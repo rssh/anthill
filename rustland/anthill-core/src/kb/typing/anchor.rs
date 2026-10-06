@@ -910,10 +910,10 @@ pub(super) fn anchor_grounding(
     if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
         let row = provides_rows_of_spec(kb, spec_canon)
             .find(|row| kb.canonical_sort_sym(row.provider) == kb.canonical_sort_sym(anchor_bound));
-        if let Some(ProvidesRow { bindings, .. }) = row {
+        if let Some(bindings) = row.map(|row| row.bindings(kb)) {
             let pins_the_carrier = bindings.iter().any(|(k, v)| {
                 same_label(kb, *k, p)
-                    && sort_functor_of_view(kb, &TermIdView(*v)).is_some_and(|h| {
+                    && sort_functor_of_view(kb, v).is_some_and(|h| {
                         kb.canonical_sort_sym(h) == kb.canonical_sort_sym(anchor_bound)
                     })
             });
@@ -921,7 +921,7 @@ pub(super) fn anchor_grounding(
                 let bound_to = bindings
                     .iter()
                     .find(|(k, _)| same_label(kb, *k, p))
-                    .and_then(|(_, v)| sort_functor_of_view(kb, &TermIdView(*v)))
+                    .and_then(|(_, v)| sort_functor_of_view(kb, v))
                     .map(|h| kb.local_name_of(h).to_owned())
                     .unwrap_or_else(|| "nothing".to_owned());
                 return Some(Err(err(

@@ -6,7 +6,7 @@
 //! Store.peek(s) }`, called `User.go13(User.mkS(), b, b)`. `mkS()`'s result names `S` unbound,
 //! so the first argument binds `S` to `U`, and the second binds `U` to `b`'s type: σ holds
 //! `S ↦ U ↦ Buf[…]`. The reader every dispatch question takes a spec parameter's binding from
-//! (`spec_param_binding_term`) read ONE link, met the variable `U`, and reported `S` as bound
+//! (`spec_param_binding`, then `spec_param_binding_term`) read ONE link, met the variable `U`, and reported `S` as bound
 //! to a variable — abstract. MEASURED on the parent commit, in both spellings of `Buf`'s `N`
 //! (a type, and a value held in the type) unless one is named:
 //!

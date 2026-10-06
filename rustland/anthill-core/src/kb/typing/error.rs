@@ -2679,11 +2679,10 @@ fn members_no_bracket_names(kb: &KnowledgeBase, op: Symbol, key: Option<Symbol>)
 /// `El` both stay unconstrained.
 ///
 /// THE MESSAGE CLAIMS NO MORE THAN THAT THIS CALL FIXED IT BY NONE OF THEM. It does not
-/// say a provision is missing: a provision that binds the member in a row holding a
-/// denoted label is not read yet (WI-20260829-2NMXA), and a signature that names the
-/// member and no carrier has no provision to read at all. Where none of the three can
-/// fix it the repair is the declaration's, and is the one spelling that always works —
-/// the parameter written in the operation's own bracket, which a call can bind.
+/// say a provision is missing: a signature that names the member and no carrier has no
+/// provision to read at all. Where none of the three can fix it the repair is the
+/// declaration's, and is the one spelling that always works — the parameter written in the
+/// operation's own bracket, which a call can bind.
 fn unconstrained_type_param_text(
     kb: &KnowledgeBase,
     op: Symbol,

@@ -258,11 +258,28 @@ pub(super) struct ProvidesRow {
     pub(super) spec_view: TermId,
     /// The spec's base sort, RAW.
     pub(super) spec_base: Symbol,
+}
+
+impl ProvidesRow {
     /// The view's NAMED bindings, as [`unwrap_spec_view`] reads them — so a bare application
     /// (`Spec[T = X]` with no `SortView` wrapper) contributes none, and the view's
     /// POSITIONAL bindings are not here either. A reader that needs either reads
-    /// [`Self::spec_view`] itself.
-    pub(super) bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// [`Self::spec_view`] itself. Values, as every reader of a provision's bindings takes
+    /// them: the stored view is a term, so each is the term it stores.
+    ///
+    /// DECODED WHEN ASKED, not with the row. A stdlib load decodes 155 000 rows (MEASURED,
+    /// WI-20260829-2NMXA) and most are read for their provider and base alone — the
+    /// provision walks filter on those — so a row that carried its bindings paid for a list
+    /// nearly every reader dropped: 4–5 % of the load once a binding was a value.
+    pub(super) fn bindings(&self, kb: &KnowledgeBase) -> SmallVec<[(Symbol, Value); 2]> {
+        spec_view_bindings(kb, self.spec_view)
+    }
+
+    /// [`Self::bindings`] where the row stores them, nothing built: for a reader that asks a
+    /// yes/no of a row and then, most often, drops it.
+    pub(super) fn stored_bindings<'k>(&self, kb: &'k KnowledgeBase) -> &'k [(Symbol, TermId)] {
+        stored_spec_view_bindings(kb, self.spec_view)
+    }
 }
 
 /// WI-20260923-32XFQ — the fields every sort-clause reflect fact shares. `SortProvidesInfo`,
@@ -305,13 +322,12 @@ fn decode_provides_row(
     if !keep(provider) {
         return None;
     }
-    let (spec_base, bindings) = unwrap_spec_view(kb, spec_view)?;
+    let spec_base = crate::kb::load::provides_spec_base_sym(kb, spec_view)?;
     Some(ProvidesRow {
         rid,
         provider,
         spec_view,
         spec_base,
-        bindings,
     })
 }
 
@@ -803,17 +819,21 @@ pub(super) fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) 
 /// that must ask "the same bindings?" cannot drift into asking it three ways. The key is
 /// the parameter's LOCAL name (spec parameters are named per spec, and the identity
 /// forwarding relates them by name) paired with the value's canonical sort symbol when
-/// the value heads a sort, else its hash-consed `TermId`. Deliberately not the raw
-/// `TermId` alone: two structurally-equal bindings written in two places need not share
+/// the value heads a sort, else its identity (a term's hash-consed id). Deliberately not
+/// the identity alone: two structurally-equal bindings written in two places need not share
 /// one id, and a hand-written row must be recognised as covering a derived one.
-pub(super) fn binding_key(kb: &KnowledgeBase, name: Symbol, value: TermId) -> (String, String) {
+pub(super) fn binding_key<V: TermView>(
+    kb: &KnowledgeBase,
+    name: Symbol,
+    value: &V,
+) -> (String, String) {
     binding_key_named(kb, kb.local_name_of(name), value)
 }
 
 /// [`binding_key`] for a binding already held by its parameter's LOCAL NAME — the shape
 /// WI-1111's translated derivation rows carry, since a mapped target parameter has no
 /// symbol on the source row to borrow.
-fn binding_key_named(kb: &KnowledgeBase, name: &str, value: TermId) -> (String, String) {
+fn binding_key_named<V: TermView>(kb: &KnowledgeBase, name: &str, value: &V) -> (String, String) {
     (name.to_string(), binding_value_key(kb, value))
 }
 
@@ -832,44 +852,56 @@ fn binding_key_named(kb: &KnowledgeBase, name: &str, value: TermId) -> (String, 
 ///
 /// A NULLARY `Fn` KEYS AS ITS `Ref` DOES, deliberately: the loader writes a bare name
 /// both ways (WI-224/WI-359's `substitute_impl_params_alloc` note), so collapsing them is
-/// what keeps the two encodings of one sort comparing equal.
-fn binding_value_key(kb: &KnowledgeBase, value: TermId) -> String {
-    match kb.get_term(value) {
-        Term::Ref(functor) | Term::Ident(functor) => kb
-            .qualified_name_of(kb.canonical_sort_sym(*functor))
-            .to_string(),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            let base = kb
-                .qualified_name_of(kb.canonical_sort_sym(*functor))
-                .to_string();
-            if pos_args.is_empty() && named_args.is_empty() {
-                return base;
+/// what keeps the two encodings of one sort comparing equal. Read through the view, where
+/// the two are one head on any carrier.
+///
+/// A LEAF THAT HEADS NO SORT keys by what it is, the same on every carrier: a variable by
+/// the variable, a literal by its value. A functor-less aggregate keys by its children. Only
+/// a value the view has no structure for keys by its identity, which two reads of one value
+/// share and two builds of one type need not.
+fn binding_value_key<V: TermView>(kb: &KnowledgeBase, value: &V) -> String {
+    let sort_name =
+        |functor: Symbol| kb.qualified_name_of(kb.canonical_sort_sym(functor)).to_string();
+    let (base, pos_arity) = match value.head(kb) {
+        ViewHead::Ident(functor) => (sort_name(functor), 0),
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => (functor.map_or_else(String::new, sort_name), pos_arity),
+        ViewHead::Var(var) => return format!("?{var:?}"),
+        ViewHead::Const(literal) => return format!("={literal:?}"),
+        ViewHead::Bottom => return "⊥".to_string(),
+        ViewHead::Opaque => {
+            return match value.as_bind_value() {
+                BindValue::Term(t) => format!("#{t:?}"),
+                BindValue::Value(v) => format!("#{:?}", value_identity_key(&v)),
+                BindValue::Path(path) => format!("#{path:?}"),
             }
-            let mut out = base;
-            out.push('[');
-            for (i, arg) in pos_args.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&binding_value_key(kb, *arg));
-            }
-            for (n, v) in named_args.iter() {
-                if !out.ends_with('[') {
-                    out.push(',');
-                }
-                out.push_str(kb.local_name_of(*n));
-                out.push('=');
-                out.push_str(&binding_value_key(kb, *v));
-            }
-            out.push(']');
-            out
         }
-        _ => format!("#{value:?}"),
+    };
+    let named = value.named_keys(kb);
+    if pos_arity == 0 && named.is_empty() {
+        return base;
     }
+    let mut out = base;
+    out.push('[');
+    for i in 0..pos_arity {
+        if i > 0 {
+            out.push(',');
+        }
+        let arg = value.pos_arg(kb, i).expect("pos_arg within arity");
+        out.push_str(&binding_value_key(kb, &arg));
+    }
+    for n in named {
+        if !out.ends_with('[') {
+            out.push(',');
+        }
+        out.push_str(kb.local_name_of(n));
+        out.push('=');
+        let v = value.named_arg(kb, n).expect("named key present");
+        out.push_str(&binding_value_key(kb, &v));
+    }
+    out.push(']');
+    out
 }
 
 /// True iff `covering` binds everything `asked` binds, to the same values.
@@ -888,20 +920,20 @@ fn binding_value_key(kb: &KnowledgeBase, value: TermId) -> String {
 /// the one it always was.
 fn bindings_cover_named(
     kb: &KnowledgeBase,
-    covering: &[(Symbol, TermId)],
-    asked: &[(String, TermId)],
+    covering: &[(Symbol, Value)],
+    asked: &[(String, Value)],
 ) -> bool {
-    bindings_cover(covering, asked, kb, |(n, v)| binding_key(kb, *n, *v))
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key(kb, *n, v))
 }
 
 /// [`bindings_cover_named`] with BOTH sides keyed by local name — comparing two pending
 /// derivation rows.
 fn bindings_cover_named_pairs(
     kb: &KnowledgeBase,
-    covering: &[(String, TermId)],
-    asked: &[(String, TermId)],
+    covering: &[(String, Value)],
+    asked: &[(String, Value)],
 ) -> bool {
-    bindings_cover(covering, asked, kb, |(n, v)| binding_key_named(kb, n, *v))
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key_named(kb, n, v))
 }
 
 /// The coverage test both of those ask — every `asked` binding's key is among the
@@ -909,12 +941,12 @@ fn bindings_cover_named_pairs(
 /// two differed in.
 fn bindings_cover<C>(
     covering: &[C],
-    asked: &[(String, TermId)],
+    asked: &[(String, Value)],
     kb: &KnowledgeBase,
     key: impl Fn(&C) -> (String, String),
 ) -> bool {
     asked.iter().all(|(an, av)| {
-        let ak = binding_key_named(kb, an.as_str(), *av);
+        let ak = binding_key_named(kb, an.as_str(), av);
         covering.iter().any(|c| key(c) == ak)
     })
 }
@@ -923,22 +955,17 @@ fn bindings_cover<C>(
 /// when it is anything else. The name half of [`is_type_param_value`], which answers
 /// only the shape; both forms this reads (`Ref`/`Ident`, and the WI-359 nullary `Fn`)
 /// are the ones that predicate accepts.
-pub(super) fn type_param_local_name(kb: &KnowledgeBase, value: TermId) -> Option<&str> {
+pub(super) fn type_param_local_name<'k, V: TermView>(
+    kb: &'k KnowledgeBase,
+    value: &V,
+) -> Option<&'k str> {
     // The `is_sort_param_symbol` guard is NOT optional and its omission was a real hole
     // (review of WI-1109): reading the local name alone accepts a binding to a CONCRETE
     // sort whenever that sort's name happens to equal the spec parameter's, so
     // `provides Sp[T = T]` with a real nullary sort `T` in scope would read as an
     // identity forwarding and derive rows at the wrong bindings. Same arms, same
     // predicate as [`is_type_param_value`] — this only adds the NAME to the answer.
-    let sym = match kb.get_term(value) {
-        Term::Ref(sym) | Term::Ident(sym) => *sym,
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => *functor,
-        _ => return None,
-    };
+    let sym = view_ref_symbol(kb, value)?;
     is_sort_param_symbol(kb, sym).then(|| kb.local_name_of(sym))
 }
 
@@ -967,11 +994,11 @@ pub(super) fn type_param_local_name(kb: &KnowledgeBase, value: TermId) -> Option
 /// The keys are LOCAL NAMES on both sides for the reason `direct_requires`' dedup gives:
 /// the same parameter reaches this function under different symbols depending on which
 /// loader path wrote the row.
-pub(super) fn forwarding_param_map(
+pub(super) fn forwarding_param_map<V: TermView>(
     kb: &KnowledgeBase,
     carrier: Symbol,
     base: Symbol,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, V)],
 ) -> Option<Vec<(String, String)>> {
     if !is_param_forwarding(kb, carrier, base, bindings) {
         return None;
@@ -982,7 +1009,7 @@ pub(super) fn forwarding_param_map(
             .map(|(name, value)| {
                 (
                     kb.local_name_of(*name).to_string(),
-                    type_param_local_name(kb, *value)
+                    type_param_local_name(kb, value)
                         .expect("is_param_forwarding checked every binding")
                         .to_string(),
                 )
@@ -1000,17 +1027,17 @@ pub(super) fn forwarding_param_map(
 /// binding. The measurements already recorded in this pass — a scanning
 /// `self_supplied_entries` costing 80 % of a stdlib load, an un-hoisted decode costing 61×
 /// — are what makes an allocation on that path worth avoiding.
-pub(super) fn is_param_forwarding(
+pub(super) fn is_param_forwarding<V: TermView>(
     kb: &KnowledgeBase,
     carrier: Symbol,
     base: Symbol,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, V)],
 ) -> bool {
     !bindings.is_empty()
         && !same_sort_canonical(kb, carrier, base)
         && bindings
             .iter()
-            .all(|(_, value)| type_param_local_name(kb, *value).is_some())
+            .all(|(_, value)| type_param_local_name(kb, value).is_some())
 }
 
 /// One decoded `SortProvidesInfo` row, for WI-1109's derivation pass. Named apart from
@@ -1019,7 +1046,7 @@ pub(super) fn is_param_forwarding(
 struct DecodedProvision {
     pub(super) carrier: Symbol,
     pub(super) base: Symbol,
-    pub(super) bindings: SmallVec<[(Symbol, TermId); 2]>,
+    pub(super) bindings: SmallVec<[(Symbol, Value); 2]>,
 }
 
 /// WI-1109 — every provision row, decoded ONCE.
@@ -1040,7 +1067,7 @@ fn decoded_provision_rows(kb: &KnowledgeBase) -> Vec<DecodedProvision> {
         .map(|row| DecodedProvision {
             carrier: kb.canonical_sort_sym(row.provider),
             base: kb.canonical_sort_sym(row.spec_base),
-            bindings: row.bindings,
+            bindings: row.bindings(kb),
         })
         .collect()
 }
@@ -1197,7 +1224,7 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
 /// [`forwarding_param_map`].
 pub(super) fn forwarded_rows_to_derive(
     kb: &KnowledgeBase,
-) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> {
+) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, Value)>)> {
     let rows = decoded_provision_rows(kb);
 
     let conditioned = conditioned_provision_pairs(kb);
@@ -1233,7 +1260,7 @@ pub(super) fn forwarded_rows_to_derive(
     // (carrier, spec) -> the bindings it is ALREADY provided at. Fill silence, never
     // overwrite speech — and binding-precisely, so a row at OTHER bindings cannot
     // suppress the one actually needed.
-    let mut existing: std::collections::HashMap<(Symbol, Symbol), Vec<&[(Symbol, TermId)]>> =
+    let mut existing: std::collections::HashMap<(Symbol, Symbol), Vec<&[(Symbol, Value)]>> =
         std::collections::HashMap::new();
     for r in &rows {
         existing
@@ -1242,7 +1269,7 @@ pub(super) fn forwarded_rows_to_derive(
             .push(&r.bindings);
     }
 
-    let mut pending: Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> = Vec::new();
+    let mut pending: Vec<(Symbol, Symbol, Symbol, Vec<(String, Value)>)> = Vec::new();
     for r in &rows {
         // The forwarding row itself is what is being read THROUGH, never a carrier of it.
         if same_sort_canonical(kb, r.carrier, r.base) {
@@ -1259,13 +1286,13 @@ pub(super) fn forwarded_rows_to_derive(
             // row binds the SUBJECT parameter the forwarding sends it to. A target
             // parameter whose subject parameter this row leaves unbound is simply absent,
             // which is what "not bound" already means everywhere else.
-            let mapped: Vec<(String, TermId)> = map
+            let mapped: Vec<(String, Value)> = map
                 .iter()
                 .filter_map(|(target_param, subject_param)| {
                     r.bindings
                         .iter()
                         .find(|(n, _)| kb.local_name_of(*n) == subject_param.as_str())
-                        .map(|(_, v)| (target_param.clone(), *v))
+                        .map(|(_, v)| (target_param.clone(), v.clone()))
                 })
                 .collect();
             // NO GUARD ON AN EMPTY `mapped`, deliberately (WI-1111 review). A source row
@@ -1307,7 +1334,7 @@ fn assert_forwarded_provides(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
     target: Symbol,
-    bindings: &[(String, TermId)],
+    bindings: &[(String, Value)],
 ) -> RuleId {
     let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
     let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
@@ -1330,28 +1357,26 @@ fn assert_forwarded_provides(
     // A target parameter the source left unbound is simply absent, which is what "not
     // bound" already means everywhere else.
     let target_params: Vec<String> = kb.type_params_of_sort(target);
-    let named_args: SmallVec<[(Symbol, TermId); 2]> = target_params
+    let named_args: Vec<(Symbol, Value)> = target_params
         .iter()
         .filter_map(|param| {
             bindings
                 .iter()
                 .find(|(name, _)| name.as_str() == param.as_str())
-                .map(|(_, value)| (kb.intern(param), *value))
+                .map(|(_, value)| (kb.intern(param), value.clone()))
         })
         .collect();
-    let spec_view = kb.alloc(Term::Fn {
-        functor: sort_view_sym,
-        pos_args: SmallVec::from_elem(spec_name, 1),
-        named_args,
-    });
+    // The view over the source row's bindings as they are: the term a stored view is
+    // while each binding is one.
+    let spec_view = kb.fn_value(sort_view_sym, vec![Value::term(spec_name)], named_args);
     let sort_ref_term = kb.make_name_term_from_sym(carrier);
     kb.register_entity_fields(provides_sym, vec![sort_ref_key, spec_key]);
     kb.assert_fact_carrier(
         provides_sym,
         Vec::new(),
         vec![
-            (sort_ref_key, crate::eval::value::Value::term(sort_ref_term)),
-            (spec_key, crate::eval::value::Value::term(spec_view)),
+            (sort_ref_key, Value::term(sort_ref_term)),
+            (spec_key, spec_view),
         ],
         crate::kb::ClauseKind::Requirement,
         carrier,

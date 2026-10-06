@@ -1182,15 +1182,19 @@ fn eliminate_in(
 /// eval died `__req_desc not bound` (the four WI-20260909-S8CBV rows, MEASURED). The slot is
 /// read and kept here.
 ///
-/// AND IT IS REBUILT AS A TERM, each child lowered — the one place this walk lowers, at the
-/// boundary that still needs it: a spec becomes a dispatch goal whose bindings are `TermId`s
-/// (`SortGoal`, WI-20260829-2NMXA), and `unwrap_spec_view_value` drops a binding on another
-/// carrier. A requirement that lost its binding demanded nothing, so a caller's `requires` at
-/// ANY binding covered it — a wrong dictionary (MEASURED). WI-20260929-WBHTM lowers a spec
-/// binding at that boundary the same way; once 2NMXA carries value bindings, this goes. Built
-/// by hand rather than through `value_to_term`'s entity arm, which would move a binding named
-/// `sort` (the view's one declared field) to the front — the canonicalization SortView
-/// bindings deliberately skip (WI-498).
+/// IT IS REBUILT ON ITS CHILDREN'S CARRIERS, as every other form is: the term it was while
+/// each child is one, and an entity the moment a child rides an occurrence (`fn_value`). Every
+/// reader of a spec takes its bindings through the view ([`unwrap_spec_view_value`]), and the
+/// dispatch goal the spec becomes holds each binding on its carrier, so a binding that holds a
+/// value reaches the goal as it is. A requirement that lost such a binding demanded nothing,
+/// and a caller's `requires` at ANY binding covered it — a wrong dictionary (MEASURED,
+/// `wi_0rp29_nested_projection_value_in_type_test`). `fn_value` keeps the bindings in the
+/// order they were read: a binding named `sort` (the view's one declared field) is not moved
+/// to the front, the canonicalization SortView bindings deliberately skip (WI-498).
+///
+/// Lowered to a term again where every child has one, it answers every reader the same
+/// (MEASURED: no row moves either way). What the carrier changes is what is refused: a
+/// child with no term form rides the view, where lowering had nowhere to put it.
 fn eliminate_spec_view(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -1213,12 +1217,14 @@ fn eliminate_spec_view(
         })?;
     let (labels, values): (Vec<Symbol>, Vec<Value>) = bindings.into_iter().unzip();
     children.extend(values);
-    let Some(children) = eliminate_children(kb, &children, cx)? else {
+    let Some(mut children) = eliminate_children(kb, &children, cx)? else {
         return Ok(None);
     };
-    lower_spec_view(kb, functor, pos_arity, &children, labels)
-        .map(Some)
-        .map_err(|why| cx.refuse(&why))
+    let named: Vec<(Symbol, Value)> = labels
+        .into_iter()
+        .zip(children.split_off(pos_arity))
+        .collect();
+    Ok(Some(kb.fn_value(functor, children, named)))
 }
 
 /// WI-20260929-0RP29 — an `EffectExpression` node (`{s.E, Error[EmptyStream]}` nested in a
@@ -1722,7 +1728,7 @@ pub(super) fn required_instance_member(
         .bindings
         .iter()
         .find(|(v, _)| *v == vid)
-        .map(|(_, bound)| Value::term(*bound))
+        .map(|(_, bound)| bound.clone())
 }
 
 /// WI-475: project an expression-carried projection (`s.M`: the receiver `value`, the member
@@ -2099,7 +2105,7 @@ fn project_via_provided_spec(
             transitive_provider_spec_view_bindings(kb, recv_sort, spec, &mut visited)
         {
             let written = member_binding(kb, &bindings, member)?;
-            return provision_lends_binding(kb, recv_ty, recv_sort, written).map(Ok);
+            return provision_lends_binding(kb, recv_ty, recv_sort, &written).map(Ok);
         }
         match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, selections, ctx, span) {
             Ok(Some(lent)) => return lent.map(Ok),
@@ -2109,7 +2115,7 @@ fn project_via_provided_spec(
     }
     let mut lent: Option<(Symbol, ProjResult)> = None;
     for (spec, written) in unowned_member_bindings(kb, recv_sort, member) {
-        let Some(this) = provision_lends_binding(kb, recv_ty, recv_sort, written) else {
+        let Some(this) = provision_lends_binding(kb, recv_ty, recv_sort, &written) else {
             continue;
         };
         let agree = match &lent {
@@ -2146,15 +2152,11 @@ fn show_lent(kb: &KnowledgeBase, r: &ProjResult) -> String {
 }
 
 /// A provision's binding of the spec parameter `member`, by its name.
-fn member_binding(
-    kb: &KnowledgeBase,
-    bindings: &[(Symbol, TermId)],
-    member: &str,
-) -> Option<TermId> {
+fn member_binding(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], member: &str) -> Option<Value> {
     bindings
         .iter()
         .find(|(p, _)| kb.local_name_of(*p) == member)
-        .map(|(_, b)| *b)
+        .map(|(_, b)| b.clone())
 }
 
 /// WHERE A RECEIVER'S DECLARATION NAMES NO SPEC: the bindings of `member` its sort's own
@@ -2173,7 +2175,7 @@ pub(super) fn unowned_member_bindings(
     kb: &KnowledgeBase,
     recv_sort: Symbol,
     member: &str,
-) -> Vec<(Symbol, TermId)> {
+) -> Vec<(Symbol, Value)> {
     // `directly_provided_specs` dedups CANONICALLY — and drops nothing this loop could reach:
     // every step below reads `spec` canonically, so a second, raw-different copy of a spec
     // already tried answers exactly as the first did.
@@ -2194,7 +2196,7 @@ pub(super) fn unowned_member_bindings(
         };
         let is_the_provider = spec_carrier_param_or_sole(kb, spec)
             .is_some_and(|p| kb.local_name_of(p) == member)
-            && composed_self_reference(kb, recv_sort, written);
+            && composed_self_reference(kb, recv_sort, &written);
         if !is_the_provider {
             out.push((spec, written));
         }
@@ -2282,14 +2284,14 @@ fn provision_lends_binding(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     recv_sort: Symbol,
-    written: TermId,
+    written: &Value,
 ) -> Option<ProjResult> {
     // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
     // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
     // it an unbound `T` ⟹ neutral.
     let grounded = match build_pattern_subst(kb, recv_ty, recv_sort) {
-        Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::term(written)),
-        None => Value::term(written),
+        Some(s) => walk_pattern_field_type_deep(kb, &s, written),
+        None => written.clone(),
     };
     if let Some(opened) = provision_variables_opened(kb, recv_sort, written, &grounded) {
         return Some(ProjResult::Grounded(opened));
@@ -2318,17 +2320,13 @@ fn provision_lends_binding(
 fn provision_variables_opened(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
-    written: TermId,
+    written: &Value,
     at_receiver: &Value,
 ) -> Option<Value> {
-    let Value::Term { id: term, .. } = at_receiver else {
-        return None;
-    };
     if matches!(type_head(kb, at_receiver), TypeHead::EffectsRows) {
         return None;
     }
-    ProvisionOpening::instance_where_nothing_else_is_open(kb, carrier, written, *term)
-        .map(Value::term)
+    ProvisionOpening::instance_where_nothing_else_is_open(kb, carrier, written, at_receiver)
 }
 
 /// A provision's binding of a member (`written`), as it reads at a receiver (`at_receiver`).
@@ -2339,13 +2337,14 @@ fn provision_variables_opened(
 /// (reconstructing `{}` for an UNwritten effect). A non-ground / unwritten effect binding
 /// lends nothing → loud missing-member, preserving WI-396 for the case it actually guarded.
 ///
-/// Grounded ONLY when the result is FULLY concrete (deep `resolved_type_is_ground`, not a
+/// Grounded ONLY when the result is FULLY concrete (deep [`type_is_ground`], not a
 /// head-only check): a structured binding still resting on an unbound carrier param (`Element
 /// = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded type that would absorb
-/// demand downstream.
-fn lent_member(kb: &KnowledgeBase, written: TermId, at_receiver: Value) -> Option<ProjResult> {
-    let is_effect_member = matches!(type_head(kb, &Value::term(written)), TypeHead::EffectsRows);
-    let is_ground = resolved_type_is_ground(kb, &at_receiver);
+/// demand downstream. A row that names a cell of the receiver's own (`{Modify[k]}`) is
+/// concrete: it is what the member is there, and nothing a later pass could decide.
+fn lent_member(kb: &KnowledgeBase, written: &Value, at_receiver: Value) -> Option<ProjResult> {
+    let is_effect_member = matches!(type_head(kb, written), TypeHead::EffectsRows);
+    let is_ground = type_is_ground(kb, &at_receiver);
     if is_effect_member && !is_ground {
         return None;
     }
@@ -2433,9 +2432,9 @@ fn witnesses_lend_member(
     let covering = covering_witnesses_named(kb, recv_ty, recv_sort, spec, selections);
     let mut lent: Option<(Symbol, Option<ProjResult>)> = None;
     for (row, at) in covering {
-        let this = member_binding(kb, &row.bindings, member).and_then(|written| {
-            let at_receiver = resolve_type_deep_value(kb, &at, &Value::term(written));
-            lent_member(kb, written, at_receiver)
+        let this = member_binding(kb, &row.bindings(kb), member).and_then(|written| {
+            let at_receiver = resolve_type_deep_value(kb, &at, &written);
+            lent_member(kb, &written, at_receiver)
         });
         let agree = match &lent {
             None => {
@@ -2951,7 +2950,7 @@ pub(super) fn resolve_rigid_projection(
             // sibling param of the declaring sort (`Key = K` — grounds to `K`'s ref,
             // resolved by the ordinary alias machinery downstream).
             Some(v) => {
-                let binding_key = subject_key_of_term(kb, v);
+                let binding_key = subject_key_of(kb, &v);
                 let placeholder_key = spec_member_param_key(kb, entry.required_sort, &member_str);
                 let is_placeholder = match (binding_key, placeholder_key) {
                     (Some(b), Some(p)) => subject_keys_equal(kb, b, p),
@@ -2975,7 +2974,7 @@ pub(super) fn resolve_rigid_projection(
                 if is_placeholder || is_sibling_param {
                     Ok(ProjResult::Neutral)
                 } else {
-                    match normalize_spec_binding_type(kb, v) {
+                    match normalize_spec_binding_type(kb, &v) {
                         Some(ty) => Ok(ProjResult::Grounded(Value::term(ty))),
                         None => Err(projection_type_error(
                             ctx,
@@ -3062,9 +3061,15 @@ fn projected_param_of_sort(
 }
 
 pub(super) fn subject_key_of_term(kb: &KnowledgeBase, t: TermId) -> Option<SubjectKey> {
-    match kb.get_term(t) {
-        Term::Var(Var::Global(v) | Var::Rigid(v)) => Some(SubjectKey::Var(v.raw())),
-        _ => spec_binding_head_sym(kb, t).map(|s| sym_subject_key(kb, s)),
+    subject_key_of(kb, &TermIdView(t))
+}
+
+/// [`subject_key_of_term`] of a subject or a binding leaf on any carrier: a variable is
+/// keyed by its id and a bare name by what it names, whichever carrier holds it.
+pub(super) fn subject_key_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<SubjectKey> {
+    match v.head(kb) {
+        ViewHead::Var(Var::Global(x) | Var::Rigid(x)) => Some(SubjectKey::Var(x.raw())),
+        _ => spec_binding_head_sym(kb, v).map(|s| sym_subject_key(kb, s)),
     }
 }
 
@@ -3090,23 +3095,11 @@ pub(super) fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKe
 /// (`Storage[C = List[P]]`) are not yet read — the candidate filter is conservative
 /// (an unmentioned subject surfaces the loud no-bound error, never a silent pick).
 pub(super) fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKey) -> bool {
-    // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
-    if let Value::Term { id, .. } = spec {
-        let Term::Fn { named_args, .. } = kb.get_term(*id) else {
-            return false;
-        };
-        return named_args.iter().any(|(_, v)| {
-            subject_key_of_term(kb, *v).is_some_and(|k| subject_keys_equal(kb, k, key))
-        });
-    }
-    // Denoted spec — check each binding's subject key via TermView. A denoted
-    // binding value (`Value::Node`) has no term subject key (`subject_key_of_term`
-    // is term-only), so it contributes no match — the deferred parametric-effect
-    // boundary, consistent with the ground path.
+    // One read for every carrier: a binding that names the subject names it on a term, as a
+    // variable on the value carrier and as an occurrence alike.
     spec.named_keys(kb).into_iter().any(|k| {
         spec.named_arg(kb, k)
-            .and_then(|it| it.as_term_id())
-            .and_then(|v| subject_key_of_term(kb, v))
+            .and_then(|binding| subject_key_of(kb, &binding))
             .is_some_and(|sk| subject_keys_equal(kb, sk, key))
     })
 }
@@ -3124,40 +3117,37 @@ pub(super) fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKe
 /// not. MEASURED, neither difference was reachable: a probe on both fired zero times
 /// across the workspace suite. The delegation removes the second reader, not a behaviour
 /// any corpus sees.
-pub(super) fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
-    view_ref_symbol(kb, &TermIdView(v))
+///
+/// Of a binding on any carrier, as [`spec_binding_value`] hands one out.
+pub(super) fn spec_binding_head_sym<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    view_ref_symbol(kb, v)
 }
 
 /// The binding VALUE a `requires` application carries for `member`, when bound
-/// (`requires Storage[C = P, Key = String]` binds `Key`).
-pub(super) fn spec_binding_value(kb: &KnowledgeBase, spec: &Value, member: &str) -> Option<TermId> {
-    // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
-    if let Value::Term { id, .. } = spec {
-        let Term::Fn { named_args, .. } = kb.get_term(*id) else {
-            return None;
-        };
-        return named_args
-            .iter()
-            .find(|(p, _)| kb.local_name_of(*p) == member)
-            .map(|(_, v)| *v);
-    }
-    // Denoted spec — the member's binding via TermView, when it is a ground term.
-    // A denoted binding value has no `TermId`; callers treat `None` as "not a
-    // projectable member" (the deferred parametric-effect boundary).
+/// (`requires Storage[C = P, Key = String]` binds `Key`), on the carrier it rides — a
+/// binding that holds a value (`Key = Buf[T = Int64, N = 3]`) is bound as plainly as one
+/// that is a term.
+pub(super) fn spec_binding_value(kb: &KnowledgeBase, spec: &Value, member: &str) -> Option<Value> {
     let key = spec
         .named_keys(kb)
         .into_iter()
         .find(|k| kb.local_name_of(*k) == member)?;
-    spec.named_arg(kb, key).and_then(|it| it.as_term_id())
+    named_child_value(kb, spec, key)
 }
 
 /// Normalize a `requires`-binding value LEAF to the plain TYPE shape (`Ref(s)`). A
 /// structured binding has no plain normalization yet → `None` (the caller surfaces a
 /// loud not-yet-supported error, never a silently wrong shape).
-pub(super) fn normalize_spec_binding_type(kb: &mut KnowledgeBase, v: TermId) -> Option<TermId> {
-    let s = spec_binding_head_sym(kb, v)?;
-    if matches!(kb.get_term(v), Term::Ref(_)) {
-        return Some(v);
+pub(super) fn normalize_spec_binding_type<V: TermView>(
+    kb: &mut KnowledgeBase,
+    v: &V,
+) -> Option<TermId> {
+    let s = view_ref_symbol(kb, v)?;
+    // Already that reference: returned as it is, with nothing allocated.
+    if let BindValue::Term(t) = v.as_bind_value() {
+        if matches!(kb.get_term(t), Term::Ref(_)) {
+            return Some(t);
+        }
     }
     Some(kb.alloc(Term::Ref(s)))
 }

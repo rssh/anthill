@@ -35,6 +35,12 @@
 //! needed — the carrier its provision is filed on — by one reader, `spec_param_binding_term`,
 //! and the unifier binds it as it binds a term.
 //!
+//! SINCE WI-20260829-2NMXA NOTHING IS LOWERED: a goal's bindings ride any carrier, the one
+//! reader is `spec_param_binding`, and each reader the ledger below names takes the binding
+//! on the carrier it rides. The verdicts are the ones these rows pinned. A part's back-out
+//! is still that reader taking a `Term` binding only; part 2's is the σ walk of
+//! `spec_param_binding`.
+//!
 //! Every row that can DRIVES what it claims: a call runs to a value that names the provider
 //! it reached (each answers `v` plus its own offset), or a refusal names what failed. The two
 //! effect-row rows assert a LOAD verdict and say at their site why nothing can run.

@@ -961,7 +961,7 @@ fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>) -> String {
 /// `extract_ref_field` this replaced, which read `Term::Ref`/`Term::Ident` only.
 ///
 /// THE ONE "is this a bare name" reader, because its readers must agree on it. On a
-/// `requires`-clause binding that is `subst_requires_value` and
+/// `requires`-clause binding that is `subst_requires_value`, [`sigma_subst_type`] and
 /// [`substitute_impl_params_alloc`], which substitute σ at exactly these shapes, and
 /// `check_use_site_requires_eq`, which reads the RAW (unsubstituted) binding back to
 /// name the container parameter in its diagnostic — if they disagreed, the diagnostic

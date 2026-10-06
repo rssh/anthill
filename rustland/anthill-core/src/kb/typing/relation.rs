@@ -960,16 +960,18 @@ fn op_slot_route(
     // entry at it through `param_rigids`. Each parameter is WALKED through the pins to its
     // end: a parameter bound to a witness variable a later parameter pinned reads as that
     // pin, not as the variable (a one-step lookup made the route depend on parameter order).
-    let spec = rewrite_spec_value(kb, &entry.spec, &|kb, t| {
-        rewrite_term_leaves(kb, t, &|kb, t| {
-            let param = ref_or_nullary_name(kb.get_term(t))?;
-            let var = kb.alloc(Term::Var(Var::Global(type_param_global_var(kb, param)?)));
-            match walk_type_deep_value(kb, &pins, &Value::term(var)) {
-                Value::Term { id, .. } if id != var => Some(id),
-                _ => None,
-            }
-        })
-    });
+    //
+    // A pin is taken on the carrier it rides, and the entry is walked on its own: a
+    // parameter pinned to a type that holds a value is pinned.
+    let spec = rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
+        let param = ref_or_nullary_name_view(kb, leaf)?;
+        let vid = type_param_global_var(kb, param)?;
+        match walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(vid))) {
+            Value::Var(Var::Global(end)) if end == vid => None,
+            pinned => Some(pinned),
+        }
+    })
+    .unwrap_or_else(|| entry.spec.clone());
     let goal = goal_from_requires_entry(
         kb,
         &RequiresEntry {

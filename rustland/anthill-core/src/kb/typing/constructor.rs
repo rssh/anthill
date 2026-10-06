@@ -520,7 +520,7 @@ fn effects_param_head_is(
             continue;
         }
         if let Some(v) = spec_binding_value(kb, &entry.spec, "Effects") {
-            if let Some(head) = spec_binding_head_sym(kb, v) {
+            if let Some(head) = spec_binding_head_sym(kb, &v) {
                 if is(kb, head) {
                     return true;
                 }
@@ -763,7 +763,7 @@ fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
 /// are declared in that sort's own scope, where a foreign sort's are not. A leaf that is not
 /// a type parameter at all (a concrete sort, a literal, a rigid) is not this question and
 /// passes.
-fn param_leaves_belong_to_sort(kb: &KnowledgeBase, t: TermId, own_params: &[Symbol]) -> bool {
+fn param_leaves_belong_to_sort<V: TermView>(kb: &KnowledgeBase, t: &V, own_params: &[Symbol]) -> bool {
     let belongs = |kb: &KnowledgeBase, sym: Symbol| -> bool {
         if !is_sort_param_symbol(kb, sym) {
             return true;
@@ -774,23 +774,17 @@ fn param_leaves_belong_to_sort(kb: &KnowledgeBase, t: TermId, own_params: &[Symb
                 .iter()
                 .any(|p| kb.symbols.declaring_scope(*p) == scope)
     };
-    match kb.get_term(t) {
-        Term::Ref(sym) | Term::Ident(sym) => belongs(kb, *sym),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
+    match t.head(kb) {
+        ViewHead::Ident(sym) => belongs(kb, sym),
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
         } => {
-            let functor = *functor;
-            let kids: Vec<TermId> = pos_args
-                .iter()
-                .copied()
-                .chain(named_args.iter().map(|(_, a)| *a))
-                .collect();
             belongs(kb, functor)
-                && kids
-                    .iter()
-                    .all(|c| param_leaves_belong_to_sort(kb, *c, own_params))
+                && view_all_children(kb, t, pos_arity, |c| {
+                    param_leaves_belong_to_sort(kb, c, own_params)
+                })
         }
         _ => true,
     }
@@ -1075,10 +1069,11 @@ pub(super) fn bare_spec_arg_provision_projection(
             let Some(vid) = type_param_vid_in_sort(kb, arg_sort, *k) else {
                 continue;
             };
-            let Value::Term { id, .. } = v else { continue };
+            // On the carrier it rides: a written argument that holds a value (`E =
+            // {Modify[k]}`) says its parameter as plainly as one that is a term.
             match recv_projections.iter_mut().find(|(pv, _)| *pv == vid) {
-                Some(slot) => slot.1 = *id,
-                None => recv_projections.push((vid, *id)),
+                Some(slot) => slot.1 = v.clone(),
+                None => recv_projections.push((vid, v.clone())),
             }
         }
     }
@@ -1097,7 +1092,7 @@ pub(super) fn bare_spec_arg_provision_projection(
         let raw = view
             .iter()
             .find(|(sp, _)| type_param_vid_in_sort(kb, field_base, *sp) == Some(key_vid))
-            .map(|(_, v)| *v)?;
+            .map(|(_, v)| v)?;
         // Same guard, same reason: a provision binding may name a FOREIGN sort's parameter,
         // and the substitution's name-anchored leaf join would claim it as this receiver's
         // whenever the short names collide ([`param_leaves_belong_to_sort`]).
@@ -1118,13 +1113,13 @@ pub(super) fn bare_spec_arg_provision_projection(
         // rigid and a receiver projection (`s.T`) are both settled, and no later pass could
         // decide them — where a leftover parameter ref or free var is exactly what a later
         // pass would wrongly decide.
-        if !type_value_is_ground_g(kb, val, true) {
+        if !type_is_determined(kb, &val) {
             return None;
         }
         // An EFFECT-ROW param threads as a single-label row (`{s.E}`); a SORT param threads
         // the substituted value bare. A value already stored as a row is kept as read.
         let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
-        let proj_val = effect_row_param_value(kb, field_base, &member_short, Value::term(val));
+        let proj_val = effect_row_param_value(kb, field_base, &member_short, val);
         proj_bindings.push((*field_key, proj_val));
     }
     Some(parameterized_value(
@@ -1150,7 +1145,7 @@ fn receiver_param_projections(
     kb: &mut KnowledgeBase,
     sort: Symbol,
     recv: Symbol,
-) -> Vec<(VarId, TermId)> {
+) -> Vec<(VarId, Value)> {
     let params = sort_type_params_as_pairs(kb, sort);
     let mut out = Vec::with_capacity(params.len());
     for (param_sym, _) in params.iter() {
@@ -1166,7 +1161,7 @@ fn receiver_param_projections(
         let member_short = short_name_of(kb.local_name_of(*param_sym)).to_owned();
         let member_sym = kb.intern(&member_short);
         let recv_term = kb.alloc(Term::Ref(recv));
-        out.push((vid, kb.make_expr_carried(recv_term, member_sym)));
+        out.push((vid, Value::term(kb.make_expr_carried(recv_term, member_sym))));
     }
     out
 }

@@ -1554,6 +1554,13 @@ this case. Found by `/code-review` on this ticket's diff. The CARRIER sites
 deliberately not moved: their value is a carried type read off a runtime value, not an
 author-written one, and changing it changes which rows every existing anchor selects.
 
+Since WI-20260829-2NMXA a goal's bindings ride any carrier, and neither is lowered: the
+written element goes in as written, and a carried type that is no term goes in whole, as a
+term-carried one always did, where it was reduced to its sort head, or left out where it
+had none. A carried type rides an occurrence only when it holds a value a provision's head
+cannot be written at (a cell; a literal is re-grounded as a term before it gets here), so
+no program was found that the second change moves.
+
 **AND THE TIE VERDICT HAD TO MOVE WITH IT — a regression this ticket introduced and
 closed.** `WitnessGoal::synthesized` (now `from_carried_types`, inverted) is what makes a
 resolution TIE read as "cannot decide" rather than as a coherence `Defect`, which is a

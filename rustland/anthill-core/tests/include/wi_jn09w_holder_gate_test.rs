@@ -45,8 +45,8 @@
 //!    written). 2 FAIL, each refused at load:
 //!    [`an_unnamed_result_pins_the_bare_sort_and_gets_a_dictionary`] and
 //!    [`an_unnamed_stack_is_measured`].
-//! 2. THE CHAIN-END READ of WI-20260929-020TH (`spec_param_binding_term` on its parent
-//!    commit's read). 2 FAIL, the two chain rows: the op-level one loads clean, and the
+//! 2. THE CHAIN-END READ of WI-20260929-020TH (`spec_param_binding`, then
+//!    `spec_param_binding_term`, on its parent commit's read). 2 FAIL, the two chain rows: the op-level one loads clean, and the
 //!    sort-level one is refused at `User.mkS()` and at `User.go13`, each naming
 //!    `Store[State = User.S]` — a requirement that names no `Buf`.
 //!

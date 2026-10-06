@@ -52,6 +52,10 @@
 //! | the FLAG CLEARING (`sort_goal_with_wildcards`' one `from_carried_types = false` made conditional on `written_element` having declined, so only a MINT clears it) | **1** | [`a_tie_a_written_element_does_not_cause_stays_a_delay`], and it ABORTS rather than fails — `debug_assert!(false, "find_dictionary: two providers answer …")` |
 //! | the FAITHFUL LOWERING (`written_element` back to `type_value_as_term`) | **1** | [`an_applied_written_element_pins_what_the_author_actually_wrote`], and BOTH its assertions — the agreeing spelling stops answering AND the disagreeing one starts |
 //!
+//! SINCE WI-20260829-2NMXA A GOAL'S BINDINGS RIDE ANY CARRIER, so `written_element` hands
+//! the written type over as it is and nothing is lowered; the last row's back-out is the
+//! written type reduced to its sort head again (`type_value_as_term` is gone).
+//!
 //! Each row below states which of those it moves under. The in-fixture controls — the
 //! spellings that write NOTHING for the element and must keep delaying — pass under ALL
 //! of them by design, and are what say the WRITTEN BINDING is doing the work rather than
@@ -335,7 +339,8 @@ fn an_applied_written_element_pins_what_the_author_actually_wrote() {
     //
     // FIXED by lowering through `value_to_term` — WI-390's "faithful, total Value → Term
     // boundary", whose own doc names this exact use ("the one converter to use where a
-    // value-in-type may ride, e.g. a `requires`/`provides` spec").
+    // value-in-type may ride, e.g. a `requires`/`provides` spec"). Since WI-20260829-2NMXA
+    // the goal takes the written type on the carrier it rides, and nothing is lowered.
     //
     // BACKING OUT that converter (back to `type_value_as_term`) fails BOTH assertions
     // here and nothing else in the workspace — the file header's table has it.

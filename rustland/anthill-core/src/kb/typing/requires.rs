@@ -168,31 +168,45 @@ impl SupplySource {
 /// caches hand back clones of one allocation) collide correctly; two distinct
 /// allocations key distinctly (a sound false MISS = a recompute, never a false
 /// HIT). Total and reflexive. WI-662.
-#[derive(PartialEq, Eq, Hash)]
-enum SpecEqKey {
+///
+/// ONE KEY FOR EVERY TYPE THAT KEYS THE MEMO: a [`SortGoal`]'s bindings ride the same
+/// carriers a spec does, and are identified the same way.
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub(super) enum ValueIdentity {
     Term(TermId),
     /// `Rc` data pointer(s): a `Value::Node` occurrence (second field 0), or a
-    /// `Value::Entity`/`Tuple`'s `pos`+`named` slice pointers.
+    /// `Value::Tuple`'s `pos`+`named` slice pointers.
     Ptr(usize, usize),
-    /// A non-spec carrier (never a real requires spec) — a defensive fallback.
+    /// A `Value::Entity`: its functor and its `pos`+`named` slice pointers. The functor
+    /// is part of it — two applications may share their children.
+    Entity(Symbol, usize, usize),
+    /// A variable on the value carrier: itself.
+    Var(Var),
+    /// Any other carrier — a scalar, a bare symbol; never an interior-mutable one.
     Other(String),
 }
 
-fn spec_eq_key(spec: &Value) -> SpecEqKey {
-    match spec {
-        Value::Term { id, .. } => SpecEqKey::Term(*id),
-        Value::Node(occ) => SpecEqKey::Ptr(Rc::as_ptr(occ) as usize, 0),
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-            SpecEqKey::Ptr(pos.as_ptr() as usize, named.as_ptr() as usize)
+pub(super) fn value_identity_key(v: &Value) -> ValueIdentity {
+    match v {
+        Value::Term { id, .. } => ValueIdentity::Term(*id),
+        Value::Node(occ) => ValueIdentity::Ptr(Rc::as_ptr(occ) as usize, 0),
+        Value::Tuple { pos, named, .. } => {
+            ValueIdentity::Ptr(pos.as_ptr() as usize, named.as_ptr() as usize)
         }
-        other => SpecEqKey::Other(format!("{other:?}")),
+        Value::Entity {
+            functor,
+            pos,
+            named,
+        } => ValueIdentity::Entity(*functor, pos.as_ptr() as usize, named.as_ptr() as usize),
+        Value::Var(var) => ValueIdentity::Var(*var),
+        other => ValueIdentity::Other(format!("{other:?}")),
     }
 }
 
 impl PartialEq for RequiresEntry {
     fn eq(&self, other: &Self) -> bool {
         self.required_sort == other.required_sort
-            && spec_eq_key(&self.spec) == spec_eq_key(&other.spec)
+            && value_identity_key(&self.spec) == value_identity_key(&other.spec)
     }
 }
 
@@ -201,7 +215,7 @@ impl Eq for RequiresEntry {}
 impl std::hash::Hash for RequiresEntry {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.required_sort.hash(state);
-        spec_eq_key(&self.spec).hash(state);
+        value_identity_key(&self.spec).hash(state);
     }
 }
 
@@ -911,18 +925,20 @@ pub(super) fn chain_at_callers_instance(
         .iter()
         .map(|entry| RequiresEntry {
             required_sort: entry.required_sort,
-            spec: rewrite_spec_value(kb, &entry.spec, &|kb, t| {
-                rewrite_term_leaves(kb, t, &|kb, t| {
-                    let (vid, is_rigid) = elem_var_step(kb, t)?;
-                    if is_rigid {
-                        return Some(t);
-                    }
-                    param_rigids
-                        .iter()
-                        .find(|(canonical, _)| *canonical == vid)
-                        .map(|(_, rigid)| *rigid)
-                })
-            }),
+            // On whichever carrier the clause rides ([`rewrite_type_leaves`]): a parameter
+            // beneath a type that holds a value is restated as any other is. A rigid is
+            // where the chase ends, and stays.
+            spec: rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
+                let (vid, is_rigid) = elem_var_step(kb, leaf)?;
+                if is_rigid {
+                    return None;
+                }
+                param_rigids
+                    .iter()
+                    .find(|(canonical, _)| *canonical == vid)
+                    .map(|(_, rigid)| Value::term(*rigid))
+            })
+            .unwrap_or_else(|| entry.spec.clone()),
             supply: entry.supply,
         })
         .collect();
@@ -1059,12 +1075,10 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
 /// for the goal, the spec's registered parameter symbol for the `SortView`.
 ///
 /// Positionals fill the parameters no named binding took, in declaration order —
-/// `KnowledgeBase::positional_param_slots`, the rule's one owner. `None`, and the caller
-/// decodes nothing, in the two cases a pairing would be FABRICATED:
-///   * a positional this cannot read (a denoted `Value::Node` carrier, WI-662). ABORT,
-///     never skip: pairing is by POSITION, so dropping an unreadable positional would
-///     shift every later value onto the wrong parameter — for the goal, a pin judged
-///     against a binding nobody wrote, i.e. a false refusal of a correct call;
+/// `KnowledgeBase::positional_param_slots`, the rule's one owner. Every positional is read
+/// on the carrier it rides; pairing is by POSITION, so one left out would shift every later
+/// value onto the wrong parameter. `None`, and the caller decodes nothing, in the one case
+/// a pairing would be FABRICATED:
 ///   * MORE positionals than the spec has free parameters: not a spec application at
 ///     all. Reached from real source, so not a `debug_assert` — MEASURED on
 ///     `wi840_named_requires_slot_test`'s `operation div[neq](…) requires neq(b, 0)`,
@@ -1080,22 +1094,19 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
 pub(super) fn op_requires_application_bindings(
     kb: &KnowledgeBase,
     entry: &RequiresEntry,
-) -> Option<(SmallVec<[(Symbol, TermId); 2]>, Vec<(String, TermId)>)> {
+) -> Option<(SmallVec<[(Symbol, Value); 2]>, Vec<(String, Value)>)> {
     let spec_qn = kb.qualified_name_of(entry.required_sort);
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for key in entry.spec.named_keys(kb) {
-        if !is_type_param_binding(kb, key, spec_qn) {
-            continue;
-        }
-        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-            bindings.push((key, v));
-        }
-    }
+    // Each binding on the carrier it rides: a clause that holds a value says its parameter
+    // as plainly as one that is a term.
+    let bindings: SmallVec<[(Symbol, Value); 2]> = view_named_children(kb, &entry.spec)
+        .into_iter()
+        .filter(|(key, _)| is_type_param_binding(kb, *key, spec_qn))
+        .collect();
     let pos_arity = match entry.spec.head(kb) {
         ViewHead::Functor { pos_arity, .. } => pos_arity,
         _ => 0,
     };
-    let mut positional: Vec<(String, TermId)> = Vec::new();
+    let mut positional: Vec<(String, Value)> = Vec::new();
     if pos_arity > 0 {
         let declared = kb.type_params_of_sort(entry.required_sort);
         let slots = KnowledgeBase::positional_param_slots(
@@ -1103,12 +1114,8 @@ pub(super) fn op_requires_application_bindings(
             |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
             pos_arity,
         );
-        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
-        for i in 0..pos_arity {
-            vals.push(entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id())?);
-        }
         let slots = slots.into_iter().collect::<Option<Vec<usize>>>()?;
-        positional = vals
+        positional = view_pos_children(kb, &entry.spec, pos_arity)
             .into_iter()
             .zip(slots)
             .map(|(val, i)| (declared[i].clone(), val))
@@ -1142,11 +1149,10 @@ pub(super) fn op_requires_application_bindings(
 ///
 /// Positionals fill the parameters no named binding took, in declaration order —
 /// the same rule [`goal_from_op_requires_entry`] applies, and the stdlib's own
-/// spelling (`requires Eq[T]`) is positional. A positional this cannot read (a
-/// denoted `Value::Node` carrier, WI-662) leaves the entry AS WRITTEN: the slot
-/// still exists and is still named, so nothing desynchronizes, but it carries the
-/// bare shape and reads as binding-free — loud in debug, since a clause the loader
-/// accepted should decode here.
+/// spelling (`requires Eq[T]`) is positional. A clause with more positionals than the
+/// spec has free parameters leaves the entry AS WRITTEN: the slot still exists and is
+/// still named, so nothing desynchronizes, but it carries the bare shape and reads as
+/// binding-free — loud in debug, since a clause the loader accepted should decode here.
 fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> RequiresEntry {
     let Some(sort_view) = kb.try_resolve_symbol("anthill.reflect.SortView") else {
         // No `anthill.reflect` in this KB — nothing reads a `SortView` either.
@@ -1172,7 +1178,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     for (name, val) in positional {
         // The spec's OWN parameter symbol, which is what a `SortView`'s named args
-        // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
+        // are keyed by and what a substitution into one matches on. A BARE
         // `intern` is not a substitute for it — an interned name is not the
         // registered qualified one, so such a key matches nothing in
         // `is_type_param_binding` and the binding would be silently inert. If the
@@ -1184,14 +1190,16 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         bindings.push((key, val));
     }
     let base_ref = kb.alloc(Term::Ref(entry.required_sort));
-    let spec = kb.alloc(Term::Fn {
-        functor: sort_view,
-        pos_args: SmallVec::from_elem(base_ref, 1),
-        named_args: bindings,
-    });
+    // The hash-consed view it always was where every binding is a term; a binding that
+    // holds a value puts the view on the value carrier, read through `TermView` alike.
+    let spec = kb.fn_value(
+        sort_view,
+        vec![Value::term(base_ref)],
+        bindings.into_iter().collect(),
+    );
     RequiresEntry {
         required_sort: entry.required_sort,
-        spec: Value::term(spec),
+        spec,
         supply: entry.supply,
     }
 }
@@ -1300,36 +1308,27 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
             // `s: MySet[T = String]` is `WeakOrd[T = String]`. Same composition
             // [`build_child_subst_map`] does one level up, keyed off the CARRIER's
             // qualified parameter names.
-            // A BINDING THAT DOES NOT LOWER DROPS THE WHOLE SLOT, not just that binding.
-            // `continue`ing the inner loop was the first cut and review MEASURED it wrong:
-            // control still reached `substitute_in_spec` and `out.push`, so the entry was
-            // synthesized with a PARTIALLY substituted spec still naming the carrier's own
-            // parameter (`WeakOrd[T = MySet.T]` where the call means `WeakOrd[T = String]`).
-            // That entry then feeds the collision screen and `param_slot_witness`'s pin
-            // under a spec the call never meant — a wrong dictionary built out of a right
-            // reading, which is the hazard the `dict_chain_index` paragraph above refuses.
-            let mut map: HashMap<Symbol, TermId> = HashMap::new();
+            // EVERY WRITTEN ARGUMENT GOES IN, ON THE CARRIER IT RIDES — one that holds a value
+            // (`MySet[T = Buf[N = 3]]`) as plainly as a term. A key that names no parameter
+            // of the carrier drops the WHOLE slot, not just that binding: with it left out
+            // the entry would be synthesized with a PARTIALLY substituted spec still naming
+            // the carrier's own parameter (`WeakOrd[T = MySet.T]` where the call means
+            // `WeakOrd[T = String]`), which then feeds the collision screen and
+            // `param_slot_witness`'s pin under a spec the call never meant — a wrong
+            // dictionary built out of a right reading, which is the hazard the
+            // `dict_chain_index` paragraph above refuses.
+            let mut map: HashMap<Symbol, Value> = HashMap::new();
             let carrier_qn = kb.qualified_name_of(carrier).to_string();
-            let mut lowered_all = true;
+            let mut keyed_all = true;
             for (short_sym, value) in &written {
                 let short = kb.local_name_of(*short_sym).to_string();
                 let Some(q) = kb.try_resolve_symbol(&format!("{carrier_qn}.{short}")) else {
-                    lowered_all = false;
+                    keyed_all = false;
                     break;
                 };
-                // [`crate::kb::node_occurrence::value_to_term`], the faithful boundary — NOT
-                // `expect_term`, which panics on a denoted binding (`MySet[T = Modify[c]]`),
-                // and not `alloc_from_value`, which rejects every `Node`. Its `Err` residue
-                // is the opaque runtime handles, which cannot appear in a declared parameter
-                // type; an entry whose binding does not lower is dropped, and the slot then
-                // keeps today's refusal rather than being supplied at a guessed binding.
-                let Ok(t) = crate::kb::node_occurrence::value_to_term(kb, value) else {
-                    lowered_all = false;
-                    break;
-                };
-                map.insert(q, t);
+                map.insert(q, value.clone());
             }
-            if !lowered_all {
+            if !keyed_all {
                 continue;
             }
             let spec = substitute_in_spec(kb, &entry.spec, &map);
@@ -2070,7 +2069,7 @@ pub fn requires_tree(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Rc<Vec<Require
 pub(super) fn build_requires_tree(
     kb: &mut KnowledgeBase,
     sort_sym: Symbol,
-    subst: &HashMap<Symbol, TermId>,
+    subst: &HashMap<Symbol, Value>,
     visited: &mut Vec<Symbol>,
 ) -> Vec<RequiresNode> {
     if visited.contains(&sort_sym) {
@@ -2301,11 +2300,11 @@ pub(super) fn collect_sort_requires(
 /// or the exclusion would delete an answer instead of relocating it. The converse is
 /// deliberately false — a Stream-family row keeps BOTH its derived rows and its search
 /// role.
-pub(super) fn provision_is_conversion(
+pub(super) fn provision_is_conversion<V: TermView>(
     kb: &KnowledgeBase,
     subject: Symbol,
     target: Symbol,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, V)],
 ) -> bool {
     if same_sort_canonical(kb, subject, target) {
         return false;
@@ -2436,13 +2435,13 @@ pub(super) fn provision_is_conversion(
 /// reach — a renaming forwarding, a permuting one, a derived spec-to-spec row and an
 /// opless multi-parameter floor — each of which loaded clean and trapped at eval with
 /// `OperationBodyMissing`. `wi1111_provision_chain_search_test` drives all four.
-pub(super) fn is_conversion_edge_at(
+pub(super) fn is_conversion_edge_at<V: TermView>(
     kb: &KnowledgeBase,
     subject: Symbol,
     target: Symbol,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, V)],
 ) -> bool {
-    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, *v)) {
+    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, v)) {
         chain_has_conversion(kb, subject, target)
     } else {
         false
@@ -2455,9 +2454,9 @@ pub(super) fn is_conversion_edge_named(
     kb: &mut KnowledgeBase,
     subject: Symbol,
     target: Symbol,
-    bindings: &[(String, TermId)],
+    bindings: &[(String, Value)],
 ) -> bool {
-    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, *v)) {
+    if !bindings.is_empty() && bindings.iter().all(|(_, v)| row_forwards_a_param(kb, v)) {
         chain_has_conversion(kb, subject, target)
     } else {
         false
@@ -2467,7 +2466,7 @@ pub(super) fn is_conversion_edge_named(
 /// One binding of a row, tested for the shape a conversion has: the value is a type
 /// parameter. The per-binding half of [`forwarding_param_map`], which the whole-row form
 /// there applies the same way.
-fn row_forwards_a_param(kb: &KnowledgeBase, value: TermId) -> bool {
+fn row_forwards_a_param<V: TermView>(kb: &KnowledgeBase, value: &V) -> bool {
     type_param_local_name(kb, value).is_some()
 }
 
@@ -2566,8 +2565,8 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // out: without it `Ord provides WeakOrd[T = T]`, read while querying an unrelated
     // `Foo`, handed `Foo` a self-supplied slot it never declared (WI-660/WI-672).
     for row in provides_rows_of_provider(kb, sort_sym) {
-        let (base, bindings) = (row.spec_base, &row.bindings);
-        if !provision_is_conversion(kb, sort_sym, base, bindings) {
+        let base = row.spec_base;
+        if !provision_is_conversion(kb, sort_sym, base, row.stored_bindings(kb)) {
             continue;
         }
         // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
@@ -2607,16 +2606,17 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
 /// a `Fn` is rebuilt through [`KnowledgeBase::map_fn_children`] (hash-cons identity kept when
 /// nothing below changed), anything else is kept.
 ///
-/// The one walk under the term-level σ substitutions, each of which spelled it. `leaf`
-/// carries the site's LEAF SET, and the sets differ on purpose: {`Ref`, nullary `Fn`} for
+/// The one walk under the TERM-level σ substitutions, each of which spelled it; a type on
+/// any carrier takes its twin [`rewrite_type_leaves`]. `leaf` carries the site's LEAF SET,
+/// and the sets differ on purpose, over either walk: {`Ref`, nullary `Fn`} for
 /// [`substitute_in_spec`], and a bare `Global` var besides for [`substitute_spec_via_subst`]
 /// (the bare-spec sugar's carrier, WI-20260927-YCPAJ); those plus `Ident` where the
-/// leaf is read through [`view_ref_symbol`] (`substitute_impl_params_alloc`,
-/// `subst_requires_value`); a bare `Ref` (and `Ident`) beside a `var_ref` wrapper that is
-/// kept or replaced WHOLE, never descended, in the two binder-aware passes
-/// (`substitute_ref_syms`, [`substitute_ref_terms`]). Merging ACROSS two sets changes an
-/// answer unless `Ident` is shown absent from what the narrower one reads; this owns only
-/// the walk.
+/// leaf is read through [`view_ref_symbol`] ([`substitute_impl_params_alloc`],
+/// [`sigma_subst_type`], `subst_requires_value`); a bare `Ref` (and `Ident`) beside a
+/// `var_ref` wrapper that is kept or replaced WHOLE, never descended, in the two
+/// binder-aware passes (`substitute_ref_syms`, [`substitute_ref_terms`]). Merging ACROSS
+/// two sets changes an answer unless `Ident` is shown absent from what the narrower one
+/// reads; this owns only the walk.
 pub(super) fn rewrite_term_leaves(
     kb: &mut KnowledgeBase,
     t: TermId,
@@ -2633,39 +2633,253 @@ pub(super) fn rewrite_term_leaves(
     kb.map_fn_children(t, |kb, child| rewrite_term_leaves(kb, child, leaf))
 }
 
-/// WI-20260923-32XFQ — [`rewrite_term_leaves`]' carrier-faithful spec walk (WI-662): a
-/// ground `Value::Term` spec is rewritten by `term`; a denoted `Value::Entity` spec is
-/// rebuilt with each child walked the same way, so a co-carried type binding (`Foo[T =
-/// ParentT, E = Modify[c]]`) is still rewritten; anything else — a denoted `Value::Node`
-/// child — is kept verbatim (its Expr-occurrence σ is the deferred parametric-effect
-/// handling). The walk [`substitute_in_spec`] and [`substitute_spec_via_subst`] each spelled.
-pub(super) fn rewrite_spec_value(
+/// [`rewrite_term_leaves`] for a type on ANY carrier, its replacements on any carrier too:
+/// `leaf` answers `Some(new)` for a node it replaces and `None` to descend. `None` when
+/// nothing at or beneath `v` was replaced, so an untouched type keeps its own carrier.
+///
+/// What a provision's binding becomes at a receiver is such a rewrite: the template is the
+/// term the provision stores, and what replaces a parameter is the receiver's own type
+/// argument, which rides an occurrence whenever it holds a value (`{Modify[k]}`). Held to a
+/// `TermId` range that argument had nowhere to go and the binding was not read at all.
+///
+/// The spine above a replaced leaf is rebuilt by [`KnowledgeBase::fn_value`], the one owner of
+/// the term-versus-entity decision: where every replacement is a term the result is the SAME
+/// hash-consed term [`rewrite_term_leaves`] builds, and only a replacement on another carrier
+/// puts the spine above it on the value carrier, read through `TermView` like its term twin.
+/// A functor-less aggregate is rebuilt as the tuple it is.
+///
+/// A HASH-CONSED TYPE IS WALKED AS THE TERM IT IS ([`rewrite_term_type_leaves`]): nearly
+/// every type this meets is one, and its children are read off the store where the view
+/// would build a list of them per node.
+///
+/// THE EXPRESSION OF A VALUE IN A TYPE POSITION IS NOT WALKED ([`holds_no_type_leaf`]): it
+/// holds no leaf of a type.
+pub(super) fn rewrite_type_leaves(
     kb: &mut KnowledgeBase,
-    spec: &Value,
-    term: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
-) -> Value {
-    match spec {
-        Value::Term { id, .. } => Value::term(term(kb, *id)),
-        Value::Entity {
-            functor,
-            pos,
-            named,
-        } => {
-            let new_pos: Vec<Value> = pos
-                .iter()
-                .map(|v| rewrite_spec_value(kb, v, term))
-                .collect();
-            let new_named: Vec<(Symbol, Value)> = named
-                .iter()
-                .map(|(k, v)| (*k, rewrite_spec_value(kb, v, term)))
-                .collect();
-            Value::Entity {
-                functor: *functor,
-                pos: new_pos.into(),
-                named: new_named.into(),
-            }
+    v: &Value,
+    leaf: &impl Fn(&mut KnowledgeBase, &Value) -> Option<Value>,
+) -> Option<Value> {
+    if let Some(new) = leaf(kb, v) {
+        return Some(new);
+    }
+    if let Value::Term { id, .. } = v {
+        return rewrite_term_type_leaves(kb, *id, leaf);
+    }
+    let ViewHead::Functor {
+        functor,
+        pos_arity,
+        named_arity,
+    } = v.head(kb)
+    else {
+        return None;
+    };
+    if holds_no_type_leaf(kb, v, pos_arity, named_arity) {
+        return None;
+    }
+    // Each child is OWNED before the recursion, which needs `kb` mutably.
+    let mut changed = false;
+    let mut pos = view_pos_children(kb, v, pos_arity).into_vec();
+    for child in &mut pos {
+        if let Some(new) = rewrite_type_leaves(kb, child, leaf) {
+            *child = new;
+            changed = true;
         }
-        other => other.clone(),
+    }
+    let mut named = view_named_children(kb, v).into_vec();
+    for (_, child) in &mut named {
+        if let Some(new) = rewrite_type_leaves(kb, child, leaf) {
+            *child = new;
+            changed = true;
+        }
+    }
+    changed.then(|| match functor {
+        Some(f) => {
+            order_rebuilt_bindings(kb, f, &mut named);
+            kb.fn_value(f, pos, named)
+        }
+        None => Value::Tuple {
+            pos: Rc::from(pos),
+            named: Rc::from(named),
+        },
+    })
+}
+
+/// The bindings of an application rebuilt off a view, in the order its builder gives them.
+/// An occurrence lists its bindings as they were written, and a term built from that list
+/// is another term than the one the builders intern for the same type
+/// ([`KnowledgeBase::make_parameterized_type`]), so the list goes through the builders'
+/// own ordering first.
+///
+/// A SPEC VIEW IS LEFT AS READ. Its bindings are the viewed spec's parameters, which the
+/// loader holds in symbol order (`Loader::assemble_sort_view_value`); the record ordering
+/// sorts against the view's own field list and would move a parameter that shares a
+/// field's name to the front.
+fn order_rebuilt_bindings(kb: &KnowledgeBase, functor: Symbol, named: &mut [(Symbol, Value)]) {
+    if !is_sort_view_functor(kb, functor) {
+        kb.canonicalize_record_named_args(functor, named);
+    }
+}
+
+/// [`rewrite_type_leaves`] beneath a hash-consed type `t` that `leaf` has declined: its
+/// children are read off the store, and where every replacement is a term the result is
+/// allocated as the term it is, with no list of values built on the way.
+fn rewrite_term_type_leaves(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    leaf: &impl Fn(&mut KnowledgeBase, &Value) -> Option<Value>,
+) -> Option<Value> {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(t)
+    else {
+        return None;
+    };
+    if pos_args.is_empty() && named_args.is_empty() {
+        return None;
+    }
+    let (functor, pos_args, named_args) = (*functor, pos_args.clone(), named_args.clone());
+    if holds_no_type_leaf(kb, &TermIdView(t), pos_args.len(), named_args.len()) {
+        return None;
+    }
+    let mut new_pos: SmallVec<[Option<Value>; 4]> = SmallVec::with_capacity(pos_args.len());
+    for &child in &pos_args {
+        new_pos.push(rewrite_type_leaves(kb, &Value::term(child), leaf));
+    }
+    let mut new_named: SmallVec<[Option<Value>; 2]> = SmallVec::with_capacity(named_args.len());
+    for &(_, child) in &named_args {
+        new_named.push(rewrite_type_leaves(kb, &Value::term(child), leaf));
+    }
+    let mut replacements = new_pos.iter().chain(new_named.iter()).flatten();
+    if replacements.clone().next().is_none() {
+        return None;
+    }
+    let term_of = |old: TermId, new: &Option<Value>| match new {
+        None => Some(old),
+        Some(Value::Term { id, .. }) => Some(*id),
+        Some(_) => None,
+    };
+    if replacements.all(|new| matches!(new, Value::Term { .. })) {
+        let pos_args = pos_args
+            .iter()
+            .zip(&new_pos)
+            .map(|(old, new)| term_of(*old, new).expect("every replacement is a term"))
+            .collect();
+        let named_args = named_args
+            .iter()
+            .zip(&new_named)
+            .map(|((k, old), new)| (*k, term_of(*old, new).expect("every replacement is a term")))
+            .collect();
+        return Some(Value::term(kb.alloc(Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        })));
+    }
+    let pos = pos_args
+        .iter()
+        .zip(new_pos)
+        .map(|(old, new)| new.unwrap_or_else(|| Value::term(*old)))
+        .collect();
+    let named = named_args
+        .iter()
+        .zip(new_named)
+        .map(|((k, old), new)| (*k, new.unwrap_or_else(|| Value::term(*old))))
+        .collect();
+    Some(kb.fn_value(functor, pos, named))
+}
+
+/// A VALUE IN A TYPE POSITION IS NOT A TYPE, and its expression is not walked: `Modify[k]`
+/// names the place `k`, which is no leaf of a type whatever it is called, and a replacement
+/// inside it would rebuild the value as a spine no type builder takes.
+///
+/// The arities are the head's, which the caller has read: a value in a type position is
+/// `denoted(value: …)`, one named child and no positional, and only a node of that shape
+/// is asked what it is.
+///
+/// NO ROW TELLS THE DIFFERENCE (MEASURED: walked, `wi_2nmxa…::a_cell_named_like_a_type_
+/// parameter_is_still_the_cell` and every other row answer the same): the readers that
+/// resolve a parameter by its name read a type's reference, and a place is an expression's.
+fn holds_no_type_leaf<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+    named_arity: usize,
+) -> bool {
+    pos_arity == 0 && named_arity == 1 && is_denoted_type(kb, v)
+}
+
+/// A term rewrite that may DECLINE, applied to a type on any carrier: every hash-consed
+/// subtree goes through `term` as it stands — so what the rewrite decides about a term is
+/// decided once, by the function that owns it — and the spine above a subtree on another
+/// carrier is rebuilt around the answers ([`KnowledgeBase::fn_value`]). `None` as soon as
+/// `term` declines anywhere beneath `v`.
+///
+/// A leaf on the value carrier (a variable, a bare symbol) is asked as the term it is. A
+/// value in a type position is not a type and crosses as it is.
+pub(super) fn try_rewrite_type_terms(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    term: &impl Fn(&mut KnowledgeBase, TermId) -> Option<TermId>,
+) -> Option<Value> {
+    if let Value::Term { id, .. } = v {
+        return term(kb, *id).map(Value::term);
+    }
+    if v.lowers_to_leaf_term() {
+        let leaf = kb
+            .alloc_from_value(v)
+            .expect("lowers_to_leaf_term admits only infallible leaves");
+        return term(kb, leaf).map(Value::term);
+    }
+    if is_denoted_type(kb, v) {
+        return Some(v.clone());
+    }
+    let ViewHead::Functor {
+        functor, pos_arity, ..
+    } = v.head(kb)
+    else {
+        return Some(v.clone());
+    };
+    let unchanged = |old: &Value, new: &Value| value_identity_key(old) == value_identity_key(new);
+    let mut changed = false;
+    let mut pos = view_pos_children(kb, v, pos_arity).into_vec();
+    for child in &mut pos {
+        let new = try_rewrite_type_terms(kb, child, term)?;
+        changed |= !unchanged(child, &new);
+        *child = new;
+    }
+    let mut named = view_named_children(kb, v).into_vec();
+    for (_, child) in &mut named {
+        let new = try_rewrite_type_terms(kb, child, term)?;
+        changed |= !unchanged(child, &new);
+        *child = new;
+    }
+    if !changed {
+        return Some(v.clone());
+    }
+    Some(match functor {
+        Some(f) => {
+            order_rebuilt_bindings(kb, f, &mut named);
+            kb.fn_value(f, pos, named)
+        }
+        None => Value::Tuple {
+            pos: Rc::from(pos),
+            named: Rc::from(named),
+        },
+    })
+}
+
+/// [`ref_or_nullary_name`] through the view, where a bare reference and the nullary
+/// application are the one head they are, on any carrier — and an `Ident` is still not it.
+pub(super) fn ref_or_nullary_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(s),
+        _ => None,
     }
 }
 
@@ -2685,29 +2899,31 @@ pub(super) fn ref_or_nullary_name(term: &Term) -> Option<Symbol> {
     }
 }
 
-/// WI-230 internal: substitution-aware deep walk. Replaces both
-/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
-/// alternative encoding for a bare name reference; see WI-224's
-/// `substitute_impl_params_alloc`) where `s` is in `map` with the
-/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
-/// Allocates fresh `Term::Fn` nodes only when a child was actually
-/// rewritten (preserves hash-cons identity for unchanged sub-terms).
-/// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662 — the
-/// WI-230 root-scope composition); `substitute_spec_via_subst` is the per-call-subst twin.
+/// WI-230 internal: substitution-aware deep walk. Replaces a bare name — `Ref(s)`, or the
+/// nullary application that is the loader's alternative encoding for one (see WI-224's
+/// `substitute_impl_params_alloc`) — where `s` is in `map` with the mapped value, on the
+/// carrier that value rides.
+///
+/// THE RANGE IS A VALUE, as a goal's bindings are: a spec composed into a caller's scope
+/// through a slot whose argument holds a value (`Coll[C = SortedSet[T = E, O = OE], Row =
+/// {Modify[k]}]`) takes that argument as it is. The spine above a replaced name is rebuilt
+/// by [`rewrite_type_leaves`] — the hash-consed term it always was where every replacement
+/// is a term, the value carrier above one that is not.
+///
+/// A spec read through the view is walked on every carrier, an occurrence included: a
+/// parameter's name beneath a type that holds a value is the same name.
 pub(super) fn substitute_in_spec(
     kb: &mut KnowledgeBase,
     spec: &Value,
-    map: &HashMap<Symbol, TermId>,
+    map: &HashMap<Symbol, Value>,
 ) -> Value {
     if map.is_empty() {
         return spec.clone();
     }
-    rewrite_spec_value(kb, spec, &|kb, t| {
-        rewrite_term_leaves(kb, t, &|kb, t| {
-            let s = ref_or_nullary_name(kb.get_term(t))?;
-            Some(map.get(&s).copied().unwrap_or(t))
-        })
+    rewrite_type_leaves(kb, spec, &|kb, leaf| {
+        map.get(&ref_or_nullary_name_view(kb, leaf)?).cloned()
     })
+    .unwrap_or_else(|| spec.clone())
 }
 
 /// WI-230 internal: from an entry whose spec has already been
@@ -2719,17 +2935,17 @@ pub(super) fn substitute_in_spec(
 pub(super) fn build_child_subst_map(
     kb: &KnowledgeBase,
     entry: &RequiresEntry,
-) -> HashMap<Symbol, TermId> {
+) -> HashMap<Symbol, Value> {
     let mut map = HashMap::new();
     let Some((base_sort, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
         return map;
     };
     let base_qn = kb.qualified_name_of(base_sort).to_string();
-    for (short_sym, value) in &bindings {
-        let short_name = kb.local_name_of(*short_sym);
+    for (short_sym, value) in bindings {
+        let short_name = kb.local_name_of(short_sym);
         let param_qn = format!("{base_qn}.{short_name}");
         if let Some(param_qualified) = kb.try_resolve_symbol(&param_qn) {
-            map.insert(param_qualified, *value);
+            map.insert(param_qualified, value);
         }
     }
     map

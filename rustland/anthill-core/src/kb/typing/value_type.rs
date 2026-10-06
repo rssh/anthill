@@ -1126,30 +1126,29 @@ fn provision_admits_carriers(
         if is_conversion_row(kb, &row) {
             return false;
         }
-        let mut variables: SmallVec<[(TermId, Symbol); 4]> = SmallVec::new();
+        let bindings = row.bindings(kb);
+        let mut variables: SmallVec<[(ValueIdentity, Symbol); 4]> = SmallVec::new();
         carriers.iter().all(|&(param, carrier)| {
             let name = kb.local_name_of(param);
-            let Some(&(_, bound)) = row
-                .bindings
-                .iter()
-                .find(|(k, _)| kb.local_name_of(*k) == name)
+            let Some((_, bound)) = bindings.iter().find(|(k, _)| kb.local_name_of(*k) == name)
             else {
                 return true;
             };
-            if is_type_param_value(kb, bound) {
-                return match variables.iter().find(|&&(v, _)| v == bound) {
+            if is_type_param_view(kb, bound) {
+                let variable = value_identity_key(bound);
+                return match variables.iter().find(|(v, _)| *v == variable) {
                     Some(&(_, earlier)) => {
                         same_sort_canonical(kb, earlier, carrier)
                             || sort_provides(kb, earlier, carrier)
                             || sort_provides(kb, carrier, earlier)
                     }
                     None => {
-                        variables.push((bound, carrier));
+                        variables.push((variable, carrier));
                         true
                     }
                 };
             }
-            match sort_functor_of_view(kb, &Value::term(bound)) {
+            match sort_functor_of_view(kb, bound) {
                 Some(sort) if is_sort_param_symbol(kb, sort) => true,
                 Some(sort) => {
                     same_sort_canonical(kb, sort, carrier) || sort_provides(kb, carrier, sort)
@@ -1664,13 +1663,13 @@ pub(super) fn anchor_sort_goal(
         ));
     }
     let param = spec_carrier_param_or_sole(kb, spec_sort)?;
-    let tid = type_value_as_term(kb, &carrier_ty)?;
     // One key spelling for every producer — see [`spec_param_key`].
     let short = kb.local_name_of(param).to_string();
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let key = spec_param_key(kb, &spec_qn, &short, param);
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    bindings.push((key, tid));
+    // The carried type itself is the binding, on the carrier it rides.
+    let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    bindings.push((key, carrier_ty));
     Some(sort_goal_with_wildcards(
         kb, spec_sort, bindings, None, written,
     ))
@@ -1926,7 +1925,7 @@ pub(super) fn witness_sort_goal(
     let type_params = kb.type_params_of_sort(spec_sort);
     let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     let mut carrier: Option<GoalCarrier> = None;
     // NO `from_carried_types` LOCAL: the flag is owned by [`sort_goal_with_wildcards`],
     // which is the only thing that can CLEAR it (it is what mints the wildcards and what
@@ -1960,11 +1959,12 @@ pub(super) fn witness_sort_goal(
         let short = kb.local_name_of(param_sym).to_string();
         // The key spelling `resolve` matches provider heads against — [`spec_param_key`].
         let key = spec_param_key(kb, &spec_qn, &short, param_sym);
-        let Some(tid) = type_value_as_term(kb, &arg_ty) else {
-            continue;
-        };
+        // The carried type itself is the binding, on the carrier it rides. A type that is
+        // no term used to be put in as its nominal head alone, its arguments dropped, and
+        // one with no such head left out — a bare head matches no provision written over an
+        // applied type, so the requirement was asked about a sort the value is not at.
         if bindings.iter().all(|(k, _)| *k != key) {
-            bindings.push((key, tid));
+            bindings.push((key, arg_ty));
         }
     }
     // WI-20260830-X9PB4 — THE SPEC'S REMAINING ELEMENTS RIDE AS WILDCARDS, and they must
@@ -2043,7 +2043,7 @@ pub(super) fn witness_sort_goal(
 fn sort_goal_with_wildcards(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
-    mut bindings: SmallVec<[(Symbol, TermId); 2]>,
+    mut bindings: SmallVec<[(Symbol, Value); 2]>,
     carrier: Option<GoalCarrier>,
     // WI-20260913-J38VE — what the author WROTE, for the elements the carrier does not
     // pin. See the loop body.
@@ -2095,7 +2095,7 @@ fn sort_goal_with_wildcards(
         // The spec's OWN parameter symbol as the value — `is_type_param_value`'s
         // wildcard, the same term a written `requires Spec[Element = Element]` clause
         // carries for an element its author did not pin.
-        let wildcard = kb.alloc(Term::Ref(qualified));
+        let wildcard = Value::term(kb.alloc(Term::Ref(qualified)));
         bindings.push((key, wildcard));
     }
     WitnessGoal {
@@ -2123,24 +2123,17 @@ fn sort_goal_with_wildcards(
 /// ([`TypeExtractor`] has nine variants) and a new one must default to the PRE-TICKET
 /// behaviour, not to being pinned as though it were a type.
 ///
-/// LOWERED THROUGH [`value_to_term`], NOT [`type_value_as_term`], and the difference is a
-/// wrong answer rather than a missing one. `type_value_as_term` returns the term id only
-/// for a `Value::Term` and otherwise falls to `sort_functor_of_view(…)` — the bare SORT
-/// HEAD, arguments discarded — and MEASURED, a written binding always arrives as a
-/// `Value::Node`, so EVERY applied element took that path. `Box[E = Leaf]` became `Box`,
-/// which both failed to match a provider's applied binding AND matched one it should not:
-/// `require[Sp[P = Box[E = Other]]]` selected the `Box[E = Leaf]` row. WI-390's converter
-/// is the documented owner of exactly this ("the one converter to use where a
-/// value-in-type may ride — e.g. a `requires`/`provides` spec"), and it is total: `Err`
-/// only for the opaque runtime handles, which take the mint path here like anything else
-/// this function cannot name. Found by `/code-review` on this ticket's own diff; driven by
-/// `wi_j38ve…::an_applied_written_element_pins_what_the_author_actually_wrote`.
+/// THE WHOLE WRITTEN TYPE, ON THE CARRIER IT RIDES, and not its sort head: a goal takes a
+/// type that holds a value as it takes a term. Reduced to the bare SORT HEAD, arguments
+/// discarded — which is what a written binding, always a `Value::Node`, once got —
+/// `Box[E = Leaf]` became `Box`, which both failed to match a provider's applied binding AND
+/// matched one it should not: `require[Sp[P = Box[E = Other]]]` selected the `Box[E = Leaf]`
+/// row. Found by `/code-review` on WI-20260913-J38VE's own diff; driven by
+/// `wi_j38ve…::an_applied_written_element_pins_what_the_author_actually_wrote`. (It was
+/// then lowered to a term, while a goal's bindings were `TermId`s.)
 ///
-/// THE CARRIER SITE IS STILL LOSSY AND IS NOT TOUCHED HERE. [`anchor_sort_goal`] and
-/// [`witness_sort_goal`] lower their carrier through `type_value_as_term`, and that
-/// predates this ticket: their value is a CARRIED TYPE read off a runtime value, not an
-/// author-written one, and moving it is a change to which rows every existing anchor
-/// selects. Recorded rather than folded in.
+/// THE CARRIER SITE READS THE WHOLE TYPE TOO: the type a runtime value carries, in
+/// [`anchor_sort_goal`] and [`witness_sort_goal`].
 ///
 /// The two shapes that would otherwise be silently wrong, named so the test is read as
 /// deliberate rather than incidental:
@@ -2172,7 +2165,7 @@ fn written_element(
     kb: &mut KnowledgeBase,
     written: &[(Symbol, Value)],
     short: &str,
-) -> Option<TermId> {
+) -> Option<Value> {
     let value = written
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == short)?
@@ -2184,11 +2177,12 @@ fn written_element(
     ) {
         return None;
     }
-    let tid = crate::kb::node_occurrence::value_to_term(kb, &value).ok()?;
-    if is_type_param_value(kb, tid) {
+    // As written, on the carrier it rides: a goal takes a type that holds a value as it
+    // takes a term.
+    if is_type_param_view(kb, &value) {
         return None;
     }
-    Some(tid)
+    Some(value)
 }
 
 /// WI-20260830-X9PB4 — [`witness_sort_goal`]'s answer, and WHETHER EVERY ELEMENT OF IT
@@ -2291,24 +2285,6 @@ pub(crate) fn dictionary_of_absence(
 ) -> Option<Dictionary> {
     let marker = absence_marker_sym(kb, AbsenceRecord::Slot { spec, why });
     Dictionary::build(kb, marker, Vec::new())
-}
-
-/// A carried type as a `TermId`, for the `TermId`-keyed [`SortGoal::bindings`].
-/// `value_type_term` already answers in the term carrier for every type it
-/// computes structurally; the fallback re-mints the nominal head for a type that
-/// arrived on another carrier, which is exactly the granularity the guard decided
-/// on. `None` for a headless type — its caller (`witness_sort_goal`) skips such a
-/// binding for its own reasons.
-///
-/// WI-20260908-PW9A0: this used to read "the guard would have suspended on it", which
-/// tied the `None` to [`type_bound_verdict`]'s old non-nominal test. That test is gone
-/// and the two were never the same question anyway — this one is about a CARRIER, that
-/// one about a type's determinacy.
-fn type_value_as_term(kb: &mut KnowledgeBase, ty: &Value) -> Option<TermId> {
-    match ty {
-        Value::Term { id, .. } => Some(*id),
-        other => sort_functor_of_view(kb, other).map(|s| kb.alloc(Term::Ref(s))),
-    }
 }
 
 /// WI-582 — the resolver-side firing guard for EXPLICIT typed rule patterns

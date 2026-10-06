@@ -519,7 +519,7 @@ fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> boo
 /// The `TermId` walk under [`type_mentions_op_tp`].
 fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) -> bool {
     term_any_subterm(kb, tid, &|t, _| {
-        elem_var_step(kb, t).is_some_and(|(v, _)| tp_vars.contains(&v))
+        elem_var_step(kb, &TermIdView(t)).is_some_and(|(v, _)| tp_vars.contains(&v))
     })
 }
 
@@ -989,17 +989,23 @@ fn eliminate_callback_hint_projection(
     .ok()
 }
 
-/// WI-427: true iff the type term mentions a `TypeExtractor.TypeVar` form
-/// anywhere — an operation's own type parameter, which is out of scope as a
-/// top-down hint for a *different* call (and a wildcard in the subtype
-/// relation, so it could never pin by equality anyway). The recursive
-/// complement of [`type_value_is_ground`], which catches logic vars and
-/// SORT-param refs but keys its functor test on sort-param symbols only.
-pub(super) fn type_term_mentions_type_var(kb: &KnowledgeBase, tid: TermId) -> bool {
-    term_any_subterm(kb, tid, &|_, term| {
-        matches!(term, Term::Fn { functor, .. }
-            if kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.TypeVar")
-    })
+/// WI-427: true iff the type mentions a `TypeExtractor.TypeVar` form anywhere — an
+/// operation's own type parameter, which is out of scope as a top-down hint for a
+/// *different* call (and a wildcard in the subtype relation, so it could never pin by
+/// equality anyway). The recursive complement of [`type_is_ground`], which catches logic
+/// vars and SORT-param refs but keys its functor test on sort-param symbols only. Read
+/// through the view, so on any carrier.
+pub(super) fn type_mentions_type_var<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => {
+            functor.is_some_and(|f| {
+                kb.qualified_name_of(f) == "anthill.prelude.TypeExtractor.TypeVar"
+            }) || view_any_child(kb, v, pos_arity, |c| type_mentions_type_var(kb, c))
+        }
+        _ => false,
+    }
 }
 
 /// WI-427: the expected-type hint for a nested-call argument — the
@@ -1035,8 +1041,7 @@ pub(super) fn nested_call_arg_hint(
             ..
         }
     );
-    let pins_by_equality = resolved_type_is_ground(kb, pt)
-        && !matches!(pt, Value::Term { id: t, .. } if type_term_mentions_type_var(kb, *t));
+    let pins_by_equality = resolved_type_is_ground(kb, pt) && !type_mentions_type_var(kb, pt);
     if is_call_arg && pins_by_equality {
         Some(pt.clone())
     } else {

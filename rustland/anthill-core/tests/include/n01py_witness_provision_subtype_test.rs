@@ -59,8 +59,9 @@
 //!   * [`a_self_carried_provision_beside_a_witness_does_not_recurse`] — an arm for the
 //!     VALUE it asserts; separately, without the re-entrancy guard (and with the leg) the
 //!     same program overflows the stack, which is the regression that row exists for;
-//!   * [`a_denoted_effect_row_is_a_known_gap`] — its GROUND-ROW CONTROL needs the leg, so
-//!     the pair moves as a unit even though the gap half is a refusal either way;
+//!   * [`a_row_that_names_a_cell_is_read_like_a_ground_one`] — then recorded as a known
+//!     gap (`a_denoted_effect_row_is_a_known_gap`), whose GROUND-ROW CONTROL needed the
+//!     leg, so the pair moved as a unit though the gap half was a refusal either way;
 //!   * `typer_capability_matrix_test::an_author_declared_consumer_takes_a_finite_carrier`
 //!     — its two `AUTHOR's consumer <- map/filter` cells and no others; that table's own
 //!     doc records which of its rows are controls.
@@ -358,37 +359,24 @@ end
     );
 }
 
-/// A KNOWN GAP, PAIRED WITH ITS CONTROL — the one arm of the subtype relation this leg
-/// does NOT reach, recorded rather than left to be rediscovered (found by /code-review).
+/// A ROW THAT NAMES A CELL IS READ LIKE A GROUND ONE — the pair this file recorded as a
+/// known gap until WI-20260829-2NMXA, and both halves load now.
 ///
-/// `types_compatible` routes to `types_compatible_view_structural` whenever a side is not
-/// a hash-consed term, and a DENOTED effect row (`TransformEffects = {Modify[k]}`) is such a
-/// side. That arm's own comment promises provider admissibility stays carrier-symmetric, and
-/// with the witness leg it no longer is: the two rows below are the same program but for the
-/// effect row, and they disagree.
+/// `total`'s row is `FiniteCollection.E`, which the call reads off the witness's provision
+/// at the argument's sort: `E = {SourceEffects, TransformEffects}`. A `TransformEffects` that
+/// names a cell (`{Modify[k]}`) rides an occurrence and not a hash-consed term, and the
+/// reader of the receiver's arguments kept terms only — so that argument read as one the
+/// receiver had not written, the row stayed open, and the call was refused "expected a type
+/// for 'FiniteCollection.E', got unconstrained" where the byte-identical program over
+/// `TransformEffects = {}` loaded. What closed it, and the rows that DRIVE it to a value, are
+/// `wi_2nmxa_denoted_provision_binding_test`; this row keeps the pair together and what was
+/// said of the spellings around it.
 ///
-/// IT IS NOT A ONE-LINE OMISSION. `witness_provides_admissibly` asks through a
-/// `SortGoal`, whose bindings are `TermId`s, and a denoted binding is precisely what has
-/// none. Wiring the leg into that arm was tried and MEASURED INERT — `walk_view` hands
-/// back a `Value::Node`, the branch never fires, the verdict does not move — so it was
-/// removed rather than shipped as a path nothing can drive. WI-20260829-2NMXA owns the
-/// increment.
-///
-/// WRITTEN OVER ANY PROVIDER THE GAP IS THE SAME ONE, SEEN FROM THE REQUIREMENT
-/// (WI-20261005-KSSA4): `total`'s row is `FiniteCollection.E`, which the call reads off the
-/// witness's provision, and a provision whose row holds a denoted label is not read — the
-/// row stays open, and the call is refused for a type parameter nothing fixed. No bracket
-/// says it instead: the row is a member's parameter, which a call's bracket does not name
-/// (WI-20261006-XQGEW; `total[E = {Modify[k]}](m)` bound it by the member's bare name
-/// before, and is now "unknown type-param 'E'"). So until the provision is read, the
-/// member spelling of this program has no repair at the call; the one that can be written
-/// is the parameter in the operation's own bracket — `total[P, R](c: P) -> Int64 effects R
-/// requires FiniteCollection[C = P, E = R]` — which `total[R = {Modify[k]}](m)` binds.
-///
-/// THE CONTROL IS WHAT MAKES THIS A GAP AND NOT A DESIGN: strip the `Modify[k]` and the
-/// identical program loads. FLIP BOTH ROWS TOGETHER when WI-20260829-2NMXA lands.
+/// A BRACKET STILL DOES NOT NAME THE MEMBER'S PARAMETER (WI-20261006-XQGEW): `total[E =
+/// {Modify[k]}](m)` is "unknown type-param 'E'" with the row read as without it. The
+/// parameter written in the operation's own bracket is bound at the call, as it was.
 #[test]
-fn a_denoted_effect_row_is_a_known_gap() {
+fn a_row_that_names_a_cell_is_read_like_a_ground_one() {
     const DENOTED: &str = r#"
 namespace n01pyden
   import anthill.prelude.{List, Int64, FiniteCollection, MappedStream, Cell, Modify}
@@ -407,15 +395,17 @@ namespace n01pygr
                               SourceEffects = {}, TransformEffects = {}]) -> Int64 = total(m)
 end
 "#;
-    let errs = try_load_kb_with(DENOTED).err().unwrap_or_else(|| {
-        panic!(
-            "THE GAP HAS CLOSED — the denoted-row spelling now loads. That is good news:              delete this test's `KnownGap` half, keep the control, and close              WI-20260829-2NMXA in the same commit."
-        )
-    });
+    if let Err(errs) = try_load_kb_with(DENOTED) {
+        panic!("the row that names a cell is read off the witness's provision: {errs:#?}");
+    }
+    // THE ROW IS READ AS WHAT IT IS: the same operation declared pure is refused for it.
+    let pure = try_load_kb_with(&DENOTED.replace(" effects {Modify[k]} =", " ="))
+        .err()
+        .unwrap_or_default();
     assert!(
-        errs.iter().any(|e| e.contains("n01pyden.total.type_arg")
-            && e.contains("expected a type for 'FiniteCollection.E', got unconstrained")),
-        "still refused, but for a DIFFERENT reason than this cell records: {errs:#?}",
+        pure.iter().any(|e| e.contains("f.effects (op-effects)")
+            && e.contains("got undeclared effect: Modify[T = k]")),
+        "declared pure, `f` is refused the cell its stream writes: {pure:#?}",
     );
     let bracketed = try_load_kb_with(&DENOTED.replace("    total(m)", "    total[E = {Modify[k]}](m)"))
         .err()
@@ -425,8 +415,7 @@ end
             && e.contains("unknown type-param 'E'")),
         "a bracket does not name the member's parameter: {bracketed:#?}",
     );
-    // …and the spelling the refusal names does load: the row a parameter in the bracket,
-    // bound at the call.
+    // …and the parameter written in the operation's own bracket is bound at the call.
     let written = DENOTED
         .replace(
             "total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E",
@@ -437,9 +426,7 @@ end
         panic!("the parameter written in the bracket is bound at the call: {errs:#?}");
     }
     if let Err(errs) = try_load_kb_with(GROUND) {
-        panic!(
-            "THE CONTROL MUST LOAD — without it the row above is satisfied by any refusal              of a declared `MappedStream[…]` parameter and measures nothing: {errs:#?}"
-        );
+        panic!("the ground-row twin loads: {errs:#?}");
     }
 }
 

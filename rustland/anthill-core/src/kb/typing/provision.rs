@@ -242,10 +242,8 @@ pub(super) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Sy
     }
     spec_carrier_param(kb, canon).or_else(|| {
         provides_rows_of_spec(kb, canon).find_map(|row| {
-            let provider = kb.canonical_sort_sym(row.provider);
-            row.bindings.iter().find_map(|(key, bound)| {
-                crate::kb::load::provides_spec_base_sym(kb, *bound)
-                    .is_some_and(|base| kb.canonical_sort_sym(base) == provider)
+            row.stored_bindings(kb).iter().find_map(|(key, bound)| {
+                composed_self_reference(kb, row.provider, bound)
                     .then(|| kb.type_param_sym_of(canon, kb.local_name_of(*key)))
                     .flatten()
             })
@@ -568,14 +566,14 @@ pub(crate) fn check_bare_spec_narrowings(
     for use_ in uses {
         let spec = kb.canonical_sort_sym(use_.spec);
         let member = short_name_of(kb.local_name_of(use_.member));
-        let mut bound: SmallVec<[TermId; 2]> = SmallVec::new();
+        let mut bound: SmallVec<[Value; 2]> = SmallVec::new();
         for row in provides_rows_of_provider(kb, use_.carrier) {
             if kb.canonical_sort_sym(row.spec_base) != spec {
                 continue;
             }
-            for &(param, value) in &row.bindings {
+            for (param, value) in row.bindings(kb) {
                 if short_name_of(kb.local_name_of(param)) == member
-                    && !bound.iter().any(|b| provision_bindings_agree(kb, *b, value))
+                    && !bound.iter().any(|b| provision_bindings_agree(kb, b, &value))
                 {
                     bound.push(value);
                 }
@@ -584,7 +582,7 @@ pub(crate) fn check_bare_spec_narrowings(
         let agrees = use_.narrowed.is_some_and(|t| {
             bound
                 .iter()
-                .all(|b| provision_bindings_agree(kb, *b, t))
+                .all(|b| provision_bindings_agree(kb, b, &TermIdView(t)))
         });
         if agrees {
             continue;
@@ -593,7 +591,7 @@ pub(crate) fn check_bare_spec_narrowings(
             spec: kb.qualified_name_of(use_.spec).to_string(),
             member: member.to_string(),
             carrier: kb.qualified_name_of(use_.carrier).to_string(),
-            bound: bound.iter().map(|b| type_display_name(kb, *b)).collect(),
+            bound: bound.iter().map(|b| type_display_name_value(kb, b)).collect(),
             site: crate::kb::load::render_decl_site(kb, use_.span),
         });
     }
@@ -777,14 +775,14 @@ fn written_spec_binds_param(
 /// (`provides Stream[T = X]`) never matches.
 fn instance_fact_op_in_bindings(
     kb: &KnowledgeBase,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, Value)],
     op_short: &str,
 ) -> Option<Symbol> {
     bindings.iter().find_map(|(key, value)| {
         if short_name_of(kb.qualified_name_of(*key)) != op_short {
             return None;
         }
-        binding_op_symbol(kb, *value)
+        binding_op_symbol(kb, value)
     })
 }
 
@@ -796,8 +794,8 @@ fn instance_fact_op_in_bindings(
 /// `provides_spec_base_sym`, is an `Operation`. Folding all three callers through this
 /// one predicate keeps them
 /// from disagreeing about what an op-valued binding is.
-pub(crate) fn binding_op_symbol(kb: &KnowledgeBase, value: TermId) -> Option<Symbol> {
-    crate::kb::load::provides_spec_base_sym(kb, value)
+pub(crate) fn binding_op_symbol<V: TermView>(kb: &KnowledgeBase, value: &V) -> Option<Symbol> {
+    crate::kb::load::provides_spec_base_sym_view(kb, value)
         .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
 }
 
@@ -811,7 +809,7 @@ pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: TermId) -> b
     match unwrap_spec_view(kb, spec_view) {
         Some((_, bindings)) => bindings
             .iter()
-            .any(|(_, value)| binding_op_symbol(kb, *value).is_some()),
+            .any(|(_, value)| binding_op_symbol(kb, value).is_some()),
         None => false,
     }
 }
@@ -1033,7 +1031,7 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
             op_short_sym,
             row.provider,
             row.spec_view,
-            &row.bindings,
+            &row.bindings(kb),
         ) else {
             continue;
         };
@@ -1057,7 +1055,7 @@ pub(super) fn provision_supplier(
     op_short_sym: Symbol,
     provider: Symbol,
     spec_t: TermId,
-    bindings: &[(Symbol, TermId)],
+    bindings: &[(Symbol, Value)],
 ) -> Option<(Symbol, SpecOpSupplier)> {
     let op_short = kb.local_name_of(op_short_sym);
     // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
@@ -1173,7 +1171,7 @@ pub(crate) fn spec_op_suppliers_for_carrier(
             op_short_sym,
             row.provider,
             row.spec_view,
-            &row.bindings,
+            &row.bindings(kb),
         ) else {
             continue;
         };
@@ -1424,7 +1422,7 @@ pub(super) fn impl_target_qn(kb: &KnowledgeBase, target: TermId) -> Option<Strin
 pub(super) fn provider_requires_subgoals(
     kb: &mut KnowledgeBase,
     spec: Symbol,
-    sigma: &[(String, TermId)],
+    sigma: &[(String, Value)],
     // The rigids of the frame the goals are asked in (`SigmaCtx::param_rigids`). A row
     // parameter of `spec` held here is the frame's OWN row — a goal issued inside the
     // spec's own body — not an omission, and is kept (found by /code-review).
@@ -1455,8 +1453,9 @@ pub(super) fn provider_requires_subgoals(
         let required = goal.spec_sort;
         let mut i = 0;
         while i < goal.bindings.len() {
-            let (k, v) = goal.bindings[i];
-            let spec_own_param = view_ref_symbol(kb, &TermIdView(v)).is_some_and(|s| {
+            let (k, v) = &goal.bindings[i];
+            let k = *k;
+            let spec_own_param = view_ref_symbol(kb, v).is_some_and(|s| {
                 own.iter()
                     .any(|p| kb.qualified_name_of(*p) == kb.qualified_name_of(s))
                     && !type_param_global_var(kb, s)
@@ -1501,7 +1500,7 @@ pub(super) fn provider_requires_subgoals(
 pub(super) fn requires_chain_goals(
     kb: &mut KnowledgeBase,
     chain: &[RequiresEntry],
-    substitute: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
+    substitute: &impl Fn(&mut KnowledgeBase, &Value) -> Value,
 ) -> Vec<SortGoal> {
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
     for entry in chain {
@@ -1521,12 +1520,12 @@ pub(super) fn requires_chain_goals(
             continue;
         };
         let spec_qn = kb.qualified_name_of(required).to_string();
-        let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         for (k, v) in &entry_bindings {
             if !is_type_param_binding(kb, *k, &spec_qn) {
                 continue;
             }
-            let substituted = substitute(kb, *v);
+            let substituted = substitute(kb, v);
             bindings.push((*k, substituted));
         }
         out.push(SortGoal {
@@ -1539,28 +1538,19 @@ pub(super) fn requires_chain_goals(
 }
 
 /// Substitute σ into one `requires`-clause binding value (by short name);
-/// leave anything σ doesn't ground unchanged. Recurses through `Fn`
-/// children (`List[T]`, `Pair[A, B]`).
-fn subst_requires_value(kb: &mut KnowledgeBase, v: TermId, sigma: &[(String, TermId)]) -> TermId {
-    rewrite_term_leaves(kb, v, &|kb, t| {
-        let s = view_ref_symbol(kb, &TermIdView(t))?;
-        Some(map_requires_name(kb, s, t, sigma))
+/// leave anything σ doesn't ground unchanged. Recurses through every application
+/// (`List[T]`, `Pair[A, B]`), on whichever carrier the value and σ's range ride
+/// ([`rewrite_type_leaves`]).
+fn subst_requires_value(kb: &mut KnowledgeBase, v: &Value, sigma: &[(String, Value)]) -> Value {
+    rewrite_type_leaves(kb, v, &|kb, leaf| {
+        let s = view_ref_symbol(kb, leaf)?;
+        let short = kb.local_name_of(s);
+        sigma
+            .iter()
+            .find(|(n, _)| n == short)
+            .map(|(_, val)| val.clone())
     })
-}
-
-/// σ-ground a bare name in a `requires` value by short name; otherwise keep
-/// it as-is. See [`provider_requires_subgoals`].
-fn map_requires_name(
-    kb: &KnowledgeBase,
-    s: Symbol,
-    orig: TermId,
-    sigma: &[(String, TermId)],
-) -> TermId {
-    let short = kb.local_name_of(s);
-    sigma
-        .iter()
-        .find(|(n, _)| n == short)
-        .map_or(orig, |(_, val)| *val)
+    .unwrap_or_else(|| v.clone())
 }
 
 /// WI-20260822-1TKN0 — "does this mention a type parameter", for a reader that holds an
@@ -1721,7 +1711,7 @@ pub(super) fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: 
 /// operations' types actually reference (`Combiner.combine`'s `Ref(Combiner.T)`)
 /// — so a σ keyed on it actually substitutes. The raw binding key can be a
 /// different `Symbol` copy (resolved in the fact's scope), against which
-/// `substitute_impl_params_alloc`'s `Symbol`-equality match is a silent no-op.
+/// [`sigma_subst_type`]'s `Symbol`-equality match is a silent no-op.
 pub(super) fn type_param_sym_of_binding(
     kb: &KnowledgeBase,
     short: Symbol,
@@ -1742,7 +1732,7 @@ pub(super) fn type_param_sym_of_binding(
 /// [`requires_shadow_is_confusable`] (WI-20260923-32XFQ).
 ///
 /// The resolved symbol and NOT the raw binding key, which is a different `Symbol` copy
-/// resolved in the provision's scope: `substitute_impl_params_alloc` matches by `Symbol`
+/// resolved in the provision's scope: [`sigma_subst_type`] matches by `Symbol`
 /// equality, so a σ keyed on the raw copy makes every substitution a SILENT NO-OP —
 /// MEASURED on `provides Sp[T = Carrier]`, where the key was `Symbol(2626)` and the spec's
 /// return type held `Symbol(2563)`. A σ reader then fails open: an effects leg sees a
@@ -1762,14 +1752,20 @@ pub(super) fn type_param_sym_of_binding(
 /// positional left in a stored view is the WI-407 carrier slot of a parameterless spec,
 /// which binds no parameter — [`check_provider_requires`], which reads the raw view and
 /// pairs positionals itself, drops it for that reason.
+///
+/// σ'S RANGE IS A VALUE, as the bindings of every spec view are read: each on the carrier
+/// its source holds it on. A `provides` fact stores terms, and a spec view the typer rebuilt
+/// around a type that holds a value does not; both are bindings of one kind, and every
+/// reader of σ takes them alike — what it compares them with, a member's types and the
+/// template they expand to, rides any carrier already.
 pub(super) fn spec_param_sigma(
     kb: &KnowledgeBase,
     spec: Symbol,
-    bindings: &[(Symbol, TermId)],
-) -> Vec<(Symbol, TermId)> {
+    bindings: &[(Symbol, Value)],
+) -> Vec<(Symbol, Value)> {
     let spec_qn = kb.qualified_name_of(spec);
     bindings
         .iter()
-        .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, spec_qn).map(|p| (p, *v)))
+        .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, spec_qn).map(|p| (p, v.clone())))
         .collect()
 }

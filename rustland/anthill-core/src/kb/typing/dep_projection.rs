@@ -188,7 +188,7 @@ pub fn build_dep_projection(
                 // a function of the slot alone — is built at most once and
                 // never for a chain with no same-sort entry (leaf-spec slots
                 // have EMPTY chains).
-                let mut slot_map: Option<HashMap<Symbol, TermId>> = None;
+                let mut slot_map: Option<HashMap<Symbol, Value>> = None;
                 (0..sub_chain.len()).find(|&k| {
                     if !same_sort_canonical(kb, sub_chain[k].required_sort, dep.required_sort) {
                         return false;
@@ -342,12 +342,11 @@ fn with_unwritten_slots_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Optio
     let mut opened = goal.clone();
     let mut any = false;
     for (_, element) in opened.bindings.iter_mut() {
-        let written = Value::term(*element);
-        if !applies_a_sort_with_its_variables(kb, &written) {
+        if !applies_a_sort_with_its_variables(kb, element) {
             continue;
         }
-        if let Some(Value::Term { id, .. }) = expand_sort_application(kb, &written) {
-            *element = id;
+        if let Some(expanded) = expand_sort_application(kb, element) {
+            *element = expanded;
             any = true;
         }
     }
@@ -443,9 +442,9 @@ pub(super) fn provider_half_projection(
     {
         return None;
     }
-    let args = carrier_named_args(kb, bound);
+    let args = view_named_children(kb, &bound);
     let carrier_params = impl_param_symbols(kb, carrier);
-    let map: HashMap<Symbol, TermId> = align_by_short_name(kb, &args, &carrier_params)
+    let map: HashMap<Symbol, Value> = align_by_short_name(kb, &args, &carrier_params)
         .into_iter()
         .collect();
     // [`DictLayout::slots_for`] OWNS the two-half fold — its spec arm answers for BOTH
@@ -480,7 +479,7 @@ pub(super) fn provider_half_projection(
 pub(super) fn provider_half_carrier(
     kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
-) -> Option<(Symbol, TermId)> {
+) -> Option<(Symbol, Value)> {
     let spec = entry.required_sort;
     // WHICH parameter holds the carrier — the same two-rung ladder `unprovided_provision`
     // reads, so the two cannot disagree about it.
@@ -491,8 +490,8 @@ pub(super) fn provider_half_carrier(
         .bindings
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == param_name)
-        .map(|(_, v)| *v)?;
-    let carrier = sort_functor_of_view(kb, &TermIdView(bound))?;
+        .map(|(_, v)| v.clone())?;
+    let carrier = sort_functor_of_view(kb, &bound)?;
     if !carrier_is_its_own_sole_provider(kb, carrier, spec) {
         return None;
     }
@@ -508,23 +507,6 @@ pub(super) fn provider_half_carrier(
         return None;
     }
     Some((carrier, bound))
-}
-
-/// The named arguments of a carrier binding (`SortedSet[T = E, O = OE]`), as the pairs a
-/// provider-half entry is composed through ([`align_by_short_name`]).
-pub(super) fn carrier_named_args(
-    kb: &KnowledgeBase,
-    carrier_value: TermId,
-) -> SmallVec<[(Symbol, TermId); 2]> {
-    let view = TermIdView(carrier_value);
-    view.named_keys(kb)
-        .into_iter()
-        .filter_map(|k| {
-            view.named_arg(kb, k)
-                .and_then(|it| it.as_term_id())
-                .map(|v| (k, v))
-        })
-        .collect()
 }
 
 /// WI-226: binding-aware predicate for slot matching in
@@ -588,15 +570,15 @@ pub(super) fn entries_cover(
 }
 
 /// The two sides of a cover question, as DISTINCT types (WI-826). Both are the
-/// same `&[(Symbol, TermId)]`, and which one is which IS the whole semantics of
+/// same `&[(Symbol, Value)]`, and which one is which IS the whole semantics of
 /// [`supply_covers_demanded_keys`] — this ticket exists because one walk had them
 /// the wrong way round. Newtyped so a transposed call is a compile error rather
 /// than a silent re-creation of the defect.
 #[derive(Clone, Copy)]
-pub(super) struct Supply<'a>(pub(super) &'a [(Symbol, TermId)]);
+pub(super) struct Supply<'a>(pub(super) &'a [(Symbol, Value)]);
 /// The demand side of a cover question — see [`Supply`].
 #[derive(Clone, Copy)]
-pub(super) struct Demand<'a>(pub(super) &'a [(Symbol, TermId)]);
+pub(super) struct Demand<'a>(pub(super) &'a [(Symbol, Value)]);
 
 /// WI-826 — THE key iteration shared by the two cover walks, the way WI-821
 /// hoisted the per-pair verdict into [`binding_pair_covers`]: for every
@@ -628,11 +610,10 @@ pub(super) fn supply_covers_demanded_keys(
         if !is_type_param_binding(kb, *d_key, spec_qn) {
             continue;
         }
-        let supplied = binding_for_param(kb, supply.0, *d_key, BindingKeyMatch::Label).copied();
-        let Some(s_val) = supplied else {
+        let Some(s_val) = binding_for_param(kb, supply.0, *d_key, BindingKeyMatch::Label) else {
             return false;
         };
-        if !binding_pair_covers(kb, sigma, s_val, *d_val) {
+        if !binding_pair_covers(kb, sigma, s_val, d_val) {
             return false;
         }
     }
@@ -681,7 +662,11 @@ pub struct SigmaCtx<'a> {
 /// `Global` is the representative, first canonicalized through the enclosing-sort
 /// param→rigid map so a written `Var::Global(B)` and a call-site `Var(Rigid(B))`
 /// land on the same id. Bounded against a pathological cycle.
-pub(super) fn sigma_class(kb: &KnowledgeBase, ctx: &SigmaCtx, value: TermId) -> Option<VarId> {
+pub(super) fn sigma_class<V: TermView>(
+    kb: &KnowledgeBase,
+    ctx: &SigmaCtx,
+    value: &V,
+) -> Option<VarId> {
     sigma_class_terminal(kb, ctx, value).map(|(vid, _)| vid)
 }
 
@@ -691,20 +676,29 @@ pub(super) fn sigma_class(kb: &KnowledgeBase, ctx: &SigmaCtx, value: TermId) -> 
 /// context; `false` = at an unbound global nothing at this call determines.
 /// WI-828's refusal explanation keys on that distinction to name the
 /// genuinely-unconstrained elements.
-pub(super) fn sigma_class_terminal(
+///
+/// THE ELEMENT AND EVERY LINK OF THE CHASE ARE READ ON THE CARRIER THEY RIDE. σ binds a
+/// variable to a value, and a variable or a parameter's name reached through an occurrence
+/// or the value carrier is the same link a term makes. Followed only where the binding was
+/// a term, any other binding read as NO binding: a variable σ had bound to a type that
+/// holds a value answered as a variable nothing determines.
+///
+/// NO ROW TELLS THE DIFFERENCE, and no σ a test builds reaches it (MEASURED over the unit
+/// tests and `wi_tests`: not one read here meets a binding that is no term, and with the
+/// chase held to terms again no row moves).
+pub(super) fn sigma_class_terminal<V: TermView>(
     kb: &KnowledgeBase,
     ctx: &SigmaCtx,
-    value: TermId,
+    value: &V,
 ) -> Option<(VarId, bool)> {
-    let mut cur = value;
+    let (mut vid, mut is_rigid) = elem_var_step(kb, value)?;
     for _ in 0..128 {
-        let (vid, is_rigid) = elem_var_step(kb, cur)?;
         if is_rigid {
             return Some((vid, true));
         }
         match ctx.subst.resolve_as_value(vid) {
-            Some(Value::Term { id: t, .. }) => cur = *t,
-            _ => {
+            Some(bound) => (vid, is_rigid) = elem_var_step(kb, bound)?,
+            None => {
                 let canon = canonical_global_var(kb, vid, ctx.param_rigids);
                 // Canonicalized ⇒ the global aliases an enclosing-sort param's
                 // rigid (rigids are freshly minted, so the id changed exactly
@@ -720,7 +714,12 @@ pub(super) fn sigma_class_terminal(
 /// canonical unification variable (the same type parameter, bridging
 /// rigid↔global)? A concrete or unrecognized element (no σ-class) is never "the
 /// same param" as anything; use `dispatch_values_match` for those.
-pub(super) fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermId) -> bool {
+pub(super) fn sigma_same<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    ctx: &SigmaCtx,
+    a: &A,
+    b: &B,
+) -> bool {
     match (sigma_class(kb, ctx, a), sigma_class(kb, ctx, b)) {
         (Some(x), Some(y)) => x == y,
         _ => false,
@@ -738,13 +737,13 @@ pub(super) fn sigma_same(kb: &KnowledgeBase, ctx: &SigmaCtx, a: TermId, b: TermI
 /// two concretes use the same symmetric `dispatch_values_match` as the coarse
 /// cover — EXCEPT a both-COMPOUND pair, which compares σ-structurally
 /// (WI-825, see below). Symmetric in `a`/`b`, so callers may pass either order.
-pub(super) fn sigma_pair_precise(
+pub(super) fn sigma_pair_precise<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
-    a: TermId,
-    b: TermId,
+    a: &A,
+    b: &B,
 ) -> bool {
-    match (is_type_param_value(kb, a), is_type_param_value(kb, b)) {
+    match (is_type_param_view(kb, a), is_type_param_view(kb, b)) {
         (true, true) => sigma_same(kb, ctx, a, b),
         (true, false) | (false, true) => false,
         (false, false) => {
@@ -754,7 +753,7 @@ pub(super) fn sigma_pair_precise(
             // recursively σ-covering (σ-classes at param leaves,
             // `dispatch_values_match` at ground leaves). The head-symbol
             // fallback in `dispatch_values_match` ignores the interiors
-            // (`types_lesseq` rejects such a pair first, so the fallback was
+            // (`types_compatible` rejects such a pair first, so the fallback was
             // the accepting leg), which let a caller entry cover a dep
             // σ-instantiated one constructor DEEPER and forward the shallower
             // dict. Any pair not both-parameterized keeps that dispatch match.
@@ -764,11 +763,15 @@ pub(super) fn sigma_pair_precise(
             // deliberately REFUSES an identical but σ-unclassifiable param
             // pair (`sigma_same` is false when `sigma_class` is `None`), so a
             // top-level identity fast path would silently widen the gate.
-            if a == b {
-                // Identical terms are the same instantiation on both sides —
-                // the pre-WI-825 verdict (`types_lesseq`'s equality leg) in
-                // O(1), skipping the structural walk.
-                return true;
+            if let (BindValue::Term(x), BindValue::Term(y)) = (a.as_bind_value(), b.as_bind_value())
+            {
+                if x == y {
+                    // Identical terms are the same instantiation on both sides —
+                    // the pre-WI-825 verdict (`types_compatible`'s equality leg) in
+                    // O(1), skipping the structural walk. A pair on another carrier
+                    // has no such identity and takes the walk, which answers the same.
+                    return true;
+                }
             }
             match (parameterized_parts(kb, a), parameterized_parts(kb, b)) {
                 (Some((base_a, pos_a, named_a)), Some((base_b, pos_b, named_b))) => {
@@ -785,10 +788,10 @@ pub(super) fn sigma_pair_precise(
                         && pos_a
                             .iter()
                             .zip(pos_b.iter())
-                            .all(|(pa, pb)| sigma_pair_precise(kb, ctx, *pa, *pb))
+                            .all(|(pa, pb)| sigma_pair_precise(kb, ctx, pa, pb))
                         && named_a.iter().all(|(k_a, v_a)| {
                             binding_for_param(kb, &named_b, *k_a, key_match)
-                                .is_some_and(|v_b| sigma_pair_precise(kb, ctx, *v_a, *v_b))
+                                .is_some_and(|v_b| sigma_pair_precise(kb, ctx, v_a, v_b))
                         })
                 }
                 _ => dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a),
@@ -806,45 +809,45 @@ pub(super) fn sigma_pair_precise(
 /// top-level element OR an interior leaf of the recursion in
 /// [`sigma_pair_precise`]) retains `dispatch_values_match`'s head-fallback
 /// acceptance: both heads are the same `TypeExtractor` meta-ctor symbol, so
-/// `types_lesseq` rejects and the head fallback accepts with the interiors
+/// `types_compatible` rejects and the head fallback accepts with the interiors
 /// IGNORED — the WI-825 residual for non-parameterized structural forms (e.g.
 /// `Wrap[A = (Int)->Int]` vs `Wrap[A = (Int)->String]`, or
 /// `Relation[T = (a, b)]` vs `Relation[T = (c, d)]`), tracked under WI-829.
 /// Positional args ride along and are compared strictly — a mixed
 /// positional+named application is not provably canonicalized away before
 /// this path, and an ignored channel is exactly the bug class WI-825
-/// closes. Deliberately not the candidate-side [`parametric_value_parts`]:
+/// closes. Deliberately not the candidate-side [`parametric_view_parts`]:
 /// an element here is a written/σ-substituted TYPE (meta-ctors excluded,
 /// no `SortView` unwrap), not a provider view.
-pub(super) fn parameterized_parts(
+pub(super) fn parameterized_parts<V: TermView>(
     kb: &KnowledgeBase,
-    t: TermId,
-) -> Option<(
-    Symbol,
-    SmallVec<[TermId; 4]>,
-    SmallVec<[(Symbol, TermId); 2]>,
-)> {
-    // Shape-filter first: only a `Fn` with named args can classify
-    // `TypeHead::Parameterized`, and a bare-sort `Ref` (the common element)
+    t: &V,
+) -> Option<(Symbol, SmallVec<[Value; 2]>, SmallVec<[(Symbol, Value); 2]>)> {
+    // Shape-filter first: only an application with named args can classify
+    // `TypeHead::Parameterized`, and a bare-sort reference (the common element)
     // fails here before `type_head`'s meta-ctor qualified-name ladder runs.
-    let Term::Fn {
-        pos_args,
-        named_args,
+    let ViewHead::Functor {
+        pos_arity,
+        named_arity,
         ..
-    } = kb.get_term(t)
+    } = t.head(kb)
     else {
         return None;
     };
-    if named_args.is_empty() {
+    if named_arity == 0 {
         return None;
     }
     // `type_head` excludes the `TypeExtractor` meta-ctors (Arrow / NamedTuple /
-    // EffectsRows / …), which are also `Fn{sym, named}`; only a user-sort
+    // EffectsRows / …), which are applications with named args too; only a user-sort
     // application is a structural-comparison target, and its base is the functor.
-    let TypeHead::Parameterized { base } = type_head(kb, &TermIdView(t)) else {
+    let TypeHead::Parameterized { base } = type_head(kb, t) else {
         return None;
     };
-    Some((base, pos_args.clone(), named_args.clone()))
+    Some((
+        base,
+        view_pos_children(kb, t, pos_arity),
+        view_named_children(kb, t),
+    ))
 }
 
 /// WI-821 (code-review): THE one per-pair cover verdict for the forwarding
@@ -864,17 +867,17 @@ pub(super) fn parameterized_parts(
 /// residual head-only cover, tracked under WI-829. Only the forwarding
 /// strategies' `None` caller (`build_dispatching_dict_direct`) is the
 /// req-insertion diagnostic path.
-pub(super) fn binding_pair_covers(
+pub(super) fn binding_pair_covers<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     sigma: Option<&SigmaCtx>,
-    a: TermId,
-    b: TermId,
+    a: &A,
+    b: &B,
 ) -> bool {
     match sigma {
         Some(ctx) => sigma_pair_precise(kb, ctx, a, b),
         None => {
-            is_type_param_value(kb, a)
-                || is_type_param_value(kb, b)
+            is_type_param_view(kb, a)
+                || is_type_param_view(kb, b)
                 || dispatch_values_match(kb, a, b)
                 || dispatch_values_match(kb, b, a)
         }
@@ -903,24 +906,20 @@ pub(super) fn pick_precise<T: Copy>(
         .or_else(|| candidates.first().copied())
 }
 
-/// Map an element term to a logical var, returning `(var, is_rigid)`.
+/// Map an element to a logical var, returning `(var, is_rigid)`.
 /// `is_rigid` marks a terminal skolem (`Var::Rigid`); a `Global` (direct or via
-/// a sort-param alias) is chaseable. `None` for a concrete / unrecognized term.
-pub(super) fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, bool)> {
-    match kb.get_term(tid) {
-        Term::Var(Var::Rigid(v)) => Some((*v, true)),
-        Term::Var(Var::Global(v)) => Some((*v, false)),
-        Term::Ref(sym) | Term::Ident(sym) if is_sort_param_symbol(kb, *sym) => {
-            type_param_global_var(kb, *sym).map(|g| (g, false))
+/// a sort-param alias) is chaseable. `None` for a concrete / unrecognized element.
+/// Read through the view: a variable or a parameter's name is the same element on a
+/// term, on the value carrier and as an occurrence.
+pub(super) fn elem_var_step<V: TermView>(kb: &KnowledgeBase, elem: &V) -> Option<(VarId, bool)> {
+    match elem.head(kb) {
+        ViewHead::Var(Var::Rigid(v)) => Some((v, true)),
+        ViewHead::Var(Var::Global(v)) => Some((v, false)),
+        ViewHead::Var(Var::DeBruijn(_)) => None,
+        _ => {
+            let sym = view_ref_symbol(kb, elem).filter(|sym| is_sort_param_symbol(kb, *sym))?;
+            type_param_global_var(kb, sym).map(|g| (g, false))
         }
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() && is_sort_param_symbol(kb, *functor) => {
-            type_param_global_var(kb, *functor).map(|g| (g, false))
-        }
-        _ => None,
     }
 }
 

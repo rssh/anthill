@@ -508,9 +508,44 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
 /// both carriers: a term-backed `TermId` and a `Value::Node` whose view exposes the
 /// bindings as named args.
 fn term_backed_bindings<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Vec<(Symbol, Value)> {
-    ty.named_keys(kb)
+    view_named_children(kb, ty).into_vec()
+}
+
+/// The named children of a view, each an owned value: the bindings of an applied type
+/// (`SortedSet[T = E, O = OE]`), of a spec view, of a requirement.
+///
+/// Each child is widened by [`view_item_value`], the one place that decides what a child
+/// read off a view is. It is not [`ViewItem::to_value`]: a child that is a type variable
+/// reads as `Value::Var` here, which the σ walks resolve, and as an occurrence there, which
+/// they return as they found it.
+///
+/// A key the view lists and then does not answer for is a broken view, not an absent
+/// binding, and is a panic.
+pub(super) fn view_named_children<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+) -> SmallVec<[(Symbol, Value); 2]> {
+    v.named_keys(kb)
         .into_iter()
-        .filter_map(|k| named_child_value(kb, ty, k).map(|v| (k, v)))
+        .map(|k| {
+            let child = v.named_arg(kb, k).expect("a view answers for a named key it lists");
+            (k, view_item_value(&child))
+        })
+        .collect()
+}
+
+/// The positional children of a view whose head reports `pos_arity` of them, each an owned
+/// value; see [`view_named_children`].
+pub(super) fn view_pos_children<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+) -> SmallVec<[Value; 2]> {
+    (0..pos_arity)
+        .map(|i| {
+            let child = v.pos_arg(kb, i).expect("a view answers for a position within its arity");
+            view_item_value(&child)
+        })
         .collect()
 }
 

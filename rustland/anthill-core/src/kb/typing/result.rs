@@ -363,8 +363,15 @@ pub(super) fn type_child_value(kb: &mut KnowledgeBase, v: Value) -> Result<Value
 /// literal over a generic call whose answer holds a value, MEASURED) as in the projection
 /// elimination before it. Read through [`extract_type`], its children converted first ([`type_child_value`]:
 /// read, not interned, so a variable inside stays on the occurrence, WI-20260904-02ERR's
-/// rule). A spec view is lowered to the term its readers key on ([`lower_spec_view`], the
-/// `TermId` boundary WI-20260829-2NMXA removes).
+/// rule).
+///
+/// A SPEC VIEW IS NO TYPE, and is answered only as the term it is when every child is one. A
+/// view that holds a value (`SortView(Desc)[E = {Modify[c]}]`) rides the entity carrier, which
+/// every reader of a spec takes through the view ([`unwrap_spec_view_value`]); it has no form
+/// a type builder takes and is refused here. It is not rebuilt as an application either:
+/// [`extract_type`] reads its named bindings and drops its positional `sort` slot, and the
+/// application built from that names no spec. No row hands a builder a spec view (MEASURED
+/// over `wi_tests`, WI-20260829-2NMXA): a spec is read, not placed in a type.
 pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Result<Value, String> {
     let sp = crate::kb::node_occurrence::empty_span();
     let owner = None;
@@ -385,13 +392,22 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
             else {
                 return Err("a spec view with no head".to_string());
             };
-            let mut children: Vec<Value> = (0..pos_arity)
+            let slots: Vec<Value> = (0..pos_arity)
                 .map(|i| v.pos_arg(kb, i).map(|item| view_item_value(&item)))
                 .collect::<Option<_>>()
                 .ok_or_else(|| "a spec view whose positional slot does not read".to_string())?;
-            let (labels, values): (Vec<Symbol>, Vec<Value>) = bindings.into_iter().unzip();
-            children.extend(values);
-            lower_spec_view(kb, functor, pos_arity, &children, labels)
+            let mut pos: Vec<Value> = Vec::with_capacity(slots.len());
+            for slot in slots {
+                pos.push(type_child_value(kb, slot)?);
+            }
+            let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+            for (k, b) in bindings {
+                named.push((k, type_child_value(kb, b)?));
+            }
+            match kb.fn_value(functor, pos, named) {
+                view @ Value::Term { .. } => Ok(view),
+                _ => Err("a spec view that holds a value, which is not a type".to_string()),
+            }
         }
         TypeExtractor::Parameterized { base, bindings } => match effect_expr_form(kb, base) {
             Some(form) => {
@@ -500,35 +516,6 @@ pub(super) fn sort_application_value(
     }
     let base_ref = kb.make_sort_ref(base);
     Ok(parameterized_value(kb, base_ref, bindings, sp, owner))
-}
-
-/// A spec view `functor(children…)` — its first `pos_arity` children positional, the rest
-/// under `labels` — lowered to the term its readers key on (SortGoal bindings are `TermId`s
-/// until WI-20260829-2NMXA). Built BY HAND rather than through `value_to_term`'s entity arm,
-/// which would reorder a binding named `sort` (WI-498); each child is lowered on its own.
-pub(super) fn lower_spec_view(
-    kb: &mut KnowledgeBase,
-    functor: Symbol,
-    pos_arity: usize,
-    children: &[Value],
-    labels: Vec<Symbol>,
-) -> Result<Value, String> {
-    let mut lowered: Vec<TermId> = Vec::with_capacity(children.len());
-    for v in children {
-        lowered.push(
-            value_to_term(kb, v)
-                .map_err(|e| format!("a spec view's child has no term form ({e:?})"))?,
-        );
-    }
-    let named_args: SmallVec<[(Symbol, TermId); 2]> = labels
-        .into_iter()
-        .zip(lowered.split_off(pos_arity))
-        .collect();
-    Ok(Value::term(kb.alloc(Term::Fn {
-        functor,
-        pos_args: lowered.into_iter().collect(),
-        named_args,
-    })))
 }
 
 /// WI-20260824-6RXGD — the GROUND twin of a written value-in-type LITERAL type argument,
@@ -865,6 +852,36 @@ pub(super) fn resolve_type_deep_value(
     walk_type_deep_value_g(kb, subst, e, true)
 }
 
+/// The children of an entity or a tuple walked by [`walk_type_deep_value_g`]: the new
+/// payload, or `None` when no child changed. A half no child of changed keeps its
+/// allocation.
+fn walk_payload_deep(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    pos: &Rc<[Value]>,
+    named: &Rc<[(Symbol, Value)]>,
+    ground: bool,
+) -> Option<(Rc<[Value]>, Rc<[(Symbol, Value)]>)> {
+    let same = |a: &Value, b: &Value| value_identity_key(a) == value_identity_key(b);
+    let walked_pos: Vec<Value> = pos
+        .iter()
+        .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
+        .collect();
+    let walked_named: Vec<(Symbol, Value)> = named
+        .iter()
+        .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
+        .collect();
+    let pos_same = pos.iter().zip(&walked_pos).all(|(a, b)| same(a, b));
+    let named_same = named.iter().zip(&walked_named).all(|((_, a), (_, b))| same(a, b));
+    if pos_same && named_same {
+        return None;
+    }
+    Some((
+        if pos_same { pos.clone() } else { walked_pos.into() },
+        if named_same { named.clone() } else { walked_named.into() },
+    ))
+}
+
 /// Shared body of [`walk_type_deep_value`] (`ground = false`, pure σ) and
 /// [`resolve_type_deep_value`] (`ground = true`, σ + call-time concrete-fill).
 pub(super) fn walk_type_deep_value_g(
@@ -901,30 +918,28 @@ pub(super) fn walk_type_deep_value_g(
         //
         // `Value::Tuple` rides the same arm: it is the functor-LESS application, and a
         // child of one is reached exactly as a child of an entity is.
+        //
+        // AN UNCHANGED APPLICATION IS RETURNED AS ITSELF, as the occurrence arm above
+        // returns an unchanged occurrence: a value on this carrier is identified by its
+        // allocation ([`value_identity_key`]), so a walk that rebuilt it whatever it found
+        // answered "changed" to every caller that compares before and after, and gave a
+        // goal that holds one a new identity per walk — an entry in the dispatch memo that
+        // nothing could find again.
         Value::Entity {
             functor,
             pos,
             named,
-        } => Value::Entity {
-            functor: *functor,
-            pos: pos
-                .iter()
-                .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
-                .collect(),
-            named: named
-                .iter()
-                .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
-                .collect(),
+        } => match walk_payload_deep(kb, subst, pos, named, ground) {
+            Some((pos, named)) => Value::Entity {
+                functor: *functor,
+                pos,
+                named,
+            },
+            None => e.clone(),
         },
-        Value::Tuple { pos, named } => Value::Tuple {
-            pos: pos
-                .iter()
-                .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
-                .collect(),
-            named: named
-                .iter()
-                .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
-                .collect(),
+        Value::Tuple { pos, named } => match walk_payload_deep(kb, subst, pos, named, ground) {
+            Some((pos, named)) => Value::Tuple { pos, named },
+            None => e.clone(),
         },
         // A `Value::Var` CHILD IS RESOLVED HERE, and the first draft of this arm said it
         // was "resolved by the caller's walk — see `walk_value_to_resolved`". That was

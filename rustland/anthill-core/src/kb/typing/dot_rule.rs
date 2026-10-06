@@ -349,7 +349,7 @@ pub(super) fn constrained_param_receiver_type(
         return None;
     };
     let tid = *tid;
-    let (vid, _) = elem_var_step(kb, tid)?;
+    let (vid, _) = elem_var_step(kb, &TermIdView(tid))?;
     let canon = canonical_global_var(kb, vid, env.param_rigids());
     env.param_rigids()
         .iter()
@@ -532,7 +532,7 @@ pub(super) fn constraining_specs_for_param(
     // BFS state, exactly [`op_requires_covers`]': (spec, {spec's type-param ↦ carrier in
     // the BODY's scope}). Grown by index rather than popped so the walk stays in source
     // order — which spec a tie NAMES is then stable across runs.
-    type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
+    type State = (Symbol, SmallVec<[(Symbol, Value); 2]>);
     let mut states: Vec<State> = Vec::new();
     for e in env.op_requires().to_vec() {
         states.push((
@@ -568,8 +568,8 @@ pub(super) fn constraining_specs_for_param(
         // they had written. The two questions are separated where they belong, at the member
         // filter in [`constraining_spec_definers`].
         if let Some(carrier_param) = spec_carrier_param_or_sole(kb, cs) {
-            let bound = binding_for_param(kb, &map, carrier_param, BindingKeyMatch::Label).copied();
-            if bound.is_some_and(|v| sigma_pair_precise(kb, &ctx, v, recv_ty))
+            let bound = binding_for_param(kb, &map, carrier_param, BindingKeyMatch::Label).cloned();
+            if bound.is_some_and(|v| sigma_pair_precise(kb, &ctx, &v, &TermIdView(recv_ty)))
                 && !constraining.iter().any(|s| same_sort_canonical(kb, *s, cs))
             {
                 constraining.push(cs);
@@ -580,7 +580,10 @@ pub(super) fn constraining_specs_for_param(
             let next = (kb.canonical_sort_sym(reached.required_sort), composed);
             // Dedup on the FULL state, [`op_requires_covers`]' rule: a spec re-reached
             // under a DIFFERENT carrier is a different constraint and must be re-explored.
-            if !states.contains(&next) {
+            if !states
+                .iter()
+                .any(|seen| seen.0 == next.0 && same_bindings(kb, &seen.1, &next.1))
+            {
                 states.push(next);
             }
         }

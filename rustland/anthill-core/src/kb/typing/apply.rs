@@ -2609,8 +2609,7 @@ pub(super) fn check_apply_iter(
                         if env.enclosing_op().is_some()
                             && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
                             && goal.bindings.iter().all(|(_, v)| {
-                                type_value_is_ground(kb, *v)
-                                    && !type_term_mentions_type_var(kb, *v)
+                                type_is_ground(kb, v) && !type_mentions_type_var(kb, v)
                             }) =>
                     {
                         return Err(TypeError::DispatchNoMatch {
@@ -3496,7 +3495,7 @@ pub(super) fn check_apply_iter(
                             if provider_bindings.as_ref().is_some_and(|binds| {
                                 binds.iter().any(|(p, v)| {
                                     short_name_of(kb.local_name_of(*p)) == short.as_str()
-                                        && type_value_is_ground(kb, *v)
+                                        && type_is_ground(kb, v)
                                 })
                             }) {
                                 continue;
@@ -3579,15 +3578,15 @@ pub(super) fn check_apply_iter(
                                 continue;
                             }
                             // Read as the dispatch readers read it — through
-                            // [`spec_param_binding_term`], so a type on another carrier (one
+                            // [`spec_param_binding`], so a type on another carrier (one
                             // holding a value, or an effect row carrying one, WI-477) is
-                            // resolved and lowered and then held to the same test as a term.
+                            // resolved and held to the same test as a term.
                             // It was read ABSTRACT for not being a term, which refused a
                             // concrete call "missing `requires`" where its term-carried twin
                             // loaded — MEASURED on `s: Src[E = {Modify[c]}]`, and, once the
                             // defer-match compared that row, under the very `requires` the
                             // message asked for (WI-20260929-WBHTM).
-                            let is_abstract = match spec_param_binding_term(kb, &subst, vid) {
+                            let is_abstract = match spec_param_binding(kb, &subst, vid) {
                                 None => true,
                                 // WI-1059: a NEUTRAL is abstract too, and it is the form a
                                 // materialized unwritten slot takes. `drive(w: Widget) =
@@ -3601,9 +3600,9 @@ pub(super) fn check_apply_iter(
                                 // OTHER spelling of "still abstract", so it demands a
                                 // `requires` exactly as the bare param does.
                                 Some(bound) => {
-                                    is_type_param_value(kb, bound)
+                                    is_type_param_view(kb, &bound)
                                         || matches!(
-                                            type_head(kb, &TermIdView(bound)),
+                                            type_head(kb, &bound),
                                             TypeHead::ExprCarried | TypeHead::RigidProjection
                                         )
                                 }
@@ -3816,9 +3815,10 @@ pub(super) fn check_apply_iter(
                         // OR a `TypeExtractor.TypeVar` — the typer's marker for a type it
                         // could not infer, which that predicate reads as ground because
                         // its `name` field is a name and not a var.
-                        let open = goal.bindings.iter().any(|(_, v)| {
-                            !type_value_is_ground(kb, *v) || type_term_mentions_type_var(kb, *v)
-                        });
+                        let open = goal
+                            .bindings
+                            .iter()
+                            .any(|(_, v)| !type_is_ground(kb, v) || type_mentions_type_var(kb, v));
                         if open {
                             return Ok(TypeResult {
                                 ty: resolved_ret.clone(),
@@ -5093,11 +5093,8 @@ fn unify_arg_with_param(
         let mut named = false;
         map_type_bottom_up(kb, param, &mut |kb, node| {
             named = named || {
-                let sym = match node {
-                    Value::Term { id, .. } => typaram_occurrence_sym(kb, *id),
-                    _ => extract_sort_ref_sym(kb, node),
-                };
-                sym.is_some_and(|s| type_param_vid_in_sort(kb, sort, s).is_some())
+                typaram_occurrence_sym(kb, node)
+                    .is_some_and(|s| type_param_vid_in_sort(kb, sort, s).is_some())
             };
             None
         });

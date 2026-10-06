@@ -209,10 +209,13 @@ fn goal_at_own_params(
         .bindings
         .iter()
         .map(|(k, v)| {
-            (
-                *k,
-                rewrite_bare_carrier_refs(kb, *v, carrier_canon, &|_, _| applied),
-            )
+            // Every hash-consed part of the binding by the one rule; a binding that holds
+            // a value has its spine rebuilt around the answers ([`try_rewrite_type_terms`]).
+            let at_own = try_rewrite_type_terms(kb, v, &|kb, part| {
+                Some(rewrite_bare_carrier_refs(kb, part, carrier_canon, &|_, _| applied))
+            })
+            .expect("a rewrite that declines no part answers for the whole");
+            (*k, at_own)
         })
         .collect();
     SortGoal {
@@ -438,8 +441,8 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         /// the stdlib shorthand `requires Eq[T]` stores the requires-binding
         /// value as the *required* spec's own param (`Eq.T`), linked to the
         /// enclosing param only by the shared short name, so a symbol-keyed
-        /// σ would never reach it.
-        sigma: SmallVec<[(String, TermId); 2]>,
+        /// σ would never reach it. Each value on the carrier the view holds it on.
+        sigma: SmallVec<[(String, Value); 2]>,
         /// WI-1110 — the row this provision was decoded from, kept so a refusal can ask
         /// [`KnowledgeBase::derived_provision_origin_of`] whether the author wrote it.
         /// The relocation this ticket performs routes obligations through DERIVED rows —
@@ -453,18 +456,19 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
     for row in provides_rows(kb) {
         let spec_base = row.spec_base;
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
-        let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
+        let mut sigma: SmallVec<[(String, Value); 2]> = SmallVec::new();
         // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
-        if let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = kb.get_term(row.spec_view).clone()
+        let view = TermIdView(row.spec_view);
+        if let ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } = view.head(kb)
         {
             // Named bindings (`F = Float`, `C = List[T]`).
-            for (k, v) in &named_args {
-                if is_type_param_binding(kb, *k, &spec_qn) {
-                    sigma.push((kb.local_name_of(*k).to_string(), *v));
+            for (k, v) in view_named_children(kb, &view) {
+                if is_type_param_binding(kb, k, &spec_qn) {
+                    sigma.push((kb.local_name_of(k).to_string(), v));
                 }
             }
             // Positional bindings (`VectorSpace[Vec3, Float]`): `unwrap_spec_view`
@@ -484,20 +488,21 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
             // gate in `convert_term`). The `SortView` test was also the dotless
             // `ends_with("SortView")`; it is [`is_sort_view_functor`] now.
             let skip = if is_sort_view_functor(kb, functor) { 1 } else { 0 };
-            if pos_args.len() > skip {
+            if pos_arity > skip {
                 let declared = kb.type_params_of_sort(spec_base);
                 let slots = KnowledgeBase::positional_param_slots(
                     &declared,
                     |d| sigma.iter().any(|(n, _)| n == d),
-                    pos_args.len() - skip,
+                    pos_arity - skip,
                 );
-                for (val, slot) in pos_args.iter().skip(skip).zip(slots) {
+                for (at, slot) in (skip..pos_arity).zip(slots) {
                     // No slot: the carrier slot of a parameterless spec, or an over-application
                     // the loader has ALREADY REPORTED for this very load — the refused
                     // provision is still in the relation when this pass runs, so the two
                     // cannot be told apart here, and neither is a binding.
                     if let Some(i) = slot {
-                        sigma.push((declared[i].clone(), *val));
+                        let val = view.pos_arg(kb, at).expect("pos_arg within arity");
+                        sigma.push((declared[i].clone(), view_item_value(&val)));
                     }
                 }
             }
@@ -667,33 +672,21 @@ fn unentailed_condition(
 /// that omitted them leaves open (the loader writes an omitted binding as the spec's own
 /// parameter), qualified.
 fn spec_params_named_in(kb: &KnowledgeBase, goal: &SortGoal, spec: Symbol) -> Vec<String> {
-    fn walk(kb: &KnowledgeBase, t: TermId, own: &[String], out: &mut Vec<String>) {
-        match kb.get_term(t) {
-            Term::Ref(s) | Term::Ident(s) => {
-                let qn = kb.qualified_name_of(*s);
-                if own.iter().any(|p| p == qn) && !out.iter().any(|o| o == qn) {
-                    out.push(qn.to_string());
-                }
+    // Through the view: a bare name — a reference, the nullary application, an unresolved
+    // identifier — is one leaf on any carrier, and every application is walked.
+    fn walk<V: TermView>(kb: &KnowledgeBase, t: &V, own: &[String], out: &mut Vec<String>) {
+        if let Some(s) = view_ref_symbol(kb, t) {
+            let qn = kb.qualified_name_of(s);
+            if own.iter().any(|p| p == qn) && !out.iter().any(|o| o == qn) {
+                out.push(qn.to_string());
             }
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => {
-                if pos_args.is_empty() && named_args.is_empty() {
-                    let qn = kb.qualified_name_of(*functor);
-                    if own.iter().any(|p| p == qn) && !out.iter().any(|o| o == qn) {
-                        out.push(qn.to_string());
-                    }
-                }
-                for a in pos_args.iter() {
-                    walk(kb, *a, own, out);
-                }
-                for (_, a) in named_args.iter() {
-                    walk(kb, *a, own, out);
-                }
-            }
-            _ => {}
+            return;
+        }
+        if let ViewHead::Functor { pos_arity, .. } = t.head(kb) {
+            view_any_child(kb, t, pos_arity, |c| {
+                walk(kb, c, own, out);
+                false
+            });
         }
     }
     let own: Vec<String> = kb
@@ -703,7 +696,7 @@ fn spec_params_named_in(kb: &KnowledgeBase, goal: &SortGoal, spec: Symbol) -> Ve
         .collect();
     let mut out = Vec::new();
     for (_, v) in &goal.bindings {
-        walk(kb, *v, &own, &mut out);
+        walk(kb, v, &own, &mut out);
     }
     out
 }
@@ -712,9 +705,9 @@ fn spec_params_named_in(kb: &KnowledgeBase, goal: &SortGoal, spec: Symbol) -> Ve
 /// applied)? Then a provision ON the carrier is the repair a missing provider asks for.
 fn goal_is_about(kb: &KnowledgeBase, goal: &SortGoal, carrier: Symbol) -> bool {
     goal.bindings.iter().any(|(_, v)| {
-        unwrap_spec_view(kb, *v)
+        unwrap_spec_view_value(kb, v)
             .map(|(base, _)| base)
-            .or_else(|| extract_sort_ref_sym(kb, &TermIdView(*v)))
+            .or_else(|| extract_sort_ref_sym(kb, v))
             .is_some_and(|s| same_sort_canonical(kb, s, carrier))
     })
 }
@@ -881,7 +874,7 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
 /// A named-tuple key (`Map[K = (a: Float)]`) has no sort to carry a provision at all, so
 /// it answers `false` and stays the structural-reading gap WI-644's enumeration leaves
 /// open (`check_use_site_requires_eq`'s non-scope item 2, and §8.3).
-fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: TermId) -> bool {
+fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: &Value) -> bool {
     // The spec's own carrier parameter (`NonEq[T = …]`) — read off the declaration rather
     // than spelled, the same way `eq_derive::spec_view` builds the views these rows are
     // recorded under. The two must agree or the goal matches no provision.
@@ -893,7 +886,7 @@ fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: TermId) -> bool
             .unwrap_or_else(|| "T".to_string());
         kb.intern(&name)
     };
-    spec_resolves_at_bindings(kb, noneq_sym, smallvec::smallvec![(param, ty)])
+    spec_resolves_at_bindings(kb, noneq_sym, smallvec::smallvec![(param, ty.clone())])
 }
 
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
@@ -1003,19 +996,18 @@ pub(crate) fn check_use_site_requires_eq(
         // here would duplicate that mapping and, since the recorded bindings are
         // always named, leave the positional half unreachable.
         //
-        // GROUND-ONLY, and that filter is this check's OWN (WI-20260831-V25N3 widened
-        // the recorded bindings to carry a denoted one too). A `denoted` binding stands
-        // a VALUE in a type-argument position — it names no carrier whose `NonEq`
-        // provisions could be looked up — so it never contributed here and still does
-        // not; dropping just that binding, rather than the whole site, is what keeps
-        // `Map[K = Float, V = Buf[T = Int64, N = 3]]`'s `K` checked.
-        let sigma: SmallVec<[(String, TermId); 2]> = site
+        // A VALUE IS NOT A KEY, AND THAT IS ALL THIS FILTER DROPS (WI-20260831-V25N3
+        // widened the recorded bindings to carry a denoted one too). A `denoted` binding
+        // stands a VALUE in a type-argument position — `Buf[T = Int64, N = 3]`'s `N` — and
+        // names no carrier whose `NonEq` provisions could be looked up. A TYPE that holds
+        // such a value somewhere inside is still a type and is a key like any other: `Map[K
+        // = Vec[T = Float, N = 3]]` is refused as `Map[K = Vec[T = Float, N = Bool]]` is.
+        // The filter used to keep the hash-consed bindings only, which dropped both.
+        let sigma: SmallVec<[(String, Value); 2]> = site
             .bindings
             .iter()
-            .filter_map(|(k, v)| match v {
-                Value::Term { id, .. } => Some((kb.local_name_of(*k).to_string(), *id)),
-                _ => None,
-            })
+            .filter(|(_, v)| !is_denoted_type(kb, v))
+            .map(|(k, v)| (kb.local_name_of(*k).to_string(), v.clone()))
             .collect();
         // Base's `requires` clauses, both σ-substituted (`Map[K=Float]` ⇒ `Eq[T =
         // Float]`) and RAW. The raw pass names the parameter the diagnostic must
@@ -1049,13 +1041,15 @@ pub(crate) fn check_use_site_requires_eq(
             .collect();
         for (gi, goal) in goals.iter().enumerate() {
             for (bi, (key, val)) in goal.bindings.iter().enumerate() {
-                if !type_value_is_ground(kb, *val) {
+                if !type_is_ground(kb, val) {
                     continue; // abstract binding: defer (not a concrete carrier)
                 }
-                let carrier = match kb.get_term(*val) {
-                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                        *functor
+                let carrier = match val.head(kb) {
+                    ViewHead::Functor {
+                        functor: Some(functor),
+                        ..
                     }
+                    | ViewHead::Ident(functor) => functor,
                     _ => continue,
                 };
                 // WI-20260919-9KYPA — RESOLVE `NonEq` AT THE WHOLE BOUND TYPE, where this
@@ -1070,7 +1064,7 @@ pub(crate) fn check_use_site_requires_eq(
                 // Not a fast path plus a goal, for that same reason: an unconditional
                 // `NonEq[Float]` resolves through this goal too, so a `sort_provides`
                 // pre-check could only ADD the verdict the goal exists to refuse.
-                if !noneq_holds_at(kb, noneq_sym, *val) {
+                if !noneq_holds_at(kb, noneq_sym, val) {
                     continue;
                 }
                 // The container's own parameter, from the raw clause. A clause that
@@ -1081,13 +1075,13 @@ pub(crate) fn check_use_site_requires_eq(
                     .get(gi)
                     .and_then(|g| g.bindings.get(bi))
                     .filter(|(k, _)| k == key)
-                    .map(|(_, raw)| *raw);
+                    .map(|(_, raw)| raw);
                 let param = raw
                     // The same "is this a bare name" rule σ-substitution applied, so
                     // the parameter reported is the one that carried the carrier in.
-                    .and_then(|raw| view_ref_symbol(kb, &TermIdView(raw)))
+                    .and_then(|raw| view_ref_symbol(kb, raw))
                     // Accept the raw name only when it is the one σ actually
-                    // substituted — the SAME comparison `map_requires_name` makes
+                    // substituted — the SAME comparison `subst_requires_value` makes
                     // (bare `local_name_of` against the σ key), so the parameter
                     // reported is exactly the parameter that carried the carrier in.
                     .filter(|s| sigma.iter().any(|(n, _)| n == kb.local_name_of(*s)))
@@ -1117,7 +1111,7 @@ pub(crate) fn check_use_site_requires_eq(
                         // refusal. This one qualifies the base and recurses into the
                         // arguments, which is the same convention `format_goal` uses for
                         // the sibling requirement diagnostics.
-                        carrier: format_term_for_goal(kb, *val),
+                        carrier: format_value_for_goal(kb, val),
                         span: Some(site_span.span),
                     };
                     // WI-745: attribute to the file the site's span indexes into, so
@@ -1781,7 +1775,7 @@ pub(super) fn check_provision_binding_agreement(
     // diagnostic lists the conflicting types the way the author wrote them.
     let mut groups: Vec<(
         (Symbol, Symbol),
-        SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>,
+        SmallVec<[SmallVec<[(Symbol, Value); 2]>; 2]>,
     )> = Vec::new();
     for p in provisions {
         let Some((base, bindings)) = unwrap_spec_view(kb, p.spec_view) else {
@@ -1808,20 +1802,20 @@ pub(super) fn check_provision_binding_agreement(
         let carrier_param = sort_type_params_as_pairs(kb, *spec)
             .first()
             .map(|(sym, _)| short_name_of(kb.local_name_of(*sym)));
-        let binding_of = |view: &SmallVec<[(Symbol, TermId); 2]>, short: &str| {
+        let binding_of = |view: &'_ SmallVec<[(Symbol, Value); 2]>, short: &str| {
             view.iter()
                 .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
-                .map(|(_, v)| *v)
+                .map(|(_, v)| v.clone())
         };
         // Bucket by the carrier-param binding: one bucket per APPLICATION.
         let mut buckets: Vec<(
-            Option<TermId>,
-            SmallVec<[&SmallVec<[(Symbol, TermId); 2]>; 2]>,
+            Option<Value>,
+            SmallVec<[&SmallVec<[(Symbol, Value); 2]>; 2]>,
         )> = Vec::new();
         for view in views {
             let app = carrier_param.and_then(|c| binding_of(view, c));
-            let slot = buckets.iter_mut().find(|(a, _)| match (a, app) {
-                (Some(x), Some(y)) => provision_bindings_agree(kb, *x, y),
+            let slot = buckets.iter_mut().find(|(a, _)| match (a, &app) {
+                (Some(x), Some(y)) => provision_bindings_agree(kb, x, y),
                 (None, None) => true,
                 _ => false,
             });
@@ -1837,7 +1831,7 @@ pub(super) fn check_provision_binding_agreement(
             // Per PARAM SHORT NAME, because a param resolved in two import scopes can
             // carry two Symbols for one spec parameter — the same reason the readers
             // compare `short_name_of(local_name_of(param))`.
-            let mut seen: Vec<(&str, SmallVec<[TermId; 2]>)> = Vec::new();
+            let mut seen: Vec<(&str, SmallVec<[&Value; 2]>)> = Vec::new();
             for view in bucket {
                 for (param, value) in view.iter() {
                     let short = short_name_of(kb.local_name_of(*param));
@@ -1845,12 +1839,12 @@ pub(super) fn check_provision_binding_agreement(
                         Some((_, vals)) => {
                             if !vals
                                 .iter()
-                                .any(|v| provision_bindings_agree(kb, *v, *value))
+                                .any(|v| provision_bindings_agree(kb, *v, value))
                             {
-                                vals.push(*value);
+                                vals.push(value);
                             }
                         }
-                        None => seen.push((short, SmallVec::from_elem(*value, 1))),
+                        None => seen.push((short, SmallVec::from_elem(value, 1))),
                     }
                 }
             }
@@ -1860,7 +1854,10 @@ pub(super) fn check_provision_binding_agreement(
                         carrier: kb.qualified_name_of(*carrier).to_string(),
                         spec: kb.qualified_name_of(*spec).to_string(),
                         param: param.to_string(),
-                        values: vals.iter().map(|v| type_display_name(kb, *v)).collect(),
+                        values: vals
+                            .iter()
+                            .map(|v| type_display_name_value(kb, v))
+                            .collect(),
                     });
                 }
             }
@@ -1895,11 +1892,21 @@ pub(super) fn check_provision_binding_agreement(
 /// String]]` loaded clean or was refused depending only on which line came first, and so
 /// did a carrier reaching one spec through two intermediates binding `P` to those two
 /// types, or to `(Int64) -> Int64` and `(String) -> String`.
-pub(crate) fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
-    if a == b {
+pub(crate) fn provision_bindings_agree<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> bool {
+    // Hash-consed: one id is one type, and the pair a stored row gives is nearly always
+    // that. Two carriers of one type are read structurally.
+    if let (BindValue::Term(x), BindValue::Term(y)) = (a.as_bind_value(), b.as_bind_value()) {
+        if x == y {
+            return true;
+        }
+    } else if views_structurally_equal(kb, a, b) {
         return true;
     }
-    match (type_head(kb, &TermIdView(a)), type_head(kb, &TermIdView(b))) {
+    match (type_head(kb, a), type_head(kb, b)) {
         (TypeHead::SortRef(x), TypeHead::SortRef(y)) => same_sort_canonical(kb, x, y),
         _ => false,
     }
@@ -2141,18 +2148,28 @@ pub(crate) struct ProvisionRow {
 /// real unifier refuses them (one `E`, two values). That errs toward REFUSING a pair of
 /// default marks, so the cost is deleting one mark on a carrier that repeats a parameter
 /// — never a silent wrong answer. Stated rather than discovered.
-pub(crate) fn carrier_views_overlap(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
-    if a == b {
-        // Hash-consed: identical structure is one id.
-        return true;
+pub(crate) fn carrier_views_overlap<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> bool {
+    if let (BindValue::Term(x), BindValue::Term(y)) = (a.as_bind_value(), b.as_bind_value()) {
+        if x == y {
+            // Hash-consed: identical structure is one id.
+            return true;
+        }
     }
-    if is_type_param_value(kb, a) || is_type_param_value(kb, b) {
+    if is_type_param_view(kb, a) || is_type_param_view(kb, b) {
         return true;
     }
     let (Some((base_a, args_a)), Some((base_b, args_b))) =
         (carrier_view_parts(kb, a), carrier_view_parts(kb, b))
     else {
-        return false;
+        // Neither a parameter nor a carrier application — an arrow, a row, a value in a
+        // type position. Two such overlap exactly when they are one type: the id test
+        // above where both are hash-consed, and the same test read structurally where one
+        // rides another carrier (a default's stored row against a goal's own argument).
+        return views_structurally_equal(kb, a, b);
     };
     // `for_bases` IS the base gate: `Label` exactly when the two bases are one canonical
     // sort, which is also the mode the per-param lookup must run in (two views of one
@@ -2163,7 +2180,7 @@ pub(crate) fn carrier_views_overlap(kb: &KnowledgeBase, a: TermId, b: TermId) ->
     }
     args_a.iter().all(
         |(param, va)| match binding_for_param(kb, &args_b, *param, key_match) {
-            Some(vb) => carrier_views_overlap(kb, *va, *vb),
+            Some(vb) => carrier_views_overlap(kb, va, vb),
             None => true,
         },
     )
@@ -2173,22 +2190,15 @@ pub(crate) fn carrier_views_overlap(kb: &KnowledgeBase, a: TermId, b: TermId) ->
 /// the BARE case, which that function answers `None` for (it requires named args, and a
 /// bare carrier has none). Positional args are dropped rather than compared because a
 /// carrier view has none; measured over the whole corpus at WI-860.
-pub(super) fn carrier_view_parts(
+pub(super) fn carrier_view_parts<V: TermView>(
     kb: &KnowledgeBase,
-    t: TermId,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    t: &V,
+) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
     if let Some((base, _, named)) = parameterized_parts(kb, t) {
         return Some((base, named));
     }
-    match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new())),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some((*functor, SmallVec::new())),
-        _ => None,
-    }
+    // A bare name, in any spelling of it.
+    view_ref_symbol(kb, t).map(|s| (s, SmallVec::new()))
 }
 
 /// WI-860 — every provision, as [`ProvisionRow`]s.

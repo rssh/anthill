@@ -1085,10 +1085,10 @@ pub(super) fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<
                 else {
                     continue;
                 };
-                if is_type_param_value(kb, *bound) {
+                if is_type_param_view(kb, bound) {
                     continue;
                 }
-                let Some(carrier) = sort_functor_of_view(kb, &TermIdView(*bound)) else {
+                let Some(carrier) = sort_functor_of_view(kb, bound) else {
                     continue;
                 };
                 if carrier_provides_spec(kb, carrier, spec_canon) {
@@ -1816,10 +1816,12 @@ pub(super) fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> boo
 
 /// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).
 /// Borrows from `kb` — no allocation.
-fn spec_arg_head_name(kb: &KnowledgeBase, tid: TermId) -> Option<&str> {
-    match kb.get_term(tid) {
-        Term::Ref(s) | Term::Ident(s) => Some(kb.local_name_of(*s)),
-        Term::Fn { functor, .. } => Some(kb.local_name_of(*functor)),
+fn spec_arg_head_name<'k>(kb: &'k KnowledgeBase, arg: &Value) -> Option<&'k str> {
+    match arg.head(kb) {
+        ViewHead::Ident(s)
+        | ViewHead::Functor {
+            functor: Some(s), ..
+        } => Some(kb.local_name_of(s)),
         _ => None,
     }
 }
@@ -1848,41 +1850,36 @@ fn requirement_ranges_over_owner_tparams(
     owner_tparams: &[String],
 ) -> bool {
     // WI-662: one carrier-agnostic body. A ground `Value::Term` reads through
-    // `TermView` identically to the pre-WI-662 `get_term` walk (a `Value::Term`
-    // child's `as_term_id` always succeeds), and a denoted `Value::Entity` spec
-    // decodes the same way — a denoted binding value has no `TermId` and drops out
-    // via `as_term_id`, never a type-param arg. One body ⇒ the two carriers cannot
-    // silently diverge (the pre-fix denoted arm dropped the bare-`Fn` pos-args case).
-    let mut bound_type_args: Vec<TermId> = Vec::new();
+    // `TermView` identically to the pre-WI-662 `get_term` walk, and a spec that holds a
+    // value decodes the same way, each argument on the carrier it rides — an argument
+    // that is a value names no type parameter, and is judged as one that does not. One
+    // body ⇒ the two carriers cannot silently diverge (the pre-fix denoted arm dropped
+    // the bare-`Fn` pos-args case).
+    let mut bound_type_args: Vec<Value> = Vec::new();
     if view_is_sort_view(kb, spec) {
         // SortView wrapper: only the named type-param bindings
         // (`unwrap_spec_view_value` drops the `pos_args[0]` inner-spec carrier).
         if let Some((_, bindings)) = unwrap_spec_view_value(kb, spec) {
             for (key, val) in bindings.iter() {
                 if is_type_param_binding(kb, *key, s_qn) {
-                    bound_type_args.push(*val);
+                    bound_type_args.push(val.clone());
                 }
             }
         }
     } else if let ViewHead::Functor { pos_arity, .. } = spec.head(kb) {
         // Bare application `Fn{<S>, pos, named}` (op-`requires`): positionals bind
         // in type-param order, named args by param name.
-        for i in 0..pos_arity {
-            if let Some(v) = spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
-                bound_type_args.push(v);
-            }
-        }
-        for key in spec.named_keys(kb) {
-            if is_type_param_binding(kb, key, s_qn) {
-                if let Some(v) = spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-                    bound_type_args.push(v);
-                }
-            }
-        }
+        bound_type_args.extend(view_pos_children(kb, spec, pos_arity));
+        bound_type_args.extend(
+            view_named_children(kb, spec)
+                .into_iter()
+                .filter(|(key, _)| is_type_param_binding(kb, *key, s_qn))
+                .map(|(_, v)| v),
+        );
     }
     !bound_type_args.is_empty()
-        && bound_type_args.iter().all(|&tid| {
-            spec_arg_head_name(kb, tid)
+        && bound_type_args.iter().all(|arg| {
+            spec_arg_head_name(kb, arg)
                 .is_some_and(|n| owner_tparams.iter().any(|tp| tp.as_str() == n))
         })
 }

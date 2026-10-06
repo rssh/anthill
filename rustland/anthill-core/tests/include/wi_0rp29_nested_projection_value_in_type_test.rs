@@ -22,9 +22,10 @@
 //! passed by name, a `denoted` re-keyed once — and an effect that does not eliminate arms it
 //! as a return does; the WI-481 return re-key and a dispatched override's effects read the
 //! call's arguments by parameter. (The §3 member tie the fallback once enforced is refused
-//! where the member is declared, `wi_0rp29_member_rule_test`.) A rebuilt form is its OCCURRENCE (a spec view excepted, the
-//! `TermId` boundary WI-20260829-2NMXA removes), and the printer renders one as it renders its
-//! term twin.
+//! where the member is declared, `wi_0rp29_member_rule_test`.) A rebuilt form is its OCCURRENCE
+//! (a spec view is rebuilt on its children's carriers, and every reader of a spec takes its
+//! bindings through the view — WI-20260829-2NMXA), and the printer renders one as it renders
+//! its term twin.
 //!
 //! Every row that can RUNS: an operation answers a number that names what was reached (the
 //! element's `v`, a provider's tag), on the value-in-type element AND on its `N = Bool` twin
@@ -1398,6 +1399,14 @@ fn a_mixed_calls_override_effect_names_its_argument_control() {
 /// An override's `Modify[c]` names ITS OWN parameter; the call incurs it on the caller's
 /// argument `x`. `first` declares `declared`.
 ///
+/// THE LABEL SITS IN A PARAMETER OF THE RETURNED CARRIER THAT ITS `Stream` VIEW DOES NOT READ
+/// (`Mark`), and `touch` incurs it. The row first stood in `EC` — the rest returned as
+/// `Cnt[T = T, EC = {Modify[c]}]` against a provision at `E = {EC}` — which the declaration
+/// rule refuses, as it refuses that member at `EC = {Error[String]}`: the rest is no `Stream`
+/// at this instance's row. It loaded while a receiver's argument that holds a value was not
+/// read into the provider's view (WI-20260829-2NMXA;
+/// `wi_2nmxa_denoted_provision_binding_test::a_member_returning_another_row_is_refused_as_its_ground_twin_is`).
+///
 /// A LOAD VERDICT: the question is which parameter the incurred `Modify` names, and it is
 /// decided at load; a run would need a place for `x` to modify.
 fn rekey_program(ns: &str, declared: &str) -> String {
@@ -1412,21 +1421,20 @@ namespace {ns}
   sort Cnt
     sort T = ?
     effects EC = ?
+    effects Mark = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = {{EC}}]
-    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = {{Modify[c]}}]]] effects {{EC}} =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = EC, Mark = {{Modify[c]}}]]] effects {{EC}} =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
+    operation touch(c: Self) -> Int64 effects {{Mark}} = 0
   end
 
   operation first[R](x: Cnt[T = Int64, EC = R]) -> Int64 effects {{{declared}}} =
     match Stream.splitFirst(x)
       case none() -> 0
-      case some(pair(_, rest)) ->
-        match Stream.splitFirst(rest)
-          case some(pair(b, _)) -> b
-          case none() -> 0
+      case some(pair(_, rest)) -> Cnt.touch(rest)
 end
 "#
     )

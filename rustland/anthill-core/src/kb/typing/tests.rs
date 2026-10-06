@@ -46,7 +46,7 @@ mod k0e8t_witness_gate_test {
     //!     arm): rows 1 and 2 fail by exactly +1 per compare (MEASURED, 458 → 459), and
     //!     so does row 3.
     //!   * `find_sort_ref` ONLY (`Self::Bare(s) => kb.make_sort_ref(s)` in
-    //!     [`super::super::WitnessActual::term`]): row 3 alone fails, by exactly +10 for its 10
+    //!     [`super::super::WitnessActual::value`]): row 3 alone fails, by exactly +10 for its 10
     //!     compares (MEASURED, 8 → 18). Rows 1 and 2 pass — they refuse before the mint
     //!     either way, which is the residual /code-review found in the first cut.
     //!
@@ -138,7 +138,7 @@ mod k0e8t_witness_gate_test {
     }
 
     /// A BARE WITNESSED CARRIER — the WI-20260829-N01PY shape, and the only one that
-    /// reaches [`super::super::WitnessActual::term`] at all. `Plain` has no type parameters, so
+    /// reaches [`super::super::WitnessActual::value`] at all. `Plain` has no type parameters, so
     /// it compares at `(sort_ref, sort_ref)`; `PlainWitness` files the provision under
     /// ITSELF, which is what makes the carrier-keyed `sort_provides_admissibly` miss and
     /// the witness leg answer.
@@ -168,7 +168,7 @@ end
     /// ROW 3 — AN ACCEPTED COMPARE, WHICH THE HOIST ALONE DOES NOT COVER. Rows 1 and 2
     /// both refuse, so they are satisfied by a repair that merely moves the mint past the
     /// gate; a compare that gets THROUGH the gate still calls
-    /// [`super::super::WitnessActual::term`], and `alloc` increfs on a hash-cons hit. Ten
+    /// [`super::super::WitnessActual::value`], and `alloc` increfs on a hash-cons hit. Ten
     /// compares of one pair, so the assertion is about GROWTH rather than a single
     /// reference: with `make_sort_ref` alone the refcount rises by exactly 10.
     ///
@@ -795,7 +795,7 @@ mod wi417_cycle_tests {
 
 #[cfg(test)]
 mod sigma_chain_end_tests {
-    //! WI-20260929-020TH: [`super::super::spec_param_binding_term`] resolves a spec parameter's
+    //! WI-20260929-020TH: [`super::super::spec_param_binding`] resolves a spec parameter's
     //! binding through σ the same way whichever carrier it rides: read at the END of σ's chain
     //! of variable links (`S ↦ U`, `U ↦ Buf` says `S` is `Buf`), the variables inside what the
     //! chain ends at resolved too, and a chain that comes back on itself ended at one of its
@@ -819,7 +819,7 @@ mod sigma_chain_end_tests {
     //!   OWN GUARD REMOVED: [`a_cycle_of_links_ends_at_one_of_its_variables`] overflows the
     //!   stack under the first and does not return under the second (stopped after 300 s).
     //!   It overflows on the parent commit's read too, at the cycle of value links.
-    use super::super::spec_param_binding_term;
+    use super::super::spec_param_binding;
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId, Var, VarId};
@@ -861,6 +861,46 @@ mod sigma_chain_end_tests {
         (application(kb, tx), application(kb, buf))
     }
 
+    /// The binding as the TERM it is — which every row but the last resolves to.
+    fn binding_term(kb: &mut KnowledgeBase, subst: &Substitution, v: VarId) -> Option<TermId> {
+        spec_param_binding(kb, subst, v).map(|bound| match bound {
+            Value::Term { id, .. } => id,
+            other => panic!("a binding that is a term on every link, read as {other:?}"),
+        })
+    }
+
+    /// WI-20260829-2NMXA — A TYPE THAT HOLDS A VALUE IS HANDED OVER AS IT RIDES, at the end
+    /// of a chain as at its start: `S ↦ U`, `U ↦ Buf[N = 3]` on the occurrence carrier reads
+    /// as that occurrence. It was LOWERED to a hash-consed term here while a goal's bindings
+    /// were `TermId`s, and this row FAILS with that lowering put back.
+    #[test]
+    fn a_type_that_holds_a_value_is_read_on_its_carrier() {
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence, TypeChild};
+        use crate::kb::term::Literal;
+        let mut kb = KnowledgeBase::new();
+        let (s, u, buf) = vars_and_sort(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span, None);
+        let denoted = kb.make_denoted_occ(three, span, None);
+        let n = kb.intern("N");
+        let holding = kb.make_parameterized_occ(
+            TypeChild::Interned(buf),
+            vec![(n, TypeChild::Node(denoted))],
+            span,
+            None,
+        );
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, s, Value::Var(Var::Global(u)));
+        subst.bind_value(&kb, u, Value::Node(std::rc::Rc::clone(&holding)));
+        match spec_param_binding(&mut kb, &subst, s) {
+            Some(Value::Node(read)) => assert!(
+                std::rc::Rc::ptr_eq(&read, &holding),
+                "the occurrence σ bound, not a copy of it"
+            ),
+            other => panic!("the type on its own carrier, got {other:?}"),
+        }
+    }
+
     /// The link a unify of two variables writes: `S ↦ Term(Var(U))`.
     #[test]
     fn a_term_link_is_followed_to_the_binding() {
@@ -870,7 +910,7 @@ mod sigma_chain_end_tests {
         let mut subst = Substitution::new();
         subst.bind_term(&kb, s, tu);
         subst.bind_term(&kb, u, buf);
-        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(buf));
+        assert_eq!(binding_term(&mut kb, &subst, s), Some(buf));
     }
 
     /// The same link as an occurrence: `S ↦ Node(TypeNode::Var(U))`.
@@ -883,7 +923,7 @@ mod sigma_chain_end_tests {
         let mut subst = Substitution::new();
         subst.bind_value(&kb, s, Value::Node(occ));
         subst.bind_term(&kb, u, buf);
-        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(buf));
+        assert_eq!(binding_term(&mut kb, &subst, s), Some(buf));
     }
 
     /// The same link on the value carrier, `S ↦ Value::Var(U)`, to a term with a bound
@@ -896,7 +936,7 @@ mod sigma_chain_end_tests {
         let (open, closed) = open_and_closed(&mut kb, &mut subst, buf);
         subst.bind_value(&kb, s, Value::Var(Var::Global(u)));
         subst.bind_term(&kb, u, open);
-        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(closed));
+        assert_eq!(binding_term(&mut kb, &subst, s), Some(closed));
     }
 
     /// No link at all, the binding a term: `S ↦ F(t: ?X)`, `?X ↦ Buf`.
@@ -907,7 +947,7 @@ mod sigma_chain_end_tests {
         let mut subst = Substitution::new();
         let (open, closed) = open_and_closed(&mut kb, &mut subst, buf);
         subst.bind_term(&kb, s, open);
-        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(closed));
+        assert_eq!(binding_term(&mut kb, &subst, s), Some(closed));
     }
 
     /// `S ↦ U ↦ S` ends at a variable of the cycle, whichever carrier closes it:
@@ -929,7 +969,7 @@ mod sigma_chain_end_tests {
             let mut subst = Substitution::new();
             subst.bind_value(&kb, s, link(first_on_value, u, tu));
             subst.bind_value(&kb, u, link(second_on_value, s, ts));
-            let end = spec_param_binding_term(&mut kb, &subst, s);
+            let end = binding_term(&mut kb, &subst, s);
             assert!(
                 end == Some(ts) || end == Some(tu),
                 "a variable of the cycle, got {end:?} ({first_on_value}, {second_on_value})"
@@ -1592,14 +1632,41 @@ mod p4_tests {
         );
         let from_node = parameterized_vid_bindings(&kb, &Value::Node(node), box_sym);
 
-        assert_eq!(
-            from_term,
-            vec![(vid, int_ref)],
+        let one = |read: &[(crate::kb::term::VarId, Value)]| -> Value {
+            assert_eq!(read.len(), 1, "one binding, for the one parameter");
+            assert_eq!(read[0].0, vid, "keyed by Box.T's canonical VarId");
+            read[0].1.clone()
+        };
+        assert!(
+            matches!(one(&from_term), Value::Term { id, .. } if id == int_ref),
             "binding read from the TermId carrier, keyed by Box.T's canonical VarId"
         );
-        assert_eq!(
-            from_node, from_term,
+        assert!(
+            crate::kb::term_view::views_structurally_equal(&kb, &one(&from_node), &one(&from_term)),
             "Node carrier yields the SAME binding (never erased)"
+        );
+
+        // WI-20260829-2NMXA — AN ARGUMENT THAT RIDES AN OCCURRENCE IS AN ARGUMENT. A type
+        // argument holds a value (`Box[T = 3]`, `Strm[E = {Modify[k]}]`) on the occurrence
+        // carrier, and the reader used to keep an argument only where it was a term: this
+        // one read as a parameter the receiver had not written, and no provision's binding
+        // over it was read at that receiver. FAILS with the reader narrowed to terms again.
+        let three = NodeOccurrence::new_expr(
+            crate::kb::node_occurrence::Expr::Const(crate::kb::term::Literal::Int(3)),
+            span(),
+            None,
+        );
+        let denoted = kb.make_denoted_occ(three, span(), None);
+        let node_arg = kb.make_parameterized_occ(
+            TypeChild::Interned(box_ref),
+            vec![(box_t, TypeChild::Node(Rc::clone(&denoted)))],
+            span(),
+            None,
+        );
+        let from_node_arg = parameterized_vid_bindings(&kb, &Value::Node(node_arg), box_sym);
+        assert!(
+            matches!(one(&from_node_arg), Value::Node(arg) if Rc::ptr_eq(&arg, &denoted)),
+            "an argument on the occurrence carrier is read, on that carrier"
         );
     }
 
@@ -5808,6 +5875,129 @@ mod groundness_gate_carrier_agreement_test {
     }
 }
 
+/// WI-20260829-2NMXA — two readers a type that holds a value now reaches, each answering as
+/// its term twin does.
+#[cfg(test)]
+mod wi_2nmxa_value_holding_type_reader_tests {
+    //! UNIT ROWS, because no program in the suite tells either reader's two forms apart
+    //! (MEASURED, each form backed out over the unit tests and `wi_tests`: no row moves).
+    //!
+    //! 1. A CHILD THAT IS A TYPE VARIABLE IS READ AS THE VARIABLE. `view_named_children`
+    //!    widens a child through `view_item_value`, the one place that decides what a
+    //!    child read off a view is; `ViewItem::to_value` hands a type variable back as the
+    //!    occurrence it rides, which no σ walk can re-carry once it is the whole value.
+    //!    BACKED OUT (`to_value` in the helper): the first row fails — the child walks to
+    //!    itself with σ's binding unread.
+    //!
+    //! 2. THE TWO GROUNDNESS GATES DIFFER IN ONE THING. `type_is_ground` asks what a type
+    //!    IS, `resolved_type_is_ground` whether the argument check can compare it, and the
+    //!    second asks one thing more: that a value the type holds be closed. BACKED OUT
+    //!    (`type_is_ground` as the plain view walk it first was): the guarded-atom row
+    //!    fails — the view presents a guard as a child, and the gate has never read one.
+    //!    The row that names a cell is the CONTROL and passes either way by design: it
+    //!    states the one difference.
+    use super::super::*;
+    use crate::eval::value::Value;
+    use crate::intern::SymbolKind;
+    use crate::kb::load::register_prelude;
+    use crate::kb::node_occurrence::{empty_span, TypeChild};
+
+    fn kb() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    #[test]
+    fn a_type_variable_child_is_read_as_the_variable() {
+        let mut kb = kb();
+        let g = kb.global_scope();
+        let sp = empty_span();
+        let map = kb.define_symbol("Map2nmxa", "Map2nmxa", SymbolKind::Sort, g);
+        let bool_sort = kb.define_symbol("Bool2nmxa", "Bool2nmxa", SymbolKind::Sort, g);
+        let key = kb.intern("K");
+        let name = kb.intern("T");
+        let vid = kb.fresh_var(name);
+        // `Map[K = ?T]`, the variable riding the occurrence carrier as every fresh one does.
+        let base = kb.alloc(Term::Ref(map));
+        let var = kb.type_var_child(Var::Global(vid), sp, None);
+        let occ = kb.make_parameterized_occ(TypeChild::Interned(base), vec![(key, var)], sp, None);
+
+        let children = view_named_children(&kb, &Value::Node(occ));
+        let [(read_key, child)] = children.as_slice() else {
+            panic!("one binding, `K`; got {children:?}");
+        };
+        assert_eq!(*read_key, key);
+
+        let concrete = kb.alloc(Term::Ref(bool_sort));
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, vid, Value::term(concrete));
+        let walked = walk_type_deep_value(&mut kb, &subst, child);
+        assert!(
+            matches!(walked, Value::Term { id, .. } if id == concrete),
+            "σ binds `?T`, and the child read off the view must resolve to that binding; \
+             got {walked:?}"
+        );
+    }
+
+    #[test]
+    fn a_guarded_atoms_guard_is_read_by_neither_groundness_gate() {
+        let mut kb = kb();
+        let g = kb.global_scope();
+        let sp = empty_span();
+        let label_sort = kb.define_symbol("Lbl2nmxa", "Lbl2nmxa", SymbolKind::Sort, g);
+        let label = kb.alloc(Term::Ref(label_sort));
+        let name = kb.intern("g");
+        let guard_var = kb.fresh_var(name);
+        // `{Lbl if ?g}`: a ground label under a guard that holds a variable.
+        let guarded = kb.make_guarded_occ(
+            TypeChild::Interned(label),
+            Value::Var(Var::Global(guard_var)),
+            sp,
+            None,
+        );
+        let row = Value::Node(kb.make_effects_rows_occ(TypeChild::Node(guarded), sp, None));
+
+        assert!(
+            resolved_type_is_ground(&kb, &row),
+            "the control: the argument check's gate counts the label and not the guard"
+        );
+        assert!(
+            type_is_ground(&kb, &row),
+            "and what the type IS says the same of it: the two gates differ in a value's \
+             closedness and in nothing else"
+        );
+    }
+
+    /// CONTROL — PASSES EITHER WAY BY DESIGN: the one difference between the two gates.
+    #[test]
+    fn a_row_that_names_a_place_is_ground_and_not_closed() {
+        let mut kb = kb();
+        let g = kb.global_scope();
+        let sp = empty_span();
+        let modify = kb.define_symbol("Modify2nmxa", "Modify2nmxa", SymbolKind::Sort, g);
+        let place = kb.define_symbol("k", "op2nmxa.k", SymbolKind::Param, g);
+        let key = kb.intern("T");
+        // `{Modify[k]}`, `k` a parameter of the operation that writes the type.
+        let denoted = kb.make_denoted_occ_ref(place, sp, None);
+        let base = kb.alloc(Term::Ref(modify));
+        let label = kb.make_parameterized_occ(
+            TypeChild::Interned(base),
+            vec![(key, TypeChild::Node(denoted))],
+            sp,
+            None,
+        );
+        let present = kb.make_present_occ(TypeChild::Node(label), sp, None);
+        let row = Value::Node(kb.make_effects_rows_occ(TypeChild::Node(present), sp, None));
+
+        assert!(type_is_ground(&kb, &row), "`{{Modify[k]}}` holds no variable");
+        assert!(
+            !resolved_type_is_ground(&kb, &row),
+            "and names a place, which the argument check compares only once binders are aligned"
+        );
+    }
+}
+
 /// WI-20260904-B1KFS — THE DISPLAY AND THE σ-WALK ANSWER ONE TYPE THE SAME ON EITHER
 /// CARRIER.
 #[cfg(test)]
@@ -7188,7 +7378,7 @@ mod wi_n3w68_row_tail_node_var_tests {
 /// WI-20260923-N3W68 (#12) — one nullary term, one answer.
 #[cfg(test)]
 mod wi_n3w68_nullary_meta_ctor_tests {
-    //! `sort_sym_of_term` and `typaram_occurrence_sym` each answered the two spellings of
+    //! `sort_sym_of_view` and `typaram_occurrence_sym` each answered the two spellings of
     //! `Nothing` differently: `Ref(Nothing)` fell through `extract_sort_ref_sym` (which reads
     //! it as `TypeHead::Nothing`, not a sort ref) to `None`, while `Fn{Nothing}` hit a
     //! nullary-`Fn` arm and answered `Some`. The CZJ2N canon makes those one term for every
@@ -7199,7 +7389,7 @@ mod wi_n3w68_nullary_meta_ctor_tests {
     //!
     //! BACK-OUT, MEASURED: restoring either function's nullary-`Fn` answer fails this row at
     //! that function's `Fn`-spelling assertion.
-    use super::super::{sort_sym_of_term, typaram_occurrence_sym};
+    use super::super::{sort_sym_of_view, typaram_occurrence_sym};
     use crate::kb::term::Term;
     use crate::kb::test_support::load_stdlib;
 
@@ -7215,15 +7405,15 @@ mod wi_n3w68_nullary_meta_ctor_tests {
             kb.get_term(fn_spelling)
         );
         let ref_spelling = kb.alloc(Term::Ref(nothing));
-        assert_eq!(sort_sym_of_term(&kb, ref_spelling), None);
+        assert_eq!(sort_sym_of_view(&kb, &crate::kb::term_view::TermIdView(ref_spelling)), None);
         assert_eq!(
-            sort_sym_of_term(&kb, fn_spelling),
+            sort_sym_of_view(&kb, &crate::kb::term_view::TermIdView(fn_spelling)),
             None,
             "the `Fn` spelling of `Nothing` must answer as its `Ref` spelling does"
         );
-        assert_eq!(typaram_occurrence_sym(&kb, ref_spelling), None);
+        assert_eq!(typaram_occurrence_sym(&kb, &ref_spelling), None);
         assert_eq!(
-            typaram_occurrence_sym(&kb, fn_spelling),
+            typaram_occurrence_sym(&kb, &fn_spelling),
             None,
             "`Nothing` names no type parameter, in either spelling"
         );
@@ -7264,9 +7454,9 @@ mod wi_n3w68_bare_name_reader_tests {
         let s = kb.intern("n3w68.Leaf");
         let r = kb.alloc(Term::Ref(s));
         let i = kb.alloc(Term::Ident(s));
-        assert_eq!(spec_binding_head_sym(&kb, r), Some(s));
+        assert_eq!(spec_binding_head_sym(&kb, &r), Some(s));
         assert_eq!(
-            spec_binding_head_sym(&kb, i),
+            spec_binding_head_sym(&kb, &i),
             Some(s),
             "an `Ident` is a bare name to `view_ref_symbol`, and this reader is that one"
         );

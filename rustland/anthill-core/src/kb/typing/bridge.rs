@@ -879,7 +879,7 @@ fn goal_is_fully_pinned(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
     kb.type_params_of_sort(goal.spec_sort).iter().all(|tp| {
         goal.bindings
             .iter()
-            .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
+            .any(|(k, v)| kb.local_name_of(*k) == tp && type_is_ground(kb, v))
     })
 }
 
@@ -1088,38 +1088,42 @@ pub(crate) fn dictionary_covers_target(
 /// effect row a call pinned have two different heads and are one type.
 pub(super) fn row_binding_could_answer(
     kb: &mut KnowledgeBase,
-    goal_value: TermId,
-    cand: TermId,
+    goal_value: &Value,
+    cand: &Value,
 ) -> bool {
-    if is_type_param_value(kb, cand) || is_type_param_value(kb, goal_value) {
+    if is_type_param_view(kb, cand) || is_type_param_view(kb, goal_value) {
         return true;
     }
-    let sort_of = |kb: &KnowledgeBase, t: TermId| match type_head(kb, &TermIdView(t)) {
-        TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => Some(sort),
-        _ => None,
-    };
+    fn sort_of<V: TermView>(kb: &KnowledgeBase, t: &V) -> Option<Symbol> {
+        match type_head(kb, t) {
+            TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => Some(sort),
+            _ => None,
+        }
+    }
     let (Some(pinned), Some(row)) = (sort_of(kb, goal_value), sort_of(kb, cand)) else {
-        return !(type_value_is_ground(kb, goal_value) && type_value_is_ground(kb, cand))
+        return !(type_is_ground(kb, goal_value) && type_is_ground(kb, cand))
             || dispatch_values_match(kb, goal_value, cand);
     };
     let row_canon = kb.canonical_sort_sym(row);
     let pinned_sort = kb.sort_of_constructor(pinned).unwrap_or(pinned);
     if kb.canonical_sort_sym(pinned) != row_canon && kb.canonical_sort_sym(pinned_sort) != row_canon
     {
-        return if type_value_is_ground(kb, cand) {
+        return if type_is_ground(kb, cand) {
             dispatch_values_match(kb, goal_value, cand)
         } else {
             sort_provides(kb, pinned_sort, row)
         };
     }
-    let theirs = parameterized_vid_bindings(kb, &TermIdView(cand), row);
-    parameterized_vid_bindings(kb, &TermIdView(goal_value), row)
+    // Each argument on the carrier it rides: one that holds a value is compared as its
+    // term twin is, where it used to read as an argument the instance had left out.
+    let theirs = parameterized_vid_bindings(kb, cand, row);
+    parameterized_vid_bindings(kb, goal_value, row)
         .into_iter()
         .all(|(param, ours)| {
             theirs
                 .iter()
                 .find(|(p, _)| *p == param)
-                .is_none_or(|(_, their)| row_binding_could_answer(kb, ours, *their))
+                .is_none_or(|(_, their)| row_binding_could_answer(kb, &ours, their))
         })
 }
 
@@ -1170,7 +1174,7 @@ pub(super) fn unique_provider_completion(
             !goal
                 .bindings
                 .iter()
-                .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
+                .any(|(k, v)| kb.local_name_of(*k) == tp && type_is_ground(kb, v))
         })
         .collect();
     if open.is_empty() {
@@ -1182,7 +1186,7 @@ pub(super) fn unique_provider_completion(
     // reached by whichever completion another provider proposes, since the resolution
     // below is the ordinary one.
     let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
-    let mut completions: Vec<SmallVec<[(Symbol, TermId); 2]>> = Vec::new();
+    let mut completions: Vec<SmallVec<[(Symbol, Value); 2]>> = Vec::new();
     for rid in provides_rids_by_spec(kb, spec_canon) {
         if !kb.is_fact(rid) {
             continue;
@@ -1204,15 +1208,14 @@ pub(super) fn unique_provider_completion(
         // it excludes only a provably-ground mismatch — because the veto below rests on
         // whatever survives here.
         let mut could_answer = true;
-        for (key, goal_value) in goal.bindings.clone() {
-            if !type_value_is_ground(kb, goal_value) {
+        for (key, goal_value) in &goal.bindings {
+            if !type_is_ground(kb, goal_value) {
                 continue;
             }
-            let short = kb.local_name_of(key).to_string();
+            let short = kb.local_name_of(*key).to_string();
             let Some((_, cand)) = view_bindings
                 .iter()
                 .find(|(k, _)| kb.local_name_of(*k) == short.as_str())
-                .copied()
             else {
                 continue;
             };
@@ -1224,13 +1227,13 @@ pub(super) fn unique_provider_completion(
         if !could_answer {
             continue;
         }
-        let mut filled: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut filled: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         for short in &open {
-            let hit = view_bindings.iter().find(|(k, v)| {
-                kb.local_name_of(*k) == short.as_str() && type_value_is_ground(kb, *v)
-            });
+            let hit = view_bindings
+                .iter()
+                .find(|(k, v)| kb.local_name_of(*k) == short.as_str() && type_is_ground(kb, v));
             match hit {
-                Some((k, v)) => filled.push((*k, *v)),
+                Some((k, v)) => filled.push((*k, v.clone())),
                 None => {
                     filled.clear();
                     break;
@@ -1256,7 +1259,7 @@ pub(super) fn unique_provider_completion(
                 && prev
                     .iter()
                     .zip(filled.iter())
-                    .all(|((_, a), (_, b))| values_structurally_equal(kb, *a, *b))
+                    .all(|((_, a), (_, b))| values_structurally_equal(kb, a, b))
         }) {
             completions.push(filled);
         }
@@ -1299,7 +1302,7 @@ pub(super) fn goal_from_requires_entry(
 ) -> Option<SortGoal> {
     let (_, raw_bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
-    let bindings: SmallVec<[(Symbol, TermId); 2]> = raw_bindings
+    let bindings: SmallVec<[(Symbol, Value); 2]> = raw_bindings
         .into_iter()
         .filter(|(k, _)| is_type_param_binding(kb, *k, &spec_qn))
         .collect();

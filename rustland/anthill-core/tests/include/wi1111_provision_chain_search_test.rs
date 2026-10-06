@@ -1002,7 +1002,7 @@ fn candidates(kb: &mut KnowledgeBase, spec_qn: &str, bindings: &[(&str, &str)]) 
     let spec = kb
         .try_resolve_symbol(spec_qn)
         .unwrap_or_else(|| panic!("{spec_qn} registered"));
-    let mut bs: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
+    let mut bs: SmallVec<[(anthill_core::intern::Symbol, anthill_core::eval::Value); 2]> =
         SmallVec::new();
     for (key, value) in bindings {
         let vs = kb
@@ -1010,7 +1010,7 @@ fn candidates(kb: &mut KnowledgeBase, spec_qn: &str, bindings: &[(&str, &str)]) 
             .unwrap_or_else(|| panic!("{value} registered"));
         let vt = kb.alloc(Term::Ref(vs));
         let ks = kb.intern(key);
-        bs.push((ks, vt));
+        bs.push((ks, anthill_core::eval::Value::term(vt)));
     }
     let goal = SortGoal {
         spec_sort: spec,
@@ -1032,7 +1032,7 @@ fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal 
     let t = kb.intern("T");
     SortGoal {
         spec_sort: spec,
-        bindings: SmallVec::from_slice(&[(t, carrier_ref)]),
+        bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
     }
 }

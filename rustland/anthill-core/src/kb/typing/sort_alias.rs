@@ -212,21 +212,14 @@ pub(super) fn expand_sort_application_as(
     ty: &Value,
     slot: SlotVar,
 ) -> Option<Value> {
-    if !matches!(ty, Value::Term { .. }) {
-        return None;
-    }
     let (base, written) = sort_application_parts(kb, ty)?;
-    // A Term carrier's children are Term-carried, so the bindings below lower to terms.
     let bindings = mint_unwritten_slots(kb, base, &written, slot)?;
-    let bindings: Vec<(Symbol, TermId)> = bindings
-        .into_iter()
-        .map(|(k, v)| match v {
-            Value::Term { id, .. } => Some((k, id)),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
+    // On the carrier the written arguments need: the hash-consed application where each
+    // is a term, the occurrence where one holds a value (`Buf[N = 3]` opens its `T` as
+    // `Buf[T = Int64]` opens nothing).
+    let (sp, owner) = site_of(ty);
     let base_ref = kb.make_sort_ref(base);
-    Some(Value::term(kb.make_parameterized_type(base_ref, &bindings)))
+    Some(parameterized_value(kb, base_ref, &bindings, sp, owner))
 }
 
 /// WI-20260929-0RP29 — a type rebuilt from its leaves up, on any carrier: each node's children
@@ -957,6 +950,11 @@ fn sort_application(
     if let Some(sort) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
         return Some((sort, SmallVec::new()));
     }
-    let (base, positional, named) = parameterized_parts(kb, tid)?;
+    let (base, positional, named) = parameterized_parts(kb, &TermIdView(tid))?;
+    // A term's children are terms: the reading is recorded as it was stored.
+    let named = named
+        .into_iter()
+        .map(|(key, child)| (key, child.expect_term()))
+        .collect();
     positional.is_empty().then_some((base, named))
 }

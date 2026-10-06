@@ -330,13 +330,14 @@ fn render_row(kb: &KnowledgeBase, r: &DefaultRow, with_origin: bool) -> String {
 /// beside it, and nothing would catch it. The base is not a second identity — it is the
 /// [`DefaultProviderIndex`] BUCKET KEY, and it is derived here rather than supplied.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum CarrierKey {
+pub(crate) enum CarrierKey<'a> {
     /// The carrier AS WRITTEN — what the provision tie in [`typing::resolve_inner`] has,
     /// since the goal carries its own bindings. **This is the arm that can tell `X[Y]`
     /// from `X[Z]`**: rows are per APPLICATION, so `List[T = Int64]` and `List[T =
     /// String]` are two rows sharing one bucket, and only [`typing::carrier_views_overlap`]
-    /// separates them.
-    View(TermId),
+    /// separates them. On the carrier the goal's binding rides — a carrier that holds a
+    /// value is an occurrence, and is compared with a row's stored view through the view.
+    View(&'a crate::eval::value::Value),
     /// Only the runtime carrier SORT is known — a VALUE-DIRECTED tie, where the receiver
     /// is a `Value::List` naming `List` and carrying no element type.
     ///
@@ -364,7 +365,7 @@ pub(crate) enum CarrierKey {
 pub(crate) fn default_provider_for(
     kb: &KnowledgeBase,
     spec: Symbol,
-    carrier: CarrierKey,
+    carrier: CarrierKey<'_>,
 ) -> Option<Symbol> {
     let index = kb.default_provider_index()?;
     // The BUCKET KEY is derived, never supplied — see [`CarrierKey`]. `None` for a view
@@ -381,7 +382,7 @@ pub(crate) fn default_provider_for(
             continue;
         }
         if let Some(v) = view {
-            if !typing::carrier_views_overlap(kb, row.carrier, v) {
+            if !typing::carrier_views_overlap(kb, &crate::kb::term_view::TermIdView(row.carrier), v) {
                 continue;
             }
         }
@@ -419,7 +420,7 @@ pub(crate) fn default_provider_for(
 pub(crate) fn default_among<I: Iterator<Item = Symbol>>(
     kb: &KnowledgeBase,
     spec: Symbol,
-    carrier: CarrierKey,
+    carrier: CarrierKey<'_>,
     providers: I,
 ) -> Option<usize> {
     let want = default_provider_for(kb, spec, carrier)?;
@@ -791,7 +792,11 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
             if (a.spec, a.carrier_base) != (b.spec, b.carrier_base) || a.provider == b.provider {
                 continue;
             }
-            if typing::carrier_views_overlap(kb, a.carrier, b.carrier) {
+            if typing::carrier_views_overlap(
+                kb,
+                &crate::kb::term_view::TermIdView(a.carrier),
+                &crate::kb::term_view::TermIdView(b.carrier),
+            ) {
                 collisions.push((a, b));
             }
         }

@@ -851,8 +851,8 @@ pub fn find_requires_slot(
 
 /// WI-613 — resolve `entry`'s type-param bindings against the per-call `subst`,
 /// yielding one `(per_call_value, entry_value)` pair per CONSTRAINING binding
-/// (a spec param `subst` binds — read as a `TermId` by [`spec_param_binding_term`],
-/// which lowers a type on another carrier, WI-20260929-WBHTM).
+/// (a spec param `subst` binds — read by [`spec_param_binding`], on the carrier the type
+/// rides).
 /// Non-constraining bindings are dropped, exactly as the pre-WI-613
 /// `entry_matches_subst` per-binding `continue` did:
 ///   * an unbound spec param — the OPEN-T defer trigger (impl picked at runtime
@@ -877,39 +877,31 @@ fn entry_type_param_bindings(
     spec_sort: Symbol,
     spec_qn: &str,
     entry: &RequiresEntry,
-) -> Option<SmallVec<[(TermId, TermId); 2]>> {
+) -> Option<SmallVec<[(Value, Value); 2]>> {
     if entry.required_sort != spec_sort {
         return None;
     }
-    let bindings: SmallVec<[(Symbol, TermId); 2]> = match &entry.spec {
-        // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
-        Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Fn {
-                functor,
-                named_args,
-                pos_args,
-            } => {
-                if is_sort_view_functor(kb, *functor) {
-                    named_args.clone()
-                } else if pos_args.is_empty() && named_args.is_empty() {
-                    // Plain sort term, e.g. `requires Paintable`.
-                    SmallVec::new()
-                } else {
-                    return None;
-                }
+    // ONE READ FOR EVERY CARRIER, each binding on the carrier it rides: a plain sort
+    // (`requires Paintable`) binds nothing, a `SortView` binds what it names, and a bare
+    // application is not the shape an entry has here — the structural reject.
+    let bindings: SmallVec<[(Symbol, Value); 2]> = match entry.spec.head(kb) {
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            named_arity,
+        } => {
+            if pos_arity == 0 && named_arity == 0 {
+                SmallVec::new()
+            } else if is_sort_view_functor(kb, functor) {
+                view_named_children(kb, &entry.spec)
+            } else {
+                return None;
             }
-            Term::Ref(_) | Term::Ident(_) => SmallVec::new(),
-            _ => return None,
-        },
-        // A denoted spec — its SortView bindings via the shared view unwrap (a
-        // denoted binding value drops out; the per-call resolution below consumes
-        // only the type-param bindings, all of which are ground terms).
-        other => match unwrap_spec_view_value(kb, other) {
-            Some((_, bindings)) => bindings,
-            None => return None,
-        },
+        }
+        ViewHead::Ident(_) => SmallVec::new(),
+        _ => return None,
     };
-    let mut out: SmallVec<[(TermId, TermId); 2]> = SmallVec::new();
+    let mut out: SmallVec<[(Value, Value); 2]> = SmallVec::new();
     for (binding_short_sym, entry_value) in &bindings {
         let binding_short = kb.local_name_of(*binding_short_sym);
         let param_qn = format!("{spec_qn}.{binding_short}");
@@ -924,15 +916,15 @@ fn entry_type_param_bindings(
             _ => continue,
         };
         // A type on another carrier (`State ↦ Buf[T = Int64, N = 4]`, which holds a value)
-        // is compared LOWERED, as the dispatch goal compares it. It was dropped here (a
-        // WI-348 "Phase C" `debug_assert`), which left the pair nothing to refute: MEASURED,
-        // a call on a `Buf` deferred to `requires Store[State = Other]` and ran `Other`'s
-        // provider on it (WI-20260929-WBHTM).
-        let Some(per_call_value) = spec_param_binding_term(kb, subst, vid) else {
+        // is compared as the dispatch goal compares it, through the view. It was dropped
+        // here once (a WI-348 "Phase C" `debug_assert`), which left the pair nothing to
+        // refute: MEASURED, a call on a `Buf` deferred to `requires Store[State = Other]`
+        // and ran `Other`'s provider on it (WI-20260929-WBHTM).
+        let Some(per_call_value) = spec_param_binding(kb, subst, vid) else {
             // Unbound spec param — the OPEN-T defer trigger; no constraint.
             continue;
         };
-        out.push((per_call_value, *entry_value));
+        out.push((per_call_value, entry_value.clone()));
     }
     Some(out)
 }
@@ -969,12 +961,12 @@ fn entry_matches_subst(
         // impl IS the requirement; a concrete call to a CONCRETE requirement
         // (`requires Eq[T=Int]`) still defers via the dispatch match (not a
         // wildcard).
-        if !is_type_param_value(kb, *per_call_value) && is_type_param_value(kb, *entry_value) {
+        if !is_type_param_view(kb, per_call_value) && is_type_param_view(kb, entry_value) {
             return false;
         }
         // Either side may be a wildcard — symmetric match, try both directions.
-        if !dispatch_values_match(kb, *per_call_value, *entry_value)
-            && !dispatch_values_match(kb, *entry_value, *per_call_value)
+        if !dispatch_values_match(kb, per_call_value, entry_value)
+            && !dispatch_values_match(kb, entry_value, per_call_value)
         {
             return false;
         }
@@ -1027,7 +1019,7 @@ pub(super) fn entry_sigma_verdict(
     }
     if pairs
         .iter()
-        .all(|(pc, ev)| sigma_pair_precise(kb, ctx, *pc, *ev))
+        .all(|(pc, ev)| sigma_pair_precise(kb, ctx, pc, ev))
     {
         SigmaVerdict::Precise
     } else {

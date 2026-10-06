@@ -7,11 +7,8 @@ use super::*;
 
 /// Check if `actual` type is compatible with (subtype of) `expected` type.
 /// Works on Type entity terms: sort_ref, parameterized, arrow, named_tuple, type_var, nothing.
-/// Lattice `≤` on type terms — `actual <: expected` with reflexivity.
-/// Alias for [`types_compatible`]; prefer this name when the directional
-/// nature of the relation matters (subtype check, effect-element
-/// compatibility, etc.). The strict (irreflexive) version is
-/// [`is_subtype`].
+/// Lattice `≤` on type terms — `actual <: expected` with reflexivity. The strict
+/// (irreflexive) version is [`is_subtype`].
 ///
 /// WI-326: takes `&mut KnowledgeBase` because [`arrow_compatible_view`] now
 /// invokes row subtyping, which allocates fresh row-tail vars in the
@@ -40,15 +37,7 @@ use super::*;
 /// substitution (or snapshot before the call). Threading-through
 /// callers in this module rely on the early-return-on-false discipline
 /// and never re-use a failed subst.
-pub fn types_lesseq(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    actual: TermId,
-    expected: TermId,
-) -> bool {
-    types_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
-}
-
+///
 /// WI-342 P4-B2: subtype/compatibility, carrier-agnostically. Mirrors
 /// [`unify_types`]'s split — the hot `(TermId, TermId)` path stays byte-identical
 /// in [`types_compatible_term_dispatch`]; a `Value`-carrier side routes to
@@ -363,38 +352,25 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // WI-466: nominal check is `(actual=ab, expected=ev)` — the parameterized
                 // side is the ACTUAL, the sort_ref the EXPECTED (the pre-WI-466 `(ev, ab)`
                 // was swapped; see the term-dispatch twin for the two latent defects).
-                // WI-20260829-N01PY — THE WITNESS LEG IS NOT ON THIS ARM, and that is a
-                // KNOWN GAP rather than an oversight, so it is written down at the site
-                // whose contract it breaks (one line up: "so provider admissibility stays
-                // carrier-symmetric").
+                // The witness leg LAST, as on the term dispatch, and with the actual AS IT
+                // RIDES: a type that holds a value (`Buf[T = Int64, N = 3]`, a row naming a
+                // cell) reaches this arm and not that one, and the goal the leg asks holds
+                // it on its own carrier ([`WitnessActual::Carried`]). The carrier with its
+                // arguments dropped is a different type, and could answer for a witness the
+                // value does not match. On this arm only: the `(sort_ref, sort_ref)` arm
+                // above reaches the leg through the `bare_sort_compatible` it shares with
+                // the term dispatch.
                 //
-                // ON THIS ARM, NOT IN THIS FUNCTION — the distinction matters because
-                // WI-20260829-2NMXA is scoped from this comment. The `(sort_ref, sort_ref)`
-                // arm above DOES reach the leg, through the `bare_sort_compatible` it
-                // shares with the term dispatch, so a bare witnessed carrier on a `Value`
-                // carrier is ACCEPTED here today. Whoever closes 2NMXA must add the leg to
-                // this arm only; adding it to the function would double it (found by
-                // /code-review, which read the earlier "NOT HERE" as the wider claim).
-                //
-                // MEASURED, a drivable pair: a DENOTED effect row on the actual
-                // (`MappedStream[…, TransformEffects = {Modify[k]}]`) routes here instead of
-                // to the term dispatch, and is REFUSED at `total(c: FiniteCollection.C)` while
-                // the byte-identical ground-row twin is accepted. The pair is
-                // `n01py_witness_provision_subtype_test::a_denoted_effect_row_is_a_known_gap`.
-                //
-                // WHY IT CANNOT SIMPLY BE ADDED: `witness_provides_admissibly` asks its
-                // question by building a `SortGoal`, whose `bindings` are `TermId`s — and
-                // a denoted binding is exactly the thing that HAS no `TermId`
-                // (`unwrap_spec_view_value` says so at its own doc, and drops such
-                // bindings). Wiring the leg in and reading `walk_view`'s result was tried:
-                // the actual comes back a `Value::Node`, the branch never fires, and the
-                // verdict does not move. Substituting a bare `Ref(ab)` instead would ask
-                // about a DIFFERENT type — the carrier with its arguments dropped — and
-                // could answer for a witness the value does not match. Closing it means
-                // giving `SortGoal` a carrier-agnostic binding, which is its own increment
-                // (WI-20260829-2NMXA). Found by /code-review.
+                // DRIVEN where a spec stands for its providers, which is the only place the
+                // leg answers: a rule's column bounded by a witness-provided spec, cited
+                // with an argument whose type holds a value, and a `-Permission[Spec]`
+                // against the permission for such a type
+                // (`wi_2nmxa_denoted_provision_binding_test`). Without it each was the
+                // opposite verdict of its twin whose type holds no value.
                 (Some(ev), Some(ab)) => {
-                    sort_sym_compatible(kb, ab, ev) || sort_provides_admissibly(kb, ab, ev)
+                    sort_sym_compatible(kb, ab, ev)
+                        || sort_provides_admissibly(kb, ab, ev)
+                        || witness_provides_admissibly(kb, WitnessActual::Carried(&a), ab, ev)
                 }
                 _ => false,
             }
@@ -862,7 +838,7 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
     // honest form of "unmeasured" is this sentence. Found by /code-review.
     // WI-20261001-80ZV8 — the view's bindings that hold a variable the PROVISION wrote
     // ([`ProvisionOpening`]); empty for every provision that writes none.
-    let mut opened_view: SmallVec<[TermId; 2]> = SmallVec::new();
+    let mut opened_view: SmallVec<[Symbol; 2]> = SmallVec::new();
     let cross_sort_provider = match cross_sort_provider {
         None => None,
         Some(view) => {
@@ -888,14 +864,12 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
             // Read off the view AS THE PROVISION STORED IT, before it is read at this
             // instance: what the instance's own type arguments bring in is not the
             // provision's ([`ProvisionOpening::of`]).
-            let opening = ProvisionOpening::of(kb, view.iter().map(|(_, v)| *v));
-            let mut instantiated: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            let opening = ProvisionOpening::of(kb, view.iter().map(|(_, v)| v));
+            let mut instantiated: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
             for (p, v) in view {
-                // Deep, and then surfaced, for the reason WI-394 records at the arm that
-                // used to do this walk lazily: a `Value::Node` binding resolves to a bare
-                // var under `walk_type_deep` alone.
-                let walked = walk_type_deep(kb, &instance, v);
-                instantiated.push((p, surface_node_binding_to_term(kb, &instance, walked)));
+                // Deep, on the value walk: an argument of the instance that holds a value
+                // is spliced where its parameter stood, on the carrier it rides.
+                instantiated.push((p, walk_type_deep_value(kb, &instance, &v)));
             }
             if let Some(opening) = opening {
                 opened_view = opening.open_view(kb, subst, &mut instantiated);
@@ -969,7 +943,7 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                 let pv = cross_sort_provider.as_ref().and_then(|view| {
                     view.iter()
                         .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
-                        .map(|(_, v)| *v)
+                        .cloned()
                 });
                 match pv {
                     // WI-1056 — the SAME-BASE partial application (see the note above the
@@ -994,7 +968,7 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                     {
                         true
                     }
-                    Some(pv) => {
+                    Some((pkey, pv)) => {
                         // WI-461: the provider value carries the carrier's canonical param
                         // refs (`provides Stream[T, {}]` holds List's `T`), so a concrete /
                         // NEUTRAL expected (`l.T`) must compare against the instance's
@@ -1021,11 +995,11 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                         // Gated on `pvr != pv`, so it can only ever ACCEPT what the first
                         // leg did not — never reject.
                         let mut probe = subst.clone();
-                        if opened_view.contains(&pv) {
+                        if opened_view.contains(&pkey) {
                             // The provision holds at EVERY type its own variable stands
                             // for, so the question is whether one of them is the expected
                             // binding — an instantiation, which is unification's to find.
-                            if unify_types(kb, &mut probe, &TermIdView(pv), ev) {
+                            if unify_types(kb, &mut probe, &pv, ev) {
                                 *subst = probe;
                                 true
                             } else {
@@ -1036,19 +1010,16 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                             &mut probe,
                             expected_base,
                             *param,
-                            &TermIdView(pv),
+                            &pv,
                             ev,
                         ) {
                             *subst = probe;
                             true
                         } else {
-                            let pvr = walk_type_deep(kb, subst, pv);
-                            // WI-394: surface a non-`Term` (`Value::Node`)
-                            // binding so the "did it resolve further?" probe
-                            // (`pvr != pv`) sees the resolved carrier instead
-                            // of the bare var (which equals `pv` and would
-                            // spuriously fail the binding).
-                            let pvr = surface_node_binding_to_term(kb, subst, pvr);
+                            // The value walk, so the "did it resolve further?" probe below
+                            // sees a binding that is no term as what it resolved to rather
+                            // than as the bare variable it stood behind (WI-394).
+                            let pvr = walk_type_deep_value(kb, subst, &pv);
                             // PROBE-AND-COMMIT, like the leg above and for the reason this
                             // whole ticket is about: `check_binding_by_variance`'s
                             // Covariant / Contravariant arms hand `subst` straight to
@@ -1061,14 +1032,14 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                             // takes and no test moves either way. It is here so the arm's
                             // two legs answer the same way, rather than because anything
                             // failed without it. Found by /code-review.
-                            if pvr != pv {
+                            if value_identity_key(&pvr) != value_identity_key(&pv) {
                                 let mut probe = subst.clone();
                                 if check_binding_by_variance(
                                     kb,
                                     &mut probe,
                                     expected_base,
                                     *param,
-                                    &TermIdView(pvr),
+                                    &pvr,
                                     ev,
                                 ) {
                                     *subst = probe;
@@ -2297,11 +2268,12 @@ pub(super) fn sort_provides_admissibly(
 
 /// WI-20260829-K0E8T — the ACTUAL side of a witness question, as its asker holds it.
 ///
-/// Two variants because the arms that ask hold different things and the gate refuses
+/// Three variants because the arms that ask hold different things and the gate refuses
 /// nearly always. [`types_compatible_term_dispatch`]'s `(parameterized, sort_ref)` arm
-/// already HAS the actual's type term; [`bare_sort_compatible`] has only a sort SYMBOL
-/// and used to mint `Ref(a)` for it BEFORE the gate — 1214 times per stdlib load, every
-/// one for a question answered `false` a few lines later.
+/// already HAS the actual's type term; [`types_compatible_view_structural`]'s has the
+/// actual on the carrier it rides, a type that holds a value; [`bare_sort_compatible`] has
+/// only a sort SYMBOL and used to mint `Ref(a)` for it BEFORE the gate — 1214 times per
+/// stdlib load, every one for a question answered `false` a few lines later.
 ///
 /// THE MINT IS CHEAP BUT UNBALANCED, which is the half that is not about speed.
 /// `make_sort_ref` is `TermStore::alloc(Term::Ref(a))`, and on a hash-cons HIT `alloc`
@@ -2312,20 +2284,23 @@ pub(super) fn sort_provides_admissibly(
 /// `k0e8t_witness_gate_test` asserts, and what makes the defect invisible without it.
 ///
 /// THE CARRIER IS A NUDGE, NOT A PROOF — the tests are the guard. There is no `TermId`
-/// to pass until [`Self::term`] is called, and it is called past the gate, so the eager
+/// to pass until [`Self::value`] is called, and it is called past the gate, so the eager
 /// mint is no longer the thing a caller reaches for. It is still WRITABLE:
 /// `WitnessActual::Term(kb.make_sort_ref(a))` at the bare arm compiles and reinstates the
 /// defect exactly (found by /code-review, which wrote it and ran it — an earlier version
 /// of this paragraph claimed "UNSPELLABLE", which is false). What actually catches that
 /// is `k0e8t_witness_gate_test`, and its module note says which rows move.
-pub(super) enum WitnessActual {
+pub(super) enum WitnessActual<'a> {
     /// The caller already holds the actual's type term.
     Term(TermId),
     /// A BARE actual, whose type term is `Ref(sym)` — minted only past the gate.
     Bare(Symbol),
+    /// The actual on the carrier its asker holds it on: a type that holds a value is no
+    /// term. Borrowed, and taken only past the gate.
+    Carried(&'a Value),
 }
 
-impl WitnessActual {
+impl WitnessActual<'_> {
     /// FIND BEFORE ALLOC, and that is what ends the unbounded growth rather than merely
     /// narrowing its population. Hoisting the mint past the gate leaves the REFUSED
     /// compares (all but 32 of 30,726,442 across the `anthill-core` suite) allocating
@@ -2345,10 +2320,13 @@ impl WitnessActual {
     /// `spec_resolves_at_bindings`, which answers a `bool` and retains nothing. Nor can
     /// the slot be freed underneath it — type-checking retracts nothing, and the only
     /// route to a free is `decref`, which is reached from retraction alone.
-    pub(super) fn term(self, kb: &mut KnowledgeBase) -> TermId {
+    pub(super) fn value(self, kb: &mut KnowledgeBase) -> Value {
         match self {
-            Self::Term(t) => t,
-            Self::Bare(s) => kb.find_sort_ref(s).unwrap_or_else(|| kb.make_sort_ref(s)),
+            Self::Term(t) => Value::term(t),
+            Self::Bare(s) => {
+                Value::term(kb.find_sort_ref(s).unwrap_or_else(|| kb.make_sort_ref(s)))
+            }
+            Self::Carried(v) => v.clone(),
         }
     }
 }
@@ -2376,23 +2354,20 @@ impl WitnessActual {
 /// and matches each provision's carrier binding — so the two readers of one relation
 /// disagreed, and this is the leg that ends the disagreement at the subtype side.
 ///
-/// ONE ARM IS DELIBERATELY WITHOUT IT — `types_compatible_view_structural`'s
-/// `(parameterized, sort_ref)`, which a DENOTED actual routes to. That is a stated known
-/// gap with a drivable fixture and a ticket (WI-20260829-2NMXA); the reason it is not a
-/// one-line addition is written at that arm. IT IS THAT ARM AND NOT THAT FUNCTION —
-/// `types_compatible_view_structural`'s OTHER bare-expected arm does reach this leg, and
-/// the inventory below says how.
-///
-/// THREE ARMS REACH IT, ACROSS BOTH DISPATCHERS, and only ONE of them is a textual call:
+/// FOUR ARMS REACH IT, ACROSS BOTH DISPATCHERS, and only TWO of them are a textual call:
 ///   * [`types_compatible_term_dispatch`] `(parameterized, sort_ref)` — calls it directly.
+///   * [`types_compatible_view_structural`] `(parameterized, sort_ref)` — calls it directly,
+///     with the actual on the carrier it rides: a type that holds a value routes there. It
+///     was the one arm without the leg while a goal's bindings were terms, which such an
+///     actual is not (WI-20260829-2NMXA).
 ///   * [`types_compatible_term_dispatch`] `(sort_ref, sort_ref)` — through
 ///     [`bare_sort_compatible`].
 ///   * [`types_compatible_view_structural`] `(sort_ref, sort_ref)` — through the SAME
-///     [`bare_sort_compatible`], which is shared by both dispatchers. This one is why the
-///     count is three and not two, and grepping this function's name finds only two of
-///     the three (found by /code-review; the first version of this doc read "TWO CALL
-///     SITES, BOTH BARE-EXPECTED ARMS of `types_compatible_term_dispatch`", which
-///     under-counted the population a later census would trust).
+///     [`bare_sort_compatible`], which is shared by both dispatchers, so grepping this
+///     function's name finds only two of the four (found by /code-review; the first
+///     version of this doc read "TWO CALL SITES, BOTH BARE-EXPECTED ARMS of
+///     `types_compatible_term_dispatch`", which under-counted the population a later
+///     census would trust).
 ///
 /// Which arm a carrier lands at is decided by whether it has TYPE PARAMETERS, which has
 /// nothing to do with how its provision is filed — the first cut wired only the
@@ -2584,11 +2559,11 @@ pub(super) fn witness_provides_admissibly(
         return false;
     }
     let actual_canon = kb.canonical_sort_sym(actual_base);
-    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provides_rows_of_spec_in(kb, spec_canon, rids)
+    let rows: Vec<SmallVec<[(Symbol, Value); 2]>> = provides_rows_of_spec_in(kb, spec_canon, rids)
         .filter_map(|row| {
             witness_dispatch_carrier(kb, expected_spec, row.provider, row.spec_view)
                 .filter(|c| *c == actual_canon)
-                .map(|_| row.bindings)
+                .map(|_| row.bindings(kb))
         })
         .collect();
     if rows.is_empty() {
@@ -2630,8 +2605,7 @@ pub(super) fn witness_provides_admissibly(
     // AND THE HEAD'S KEYS ARE TAKEN VERBATIM, which /code-review read as this being the
     // one `SortGoal` producer that skips `is_type_param_binding`. MEASURED, with that
     // filter added and instrumented: it drops ZERO bindings across the typer's rows and
-    // the whole capability matrix, and changes no verdict — because `unwrap_spec_view`
-    // has already dropped every non-`TermId` binding, and an `effects E = ?` param IS a
+    // the whole capability matrix, and changes no verdict — an `effects E = ?` param IS a
     // sort (WI-320), so the filter answers `true` for the very binding it was expected to
     // remove. A guard that refuses nothing is not shipped; the population it would guard
     // is stated here instead.
@@ -2640,14 +2614,17 @@ pub(super) fn witness_provides_admissibly(
     // ITSELF makes this question its own sub-question. See
     // `KnowledgeBase::witness_admissibility_in_flight` for the measured shape — the
     // borrow is dropped before `resolve` runs, and released on every exit below.
-    let actual = actual.term(kb);
-    let key = (actual, spec_canon);
-    if !kb.witness_admissibility_in_flight.borrow_mut().insert(key) {
+    let actual = actual.value(kb);
+    let key = (
+        crate::kb::term_view::goal_fingerprint(kb, &actual, &Substitution::new()),
+        spec_canon,
+    );
+    if !kb.witness_admissibility_in_flight.borrow_mut().insert(key.clone()) {
         return false;
     }
     for bindings in rows {
-        let mut goal_bindings: SmallVec<[(Symbol, TermId); 2]> =
-            smallvec::smallvec![(carrier_param, actual)];
+        let mut goal_bindings: SmallVec<[(Symbol, Value); 2]> =
+            smallvec::smallvec![(carrier_param, actual.clone())];
         for (param, value) in bindings {
             if short_name_of(kb.local_name_of(param)) == carrier_short {
                 continue;
@@ -2776,7 +2753,7 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
     // site ([`ProvisionOpening`]). A view that stores none — every one in the stdlib — is
     // left as it was read, and this stays the walk over it that finds that out.
     let mut provider_view = provider_view;
-    let opened_view = match ProvisionOpening::of(kb, provider_view.iter().map(|(_, v)| *v)) {
+    let opened_view = match ProvisionOpening::of(kb, provider_view.iter().map(|(_, v)| v)) {
         Some(opening) => opening.open_view(kb, subst, &mut provider_view),
         None => SmallVec::new(),
     };
@@ -2798,10 +2775,10 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
             }
         }
         let short = short_name_of(kb.local_name_of(*param));
-        let Some(pv) = provider_view
+        let Some((pkey, pv)) = provider_view
             .iter()
             .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
-            .map(|(_, v)| *v)
+            .cloned()
         else {
             if provision_leaves_param_open(kb, expected_base, *param) {
                 continue;
@@ -2816,14 +2793,14 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
         // shapes) is the deferred fact-path / structured-binding work. Conservative: a false
         // REJECT only, never a false accept — anchored by the `#[ignore]`d wi402
         // structured-accept test.
-        if opened_view.contains(&pv) {
-            if !unify_types(kb, &mut probe, &TermIdView(pv), ev) {
+        if opened_view.contains(&pkey) {
+            if !unify_types(kb, &mut probe, &pv, ev) {
                 return false;
             }
             continue;
         }
-        let pv = normalize_spec_binding_type(kb, pv).unwrap_or(pv);
-        if !check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
+        let pv = normalize_spec_binding_type(kb, &pv).map_or(pv, Value::term);
+        if !check_binding_by_variance(kb, &mut probe, expected_base, *param, &pv, ev) {
             return false;
         }
     }
@@ -2869,27 +2846,48 @@ pub(super) struct ProvisionOpening {
 impl ProvisionOpening {
     /// The opening of the provision whose bindings are `stored` — AS STORED, before they are
     /// read at any instance — or `None` when it wrote no variable, which is every provision
-    /// in the stdlib: the walk that finds that out reads the terms in place and allocates
-    /// nothing, so a caller on the subtype path pays one pass over a binding or two.
-    pub(super) fn of(kb: &KnowledgeBase, stored: impl IntoIterator<Item = TermId>) -> Option<Self> {
-        fn collect(kb: &KnowledgeBase, t: TermId, written: &mut SmallVec<[VarId; 2]>) {
+    /// in the stdlib. A binding a `provides` fact stores is a term, and the walk that finds
+    /// that out reads a term in place and allocates nothing, so a caller on the subtype path
+    /// pays one pass over a binding or two; one a reader of σ holds on another carrier is
+    /// walked through the view.
+    pub(super) fn of<'a, V: TermView + 'a>(
+        kb: &KnowledgeBase,
+        stored: impl IntoIterator<Item = &'a V>,
+    ) -> Option<Self> {
+        fn note(written: &mut SmallVec<[VarId; 2]>, vid: VarId) {
+            if !written.contains(&vid) {
+                written.push(vid);
+            }
+        }
+        fn collect_term(kb: &KnowledgeBase, t: TermId, written: &mut SmallVec<[VarId; 2]>) {
             match kb.get_term(t) {
-                Term::Var(Var::Global(vid)) => {
-                    if !written.contains(vid) {
-                        written.push(*vid);
-                    }
-                }
+                Term::Var(Var::Global(vid)) => note(written, *vid),
                 Term::Fn {
                     pos_args,
                     named_args,
                     ..
                 } => {
-                    for &a in pos_args.iter() {
-                        collect(kb, a, written);
+                    for child in pos_args {
+                        collect_term(kb, *child, written);
                     }
-                    for &(_, a) in named_args.iter() {
-                        collect(kb, a, written);
+                    for (_, child) in named_args {
+                        collect_term(kb, *child, written);
                     }
+                }
+                _ => {}
+            }
+        }
+        fn collect<V: TermView>(kb: &KnowledgeBase, t: &V, written: &mut SmallVec<[VarId; 2]>) {
+            if let BindValue::Term(id) = t.as_bind_value() {
+                return collect_term(kb, id, written);
+            }
+            match t.head(kb) {
+                ViewHead::Var(Var::Global(vid)) => note(written, vid),
+                ViewHead::Functor { pos_arity, .. } => {
+                    view_any_child(kb, t, pos_arity, |c| {
+                        collect(kb, c, written);
+                        false
+                    });
                 }
                 _ => {}
             }
@@ -2913,40 +2911,46 @@ impl ProvisionOpening {
     /// per opening; `value` itself when it holds none. A variable `bound` already gives a
     /// value to is the caller's — this call chose the provision's instance there — and is
     /// kept.
-    pub(super) fn open_with(
+    ///
+    /// A binding on ANY carrier, by one walk ([`rewrite_binding_leaves`]): a stored binding
+    /// is a term and stays one, and one a receiver's argument was substituted into rides the
+    /// carrier that argument does. The same renaming and the same record of it: a variable
+    /// this opening already gave a value in one binding is that value in the next.
+    pub(super) fn open_value_with(
         &self,
         kb: &mut KnowledgeBase,
-        value: TermId,
+        value: &Value,
         bound: Option<&Substitution>,
         to: &impl Fn(&mut KnowledgeBase, VarId) -> TermId,
-    ) -> TermId {
-        rewrite_term_leaves(kb, value, &|kb, leaf| {
-            let Term::Var(Var::Global(vid)) = kb.get_term(leaf) else {
+    ) -> Value {
+        rewrite_binding_leaves(kb, value, &|kb, leaf| {
+            let ViewHead::Var(Var::Global(vid)) = leaf.head(kb) else {
                 return None;
             };
-            let vid = *vid;
             if !self.written.contains(&vid)
                 || bound.is_some_and(|s| s.resolve_as_value(vid).is_some())
             {
                 return None;
             }
             if let Some((_, renamed)) = self.fresh.borrow().iter().find(|(v, _)| *v == vid) {
-                return Some(*renamed);
+                return Some(Value::term(*renamed));
             }
             let renamed = to(kb, vid);
             self.fresh.borrow_mut().push((vid, renamed));
-            Some(renamed)
+            Some(Value::term(renamed))
         })
+        .unwrap_or_else(|| value.clone())
     }
 
-    /// [`Self::open_with`] at a fresh FLEXIBLE variable each: the reader's to instantiate.
-    pub(super) fn open(
+    /// [`Self::open_value_with`] at a fresh FLEXIBLE variable each: the reader's to
+    /// instantiate.
+    pub(super) fn open_value(
         &self,
         kb: &mut KnowledgeBase,
-        value: TermId,
+        value: &Value,
         bound: Option<&Substitution>,
-    ) -> TermId {
-        self.open_with(kb, value, bound, &|kb, vid| {
+    ) -> Value {
+        self.open_value_with(kb, value, bound, &|kb, vid| {
             let renamed = kb.fresh_var(vid.name());
             kb.alloc(Term::Var(Var::Global(renamed)))
         })
@@ -2967,34 +2971,35 @@ impl ProvisionOpening {
     pub(super) fn instance_where_nothing_else_is_open(
         kb: &mut KnowledgeBase,
         carrier: Symbol,
-        stored: TermId,
-        at_instance: TermId,
-    ) -> Option<TermId> {
+        stored: &Value,
+        at_instance: &Value,
+    ) -> Option<Value> {
         let filling = ProvisionOpening::of(kb, [stored])?;
         let stand_in = kb.make_sort_ref(carrier);
-        let filled = filling.open_with(kb, at_instance, None, &|_, _| stand_in);
-        if !type_value_is_ground(kb, filled) {
+        let filled = filling.open_value_with(kb, at_instance, None, &|_, _| stand_in);
+        if !type_is_ground(kb, &filled) {
             return None;
         }
         // A second opening: the first one's variables are the stand-in now.
         let opening = ProvisionOpening::of(kb, [stored])?;
-        Some(opening.open(kb, at_instance, None))
+        Some(opening.open_value(kb, at_instance, None))
     }
 
     /// `view` — the provision's bindings as read at an instance — opened in place; answers
-    /// the bindings that hold a renamed variable, for the caller to meet by unification.
+    /// the parameters whose binding holds a renamed variable, for the caller to meet by
+    /// unification.
     fn open_view(
         &self,
         kb: &mut KnowledgeBase,
         subst: &Substitution,
-        view: &mut SmallVec<[(Symbol, TermId); 2]>,
-    ) -> SmallVec<[TermId; 2]> {
-        let mut opened: SmallVec<[TermId; 2]> = SmallVec::new();
-        for (_, value) in view.iter_mut() {
-            let rewritten = self.open(kb, *value, Some(subst));
-            if rewritten != *value {
+        view: &mut SmallVec<[(Symbol, Value); 2]>,
+    ) -> SmallVec<[Symbol; 2]> {
+        let mut opened: SmallVec<[Symbol; 2]> = SmallVec::new();
+        for (param, value) in view.iter_mut() {
+            let rewritten = self.open_value(kb, value, Some(subst));
+            if value_identity_key(&rewritten) != value_identity_key(value) {
                 *value = rewritten;
-                opened.push(rewritten);
+                opened.push(*param);
             }
         }
         opened

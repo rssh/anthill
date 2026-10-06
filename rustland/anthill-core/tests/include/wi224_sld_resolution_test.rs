@@ -239,7 +239,7 @@ fn one_level_conditional_resolves_via_subgoal() {
     let t_sym = kb.intern("T");
     let goal = SortGoal {
         spec_sort: eq_sym,
-        bindings: SmallVec::from_slice(&[(t_sym, list_int)]),
+        bindings: smallvec::smallvec![(t_sym, anthill_core::eval::Value::term(list_int))],
         carrier: None,
     };
     let subst = Substitution::new();
@@ -358,7 +358,7 @@ fn two_level_conditional_chains_recursively() {
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq");
     let goal = SortGoal {
         spec_sort: eq_sym,
-        bindings: SmallVec::from_slice(&[(t_sym, list_list_int)]),
+        bindings: smallvec::smallvec![(t_sym, anthill_core::eval::Value::term(list_list_int))],
         carrier: None,
     };
     let subst = Substitution::new();

@@ -2200,7 +2200,7 @@ pub struct KnowledgeBase {
     //
     // `witness_provides_admissibly` answers a subtype question by calling `resolve`, and
     // `resolve` calls back into the subtype relation when it matches a candidate head
-    // (`dispatch_values_match` → `types_lesseq`). A provision whose carrier binding is the
+    // (`dispatch_values_match` → `types_compatible`). A provision whose carrier binding is the
     // SPEC ITSELF closes that loop: asking "is `A` a `Sp`" resolves `Sp[C = A]`, whose
     // candidate `SpW provides Sp[C = Sp]` is matched by comparing `A` against `Sp` — which
     // is the question we started from. MEASURED: a stack overflow, where the same program
@@ -2216,9 +2216,13 @@ pub struct KnowledgeBase {
     // the whole type, so a base-keyed set collapses `MappedStream[Source = List[…]]` onto
     // `MappedStream[Source = MappedStream[…]]` and would answer the inner ask `false`
     // because an OUTER ask with the same base is on the stack — silently disabling the
-    // feature for a nested combinator chain. A `TermId` is hash-consed, so the genuine
-    // self-recurrence (the same type meeting the same spec) still collides and still
-    // terminates.
+    // feature for a nested combinator chain. The key is the type's STRUCTURE
+    // ([`term_view::GoalKey`]), read through the view: a type is asked on the carrier it
+    // rides, one that holds a value on an occurrence, and a walk may hand the same type back
+    // as a new allocation — so the genuine self-recurrence (the same type meeting the same
+    // spec) collides by what the type is, as two hash-consed terms do, and still terminates.
+    // A part the view cannot read keys alike in two types; the second is then answered
+    // `false` too, the conservative direction.
     //
     // AND `false` IS THE RIGHT ANSWER AT A RE-ENTRY, not merely a safe one: the only way
     // to reach it is for "is this type that spec" to be its own sub-question, and a
@@ -2226,7 +2230,7 @@ pub struct KnowledgeBase {
     // still weighed — in the measured fixture the witness answers and the self-carried
     // rival drops out, which is why that row asserts a VALUE and not just "no crash".
     pub(crate) witness_admissibility_in_flight:
-        RefCell<std::collections::HashSet<(crate::kb::term::TermId, Symbol)>>,
+        RefCell<std::collections::HashSet<(term_view::GoalKey, Symbol)>>,
 
     // WI-226 Cache B — memoized spec-op SLD dispatch results, keyed by
     // `(op_short, SortGoal, scope)`. Saves re-walking `SortProvidesInfo`
@@ -10230,7 +10234,7 @@ impl KnowledgeBase {
     /// the term `Ref(S)` itself, no `sort_ref(name: …)` wrapper" — is a fact about the
     /// shape, and a reader spelling `Term::Ref` for itself would be a second place to
     /// change when that canon moves. One caller today: [`crate::kb::typing`]'s
-    /// `WitnessActual::term`, which says at its site why not increffing is sound there.
+    /// `WitnessActual::value`, which says at its site why not increffing is sound there.
     pub fn find_sort_ref(&self, sort_sym: Symbol) -> Option<TermId> {
         self.terms.find(&Term::Ref(sort_sym))
     }

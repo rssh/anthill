@@ -1045,11 +1045,12 @@ pub(super) fn carried_named_frame_slot(
     if named.is_empty() {
         return None;
     }
-    let args = carrier_named_args(kb, carrier_value);
+    let args = view_named_children(kb, &carrier_value);
     let slot = named.into_iter().find(|ns| {
         let binder = kb.local_name_of(ns.binder).to_string();
-        args.iter()
-            .any(|(k, v)| kb.local_name_of(*k) == binder && sigma_same(kb, ctx, *v, bound))
+        args.iter().any(|(k, v)| {
+            kb.local_name_of(*k) == binder && sigma_same(kb, ctx, v, &TermIdView(bound))
+        })
     })?;
     let entries = provider_dict_entries(kb, carrier, Some(spec)).entries_rc();
     let carried = entries.get(slot.slot)?;
@@ -1063,7 +1064,7 @@ pub(super) fn carried_named_frame_slot(
         .slots_for(kb, carrier)?
         .start;
     let carrier_params = impl_param_symbols(kb, carrier);
-    let map: HashMap<Symbol, TermId> = align_by_short_name(kb, &args, &carrier_params)
+    let map: HashMap<Symbol, Value> = align_by_short_name(kb, &args, &carrier_params)
         .into_iter()
         .collect();
     Some(BinderSlot {
@@ -1393,7 +1394,7 @@ fn binder_slot_path(
         return None;
     }
     let chain = direct_requires_chain_rc(kb, slot.entry.required_sort);
-    let mut map: Option<HashMap<Symbol, TermId>> = None;
+    let mut map: Option<HashMap<Symbol, Value>> = None;
     for (k, sub) in chain.iter().enumerate() {
         if !same_sort_canonical(kb, sub.required_sort, demand_spec) {
             continue;
@@ -1669,11 +1670,11 @@ pub(super) fn carried_slot(
     kb: &mut KnowledgeBase,
     owner: Symbol,
     slot: crate::kb::NamedRequirementSlot,
-    impl_subst: &[(Symbol, TermId)],
+    impl_subst: &[(Symbol, Value)],
     // WI-20261001-80ZV8 — the goal's value at each spec parameter the provision's head
     // binds (`Candidate::resolved_head_bindings`): where the carrier's type is read when
     // the match recorded nothing for the slot.
-    goal_values: &[(Symbol, TermId)],
+    goal_values: &[(Symbol, Value)],
     sigma: Option<&SigmaCtx>,
     // WI-20260923-WN9P8 — the frame the resolution's `FromScope` indices count in, where a
     // forwarded binder's own dictionary is looked for.
@@ -1686,7 +1687,7 @@ pub(super) fn carried_slot(
     let Some(raw) = impl_subst
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == binder)
-        .map(|(_, v)| *v)
+        .map(|(_, v)| v.clone())
     else {
         return if goal_carrier_leaves_slot_unwritten(kb, owner, slot, goal_values) {
             CarriedSlot::Unwritten
@@ -1694,16 +1695,18 @@ pub(super) fn carried_slot(
             CarriedSlot::NotInHead
         };
     };
+    // What the match recorded, resolved through σ on the carrier it rides; a leaf — the
+    // caller's own binder, a rigid — held as the term the frame's rigids are compared by.
     let bound = match sigma {
         Some(s) => {
-            let walked = walk_type_deep(kb, s.subst, raw);
-            surface_node_binding_to_term(kb, s.subst, walked)
+            let walked = walk_type_deep_value(kb, s.subst, &raw);
+            leaf_held_as_term(kb, walked)
         }
         None => raw,
     };
-    match slot_binder_state(kb, &TermIdView(bound)) {
+    match slot_binder_state(kb, &bound) {
         SlotBinderState::Decided => {
-            match slot_selection_of(kb, owner, slot, &Value::term(bound), SlotPinSource::Carrier) {
+            match slot_selection_of(kb, owner, slot, &bound, SlotPinSource::Carrier) {
                 Ok(Some(sel)) => CarriedSlot::Pinned(sel),
                 // A DECIDED top level always has a sort head; `None` would mean the two
                 // classifiers disagree about one binding.
@@ -1731,8 +1734,11 @@ pub(super) fn carried_slot(
         // either by spec. MEASURED: `PersistentCollection.insert(s, x)` with `s:
         // SortedSet[T = E, O = P]`, inside a sort that also `requires OE: WeakOrd[E]`,
         // inserted in `OE`'s order.
-        SlotBinderState::Quantified => match sigma {
-            Some(s) if s.param_rigids.iter().any(|(_, rigid)| *rigid == bound) => {
+        SlotBinderState::Quantified => match (sigma, &bound) {
+            (Some(s), Value::Term { id: rigid, .. })
+                if s.param_rigids.iter().any(|(_, held)| held == rigid) =>
+            {
+                let bound = *rigid;
                 let held = binder_frame_slots(kb, frame, bound, s);
                 if held.slots.is_empty() {
                     CarriedSlot::Untied(UntiedForward::of(kb, owner, slot.binder, bound, s, &held))
@@ -1740,8 +1746,8 @@ pub(super) fn carried_slot(
                     CarriedSlot::Forwarded(Some(held))
                 }
             }
-            Some(_) => CarriedSlot::Erased,
-            None => CarriedSlot::Forwarded(None),
+            (Some(_), _) => CarriedSlot::Erased,
+            (None, _) => CarriedSlot::Forwarded(None),
         },
         SlotBinderState::Unspoken(_) => CarriedSlot::Unspoken,
         SlotBinderState::NoWitnessReading => CarriedSlot::NoWitness,
@@ -1757,10 +1763,10 @@ fn goal_carrier_leaves_slot_unwritten(
     kb: &KnowledgeBase,
     owner: Symbol,
     slot: crate::kb::NamedRequirementSlot,
-    goal_values: &[(Symbol, TermId)],
+    goal_values: &[(Symbol, Value)],
 ) -> bool {
     goal_values.iter().any(|(_, value)| {
-        sort_instance_parts(kb, *value).is_some_and(|(sort, bindings)| {
+        sort_instance_parts(kb, value).is_some_and(|(sort, bindings)| {
             same_sort_canonical(kb, sort, owner)
                 && binding_for_param(kb, &bindings, slot.binder, BindingKeyMatch::Label).is_none()
         })

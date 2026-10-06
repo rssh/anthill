@@ -114,7 +114,7 @@ pub(super) fn check_member_signature(
     op_short: &str,
     spec_info: &crate::kb::op_info::OpInfoRecord,
     impl_info: &crate::kb::op_info::OpInfoRecord,
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
     provision: &ProvisionMembers,
     errors: &mut Vec<crate::kb::load::LoadError>,
 ) -> MemberSignature {
@@ -402,7 +402,7 @@ pub(super) fn check_member_signature(
                     )),
                     Narrower::Circular { binding, sort } => {
                         let recv_short = kb.local_name_of(sort).to_string();
-                        let b = type_display_name_value(kb, &Value::term(binding));
+                        let b = type_display_name_value(kb, &binding);
                         format!(
                             "{at} is the receiver, and the provision binds its type to `{b}`, \
                              which writes one of `{recv_short}`'s own parameters inside its own \
@@ -483,14 +483,15 @@ pub(super) struct ProvisionMembers<'a> {
     /// The declaring sort, whose members are compared and whose own parameters a member's
     /// self references denote.
     carrier: Symbol,
-    /// The provision's bindings AS THE `provides` FACT STORES THEM — spec parameter ↦ the type
-    /// the clause wrote (`provides Sp[T = List[T = V]]` ⟹ `T ↦ List[T = V]`), read off the
-    /// fact's spec-view term ([`spec_param_sigma`]). STORED DATA, not the result of a
-    /// substitution, which is why it is `TermId`s: a fact's arguments are hash-consed. It is
-    /// called σ for its USE — the spec's signature with each parameter reference replaced by
-    /// its binding ([`sigma_subst_type`]). Everything DERIVED from it is a `Value`
-    /// ([`ProvisionShared::template`]).
-    sigma: &'a [(Symbol, TermId)],
+    /// The provision's bindings — spec parameter ↦ the type the clause wrote (`provides
+    /// Sp[T = List[T = V]]` ⟹ `T ↦ List[T = V]`), read off the provision's spec view
+    /// ([`spec_param_sigma`]), each on the carrier the view holds it on. A `provides` fact's
+    /// view is a hash-consed term, so each of its bindings is one; a view the typer rebuilt
+    /// around a type that holds a value holds that binding as the occurrence it is, and every
+    /// reader of σ takes either. It is called σ for its USE — the spec's signature with each
+    /// parameter reference replaced by its binding ([`sigma_subst_type`]), on the
+    /// carrier the binding rides ([`ProvisionShared::template`]).
+    sigma: &'a [(Symbol, Value)],
     /// The sort the spec's carrier parameter is bound to where it is not the declaring sort
     /// (a WITNESS's carrier: `BoxHolder provides Holder[C = Box]` receives a `Box`).
     witness: Option<Symbol>,
@@ -512,7 +513,7 @@ struct ProvisionShared {
     ///
     /// On whatever carrier each binding's expansion rides — a rebuilt arrow is an occurrence, a
     /// row around an expanded label a value — and substituted as that
-    /// ([`sigma_subst_type_values`]).
+    /// ([`sigma_subst_type`]).
     template: Vec<(Symbol, Value)>,
     /// The spec's own parameters: one the provision leaves unbound stays a WILDCARD, as in the
     /// rest of this check (a provision naming no carrier is refused on its own, WI-KXNEX).
@@ -523,7 +524,7 @@ impl<'a> ProvisionMembers<'a> {
     pub(super) fn new(
         spec: Symbol,
         carrier: Symbol,
-        sigma: &'a [(Symbol, TermId)],
+        sigma: &'a [(Symbol, Value)],
         witness: Option<Symbol>,
     ) -> Self {
         ProvisionMembers {
@@ -548,11 +549,11 @@ impl<'a> ProvisionMembers<'a> {
             let template = self
                 .sigma
                 .iter()
-                .map(|&(p, b)| {
-                    let b = row_parameter_binding_as_row(kb, spec_canon, p, Value::term(b));
+                .map(|(p, b)| {
+                    let b = row_parameter_binding_as_row(kb, spec_canon, *p, b.clone());
                     let b =
                         expand_sorts_and_row_labels(kb, &b, SlotVar::Flexible);
-                    (p, b)
+                    (*p, b)
                 })
                 .collect();
             ProvisionShared {
@@ -601,27 +602,27 @@ pub(super) fn own_application(kb: &mut KnowledgeBase, sort: Symbol) -> TermId {
 fn carrier_param_receiver_of(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
     sorts: &[Symbol],
-) -> Option<(usize, Symbol, TermId, Symbol)> {
+) -> Option<(usize, Symbol, Value, Symbol)> {
     params.iter().enumerate().find_map(|(i, (_, pty))| {
         let v = declared_type_param_vid(kb, pty)?;
-        sigma.iter().find_map(|&(p, b)| {
-            if type_param_global_var(kb, p) != Some(v) {
+        sigma.iter().find_map(|(p, b)| {
+            if type_param_global_var(kb, *p) != Some(v) {
                 return None;
             }
             sorts
                 .iter()
                 .copied()
                 .find(|&s| composed_self_reference(kb, s, b))
-                .map(|s| (i, p, b, s))
+                .map(|s| (i, *p, b.clone(), s))
         })
     })
 }
 
 /// WI-20260929-0RP29 (user decision, 2026-09-30) — WHY a member takes less than its spec,
 /// for the refusal to name the repair that fits.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 enum Narrower {
     /// The operation's RECEIVER takes fewer carriers than the spec sends it — `written` when
     /// the spec's receiver writes the restriction it is held to (a carrier parameter bound to
@@ -645,7 +646,7 @@ enum Narrower {
     /// The provision binds the receiver's parameter to a type writing one of the carrier's own
     /// parameters inside its own slot (`C = Box[B = List[T = B]]`): no instance is that type,
     /// so no call through the spec reaches the member.
-    Circular { binding: TermId, sort: Symbol },
+    Circular { binding: Value, sort: Symbol },
     /// A projection does not read here — on the spec's side, the spec's own (`spec: true`).
     Unreadable { spec: bool, why: String },
     /// The member's return type is not a subtype of the spec's. `unwritten`: it leaves a slot
@@ -794,7 +795,7 @@ fn member_narrower_than_spec(
     spec_op: Symbol,
     spec_info: &crate::kb::op_info::OpInfoRecord,
     impl_info: &crate::kb::op_info::OpInfoRecord,
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
     provision: &ProvisionMembers,
     impl_to_spec: &HashMap<Symbol, Symbol>,
 ) -> MemberFit {
@@ -815,8 +816,8 @@ fn member_narrower_than_spec(
             carrier_param_receiver_of(kb, &spec_info.params, sigma, &sorts)
         }
     };
-    let recv = self_recv.or(carrier_recv.map(|(i, ..)| i));
-    let recv_sort = carrier_recv.map_or(decl, |(.., s)| s);
+    let recv = self_recv.or(carrier_recv.as_ref().map(|(i, ..)| *i));
+    let recv_sort = carrier_recv.as_ref().map_or(decl, |(.., s)| *s);
     let own = if recv_sort == decl {
         own_decl
     } else {
@@ -825,20 +826,20 @@ fn member_narrower_than_spec(
     // THE INSTANCE, in the spec side's own substitution.
     let mut prep = Substitution::new();
     let mut receiver_written = false;
-    if let Some((i, p, b, _)) = carrier_recv {
+    if let Some((i, p, b, _)) = &carrier_recv {
         for (q, v) in template.iter_mut() {
-            if *q == p {
+            if q == p {
                 *v = Value::term(own);
             }
         }
-        if !is_this_instance(kb, &Value::term(b), recv_sort) {
+        if !is_this_instance(kb, b, recv_sort) {
             receiver_written = true;
-            if !meet_receiver_binding(kb, &mut prep, own, &Value::term(b), recv_sort) {
+            if !meet_receiver_binding(kb, &mut prep, own, b, recv_sort) {
                 let why = Narrower::Circular {
-                    binding: b,
+                    binding: b.clone(),
                     sort: recv_sort,
                 };
-                return Narrowing::at(i, why).into();
+                return Narrowing::at(*i, why).into();
             }
         }
     }
@@ -889,7 +890,7 @@ fn member_narrower_than_spec(
             // bound `List`'s one canonical `T`; a binding of each at another element type then
             // read as a contradiction, the provision as unreachable, and the operation went
             // uncompared (MEASURED: a narrower member loaded and crashed).
-            let t = sigma_subst_type_values(kb, &t, &template);
+            let t = sigma_subst_type(kb, &t, &template);
             let t =
                 expand_sorts_and_row_labels(kb, &t, SlotVar::Flexible);
             let mut probe = prep.clone();
@@ -1025,7 +1026,7 @@ fn member_narrower_than_spec(
             let at = if recv == Some(i) || by_spec_recv == Some(i) {
                 Value::term(own)
             } else {
-                sigma_subst_type_values(kb, pty, &template)
+                sigma_subst_type(kb, pty, &template)
             };
             let at = resolve_type_deep_value(kb, &prep, &at);
             read.extend(kb.collect_vars(&at));
@@ -1090,7 +1091,7 @@ fn member_narrower_than_spec(
                      prep: &mut Substitution,
                      ty: &Value,
                      template: &[(Symbol, Value)]| {
-        let s = sigma_subst_type_values(kb, ty, template);
+        let s = sigma_subst_type(kb, ty, template);
         let s = expand_sorts_and_row_labels(kb, &s, SlotVar::Rigid);
         let _ = rigidify_open(kb, prep, &s, &kept);
         resolve_type_deep_value(kb, prep, &s)
@@ -1327,7 +1328,7 @@ fn member_narrower_than_spec(
             None,
         ) {
             Ok(s) => {
-                let s = sigma_subst_type_values(kb, &s, &template);
+                let s = sigma_subst_type(kb, &s, &template);
                 // ONE expansion under a returned arrow's parameters, shared by both forms: each
                 // minting its own rigid there, unification bound the member's variable to
                 // `want`'s and the relation then met `want_open`'s — two unknowns of one name —
@@ -1826,21 +1827,20 @@ pub(super) fn referenced_param_vars<V: TermView>(
 pub(super) fn this_instance_binding_at(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
-    binding: TermId,
+    binding: &Value,
     recv_ty: &Value,
 ) -> Option<Value> {
     let carrier = kb.canonical_sort_sym(carrier);
-    let read = Value::term(binding);
-    if !holds_carrier(kb, &read, carrier) {
+    if !holds_carrier(kb, binding, carrier) {
         return None;
     }
-    if is_this_instance(kb, &read, carrier) {
+    if is_this_instance(kb, binding, carrier) {
         return Some(recv_ty.clone());
     }
-    if !holds_own_instance(kb, &read, carrier) {
+    if !holds_own_instance(kb, binding, carrier) {
         return None;
     }
-    binding_at_receiver(kb, carrier, recv_ty, &read)
+    binding_at_receiver(kb, carrier, recv_ty, binding)
 }
 
 /// Does `ty` hold an application of `carrier` with a slot WRITTEN at the carrier's own
@@ -1954,15 +1954,16 @@ struct ProjectionReader {
     /// The provision's spec, canonical.
     spec: Symbol,
     recv_sort: Symbol,
-    /// The provision's bindings by the spec parameter's short name.
-    bindings: SmallVec<[(String, TermId); 4]>,
+    /// The provision's bindings by the spec parameter's short name, each on the carrier it
+    /// rides.
+    bindings: SmallVec<[(String, Value); 4]>,
     /// The spec's own parameters: one the provision leaves unbound reads as its variable, the
     /// wildcard it is in the rest of the check.
     spec_params: SmallVec<[(String, VarId); 4]>,
     /// A WITNESS's carrier view — the binding of the spec's carrier parameter (`C = List[T =
     /// E]`) — through which a receiver's type instantiates the witness's own parameters; `None`
     /// for a provision the receiving sort writes itself.
-    witness_view: Option<TermId>,
+    witness_view: Option<Value>,
 }
 
 impl ProjectionReader {
@@ -1970,8 +1971,8 @@ impl ProjectionReader {
         kb: &KnowledgeBase,
         recv_sort: Symbol,
         spec_canon: Symbol,
-        sigma: &[(Symbol, TermId)],
-        witness_view: Option<TermId>,
+        sigma: &[(Symbol, Value)],
+        witness_view: Option<Value>,
     ) -> Self {
         let by_short = |kb: &KnowledgeBase, sort: Symbol| {
             own_params_of(kb, sort)
@@ -1981,7 +1982,7 @@ impl ProjectionReader {
         };
         let bindings = sigma
             .iter()
-            .map(|&(q, b)| (short_name_of(kb.local_name_of(q)).to_owned(), b))
+            .map(|(q, b)| (short_name_of(kb.local_name_of(*q)).to_owned(), b.clone()))
             .collect();
         ProjectionReader {
             spec: spec_canon,
@@ -2050,7 +2051,7 @@ impl ProjectionReader {
             Some(_) => return None,
             None => return self.read_unowned(kb, recv_ty, &name, prep, instance),
         }
-        let Some(&(_, b)) = self.bindings.iter().find(|(s, _)| *s == name) else {
+        let Some((_, b)) = self.bindings.iter().find(|(s, _)| *s == name) else {
             // A spec parameter the provision leaves UNBOUND is a wildcard here as in every
             // other position: its own variable. Left to the call's reading, `s.K` at `Car
             // provides Sp[T = V]` was "type 'Car' has no member 'K'" and a member the spec call
@@ -2058,7 +2059,7 @@ impl ProjectionReader {
             let &(_, v) = self.spec_params.iter().find(|(s, _)| *s == name)?;
             return Some(Value::term(kb.alloc(Term::Var(Var::Global(v)))));
         };
-        match self.witness_view {
+        match &self.witness_view {
             // A witness's binding is written in the WITNESS's parameters, which the receiver
             // PROJECTED instantiates through the carrier view, as the call's reading does
             // ([`witnesses_covering`]) — not the operation's receiver: `get2(c: C, d: D) ->
@@ -2068,11 +2069,10 @@ impl ProjectionReader {
             // `Option[T = Int64]` (MEASURED, run time).
             Some(view) => {
                 let mut at = Substitution::new();
-                if !unify_types(kb, &mut at, &Value::term(view), recv_ty) || binds_a_cycle(kb, &at)
-                {
+                if !unify_types(kb, &mut at, view, recv_ty) || binds_a_cycle(kb, &at) {
                     return None;
                 }
-                let v = resolve_type_deep_value(kb, &at, &Value::term(b));
+                let v = resolve_type_deep_value(kb, &at, b);
                 let v = Self::instance_of(kb, b, v, instance);
                 Some(resolve_type_deep_value(kb, prep, &v))
             }
@@ -2087,11 +2087,11 @@ impl ProjectionReader {
         &self,
         kb: &mut KnowledgeBase,
         recv_ty: &Value,
-        b: TermId,
+        b: &Value,
         prep: &Substitution,
         instance: Option<SlotVar>,
     ) -> Option<Value> {
-        let v = binding_at_receiver(kb, self.recv_sort, recv_ty, &Value::term(b))?;
+        let v = binding_at_receiver(kb, self.recv_sort, recv_ty, b)?;
         let v = Self::instance_of(kb, b, v, instance);
         Some(resolve_type_deep_value(kb, prep, &v))
     }
@@ -2121,7 +2121,7 @@ impl ProjectionReader {
     /// loaded against it (MEASURED).
     fn instance_of(
         kb: &mut KnowledgeBase,
-        b: TermId,
+        b: &Value,
         read: Value,
         instance: Option<SlotVar>,
     ) -> Value {
@@ -2160,9 +2160,9 @@ impl ProjectionReader {
         // AGREEMENT IS ASKED OF THE BINDINGS AS THE RULE HOLDS THEM — an instance of each
         // would never agree with an instance of the next — and the one they agree on is then
         // read as the instance asked for.
-        let mut read: Option<(TermId, Value)> = None;
+        let mut read: Option<(Value, Value)> = None;
         for (_, written) in unowned_member_bindings(kb, self.recv_sort, name) {
-            let this = self.at_receiver(kb, recv_ty, written, prep, None)?;
+            let this = self.at_receiver(kb, recv_ty, &written, prep, None)?;
             match &read {
                 None => read = Some((written, this)),
                 Some((_, prior)) if types_agree(kb, prior, &this) => {}
@@ -2172,7 +2172,7 @@ impl ProjectionReader {
         let (written, agreed) = read?;
         match instance {
             None => Some(agreed),
-            Some(_) => self.at_receiver(kb, recv_ty, written, prep, instance),
+            Some(_) => self.at_receiver(kb, recv_ty, &written, prep, instance),
         }
     }
 
@@ -2450,11 +2450,10 @@ fn bind_along_provider_view(
     let at = build_pattern_subst(kb, &s, carrier);
     let bindings: Vec<(Symbol, Value)> = view
         .iter()
-        .map(|(k, t)| {
-            let v = Value::term(*t);
+        .map(|(k, v)| {
             let v = match &at {
-                Some(ps) => walk_pattern_field_type_deep(kb, ps, &v),
-                None => v,
+                Some(ps) => walk_pattern_field_type_deep(kb, ps, v),
+                None => v.clone(),
             };
             (*k, v)
         })
@@ -2606,7 +2605,7 @@ fn member_params_are_a_permutation(
     kb: &mut KnowledgeBase,
     spec_info: &crate::kb::op_info::OpInfoRecord,
     impl_info: &crate::kb::op_info::OpInfoRecord,
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
     bad: &[usize],
 ) -> bool {
     let mut idx: Vec<usize> = (0..bad.len()).collect();
@@ -2668,7 +2667,7 @@ fn render_op_signature(
     kb: &mut KnowledgeBase,
     short: &str,
     info: &crate::kb::op_info::OpInfoRecord,
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
 ) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(info.params.len());
     for (name, ty) in &info.params {
@@ -2724,21 +2723,18 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
     struct Prov {
         carrier: Symbol,
         spec: Symbol,
-        sigma: Vec<(Symbol, TermId)>,
+        sigma: Vec<(Symbol, Value)>,
         /// A witness's carrier — the sort its operations receive on.
         witness: Option<Symbol>,
     }
     let provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
             // The view's RAW named arguments, not `row.bindings` — see [`spec_param_sigma`].
-            let named: &[(Symbol, TermId)] = match kb.get_term(row.spec_view) {
-                Term::Fn { named_args, .. } => named_args,
-                _ => &[],
-            };
+            let named = view_named_children(kb, &TermIdView(row.spec_view));
             Prov {
                 carrier: row.provider,
                 spec: row.spec_base,
-                sigma: spec_param_sigma(kb, row.spec_base, named),
+                sigma: spec_param_sigma(kb, row.spec_base, &named),
                 witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, row.spec_view),
             }
         })
@@ -4182,7 +4178,7 @@ pub(crate) fn check_written_row_bindings(
                 origin: format!("`{owner_qn} {} {spec_qn}`", clause.kind.keyword()),
                 spec: spec_base,
                 param,
-                value: Value::term(*v),
+                value: v.clone(),
                 span: None,
             });
         }
@@ -4714,7 +4710,7 @@ fn registered_effect_kinds(
         // The registration binds a KIND: `Modify[?]` registers `Modify`, `Branch`
         // registers `Branch`. Read through the same classifier the labels are read
         // through, so a shape that is a label on one side is a registration on the other.
-        if let Some(k) = match type_head(kb, &Value::term(*binding)) {
+        if let Some(k) = match type_head(kb, binding) {
             TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
             _ => None,
         } {
@@ -4837,19 +4833,19 @@ pub fn check_instance_fact_op_signatures(
     struct Prov {
         carrier: Symbol,
         spec: Symbol,
-        sigma: Vec<(Symbol, TermId)>,
+        sigma: Vec<(Symbol, Value)>,
         ops: Vec<(String, Symbol)>,
     }
     let provs: Vec<Prov> = provides_rows(kb)
         .filter_map(|row| {
             let spec_qn = kb.qualified_name_of(row.spec_base);
             // The op-valued bindings: every binding [`spec_param_sigma`] does not take.
-            let ops: Vec<(String, Symbol)> = row
-                .bindings
+            let bindings = row.bindings(kb);
+            let ops: Vec<(String, Symbol)> = bindings
                 .iter()
                 .filter(|(k, _)| !is_type_param_binding(kb, *k, spec_qn))
                 .filter_map(|(k, v)| {
-                    let bound_op = binding_op_symbol(kb, *v)?;
+                    let bound_op = binding_op_symbol(kb, v)?;
                     Some((
                         short_name_of(kb.qualified_name_of(*k)).to_string(),
                         bound_op,
@@ -4862,7 +4858,7 @@ pub fn check_instance_fact_op_signatures(
             Some(Prov {
                 carrier: row.provider,
                 spec: row.spec_base,
-                sigma: spec_param_sigma(kb, row.spec_base, &row.bindings),
+                sigma: spec_param_sigma(kb, row.spec_base, &bindings),
                 ops,
             })
         })
@@ -4987,7 +4983,7 @@ fn instance_binding_type_ok(
     kb: &mut KnowledgeBase,
     spec_ty: &Value,
     bound_ty: &Value,
-    sigma: &[(Symbol, TermId)],
+    sigma: &[(Symbol, Value)],
     bound_is_subtype: bool,
 ) -> Option<bool> {
     let spec_sub = sigma_subst_type(kb, spec_ty, sigma);
@@ -5073,7 +5069,7 @@ pub(crate) fn requires_shadow_is_confusable(
     if spec_info.params.len() != local_info.params.len() {
         return false; // different arity — a call site cannot confuse them
     }
-    let sigma: Vec<(Symbol, TermId)> = unwrap_spec_view_value(kb, spec_view)
+    let sigma: Vec<(Symbol, Value)> = unwrap_spec_view_value(kb, spec_view)
         .map(|(_, bindings)| spec_param_sigma(kb, spec, &bindings))
         .unwrap_or_default();
 
@@ -5094,15 +5090,15 @@ pub(crate) fn requires_shadow_is_confusable(
         .map(|(s, l)| (s.clone(), l.clone()))
         .collect();
     for (spec_ty, local_ty) in pairs {
-        let (Value::Term { id: spec_t, .. }, Value::Term { id: local_t, .. }) =
-            (&spec_ty, &local_ty)
-        else {
-            continue; // a denoted carrier — undecidable, falls open to "confusable"
+        // What the comparison below decides is decided on terms: a type on another carrier
+        // — the spec's as written, or after σ put a binding that holds a value into it —
+        // is undecidable here, and falls open to "confusable".
+        let Value::Term { id: local_t, .. } = &local_ty else {
+            continue;
         };
-        let spec_sub = if sigma.is_empty() {
-            *spec_t
-        } else {
-            substitute_impl_params_alloc(kb, *spec_t, &sigma)
+        let Value::Term { id: spec_sub, .. } = sigma_subst_type(kb, &spec_ty, &sigma)
+        else {
+            continue;
         };
         if types_definitely_differ(kb, spec_sub, *local_t) {
             return false; // a confidently different type — distinct operations

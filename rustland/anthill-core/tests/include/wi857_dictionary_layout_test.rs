@@ -389,7 +389,7 @@ fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal 
     let t = kb.intern("T");
     SortGoal {
         spec_sort: spec,
-        bindings: SmallVec::from_slice(&[(t, carrier_ref)]),
+        bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
     }
 }
@@ -563,7 +563,7 @@ fn an_unprovided_spec_half_fails_the_resolution() {
     let top = kb.try_resolve_symbol("wi857.gap.Top").expect("Top");
     let goal = SortGoal {
         spec_sort: top,
-        bindings: SmallVec::from_slice(&[(t, wrap_int)]),
+        bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(wrap_int))],
         carrier: None,
     };
     let scope = ResolutionScope {

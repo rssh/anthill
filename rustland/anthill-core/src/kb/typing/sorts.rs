@@ -1374,13 +1374,15 @@ fn check_value_against_parameterized(
             // because a `Widget` is one (MEASURED, on the parent commit as on this tree).
             let accepted = provider_conforms_to(kb, base_sym)
                 && sort_provides(kb, parent, base_sym)
-                && match declared_type_goal_bindings(kb, &bindings) {
-                    None => false,
-                    Some(goal_bindings) if goal_bindings.is_empty() => true,
-                    Some(goal_bindings) => {
-                        spec_resolves_at_bindings(kb, base_sym, goal_bindings)
-                    }
-                };
+                && (bindings.is_empty()
+                    // The declared type's bindings are the goal's, each on the carrier it
+                    // rides: one that holds a value was once filtered out here, and the
+                    // goal then omitted the parameter and refused every candidate binding it.
+                    || spec_resolves_at_bindings(
+                        kb,
+                        base_sym,
+                        bindings.iter().cloned().collect(),
+                    ));
             if accepted {
                 return None;
             }
@@ -1446,41 +1448,6 @@ fn check_value_against_parameterized(
     None
 }
 
-/// WI-274: collect a parameterized type's bindings as `SortGoal` bindings — `(spec
-/// short-param symbol, value type term)` pairs — or `None` when a binding value has no
-/// term form, which the caller reports as the field's type mismatch.
-///
-/// WI-20260829-7QVD5 — THE VALUES GO IN AS WRITTEN. They used to be canonicalized into
-/// a `Ref(S)`-only shape first (`canonicalize_goal_value`, deleted), because the instance
-/// resolver's candidate matcher read its operands' raw spelling. It reads them through
-/// the view now — see [`spec_resolves_at_bindings`] for the readers — so there is no
-/// normal form for a producer to owe, and the other producers (the witness leg,
-/// `noneq_holds_at`) never applied it.
-///
-/// A NON-`Term` VALUE IS LOWERED, NOT DROPPED. `extract_type` hands the bindings over
-/// carrier-agnostically, and a `Value::Node` binding (a value-in-type) was filtered out
-/// here, silently: the goal then omitted that param, which refused every candidate that
-/// binds it — or, when it was the only binding, sent the check down the base-only
-/// `sort_provides` leg that ignores bindings altogether. [`value_to_term`] is lossless
-/// for a type; its `Err` residue is the opaque runtime handles, which a declared field
-/// type cannot hold, and refuses the check rather than answering it on fewer bindings.
-///
-/// [`value_to_term`]: crate::kb::node_occurrence::value_to_term
-fn declared_type_goal_bindings(
-    kb: &mut KnowledgeBase,
-    bindings: &[(Symbol, Value)],
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    bindings
-        .iter()
-        .map(|(p, v)| match v {
-            Value::Term { id, .. } => Some((*p, *id)),
-            other => crate::kb::node_occurrence::value_to_term(kb, other)
-                .ok()
-                .map(|t| (*p, t)),
-        })
-        .collect()
-}
-
 /// WI-274: binding-precise spec satisfaction. A field declared with a
 /// parameterized spec is accepted iff the spec resolves at the
 /// *declared bindings* through the canonical instance resolver
@@ -1497,16 +1464,16 @@ fn declared_type_goal_bindings(
 /// `Ref(S)` answered differently depending on which one asked. No producer owes a normal
 /// form, because every reader of a goal value in the candidate matcher classifies it
 /// through the view rather than by raw shape: [`impl_param_ref`] (the candidate side's
-/// wildcard test), and on the goal side [`dispatch_values_match`] (via `types_lesseq`),
-/// [`values_structurally_equal`] (via `sort_sym_of_term` → [`extract_sort_ref_sym`]) and
+/// wildcard test), and on the goal side [`dispatch_values_match`] (via [`types_compatible`]),
+/// [`values_structurally_equal`] (via `sort_sym_of_view` → [`extract_sort_ref_sym`]) and
 /// [`is_type_param_value`], all of which read `Ref(S)` and `Fn{S}` as one bare sort.
-/// `parametric_value_parts` matches `Term::Fn` with named args, which is the one
+/// `parametric_view_parts` matches an application with named arguments, which is the one
 /// spelling a type application has. A new raw-shape reader there reopens this; the
 /// `q7vd5_goal_spelling_test` rows are what notice.
 pub(super) fn spec_resolves_at_bindings(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
-    bindings: SmallVec<[(Symbol, TermId); 2]>,
+    bindings: SmallVec<[(Symbol, Value); 2]>,
 ) -> bool {
     // Field validation resolves a spec at declared bindings — no call-site
     // receiver, so no carrier discrimination (WI-350).

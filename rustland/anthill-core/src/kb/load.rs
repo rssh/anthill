@@ -19671,6 +19671,13 @@ pub(crate) fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbo
 /// the base of a `SortView(Spec, …)` wrapper, or a bare spec ref. The wrapper is the reflect
 /// one BY IDENTITY ([`super::typing::is_sort_view_functor`]) — a user sort named `SortView`
 /// is a spec like any other.
+///
+/// Read off the term and not through the view, for two reasons. This is asked of every
+/// provision row each time the relation is decoded. And the two spellings of a bare name
+/// differ here, which the view presents as one head: a `Ref` to the reflect wrapper — what
+/// `provides PartialEq[T = SortView]` binds its parameter to — names that sort, while the
+/// nullary `Fn` a bare `provides anthill.reflect.SortView` lowers to is a view with no base
+/// and decodes to nothing.
 pub(crate) fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option<Symbol> {
     match kb.get_term(spec) {
         Term::Fn {
@@ -19689,6 +19696,36 @@ pub(crate) fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option
             }
         }
         Term::Ref(s) | Term::Ident(s) => Some(*s),
+        _ => None,
+    }
+}
+
+/// [`provides_spec_base_sym`] of a spec — or of a binding's value, whose head it reads the
+/// same way — on any carrier: a hash-consed one is read as the term it is, and one on
+/// another carrier, which is always an application, through the view.
+pub(crate) fn provides_spec_base_sym_view<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<Symbol> {
+    if let crate::kb::persist_subst::BindValue::Term(t) = spec.as_bind_value() {
+        return provides_spec_base_sym(kb, t);
+    }
+    match spec.head(kb) {
+        ViewHead::Functor {
+            functor: Some(functor),
+            ..
+        } => {
+            if super::typing::is_sort_view_functor(kb, functor) {
+                match spec.pos_arg(kb, 0)?.head(kb) {
+                    ViewHead::Functor {
+                        functor: Some(base),
+                        ..
+                    }
+                    | ViewHead::Ident(base) => Some(base),
+                    _ => None,
+                }
+            } else {
+                Some(functor)
+            }
+        }
+        ViewHead::Ident(s) => Some(s),
         _ => None,
     }
 }
@@ -32229,8 +32266,7 @@ impl<'a> Loader<'a> {
                 .insert(key, Value::term(spec_term));
             // A named spec lowers to a `SortView` over its base, or to the bare base, and
             // either decodes.
-            let Some((spec_sym, bindings)) =
-                super::typing::unwrap_spec_view_value(&self.kb, &Value::term(spec_term))
+            let Some((spec_sym, bindings)) = super::typing::unwrap_spec_view(&self.kb, spec_term)
             else {
                 // The one BARE spec that decodes to nothing is the reflect wrapper itself,
                 // `provides anthill.reflect.SortView` — a view with no base, binding no
@@ -32242,11 +32278,16 @@ impl<'a> Loader<'a> {
                 continue;
             };
             for (member, value) in bindings {
+                // The spec was lowered above, so each binding it decodes to is a term.
+                let value = value.expect_term();
                 let values = seen.entry((spec_sym, member)).or_default();
-                if !values
-                    .iter()
-                    .any(|v| super::typing::provision_bindings_agree(&self.kb, *v, value))
-                {
+                if !values.iter().any(|v| {
+                    super::typing::provision_bindings_agree(
+                        &self.kb,
+                        &TermIdView(*v),
+                        &TermIdView(value),
+                    )
+                }) {
                     values.push(value);
                 }
             }

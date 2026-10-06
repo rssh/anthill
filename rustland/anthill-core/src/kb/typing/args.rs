@@ -3041,18 +3041,21 @@ fn callback_actual_subject(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Stri
 /// `Some(Nothing)` for the `Fn` spelling alone — WI-20260923-N3W68 #12. MEASURED, only the
 /// `Ref` spelling reaches here (2074 times across the workspace suite, all
 /// `anthill.prelude.Nothing`), so the alignment changes no answer any corpus asks for.
-pub(super) fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
-    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(t)) {
+///
+/// Of a type on any carrier: an occurrence heads as the term it stands for, so the coarse
+/// head is one answer whichever carrier the type rides.
+pub(super) fn sort_sym_of_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    if let Some(s) = extract_sort_ref_sym(kb, v) {
         return Some(s);
     }
-    match kb.get_term(t) {
+    match v.head(kb) {
         // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
-        Term::Ident(s) => Some(*s),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if !pos_args.is_empty() || !named_args.is_empty() => Some(*functor),
+        ViewHead::Ident(s) => Some(s),
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            named_arity,
+        } if pos_arity + named_arity > 0 => Some(functor),
         _ => None,
     }
 }

@@ -1590,7 +1590,7 @@ fn type_value_clause_param_at(
     let (_, bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
     bindings
         .iter()
-        .find_map(|(_, v)| clause_named_type_param(kb, *v))
+        .find_map(|(_, v)| clause_named_type_param(kb, v))
 }
 
 /// WI-20260919-N31XX (proposal 065 §1) — the FRAME SLOT that backs a value read of the

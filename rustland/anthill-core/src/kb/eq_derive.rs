@@ -438,11 +438,7 @@ fn field_conditions<V: TermView>(
                 for cv in one {
                     let (base, bindings) = super::typing::unwrap_spec_view_value(kb, cv)?;
                     let q = bindings.iter().find_map(|(_, t)| {
-                        super::typing::sort_functor_of_view(
-                            kb,
-                            &crate::kb::term_view::TermIdView(*t),
-                        )
-                        .filter(|q| h_params.contains(q))
+                        super::typing::sort_functor_of_view(kb, t).filter(|q| h_params.contains(q))
                     })?;
                     out.push((base, q));
                 }

@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// WI-20260929-WBHTM — the binding σ holds for a spec parameter at a call, as the `TermId`
-/// the dispatch readers compare a provision's against; `None` when σ leaves it unbound.
+/// WI-20260929-WBHTM — the binding σ holds for a spec parameter at a call, as the dispatch
+/// readers compare a provision's against; `None` when σ leaves it unbound.
 ///
 /// THE BINDING IS RESOLVED THROUGH σ, AND THE SAME WAY ON EVERY CARRIER (WI-20260929-020TH).
 /// It is read at the END of σ's chain of variable links ([`sigma_chain_end`]) — `S ↦ U`,
@@ -23,38 +23,62 @@ use super::*;
 /// OCCURRENCE read as that variable too. A link on the value carrier, and a type on any
 /// carrier but a term, were resolved in full. One binding, two answers.
 ///
-/// The result is a TERM. A type on another carrier is one the term store could not hold when
-/// σ bound it — it carries a VALUE (`Buf[T = Int64, N = 3]` rides as an occurrence, WI-477),
-/// or is an entity spine `fn_value` rebuilt around one — and is LOWERED to its term twin
-/// ([`dispatch_type_term`]). That twin is what its provision was filed as
-/// (`lower_value_or_gate`), so the matchers relate the two as any two types, a value leaf by
-/// value. Lowering, not carrying the occurrence, because every reader of this is
-/// `TermId`-keyed at the boundary: a `SortGoal` is the resolve memo's key, and what it is
-/// matched against is a term fact.
+/// THE RESULT RIDES THE CARRIER THE TYPE DOES. A type that holds a VALUE (`Buf[T = Int64, N
+/// = 3]`, `MappedStream[…, TransformEffects = {Modify[k]}]`) is an occurrence, or the entity
+/// spine `fn_value` rebuilt around one, and is handed over as that: a goal's bindings are
+/// values, and every matcher reads them through the view, where such a type presents what
+/// its term twin does — the twin its provision was filed as (`lower_value_or_gate`). It used
+/// to be LOWERED to that twin here, because a goal's bindings were `TermId`s. A LEAF is
+/// held as its term — a variable is one variable whichever carrier a link left it on.
 ///
-/// Such a binding used to be DROPPED by every one of these readers (a WI-348 "Phase C"
-/// `debug_assert` in the dispatch goal, the defer-match and the op-scoped licence; a
-/// silent `None` in a callee requirement's substitution) — a debug panic, and in release a
+/// Before either, such a binding was DROPPED by every one of these readers (a WI-348
+/// "Phase C" `debug_assert` in the dispatch goal, the defer-match and the op-scoped licence;
+/// a silent `None` in a callee requirement's substitution) — a debug panic, and in release a
 /// wrong provider RUN: MEASURED, a call on a `Buf` deferred to `requires Store[State =
 /// Other]`, and another licensed "blind" by an op-scoped `requires Store[State = S]`, each
 /// ran `Other`'s provider on the `Buf`.
-pub(super) fn spec_param_binding_term(
+pub(super) fn spec_param_binding(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     vid: VarId,
-) -> Option<TermId> {
+) -> Option<Value> {
     let end = sigma_chain_end(kb, subst, vid)?;
     if kb.value_global_var(end).is_some() {
-        return Some(dispatch_type_term(kb, end));
+        return Some(leaf_held_as_term(kb, end.clone()));
     }
     // A ground term is what the walk below would hand back.
     if let Value::Term { id, .. } = end {
         if type_value_is_ground(kb, *id) {
-            return Some(*id);
+            return Some(end.clone());
         }
     }
     let resolved = walk_type_deep_value(kb, subst, end);
-    Some(dispatch_type_term(kb, &resolved))
+    Some(leaf_held_as_term(kb, resolved))
+}
+
+/// A type that is a LEAF on another carrier — a variable on the value carrier or as an
+/// occurrence, a bare symbol — held as the term it is, so one leaf has one spelling
+/// wherever a binding is compared; anything else as it stands.
+pub(super) fn leaf_held_as_term(kb: &mut KnowledgeBase, ty: Value) -> Value {
+    let var = match &ty {
+        Value::Term { .. } => return ty,
+        Value::Node(occ) => match occ.as_type() {
+            Some(TypeNode::Var(var)) => Some(*var),
+            _ => return ty,
+        },
+        Value::Var(var) => Some(*var),
+        _ => None,
+    };
+    match var {
+        // Found before it is interned ([`type_param_var_term`] says why): this is read per
+        // call, and interning takes a reference count nothing gives back.
+        Some(var) => Value::term(type_param_var_term(kb, var)),
+        None if ty.lowers_to_leaf_term() => Value::term(
+            kb.alloc_from_value(&ty)
+                .expect("lowers_to_leaf_term admits only infallible leaves"),
+        ),
+        None => ty,
+    }
 }
 
 /// What σ binds `vid` to, read at the END of its chain of variable links; `None` when
@@ -70,7 +94,7 @@ pub(super) fn spec_param_binding_term(
 /// the same reason), which is why this is not [`KnowledgeBase::chase_var`].
 ///
 /// ONLY a variable is a link: a binding to a sort parameter's NAME (`Ref(User.S)`) ends this
-/// walk. What a caller makes of the end is its own — [`spec_param_binding_term`] resolves it
+/// walk. What a caller makes of the end is its own — [`spec_param_binding`] resolves it
 /// through σ, a name through its alias variable included.
 pub(super) fn sigma_chain_end<'s>(
     kb: &KnowledgeBase,
@@ -92,28 +116,8 @@ pub(super) fn sigma_chain_end<'s>(
     Some(end)
 }
 
-/// WI-20260929-WBHTM — a type on any carrier as the `TermId` the dispatch matchers compare:
-/// a term as it is, anything else through [`value_to_term`], lossless for a type since
-/// WI-390. TOTAL on types — an occurrence, a variable and an entity spine all lower — so a
-/// failure is a non-type standing where a type goes, which is a typer bug, and it stops
-/// here rather than let a dispatch go ahead on a binding it could not state. The same call
-/// [`crate::kb::node_occurrence::type_denoted_by`] makes about a leaf that does not lower,
-/// and `surface_node_binding_to_term` about exactly this case ("a malformation, not a
-/// benign miss").
-pub(super) fn dispatch_type_term(kb: &mut KnowledgeBase, ty: &Value) -> TermId {
-    match ty {
-        Value::Term { id, .. } => *id,
-        other => value_to_term(kb, other).unwrap_or_else(|e| {
-            panic!(
-                "a type carried as a {} has no term form ({e:?}): only a type reaches here",
-                other.type_name()
-            )
-        }),
-    }
-}
-
 /// WI-20260929-WBHTM — every parameter of `spec_sort` σ binds at a call, keyed by the
-/// parameter's declared (qualified) symbol and read through [`spec_param_binding_term`].
+/// parameter's declared (qualified) symbol and read through [`spec_param_binding`].
 /// The one walk the dispatch goal ([`sort_goal_from_subst`], which re-keys it) and the
 /// op-scoped licence's carriers ([`op_requires_covers_call`]) share, so the two cannot
 /// disagree about which parameters a call pinned.
@@ -121,9 +125,9 @@ pub(super) fn spec_param_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     spec_sort: Symbol,
-) -> SmallVec<[(Symbol, TermId); 2]> {
+) -> SmallVec<[(Symbol, Value); 2]> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut out: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     for short in kb.type_params_of_sort(spec_sort) {
         let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
             continue;
@@ -135,7 +139,7 @@ pub(super) fn spec_param_bindings(
             continue;
         };
         let vid = *vid;
-        if let Some(value) = spec_param_binding_term(kb, subst, vid) {
+        if let Some(value) = spec_param_binding(kb, subst, vid) {
             out.push((param, value));
         }
     }
@@ -157,7 +161,7 @@ pub fn sort_goal_from_subst(
     // `parameterized(base, bindings)` wrapper left to unwrap. Keyed by the parameter's short
     // name where that is registered, else its qualified form — [`spec_param_key`], the one
     // owner of the key spelling every goal producer uses.
-    let bindings: SmallVec<[(Symbol, TermId); 2]> = spec_param_bindings(kb, subst, spec_sort)
+    let bindings: SmallVec<[(Symbol, Value); 2]> = spec_param_bindings(kb, subst, spec_sort)
         .into_iter()
         .map(|(param, value)| {
             let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
@@ -181,7 +185,7 @@ pub fn sort_goal_from_subst(
         args: c
             .args
             .iter()
-            .map(|(k, v)| (*k, walk_type_deep_g(kb, subst, *v, true)))
+            .map(|(k, v)| (*k, resolve_type_deep_value(kb, subst, v)))
             .collect(),
     });
     SortGoal {
@@ -272,15 +276,13 @@ pub(super) fn concrete_receiver_carrier(
 }
 
 /// WI-20260828-EKWDC — the type ARGUMENTS a receiver's own type writes at its carrier
-/// sort, as the `TermId`s a [`GoalCarrier`] carries.
+/// sort, each on the carrier it rides, as a [`GoalCarrier`] carries them.
 ///
-/// [`parametric_value_parts`] AND NOT [`extract_type`], for the reason
+/// [`parametric_view_parts`] AND NOT [`extract_type`], for the reason
 /// [`carrier_arg_impl_subst`] gives about the rule itself: that is the reader
 /// [`match_candidate_against_goal`]'s arm (2.5) already asks this same question through,
 /// so "what are this instance's type arguments" has one owner across both routes to a
-/// receiver. It is also the cheaper walk — a `SmallVec` clone of the head's named args,
-/// where `extract_type` builds a `Vec<(Symbol, Value)>` and clones a `Value` per
-/// argument.
+/// receiver.
 ///
 /// AND IT IS NOT A HOT PATH, which a review raised as a cost and a measurement settled
 /// the other way: **4 calls per full stdlib load** (counted, plus a source making one
@@ -292,9 +294,8 @@ pub(super) fn concrete_receiver_carrier(
 /// the arguments had the lower minimum, i.e. the difference is under this box's noise
 /// floor for one unchanged binary. Two of the four `receiver_carrier` call sites keep
 /// only `.sort`; deferring the walk for them would buy 2 SmallVec clones per load and
-/// cost a second spelling of this question. (That count and timing are the TERM carrier's.
-/// A receiver type on another carrier also pays the lowering below — a hash-consed walk,
-/// CPU only — on the rarer still shape of a statically concrete receiver holding a value.)
+/// cost a second spelling of this question. (That count and timing were taken while the
+/// arguments were read as terms.)
 ///
 /// EMPTY for a bare sort reference (`s : List`, nothing written) and for any type that is
 /// not an application, which is the honest answer: the receiver said nothing about the
@@ -303,17 +304,17 @@ pub(super) fn concrete_receiver_carrier(
 /// A TYPE ON ANOTHER CARRIER — an occurrence (a receiver whose type holds a value,
 /// `Pairer[Src = Heavy, Out = Int64, N = 3]`, WI-477) or the entity spine `fn_value` builds
 /// when a return type is instantiated around one (`mkp[S](s: S) -> Pairer[Src = S, …]` at an
-/// `S` holding a value) — is read LOWERED ([`dispatch_type_term`]), as the goal's own
-/// bindings are ([`spec_param_binding_term`], WI-20260929-WBHTM). It was EMPTY, which asked
-/// the carrier's `requires` in its declaration scope and refused the call naming
-/// `Tagger[T = Pairer.Src]` where the ground twin ran (MEASURED on both carriers; on the
-/// entity, even an argument that was a plain term was lost with the rest).
+/// `S` holding a value) — is read through the view like any other, each argument on the
+/// carrier it rides, as the goal's own bindings are ([`spec_param_binding`]). It was EMPTY
+/// once, which asked the carrier's `requires` in its declaration scope and refused the call
+/// naming `Tagger[T = Pairer.Src]` where the ground twin ran (MEASURED on both carriers; on
+/// the entity, even an argument that was a plain term was lost with the rest), and then
+/// read LOWERED to a term while a goal's carrier held `TermId`s.
 pub(super) fn receiver_type_args(
     kb: &mut KnowledgeBase,
     ty: &Value,
-) -> SmallVec<[(Symbol, TermId); 2]> {
-    let id = dispatch_type_term(kb, ty);
-    parametric_value_parts(kb, id)
+) -> SmallVec<[(Symbol, Value); 2]> {
+    parametric_view_parts(kb, ty)
         .map(|(_, args)| args)
         .unwrap_or_default()
 }
@@ -397,15 +398,10 @@ pub(super) fn provision_binds_param_to_carrier(
     spec_sort: Symbol,
     pvid: VarId,
     carrier_sym: Symbol,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-    let binds_pvid_to_carrier = |view: &SmallVec<[(Symbol, TermId); 2]>| {
-        view.iter().any(|(sp_sym, sp_val)| {
-            type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
-                && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
-                    .map(|b| kb.canonical_sort_sym(b))
-                    == Some(carrier_canon)
-        })
+    let binds_pvid_to_carrier = |view: &SmallVec<[(Symbol, Value); 2]>| {
+        view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, view)
     };
     // Primary: the carrier-keyed provision (`sort_ref == carrier`) — a fact whose
     // derived carrier IS the value's sort, or a normal provider whose own sort IS
@@ -432,7 +428,7 @@ pub(super) fn provision_binds_param_to_carrier(
             witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
                 == Some(carrier_canon)
         })
-        .map(|row| row.bindings)
+        .map(|row| row.bindings(kb))
         .find(|view| binds_pvid_to_carrier(view))
 }
 
@@ -460,14 +456,26 @@ fn witness_provider_for(
                     == Some(carrier_canon)
         })
         .find(|row| {
-            row.bindings.iter().any(|(sp_sym, sp_val)| {
-                type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
-                    && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
-                        .map(|b| kb.canonical_sort_sym(b))
-                        == Some(carrier_canon)
-            })
+            view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, row.stored_bindings(kb))
         })
         .map(|row| row.provider)
+}
+
+/// Does `view` — a provision's bindings of `spec_sort` — bind the spec parameter whose
+/// canonical variable is `pvid` to `sort` itself: a bare reference to it or an application
+/// of it ([`composed_self_reference`])? The one statement of "this provision is AT this
+/// carrier", for the readers that pick a provision by it.
+fn view_binds_param_to_sort<V: TermView>(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    sort: Symbol,
+    view: &[(Symbol, V)],
+) -> bool {
+    view.iter().any(|(param, bound)| {
+        type_param_vid_in_sort(kb, spec_sort, *param) == Some(pvid)
+            && composed_self_reference(kb, sort, bound)
+    })
 }
 
 /// Does the carrier's OWN `provides` of `spec_sort` bind the parameter `carrier_pvid` to the
@@ -480,14 +488,8 @@ pub(super) fn carriers_own_provision_qualifies(
     carrier_pvid: VarId,
     carrier_sym: Symbol,
 ) -> bool {
-    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
     provider_spec_view_bindings(kb, carrier_sym, spec_sort).is_some_and(|view| {
-        view.iter().any(|(sp_sym, sp_val)| {
-            type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(carrier_pvid)
-                && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
-                    .map(|b| kb.canonical_sort_sym(b))
-                    == Some(carrier_canon)
-        })
+        view_binds_param_to_sort(kb, spec_sort, carrier_pvid, carrier_sym, &view)
     })
 }
 
@@ -518,24 +520,24 @@ pub(super) fn witness_instantiation(
     spec_sort: Symbol,
     carrier_sym: Symbol,
     carrier_pvid: VarId,
-    view_bindings: &[(Symbol, TermId)],
-    recv_bindings: &[(VarId, TermId)],
-) -> Option<(Vec<(Symbol, TermId)>, Vec<(VarId, TermId)>)> {
+    view_bindings: &[(Symbol, Value)],
+    recv_bindings: &[(VarId, Value)],
+) -> Option<(Vec<(Symbol, TermId)>, Vec<(VarId, Value)>)> {
     // CHEAP GATE FIRST — the carrier binding being an APPLICATION of the carrier is the
     // witness signature (an ordinary `provides` writes a bare reference). Every ordinary
     // dispatch answers here, before the provider scan below runs at all.
     let (_, carrier_val) = view_bindings
         .iter()
         .find(|(p, _)| type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid))?;
-    let Term::Fn {
-        functor,
-        named_args,
+    let ViewHead::Functor {
+        functor: Some(functor),
+        named_arity,
         ..
-    } = kb.get_term(*carrier_val).clone()
+    } = carrier_val.head(kb)
     else {
         return None;
     };
-    if kb.canonical_sort_sym(functor) != kb.canonical_sort_sym(carrier_sym) {
+    if named_arity == 0 || kb.canonical_sort_sym(functor) != kb.canonical_sort_sym(carrier_sym) {
         return None;
     }
     // …but the APPLICATION shape does NOT by itself mean a witness: an ordinary `provides`
@@ -553,12 +555,14 @@ pub(super) fn witness_instantiation(
     // head binding, and rebuilding it per leaf is the difference between one read and one
     // per node.
     let witness_params = sort_type_params_as_pairs(kb, witness).to_vec();
-    let subst: Vec<(VarId, TermId)> = named_args
-        .iter()
-        .filter_map(|(carrier_param, witness_occ)| {
-            let wvid = witness_param_vid_of_occurrence(kb, *witness_occ, &witness_params)?;
-            let cvid = type_param_vid_in_sort(kb, carrier_sym, *carrier_param)?;
-            let arg = recv_bindings.iter().find(|e| e.0 == cvid)?.1;
+    let subst: Vec<(VarId, Value)> = carrier_val
+        .named_keys(kb)
+        .into_iter()
+        .filter_map(|carrier_param| {
+            let witness_occ = carrier_val.named_arg(kb, carrier_param)?;
+            let wvid = witness_param_vid_of_occurrence(kb, &witness_occ, &witness_params)?;
+            let cvid = type_param_vid_in_sort(kb, carrier_sym, carrier_param)?;
+            let arg = recv_bindings.iter().find(|e| e.0 == cvid)?.1.clone();
             Some((wvid, arg))
         })
         .collect();
@@ -566,12 +570,13 @@ pub(super) fn witness_instantiation(
 }
 
 /// WI-20260828-57MRM — the WITNESS parameter a head occurrence denotes, in either spelling:
-/// the `Var(Global(vid))` a row tail carries, or the `Ref(symbol)` a type-argument slot
+/// the `Var(Global(vid))` a row tail carries, or the bare reference a type-argument slot
 /// writes. `None` for anything that is not one of `witness`'s own parameters (a concrete
 /// leaf such as `Int64`, or another sort's parameter), which therefore substitutes nothing.
-fn witness_param_vid_of_occurrence(
+/// Read through the view, so an occurrence answers as the term it stands for.
+fn witness_param_vid_of_occurrence<V: TermView>(
     kb: &KnowledgeBase,
-    occ: TermId,
+    occ: &V,
     // WI-20260921-3G1YT — the `witness: Symbol` parameter was dropped as unused (it
     // warned). Both arms below match against `witness_params`, which already IS that
     // witness's declared parameter list, so the symbol added nothing; passing it
@@ -582,12 +587,12 @@ fn witness_param_vid_of_occurrence(
         Term::Var(Var::Global(v)) => Some(*v),
         _ => None,
     };
-    match kb.get_term(occ) {
+    match occ.head(kb) {
         // A ROW tail: the parameter's own var, so membership is EXACT — no name involved.
-        Term::Var(Var::Global(v)) => witness_params
+        ViewHead::Var(Var::Global(v)) => witness_params
             .iter()
-            .any(|(_, t)| vid_of(*t) == Some(*v))
-            .then(|| *v),
+            .any(|(_, t)| vid_of(*t) == Some(v))
+            .then_some(v),
         // A TYPE-ARGUMENT slot: the parameter's symbol, matched against the witness's own
         // declared parameters by SYMBOL IDENTITY. Deliberately NOT `type_param_vid_in_sort`,
         // which resolves a symbol by its LOCAL NAME in the owner's scope — that is a name
@@ -599,30 +604,72 @@ fn witness_param_vid_of_occurrence(
         // cross-sort `T` collapse identity-keyed matching exists to prevent. A value that is
         // not one of this witness's own parameters resolves to `None` and substitutes
         // nothing, which is the correct answer for it.
-        Term::Ref(sym) => witness_params
+        ViewHead::Functor {
+            functor: Some(sym),
+            pos_arity: 0,
+            named_arity: 0,
+        } => witness_params
             .iter()
-            .find(|(p, _)| *p == *sym)
+            .find(|(p, _)| *p == sym)
             .and_then(|(_, t)| vid_of(*t)),
         _ => None,
     }
 }
 
 /// WI-20260828-57MRM — apply [`witness_instantiation`]'s σ to one head binding, replacing
-/// each witness-parameter occurrence (in either spelling) by the receiver's type-arg.
+/// each witness-parameter occurrence (in either spelling) by the receiver's type-arg:
+/// `None` where the binding names none of them. The result rides the carrier its form
+/// takes ([`rewrite_binding_leaves`]) — an argument that holds a value (`{Modify[k]}`)
+/// puts the row around it on the occurrence carrier, where a term-only rewrite had no
+/// place for it.
 ///
 /// The `witness: Symbol` parameter is gone for the reason WI-20260921-3G1YT dropped it from
 /// [`witness_param_vid_of_occurrence`]: it was only ever passed down the recursion, and
 /// `witness_params` already IS that witness's parameter list.
 fn apply_witness_instantiation(
     kb: &mut KnowledgeBase,
-    tid: TermId,
+    binding: &Value,
     witness_params: &[(Symbol, TermId)],
-    subst: &[(VarId, TermId)],
-) -> TermId {
-    rewrite_term_leaves(kb, tid, &|kb, t| {
-        let v = witness_param_vid_of_occurrence(kb, t, witness_params)?;
-        subst.iter().find(|(w, _)| *w == v).map(|(_, bound)| *bound)
+    subst: &[(VarId, Value)],
+) -> Option<Value> {
+    rewrite_binding_leaves(kb, binding, &|kb, leaf| {
+        let v = witness_param_vid_of_occurrence(kb, leaf, witness_params)?;
+        subst
+            .iter()
+            .find(|(w, _)| *w == v)
+            .map(|(_, bound)| bound.clone())
     })
+}
+
+/// A provision's binding with some of its leaves replaced ([`rewrite_type_leaves`]), on the
+/// carrier its form takes: `None` where no leaf was replaced.
+///
+/// A spine the rewrite put on the value carrier — one above a replacement that is no term —
+/// is rebuilt through the type builders ([`type_child_value`]), so what the binding becomes
+/// at a receiver is the type a reader would have built for it: a row around a label that
+/// holds a value is the row occurrence, an application over one the application occurrence.
+/// Left as the entity the rewrite made, a row was one more carrier for every reader of rows
+/// to meet.
+pub(super) fn rewrite_binding_leaves(
+    kb: &mut KnowledgeBase,
+    binding: &Value,
+    leaf: &impl Fn(&mut KnowledgeBase, &Value) -> Option<Value>,
+) -> Option<Value> {
+    let rewritten = rewrite_type_leaves(kb, binding, leaf)?;
+    match type_child_value(kb, rewritten.clone()) {
+        Ok(on_builders) => Some(on_builders),
+        // A binding is a type, and so is the spine above a parameter of it. One the
+        // builders have no form for is a reader's error and not a program's: loud where it
+        // can be, and where it cannot the rewrite's own value is still the binding.
+        Err(why) => {
+            debug_assert!(
+                false,
+                "rewrite_binding_leaves: no type form for the rewritten binding ({why}) \
+                 {rewritten:?}"
+            );
+            Some(rewritten)
+        }
+    }
 }
 
 /// WI-492 — the specs a carrier sort DIRECTLY provides (base symbols), read
@@ -743,21 +790,21 @@ fn transitive_carrier_for_param(
 fn compose_provision_views(
     kb: &KnowledgeBase,
     intermediate: Symbol,
-    outer_view: &SmallVec<[(Symbol, TermId); 2]>,
-    inner_view: &SmallVec<[(Symbol, TermId); 2]>,
-) -> SmallVec<[(Symbol, TermId); 2]> {
+    outer_view: &SmallVec<[(Symbol, Value); 2]>,
+    inner_view: &SmallVec<[(Symbol, Value); 2]>,
+) -> SmallVec<[(Symbol, Value); 2]> {
     outer_view
         .iter()
         .map(|(spec_param, val)| {
-            if let Some(inter_vid) = typaram_ref_vid(kb, *val, intermediate) {
+            if let Some(inter_vid) = typaram_ref_vid(kb, val, intermediate) {
                 if let Some((_, inner_val)) = inner_view
                     .iter()
                     .find(|(p, _)| type_param_vid_in_sort(kb, intermediate, *p) == Some(inter_vid))
                 {
-                    return (*spec_param, *inner_val);
+                    return (*spec_param, inner_val.clone());
                 }
             }
-            (*spec_param, *val)
+            (*spec_param, val.clone())
         })
         .collect()
 }
@@ -789,7 +836,7 @@ pub(super) fn transitive_provision_view(
     pvid: VarId,
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
-) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
+) -> Option<(SmallVec<[(Symbol, Value); 2]>, bool)> {
     // Direct: the carrier itself provides spec_sort binding the carrier param.
     compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::VisitedFirst, &|c| {
         provision_binds_param_to_carrier(kb, spec_sort, pvid, c)
@@ -827,8 +874,8 @@ fn compose_through_provision_chain(
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
     order: VisitOrder,
-    direct: &impl Fn(Symbol) -> Option<SmallVec<[(Symbol, TermId); 2]>>,
-) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
+    direct: &impl Fn(Symbol) -> Option<SmallVec<[(Symbol, Value); 2]>>,
+) -> Option<(SmallVec<[(Symbol, Value); 2]>, bool)> {
     let seen = |visited: &SmallVec<[Symbol; 8]>| {
         visited
             .iter()
@@ -959,7 +1006,7 @@ pub(super) fn bind_this_instance_params(
             }
             // At any depth and part-written too ([`this_instance_binding_at`]), as the rule
             // reads it: `T = List[T = Car]` holds `o` to a list of the RECEIVER's instance.
-            let Some(instance) = this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty)
+            let Some(instance) = this_instance_binding_at(kb, carrier_sym, &carrier_value, recv_ty)
             else {
                 continue;
             };
@@ -1083,9 +1130,9 @@ pub(super) fn bind_spec_params_from_carrier(
         // NON-carrier-param (a concrete leaf `Int64`) resolves to no VarId, finds
         // no receiver arg, and is skipped — it must NOT fall to the ground-verbatim
         // arm (WI-383 reserves ground value-params to the late pass).
-        let ref_shape = typaram_occurrence_sym(kb, carrier_value).is_some();
-        // The carrier-side CONCRETE value for this spec parameter, as a ground
-        // hash-consed term:
+        let ref_shape = typaram_occurrence_sym(kb, &carrier_value).is_some();
+        // The carrier-side CONCRETE value for this spec parameter, on the carrier it
+        // rides:
         //  - a type-param ref (`Stream.T` ↦ `List.T`): the receiver's binding for
         //    that carrier param (`List[T = Int]` ⇒ `Int`), looked up by the carrier
         //    sort's canonical param VarId. Threaded even if itself a var (an unbound
@@ -1094,7 +1141,7 @@ pub(super) fn bind_spec_params_from_carrier(
         //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
         //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
         //    so a cross-sort `collect`'s `Eff` never grounded.
-        // The `type_value_is_ground` guard on the non-ref arm is load-bearing: a
+        // The [`type_is_ground`] guard on the non-ref arm is load-bearing: a
         // non-ref provider binding that still mentions the carrier's OWN params
         // (`provides Stream[T = Pair[A = C.T, B = C.T]]`) is not ground, and
         // binding it verbatim would pin the op param to a carrier-relative `?_`
@@ -1102,10 +1149,14 @@ pub(super) fn bind_spec_params_from_carrier(
         // wrong. Skip it: the op param stays unbound and surfaces a LOUD
         // `unconstrained` instead. (Threading such a compound through
         // `recv_bindings` is future work — see WI-380 follow-ups.)
-        let concrete: Option<TermId> = if ref_shape {
-            typaram_ref_vid(kb, carrier_value, carrier_sym)
-                .and_then(|vid| recv_bindings.iter().find(|e| e.0 == vid).map(|e| e.1))
-        } else if type_value_is_ground(kb, carrier_value) {
+        let concrete: Option<Value> = if ref_shape {
+            typaram_ref_vid(kb, &carrier_value, carrier_sym).and_then(|vid| {
+                recv_bindings
+                    .iter()
+                    .find(|e| e.0 == vid)
+                    .map(|e| e.1.clone())
+            })
+        } else if type_is_ground(kb, &carrier_value) {
             Some(carrier_value)
         } else {
             None
@@ -1119,30 +1170,33 @@ pub(super) fn bind_spec_params_from_carrier(
         //     row is not bound onto the spec alias (effects aren't expressible
         //     there — WI-301; the coverage check reads the provider view's
         //     groundness directly for that). Only fill a genuinely-empty slot:
-        //     `bind_term` flags a CONTRADICTION against a differing existing
+        //     `bind_value` flags a CONTRADICTION against a differing existing
         //     binding (it does not rebind), and an alias whose root is bound
         //     resolves anyway.
         if ref_shape {
             if let Some(spec_vid) = spec_vid {
-                if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete)
+                if subst.resolve_as_value(spec_vid).is_none()
+                    && !occurs_in_view(kb, spec_vid, &concrete)
                 {
-                    subst.bind_term(kb, spec_vid, concrete);
+                    subst.bind_value(kb, spec_vid, concrete.clone());
                     any = true;
                 }
             }
         }
 
         // (b) The consuming op's OWN type-param var (WI-393), matched by the SPEC
-        //     param's canonical VarId through `op_param_map`. `concrete` is a ground
-        //     hash-consed term (the receiver's element, or a ground provider row
-        //     like `{}`); bind it occurs-checked into the op's own `Elem` / `Eff`.
+        //     param's canonical VarId through `op_param_map`. `concrete` is the
+        //     receiver's element, or a ground provider row like `{}`; bind it
+        //     occurs-checked into the op's own `Elem` / `Eff`.
         //     Same empty-slot guard as (a).
         if let Some((_, op_param_val)) =
             spec_vid.and_then(|sv| op_param_map.iter().find(|(v, _)| *v == sv))
         {
             if let Some(op_vid) = resolved_var(kb, op_param_val) {
-                if subst.resolve_as_value(op_vid).is_none() && !occurs_in(kb, op_vid, concrete) {
-                    subst.bind_term(kb, op_vid, concrete);
+                if subst.resolve_as_value(op_vid).is_none()
+                    && !occurs_in_view(kb, op_vid, &concrete)
+                {
+                    subst.bind_value(kb, op_vid, concrete);
                     any = true;
                 }
             }
@@ -1278,7 +1332,7 @@ pub(super) fn carrier_param_receiver(
     Symbol,
     Symbol,
     Value,
-    SmallVec<[(Symbol, TermId); 2]>,
+    SmallVec<[(Symbol, Value); 2]>,
     VarId,
     bool,
     Option<Symbol>,
@@ -1471,9 +1525,10 @@ fn scope_own_instance_at_carrier(
     let bindings = sort_type_params_as_pairs(kb, spec_sort)
         .iter()
         .filter_map(|(_, var)| match kb.get_term(*var) {
-            Term::Var(Var::Global(v)) if *v != carrier_pvid => {
-                rigids.iter().find(|(pv, _)| pv == v).copied()
-            }
+            Term::Var(Var::Global(v)) if *v != carrier_pvid => rigids
+                .iter()
+                .find(|(pv, _)| pv == v)
+                .map(|(pv, r)| (*pv, Value::term(*r))),
             _ => None,
         })
         .collect();
@@ -1522,7 +1577,7 @@ pub(super) fn scope_clause_at_carrier(
     if rigids.is_empty() {
         return None;
     }
-    let rigid_of = |kb: &KnowledgeBase, t: TermId| -> Option<TermId> {
+    let rigid_of = |kb: &KnowledgeBase, t: &Value| -> Option<TermId> {
         let vid = clause_named_type_param(kb, t)?;
         rigids.iter().find(|(pv, _)| *pv == vid).map(|(_, r)| *r)
     };
@@ -1565,12 +1620,12 @@ pub(super) fn scope_clause_at_carrier(
         // The clause must be about THIS carrier.
         let licenses = bindings.iter().any(|(p, t)| {
             type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid)
-                && rigid_of(kb, *t) == Some(recv_carrier)
+                && rigid_of(kb, t) == Some(recv_carrier)
         });
         if !licenses {
             continue;
         }
-        let mut out: Vec<(VarId, TermId)> = Vec::new();
+        let mut out: Vec<(VarId, Value)> = Vec::new();
         for (p, t) in &bindings {
             let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *p) else {
                 continue;
@@ -1582,8 +1637,11 @@ pub(super) fn scope_clause_at_carrier(
             // (`Option[T = Other]`) is crossed whole. What cannot be crossed — another
             // sort's parameter, at the top or inside — is not a type this scope knows, and
             // the clause binds nothing there.
-            if let Some(r) = substitute_body_rigids(kb, *t, &rigids)
-                .filter(|r| type_value_is_ground_g(kb, *r, true))
+            // On whichever carrier the clause's value rides: every hash-consed part of it is
+            // crossed by the one rule ([`try_rewrite_type_terms`]).
+            if let Some(r) =
+                try_rewrite_type_terms(kb, t, &|kb, part| substitute_body_rigids(kb, part, &rigids))
+                    .filter(|r| type_is_determined(kb, r))
             {
                 out.push((spec_vid, r));
             }
@@ -1605,11 +1663,11 @@ fn requirements_implied_by(kb: &mut KnowledgeBase, clause: &RequiresEntry) -> Ve
         return Vec::new();
     };
     let base_qn = kb.qualified_name_of(base).to_owned();
-    let at: HashMap<Symbol, TermId> = bindings
+    let at: HashMap<Symbol, Value> = bindings
         .iter()
         .filter_map(|(key, value)| {
             let param = format!("{base_qn}.{}", short_name_of(kb.local_name_of(*key)));
-            Some((kb.try_resolve_symbol(&param)?, *value))
+            Some((kb.try_resolve_symbol(&param)?, value.clone()))
         })
         .collect();
     requires_chain(kb, base)
@@ -1709,8 +1767,9 @@ pub(super) struct LicensingClause {
     /// resolved to.
     pub(super) carrier: TermId,
     /// What the clause binds the spec's OTHER parameters to, each by its canonical
-    /// variable: an enclosing parameter's body rigid, or a ground type.
-    pub(super) bindings: Vec<(VarId, TermId)>,
+    /// variable: an enclosing parameter's body rigid, or a ground type — on the carrier
+    /// the clause's value rides.
+    pub(super) bindings: Vec<(VarId, Value)>,
 }
 
 /// WI-20260918-R541X (A) / WI-20260919-H20YY — THE SOLE `requires` ENTRY OVER `spec` in
@@ -1832,16 +1891,16 @@ pub(super) fn bind_sort_params_from_sole_enclosing_requirement(
         let Some(spec_vid) = type_param_vid_in_sort(kb, spec, p) else {
             continue;
         };
-        let value = match clause_named_type_param(kb, t) {
+        let value = match clause_named_type_param(kb, &t) {
             Some(v) => env
                 .param_rigids()
                 .iter()
                 .find(|(pv, _)| *pv == v)
-                .map(|(_, r)| *r),
-            None => type_value_is_ground(kb, t).then_some(t),
+                .map(|(_, r)| Value::term(*r)),
+            None => type_is_ground(kb, &t).then_some(t),
         };
-        if let Some(value) = value.filter(|v| !occurs_in(kb, spec_vid, *v)) {
-            subst.bind_term(kb, spec_vid, value);
+        if let Some(value) = value.filter(|v| !occurs_in_view(kb, spec_vid, v)) {
+            subst.bind_value(kb, spec_vid, value);
         }
     }
 }
@@ -1852,12 +1911,14 @@ pub(super) fn bind_sort_params_from_sole_enclosing_requirement(
 pub(super) fn bind_spec_params_from_enclosing_requires(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
-    clause: Option<&[(VarId, TermId)]>,
+    clause: Option<&[(VarId, Value)]>,
 ) -> bool {
     let mut any = false;
     for (spec_vid, concrete) in clause.unwrap_or(&[]) {
-        if subst.resolve_as_value(*spec_vid).is_none() && !occurs_in(kb, *spec_vid, *concrete) {
-            subst.bind_term(kb, *spec_vid, *concrete);
+        if subst.resolve_as_value(*spec_vid).is_none()
+            && !occurs_in_view(kb, *spec_vid, concrete)
+        {
+            subst.bind_value(kb, *spec_vid, concrete.clone());
             any = true;
         }
     }
@@ -1869,12 +1930,12 @@ pub(super) fn bind_spec_params_from_enclosing_requires(
 ///
 /// Two value shapes: a clause names a parameter as a `Ref` to its symbol, and a row TAIL
 /// arrives as the bare canonical `Var::Global`.
-pub(super) fn clause_named_type_param(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
-    match kb.get_term(t) {
-        Term::Ref(sym) | Term::Ident(sym) => type_param_global_var(kb, *sym),
-        Term::Var(Var::Global(v)) => Some(*v),
-        _ => None,
-    }
+///
+/// The reading of a declared parameter type ([`declared_type_param_vid`]), asked of a
+/// clause's value: one reader, with one answer on every carrier and for either spelling of
+/// a bare name.
+pub(super) fn clause_named_type_param(kb: &KnowledgeBase, t: &Value) -> Option<VarId> {
+    declared_type_param_vid(kb, t)
 }
 
 /// The same, narrowed to the operation's OWN parameters — the ones a CALL may bind. An
@@ -1884,7 +1945,7 @@ pub(super) fn clause_named_type_param(kb: &KnowledgeBase, t: TermId) -> Option<V
 /// `own` is the CLASSIFICATION's own list ([`OperationInfoFull::type_params`]), not a
 /// name-scoped test: §5.3 says a clause names parameters of two scopes in ONE list, and only
 /// membership here separates them.
-fn clause_named_op_type_param(kb: &KnowledgeBase, t: TermId, own: &[VarId]) -> Option<VarId> {
+fn clause_named_op_type_param(kb: &KnowledgeBase, t: &Value, own: &[VarId]) -> Option<VarId> {
     clause_named_type_param(kb, t).filter(|v| own.contains(v))
 }
 
@@ -2028,9 +2089,9 @@ pub(super) fn clause_binding_param_at_carrier(
             continue;
         };
         let carrier_pvid = type_param_global_var(kb, carrier_param);
-        let names_open = |kb: &KnowledgeBase, t: TermId| clause_named_type_param(kb, t) == Some(open);
+        let names_open = |kb: &KnowledgeBase, t: &Value| clause_named_type_param(kb, t) == Some(open);
         let binds_open = clause.iter().any(|(p, t)| {
-            type_param_vid_in_sort(kb, spec, *p) != carrier_pvid && names_open(kb, *t)
+            type_param_vid_in_sort(kb, spec, *p) != carrier_pvid && names_open(kb, t)
         });
         if !binds_open {
             continue;
@@ -2038,7 +2099,7 @@ pub(super) fn clause_binding_param_at_carrier(
         let Some(carrier_at) = clause
             .iter()
             .find(|(p, _)| type_param_vid_in_sort(kb, spec, *p) == carrier_pvid)
-            .map(|(_, t)| *t)
+            .map(|(_, t)| t.clone())
         else {
             continue;
         };
@@ -2047,11 +2108,11 @@ pub(super) fn clause_binding_param_at_carrier(
         // variable (`c: FiniteCollection.C`), and read as written the first resolved to
         // itself — the bound spelling kept "unconstrained — use `total[El = …](…)`" where
         // its member twin named the missing provision (MEASURED).
-        let carrier_at = match clause_named_type_param(kb, carrier_at) {
-            Some(vid) => type_param_var_term(kb, Var::Global(vid)),
+        let carrier_at = match clause_named_type_param(kb, &carrier_at) {
+            Some(vid) => Value::term(type_param_var_term(kb, Var::Global(vid))),
             None => carrier_at,
         };
-        let carrier_ty = resolve_type_deep_value(kb, subst, &Value::term(carrier_at));
+        let carrier_ty = resolve_type_deep_value(kb, subst, &carrier_at);
         if view_contains_type_param(kb, &carrier_ty) {
             continue;
         }
@@ -2177,7 +2238,7 @@ pub(super) fn bind_sort_params_from_sort_requires_at_construction(
 fn clause_says_more_than_its_carrier(
     kb: &KnowledgeBase,
     spec: Symbol,
-    clause: &[(Symbol, TermId)],
+    clause: &[(Symbol, Value)],
 ) -> bool {
     clause
         .iter()
@@ -2230,7 +2291,7 @@ fn bind_clause_params_at_carrier(
     subst: &mut Substitution,
     env: Option<&TypingEnv>,
     spec: Symbol,
-    clause: &[(Symbol, TermId)],
+    clause: &[(Symbol, Value)],
     bindable: &[VarId],
     recv_ty: &dyn Fn(&KnowledgeBase, VarId) -> Option<Value>,
 ) {
@@ -2241,11 +2302,11 @@ fn bind_clause_params_at_carrier(
     };
     // Clause binding ↦ the spec parameter it is FOR, by VarId identity (the clause's
     // keys and the spec's declared parameters are resolved in two scopes).
-    let clause_value = |kb: &KnowledgeBase, want: VarId| -> Option<TermId> {
+    let clause_value = |kb: &KnowledgeBase, want: VarId| -> Option<&Value> {
         clause
             .iter()
             .find(|(p, _)| type_param_vid_in_sort(kb, spec, *p) == Some(want))
-            .map(|(_, v)| *v)
+            .map(|(_, v)| v)
     };
     let Some(carrier_tp) =
         clause_value(kb, carrier_pvid).and_then(|t| clause_named_type_param(kb, t))
@@ -2271,7 +2332,7 @@ fn bind_clause_params_at_carrier(
             };
             let mut at = Substitution::new();
             for (pvid, value) in scope.bindings {
-                at.bind_term(kb, pvid, value);
+                at.bind_value(kb, pvid, value);
             }
             at
         }
@@ -2296,13 +2357,20 @@ fn bind_clause_params_at_carrier(
         //
         // ONLY A TYPE THE CARRIER DETERMINES. A parameter of the carrier the call left
         // open, another sort's parameter a provision names: nothing to bind to.
+        //
+        // DETERMINED AS THE TYPE READS, WHICHEVER CARRIER IT RIDES ([`type_is_determined`]):
+        // nothing in it is a variable or a parameter. A row that names a place — `{Modify[k]}`,
+        // the transform of a mapped stream that writes a cell — is as determined as `{}`, and
+        // rides an occurrence. Asked the argument check's question instead (is the value it
+        // holds CLOSED), such a row was no answer, and the parameter it fixes was reported as
+        // fixed by nothing.
         let Some(said) = instance
             .resolve_as_value(pvid)
             .map(|bound| {
                 let bound = resolve_type_deep_value(kb, &instance, &bound);
                 effect_row_param_value(kb, spec, &member, bound)
             })
-            .filter(|said| resolved_type_is_determined(kb, said))
+            .filter(|said| type_is_determined(kb, said))
         else {
             continue;
         };
@@ -2391,6 +2459,9 @@ fn agreed_by_every_provision(
     if covering.len() + usize::from(own) < 2 {
         return at;
     }
+    // Each covering row's bindings, decoded once for every parameter asked of them.
+    let rows: Vec<SmallVec<[(Symbol, Value); 2]>> =
+        covering.iter().map(|(row, _)| row.bindings(kb)).collect();
     let mut agreed = Substitution::new();
     for (param, _) in sort_type_params_as_pairs(kb, spec).to_vec() {
         let Some(pvid) = type_param_vid_in_sort(kb, spec, param) else {
@@ -2401,15 +2472,14 @@ fn agreed_by_every_provision(
         };
         let said = resolve_type_deep_value(kb, &at, &said);
         let mut all = true;
-        for (row, instantiated) in &covering {
-            let written = row
-                .bindings
+        for ((_, instantiated), bindings) in covering.iter().zip(&rows) {
+            let written = bindings
                 .iter()
                 .find(|(key, _)| type_param_vid_in_sort(kb, spec, *key) == Some(pvid))
-                .map(|(_, v)| *v);
+                .map(|(_, v)| v.clone());
             let same = match written {
                 Some(written) => {
-                    let theirs = resolve_type_deep_value(kb, instantiated, &Value::term(written));
+                    let theirs = resolve_type_deep_value(kb, instantiated, &written);
                     types_agree(kb, &said, &theirs)
                 }
                 None => false,
@@ -2445,7 +2515,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
     carrier_sym: Symbol,
     carrier_pvid: VarId,
     recv_ty: &Value,
-    view_bindings: SmallVec<[(Symbol, TermId); 2]>,
+    view_bindings: SmallVec<[(Symbol, Value); 2]>,
     recv_arg_sym: Option<Symbol>,
 ) -> bool {
     let recv_bindings = parameterized_vid_bindings(kb, recv_ty, carrier_sym);
@@ -2472,8 +2542,8 @@ pub(super) fn bind_spec_params_from_carrier_param(
     // Both belong to the declaration, which every call shares, so neither may be bound as it
     // stands — and each is ONE fresh variable for the call, shared by every binding of this
     // provision that names it (`call_bindings` for the first, `opening` for the second).
-    let opening = ProvisionOpening::of(kb, view_bindings.iter().map(|(_, v)| *v));
-    let mut call_bindings: Option<Vec<(VarId, TermId)>> = None;
+    let opening = ProvisionOpening::of(kb, view_bindings.iter().map(|(_, v)| v));
+    let mut call_bindings: Option<Vec<(VarId, Value)>> = None;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
         // (the carrier-param skip below runs BEFORE any instantiation: for a witness that
@@ -2498,24 +2568,35 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // would answer `None` and the binding would be DROPPED. MEASURED — a `String` was
         // accepted where the witness pins `Element = Int64`, which the un-instantiated read
         // had refused. A rewritten value that is GROUND is already the answer; bind it.
-        let carrier_value = match &instantiation {
+        //
+        // FROM HERE THE BINDING IS READ ON WHATEVER CARRIER IT RIDES. As stored it is a
+        // term; with a receiver's argument in it, it is what that argument makes it — a row
+        // around `Modify[k]` is an occurrence — and every reading below answers for it as
+        // for the term.
+        let stored = carrier_value;
+        let binding: Value = match &instantiation {
             Some((witness_params, wsubst)) => {
-                let rewritten =
-                    apply_witness_instantiation(kb, carrier_value, witness_params, wsubst);
-                if rewritten != carrier_value && type_value_is_ground(kb, rewritten) {
-                    if let Some(spec_vid) = spec_vid {
-                        if subst.resolve_as_value(spec_vid).is_none()
-                            && !occurs_in(kb, spec_vid, rewritten)
-                        {
-                            subst.bind_term(kb, spec_vid, rewritten);
-                            any = true;
+                match apply_witness_instantiation(kb, &stored, witness_params, wsubst) {
+                    Some(rewritten) => {
+                        let unchanged =
+                            value_identity_key(&rewritten) == value_identity_key(&stored);
+                        if !unchanged && type_is_ground(kb, &rewritten) {
+                            if let Some(spec_vid) = spec_vid {
+                                if subst.resolve_as_value(spec_vid).is_none()
+                                    && !occurs_in_view(kb, spec_vid, &rewritten)
+                                {
+                                    subst.bind_value(kb, spec_vid, rewritten);
+                                    any = true;
+                                }
+                            }
+                            continue;
                         }
+                        rewritten
                     }
-                    continue;
+                    None => stored,
                 }
-                rewritten
             }
-            None => carrier_value,
+            None => stored,
         };
         // WI-600: match the carrier-side value's type-param leaves by the CARRIER
         // sort's canonical `Var::Global` VarId (identity), not short name. The
@@ -2541,17 +2622,16 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // passed a second instance to the member the rule admits as tied).
         if let Some(spec_vid) = spec_vid.filter(|v| subst.resolve_as_value(*v).is_none()) {
             let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-            let binding = Value::term(carrier_value);
             let instance = if !holds_carrier(kb, &binding, carrier_canon) {
                 None
             } else if let Some(this) = (*own_provision.get_or_insert_with(|| {
                 carriers_own_provision_qualifies(kb, spec_sort, carrier_pvid, carrier_sym)
             }))
-            .then(|| this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty))
+            .then(|| this_instance_binding_at(kb, carrier_sym, &binding, recv_ty))
             .flatten()
             {
                 Some(once_per_call(kb, &this))
-            } else if extract_sort_ref_sym(kb, &TermIdView(carrier_value)).is_some()
+            } else if extract_sort_ref_sym(kb, &binding).is_some()
                 && sort_application_parts(kb, &binding)
                     .is_some_and(|(s, _)| kb.canonical_sort_sym(s) == carrier_canon)
             {
@@ -2561,7 +2641,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
                 // name as a ref-shaped leaf and leaves it for the late pass — by which time the
                 // argument has bound the parameter, and `Rel.mix(x, 5)` loaded behind `B = Car`
                 // (MEASURED, with the loader no longer writing the `?` into such a reference).
-                Some(expand_sort_application(kb, &binding).unwrap_or(binding))
+                Some(expand_sort_application(kb, &binding).unwrap_or_else(|| binding.clone()))
             } else {
                 None
             };
@@ -2573,15 +2653,15 @@ pub(super) fn bind_spec_params_from_carrier_param(
                 continue;
             }
         }
-        let concrete: Option<TermId> = if typaram_occurrence_sym(kb, carrier_value).is_some() {
+        let concrete: Option<Value> = if typaram_occurrence_sym(kb, &binding).is_some() {
             // A ref SHAPE (`Element ↦ T`, `E ↦ Stream.E`, or a concrete leaf `Int64`).
-            match typaram_ref_vid(kb, carrier_value, carrier_sym) {
+            match typaram_ref_vid(kb, &binding, carrier_sym) {
                 // A genuine carrier param (`Stream.T` / `Stream.E`): read the receiver's
-                // written type-arg.
+                // written type-arg, on the carrier it rides.
                 Some(vid) => recv_bindings
                     .iter()
                     .find(|e| e.0 == vid)
-                    .map(|e| e.1)
+                    .map(|e| e.1.clone())
                     // WI-612: the receiver left this carrier param ABSTRACT (unwritten —
                     // `s : Stream[T = Int64]` writes no `E`), so there is no type-arg to
                     // read and the param would leak `?_`. For an EFFECT-ROW param (the only
@@ -2596,16 +2676,12 @@ pub(super) fn bind_spec_params_from_carrier_param(
                     // unbound and surfaces the usual loud `undeclared`/`unconstrained`.
                     .or_else(|| {
                         let arg_sym = recv_arg_sym?;
-                        let param_sym = typaram_occurrence_sym(kb, carrier_value)?;
+                        let param_sym = typaram_occurrence_sym(kb, &binding)?;
                         let member_name = short_name_of(kb.local_name_of(param_sym)).to_owned();
-                        // Positively verify the row is UNWRITTEN on the receiver, not merely
-                        // absent from the Term-only `recv_bindings`: a WRITTEN Node-carried
-                        // row (`Stream[E = {Modify[x]}]`) is dropped by
-                        // `parameterized_vid_bindings` (its `_ => None` arm), so reading only
-                        // `recv_bindings` would synthesize a spurious `s.E` over an
-                        // already-written row. `extract_type_param` is Node-inclusive, so a
-                        // written row (any carrier) skips the projection — the row is read /
-                        // grounded by the ordinary path instead.
+                        // Positively verify the row is UNWRITTEN on the receiver, by the
+                        // member's name as well as by its variable: a row the receiver wrote
+                        // under a key `recv_bindings` could not resolve to a parameter is
+                        // still written, and a projection `s.E` over it would be spurious.
                         if extract_type_param(kb, recv_ty, &member_name).is_some()
                             || !sort_param_is_effect_row(kb, carrier_sym, &member_name)
                         {
@@ -2613,44 +2689,30 @@ pub(super) fn bind_spec_params_from_carrier_param(
                         }
                         let member = kb.intern(&member_name);
                         let recv_term = kb.alloc(Term::Ref(arg_sym));
-                        Some(kb.make_expr_carried(recv_term, member))
+                        Some(Value::term(kb.make_expr_carried(recv_term, member)))
                     }),
                 // A ref-shaped CONCRETE leaf (`Int64`) that is not one of the carrier's
                 // params: skip here — WI-383 reserves ground value-params to the late pass.
                 None => None,
             }
-        } else if type_value_is_ground(kb, carrier_value) {
+        } else if type_is_ground(kb, &binding) {
             // A ground provider value, bound ONCE per call with each unwritten slot a fresh
             // variable — every parameter typed by it reads that one type (`x: T, y: T` at `T =
             // Pair[A = Box, B = Int64]` take one `Box`, as the self-receiver path and the
             // declaration rule tie them). Bound as written and expanded per occurrence it
             // admitted two, and a member tying them crashed (WI-20260929-0RP29, MEASURED). A
             // written row (`{}`) has no slot and is bound as written.
-            match expand_sorts_deep(kb, &Value::term(carrier_value), SlotVar::Flexible) {
-                Value::Term { id, .. } => Some(id),
-                expanded => {
-                    if let Some(spec_vid) = spec_vid {
-                        if subst.resolve_as_value(spec_vid).is_none()
-                            && !occurs_in_view(kb, spec_vid, &expanded)
-                        {
-                            subst.bind_value(kb, spec_vid, expanded);
-                            any = true;
-                        }
-                    }
-                    continue;
-                }
-            }
+            Some(expand_sorts_deep(kb, &binding, SlotVar::Flexible))
         } else {
             // WI-593: a COMPOUND provider binding still mentioning the carrier's own
             // params (`Map provides FiniteCollection[Element = Pair[A = K, B = V]]`).
             // Substitute the receiver's type-args (`K ↦ Int64, V ↦ Int64`) into it.
-            let at_receiver =
-                substitute_carrier_params(kb, carrier_value, carrier_sym, &recv_bindings);
+            let at_receiver = substitute_carrier_params(kb, &binding, carrier_sym, &recv_bindings);
             // DETERMINED, not concrete ([`type_value_is_ground_g`], WI-1059): a slot the
             // receiver fills with the CALLER's own type parameter (`m: MapLike[K = Int64, V
             // = W]`) is a rigid, which nothing later can decide — the binding is as known as
             // it will ever be, and is the common case, bound as it stands.
-            if type_value_is_ground_g(kb, at_receiver, true) {
+            if type_is_determined(kb, &at_receiver) {
                 Some(at_receiver)
             } else {
                 // NOT DETERMINED — AND BOUND ALL THE SAME. It used to be skipped here: "a
@@ -2679,23 +2741,28 @@ pub(super) fn bind_spec_params_from_carrier_param(
                             let vid = *vid;
                             if !all.iter().any(|(written, _)| *written == vid) {
                                 let fresh = kb.fresh_var(vid.name());
-                                all.push((vid, kb.alloc(Term::Var(Var::Global(fresh)))));
+                                all.push((
+                                    vid,
+                                    Value::term(kb.alloc(Term::Var(Var::Global(fresh)))),
+                                ));
                             }
                         }
                         unset.insert(all)
                     }
                 };
-                let at_call = substitute_carrier_params(kb, carrier_value, carrier_sym, bindings);
+                let at_call = substitute_carrier_params(kb, &binding, carrier_sym, bindings);
                 Some(match &opening {
-                    Some(opening) => opening.open(kb, at_call, None),
+                    Some(opening) => opening.open_value(kb, &at_call, None),
                     None => at_call,
                 })
             }
         };
         let Some(concrete) = concrete else { continue };
         if let Some(spec_vid) = spec_vid {
-            if subst.resolve_as_value(spec_vid).is_none() && !occurs_in(kb, spec_vid, concrete) {
-                subst.bind_term(kb, spec_vid, concrete);
+            if subst.resolve_as_value(spec_vid).is_none()
+                && !occurs_in_view(kb, spec_vid, &concrete)
+            {
+                subst.bind_value(kb, spec_vid, concrete);
                 any = true;
             }
         }
@@ -2704,7 +2771,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
 }
 
 /// WI-593 — substitute a carrier's receiver-side type-args into a COMPOUND
-/// provider-view binding, producing the PLAIN type term the rest of the typer
+/// provider-view binding, producing the PLAIN type the rest of the typer
 /// compares against. A provision can map a spec parameter to a term that still
 /// mentions the carrier's OWN params (`Map provides FiniteCollection[Element =
 /// Pair[A = K, B = V]]`); to ground `Element` at a concrete `Map[K = Int64, V =
@@ -2715,39 +2782,46 @@ pub(super) fn bind_spec_params_from_carrier_param(
 /// is left intact, so the caller's groundness check rejects a partially-
 /// substituted result rather than binding a carrier-relative var.
 ///
+/// THE RECEIVER'S ARGUMENT GOES IN ON THE CARRIER IT RIDES, and the binding comes out on
+/// the carrier its form then takes ([`rewrite_binding_leaves`]): `Wrap provides Walk[E =
+/// {A, B}]` at a receiver `Wrap[A = {Modify[k]}, B = {}]` is the row `{Modify[k]}`, on the
+/// occurrence carrier the argument rides. Where every argument is a term the result is the
+/// hash-consed term it always was.
+///
 /// WI-600: the provider fact now stores a compound binding as the PLAIN
 /// parameterized term `Fn{Pair, A = K, B = V}` (the loader no longer wraps a nested
 /// binding value in a `reflect.SortView`; see `sort_binding_to_value`) — a value-in-type
 /// one too since WI-20260924-F3FYJ, whose provision `lower_value_or_gate` files as a term
 /// fact like any other. So a compound reaching here is always this plain `Fn` (an
 /// over-applied one included: the argument no parameter took is refused where it is
-/// written and not built, WI-20260929-AAQT5) — the generic-Fn recursion below handles it
+/// written and not built, WI-20260929-AAQT5) — the generic recursion below handles it
 /// with no `SortView` unwrap / rebuild.
 pub(super) fn substitute_carrier_params(
     kb: &mut KnowledgeBase,
-    tid: TermId,
+    binding: &Value,
     carrier_sym: Symbol,
-    recv_bindings: &[(VarId, TermId)],
-) -> TermId {
-    rewrite_term_leaves(kb, tid, &|kb, t| {
-        carrier_param_leaf_binding(kb, t, carrier_sym, recv_bindings)
+    recv_bindings: &[(VarId, Value)],
+) -> Value {
+    rewrite_binding_leaves(kb, binding, &|kb, leaf| {
+        carrier_param_leaf_binding(kb, leaf, carrier_sym, recv_bindings)
     })
+    .unwrap_or_else(|| binding.clone())
 }
 
 /// [`substitute_carrier_params`]' leaf set: the receiver's type-arg for a carrier-parameter
 /// occurrence, in either of its two spellings; `None` for anything else, which the walk
-/// descends ([`rewrite_term_leaves`]) — any other compound keeps its functor.
-fn carrier_param_leaf_binding(
+/// descends ([`rewrite_type_leaves`]) — any other compound keeps its functor.
+fn carrier_param_leaf_binding<V: TermView>(
     kb: &KnowledgeBase,
-    tid: TermId,
+    leaf: &V,
     carrier_sym: Symbol,
-    recv_bindings: &[(VarId, TermId)],
-) -> Option<TermId> {
+    recv_bindings: &[(VarId, Value)],
+) -> Option<Value> {
     // (1) A carrier-param leaf (`K`) → the receiver's type-arg, keyed by the
     //     carrier sort's canonical param VarId.
-    if let Some(vid) = typaram_ref_vid(kb, tid, carrier_sym) {
+    if let Some(vid) = typaram_ref_vid(kb, leaf, carrier_sym) {
         if let Some((_, bound)) = recv_bindings.iter().find(|e| e.0 == vid) {
-            return Some(*bound);
+            return Some(bound.clone());
         }
     }
     // (1b) WI-590 — the same leaf in its OTHER SPELLING. A carrier parameter is a
@@ -2767,8 +2841,11 @@ fn carrier_param_leaf_binding(
     //      only this read was missing. It went unnoticed while every route to such a call
     //      arrived with the intermediate's static type, which is a ONE-hop provision whose
     //      binding is a plain `Ref`.
-    match kb.get_term(tid) {
-        Term::Var(Var::Global(v)) => recv_bindings.iter().find(|e| e.0 == *v).map(|e| e.1),
+    match leaf.head(kb) {
+        ViewHead::Var(Var::Global(v)) => recv_bindings
+            .iter()
+            .find(|e| e.0 == v)
+            .map(|e| e.1.clone()),
         _ => None,
     }
 }
@@ -2801,14 +2878,14 @@ pub(super) fn bind_ground_value_params_from_provider(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     spec_sort: Symbol,
-    view_bindings: &SmallVec<[(Symbol, TermId); 2]>,
+    view_bindings: &SmallVec<[(Symbol, Value); 2]>,
 ) -> bool {
     let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         // GROUND value only (a concrete sort `Int64`): a type-param ref (`V ↦ Cell.V`) is
         // threaded by the early `bind_spec_params_from_carrier_param`, and the carrier
         // application / a still-abstract binding is filled by argument unification.
-        if !type_value_is_ground(kb, *carrier_value) {
+        if !type_is_ground(kb, carrier_value) {
             continue;
         }
         let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *spec_param_sym) else {
@@ -2823,9 +2900,8 @@ pub(super) fn bind_ground_value_params_from_provider(
         // WI-391: the producer emits the canonical `Ref(S)` binding shape (a bare sort is
         // `Ref(S)`, never the former nullary `Fn{S}` that extracted as `Error`), so the
         // carrier value binds directly — no late `Fn{S}→Ref(S)` normalization needed.
-        let bound = *carrier_value;
-        if !occurs_in(kb, spec_vid, bound) {
-            subst.bind_term(kb, spec_vid, bound);
+        if !occurs_in_view(kb, spec_vid, carrier_value) {
+            subst.bind_value(kb, spec_vid, carrier_value.clone());
             any = true;
         }
     }
@@ -2837,8 +2913,15 @@ pub(super) fn bind_ground_value_params_from_provider(
 /// [`bind_spec_params_from_carrier_param`]. Reads via [`extract_type`] and re-keys
 /// each binding by the `owner_sort`'s canonical `Var::Global` param VarId (WI-600:
 /// the identity key carrier grounding joins on, replacing the non-hygienic short
-/// name). Keeps only `Value::Term` values (a parameterized type's bindings are
-/// ground terms) whose param resolves to one of `owner_sort`'s declared params.
+/// name), keeping those whose param resolves to one of `owner_sort`'s declared params.
+///
+/// EACH VALUE ON THE CARRIER IT RIDES. A type argument is a hash-consed term unless it
+/// holds a value (`TransformEffects = {Modify[k]}`, `N = 3`), and then it is an
+/// occurrence: the same argument, read the same way through [`TermView`]. Kept only where
+/// it was a term, such an argument read as one the receiver had not written — the
+/// provision's binding over it stayed open, and what the spec is at that receiver was not
+/// read at all (`FiniteCollection.size(m)` over a mapped stream whose transform writes a
+/// cell leaked its row; MEASURED).
 ///
 /// `owner_sort` is the carrier the receiver type applies (`List` for a `List[T =
 /// Int]` receiver): its declared params own these binding keys, so resolving each
@@ -2849,7 +2932,7 @@ pub(super) fn parameterized_vid_bindings(
     kb: &KnowledgeBase,
     ty: &impl TermView,
     owner_sort: Symbol,
-) -> Vec<(VarId, TermId)> {
+) -> Vec<(VarId, Value)> {
     // WI-361: a parameterized type's bindings (`List[T = Int]` ⇒ `[(T, Int)]`), read
     // carrier-agnostically through `extract_type` (WI-470: the receiver type is now a
     // `Value::Node` for an occurrence-primary `List[T = …]`, but its binding `T = Int`
@@ -2860,19 +2943,8 @@ pub(super) fn parameterized_vid_bindings(
     };
     bindings
         .into_iter()
-        .filter_map(|(param, value)| match value {
-            // A concrete parameterized carrier's binding is a ground sort term
-            // (`List[T = Int]` ⇒ `Int`) — thread it. WI-477: a non-`Term` (Node)
-            // binding — a carrier parameterized by a poisoned/occurrence type — is
-            // not the ground `TermId` the carrier-grounding consumers `bind_term`;
-            // leaving it unthreaded surfaces a LOUD `unconstrained` downstream (cf.
-            // the `type_value_is_ground` guard in `bind_spec_params_from_carrier`)
-            // rather than a silently-wrong bind. Threading such a compound is WI-380
-            // follow-up work.
-            Value::Term { id: t, .. } => {
-                type_param_vid_in_sort(kb, owner_sort, param).map(|vid| (vid, t))
-            }
-            _ => None,
+        .filter_map(|(param, value)| {
+            type_param_vid_in_sort(kb, owner_sort, param).map(|vid| (vid, value))
         })
         .collect()
 }
@@ -2894,7 +2966,7 @@ pub(super) fn transitive_provider_spec_view_bindings(
     carrier_sym: Symbol,
     spec_sort: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::DirectFirst, &|c| {
         provider_spec_view_bindings(kb, c, spec_sort)
     })
@@ -2978,7 +3050,7 @@ pub(super) fn subtype_provider_view(
     kb: &KnowledgeBase,
     carrier: Symbol,
     spec: Symbol,
-) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
+) -> Option<(SmallVec<[(Symbol, Value); 2]>, bool)> {
     // The direct fact first — the hot path, and the answer for every carrier that
     // declares the spec itself. Reached before the reachability walk so a one-hop
     // provider pays nothing for the chain machinery.
@@ -3050,7 +3122,7 @@ pub(super) fn subtype_provider_view(
     let self_naming = carrier_vid
         .and_then(|cvid| transitive_carrier_for_param(kb, spec, cvid, carrier))
         .filter(|owner| !same_sort_canonical(kb, *owner, carrier));
-    let mut merged: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut merged: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     let mut dropped_carrier = false;
     for view in &views {
         for (param, value) in view {
@@ -3059,16 +3131,16 @@ pub(super) fn subtype_provider_view(
             // nothing.
             if let (Some(cvid), Some(owner)) = (carrier_vid, self_naming) {
                 if type_param_vid_in_sort(kb, spec, *param) == Some(cvid)
-                    && composed_self_reference(kb, owner, *value)
+                    && composed_self_reference(kb, owner, value)
                 {
                     dropped_carrier = true;
                     continue;
                 }
             }
             match merged.iter().find(|(mp, _)| same_label(kb, *mp, *param)) {
-                Some((_, seen)) if !provision_bindings_agree(kb, *seen, *value) => return None,
+                Some((_, seen)) if !provision_bindings_agree(kb, seen, value) => return None,
                 Some(_) => {}
-                None => merged.push((*param, *value)),
+                None => merged.push((*param, value.clone())),
             }
         }
     }
@@ -3117,8 +3189,12 @@ pub(super) fn subtype_provider_view(
 /// path, which is the defect this ticket removes, relocated. Identity against the chain's
 /// OWN self-naming sort is the exact question: for that fixture there is none (no sort on
 /// `Carrier`'s chain binds `P` to itself), so nothing is dropped.
-pub(super) fn composed_self_reference(kb: &KnowledgeBase, owner: Symbol, value: TermId) -> bool {
-    crate::kb::load::provides_spec_base_sym(kb, value)
+pub(super) fn composed_self_reference<V: TermView>(
+    kb: &KnowledgeBase,
+    owner: Symbol,
+    value: &V,
+) -> bool {
+    crate::kb::load::provides_spec_base_sym_view(kb, value)
         .is_some_and(|base| same_sort_canonical(kb, base, owner))
 }
 
@@ -3129,7 +3205,7 @@ fn provision_route_views(
     kb: &KnowledgeBase,
     carrier: Symbol,
     spec: Symbol,
-) -> Option<SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]>> {
+) -> Option<SmallVec<[SmallVec<[(Symbol, Value); 2]>; 2]>> {
     // REACHABILITY FIRST, COMPOSITION ONLY FOR THE ROUTES THAT REACH. The naive form —
     // ask `transitive_provider_spec_view_bindings` per intermediate and keep the `Some`s —
     // pays a composing walk for every spec the carrier declares, which for a carrier like
@@ -3150,7 +3226,7 @@ fn provision_route_views(
     // whole lookup is the conservative reading (the caller then refuses the comparison),
     // and it keeps this loop from being the silent `continue` the repo's principles warn
     // about (found by /code-review).
-    let mut out: SmallVec<[SmallVec<[(Symbol, TermId); 2]>; 2]> = SmallVec::new();
+    let mut out: SmallVec<[SmallVec<[(Symbol, Value); 2]>; 2]> = SmallVec::new();
     for intermediate in reaching {
         let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
         let outer = transitive_provider_spec_view_bindings(kb, intermediate, spec, &mut visited)?;
@@ -3200,10 +3276,10 @@ pub(super) fn provider_spec_view_bindings(
     kb: &KnowledgeBase,
     carrier_sym: Symbol,
     spec_sort: Symbol,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     // (An unresolved `SortProvidesInfo` symbol yields no rows, and the tail returns
     // `None` — identical to the old `?` early return.)
-    let mut merged: Option<SmallVec<[(Symbol, TermId); 2]>> = None;
+    let mut merged: Option<SmallVec<[(Symbol, Value); 2]>> = None;
     for row in provides_rows_of_provider(kb, carrier_sym) {
         // Canonicalize both sides — the spec base in the provider fact's
         // `SortView` is resolved in the carrier's import scope and may be a
@@ -3214,7 +3290,7 @@ pub(super) fn provider_spec_view_bindings(
         if kb.canonical_sort_sym(row.spec_base) != kb.canonical_sort_sym(spec_sort) {
             continue;
         }
-        let bindings = row.bindings;
+        let bindings = row.bindings(kb);
         match &mut merged {
             // The overwhelmingly common case: one provision, returned as it was
             // read, with no merge allocation.
@@ -3982,14 +4058,17 @@ pub(super) fn override_at_call(
 /// WI-599: a `Var::Rigid` counts too — an op's own type params are Skolemized while
 /// its body is checked, so a bare carrier argument `c : C` arrives as a rigid var
 /// carrying the param's name.
-pub(super) fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
-    if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
+///
+/// Read through the view, so on any carrier: a binding a receiver's argument was
+/// substituted into need not be a term.
+pub(super) fn typaram_occurrence_sym<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    if let Some(s) = extract_sort_ref_sym(kb, v) {
         return Some(s);
     }
-    match kb.get_term(tid) {
+    match v.head(kb) {
         // A bare sort is answered above via `extract_sort_ref_sym` (WI-361); `Ident` here.
-        Term::Ident(s) => Some(*s),
-        Term::Var(Var::Global(v)) | Term::Var(Var::Rigid(v)) => Some(v.name()),
+        ViewHead::Ident(s) => Some(s),
+        ViewHead::Var(Var::Global(x)) | ViewHead::Var(Var::Rigid(x)) => Some(x.name()),
         _ => None,
     }
 }
@@ -4002,7 +4081,7 @@ pub(super) fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<
 /// what makes the key hygienic — two unrelated sorts' `T` resolve to DISTINCT
 /// VarIds, so the match cannot cross-collide (the fragility the retired short-name
 /// compare papered over: "safe today only because the compare is scoped per
-/// spec↔carrier triad"). `None` when `tid` is not a type-param occurrence, or names
+/// spec↔carrier triad"). `None` when `v` is not a type-param occurrence, or names
 /// a parameter `owner_sort` does not declare (a concrete leaf sort like `Int64`).
 ///
 /// ANOTHER SORT'S PARAMETER OF THE SAME NAME IS NOT THIS SORT'S. The resolution below is by
@@ -4012,12 +4091,12 @@ pub(super) fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<
 /// Element = Foreign.Elem]` read `Foreign.Elem` as `Seq`'s own `Elem`, and a construction
 /// over a `Seq[Elem = Bool]` was held to an element of `Bool` the provision never named,
 /// where the twin written `Foreign.X` was not (MEASURED).
-pub(super) fn typaram_ref_vid(
+pub(super) fn typaram_ref_vid<V: TermView>(
     kb: &KnowledgeBase,
-    tid: TermId,
+    v: &V,
     owner_sort: Symbol,
 ) -> Option<VarId> {
-    let name_sym = typaram_occurrence_sym(kb, tid)?;
+    let name_sym = typaram_occurrence_sym(kb, v)?;
     let local = kb.local_name_of(name_sym);
     let declared = kb.type_param_sym_of(owner_sort, local)?;
     if name_sym != declared {
@@ -4173,7 +4252,7 @@ pub fn dispatch_spec_op_cached(
     // which chases vars NESTED inside a goal binding, through the rigid bridge
     // too), and what `sort_goal_from_subst` stores is each binding as σ resolved
     // it when the goal was built — a variable still inside it is one that walk
-    // could not close. So two σ-present dispatches sharing this goal `TermId` whose
+    // could not close. So two σ-present dispatches sharing this goal whose
     // σ classes that variable differently would resolve differently yet collide on
     // the key. A FULLY-GROUND goal has nothing for σ to chase, so its result is
     // determined by the key and stays cacheable; a non-ground σ-present goal
@@ -4187,26 +4266,38 @@ pub fn dispatch_spec_op_cached(
     // WI-20260828-EKWDC: the CARRIER'S ARGUMENTS are held to the same test, because they
     // are now part of what makes a goal ground. `carrier` used to be a `Symbol` — ground
     // by construction — so `bindings` alone answered "has this goal anything for σ to
-    // chase"; an argument is a `TermId` off the receiver's inferred type and can be an
+    // chase"; an argument is read off the receiver's inferred type and can be an
     // unresolved var, which the paragraph above is precisely about. Reading only the
     // bindings would leave a goal the memo treats as determined while its resolution
     // still depends on σ.
-    let cacheable = disambig.is_none()
-        || goal
-            .bindings
+    //
+    // A BINDING THAT IS NOT HASH-CONSED HAS NO IDENTITY THAT RECURS, so a goal that holds
+    // one is resolved each time, as a goal σ can still change is. The key compares such a
+    // binding by its allocation ([`value_identity_key`]) — sound: a miss is a recompute —
+    // and two dispatches of one goal hold two allocations of it, so its entry would be
+    // written and never read. MEASURED over the rows that drive such goals (`wi_2nmxa`,
+    // `wi_wbhtm`, `wi_0rp29_nested`, `wi_j38ve`, `wi_020th`, `wi_jn09w`, `wi_kssa4`): 38
+    // entries written, none read, two of them a goal the same load had resolved before.
+    let parts = || {
+        goal.bindings
             .iter()
             .chain(goal.carrier.iter().flat_map(|c| c.args.iter()))
-            .all(|(_, v)| type_value_is_ground(kb, *v));
-    let key = (
-        op_short_sym,
-        goal.clone(),
-        enclosing_requires.to_vec(),
-        disambig.is_some(),
-        selected.to_vec(),
-        sub_goal_requires.to_vec(),
-    );
-    if cacheable {
-        if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
+            .map(|(_, v)| v)
+    };
+    let cacheable = parts().all(|v| matches!(v, Value::Term { .. }))
+        && (disambig.is_none() || parts().all(|v| type_is_ground(kb, v)));
+    let key = cacheable.then(|| {
+        (
+            op_short_sym,
+            goal.clone(),
+            enclosing_requires.to_vec(),
+            disambig.is_some(),
+            selected.to_vec(),
+            sub_goal_requires.to_vec(),
+        )
+    });
+    if let Some(key) = &key {
+        if let Some(cached) = kb.resolve_cache.borrow().get(key) {
             return cached.clone();
         }
     }
@@ -4219,7 +4310,7 @@ pub fn dispatch_spec_op_cached(
         selected,
         sub_goal_requires,
     );
-    if cacheable {
+    if let Some(key) = key {
         kb.resolve_cache.borrow_mut().insert(key, result.clone());
     }
     result
@@ -4341,8 +4432,8 @@ pub(super) fn resolve_at_goal(
 }
 
 /// WI-210 — does a per-call binding value match a candidate's binding value, for
-/// DISPATCH? [`types_lesseq`] first; failing that, a coarse HEAD match through
-/// [`sort_sym_of_term`] — two bare sorts by symbol, and two STRUCTURED values by their
+/// DISPATCH? [`types_compatible`] first; failing that, a coarse HEAD match through
+/// [`sort_sym_of_view`] — two bare sorts by symbol, and two STRUCTURED values by their
 /// functor ALONE: `List[T = Int64]` matches `List[T = String]`, and any two effect rows
 /// match whatever their labels.
 ///
@@ -4361,13 +4452,17 @@ pub(super) fn resolve_at_goal(
 /// design change with that census as its blast radius, not a correction of this one.
 ///
 /// ONE EXCEPTION, and it is not a tightening of the structured arm: a VALUE in a type
-/// position (`denoted(value: 3)`) is related by value alone — `types_lesseq` decides it and
+/// position (`denoted(value: 3)`) is related by value alone — `types_compatible` decides it and
 /// the coarse head never does, because every value-in-type shares the one head `Denoted`
 /// (WI-20260924-F3FYJ).
-pub(super) fn dispatch_values_match(
+///
+/// ON ANY CARRIER, read through the view: a per-call value that holds a value in a type
+/// position (`MappedStream[…, TransformEffects = {Modify[k]}]`) rides an occurrence, and is
+/// matched as its term twin would be.
+pub(super) fn dispatch_values_match<P: TermView, C: TermView>(
     kb: &mut KnowledgeBase,
-    per_call_value: TermId,
-    candidate_value: TermId,
+    per_call_value: &P,
+    candidate_value: &C,
 ) -> bool {
     // A universally-quantified candidate matches any per-call value. The
     // fact-loading path stores type-params as `Term::Ref`, the op-signature
@@ -4375,33 +4470,31 @@ pub(super) fn dispatch_values_match(
     //
     // The CANDIDATE side only. This function also owns half of WI-824's rule —
     // a per-call RIGID does not match a CONCRETE candidate — but owns it
-    // EMERGENTLY, via `types_lesseq` refusing a var against a sort and
-    // `sort_sym_of_term` finding no symbol for a var; nothing below states it.
+    // EMERGENTLY, via `types_compatible` refusing a var against a sort and
+    // `sort_sym_of_view` finding no symbol for a var; nothing below states it.
     // A var-tolerant widening of either would silently re-open that half (the
     // `Leaf` candidate would start matching an abstract `Desc[T = FT]` goal),
     // which the sibling guard in `match_candidate_against_goal` arm (2) cannot
     // catch — it sees only parameterized candidate heads.
-    if is_type_param_value(kb, candidate_value) {
+    if is_type_param_view(kb, candidate_value) {
         return true;
     }
     // WI-335: dispatch decisions are independent of each other (dispatch
     // values are typically nominal sort_refs; row reasoning is rare).
     // Each call gets a fresh scratch substitution.
     let mut subst = Substitution::new();
-    if types_lesseq(kb, &mut subst, per_call_value, candidate_value) {
+    if types_compatible(kb, &mut subst, per_call_value, candidate_value) {
         return true;
     }
-    // A VALUE in a type position is related by VALUE, which `types_lesseq` has just
+    // A VALUE in a type position is related by VALUE, which `types_compatible` has just
     // decided — never by the coarse head below, where every value-in-type has the one
     // head `Denoted` and `N = 4` would match `N = 3` (WI-20260924-F3FYJ, beside the
     // leaf arm it serves in `match_candidate_against_goal`).
-    if is_denoted_type(kb, &TermIdView(per_call_value))
-        || is_denoted_type(kb, &TermIdView(candidate_value))
-    {
+    if is_denoted_type(kb, per_call_value) || is_denoted_type(kb, candidate_value) {
         return false;
     }
-    let per_call_sym = sort_sym_of_term(kb, per_call_value);
-    let candidate_sym = sort_sym_of_term(kb, candidate_value);
+    let per_call_sym = sort_sym_of_view(kb, per_call_value);
+    let candidate_sym = sort_sym_of_view(kb, candidate_value);
     match (per_call_sym, candidate_sym) {
         (Some(a), Some(b)) => a == b,
         _ => false,

@@ -6,20 +6,18 @@ use super::*;
 /// `Term::Var`, or as a `Term::Ref` / `Term::Ident` to a sort-level type-param
 /// symbol (the loader signal for `sort T = ?`).
 pub(crate) fn is_type_param_value(kb: &KnowledgeBase, value: TermId) -> bool {
-    match kb.get_term(value) {
-        Term::Var(_) => true,
-        Term::Ref(sym) | Term::Ident(sym) => is_sort_param_symbol(kb, *sym),
-        // WI-359: a bare param name also surfaces as a nullary `Fn` (the
-        // `make_name_term` shape — e.g. an enclosing sort's open param
-        // captured into a `requires` SortView). Treat `Fn{param}` like
-        // `Ref(param)` so defer-to-requirement matching and candidate
-        // leniency see it as the wildcard it is.
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => is_sort_param_symbol(kb, *functor),
-        _ => false,
+    is_type_param_view(kb, &TermIdView(value))
+}
+
+/// [`is_type_param_value`] of a type on any carrier, read through the view: a variable of
+/// any kind, or a bare name of a sort-level type parameter. WI-359: the nullary
+/// application is that bare name too (the `make_name_term` shape — an enclosing sort's
+/// open param captured into a `requires` SortView), which the view reads as the one head
+/// it is.
+pub(crate) fn is_type_param_view<V: TermView>(kb: &KnowledgeBase, value: &V) -> bool {
+    match value.head(kb) {
+        ViewHead::Var(_) => true,
+        _ => view_ref_symbol(kb, value).is_some_and(|sym| is_sort_param_symbol(kb, sym)),
     }
 }
 
@@ -119,6 +117,38 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
     }
 }
 
+/// [`type_value_is_ground`] of a type on ANY carrier: CONCRETE — no variable and no
+/// sort-parameter reference anywhere in it — so an occurrence answers as the term it
+/// stands for.
+///
+/// NOT [`resolved_type_is_ground`], which is the gate of the argument check and asks one
+/// thing more of an occurrence: that a value it holds be CLOSED, a reference to a
+/// parameter (`Modify[k]`) being comparable only once binders are aligned. What a
+/// provision's binding IS at a receiver is not that question — `{Modify[k]}` holds nothing
+/// a later pass could decide, and is as much the answer as `{}` is.
+///
+/// THAT IS THE ONLY DIFFERENCE ([`DenotedReading`]): the two gates are one walk, so what
+/// either says of a ∀, of a guarded atom's guard or of a projection's receiver is what the
+/// other says.
+pub(super) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
+    value_type_is_ground_g(kb, v, false, DenotedReading::AsWritten)
+}
+
+/// [`type_is_ground`] at the DETERMINED reading ([`type_value_is_ground_g`]): a rigid counts.
+pub(super) fn type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool {
+    value_type_is_ground_g(kb, v, true, DenotedReading::AsWritten)
+}
+
+/// What a groundness gate asks of a VALUE standing in a type position (`denoted`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DenotedReading {
+    /// That it be CLOSED ([`denoted_value_is_closed`]): the argument check's question,
+    /// which can compare a place only once binders are aligned.
+    Closed,
+    /// That it hold no variable, as any other part of the type: what the type IS.
+    AsWritten,
+}
+
 /// WI-20260923-32XFQ — does `t`, or any term beneath it, satisfy `hit`? Pre-order over the
 /// hash-consed `Term::Fn` spine — the node itself, then its positional arguments, then its
 /// named ones — stopping at the first hit. `hit` is asked of EVERY node, interior ones
@@ -128,7 +158,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// The one child walk under the `TermId` "does this type mention X" predicates, which each
 /// spelled it with only the leaf test differing: [`term_contains_callable`],
 /// `term_mentions_an_entity`, `type_term_has_variable`, `declared_type_mentions_param`,
-/// [`type_term_mentions_type_var`], `type_term_mentions_op_tp`, `term_contains_functor`,
+/// `type_term_mentions_op_tp`, `term_contains_functor`,
 /// [`occurs_in`]. A `TermId` walk rather than a [`TermView`] one on purpose: the view's
 /// `named_keys` allocates per node, and [`occurs_in`] runs for every hash-consed binding.
 pub(crate) fn term_any_subterm(
@@ -217,6 +247,17 @@ pub(super) fn resolved_type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool
 /// the shared view walk [`type_view_is_ground_g`] (which is where the old `_ => false`
 /// went — one type, one answer, whatever carrier it rides in on).
 fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> bool {
+    value_type_is_ground_g(kb, v, rigid_ok, DenotedReading::Closed)
+}
+
+/// The one walk under [`resolved_type_is_ground_g`] and [`type_is_ground`], which differ
+/// in `denoted` alone.
+fn value_type_is_ground_g(
+    kb: &KnowledgeBase,
+    v: &Value,
+    rigid_ok: bool,
+    denoted: DenotedReading,
+) -> bool {
     match v {
         Value::Term { id: t, .. } => type_value_is_ground_g(kb, *t, rigid_ok),
         // WI-470: an occurrence-primary type (the flipped arrow / row / parameterized
@@ -231,7 +272,7 @@ fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> b
         // schema rather than a determined type (WI-1083), and a guarded effect atom whose
         // GUARD is deliberately not read (WI-478). Those are deferrals with named owners,
         // not the missing arm this ticket removed.
-        Value::Node(occ) => node_type_is_ground_g(kb, occ, rigid_ok),
+        Value::Node(occ) => node_type_is_ground_g(kb, occ, rigid_ok, denoted),
         // EVERY OTHER CARRIER through the shared view walk — `Value::Entity` and
         // `Value::Tuple` (a type application whose child is not leaf-lowering), the scalar
         // carriers of a §4.5 value-in-type, `Value::SymbolRef`, `Value::Var`. This was
@@ -256,10 +297,15 @@ fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> b
 /// both carriers must key alike (WI-1016): a rigid nested in a `Value::Node` row tail is
 /// the SAME skolem as one in the hash-consed twin, and a gate that admits one and skips the
 /// other decides the same program two ways.
-fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok: bool) -> bool {
+fn node_type_is_ground_g(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    rigid_ok: bool,
+    denoted: DenotedReading,
+) -> bool {
     let child_ground = |c: &TypeChild| match c {
         TypeChild::Interned(t) => type_value_is_ground_g(kb, *t, rigid_ok),
-        TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok),
+        TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok, denoted),
     };
     match &occ.kind {
         NodeKind::Type(tn) => match tn {
@@ -275,7 +321,14 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
             // (`Vector[Int64, ?n]`) or binder-relative (`Modify[c]`, `c` a callback param)
             // denoted is deferred to the validator that can decide it (unification /
             // the alignment-aware `validate_callback_effect_row`). Nothing is skipped.
-            TypeNode::Denoted { value } => denoted_value_is_closed(kb, value),
+            //
+            // The other gate asks only what the type IS ([`DenotedReading::AsWritten`]):
+            // the value is read as any other part of it, a variable in it the one thing
+            // that leaves it open.
+            TypeNode::Denoted { value } => match denoted {
+                DenotedReading::Closed => denoted_value_is_closed(kb, value),
+                DenotedReading::AsWritten => type_view_is_ground_g(kb, value, rigid_ok),
+            },
             TypeNode::Parameterized { base, bindings } => {
                 child_ground(base) && bindings.iter().all(|(_, c)| child_ground(c))
             }
@@ -310,7 +363,7 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
             }
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
-                .all(|(_, t)| resolved_type_is_ground_g(kb, t, rigid_ok)),
+                .all(|(_, t)| value_type_is_ground_g(kb, t, rigid_ok, denoted)),
             // WI-1083 — A ∀ IS A SCHEMA, NOT A DETERMINED TYPE, so it is not ground:
             // this gate asks "is enough of this type known to judge it", and a
             // `PolyType` answers "not until it is instantiated". Every consumer DOES

@@ -1193,13 +1193,15 @@ fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> 
 /// A `Value::Node` type is walked completely via [`occ_contains_var`] (which reads
 /// the occurrence storage directly), not through the view alone — belt-and-braces
 /// so a var nested in a parameterized binding / named-tuple field can't be missed,
-/// which would let `bind_resolved` create a cyclic binding. So a `Value::Node` is
-/// walked completely via [`occ_contains_var`]
-/// over the occurrence spine; every other carrier (a `TermId`, which exposes all
-/// children) uses the view walk.
+/// which would let `bind_resolved` create a cyclic binding. A hash-consed type is
+/// walked as the term it is ([`occurs_in`]); every other carrier uses the view walk.
 pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
-    if let BindValue::Value(Value::Node(occ)) = v.as_bind_value() {
-        return occ_contains_var(kb, vid, &occ);
+    match v.as_bind_value() {
+        // A hash-consed type is walked where it is stored ([`occurs_in`], which says why):
+        // the two checks ask one question of a leaf, and this is nearly every binding.
+        BindValue::Term(t) => return occurs_in(kb, vid, t),
+        BindValue::Value(Value::Node(occ)) => return occ_contains_var(kb, vid, &occ),
+        _ => {}
     }
     match v.head(kb) {
         // Only a flex `Global` can be the var being bound; a `Rigid` / `DeBruijn`
@@ -1748,10 +1750,11 @@ fn ground_rigid_projection_if_concrete(
         let Some(bindings) = provider_spec_view_bindings(kb, s, e.required_sort) else {
             continue;
         };
+        // A term walk answers a term, and the binding a provision stores is one.
         let Some(bound) = bindings
             .iter()
             .find(|(n, _)| kb.local_name_of(*n) == member_str)
-            .map(|(_, b)| *b)
+            .map(|(_, b)| b.expect_term())
         else {
             continue;
         };

@@ -144,8 +144,11 @@ pub fn dispatch_candidate_impl_sorts(kb: &mut KnowledgeBase, goal: &SortGoal) ->
 /// guard's provision question (`provision_admits_carriers`, WI-20260925-PRVA2 (c)), which must
 /// agree about which rows are instances — the guard read a conversion as a provision with only
 /// variables in it and admitted every carrier pair the search then found nothing for.
+///
+/// The row's bindings are read where they are stored ([`ProvidesRow::stored_bindings`]):
+/// this is asked of every row of a spec on each search, and most rows are then dropped.
 pub(super) fn is_conversion_row(kb: &KnowledgeBase, row: &ProvidesRow) -> bool {
-    is_conversion_edge_at(kb, row.provider, row.spec_base, &row.bindings)
+    is_conversion_edge_at(kb, row.provider, row.spec_base, row.stored_bindings(kb))
         || kb
             .derived_provision_origin_of(row.rid)
             .is_some_and(|origin| chain_has_conversion(kb, row.provider, origin))
@@ -304,11 +307,7 @@ pub(super) fn collect_provides_candidates(
         if is_conversion_row(kb, &row) {
             continue;
         }
-        let ProvidesRow {
-            provider: impl_sort,
-            bindings: view_bindings,
-            ..
-        } = row;
+        let impl_sort = row.provider;
 
         // WI-350: when the call supplies a concrete receiver carrier (a
         // self-receiver spec — `head(s: Stream)` with `s : List[…]`),
@@ -344,10 +343,12 @@ pub(super) fn collect_provides_candidates(
         }
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
-        let mut impl_subst: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         let mut head_specificity: u32 = 0;
         let mut all_match = true;
-        let mut resolved_head_bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut resolved_head_bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+        // Decoded here, for the rows the conversion test and the carrier filter kept.
+        let view_bindings = row.bindings(kb);
         for (binding_short, candidate_value) in &view_bindings {
             let short_name = kb.local_name_of(*binding_short);
             if !type_param_names.iter().any(|n| n == short_name) {
@@ -356,7 +357,7 @@ pub(super) fn collect_provides_candidates(
                 continue;
             }
             let per_call_value = match goal_binding_value(kb, goal, *binding_short) {
-                Some(t) => t,
+                Some(t) => t.clone(),
                 None => {
                     // WI-387 + WI-714: the goal under-constrains this spec param (no
                     // per-call value). The decision turns on the param's ROLE:
@@ -391,8 +392,8 @@ pub(super) fn collect_provides_candidates(
                 kb,
                 impl_sort,
                 true, // top-level spec-view binding — arm (2.5) may self-capture here
-                *candidate_value,
-                per_call_value,
+                candidate_value,
+                &per_call_value,
                 &impl_param_set,
                 &mut impl_subst,
                 &mut head_specificity,
@@ -486,19 +487,39 @@ pub(super) fn collect_provides_candidates(
         // today (WI-838 measured every provision's carrier equal to its canonical symbol),
         // so this is untested; it is spelled the strong way because the untested direction
         // is refusing a correct program, and because the named owner of the rule spells it
-        // so. The other three fields compare raw: they hold per-call `TermId`s from ONE
-        // goal, so two provisions that agree produce identical ids by construction.
+        // so. The other three fields compare by what they hold: per-call values from ONE
+        // goal, so two provisions that agree produce the same value at each key — the same
+        // `TermId` where it is a term, and structurally the same where it rides another
+        // carrier ([`same_bindings`]).
         let cand_carrier = kb.canonical_sort_sym(cand.impl_sort);
         if !out.iter().any(|c| {
             kb.canonical_sort_sym(c.impl_sort) == cand_carrier
-                && c.resolved_head_bindings == cand.resolved_head_bindings
-                && c.impl_subst == cand.impl_subst
+                && same_bindings(kb, &c.resolved_head_bindings, &cand.resolved_head_bindings)
+                && same_bindings(kb, &c.impl_subst, &cand.impl_subst)
                 && c.head_specificity == cand.head_specificity
         }) {
             out.push(cand);
         }
     }
     out
+}
+
+/// Two binding lists that say the same thing in the same order: each key, and each value —
+/// a hash-consed one by its `TermId`, one on another carrier by its structure. The equality
+/// two lists of `TermId`s had by `==`, for bindings that may ride any carrier.
+pub(super) fn same_bindings(
+    kb: &KnowledgeBase,
+    a: &[(Symbol, Value)],
+    b: &[(Symbol, Value)],
+) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|((ka, va), (kb_, vb))| {
+            ka == kb_
+                && match (va, vb) {
+                    (Value::Term { id: x, .. }, Value::Term { id: y, .. }) => x == y,
+                    _ => views_structurally_equal(kb, va, vb),
+                }
+        })
 }
 
 /// WI-20260828-EKWDC — extend a candidate's impl-param substitution with the arguments
@@ -548,7 +569,7 @@ pub(super) fn carrier_arg_impl_subst(
     goal: &SortGoal,
     impl_sort: Symbol,
     impl_params: &[Symbol],
-    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+    impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
 ) {
     let Some(carrier) = goal.carrier.as_ref() else {
         return;
@@ -563,8 +584,8 @@ pub(super) fn carrier_arg_impl_subst(
     // functor, and the typer canonicalizes exactly because one qualified name can be
     // interned under several `Symbol`s (WI-838/WI-864). A disagreement would be SILENT IN
     // BOTH DIRECTIONS: the additivity test below would not see the head match's binding,
-    // so a duplicate key would be pushed, and `substitute_impl_params_alloc`'s `*k == s`
-    // would never match the `Ref` in the `requires` clause, so the fill would do nothing.
+    // so a duplicate key would be pushed, and [`sigma_subst_type`]'s `*k == s` would
+    // never match the `Ref` in the `requires` clause, so the fill would do nothing.
     for (param, value) in align_by_short_name(kb, &path, impl_params) {
         if impl_subst.iter().any(|(k, _)| *k == param) {
             continue;
@@ -575,7 +596,7 @@ pub(super) fn carrier_arg_impl_subst(
 
 /// `sort` at the arguments `args`, read AT `base` — a sort it provides, or itself: `base`'s
 /// own parameters in the receiver's terms. The receiver's arguments are first re-keyed by
-/// `sort`'s own parameter symbols — the form [`substitute_impl_params_alloc`] matches, and
+/// `sort`'s own parameter symbols — the form [`sigma_subst_type`] matches, and
 /// the starting substitution of [`provision_path_subst`]'s walk; at zero hops that IS the
 /// answer. `None` when `sort` does not reach `base`.
 ///
@@ -584,9 +605,9 @@ pub(super) fn carrier_arg_impl_subst(
 fn sort_args_viewed_at(
     kb: &mut KnowledgeBase,
     sort: Symbol,
-    args: &[(Symbol, TermId)],
+    args: &[(Symbol, Value)],
     base: Symbol,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     let params = impl_param_symbols(kb, sort);
     let own = align_by_short_name(kb, args, &params);
     let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
@@ -598,12 +619,12 @@ fn sort_args_viewed_at(
 /// two spellings of one parameter; see [`carrier_arg_impl_subst`] for why that join is
 /// exact within a sort and nowhere else. A key naming no parameter of the sort is
 /// dropped — it constrains nothing the substitution can reach.
-pub(super) fn align_by_short_name(
+pub(super) fn align_by_short_name<T: Clone>(
     kb: &KnowledgeBase,
-    pairs: &[(Symbol, TermId)],
+    pairs: &[(Symbol, T)],
     params: &[Symbol],
-) -> SmallVec<[(Symbol, TermId); 2]> {
-    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+) -> SmallVec<[(Symbol, T); 2]> {
+    let mut out: SmallVec<[(Symbol, T); 2]> = SmallVec::new();
     for (written, value) in pairs {
         let short = short_name_of(kb.local_name_of(*written));
         if let Some(param) = params
@@ -611,7 +632,7 @@ pub(super) fn align_by_short_name(
             .copied()
             .find(|&p| short_name_of(kb.local_name_of(p)) == short)
         {
-            out.push((param, *value));
+            out.push((param, value.clone()));
         }
     }
     out
@@ -659,12 +680,12 @@ pub(super) fn align_by_short_name(
 fn provision_path_subst(
     kb: &mut KnowledgeBase,
     from: Symbol,
-    from_subst: &[(Symbol, TermId)],
+    from_subst: &[(Symbol, Value)],
     impl_sort: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     if same_sort_canonical(kb, from, impl_sort) {
-        return Some(SmallVec::from_slice(from_subst));
+        return Some(from_subst.iter().cloned().collect());
     }
     if visited.iter().any(|&v| same_sort_canonical(kb, v, from)) {
         return None;
@@ -700,7 +721,7 @@ fn provision_path_subst(
         // parameter space; instantiate those values at `from_subst` so what crosses the
         // hop is in the receiver's terms.
         let inter_params = impl_param_symbols(kb, intermediate);
-        let mut inter_subst: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        let mut inter_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         for (key, value) in view {
             let short = short_name_of(kb.local_name_of(key)).to_string();
             let Some(param) = inter_params
@@ -710,7 +731,7 @@ fn provision_path_subst(
             else {
                 continue;
             };
-            let instantiated = substitute_impl_params_alloc(kb, value, from_subst);
+            let instantiated = sigma_subst_type(kb, &value, from_subst);
             inter_subst.push((param, instantiated));
         }
         if let Some(found) =
@@ -749,83 +770,78 @@ pub(crate) fn is_sort_view_functor(kb: &KnowledgeBase, functor: Symbol) -> bool 
     kb.qualified_name_of(functor) == "anthill.reflect.SortView"
 }
 
-/// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
-/// named_bindings)`. Accepts a bare functor (no SortView wrap) as the
-/// no-bindings case. Returns `None` for shapes that don't fit either
-/// case (caller must filter).
-pub(super) fn unwrap_spec_view(
+/// Unwrap a stored `SortView(base, …named)` term into `(base_sort_sym, named_bindings)`.
+/// Accepts a bare functor (no SortView wrap) as the no-bindings case. Returns `None` for
+/// shapes that don't fit either case (caller must filter).
+///
+/// [`unwrap_spec_view_value`] for a hash-consed view: each binding is the term the view
+/// stores, answered as a value like every other reader's.
+pub(crate) fn unwrap_spec_view(
     kb: &KnowledgeBase,
     spec_view_tid: TermId,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
+    let base = crate::kb::load::provides_spec_base_sym(kb, spec_view_tid)?;
+    Some((base, spec_view_bindings(kb, spec_view_tid)))
+}
+
+/// The NAMED bindings of a stored spec view, each the term it stores: a `SortView`'s named
+/// arguments, and none for a bare spec or a bare application. The bindings half of
+/// [`unwrap_spec_view`], for a reader that already holds the base.
+pub(super) fn spec_view_bindings(
+    kb: &KnowledgeBase,
+    spec_view_tid: TermId,
+) -> SmallVec<[(Symbol, Value); 2]> {
+    stored_spec_view_bindings(kb, spec_view_tid)
+        .iter()
+        .map(|(k, v)| (*k, Value::term(*v)))
+        .collect()
+}
+
+/// [`spec_view_bindings`] where the view stores them, nothing built: for a reader that asks
+/// a question of the bindings and keeps none of them.
+pub(super) fn stored_spec_view_bindings(
+    kb: &KnowledgeBase,
+    spec_view_tid: TermId,
+) -> &[(Symbol, TermId)] {
     match kb.get_term(spec_view_tid) {
         Term::Fn {
             functor,
-            pos_args,
             named_args,
-        } => {
-            if is_sort_view_functor(kb, *functor) {
-                let base_sym = pos_args
-                    .first()
-                    .copied()
-                    .and_then(|t| match kb.get_term(t) {
-                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                            Some(*functor)
-                        }
-                        _ => None,
-                    })?;
-                Some((base_sym, named_args.clone()))
-            } else {
-                Some((*functor, SmallVec::new()))
-            }
-        }
-        Term::Ref(s) | Term::Ident(s) => Some((*s, SmallVec::new())),
-        _ => None,
+            ..
+        } if is_sort_view_functor(kb, *functor) => named_args,
+        _ => &[],
     }
 }
 
-/// WI-662: the carrier-agnostic [`unwrap_spec_view`] for a `RequiresEntry.spec`
-/// `Value`. A ground `Value::Term` delegates to the TermId decode above
-/// (byte-identical). A denoted spec (`Value::Entity` / `Value::Node`, e.g.
-/// `Foo[E = Modify[c]]`) is decoded via [`TermView`] with the SAME SortView
-/// logic. A BINDING carried as a value (`E = {Modify[c]}`, or a type holding a
-/// value-in-type, `State = Buf[T = Int64, N = 3]`) has no `TermId` and is dropped from
-/// the returned bindings; the full spec stays preserved on `RequiresEntry.spec`
-/// regardless. A reader that needs such a binding decodes the LOWERED spec
-/// (`node_occurrence::value_to_term`) instead — as the loader's carrier pre-scan does
-/// since WI-20260924-F3FYJ, which lost `State` here and kept the generic reading.
+/// The base and the named bindings of a spec, EACH BINDING ON THE CARRIER IT RIDES — the one
+/// reading of a spec view, for a `RequiresEntry.spec` and a stored provision alike. The base
+/// is [`crate::kb::load::provides_spec_base_sym_view`]'s; a ground `Value::Term` takes
+/// [`unwrap_spec_view`]'s decode of the bindings, and a spec that holds a value
+/// (`Value::Entity` / `Value::Node`, e.g. `Foo[E = {Modify[c]}]`, `Store[State = Buf[T =
+/// Int64, N = 3]]`) is decoded via [`TermView`], a binding that rides an occurrence coming
+/// back as that occurrence.
+///
+/// It used to answer `TermId`s, and a binding on another carrier had none: it was dropped
+/// from the list, and a reader that needed it lowered the whole spec first. Every reader
+/// takes the bindings through the view now.
 pub(crate) fn unwrap_spec_view_value(
     kb: &KnowledgeBase,
     spec: &Value,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
     if let Value::Term { id, .. } = spec {
         return unwrap_spec_view(kb, *id);
     }
-    match spec.head(kb) {
-        ViewHead::Functor {
-            functor: Some(f), ..
-        } => {
-            if is_sort_view_functor(kb, f) {
-                let base_sym = spec.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
-                    ViewHead::Functor {
-                        functor: Some(s), ..
-                    }
-                    | ViewHead::Ident(s) => Some(s),
-                    _ => None,
-                })?;
-                let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-                for key in spec.named_keys(kb) {
-                    if let Some(v) = spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-                        bindings.push((key, v));
-                    }
-                }
-                Some((base_sym, bindings))
-            } else {
-                Some((f, SmallVec::new()))
-            }
-        }
-        ViewHead::Ident(s) => Some((s, SmallVec::new())),
-        _ => None,
-    }
+    let base = crate::kb::load::provides_spec_base_sym_view(kb, spec)?;
+    let is_view = matches!(
+        spec.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
+    );
+    let bindings = if is_view {
+        view_named_children(kb, spec)
+    } else {
+        SmallVec::new()
+    };
+    Some((base, bindings))
 }
 
 /// Look up `goal.bindings[short]` (the per-call value for the spec's
@@ -834,12 +850,16 @@ pub(crate) fn unwrap_spec_view_value(
 /// stored key may have been interned through different paths (the
 /// candidate-side loader vs. the goal-construction call below) — but
 /// they always render to the same short name (e.g. "T").
-fn goal_binding_value(kb: &KnowledgeBase, goal: &SortGoal, short: Symbol) -> Option<TermId> {
+fn goal_binding_value<'g>(
+    kb: &KnowledgeBase,
+    goal: &'g SortGoal,
+    short: Symbol,
+) -> Option<&'g Value> {
     if let Some(v) = goal
         .bindings
         .iter()
         .find(|(k, _)| *k == short)
-        .map(|(_, v)| *v)
+        .map(|(_, v)| v)
     {
         return Some(v);
     }
@@ -847,7 +867,7 @@ fn goal_binding_value(kb: &KnowledgeBase, goal: &SortGoal, short: Symbol) -> Opt
     goal.bindings
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == name)
-        .map(|(_, v)| *v)
+        .map(|(_, v)| v)
 }
 
 /// Type-param short-name symbols declared on an impl sort. Used to
@@ -873,10 +893,13 @@ pub(super) fn match_candidate_against_goal(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
     top_level: bool,
-    candidate_value: TermId,
-    per_call_value: TermId,
+    // The provision's side and the goal's, each on the carrier it rides: a call asks a spec
+    // at types, and one that holds a value is an occurrence. Every arm below reads both
+    // through the view.
+    candidate_value: &Value,
+    per_call_value: &Value,
     impl_params: &[Symbol],
-    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+    impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
     specificity: &mut u32,
     // WI-827: the call-site σ (`None` on the σ-less dispatch/diagnostic path).
     sigma: Option<&SigmaCtx>,
@@ -885,7 +908,7 @@ pub(super) fn match_candidate_against_goal(
     // with an earlier binding). Both σ modes live in [`match_impl_param`] so
     // they cannot drift (mirrors [`binding_pair_covers`]); an impl-param ref
     // contributes no specificity weight.
-    if let Some(p) = impl_param_ref(kb, &TermIdView(candidate_value), impl_params) {
+    if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
@@ -900,12 +923,12 @@ pub(super) fn match_candidate_against_goal(
     // loaded clean and died "ambiguous dispatch" at run time, where the typed twin (`N =
     // Int64` / `String`) is a load error; a `[Store = C2]` bracket was dropped; beside a
     // typed provider the call silently took the typed one. `value` is a field of the
-    // extractor, not a spec parameter — the reason `parametric_value_parts` keeps
+    // extractor, not a spec parameter — the reason `parametric_view_parts` keeps
     // `effects_rows` out of this arm too.
-    let candidate_parts = if is_denoted_type(kb, &TermIdView(candidate_value)) {
+    let candidate_parts = if is_denoted_type(kb, candidate_value) {
         None
     } else {
-        parametric_value_parts(kb, candidate_value)
+        parametric_view_parts(kb, candidate_value)
     };
     if let Some((c_base, c_bindings)) = candidate_parts {
         // (2a) WI-20261001-80ZV8 — THE GOAL'S VALUE IS A CARRIER OF THE CANDIDATE'S SORT.
@@ -943,15 +966,15 @@ pub(super) fn match_candidate_against_goal(
                 let key_match = BindingKeyMatch::for_bases(kb, c_base, c_base);
                 *specificity = specificity.saturating_add(1);
                 for (k, c_val) in &c_bindings {
-                    let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).copied() else {
+                    let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).cloned() else {
                         return false;
                     };
                     if !match_candidate_against_goal(
                         kb,
                         impl_sort,
                         false,
-                        *c_val,
-                        p_val,
+                        c_val,
+                        &p_val,
                         impl_params,
                         impl_subst,
                         specificity,
@@ -964,7 +987,7 @@ pub(super) fn match_candidate_against_goal(
             }
         }
         // Per-call side must also be parametric with the same base.
-        let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
+        let (p_base, p_bindings) = match parametric_view_parts(kb, per_call_value) {
             Some(parts) => parts,
             None => {
                 // WI-824: a BARE TYPE-PARAM element does NOT match a STRUCTURED
@@ -1046,7 +1069,7 @@ pub(super) fn match_candidate_against_goal(
         // Each candidate binding must find a matching per-call binding.
         for (k, c_val) in &c_bindings {
             let p_val = match binding_for_param(kb, &p_bindings, *k, key_match) {
-                Some(v) => *v,
+                Some(v) => v.clone(),
                 // WI-20261001-80ZV8 — THE GOAL'S CARRIER LEAVES ONE OF ITS NAMED SLOTS
                 // UNWRITTEN, and the candidate is that sort's own provision forwarding the
                 // slot (`O = O`, which is what `Self` lowers to). The type parameters have
@@ -1074,7 +1097,7 @@ pub(super) fn match_candidate_against_goal(
                 // whose own provision leaves the slot out is refused under the bare
                 // spelling as well, at the abstract parameter arm (3) leaves it with
                 // (MEASURED — "`WeakOrd[T = Keyed.T]` beneath it does not hold").
-                None if forwards_own_named_slot(kb, impl_sort, c_base, *k, *c_val, impl_params) => {
+                None if forwards_own_named_slot(kb, impl_sort, c_base, *k, c_val, impl_params) => {
                     continue
                 }
                 None => return false,
@@ -1083,8 +1106,8 @@ pub(super) fn match_candidate_against_goal(
                 kb,
                 impl_sort,
                 false, // nested sub-binding — arm (2.5) applies only at top level
-                *c_val,
-                p_val,
+                c_val,
+                &p_val,
                 impl_params,
                 impl_subst,
                 specificity,
@@ -1118,10 +1141,10 @@ pub(super) fn match_candidate_against_goal(
     // sort at top level (`EqList provides Eq[T = List[A]]`) is parametric, handled
     // by step (2), and never reaches here.
     if top_level
-        && extract_sort_ref_sym(kb, &TermIdView(candidate_value))
+        && extract_sort_ref_sym(kb, candidate_value)
             .is_some_and(|s| kb.canonical_sort_sym(s) == kb.canonical_sort_sym(impl_sort))
     {
-        if let Some((p_base, p_bindings)) = parametric_value_parts(kb, per_call_value) {
+        if let Some((p_base, p_bindings)) = parametric_view_parts(kb, per_call_value) {
             if kb.canonical_sort_sym(p_base) == kb.canonical_sort_sym(impl_sort) {
                 let mut aligned = false;
                 for (p_key, p_val) in &p_bindings {
@@ -1142,15 +1165,15 @@ pub(super) fn match_candidate_against_goal(
                     // no divergence there — it is NARROWER than arm (1)'s coarse
                     // rule, so it is not routed through `match_impl_param`).
                     if sigma.is_some() {
-                        if !match_impl_param(kb, sigma, *ip, *p_val, impl_subst) {
+                        if !match_impl_param(kb, sigma, *ip, p_val, impl_subst) {
                             return false;
                         }
                     } else if let Some((_, prev)) = impl_subst.iter().find(|(k, _)| k == ip) {
-                        if !values_structurally_equal(kb, *prev, *p_val) {
+                        if !values_structurally_equal(kb, prev, p_val) {
                             return false;
                         }
                     } else {
-                        impl_subst.push((*ip, *p_val));
+                        impl_subst.push((*ip, p_val.clone()));
                     }
                 }
                 // Only claim the (scored) match when we actually aligned an element
@@ -1181,13 +1204,13 @@ fn forwards_own_named_slot(
     impl_sort: Symbol,
     base: Symbol,
     key: Symbol,
-    value: TermId,
+    value: &Value,
     impl_params: &[Symbol],
 ) -> bool {
     if !same_sort_canonical(kb, base, impl_sort) {
         return false;
     }
-    let Some(param) = impl_param_ref(kb, &TermIdView(value), impl_params) else {
+    let Some(param) = impl_param_ref(kb, value, impl_params) else {
         return false;
     };
     let forwarded = short_name_of(kb.local_name_of(param));
@@ -1205,15 +1228,15 @@ fn forwards_own_named_slot(
 /// `base` — the same-base arm's case — or when that sort does not provide `base`.
 ///
 /// A PARAMETERLESS carrier is a sort applied to nothing, and is read too:
-/// [`parametric_value_parts`] answers only for an application, so `Fin` — `sort Fin {
+/// [`parametric_view_parts`] answers only for an application, so `Fin` — `sort Fin {
 /// provides Stream[T = Int64, E = {}] }` — would otherwise be the one carrier a written
 /// provision could not answer for (MEASURED: four rows of
 /// `wi590_conditional_finiteness_test`).
 fn carrier_viewed_at(
     kb: &mut KnowledgeBase,
-    value: TermId,
+    value: &Value,
     base: Symbol,
-) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
     let (sort, args) = sort_instance_parts(kb, value)?;
     if same_sort_canonical(kb, sort, base) {
         return None;
@@ -1222,20 +1245,17 @@ fn carrier_viewed_at(
 }
 
 /// The sort a type value is an instance of and the bindings it writes: an application's
-/// own, and none for a sort applied to nothing ([`parametric_value_parts`] answers only
+/// own, and none for a sort applied to nothing ([`parametric_view_parts`] answers only
 /// for an application). `None` for a type parameter, and for a value that heads no sort
 /// (a variable, a structural type).
-pub(super) fn sort_instance_parts(
+pub(super) fn sort_instance_parts<V: TermView>(
     kb: &KnowledgeBase,
-    value: TermId,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
-    match parametric_value_parts(kb, value) {
+    value: &V,
+) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
+    match parametric_view_parts(kb, value) {
         Some(parts) => Some(parts),
-        None if is_type_param_value(kb, value) => None,
-        None => Some((
-            extract_sort_ref_sym(kb, &TermIdView(value))?,
-            SmallVec::new(),
-        )),
+        None if is_type_param_view(kb, value) => None,
+        None => Some((extract_sort_ref_sym(kb, value)?, SmallVec::new())),
     }
 }
 
@@ -1269,10 +1289,11 @@ fn match_impl_param(
     kb: &mut KnowledgeBase,
     sigma: Option<&SigmaCtx>,
     p: Symbol,
-    per_call_value: TermId,
-    impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
+    per_call_value: &Value,
+    impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
 ) -> bool {
-    let per_call_value = sole_projected_row(kb, per_call_value);
+    let per_call_value = &sole_projected_row(kb, per_call_value);
+    let is_rigid = |kb: &KnowledgeBase, v: &Value| matches!(v.head(kb), ViewHead::Var(Var::Rigid(_)));
     let Some(ctx) = sigma else {
         // WI-507: a type-param WILDCARD on the per-call side — the enclosing
         // sort's own param left unpinned because no call arg determined it
@@ -1288,7 +1309,7 @@ fn match_impl_param(
         // a wildcard too, so `T` never pins); this extends the same leniency to
         // the carrier-concrete / sibling-abstract mix — matching the wildcard
         // tolerance the parametric arm and `entries_cover` already apply.
-        if is_type_param_value(kb, per_call_value) {
+        if is_type_param_view(kb, per_call_value) {
             // WI-821: a RIGID per-call value is a definite per-body skolem
             // (the enclosing sort's own param), not an unpinned wildcard —
             // RECORD it (first writer wins, never rejecting the match) so a
@@ -1299,15 +1320,13 @@ fn match_impl_param(
             // SAME parametric fact again, and dies Cyclic. Other type-param
             // spellings (an unpinned `Ref(Sort.Element)` sibling) stay
             // unconstraining exactly as WI-507 established.
-            if matches!(kb.get_term(per_call_value), Term::Var(Var::Rigid(_)))
-                && !impl_subst.iter().any(|(k, _)| *k == p)
-            {
-                impl_subst.push((p, per_call_value));
+            if is_rigid(kb, per_call_value) && !impl_subst.iter().any(|(k, _)| *k == p) {
+                impl_subst.push((p, per_call_value.clone()));
             }
             return true;
         }
         if let Some(slot) = impl_subst.iter_mut().find(|(k, _)| *k == p) {
-            if values_structurally_equal(kb, slot.1, per_call_value) {
+            if values_structurally_equal(kb, &slot.1, per_call_value) {
                 return true;
             }
             // WI-821 order symmetry: a stored RIGID yields to an incoming
@@ -1318,13 +1337,13 @@ fn match_impl_param(
             // binding the fact happened to declare first. Either order now
             // ends with the concrete in the slot; only concrete/concrete
             // disagreement rejects.
-            if matches!(kb.get_term(slot.1), Term::Var(Var::Rigid(_))) {
-                slot.1 = per_call_value;
+            if is_rigid(kb, &slot.1) {
+                slot.1 = per_call_value.clone();
                 return true;
             }
             return false;
         }
-        impl_subst.push((p, per_call_value));
+        impl_subst.push((p, per_call_value.clone()));
         return true;
     };
 
@@ -1336,10 +1355,10 @@ fn match_impl_param(
     }
     // Empty slot — first writer records (rigid-terminal or concrete alike).
     let Some(i) = impl_subst.iter().position(|(k, _)| *k == p) else {
-        impl_subst.push((p, per_call_value));
+        impl_subst.push((p, per_call_value.clone()));
         return true;
     };
-    let stored = impl_subst[i].1;
+    let stored = &impl_subst[i].1;
     // One impl-param slot names ONE type. Two per-call values reconcile only
     // when they ARE the same type — never by yielding one to the other, which
     // would silently drop a slot's constraint and build an unsound dict (a
@@ -1375,23 +1394,18 @@ fn match_impl_param(
 /// `s: Stream[T = Int64]`). The same limit as a row VARIABLE's two spellings, which
 /// `effect_row_param_value` keeps from arising; a projection cannot be kept bare there,
 /// since it must be an atom of the rows it joins.
-fn sole_projected_row(kb: &mut KnowledgeBase, value: TermId) -> TermId {
-    let view = TermIdView(value);
-    if !matches!(type_head(kb, &view), TypeHead::EffectsRows) {
-        return value;
+fn sole_projected_row(kb: &mut KnowledgeBase, value: &Value) -> Value {
+    if !matches!(type_head(kb, value), TypeHead::EffectsRows) {
+        return value.clone();
     }
     let Some((present, tails, absent)) =
-        decompose_effect_row_raw(kb, &Substitution::new(), &view)
+        decompose_effect_row_raw(kb, &Substitution::new(), value)
     else {
-        return value;
+        return value.clone();
     };
     match (present.as_slice(), tails.is_empty() && absent.is_empty()) {
-        ([Value::Term { id, .. }], true)
-            if matches!(type_head(kb, &TermIdView(*id)), TypeHead::ExprCarried) =>
-        {
-            *id
-        }
-        _ => value,
+        ([label], true) if matches!(type_head(kb, label), TypeHead::ExprCarried) => label.clone(),
+        _ => value.clone(),
     }
 }
 
@@ -1426,75 +1440,77 @@ pub(super) fn impl_param_ref<V: TermView>(
     impl_params.contains(&sym).then_some(sym)
 }
 
-/// Decompose a parametric value `Functor(named: [(k, v), ...])` into
-/// `(functor, named_args)`. Returns `None` for non-parametric shapes
-/// (bare refs, sort_ref wraps, literals).
-pub(super) fn parametric_value_parts(
+/// Decompose a parametric value `Functor(named: [(k, v), ...])` into `(functor, bindings)`,
+/// its bindings each on the carrier it rides. `None` for non-parametric shapes (bare refs,
+/// literals). Both sides of a match are read by it — a provision's binding and the call's,
+/// each a term unless it holds a value — through the view, where an occurrence presents the
+/// functor and the keys its term twin does. Three shapes are told apart:
+///
+/// * a `SortView` is the provision-side parametric encoding, unwrapped by its positional
+///   base into `(base, bindings)`;
+/// * `effects_rows(effects_expr = E)` is a structural type that wraps an effect
+///   expression, not a parametric spec carrier — `effects_expr` is a field, not a spec
+///   parameter — and answers `None` (WI-320: read as an application it carried a phantom
+///   `effects_expr = E` binding that spec resolution took for a satisfaction site);
+/// * any other application is parametric when it has named arguments: a parameterized type
+///   is `Fn{S, named}`, its base the functor and its bindings the named arguments (WI-361).
+pub(super) fn parametric_view_parts<V: TermView>(
     kb: &KnowledgeBase,
-    value: TermId,
-) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
-    match kb.get_term(value) {
-        Term::Fn {
-            functor,
-            named_args,
-            pos_args,
-        } => {
-            let f_qn = kb.qualified_name_of(*functor);
-            // SortView is the candidate-side parametric encoding —
-            // unwrap into (base, bindings).
-            if is_sort_view_functor(kb, *functor) {
-                let base = pos_args
-                    .first()
-                    .copied()
-                    .and_then(|t| match kb.get_term(t) {
-                        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                            Some(*functor)
-                        }
-                        _ => None,
-                    });
-                return base.map(|b| (b, named_args.clone()));
+    value: &V,
+) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
+    let ViewHead::Functor {
+        functor: Some(functor),
+        ..
+    } = value.head(kb)
+    else {
+        return None;
+    };
+    let named = |kb: &KnowledgeBase| view_named_children(kb, value);
+    if is_sort_view_functor(kb, functor) {
+        let base = value.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
+            ViewHead::Functor {
+                functor: Some(s), ..
             }
-            // WI-361: a parameterized type is the term backing `Fn{S, named}` (base
-            // sort IS the functor, bindings ARE the named args) — handled by the
-            // generic-Fn arm below as `(S, named_args)`, no `parameterized(base,
-            // bindings)` wrapper to translate.
-            // WI-320: `effects_rows(effects_expr = E)` is a structural Type
-            // variant (wraps an EffectExpression), not a parametric spec
-            // carrier — `effects_expr` is a *field*, not a spec parameter.
-            // Without this explicit None, the generic-Fn catch-all below
-            // would falsely classify it as a parametric instance with a
-            // phantom (param = effects_expr, value = E) binding, leading
-            // spec-resolution and `values_structurally_equal` to treat it
-            // as a satisfaction site.
-            if f_qn == "EffectsRows" || f_qn.ends_with(".EffectsRows") {
-                return None;
-            }
-            // Generic Fn — non-empty named_args means parametric.
-            if !named_args.is_empty() {
-                Some((*functor, named_args.clone()))
-            } else {
-                None
-            }
-        }
-        _ => None,
+            | ViewHead::Ident(s) => Some(s),
+            _ => None,
+        })?;
+        return Some((base, named(kb)));
     }
+    let f_qn = kb.qualified_name_of(functor);
+    if f_qn == "EffectsRows" || f_qn.ends_with(".EffectsRows") {
+        return None;
+    }
+    let named = named(kb);
+    (!named.is_empty()).then_some((functor, named))
 }
 
-/// Structural equality check on two term values — used when an impl
+/// Structural equality check on two type values — used when an impl
 /// param is encountered twice in the head and must bind consistently.
-pub(super) fn values_structurally_equal(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
-    if a == b {
+///
+/// ON ANY CARRIER, with one answer: two hash-consed terms are the same exactly when they
+/// are one `TermId`, and a value on another carrier is the same as what it is structurally
+/// equal to — so a type that holds a value compares as its term twin would.
+pub(super) fn values_structurally_equal<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> bool {
+    let identical = match (a.as_bind_value(), b.as_bind_value()) {
+        (BindValue::Term(x), BindValue::Term(y)) => x == y,
+        _ => views_structurally_equal(kb, a, b),
+    };
+    if identical {
         return true;
     }
     // Hash-consing collapses identical structures into one TermId, so
     // distinct ids generally indicate a shape difference. Still, walk
     // sort_ref / parametric forms to catch the shallow encoding noise.
-    let a_sym = sort_sym_of_term(kb, a);
-    let b_sym = sort_sym_of_term(kb, b);
+    let a_sym = sort_sym_of_view(kb, a);
+    let b_sym = sort_sym_of_view(kb, b);
     match (a_sym, b_sym) {
         (Some(x), Some(y)) if x == y => {
             // Check nested bindings if parametric.
-            match (parametric_value_parts(kb, a), parametric_value_parts(kb, b)) {
+            match (parametric_view_parts(kb, a), parametric_view_parts(kb, b)) {
                 (Some((ab_base, ab)), Some((bb_base, bb))) => {
                     if ab.len() != bb.len() {
                         return false;
@@ -1518,7 +1534,7 @@ pub(super) fn values_structurally_equal(kb: &KnowledgeBase, a: TermId, b: TermId
                     let key_match = BindingKeyMatch::for_bases(kb, ab_base, bb_base);
                     ab.iter().all(|(k, av)| {
                         binding_for_param(kb, &bb, *k, key_match)
-                            .is_some_and(|bv| values_structurally_equal(kb, *av, *bv))
+                            .is_some_and(|bv| values_structurally_equal(kb, av, bv))
                     })
                 }
                 _ => true,
@@ -1627,13 +1643,13 @@ pub(super) fn default_among_candidates(
 /// [`is_type_param_value`] is what says the name denotes no carrier, and a default for
 /// "any carrier" is not a thing 058 §3.6 can express — the abstract goal resolves through
 /// the caller's own `requires` slot, not through a default.
-fn goal_carrier_key(
+fn goal_carrier_key<'g>(
     kb: &KnowledgeBase,
-    goal: &SortGoal,
-) -> Option<crate::kb::defaults::CarrierKey> {
+    goal: &'g SortGoal,
+) -> Option<crate::kb::defaults::CarrierKey<'g>> {
     let param = spec_carrier_param_or_sole(kb, goal.spec_sort)?;
-    let view = *binding_for_param(kb, &goal.bindings, param, BindingKeyMatch::Label)?;
-    if is_type_param_value(kb, view) {
+    let view = binding_for_param(kb, &goal.bindings, param, BindingKeyMatch::Label)?;
+    if is_type_param_view(kb, view) {
         return None;
     }
     // The WRITTEN view alone: `X[Y]` and `X[Z]` are different carriers and this is what
@@ -1647,7 +1663,7 @@ fn goal_carrier_key(
 /// reader that needs the [`crate::kb::defaults::DefaultProviderIndex`] BUCKET rather than the
 /// comparison. `None` for a term that is not a carrier shape at all, which that reader
 /// takes as "no default here".
-pub(crate) fn carrier_view_base(kb: &KnowledgeBase, view: TermId) -> Option<Symbol> {
+pub(crate) fn carrier_view_base<V: TermView>(kb: &KnowledgeBase, view: &V) -> Option<Symbol> {
     carrier_view_parts(kb, view).map(|(base, _)| base)
 }
 
@@ -1680,15 +1696,15 @@ pub(crate) fn carrier_view_base(kb: &KnowledgeBase, view: TermId) -> Option<Symb
 /// spec application verbatim). Every key is routed through [`type_param_sym_of_binding`]
 /// / `try_resolve_symbol` so the map key is the CANONICAL spec-param symbol the
 /// reached-requirement `Ref`s use — the interning bridge without which
-/// `substitute_impl_params_alloc`'s `Symbol`-equality composition is a silent no-op (the
+/// [`sigma_subst_type`]'s `Symbol`-equality composition is a silent no-op (the
 /// wall the prior carrier-aware attempt hit). Non-type-param keys (`eq`, `neq`, …) are
 /// dropped.
 pub(super) fn op_requires_entry_carrier_map(
     kb: &KnowledgeBase,
     entry: &RequiresEntry,
-) -> SmallVec<[(Symbol, TermId); 2]> {
+) -> SmallVec<[(Symbol, Value); 2]> {
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
-    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let mut out: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     // Positional carriers pair with the spec's declared type-params by the language's
     // rule — the next param no NAMED binding took (`KnowledgeBase::positional_param_slots`).
     // WI-20260923-N3W68 (#9): this zipped params against positionals by RAW INDEX, so an
@@ -1702,71 +1718,34 @@ pub(super) fn op_requires_entry_carrier_map(
                 .is_some_and(|p| short_name_of(kb.local_name_of(p)) == d)
         })
     };
-    match &entry.spec {
-        // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
-        Value::Term { id, .. } => {
-            let Term::Fn {
-                pos_args,
-                named_args,
-                ..
-            } = kb.get_term(*id).clone()
-            else {
-                return out; // a bare `Ref`/`Ident` spec carries no bindings
-            };
-            let keys: SmallVec<[Symbol; 2]> = named_args.iter().map(|(k, _)| *k).collect();
-            let slots = KnowledgeBase::positional_param_slots(
-                &params,
-                |d| bound_by_name(kb, &keys, d),
-                pos_args.len(),
-            );
-            for (v, slot) in pos_args.iter().zip(slots) {
-                // No slot: refused at load where it is written (the op-contract arity gate
-                // in `convert_term`), and binding nothing.
-                let Some(short) = slot.map(|i| &params[i]) else {
-                    continue;
-                };
-                if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
-                    out.push((param, *v));
-                }
-            }
-            // Named carriers (sugar / explicit `Spec[C = T]`) — keyed by short param
-            // name, resolved to the canonical spec-param symbol.
-            for (k, v) in &named_args {
-                if let Some(param) = type_param_sym_of_binding(kb, *k, &spec_qn) {
-                    out.push((param, *v));
-                }
-            }
+    // ONE READ FOR EVERY CARRIER, each binding on the carrier it rides. A spec with no
+    // application head — a bare name — carries no bindings.
+    let spec = &entry.spec;
+    let ViewHead::Functor { pos_arity, .. } = spec.head(kb) else {
+        return out;
+    };
+    let named = view_named_children(kb, spec);
+    let keys: SmallVec<[Symbol; 2]> = named.iter().map(|(k, _)| *k).collect();
+    let slots = KnowledgeBase::positional_param_slots(
+        &params,
+        |d| bound_by_name(kb, &keys, d),
+        pos_arity,
+    );
+    for (v, slot) in view_pos_children(kb, spec, pos_arity).into_iter().zip(slots) {
+        // No slot: refused at load where it is written (the op-contract arity gate in
+        // `convert_term`), and binding nothing.
+        let Some(short) = slot.map(|i| &params[i]) else {
+            continue;
+        };
+        if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
+            out.push((param, v));
         }
-        // WI-662: a denoted op-spec — the same positional/named carrier extraction via
-        // TermView, keeping only term-representable binding values (a denoted binding
-        // value has no TermId; its carrier threading is deferred parametric-effect work).
-        other => {
-            let ViewHead::Functor { pos_arity, .. } = other.head(kb) else {
-                return out;
-            };
-            let keys = other.named_keys(kb);
-            let slots = KnowledgeBase::positional_param_slots(
-                &params,
-                |d| bound_by_name(kb, &keys, d),
-                pos_arity,
-            );
-            for (i, slot) in slots.into_iter().enumerate() {
-                let Some(short) = slot.map(|j| &params[j]) else {
-                    continue;
-                };
-                if let Some(v) = other.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
-                    if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
-                        out.push((param, v));
-                    }
-                }
-            }
-            for k in other.named_keys(kb) {
-                if let Some(param) = type_param_sym_of_binding(kb, k, &spec_qn) {
-                    if let Some(v) = other.named_arg(kb, k).and_then(|it| it.as_term_id()) {
-                        out.push((param, v));
-                    }
-                }
-            }
+    }
+    // Named carriers (sugar / explicit `Spec[C = T]`) — keyed by short param name,
+    // resolved to the canonical spec-param symbol.
+    for (k, v) in named {
+        if let Some(param) = type_param_sym_of_binding(kb, k, &spec_qn) {
+            out.push((param, v));
         }
     }
     out
@@ -1780,10 +1759,10 @@ pub(super) fn op_requires_entry_carrier_map(
 /// carrier-blind BFS skipped.
 pub(super) fn compose_reached_carrier_map(
     kb: &mut KnowledgeBase,
-    parent_map: &[(Symbol, TermId)],
+    parent_map: &[(Symbol, Value)],
     reached: &RequiresEntry,
-) -> SmallVec<[(Symbol, TermId); 2]> {
-    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+) -> SmallVec<[(Symbol, Value); 2]> {
+    let mut out: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     // A reached SORT-level requirement's `spec` is always a decodable spec application
     // (a `SortView`, or a bare `Fn`/`Ref` → empty bindings). A shape `unwrap_spec_view`
     // cannot decode is an unexpected `SortRequiresInfo` form — surface it loudly rather
@@ -1802,7 +1781,7 @@ pub(super) fn compose_reached_carrier_map(
         let Some(reached_param) = type_param_sym_of_binding(kb, *k, &base_qn) else {
             continue;
         };
-        let composed = substitute_impl_params_alloc(kb, *v, parent_map);
+        let composed = sigma_subst_type(kb, v, parent_map);
         out.push((reached_param, composed));
     }
     out
@@ -1818,19 +1797,19 @@ pub(super) fn compose_reached_carrier_map(
 pub(super) fn reached_carrier_matches_call(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
-    reached_map: &[(Symbol, TermId)],
-    call_carriers: &[(Symbol, TermId)],
+    reached_map: &[(Symbol, Value)],
+    call_carriers: &[(Symbol, Value)],
 ) -> bool {
     let mut aligned = false;
     for (cp, cc) in call_carriers {
         let Some(rc) = reached_map
             .iter()
             .find(|(rp, _)| *rp == *cp)
-            .map(|(_, v)| *v)
+            .map(|(_, v)| v)
         else {
             continue;
         };
-        if !sigma_pair_precise(kb, ctx, rc, *cc) {
+        if !sigma_pair_precise(kb, ctx, rc, cc) {
             return false;
         }
         aligned = true;
@@ -1868,7 +1847,7 @@ pub(super) fn op_requires_covers(
     ctx: &SigmaCtx,
     op_requires: &[RequiresEntry],
     spec_sort: Symbol,
-    call_carriers: &[(Symbol, TermId)],
+    call_carriers: &[(Symbol, Value)],
 ) -> bool {
     let target = kb.canonical_sort_sym(spec_sort);
     let blind = call_carriers.is_empty();
@@ -1879,7 +1858,7 @@ pub(super) fn op_requires_covers(
     // only via the second carrier would be missed (a false reject). Full-state dedup
     // stays terminating — well-formed `requires` graphs are acyclic and carriers only
     // re-scope toward the op's own (finite) params, so the distinct states are finite.
-    type State = (Symbol, SmallVec<[(Symbol, TermId); 2]>);
+    type State = (Symbol, SmallVec<[(Symbol, Value); 2]>);
     let mut stack: Vec<State> = op_requires
         .iter()
         .map(|e| {
@@ -1891,7 +1870,10 @@ pub(super) fn op_requires_covers(
         .collect();
     let mut visited: Vec<State> = Vec::new();
     while let Some(state) = stack.pop() {
-        if visited.contains(&state) {
+        if visited
+            .iter()
+            .any(|seen: &State| seen.0 == state.0 && same_bindings(kb, &seen.1, &state.1))
+        {
             continue;
         }
         visited.push(state.clone());
@@ -1964,8 +1946,8 @@ pub(super) fn dict_sub_goals(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
     impl_sort: Symbol,
-    impl_subst: &[(Symbol, TermId)],
-    head_bindings: &[(Symbol, TermId)],
+    impl_subst: &[(Symbol, Value)],
+    head_bindings: &[(Symbol, Value)],
     // The resolving frame's rigids ([`provider_requires_subgoals`]'s row rule).
     rigid_params: &[(VarId, TermId)],
 ) -> DictSubGoals {
@@ -1974,9 +1956,9 @@ pub(super) fn dict_sub_goals(
         // σ keyed by the spec's short param name — `provider_requires_subgoals`'
         // convention, and the only key that reaches the stdlib shorthand
         // (`Ord requires Eq[T]` stores the value as `Eq`'s OWN `T`).
-        let sigma: SmallVec<[(String, TermId); 2]> = head_bindings
+        let sigma: SmallVec<[(String, Value); 2]> = head_bindings
             .iter()
-            .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
+            .map(|(k, v)| (kb.local_name_of(*k).to_string(), v.clone()))
             .collect();
         goals.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma, rigid_params));
     }
@@ -2048,7 +2030,7 @@ pub(super) struct DictSubGoals {
 pub(super) fn candidate_provider_sub_goals(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
-    impl_subst: &[(Symbol, TermId)],
+    impl_subst: &[(Symbol, Value)],
     goal_spec: Symbol,
 ) -> Vec<SortGoal> {
     let chain = provider_dict_entries(kb, impl_sort, Some(goal_spec)).entries_rc();
@@ -2069,7 +2051,7 @@ pub(super) fn candidate_provider_sub_goals(
 pub(super) fn alternative_condition_goals(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
-    impl_subst: &[(Symbol, TermId)],
+    impl_subst: &[(Symbol, Value)],
     goal_spec: Symbol,
 ) -> Option<Vec<Vec<SortGoal>>> {
     let clauses = kb.provides_clause_count(impl_sort, goal_spec) as usize;
@@ -2123,12 +2105,10 @@ pub(super) fn alternative_condition_goals(
 fn instantiate_provider_entries(
     kb: &mut KnowledgeBase,
     chain: &[RequiresEntry],
-    impl_subst: &[(Symbol, TermId)],
+    impl_subst: &[(Symbol, Value)],
 ) -> Vec<SortGoal> {
     // The resolver's impl-side template: σ keyed by SYMBOL, since these entries' values
     // reference the impl's OWN parameters (see [`provider_requires_subgoals`] for the
     // by-name keying the spec half needs instead).
-    requires_chain_goals(kb, chain, &|kb, v| {
-        substitute_impl_params_alloc(kb, v, impl_subst)
-    })
+    requires_chain_goals(kb, chain, &|kb, v| sigma_subst_type(kb, v, impl_subst))
 }

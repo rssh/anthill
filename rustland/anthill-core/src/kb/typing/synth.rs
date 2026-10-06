@@ -18,10 +18,26 @@ use super::*;
 /// A goal in instance resolution: "find an impl that provides `spec_sort`
 /// at the given bindings." Bindings keyed by the spec's short
 /// parameter names (`T`, `State`, …) per the `SortView` convention.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// EACH BINDING ON THE CARRIER IT RIDES. What a call asks a spec at is a type, and a type
+/// that holds a value — `FiniteCollection[C = MappedStream[…, TransformEffects =
+/// {Modify[k]}]]`, the mapped stream whose transform writes the cell `k` — rides an
+/// occurrence and not a hash-consed term. A goal whose bindings were `TermId`s had no place
+/// for one: its producers dropped such a binding or lowered it to a term to fit, and the
+/// subtype relation's witness leg could not ask about such a type at all. The resolver
+/// reads every binding through [`TermView`], so a goal is matched the same whichever
+/// carrier its bindings ride.
+///
+/// IDENTITY, NOT STRUCTURE, IS WHAT `==` AND THE HASH COMPARE ([`value_identity_key`]): a
+/// goal keys the dispatch memo, and a hash-consed binding is identified by its `TermId` —
+/// exact — while one on another carrier is identified by its allocation, so two goals that
+/// differ only in where an equal occurrence was allocated are two keys and the second is
+/// resolved again. Never a wrong hit. Whether two goals are the SAME GOAL is asked
+/// structurally, with the knowledge base in hand ([`goals_equal`]).
+#[derive(Clone, Debug)]
 pub struct SortGoal {
     pub spec_sort: Symbol,
-    pub bindings: SmallVec<[(Symbol, TermId); 2]>,
+    pub bindings: SmallVec<[(Symbol, Value); 2]>,
     /// WI-350 — the receiver's concrete carrier, when the spec op has a
     /// *self-receiver* parameter (one declared with the spec sort itself, e.g.
     /// `head(s: Stream)`). For such specs the carrier is NOT a type parameter
@@ -64,17 +80,61 @@ pub struct SortGoal {
 /// carrier-PARAM shape (`describe(x: T)`), whose arguments are already the goal's own
 /// binding for that param — [`statically_pinned_carrier`] says so at the arm that
 /// builds one.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct GoalCarrier {
     /// The carrier sort, canonical (`canonical_sort_sym`) — the candidate filter in
     /// [`collect_provides_candidates`] compares it against a canonicalized
     /// `impl_sort`.
     pub sort: Symbol,
     /// The receiver type's own arguments at `sort`, keyed by the parameter symbol the
-    /// TYPE wrote. Joined to the impl's parameters by LOCAL NAME at the one consumer
-    /// ([`carrier_arg_impl_subst`]) — within a single sort that join is exact, and it
-    /// is the same join [`impl_param_symbols`] already makes.
-    pub args: SmallVec<[(Symbol, TermId); 2]>,
+    /// TYPE wrote, each on the carrier it rides (see [`SortGoal`]). Joined to the impl's
+    /// parameters by LOCAL NAME at the one consumer ([`carrier_arg_impl_subst`]) — within
+    /// a single sort that join is exact, and it is the same join [`impl_param_symbols`]
+    /// already makes.
+    pub args: SmallVec<[(Symbol, Value); 2]>,
+}
+
+/// The identity of a list of bindings, for [`SortGoal`]'s and [`GoalCarrier`]'s `==` and
+/// hash: each key, and each value by [`value_identity_key`].
+fn bindings_identity(bindings: &[(Symbol, Value)]) -> impl Iterator<Item = (Symbol, ValueIdentity)> + '_ {
+    bindings.iter().map(|(k, v)| (*k, value_identity_key(v)))
+}
+
+impl PartialEq for GoalCarrier {
+    fn eq(&self, other: &Self) -> bool {
+        self.sort == other.sort && bindings_identity(&self.args).eq(bindings_identity(&other.args))
+    }
+}
+
+impl Eq for GoalCarrier {}
+
+impl std::hash::Hash for GoalCarrier {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.sort.hash(state);
+        for entry in bindings_identity(&self.args) {
+            entry.hash(state);
+        }
+    }
+}
+
+impl PartialEq for SortGoal {
+    fn eq(&self, other: &Self) -> bool {
+        self.spec_sort == other.spec_sort
+            && bindings_identity(&self.bindings).eq(bindings_identity(&other.bindings))
+            && self.carrier == other.carrier
+    }
+}
+
+impl Eq for SortGoal {}
+
+impl std::hash::Hash for SortGoal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.spec_sort.hash(state);
+        for entry in bindings_identity(&self.bindings) {
+            entry.hash(state);
+        }
+        self.carrier.hash(state);
+    }
 }
 
 impl GoalCarrier {
@@ -180,13 +240,13 @@ pub enum ResolvedRequiresNode {
     Leaf {
         impl_sort: Symbol,
         spec_sort: Symbol,
-        bindings: SmallVec<[(Symbol, TermId); 2]>,
+        bindings: SmallVec<[(Symbol, Value); 2]>,
     },
     /// Conditional impl: head matched + sub_resolutions resolved.
     Conditional {
         impl_sort: Symbol,
         spec_sort: Symbol,
-        bindings: SmallVec<[(Symbol, TermId); 2]>,
+        bindings: SmallVec<[(Symbol, Value); 2]>,
         sub_resolutions: Vec<ResolvedRequiresNode>,
     },
     /// Matched an entry in `scope.available_requires`. No new
@@ -644,7 +704,7 @@ pub(super) struct LocalProvider<'s> {
     /// The enclosing level's own written slots (a bracket value's or a carrier's).
     slots: &'s [SlotSelection],
     source: SlotPinSource,
-    impl_subst: &'s [(Symbol, TermId)],
+    impl_subst: &'s [(Symbol, Value)],
 }
 
 impl<'s> LocalProvider<'s> {
@@ -654,7 +714,7 @@ impl<'s> LocalProvider<'s> {
         &self,
         kb: &KnowledgeBase,
         chosen: Symbol,
-        chosen_subst: &[(Symbol, TermId)],
+        chosen_subst: &[(Symbol, Value)],
     ) -> Option<(&'s [SlotSelection], SlotPinSource)> {
         // Nothing to inherit is the overwhelmingly common case; ask it first.
         if self.slots.is_empty() {
@@ -666,7 +726,7 @@ impl<'s> LocalProvider<'s> {
                 // By qualified name as well: one parameter can be interned twice.
                 self.impl_subst.iter().any(|(q, w)| {
                     (p == q || kb.qualified_name_of(*p) == kb.qualified_name_of(*q))
-                        && values_structurally_equal(kb, *v, *w)
+                        && values_structurally_equal(kb, v, w)
                 })
             });
         same_instance.then_some((self.slots, self.source))
@@ -1370,17 +1430,17 @@ pub(super) fn resolve_inner<'a>(
 /// A SortProvidesInfo candidate matched against a goal. Carries the
 /// impl sort + the impl-side substitution (impl param → resolved
 /// value) used to instantiate the impl's `requires_chain` subgoals.
-#[derive(PartialEq, Eq)]
 pub(super) struct Candidate {
     /// The carrier sort symbol (e.g., `IntEq`, `EqList`).
     pub(super) impl_sort: Symbol,
     /// Head bindings after impl-param substitution — used for the
-    /// resolved tree node's `bindings` slot.
-    pub(super) resolved_head_bindings: SmallVec<[(Symbol, TermId); 2]>,
+    /// resolved tree node's `bindings` slot. Each is the GOAL's value for that parameter,
+    /// on the carrier it rides.
+    pub(super) resolved_head_bindings: SmallVec<[(Symbol, Value); 2]>,
     /// Impl-side substitution: maps the impl sort's type-param symbols
     /// to the values they got from matching the goal. Used to
     /// instantiate the impl's `requires_chain` subgoals.
-    pub(super) impl_subst: SmallVec<[(Symbol, TermId); 2]>,
+    pub(super) impl_subst: SmallVec<[(Symbol, Value); 2]>,
     /// True iff the candidate's head is fully-ground (no impl-params
     /// referenced) — i.e., a strictly more-specific instance than a
     /// candidate whose head still carries impl-params. Used by
@@ -1562,30 +1622,24 @@ pub(super) fn result_binder_discharges(
 
 /// Apply a provision's σ (spec param symbol → binding) to a spec operation's DECLARED
 /// TYPE — a parameter type, the return type or an effect label — on whatever carrier
-/// it rides.
+/// it rides, σ's range on any carrier too.
 ///
-/// WI-20260923-Z1Q8B — THE ONE VALUE-LEVEL σ, and it reads the type through
-/// [`TermView`]. Until this ticket it was `sigma_subst_effect`, which rewrote a
-/// `Value::Term` and handed a `Value::Node` back UNSUBSTITUTED as "deferred
-/// parametric-effect handling". A type rides the occurrence carrier whenever it
-/// carries a denoted — the literal `3` in `Foo[T = T, N = 3]` — which says nothing about
-/// whether it is parametric, so a spec parameter beneath one was never grounded and
-/// every reader failed open on it: [`check_override_refinement`]'s return leg, its
-/// effects leg, and [`instance_binding_type_ok`], which kept a `TermId`-only copy of
-/// this σ beside it and read `Value::Node` as "not confident" outright.
+/// THE ONE VALUE-LEVEL σ, and it is [`rewrite_type_leaves`] with a bare name σ binds as
+/// the leaf — replaced, never descended — by the same [`view_ref_symbol`] reading the term
+/// walk uses ([`substitute_impl_params_alloc`]). A type rides the occurrence carrier
+/// whenever it holds a value — the literal `3` in `Foo[T = T, N = 3]` — which says nothing
+/// about whether it is parametric, and a spec parameter beneath one is grounded as one
+/// beneath a term is. A binding the member rule has expanded is the value its expansion
+/// built — an arrow rebuilt as an occurrence, a row around a rewritten label on the value
+/// carrier — and is substituted as that value.
 ///
-/// A hash-consed subtree stays in the term world: [`substitute_impl_params_alloc`],
-/// hash-consed result, the path a `Value::Term` always took. Anything else is read
-/// through the view, where a bare name σ binds is a LEAF — replaced, never descended —
-/// by the same [`view_ref_symbol`] reading the term walk uses, and ONLY THE SPINE ABOVE
-/// A REPLACED LEAF IS REBUILT: as a `Value::Entity`, or a `Value::Tuple` for a
-/// functor-less aggregate, which reads through `TermView` exactly as the occurrence it
-/// replaces did (WI-361 — the two carriers are indistinguishable through the view).
-/// A subtree σ does not touch comes back as the value it was, carrier and all, so a type
-/// with nothing to substitute — `Modify[c]` — is returned unchanged. A head the view
-/// cannot present (`Opaque` — a `Parameterized` whose base is itself an occurrence) is
-/// returned unchanged too, and fails open downstream rather than being compared
-/// unsubstituted: [`view_contains_type_param`] reads `Opaque` as abstract.
+/// ONLY THE SPINE ABOVE A REPLACED LEAF IS REBUILT, and by the one owner of the
+/// term-versus-entity decision: a hash-consed type under a σ of terms stays the hash-consed
+/// term it was, whatever else σ binds. A subtree σ does not touch comes back as the value it
+/// was, carrier and all, so a type with nothing to substitute — `Modify[c]` — is returned
+/// unchanged. A head the view cannot present (`Opaque` — a `Parameterized` whose base is
+/// itself an occurrence) is returned unchanged too, and fails open downstream rather than
+/// being compared unsubstituted: [`view_contains_type_param`] reads `Opaque` as abstract.
 ///
 /// [`substitute_ref_terms`]' SHAPE, AND DELIBERATELY NOT THAT FUNCTION. It σ-applies a
 /// GOAL, so it replaces a `var_ref` binder whole and rebuilds every application it passes
@@ -1595,107 +1649,16 @@ pub(super) fn result_binder_discharges(
 pub(super) fn sigma_subst_type(
     kb: &mut KnowledgeBase,
     ty: &Value,
-    sigma: &[(Symbol, TermId)],
-) -> Value {
-    if sigma.is_empty() {
-        return ty.clone();
-    }
-    let lookup = |s: Symbol| {
-        sigma
-            .iter()
-            .find(|(k, _)| *k == s)
-            .map(|(_, t)| Value::term(*t))
-    };
-    sigma_subst_view(kb, ty, Some(sigma), &lookup).unwrap_or_else(|| ty.clone())
-}
-
-/// [`sigma_subst_type`] with σ's RANGE on any carrier (WI-20260929-0RP29): a binding the member
-/// rule has expanded is the value its expansion built — an arrow is rebuilt as an occurrence, a
-/// row around a rewritten label on the value carrier — and is substituted as that value. Held to
-/// a `TermId` range, such a binding did not fit and was kept UNEXPANDED, read three ways by its
-/// three readers (MEASURED: `T = Strm[E = {Error}]` and `T = (z: List) -> Int64`). While every
-/// binding is a term this is [`sigma_subst_type`] itself, hash-consed result and all.
-pub(super) fn sigma_subst_type_values(
-    kb: &mut KnowledgeBase,
-    ty: &Value,
     sigma: &[(Symbol, Value)],
 ) -> Value {
     if sigma.is_empty() {
         return ty.clone();
     }
-    let terms: Option<Vec<(Symbol, TermId)>> = sigma
-        .iter()
-        .map(|(k, v)| match v {
-            Value::Term { id, .. } => Some((*k, *id)),
-            _ => None,
-        })
-        .collect();
-    if let Some(terms) = terms {
-        return sigma_subst_type(kb, ty, &terms);
-    }
-    let lookup = |s: Symbol| sigma.iter().find(|(k, _)| *k == s).map(|(_, v)| v.clone());
-    sigma_subst_view(kb, ty, None, &lookup).unwrap_or_else(|| ty.clone())
-}
-
-/// [`sigma_subst_type`]'s walk. `None` when σ changes nothing at or beneath `v`, which
-/// is what lets an untouched subtree keep its own carrier. `terms` is σ where its whole range
-/// is hash-consed — the term world's own substitution for a hash-consed subtree; `lookup` is σ
-/// by name, on whatever carrier each binding rides.
-fn sigma_subst_view(
-    kb: &mut KnowledgeBase,
-    v: &Value,
-    terms: Option<&[(Symbol, TermId)]>,
-    lookup: &dyn Fn(Symbol) -> Option<Value>,
-) -> Option<Value> {
-    if let (Value::Term { id, .. }, Some(sigma)) = (v, terms) {
-        let t = substitute_impl_params_alloc(kb, *id, sigma);
-        return (t != *id).then(|| Value::term(t));
-    }
-    if let Some(s) = view_ref_symbol(kb, v) {
-        return lookup(s);
-    }
-    // A variable, a literal, `⊥` or an opaque head names nothing σ binds.
-    let ViewHead::Functor {
-        functor, pos_arity, ..
-    } = v.head(kb)
-    else {
-        return None;
-    };
-    // `.to_value()` owns each child, ending the view's borrow of `kb` before the
-    // `&mut kb` recursion — the borrow shape `subst_view_pos` uses.
-    let mut changed = false;
-    let mut pos = Vec::with_capacity(pos_arity);
-    for i in 0..pos_arity {
-        let child = v.pos_arg(kb, i).expect("pos_arg within arity").to_value();
-        let new = sigma_subst_view(kb, &child, terms, lookup);
-        changed |= new.is_some();
-        pos.push(new.unwrap_or(child));
-    }
-    let keys = v.named_keys(kb);
-    let mut named = Vec::with_capacity(keys.len());
-    for k in keys {
-        let child = v.named_arg(kb, k).expect("named key present").to_value();
-        let new = sigma_subst_view(kb, &child, terms, lookup);
-        changed |= new.is_some();
-        named.push((k, new.unwrap_or(child)));
-    }
-    if !changed {
-        return None;
-    }
-    Some(match functor {
-        Some(f) => {
-            kb.canonicalize_record_named_args(f, &mut named);
-            Value::Entity {
-                functor: f,
-                pos: Rc::from(pos),
-                named: Rc::from(named),
-            }
-        }
-        None => Value::Tuple {
-            pos: Rc::from(pos),
-            named: Rc::from(named),
-        },
+    rewrite_type_leaves(kb, ty, &|kb, leaf| {
+        let s = view_ref_symbol(kb, leaf)?;
+        sigma.iter().find(|(k, _)| *k == s).map(|(_, v)| v.clone())
     })
+    .unwrap_or_else(|| ty.clone())
 }
 
 /// Replace every `Ref(p)` / `Ident(p)` / nullary `Fn(p, [], [])` in
@@ -1818,7 +1781,7 @@ fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
         b.bindings
             .iter()
             .find(|(kk, _)| same_label(kb, *kk, *k))
-            .map_or(false, |(_, bv)| values_structurally_equal(kb, *av, *bv))
+            .map_or(false, |(_, bv)| values_structurally_equal(kb, av, bv))
     })
 }
 
@@ -1966,7 +1929,7 @@ pub(super) fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
             first = false;
             out.push_str(kb.local_name_of(*k));
             out.push_str(" = ");
-            out.push_str(&format_term_for_goal(kb, *v));
+            out.push_str(&format_value_for_goal(kb, v));
         }
         out.push(']');
     }
@@ -1976,11 +1939,18 @@ pub(super) fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
 /// Render a binding value compactly. Sort symbols → short name;
 /// parametric forms → `Base[K = V]`.
 pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
-    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(t)) {
+    format_value_for_goal(kb, &Value::term(t))
+}
+
+/// [`format_term_for_goal`] of a binding on ANY carrier — one rendering, read through the
+/// view, so a goal that names a type holding a value is printed as its term twin would be
+/// (`FiniteCollection[C = MappedStream[…, TransformEffects = {Modify[T = k]}]]`).
+pub(super) fn format_value_for_goal(kb: &KnowledgeBase, v: &Value) -> String {
+    if let Some(sym) = extract_sort_ref_sym(kb, v) {
         return kb.qualified_name_of(sym).to_string();
     }
     // WHAT IS NOT A SORT OR AN APPLICATION OF ONE renders as every type diagnostic renders
-    // it ([`type_display_name`]), not as the raw extractor application the arms below
+    // it ([`type_display_name_value`]), not as the raw extractor application the arms below
     // produce. WI-20260924-F3FYJ: a value in a type position is the value it carries (`N =
     // 3`, not `TypeExtractor.Denoted[value = 3]`) — a provision at such a binding reaches a
     // requirement refusal now that it loads. WI-20261005-KSSA4: a construction's
@@ -1989,7 +1959,7 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
     // arrow, a tuple, and the type variable a constructed value keeps for a slot nothing
     // fixed.
     if matches!(
-        type_head(kb, &TermIdView(t)),
+        type_head(kb, v),
         TypeHead::Denoted
             | TypeHead::TypeVar(_)
             | TypeHead::EffectsRows
@@ -1998,38 +1968,38 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
             | TypeHead::Arrow
             | TypeHead::NamedTuple
     ) {
-        return type_display_name(kb, t);
+        return type_display_name_value(kb, v);
     }
-    match kb.get_term(t) {
-        // bare `Ref` is named above via `extract_sort_ref_sym` (WI-361); a still-
+    match v.head(kb) {
+        // a bare reference is named above via `extract_sort_ref_sym` (WI-361); a still-
         // unresolved `Ident` falls here.
-        Term::Ident(s) => kb.qualified_name_of(*s).to_string(),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
+        ViewHead::Ident(s) => kb.qualified_name_of(s).to_string(),
+        ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            named_arity,
         } => {
-            let base = kb.qualified_name_of(*functor).to_string();
-            if pos_args.is_empty() && named_args.is_empty() {
+            let base = kb.qualified_name_of(functor).to_string();
+            if pos_arity == 0 && named_arity == 0 {
                 base
             } else {
                 let mut s = base;
                 s.push('[');
                 let mut first = true;
-                for (k, v) in named_args.iter() {
+                for (k, child) in view_named_children(kb, v) {
                     if !first {
                         s.push_str(", ");
                     }
                     first = false;
-                    s.push_str(kb.local_name_of(*k));
+                    s.push_str(kb.local_name_of(k));
                     s.push_str(" = ");
-                    s.push_str(&format_term_for_goal(kb, *v));
+                    s.push_str(&format_value_for_goal(kb, &child));
                 }
                 s.push(']');
                 s
             }
         }
-        Term::Const(Literal::Int(i)) => i.to_string(),
+        ViewHead::Const(Literal::Int(i)) => i.to_string(),
         // WI-20260921-3G1YT — AN UNBOUND VAR IN TYPE POSITION IS "THIS ELEMENT IS
         // UNDETERMINED", and `?` is how the language already spells that (`sort T = ?`).
         // It fell to the `<term#NNN>` arm below, which is loud about nothing: the reader
@@ -2046,17 +2016,20 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
         // stated at the caller's instance ([`chain_at_callers_instance`]): rendered `?` the
         // clause read `requires Tag[T = ?]`, which says the caller left undetermined what
         // it declared. `?T`, as every type diagnostic spells a parameter.
-        Term::Var(Var::Rigid(vid)) => type_var_display_name(kb, *vid),
+        ViewHead::Var(Var::Rigid(vid)) => type_var_display_name(kb, vid),
         // WI-20261006-XQGEW — NOR IS A MEMBER'S PARAMETER, rigid or not. The clause the
         // member sugar synthesizes holds the parameter's own variable, and stated to its
         // author it read `requires Tag[T = ?]` — the same sentence about a caller that
         // wrote `w: Tag.T` (MEASURED: "the enclosing scope's `requires …Tag[T = ?]` covers
         // only as a wildcard"). By its spelling, as an element still open is shown by
         // its parameter's name where it is spelled as a reference (`Out = …Tagger.Out`).
-        Term::Var(Var::Global(vid)) if kb.member_param_head(vid.name()).is_some() => {
-            type_var_display_name(kb, *vid)
+        ViewHead::Var(Var::Global(vid)) if kb.member_param_head(vid.name()).is_some() => {
+            type_var_display_name(kb, vid)
         }
-        Term::Var(_) => "?".to_owned(),
-        _ => format!("<term#{}>", t.raw()),
+        ViewHead::Var(_) => "?".to_owned(),
+        _ => match v {
+            Value::Term { id, .. } => format!("<term#{}>", id.raw()),
+            other => type_display_name_value(kb, other),
+        },
     }
 }

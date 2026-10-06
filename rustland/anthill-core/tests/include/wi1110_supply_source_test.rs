@@ -56,7 +56,6 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::typing::{dispatch_candidate_impl_sorts, SortGoal};
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 /// The candidate impl sorts offered for `<spec>[T = <carrier>]`, by qualified name.
 fn candidates_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Vec<String> {
@@ -70,7 +69,7 @@ fn candidates_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Vec
     let t = kb.intern("T");
     let goal = SortGoal {
         spec_sort: spec,
-        bindings: SmallVec::from_slice(&[(t, carrier_ref)]),
+        bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
     };
     dispatch_candidate_impl_sorts(kb, &goal)
