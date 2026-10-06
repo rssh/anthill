@@ -55,14 +55,14 @@ sort guardians.agent.DeclaredMintTriage
 
   operation launder(s: String) -> Text[Trusted]
 
-  operation run(self: DeclaredMintTriage, box: Mailbox, llm: Llm,
+  operation run(self: DeclaredMintTriage, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, llm.E, Error} =
+    effects {External, Llm.E, Error} =
       let msgs = Email.fetch(box)
       let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
                             body: launder(box.owner.local))
-      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+      Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
                         lambda m -> Verdict(message:    m.id,
                                             evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))

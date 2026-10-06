@@ -27,8 +27,8 @@
 //! `Bag.empty()` — is asked at its open slots when the requirement is CONSTRUCTED, where it
 //! used to be met by swapping a value's type in and building nothing. What still discharges
 //! is a requirement the call stated
-//! ([`an_operations_own_requirement_is_held_by_a_spec_typed_argument`],
-//! [`a_specs_own_operation_on_a_spec_typed_argument_runs`]) and a declared `require[…]`
+//! ([`an_operations_own_requirement_is_supplied_through_the_callers`],
+//! [`a_specs_own_operation_on_a_value_of_any_provider_runs`]) and a declared `require[…]`
 //! bracket.
 //!
 //! THE STANDARD LIBRARY WAS THE ONE POPULATION THE FIRST DISCHARGE SERVED. `MappedStream`
@@ -41,6 +41,19 @@
 //!
 //! A refusal row asserts a LOAD verdict naming the requirement; a row that runs asserts the
 //! value.
+//!
+//! WI-20261005-KSSA4 — NO VALUE HOLDS A REQUIREMENT ANY MORE, AND THE ROWS THAT TYPED ONE
+//! AT A SPEC ARE WRITTEN OVER ANY PROVIDER. `w: Tagger` was a value "typed at a spec", read
+//! as a value of the spec's carrier that carries the spec's chain; a `B` provides `Tagger`
+//! and is not one, so that parameter takes no `B` and nothing held there is a `Tagger.C`.
+//! The rows that passed one write `w: Tagger.C` — a value of a sort of which `Tagger` is
+//! required — and what they measure is unchanged where it was about the CALL: a
+//! requirement the call states is supplied (now through the caller's own requirement,
+//! whose chain has it), one it leaves an element of open is refused, and the chain is
+//! judged to its end. Parts 2 and 7 of the ledger below back out the value half of the
+//! route, which no longer exists: `held_spec_views` reads a declared `require[…]` bracket
+//! and nothing else. The standard library's two clauses are back, on a field typed by the
+//! sort's own parameter ([`a_factory_receiving_on_the_sorts_own_source_runs`]).
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ───────────────────────────────
 //!
@@ -101,8 +114,8 @@
 //!    provides" rather than as the tie) and
 //!    [`a_tie_over_an_open_slot_is_refused_at_load_not_at_run_time`] (loads).
 //! 7. THE ROUTE ANSWERING "NOTHING IS HELD". 3 FAIL, each refused at load:
-//!    [`an_operations_own_requirement_is_held_by_a_spec_typed_argument`] and
-//!    [`a_specs_own_operation_on_a_spec_typed_argument_runs`] — what says the cover does
+//!    [`an_operations_own_requirement_is_supplied_through_the_callers`] and
+//!    [`a_specs_own_operation_on_a_value_of_any_provider_runs`] — what says the cover does
 //!    not refuse too much — and [`a_requirement_declared_after_a_held_one_is_still_owed`],
 //!    refused over the `Tag` its `w` no longer holds before `Store` is reached.
 //! 8. THE TWO CLAUSES PUT BACK in the standard library. No row of this file moves — its
@@ -117,7 +130,7 @@
 //! [`without_the_value_the_open_slot_is_the_same_tie`],
 //! [`one_provider_answers_an_open_slot`],
 //! [`declared_before_the_held_one_it_is_refused_the_same_way`],
-//! [`without_the_unread_clause_the_factory_runs`], and the two that pin a case this change
+//! [`a_factory_receiving_on_the_sorts_own_source_runs`], and the two that pin a case this change
 //! leaves as it was: [`beside_a_generic_provision_the_bare_spelling_runs_the_generic_one`]
 //! and [`a_provision_at_one_instance_does_not_answer_a_bare_carrier`].
 
@@ -835,13 +848,12 @@ end
 
 // ── a requirement the call pinned is still held ───────────────────────────────────────
 
-/// AN OPERATION'S OWN REQUIREMENT, PINNED BY ITS ARGUMENT, IS HELD BY THAT ARGUMENT'S TYPE:
-/// `w: Tagger` and `Tagger requires Tag[T = C]`, so `tag2(w)` owes `Tag` at `w`'s carrier
-/// and `w` holds it. Every element of the dep is pinned, so asking a value for all of them
-/// loses nothing: 2, `B`'s tag. Passes with or without the change — the control for a
-/// cover that refuses too much.
+/// AN OPERATION'S OWN REQUIREMENT, PINNED BY ITS ARGUMENT, IS SUPPLIED THROUGH THE CALLER'S:
+/// `w: Tagger.C` requires `Tagger` of `w`'s sort, and `Tagger requires Tag[T = C]`, so
+/// `tag2(w)` owes `Tag` at that sort and the caller's own dictionary has it. 2, `B`'s tag —
+/// the control for a cover that refuses too much.
 #[test]
-fn an_operations_own_requirement_is_held_by_a_spec_typed_argument() {
+fn an_operations_own_requirement_is_supplied_through_the_callers() {
     let src = r#"
 namespace wi2kv4y.opslot
   import anthill.prelude.{Int64}
@@ -862,23 +874,23 @@ namespace wi2kv4y.opslot
     operation probe(x: B) -> Int64 = 7
   end
   operation tag2[K](x: K) -> Int64 requires Tag[T = K] = Tag.tagOf(x)
-  operation outside(w: Tagger) -> Int64 = tag2(w)
+  operation outside(w: Tagger.C) -> Int64 = tag2(w)
   operation go() -> Int64 = outside(b(k: 0))
 end
 "#;
     assert_eq!(run_int64(src, "wi2kv4y.opslot.go"), Ok(2));
 }
 
-/// THE ROUTE'S HEADLINE SHAPE, DRIVEN: `size(c)` owes `FiniteCollection`'s `Iterable[…]` at
-/// `c`'s own bindings and `c` holds it — over a list, and over a mapped stream. The same
-/// control on the sort-level half.
+/// THE HEADLINE SHAPE, DRIVEN: `size(c)` owes `FiniteCollection`'s `Iterable[…]` at the sort
+/// `c` is a value of, and the dictionary `total` is handed for its own requirement has it —
+/// over a list, and over a mapped stream.
 #[test]
-fn a_specs_own_operation_on_a_spec_typed_argument_runs() {
+fn a_specs_own_operation_on_a_value_of_any_provider_runs() {
     let src = r#"
 namespace wi2kv4y.own
   import anthill.prelude.{List, Int64, FiniteCollection}
   import anthill.prelude.FiniteCollection.{size}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
   operation rows() -> List[T = Int64] = [1, 2, 3, 4]
   operation over_a_list() -> Int64 = total(rows())
   operation over_a_mapped_stream() -> Int64 = total(rows().map(lambda n -> n * 2))
@@ -891,7 +903,8 @@ end
 // ── a held requirement does not end the judging of the chain ──────────────────────────
 
 /// `User` under two requirements, declared `first` then `second`: `both(x: K)` fixes `K`,
-/// nothing fixes `S`, and `outside` passes a `w: Tagger`, which holds `Tag` at its carrier.
+/// nothing fixes `S`, and `outside` passes a `w: Tagger.C`, whose `Tagger` supplies `Tag` at
+/// its sort.
 fn two_requirements_program(ns: &str, first: &str, second: &str) -> String {
     format!(
         r#"
@@ -926,7 +939,7 @@ namespace {ns}
     requires {second}
     operation both(x: K) -> Int64 = Store.zero()
   end
-  operation outside(w: Tagger) -> Int64 = User.both(w)
+  operation outside(w: Tagger.C) -> Int64 = User.both(w)
   operation go() -> Int64 = outside(b(k: 0))
 end
 "#
@@ -949,7 +962,8 @@ fn assert_store_is_owed(ns: &str, first: &str, second: &str, why: &str) {
     );
 }
 
-/// A REQUIREMENT DECLARED AFTER A HELD ONE IS STILL OWED. `w` holds `Tag[T = K]`, and the
+/// A REQUIREMENT DECLARED AFTER A HELD ONE IS STILL OWED. `w`'s `Tagger` supplies `Tag[T =
+/// K]`, and the
 /// first held requirement used to end the judging of the chain: `Store` was never asked, the
 /// program loaded, and `both` died "`__req_store` not bound in caller frame". The same on
 /// the parent commit.
@@ -977,14 +991,18 @@ fn declared_before_the_held_one_it_is_refused_the_same_way() {
 
 // ── the population the unfixed-carrier discharge served ───────────────────────────────
 
-/// A mapped stream over any iterable source, with `requires` on the sort when `on_sort`.
-/// `map` is a factory: it takes `s: Sc` and returns another instance, so nothing at a call
-/// to it fixes the sort's own `Source`.
-fn factory_program(ns: &str, on_sort: bool) -> String {
-    let clause = if on_sort {
-        "    requires Iterable[C = Source, Element = Src, E = ES]\n"
+/// A mapped stream over any iterable source: the field holds a value of the sort's own
+/// `Source`, and the sort requires `Iterable` of it. Where `unfixed`, `map` is a factory —
+/// it takes `s: Sc` and returns another instance, so nothing at a call to it fixes the
+/// sort's own `Source`; otherwise it receives on `Source`, and the call fixes it.
+fn factory_program(ns: &str, unfixed: bool) -> String {
+    let map = if unfixed {
+        "    operation map[Sc, S, Dst, EffS, EffP](s: Sc, f: (x: S) -> Dst @ {EffP, -Modify[x]})\n      \
+         -> MS[Source = Sc, Src = S, T = Dst, ES = EffS, EF = EffP]\n      \
+         requires Iterable[C = Sc, Element = S, E = EffS] =\n      mapped(s, f)\n"
     } else {
-        ""
+        "    operation map[Dst, EffP](s: Source, f: (x: Src) -> Dst @ {EffP, -Modify[x]})\n      \
+         -> MS[Source = Source, Src = Src, T = Dst, ES = ES, EF = EffP] =\n      mapped(s, f)\n"
     };
     format!(
         r#"
@@ -1002,7 +1020,8 @@ namespace {ns}
     sort T = ?
     effects ES = ?
     effects EF = ?
-{clause}    entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
+    requires Iterable[C = Source, Element = Src, E = ES]
+    entity mapped(source: Source, fn: (Src) -> T @ {{EF}})
     provides Stream[T = T, E = {{ES, EF}}]
     operation splitFirst(m: Self) -> Option[Pair[A = T, B = Stream[T = T, E = {{ES, EF}}]]] effects {{ES, EF}} =
       match m
@@ -1010,11 +1029,7 @@ namespace {ns}
           match Stream.splitFirst(Iterable.iterator(src))
             case none() -> none
             case some(pair(h, rest)) -> some(pair(fn(h), mapped(rest, fn)))
-    operation map[Sc, S, Dst, EffS, EffP](s: Sc, f: (x: S) -> Dst @ {{EffP, -Modify[x]}})
-      -> MS[Source = Sc, Src = S, T = Dst, ES = EffS, EF = EffP]
-      requires Iterable[C = Sc, Element = S, E = EffS] =
-      mapped(s, f)
-  end
+{map}  end
 
   operation sum(s: Stream[T = Int64]) -> Int64 effects s.E =
     match Stream.splitFirst(s)
@@ -1046,12 +1061,16 @@ fn a_factory_that_leaves_its_sorts_requirement_unfixed_is_refused() {
     );
 }
 
-/// THE REPAIR THE STANDARD LIBRARY TOOK: the clause is not needed — the field's type is
-/// what says the source is iterable — and without it the same program walks the stream.
+/// THE REPAIR THE STANDARD LIBRARY HAS NOW: `map` receives on the sort's own `Source`, so
+/// its argument fixes it, the sort's requirement is asked at the list's own provision, and
+/// the same program walks the stream. (The repair this ticket took was to delete the
+/// clause: the field was typed `Iterable[C = Source, …]` and its type was what said the
+/// source is iterable. A value of a sort that provides `Iterable` is not an `Iterable` —
+/// WI-20261005-KSSA4 — so the field holds a `Source` and the clause is what says it.)
 /// `MappedStream.map` over a bare list is driven on the library itself by `wi599
 /// …the_stdlib_combinators_are_general_over_any_iterable_source`.
 #[test]
-fn without_the_unread_clause_the_factory_runs() {
+fn a_factory_receiving_on_the_sorts_own_source_runs() {
     let ns = "wi2kv4y.factoryok";
     assert_eq!(
         run_int64(&factory_program(ns, false), &format!("{ns}.go")),

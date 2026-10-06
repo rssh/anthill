@@ -374,7 +374,7 @@ namespace {ns}
     provides Iter[Carrier = C, Element = {second}]
   end
   sort Use
-    operation takes(i: Iter[Carrier = C, Element = String]) -> Int64 = 1
+    operation takes(i: C) -> Int64 requires Iter[Carrier = C, Element = String] = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end
@@ -479,7 +479,7 @@ namespace wi842.view.merge
     provides Iter[Carrier = C, Element = Int64]
   end
   sort Use
-    operation takes(i: Iter[Carrier = C, Element = Int64]) -> Int64 = 1
+    operation takes(i: C) -> Int64 requires Iter[Carrier = C, Element = Int64] = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end

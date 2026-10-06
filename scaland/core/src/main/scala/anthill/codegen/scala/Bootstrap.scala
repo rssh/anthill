@@ -951,7 +951,8 @@ object Bootstrap:
     val scope = env.scopeAt(
       s"entity `${sym.name(e.name.last)}`", e.name.span, effectivePkg, imports)
     val src = pkg +
-      renderCaseClass(sym, typeName, tpStr = "", e.fields, extendsClause = "", scope)
+      renderCaseClass(
+        sym, typeName, tpStr = "", e.fields, usingClause = "", extendsClause = "", scope)
     out += GeneratedFile(
       relPath = s"src/main/scala/${pathToDir(effectivePkg)}$typeName.scala",
       contents = src)
@@ -1049,9 +1050,16 @@ object Bootstrap:
     * where it stops meaning anything: `evidence` is computed and there is no `def` to
     * put it on ([[renderMainSort]]'s `ops.isEmpty` arm). Nothing is lost that the
     * emission ever carried — no operation, no body, no evidence to supply — and the
-    * note says so in its own words rather than promising a clause ([[carriedByNothing]]). */
+    * note says so in its own words rather than promising a clause ([[carriedByNothing]]).
+    *
+    * `ctorEvidence` IS A DATA SORT'S OTHER HALF (WI-20261005-KSSA4): the requirements a
+    * constructor takes as its own context parameter, keyed by the constructor's anthill
+    * name. A value is built where the requirement holds, so the constructor asks for it;
+    * a constructor one of whose fields is typed by the requirement carries it there and
+    * has no entry ([[fieldless]]). Empty for an algebra sort, which has no constructor. */
   private case class RequiresMapping(
-    ext: String, note: String, evidence: IndexedSeq[String])
+    ext: String, note: String, evidence: IndexedSeq[String],
+    ctorEvidence: Map[String, IndexedSeq[String]] = Map.empty)
 
   /** Map a sort's `requires` declarations onto its emitted declaration (§2.7a).
     *
@@ -1065,9 +1073,8 @@ object Bootstrap:
     *
     * ON A SORT WITH CONSTRUCTORS IT NEVER COINCIDES (WI-1064): the sort IS the
     * carrier, so a requirement can only be over some other parameter.
-    * `combinators.anthill` wrote `requires Iterable[C = Source, …]`
-    * over its SOURCE parameter (until WI-20261005-2KV4Y deleted the clause, which no
-    * body read), while its claim about itself is the `provides
+    * `combinators.anthill` writes `requires Iterable[C = Source, …]`
+    * over its SOURCE parameter, while its claim about itself is the `provides
     * Stream[…]` below. The `extends`
     * was built from the first, because `emitSort` reads `RequiresDeclItem` and
     * NOTHING reads `ProvidesClauseItem` — the is-a claim falls through a `case _`.
@@ -1118,10 +1125,12 @@ object Bootstrap:
     * everything else is `using` EVIDENCE on every operation (WI-1022), and an
     * algebra sort's demotion is additionally RECORDED in the emitted source
     * ([[evidenceNote]], [[shadowNote]]) so the reader is told which of the two a
-    * requirement became and why. A data sort's anonymous requirement is the one case
-    * with no `using` of its own: it reaches Scala as the declared type of the
-    * constructor field typed by it, and one that rides nowhere is refused
-    * ([[checkDischarged]]).
+    * requirement became and why. A data sort's anonymous requirement is evidence too,
+    * and it has one more place to be: the CONSTRUCTOR, which asks for the dictionary
+    * as its own context parameter, since the value is built where the requirement
+    * holds (WI-20261005-KSSA4). A constructor one of whose fields is typed by the
+    * requirement carries it in that field's type instead ([[fieldless]]), and a
+    * requirement every constructor carries that way is on no operation either.
     *
     * A NAMED SLOT IS NEITHER QUESTION (WI-1022, proposal 058 §4.7). `requires O:
     * Ord[T]` declares a type PARAMETER whose value is the chosen witness, so it is
@@ -1131,8 +1140,8 @@ object Bootstrap:
     * type and a body needs a value, so the witness is also `using O`: the evidence is
     * the slot itself, which is what keeps two orderings of one element type from
     * sharing an implementation as well as from sharing a type. This is also the data
-    * shape's second discharge route — the bound is on the emitted declaration, so
-    * `checkDischarged` is asked only about the anonymous ones.
+    * shape's other route — the bound is on the emitted declaration, so
+    * [[fieldless]] is asked only about the anonymous ones.
     */
   private def requiresMapping(
     sym: SymbolTable, sortLeaf: String, shape: SortShape, carrier: Carrier,
@@ -1143,12 +1152,17 @@ object Bootstrap:
     if requires.isEmpty && conversions.isEmpty then RequiresMapping("", "", IndexedSeq.empty)
     else
       val anonymous = requires.filter(_.decl.binder.isEmpty)
-      // Per shape: the supertraits, the note explaining every demotion, and which
-      // ANONYMOUS requirements need a `using` dictionary of their own. The data
-      // shapes need none — theirs is carried by the constructor FIELD typed by it,
-      // which is a stronger position than a context parameter (it constrains the
-      // VALUE and not only the bodies), and `checkDischarged` is what says so.
-      val (supertraits, note, evidence) = shape match
+      // The two data shapes are one answer over their constructors.
+      def ofData(ctors: IndexedSeq[Entity]) =
+        val perCtor = fieldless(sym, sortLeaf, ctors, anonymous, scope)
+        (IndexedSeq.empty[SortRequirement], dataConversionNote(conversions),
+          perCtor.values.flatten.toSet, perCtor)
+      // Per shape: the supertraits, the note explaining every demotion, which
+      // ANONYMOUS requirements need a `using` dictionary on the operations, and — for
+      // the data shapes — which each constructor takes as its own context parameter.
+      // A data sort's requirement a constructor FIELD is typed by is carried by that
+      // field and needs neither; [[fieldless]] is what says which those are.
+      val (supertraits, note, evidence, ctorEvidence) = shape match
         case SortShape.Algebra =>
           // `carrier` is the sort's, asked once by [[emitSort]] with the witness slots
           // already left out of the candidates (WI-1022) — see there.
@@ -1185,7 +1199,8 @@ object Bootstrap:
               shadowed.map((r, members) => shadowNote(r.rendered, members)).mkString +
               notOverCarrier.map(r =>
                 evidenceNote(r.rendered, carrier, hasOps = ops.nonEmpty)).mkString,
-            anonymous.toSet -- kept)
+            anonymous.toSet -- kept,
+            Map.empty[String, IndexedSeq[SortRequirement]])
         // WI-1064: on a sort WITH CONSTRUCTORS a `requires` is never an is-a claim, so
         // the data shapes take no supertrait from one. WI-1110: a CONVERSION is an is-a
         // claim whatever the shape, but it is not emitted here either — and it is
@@ -1194,12 +1209,12 @@ object Bootstrap:
         // spec over its own parameter), so emitting an `extends` for it would be an
         // unmeasured guess about enum/case inheritance; saying so in the source is what
         // the reader can act on.
-        case SortShape.Record(ctor) =>
-          checkDischarged(sym, sortLeaf, IndexedSeq(ctor), anonymous, scope)
-          (IndexedSeq.empty, dataConversionNote(conversions), Set.empty)
-        case SortShape.Sum(ctors) =>
-          checkDischarged(sym, sortLeaf, ctors, anonymous, scope)
-          (IndexedSeq.empty, dataConversionNote(conversions), Set.empty)
+        //
+        // WI-20261005-KSSA4: what a constructor's fields do not carry, the constructor
+        // takes as a context parameter, and so do the sort's operations — the value is
+        // built where the requirement holds, and a body is handed what its sort requires.
+        case SortShape.Record(ctor) => ofData(IndexedSeq(ctor))
+        case SortShape.Sum(ctors) => ofData(ctors)
       // Walking `requires` keeps SOURCE order, so the `using` clause lists the
       // dictionaries in the order the sort declares them.
       RequiresMapping(
@@ -1210,7 +1225,8 @@ object Bootstrap:
           r.decl.binder match
             case Some(binder) => Some(Names.scalaTypeName(sym.name(binder.last)))
             case None => Option.when(evidence.contains(r))(r.rendered)
-        })
+        },
+        ctorEvidence.view.mapValues(_.map(_.rendered)).toMap)
 
   /** WI-1110 — the note a DATA sort's conversion becomes. Empty when there is none,
     * which is every sort in the corpus. */
@@ -1502,7 +1518,8 @@ object Bootstrap:
       "//   group cannot hold (WI-1065). ",
       carriedByUsing)
 
-  /** Refuse a data sort's ANONYMOUS `requires` that the emitted tree would not carry.
+  /** A data sort's ANONYMOUS `requires` that a constructor's fields do not carry — per
+    * constructor, keyed by its anthill name, in the order the sort declares them.
     *
     * ANONYMOUS, because a named slot has its own home and reaches here already
     * discharged (WI-1022): it is a type PARAMETER, so the requirement rides in that
@@ -1510,16 +1527,28 @@ object Bootstrap:
     * Ord[T]]` states it where no field could. [[requiresMapping]] does the filtering,
     * so this function is never asked a question it would answer wrongly.
     *
-    * The question is asked of the EMISSION and not of the source, which is what
-    * makes it the right question: the requirement survives when a constructor field
-    * is TYPED BY it, so the evidence reaches Scala as that field's type. The two
-    * corpus instances were exactly that — `requires Iterable[C = Source,
-    * Element = SourceElement, E = SourceEffects]` beside `entity mapped(source:
-    * Iterable[C = Source, Element = SourceElement, E = SourceEffects], …)` — and there
-    * the omitted `extends` cost the emitted tree nothing. The corpus no longer writes the
-    * clause (WI-20261005-2KV4Y); the shape is driven by the `boxed.anthill` fixture.
-    * Rendering through the SAME `scope` the field list uses
-    * (`at` varies only the diagnostic label) is what makes the two comparable.
+    * WHAT IS LISTED HERE THE CONSTRUCTOR TAKES AS A CONTEXT PARAMETER
+    * (WI-20261005-KSSA4). A sort-level `requires` on a sort with constructors says what
+    * every value of the sort is built over: `requires Iterable[C = Source, Element =
+    * SourceElement, E = SourceEffects]` beside `entity mapped(source: Source, fn: …)`
+    * — the source is a value of ANY sort that can be walked, and the clause is what
+    * says it can. The emitted constructor therefore asks for the dictionary, `case
+    * Mapped(source: Source, fn: …)(using Iterable[Source, SourceElement])`, which is
+    * the one construct that constrains the constructed VALUE; a `using` on the
+    * operations alone does not reach it. This was a REFUSAL while the corpus typed the
+    * field by the spec instead (`source: Iterable[C = Source, …]`): that field's Scala
+    * type IS the dictionary, and it carried the requirement — and nothing else, the
+    * emitted `Mapped` held a dictionary and no source.
+    *
+    * A REQUIREMENT WRITTEN WITH NO ARGUMENTS IS STILL REFUSED. `requires anthill.cli.Main`
+    * is a marker over none of the sort's parameters, so there is no instance a
+    * constructor is built over to ask a dictionary for; on a sort without constructors
+    * it is a supertrait ([[isOverCarrier]]), and on this shape nothing carries it.
+    *
+    * A FIELD TYPED BY THE REQUIREMENT STILL CARRIES IT, and such a constructor has no
+    * entry. The question is asked of the EMISSION and not of the source, which is what
+    * makes it the right question: rendering through the SAME `scope` the field list
+    * uses (`at` varies only the diagnostic label) is what makes the two comparable.
     *
     * PER CONSTRUCTOR, not per sort. Over the flattened field list of a sum, one
     * constructor carrying the requirement would discharge it for its siblings, and
@@ -1528,8 +1557,7 @@ object Bootstrap:
     * CONTAINMENT, not equality, and bounded on the left so `MyWalk[T]` cannot
     * discharge `Walk[T]`. A field is often the requirement NESTED — `sources:
     * List[T = Walk[…]]` renders `_root_.anthill.prelude.List[Walk[SrcC, Src]]` —
-    * and whole-string equality refused those, which aborts `generate` and takes
-    * every other sort in the file with it.
+    * and whole-string equality would hand that constructor a second dictionary.
     *
     * TWO LIMITS, both real and neither reached by the corpus. Effect arguments
     * erase before rendering (§2.8a), so a field carrying a DIFFERENT row compares
@@ -1539,30 +1567,31 @@ object Bootstrap:
     * rendered output; asking it of the parse IR instead would be asking about a
     * type the emission may not carry.
     */
-  private def checkDischarged(
+  private def fieldless(
     sym: SymbolTable, sortLeaf: String, ctors: IndexedSeq[Entity],
     requires: IndexedSeq[SortRequirement], scope: TypeScope
-  ): Unit =
-    requires.foreach { req =>
-      val rendered = req.rendered
-      val occurrence = java.util.regex.Pattern.compile(
-        s"(?<![\\w.])${java.util.regex.Pattern.quote(rendered)}")
-      ctors.foreach { ctor =>
-        val carried = ctor.fields.exists(f =>
-          occurrence.matcher(TypeGen.render(sym, f.ty, scope)).find())
-        if !carried then
-          throw BootstrapError(
-            s"sort `$sortLeaf` has constructors, so its `requires $rendered` is " +
-            "evidence supplied to bodies (kernel §8.7) and not a claim about the " +
-            s"type — and constructor `${sym.name(ctor.name.last)}` has no field " +
-            "typed by it, so the emitted declaration would carry the requirement " +
-            "nowhere — and a data sort's requirement constrains the constructed " +
-            "VALUE, which a `using` clause on its operations does not reach. NAME " +
-            "the slot and it becomes a type parameter bounded by the spec (§2.7), " +
-            "which the declaration itself carries",
-            req.span)
+  ): Map[String, IndexedSeq[SortRequirement]] =
+    ctors.flatMap { ctor =>
+      val fieldTypes = ctor.fields.map(f => TypeGen.render(sym, f.ty, scope))
+      val uncarried = requires.filterNot { req =>
+        val occurrence = java.util.regex.Pattern.compile(
+          s"(?<![\\w.])${java.util.regex.Pattern.quote(req.rendered)}")
+        fieldTypes.exists(occurrence.matcher(_).find())
       }
-    }
+      uncarried.find(writtenArguments(_).isEmpty).foreach { marker =>
+        throw BootstrapError(
+          s"sort `$sortLeaf` has constructors, so its `requires ${marker.rendered}` is " +
+          "evidence supplied to bodies (kernel §8.7) and not a claim about the type — " +
+          "and it is written with no arguments, so it is over none of the sort's " +
+          s"parameters: constructor `${sym.name(ctor.name.last)}` would ask for a " +
+          "dictionary of nothing it is built over. A requirement with no arguments is a " +
+          "supertrait of a sort WITHOUT constructors (§2.7a); on this one, NAME the slot " +
+          "and it becomes a type parameter bounded by the spec (§2.7), which the " +
+          "declaration itself carries",
+          marker.span)
+      }
+      Option.when(uncarried.nonEmpty)(sym.name(ctor.name.last) -> uncarried)
+    }.toMap
 
   // ── Helpers ─────────────────────────────────────────────────────
 
@@ -1616,10 +1645,15 @@ object Bootstrap:
     // (`[M[_]]`) — an enum case that has to name its parent needs both forms.
     val tpArgs =
       if typeParams.isEmpty then "" else typeParams.map(_.scalaName).mkString("[", ", ", "]")
+    // The context clause a constructor takes for the requirements none of its fields
+    // carries ([[fieldless]]) — "" for the usual constructor, which has none.
+    def usingOf(ctor: Entity): String =
+      OpGen.usingClause(req.ctorEvidence.getOrElse(sym.name(ctor.name.last), IndexedSeq.empty))
     shape match
       case SortShape.Record(ctor) =>
         // case class Sort[T](fields) — ONE declaration (§6.3 / WI-926 / WI-940).
-        sb ++= renderCaseClass(sym, sortName, tpStr, ctor.fields, ext, scope)
+        sb ++= renderCaseClass(
+          sym, sortName, tpStr, ctor.fields, usingOf(ctor), ext, scope)
         sb ++= renderOpsTrait(sortName, tpStr, ops, req.evidence, scope, sym)
       case SortShape.Sum(ctors) =>
         // enum Sort[T] { case C1(...); case C2 }
@@ -1627,16 +1661,19 @@ object Bootstrap:
         ctors.foreach { c =>
           val cName = Names.scalaTypeName(sym.name(c.name.last))
           val fields = renderFieldList(sym, c.fields, scope)
+          val using = usingOf(c)
           // An UNPARAMETERIZED enum's nullary case takes no parameter list at all —
           // `case Red`, not `case Red()`. The record branch has neither form: a
-          // `case class` always needs its `()`.
-          if c.fields.isEmpty && typeParams.isEmpty then sb ++= s"  case $cName\n"
+          // `case class` always needs its `()`. A case that asks for a dictionary is
+          // a class case whatever its fields, so it keeps the list.
+          if c.fields.isEmpty && typeParams.isEmpty && using.isEmpty then
+            sb ++= s"  case $cName\n"
           else
             val uncovered = uncoveredParams(sym, c, typeParams, selfNames(scope))
-            if uncovered.isEmpty then sb ++= s"  case $cName($fields)\n"
+            if uncovered.isEmpty then sb ++= s"  case $cName($fields)$using\n"
             else
               val parent = enumParent(cName, sortName, packagePath, c.name.span)
-              sb ++= s"  case $cName$tpStr($fields) extends $parent$tpArgs\n"
+              sb ++= s"  case $cName$tpStr($fields)$using extends $parent$tpArgs\n"
         }
         sb ++= renderOpsTrait(sortName, tpStr, ops, req.evidence, scope, sym)
       case SortShape.Algebra =>
@@ -1760,9 +1797,10 @@ object Bootstrap:
     */
   private def renderCaseClass(
     sym: SymbolTable, typeName: String, tpStr: String,
-    fields: IndexedSeq[FieldDecl], extendsClause: String, scope: TypeScope
+    fields: IndexedSeq[FieldDecl], usingClause: String, extendsClause: String,
+    scope: TypeScope
   ): String =
-    s"case class $typeName$tpStr(${renderFieldList(sym, fields, scope)})$extendsClause\n"
+    s"case class $typeName$tpStr(${renderFieldList(sym, fields, scope)})$usingClause$extendsClause\n"
 
   /** A constructor's fields as a Scala parameter list, without the parentheses —
     * one rendering for the `case class` and the `enum case`, which declare the

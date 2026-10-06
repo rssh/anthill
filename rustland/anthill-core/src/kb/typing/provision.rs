@@ -199,6 +199,188 @@ pub(super) fn spec_carrier_param_or_sole(kb: &KnowledgeBase, spec_sort: Symbol) 
     (tps.len() == 1).then(|| tps[0].0)
 }
 
+/// WI-20261005-KSSA4 — does `spec` have a CARRIER PARAMETER: is what provides it the value
+/// of one of its parameters, rather than a value of the spec itself?
+///
+/// The two kinds of sort a `provides` clause can name. `Tagger { sort C = ?; operation
+/// probe(x: C) }` receives on its parameter, so `B provides Tagger[C = B]` says `Tagger`'s
+/// operations may be used on a `B` — a `B` is the `C` of a `Tagger`, and no value is a
+/// `Tagger`. `Stream { operation splitFirst(s: Self) }` receives on itself, so `List
+/// provides Stream[T = T, E = {}]` says a `List` IS a `Stream`. Only the second makes the
+/// provider's value admissible where the spec is written as a type
+/// ([`sort_provides_admissibly`]); the first is asked for by a type parameter under
+/// `requires Tagger[C = P]`, or by `Tagger.C` in a signature.
+///
+/// READ OFF THE DECLARATION where it says, by the two owners of the two shapes: a sort ONE
+/// of whose operations receives on the sort itself is its own carrier
+/// ([`spec_is_self_representing`] — `Set.insert(s: Self, x: T)` takes its element as well,
+/// and is still a `Set`'s); otherwise a parameter some operation takes a value of is the
+/// carrier parameter ([`spec_carrier_param`]).
+///
+/// AND OFF THE PROVISIONS where no operation says. A sort that declares no such operation
+/// has a carrier parameter where a provision binds one to the PROVIDING SORT ITSELF:
+/// `Int64 provides Eq[T = Int64]` makes an `Int64` the `T` of an `Eq`, while `Leaf provides
+/// Shape[E = Int64]` binds `E` to another sort, an element, and makes a `Leaf` a `Shape`.
+/// A sort nothing provides answers `false`: nothing says a provider would be a parameter's
+/// value.
+pub(super) fn spec_has_carrier_param(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    spec_over_parameter(kb, spec).is_some()
+}
+
+/// The parameter `spec` is a spec OVER, where it is one — [`spec_has_carrier_param`]'s
+/// answer with the parameter a diagnostic names: the one an operation receives on, else
+/// the first a provision binds to its own provider. `None` for a sort that is its own
+/// carrier, and for a sort with constructors, which nothing provides.
+///
+/// ONE LADDER, read by the verdict and by the message alike: they were two
+/// (`carrier_param_of` added a sole-parameter rung of its own), and where they disagreed
+/// a refusal printed an empty parameter name.
+pub(super) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Symbol> {
+    let canon = kb.canonical_sort_sym(spec);
+    if sort_is_data(kb, canon) || spec_is_self_representing(kb, canon) {
+        return None;
+    }
+    spec_carrier_param(kb, canon).or_else(|| {
+        provides_rows_of_spec(kb, canon).find_map(|row| {
+            let provider = kb.canonical_sort_sym(row.provider);
+            row.bindings.iter().find_map(|(key, bound)| {
+                crate::kb::load::provides_spec_base_sym(kb, *bound)
+                    .is_some_and(|base| kb.canonical_sort_sym(base) == provider)
+                    .then(|| kb.type_param_sym_of(canon, kb.local_name_of(*key)))
+                    .flatten()
+            })
+        })
+    })
+}
+
+/// Has `sort` constructors of its own? Read off the sort → constructors index, which is
+/// complete when the typer runs — `KnowledgeBase::sort_has_constructors` answers the same
+/// during the load by a scan of the whole symbol table, which no per-call reader can
+/// afford. An eponymous constructor is the sort itself and is no child of it.
+pub(super) fn sort_is_data(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    !kb.sort_children(sort).is_empty() || kb.is_entity_constructor(sort)
+}
+
+/// WI-20261005-KSSA4 — does a sort that provides `spec` CONFORM to `spec` in the
+/// question being asked?
+///
+/// As a value's type only where the spec is its own carrier ([`spec_has_carrier_param`]):
+/// a `List` is a `Stream`, and a `B` providing `Tagger[C = B]` is not a `Tagger`. Where
+/// the spec stands for its providers ([`spec_as_its_providers`]) always. Asked once a
+/// provision has been found, which nearly every compare never reaches.
+pub(super) fn provider_conforms_to(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    kb.spec_as_providers_depth > 0 || !spec_has_carrier_param(kb, spec)
+}
+
+/// WI-20261005-KSSA4 — every operation parameter and entity field whose declared type names,
+/// at the top or inside, a spec over its parameter: `owner.name: Spec`, sorted.
+///
+/// Such a position takes no provider's value ([`provider_conforms_to`]) and a value held
+/// there is no carrier ([`spec_typed_value_at_carrier_error`]), so a declaration that
+/// writes one is asking for `Spec.C`, or for a parameter under `requires Spec[C = P]`. The
+/// declaration itself is not refused — the census is what the standard library and the
+/// examples are held to, which write none
+/// (`wi_kssa4_spec_typed_value_test …the_library_and_the_examples_type_no_position_at_a_spec`).
+pub fn positions_typed_at_a_spec_over_a_parameter(kb: &mut KnowledgeBase) -> Vec<String> {
+    let mut positions: Vec<(Symbol, Symbol, Value)> = Vec::new();
+    for (op, params) in crate::kb::op_info::all_operation_params(kb) {
+        positions.extend(params.into_iter().map(|(name, ty)| (op, name, ty)));
+    }
+    for ctor in kb.entity_field_type_functors().copied().collect::<Vec<_>>() {
+        for (field, ty) in kb.entity_field_types(ctor).unwrap_or(&[]) {
+            positions.push((ctor, *field, ty.clone()));
+        }
+    }
+    let mut found: Vec<String> = Vec::new();
+    for (owner, name, ty) in positions {
+        // An alias is the type it stands for, here as wherever a type is compared.
+        let ty = dealiased(kb, &ty);
+        let mut sorts = Vec::new();
+        collect_sorts_written_as_types(kb, &ty, &mut sorts);
+        for spec in sorts.into_iter().filter(|s| spec_has_carrier_param(kb, *s)) {
+            found.push(format!(
+                "{}.{}: {}",
+                kb.qualified_name_of(owner),
+                short_name_of(kb.local_name_of(name)),
+                kb.qualified_name_of(spec),
+            ));
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every sort a type NAMES AS THE TYPE OF A VALUE, at any depth and on any carrier: its
+/// head and the heads of its arguments, an arrow's parameters and result, a tuple's
+/// components.
+///
+/// NOT WHAT AN EFFECT ROW NAMES — a row names capabilities, and `f: () -> X @ {Error[T1]}`
+/// holds no `Error` — and not the sort a member projection is read off: `Summable.T` names
+/// its member. The three readers of "which sorts does this type write" share it: a rule
+/// head's bound, a written `domain` goal (`kb::load`) and the census above. Each had a walk
+/// of its own, and they disagreed on both points: the rule-side walks entered the row, so
+/// `?f: (Int64) -> Int64 @ {Error[String]}` was refused as "a rule variable typed `Error`"
+/// (MEASURED), and the census read a type that is no interned term by its head alone.
+pub(crate) fn collect_sorts_written_as_types<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    out: &mut Vec<Symbol>,
+) {
+    if matches!(type_head(kb, ty), TypeHead::EffectsRows) {
+        return;
+    }
+    match ty.head(kb) {
+        ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } => {
+            if let Some(f) = functor {
+                if crate::parse::desugar_target::is(
+                    kb.qualified_name_of(f),
+                    crate::parse::desugar_target::FIELD_ACCESS,
+                ) {
+                    return;
+                }
+                out.push(f);
+            }
+            for i in 0..pos_arity {
+                if let Some(a) = ty.pos_arg(kb, i) {
+                    collect_sorts_written_as_types(kb, &a, out);
+                }
+            }
+            if named_arity > 0 {
+                for key in ty.named_keys(kb) {
+                    if let Some(a) = ty.named_arg(kb, key) {
+                        collect_sorts_written_as_types(kb, &a, out);
+                    }
+                }
+            }
+        }
+        ViewHead::Ident(s) => out.push(s),
+        _ => {}
+    }
+}
+
+/// WI-20261005-KSSA4 — run `compare` with a spec over a parameter standing for the sorts
+/// that provide it ([`KnowledgeBase::spec_as_providers_depth`]).
+///
+/// TWO ASKERS, each about a provision and not about a value's type: a rule variable's
+/// requirement, stored as the spec it requires of the matched value's sort
+/// ([`type_bound_verdict_view`]), and a `Permission` label's capability, which the
+/// permission for a provider entails ([`label_violates_absence`]). A type written at a
+/// value's position is never compared here.
+pub(crate) fn spec_as_its_providers<R>(
+    kb: &mut KnowledgeBase,
+    compare: impl FnOnce(&mut KnowledgeBase) -> R,
+) -> R {
+    kb.spec_as_providers_depth += 1;
+    let answer = compare(kb);
+    kb.spec_as_providers_depth -= 1;
+    answer
+}
+
 /// [`provision_carrier_sort`] before it throws the WRITTEN term away: the value bound to
 /// the spec's carrier param AND the sort-like base that value names, as one answer.
 ///
@@ -414,6 +596,100 @@ pub(crate) fn check_bare_spec_narrowings(
             bound: bound.iter().map(|b| type_display_name(kb, *b)).collect(),
             site: crate::kb::load::render_decl_site(kb, use_.span),
         });
+    }
+    errors
+}
+
+/// WI-20261005-KSSA4 — the sort names a rule wrote where it types a value, judged once
+/// every file has loaded ([`crate::kb::RuleSortUse`]).
+///
+/// A RULE VARIABLE'S TYPE IS READ AS A PARAMETER'S IS. `rule keep(?x: Summable, ?y)` types
+/// `?x` at a spec that receives on its parameter `T`; no value has that type, since a sort
+/// that provides `Summable[T = Int64]` is the `T` of a `Summable` and not a `Summable`
+/// ([`spec_has_carrier_param`]). It was read as "the matched value's sort provides
+/// `Summable`" — the spec taken for its carrier — and is refused where it is written, as
+/// a rule that can match nothing would otherwise say nothing. A sort that is its own
+/// carrier is a type of its providers' values and is left alone (`?s: Stream`). A
+/// `domain(?x, Summable)` goal written in a body asks the same question of the same pair
+/// and is refused the same way.
+///
+/// THE REQUIREMENT IS WRITTEN `?x: Summable.T`, or by a type variable the head introduces
+/// and the body bounds (`keep[A](?x: A, ?y) … :- Summable[A]`). A member named there must
+/// be the parameter the spec receives on: nothing else of a spec is what its providers
+/// are.
+pub(crate) fn check_rule_sort_uses(
+    kb: &mut KnowledgeBase,
+    uses: &[crate::kb::RuleSortUse],
+) -> Vec<crate::kb::load::LoadError> {
+    use crate::kb::RuleSortSite;
+    let mut errors = Vec::new();
+    for written in uses {
+        let sort = kb.canonical_sort_sym(written.sort);
+        let message = match written.site {
+            RuleSortSite::HeadBound | RuleSortSite::DomainGoal => {
+                // AN ALIAS IS THE TYPE IT STANDS FOR: `sort Sums = List[T = Summable]`
+                // writes the spec as a type as surely as the bracket does. Read as its own
+                // name it was no spec at all, and `?xs: Sums` loaded and matched by
+                // provision — the reading its spelled-out twin is refused for (MEASURED).
+                let mut named = vec![sort];
+                if let Some(target) = alias_leaf(kb, sort) {
+                    named.clear();
+                    collect_sorts_written_as_types(kb, &TermIdView(target), &mut named);
+                }
+                let Some((spec, param)) = named.into_iter().find_map(|s| {
+                    spec_over_parameter(kb, s).map(|p| (kb.canonical_sort_sym(s), p))
+                }) else {
+                    continue;
+                };
+                let site = crate::kb::load::render_decl_site(kb, written.span);
+                let sort_name = kb.qualified_name_of(spec).to_owned();
+                let param = short_name_of(kb.local_name_of(param)).to_owned();
+                if matches!(written.site, RuleSortSite::HeadBound) {
+                    format!(
+                        "{site}: a rule variable is typed `{sort_name}`, a spec over its \
+                         parameter `{param}`: a value whose sort provides it is the `{param}` \
+                         of a `{sort_name}`, not a `{sort_name}`, so nothing matches. Write \
+                         `{sort_name}.{param}` to require `{sort_name}` of the matched \
+                         value's sort, or introduce a type variable and bound it — \
+                         `r[A](?x: A, …) :- {sort_name}[A]`"
+                    )
+                } else {
+                    format!(
+                        "{site}: a `domain` goal asks whether a value is a `{sort_name}`, a \
+                         spec over its parameter `{param}`: a value whose sort provides it is \
+                         the `{param}` of a `{sort_name}`, not a `{sort_name}`, so the goal \
+                         holds of nothing. Require `{sort_name}` of the value's sort where a \
+                         head types it — `?x: {sort_name}.{param}`, or \
+                         `r[A](?x: A, …) :- {sort_name}[A]`"
+                    )
+                }
+            }
+            RuleSortSite::HeadMember(member) => {
+                let member = short_name_of(kb.local_name_of(member)).to_owned();
+                let carrier = spec_over_parameter(kb, sort)
+                    .map(|p| short_name_of(kb.local_name_of(p)).to_owned());
+                if carrier.as_deref() == Some(member.as_str()) {
+                    continue;
+                }
+                let site = crate::kb::load::render_decl_site(kb, written.span);
+                let sort_name = kb.qualified_name_of(sort).to_owned();
+                match carrier {
+                    Some(param) => format!(
+                        "{site}: `{sort_name}.{member}` in a rule head requires \
+                         `{sort_name}` of the matched value's sort, and a sort that \
+                         provides `{sort_name}` is its `{param}`, not its `{member}` — \
+                         write `{sort_name}.{param}`"
+                    ),
+                    None => format!(
+                        "{site}: `{sort_name}.{member}` in a rule head requires \
+                         `{sort_name}` of the matched value's sort, and `{sort_name}` is \
+                         not a spec over a parameter: a sort that provides it is a \
+                         `{sort_name}`. Type the variable `{sort_name}`"
+                    ),
+                }
+            }
+        };
+        errors.push(crate::kb::load::LoadError::Other { message });
     }
     errors
 }
@@ -1326,6 +1602,55 @@ pub(super) fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -
         }
         ViewHead::Opaque => true,
         ViewHead::Const(_) | ViewHead::Bottom => false,
+    }
+}
+
+/// WI-20261005-KSSA4 — [`view_contains_type_param`] less the parameters in `own`: does
+/// `v` carry a type parameter OTHER than those?
+///
+/// An operation's own type parameter is not an unknown the way a spec's is. A spec's
+/// parameter is whatever a provision binds it to, so a row naming one says nothing until
+/// it is bound; `run[R](…) effects {R}` names the one `R` every call of `run` supplies,
+/// and a member backing `run` names the same `R`. `own` lists them in both spellings a
+/// signature gives one — the variable, and the operation-scoped name.
+pub(super) fn view_contains_type_param_except<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    own: &OwnTypeParams,
+) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(var) => !own.vars.contains(&var),
+        ViewHead::Ident(s) => is_sort_param_symbol(kb, s) && !own.syms.contains(&s),
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => {
+            if functor.is_some_and(|f| is_sort_param_symbol(kb, f) && !own.syms.contains(&f)) {
+                return true;
+            }
+            view_any_child(kb, v, pos_arity, |a| view_contains_type_param_except(kb, a, own))
+        }
+        ViewHead::Opaque => true,
+        ViewHead::Const(_) | ViewHead::Bottom => false,
+    }
+}
+
+/// An operation's own type parameters, as a row or a clause may spell each
+/// ([`view_contains_type_param_except`]).
+pub(super) struct OwnTypeParams {
+    pub(super) vars: Vec<Var>,
+    pub(super) syms: Vec<Symbol>,
+}
+
+impl OwnTypeParams {
+    pub(super) fn of(kb: &KnowledgeBase, op: Symbol, type_params: &[(Symbol, Var)]) -> Self {
+        let scope = kb.symbols.scope_id(op);
+        OwnTypeParams {
+            vars: type_params.iter().map(|(_, v)| *v).collect(),
+            syms: type_params
+                .iter()
+                .filter_map(|(n, _)| kb.symbols.type_param_sym(scope, kb.local_name_of(*n)))
+                .collect(),
+        }
     }
 }
 

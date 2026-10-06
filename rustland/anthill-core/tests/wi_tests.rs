@@ -1955,3 +1955,6 @@ mod wi_vm9q7_string_escape_test;
 mod wi_hsg31_global_declaration_test;
 #[path = "include/wi753_native_rule_body_occurrence_test.rs"]
 mod wi753_native_rule_body_occurrence_test;
+
+#[path = "include/wi_kssa4_spec_typed_value_test.rs"]
+mod wi_kssa4_spec_typed_value_test;

@@ -93,10 +93,11 @@ Rules the example illustrates:
   Fields are projected with a dot: `m.body`, `m.id`.
 - **Type arguments are named**: `List[T = String]`, `Text[Trust = Untrusted]` (the
   short form `Text[Untrusted]` is accepted where the parameter is unambiguous).
-- **Effect rows**: `effects {External, Error}`. A row may name a parameter's row,
-  `llm.E`, meaning "whatever effects the model I was handed performs". When a lambda
-  passed to `mapElems`/`filterElems` performs effects, the call can state them
-  explicitly: `mapElems[EffP = {llm.E, Error}](xs, lambda x -> …)`.
+- **Effect rows**: `effects {External, Error}`. A parameter written `llm: Llm.C` is
+  a value of any sort that provides `Llm`, and `Llm.E` in the same signature is that
+  model's row, meaning "whatever effects the model I was handed performs". When a
+  lambda passed to `mapElems`/`filterElems` performs effects, the call can state them
+  explicitly: `mapElems[EffP = {Llm.E, Error}](xs, lambda x -> …)`.
 - **Constructors marked `internal`** in the library cannot be called by you. Use the
   operations the library provides instead.
 

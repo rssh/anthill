@@ -1272,6 +1272,7 @@ fn match_impl_param(
     per_call_value: TermId,
     impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
+    let per_call_value = sole_projected_row(kb, per_call_value);
     let Some(ctx) = sigma else {
         // WI-507: a type-param WILDCARD on the per-call side — the enclosing
         // sort's own param left unpinned because no call arg determined it
@@ -1359,6 +1360,39 @@ fn match_impl_param(
         );
     }
     sigma_pair_precise(kb, ctx, stored, per_call_value)
+}
+
+/// WI-20261005-KSSA4 — a row holding ONE label that is itself a projected row (`{s.E}`)
+/// is that row (`s.E`): the spelling a slot is reconciled in.
+///
+/// A receiver's row slot left to itself is the projection `s.E`, and a row parameter bound
+/// from it is the single-label row `{s.E}` — in a row a projection is an atom
+/// ([`effect_row_param_value`]). Type unification equates the two; this reconciliation
+/// compares structurally and did not, so a goal that names one row both ways —
+/// `Iterable[C = Stream[T, E = s.E], …, E = {s.E}]`, what `MappedStream`'s `requires`
+/// asks of a stream whose row its caller left open — bound the provider's row parameter
+/// twice and was refused "no impl matches" (MEASURED: `MappedStream.map(s, f)` over
+/// `s: Stream[T = Int64]`). The same limit as a row VARIABLE's two spellings, which
+/// `effect_row_param_value` keeps from arising; a projection cannot be kept bare there,
+/// since it must be an atom of the rows it joins.
+fn sole_projected_row(kb: &mut KnowledgeBase, value: TermId) -> TermId {
+    let view = TermIdView(value);
+    if !matches!(type_head(kb, &view), TypeHead::EffectsRows) {
+        return value;
+    }
+    let Some((present, tails, absent)) =
+        decompose_effect_row_raw(kb, &Substitution::new(), &view)
+    else {
+        return value;
+    };
+    match (present.as_slice(), tails.is_empty() && absent.is_empty()) {
+        ([Value::Term { id, .. }], true)
+            if matches!(type_head(kb, &TermIdView(*id)), TypeHead::ExprCarried) =>
+        {
+            *id
+        }
+        _ => value,
+    }
 }
 
 /// The impl param a candidate head value NAMES, if it names one: a bare name — any

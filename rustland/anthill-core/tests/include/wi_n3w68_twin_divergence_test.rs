@@ -41,7 +41,7 @@ namespace {ns}
     provides Iter[Carrier = C, Element = {second}]
   end
   sort Use
-    operation takes(i: Iter[Carrier = C, Element = List[T = String]]) -> Int64 = 1
+    operation takes(i: C) -> Int64 requires Iter[Carrier = C, Element = List[T = String]] = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end
@@ -423,7 +423,7 @@ namespace {ns}
     operation f(x: C) -> String = "a"
   end
   sort Use
-    operation takes(i: Spec2[T = C, U = String]) -> Int64 = 1
+    operation takes(i: C) -> Int64 requires Spec2[T = C, U = String] = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end

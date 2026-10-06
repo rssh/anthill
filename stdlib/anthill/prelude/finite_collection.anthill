@@ -59,12 +59,13 @@ sort anthill.prelude.FiniteCollection
   -- non-stream carrier — a `Map` — gets them too.
   --
   -- THIN: wrap the BARE carrier `c` directly (`mapped(c, f)` / `filtered(c, p)`)
-  -- — no `finiteIterator` indirection. The combinator's `source` field is typed
-  -- `Iterable[C = Source, …]`, and the carrier value `c : C` PROVIDES Iterable, so
-  -- the source carrier + access effect thread off `c`'s own provision (WI-599 gap-1
-  -- `carrier_arg_provision_projection`). Wrapping `c` and NOT `iterator(c)` is what
-  -- keeps the source's SORT in the type for the finiteness witness to read; the
-  -- eager-snapshot reading stays on `Iterable.map`, which does call `iterator(c)`.
+  -- — no `finiteIterator` indirection. The combinator's `source` field is typed by
+  -- its own `Source` parameter, and the combinator requires `Iterable` of that
+  -- parameter. This sort requires `Iterable` of `C`, so the requirement holds at
+  -- `c`, and it says the element and the access effect. Wrapping `c` and NOT
+  -- `iterator(c)` is what keeps the source's SORT in the type for the finiteness
+  -- witness to read; the eager-snapshot reading stays on `Iterable.map`, which does
+  -- call `iterator(c)`.
   --
   -- The return is the BARE CARRIER, not the `FiniteCollection[C = …]` view: the view
   -- spelling does not load (the value's `TransformEffects` is an OPEN row from the `-Modify[x]`

@@ -1703,19 +1703,54 @@ fn the_empty_list_cannot_mint_trusted_text() {
 }
 
 #[test]
-fn a_checker_holding_a_spec_typed_model_cannot_call_it() {
+fn a_checker_holding_a_model_of_an_unknown_carrier_cannot_call_it() {
     // THE OTHER HALF OF `a_checker_may_consult_a_model_and_learns_nothing`, and its
     // header rests on it: that fixture holds a CONCRETE `FakeLlm`, whose `E` is `{}`,
-    // so the call incurs nothing its row does not declare. Written with a SPEC-typed
-    // `Llm` the same body is refused — the carrier's row parameter is undeclared, and
-    // `Checker.check` has no slot for it.
+    // so the call incurs nothing its row does not declare. Written over ANY carrier of
+    // `Llm` — a checker parameterized by its model's sort — the same body is refused:
+    // the carrier's row is a parameter, and `Checker.check` has no slot for it.
     //
     // WITHOUT THIS ROW the acceptance next door cannot distinguish "consulting is
-    // permitted, and the spec-typed form is confined by the effect row" from "the row
-    // check happens to be vacuous here". It is the row, and only for a carrier whose
-    // effects are unknown — a concrete `LiveLlm` (`E = {External}`, which the row
+    // permitted, and a model of an unknown carrier is confined by the effect row" from
+    // "the row check happens to be vacuous here". It is the row, and only for a carrier
+    // whose effects are unknown — a concrete `LiveLlm` (`E = {External}`, which the row
     // declares) would be admitted too. That is a coverage fact, not a security one:
     // what makes consulting harmless is that the reply is unreadable.
+    let errs = errors_for_extra(
+        r#"
+        sort guardians.agent.AnyModelChecker
+          import anthill.prelude.{String, List, Error, External, Permission}
+          import anthill.prelude.List.{nil, cons}
+          import anthill.reflect.{Symbol}
+          import guardians.{Checker, Source, CheckResult, Llm, Text, Prompt}
+          import guardians.CheckResult.{Rejected}
+          sort M = ?
+          effects ME = ?
+          requires Llm[C = M, E = ME]
+          entity mk(oracle: M)
+
+          operation check(self: Self, src: Source, spec: Symbol) -> CheckResult
+            effects {External, Error, -Permission[Llm]} =
+              let answer = self.oracle.complete(prompt(body: Text.untrusted(raw: "hm")))
+              Rejected(diagnostics: cons(head: "consulted", tail: nil))
+
+          provides Checker[C = Self]
+        end
+        "#,
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: ?ME")),
+        "the model's row parameter is not covered by `check`: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_model_typed_at_the_spec_itself_is_not_a_model() {
+    // THE SPELLING THE ROW ABOVE USED TO BE WRITTEN IN. `oracle: Llm` types the field at
+    // the spec: `Llm` is a spec over its parameter `C`, a `FakeLlm` provides it and is
+    // not an `Llm`, so nothing can be stored in the field and nothing held there can be
+    // called. The call is refused where it is written, naming the spelling that says
+    // "a value of a sort that provides `Llm`".
     let errs = errors_for_extra(
         r#"
         sort guardians.agent.SpecTypedChecker
@@ -1736,8 +1771,9 @@ fn a_checker_holding_a_spec_typed_model_cannot_call_it() {
         "#,
     );
     assert!(
-        errs.iter().any(|e| e.contains("undeclared effect: ?E")),
-        "a spec-typed carrier's row parameter is not covered by `check`: {errs:#?}"
+        errs.iter().any(|e| e.contains("expected guardians.Llm.C, got Llm")
+            && e.contains("a value typed at it is not a value of a sort that provides it")),
+        "a value typed at the spec is refused at the call, naming `Llm.C`: {errs:#?}"
     );
 }
 
@@ -1823,8 +1859,8 @@ fn the_runner_holds_the_vouching_authority_and_hands_the_result_down() {
           import anthill.prelude.{Permission, Error, External}
           import guardians.{Triage, Mailbox, Report, Llm, Vouch, run_triage}
 
-          operation drive(t: Triage, box: Mailbox, llm: Llm) -> Report
-            effects {External, llm.E, Error, Permission[Vouch]} =
+          operation drive(t: Triage.C, box: Mailbox, llm: Llm.C) -> Report
+            effects {External, Llm.E, Error, Permission[Vouch]} =
               run_triage(t, box, llm)
         end
         "#,
@@ -1843,8 +1879,8 @@ fn the_runner_holds_the_vouching_authority_and_hands_the_result_down() {
           import anthill.prelude.{Error, External}
           import guardians.{Triage, Mailbox, Report, Llm, run_triage}
 
-          operation drive_unauthorised(t: Triage, box: Mailbox, llm: Llm) -> Report
-            effects {External, llm.E, Error} =
+          operation drive_unauthorised(t: Triage.C, box: Mailbox, llm: Llm.C) -> Report
+            effects {External, Llm.E, Error} =
               run_triage(t, box, llm)
         end
         "#,
@@ -2257,14 +2293,15 @@ fn read_verdict(
 #[test]
 fn a_carriers_effect_row_reaches_the_caller_that_was_handed_it() {
     let caller = |carrier: &str| {
+        let import = carrier.trim_end_matches(".C");
         format!(
             r#"
 sort guardians.agent.Caller
   import anthill.prelude.{{Error}}
-  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.{{Harness, Prompt, Source, {import}}}
   import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
+  operation call(h: Harness.C, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {{Error}} = h.generate(llm, p)
 end
 "#
@@ -2323,7 +2360,7 @@ end
 /// ```text
 ///                                    delivered    un-flatten     exclusion reads
 ///                                                 coverage       the RAW row
-///   Llm      {llm.E, Error}          LOADS        LOADS          LOADS
+///   Llm.C    {Llm.E, Error}          LOADS        LOADS          LOADS
 ///   FakeLlm  {llm.E, Error}          LOADS        LOADS          LOADS
 ///   LiveLlm  {llm.E, Error}          LOADS        REFUSED-cov    LOADS
 ///   FakeLlm  {Branch, llm.E, Error}  LOADS        LOADS          LOADS
@@ -2350,14 +2387,15 @@ end
 #[test]
 fn a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external() {
     let caller = |carrier: &str, effects: &str| {
+        let import = carrier.trim_end_matches(".C");
         format!(
             r#"
 sort guardians.agent.Caller
   import anthill.prelude.{{Error, Branch}}
-  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.{{Harness, Prompt, Source, {import}}}
   import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
+  operation call(h: Harness.C, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {effects} = h.generate(llm, p)
 end
 "#
@@ -2374,7 +2412,7 @@ end
     // The first two loaded before this ticket too and are stated as controls: they are
     // what proves the defect was specific to a NON-EMPTY concrete instantiation rather
     // than to projections in general.
-    load("Llm", "{llm.E, Error}")
+    load("Llm.C", "{Llm.E, Error}")
         .unwrap_or_else(|e| panic!("an ABSTRACT receiver's row var: {e:#?}"));
     load("FakeLlm", "{llm.E, Error}")
         .unwrap_or_else(|e| panic!("a concrete carrier at `E = {{}}`: {e:#?}"));
@@ -2433,11 +2471,13 @@ fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
     // because the whole point of reading it from the base is that a candidate which
     // redeclares the spec cannot widen what the verdict cites.
     //
-    // `llm.E` IS THE THIRD MEMBER, and it is the verdict earning its keep: the agent's
-    // worldly effects are the mailbox's (`External`, from `Email.fetch`) PLUS whatever
-    // model it is handed. A budget that said only `External` would be asserting that a
-    // `Triage` performs the same effects against a fixture as against a frontier model.
-    assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
+    // THE MODEL'S ROW IS THE THIRD MEMBER, and it is the verdict earning its keep: the
+    // agent's worldly effects are the mailbox's (`External`, from `Email.fetch`) PLUS
+    // whatever model it is handed. A budget that said only `External` would be asserting
+    // that a `Triage` performs the same effects against a fixture as against a frontier
+    // model. `run` writes it `Llm.E` — the row of the `Llm` its `llm: Llm.C` is — which
+    // is a type parameter of `run`, and prints as the variable it is.
+    assert_eq!(v.budget, vec!["External", "?E", "Error"]);
 }
 
 #[test]
@@ -2470,7 +2510,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
         .unwrap_or_else(|e| panic!("attempt: {e:?}"));
     let v = read_verdict(&p.interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
-    assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
+    assert_eq!(v.budget, vec!["External", "?E", "Error"]);
 }
 
 /// WI-20260908-H2GDZ's OWN ACCEPTANCE — TWO ROUNDS, THE SECOND BUILT FROM A REAL REFUSAL.
@@ -2978,13 +3018,13 @@ sort guardians.agent.MisprojectingTriage
   import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm,
+  operation run(self: MisprojectingTriage, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, llm.E, Error} =
+    effects {External, Llm.E, Error} =
       let msgs = Email.fetch(box)
       let joined = join_texts(msgs)
-      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+      Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
                         lambda m -> Verdict(message:    m.id,
                                             evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
@@ -3167,7 +3207,7 @@ fn redeclaring_a_trusted_name_is_refused_by_the_naming_rule() {
           import anthill.prelude.{Error, External}
           import guardians.{Mailbox, Report, Llm, Filesystem}
           sort C = ?
-          operation run(self: C, box: Mailbox, llm: Llm) -> Report
+          operation run(self: C, box: Mailbox, llm: Llm.C) -> Report
             effects {External, Error, Filesystem}
         end
     "#,
@@ -3196,12 +3236,12 @@ fn a_candidate_may_declare_and_assert_freely_inside_its_own_namespace() {
           import guardians.TrustLevel.{Trusted}
           entity mk
 
-          operation run(self: TidyTriage, box: Mailbox, llm: Llm,
+          operation run(self: TidyTriage, box: Mailbox, llm: Llm.C,
                         wording: Text[Trusted]) -> Report
             ensures mentions_all(result, box)
-            effects {External, llm.E, Error} =
+            effects {External, Llm.E, Error} =
               let msgs = Email.fetch(box)
-              Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+              Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
                                 lambda m -> Verdict(message:    m.id,
                                                     evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
                      summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
@@ -3297,12 +3337,12 @@ fn a_candidates_own_mentions_all_does_not_discharge_the_specs_postcondition() {
           import guardians.agent.{mentions_all}
           entity mk
 
-          operation run(self: ShadowTriage, box: Mailbox, llm: Llm,
+          operation run(self: ShadowTriage, box: Mailbox, llm: Llm.C,
                         wording: Text[Trusted]) -> Report
             ensures mentions_all(result, box)
-            effects {External, llm.E, Error} =
+            effects {External, Llm.E, Error} =
               let msgs = Email.fetch(box)
-              Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+              Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
                                 lambda m -> Verdict(message:    m.id,
                                                     evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
                      summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
@@ -3456,14 +3496,15 @@ fn a_bare_fact_head_lands_in_the_namespace_it_is_written_in_and_the_gate_reads_i
 #[test]
 fn a_denial_is_not_evaded_by_projecting_the_label_it_denies() {
     let caller = |carrier: &str, effects: &str| {
+        let import = carrier.trim_end_matches(".C");
         format!(
             r#"
 sort guardians.agent.Caller
   import anthill.prelude.{{Error, External}}
-  import guardians.{{Harness, Prompt, Source, {carrier}}}
+  import guardians.{{Harness, Prompt, Source, {import}}}
   import guardians.TrustLevel.{{Trusted}}
   entity mk
-  operation call(h: Harness, llm: {carrier}, p: Prompt[Trusted]) -> Source
+  operation call(h: Harness.C, llm: {carrier}, p: Prompt[Trusted]) -> Source
     effects {effects} = h.generate(llm, p)
 end
 "#
@@ -3498,7 +3539,7 @@ end
     // NEITHER CONTROL PRESENTS THE DENIED LABEL, so neither is a contradiction.
     load("FakeLlm", "{llm.E, Error, -External}")
         .unwrap_or_else(|e| panic!("`-External` beside a row that binds `E = {{}}`: {e:#?}"));
-    load("Llm", "{llm.E, Error, -External}")
+    load("Llm.C", "{Llm.E, Error, -External}")
         .unwrap_or_else(|e| panic!("`-External` beside an UNINSTANTIATED row var: {e:#?}"));
 }
 

@@ -6589,12 +6589,54 @@ end
     );
 }
 
-// WI-036: a fact field whose declared type is a spec sort accepts a value
-// whose own sort provides that spec.
+// WI-036: a fact field typed at a sort that is ITS OWN CARRIER accepts a value whose sort
+// provides it — a `Widget` is a `Comparable` where `Comparable`'s operations receive on
+// `Self`.
+//
+// WI-20261005-KSSA4: the fixture used to be a spec over a parameter (`sort T = ?`,
+// `cmp(a: T, b: T)`), which a `Widget` provides and is not; that reading is refused in
+// the row below, as the operation typer refuses the same field.
 #[test]
 fn spec_field_accepts_value_whose_sort_provides_spec() {
     let source = r#"
 namespace test.wi036_ok
+  sort Comparable
+    operation cmp(a: Self, b: Self) -> Bool
+  end
+  sort Widget
+    entity widget(id: Int64)
+  end
+  namespace Widget
+    provides Comparable
+    operation cmp(a: Widget, b: Widget) -> Bool = true
+  end
+  sort Box
+    entity Holder(item: Comparable)
+  end
+  fact Holder(item: widget(7))
+end
+"#;
+    let errors = load_type_errors(source);
+    let field_errors: Vec<_> = errors
+        .iter()
+        .filter(|e| format!("{}", e).contains("Holder"))
+        .collect();
+    assert!(
+        field_errors.is_empty(),
+        "Widget provides Comparable, so the field should type-check, got: {:?}",
+        errors
+    );
+}
+
+// WI-20261005-KSSA4: …AND NOT AT A SPEC OVER A PARAMETER. `Widget provides Comparable[T =
+// Widget]` lets `cmp` be used on a `Widget`; a `Widget` is the `T` of a `Comparable`, not
+// a `Comparable`. The fact reader kept its own copy of the old rule and admitted it,
+// while `Holder(item: widget(7))` in an operation body was refused (MEASURED). FAILS with
+// the fact reader back on the bare `sort_provides`.
+#[test]
+fn spec_field_takes_no_provider_of_a_spec_over_a_parameter() {
+    let source = r#"
+namespace test.wi036_over_param
   sort Comparable
     sort T = ?
     operation cmp(a: T, b: T) -> Bool
@@ -6612,14 +6654,66 @@ namespace test.wi036_ok
 end
 "#;
     let errors = load_type_errors(source);
-    let field_errors: Vec<_> = errors
+    let rendered: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
+    assert!(
+        rendered.iter().any(|e| e.contains("Holder")
+            && e.contains("is a spec over its parameter `T`")
+            && e.contains("Type the field by a parameter `P` of its sort")),
+        "a provider's value is not a value of the spec; got: {rendered:#?}",
+    );
+}
+
+// …and a LITERAL is a value like any other: `Int64 provides Summable[T = Int64]` does not
+// make `7` a `Summable`. The literal arm reads the provision by its own function
+// (`lit_sort_provides`), which kept the bare relation as well. The control is a literal at
+// a field typed at a sort that is its own carrier, which the provision does make it a
+// value of. FAILS with that arm back on the bare `sort_provides` (the refused half).
+#[test]
+fn spec_field_takes_no_literal_of_a_provider_of_a_spec_over_a_parameter() {
+    let program = |spec_body: &str, provision: &str| {
+        format!(
+            r#"
+namespace test.wi036_literal
+  sort Summable
+{spec_body}
+  end
+  sort Box
+    entity Holder(item: Summable)
+  end
+  fact Holder(item: 7)
+end
+
+namespace anthill.prelude.Int64
+  import test.wi036_literal.Summable
+  {provision}
+end
+"#
+        )
+    };
+    let over_parameter = program(
+        "    sort T = ?\n    operation plus(a: T, b: T) -> T",
+        "provides Summable[T = Int64]\n  operation plus(a: Int64, b: Int64) -> Int64 = a + b",
+    );
+    let rendered: Vec<String> = load_type_errors(&over_parameter)
         .iter()
-        .filter(|e| format!("{}", e).contains("Holder"))
+        .map(|e| format!("{}", e))
         .collect();
     assert!(
-        field_errors.is_empty(),
-        "Widget provides Comparable, so the field should type-check, got: {:?}",
-        errors
+        rendered.iter().any(|e| e.contains("Holder") && e.contains("Summable")),
+        "a literal of a provider's sort is not a value of the spec; got: {rendered:#?}",
+    );
+    let own_carrier = program(
+        "    operation twice(a: Summable) -> Summable",
+        "provides Summable\n  operation twice(a: Int64) -> Int64 = a + a",
+    );
+    let rendered: Vec<String> = load_type_errors(&own_carrier)
+        .iter()
+        .map(|e| format!("{}", e))
+        .filter(|e| e.contains("Holder"))
+        .collect();
+    assert!(
+        rendered.is_empty(),
+        "a literal at a sort that is its own carrier, which its sort provides; got: {rendered:#?}",
     );
 }
 
@@ -6659,9 +6753,10 @@ end
 // Comparable = w`, structurally `seal(s: SubscriberStore) -> DataProvider = s`) is the
 // abstracting/sealing return — the spec's abstract member `T` is erased and would escape its
 // scope (the ML avoidance problem). The base model is escape-free, so this is now REJECTED;
-// the route is a concrete / input-rooted / manifest (`ensures`) return. (Provider
-// admissibility still holds at the ARGUMENT position — the `requires` input dual — which
-// WI-401 does not touch; only the return is gated.) Was
+// the route is a concrete / input-rooted / manifest (`ensures`) return. (At the ARGUMENT
+// position a provider's value is admissible where the spec is its own carrier, and where
+// it is a spec over a parameter — as `Comparable` here — the position is typed by that
+// parameter under `requires`, WI-20261005-KSSA4.) Was
 // `operation_return_accepts_value_whose_sort_provides_spec`.
 #[test]
 fn operation_return_rejects_abstracting_provider_upcast() {
@@ -6763,21 +6858,23 @@ end
 }
 
 // WI-036: spec satisfaction also applies through parameterized field types —
-// here a `List[T = Comparable]` whose elements must each provide Comparable.
+// here a `List[T = Comparable]` whose elements must each provide Comparable, a sort
+// that is its own carrier (WI-20261005-KSSA4: over a parameter it would be refused, as
+// `spec_field_takes_no_provider_of_a_spec_over_a_parameter` pins).
 #[test]
 fn parameterized_spec_field_accepts_providing_elements() {
     let source = r#"
 namespace test.wi036_list_ok
   import anthill.prelude.{List}
   sort Comparable
-    sort T = ?
-    operation cmp(a: T, b: T) -> Bool
+    operation cmp(a: Self, b: Self) -> Bool
   end
   sort Widget
     entity widget(id: Int64)
   end
   namespace Widget
-    provides Comparable[T = Widget]
+    provides Comparable
+    operation cmp(a: Widget, b: Widget) -> Bool = true
   end
   sort Box
     entity Holder(items: List[T = Comparable])
@@ -6833,25 +6930,27 @@ end
     );
 }
 
-// WI-036: a field whose declared type is a *parameterized spec* (`Comparable[T
-// = Widget]`) accepts a value whose sort provides that spec — exercises the
-// provides fallback in check_value_against_parameterized's base check.
+// WI-036: a field whose declared type is a *parameterized spec* (`Ranked[K =
+// Int64]`) accepts a value whose sort provides that spec — exercises the
+// provides fallback in check_value_against_parameterized's base check. `Ranked`
+// receives on itself, so a `Widget` is one (WI-20261005-KSSA4).
 #[test]
 fn parameterized_spec_base_field_accepts_providing_value() {
     let source = r#"
 namespace test.wi036_pspec
-  sort Comparable
-    sort T = ?
-    operation cmp(a: T, b: T) -> Bool
+  sort Ranked
+    sort K = ?
+    operation key(r: Self) -> K
   end
   sort Widget
     entity widget(id: Int64)
   end
   namespace Widget
-    provides Comparable[T = Widget]
+    provides Ranked[K = Int64]
+    operation key(w: Widget) -> Int64 = w.id
   end
   sort Box
-    entity Holder(item: Comparable[T = Widget])
+    entity Holder(item: Ranked[K = Int64])
   end
   fact Holder(item: widget(7))
 end
@@ -6863,38 +6962,40 @@ end
         .collect();
     assert!(
         field_errors.is_empty(),
-        "Widget provides Comparable, so the parameterized-spec field should type-check, got: {:?}",
+        "Widget provides Ranked[K = Int64], so the parameterized-spec field should type-check, got: {:?}",
         errors
     );
 }
 
 // WI-274: binding-precise spec-field validation. The base-only WI-036
 // check looked only at whether the value's sort provides the spec
-// *base*, ignoring the declared bindings. A field `Comparable[T =
-// Gadget]` holding a Widget value (Widget provides Comparable only at
-// `T = Widget`) was therefore silently accepted. With binding-precise
-// validation the canonical instance resolver runs at `T = Gadget`,
-// finds no provider, and the field is rejected at load. This is the
-// case that behaved incorrectly before the fix.
+// *base*, ignoring the declared bindings. A field `Ranked[K = String]`
+// holding a Widget value (Widget provides Ranked only at `K = Int64`)
+// was therefore silently accepted. With binding-precise validation the
+// canonical instance resolver runs at `K = String`, finds no provider,
+// and the field is rejected at load.
+//
+// WI-20261005-KSSA4 moved the fixture to a sort that is its own carrier: over a
+// parameter (`Comparable[T = Gadget]` holding a `Widget`) the field is refused before
+// any binding is read, and the row would no longer be about bindings.
 #[test]
 fn parameterized_spec_base_field_rejects_binding_mismatch() {
     let source = r#"
 namespace test.wi274_mismatch
-  sort Comparable
-    sort T = ?
-    operation cmp(a: T, b: T) -> Bool
+  import anthill.prelude.{String}
+  sort Ranked
+    sort K = ?
+    operation key(r: Self) -> K
   end
   sort Widget
     entity widget(id: Int64)
   end
-  sort Gadget
-    entity gadget(id: Int64)
-  end
   namespace Widget
-    provides Comparable[T = Widget]
+    provides Ranked[K = Int64]
+    operation key(w: Widget) -> Int64 = w.id
   end
   sort Box
-    entity Holder(item: Comparable[T = Gadget])
+    entity Holder(item: Ranked[K = String])
   end
   fact Holder(item: widget(7))
 end
@@ -6905,7 +7006,44 @@ end
         .filter(|e| format!("{}", e).contains("Holder"))
         .collect();
     assert!(!field_errors.is_empty(),
-        "Widget provides Comparable only at T = Widget, so a Comparable[T = Gadget] field must reject a Widget value, got: {:?}", errors);
+        "Widget provides Ranked only at K = Int64, so a Ranked[K = String] field must reject a Widget value, got: {:?}", errors);
+}
+
+// …AND THE VALUE'S OWN SORT MUST BE THE PROVIDER. `Ranked[K = Int64]` has an instance —
+// `Widget`'s — and the resolver that finds it never looks at the value, so a `gadget(…)`,
+// whose sort provides nothing, was admitted at the field on the strength of another
+// sort's provision (MEASURED, on the parent commit too). FAILS with the `sort_provides`
+// conjunct out of `check_value_against_parameterized`.
+#[test]
+fn parameterized_spec_base_field_rejects_a_value_of_no_provider() {
+    let source = r#"
+namespace test.wi274_wrong_sort
+  sort Ranked
+    sort K = ?
+    operation key(r: Self) -> K
+  end
+  sort Widget
+    entity widget(id: Int64)
+  end
+  sort Gadget
+    entity gadget(id: Int64)
+  end
+  namespace Widget
+    provides Ranked[K = Int64]
+    operation key(w: Widget) -> Int64 = w.id
+  end
+  sort Box
+    entity Holder(item: Ranked[K = Int64])
+  end
+  fact Holder(item: gadget(3))
+end
+"#;
+    let errors = load_type_errors(source);
+    assert!(
+        errors.iter().any(|e| format!("{}", e).contains("Holder")),
+        "a Gadget provides no Ranked, whoever else does; got: {:?}",
+        errors
+    );
 }
 
 // WI-274: conditional provider. `EqList` provides Eq for a list whose elements provide
@@ -6965,25 +7103,31 @@ fn conditional_eqlist_errors(source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// WI-20261005-KSSA4 — THE FIELD IS TYPED AT `Eq`, A SPEC OVER ITS PARAMETER, AND A LIST IS
+// THE `T` OF AN `Eq`, NOT AN `Eq`. The fact reader admitted the list wherever the instance
+// `Eq[T = List[T = Elem]]` resolved — its own copy of "a provider's value is a value of
+// the spec" — so the pair below was the conditional provider seen through that reading:
+// accepted over an equatable element, refused over a `Float`. Both are refused now, the
+// first by the rule (FAILS with the fact reader back on the instance resolver alone), the
+// second either way. The conditional provider's descent is the dictionary search's, and
+// is driven where a requirement is supplied (`wi1102_unsatisfiable_requirement_test`,
+// `wi869_per_provision_conditions_test`).
 #[test]
-fn conditional_spec_field_accepts_eq_list_of_eq_elements() {
-    // `Elem`'s only field is `Int64`, which has `Eq`, so `Elem` is Total and
-    // `derive_total_eq` gives it `Eq` — the conditional provider's guard is satisfied.
+fn conditional_spec_field_takes_no_list_over_equatable_elements() {
     let errs = conditional_eqlist_errors(&conditional_eqlist_source("test.wi274_ok", "Int64", "1"));
-    let field: Vec<&String> = errs.iter().filter(|e| e.contains("Holder")).collect();
     assert!(
-        field.is_empty(),
-        "Elem is equatable, so Eq[T = List[T = Elem]] must type-check through the \
-         conditional EqList provider; got: {errs:#?}"
+        errs.iter().any(|e| {
+            e.contains("Holder.item (entity-field): expected Eq[T = List[T = Elem]]")
+        }),
+        "a list provides `Eq` and is not one; got: {errs:#?}"
     );
 }
 
 #[test]
 fn conditional_spec_field_rejects_eq_list_of_non_eq_elements() {
     // The SAME source with ONE token changed: the element's field is `Float`, so `Elem`
-    // reaches an IEEE float and is classified `NonEq`. The guard `Eq[T = A]` now fails,
-    // and binding precision is what makes the two cases differ — base-only validation
-    // could not tell them apart (both are "List provides Eq").
+    // reaches an IEEE float and is classified `NonEq`. Refused before the rule above for
+    // the guard `Eq[T = A]` failing, and since it for the field's type alone.
     let errs =
         conditional_eqlist_errors(&conditional_eqlist_source("test.wi274_bad", "Float", "1.0"));
     let field: Vec<&String> = errs.iter().filter(|e| e.contains("Holder")).collect();

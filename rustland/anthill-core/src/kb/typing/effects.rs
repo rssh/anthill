@@ -372,7 +372,10 @@ fn permission_entails(
         return false;
     }
     let mut probe = subst.clone();
-    types_compatible(kb, &mut probe, &p_arg, &a_arg)
+    // The capability a spec names is every provider's: `-Permission[Llm]` forbids
+    // `Permission[LiveLlm]` where `LiveLlm provides Llm`. A provision relates two
+    // capabilities though it does not make a `LiveLlm` an `Llm`.
+    spec_as_its_providers(kb, |kb| types_compatible(kb, &mut probe, &p_arg, &a_arg))
 }
 
 /// The self-contradiction-filtering decomposition used by the row subtype / unify

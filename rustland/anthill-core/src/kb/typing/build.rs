@@ -2223,7 +2223,7 @@ pub(crate) fn classify_pin_or_apply_within(
             ctx.param_arg_types,
             ctx.held,
             Some(occ.span.span),
-            false,
+            RequirementUse::Call,
         )?;
     }
     // WI-822 LEG 1: … but only where there IS a parent to name as the callee's
@@ -2408,8 +2408,9 @@ pub(crate) struct OpSupplyCtx<'a> {
     /// grounds here needs nothing further, one that does not can only be forwarded, and
     /// forwarding is what this ticket does not build.
     pub(crate) param_arg_types: &'a HashMap<Symbol, Value>,
-    /// WI-20260921-3G1YT — ROUTE 4's slot source: the spec VIEWS the caller holds values
-    /// of ([`held_spec_views`]). Rides here for the same reason every field above does —
+    /// WI-20260921-3G1YT — the bracket route's slot source: the spec instances the
+    /// clause's `require[…]` brackets declare ([`held_spec_views`]). Rides here for the
+    /// same reason every field above does —
     /// it is call-site information the op half's verdict needs and the dep cannot see.
     pub(crate) held: &'a [HeldSpecView],
 }

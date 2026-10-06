@@ -13,6 +13,18 @@ import anthill.parse.{Effect, Operation, TypeExpr, TypeParam}
   */
 object OpGen:
 
+  /** The context clause for a requirement set, or "" for an empty one.
+    *
+    * ONE clause for every dictionary and not one clause each: they are the sort's
+    * requirement set, supplied together, and Scala resolves an anonymous `using`
+    * parameter by TYPE — so the clause needs no names and two requirements of one spec
+    * at different arguments (`Eq[A]`, `Eq[B]`) stay distinguishable. ANONYMOUS also
+    * keeps the emitted name space free of a binder the anthill declaration never wrote.
+    * Shared by an operation's signature and a constructor's parameter list
+    * (`Bootstrap.fieldless`), which ask for the same dictionaries the same way. */
+  def usingClause(evidence: IndexedSeq[String]): String =
+    if evidence.isEmpty then "" else evidence.mkString("(using ", ", ", ")")
+
   /** One operation's abstract signature.
     *
     * `evidence` is the enclosing sort's requirement dictionaries (WI-1022): the
@@ -60,13 +72,7 @@ object OpGen:
       val pTy = TypeGen.render(sym, p.ty, scope)
       s"$pName: $pTy"
     }.mkString("(", ", ", ")")
-    // ONE clause for every dictionary and not one clause each: they are the sort's
-    // requirement set, supplied together at a call site, and Scala resolves an
-    // anonymous `using` parameter by TYPE — so the clause needs no names and two
-    // requirements of one spec at different arguments (`Eq[A]`, `Eq[B]`) stay
-    // distinguishable. ANONYMOUS also keeps the emitted name space free of a binder
-    // the anthill declaration never wrote.
-    val using = if evidence.isEmpty then "" else evidence.mkString("(using ", ", ", ")")
+    val using = usingClause(evidence)
     val ret = renderReturn(op, scope, sym)
     s"def $name$tpStr$params$using: $ret"
 

@@ -12,25 +12,30 @@
 //! The information is one level out: the enclosing sort's own `requires Spec[C = P, …]` IS
 //! the statement "P provides Spec, with these params". That is the shape a WITNESS sort needs
 //! in order to consume its own subject, which is what WI-590's finite-combinator
-//! consolidation rests on, and the wiring `carrier_provision_short_bindings`' doc named as
-//! missing ("a free op licensing `c` through an ambient `requires FiniteCollection[C = C2,
-//! …]` is NOT handled here … What is missing is the wiring, not the information").
+//! consolidation rests on.
 //!
-//! NOT COVERED HERE — the CONSTRUCTION side. The same information is missing when a value
-//! flows into an entity FIELD typed on a spec the enclosing sort merely requires
-//! (`carrier_provision_short_bindings`, whose doc names that face too). That half is NOT
-//! implemented: the only fixture that would drive it also type-checks with the change backed
-//! out (its declared return pins the params the construction leaves free), so it would have
-//! measured nothing. It lands with the stdlib work that actually needs it.
+//! THE CONSTRUCTION SIDE came with WI-20261005-KSSA4, the standard library work that needed
+//! it: a value built into an entity whose sort requires a spec of the field's parameter
+//! reads the same clause (`bind_sort_params_from_sort_requires_at_construction`). Its rows
+//! are the `ambient_requires_*` ones of `wi_mdwew_bare_spec_arg_provision_test` and
+//! `wi599_carrier_arg_provision_test`'s.
 //!
-//! CONTROLS. `control_*` are the two shapes that ALREADY worked — the receiver typed as a
-//! view of the very spec the `requires` names. They must pass with the change backed out;
-//! the three `enclosing_requires_*` cases must FAIL with it backed out. Backing out means
-//! making `enclosing_requires_licensing_clause` return `None`; MEASURED, the three go red —
-//! with `undeclared effect: ?_`, an ungrounded element, and a `missing requires … on
-//! enclosing sort` refusal respectively — and both controls stay green. The `refuses_*`
-//! cases pass EITHER WAY by design: they pin the gates that keep the licence from widening,
-//! and a back-out only removes licences.
+//! WHAT FAILS WHEN IT IS BACKED OUT. Backing out means making
+//! `enclosing_requires_licensing_clause` return `None`: the two `enclosing_requires_*` cases
+//! go red, and the `refuses_*` cases pass EITHER WAY by design — they pin the gates that
+//! keep the licence from widening, and a back-out only removes licences. RE-MEASURED
+//! 2026-10-05 (WI-20261005-KSSA4): the two go red on the STANDARD LIBRARY's own errors —
+//! `iterator.return: cannot project 'Element' off an abstract receiver with no concrete
+//! sort`, twice. The library's lazy carriers hold their source as a value of their own
+//! `Source` and read it through the sort's clause (`Iterable.iterator(src)` in
+//! `MappedStream.splitFirst`), which this reader is what licenses; so with it backed out
+//! every row that loads the library fails, anywhere, and these two no longer isolate it.
+//!
+//! A RECEIVER TYPED AS A VIEW OVER THE PARAM (`s: Iterable[C = S, …]`) was a third licensed
+//! case and the file's two controls. A value typed at a spec over a parameter is not a
+//! value of a sort that provides it (WI-20261005-KSSA4), so the three are one refusal row,
+//! [`a_receiver_typed_as_a_view_over_the_param_is_refused`], which passes with or without
+//! the licence.
 
 fn expect_loads(name: &str, src: &str) {
     if let Err(errs) = crate::common::try_load_kb_with(src) {
@@ -63,34 +68,6 @@ end
     );
 }
 
-/// The RECEIVER IS A VIEW OVER THE PARAM, and over a DIFFERENT spec than the one being
-/// called: `s : Iterable[C = S, …]` (what destructuring a spec-typed field yields) with
-/// `requires FiniteCollection[C = S, …]`. `Iterable` neither provides nor requires
-/// `FiniteCollection`, so the carrier-keyed search finds nothing; the clause that licenses
-/// the call is the enclosing sort's, keyed by `S`. Without the change this is REFUSED
-/// outright with `missing requires FiniteCollection[…] on enclosing sort` — the licensing
-/// half of the fix, separate from the binding half the other cases exercise.
-#[test]
-fn enclosing_requires_licenses_a_view_over_the_param() {
-    expect_loads(
-        "view-over-param receiver",
-        r#"
-namespace wi590.encl.b
-  import anthill.prelude.{FiniteCollection, Iterable, List}
-  sort W
-    import anthill.prelude.{FiniteCollection, Iterable, List}
-    import anthill.prelude.FiniteCollection.{collect}
-    sort S = ?
-    sort Src = ?
-    effects ES = ?
-    requires FiniteCollection[C = S, Element = Src, E = ES]
-    operation drain(s: Iterable[C = S, Element = Src, E = ES]) -> List[T = Src] effects ES = collect(s)
-  end
-end
-"#,
-    );
-}
-
 /// The ELEMENT, not just the effect row: `Iterable.iterator(s)` on a bare `Source` param
 /// yields a `Stream` whose element must come from the enclosing `requires`. Without the
 /// change the peeled element is a fresh `?A` and the declared `Pair[A = Src]` return is
@@ -117,52 +94,51 @@ end
     );
 }
 
-/// CONTROL — the shape that already worked: the receiver is a view of the SAME spec the
-/// `requires` names (`s : FiniteCollection[C = S, …]`, `requires FiniteCollection[…]`), which
-/// WI-608/WI-609 already ground. Passes with the change backed out; it is here so a
-/// regression in the shared path is not mistaken for the new one.
+/// A RECEIVER TYPED AS A VIEW OVER THE PARAM IS NOT A VALUE OF THE PARAM. `s: Iterable[C =
+/// S, …]` and `s: FiniteCollection[C = S, …]` type `s` at a spec, and a value typed at a
+/// spec over a parameter is not a value of a sort that provides it (WI-20261005-KSSA4): the
+/// enclosing clause is about `S`, and `s` is not an `S`. These three were the licensing row
+/// and the two controls of this file — each read the view's carrier argument as the
+/// receiver's own type. The receiver is written `s: S`, as the two rows above write it.
 #[test]
-fn control_same_spec_view_receiver_still_grounds() {
-    expect_loads(
-        "control: same-spec view",
-        r#"
-namespace wi590.encl.c
-  import anthill.prelude.{FiniteCollection, List}
+fn a_receiver_typed_as_a_view_over_the_param_is_refused() {
+    let program = |ns: &str, spec: &str, param: &str, body: &str, ret: &str| {
+        format!(
+            r#"
+namespace wi590.encl.{ns}
+  import anthill.prelude.{{FiniteCollection, Iterable, List, Stream, Option, Pair}}
   sort W
-    import anthill.prelude.{FiniteCollection, List}
-    import anthill.prelude.FiniteCollection.{collect}
+    import anthill.prelude.{{FiniteCollection, Iterable, List, Stream, Option, Pair}}
+    import anthill.prelude.FiniteCollection.{{collect}}
     sort S = ?
     sort Src = ?
     effects ES = ?
-    requires FiniteCollection[C = S, Element = Src, E = ES]
-    operation drain(s: FiniteCollection[C = S, Element = Src, E = ES]) -> List[T = Src] effects ES = collect(s)
+    requires {spec}[C = S, Element = Src, E = ES]
+    operation use(s: {param}[C = S, Element = Src, E = ES]) -> {ret} effects ES = {body}
   end
 end
-"#,
-    );
-}
-
-/// CONTROL — the other already-working shape: an `Iterable`-viewed receiver calling an
-/// `Iterable` op, which the WI-608 requires-view path grounds. Also passes backed out.
-#[test]
-fn control_same_spec_view_peel_still_grounds() {
-    expect_loads(
-        "control: same-spec view peel",
-        r#"
-namespace wi590.encl.f
-  import anthill.prelude.{Iterable, Stream, Option, Pair}
-  sort W
-    import anthill.prelude.{Iterable, Stream, Option, Pair}
-    sort Source = ?
-    sort Src = ?
-    effects ES = ?
-    requires Iterable[C = Source, Element = Src, E = ES]
-    operation peel(s: Iterable[C = Source, Element = Src, E = ES]) -> Option[Pair[A = Src, B = Stream[T = Src, E = ES]]] effects ES =
-      Stream.splitFirst(Iterable.iterator(s))
-  end
-end
-"#,
-    );
+"#
+        )
+    };
+    let list = "List[T = Src]";
+    let peeled = "Option[Pair[A = Src, B = Stream[T = Src, E = ES]]]";
+    for (ns, spec, param, body, ret, callee) in [
+        // a view of ANOTHER spec than the one the clause names
+        ("b", "FiniteCollection", "Iterable", "collect(s)", list, "FiniteCollection"),
+        // a view of the SAME spec
+        ("c", "FiniteCollection", "FiniteCollection", "collect(s)", list, "FiniteCollection"),
+        ("f", "Iterable", "Iterable", "Stream.splitFirst(Iterable.iterator(s))", peeled, "Iterable"),
+    ] {
+        let errs = crate::common::try_load_kb_with(&program(ns, spec, param, body, ret))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("expected anthill.prelude.{callee}.C, got {param}["))
+                && e.contains("a value typed at it is not a value of a sort that provides it")),
+            "`s: {param}[C = S, …]` is not an `S`, so `{body}` must refuse it where the \
+             carrier is expected; got: {errs:#?}"
+        );
+    }
 }
 
 /// NEGATIVE — the clause must be about the RECEIVER'S param, not merely name the spec. `W`

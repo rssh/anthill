@@ -105,7 +105,7 @@ use anthill_core::eval::Value;
 
 /// `Buf[T, N]` — `N` the value-in-type argument — the spec `Store`, and a second state sort
 /// `Other`. `body` follows.
-fn program(ns: &str, body: &str) -> String {
+pub(crate) fn program(ns: &str, body: &str) -> String {
     format!(
         r#"
 namespace {ns}
@@ -156,7 +156,7 @@ const N3: &str = "Buf[T = Int64, N = 3]";
 const N4: &str = "Buf[T = Int64, N = 4]";
 
 /// The providers at `N = 3` (answers `v + 30`) and at `N = 4` (answers `v + 40`).
-fn by_value() -> String {
+pub(crate) fn by_value() -> String {
     format!("{}{}", provider("C3", N3, 30), provider("C4", N4, 40))
 }
 

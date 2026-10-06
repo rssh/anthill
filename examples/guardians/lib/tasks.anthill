@@ -17,10 +17,11 @@ namespace guardians
   -- `Text[Untrusted]` for every prompt, so `-> Text[?t]` is refused (measured:
   -- docs/design/measured.md C10). The input could be widened to `Text[?t]` and is
   -- not — llm.anthill's rule: write no variable where no relationship exists.
-  -- ROW-POLYMORPHIC IN THE MODEL. An operation that takes ANY `Llm` has no
-  -- business asserting `External`: it performs whatever the carrier it is handed
-  -- performs. `llm.E` projects that off the parameter — the `Stream` shape
-  -- (`s.E`) — so `summarize` over `FakeLlm` is `{Error}` and over `LiveLlm` is
+  -- ROW-POLYMORPHIC IN THE MODEL. An operation that takes a value of ANY sort
+  -- providing `Llm` has no business asserting `External`: it performs whatever the
+  -- carrier it is handed performs. `llm: Llm.C` is that value and `Llm.E` the row of
+  -- the same `Llm` — the members of one spec named in one signature are one
+  -- instance — so `summarize` over `FakeLlm` is `{Error}` and over `LiveLlm` is
   -- `{External, Error}`, and only the latter is barred from a `Branch` region.
   -- THE INSTRUCTION IS A PARAMETER, AND IT HAS TO BE. Minting it here made
   -- `summarize` carry `Permission[Vouch]`, and an effect row propagates: every
@@ -29,10 +30,10 @@ namespace guardians
   -- load would have handed every candidate the power to mint `Text[Trusted]`
   -- directly, voiding the seal. So the mint happens ONCE, above the agent, and
   -- what reaches the agent is the result (WI-20260829-MCKTE).
-  operation summarize(llm: Llm, instruction: Text[Trusted],
+  operation summarize(llm: Llm.C, instruction: Text[Trusted],
                       msgs: List[T = Text[Untrusted]])
       -> Text[Untrusted]
-    effects {llm.E, Error} =
+    effects {Llm.E, Error} =
       let content = join_texts(msgs)
       let p = prompt_with(instruction: instruction, content: content)
       llm.complete(p)
@@ -41,7 +42,7 @@ namespace guardians
   -- vocabulary, refusing anything outside it at the boundary. Doing that in
   -- anthill needs string machinery this example lacks, so the check lives in the
   -- host binding — the largest remaining fiction here.
-  operation observe(llm: Llm, m: Message[Untrusted])
+  operation observe(llm: Llm.C, m: Message[Untrusted])
       -> List[T = Observed]
-    effects {llm.E, Error}
+    effects {Llm.E, Error}
 end

@@ -78,7 +78,7 @@ pub(super) fn check_operation_bodies(
         // rejected; the body must type-check for ALL `Elem`). Inner calls keep
         // their own FLEXIBLE `Global` type params, which solve TO these rigids
         // (rigid ⇒ global; `resolved_var` matches only `Global`), and
-        // `check_unconstrained_type_params` passes them unchanged (it flags only
+        // `first_unconstrained_type_param` passes them unchanged (it flags only
         // bare `Global`s) — so a self-receiver / recursive call whose type param
         // resolves to the enclosing rigid is no longer a false "unconstrained"
         // leak. Declared ⇒ check-mode ⇒ rigid; an *inferred* param would stay

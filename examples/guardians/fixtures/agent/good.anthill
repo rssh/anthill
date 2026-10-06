@@ -95,17 +95,17 @@ sort guardians.agent.GoodTriage
 
   -- The row and the postcondition are RESTATED; the row half is checked
   -- against the spec's (an override may not widen it).
-  operation run(self: GoodTriage, box: Mailbox, llm: Llm,
+  operation run(self: GoodTriage, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, llm.E, Error} =
+    effects {External, Llm.E, Error} =
       -- `Email.fetch` is External, so it is called ONCE and the result reused.
       -- Calling it twice would be two different mailbox reads, which is
       -- exactly the licence External revokes.
       let msgs = Email.fetch(box)
       -- THE MODEL RUN, once per message. This is site 3 of two-flows.md, and
       -- until `categories_of` came out no candidate performed it at all.
-      let seen = mapElems[EffP = {llm.E, Error}](msgs,
+      let seen = mapElems[EffP = {Llm.E, Error}](msgs,
                    lambda m -> Seen(message:  m,
                                     features: mapElems(observe(llm, m),
                                                        lambda o -> o.feature)))

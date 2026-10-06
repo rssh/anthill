@@ -637,7 +637,9 @@ fn a_covariant_return_type_still_discharges_the_result_clause() {
     // a SUBTYPE of what the spec declares, and a predicate about a value of the
     // subtype is the same proposition — so the `result` clause is still discharged.
     // `Carrier` provides `Base`, which is what makes `Carrier <: Base` hold
-    // (`sort_provides_admissibly`).
+    // (`sort_provides_admissibly`) — `Base` receives on itself, so a sort that provides it
+    // is one. (A `Base` over a parameter would not do: a sort that provides such a spec is
+    // its parameter, not the spec, and returning one is no refinement — WI-20261005-KSSA4.)
     //
     // BACK-OUT F takes it, and only it — the refusal then reads as a weakened
     // postcondition on a faithful override.
@@ -646,7 +648,7 @@ fn a_covariant_return_type_still_discharges_the_result_clause() {
           import anthill.prelude.{Int64}
           import anthill.prelude.Ord.{gt}
           sort Base
-            sort B = ?
+            operation rank(b: Self) -> Int64
           end
           sort Sp
             sort T = ?
@@ -654,7 +656,8 @@ fn a_covariant_return_type_still_discharges_the_result_clause() {
           end
           sort Carrier
             entity c(id: Int64)
-            provides Base[B = Carrier]
+            provides Base
+            operation rank(b: Carrier) -> Int64 = 0
             provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier ensures gt(result, 0) = x
           end

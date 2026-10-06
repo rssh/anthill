@@ -14,7 +14,7 @@
 //! and split it out as this ticket. The accepting half is the same artifact read the other
 //! way and nothing had named it: `ti(c: Iterable[C = Stream])` ACCEPTED that same `List`,
 //! because the view literally said the carrier was a `Stream`. That row is
-//! [`a_list_is_no_longer_admissible_at_a_spec_view_naming_stream`], and it is the more
+//! [`a_list_is_not_a_value_of_any_view_of_iterable`], and it is the more
 //! dangerous of the two — a refusal that never comes is invisible.
 //!
 //! WHERE THE FIX IS, AND WHY NOT IN THE COMPOSER. `compose_provision_views` is UNCHANGED.
@@ -52,11 +52,15 @@
 //! taken out of the composed view at all, and WHAT replaces it — and one back-out cannot
 //! separate them. Both were measured by MUTATING the shipped code, not deleting it.
 //!
+//! WHAT FOLLOWS IS THE MEASUREMENT AT DELIVERY, on rows that typed the parameter at the
+//! spec; the note at the end of this header says what the same back-outs move today.
+//!
 //! (A) NEUTRALIZE THE EXCLUSION (`carrier_vid` forced to `None` in `subtype_provider_view`,
 //! so nothing is dropped and neither caller's override fires) — the pre-ticket tree:
 //!
 //!   * [`a_two_hop_carrier_conforms_to_a_spec_view_naming_it`] — RED.
-//!   * [`a_list_is_no_longer_admissible_at_a_spec_view_naming_stream`] — RED.
+//!   * `a_list_is_no_longer_admissible_at_a_spec_view_naming_stream` — RED (the row that is
+//!     now [`a_list_is_not_a_value_of_any_view_of_iterable`]).
 //!   * [`a_bare_two_hop_carrier_conforms_to_a_spec_view_naming_it`] — RED.
 //!   * [`a_wrong_carrier_argument_still_refuses`] — GREEN. It refuses for the OLD reason,
 //!     the composed view naming `Stream`, so it says nothing about this axis.
@@ -98,6 +102,29 @@
 //! control that makes the rows above attributable to composition rather than to the carrier
 //! parameter having been given a new meaning everywhere.
 
+//!
+//! WI-20261005-KSSA4 — THE ROWS OVER `Iterable` ASK THE REQUIREMENT, NOT THE PARAMETER.
+//! `Iterable` is a spec over its parameter `C`, so a `List` is not a value of any view of
+//! it and `ti(c: Iterable[C = …])` takes none ([`a_list_is_not_a_value_of_any_view_of_
+//! iterable`], at both subtype sites). That a carrier's composed view names the carrier
+//! itself is asked where a requirement written AT the carrier is supplied — `ti(c:
+//! List[T = Row]) requires Iterable[C = List[T = Row]]` — and where the consumer is
+//! written over any provider, `ti[P](c: P) requires Iterable[C = P, …]`.
+//!
+//! THE BACK-OUTS, RE-MEASURED. A provider's value is no longer compared with a spec over a
+//! parameter, so the composed view's carrier parameter is not reached from a value's type,
+//! and the requirement rows above are supplied by resolution, which this reader is no part
+//! of: under (A) and under (B) none of them fails. The reader is reached where a spec
+//! stands for its providers — a rule variable's bound — and
+//! [`a_rule_bound_that_writes_the_carrier_reads_the_composed_view`] is the row that drives
+//! it there: under (A) its `List` bound holds of nothing and its `Stream` bound of the
+//! list, and under (B) its bound at a list of another element holds of the list. Under
+//! cut 1 of (A2) the two rows over a spec that is its own carrier fail as recorded
+//! ([`a_composed_element_parameter_is_not_dropped_as_the_carrier`],
+//! [`a_self_providing_element_sort_is_not_read_as_the_carrier`]); cut 2 was not rebuilt.
+//! Those two and the rule-bound row also fail with the subtype relation's provider view
+//! read one hop deep (WI-20260829-GNPG7's back-out).
+
 use crate::common::{expect_loaded, try_load_kb_with};
 
 /// The two-hop carrier is `List`, reaching `Iterable` through `Stream`
@@ -134,6 +161,39 @@ end
     )
 }
 
+/// [`program`] with `ti` declared by its whole `signature`: a requirement on any provider
+/// (`ti[P](c: P) -> Int64 requires Iterable[C = P]`) or one written at a carrier
+/// (`ti(c: List[T = Row]) -> Int64 requires Iterable[C = List[T = Row]]`).
+fn requiring_program(signature: &str, arg_ty: &str) -> String {
+    format!(
+        r#"
+namespace test.xzmgc
+  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream, MutableStack}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  operation {signature} = 1
+  operation drive(rs: {arg_ty}) -> Int64 = ti(rs)
+end
+"#
+    )
+}
+
+/// [`bare_program`] with `ti` declared by its whole `signature`.
+fn bare_requiring_program(signature: &str) -> String {
+    format!(
+        r#"
+namespace test.xzmgc_bare
+  import anthill.prelude.{{Int64, List, Iterable, Stream}}
+  import anthill.prelude.List.{{nil}}
+  operation {signature} = 1
+  operation drive() -> Int64 = ti(nil())
+end
+"#
+    )
+}
+
 fn load_errors(src: &str) -> Vec<String> {
     match try_load_kb_with(src) {
         Ok(_) => Vec::new(),
@@ -153,12 +213,15 @@ fn load_errors(src: &str) -> Vec<String> {
 /// having taken too much.
 #[test]
 fn a_two_hop_carrier_conforms_to_a_spec_view_naming_it() {
-    for param in [
+    for requirement in [
         "Iterable[C = List]",
         "Iterable[C = List[T = Row]]",
         "Iterable[C = List[T = Row], Element = Row, E = {}]",
     ] {
-        expect_loaded(try_load_kb_with(&program(param, "List[T = Row]")));
+        expect_loaded(try_load_kb_with(&requiring_program(
+            &format!("ti(c: List[T = Row]) -> Int64 requires {requirement}"),
+            "List[T = Row]",
+        )));
     }
 }
 
@@ -170,27 +233,30 @@ fn a_two_hop_carrier_conforms_to_a_spec_view_naming_it() {
 /// and a fix to one says nothing about the other — the pairing GNPG7's own two tests
 /// established for this relation.
 #[test]
-fn a_list_is_no_longer_admissible_at_a_spec_view_naming_stream() {
-    let parameterized = load_errors(&program("Iterable[C = Stream]", "List[T = Row]"));
-    assert!(
-        parameterized
-            .iter()
-            .any(|e| e.contains("expected Iterable[C = Stream]")),
-        "a List's Iterable carrier is the LIST, so a view naming Stream must refuse it \
-         (parameterized actual): {parameterized:?}"
-    );
+fn a_list_is_not_a_value_of_any_view_of_iterable() {
+    // Whichever carrier the view names — the intermediate's, which the composed view once
+    // claimed, or the list's own — at BOTH subtype sites, which are separate call sites.
+    for view in ["Iterable[C = Stream]", "Iterable[C = List]", "Iterable"] {
+        let parameterized = load_errors(&program(view, "List[T = Row]"));
+        assert!(
+            parameterized.iter().any(|e| e.contains(&format!("expected {view}, got List[T = Row]"))
+                && e.contains("Type this position `anthill.prelude.Iterable.C`")),
+            "a `List` provides `Iterable` and is not one (parameterized actual): \
+             {parameterized:?}"
+        );
+        let bare = load_errors(&bare_program(view));
+        assert!(
+            bare.iter().any(|e| e.contains(&format!("expected {view}, got List"))
+                && e.contains("Type this position `anthill.prelude.Iterable.C`")),
+            "the same, at the BARE-actual site (`bare_provider_binding_precise`): {bare:?}"
+        );
+    }
 
-    let bare = load_errors(&bare_program("Iterable[C = Stream]"));
-    assert!(
-        bare.iter()
-            .any(|e| e.contains("expected Iterable[C = Stream]")),
-        "the same, at the BARE-actual site (`bare_provider_binding_precise`): {bare:?}"
-    );
-
-    // CONTROL — the same fixture with the carrier named correctly loads, so the rows above
-    // are about WHICH carrier is named and not about the view carrying a `C` at all.
-    expect_loaded(try_load_kb_with(&program("Iterable[C = List]", "List[T = Row]")));
-    expect_loaded(try_load_kb_with(&bare_program("Iterable[C = List]")));
+    // CONTROL — written as a requirement on the argument's sort, the same call loads at
+    // both sites, so the rows above are about the spelling and not about the provision.
+    let any_provider = "ti[P](c: P) -> Int64 requires Iterable[C = P]";
+    expect_loaded(try_load_kb_with(&requiring_program(any_provider, "List[T = Row]")));
+    expect_loaded(try_load_kb_with(&bare_requiring_program(any_provider)));
 }
 
 /// THE STRENGTH CONTROL, and the row that decides HOW the carrier param is supplied.
@@ -237,8 +303,13 @@ fn a_wrong_carrier_argument_still_refuses() {
 /// hole this ticket opened.
 #[test]
 fn a_bare_two_hop_carrier_conforms_to_a_spec_view_naming_it() {
-    for param in ["Iterable[C = List]", "Iterable[C = List[T = Int64]]"] {
-        expect_loaded(try_load_kb_with(&bare_program(param)));
+    for (param, requirement) in [
+        ("List", "Iterable[C = List]"),
+        ("List[T = Int64]", "Iterable[C = List[T = Int64]]"),
+    ] {
+        expect_loaded(try_load_kb_with(&bare_requiring_program(&format!(
+            "ti(c: {param}) -> Int64 requires {requirement}"
+        ))));
     }
     // CONTROL: the same shape with no spec view in it at all.
     for param in ["List", "List[T = Int64]"] {
@@ -255,13 +326,17 @@ fn a_bare_two_hop_carrier_conforms_to_a_spec_view_naming_it() {
 /// param having been given a new meaning everywhere.
 #[test]
 fn a_direct_provider_is_untouched() {
-    for param in [
-        "Iterable[Element = Row]",
-        "Iterable[C = MutableStack]",
-        "Iterable[C = MutableStack[T = Row]]",
-        "Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
+    for signature in [
+        "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Row]",
+        "ti(c: MutableStack[T = Row]) -> Int64 requires Iterable[C = MutableStack]",
+        "ti(c: MutableStack[T = Row]) -> Int64 requires Iterable[C = MutableStack[T = Row]]",
+        "ti(c: MutableStack[T = Row]) -> Int64 \
+         requires Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
     ] {
-        expect_loaded(try_load_kb_with(&program(param, "MutableStack[T = Row]")));
+        expect_loaded(try_load_kb_with(&requiring_program(
+            signature,
+            "MutableStack[T = Row]",
+        )));
     }
 }
 
@@ -435,23 +510,25 @@ namespace test.xzmgc_entity
     provides Stream[T = T, E = {{}}]
     operation splitFirst(s: Self) -> Option[T = Pair[A = T, B = Box[T = T]]] = none
   end
-  operation ti(c: {want}) -> Int64 = 1
+  operation {want} = 1
   operation drive(b: Box.boxed) -> Int64 = ti(b)
 end
 "#
         )
     };
-    expect_loaded(try_load_kb_with(&program("Iterable[C = Box]")));
+    // The entity is a `Box`, and `Iterable` is required of `Box`.
+    expect_loaded(try_load_kb_with(&program(
+        "ti(c: Box) -> Int64 requires Iterable[C = Box]",
+    )));
 
-    // And the carrier is CHECKED, not merely present: the intermediate's own name — the
-    // value the composed view used to carry — is refused.
-    let errs = load_errors(&program("Iterable[C = Stream]"));
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("expected Iterable[C = Stream]")),
-        "an entity of a two-hop provider must not be admissible at the INTERMEDIATE: \
-         {errs:?}"
-    );
+    // And the entity is not a value of a view of `Iterable`, whichever carrier it names.
+    for view in ["Iterable[C = Box]", "Iterable[C = Stream]"] {
+        let errs = load_errors(&program(&format!("ti(c: {view}) -> Int64")));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("expected {view}"))),
+            "an entity of a provider is not a value of the spec it provides: {errs:?}"
+        );
+    }
 }
 
 /// THE NON-CARRIER PARAMS ARE STILL COMPOSED. WI-20260829-GNPG7 made these load and this
@@ -460,11 +537,47 @@ end
 /// view still has to supply.
 #[test]
 fn the_composed_non_carrier_params_are_unaffected() {
-    for param in [
-        "Iterable",
-        "Iterable[Element = Row]",
-        "Iterable[Element = Row, E = {}]",
+    for requirement in [
+        "Iterable[C = P]",
+        "Iterable[C = P, Element = Row]",
+        "Iterable[C = P, Element = Row, E = {}]",
     ] {
-        expect_loaded(try_load_kb_with(&program(param, "List[T = Row]")));
+        expect_loaded(try_load_kb_with(&requiring_program(
+            &format!("ti[P](c: P) -> Int64 requires {requirement}"),
+            "List[T = Row]",
+        )));
     }
+}
+
+/// WHERE THE COMPOSED VIEW IS STILL READ FROM A TYPE (WI-20261005-KSSA4): a rule variable's
+/// bound, which reads a spec as standing for its providers. `?xs: A[C = List[T = Int64]]`
+/// under `Iterable[A]` requires `Iterable` of the matched value's sort AT that carrier, and
+/// a `List` reaches `Iterable` through `Stream`, whose provision names `Stream` itself as
+/// the carrier. The list's carrier is the list: the bound at `List[T = Int64]` holds of
+/// it, the bound at `Stream` does not, and neither does the bound at a list of another
+/// element.
+///
+/// FAILS under (A) — nothing taken out of the composed view: the first two answers swap —
+/// and under (B) — the bare carrier sort supplied in place of the value's own type: the
+/// third bound holds of the list. Both measured on this row.
+#[test]
+fn a_rule_bound_that_writes_the_carrier_reads_the_composed_view() {
+    let mut kb = crate::common::load_kb_with(
+        r#"
+namespace test.xzmgc_bound
+  import anthill.prelude.{Int64, Bool, List, Iterable, Stream}
+  fact src([1, 2])
+  fact src(5)
+  rule viaList[A](?xs: A[C = List[T = Int64]]) :- src(?xs), Iterable[A]
+  rule viaStream[A](?xs: A[C = Stream]) :- src(?xs), Iterable[A]
+  rule viaWrongList[A](?xs: A[C = List[T = Bool]]) :- src(?xs), Iterable[A]
+end
+"#,
+    );
+    let mut holds_of = |rule: &str| {
+        crate::common::query_unary(&mut kb, &format!("test.xzmgc_bound.{rule}")).len()
+    };
+    assert_eq!(holds_of("viaList"), 1, "the list's `Iterable` carrier is the list");
+    assert_eq!(holds_of("viaStream"), 0, "…and not the `Stream` it is reached through");
+    assert_eq!(holds_of("viaWrongList"), 0, "…nor a list of another element");
 }

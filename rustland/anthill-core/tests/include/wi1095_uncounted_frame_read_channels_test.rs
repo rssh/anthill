@@ -69,6 +69,13 @@ use anthill_core::kb::KnowledgeBase;
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
+/// A spec over a vector `V` and a scalar `F` with TWO providers at `Vec3` that bind `F`
+/// differently, so that a requirement naming `Vec3` and leaving `F` open is at an element
+/// nothing says — `wi945_unconstrained_sort_element_test`'s device, and its note says why
+/// `VectorSpace[V, F]` no longer is one (WI-20261005-KSSA4). `OverFloat` doubles and
+/// `OverInt` does not, so a pinned control that reached the wrong one answers (1, 2, 3).
+use crate::wi945_unconstrained_sort_element_test::SCALING;
+
 /// (4) AN OP-SCOPED FORWARD. `HolderVS.twice` calls `Inner.innerOp`, whose OWN
 /// `requires Doubler[W]` is filled by forwarding `HolderVS`'s `__req_doubler` — so the
 /// forward rides in `op_dicts` and `dispatch_dict` is `None` (`Inner` declares no
@@ -79,10 +86,10 @@ fn op_forward_src(ns: &str, requires_vs: &str) -> String {
         r#"
 namespace {ns}
   import anthill.geometry.{{Vec3}}
-  import anthill.prelude.{{Float}}
+  import anthill.prelude.{{Float, Int64}}
   import anthill.prelude.algebra.{{VectorSpace}}
 
-  sort Doubler
+{SCALING}  sort Doubler
     sort V = ?
     operation dbl(a: V) -> V
   end
@@ -108,7 +115,8 @@ namespace {ns}
     operation drive(a: Vec3) -> Vec3 = HolderVS.twice(a)
   end
 end
-"#
+"#,
+        SCALING = SCALING,
     )
 }
 
@@ -120,10 +128,10 @@ fn same_sort_eta_src(ns: &str, requires_vs: &str) -> String {
         r#"
 namespace {ns}
   import anthill.geometry.{{Vec3}}
-  import anthill.prelude.{{Float, Function}}
+  import anthill.prelude.{{Float, Int64, Function}}
   import anthill.prelude.algebra.{{VectorSpace}}
 
-  sort Ap
+{SCALING}  sort Ap
     sort T = ?
     operation ap(f: Function[T, T], a: T) -> T = f(a)
   end
@@ -132,7 +140,7 @@ namespace {ns}
     sort V = ?
     sort F = ?
     {requires_vs}
-    operation helper(a: V) -> V = VectorSpace.vec_add(a, a)
+    operation helper(a: V) -> V = Scaling.doubled(a)
     operation twice(a: V) -> V = Ap.ap(helper, a)
   end
 
@@ -140,7 +148,8 @@ namespace {ns}
     operation drive(a: Vec3) -> Vec3 = HolderVS.twice(a)
   end
 end
-"#
+"#,
+        SCALING = SCALING,
     )
 }
 
@@ -153,10 +162,10 @@ fn cross_sort_eta_src(ns: &str, requires_vs: &str) -> String {
         r#"
 namespace {ns}
   import anthill.geometry.{{Vec3}}
-  import anthill.prelude.{{Float, Function}}
+  import anthill.prelude.{{Float, Int64, Function}}
   import anthill.prelude.algebra.{{VectorSpace}}
 
-  sort Doubler
+{SCALING}  sort Doubler
     sort V = ?
     operation dbl(a: V) -> V
   end
@@ -191,7 +200,8 @@ namespace {ns}
     operation drive(a: Vec3) -> Vec3 = HolderVS.twice(a)
   end
 end
-"#
+"#,
+        SCALING = SCALING,
     )
 }
 
@@ -329,7 +339,7 @@ fn drive_123(src: &str, ns: &str, want: (f64, f64, f64), why: &str) {
 fn assert_names_the_unconstrained_element(text: &str, ns: &str, callee: &str) {
     for piece in [
         // the requirement, rendered at the call's own bindings
-        "anthill.prelude.algebra.VectorSpace[V = anthill.geometry.Vec3",
+        &format!("{ns}.Scaling[V = anthill.geometry.Vec3"),
         // the unconstrained element — the whole point of the refusal
         &format!("F = {ns}.HolderVS.F"),
         "unconstrained",
@@ -353,7 +363,7 @@ fn assert_names_the_unconstrained_element(text: &str, ns: &str, callee: &str) {
 fn an_op_scoped_forward_is_refused() {
     let ns = "test.wi1095.opfwd";
     let text = refusal(
-        &op_forward_src(ns, "requires VectorSpace[V, F]"),
+        &op_forward_src(ns, "requires Scaling[V, F]"),
         "an op-scoped `requires` filled by a caller-frame forward",
         |src| drive_outcome_vec3(src, ns),
     );
@@ -369,7 +379,7 @@ fn an_op_scoped_forward_is_refused() {
 fn control_the_op_scoped_forward_with_f_pinned_still_runs() {
     let ns = "test.wi1095.opfwd.pinned";
     drive_123(
-        &op_forward_src(ns, "requires VectorSpace[V = V, F = Float]"),
+        &op_forward_src(ns, "requires Scaling[V = V, F = Float]"),
         ns,
         (1.0, 2.0, 3.0),
         "a pinned element must still build the dictionary the op-scoped slot forwards",
@@ -386,7 +396,7 @@ fn control_the_op_scoped_forward_with_f_pinned_still_runs() {
 fn an_eta_of_a_same_sort_sibling_is_refused() {
     let ns = "test.wi1095.selfeta";
     let text = refusal(
-        &same_sort_eta_src(ns, "requires VectorSpace[V, F]"),
+        &same_sort_eta_src(ns, "requires Scaling[V, F]"),
         "a same-sort eta, whose dict is `var_ref(__req_self)`",
         |src| drive_outcome_vec3(src, ns),
     );
@@ -399,7 +409,7 @@ fn an_eta_of_a_same_sort_sibling_is_refused() {
 fn control_the_same_sort_eta_with_f_pinned_still_runs() {
     let ns = "test.wi1095.selfeta.pinned";
     drive_123(
-        &same_sort_eta_src(ns, "requires VectorSpace[V = V, F = Float]"),
+        &same_sort_eta_src(ns, "requires Scaling[V = V, F = Float]"),
         ns,
         (2.0, 4.0, 6.0),
         "a pinned element must still mint an `OpRef` carrying its sort's dictionary",
@@ -412,7 +422,7 @@ fn control_the_same_sort_eta_with_f_pinned_still_runs() {
 fn an_eta_of_a_cross_sort_op_forwards_this_frame_too() {
     let ns = "test.wi1095.crosseta";
     let text = refusal(
-        &cross_sort_eta_src(ns, "requires VectorSpace[V, F]"),
+        &cross_sort_eta_src(ns, "requires Scaling[V, F]"),
         "a cross-sort eta whose built dict forwards `__req_doubler`",
         |src| drive_outcome_vec3(src, ns),
     );
@@ -425,7 +435,7 @@ fn an_eta_of_a_cross_sort_op_forwards_this_frame_too() {
 fn control_the_cross_sort_eta_with_f_pinned_still_runs() {
     let ns = "test.wi1095.crosseta.pinned";
     drive_123(
-        &cross_sort_eta_src(ns, "requires VectorSpace[V = V, F = Float]"),
+        &cross_sort_eta_src(ns, "requires Scaling[V = V, F = Float]"),
         ns,
         (1.0, 2.0, 3.0),
         "a pinned element must still build the dictionary the eta forwards into",

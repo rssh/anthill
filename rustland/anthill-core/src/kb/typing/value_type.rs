@@ -495,6 +495,12 @@ fn constructor_value_type(
             unify_types(kb, &mut subst, child_ty, declared_type);
         }
     }
+    // What the sort's own `requires` clauses say of a parameter no field is typed by, as
+    // [`check_constructor_iter`] reads them — a value has no enclosing scope, so its
+    // carrier is a sort and its provision answers.
+    if let Some(sort) = parent_sort {
+        bind_sort_params_from_sort_requires_at_construction(kb, &mut subst, None, sort);
+    }
     finish_constructor_type(kb, parent_sort.unwrap_or(ctor_sym), parent_sort, &subst)
 }
 
@@ -2442,7 +2448,14 @@ pub(crate) fn type_bound_verdict_view(
     if type_is_undetermined(kb, &ty) || type_is_undetermined(kb, bound) {
         return TypeBoundVerdict::Suspend; // WI-067 — never NAF-decide an open variable
     }
-    if types_compatible(kb, &mut Substitution::new(), &ty, bound) {
+    // A spec over a parameter in a stored bound is the requirement a head wrote through
+    // its member (`?x: Summable.T`) or a type variable: the matched value's sort provides
+    // it. The spec written as the variable's type is refused at load
+    // ([`check_rule_sort_uses`]), so no bound holds one as a type.
+    let holds = spec_as_its_providers(kb, |kb| {
+        types_compatible(kb, &mut Substitution::new(), &ty, bound)
+    });
+    if holds {
         TypeBoundVerdict::Holds
     } else {
         TypeBoundVerdict::Refuted
@@ -2531,7 +2544,24 @@ pub(crate) fn pin_bound_from_value_open(
 /// The one body of [`pin_bound_from_value`] (`open: false`) and
 /// [`pin_bound_from_value_open`] (`open: true`), which differ in how they read the value's
 /// type — and, for the open reading, a bound σ has already pinned.
+///
+/// A RULE BOUND IS READ AS ONE HERE TOO ([`spec_as_its_providers`]). A spec over a
+/// parameter standing in the bound is the requirement a head wrote through its member or a
+/// type variable, wherever in the bound it stands; compared as a value's type beside a
+/// variable, `?p: Pair[A = Summable.T]` — whose unwritten `B` is a variable — refuted
+/// every provider and the rule answered nothing, while its fully written twin, which has
+/// no variable and so takes [`type_bound_verdict_view`], answered (MEASURED).
 fn pin_bound(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    bound: &Value,
+    open: bool,
+) -> TypeBoundPin {
+    spec_as_its_providers(kb, |kb| pin_bound_as_a_bound(kb, subst, value, bound, open))
+}
+
+fn pin_bound_as_a_bound(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     value: &Value,

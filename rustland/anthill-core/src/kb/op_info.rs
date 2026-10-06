@@ -842,7 +842,7 @@ pub(crate) fn value_list_to_vec(kb: &KnowledgeBase, mut v: &Value) -> Vec<Value>
 /// from `type_check_sorts_collect` where the error list lives — is the right one.
 ///
 /// A dropped op type param is invisible in four ways at once, which is why it must be
-/// reported SOMEWHERE: [`crate::kb::typing`]'s `check_unconstrained_type_params` never
+/// reported SOMEWHERE: [`crate::kb::typing`]'s `first_unconstrained_type_param` never
 /// checks it; `resolve_call_type_arg_targets` cannot find its label, so `op[T = …]`
 /// reports `NoSuchTypeParam` naming the USER's call for a malformed DECLARATION;
 /// `rigidify_op_type_params` never skolemizes it, so the body sees a solvable flex var

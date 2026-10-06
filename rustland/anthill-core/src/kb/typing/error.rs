@@ -75,6 +75,26 @@ fn ambiguous_constrained_param_message(
     )
 }
 
+/// Which site owes the requirement an [`TypeError::UnsatisfiableRequirement`] refuses: a
+/// call of the operation, the operation used as a function value, or a construction of an
+/// entity of the sort that declares the requirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequirementUse {
+    Call,
+    FunctionValue,
+    Construction,
+}
+
+impl RequirementUse {
+    /// The site, as a refusal names it.
+    pub(super) fn site(self) -> &'static str {
+        match self {
+            RequirementUse::Call | RequirementUse::FunctionValue => "call site",
+            RequirementUse::Construction => "construction",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeError {
     /// Canonical type mismatch from `assert_compatible`. `context` is where
@@ -664,13 +684,13 @@ pub enum TypeError {
     /// forwarded a σ-disagreeing dictionary here (unsound); post-gate the
     /// refusal landed as a silent `dispatch_dict: None` that loaded clean and
     /// died at EVAL reading the unbound `__req_*`. This is the load-time face
-    /// the loud-error principle demands. `eta` marks the function-value
-    /// spelling (the WI-420 site) so the message names the usage.
+    /// the loud-error principle demands. `usage` says which of the three sites owes the
+    /// requirement, so the message names it ([`RequirementUse`]).
     UnsatisfiableRequirement {
         span: Option<Span>,
         op: Symbol,
         callee_sort: Symbol,
-        eta: bool,
+        usage: RequirementUse,
         /// Boxed so the cold refusal payload doesn't widen every
         /// `Result<_, TypeError>` on the typer's hot faces.
         refusal: Box<RequirementRefusal>,
@@ -1643,10 +1663,10 @@ impl TypeError {
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
-                eta,
+                usage,
                 refusal,
                 ..
-            } => refusal.render(kb, *op, *callee_sort, *eta),
+            } => refusal.render(kb, *op, *callee_sort, *usage),
             TypeError::NonBoolOpInGoalPosition {
                 op_sym,
                 return_sort,
@@ -2354,15 +2374,15 @@ impl TypeError {
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
-                eta,
+                usage,
                 refusal,
                 ..
             } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "requires".to_string(),
-                expected_type: "a requirement suppliable at this call site".to_string(),
-                actual_type: refusal.render(kb, *op, *callee_sort, *eta),
+                expected_type: format!("a requirement suppliable at this {}", usage.site()),
+                actual_type: refusal.render(kb, *op, *callee_sort, *usage),
                 span: self.span(kb),
             },
             TypeError::NonBoolOpInGoalPosition {

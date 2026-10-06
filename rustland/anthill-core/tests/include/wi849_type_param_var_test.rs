@@ -67,7 +67,7 @@ end
 
 /// A monomorphic operation has an EMPTY table — the case `seed_op_type_args` used to
 /// short-circuit on (WI-839 deleted that guard) and the case
-/// `check_unconstrained_type_params` returns early for.
+/// `first_unconstrained_type_param` returns early for.
 #[test]
 fn a_monomorphic_operation_has_no_type_params() {
     let kb = load_kb_with(

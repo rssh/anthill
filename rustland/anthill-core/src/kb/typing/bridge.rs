@@ -1066,6 +1066,63 @@ pub(crate) fn dictionary_covers_target(
         .is_some_and(|slots| slots.len() >= names.len())
 }
 
+/// Could a provision row that binds an element to `cand` answer a goal that fixed it to
+/// `goal_value`? Conservative: `false` only where the two provably differ.
+///
+/// A binding that IS a parameter of its provider answers anywhere, and a slot the goal
+/// has not fixed excludes nothing. TWO INSTANCES OF ONE SORT are compared argument by
+/// argument, an argument either side leaves out excluding nothing: a row at `Buf[T =
+/// Int64, N = 3]` cannot answer at `Buf[T = String]`, whatever `N` turns out to be. Read
+/// by head alone, as dispatch's coarse match reads a ground binding, that row kept a
+/// construction over `buf(v: "s")` admitted (MEASURED). A ROW AT ANOTHER SORT answers
+/// only where the pinned one is an instance of it — a subtype, an entity of it, or, for a
+/// row over its provider's parameters, a sort that provides it (`List` at `Stream`'s `C =
+/// Stream[T = T, E = E]`). Any other pinned sort it cannot answer for (WI-20261005-KSSA4):
+/// read as "not provably excluded", one such row kept a call admitted whose requirement
+/// nothing built — `sink(c: Cap.C)` called with a sort that provides no `Cap` loaded
+/// beside a generic witness and died reading the slot (MEASURED).
+///
+/// WHAT IS NOT A SORT ON BOTH SIDES — a row, an arrow, a tuple, a value in a type
+/// position — is compared as dispatch compares it where both are ground, and is excluded
+/// by nothing otherwise: a row over its provider's parameters (`E = {ES, EF}`) and the
+/// effect row a call pinned have two different heads and are one type.
+pub(super) fn row_binding_could_answer(
+    kb: &mut KnowledgeBase,
+    goal_value: TermId,
+    cand: TermId,
+) -> bool {
+    if is_type_param_value(kb, cand) || is_type_param_value(kb, goal_value) {
+        return true;
+    }
+    let sort_of = |kb: &KnowledgeBase, t: TermId| match type_head(kb, &TermIdView(t)) {
+        TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => Some(sort),
+        _ => None,
+    };
+    let (Some(pinned), Some(row)) = (sort_of(kb, goal_value), sort_of(kb, cand)) else {
+        return !(type_value_is_ground(kb, goal_value) && type_value_is_ground(kb, cand))
+            || dispatch_values_match(kb, goal_value, cand);
+    };
+    let row_canon = kb.canonical_sort_sym(row);
+    let pinned_sort = kb.sort_of_constructor(pinned).unwrap_or(pinned);
+    if kb.canonical_sort_sym(pinned) != row_canon && kb.canonical_sort_sym(pinned_sort) != row_canon
+    {
+        return if type_value_is_ground(kb, cand) {
+            dispatch_values_match(kb, goal_value, cand)
+        } else {
+            sort_provides(kb, pinned_sort, row)
+        };
+    }
+    let theirs = parameterized_vid_bindings(kb, &TermIdView(cand), row);
+    parameterized_vid_bindings(kb, &TermIdView(goal_value), row)
+        .into_iter()
+        .all(|(param, ours)| {
+            theirs
+                .iter()
+                .find(|(p, _)| *p == param)
+                .is_none_or(|(_, their)| row_binding_could_answer(kb, ours, *their))
+        })
+}
+
 /// WI-1091 — the one GROUND completion of `goal`'s un-pinned elements, when the spec's
 /// providers leave exactly one. `None` when they leave none or several.
 ///
@@ -1159,7 +1216,7 @@ pub(super) fn unique_provider_completion(
             else {
                 continue;
             };
-            if type_value_is_ground(kb, cand) && !dispatch_values_match(kb, goal_value, cand) {
+            if !row_binding_could_answer(kb, goal_value, cand) {
                 could_answer = false;
                 break;
             }

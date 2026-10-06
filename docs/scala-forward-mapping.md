@@ -102,7 +102,7 @@ hyphens in identifiers become underscores (§5).
 | `effects (Error)` or `effects (Error E)` | `Either[E, R]` return (default profile) |
 | `effects (Requires Cap)` | `(using Cap)` context parameter |
 | `sort T` (abstract sub-sort = type parameter) | `[T]` type parameter |
-| `requires Eq[T]` | supertrait when it is over the sort's carrier AND the sort redeclares none of the spec's members, else `using Eq[T]` evidence on every operation — see §2.7a |
+| `requires Eq[T]` | supertrait when it is over the sort's carrier AND the sort redeclares none of the spec's members, else `using Eq[T]` evidence on every operation — and, on a sort with constructors, on each constructor no field of which is typed by it — see §2.7a |
 | `requires O: Ord[T]` (NAMED slot) | type parameter bounded by the spec, `[T, O <: Ord[T]]`, plus `using O` on every operation — see §2.7b |
 | `fact SortName` (inside sort body) | `extends SortName` |
 | `fact SortName` (in entity's namespace) | `given SortName.Of[Entity] = …` |
@@ -641,7 +641,8 @@ sort PolynomOps {                           trait PolynomOps {
 dictionary would be the one an implementor cannot write; the clause is anonymous because Scala
 resolves a `using` parameter by type, which also keeps two requirements of one spec at different
 arguments (`Eq[A]`, `Eq[B]`) distinguishable. A namespace's `<Ns>Ops` trait takes none — a
-namespace declares no carrier for a `requires` to condition.
+namespace declares no carrier for a `requires` to condition. One requirement is on no operation:
+a data sort's that every constructor holds in a field typed by it (§2.7a).
 
 #### 2.7a A sort-level `requires` is evidence, not an is-a claim
 
@@ -690,13 +691,13 @@ no KB; the resolved type table (WI-1060) carries each prelude sort's parameter *
 kinds, not their names, so it cannot say which named binding is the carrier one. The weaker
 test is exact on every file in the corpus (`Iterable[C = C, …]` mentions `C`; `Ring[F]` does
 not mention `V`; `Eq[T]` inside `Set` does not mention `Set`) and would over-qualify only a
-requirement that named the carrier in a *non-carrier* slot, which nothing writes. A
-requirement with **no arguments** is a supertrait: `requires anthill.cli.Main` is a marker
-with no parameters and no members, so it has no slot to be over anything else and the tag is
-its whole content. (A spec that *does* declare parameters cannot reach that arm written bare
-— `TypeGen` refuses a partial application first, "declares N type parameter(s), but 0 were
-written", WI-1055 B3.) A `requires` naming no sort at all — the grammar admits an arrow — is
-refused.
+requirement that named the carrier in a *non-carrier* slot, which nothing writes. On a sort
+without constructors a requirement with **no arguments** is a supertrait: `requires
+anthill.cli.Main` is a marker with no parameters and no members, so it has no slot to be over
+anything else and the tag is its whole content. (A spec that *does* declare parameters cannot
+reach that arm written bare — `TypeGen` refuses a partial application first, "declares N type
+parameter(s), but 0 were written", WI-1055 B3.) A `requires` naming no sort at all — the
+grammar admits an arrow — is refused.
 
 **What each shape emits.**
 
@@ -707,17 +708,37 @@ refused.
 
   ```
   requires Iterable[C = Source, Element = SourceElement, E = SourceEffects]
-  entity mapped(source: Iterable[C = Source, Element = SourceElement, E = SourceEffects], fn: …)
+  entity mapped(source: Source, fn: (SourceElement) -> T @ {TransformEffects})
   provides Stream[T = T, E = {SourceEffects, TransformEffects}]
   ```
 
   has a `requires` that constrains the *source* carrier `Source`, and its claim about
-  itself is the `provides` below it. This was `combinators.anthill`'s `MappedStream`; the
-  library no longer writes the `requires` line, since the field's type says the same. An `extends` built from the first is an is-a
-  claim about the wrong carrier — and, inheriting members no signature-only emission can
-  define, produces `class Fmapped needs to be abstract, since it has 9 unimplemented
-  members` (the symptom was measured on `finite_combinators.anthill`'s `FiniteMappedStream`,
-  which wrote this same shape until WI-590 folded it into the one carrier).
+  itself is the `provides` below it (`combinators.anthill`'s `MappedStream`). An `extends`
+  built from the first is an is-a claim about the wrong carrier — and, inheriting members no
+  signature-only emission can define, produces `class Fmapped needs to be abstract, since
+  it has 9 unimplemented members` (the symptom was measured on
+  `finite_combinators.anthill`'s `FiniteMappedStream`, which wrote this same shape until
+  WI-590 folded it into the one carrier). The requirement is **evidence**, and on a sort
+  with constructors evidence has two places to be asked for:
+
+  ```scala
+  enum MappedStream[Source, SourceElement, T]:
+    case Mapped(source: Source, fn: (SourceElement) => T)(using Iterable[Source, SourceElement])
+
+  trait MappedStreamOps[Source, SourceElement, T]:
+    def splitFirst(m: MappedStream[Source, SourceElement, T])(using Iterable[Source, SourceElement]): …
+    def map[Dst](s: Source, f: (SourceElement) => Dst)(using Iterable[Source, SourceElement]): …
+  ```
+
+  The **constructor** asks for the dictionary because a value is built where the
+  requirement holds — the source is a value of *any* sort that can be walked, and the
+  clause is what says it can. The **operations** ask for it as an algebra sort's do: a
+  body is handed what its sort requires.
+
+  A requirement written with **no arguments** is refused on this shape. It is over none of
+  the sort's parameters, so there is no instance a constructor is built over to ask a
+  dictionary of, and the shape takes no supertrait. Naming the slot (§2.7b) is the spelling
+  the declaration carries.
 
 - **A sort without constructors** gets the supertrait for each requirement over its carrier
   and **none** for the rest. `trait Ord[T] extends Eq[T], PartialOrd[T]` and
@@ -772,14 +793,17 @@ supertrait-keeping pairs all have empty intersections and are pinned unchanged a
 
 **No omission is a silent drop, and the shapes are prevented differently.**
 
-A **data** sort's `requires` is not discarded: the required spec reaches Scala as the declared
-type of the constructor field typed by it (`source: FiniteCollection[SrcC, Src]` above), which
-is the whole of what a signature-only emission can say about it. The check is per constructor
-and matches the requirement nested inside a field type (`sources: List[T = Walk[…]]` carries
-`Walk[…]`). A constructor that carries it **nowhere** is **refused** rather than emitted short.
+A **data** sort's `requires` is not discarded: each constructor asks for it as a context
+parameter, and so does every operation. The one exception is a constructor with a field
+*typed by the required spec* (`entity wrapped(source: Walk[C = SrcC, Element = Src])`): that
+field's Scala type is the dictionary, so the constructor already holds it and asks for nothing
+more, and a requirement every constructor holds that way is on no operation either. The read is
+per constructor and matches the requirement nested inside a field type (`sources: List[T =
+Walk[…]]` carries `Walk[…]`); in a sum, the sibling whose fields carry it nowhere takes the
+context parameter and the one that holds it does not.
 
-An **algebra** sort's has no such place — a trait's abstract *type* carries no evidence — so it
-becomes §2.7's `using` context parameter on every operation, and the demotion is additionally
+An **algebra** sort's has no constructor to ask — a trait's abstract *type* carries no evidence —
+so it is §2.7's `using` context parameter on every operation alone, and the demotion is additionally
 **recorded** as a comment naming the requirement, the carrier it is not over, and what carries it:
 
 ```scala
@@ -805,13 +829,14 @@ trait FiniteCollection[C, Element]:
 ```
 
 The asymmetry is deliberate, and it is about *what the requirement constrains*. A data sort's
-constrains the constructed **value**, which a context parameter on the operations does not reach, so
-a constructor that carries it nowhere is refused (or the slot is named, §2.7b, and the bound carries
-it). An algebra sort's constrains only the **bodies**, which is exactly what a context parameter
-supplies — so the emitted trait is not weaker than the anthill declaration: an implementor is asked
-for precisely the dictionaries kernel §8.7 says the bodies have. The `extends` clause and the `using`
-clause **partition** the requirements: one or the other, never both (a supertrait's members are
-inherited and need nothing passed) and never neither.
+constrains the constructed **value** as well as the bodies, and a context parameter on the operations
+does not reach the value — so the constructor takes one too (or the slot is named, §2.7b, and the
+bound carries it). An algebra sort's constrains only the **bodies**, which is exactly what a context
+parameter supplies — so the emitted trait is not weaker than the anthill declaration: an implementor
+is asked for precisely the dictionaries kernel §8.7 says the bodies have. On an algebra sort the
+`extends` clause and the `using` clause **partition** the requirements: one or the other, never both
+(a supertrait's members are inherited and need nothing passed) and never neither. On a data sort a
+requirement is in a field's type or in the context parameters, and likewise never in neither.
 
 Nothing in the emitted closure reports the difference either way — a trait tolerates a missing
 context parameter as readily as a missing supertrait — so this rule and WI-1066's are both pinned by
@@ -847,9 +872,9 @@ WI-456 no prelude file shows that, and `BootstrapTest`'s own `Box` fixture is th
 
 The parameter is the *distinction*; the **bound** is the requirement itself, stated where §2.7a says
 an is-a claim belongs — on the type — and `using O` is the *witness*, because a body dispatches
-through a value and a type parameter is not one. The bound is also how a **data** sort discharges the
-requirement (§2.7a's "no silent drop"): it is on the emitted declaration, so no constructor field has
-to carry it, and the field check is asked only about the anonymous ones.
+through a value and a type parameter is not one. The bound is also how a **data** sort carries the
+requirement (§2.7a's "no silent drop"): it is on the emitted declaration, so no constructor has
+to ask for it, and the field read is asked only about the anonymous ones.
 
 **A consumer must write the slot**, and that is a limit rather than a rule (found in review). The
 slot joins the sort's published parameter count (§2.1a's table is built from the same walk), so

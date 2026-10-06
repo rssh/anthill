@@ -13,12 +13,12 @@ sort guardians.agent.WideRowTriage
   import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: WideRowTriage, box: Mailbox, llm: Llm,
+  operation run(self: WideRowTriage, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, Filesystem, llm.E, Error} =
+    effects {External, Filesystem, Llm.E, Error} =
       let msgs = Email.fetch(box)
-      Report(items:   mapElems[EffP = {llm.E, Error}](msgs,
+      Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
                         lambda m -> Verdict(message:    m.id,
                                             evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))

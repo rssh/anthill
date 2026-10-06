@@ -61,6 +61,23 @@
 //! — the ticket's own cell, whose failure message asks to be updated when GNPG7 is settled.
 //! 6126 passed / 1 failed before that cell was rewritten; no other row in the corpus
 //! changed verdict.
+//!
+//! WI-20261005-KSSA4 — THE ROWS OVER `Iterable` ARE WRITTEN AS REQUIREMENTS NOW. `Iterable`
+//! is a spec over its parameter `C`: a `List` provides it and is not one, so `ti(c:
+//! Iterable[Element = Row])` no longer takes a `List` and the subtype relation is not asked
+//! about its provision view ([`a_carrier_is_not_a_value_of_the_spec_it_provides`]). What
+//! the rows measured — that a carrier's view of a spec is composed through the chain, with
+//! its bindings — is asked where a requirement is SUPPLIED: `ti[P](c: P) requires
+//! Iterable[C = P, Element = Row]` called with a `List[T = Row]`. The back-out ledger
+//! above was measured on the spec-typed spelling and describes the subtype relation's
+//! reader. RE-MEASURED on these rows, with that reader's provider view read one hop deep:
+//! [`a_bare_two_hop_carrier_conforms_to_a_bound_spec_view`] and
+//! [`provision_routes_do_not_depend_on_declaration_order`] fail — both over specs that are
+//! their own carriers — with `wi_xzmgc`'s two rows of the same kind, its rule-bound row
+//! (a bound reads `Iterable` as standing for its providers, through the chain), and
+//! `wi_n3w68 …two_routes_binding_one_structured_type_still_load`. The requirement rows
+//! over `Iterable` pass either way: a requirement is supplied by resolution, which
+//! composes the chain itself.
 
 use crate::common::{expect_loaded, try_load_kb_with};
 
@@ -81,6 +98,24 @@ end
     )
 }
 
+/// [`program`] with the consumer written over ANY sort that provides the spec: `c` is a
+/// value of `P`, and `requirement` — a spec bound at `C = P` — is required of `P`.
+fn bound_program(requirement: &str, arg_ty: &str) -> String {
+    format!(
+        r#"
+namespace test.gnpg7
+  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream, MutableStack}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  operation ti[P](c: P) -> Int64 requires {requirement} = 1
+  operation drive(rs: {arg_ty}) -> Int64 = ti(rs)
+end
+"#
+    )
+}
+
 fn load_errors(src: &str) -> Vec<String> {
     match try_load_kb_with(src) {
         Ok(_) => Vec::new(),
@@ -93,41 +128,105 @@ fn load_errors(src: &str) -> Vec<String> {
 /// that `List provides Stream[T, {}]` supplies.
 #[test]
 fn a_two_hop_carrier_conforms_to_a_bound_spec_view() {
-    for param in ["Iterable[Element = Row]", "Iterable[Element = Row, E = {}]"] {
-        expect_loaded(try_load_kb_with(&program(param, "List[T = Row]")));
+    for requirement in [
+        "Iterable[C = P, Element = Row]",
+        "Iterable[C = P, Element = Row, E = {}]",
+    ] {
+        expect_loaded(try_load_kb_with(&bound_program(requirement, "List[T = Row]")));
     }
 
-    // CONTROL — the bare spec name, which has always been admissible because its arm
-    // walks the chain. Green either way; it is what made the asymmetry visible.
-    expect_loaded(try_load_kb_with(&program("Iterable", "List[T = Row]")));
+    // CONTROL — the spec with only its carrier written, which the chain has always
+    // answered.
+    expect_loaded(try_load_kb_with(&bound_program("Iterable[C = P]", "List[T = Row]")));
+
+    // AND THE BINDINGS ARE COMPARED, not merely carried: a `List[T = Row]` walks `Row`s,
+    // so the requirement at another element is one nothing supplies.
+    let errs = load_errors(&bound_program("Iterable[C = P, Element = Bool]", "List[T = Row]"));
+    assert!(
+        errs.iter().any(|e| e.contains("requirement `anthill.prelude.Iterable[C = anthill.prelude.List[T = test.gnpg7.Row], Element = anthill.prelude.Bool")
+            && e.contains("cannot be supplied for call to `test.gnpg7.ti`")),
+        "a requirement at the wrong element is refused, naming it: {errs:?}"
+    );
 }
 
-/// THE SECOND SITE. A BARE actual (`nil()` has type `List`, no bindings) reaches
-/// `bare_provider_binding_precise`, not `parameterized_compatible_view`. Its provider
-/// lookup was one-hop for the same reason and is now transitive too.
+/// THE SPEC-TYPED SPELLING OF THE SAME ROWS. `Iterable` is a spec over `C`; a `List`
+/// provides it, so `Iterable`'s operations may be used on a `List`, and that does not make
+/// a `List` an `Iterable`. Refused at the argument, with or without bindings, naming the
+/// spelling that says "a value of a sort that provides it".
+#[test]
+fn a_carrier_is_not_a_value_of_the_spec_it_provides() {
+    for param in [
+        "Iterable",
+        "Iterable[Element = Row]",
+        "Iterable[C = List[T = Row], Element = Row, E = {}]",
+    ] {
+        let errs = load_errors(&program(param, "List[T = Row]"));
+        assert!(
+            errs.iter().any(|e| e.contains("ti.c (op-arg): expected Iterable")
+                && e.contains("got List[T = Row] — `anthill.prelude.Iterable` is a spec over its parameter `C`")
+                && e.contains("Type this position `anthill.prelude.Iterable.C`")),
+            "`{param}` must refuse a `List`, naming `Iterable.C`: {errs:?}"
+        );
+    }
+    // A sort that receives on itself is its own carrier, and a `List` is one of those.
+    expect_loaded(try_load_kb_with(&program("Stream", "List[T = Row]")));
+    expect_loaded(try_load_kb_with(&program("Stream[T = Row, E = {}]", "List[T = Row]")));
+}
+
+/// THE SECOND SITE. A BARE actual (a constructor with no arguments, whose type is its sort
+/// with no bindings) reaches `bare_provider_binding_precise`, not
+/// `parameterized_compatible_view`. Its provider lookup was one-hop for the same reason and
+/// is now transitive too.
 ///
-/// The parameter writes ONLY `E`, which is the binding the provision chain determines
-/// without help from the actual: a bare `List` offers no `T`, so `Element = Row` genuinely
-/// could not be satisfied here and is not what this row is about. Holding the available
-/// information fixed is what makes hop count the only difference between the two rows.
+/// The parameter writes ONLY the effect row, which is the binding the provision chain
+/// determines without help from the actual: a bare `Deep` offers no `D`, so an element
+/// binding genuinely could not be satisfied here and is not what this row is about. Holding
+/// the available information fixed is what makes hop count the only difference between the
+/// two rows.
+///
+/// OVER A SPEC THAT IS ITS OWN CARRIER (WI-20261005-KSSA4): the rows were `Stream[E = {}]`
+/// and `Iterable[E = {}]` at `nil()`, and a `List` is no value of the second. `Mid` and
+/// `Walk` receive on `Self`, so a `Deep` is a `Mid` in one hop and a `Walk` in two. FAILS
+/// with the provider view read one hop deep (re-measured on this fixture).
 #[test]
 fn a_bare_two_hop_carrier_conforms_to_a_bound_spec_view() {
     let src = |param: &str| {
         format!(
             r#"
 namespace test.gnpg7_bare
-  import anthill.prelude.{{Int64, List, Iterable, Stream}}
-  import anthill.prelude.List.{{nil}}
+  import anthill.prelude.{{Int64}}
+  sort Walk
+    import anthill.prelude.Int64
+    sort Element = ?
+    effects WE = ?
+    operation steps(w: Self) -> Int64
+  end
+  sort Mid
+    import anthill.prelude.Int64
+    sort Item = ?
+    effects ME = ?
+    provides Walk[Element = Item, WE = {{}}]
+    operation steps(w: Self) -> Int64 = 2
+  end
+  sort Deep
+    import anthill.prelude.Int64
+    sort D = ?
+    entity deep(d: D)
+    entity hollow
+    provides Mid[Item = D, ME = {{}}]
+    operation steps(w: Self) -> Int64 = 3
+  end
+  import test.gnpg7_bare.Deep.{{hollow}}
   operation ti(c: {param}) -> Int64 = 1
-  operation drive() -> Int64 = ti(nil())
+  operation drive() -> Int64 = ti(hollow())
 end
 "#
         )
     };
-    // CONTROL, one hop: `List provides Stream` directly. Green either way.
-    expect_loaded(try_load_kb_with(&src("Stream[E = {}]")));
+    // CONTROL, one hop: `Deep provides Mid` directly. Green either way.
+    expect_loaded(try_load_kb_with(&src("Mid[ME = {}]")));
     // Two hops, same binding, same information available.
-    expect_loaded(try_load_kb_with(&src("Iterable[E = {}]")));
+    expect_loaded(try_load_kb_with(&src("Walk[WE = {}]")));
 }
 
 /// THE ROW THAT SETTLES THE DESIGN QUESTION. `MutableStack` provides `Iterable` DIRECTLY,
@@ -141,11 +240,14 @@ end
 /// rows above so their movement is attributable to hop count and to nothing else.
 #[test]
 fn a_direct_provider_accepts_the_fully_bound_spec_view() {
-    for param in [
-        "Iterable[Element = Row]",
-        "Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
+    for requirement in [
+        "Iterable[C = P, Element = Row]",
+        "Iterable[C = P, Element = Row, E = {}]",
     ] {
-        expect_loaded(try_load_kb_with(&program(param, "MutableStack[T = Row]")));
+        expect_loaded(try_load_kb_with(&bound_program(
+            requirement,
+            "MutableStack[T = Row]",
+        )));
     }
 }
 
@@ -269,8 +371,25 @@ end
 /// chain.
 #[test]
 fn the_carrier_param_of_a_composed_view_names_the_carrier() {
-    expect_loaded(try_load_kb_with(&program(
+    // The requirement written AT the carrier, every element stated: it is constructed
+    // from `List`'s composed provision, whose carrier is the list and not the `Stream`
+    // the chain passes through.
+    let at_the_carrier = |requirement: &str| {
+        format!(
+            r#"
+namespace test.gnpg7_at
+  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream}}
+  sort Row
+    import anthill.prelude.{{Int64, Bool}}
+    entity row(a: Int64, flag: Bool)
+  end
+  operation ti(c: List[T = Row]) -> Int64 requires {requirement} = 1
+  operation drive(rs: List[T = Row]) -> Int64 = ti(rs)
+end
+"#
+        )
+    };
+    expect_loaded(try_load_kb_with(&at_the_carrier(
         "Iterable[C = List[T = Row], Element = Row, E = {}]",
-        "List[T = Row]",
     )));
 }

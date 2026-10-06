@@ -331,6 +331,7 @@ fn a_route_1_vs_2_tie_is_not_a_provider_tie() {
 
 /// The tie behind an ABSTRACT-SPEC receiver: `via_spec` takes a `Shape`, so the typer
 /// cannot pin, and the runtime value's own sort is what reaches the two suppliers.
+/// `Shape` receives on itself, so a `Leaf` is a `Shape` (WI-20261005-KSSA4).
 fn abstract_carrier_program(ns: &str) -> String {
     format!(
         r#"namespace {ns}
@@ -343,6 +344,7 @@ fn abstract_carrier_program(ns: &str) -> String {
 
   sort Shape
     sort E = ?
+    operation sides(s: Self) -> Int64 = 0
   end
 
   sort Leaf

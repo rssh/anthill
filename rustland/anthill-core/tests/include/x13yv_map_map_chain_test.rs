@@ -146,7 +146,7 @@ namespace x13yv.route
     entity row(a: Int64, flag: Bool)
   end
   import x13yv.route.Row.{row}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
   operation cell(xs: List[T = Row]) -> Int64 =
     let s = {BODY}
     42
@@ -303,7 +303,9 @@ fn the_mixed_chains_are_unchanged() {
 fn an_erasing_iterable_map_is_still_not_consumable() {
     let errs = load_errors("total(Iterable.map(xs, lambda r -> r.a))");
     assert!(
-        errs.iter().any(|e| e.contains("expected FiniteCollection")),
+        errs.iter().any(|e| e.contains("requirement `anthill.prelude.FiniteCollection[C = Stream[")
+            && e.contains("cannot be supplied")
+            && e.contains("`anthill.prelude.Stream` provides no `anthill.prelude.FiniteCollection`")),
         "`Iterable.map`'s erased Stream must not feed an eager consumer; got: {errs:#?}"
     );
 }

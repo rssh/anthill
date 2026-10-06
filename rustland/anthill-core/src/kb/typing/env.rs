@@ -101,9 +101,6 @@ pub struct TypingEnv {
     ///    `Iterable` member body returns a stream at the enclosing rigids instead of
     ///    dangling fresh `?_`), and what a projection off the spec's own carrier
     ///    reads (`this_instance_member`). A per-call op param is not one of them.
-    ///    `carrier_provision_short_bindings` also takes this view, but is indifferent
-    ///    to the choice: it looks up only vids it got from
-    ///    `sort_type_params_as_pairs`, which an op param's vid never is.
     pub(super) param_rigids: Rc<Vec<(VarId, TermId)>>,
     /// How many leading entries of [`Self::param_rigids`] are the enclosing SORT's
     /// (see that field). The producer appends the op's own after them, so the
@@ -131,12 +128,10 @@ pub struct TypingEnv {
     /// `requires(X)` brackets (the `find_dictionary` goals the converter lowered them to,
     /// whose slot 0 carries the instance WHOLE — `lower_require`'s "WHOLE, not stripped").
     ///
-    /// ROUTE 4's SLOT SOURCE, ONE SOURCE OVER, and that is why it rides here rather than
-    /// in a predicate of its own: [`held_spec_views`] already asks "what contracts does
-    /// this caller hold?", and a clause that WRITES `require[FiniteCollection[C = …]]`
-    /// holds one for the same reason a parameter's type does — it is evidence read off
-    /// the clause's own text, not a walk of somebody else's body. Feeding it through the
-    /// one channel is also what makes the TRANSITIVE leg work for free:
+    /// THE BRACKET ROUTE'S SLOT SOURCE ([`held_spec_views`]): a clause that WRITES
+    /// `require[FiniteCollection[C = …]]` holds that contract — evidence read off the
+    /// clause's own text, not a walk of somebody else's body. Feeding it through the
+    /// cover walk is also what makes the TRANSITIVE leg work for free:
     /// [`scope_contract_covers_dep`] walks `direct_requires_chain`, so a declared
     /// `FiniteCollection` discharges the `Iterable` that `FiniteCollection` itself
     /// requires. Exactly the carrier-aware transitive suppression

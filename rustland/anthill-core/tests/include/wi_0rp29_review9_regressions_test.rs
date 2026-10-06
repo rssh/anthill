@@ -119,9 +119,11 @@
 //!     [`a_returned_functions_parameter_is_one_type_on_both_sides`].
 //! 115. A CARRIER-PARAMETER RECEIVER IS THE SPEC AT THE PROVISION (`spec_at_provision`) — the
 //!     template appended to whatever head it resolves to, as on the tree the ninth review saw. 1
-//!     FAILS: [`a_carrier_parameter_type_is_read_at_the_provision`]. And read as the carrier the
-//!     parameter is bound to, this pass's first cut, 1 FAILS:
-//!     [`a_witness_member_typed_by_the_spec_takes_the_witness_carrier`].
+//!     FAILS: [`a_carrier_parameter_type_is_read_at_the_provision`]. (Read as the carrier the
+//!     parameter is bound to, this pass's first cut, a witness's member typed by the spec also
+//!     failed. That row asserts the other verdict since WI-20261005-KSSA4 — a `Box` is the `C`
+//!     of a `Holder`, not a `Holder` — and is not a row of this part:
+//!     [`a_witness_member_is_typed_by_the_sort_it_provides_for`].)
 //! 116. "PRINT ALIKE" ONLY WHERE TWO TYPES WERE COMPARED — always. 1 FAILS:
 //!     [`a_circular_binding_refusal_does_not_say_two_types_print_alike`].
 //! 117. THE UNWRITTEN-SLOT ADVICE ONLY WHERE THAT SLOT IS THE DIFFERENCE
@@ -1619,15 +1621,42 @@ end
 // ── the declaration rule, through a provider ────────────────────────────────────────────────
 
 /// A MEMBER WIDER THROUGH A SPEC ITS PARAMETER'S TYPE PROVIDES FITS. `count(c: Car, xs:
-/// FiniteCollection[E = {}])` against the spec's `xs: List[T = Int64]` — `List` provides
-/// `FiniteCollection`, so every argument the spec admits the member takes; the ninth pass compared
-/// the two heads and refused "takes less than the spec's" (MEASURED on the tree the ninth review
-/// saw; the tree before it ran this). Runs to 3 + 39.
+/// Stream[E = {}])` against the spec's `xs: List[T = Int64]` — `List` provides `Stream`, which
+/// receives on itself, so a `List` is a `Stream` and every argument the spec admits the member
+/// takes; the ninth pass compared the two heads and refused "takes less than the spec's"
+/// (MEASURED on the tree the ninth review saw; the tree before it ran this). Runs to 3 + 39.
 /// FAILS under ledger part 108.
+///
+/// IT WAS `xs: FiniteCollection[E = {}]`, a spec over its parameter `C`: a `List` provides that
+/// and is not one, so a member typed so takes less than the spec's, not more
+/// (WI-20261005-KSSA4; [`a_member_typed_at_a_spec_over_a_parameter_takes_less`]).
 #[test]
 fn a_member_wider_through_a_spec_its_parameter_provides_fits() {
     let src = r#"
 namespace wi0rp29r9.wider_stdlib
+  import anthill.prelude.{Int64, String, List, Stream}
+  sort Sp
+    sort T = ?
+    operation count(s: Self, xs: List[T = T]) -> Int64
+  end
+  sort Car
+    entity car(n: Int64)
+    provides Sp[T = Int64]
+    operation count(c: Car, xs: Stream[E = {}]) -> Int64 = List.length(Stream.takeN(xs, 10)) + 39
+  end
+  operation go() -> Int64 = Sp.count(car(n: 1), [1, 2, 3])
+end
+"#;
+    assert_eq!(run_src(src, "wi0rp29r9.wider_stdlib.go"), Ok(42));
+}
+
+/// … AND A MEMBER TYPED AT A SPEC OVER A PARAMETER TAKES LESS. `xs: FiniteCollection[E = {}]`
+/// behind the spec's `xs: List[T = Int64]`: a `List` provides `FiniteCollection` and is not
+/// one, so the member refuses the very argument a call written against the spec passes.
+#[test]
+fn a_member_typed_at_a_spec_over_a_parameter_takes_less() {
+    let src = r#"
+namespace wi0rp29r9.narrower_stdlib
   import anthill.prelude.{Int64, String, List, FiniteCollection}
   sort Sp
     sort T = ?
@@ -1636,12 +1665,20 @@ namespace wi0rp29r9.wider_stdlib
   sort Car
     entity car(n: Int64)
     provides Sp[T = Int64]
-    operation count(c: Car, xs: FiniteCollection[E = {}]) -> Int64 = FiniteCollection.size(xs) + 39
+    operation count(c: Car, xs: FiniteCollection[E = {}]) -> Int64 = 39
   end
   operation go() -> Int64 = Sp.count(car(n: 1), [1, 2, 3])
 end
 "#;
-    assert_eq!(run_src(src, "wi0rp29r9.wider_stdlib.go"), Ok(42));
+    assert_refused_naming(
+        &load_errors(src),
+        &[
+            "its own member 'count' does not fit 'wi0rp29r9.narrower_stdlib.Sp.count'",
+            "parameter 2",
+            "FiniteCollection[E = {}]",
+        ],
+        "a member typed at a spec over a parameter, behind a provider of it",
+    );
 }
 
 /// … A USER SPEC: `op(c: Car, x: Describe)` against the spec's `x: Box[T = Int64]`, `Box
@@ -1966,18 +2003,21 @@ end
     assert_eq!(run_src(src, "wi0rp29r9.cp_at_provision.go"), Ok(42));
 }
 
-/// … AND A WITNESS'S MEMBER TYPED BY THE SPEC: `peek(c: Holder)` behind `peek(c: C)` at
-/// `BoxHolder provides Holder[C = Box]` takes any provider of `Holder`, the box among them — the
-/// receiver typed by the carrier parameter is the spec at this provision, not the box: read as
-/// the box, the relation sees no `Box` providing `Holder` (only the witness says so) and the
-/// member was refused as taking less (MEASURED: the tenth pass's first cut; it ran on every build
-/// before). Runs to 40 + 2.
-/// FAILS under ledger part 115 read as the bound carrier (the first cut).
+/// … AND A WITNESS'S MEMBER IS TYPED BY THE SORT IT PROVIDES FOR: `peek(c: Box)` behind
+/// `peek(c: C)` at `BoxHolder provides Holder[C = Box]`. Runs to 40 + 2.
+///
+/// TYPED BY THE SPEC IT TAKES LESS. `peek(c: Holder)` was read as "any provider of `Holder`,
+/// the box among them" — the witness's saying so made a `Box` a `Holder` — and ran on every
+/// build before WI-20261005-KSSA4. A `Box` is the `C` of `BoxHolder`'s `Holder`, not a
+/// `Holder`: the member refuses the box a call written against the spec passes, and the
+/// declaration rule says so.
 #[test]
-fn a_witness_member_typed_by_the_spec_takes_the_witness_carrier() {
-    let src = r#"
-namespace wi0rp29r9.byspec_witness
-  import anthill.prelude.{Int64, String, List}
+fn a_witness_member_is_typed_by_the_sort_it_provides_for() {
+    let program = |ns: &str, receiver: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List}}
   sort Holder
     sort C = ?
     operation peek(c: C) -> Int64
@@ -1990,13 +2030,24 @@ namespace wi0rp29r9.byspec_witness
   sort BoxHolder
     import anthill.prelude.Int64
     provides Holder[C = Box]
-    operation peek(c: Holder) -> Int64 = 40
+    operation peek(c: {receiver}) -> Int64 = 40
     operation size(h: Self) -> Int64 = 1
   end
   operation go() -> Int64 = Holder.peek(box(inner: 1)) + 2
 end
-"#;
-    assert_eq!(run_src(src, "wi0rp29r9.byspec_witness.go"), Ok(42));
+"#
+        )
+    };
+    let ns = "wi0rp29r9.byspec_witness";
+    assert_eq!(run_src(&program(ns, "Box"), &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&program("wi0rp29r9.byspec_witness_spec", "Holder")),
+        &[
+            "its own member 'peek' does not fit 'wi0rp29r9.byspec_witness_spec.Holder.peek'",
+            "parameter 1 is `Holder` where the spec's is `Box`",
+        ],
+        "a witness's member typed by the spec, behind the sort it provides for",
+    );
 }
 
 /// A RECEIVER'S PROJECTION IN A PARAMETER TIES NOTHING TO THE RETURN. `op(s: Sp, x: s.T) -> T` at

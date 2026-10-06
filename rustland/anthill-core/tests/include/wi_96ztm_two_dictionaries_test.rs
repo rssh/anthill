@@ -666,15 +666,41 @@ fn the_other_two_bound_spellings_thread_both_as_well() {
         Some(16),
         "the introducer spelling must thread both",
     );
-    // SPEC-APPLICATION — the bound is written as the spec itself.
+    // SPEC MEMBER — the parameter is typed at the parameter each spec receives on, which
+    // requires the spec of the parameter's sort (§5.4's sugar in a rule head).
     assert_eq!(
         two_spec_answer(
             "test.twospec.specbound",
-            "  rule p(x: Ord, y: Eqq, ?r) :- ?d1 = require[Ord[A = Red]], \
+            "  rule p(x: Ord.A, y: Eqq.B, ?r) :- ?d1 = require[Ord[A = Red]], \
              ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
              rule answer(?r) :- p(red(), blue(), ?r)\n",
         ),
         Some(16),
-        "a spec-application bound must thread both",
+        "a spec-member bound must thread both",
+    );
+}
+
+/// The parameter typed at the spec itself: `Ord` is a spec over `A`, a `Red` provides
+/// it and is not an `Ord`, so the bound could match nothing. Refused once per parameter.
+#[test]
+fn a_parameter_typed_at_the_spec_itself_is_refused() {
+    let errs = crate::common::load_errors_of(&two_specs(
+        "test.twospec.direct",
+        "  rule p(x: Ord, y: Eqq, ?r) :- ?d1 = require[Ord[A = Red]], \
+         ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+         rule answer(?r) :- p(red(), blue(), ?r)\n",
+    ));
+    assert_eq!(errs.len(), 2, "one refusal per parameter; got {errs:#?}");
+    assert!(
+        errs[0].contains("a rule variable is typed `test.twospec.direct.Ord`")
+            && errs[0].contains("Write `test.twospec.direct.Ord.A`"),
+        "the first names `Ord` and its member spelling; got {}",
+        errs[0],
+    );
+    assert!(
+        errs[1].contains("a rule variable is typed `test.twospec.direct.Eqq`")
+            && errs[1].contains("Write `test.twospec.direct.Eqq.B`"),
+        "the second names `Eqq` and its member spelling; got {}",
+        errs[1],
     );
 }

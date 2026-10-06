@@ -396,10 +396,10 @@ pub(super) fn type_rule_bodies(
             // is read by `referencing_scope` alone.
             env.set_rule_scope(kb.rule_domain(rid));
             // WI-20260922-0DK3H — and what this clause DECLARES. See
-            // [`TypingEnv::rule_declared_specs`]: the brackets are route 4's slot source,
-            // so a rule-body call's dep is discharged by the clause's own
-            // `require[Spec[…]]` exactly as an operation-body call's is by a parameter's
-            // type. Collected HERE because this is the only site holding the `RuleId`.
+            // [`TypingEnv::rule_declared_specs`]: the brackets are the bracket route's
+            // slot source, so a rule-body call's dep is discharged by the clause's own
+            // `require[Spec[…]]`. Collected HERE because this is the only site holding the
+            // `RuleId`.
             //
             // The builtin is absent in a minimal KB that never registered it; then no
             // rule can carry a bracket and the list is correctly empty — the same reason

@@ -499,8 +499,8 @@ pub(super) fn attach_eta_dispatch_dict(
         // The eta route's `Ok(None)` is ALREADY a load error (WI-420), so it has no use
         // for the rule-body verdict — see the parameter's own note.
         None,
-        // …and for the same reason no use for route 4: it cannot act on the verdict
-        // either way.
+        // …and for the same reason no use for a `require[…]` bracket: it cannot act on
+        // the verdict either way.
         &[],
         &subst,
         parent,
@@ -509,6 +509,7 @@ pub(super) fn attach_eta_dispatch_dict(
         &caller_requires,
         env.param_rigids(),
         &selected,
+        RequirementUse::FunctionValue,
         // WI-945: the eta route needs no parked verdict — its `Ok(None)` arm below is
         // ALREADY a load error (WI-420), for the reason that makes the verdict
         // unconditional here: an `OpRef` escapes to a foreign apply frame, so a dict
@@ -530,7 +531,7 @@ pub(super) fn attach_eta_dispatch_dict(
             span: Some(occ.span.span),
             op: sym,
             callee_sort: parent,
-            eta: true,
+            usage: RequirementUse::FunctionValue,
             refusal,
         }),
         Ok(None) => {
@@ -657,7 +658,8 @@ fn eta_op_scoped_dicts(
     //
     // WI-1091: a TIE in the op half is refused here exactly as it is at a written call
     // site — an eta carries no bracket to decide it either, and `attach_eta_dispatch_dict`
-    // already turns the sort half's refusal into `UnsatisfiableRequirement { eta: true }`.
+    // already turns the sort half's refusal into an `UnsatisfiableRequirement` at
+    // `RequirementUse::FunctionValue`.
     stamp_op_scoped_dicts(
         kb,
         occ,
@@ -678,16 +680,16 @@ fn eta_op_scoped_dicts(
         // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
         // is for every other dep this path cannot pin.
         &HashMap::new(),
-        // WI-20260921-3G1YT — no route 4 on the ETA path, for the same reason it parks
-        // nothing here: the slot is read wherever the `OpRef` VALUE is finally applied,
+        // WI-20260921-3G1YT — no bracket route on the ETA path, for the same reason it
+        // parks nothing here: the slot is read wherever the `OpRef` VALUE is finally applied,
         // which is a frame this site cannot see, so the scope it CAN see is not the one
         // whose contracts would discharge the dep.
         &[],
         span,
         // The OPERATION owns an op-scoped clause, so it is what the refusal must name
         // as the declaration whose requirement could not be supplied — its parent sort
-        // did not write it. `eta: true` is this site's alone.
-        true,
+        // did not write it. The function-value use is this site's alone.
+        RequirementUse::FunctionValue,
     )?;
     Ok((subst, selected))
 }

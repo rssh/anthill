@@ -12,9 +12,10 @@
 --
 -- THE CARRIER IS CONCRETE, AND THAT IS LOAD-BEARING RATHER THAN INCIDENTAL. The
 -- oracle is a `FakeLlm`, whose `E` is `{}`, so the call incurs nothing this row
--- does not already declare. Written with a SPEC-typed `Llm` the same body is
--- REFUSED — `undeclared effect: ?E`, the carrier's row parameter, which
--- `Checker.check` has no slot for. So the pipeline's own shape does confine a
+-- does not already declare. Written over a model of ANY carrier — a checker
+-- parameterized by its model's sort — the same body is REFUSED, `undeclared
+-- effect`: the carrier's row is a parameter, which `Checker.check` has no slot
+-- for. So the pipeline's own shape does confine a
 -- checker's model use, but by the effect ROW and only for a carrier whose effects
 -- are unknown; it is not a statement about prompts, and a concrete `LiveLlm`
 -- (`E = {External}`, which this row declares) would be admitted too.

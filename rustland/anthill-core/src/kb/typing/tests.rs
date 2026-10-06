@@ -53,7 +53,7 @@ mod k0e8t_witness_gate_test {
     //! WHAT PASSES EITHER WAY BY DESIGN: every `types_compatible` verdict the rows assert
     //! — neither change answers a question differently, and a test that only checked the
     //! verdict would measure nothing at all.
-    use super::super::{types_compatible, TermIdView};
+    use super::super::{spec_as_its_providers, types_compatible, TermIdView};
     use crate::intern::Symbol;
     use crate::kb::subst::Substitution;
     use crate::kb::test_support::load_stdlib;
@@ -68,6 +68,10 @@ mod k0e8t_witness_gate_test {
     /// answer `expect`, with the refcount of the ACTUAL's `Ref` term either side. The
     /// fixture's own `make_sort_ref` is included in `before`, so the pair differs only by
     /// what the compares themselves minted.
+    ///
+    /// ASKED AS A BOUND (WI-20261005-KSSA4): the witness leg answers a rule variable's
+    /// bound and nothing else — at a value position a provider of a spec with a carrier
+    /// parameter is not a value of it, and the leg returns before its gate.
     fn refcount_across_compares(
         kb: &mut KnowledgeBase,
         actual_qn: &str,
@@ -79,15 +83,17 @@ mod k0e8t_witness_gate_test {
         let at = kb.make_sort_ref(a);
         let et = kb.make_sort_ref(e);
         let before = kb.terms.refcount(at);
-        for _ in 0..reps {
-            let mut subst = Substitution::new();
-            assert_eq!(
-                types_compatible(kb, &mut subst, &TermIdView(at), &TermIdView(et)),
-                expect,
-                "{actual_qn} <: {expected_qn} must answer {expect} for this row to \
-                 measure the path it names"
-            );
-        }
+        spec_as_its_providers(kb, |kb| {
+            for _ in 0..reps {
+                let mut subst = Substitution::new();
+                assert_eq!(
+                    types_compatible(kb, &mut subst, &TermIdView(at), &TermIdView(et)),
+                    expect,
+                    "{actual_qn} <: {expected_qn} must answer {expect} for this row to \
+                     measure the path it names"
+                );
+            }
+        });
         (before, kb.terms.refcount(at))
     }
 
@@ -211,7 +217,7 @@ mod q7vd5_goal_spelling_test {
     //!
     //! Row 2 passes either way BY DESIGN: it is the control that says the spelling-neutral
     //! read did not become an accept-anything read.
-    use super::super::{types_compatible, TermIdView};
+    use super::super::{spec_as_its_providers, types_compatible, TermIdView};
     use crate::intern::Symbol;
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId};
@@ -279,7 +285,8 @@ end
         [("Ref", bare), ("nullary Fn", nullary)]
     }
 
-    /// `Wrap[S = inner]`, compared against the bare spec `Cap`.
+    /// `Wrap[S = inner]`, compared against the bare spec `Cap` — as a rule variable's
+    /// bound, the one question the witness leg answers (WI-20261005-KSSA4).
     fn wrap_conforms(kb: &mut KnowledgeBase, inner: TermId) -> bool {
         let wrap = sym(kb, "q7vd5.Wrap");
         let s = sym(kb, "q7vd5.Wrap.S");
@@ -291,7 +298,9 @@ end
         let cap = sym(kb, "q7vd5.Cap");
         let expected = kb.make_sort_ref(cap);
         let mut subst = Substitution::new();
-        types_compatible(kb, &mut subst, &TermIdView(actual), &TermIdView(expected))
+        spec_as_its_providers(kb, |kb| {
+            types_compatible(kb, &mut subst, &TermIdView(actual), &TermIdView(expected))
+        })
     }
 
     /// ROW 1 — the witness leg's goal carries `Wrap[S = Direct]` in both spellings of

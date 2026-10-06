@@ -627,14 +627,25 @@ pub(super) fn requires_edge_is_carrier_preserving(
 /// (`FiniteCollection.collect(c: C)`) takes its carrier param instead and answers `false`.
 /// ([`self_receiver_param_index`] matches a param typed as the sort itself — exactly the
 /// self-representing shape — so any hit means self-representing.)
+///
+/// Memoized on `kb.spec_self_representing_cache`, keyed as asked: the walk builds an
+/// `OperationInfoFull` per declared operation, and the subtype relation asks this of every
+/// provider it admits at a value position ([`provider_conforms_to`]).
 pub(super) fn spec_is_self_representing(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
-    crate::kb::op_requirements::operations_of_sort(kb, sort_sym)
+    if let Some(cached) = kb.spec_self_representing_cache.borrow().get(&sort_sym) {
+        return *cached;
+    }
+    let answer = crate::kb::op_requirements::operations_of_sort(kb, sort_sym)
         .iter()
         .any(|&op| {
             lookup_operation_info_full(kb, op)
                 .and_then(|info| self_receiver_param_index(kb, &info.params, sort_sym))
                 .is_some()
-        })
+        });
+    kb.spec_self_representing_cache
+        .borrow_mut()
+        .insert(sort_sym, answer);
+    answer
 }
 
 /// WI-411 — redirect an UNQUALIFIED self-named spec-op call inside a provider's OWN

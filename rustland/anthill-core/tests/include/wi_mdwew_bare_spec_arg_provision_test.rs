@@ -48,6 +48,25 @@
 //! silently claimed when its short name collides, because `substitute_carrier_params` joins
 //! its leaves by LOCAL NAME. Each has its own back-out named at its test.
 
+// WI-20261005-KSSA4 — THE FIELD IS TYPED BY THE SORT'S PARAMETER NOW. `mk(source: Walk[C =
+// Source, Element = Src, E = ES], …)` held a value of a sort that PROVIDES `Walk`, read as a
+// `Walk`; a provider's value is not one, and the readers this file's header describes —
+// which rebuilt the argument's type as the field's spec — are deleted for a spec over a
+// parameter. `Mapped` is written `entity mk(source: Source, …)` under `requires Walk[C =
+// Source, Element = Src, E = ES]`: the field says which sort the source is, and the clause
+// says what `Walk` is there, read at a construction off the source's provision or off the
+// clause in scope that is about its parameter
+// (`bind_sort_params_from_sort_requires_at_construction`). The rows are unchanged in what
+// they ask. Their refusals moved from "the field's parameters stayed unbound" to "the
+// requirement `Mapped` owes cannot be supplied at the instance built": the clause binds a
+// parameter no field fixed, a parameter a field fixed to another type stays as fixed, and
+// the instance is then asked for the sort's requirement where the value is built
+// (`construction_meets_sort_requires`) — the same disagreement, found by the one judge of
+// it. The back-outs named at each row are the ones measured on the deleted readers;
+// `wi_kssa4_spec_typed_value_test`'s ledger has these rows' own. The `transposed_*` rows
+// keep a field typed at a spec, `Slot`, which receives on itself: an `Xchg` IS a `Slot`,
+// and `bare_spec_arg_provision_projection` still reads its provision.
+
 /// Each refusal control below names the token that DISTINGUISHES the right refusal from the
 /// wrong acceptance — the string the corresponding back-out makes disappear. The assertion
 /// itself moved to `common` under WI-20260829-70XVH, whose free-op rows are its second user.
@@ -97,7 +116,7 @@ namespace test.mdwew
     effects ES = ?
     effects EF = ?
     requires Walk[C = Source, Element = Src, E = ES]
-    entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {EF})
+    entity mk(source: Source, fn: (Src) -> T @ {EF})
     provides Seq[Elem = T, Row = {ES, EF}]
     operation firstOf(m: Self) -> Option[T = T] effects {ES, EF} = none
   end
@@ -171,7 +190,7 @@ namespace test.mdwew.foreign
     effects ES = ?
     effects EF = ?
     requires Walk[C = Source, Element = Src, E = ES]
-    entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
+    entity mk(source: Source, fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
     operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
@@ -191,26 +210,34 @@ end
 fn foreign_provision_binding_is_refused_like_its_concrete_twin() {
     let concrete = foreign_provision_binding("Int64");
     let foreign = foreign_provision_binding("Foreign.X");
-    // The CONCRETE twin fixes the intended verdict: a provision binding the receiver really
-    // does determine contradicts the callback, and is refused AT THE FIELD. The field's
-    // RESULT prints as the callback's own (`?Dst`) since WI-20261001-80ZV8: `Mapped`'s `T` is
-    // instantiated from the arguments before the field is judged
-    // (`join_repeated_sort_params`), where it used to be still unbound there and printed
-    // `?_`. The PARAMETER is what is refused, as it was.
+    // The CONCRETE twin fixes the intended verdict: the provision says the source walks
+    // `Int64`s, the callback takes the source's own `s.Elem`, and a `Mapped` over that pair
+    // owes `Walk` of the source at an element no row of `Seq` answers at. Refused where the
+    // value is built, naming the requirement at the instance.
     assert_refused_naming(
         &concrete,
-        &["mk.fn (entity-field): expected Int64 -> ?Dst, got s.Elem -> ?Dst"],
+        &[
+            "Element = s.Elem, E = {s.Row}]` of `test.mdwew.foreign.Mapped` cannot be \
+             supplied for the construction `test.mdwew.foreign.Mapped.mk`",
+            "`test.mdwew.foreign.Seq` does provide `test.mdwew.foreign.Walk`, but no row of \
+             it answers at these bindings",
+        ],
         "the concrete control must refuse, or the foreign row proves nothing",
     );
-    // The FOREIGN one is refused a step later and for a different reason — the projection
-    // DECLINES rather than contradicting, so the field's params rigidify unwritten
-    // (`Source = ??_`). Same verdict, and that is what the two rows must agree on. Drop the
-    // groundness gate and this row alone loads clean.
+    // The FOREIGN one says a type this call does not determine, so it is neither bound to
+    // nor held against — the construction is not what refuses it. The provision is: a
+    // member returning `Seq[Elem = s.Elem, …]` is not what `Walk.walk` promises at an
+    // element that is another sort's parameter. Same verdict, and that is what the two
+    // rows must agree on.
     assert_refused_naming(
         &foreign,
-        &["Source = ??_"],
-        "a provision binding naming a FOREIGN sort's parameter must not be threaded as \
-         though the receiver determined it",
+        &["its own member 'walk' does not fit 'test.mdwew.foreign.Walk.walk'"],
+        "a provision binding naming a FOREIGN sort's parameter must be refused, not \
+         threaded as though the receiver determined it",
+    );
+    assert!(
+        !foreign.iter().any(|e| e.contains("mk.")),
+        "nothing of the foreign binding reaches the construction: {foreign:#?}"
     );
 }
 
@@ -368,7 +395,7 @@ namespace test.mdwew.ambient
     effects ES = ?
     effects EF = ?
     requires Walk[C = Source, Element = Src, E = ES]
-    entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
+    entity mk(source: Source, fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
     operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
@@ -397,8 +424,11 @@ end
 
 /// DRIVES the ambient face. The return goes through `Mapped`'s provision, so `expected`
 /// pins nothing and only the `requires Walk[C = C, …]` clause can supply `Source` and `ES`.
-/// MEASURED: with `enclosing_requires_provision_bindings` returning `None` at entry, this
-/// test ALONE goes red — `got Mapped[T = ?Dst, Source = ??_, Src = ?Element, ES = ??_, …]`.
+/// MEASURED on the reader this row was written for: with `enclosing_requires_provision_
+/// bindings` returning `None` at entry, this test ALONE went red. That reader is deleted;
+/// the clause is read at the construction now, and with the scope's clause not read there
+/// the standard library's own `FiniteCollection.map` is refused, so this row is not
+/// separable from it (`wi_kssa4_spec_typed_value_test`'s ledger, part 7).
 #[test]
 fn ambient_requires_clause_threads_the_field_specs_params() {
     let errs = ambient_requires("C", "Seq[Elem = Dst, Row = {E, EffP}]");
@@ -411,20 +441,24 @@ fn ambient_requires_clause_threads_the_field_specs_params() {
 }
 
 /// CONTROL — the clause must be ABOUT THIS ARGUMENT. Here it is written about a different
-/// parameter (`Other`), so nothing licenses `c : C` and the load is refused. Green with the
-/// face backed out too, by design: it is the WIDENED gate — a face that took the first
-/// clause on the spec whatever it is about — that this catches. MEASURED: neutralize the
-/// `clause_param_vid(...) == arg_pvid` comparison and this test alone goes RED, by loading
-/// a program nothing licenses.
+/// parameter (`Other`), so nothing licenses `c : C`: `Mapped` requires `Walk` of its source,
+/// the source is a `C`, and the enclosing sort holds `Walk` of another parameter. Refused
+/// where the value is built, naming the clause that does not cover (WI-20261005-KSSA4);
+/// before a construction owed its sort's requirement the same program was refused one step
+/// later, by a return type whose `ES` nothing had said. A clause about any parameter
+/// licensing it would load the program clean, with no message at all.
 #[test]
 fn ambient_requires_clause_about_another_param_does_not_license() {
     let errs = ambient_requires("Other", "Seq[Elem = Dst, Row = {E, EffP}]");
-    // `Source = ??_` is the LICENCE WITHHELD: the field's carrier param was never bound, so
-    // it rigidified unwritten. Widening the gate licenses the clause and the program loads
-    // clean, with no message at all.
     assert_refused_naming(
         &errs,
-        &["Source = ??_"],
+        &[
+            "`test.mdwew.ambient.Walk[C = test.mdwew.ambient.Mapped.Source,",
+            "cannot be supplied for the construction `test.mdwew.ambient.Mapped.mk`",
+            "the enclosing scope's `requires test.mdwew.ambient.Walk[C = \
+             test.mdwew.ambient.Coll.Other,",
+            "covers only as a wildcard and is not forwarded",
+        ],
         "a `requires` clause about a DIFFERENT parameter must not license this argument",
     );
 }
@@ -466,13 +500,18 @@ fn ambient_requires_compound_clause_value_is_not_bound_verbatim() {
         "Seq[Elem = Dst, Row = {E, EffP}]",
         "Option[T = Element]",
     );
-    // `Src = Option[T = ?Other]` is the clause's OWN value with `Other` resolved to its body
-    // rigid — which is why it contradicts the callback's `Option[T = Element]` instead of
-    // unifying with it. Bind the value verbatim and `Other` stays free, the two unify, and
-    // the program loads clean.
+    // The clause's OWN value, `Option[T = Other]`, is another type than the callback's
+    // `Option[T = Element]`, so the clause does not cover the requirement the construction
+    // owes at that element, and is named as the one that does not. Read with `Other` left
+    // free, the two unify, and the program loads clean.
     assert_refused_naming(
         &errs,
-        &["Src = Option[T = ?Other]"],
+        &[
+            "Element = anthill.prelude.Option[T = ?Element]",
+            "cannot be supplied for the construction `test.mdwew.ambient.Mapped.mk`",
+            "Element = anthill.prelude.Option[T = test.mdwew.ambient.Coll.Other], E = \
+             test.mdwew.ambient.Coll.E]` covers only as a wildcard and is not forwarded",
+        ],
         "a compound clause value must resolve its parameters to the body rigids, so a \
          disagreement inside it is still a disagreement",
     );
@@ -490,8 +529,13 @@ fn ambient_requires_compound_clause_value_is_not_bound_verbatim() {
 ///
 /// The two foreign rows must AGREE. They differ only in the foreign parameter's spelling.
 ///
-/// MEASURED: neutralize `param_leaves_belong_to_sort` and this test and its provision-side
-/// twin — and only those two — go red, by loading the colliding row clean.
+/// MEASURED on the reader these rows were written for: with `param_leaves_belong_to_sort`
+/// neutralized this test and its provision-side twin — and only those two — went red, by
+/// loading the colliding row clean. RE-MEASURED since the field is typed by the sort's
+/// parameter: neutralized, no row of this file moves. The clause's element is compared by
+/// the variable its symbol names, where a name was never joined, so the two spellings are
+/// one case there; both halves fail with a construction owing nothing
+/// (`wi_kssa4_spec_typed_value_test`'s ledger, part 22).
 #[test]
 fn ambient_requires_colliding_foreign_param_is_still_foreign() {
     let non_colliding = ambient_requires_with(
@@ -502,7 +546,11 @@ fn ambient_requires_colliding_foreign_param_is_still_foreign() {
     );
     assert_refused_naming(
         &non_colliding,
-        &["Source = ??_"],
+        &[
+            "cannot be supplied for the construction `test.mdwew.ambient.Mapped.mk`",
+            "Element = test.mdwew.ambient.Foreign.X, E = test.mdwew.ambient.Coll.E]` covers \
+             only as a wildcard and is not forwarded",
+        ],
         "a clause value naming a foreign sort's parameter must not license this argument",
     );
     let colliding = ambient_requires_with(
@@ -513,7 +561,11 @@ fn ambient_requires_colliding_foreign_param_is_still_foreign() {
     );
     assert_refused_naming(
         &colliding,
-        &["Source = ??_"],
+        &[
+            "cannot be supplied for the construction `test.mdwew.ambient.Mapped.mk`",
+            "Element = test.mdwew.ambient.Foreign.Element, E = test.mdwew.ambient.Coll.E]` \
+             covers only as a wildcard and is not forwarded",
+        ],
         "a foreign parameter that happens to SHARE a short name with an enclosing one is \
          still foreign; it must be refused exactly as `Foreign.X` is",
     );
@@ -523,18 +575,29 @@ fn ambient_requires_colliding_foreign_param_is_still_foreign() {
 /// against a receiver sort declaring `Elem`: the name-anchored leaf join rewrites it to the
 /// receiver's own `s.Elem` projection, so the provision threads a parameter it never named.
 /// The shipped `Foreign.X` row passes only because `X` does not collide.
+///
+/// ON THIS FIXTURE THE TWO SPELLINGS GIVE ONE VERDICT WITH THE JOIN OR WITHOUT IT
+/// (re-measured): the callback fixes the element before the provision is read, and the
+/// mis-joined value is the callback's own. The row that fails under the join by name is
+/// `wi_kssa4_spec_typed_value_test …a_foreign_parameter_of_the_same_name_is_not_the_
+/// receivers`, where nothing but the provision says the element.
 #[test]
 fn provision_colliding_foreign_param_is_still_foreign() {
     let non_colliding = foreign_provision_binding("Foreign.X");
     assert_refused_naming(
         &non_colliding,
-        &["Source = ??_"],
+        &["its own member 'walk' does not fit 'test.mdwew.foreign.Walk.walk'"],
         "a provision binding naming a foreign sort's parameter must not be threaded",
     );
     let colliding = foreign_provision_binding("Foreign.Elem");
+    assert!(
+        !non_colliding.iter().chain(colliding.iter()).any(|e| e.contains("mk.")),
+        "neither spelling of the foreign binding reaches the construction: \
+         {non_colliding:#?} / {colliding:#?}"
+    );
     assert_refused_naming(
         &colliding,
-        &["Source = ??_"],
+        &["its own member 'walk' does not fit 'test.mdwew.foreign.Walk.walk'"],
         "a foreign parameter that happens to SHARE a short name with one of the receiver \
          sort's is still foreign; it must be refused exactly as `Foreign.X` is",
     );

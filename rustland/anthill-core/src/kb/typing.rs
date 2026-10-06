@@ -162,6 +162,7 @@ use op_bodies::*;
 use pattern::*;
 pub(crate) use projection::*;
 pub(crate) use provides_index::*;
+pub use provision::positions_typed_at_a_spec_over_a_parameter;
 pub(crate) use provision::*;
 pub(crate) use relation::*;
 pub use requires::*;

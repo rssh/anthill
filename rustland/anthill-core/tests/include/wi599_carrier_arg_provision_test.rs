@@ -11,22 +11,35 @@
 //! the spec base, so WI-594's self-projection does not fire and the field's source carrier +
 //! access effect leak as `??_`.
 //!
-//! `carrier_arg_provision_projection` rebuilds the argument's type from the carrier's
+//! `carrier_arg_provision_projection` rebuilt the argument's type from the carrier's
 //! provision, keyed by the field's binding symbols so every param (carrier, element AND
-//! effect) threads. That provision can be written on THREE declarations and each has its
-//! own reader: the enclosing spec's own params for a spec METHOD
-//! (`carrier_provision_short_bindings`, the first test below — the shape the stdlib thin
-//! `FiniteCollection.map`/`filter` use); the ENCLOSING SORT's ambient `requires`
-//! (`enclosing_requires_provision_bindings`, WI-20260828-MDWEW, whose rows live in
-//! `wi_mdwew_bare_spec_arg_provision_test`); and the OPERATION's own
-//! (`op_requires_provision_bindings`, WI-20260829-70XVH, at the bottom of this file).
+//! effect) threaded. That provision can be written on THREE declarations and each had its
+//! own reader: the enclosing spec's own params for a spec METHOD (the first test below —
+//! the shape the stdlib thin `FiniteCollection.map`/`filter` use); the ENCLOSING SORT's
+//! ambient `requires` (WI-20260828-MDWEW, whose rows live in
+//! `wi_mdwew_bare_spec_arg_provision_test`); and the OPERATION's own (WI-20260829-70XVH, at
+//! the bottom of this file).
+//!
+//! WI-20261005-KSSA4 — THE FIELD IS TYPED BY THE SORT'S PARAMETER NOW, AND ONE READER
+//! SERVES THE THREE. A field typed `Coll[C = SrcC, Element = Src, E = ES]` held a value of
+//! a sort that provides `Coll`, read as a `Coll`; a provider's value is not one, and the
+//! four field readers above are deleted. The combinator is written `entity mk(source:
+//! SrcC, …)` under `requires Coll[C = SrcC, Element = Src, E = ES]`: the field says which
+//! sort the source is, and the clause says what that sort's `Coll` is — read at a
+//! construction off the source's provision, or, where the source is typed by a parameter,
+//! off whichever clause in scope is about that parameter
+//! (`bind_sort_params_from_sort_requires_at_construction`). The rows are the same three
+//! places the statement "this carrier provides that spec" can be written, and what they
+//! fail under is in `wi_kssa4_spec_typed_value_test`'s ledger; the back-out list further
+//! down is the one measured on the field readers.
 
 /// A spec method `wrapmap(c: C, f)` wraps its bare carrier param `c` into a
-/// combinator `Mapped` whose `source` field is typed with the enclosing spec
-/// (`Coll[C = SrcC, Element = Src, E = ES]`). The element threads through the
-/// sibling `fn` field; WITHOUT the fix the source carrier `SrcC` and access effect
-/// `ES` stay unbound and the declared return `Coll[C = Mapped[SrcC = C, ES = E, …]]`
-/// is rejected. With the fix they thread from the enclosing spec's own params.
+/// combinator `Mapped` whose source is any sort `SrcC` that provides the enclosing
+/// spec (`requires Coll[C = SrcC, Element = Src, E = ES]`). The element threads through
+/// the sibling `fn` field and the source through its own; the access effect `ES` is
+/// said only by the clause, read at the spec's own instance — the method's carrier is
+/// this instance's `C`, whose `E` is the spec's own parameter. Without that reading
+/// `ES` stays unbound and the declared return `Mapped[SrcC = C, ES = E, …]` is rejected.
 #[test]
 fn spec_method_bare_carrier_threads_source_and_effect() {
     let src = r#"
@@ -42,7 +55,7 @@ namespace test.wi599
     operation collect(c: C) -> List[T = Element] effects E
 
     operation wrapmap[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
-      -> Coll[C = Mapped[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP], Element = Dst, E = {E, EffP}] =
+      -> Mapped[SrcC = C, Src = Element, T = Dst, ES = E, EF = EffP] =
       mk(c, f)
   end
 
@@ -54,7 +67,8 @@ namespace test.wi599
     sort T = ?
     effects ES = ?
     effects EF = ?
-    entity mk(source: Coll[C = SrcC, Element = Src, E = ES], fn: (Src) -> T @ {EF})
+    requires Coll[C = SrcC, Element = Src, E = ES]
+    entity mk(source: SrcC, fn: (Src) -> T @ {EF})
     provides Coll[C = Self, Element = T, E = {ES, EF}]
     operation collect(m: Self) -> List[T = T] effects {ES, EF} = nil
   end
@@ -148,7 +162,7 @@ namespace test.wi70xvh.body
     effects ES = ?
     effects EF = ?
     requires Walk[C = Source, Element = Src, E = ES]
-    entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
+    entity mk(source: Source, fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
     operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
@@ -186,19 +200,23 @@ fn free_op_requires_clause_threads_the_field_specs_params() {
 }
 
 /// CONTROL — the clause must be ABOUT THIS ARGUMENT. Written about `Other`, it says nothing
-/// about `c : Sc`, so nothing licenses the construction. Green with the face backed out too,
-/// by design: it is the WIDENED gate — a face that took the first clause naming the field's
-/// spec whatever it is about — that this catches. MEASURED: neutralize the
-/// `substitute_body_rigids(cval) == arg_id` comparison and this test alone goes RED, by
-/// loading a program nothing licenses.
+/// about `c : Sc`, so nothing licenses the construction: `Mapped` requires `Walk` of its
+/// source, the source is a `Sc`, and the scope holds `Walk` of another parameter. Refused
+/// where the value is built, naming the clause that does not cover (WI-20261005-KSSA4);
+/// before a construction owed its sort's requirement the same program was refused one step
+/// later, by a return type whose `ES` nothing had said.
 #[test]
 fn free_op_clause_about_another_param_does_not_license() {
     let errs = free_op_requires("Other", "Seq[Elem = Dst, Row = {EffS, EffP}]");
-    // `Source = ??_` is the LICENCE WITHHELD: the field's carrier param was never bound, so
-    // it rigidified unwritten.
     assert_refused_naming(
         &errs,
-        &["Source = ??_"],
+        &[
+            "`test.wi70xvh.body.Walk[C = test.wi70xvh.body.Mapped.Source,",
+            "cannot be supplied for the construction `test.wi70xvh.body.Mapped.mk`",
+            "the enclosing scope's `requires test.wi70xvh.body.Walk[C = \
+             test.wi70xvh.body.freemap.Other,",
+            "covers only as a wildcard and is not forwarded",
+        ],
         "an op-level `requires` about a DIFFERENT type parameter must not license this \
          argument",
     );

@@ -1,6 +1,19 @@
 //! WI-20260829-N01PY — a value whose provision comes from a WITNESS was refused at a
 //! SPEC-TYPED PARAMETER, while the same value dispatched that spec's operations fine.
 //!
+//! WI-20261005-KSSA4 — THE CONSUMER IS WRITTEN OVER ANY PROVIDER NOW, AND THE REST OF THIS
+//! HEADER IS THE HISTORY OF THE OTHER SPELLING. `total(c: FiniteCollection)` typed `c` at a
+//! spec over its parameter `C`; a mapped stream provides `FiniteCollection` and is not one,
+//! so that parameter takes no value of a provider's sort, through a witness or directly
+//! ([`a_parameter_typed_at_the_spec_takes_no_provider`]). The consumer an author writes is
+//! `total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)` — `c` a
+//! value of a sort of which the spec is required — and every row below drives THAT: the
+//! requirement is supplied through the witness where its condition holds, and refused,
+//! naming the requirement, where it does not. The witness leg of the subtype relation and
+//! its back-out ledger below now serve a rule variable's requirement only
+//! (`typing::spec_as_its_providers`); what these rows fail under is in
+//! `wi_kssa4_spec_typed_value_test`'s ledger.
+//!
 //! THE TWO READERS OF ONE RELATION. `load_provides_clause` files
 //! `SortProvidesInfo(sort_ref = <the ENCLOSING sort>, …)`, so a WITNESS — which names its
 //! carrier only in the spec's carrier BINDING (`sort MappedStreamFinite provides
@@ -160,8 +173,9 @@ namespace n01py
   import n01py.Plain.{{plain}}
   import n01py.Wrap.{{wrap}}
 
-  -- The consumer under test: an ordinary operation declared over the SPEC.
-  operation sink(c: Cap) -> Int64 = Cap.tag(c)
+  -- The consumer under test: an ordinary operation over ANY sort that provides the
+  -- spec — `Cap.C` is the value, and `Cap` is required of its sort.
+  operation sink(c: Cap.C) -> Int64 = Cap.tag(c)
 
   operation use() -> Int64 = {use_expr}
 end
@@ -176,6 +190,31 @@ fn drive(use_expr: &str) -> i64 {
         .unwrap_or_else(|e| panic!("call n01py.use over `{use_expr}`: {e:?}"));
     v.literal_int64(interp.kb())
         .unwrap_or_else(|| panic!("expected an Int64 from `{use_expr}`, got {v:?}"))
+}
+
+/// THE SPEC-TYPED SPELLING OF THE CONSUMER, which this file was written to make work for a
+/// witnessed carrier. No value of a provider's sort is a `Cap` — direct, witnessed with or
+/// without parameters alike — and each is refused at the argument, naming `Cap.C`.
+#[test]
+fn a_parameter_typed_at_the_spec_takes_no_provider() {
+    for (use_expr, actual) in [
+        ("sink(direct(v: 7))", "Direct"),
+        ("sink(plain(v: 7))", "Plain"),
+        ("sink(wrap(inner: direct(v: 7)))", "Wrap[S = Direct]"),
+    ] {
+        let src = fixture(use_expr).replace(
+            "operation sink(c: Cap.C) -> Int64 = Cap.tag(c)",
+            "operation sink(c: Cap) -> Int64 = 1",
+        );
+        let errs = try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| panic!("`{use_expr}` at `sink(c: Cap)` must be refused"));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("expected Cap, got {actual}"))
+                && e.contains("Type this position `n01py.Cap.C`")),
+            "`{use_expr}`: a provider's value is not a `Cap`; got: {errs:#?}",
+        );
+    }
 }
 
 fn errors_for(use_expr: &str) -> Vec<String> {
@@ -228,22 +267,31 @@ fn a_direct_provider_is_the_control() {
 fn an_unmet_witness_condition_is_still_refused() {
     let errs = errors_for("sink(wrap(inner: opaque(v: 7)))");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("expected Cap") && e.contains("Wrap[S = Opaque]")),
+        errs.iter().any(|e| e.contains("requirement `n01py.Cap[C = n01py.Wrap[S = n01py.Opaque]")
+            && e.contains("cannot be supplied for call to `n01py.sink`")
+            && e.contains("`n01py.Wrap` does provide `n01py.Cap`, but no row of it answers")),
         "`Opaque` provides no `Cap`, so the witness's condition cannot be discharged and \
-         `Wrap[S = Opaque]` must not conform; got: {errs:#?}",
+         `Cap` is not supplied at `Wrap[S = Opaque]`; got: {errs:#?}",
     );
 }
 
-/// CONTROL — PASSES EITHER WAY BY DESIGN. A sort that provides the spec by NO route is
-/// refused, which is what says the leg widened admissibility rather than deleting the
-/// check.
+/// A sort that provides the spec by NO route is refused, naming the requirement.
+///
+/// THE WITNESS BESIDE IT IS WHAT MAKES THIS A ROW (WI-20261005-KSSA4). `sink`'s clause
+/// writes only the carrier, so the call owes `Cap[C = Opaque]` with `Element` open, and a
+/// requirement pinned in part is refused only where no provision row could answer. The
+/// generic witness's row — `Cap[C = Wrap[S = S], …]`, not ground — used to count as one
+/// that could, the call was admitted, and `sink` died "`__req_cap` not bound in caller
+/// frame" (MEASURED, on the parent commit too, once the consumer is written over any
+/// provider). A row at another sort than the one the call pinned cannot answer
+/// (`typing::row_binding_could_answer`).
 #[test]
 fn a_non_provider_is_still_refused() {
     let errs = errors_for("sink(opaque(v: 7))");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("expected Cap") && e.contains("Opaque")),
+        errs.iter().any(|e| e.contains("requirement `n01py.Cap[C = n01py.Opaque]`")
+            && e.contains("cannot be supplied for call to `n01py.sink`")
+            && e.contains("no provision of `n01py.Cap` answers at these bindings")),
         "got: {errs:#?}",
     );
 }
@@ -294,7 +342,7 @@ namespace n01pyrec
     operation tag(x: Sp) -> Int64 = 0
   end
   import n01pyrec.A.{a}
-  operation sink(c: Sp) -> Int64 = Sp.tag(c)
+  operation sink(c: Sp.C) -> Int64 = Sp.tag(c)
   operation use() -> Int64 = sink(a(v: 7))
 end
 "#;
@@ -326,6 +374,12 @@ end
 /// removed rather than shipped as a path nothing can drive. WI-20260829-2NMXA owns the
 /// increment.
 ///
+/// WRITTEN OVER ANY PROVIDER THE GAP IS THE SAME ONE, SEEN FROM THE REQUIREMENT
+/// (WI-20261005-KSSA4): `total`'s row is `FiniteCollection.E`, which the call reads off the
+/// witness's provision, and a provision whose row holds a denoted label is not read — the
+/// row stays open, and the call is refused for a type parameter nothing fixed. Written at
+/// the call (`total[E = {Modify[k]}](m)`) it is one.
+///
 /// THE CONTROL IS WHAT MAKES THIS A GAP AND NOT A DESIGN: strip the `Modify[k]` and the
 /// identical program loads. FLIP BOTH ROWS TOGETHER when WI-20260829-2NMXA lands.
 #[test]
@@ -333,7 +387,7 @@ fn a_denoted_effect_row_is_a_known_gap() {
     const DENOTED: &str = r#"
 namespace n01pyden
   import anthill.prelude.{List, Int64, FiniteCollection, MappedStream, Cell, Modify}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = FiniteCollection.size(c)
   operation f(k: Cell[V = Int64],
               m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,
                               SourceEffects = {}, TransformEffects = {Modify[k]}]) -> Int64 effects {Modify[k]} =
@@ -343,7 +397,7 @@ end
     const GROUND: &str = r#"
 namespace n01pygr
   import anthill.prelude.{List, Int64, FiniteCollection, MappedStream}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = FiniteCollection.size(c)
   operation f(m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,
                               SourceEffects = {}, TransformEffects = {}]) -> Int64 = total(m)
 end
@@ -354,8 +408,8 @@ end
         )
     });
     assert!(
-        errs.iter()
-            .any(|e| e.contains("expected FiniteCollection") && e.contains("MappedStream")),
+        errs.iter().any(|e| e.contains("n01pyden.total.type_arg")
+            && e.contains("expected a type for 'E', got unconstrained")),
         "still refused, but for a DIFFERENT reason than this cell records: {errs:#?}",
     );
     if let Err(errs) = try_load_kb_with(GROUND) {
@@ -378,7 +432,7 @@ namespace n01pystl
   -- THE CONSUMER AN AUTHOR WRITES. Declared over the SPEC, not over `List` — repair (a)
   -- of the ticket's three, which before this fix could be written and could not be
   -- CALLED with anything a combinator produced.
-  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
 
   operation rows() -> List[T = Int64] = [1, 2, 3, 4]
 
@@ -398,7 +452,7 @@ const STDLIB_CONTROL_SRC: &str = r#"
 namespace n01pystlctl
   import anthill.prelude.{List, Int64, FiniteCollection}
   import anthill.prelude.FiniteCollection.{size}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
   operation rows() -> List[T = Int64] = [1, 2, 3, 4]
   operation totalOfList() -> Int64 = total(rows())
 end
@@ -458,7 +512,7 @@ fn the_erased_iterable_map_return_is_still_refused() {
 namespace n01pyerased
   import anthill.prelude.{List, Int64, Iterable, FiniteCollection}
   operation inc(n: Int64) -> Int64 = n + 1
-  operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = FiniteCollection.size(c)
   operation rows() -> List[T = Int64] = [1, 2, 3]
   operation bad() -> Int64 = total(Iterable.map(rows(), inc))
 end
@@ -467,8 +521,9 @@ end
         .err()
         .expect("a bare `Stream` is maybe-infinite and must not satisfy `FiniteCollection`");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("expected FiniteCollection") && e.contains("Stream")),
+        errs.iter().any(|e| e.contains("requirement `anthill.prelude.FiniteCollection[C = Stream[")
+            && e.contains("cannot be supplied for call to `n01pyerased.total`")
+            && e.contains("`anthill.prelude.Stream` provides no `anthill.prelude.FiniteCollection`")),
         "got: {errs:#?}",
     );
 }
@@ -501,7 +556,7 @@ namespace n01pyinf
       match n case nats(f) -> some(pair(f, nats(from: f + 1)))
   end
 
-  operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = FiniteCollection.size(c)
 
   operation bad(m: MappedStream[Source = Nats, SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> Int64 = total(m)
@@ -511,10 +566,14 @@ end
         .err()
         .expect("a mapped stream over an INFINITE source provides no FiniteCollection");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("expected FiniteCollection") && e.contains("MappedStream")),
+        errs.iter().any(|e| e.contains("cannot be supplied for call to `n01pyinf.total`")
+            && e.contains("Source = n01pyinf.Nats")
+            && e.contains(
+                "`anthill.prelude.MappedStream` does provide `anthill.prelude.FiniteCollection`, \
+                 but no row of it answers at these bindings"
+            )),
         "the witness's `requires FiniteCollection[C = S]` is unmet at `S = Nats`, so the \
-         mapped stream must not conform; got: {errs:#?}",
+         requirement is not supplied at the mapped stream; got: {errs:#?}",
     );
 }
 
@@ -531,7 +590,7 @@ fn the_same_shape_over_a_finite_source_loads() {
     let src = r#"
 namespace n01pyfin
   import anthill.prelude.{Int64, List, FiniteCollection, MappedStream}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = FiniteCollection.size(c)
   operation ok(m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> Int64 = total(m)
 end

@@ -97,8 +97,8 @@ end
 -- takes an unparameterized `Prompt` on purpose, since `summarize` sends untrusted
 -- mailbox content to a model. `fixtures/agent/consulting_checker.anthill` is the
 -- control that loads. What the pipeline's own shape confines is narrower: a checker
--- holding a SPEC-typed `Llm` is refused by `undeclared effect: ?E`, the carrier row
--- `Checker.check` has no slot for — the effect row, not the prompt.
+-- written over a model of ANY carrier is refused by `undeclared effect`, the carrier
+-- row `Checker.check` has no slot for — the effect row, not the prompt.
 -- ================================================================
 sort guardians.LiveLlm
   import anthill.prelude.{String, Error, External, Permission}

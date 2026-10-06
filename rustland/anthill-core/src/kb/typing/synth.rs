@@ -1469,6 +1469,26 @@ pub(super) fn substitute_clause(
     }
 }
 
+/// WI-20261005-KSSA4 — [`substitute_clause`] for the type parameters a clause spells as
+/// VARIABLES: each `Var` of `subst` replaced by its term. The member sugar's synthesized
+/// clause is the one that does (`requires Tagger[C = ?P]`); a clause on the occurrence
+/// carrier is returned as it is, for `substitute_clause`'s reason.
+pub(super) fn substitute_clause_vars(
+    kb: &mut KnowledgeBase,
+    clause: &Value,
+    subst: &[(Var, TermId)],
+) -> Value {
+    match clause {
+        Value::Term { id: t, .. } if !subst.is_empty() => {
+            Value::term(rewrite_term_leaves(kb, *t, &|kb, leaf| match kb.get_term(leaf) {
+                Term::Var(v) => subst.iter().find(|(k, _)| k == v).map(|(_, to)| *to),
+                _ => None,
+            }))
+        }
+        other => other.clone(),
+    }
+}
+
 /// WI-20260822-1TKN0 — align ONE effect label into the spec operation's parameter
 /// vocabulary, on EITHER carrier.
 ///
@@ -1959,11 +1979,25 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
     if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(t)) {
         return kb.qualified_name_of(sym).to_string();
     }
-    // WI-20260924-F3FYJ — a value-in-type renders as the value it carries (`N = 3`), as
-    // every type diagnostic renders it ([`type_display_name`]'s `Denoted` arm) — not as the
-    // raw extractor application `TypeExtractor.Denoted[value = 3]` the arms below produced.
-    // A provision at such a binding reaches a requirement refusal now that it loads.
-    if is_denoted_type(kb, &TermIdView(t)) {
+    // WHAT IS NOT A SORT OR AN APPLICATION OF ONE renders as every type diagnostic renders
+    // it ([`type_display_name`]), not as the raw extractor application the arms below
+    // produce. WI-20260924-F3FYJ: a value in a type position is the value it carries (`N =
+    // 3`, not `TypeExtractor.Denoted[value = 3]`) — a provision at such a binding reaches a
+    // requirement refusal now that it loads. WI-20261005-KSSA4: a construction's
+    // requirement is rendered at the type the value was built at, which holds whatever a
+    // field's type does — an effect row (`{}`), a projection off a parameter (`s.Elem`), an
+    // arrow, a tuple, and the type variable a constructed value keeps for a slot nothing
+    // fixed.
+    if matches!(
+        type_head(kb, &TermIdView(t)),
+        TypeHead::Denoted
+            | TypeHead::TypeVar(_)
+            | TypeHead::EffectsRows
+            | TypeHead::ExprCarried
+            | TypeHead::RigidProjection
+            | TypeHead::Arrow
+            | TypeHead::NamedTuple
+    ) {
         return type_display_name(kb, t);
     }
     match kb.get_term(t) {
