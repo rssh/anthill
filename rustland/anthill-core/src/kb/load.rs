@@ -31048,7 +31048,7 @@ impl<'a> Loader<'a> {
                 // anything else stays on the `remap_name` path.
                 if allow_rigid_type_projection && segs.len() == 2 {
                     if let Some(child) =
-                        self.try_rigid_type_projection(resolved, &head_name, &member_name, span)
+                        self.try_rigid_type_projection(resolved, resolved, &member_name, span)
                     {
                         return Some(child);
                     }
@@ -31599,9 +31599,13 @@ impl<'a> Loader<'a> {
     /// `sort S2A = Spec2[A = WIS]` requires `Spec2[A = WIS, B = ?P]`); anything else is
     /// what the same member of the sort spelled directly is. `None` when `head` is not an
     /// alias the spec-clause reading resolves — its refusals are that reader's to make.
+    ///
+    /// `written` is the head as the signature has it — `head`, or the alias of `head` this
+    /// was reached through — and is what a member's parameter minted here is printed by.
     fn alias_type_member(
         &mut self,
         head: Symbol,
+        written: Symbol,
         member_name: &str,
         span: SourceSpan,
     ) -> Option<node_occurrence::TypeChild> {
@@ -31630,7 +31634,7 @@ impl<'a> Loader<'a> {
                 && !self.kb.sort_has_constructors(base)
                 && !bindings.is_empty()
             {
-                let var = self.mint_bare_spec_carrier_fixing(base, member_name, bindings, span);
+                let var = self.mint_bare_spec_carrier(base, written, member_name, bindings, span);
                 return Some(node_occurrence::TypeChild::Interned(var));
             }
             // IN A RULE HEAD the member lowers to the spec as the variable's requirement
@@ -31657,8 +31661,7 @@ impl<'a> Loader<'a> {
                 });
             }
         }
-        let base_name = self.kb.local_name_of(base).to_owned();
-        self.try_rigid_type_projection(base, &base_name, member_name, span)
+        self.try_rigid_type_projection(base, written, member_name, span)
     }
 
     /// WI-428: classify a two-segment TYPE-headed name (`P.Key` / `MemStore.Key` /
@@ -31672,14 +31675,19 @@ impl<'a> Loader<'a> {
     ///   - a head that is neither a type-parameter nor a sort (a namespace path);
     ///   - a sort-headed name that RESOLVES as a qualified name (`Enum.Entity` — a
     ///     legitimate qualified ref, never shadowed by projection classification).
+    ///
+    /// `written` is the head as the signature has it: `head_resolved`, or the alias this
+    /// was reached through ([`Self::alias_type_member`]). A member's parameter minted here
+    /// is printed by it (WI-20261006-XQGEW) — through `sort PS = P.S` and `sort QS = Q.S`,
+    /// printed by the sort each stands for, `PS.E` and `QS.E` both read `S.E` (MEASURED).
     fn try_rigid_type_projection(
         &mut self,
         head_resolved: Symbol,
-        head_name: &str,
+        written: Symbol,
         member_name: &str,
         span: SourceSpan,
     ) -> Option<node_occurrence::TypeChild> {
-        if let Some(child) = self.alias_type_member(head_resolved, member_name, span) {
+        if let Some(child) = self.alias_type_member(head_resolved, written, member_name, span) {
             return Some(child);
         }
         let head_short = self.kb.local_name_of(head_resolved).to_owned();
@@ -31785,7 +31793,13 @@ impl<'a> Loader<'a> {
             // type-param too, but `Option.T` is a data param, not an associated spec
             // member to existentialize — it stays the loud conflation error, as before.
             if self.bare_spec_sugar.is_some() && !self.kb.sort_has_constructors(head_sort_sym) {
-                let var = self.mint_bare_spec_carrier(head_sort_sym, member_name, span);
+                let var = self.mint_bare_spec_carrier(
+                    head_sort_sym,
+                    written,
+                    member_name,
+                    SmallVec::new(),
+                    span,
+                );
                 return Some(node_occurrence::TypeChild::Interned(var));
             }
             // WI-20261005-KSSA4: in the BODY of an operation whose signature named this
@@ -31895,7 +31909,7 @@ impl<'a> Loader<'a> {
                 // hidden child that dropped through to the projection path was reported as
                 // "type 'Base' has no member 'Inner'", which tells the author their name
                 // denotes nothing when in fact it denotes something they may not see.
-                let joined = format!("{head_name}.{member_name}");
+                let joined = format!("{head_short}.{member_name}");
                 let picked = self.push_forbidden_internal(child, &joined, span.span);
                 return Some(node_occurrence::TypeChild::Interned(
                     self.kb.make_sort_ref(picked),
@@ -31918,7 +31932,7 @@ impl<'a> Loader<'a> {
                 // the opposite verdict: it says the name denotes nothing, and here it
                 // denotes two things.
                 ResolveResult::Ambiguous(candidates, contested) => {
-                    let joined = format!("{head_name}.{member_name}");
+                    let joined = format!("{head_short}.{member_name}");
                     let picked =
                         self.push_ambiguous_symbol(&joined, &candidates, &contested, span.span);
                     return Some(node_occurrence::TypeChild::Interned(
@@ -31949,7 +31963,7 @@ impl<'a> Loader<'a> {
                         }
                     };
                     if let Some(h) = hidden {
-                        let joined = format!("{head_name}.{member_name}");
+                        let joined = format!("{head_short}.{member_name}");
                         let picked = self.push_forbidden_internal(h, &joined, span.span);
                         return Some(node_occurrence::TypeChild::Interned(
                             self.kb.make_sort_ref(picked),
@@ -31961,7 +31975,7 @@ impl<'a> Loader<'a> {
         // A sort-headed dotted name that RESOLVES under its written spelling
         // (scope-aware, or an import-established qualified name) is a legitimate
         // qualified ref — leave it to `remap_name`.
-        let joined = format!("{head_name}.{member_name}");
+        let joined = format!("{head_short}.{member_name}");
         if !matches!(
             self.kb
                 .symbols
@@ -31994,28 +32008,28 @@ impl<'a> Loader<'a> {
     /// `?P.member` projection; the latter cannot infer `?P` from an argument when the
     /// projected member is itself the carrier, the WorkItemStore.State driving case).
     ///
-    /// No symbol-table registration: the typer reads each var's surface name via
-    /// `vid.name()` and treats EVERY var listed in `OperationInfo.type_params` as an
-    /// inferable op type-parameter, so adding the minted var there (at the drain in
-    /// `load_operation`) suffices. The synthesized `requires Spec[member = ?P]` is
-    /// rebuilt from the recorded entry at the drain. Precondition:
+    /// No symbol-table registration: the typer treats EVERY var listed in
+    /// `OperationInfo.type_params` as an inferable op type-parameter, so adding the minted
+    /// var there (at the drain in `load_operation`) suffices. The synthesized `requires
+    /// Spec[member = ?P]` is rebuilt from the recorded entry at the drain. Precondition:
     /// `self.bare_spec_sugar.is_some()`.
+    ///
+    /// `fixed` holds what a type ALIAS the member was reached through fixes of the spec's
+    /// other parameters (WI-20260924-SNJPR), empty for the spec named directly. A
+    /// parameter minted with some is neither narrowed by the carrier block (its bindings
+    /// are read about the spec, not about the alias's fixed ones) nor shared with one
+    /// minted through another spelling.
+    ///
+    /// `written` is the name before the dot as the signature has it — `spec` itself, or
+    /// an alias of it, with or without bindings — and is what the minted parameter is
+    /// printed by ([`Self::mint_member_param`]). A second spelling of a member already
+    /// minted in this signature shares its parameter, and so its spelling: the first one
+    /// the loader met, which is the return type's, then the parameters' in order, then
+    /// the row's — `h(x: Tagger.C) -> TG.C` over `sort TG = Tagger` prints `TG.C`.
     fn mint_bare_spec_carrier(
         &mut self,
         spec: Symbol,
-        member_name: &str,
-        span: SourceSpan,
-    ) -> TermId {
-        self.mint_bare_spec_carrier_fixing(spec, member_name, SmallVec::new(), span)
-    }
-
-    /// [`Self::mint_bare_spec_carrier`] reached through a type ALIAS that fixes `fixed`
-    /// of the spec's other parameters (WI-20260924-SNJPR). Neither narrowed by the
-    /// carrier block (its bindings are read about the spec, not about the alias's fixed
-    /// ones) nor shared with a carrier minted through another spelling.
-    fn mint_bare_spec_carrier_fixing(
-        &mut self,
-        spec: Symbol,
+        written: Symbol,
         member_name: &str,
         fixed: SmallVec<[(Symbol, TermId); 2]>,
         span: SourceSpan,
@@ -32029,8 +32043,7 @@ impl<'a> Loader<'a> {
                     return *var;
                 }
             }
-            let vid = self.kb.fresh_var(member_sym);
-            let var = self.kb.alloc(Term::Var(Var::Global(vid)));
+            let var = self.mint_member_param(written, member_name);
             if let Some(sugar) = self.bare_spec_sugar.as_mut() {
                 sugar.minted.push(((spec, member_sym), var));
                 sugar.fixed.insert(var, fixed);
@@ -32076,15 +32089,27 @@ impl<'a> Loader<'a> {
                 return *var;
             }
         }
-        // Fresh `?P`, named after the member so a diagnostic reads naturally
-        // (`expected a type for 'State'`). The licensing `requires Spec[member = ?P]` is
-        // synthesized from this entry at the drain.
-        let vid = self.kb.fresh_var(member_sym);
-        let var = self.kb.alloc(Term::Var(Var::Global(vid)));
+        // Fresh `?P`. The licensing `requires Spec[member = ?P]` is synthesized from this
+        // entry at the drain.
+        let var = self.mint_member_param(written, member_name);
         if let Some(sugar) = self.bare_spec_sugar.as_mut() {
             sugar.minted.push(((spec, member_sym), var));
         }
         var
+    }
+
+    /// The type parameter the member sugar mints for `written.member`: a fresh variable
+    /// under a name of its own (WI-20261006-XQGEW,
+    /// [`KnowledgeBase::mint_member_param_name`]).
+    ///
+    /// The name reads as the bare member — it is what `OperationInfo.type_params` lists
+    /// the parameter under, and what a generator spells it by — and is no other symbol's
+    /// equal, so nothing that matches a name by identity takes this parameter for the
+    /// enclosing sort's `E`, a bracket's, or another spec's member.
+    fn mint_member_param(&mut self, written: Symbol, member_name: &str) -> TermId {
+        let name = self.kb.mint_member_param_name(written, member_name);
+        let vid = self.kb.fresh_var(name);
+        self.kb.alloc(Term::Var(Var::Global(vid)))
     }
 
     /// WI-201 / WI-20260923-ZBWMC: could an operation signature HERE spell `t` — is it a
@@ -32144,7 +32169,7 @@ impl<'a> Loader<'a> {
     /// while its `provides` arm recorded NOTHING: it gated on the head of the lowered
     /// spec, the `SortView` wrapper rather than the spec, so every parameterized provision
     /// read as a non-spec. MEASURED: under `provides Store[State = WIS]`, `count(s:
-    /// Store.State) -> Int64 = s.n` was refused (`?State.n … declare no 'n'`), and under
+    /// Store.State) -> Int64 = s.n` was refused (`Store.State.n … declare no 'n'`), and under
     /// `fact Store[State = WIS]` it loaded; `wi_zbwmc_provision_narrowing_test` drives
     /// both. Dropping the `fact` arm also stopped it converting every fact head of the
     /// body before `load_fact` did — `convert_term` memoizes per parse node, so `load_fact`

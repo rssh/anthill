@@ -2747,7 +2747,7 @@ pub(super) fn override_variable_name(
     {
         return format!(
             "the type parameter `{}` of `{}`",
-            short_name_of(kb.local_name_of(*name)),
+            type_param_display_name(kb, *name),
             kb.local_name_of(impl_op)
         );
     }

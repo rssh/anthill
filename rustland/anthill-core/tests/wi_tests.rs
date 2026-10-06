@@ -1961,3 +1961,6 @@ mod wi753_native_rule_body_occurrence_test;
 
 #[path = "include/wi_kssa4_spec_typed_value_test.rs"]
 mod wi_kssa4_spec_typed_value_test;
+
+#[path = "include/wi_xqgew_member_param_test.rs"]
+mod wi_xqgew_member_param_test;

@@ -779,7 +779,7 @@ loaded clean while implementing NOTHING was Accepted.
 
 **Measured, now.** `spec` is a `Symbol` reference, and
 `agent/good.anthill` yields `Accepted(carrier: guardians.agent.GoodTriage,
-spec: guardians.Triage, budget: [External, ?E, Error])`. A candidate that
+spec: guardians.Triage, budget: [External, Llm.E, Error])`. A candidate that
 declares only under `guardians.agent.` and provides nothing is refused:
 `the candidate declares no carrier that provides 'guardians.Triage'`.
 
@@ -971,7 +971,7 @@ type mismatch in guardians.Email.send.requires:
   expected precondition `deliverable(who)` provable at the call site,
   got unsatisfied precondition
 type mismatch in run.effects (op-effects):
-  expected declared: [External, ?E, Error],
+  expected declared: [External, Llm.E, Error],
   got undeclared effect: Permission[T = Outbox]
 ```
 

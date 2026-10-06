@@ -319,6 +319,12 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // Fresh-`VarId` counter. Rolling it back reissues ids that the layer's escaped
         // substitutions still use, so two distinct variables would collide.
         next_var: _,
+        // WI-20261006-XQGEW — what a member's parameter was WRITTEN AS, keyed by its name:
+        // a symbol minted for it alone, and `symbols`' definitions above are never rolled
+        // back. A type the layer made can be rendered after the discard, and a variable
+        // still carrying that name would then print by the bare member again.
+        // `spgbp_a_layer_minted_member_still_prints_as_written_after_the_discard` drives it.
+        member_param_heads: _,
         // `SourceId` is an index into this registry and rides inside every `SourceSpan`.
         // An interner by another name: truncating it makes a layer-minted span report a
         // different file, or none.
@@ -924,6 +930,46 @@ end
         assert!(
             matches!(kb.get_term(escaped), Term::Fn { functor, .. } if *functor == widget),
             "a TermId minted inside the layer must still resolve to its own term"
+        );
+    }
+
+    /// WI-20261006-XQGEW — what a member's parameter was WRITTEN AS outlives the layer
+    /// that minted it, as the name it is keyed by does: a type made in the layer and kept
+    /// past the discard still prints `Tagger.E`.
+    ///
+    /// WHAT FAILS WHEN BACKED OUT: this fails if `member_param_heads` is added to the
+    /// scoped list — the variable still carries its name, the record of what that name
+    /// was written with is rolled back, and the row reads `?E`.
+    #[test]
+    fn spgbp_a_layer_minted_member_still_prints_as_written_after_the_discard() {
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let snap = kb.snapshot_scoped();
+        let parsed = parse::parse(
+            "namespace xqgew.layer\n  import anthill.prelude.{Int64}\n  sort Tagger\n    \
+             sort C = ?\n    effects E = ?\n    operation tag(self: C) -> Int64 effects {E}\n  \
+             end\n  operation one(x: Tagger.C) -> Int64 effects {Tagger.E}\nend\n",
+        )
+        .unwrap();
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!("layer load errors: {errs:?}");
+        }
+        let one = kb.resolve_symbol("xqgew.layer.one");
+        let row = crate::kb::op_info::lookup_operation_info(&kb, one)
+            .expect("`one` is declared while the layer is live")
+            .effects;
+        let shown = |kb: &KnowledgeBase| -> Vec<String> {
+            row.iter()
+                .map(|e| crate::kb::typing::type_display_name_value(kb, e))
+                .collect()
+        };
+        assert_eq!(shown(&kb), vec!["Tagger.E"], "the row as written, in the layer");
+
+        kb.restore_scoped(snap);
+
+        assert_eq!(
+            shown(&kb),
+            vec!["Tagger.E"],
+            "a row the layer made must still print as it was written after the discard"
         );
     }
 

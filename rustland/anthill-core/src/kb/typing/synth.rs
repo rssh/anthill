@@ -2046,7 +2046,16 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
         // stated at the caller's instance ([`chain_at_callers_instance`]): rendered `?` the
         // clause read `requires Tag[T = ?]`, which says the caller left undetermined what
         // it declared. `?T`, as every type diagnostic spells a parameter.
-        Term::Var(Var::Rigid(vid)) => format!("?{}", kb.local_name_of(vid.name())),
+        Term::Var(Var::Rigid(vid)) => type_var_display_name(kb, *vid),
+        // WI-20261006-XQGEW — NOR IS A MEMBER'S PARAMETER, rigid or not. The clause the
+        // member sugar synthesizes holds the parameter's own variable, and stated to its
+        // author it read `requires Tag[T = ?]` — the same sentence about a caller that
+        // wrote `w: Tag.T` (MEASURED: "the enclosing scope's `requires …Tag[T = ?]` covers
+        // only as a wildcard"). By its spelling, as an element still open is shown by
+        // its parameter's name where it is spelled as a reference (`Out = …Tagger.Out`).
+        Term::Var(Var::Global(vid)) if kb.member_param_head(vid.name()).is_some() => {
+            type_var_display_name(kb, *vid)
+        }
         Term::Var(_) => "?".to_owned(),
         _ => format!("<term#{}>", t.raw()),
     }

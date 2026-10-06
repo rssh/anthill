@@ -179,11 +179,12 @@ fn load_errors(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
 }
 
-/// The refusal the GENERIC reading gets: `Store.State` is the existential `?State`, which
-/// has no `n`. The mark of "did not narrow" — and, beside the negative, of "was not the
+/// The refusal the GENERIC reading gets: `Store.State` is the member's own parameter, which
+/// has no `n` — printed as written, `Store.State.n` (WI-20261006-XQGEW; it read
+/// `?State.n`). The mark of "did not narrow" — and, beside the negative, of "was not the
 /// ambiguity refusal either".
 fn assert_generic(errs: &[String], why: &str) {
-    assert_refused_naming(errs, &["?State.n", "declare no 'n'"], why);
+    assert_refused_naming(errs, &["in Store.State.n:", "declare no 'n'"], why);
     assert!(
         !errs.iter().any(|e| e.contains("names no one type")),
         "{why}: this is the generic reading, not an ambiguity: {errs:#?}"
@@ -303,7 +304,7 @@ end
 
 /// A carrier bound to the providing sort's OWN type parameter narrows to that parameter —
 /// the same type writing `T` there gives: returning it as an `Int64` is refused as `?T`,
-/// not as the generic `?State`. The admissibility check must keep this while it refuses
+/// not as the generic `Store.State`. The admissibility check must keep this while it refuses
 /// another sort's abstract member (the four rows below).
 #[test]
 fn the_providing_sorts_own_parameter_is_a_carrier() {

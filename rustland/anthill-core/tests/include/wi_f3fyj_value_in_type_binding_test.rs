@@ -312,7 +312,8 @@ fn the_alias_spelling_narrows_alike() {
 
 /// `Sized[WIS, 3]`, whose `N` is bound to the bare VALUE `3`, and an operation that returns
 /// its `Sized.N` argument as a `Bool` — refused either way, and the refusal names the type
-/// the sugar read: `?N` for the generic reading, `3` if it narrowed.
+/// the sugar read: `Sized.N`, the member's own parameter printed as written
+/// (WI-20261006-XQGEW; it read `?N`), for the generic reading, `3` if it narrowed.
 fn value_binding_program(ns: &str, claim: &str) -> String {
     format!(
         r#"
@@ -337,7 +338,7 @@ end
 
 fn assert_value_binding_stays_generic(ns: &str, claim: &str) {
     let errs = load_errors(&value_binding_program(ns, claim));
-    assert_refused_naming(&errs, &["probeN", "got ?N"], claim);
+    assert_refused_naming(&errs, &["probeN", "got Sized.N"], claim);
     assert!(
         !errs.iter().any(|e| e.contains("got 3")),
         "{claim}: a bare value is no type a signature could spell (`x: 3` does not parse), so \
