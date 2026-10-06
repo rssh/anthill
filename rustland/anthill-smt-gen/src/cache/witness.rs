@@ -25,7 +25,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use anthill_core::kb::KnowledgeBase;
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::key::state_hash;

@@ -5,4 +5,9 @@ edition = "2021"
 description = "Shared build-time version stamp (semver + git SHA + build date) for Anthill workspace CLIs"
 
 [build-dependencies]
-chrono = "0.4"
+# The chrono features anthill-core asks for, and no more. This is a BUILD-dependency,
+# so it unifies on the host side — with the build of anthill-core that anthill-stl's
+# build script links. With the default features here, that host build was one build
+# for a selection that includes this crate (the gate) and another for one that does
+# not (`-p anthill-stl`): two to keep current instead of one (WI-20261006-ZVV24).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

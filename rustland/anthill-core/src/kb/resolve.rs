@@ -71,6 +71,18 @@ use evaluate::{Holes, Stuck};
 /// whatever the code does): the fixture still overflows at 1 MiB and passes at
 /// 1.5 MiB. The new site does not nest crossings — it REPLACES a fold with one
 /// bridge, where the alternative was riding the enclosing bridge one frame deeper.
+///
+/// **WI-20261006-ZVV24 — every number above is an OPT-LEVEL 0 number, and the gate no
+/// longer builds this crate at opt-level 0.** A full `scripts/test.sh` run builds it at
+/// opt-level 2 (the script's header says why), where the frames are about a third the
+/// size: MEASURED the same way on the same day, the fixture overflows at 384 KiB and
+/// passes at 512 KiB there, and still overflows at 1 MiB and passes at 1.5 MiB at 0. So
+/// the gate now has ~4x the headroom these notes describe and does NOT guard the
+/// unoptimized budget: a change that deepens a crossing 2-3x stays green in the gate and
+/// overflows a 2 MiB thread in an opt-level 0 build — an embedder's debug build, and any
+/// SELECTED `test.sh` run, which stays unoptimized. Left documented rather than guarded
+/// (user, 2026-10-06). Re-measure on BOTH builds when this path grows: 16/escape ∈
+/// (1.0, 1.5] MiB at opt-level 0, ∈ (384, 512] KiB at opt-level 2.
 const BRIDGE_REENTRY_CAP: usize = 16;
 
 thread_local! {

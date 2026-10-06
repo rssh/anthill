@@ -1,0 +1,167 @@
+# Compile cost of optimizing anthill-core, 2026-10-06, i7-9750H, cargo 1.94.0, default jobs (12).
+# real = wall seconds, user = CPU seconds. Every optimized build keeps debug-assertions, overflow-checks,
+# full debug info and incremental compilation — it is the dev profile with one opt-level changed.
+
+## 1. Cold compile of the anthill-core library (dependencies already built)
+
+== core@1 cold build, load { 2.53 3.36 4.53 }, free 6G
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 31s
+real 91.95
+user 570.31
+== core@2 cold build, load { 18.05 7.58 5.98 }, free 5G
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 48s
+real 108.12
+user 727.60
+== core@3 cold build, load { 21.61 11.68 7.73 }, free 4G
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 50s
+real 110.65
+user 737.31
+== core@0 cold build (artifacts removed first),  load { 3.30 6.90 10.79 }
+real 35.02 user 65.58 
+
+## 2. Rebuild of the library after a one-line edit, by kind of edit (cargo build -p anthill-core --lib)
+#   shift  — a new line in a function body a third of the way into kb/load.rs (40 519 lines): every item after it moves
+#   inline — the same statement added on an existing line there: nothing moves
+#   leaf   — a new line in fs_util.rs (118 lines)
+#   'settle' = rebuild with sources unchanged but touched; each edit timed twice, the edit then its revert
+
+== core@0   load { 3.24 9.56 9.04 }  free 4G
+-- settle          real 9.91 user 3.55 
+-- shift  edit     real 8.58 user 6.71 
+-- shift  revert   real 7.97 user 6.72 
+-- inline edit     real 7.28 user 5.48 
+-- inline revert   real 7.34 user 5.85 
+-- leaf   edit     real 6.59 user 4.76 
+-- leaf   revert   real 6.16 user 4.71 
+== core@2   load { 3.08 8.47 8.67 }  free 4G
+-- settle          real 7.81 user 3.85 
+-- shift  edit     real 68.87 user 550.99 
+-- shift  revert   real 78.24 user 586.84 
+-- inline edit     real 48.27 user 250.46 
+-- inline revert   real 48.22 user 252.08 
+-- leaf   edit     real 6.75 user 4.53 
+-- leaf   revert   real 6.57 user 4.54 
+== sources clean
+
+# first attempt, 08:30 — shift only; stopped at 3 GiB free disk before levels 2 and 3
+== core@0  load { 3.47 5.06 6.30 }  free 3G
+-- edit
+real 15.34
+user 6.92
+-- revert
+real 9.88
+user 7.32
+== core@1  load { 4.76 5.22 6.32 }  free 3G
+-- edit
+real 65.69
+user 472.77
+-- revert
+real 69.13
+user 486.49
+
+## 3. The edit loop: cargo test -p anthill-core --test wi_tests --no-run
+#   NOTE the override is per PACKAGE, so at the optimized setting wi_tests itself (a test target of
+#   anthill-core, 298k lines) is compiled at opt-level 2 as well: that is the 600 s of CPU in its 'cold' row.
+
+== wi_tests --no-run  []  load { 3.31 6.49 10.48 }  free 134G
+-- cold               real 38.58 user 61.82 
+-- no-op              real 0.12 user 0.06 
+-- core edit          real 14.53 user 13.78 
+-- core edit revert   real 14.75 user 13.86 
+-- test edit          real 7.91 user 7.36 
+-- test edit revert   real 8.02 user 7.37 
+== sources clean
+== wi_tests --no-run  [profile.dev.package."*".opt-level=3 profile.dev.package.anthill-core.opt-level=2]  load { 3.71 5.65 9.58 }  free 133G
+-- cold               real 98.64 user 600.73 
+-- no-op              real 0.12 user 0.06 
+-- core edit          real 78.55 user 592.49 
+-- core edit revert   real 85.00 user 584.45 
+-- test edit          real 10.31 user 8.97 
+-- test edit revert   real 11.06 user 9.15 
+== sources clean
+
+## 4. What a GATE compiles after a one-line edit to kb/load.rs (anthill-core at 2, dependencies at 3)
+#   The two cargo invocations scripts/test.sh makes, with --no-run:
+#     tier 1 = cargo test --workspace --exclude anthill-cli --exclude anthill-todo
+#     tier 2 = cargo test -p anthill-cli -p anthill-todo
+#   'settle' = first build after a manifest change; the 'x1' counts cargo's one 'Compiling anthill-core'
+#   line per invocation, NOT the number of builds of it — read that off the CPU seconds (one build ~550-600).
+
+# 4a. 10:00 — chrono features aligned; anthill-smt-gen still on serde's derive feature.
+#     tier 1 builds the library twice (target, host) plus the unit-test harness; tier 2 builds it a THIRD time.
+== gate compile  load { 4.78 24.91 37.55 }
+-- settle tier 1              real 119.17  user  779.76  anthill-core built x1
+-- settle tier 2              real 136.04  user  891.58  anthill-core built x1
+-- no-op tier 1               real   0.25  user    0.12  anthill-core built x0
+-- no-op tier 2               real   0.20  user    0.10  anthill-core built x0
+-- core edit, tier 1          real 272.19  user 2224.31  anthill-core built x1
+-- core edit, tier 2          real 114.97  user  769.79  anthill-core built x1
+-- revert, tier 1             real 285.00  user 2149.88  anthill-core built x1
+-- revert, tier 2             real  98.39  user  634.79  anthill-core built x1
+== sources clean
+
+# 4b. 10:15 — also anthill-smt-gen on serde_derive directly, so anthill-core's dependencies resolve the same
+#     features under every selection. tier 2 no longer builds the library (4 s). tier 1 still builds it three
+#     times — target, host (it is a build-dependency of anthill-stl), unit-test harness — all at once.
+#     ('settle tier 1' is a cold rebuild of everything downstream of the manifest change, under a load of 10-60.)
+== gate compile  load { 9.60 36.98 58.91 }
+-- settle tier 1              real 563.52  user 3615.29  anthill-core built x1
+-- settle tier 2              real  13.90  user   55.07  anthill-core built x0
+-- no-op tier 1               real   0.25  user    0.11  anthill-core built x0
+-- no-op tier 2               real   0.20  user    0.10  anthill-core built x0
+-- core edit, tier 1          real 305.58  user 2231.97  anthill-core built x1
+-- core edit, tier 2          real   4.67  user    8.90  anthill-core built x0
+-- revert, tier 1             real 228.78  user 2145.65  anthill-core built x1
+-- revert, tier 2             real   3.80  user    8.36  anthill-core built x0
+== sources clean
+
+## 5. Line-tables-only debug info for the optimized crate — the same rebuilds as §2's core@2 block,
+#    with [profile.dev.package.anthill-core] debug = "line-tables-only" added. 'settle' here is the COLD compile.
+#    Against full debug info: cold 105 s / 628 CPU-s vs 108 / 728; shift 67-72 s vs 69-78; inline 44-48 s vs 48.
+#    About a tenth of the CPU and next to nothing of the wall; not taken.
+== core@2 profile.dev.package.anthill-core.debug="line-tables-only"  load { 4.77 64.00 106.19 }  free 108G
+-- settle          real 104.74 user 628.46 
+-- shift  edit     real 72.15 user 534.49 
+-- shift  revert   real 66.83 user 496.82 
+-- inline edit     real 44.01 user 208.87 
+-- inline revert   real 48.25 user 223.76 
+== sources clean
+
+## 6. The edit loop by MODULE — cargo test -p anthill-core --test wi_tests --no-run after one new line in a
+#    function body, at the gate's setting (anthill-core at 2, the two tree-sitter crates at 3) and at
+#    opt-level 0 (the three overrides set to 0 with --config). Taken after /code-review pointed out that §2 and
+#    §3 generalised from one leaf file and one end-of-file test edit. The cost follows what the edit
+#    INVALIDATES — how widely the edited code is inlined and used, the test binary included, since
+#    wi_tests is a target of the same package and is optimized with it — not the size of the file.
+#    term.rs:99 and intern.rs:351 are one-line accessors used everywhere; common/mod.rs is the
+#    helper module all 669 test files use. 'settle' is the first build against a new library.
+
+== edit loop by module, the gate's setting  load { 5.16 8.93 11.29 }
+-- settle                                       real 90.37 user 565.29 
+-- term.rs (518 lines), line 99: edit           real 115.71 user 923.28 
+-- term.rs: revert                              real 147.07 user 1003.02 
+-- intern.rs (3129 lines), line 351: edit       real 134.17 user 902.98 
+-- intern.rs: revert                            real 126.54 user 909.46 
+-- value.rs (1150 lines), line 373: edit        real 81.56 user 527.73 
+-- value.rs: revert                             real 76.55 user 497.75 
+-- expr.rs (1223 lines), line 458: edit         real 26.83 user 49.76 
+-- expr.rs: revert                              real 26.05 user 49.87 
+-- mod.rs (1897 lines), line 19: edit           real 62.00 user 426.68 
+-- mod.rs: revert                               real 68.82 user 472.60 
+== sources clean
+
+== edit loop by module, opt-level 0 (the three overrides set to 0)  load { 5.62 19.42 22.16 }
+-- settle                                       real 15.99 user 11.25 
+-- load.rs (40519 lines), line 13902: edit      real 15.87 user 14.54 
+-- load.rs: revert                              real 15.37 user 14.13 
+-- term.rs (518 lines), line 99: edit           real 14.50 user 12.73 
+-- term.rs: revert                              real 14.45 user 12.66 
+-- intern.rs (3129 lines), line 351: edit       real 13.59 user 11.96 
+-- intern.rs: revert                            real 13.70 user 12.08 
+-- value.rs (1150 lines), line 373: edit        real 13.30 user 11.44 
+-- value.rs: revert                             real 13.29 user 11.43 
+-- expr.rs (1223 lines), line 458: edit         real 13.00 user 11.21 
+-- expr.rs: revert                              real 13.00 user 11.27 
+-- mod.rs (1897 lines), line 19: edit           real 8.25 user 7.73 
+-- mod.rs: revert                               real 8.47 user 7.90 
+== sources clean

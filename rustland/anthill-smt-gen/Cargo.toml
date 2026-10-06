@@ -9,7 +9,14 @@ autotests = false
 anthill-core = { path = "../anthill-core" }
 sha2 = "0.10"
 hex = "0.4"
-serde = { version = "1", features = ["derive"] }
+# The derive macros come from `serde_derive` DIRECTLY, not through `serde`'s `derive`
+# feature. Features unify across whatever one cargo invocation builds, so with the
+# feature on here, anthill-core's own `serde` gained a dependency on `serde_derive` —
+# and through it on `syn`, whose features differ by which crates are selected (clap's
+# derive asks for more). anthill-core was then a different build per selection, rebuilt
+# whenever the selection changed (WI-20261006-ZVV24; ~110 s a time once optimized).
+serde = "1"
+serde_derive = "1"
 serde_json = "1"
 dirs = "5"
 smallvec = "1"

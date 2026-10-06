@@ -16,8 +16,9 @@ live per-binary progress. Plain `cargo test` buffers under
 indistinguishable from slow compiles.
 
 ```bash
-scripts/test.sh                                     # full workspace, live progress
+scripts/test.sh                                     # full workspace (the gate), live progress
 scripts/test.sh -p anthill-core                     # one crate
+ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core  # ...optimized: 13 min, not 2 h (see below)
 scripts/test.sh -p anthill-core --lib               # unit tests only
 scripts/test.sh -p anthill-core --test github_todo  # one integration binary
 scripts/test.sh -p anthill-core -- debruijn_multi   # filter by test name
@@ -29,6 +30,37 @@ scripts/test-status.sh                              # report current/last binary
 Reach for raw `cargo test` only when you specifically need a behavior
 `test.sh` doesn't provide (e.g. doc-tests, `--exact`, custom test
 runners).
+
+**Two builds: the gate's is optimized, the edit loop's is not.** A full run
+(`scripts/test.sh`, no arguments) builds `anthill-core` at opt-level 2 and the two
+tree-sitter crates at 3; a SELECTED run uses the plain dev profile. `ANTHILL_TEST_OPT=2`
+or `=0` overrides either default. Debug assertions and overflow checks are on in both.
+The setting is passed by the script and is NOT in `Cargo.toml` — its header says why, in
+full; the short of it (WI-20261006-ZVV24; `docs/design/test-infrastructure.md` §1.1, §2.5):
+
+- Optimized, a stdlib load is 0.3 s instead of 2.1 s, and the suites execute ~9 300 of
+  them: the gate went from over 3 hours to ~16 min, ~20–25 after an edit to `anthill-core`.
+- Optimized, the REBUILD after an edit costs 1–2 min where opt-level 0 takes 8–16 s — for
+  most of `anthill-core`'s sources and for `tests/common/mod.rs` (`kb/load.rs` ~80 s, a
+  one-line accessor in `kb/term.rs` ~130 s, a typer module ~26 s, one test file ~10 s).
+  It follows how widely the edited code is used, not the size of the file.
+
+So: iterate on a few tests with a selected run, set `ANTHILL_TEST_OPT=2` for a WIDE
+selection (a whole crate), and let the full run be the gate. The two builds live side by
+side in `target/`; raw `cargo test` / `cargo build` are the unoptimized one.
+
+The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
+optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
+`kb/resolve.rs` before changing anything on that path.
+
+**No workspace crate may enable, on a dependency `anthill-core` also has, a feature
+that `anthill-core`'s own `Cargo.toml` line does not.** Cargo unifies features across
+what one invocation builds, so one extra feature makes `anthill-core` a different build
+per selection — it was compiled four times a gate, over `chrono` and `serde/derive`,
+before that was found, and each build is ~110 s when optimized. A subset is harmless
+(`smallvec = "1"` beside `anthill-core`'s `const_generics`). `scripts/test.sh` refuses to
+run when the rule is broken and names the dependency; for derive macros, depend on
+`serde_derive` directly, as `anthill-smt-gen` does.
 
 ## Crate Structure
 

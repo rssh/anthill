@@ -1,0 +1,112 @@
+# Full workspace run, 2026-10-06 09:17, rustland/scripts/test.sh, 12 test threads (6 for the spawning crates)
+# Profile: dev with [profile.dev.package.anthill-core] opt-level = 2 and [profile.dev.package."*"] opt-level = 3
+#          (debug-assertions, overflow-checks, debug info and incremental compilation all still on)
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6; no other gate in flight (load avg 4.9 at start)
+# Result:  8560 passed, 0 failed, 14 ignored — the totals of the last gated commit (a288c6a6)
+# wall = seconds from the binary's 'Running' line to its 'test result' line; 'finished in' is libtest's own clock
+#   wall  binary                                                tests  finished in
+    10  unittests src/lib.rs [anthill_core]                    661  10.13s
+     3  tests/algebra_tests.rs [algebra_tests]                  24  2.79s
+     7  tests/builtin_tests.rs [builtin_tests]                  81  6.87s
+     1  tests/classic_mini_test.rs [classic_mini_test]           4  0.66s
+     9  tests/eval_tests.rs [eval_tests]                       119  9.16s
+     2  tests/github_todo_test.rs [github_todo_test]            15  1.75s
+     9  tests/guardians_test.rs [guardians_test]                66  9.21s
+     3  tests/induction_tests.rs [induction_tests]              13  2.01s
+    27  tests/parse_tests.rs [parse_tests]                     460  27.24s
+    11  tests/resolve_tests.rs [resolve_tests]                 133  11.31s
+     2  tests/sql_store_example_test.rs [sql_store_example_test]     7  1.27s
+   659  tests/wi_tests.rs [wi_tests]                          6093  658.78s
+     0  unittests src/lib.rs [anthill_cpp_gen]                   0  0.00s
+    20  tests/integration.rs [integration]                     207  19.68s
+     0  unittests src/lib.rs [anthill_rust_gen]                  0  0.00s
+     0  tests/integration.rs [integration]                       7  0.08s
+     0  unittests src/lib.rs [anthill_smt_gen]                  26  0.00s
+     0  tests/blob_test.rs [blob]                                6  0.00s
+     1  tests/cache_key_test.rs [cache_key]                      6  1.34s
+     5  tests/integration.rs [integration]                      53  4.89s
+     2  tests/policy_test.rs [policy]                           11  0.97s
+     1  tests/state_hash_test.rs [state_hash]                    8  1.48s
+     1  unittests src/lib.rs [anthill]                          32  1.26s
+     1  tests/stdlib_drift_test.rs [stdlib_drift_test]           2  0.00s
+     0  unittests src/lib.rs [anthill_version]                   0  0.00s
+     0  tests/sha_matches.rs [sha_matches]                       3  0.04s
+     3  doc-tests anthill_core                                  4  0.46s
+     1  unittests src/main.rs [anthill]                         14  0.93s
+    57  tests/cli_tests.rs [cli_tests]                         198  56.57s
+     0  unittests src/main.rs [anthill_todo]                    12  0.00s
+   240  tests/cmd_tests.rs [cmd_tests]                         295  240.04s
+# COLD build: this checkout had never built the workspace's tests. First 'Running' at 469 s (7 min 49 s of
+# compile); the second cargo invocation (-p anthill-cli -p anthill-todo) compiled for another 293 s, 1249 s to
+# 1542 s, rebuilding anthill-core under a different chrono feature set — fixed after this run by aligning the
+# chrono features in anthill-todo and anthill-version. Compile 762 s in all; tests 1078 s (18 min).
+# Last 'test result' at 1840 s = 30 min 40 s.
+#
+# For comparison, the last opt-level 0 gate on this machine (2026-10-05 22:53, read from its log before the
+# target directory was removed): 11 519 s = 3 h 12 min; wi_tests 7518 s (6124 tests), cmd_tests 2143 s,
+# cli_tests 351 s, parse_tests 243 s, cpp-gen integration 155 s, anthill-core lib 120 s, eval_tests 111 s,
+# resolve_tests 109 s, guardians_test 89 s.
+
+# ── Second run, 2026-10-06 11:10, the manifests with the chrono and serde_derive fixes in, WARM builds ──
+# Same machine and settings; load avg 5.0 at start. 8560 passed, 0 failed, 14 ignored.
+#   wall  binary                                                tests  finished in
+     9  unittests src/lib.rs [anthill_core]                    661  9.18s
+     2  tests/algebra_tests.rs [algebra_tests]                  24  2.36s
+     6  tests/builtin_tests.rs [builtin_tests]                  81  5.80s
+     1  tests/classic_mini_test.rs [classic_mini_test]           4  0.50s
+    10  tests/eval_tests.rs [eval_tests]                       119  10.26s
+     2  tests/github_todo_test.rs [github_todo_test]            15  1.71s
+    11  tests/guardians_test.rs [guardians_test]                66  10.82s
+     3  tests/induction_tests.rs [induction_tests]              13  2.14s
+    33  tests/parse_tests.rs [parse_tests]                     460  32.58s
+    13  tests/resolve_tests.rs [resolve_tests]                 133  13.22s
+     2  tests/sql_store_example_test.rs [sql_store_example_test]     7  1.25s
+   602  tests/wi_tests.rs [wi_tests]                          6093  601.53s
+     0  unittests src/lib.rs [anthill_cpp_gen]                   0  0.00s
+    17  tests/integration.rs [integration]                     207  16.81s
+     0  unittests src/lib.rs [anthill_rust_gen]                  0  0.00s
+     1  tests/integration.rs [integration]                       7  0.08s
+     0  unittests src/lib.rs [anthill_smt_gen]                  26  0.00s
+     0  tests/blob_test.rs [blob]                                6  0.00s
+     1  tests/cache_key_test.rs [cache_key]                      6  1.02s
+     4  tests/integration.rs [integration]                      53  3.96s
+     1  tests/policy_test.rs [policy]                           11  0.85s
+     2  tests/state_hash_test.rs [state_hash]                    8  1.23s
+     1  unittests src/lib.rs [anthill]                          32  1.08s
+     0  tests/stdlib_drift_test.rs [stdlib_drift_test]           2  0.00s
+     1  unittests src/lib.rs [anthill_version]                   0  0.00s
+     0  tests/sha_matches.rs [sha_matches]                       3  0.03s
+     3  doc-tests anthill_core                                  4  0.60s
+     0  unittests src/main.rs [anthill]                         14  0.47s
+    33  tests/cli_tests.rs [cli_tests]                         198  32.39s
+     0  unittests src/main.rs [anthill_todo]                    12  0.00s
+   162  tests/cmd_tests.rs [cmd_tests]                         295  161.45s
+# First 'Running' at 21 s; the second cargo invocation compiled for 1.8 s. Last 'test result' at 945 s = 15 min 45 s.
+
+# ── Third run, 2026-10-06 12:21, the state as reviewed: the dependency override narrowed to the two
+# tree-sitter crates (so every dependency rebuilt), a comment changed in kb/resolve.rs (so anthill-core rebuilt),
+# test.sh's feature-drift check in. 8560 passed, 0 failed, 14 ignored. Load avg 25 at start (a build had just ended).
+# Compile 444 s in the first invocation and 9 s in the second; wi_tests 693 s, cmd_tests 156 s, cli_tests 32 s,
+# parse_tests 34 s. Last 'test result' at 1476 s = 24 min 36 s.
+
+# ── Fourth run, 2026-10-06 13:37 — the first through test.sh's own full-run mode (the settings passed as
+# --config, nothing in the manifest). ABORTED, and the cause is NOT known.
+#   wi_tests died 40 s in, after 154 tests: SIGABRT, "malloc: *** error for object …: pointer being freed was
+#   not allocated", one line after `typer_capability_matrix_test::sweep_fold_left ... FAILED`. The other 35
+#   binaries passed (2467 passed, 0 failed).
+#   The macOS crash report puts the abort in a DIFFERENT test's thread, at the end of
+#   wi084_const_phase1_test::bodyless_const_has_kind_and_type_but_no_body:
+#     drop_in_place<KnowledgeBase> -> drop_in_place<SortOpsTable>
+#       -> drop of HashMap<Symbol, HashMap<Symbol, Symbol>> -> the inner table's free_buckets -> dealloc -> abort
+#   Two threads going wrong in the same second reads as heap corruption, not as a logic error in either test.
+#   anthill-core has no `unsafe` outside one unit-test helper (kb/term.rs), so a corrupting write would be a
+#   dependency's or the tree-sitter C code's.
+#   NOT REPRODUCED, on the binary that aborted: sweep_fold_left alone x3; its test file (22 tests); the first
+#   235 tests at 12 threads x6, and x4 more under MallocScribble=1 MallocPreScribble=1 — all green.
+#   Tally for the day: 1 abort in 6 full optimized executions of wi_tests (runs 1-5 and the load count).
+#   Not known: whether it also happens, rarely, at opt-level 0; whether optimization exposes something latent;
+#   whether it was the machine (load average had been over 100 several times that morning).
+#
+# ── Fifth run, 2026-10-06 14:02 — the same tree, unchanged. 8560 passed, 0 failed, 14 ignored.
+# Warm build (first 'Running' at 3 s); wi_tests 788 s, cmd_tests 167 s, cli_tests 38 s, parse_tests 33 s.
+# Load avg 28 at start. Last 'test result' at 1136 s = 18 min 56 s.

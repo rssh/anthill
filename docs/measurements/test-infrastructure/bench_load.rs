@@ -9,6 +9,10 @@
 //!   incr       — load_all(one small user file) INTO an already-loaded stdlib KB  [what a cached-KB design pays]
 //!
 //! ITERS=<n> picks the iteration count (default 5). LOOP=1 runs `full` forever for a sampler.
+//! THREADS=<n> runs `full` on n threads at once, ITERS loads each, and reports the
+//! per-load time and the throughput — whether loads SCALE, which is what a test
+//! binary's `--test-threads` assumes. Each thread builds its own KB on a default-size
+//! (2 MiB) stack, as a libtest thread does.
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -39,6 +43,28 @@ fn parse_all(paths: &[PathBuf]) -> Vec<parse::ir::ParsedFile> {
         .collect()
 }
 
+/// One `full` load — fresh KB, `load_all(stdlib ∪ bindings ∪ user)` — and how long it took.
+/// The ONE definition: `full`, the `THREADS` rows and `LOOP` all call it, so the thread
+/// columns cannot come to measure a different load than the column they are read against.
+fn full_load(parsed: &[parse::ir::ParsedFile], user: &parse::ir::ParsedFile) -> Duration {
+    let mut refs: Vec<&parse::ir::ParsedFile> = parsed.iter().collect();
+    refs.push(user);
+    let s = Instant::now();
+    let mut kb = KnowledgeBase::new();
+    load::load_all(&mut kb, &refs, &NullResolver).map_err(|e| e.len()).unwrap();
+    s.elapsed()
+}
+
+/// An environment variable that, when set, must be a positive count — a malformed value is
+/// an error, not a silent fall-back to the default measurement.
+fn count_var(name: &str) -> Option<usize> {
+    let raw = std::env::var(name).ok()?;
+    match raw.parse::<usize>() {
+        Ok(n) if n > 0 => Some(n),
+        _ => panic!("{name}={raw:?}: expected a positive integer"),
+    }
+}
+
 fn stats(name: &str, xs: &[Duration]) {
     let mut v: Vec<f64> = xs.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -47,7 +73,7 @@ fn stats(name: &str, xs: &[Duration]) {
 }
 
 fn main() {
-    let iters: usize = std::env::var("ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let iters: usize = count_var("ITERS").unwrap_or(5);
     let paths = files();
     println!("files: {}", paths.len());
 
@@ -62,25 +88,30 @@ fn main() {
     stats("parse", &t);
     let user = parse::parse(USER_SRC).unwrap();
 
+    if let Some(n) = count_var("THREADS") {
+        let wall = Instant::now();
+        let all: Vec<Duration> = std::thread::scope(|sc| {
+            let handles: Vec<_> = (0..n)
+                .map(|_| {
+                    sc.spawn(|| (0..iters).map(|_| full_load(&parsed, &user)).collect::<Vec<_>>())
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let wall = wall.elapsed().as_secs_f64();
+        stats(&format!("full x{n}"), &all);
+        println!("threads={n} loads={} wall={wall:.2}s throughput={:.2} loads/s", all.len(), all.len() as f64 / wall);
+        return;
+    }
+
     if std::env::var("LOOP").is_ok() {
         loop {
-            let mut refs: Vec<&parse::ir::ParsedFile> = parsed.iter().collect();
-            refs.push(&user);
-            let mut kb = KnowledgeBase::new();
-            load::load_all(&mut kb, &refs, &NullResolver).map_err(|e| e.len()).unwrap();
+            full_load(&parsed, &user);
         }
     }
 
     // full
-    let mut t = vec![];
-    for _ in 0..iters {
-        let mut refs: Vec<&parse::ir::ParsedFile> = parsed.iter().collect();
-        refs.push(&user);
-        let s = Instant::now();
-        let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver).map_err(|e| e.len()).unwrap();
-        t.push(s.elapsed());
-    }
+    let t: Vec<Duration> = (0..iters).map(|_| full_load(&parsed, &user)).collect();
     stats("full", &t);
 
     // pre_typer

@@ -1,0 +1,139 @@
+# bench_load, 2026-10-06, i7-9750H (6 cores / 12 threads), no gate run in flight; each block's header says the load average.
+# Variants — only what differs from the dev profile (debug-assertions and overflow-checks stay ON in all but 'release'):
+#   dev0        nothing (opt-level 0)
+#   coreN       [profile.dev.package.anthill-core] opt-level = N
+#   deps3core2  core2 plus [profile.dev.package."*"] opt-level = 3
+#   ts3core2    core2 plus opt-level = 3 for the packages tree-sitter and tree-sitter-anthill only (what test.sh passes for a full run)
+#   release     --release (opt-level 3, assertions off) — the reference
+# 'full xN' = N threads each doing 3 full loads at once; throughput counts loads finished per wall second.
+
+### dev0  2026-10-06 08:07  load { 1.97 3.46 4.64 }  (first session, the quietest; single-thread numbers only)
+files: 87
+parse      n= 5  min=   214.5ms  median=   218.5ms  max=   277.8ms
+full       n= 5  min=  2066.9ms  median=  2111.3ms  max=  2153.3ms
+pre_typer  n= 5  min=  1020.7ms  median=  1034.7ms  max=  1083.6ms
+incr       n= 5  min=  1166.1ms  median=  1182.0ms  max=  1201.2ms
+
+# first matrix session, 08:26
+### dev0  2026-10-06 08:26  load { 2.91 5.38 6.80 }
+files: 87
+parse      n= 5  min=   218.3ms  median=   221.6ms  max=   276.7ms
+full       n= 5  min=  2102.1ms  median=  2144.6ms  max=  2535.5ms
+pre_typer  n= 5  min=  1114.3ms  median=  1230.3ms  max=  1323.2ms
+incr       n= 5  min=  1199.6ms  median=  1209.4ms  max=  1252.9ms
+full x1    n= 3  min=  2177.1ms  median=  2192.1ms  max=  2247.0ms
+threads=1 loads=3 wall=6.80s throughput=0.44 loads/s
+full x6    n=18  min=  2976.0ms  median=  3126.3ms  max=  3427.0ms
+threads=6 loads=18 wall=9.86s throughput=1.82 loads/s
+full x12   n=36  min=  4858.7ms  median=  5159.5ms  max=  5343.2ms
+threads=12 loads=36 wall=16.05s throughput=2.24 loads/s
+### core1  2026-10-06 08:27  load { 11.51 6.90 7.23 }
+files: 87
+parse      n= 5  min=   194.7ms  median=   197.9ms  max=   221.3ms
+full       n= 5  min=   766.4ms  median=   789.7ms  max=   888.6ms
+pre_typer  n= 5  min=   404.7ms  median=   407.7ms  max=   418.7ms
+incr       n= 5  min=   444.3ms  median=   450.5ms  max=   463.8ms
+full x1    n= 3  min=   781.8ms  median=   785.7ms  max=   819.8ms
+threads=1 loads=3 wall=2.47s throughput=1.21 loads/s
+full x6    n=18  min=  1068.3ms  median=  1172.7ms  max=  1258.2ms
+threads=6 loads=18 wall=3.68s throughput=4.89 loads/s
+full x12   n=36  min=  1845.9ms  median=  1991.9ms  max=  2115.6ms
+threads=12 loads=36 wall=6.26s throughput=5.75 loads/s
+### core2  2026-10-06 08:27  load { 10.01 6.90 7.21 }
+files: 87
+parse      n= 5  min=   187.3ms  median=   199.1ms  max=   212.9ms
+full       n= 5  min=   282.9ms  median=   308.8ms  max=   392.2ms
+pre_typer  n= 5  min=   135.3ms  median=   139.9ms  max=   140.8ms
+incr       n= 5  min=   151.4ms  median=   154.7ms  max=   180.1ms
+full x1    n= 3  min=   261.6ms  median=   263.7ms  max=   269.8ms
+threads=1 loads=3 wall=0.86s throughput=3.48 loads/s
+full x6    n=18  min=   324.3ms  median=   333.9ms  max=   347.7ms
+threads=6 loads=18 wall=1.15s throughput=15.61 loads/s
+full x12   n=36  min=   584.4ms  median=   615.8ms  max=   642.0ms
+threads=12 loads=36 wall=2.18s throughput=16.52 loads/s
+### core3  2026-10-06 08:28  load { 9.19 6.85 7.19 }
+files: 87
+parse      n= 5  min=   181.6ms  median=   182.0ms  max=   205.0ms
+full       n= 5  min=   252.1ms  median=   256.9ms  max=   330.1ms
+pre_typer  n= 5  min=   126.5ms  median=   130.3ms  max=   131.0ms
+incr       n= 5  min=   146.7ms  median=   148.0ms  max=   156.7ms
+full x1    n= 3  min=   256.8ms  median=   260.1ms  max=   267.6ms
+threads=1 loads=3 wall=0.85s throughput=3.51 loads/s
+full x6    n=18  min=   314.9ms  median=   330.0ms  max=   349.7ms
+threads=6 loads=18 wall=1.14s throughput=15.77 loads/s
+full x12   n=36  min=   576.9ms  median=   629.6ms  max=   669.1ms
+threads=12 loads=36 wall=2.21s throughput=16.30 loads/s
+### release  2026-10-06 08:28  load { 11.93 7.52 7.42 }
+files: 87
+parse      n= 5  min=    69.7ms  median=    72.6ms  max=    88.0ms
+full       n= 5  min=   210.0ms  median=   219.3ms  max=   293.0ms
+pre_typer  n= 5  min=   112.3ms  median=   116.0ms  max=   122.3ms
+incr       n= 5  min=   123.5ms  median=   125.4ms  max=   133.4ms
+full x1    n= 3  min=   209.6ms  median=   211.3ms  max=   219.4ms
+threads=1 loads=3 wall=0.71s throughput=4.25 loads/s
+full x6    n=18  min=   258.8ms  median=   268.0ms  max=   297.9ms
+threads=6 loads=18 wall=0.97s throughput=18.49 loads/s
+full x12   n=36  min=   537.4ms  median=   552.6ms  max=   579.5ms
+threads=12 loads=36 wall=2.01s throughput=17.93 loads/s
+
+# second session, 08:56 — the dependencies-at-3 variant against its neighbours
+### core2  2026-10-06 08:56  load { 3.44 11.46 13.49 }
+files: 87
+parse      n= 5  min=   186.3ms  median=   194.3ms  max=   213.0ms
+full       n= 5  min=   286.9ms  median=   309.4ms  max=   318.9ms
+pre_typer  n= 5  min=   148.2ms  median=   155.3ms  max=   164.3ms
+incr       n= 5  min=   160.9ms  median=   175.8ms  max=   181.4ms
+full x12   n=36  min=   576.1ms  median=   600.5ms  max=   647.0ms
+threads=12 loads=36 wall=2.16s throughput=16.68 loads/s
+### deps3core2  2026-10-06 08:56  load { 3.73 11.38 13.45 }
+files: 87
+parse      n= 5  min=    78.6ms  median=    84.9ms  max=   111.1ms
+full       n= 5  min=   299.4ms  median=   309.5ms  max=   354.7ms
+pre_typer  n= 5  min=   147.9ms  median=   150.4ms  max=   155.6ms
+incr       n= 5  min=   155.0ms  median=   173.4ms  max=   173.9ms
+full x12   n=36  min=   550.2ms  median=   571.6ms  max=   612.4ms
+threads=12 loads=36 wall=2.07s throughput=17.38 loads/s
+### release  2026-10-06 08:56  load { 4.14 11.22 13.37 }
+files: 87
+parse      n= 5  min=    72.7ms  median=    81.2ms  max=    88.3ms
+full       n= 5  min=   234.2ms  median=   243.1ms  max=   248.5ms
+pre_typer  n= 5  min=   130.7ms  median=   132.5ms  max=   149.4ms
+incr       n= 5  min=   131.6ms  median=   134.7ms  max=   155.3ms
+full x12   n=36  min=   449.2ms  median=   468.5ms  max=   497.0ms
+threads=12 loads=36 wall=1.72s throughput=20.88 loads/s
+
+# third session, 11:55 — only the two tree-sitter crates at 3 ('ts3core2', what test.sh passes for a full run) against all
+# dependencies at 3 and its neighbours. Same parse, same load. (This session ran ~12 % faster than the
+# first two throughout: differences of that size BETWEEN sessions are noise.)
+### core2  2026-10-06 11:55  load { 5.91 9.84 11.77 }
+files: 87
+parse      n= 5  min=   184.7ms  median=   185.3ms  max=   211.6ms
+full       n= 5  min=   267.9ms  median=   274.4ms  max=   329.1ms
+pre_typer  n= 5  min=   138.9ms  median=   143.9ms  max=   147.8ms
+incr       n= 5  min=   153.4ms  median=   153.9ms  max=   170.5ms
+full x12   n=36  min=   505.0ms  median=   529.8ms  max=   584.8ms
+threads=12 loads=36 wall=1.92s throughput=18.74 loads/s
+### ts3core2  2026-10-06 11:55  load { 6.49 9.83 11.75 }
+files: 87
+parse      n= 5  min=    71.2ms  median=    72.1ms  max=    88.5ms
+full       n= 5  min=   262.1ms  median=   268.4ms  max=   316.1ms
+pre_typer  n= 5  min=   137.2ms  median=   141.4ms  max=   160.2ms
+incr       n= 5  min=   151.5ms  median=   159.2ms  max=   172.2ms
+full x12   n=36  min=   520.8ms  median=   549.9ms  max=   605.2ms
+threads=12 loads=36 wall=2.01s throughput=17.92 loads/s
+### deps3core2  2026-10-06 11:55  load { 6.53 9.79 11.72 }
+files: 87
+parse      n= 5  min=    70.7ms  median=    71.8ms  max=    86.0ms
+full       n= 5  min=   261.8ms  median=   269.9ms  max=   316.9ms
+pre_typer  n= 5  min=   135.5ms  median=   137.5ms  max=   138.4ms
+incr       n= 5  min=   150.2ms  median=   152.0ms  max=   167.6ms
+full x12   n=36  min=   534.7ms  median=   552.0ms  max=   586.1ms
+threads=12 loads=36 wall=1.96s throughput=18.34 loads/s
+### release  2026-10-06 11:56  load { 6.87 9.75 11.68 }
+files: 87
+parse      n= 5  min=    69.2ms  median=    70.8ms  max=    89.6ms
+full       n= 5  min=   206.7ms  median=   215.7ms  max=   281.0ms
+pre_typer  n= 5  min=   111.5ms  median=   112.4ms  max=   118.0ms
+incr       n= 5  min=   124.5ms  median=   125.5ms  max=   133.1ms
+full x12   n=36  min=   441.9ms  median=   449.9ms  max=   477.0ms
+threads=12 loads=36 wall=1.70s throughput=21.20 loads/s

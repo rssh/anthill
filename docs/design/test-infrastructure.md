@@ -1,6 +1,10 @@
 # Test infrastructure — making the gate fast
 
-**Status.** Brainstorm with measurements, 2026-10-05. Nothing here is decided; §8 lists
+**Status.** Brainstorm with measurements, 2026-10-05. **Lever A1 landed 2026-10-06, for
+the gate** — a full `scripts/test.sh` run builds `anthill-core` optimized, a selected run
+does not (WI-20261006-ZVV24: §1.1, §2.5, §4 A1), and that day's re-measurement on a quiet machine
+corrected several of the first day's numbers — each correction is dated where it stands.
+Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
 `docs/measurements/test-infrastructure/` so it can be re-taken.
@@ -13,12 +17,14 @@ measured this doc is **3 h 27 min** of wall clock (§1), a few hours on a slow b
 **The short version.** One number explains almost all of it: a test that loads the
 standard library pays **~4.8 s** for that load (debug profile, §2), and the `anthill-core`
 suites do it at **~3 100 call sites** across 7 039 tests. The CLI suites pay the same load
-once per spawned process. Three levers, in the order they should be pulled:
+once per spawned process. (Re-measured 2026-10-06: 2.1 s on a quiet machine, 5.2 s with
+twelve threads loading at once, and ~9 300 stdlib loads EXECUTED — §2.1, §2.4, §2.5.)
+Three levers, in the order they should be pulled:
 
 | lever | what it attacks | expected gain | cost |
 |---|---|---|---|
-| A1. build the tests optimized (§4 A1) | the 4.8 s | **the same load is 7.9× faster at opt-level 3** (§2.5); opt-level 1/2 with assertions still to measure | one `[profile.test]` line + a compile-time measurement |
-| A2–A4. hashing, frontier-driven passes, hot spots (§4) | the 4.8 s, and the 2.9 s "incremental" load | tens of % each; A3 is what makes B pay | hours to days each |
+| A1. build `anthill-core` optimized (§4 A1) — **DONE 2026-10-06** | the 4.8 s | measured: the load 6.8× faster with every check still on, the gate **3 h 27 min → 15 min 45 s** warm, 30 min 40 s cold (§1.1) | three `--config` lines in `test.sh`, for a full run only: optimized, a rebuild after most edits costs 1–2 min more (§2.5), so the edit loop is left at opt-level 0 |
+| A2–A4. hashing, frontier-driven passes, hot spots (§4) | the load (0.31 s since A1), and the "incremental" load (0.15 s since A1) | tens of % each; A3 is what makes B pay | hours to days each |
 | B. load the stdlib once per process, clone per test (§5) | the ×3 100 | wi_tests from hours to minutes — **but only after A3**, which is a prerequisite | days |
 | C. run less per gate, or on more machines (§6) | the policy | whatever the policy allows | a decision |
 
@@ -71,6 +77,69 @@ right; nothing below undoes it. The second thing already done is `STDLIB_PARSED`
 parsed stdlib is a `LazyLock` per test binary, so the **parse** is shared and only the
 **load** is repeated. §2.1 shows the parse would have been ~0.5 s of the 4.8 s.
 
+### 1.1 The same run with `anthill-core` optimized (WI-20261006-ZVV24)
+
+Full run, 2026-10-06 09:17, this checkout, the same machine with no other gate in flight,
+`anthill-core` at opt-level 2 and the dependencies at 3 (§4 A1; narrowed to the two
+tree-sitter crates from the third run on), 12 test threads. **8 560
+passed, 0 failed, 14 ignored** — the totals of the last gated commit. Raw table:
+`full-run-2026-10-06-core-opt2.txt`. The opt-level 0 column is §1's run.
+
+| binary | tests | opt-level 0 (§1) | optimized | ratio |
+|---|---:|---:|---:|---:|
+| `anthill-core` · `wi_tests` | 6 093 | 7 801 s | **659 s** | 11.8× |
+| `anthill-todo` · `cmd_tests` (spawns the CLI) | 295 | 2 786 s | **240 s** | 11.6× |
+| `anthill-cli` · `cli_tests` (spawns the CLI) | 198 | 445 s | 57 s | 7.8× |
+| `anthill-core` · the other 10 integration binaries | 922 | 810 s | 74 s | 10.9× |
+| `anthill-core` · lib unit tests | 661 | 104 s | 10 s | 10× |
+| `anthill-cpp-gen`, `anthill-smt-gen`, `anthill-stl`, rest | 391 | ~374 s | 35 s | ~11× |
+| compile, both cargo invocations | | 23 s (incremental) | 762 s (**cold**, see below) | |
+| **total** | **8 560** | **12 448 s = 3 h 27 min** | **1 840 s = 30 min 40 s** | **6.8×** |
+| the same, second run: the feature fixes in, warm builds | 8 560 | | **945 s = 15 min 45 s** | 13× |
+| the same, third run: as reviewed, everything rebuilt (444 s of compile) | 8 560 | | 1 476 s = 24 min 36 s | 8.4× |
+| fourth run: through `test.sh`'s full-run mode | | | **`wi_tests` ABORTED** — see below | |
+| fifth run: the same tree, unchanged, warm | 8 560 | | 1 136 s = 18 min 56 s | 11× |
+
+§1's run had other work on the machine. The quietest opt-level 0 gate of that day (22:53,
+read from its log before the directory was removed) took 11 519 s = 3 h 12 min, with
+`wi_tests` 7 518 s, `cmd_tests` 2 143 s and `cli_tests` 351 s — against it the total is 6.3×.
+
+The second run is what a gate costs when nothing in `anthill-core` was edited: 23 s of
+compile, then `wi_tests` 602 s, `cmd_tests` 162 s, `cli_tests` 33 s. After an edit to a
+large `anthill-core` module add 4–5 min of compile (§7).
+
+The tests themselves went from about 3 h 25 min to **18 min** in the first run and
+**15 min** in the second. `wi_tests` beat the bench's
+7.4× (12-thread load throughput, §2.5). Two candidate reasons, not separated: the test
+bodies — resolution, eval — are `anthill-core` code too and shrink with the loads, and a
+laptop that throttles over a two-hour all-core run does not over an eleven-minute one.
+
+**One run aborted, and the cause is not known.** The fourth run lost `wi_tests` 40 s in:
+`SIGABRT` from the allocator ("pointer being freed was not allocated") while one test's
+thread was dropping its `KnowledgeBase` — the inner table of `sort_ops` — one line after an
+unrelated test in another thread had FAILED. Two threads going wrong in the same second
+reads as heap corruption, and `anthill-core` has no `unsafe` outside one unit-test helper,
+so the write would be a dependency's or the tree-sitter C code's. It did not reproduce on
+the binary that aborted (the failed test alone, its file, and the first 235 tests at 12
+threads ten times over, four of them with the allocator scribbling freed memory), and the
+fifth run of the unchanged tree is green: **1 abort in 6 full optimized executions of
+`wi_tests`** that day. Not known: whether it also happens, rarely, at opt-level 0; whether
+optimization exposes something latent; whether it was a machine that had spent the morning
+at a load average over 100. The stack and the attempts are in the raw file. AddressSanitizer
+is the tool that would say, and needs a nightly toolchain.
+
+The compile row is not a like-for-like: this checkout had never built the workspace's
+tests, so 762 s is a cold build of everything. It is also where the run found something:
+`anthill-core`'s library was built **four times** — a target and a host flavour (it is a
+build-dependency of `anthill-stl`, and `tree-sitter`'s build script turns on
+`serde_json/preserve_order` for host builds only), each once per cargo invocation, because
+`test.sh` runs the gate as two (`--workspace --exclude` the spawning crates, then `-p` them)
+and the two selections resolved different features for two of `anthill-core`'s
+dependencies: `chrono`, and `serde` through `anthill-smt-gen`'s use of its `derive`
+feature. At opt-level 0 a redundant build of the library cost 35 s cold and went unnoticed;
+optimized it is 110 s. Both are fixed in the manifests, and the second run's second
+invocation compiled for 1.8 s (§7 has the mechanism and the rule it leaves).
+
 ## 2. The unit of cost: one stdlib load
 
 All numbers in this section: 2026-10-05, this machine, **debug profile** (what `cargo test`
@@ -82,14 +151,23 @@ commit it there, `cargo test` builds examples). Per-phase trace:
 `docs/measurements/test-infrastructure/load-phases-debug-2026-10-05.txt`, taken with the
 loader's own `ANTHILL_LOAD_TIMING=1` switch (`load_phase_inner`'s `mark!`).
 
+**Re-taken 2026-10-06 with no gate in flight** (load average 2–3, the desktop's own): the
+inflation was **2.3×**, not 1.5×. §2.1 and §2.5 carry the quiet numbers; §2.2's and §2.3's
+per-phase times were not re-taken and are to be read as SHARES. Raw:
+`bench-matrix-2026-10-06.txt`, `compile-cost-2026-10-06.txt`.
+
 ### 2.1 Four numbers
 
-| measurement | median of 5 | what it is |
-|---|---:|---|
-| `parse` | 0.52 s | read + tree-sitter parse of the 87 files (73 `stdlib/anthill`, 14 `anthill-stl/anthill`) |
-| `full` | **4.85 s** | fresh `KnowledgeBase::new()` + `load_all(stdlib ∪ bindings ∪ one 4-line user file)` — **what every `load_kb_with` pays** |
-| `pre_typer` | 2.25 s | the same with `LoadOptions { run_typer: false }` — everything before the typer |
-| `incr` | **2.40 s** | `load_all(one 4-line user file)` into a KB that already holds the stdlib — **what a cached-KB design would pay today** |
+| measurement | 2026-10-05, gate in flight | 2026-10-06, quiet | what it is |
+|---|---:|---:|---|
+| `parse` | 0.52 s | 0.22 s | read + tree-sitter parse of the 87 files (73 `stdlib/anthill`, 14 `anthill-stl/anthill`) |
+| `full` | 4.85 s | **2.11 s** | fresh `KnowledgeBase::new()` + `load_all(stdlib ∪ bindings ∪ one 4-line user file)` — **what every `load_kb_with` pays** |
+| `pre_typer` | 2.25 s | 1.03 s | the same with `LoadOptions { run_typer: false }` — everything before the typer |
+| `incr` | 2.40 s | **1.18 s** | `load_all(one 4-line user file)` into a KB that already holds the stdlib — **what a cached-KB design would pay today** |
+
+Medians of 5, debug profile. A test thread does not see the quiet number: with 12 loads
+running at once on this 6-core box one load takes **5.2 s** (§2.5's scaling rows), which is
+what a `wi_tests` thread actually pays.
 
 ### 2.2 Where the 4.8 s goes (full load, `ANTHILL_LOAD_TIMING`)
 
@@ -164,34 +242,137 @@ reach the ~683 ordinary call sites while leaving …" — WI-966/-967):
 load and a clean load). 3 100 × 4.85 s ≈ 4.2 h of thread-time, which on 6 cores with
 hyper-threading is the 2 h 10 min measured. **The model fits; there is nothing hidden.**
 
+**Corrected 2026-10-06 — the fit was two errors cancelling.** 3 100 is a count of call
+SITES, not of loads executed: a helper that twenty tests call is one site. And the helpers
+are not the only way in — **346 direct `load::load_all*` calls in 194 files** under
+`anthill-core/tests` never pass through `common/`, so "the one recipe" is the recipe of the
+tests that use it, not of the suite. On the other side, 4.85 s was a bench number inflated
+2.3× by the gate it was measured beside (§2.1). The honest inputs are the contended load
+time — 5.2 s with 12 threads loading, §2.5 — and the number of loads a gate EXECUTES,
+which needs no new code to count: `ANTHILL_LOAD_TIMING=1` with `--nocapture` prints one
+trace per load, direct calls included, and each trace says how many files it loaded.
+
+**Counted 2026-10-06** (`load-count-2026-10-06.txt`), `anthill-core`'s twelve test
+binaries, 12 threads, optimized:
+
+| binary | tests | loads executed | of them stdlib-sized (≥ 80 files) | load time as a share of the binary's thread-time |
+|---|---:|---:|---:|---:|
+| `wi_tests` | 6 093 | 8 602 | 8 441 | 89 % |
+| `parse_tests` | 460 | 461 | 243 | 77 % |
+| the other nine integration binaries | 462 | 521 | 484 | 23–85 % |
+| lib unit tests | 661 | 127 | 103 | 79 % |
+| **all twelve** | **7 676** | **9 711** | **9 271** | **87 %** |
+
+So the suite runs **1.2 stdlib loads per test** (1.4 in `wi_tests`), three times the
+call-site count — and **optimizing the load did not change what the suite is made of**:
+at 0.3 s a load instead of 2.1 s, loading is still 87 % of the time. Lever B's case is
+intact, on an 11-minute `wi_tests` instead of a 2-hour one. The split of that load time
+by phase is also what §2.2 measured at opt-level 0, to within a point or two:
+`type_check_sorts` 38 %, `load_with_visited` 21 %, `eq_derive`'s classify and derive 10 %,
+`check_provider_requires` 8 %, `type_value_derive` 4 %, `sort_domain_derive` 4 %.
+
 ### 2.5 The optimized-build numbers
 
-`rustland/Cargo.toml` has no `[profile]` section: tests run at `opt-level = 0`. The same
-bench built `--release` (`nice -n 19`, `-j 3`, during the user's run — so if anything this
-row is *pessimistic*; raw output in `bench-release-2026-10-05.txt`):
+`rustland/Cargo.toml` has no `[profile]` section, and until WI-20261006-ZVV24 nothing
+overrode it: everything ran at `opt-level = 0`. The first day's release-against-dev pair, taken beside a running gate
+(4.85 s against 0.62 s, the "7.9×" this doc opened with), is in `bench-debug-2026-10-05.txt`
+and `bench-release-2026-10-05.txt`. Measured 2026-10-06 on a quiet machine: the same bench with ONE thing
+changed from the dev profile at a time. Debug assertions, overflow checks, full debug info
+and incremental compilation stay on in every row but the last. Raw:
+`bench-matrix-2026-10-06.txt`.
 
-| profile | `parse` | `full` | `pre_typer` | `incr` | `full` ratio |
-|---|---:|---:|---:|---:|---:|
-| dev (opt-level 0, debug-assertions on) | 0.52 s | 4.85 s | 2.25 s | 2.40 s | 1× |
-| release (opt-level 3, debug-assertions off) | 0.19 s | **0.62 s** | 0.30 s | 0.36 s | **7.9×** |
-| `[profile.test] opt-level = 1` (assertions on) | _to measure_ | | | | |
-| `[profile.test] opt-level = 2` (assertions on) | _to measure_ | | | | |
+| build | `parse` | `full` | `pre_typer` | `incr` | `full` ratio | loads/s on 1 thread | 6 threads | 12 threads |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dev (opt-level 0) | 0.22 s | 2.11 s | 1.03 s | 1.18 s | 1× | 0.44 | 1.82 | 2.24 |
+| `anthill-core` at opt-level 1 | 0.20 s | 0.79 s | 0.41 s | 0.45 s | 2.7× | 1.21 | 4.89 | 5.75 |
+| `anthill-core` at opt-level 2 | 0.20 s | **0.31 s** | 0.14 s | 0.15 s | **6.8×** | 3.48 | 15.6 | **16.5** |
+| `anthill-core` at opt-level 3 | 0.18 s | 0.26 s | 0.13 s | 0.15 s | 8.2× | 3.51 | 15.8 | 16.3 |
+| `anthill-core` at 2, ALL dependencies at 3 † | **0.085 s** | 0.31 s | 0.15 s | 0.17 s | 6.8× | | | 17.4 † |
+| `anthill-core` at 2, the two tree-sitter crates at 3 — **the gate's build** ‡ | **0.072 s** | 0.27 s | | | | | | 17.9 ‡ |
+| release (opt-level 3, assertions off) | 0.08 s | 0.22 s | 0.12 s | 0.13 s | 9.6× | 4.25 | 18.5 | 17.9 |
 
-The ratio is uniform across the four measurements (6.7–7.9×), so it is the code generation,
-not one pass: un-inlined SipHash rounds, un-inlined `SmallVec`/iterator adaptors, and the
-debug-only precondition checks (§2.2) are what opt-level 0 costs on this workload.
+† second session (08:56), where `anthill-core` at 2 alone gave 16.7 and release 20.9.
+‡ third session (11:55), where `anthill-core` at 2 alone gave 0.185 s / 0.27 s / 18.7, all
+dependencies at 3 gave 0.072 s / 0.27 s / 18.3, and release 0.071 s / 0.22 s / 21.2.
+**Compare within a session, not across**: the same binary's 12-thread figure moved up to
+18 % between the three (release: 17.9, 20.9, 21.2), with the machine's background load.
 
-Plugging it into §2.4's model: 3 100 loads × 0.62 s ≈ 32 min of thread-time, which on this
-box is **~5 min of `wi_tests`** instead of 130, and the test bodies shrink by the same
-factor. That is the whole gate under ~20 min on the laptop **before any code changes**,
-to be confirmed by one full run at the chosen level.
+The thread columns are `full` on N threads at once, each thread building its own KB on a
+default-size stack as a libtest thread does (`THREADS=<n>` in the bench).
 
-What decides the level: **load speed × loads per gate** against **compile time × edits per
-WI**. The release build above cost ~790 s of CPU for `anthill-core` + the bench (at `-j 3`,
-niced) against ~395 s for the whole debug CLI build — roughly 2× at opt-level 3; opt-level 1
-is known to be much cheaper to compile than 3. Still to measure, on an idle machine: the
-incremental rebuild of `anthill-core` + `wi_tests` after a one-line edit at levels 1, 2 and
-3 (today, opt-level 0: 23–180 s, §1), and the load at 1 and 2 with assertions on.
+Three readings:
+
+- **Level 2 takes nearly all of it.** It is within 1.4× of a release build with every check
+  still on. Level 3 is 17 % faster on one thread and indistinguishable once 12 share the box
+  (16.3 against 16.5 loads/s, same session — inside the noise). Level 1 leaves 2.5× on the
+  table to save 16 s of cold compile.
+- **Loads scale across threads.** Six threads give 4.0–4.5× one thread's throughput, and
+  twelve change it by −3 % (release) to +23 % (opt-level 0) — an ordinary curve for six
+  physical cores. There is no
+  allocator or lock contention to hunt (§4 A5), and the thread count is not a lever
+  (§6 C3). What a test thread pays is the contended number: 5.2 s a load at opt-level 0
+  with 12 running, 0.60 s at level 2.
+- **Two dependencies matter, for the parse.** §4 A1 guessed a dependencies-only override
+  near-useless on the grounds that the tree-sitter C parser "is compiled by `cc` at its own
+  `-O`". It is not: `cc` takes the PACKAGE's opt-level, so in the dev profile `parser.c`
+  is built `-O0`. With dependencies at 3 the stdlib parse falls from 0.20 s to 0.085 s —
+  the release figure — and the two crates the parse runs in, `tree-sitter` and
+  `tree-sitter-anthill`, give all of it on their own (0.072 s against 0.072 s, third
+  session). A test binary pays the parse once (`STDLIB_PARSED`); a spawned CLI
+  process pays it every time, so this one is for `cmd_tests` and `cli_tests`.
+
+**What it costs to compile.** Raw: `compile-cost-2026-10-06.txt`. Wall seconds, CPU seconds
+in brackets where they say something.
+
+| the `anthill-core` library | opt-level 0 | at 1 | at 2 | at 3 |
+|---|---:|---:|---:|---:|
+| cold compile | 35 s (66) | 92 s (570) | 108 s (728) | 111 s (737) |
+| rebuild after a new line in `kb/load.rs` (40 519 lines; everything after it moves) | 8–15 s | 66–69 s (473–486) | 69–78 s (551–587) | |
+| rebuild after the same statement on an EXISTING line there (nothing moves) | 7 s | | 48 s (250) | |
+| rebuild after a new line in `fs_util.rs` (118 lines) | 6.5 s | | 6.7 s | |
+
+**The rebuild cost is set by what the edit INVALIDATES, not by the level** — and not by the
+size of the file, which is what this paragraph first claimed from the three rows above
+(/code-review, 2026-10-06, asked for the rows below). Under incremental compilation an
+optimized unit is re-optimized whole, and a unit is invalidated by a change to anything
+inlined into it. So `kb/load.rs`, 40k lines in one module, costs most of a cold build for
+one line; a leaf module costs what it did; and a one-line accessor in a 518-line file that
+everything uses costs MORE than `load.rs`, the test binary included.
+
+The loop a work item actually runs, `cargo test -p anthill-core --test wi_tests --no-run`,
+after one new line in a function body (`compile-cost-2026-10-06.txt` §3, §6):
+
+| edit in | opt-level 0 (a selected run) | optimized (the gate's build) |
+|---|---:|---:|
+| one `tests/include` file (a new item at its end) | 8 s | 10–11 s |
+| `kb/typing/expr.rs` (1 223 lines, a typer module) | 13 s | 26–27 s |
+| `tests/common/mod.rs` (the helpers all 669 test files use) | 8 s | 62–69 s |
+| `kb/load.rs` (40 519 lines) | 15–16 s | 78–85 s |
+| `eval/value.rs` (1 150 lines) | 13 s | 77–82 s |
+| `intern.rs` (3 129 lines; a one-line accessor) | 14 s | 127–134 s |
+| `kb/term.rs` (518 lines; a one-line accessor) | 14.5 s | 116–147 s |
+| cold — `wi_tests` never built against this library | 39 s (62 CPU) | 99 s (601 CPU) |
+
+At opt-level 0 every row is 8–16 s. Optimized, an edit to most of `anthill-core`'s sources
+or to the shared test helpers costs one to two minutes more, and only an edit confined to
+one test file, or to a module little else inlines from, stays near what it was. This is the
+price of the setting — the reason it is applied to the gate and not to the edit loop (§4
+A1) — and the only number in this section that moving the tests out of the package, or
+splitting the big modules, would change.
+
+**A profile override is per PACKAGE, not per target.** `[profile.dev.package.anthill-core]`
+optimizes the library and every other target of that package: `wi_tests` and the other ten
+integration binaries, the unit-test harness, the examples. Cargo has no way to say "the
+library only" short of moving the tests into a package of their own. That is the 601 s of
+CPU in the cold row above — `wi_tests` itself, 267k lines, at opt-level 2 (its binary is
+35 MB against 63 MB) — and it is why an edit to `tests/common/mod.rs` costs a minute: the
+test binary is re-optimized too. The other crates' tests and binaries stay at 0.
+
+An override on the `dev` profile is inherited by `test` (checked with a two-crate probe:
+the overridden library and its harness get `-C opt-level=2`, a dependent crate's binary and
+tests do not). `[profile.test] opt-level = N`, this doc's first proposal, would compile
+every test crate in the workspace optimized. And a profile given with `--config` outranks
+the manifest's (same probe), which is what lets one script run both builds.
 
 ## 3. The cost model, and what it rules out
 
@@ -203,7 +384,10 @@ gate_wall ≈ Σ_tests (loads × T_load + T_test_body) / effective_cores  +  T_c
 - `T_test_body` (resolution, eval) is small next to the load for almost every test; the
   throughput curve in §1 says there is no class of slow tests to hunt. Not a lever today.
 - `T_compile` is 2 % of the gate. Not a lever today — but it is the term that lever A1
-  (opt-level) can make worse, so it is measured alongside.
+  (opt-level) can make worse, so it is measured alongside. **2026-10-06: it did.** With
+  `anthill-core` optimized a gate compiles for 23 s when the crate was not edited and for
+  229–306 s after an edit to one of its large modules — a fifth to a quarter of a ~20 min
+  gate (§1.1, §7). It is a lever now; §7 says what is left in it.
 - Reordering binaries, a different test runner, retries, fail-fast: none change any term.
   `cargo-nextest` in particular runs **one process per test**, which is exactly the shape
   lever B cannot live in (§5.4); it would also not help, since the launch-assessment tax is
@@ -217,25 +401,71 @@ every test, every `anthill-todo` cold start, every `anthill check`.
 ### A1. Build profile
 
 Debug `opt-level = 0` on a workload that is hash maps, small vectors and symbol resolution
-costs **7.9× on the load** (§2.5, measured). This is the single cheapest thing to do and the
-first step of §9. The options, in order of blast radius:
+costs **6.8× on the load** at the level taken (§2.5), and the first full run with it changed
+went from 3 h 27 min to 30 min 40 s (§1.1). This was the single cheapest thing to do and
+the first step of §9. What was proposed here on 2026-10-05, and what the measurements of
+2026-10-06 made of each (WI-20261006-ZVV24):
 
-1. `[profile.test] opt-level = 1` (or 2), keeping `debug-assertions = true` and `overflow-checks`.
-   Applies to everything `cargo test` builds, so `cargo build` and `cargo test` stop sharing
-   the `anthill-core` artifact — one extra compile of the library per profile, not per run.
-   Keeps the assertions, which this codebase leans on (`debug_assert!`, precondition checks
-   — the `copy_nonoverlapping::precondition_check` frames in the profile are those).
-2. `[profile.dev.package."*"] opt-level = 3` — dependencies only. **Likely near-useless
-   here**: `HashMap`, `SmallVec` and the hashers are generic and get monomorphized inside
-   `anthill-core`, so they compile at `anthill-core`'s level, not the dependency's. The
-   tree-sitter C parser is compiled by `cc` at its own `-O` already. Measure once to
-   confirm, then drop.
-3. `debug = 1` (line tables only) instead of full debug info: cuts link time and binary size,
-   no run-time effect. A compile-side win only.
+1. `[profile.test] opt-level = 1` (or 2). **Not this spelling.** It optimizes every test
+   crate in the workspace, and `cargo build` and `cargo test` stop sharing the `anthill-core`
+   artifact. The load is `anthill-core` code, so the override names that package and sits on
+   `dev`, which `test` inherits — given per run, as `--config` (see the decision below):
 
-Decision rule: pick the highest level at which the incremental rebuild after a one-line
-edit to `kb/load.rs` stays under what the user tolerates in the edit loop (the doc's
-guess: ~60 s), given the gate saving at that level. Both halves get measured in §2.5.
+   ```
+   --config profile.dev.package.anthill-core.opt-level=2
+   --config profile.dev.package.tree-sitter.opt-level=3          # the parse: see 2
+   --config profile.dev.package.tree-sitter-anthill.opt-level=3
+   ```
+
+   Debug assertions, overflow checks, debug info and incremental compilation are untouched —
+   this codebase leans on the first two (`debug_assert!`, the precondition checks).
+   **Level 2**: level 3 loads no faster under 12 threads, level 1 gives up 2.5× of the load
+   for 16 s of cold compile and rebuilds no faster after an edit (§2.5).
+2. `[profile.dev.package."*"] opt-level = 3` — dependencies only. Guessed near-useless;
+   **measured otherwise for the parse**: the tree-sitter C parser is built at the package's
+   opt-level, so it was `-O0`, and the stdlib parse falls 0.20 s → 0.085 s. It does nothing
+   for the load itself, as predicted (the hashers are monomorphized inside `anthill-core`).
+   Taken for the CLI suites, which parse on every spawn — but NARROWED to the two crates
+   the parse runs in, which give the whole gain. `package."*"` outranks `build-override`,
+   so it would also optimize every proc-macro crate and third-party build script on a cold
+   build (and `syn`, `quote` and `proc-macro2` resolve different features under the gate's
+   two invocations, so twice), for nothing at test time. The first two full runs of §1.1
+   were taken with `"*"`; the third, and what `test.sh` passes, with the two names.
+3. `debug = "line-tables-only"` for the optimized crate. **Measured, not taken**: a tenth of
+   the compile's CPU and next to nothing of its wall (cold 105 s against 108 s; a `load.rs`
+   edit 67–72 s against 69–78 s), paid for with the debugger's view of locals.
+
+**What it costs, and where.** One to two minutes more per rebuild after an edit to most of
+`anthill-core`'s sources or to `tests/common/mod.rs` — `kb/load.rs` 78–85 s, `kb/term.rs`
+116–147 s, the test helpers 62–69 s, where opt-level 0 took 8–16 s for each; 26 s for a
+typer module; next to nothing for an edit confined to one test file (§2.5 has the table).
+And a gate after an edit to the crate compiles for 4–5 min, the library being built three
+times (§7). In CPU rather than this 12-thread laptop's wall clock: about 590 s for one
+`load.rs` edit, 2 150–2 230 s for a gate's compile after a core edit, ~1 450 s for the
+library's two flavours on any cold build — on a 4-core box, minutes where the above says
+seconds. The native-stack budget of the eval/SLD crossing also moves with the level, and
+the optimized gate does not guard the unoptimized one (`BRIDGE_REENTRY_CAP` in
+`kb/resolve.rs` records both measurements).
+
+Two ways to hold the setting. **Decided 2026-10-06 (user): gate only** — the second. The
+first was chosen earlier the same day, on this doc's then claim that only a very large
+module rebuilds slowly; §2.5's per-module table, taken after /code-review questioned the
+claim, reversed it.
+
+- **Always on, in `rustland/Cargo.toml`.** One artifact set; what the edit loop runs is
+  what the gate runs; every test invocation loads fast, the filtered ones included. But
+  every rebuild after an edit to `anthill-core` or to the test helpers costs 1–2 min more,
+  and a work item is many rebuilds: ten of them give back more than the fast loads of the
+  filtered runs save.
+- **Gate only** — the manifest untouched, `scripts/test.sh` passing the three `--config`
+  lines. A full run (no arguments) is optimized; a selected run is the plain dev profile;
+  `ANTHILL_TEST_OPT=2` or `=0` overrides either default, and a WIDE selection wants `=2`
+  (`-p anthill-core`: 13 min against over two hours). The edit loop keeps its 8–16 s
+  rebuilds; the gate compiles what it needs, 4–5 min after an edit to the crate. Costs: a
+  second artifact set and incremental cache in `target/` (the gate checkout's had reached
+  131 GB on 2026-10-06 and filled the disk — two sets get there sooner), a selected run
+  keeps 2 s loads, and the gate does not test the build the edit loop iterated on — which
+  cuts both ways: both builds are now exercised.
 
 ### A2. Hashing
 
@@ -300,6 +530,11 @@ A debug build on the system allocator with this many small `Vec`/`SmallVec`/`Has
 allocations: `mimalloc` as the global allocator in the **test binaries only** (a
 `#[global_allocator]` in each aggregator) is a one-line experiment. Typical: 5–15 %.
 
+**2026-10-06: not tried, and the reason to try it first is gone.** The case for an allocator
+experiment was the suspicion that twelve allocating threads contend. They do not: six
+threads give 4.0–4.5× one thread's load throughput (§2.5), an ordinary curve for six
+cores. What is left is the single-thread 5–15 %, unmeasured, and a step-6 item as before.
+
 ### A6. A loaded-KB snapshot on disk
 
 Serialize the loaded stdlib KB once (at build time or on first use), deserialize per
@@ -320,6 +555,8 @@ per test:   let mut kb = BASE.lock().clone();  load_all(&mut kb, &[user files]);
 ```
 
 Per-test cost becomes `T_clone + T_incr`. `T_incr` is 2.9 s today and ~0.1 s after A3.
+(2026-10-06, optimized: `T_incr` is 0.15–0.17 s on a quiet machine, against a full load of
+0.31 s — the same "B without A3 wins at most ~1.7×", on numbers a tenth the size.)
 `T_clone` is unmeasured (there is no `Clone` yet); a KB of this size is a few MB of hash
 maps and vectors, so tens of milliseconds in debug is the expectation. With 12 threads
 cloning under one mutex that is still far below one load; a pool of N bases is the fallback
@@ -341,6 +578,16 @@ if contention shows.
   it is, with a compile-time `Send` assertion next to the struct (a `const _` that
   instantiates `fn needs_send<T: Send>()` at `KnowledgeBase` — no crate needed) so a
   future `Rc` field is a compile error, not a silent regression of this design.
+
+  **Corrected 2026-10-06 — it is not eight fields.** `Rc<NodeOccurrence>` is the body
+  representation of operations, rules and consts (1 072 mentions in 58 files), and
+  `NodeKind` carries `Value`s whose tuple and entity payloads are `Rc<[Value]>` — so the
+  change reaches the interpreter's hot path, where every `Value` clone becomes an atomic
+  increment, and that cost has to be measured rather than called negligible. About 1 740
+  `Rc` uses in 68 files of `anthill-core`, 79 more in `anthill-stl` / `-cpp-gen` /
+  `-smt-gen`; `HostFnImpl::Dynamic` is an `Arc<dyn Fn>` with no `Send + Sync` bound.
+  Suggested shape: a `Shared<T>` alias first (mechanical, no behaviour change), so the
+  flip to `Arc` is one line and is measured against a one-line back-out.
 - **Not `Sync`** is fine: the `Mutex` provides exclusive access for the clone.
 - `Interpreter::new(kb)` takes the KB by value (81 sites) — a clone is exactly what it wants.
 
@@ -371,7 +618,8 @@ stdlib fact.
 ### 5.4 The subprocess suites
 
 `cmd_tests` (46 min) and `cli_tests` (7 min) do not benefit from an in-process base: every
-spawn is a fresh process. Options:
+spawn is a fresh process. (2026-10-06, optimized: 162–240 s and 33–57 s — option (c) below,
+taken. What (a) would still buy is to be re-estimated from those, not from 46 min.) Options:
 
 - **(a) An in-process entry point.** `anthill-todo` and `anthill` get a library function —
   `run(argv, cwd, env) -> (status, stdout, stderr)` — that `main` is a one-line wrapper
@@ -414,18 +662,52 @@ informed; it does not recommend changing the rule until A and B have been measur
 - **C3. Thread count.** 12 threads on 6 physical cores. On a hash-and-allocate workload the
   second hyper-thread buys little and each thread holds a full KB (memory bandwidth, cache).
   Measure `ANTHILL_TEST_THREADS=6` against 12 on an idle machine once; it may be a free 10 %
-  either way.
+  either way. **Measured 2026-10-06 (§2.5, load throughput):** 12 threads against 6 is +23 %
+  at opt-level 0, and with `anthill-core` at 2 it is +6 % — inside that table's noise, so
+  "no difference". The default stays; not a lever.
 - **C4. Fewer loads per test.** Some tests load three times for a control, a refusal and a
   clean run. With lever B each is cheap, so this stops mattering. Without it, it is an audit
   of 3 100 sites for a few percent — not worth it.
 
-## 7. Compile-time side (small today, watch it)
+## 7. Compile-time side (small on 2026-10-05; a fifth of the gate since A1)
 
 - Incremental rebuild of the library and all 21 test binaries after an edit: 23 s, 127 s and
-  180 s on three runs today. `wi_tests` alone is 669 include files, 298 k lines; it is one
-  compilation unit, so any `anthill-core` API change recompiles it whole. Not a lever at 2 %
-  of the gate, but A1 raises this term and §2.5 measures both sides.
+  180 s on three runs on 2026-10-05, at opt-level 0. `wi_tests` alone is 669 include files,
+  267 k lines (the 298 k first written here is all 714 files under `tests/include`); it is
+  one compilation unit, so any `anthill-core` API change recompiles it whole. Not a lever at
+  2 % of the gate, but A1 raises this term and §2.5 measures both sides.
 - A cold `cargo build -p anthill-cli` on this machine: 125 s wall (395 s CPU).
+- **`anthill-core` was built several times a gate, and now is not** (2026-10-06,
+  WI-20261006-ZVV24; raw: `compile-cost-2026-10-06.txt` §4). Cargo unifies features across
+  what ONE invocation builds, so a dependency of `anthill-core` that resolves different
+  features under different selections makes `anthill-core` a different build per selection.
+  Two did: `chrono` (`anthill-todo` asked for the default features, `anthill-core` for
+  `clock` alone — and `anthill-todo` is in the gate's second invocation only) and `serde`
+  (`anthill-smt-gen` turned on `derive`, which hangs `serde_derive` — and through it `syn`,
+  whose features follow clap's derive — under `anthill-core`'s own `serde`). Measured
+  before: four library builds in one gate, and a rebuild whenever a `-p anthill-core` run
+  was followed by a wider one. After giving `anthill-todo` the `chrono` features
+  `anthill-core` has and moving `anthill-smt-gen` to `serde_derive` directly, the gate's
+  second cargo invocation compiles for **4 s** after a core edit, down from 98–115 s.
+  `anthill-version`'s `chrono` — a BUILD-dependency, so the host side — was aligned with
+  them; it was not a cause of the gate's rebuild (both invocations include that crate), it
+  keeps the host build of `anthill-core` the same for a selection that leaves the crate out.
+  The rule this leaves: **no workspace crate enables, on a dependency `anthill-core` also
+  has, a feature that `anthill-core`'s own line does not.** A subset is harmless
+  (`smallvec = "1"` beside `anthill-core`'s `const_generics`). `test.sh` now refuses to run
+  when the rule is broken on the target side — it compares what `anthill-core`'s
+  dependencies resolve to alone and in the whole workspace — because nothing else reports
+  it: every selection still builds and passes. The host side it cannot see.
+- What a gate still compiles after a one-line edit to `kb/load.rs`, optimized: **229–306 s**
+  (2 150–2 230 s of CPU) in the first invocation — the library three times at once: the
+  target build, the host build (`anthill-core` is a build-dependency of `anthill-stl`, and
+  the host side resolves `serde_json/preserve_order` through `tree-sitter`'s build script,
+  so it is a second flavour), and the unit-test harness. The host build need not be
+  optimized — it runs one load in `anthill-stl`'s build script — but a NAMED package
+  override outranks `build-override`, so it is. The way out is the inverted spelling
+  (`[profile.dev] opt-level = 2`, every other workspace crate pinned to 0 by name), which
+  leaves host builds to `build-override`; not taken, because it makes "optimized" the
+  default a new crate gets in silence. Unmeasured; ~70 s a gate by the numbers above.
 - **Fresh-clone trap, reproduced today.** `tree-sitter-anthill/build.rs` regenerates
   `src/parser.c` when `grammar.js` is *newer by mtime*. A clone or a pull sets `grammar.js`'s
   mtime to now while `src/parser.c` is gitignored and keeps its old one, so the build script
@@ -437,37 +719,50 @@ informed; it does not recommend changing the rule until A and B have been measur
 
 ## 8. Decisions that are the user's
 
-1. **Profile.** Whether `cargo test` may run optimized (§4 A1), and at what level, once §2.5
-   has both the load and the compile numbers.
+1. **Profile. DECIDED 2026-10-06 (user): for the gate only** — `scripts/test.sh` passes
+   `anthill-core` at opt-level 2 and the two tree-sitter crates at 3 on a full run, and
+   `rustland/Cargo.toml` carries no override (§4 A1). "Always on, in the manifest" was the
+   first choice and was reversed once the per-module rebuild costs were measured. With it:
+   the native-stack budget of the eval/SLD crossing differs between the two builds and the
+   optimized gate does not guard the unoptimized one — left DOCUMENTED, at
+   `BRIDGE_REENTRY_CAP` in `kb/resolve.rs`, rather than guarded (user, same day).
 2. **Order of A3 and B.** The doc's recommendation (§9) is A3 first because B is capped at
    ~1.7× without it; the alternative is B first at the capped gain, which still halves
    `wi_tests`, and A3 after.
 3. **`anthill-todo` in-process entry point** (§5.4 a): a change to the product's structure
-   (a library crate with `main` as a wrapper), not only to tests.
+   (a library crate with `main` as a wrapper), not only to tests. Both CLI crates are
+   bin-only today and `anthill-todo/src/main.rs` writes through 129 `println!`/`eprintln!`
+   sites with no writer threaded, so it is a larger change than §5.4 reads — and
+   `cmd_tests` is 240 s now, not 46 min.
 4. **Gate policy** (§6 C1): untouched until A and B are measured, unless the user wants the
    tiered gate now.
-5. **Tickets.** None filed from this doc; the repo rule is to ask first. Candidates:
-   A1 (measure + decide), A2, A3 (one per pass, or one with three parts), B (§5.1–5.3),
+5. **Tickets.** Filed 2026-10-06 under the tag `test-infra`: WI-20261006-ZVV24 (A1, this
+   change), WI-20261006-SZKV7 (the two-step load switch — the control A3 and B rest on,
+   which §9 did not have as a step of its own), and WI-059 rewritten as B. A3 goes one
+   ticket per pass, filed one at a time (user, 2026-10-06). Not filed: A2, `Clone + Send`,
    §5.4 a, the §7 fresh-clone trap.
 
 ## 9. Recommended sequence, with the measurement at each step
 
-| step | what | measured by | expected |
+| step | what | measured by | expected / outcome |
 |---|---|---|---|
-| 0 | re-take §2 on an idle machine; fill §2.5's opt-level 1 and 2 rows and the compile deltas | the bench + `time cargo test --no-run` after a one-line edit | the A1 level |
-| 1 | A1 `[profile.test]` change | one full run, same log format as §1 | up to 7.9× on every load (§2.5); the model says a gate under ~20 min on the laptop |
-| 2 | A2 hashing + `canonical_sym` cache | the bench, `full` | −10–25 % per load |
-| 3 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` | the bench, `incr`; the full suite under both recipes | `incr` 2.9 s → <0.1 s |
-| 4 | B `Clone` + `Send` + base-in-recipe | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 130 min → <10 min on this box |
-| 5 | §5.4 a in-process `anthill-todo` entry | one full run | `cmd_tests` 46 min → minutes |
-| 6 | C3 thread count; A5 allocator; A4 hot spots as the profile then ranks them | the bench, one full run | single-digit % each |
+| 0 | re-take §2 on a quiet machine; the opt-level rows and the compile deltas | the bench + `cargo test --no-run` after a one-line edit | **done 2026-10-06** — level 2 (§2.5) |
+| 1 | A1: `anthill-core` at 2 and the tree-sitter crates at 3, for the gate | one full run, same log format as §1 | **done 2026-10-06** — 3 h 27 min → 30 min 40 s cold, 15 min 45 s warm (§1.1) |
+| 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | the list of tests that differ — B's real cost, before B |
+| 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
+| 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
+| 5 | B: `Clone` + `Send` + base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 659 s → one to two minutes: loads are 89 % of it (§2.4) |
+| 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
+| 7 | A4 hot spots as a level-2 profile ranks them; A5 allocator | the bench, one full run | single-digit % each. C3 thread count is measured and is not a lever (§6) |
 
-Steps 1 and 2 are independent of each other and of 3–5. Step 1 alone, if a full run
-confirms the model, takes this laptop's gate from 3.5 h to the 10–20 min the fast box gets
-today, and the fast box to a few minutes. Step 4 is where the gate changes shape rather than
-scale: a test stops paying for the stdlib at all, and the gate's cost becomes the tests'
-own bodies — which is the number that makes the current policy (full run per WI)
-comfortable rather than a question.
+Step 1 did what the model said in kind and less than it said in degree: the doc projected
+"~5 min of `wi_tests`" and a gate under 20 min, and got 10–11 min and 16–31 min — the
+projection divided by six cores where §2.4's own fit implied two, and counted call sites
+where loads are executed. After it the gate is roughly **15–18 min of tests plus compile**
+(4–5 min after an edit to a large `anthill-core` module, §7), and of the tests,
+10–11 min are `wi_tests` and 3–4 are `cmd_tests`. Step 5 is still where the gate changes shape
+rather than scale: a test stops paying for the stdlib at all, and what is left is the
+tests' own bodies.
 
 ## 10. Appendix — how to re-take the numbers
 
@@ -485,6 +780,23 @@ LOOP=1 ITERS=1 ./target/debug/examples/bench_load & sample $! 12 -mayDie -file /
 
 # per-binary wall from a test.sh log (the table in §1)
 grep -E 'Running|test result' target/test-run-latest.log
+
+# the same bench at another setting, without touching the manifest (§2.5's rows).
+# Plain `cargo run` is the "dev (opt-level 0)" row. This is the gate's build; drop the two
+# tree-sitter lines for the "`anthill-core` at N" rows:
+cargo run -q --example bench_load -p anthill-core \
+  --config 'profile.dev.package.anthill-core.opt-level=2' \
+  --config 'profile.dev.package.tree-sitter.opt-level=3' \
+  --config 'profile.dev.package.tree-sitter-anthill.opt-level=3'
+
+# do loads scale across threads? N threads, ITERS loads each (§2.5's thread columns)
+THREADS=12 ITERS=3 ./target/debug/examples/bench_load
+
+# how many loads a suite EXECUTES, and what share of its time they are (§2.4).
+# Raw cargo on purpose: this prints ~500k lines, and test.sh forks a process per line.
+# (plain cargo is the unoptimized build; add the three --config lines above for the gate's)
+ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core -- --nocapture > load-trace.log 2>&1
+grep -c 'load_with_visited x' load-trace.log
 ```
 
 Everything in §1 came from `rustland/scripts/test.sh`'s own log: its elapsed-seconds

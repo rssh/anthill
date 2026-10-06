@@ -1,0 +1,75 @@
+# Loads EXECUTED by anthill-core's suites, 2026-10-06 10:47, i7-9750H, 12 test threads,
+# anthill-core at opt-level 2 and dependencies at 3. Taken with the loader's own switch:
+#   ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core -- --nocapture
+# (raw cargo, not scripts/test.sh: its per-line elapsed prefix forks a process per line, and this is ~500k lines).
+# One 'load_with_visited x N' trace line per load, N the number of files in it; 'stdlib-sized' is N >= 80.
+# 'traced load time' sums every [load_timing] phase line, i.e. wall time inside load_all on the test threads.
+# CAVEATS: the trace and --nocapture slow the run (wi_tests 851 s here against 659 s untraced), so read the
+# seconds as SHARES; a handful of trace lines are lost where two threads' output interleaved on one line.
+# 7 680 passed, 0 failed.
+
+unittests                          tests   661  wall    21.9 s  loads   127 (stdlib-sized   103)  traced load time     208 thread-s =   79% of wall x 12
+tests/algebra_tests.rs             tests    24  wall     5.7 s  loads    30 (stdlib-sized    30)  traced load time      45 thread-s =   66% of wall x 12
+tests/builtin_tests.rs             tests    81  wall    14.4 s  loads    92 (stdlib-sized    80)  traced load time     133 thread-s =   77% of wall x 12
+tests/classic_mini_test.rs         tests     4  wall     1.2 s  loads     4 (stdlib-sized     4)  traced load time       3 thread-s =   23% of wall x 12
+tests/eval_tests.rs                tests   119  wall    20.1 s  loads   123 (stdlib-sized   123)  traced load time     205 thread-s =   85% of wall x 12
+tests/github_todo_test.rs          tests    15  wall     2.9 s  loads    15 (stdlib-sized    15)  traced load time      19 thread-s =   53% of wall x 12
+tests/guardians_test.rs            tests    66  wall    18.5 s  loads   103 (stdlib-sized    83)  traced load time     175 thread-s =   79% of wall x 12
+tests/induction_tests.rs           tests    13  wall     3.6 s  loads    16 (stdlib-sized    16)  traced load time      20 thread-s =   46% of wall x 12
+tests/parse_tests.rs               tests   460  wall    47.5 s  loads   461 (stdlib-sized   243)  traced load time     441 thread-s =   77% of wall x 12
+tests/resolve_tests.rs             tests   133  wall    22.0 s  loads   130 (stdlib-sized   125)  traced load time     202 thread-s =   76% of wall x 12
+tests/sql_store_example_test.rs    tests     7  wall     2.4 s  loads     8 (stdlib-sized     8)  traced load time       9 thread-s =   31% of wall x 12
+tests/wi_tests.rs                  tests  6093  wall   851.2 s  loads  8602 (stdlib-sized  8441)  traced load time    9120 thread-s =   89% of wall x 12
+TOTAL                              tests  7676  wall  1011.4 s  loads  9711 (stdlib-sized  9271)  traced load time   10581 thread-s =   87% of wall x 12
+== phases, share of all traced load time
+ 38.5%      4077 s  type_check_sorts (N sorts)
+ 21.2%      2240 s  load_with_visited x N
+ 10.4%      1102 s  eq_derive::classify + derive_total_eq + derive_conditional_eq
+  7.5%       795 s  check_provider_requires
+  4.2%       449 s  type_value_derive::run
+  3.7%       396 s  sort_domain_derive::run
+  1.4%       153 s  resolve_instantiations
+  1.4%       147 s  scan_definitions
+  1.2%       130 s  check_override_refinement
+  1.1%       116 s  eq_derive::run
+  1.1%       112 s  declare_field_types
+  0.9%       100 s  register_specialization_witnesses
+  0.9%        99 s  derive_sort_domains
+  0.8%        81 s  seed_default_provider_index
+  0.6%        63 s  build_eq_dispatch_index
+  0.5%        53 s  check_name_captures
+  0.4%        45 s  derive_forwarded_provisions
+  0.4%        41 s  check_provider_operations
+  0.3%        34 s  check_rule_body_goals
+  0.3%        32 s  derive_carrier_builtin_tags
+  0.3%        31 s  check_written_row_bindings
+  0.2%        25 s  req_insertion::run
+  0.2%        22 s  check_declared_row_contradiction
+  0.2%        21 s  register_requires_axiom_witnesses
+  0.2%        17 s  register_induction_axiom_witnesses
+  0.1%        15 s  build_default_provider_index
+  0.1%        15 s  build_sort_ops_table
+  0.1%        14 s  check_host_implemented_claims
+  0.1%        14 s  check_use_site_requires_eq
+  0.1%        14 s  check_instance_fact_op_signatures
+  0.1%        13 s  flow_derive::run
+  0.1%        11 s  check_modify_targets
+  0.1%        11 s  check_effect_registration
+  0.1%        11 s  check_macro_purity
+  0.1%        10 s  check_requires_shadows
+  0.1%        10 s  build_host_op_mappings
+  0.1%         9 s  check_eq_noneq_exclusive
+  0.1%         8 s  check_contract_clause_goals
+  0.1%         8 s  expand_rule_head_bound_type_params
+  0.1%         6 s  check_operation_body_and_clauses
+  0.0%         5 s  check_host_mapping_duplicates
+  0.0%         4 s  check_provision_names_carrier
+  0.0%         4 s  resolve_builtins
+  0.0%         3 s  check_duplicate_operation_declarations
+  0.0%         3 s  check_const_purity
+  0.0%         2 s  check_all_guards
+  0.0%         2 s  build_host_const_mappings
+  0.0%         2 s  validate_rigid_projection_formations
+  0.0%         2 s  check_bare_spec_narrowings
+  0.0%         2 s  register_implicit_prelude_effects
+  0.0%         1 s  check_undefined_head_arguments

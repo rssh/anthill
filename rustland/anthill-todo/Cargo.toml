@@ -12,7 +12,11 @@ path = "src/main.rs"
 anthill-core = { path = "../anthill-core" }
 anthill-stl = { path = "../anthill-stl" }
 anthill-version = { path = "../anthill-version" }
-chrono = "0.4"
+# The SAME chrono features as anthill-core, on purpose. `test.sh` runs the gate as two
+# cargo invocations, and a different set here made the second one resolve a different
+# `chrono` — and with it build anthill-core again (WI-20261006-ZVV24: four library
+# builds a gate, each ~110 s once the crate is optimized).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 smallvec = "1"
 
 [dev-dependencies]

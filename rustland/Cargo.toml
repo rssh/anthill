@@ -1,3 +1,9 @@
 [workspace]
 members = ["anthill-core", "anthill-cli", "anthill-stl", "anthill-todo", "anthill-cpp-gen", "anthill-rust-gen", "anthill-smt-gen", "anthill-version"]
 resolver = "2"
+
+# NO `[profile]` override here, on purpose (WI-20261006-ZVV24). The gate runs with
+# anthill-core optimized, which makes it ~10x faster — but an optimized anthill-core costs
+# 1-2 min more per rebuild after most edits, so the setting is passed by `scripts/test.sh`
+# for the runs that want it (`ANTHILL_TEST_OPT`) and the edit loop keeps the plain dev
+# profile. The why, the numbers and the three `--config` lines are in that script.

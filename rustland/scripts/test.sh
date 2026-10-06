@@ -38,6 +38,33 @@
 # The split costs one extra `cargo test` invocation. Passing an explicit
 # selector (`-p`, `--workspace`, …) skips the split entirely and runs exactly
 # what was asked, at the tier matching the named crates.
+#
+# ── Two builds: the gate's is optimized, the edit loop's is not ──────────────
+#
+# A test that loads the stdlib pays for the load, anthill-core's suites alone
+# execute ~9 300 such loads, and the load is anthill-core code. MEASURED
+# 2026-10-06 on a 6-core laptop (WI-20261006-ZVV24;
+# docs/design/test-infrastructure.md §1.1, §2.5): one load is 2.1 s at
+# opt-level 0 and 0.31 s with anthill-core at 2, and the full run went from over
+# 3 hours to 16 min. Level 3 loads no faster once 12 threads share the box;
+# level 1 gives up 2.5x of it. The two tree-sitter crates are the parse (their C
+# sources are built at the package's opt-level): 0.20 s -> 0.07 s, paid once per
+# test binary and on every spawn of the CLIs.
+#
+# The price is the REBUILD: with anthill-core optimized, an edit to most of its
+# sources or to tests/common/mod.rs costs 1-2 min to rebuild where opt-level 0
+# takes 8-16 s (kb/load.rs ~80 s, a one-line accessor in kb/term.rs ~130 s) —
+# its own test binaries are optimized with it, a profile override being per
+# package. That is why the setting is passed HERE, per run, and is not in
+# Cargo.toml: a full run is worth it, an edit loop on a few tests is not.
+#
+#   ANTHILL_TEST_OPT=2   anthill-core at opt-level 2, the tree-sitter crates at 3
+#   ANTHILL_TEST_OPT=0   the dev profile as the manifest has it
+#
+# Default: 2 for a full run (no arguments), 0 when a selection is given. Set it
+# to 2 for a WIDE selection — `-p anthill-core` is 13 min optimized and over two
+# hours not. Debug assertions and overflow checks are on in both. The two are
+# separate builds in the same target/, each kept current by the runs that use it.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -96,6 +123,50 @@ if [ "$force" = 0 ] && [ -e "$pidfile" ]; then
   fi
 fi
 
+# ── Which build (see the header) ─────────────────────────────────────────────
+if [ "$#" -gt 0 ]; then default_opt=0; else default_opt=2; fi
+: "${ANTHILL_TEST_OPT:=$default_opt}"
+case "$ANTHILL_TEST_OPT" in
+  2) opt_cfg=(--config 'profile.dev.package.anthill-core.opt-level=2'
+              --config 'profile.dev.package.tree-sitter.opt-level=3'
+              --config 'profile.dev.package.tree-sitter-anthill.opt-level=3')
+     opt_note="anthill-core at opt-level 2" ;;
+  0) opt_cfg=()
+     opt_note="dev profile, opt-level 0" ;;
+  *) echo "test.sh: ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT}: expected 0 or 2" >&2; exit 2 ;;
+esac
+
+# ── anthill-core must be ONE build, whatever is selected ─────────────────────
+#
+# Cargo unifies features across what one invocation builds. If another workspace
+# crate turns on a feature of a dependency anthill-core also has, anthill-core
+# becomes a different build per selection — and for the gate it is built
+# optimized, ~110 s a time. MEASURED before this check existed
+# (WI-20261006-ZVV24): four library builds in one gate, over `chrono` and
+# `serde/derive`. Nothing else reports that drift — every selection still builds
+# and passes — so it is refused here: what anthill-core's dependencies resolve to
+# on their own must be what they resolve to in the whole workspace.
+#
+# It names `chrono` and `serde` on the manifests as they were before the fix, and
+# nothing on them since. It sees the TARGET side only: a build-dependency's
+# features (anthill-core is also built for the host, for anthill-stl's build
+# script) are not on `-e normal` edges.
+core_dep_features() {
+  cargo tree "$@" -e normal -f '{p} [{f}]' --prefix none | sed 's/ (\*)//' | sort -u
+}
+alone=$(core_dep_features -p anthill-core)
+whole=$(core_dep_features --workspace)
+drift=$(comm -23 <(printf '%s\n' "$alone") <(printf '%s\n' "$whole"))
+if [ -n "$drift" ]; then
+  {
+    echo "test.sh: anthill-core's dependencies resolve to DIFFERENT features alone and in the workspace:"
+    printf '%s\n' "$drift" | sed 's/^/  alone: /'
+    echo "another workspace crate enables a feature that anthill-core's own Cargo.toml line"
+    echo "does not, so anthill-core would be built once per selection. See rustland/CLAUDE.md."
+  } >&2
+  exit 2
+fi
+
 ts=$(date +%Y%m%d-%H%M%S)
 log="target/test-run-${ts}.log"
 ln -sfn "test-run-${ts}.log" target/test-run-latest.log
@@ -118,14 +189,15 @@ cargo_under_pty() {
     # BSD `script`: command trails the logfile.
     Darwin)
       RUST_TEST_THREADS="$threads" \
-        script -F -q /dev/null cargo test --no-fail-fast "$@" 2>&1 ;;
+        script -F -q /dev/null cargo test --no-fail-fast \
+          ${opt_cfg[@]+"${opt_cfg[@]}"} "$@" 2>&1 ;;
     # util-linux `script`: command must be passed via -c "...". Build a
     # safely-quoted command string so args with spaces survive. `-e` returns
     # the CHILD's exit status rather than script's own — without it a failing
     # cargo is reported as success.
     *)
       local cmd="cargo test --no-fail-fast"
-      for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
+      for a in ${opt_cfg[@]+"${opt_cfg[@]}"} "$@"; do cmd+=" $(printf '%q' "$a")"; done
       RUST_TEST_THREADS="$threads" \
         script -efq -c "${cmd}" /dev/null 2>&1 ;;
   esac
@@ -147,6 +219,7 @@ run_tier() {
 echo "log:  rustland/${log}  (-> rustland/target/test-run-latest.log)"
 echo "tail: tail -f rustland/target/test-run-latest.log"
 echo "threads: ${ANTHILL_TEST_THREADS} (compute) / ${ANTHILL_CLI_TEST_THREADS} (spawning) on ${cpus} CPUs"
+echo "build:   ${opt_note} (ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT})"
 echo "---"
 
 overall=0

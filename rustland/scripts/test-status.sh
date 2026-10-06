@@ -61,7 +61,9 @@ esac
 now=$(date +%s)
 echo
 echo "last log write: $(( now - mtime ))s ago"
-echo "                (no new output for >120s often means a hang)"
+echo "                (no new output for >120s often means a hang — but NOT while the tail"
+echo "                 still shows 'Compiling': anthill-core is built optimized, and that is"
+echo "                 silent for up to ~5 min after an edit to one of its big modules)"
 echo
 echo "--- tail -20 ---"
 tail -20 "${real}"
