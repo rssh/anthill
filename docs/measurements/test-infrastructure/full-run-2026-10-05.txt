@@ -1,0 +1,35 @@
+# Full workspace run, 2026-10-05 12:48, rustland/scripts/test.sh (debug profile), 12 test threads
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6; other work in flight (load avg ~20)
+# wall = seconds from the binary's 'Running' line to its 'test result' line; 'finished in' is libtest's own clock
+#   wall  binary                                       tests  finished in
+     104  unittests src/lib.rs [anthill_core]            656  93.63s
+      36  tests/algebra_tests.rs [algebra_tests]          24  25.08s
+      70  tests/builtin_tests.rs [builtin_tests]          81  65.29s
+      15  tests/classic_mini_test.rs [classic_mini_test]     4  3.94s
+     117  tests/eval_tests.rs [eval_tests]               119  112.26s
+      21  tests/github_todo_test.rs [github_todo_test]    15  15.80s
+      98  tests/guardians_test.rs [guardians_test]        68  93.62s
+      23  tests/induction_tests.rs [induction_tests]      13  18.35s
+     260  tests/parse_tests.rs [parse_tests]             459  256.07s
+     149  tests/resolve_tests.rs [resolve_tests]         133  138.85s
+      21  tests/sql_store_example_test.rs [sql_store_example_test]     7  11.18s
+    7801  tests/wi_tests.rs [wi_tests]                  6043  7793.63s
+      11  unittests src/lib.rs [anthill_cpp_gen]           0  0.00s
+     196  tests/integration.rs [integration]             214  192.06s
+      12  unittests src/lib.rs [anthill_rust_gen]          0  0.00s
+       4  tests/integration.rs [integration]               8  0.12s
+       4  unittests src/lib.rs [anthill_smt_gen]          26  0.01s
+       4  tests/blob_test.rs [blob]                        6  0.00s
+      15  tests/cache_key_test.rs [cache_key]              6  11.08s
+      46  tests/integration.rs [integration]              53  42.10s
+      12  tests/policy_test.rs [policy]                   11  8.26s
+      16  tests/state_hash_test.rs [state_hash]            8  11.46s
+      14  unittests src/lib.rs [anthill]                  32  9.88s
+       5  tests/stdlib_drift_test.rs [stdlib_drift_test]     2  0.00s
+       4  unittests src/lib.rs [anthill_version]           0  0.00s
+       4  tests/sha_matches.rs [sha_matches]               3  0.07s
+      16  unittests src/main.rs [anthill]                 14  5.32s
+     445  tests/cli_tests.rs [cli_tests]                 198  441.00s
+      11  unittests src/main.rs [anthill_todo]            12  0.00s
+    2786  tests/cmd_tests.rs [cmd_tests]                 295  2780.96s
+# first 'Running' at 23 s (compile/link phase); last 'test result' at 12448 s = 3 h 27 min

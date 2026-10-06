@@ -1,0 +1,6 @@
+# bench_load, dev profile (opt-level 0, debug-assertions on), 2026-10-05, i7-9750H, run with the user's gate run in flight (load avg 10-20)
+files: 87
+parse      n= 5  min=   510.4ms  median=   522.0ms  max=   559.2ms
+full       n= 5  min=  4419.8ms  median=  4848.7ms  max=  5533.1ms
+pre_typer  n= 5  min=  2152.1ms  median=  2248.8ms  max=  2572.3ms
+incr       n= 5  min=  2350.0ms  median=  2399.0ms  max=  2454.6ms

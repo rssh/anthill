@@ -1,0 +1,6 @@
+# bench_load, release profile (opt-level 3, debug-assertions off), 2026-10-05, i7-9750H, built and run under nice -n 19 with the user's gate run in flight (load avg 10-20)
+files: 87
+parse      n= 5  min=   161.0ms  median=   185.6ms  max=   216.8ms
+full       n= 5  min=   596.0ms  median=   616.6ms  max=   667.6ms
+pre_typer  n= 5  min=   281.1ms  median=   302.9ms  max=   492.6ms
+incr       n= 5  min=   325.2ms  median=   360.2ms  max=   518.2ms

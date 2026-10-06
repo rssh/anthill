@@ -1,0 +1,188 @@
+parse      n= 1  min=   462.7ms  median=   462.7ms  max=   462.7ms
+[load_timing]   scan_definitions: 53.214896ms
+[load_timing]   resolve_builtins: 141.604µs
+[load_timing]   register_implicit_prelude_effects: 71.548µs
+[load_timing]   declare_field_types: 64.030226ms
+[load_timing]   load_with_visited x 88: 1.229085107s
+[load_timing]   check_duplicate_operation_declarations: 73.704µs
+[load_timing]   check_undefined_head_arguments: 52.311µs
+[load_timing]   resolve_instantiations: 74.176315ms
+[load_timing]   register_requires_axiom_witnesses: 10.102007ms
+[load_timing]   register_induction_axiom_witnesses: 6.559155ms
+[load_timing]   register_specialization_witnesses: 18.134516ms
+[load_timing]   build_sort_ops_table: 4.278171ms
+[load_timing]   build_host_op_mappings: 2.084484ms
+[load_timing]   check_host_implemented_claims: 8.721217ms
+[load_timing]   build_host_const_mappings: 72.75µs
+[load_timing]   check_host_mapping_duplicates: 2.158538ms
+[load_timing]   build_eq_dispatch_index: 30.746466ms
+[load_timing]   eq_derive::classify + derive_total_eq + derive_conditional_eq: 877.78514ms
+[load_timing]   type_value_derive::run: 279.392044ms
+[load_timing]   derive_forwarded_provisions: 25.127955ms
+[load_timing]   build_sort_ops_table (derived-provision delta): 5.80794ms
+[load_timing]   derive_carrier_builtin_tags: 17.335078ms
+[load_timing]   derive_sort_domains: 64.061288ms
+[load_timing]   expand_rule_head_bound_type_params: 1.597585ms
+[load_timing]   sort_domain_derive::run: 260.7205ms
+[load_timing]   flow_derive::run: 2.77374ms
+[load_timing]   validate_rigid_projection_formations: 35.799µs
+[load_timing]   seed_default_provider_index: 52.843411ms
+[load_timing]   type_check_sorts (206 sorts): 2.525689102s
+[load_timing]   req_insertion::run: 8.424071ms
+[load_timing]   check_provider_requires: 521.149701ms
+[load_timing]   check_provider_operations: 16.826195ms
+[load_timing]   check_provision_names_carrier: 441.112µs
+[load_timing]   check_bare_spec_narrowings: 23.37µs
+[load_timing]   eq_derive::run: 67.42013ms
+[load_timing]   check_eq_noneq_exclusive: 3.019993ms
+[load_timing]   build_default_provider_index: 9.212605ms
+[load_timing]   check_use_site_requires_eq: 6.497982ms
+[load_timing]   check_override_refinement: 64.859978ms
+[load_timing]   check_instance_fact_op_signatures: 3.607387ms
+[load_timing]   check_modify_targets: 2.561915ms
+[load_timing]   check_effect_registration: 5.357602ms
+[load_timing]   check_declared_row_contradiction: 7.69769ms
+[load_timing]   check_written_row_bindings: 13.80482ms
+[load_timing]   check_const_purity: 34.175µs
+[load_timing]   check_macro_purity: 2.989249ms
+[load_timing]   check_rule_body_goals: 12.138404ms
+[load_timing]   check_contract_clause_goals: 2.191263ms
+[load_timing]   check_name_captures: 42.240375ms
+[load_timing]   check_operation_body_and_clauses: 1.097982ms
+[load_timing]   check_requires_shadows: 10.419633ms
+[load_timing]   check_all_guards: 37.694µs
+full       n= 1  min=  6421.9ms  median=  6421.9ms  max=  6421.9ms
+[load_timing]   scan_definitions: 65.13184ms
+[load_timing]   resolve_builtins: 128.126µs
+[load_timing]   register_implicit_prelude_effects: 61.483µs
+[load_timing]   declare_field_types: 71.215294ms
+[load_timing]   load_with_visited x 88: 1.399983371s
+[load_timing]   check_duplicate_operation_declarations: 62.79µs
+[load_timing]   check_undefined_head_arguments: 47.372µs
+[load_timing]   resolve_instantiations: 102.341271ms
+[load_timing]   register_requires_axiom_witnesses: 9.493581ms
+[load_timing]   register_induction_axiom_witnesses: 6.794568ms
+[load_timing]   register_specialization_witnesses: 24.752798ms
+[load_timing]   build_sort_ops_table: 4.755449ms
+[load_timing]   build_host_op_mappings: 2.341554ms
+[load_timing]   check_host_implemented_claims: 6.872304ms
+[load_timing]   build_host_const_mappings: 75.48µs
+[load_timing]   check_host_mapping_duplicates: 2.087168ms
+[load_timing]   build_eq_dispatch_index: 35.047578ms
+[load_timing]   eq_derive::classify + derive_total_eq + derive_conditional_eq: 765.718145ms
+[load_timing]   type_value_derive::run: 292.873572ms
+[load_timing]   derive_forwarded_provisions: 22.264792ms
+[load_timing]   build_sort_ops_table (derived-provision delta): 5.99669ms
+[load_timing]   derive_carrier_builtin_tags: 26.830931ms
+[load_timing]   derive_sort_domains: 57.104476ms
+[load_timing]   expand_rule_head_bound_type_params: 1.745441ms
+[load_timing]   sort_domain_derive::run: 247.325705ms
+[load_timing]   flow_derive::run: 2.553684ms
+[load_timing]   validate_rigid_projection_formations: 29.217µs
+[load_timing]   seed_default_provider_index: 50.798996ms
+pre_typer  n= 1  min=  3215.0ms  median=  3215.0ms  max=  3215.0ms
+[load_timing]   scan_definitions: 54.077575ms
+[load_timing]   resolve_builtins: 165.013µs
+[load_timing]   register_implicit_prelude_effects: 94.183µs
+[load_timing]   declare_field_types: 66.867768ms
+[load_timing]   load_with_visited x 87: 1.554371573s
+[load_timing]   check_duplicate_operation_declarations: 56.508µs
+[load_timing]   check_undefined_head_arguments: 47.522µs
+[load_timing]   resolve_instantiations: 84.546586ms
+[load_timing]   register_requires_axiom_witnesses: 8.352933ms
+[load_timing]   register_induction_axiom_witnesses: 6.635024ms
+[load_timing]   register_specialization_witnesses: 31.522713ms
+[load_timing]   build_sort_ops_table: 5.232721ms
+[load_timing]   build_host_op_mappings: 2.577203ms
+[load_timing]   check_host_implemented_claims: 5.382385ms
+[load_timing]   build_host_const_mappings: 74.534µs
+[load_timing]   check_host_mapping_duplicates: 1.847591ms
+[load_timing]   build_eq_dispatch_index: 49.230351ms
+[load_timing]   eq_derive::classify + derive_total_eq + derive_conditional_eq: 973.978276ms
+[load_timing]   type_value_derive::run: 354.343448ms
+[load_timing]   derive_forwarded_provisions: 27.530291ms
+[load_timing]   build_sort_ops_table (derived-provision delta): 13.674131ms
+[load_timing]   derive_carrier_builtin_tags: 21.157054ms
+[load_timing]   derive_sort_domains: 66.993078ms
+[load_timing]   expand_rule_head_bound_type_params: 2.248829ms
+[load_timing]   sort_domain_derive::run: 252.929694ms
+[load_timing]   flow_derive::run: 3.019282ms
+[load_timing]   validate_rigid_projection_formations: 25.215µs
+[load_timing]   seed_default_provider_index: 66.65615ms
+[load_timing]   type_check_sorts (206 sorts): 2.797576536s
+[load_timing]   req_insertion::run: 30.067225ms
+[load_timing]   check_provider_requires: 698.262696ms
+[load_timing]   check_provider_operations: 18.407561ms
+[load_timing]   check_provision_names_carrier: 512.573µs
+[load_timing]   check_bare_spec_narrowings: 19.068µs
+[load_timing]   eq_derive::run: 76.394525ms
+[load_timing]   check_eq_noneq_exclusive: 3.160274ms
+[load_timing]   build_default_provider_index: 13.204046ms
+[load_timing]   check_use_site_requires_eq: 5.349647ms
+[load_timing]   check_override_refinement: 100.250592ms
+[load_timing]   check_instance_fact_op_signatures: 4.626135ms
+[load_timing]   check_modify_targets: 2.738266ms
+[load_timing]   check_effect_registration: 5.593626ms
+[load_timing]   check_declared_row_contradiction: 10.75721ms
+[load_timing]   check_written_row_bindings: 14.205225ms
+[load_timing]   check_const_purity: 29.824µs
+[load_timing]   check_macro_purity: 3.085339ms
+[load_timing]   check_rule_body_goals: 10.816462ms
+[load_timing]   check_contract_clause_goals: 2.503683ms
+[load_timing]   check_name_captures: 42.88393ms
+[load_timing]   check_operation_body_and_clauses: 1.138268ms
+[load_timing]   check_requires_shadows: 6.388236ms
+[load_timing]   check_all_guards: 24.23µs
+[load_timing]   scan_definitions: 337.738µs
+[load_timing]   resolve_builtins: 179.534µs
+[load_timing]   register_implicit_prelude_effects: 45.882µs
+[load_timing]   declare_field_types: 234.196µs
+[load_timing]   load_with_visited x 1: 1.996466ms
+[load_timing]   check_duplicate_operation_declarations: 56.171µs
+[load_timing]   check_undefined_head_arguments: 12.524µs
+[load_timing]   resolve_instantiations: 6.089952ms
+[load_timing]   register_requires_axiom_witnesses: 1.264498ms
+[load_timing]   register_induction_axiom_witnesses: 1.436628ms
+[load_timing]   register_specialization_witnesses: 57.238558ms
+[load_timing]   build_sort_ops_table: 6.406381ms
+[load_timing]   build_host_op_mappings: 4.692421ms
+[load_timing]   check_host_implemented_claims: 3.71073ms
+[load_timing]   build_host_const_mappings: 107.742µs
+[load_timing]   check_host_mapping_duplicates: 780.767µs
+[load_timing]   build_eq_dispatch_index: 14.401979ms
+[load_timing]   eq_derive::classify + derive_total_eq + derive_conditional_eq: 1.216023183s
+[load_timing]   type_value_derive::run: 15.817447ms
+[load_timing]   derive_forwarded_provisions: 19.198596ms
+[load_timing]   build_sort_ops_table (derived-provision delta): 5.743051ms
+[load_timing]   derive_carrier_builtin_tags: 21.066482ms
+[load_timing]   derive_sort_domains: 53.442µs
+[load_timing]   expand_rule_head_bound_type_params: 2.479115ms
+[load_timing]   sort_domain_derive::run: 4.960276ms
+[load_timing]   flow_derive::run: 1.58075ms
+[load_timing]   validate_rigid_projection_formations: 27.534µs
+[load_timing]   seed_default_provider_index: 11.594261ms
+[load_timing]   type_check_sorts (0 sorts): 1.822934939s
+[load_timing]   req_insertion::run: 2.306448ms
+[load_timing]   check_provider_requires: 659.690745ms
+[load_timing]   check_provider_operations: 18.660414ms
+[load_timing]   check_provision_names_carrier: 32.522µs
+[load_timing]   check_bare_spec_narrowings: 9.974µs
+[load_timing]   eq_derive::run: 75.955854ms
+[load_timing]   check_eq_noneq_exclusive: 6.234022ms
+[load_timing]   build_default_provider_index: 8.546074ms
+[load_timing]   check_use_site_requires_eq: 215.383µs
+[load_timing]   check_override_refinement: 63.470833ms
+[load_timing]   check_instance_fact_op_signatures: 4.930442ms
+[load_timing]   check_modify_targets: 2.609404ms
+[load_timing]   check_effect_registration: 3.827608ms
+[load_timing]   check_declared_row_contradiction: 5.994258ms
+[load_timing]   check_written_row_bindings: 7.661502ms
+[load_timing]   check_const_purity: 28.321µs
+[load_timing]   check_macro_purity: 2.08327ms
+[load_timing]   check_rule_body_goals: 11.196506ms
+[load_timing]   check_contract_clause_goals: 42.354µs
+[load_timing]   check_name_captures: 31.995µs
+[load_timing]   check_operation_body_and_clauses: 1.576498ms
+[load_timing]   check_requires_shadows: 4.285534ms
+[load_timing]   check_all_guards: 28.381µs
+incr       n= 1  min=  4100.4ms  median=  4100.4ms  max=  4100.4ms
