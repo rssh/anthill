@@ -2217,9 +2217,9 @@ end
     );
 }
 
-/// … AND THE STDLIB'S OWN BRACED ROWS: `MappedStream provides Stream[E = {ES, EF}]`, so a
-/// refuted `s.E :- eq(d, 0)` over a `MappedStream[…, ES = {}, EF = {}]` meets two bound tails.
-/// Refused the same way; runs to 7.
+/// … AND THE STDLIB'S OWN BRACED ROWS: `MappedStream provides Stream[E = {SourceEffects,
+/// TransformEffects}]`, so a refuted `s.E :- eq(d, 0)` over a `MappedStream[…, SourceEffects
+/// = {}, TransformEffects = {}]` meets two bound tails. Refused the same way; runs to 7.
 #[test]
 fn a_guarded_atom_over_the_stdlib_mapped_stream_distributes() {
     let ns = "wi0rp29.mapped";
@@ -2232,9 +2232,9 @@ namespace {ns}
   operation inc(x: Int64) -> Int64 = x + 1
   operation obs(s: Stream, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
   operation mk(xs: List[T = Int64])
-    -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {{}}, EF = {{}}] =
+    -> MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {{}}, TransformEffects = {{}}] =
     mapped(xs, inc)
-  operation probe(m: MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {{}}, EF = {{}}]) -> Bool =
+  operation probe(m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {{}}, TransformEffects = {{}}]) -> Bool =
     obs(m, 1)
   operation go() -> Int64 =
     let xs: List[T = Int64] = [1, 2, 3]

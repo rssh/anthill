@@ -61,8 +61,8 @@
 //! (D) IS BACKED BY TWO OLDER REFUSALS for one shape, an operation's type parameter with no
 //! slot at all (`insertA[T, O](s: SortedSet[T = T, O = O])`). wi456's three no-route rows
 //! and `wi_3g1yt a_carriers_own_requires_is_not_held_by_a_value_of_it` are refused by (D)
-//! first now, and still by the parked no-route refusal and route 4's obtainability gate
-//! behind it. MEASURED: they redden with (D) and either of those backed out together, and
+//! first now, and still by the parked no-route refusal and route 4's rule that it is a spec
+//! which holds a chain (`sort_is_a_provided_spec`) behind it. MEASURED: they redden with (D) and either of those backed out together, and
 //! with neither alone.
 //!
 //! **PASS EITHER WAY, BY DESIGN** — the TIED controls that ran before this ticket, here so

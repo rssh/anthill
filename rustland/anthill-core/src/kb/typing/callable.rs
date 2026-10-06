@@ -614,6 +614,9 @@ pub(super) fn conformance_error(
     if let Some(err) = function_slot_arity_error(kb, &declared, &actual, span, &context) {
         return err;
     }
+    if let Some(err) = provider_at_a_spec_type_error(kb, &declared, &actual, span, &context) {
+        return err;
+    }
     TypeError::TypeMismatch {
         site: TypeError::here(),
         span,
@@ -622,6 +625,115 @@ pub(super) fn conformance_error(
         denoted: denoted_type_value(kb, actual_node),
         actual,
     }
+}
+
+/// WI-20261005-KSSA4 — the mismatch of a PROVIDER'S VALUE against a spec that has a carrier
+/// parameter, said as what it is. `None` for any other pair.
+///
+/// `operation viaDefaulted(w: Tagger)` given a `B`, where `B provides Tagger[C = B]`: the
+/// provision lets `Tagger`'s operations be used on a `B`; it does not make a `B` a `Tagger`
+/// ([`spec_has_carrier_param`]). The bare `expected Tagger, got B` is true and says none of
+/// that — nor the two spellings that do ask for "any value whose sort provides `Tagger`".
+/// Asked on the refusal path only, where the relation has already answered.
+fn provider_at_a_spec_type_error(
+    kb: &KnowledgeBase,
+    declared: &Value,
+    actual: &Value,
+    span: Option<Span>,
+    context: &TypeErrorContext,
+) -> Option<TypeError> {
+    let spec = sort_functor_of_view(kb, declared)?;
+    let param = spec_over_parameter(kb, spec)?;
+    let mut provider = sort_functor_of_view(kb, actual)?;
+    // An entity's provision is its parent sort's, as the relation reads it.
+    while !carrier_is_an_instance(kb, provider, spec) {
+        provider = kb.strict_parent_sort(provider)?;
+    }
+    let (expected, got) = render_mismatch_pair(kb, declared, actual);
+    Some(TypeError::Other {
+        span,
+        context: context.clone(),
+        expected,
+        actual: format!(
+            "{got} — {}",
+            provider_is_not_the_spec_note(kb, spec, param, provider, context),
+        ),
+        site: TypeError::here(),
+    })
+}
+
+/// What a refusal of a provider's value at a spec over a parameter says, and the spelling
+/// that asks for a provider AT THE POSITION REFUSED. A parameter can be typed by the member
+/// or by a bound; a field has no member sugar, and is typed by a parameter of its sort the
+/// sort requires the spec of; a result or a binding holds one value, of its own sort — a
+/// bound there would be the caller's to choose, and the value would not meet it.
+pub(super) fn provider_is_not_the_spec_note(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    param: Symbol,
+    provider: Symbol,
+    context: &TypeErrorContext,
+) -> String {
+    let spec_name = kb.qualified_name_of(spec);
+    let param_name = short_name_of(kb.local_name_of(param));
+    let provider = kb.qualified_name_of(provider);
+    let repair = match context {
+        TypeErrorContext::OperationArgument { .. } => format!(
+            "Type this position `{spec_name}.{param_name}`, or by a type parameter `P` \
+             under `requires {spec_name}[{param_name} = P]`"
+        ),
+        TypeErrorContext::EntityField { .. } => format!(
+            "Type the field by a parameter `P` of its sort, and write `requires \
+             {spec_name}[{param_name} = P]` on the sort"
+        ),
+        _ => format!("Type it `{provider}`, the sort the value is of"),
+    };
+    format!(
+        "`{spec_name}` is a spec over its parameter `{param_name}`: `{provider}` provides \
+         it, so its operations may be used on a value of `{provider}`, and that does not \
+         make the value a `{spec_name}`. {repair}"
+    )
+}
+
+/// WI-20261005-KSSA4 — the refusal of a value TYPED AT A SPEC where an operation receives on
+/// its sort's parameter: `Tagger.tagIn(w)` over `w: Tagger`, against `tagIn(x: C)`. `None`
+/// for every other receiver.
+///
+/// A value typed at `Tagger` is not a value of a sort that provides `Tagger`; `C` is. Read
+/// as one, the call fixed `C` at the type `Tagger` itself, a dictionary for `Tagger`'s own
+/// `requires` could be built at no carrier, and the body read a frame nothing had filled
+/// (MEASURED: `viaDefaulted(w: Tagger) = Tagger.tagIn(w)` loaded and died "`__req_tag` not
+/// bound in caller frame"). The receiver's type may be the callee's own spec or any other
+/// that has a carrier parameter: neither is a carrier.
+pub(super) fn spec_typed_value_at_carrier_error(
+    kb: &KnowledgeBase,
+    callee_sort: Symbol,
+    carrier_param: Symbol,
+    recv_ty: &Value,
+    span: Option<Span>,
+    context: TypeErrorContext,
+) -> Option<TypeError> {
+    let typed_at = sort_functor_of_view(kb, recv_ty)?;
+    let typed_at_param = spec_over_parameter(kb, typed_at)?;
+    let typed_at_name = kb.qualified_name_of(typed_at);
+    let typed_at_param = short_name_of(kb.local_name_of(typed_at_param)).to_owned();
+    Some(TypeError::Other {
+        span,
+        context,
+        expected: format!(
+            "{}.{}",
+            kb.qualified_name_of(callee_sort),
+            short_name_of(kb.local_name_of(carrier_param)),
+        ),
+        actual: format!(
+            "{got} — `{typed_at_name}` is a spec over its parameter `{typed_at_param}`: a \
+             value typed at it is not a value of a sort that provides it. Type the value \
+             `{typed_at_name}.{typed_at_param}`, or by a type parameter `P` under `requires \
+             {typed_at_name}[{typed_at_param} = P]`",
+            got = type_display_name_value(kb, recv_ty),
+        ),
+        site: TypeError::here(),
+    })
 }
 
 /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8) — the SURFACE a rejected

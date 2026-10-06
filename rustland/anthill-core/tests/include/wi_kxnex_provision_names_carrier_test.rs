@@ -68,7 +68,7 @@ use anthill_core::eval::value::Value;
 /// force these assertions to stop counting. The row shape itself is not lost: it is driven
 /// verbatim, against the shipped sources, by
 /// [`reverting_the_guardians_carrier_bindings_is_refused_at_load`].
-fn program(provision: &str) -> String {
+fn program_with(provision: &str, driver: &str) -> String {
     format!(
         r#"namespace test.kxnex
   import anthill.prelude.Int64
@@ -87,11 +87,26 @@ fn program(provision: &str) -> String {
     {provision}
   end
 
-  operation drive(s: Spec, p: Int64) -> Int64 = s.run(p)
-  operation probe() -> Int64 = drive(impl(), 41)
-end
+{driver}end
 "#
     )
+}
+
+/// [`program_with`] and the call that reaches the provision: `drive` takes a value of ANY
+/// sort that provides `Spec` and its body is `s.run(p)`.
+fn program(provision: &str) -> String {
+    program_with(
+        provision,
+        "  operation drive(s: Spec.C, p: Int64) -> Int64 = s.run(p)\n  \
+         operation probe() -> Int64 = drive(impl(), 41)\n",
+    )
+}
+
+/// [`program_with`] and no call at all: the declarations alone, so that a refused
+/// provision is the ONE diagnostic. A call would owe `Spec` of `Impl` and be refused
+/// beside it — honestly, and for the same cause.
+fn declarations(provision: &str) -> String {
+    program_with(provision, "")
 }
 
 /// The load errors of a program, as rendered strings — `Vec::new()` when it loads.
@@ -138,7 +153,7 @@ fn expect_carrier_refusal(errs: &[String], spec: &str, param: &str, provider: &s
 #[test]
 fn a_provision_binding_a_non_carrier_parameter_is_refused() {
     expect_carrier_refusal(
-        &load_errors(&program("provides Spec[U = Int64]")),
+        &load_errors(&declarations("provides Spec[U = Int64]")),
         "test.kxnex.Spec",
         "C",
         "test.kxnex.Impl",
@@ -155,7 +170,7 @@ fn a_provision_binding_a_non_carrier_parameter_is_refused() {
 #[test]
 fn a_bare_provision_of_a_carrier_parameter_spec_is_refused() {
     expect_carrier_refusal(
-        &load_errors(&program("provides Spec")),
+        &load_errors(&declarations("provides Spec")),
         "test.kxnex.Spec",
         "C",
         "test.kxnex.Impl",
@@ -166,9 +181,9 @@ fn a_bare_provision_of_a_carrier_parameter_spec_is_refused() {
 // ── 2. The control that DRIVES the capability ────────────────────────────────────────
 
 /// THE CONTROL THAT IS EVIDENCE, not decoration: the SAME program with `C = Impl` loads
-/// AND the call dispatches. `drive`'s receiver is the abstract `Spec` and its body is
-/// `s.run(p)`, so the answer can only come from `Impl.run` having been found THROUGH the
-/// provision — which is precisely the step that was failing.
+/// AND the call dispatches. `drive`'s receiver is a value of any sort that provides `Spec`
+/// and its body is `s.run(p)`, so the answer can only come from `Impl.run` having been
+/// found THROUGH the provision — which is precisely the step that was failing.
 ///
 /// This is the test the original defect would have been caught by. Its predecessor in
 /// `examples/guardians` had only ever been LOADED, and "it loads clean" is exactly what

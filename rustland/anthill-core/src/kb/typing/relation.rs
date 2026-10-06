@@ -206,7 +206,7 @@ fn seed_citation_params(
 /// if the whole type unifies, so a mismatch is left for the ordinary expected-type check to
 /// report rather than half-applied here. Then any parameter still free is REFUSED: the
 /// relation value would carry a variable its consumer cannot recover, which is WI-270's
-/// rule for an operation's parameter (`check_unconstrained_type_params`), applied at the
+/// rule for an operation's parameter (`first_unconstrained_type_param`), applied at the
 /// citation — LOCALLY, as WI-270 applies it: a consumer further up the chain that passes no
 /// expected type down (`Wrap.dom.head.x` against the return) does not count, exactly as it
 /// does not for `Option.none().isEmpty()`.
@@ -578,9 +578,15 @@ pub(super) fn relation_reference_type_applied(
                 // brings the subtype FALLBACK with it: `unify_types` alone (this arm's
                 // first cut) refused an argument whose type is a legitimate subtype of the
                 // column's, since unification is not subsumption — found by `/code-review`.
-                pin_type_vars(kb, &mut subst, &arg.ty, &col_ty)
+                spec_as_its_providers(kb, |kb| pin_type_vars(kb, &mut subst, &arg.ty, &col_ty))
             } else {
-                types_compatible(kb, &mut subst, &arg.ty, &col_ty)
+                // A COLUMN'S TYPE IS ITS RULE'S STORED BOUND, and a spec over a parameter
+                // in it is the requirement the head wrote (`?x: Summable.T`), which a value
+                // meets by its sort providing the spec. Compared as a value's type, `keep(1)`
+                // was refused at a column no spelling could then be cited at (MEASURED).
+                spec_as_its_providers(kb, |kb| {
+                    types_compatible(kb, &mut subst, &arg.ty, &col_ty)
+                })
             };
             if !ok {
                 return Err(arg_err(

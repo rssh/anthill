@@ -142,35 +142,77 @@ fn every_requires_spelling_agrees_between_the_dot_and_the_named_form() {
     }
 }
 
-/// THE TWO CONTROLS THAT ALREADY WORKED MUST KEEP WORKING — the guard that the new rung
-/// widened nothing else. A CONCRETE receiver resolves through the receiver sort's own member
-/// and an ABSTRACT-SPEC receiver through the WI-281/WI-614 fallbacks; both are gated on a
-/// resolved `recv_sort`, and the new rung sits in the `else`, so neither can reach it.
+/// THE CONTROL THAT ALREADY WORKED MUST KEEP WORKING — the guard that the new rung widened
+/// nothing else. A CONCRETE receiver resolves through the receiver sort's own member, gated
+/// on a resolved `recv_sort`, and the new rung sits in the `else`, so it cannot reach it.
 ///
 /// Passes under BOTH back-outs, BY DESIGN, and said here rather than left for a reader to
 /// discover: it measures nothing about the new rung and is not meant to. It is the neighbour
 /// that stops "the dot now dispatches" from being satisfied by a rung that fired where an
 /// earlier one already had.
 #[test]
-fn the_concrete_and_abstract_spec_receivers_are_unchanged() {
-    for (label, param) in [("concrete", "Leaf"), ("abstractspec", "Desc")] {
-        for (form, body) in [("dot", "x.describe()"), ("named", "Desc.describe(x)")] {
-            let ns = format!("wi1119.ctl.{label}.{form}");
-            let src = with_instances(
-                &ns,
-                &format!(
-                    "  sort Holder\n    operation probe(x: {param}) -> Int64 = {body}\n  end\n  \
-                     sort Driver\n    operation drive(n: Int64) -> Int64 = Holder.probe(leaf())\n  end"
-                ),
-            );
-            assert_int(
-                &src,
-                &format!("{ns}.Driver.drive"),
-                1,
-                &format!("({label} receiver, {form} form) resolved before the new rung"),
-            );
-        }
+fn the_concrete_receiver_is_unchanged() {
+    for (form, body) in [("dot", "x.describe()"), ("named", "Desc.describe(x)")] {
+        let ns = format!("wi1119.ctl.concrete.{form}");
+        let src = with_instances(
+            &ns,
+            &format!(
+                "  sort Holder\n    operation probe(x: Leaf) -> Int64 = {body}\n  end\n  \
+                 sort Driver\n    operation drive(n: Int64) -> Int64 = Holder.probe(leaf())\n  end"
+            ),
+        );
+        assert_int(
+            &src,
+            &format!("{ns}.Driver.drive"),
+            1,
+            &format!("(concrete receiver, {form} form) resolved before the new rung"),
+        );
     }
+}
+
+/// A RECEIVER TYPED AT THE SPEC ITSELF IS NOT ONE OF THE RECEIVERS (WI-20261005-KSSA4).
+/// `probe(x: Desc)` used to be this file's second control, "an abstract-spec receiver": a
+/// `Leaf` was admitted at `x: Desc` and the dot dispatched on the value. `Desc` receives on
+/// its parameter `T`, so a `Leaf` is the `T` of a `Desc` and no value is a `Desc`; the
+/// spelling that asks for "any value whose sort provides `Desc`" is this file's subject —
+/// `x: P` under `requires Desc[P]`, or `x: Desc.T`. Both forms are refused in both places:
+/// the `Leaf` at the parameter, and the `Desc`-typed value where `describe` receives.
+#[test]
+fn a_receiver_typed_at_the_spec_is_refused_where_it_is_written() {
+    for (form, body) in [("dot", "x.describe()"), ("named", "Desc.describe(x)")] {
+        let ns = format!("wi1119.ctl.abstractspec.{form}");
+        let src = with_instances(
+            &ns,
+            &format!(
+                "  sort Holder\n    operation probe(x: Desc) -> Int64 = {body}\n  end\n  \
+                 sort Driver\n    operation drive(n: Int64) -> Int64 = Holder.probe(leaf())\n  end"
+            ),
+        );
+        let errs = load_errs(&src);
+        assert_err_contains(
+            &errs,
+            &["probe.x", "expected Desc, got Leaf", &format!("`{ns}.Desc.T`")],
+            &format!("({form} form) a `Leaf` passed where the parameter is typed `Desc`"),
+        );
+        assert_err_contains(
+            &errs,
+            &["describe.x", &format!("expected {ns}.Desc.T, got Desc")],
+            &format!("({form} form) a `Desc`-typed value where `describe` receives on `T`"),
+        );
+    }
+    // The spelling that does ask for it runs.
+    let ns = "wi1119.ctl.member";
+    let src = with_instances(
+        ns,
+        "  sort Holder\n    operation probe(x: Desc.T) -> Int64 = x.describe()\n  end\n  \
+         sort Driver\n    operation drive(n: Int64) -> Int64 = Holder.probe(leaf())\n  end",
+    );
+    assert_int(
+        &src,
+        &format!("{ns}.Driver.drive"),
+        1,
+        "the member of the spec, named in the signature, is the bound",
+    );
 }
 
 // ── THE ALIGNMENT: a clause lends its members only over ITS OWN parameter ────

@@ -38,14 +38,14 @@ sort guardians.agent.ConcealTriage
   import guardians.TrustLevel.{Trusted}
   entity mk
 
-  operation run(self: ConcealTriage, box: Mailbox, llm: Llm,
+  operation run(self: ConcealTriage, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, llm.E, Error} =
+    effects {External, Llm.E, Error} =
       let msgs = Email.fetch(box)
       -- THE CONCEALMENT, in one combinator the agent writes for itself.
       let kept = msgs.filter(lambda m -> neq(m.id, MessageId(value: "m5"))).collect()
-      Report(items:   mapElems[EffP = {llm.E, Error}](kept,
+      Report(items:   mapElems[EffP = {Llm.E, Error}](kept,
                         lambda m -> Verdict(message:    m.id,
                                             evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
              summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))

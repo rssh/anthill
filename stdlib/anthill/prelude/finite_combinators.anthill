@@ -12,7 +12,7 @@
 -- duplicating MappedStream / FilteredStream in everything but the source field's
 -- type. `Iterable.map` built one, `FiniteCollection.map` the other, and a value
 -- could not cross between them. What FORCED the duplication was ERASURE:
--- `mapped`'s source field was typed `Stream[Src, ES]`, so a mapped stream's type
+-- `mapped`'s source field was typed `Stream[SourceElement, SourceEffects]`, so a mapped stream's type
 -- did not record WHICH carrier the source was and no rule could condition on it.
 -- WI-590 threads that sort as `MappedStream.Source`, which is exactly the handle a
 -- witness needs: the `provides` below keys FiniteCollection on
@@ -48,23 +48,31 @@ sort anthill.prelude.MappedStreamFinite
   import anthill.prelude.List.{mapElems}
 
   sort S = ?                             -- the SOURCE carrier — what finiteness is keyed on
-  sort Src = ?                           -- source element
+  sort SourceElement = ?                           -- source element
   sort T = ?                             -- mapped element (fn's result)
   -- WI-441 decoupled rows (cf. MappedStream): source access row + transform row;
   -- the provided collection's row is their UNION (both paid on consumption).
-  effects ES = ?
-  effects EF = ?
+  effects SourceEffects = ?
+  effects TransformEffects = ?
 
-  requires FiniteCollection[C = S, Element = Src, E = ES]
+  requires FiniteCollection[C = S, Element = SourceElement, E = SourceEffects]
 
   -- THE WITNESS — read it as the conditional instance it is: GIVEN the `requires`
   -- above, a MappedStream whose Source is S provides FiniteCollection.
-  provides FiniteCollection[C = MappedStream[Source = S, Src = Src, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
+  provides FiniteCollection[
+    C = MappedStream[
+      Source = S, SourceElement = SourceElement, T = T,
+      SourceEffects = SourceEffects, TransformEffects = TransformEffects],
+    Element = T,
+    E = {SourceEffects, TransformEffects}]
 
   -- EAGER: materialize the source, then map `fn` over the resulting List.
-  -- `collect(src)` pays the source's access row ES; `mapElems(…, fn)` pays EF.
-  operation collect(m: MappedStream[Source = S, Src = Src, T = T, ES = ES, EF = EF])
-    -> List[T = T] effects {ES, EF} =
+  -- `collect(src)` pays the source's access row SourceEffects; `mapElems(…, fn)` pays
+  -- TransformEffects.
+  operation collect(m: MappedStream[
+      Source = S, SourceElement = SourceElement, T = T,
+      SourceEffects = SourceEffects, TransformEffects = TransformEffects])
+    -> List[T = T] effects {SourceEffects, TransformEffects} =
     match m
       case mapped(src, fn) -> mapElems(collect(src), fn)
 end
@@ -79,15 +87,20 @@ sort anthill.prelude.FilteredStreamFinite
 
   sort S = ?                             -- the SOURCE carrier
   sort T = ?                             -- element (kept verbatim, so src = result)
-  effects ES = ?
-  effects EF = ?
+  effects SourceEffects = ?
+  effects PredicateEffects = ?
 
-  requires FiniteCollection[C = S, Element = T, E = ES]
+  requires FiniteCollection[C = S, Element = T, E = SourceEffects]
 
-  provides FiniteCollection[C = FilteredStream[Source = S, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
+  provides FiniteCollection[
+    C = FilteredStream[
+      Source = S, T = T, SourceEffects = SourceEffects, PredicateEffects = PredicateEffects],
+    Element = T,
+    E = {SourceEffects, PredicateEffects}]
 
-  operation collect(f: FilteredStream[Source = S, T = T, ES = ES, EF = EF])
-    -> List[T = T] effects {ES, EF} =
+  operation collect(f: FilteredStream[
+      Source = S, T = T, SourceEffects = SourceEffects, PredicateEffects = PredicateEffects])
+    -> List[T = T] effects {SourceEffects, PredicateEffects} =
     match f
       case filtered(src, pred) -> filterElems(collect(src), pred)
 end

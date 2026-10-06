@@ -768,6 +768,38 @@ pub(crate) struct BareSpecNarrowing {
     pub span: SourceSpan,
 }
 
+/// WI-20261005-KSSA4 — one sort NAME a rule writes where it types a value, for
+/// `typing::check_rule_sort_uses`.
+///
+/// RECORDED, because the loader cannot say what the name means there. `?x: Summable` types
+/// the variable at a spec whose operations receive on its parameter `T` — a type no value
+/// has — while `?x: Stream` types it at a sort a `List` is; and `?x: Summable.T` requires
+/// `Summable` of the matched value's sort only where `T` is the parameter `Summable`
+/// receives on. Which of these a sort is depends on its operations and its provisions,
+/// in whichever file they stand.
+#[derive(Clone, Debug)]
+pub(crate) struct RuleSortUse {
+    /// The sort the rule names.
+    pub sort: Symbol,
+    /// Where, and in which spelling.
+    pub site: RuleSortSite,
+    /// The use, for a `path:line:col` diagnostic.
+    pub span: SourceSpan,
+}
+
+/// The positions of a rule that type a value at a written sort ([`RuleSortUse`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuleSortSite {
+    /// `?x: Sort`, or `x: Sort` in the parameter form — the sort anywhere in a head
+    /// variable's bound.
+    HeadBound,
+    /// `?x: Sort.member` — the member of a spec named in a head variable's bound, which
+    /// is that spec required of the matched value's sort.
+    HeadMember(Symbol),
+    /// `domain(?x, Sort)` written in a body — the sort anywhere in the goal's type.
+    DomainGoal,
+}
+
 /// WI-840/WI-841 (058 §4.7) — one NAMED requirement slot of an operation or a sort:
 /// `requires O: Ord[T = E]`. See [`KnowledgeBase::named_requirement_slots`] for the
 /// two lists `slot` indexes and why `spec_base` is recorded beside it rather than
@@ -1708,6 +1740,22 @@ pub struct KnowledgeBase {
     /// stated, not a hidden one-shot.
     pub(crate) simp_guard_depth: usize,
 
+    /// WI-20261005-KSSA4 — how many comparisons are being made right now, nested, in which
+    /// a spec over a parameter STANDS FOR THE SORTS THAT PROVIDE IT: `0` while a type is
+    /// compared as a value's type, positive inside [`super::typing::spec_as_its_providers`].
+    ///
+    /// A sort that provides `Tagger[C = B]` is not a `Tagger`: a value of `B` is the `C`
+    /// of a `Tagger` (kernel-language §8.2). Two questions are nevertheless about the
+    /// PROVISION and name the spec where the provider goes — a requirement on a rule
+    /// variable's sort, which a rule stores as the spec it requires (`?x: Summable.T`,
+    /// §5.3), and the capability a `Permission` label names, which a provider's
+    /// permission entails (§5.5). The subtype relation has no parameter to carry which is
+    /// being asked through its recursion into type arguments, so the asker says it here.
+    ///
+    /// A counter, every increment paired with a decrement on the way out, as
+    /// [`Self::simp_guard_depth`] is.
+    pub(crate) spec_as_providers_depth: usize,
+
     /// WI-627: the resolved `anthill.prelude.PartialEq.eq` / `anthill.kernel.unify`
     /// connective symbols, cached at [`Self::register_builtin_tags`] time
     /// (re-synced in [`Self::resolve_builtins`]) so
@@ -1883,6 +1931,11 @@ pub struct KnowledgeBase {
     // stand in a file that has not loaded yet. Push-only within a load, drained once by
     // `load_phase_inner` beside it.
     bare_spec_narrowings: Vec<BareSpecNarrowing>,
+
+    // WI-20261005-KSSA4 — every sort name a rule wrote in this load where it types a
+    // value, for `typing::check_rule_sort_uses`. Recorded rather than checked in place
+    // for its neighbours' reason; push-only within a load, drained once beside them.
+    rule_sort_uses: Vec<RuleSortUse>,
 
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
@@ -2121,6 +2174,12 @@ pub struct KnowledgeBase {
     // invalidation point.
     pub(crate) spec_carrier_param_cache: RefCell<HashMap<Symbol, Option<Symbol>>>,
 
+    // WI-20261005-KSSA4 — memoized `typing::spec_is_self_representing`: does some
+    // operation of the sort receive on the sort itself. Derived from the sort's
+    // operation list, as the memo above is, and invalidated with it. The subtype
+    // relation asks it of every provider it admits at a value position.
+    pub(crate) spec_self_representing_cache: RefCell<HashMap<Symbol, bool>>,
+
     // WI-20260829-N01PY — the `(carrier, spec)` witness-admissibility questions currently
     // IN FLIGHT, and it is a correctness guard rather than a memo.
     //
@@ -2321,6 +2380,8 @@ pub(crate) struct LoadCheckMarks {
     /// WI-20260923-ZBWMC — the bare-spec narrowing registry, on the same terms: drained
     /// beside the written-`provides` one, so it is left behind by the same partial load.
     bare_spec_narrowings: usize,
+    /// WI-20261005-KSSA4 — the rule-head bound registry, on the same terms.
+    rule_sort_uses: usize,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -2541,6 +2602,7 @@ impl KnowledgeBase {
             has_dot_applies: false,
             simp_gate_cache: None,
             simp_guard_depth: 0,
+            spec_as_providers_depth: 0,
             eq_connective_sym: None,
             or_connective_sym: None,
             and_connective_sym: None,
@@ -2557,6 +2619,7 @@ impl KnowledgeBase {
             parameterized_type_sites: Vec::new(),
             written_provides_clauses: Vec::new(),
             bare_spec_narrowings: Vec::new(),
+            rule_sort_uses: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
@@ -2576,6 +2639,7 @@ impl KnowledgeBase {
             op_frame_names_cache: RefCell::new(HashMap::new()),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: RefCell::new(HashMap::new()),
+            spec_self_representing_cache: RefCell::new(HashMap::new()),
             witness_admissibility_in_flight: RefCell::new(std::collections::HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
             sort_ops: SortOpsTable::default(),
@@ -2762,6 +2826,7 @@ impl KnowledgeBase {
             parameterized_type_sites: self.parameterized_type_sites.len(),
             written_provides_clauses: self.written_provides_clauses.len(),
             bare_spec_narrowings: self.bare_spec_narrowings.len(),
+            rule_sort_uses: self.rule_sort_uses.len(),
         }
     }
 
@@ -2771,6 +2836,7 @@ impl KnowledgeBase {
             parameterized_type_sites,
             written_provides_clauses,
             bare_spec_narrowings,
+            rule_sort_uses,
         } = marks;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
         // pending sites, and this restores what it found rather than what it wants.
@@ -2802,6 +2868,11 @@ impl KnowledgeBase {
             "the bare-spec narrowing registry shrank between capture and restore"
         );
         self.bare_spec_narrowings.truncate(bare_spec_narrowings);
+        debug_assert!(
+            self.rule_sort_uses.len() >= rule_sort_uses,
+            "the rule-head bound registry shrank between capture and restore"
+        );
+        self.rule_sort_uses.truncate(rule_sort_uses);
     }
 
     /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
@@ -10850,11 +10921,11 @@ impl KnowledgeBase {
         // as-is rather than wrapping the whole `guarded(…)` Fn in `present(…)`.
         let guarded_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.guarded");
         let mut atoms: Vec<TermId> = Vec::new();
-        // WI-441: ALL row-tail Vars are collected — a row UNION (`{ES, EF}`,
-        // the lazy combinators' merge row) folds each as its own `open(…)`.
-        // (Pre-WI-441 only the first Var became the tail; the rest were
-        // stuffed into the atoms list and wrapped `present(var)` — a
-        // malformed shape decompose read as a present LABEL.)
+        // WI-441: ALL row-tail Vars are collected — a row UNION (`{SourceEffects,
+        // TransformEffects}`, the lazy combinators' merge row) folds each as its own
+        // `open(…)`. (Pre-WI-441 only the first Var became the tail; the rest were stuffed into
+        // the atoms list and wrapped `present(var)` — a malformed shape decompose read as a
+        // present LABEL.)
         let mut tail_vars: Vec<TermId> = Vec::new();
         for &e in effects {
             // WI-441: a SORT-level row param referenced in a written row lowers
@@ -11298,6 +11369,18 @@ impl KnowledgeBase {
     /// for the reason [`Self::take_written_provides_clauses`] is.
     pub(crate) fn take_bare_spec_narrowings(&mut self) -> Vec<BareSpecNarrowing> {
         std::mem::take(&mut self.bare_spec_narrowings)
+    }
+
+    /// WI-20261005-KSSA4 — record one sort name a rule wrote where it types a value,
+    /// for the post-load check. The split and the draining ownership of
+    /// [`Self::record_bare_spec_narrowing`].
+    pub(crate) fn record_rule_sort_use(&mut self, written: RuleSortUse) {
+        self.rule_sort_uses.push(written);
+    }
+
+    /// WI-20261005-KSSA4 — take the recorded names, leaving the registry empty.
+    pub(crate) fn take_rule_sort_uses(&mut self) -> Vec<RuleSortUse> {
+        std::mem::take(&mut self.rule_sort_uses)
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).

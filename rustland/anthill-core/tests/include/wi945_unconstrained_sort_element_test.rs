@@ -3,7 +3,7 @@
 //!
 //! THE DISAGREEMENT THE TICKET FOUND. `operation twice[V, F](a: V) -> V requires
 //! VectorSpace[V, F]`, called as `twice(a)` at a `Vec3`, is refused at load —
-//! `check_unconstrained_type_params` (WI-270) sees that the OPERATION's own `F` is
+//! `first_unconstrained_type_param` (WI-270) sees that the OPERATION's own `F` is
 //! undetermined and says so. Move the very same declaration to the sort
 //! (`sort V = ? / sort F = ? / requires VectorSpace[V, F]`) and WI-270 has nothing to
 //! look at: sort parameters are not the operation's type parameters. That spelling
@@ -95,6 +95,35 @@ use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
 
+/// A spec over a vector `V` and a scalar `F`, with TWO providers at `Vec3` that bind `F`
+/// differently — so a requirement naming `Vec3` and leaving `F` open is at an element
+/// nothing says (WI-20261005-KSSA4). The fixtures stood on `VectorSpace[V, F]`, which
+/// `Vec3` provides once, at `Float`: since a sort's own clause is read at the carrier a
+/// call fixes, that provision says `F`, the call is supplied and the program answers
+/// ([`a_sorts_own_clause_says_its_other_parameters`]). Two providers that disagree say
+/// nothing, which is the condition these rows are about; `OverFloat` doubles and `OverInt`
+/// does not, so a pinned control that reached the wrong one answers (1, 2, 3).
+///
+/// Shared with `wi1095_uncounted_frame_read_channels_test`, whose subjects stand on the
+/// same condition.
+pub(crate) const SCALING: &str = r#"  sort Scaling
+    sort V = ?
+    sort F = ?
+    operation doubled(a: V) -> V
+  end
+
+  sort OverFloat
+    provides Scaling[V = Vec3, F = Float]
+    operation doubled(a: Vec3) -> Vec3 = VectorSpace.vec_add(a, a)
+  end
+
+  sort OverInt
+    provides Scaling[V = Vec3, F = Int64]
+    operation doubled(a: Vec3) -> Vec3 = a
+  end
+
+"#;
+
 /// The holder shape the ticket measured, parameterized by the holder's `requires`
 /// clause and the body of the operation the driver calls. `V` is pinned by the
 /// argument at every call below; whether `F` is pinned is what each fixture varies.
@@ -103,10 +132,10 @@ fn holder_program(ns: &str, requires: &str, twice_body: &str) -> String {
         r#"
 namespace {ns}
   import anthill.geometry.{{Vec3}}
-  import anthill.prelude.{{Float}}
+  import anthill.prelude.{{Float, Int64}}
   import anthill.prelude.algebra.{{VectorSpace}}
 
-  sort HolderVS
+{SCALING}  sort HolderVS
     sort V = ?
     sort F = ?
     {requires}
@@ -117,7 +146,8 @@ namespace {ns}
     operation drive(a: Vec3) -> Vec3 = HolderVS.twice(a)
   end
 end
-"#
+"#,
+        SCALING = SCALING,
     )
 }
 
@@ -177,8 +207,8 @@ fn drive_123(src: &str, ns: &str, want: (f64, f64, f64), why: &str) {
 fn sort_level_unconstrained_element_is_refused_at_load() {
     let src = holder_program(
         "test.wi945.subject",
-        "requires VectorSpace[V, F]",
-        "VectorSpace.vec_add(a, a)",
+        "requires Scaling[V, F]",
+        "Scaling.doubled(a)",
     );
     let errs = crate::common::try_load_kb_with(&src)
         .err()
@@ -190,7 +220,7 @@ fn sort_level_unconstrained_element_is_refused_at_load() {
     // Every piece §5.2 requires the diagnostic to name, plus the location.
     for piece in [
         // the requirement, rendered at the call's own bindings
-        "anthill.prelude.algebra.VectorSpace[V = anthill.geometry.Vec3",
+        "test.wi945.subject.Scaling[V = anthill.geometry.Vec3",
         // the unconstrained element — the whole point, and the word the op-level
         // twin uses for the same condition
         "F = test.wi945.subject.HolderVS.F",
@@ -208,6 +238,26 @@ fn sort_level_unconstrained_element_is_refused_at_load() {
     assert!(
         refusal.chars().next().is_some_and(|c| c.is_ascii_digit()),
         "refusal must be located (line:col prefix); got:\n{refusal}"
+    );
+}
+
+/// THE FIXTURE THESE ROWS STOOD ON, WHICH NOW ANSWERS (WI-20261005-KSSA4). `HolderVS
+/// requires VectorSpace[V, F]`, called at a `Vec3`: the sort's own clause is read at the
+/// carrier the call fixes, `Vec3` provides `VectorSpace` once, at `Float`, and that
+/// provision says the `F` no argument does. The call is supplied and doubles. Refused
+/// before, as the subject above still is over two providers that disagree.
+///
+/// FAILS with the sort's clause not read at a call (`bind_sort_params_from_sort_requires`):
+/// refused, `F` unconstrained.
+#[test]
+fn a_sorts_own_clause_says_its_other_parameters() {
+    let ns = "test.wi945.own_clause";
+    let src = holder_program(ns, "requires VectorSpace[V, F]", "VectorSpace.vec_add(a, a)");
+    drive_123(
+        &src,
+        ns,
+        (2.0, 4.0, 6.0),
+        "the one provision at `Vec3` says the scalar, and the call is supplied",
     );
 }
 
@@ -231,14 +281,14 @@ fn a_sibling_that_reads_the_slot_is_refused_too() {
         r#"
 namespace test.wi945.sibling
   import anthill.geometry.{{Vec3}}
-  import anthill.prelude.{{Float}}
+  import anthill.prelude.{{Float, Int64}}
   import anthill.prelude.algebra.{{VectorSpace}}
 
-  sort HolderVS
+{SCALING}  sort HolderVS
     sort V = ?
     sort F = ?
-    requires VectorSpace[V, F]
-    operation inner(a: V) -> V = VectorSpace.vec_add(a, a)
+    requires Scaling[V, F]
+    operation inner(a: V) -> V = Scaling.doubled(a)
     operation twice(a: V) -> V = inner(a)
   end
 
@@ -246,7 +296,8 @@ namespace test.wi945.sibling
     operation drive(a: Vec3) -> Vec3 = HolderVS.twice(a)
   end
 end
-"#
+"#,
+        SCALING = SCALING,
     );
     let errs = crate::common::try_load_kb_with(&src)
         .err()
@@ -276,8 +327,24 @@ fn a_forwarded_slot_inside_a_built_dictionary_is_refused_too() {
     let src = r#"
 namespace test.wi945.forward
   import anthill.geometry.{Vec3}
-  import anthill.prelude.{Float}
+  import anthill.prelude.{Float, Int64}
   import anthill.prelude.algebra.{VectorSpace}
+
+  sort Scaling
+    sort V = ?
+    sort F = ?
+    operation doubled(a: V) -> V
+  end
+
+  sort OverFloat
+    provides Scaling[V = Vec3, F = Float]
+    operation doubled(a: Vec3) -> Vec3 = VectorSpace.vec_add(a, a)
+  end
+
+  sort OverInt
+    provides Scaling[V = Vec3, F = Int64]
+    operation doubled(a: Vec3) -> Vec3 = a
+  end
 
   sort Doubler
     sort V = ?
@@ -293,7 +360,7 @@ namespace test.wi945.forward
   sort HolderVS
     sort V = ?
     sort F = ?
-    requires VectorSpace[V, F]
+    requires Scaling[V, F]
     requires Doubler[V]
     operation twice(a: V) -> V = Inner.innerOp(a)
   end
@@ -322,8 +389,8 @@ end
 fn control_the_pinned_element_still_dispatches() {
     let src = holder_program(
         "test.wi945.pinned",
-        "requires VectorSpace[V = V, F = Float]",
-        "VectorSpace.vec_add(a, a)",
+        "requires Scaling[V = V, F = Float]",
+        "Scaling.doubled(a)",
     );
     drive_123(
         &src,
@@ -352,12 +419,12 @@ fn control_the_pinned_element_still_dispatches() {
 /// `wi456_no_scope_route_test` is that spelling.
 #[test]
 fn a_callee_that_never_reads_the_slot_is_refused_too_and_the_clause_is_the_repair() {
-    let src = holder_program("test.wi945.unread", "requires VectorSpace[V, F]", "a");
+    let src = holder_program("test.wi945.unread", "requires Scaling[V, F]", "a");
     let errs = crate::common::try_load_kb_with(&src)
         .err()
         .unwrap_or_else(|| panic!("expected a refusal, but this loaded clean:\n{src}"));
     assert!(
-        errs.iter().any(|e| e.contains("VectorSpace")),
+        errs.iter().any(|e| e.contains("Scaling")),
         "the refusal must name the requirement nothing supplies; got {errs:?}"
     );
 

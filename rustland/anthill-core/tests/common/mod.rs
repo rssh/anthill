@@ -290,8 +290,15 @@ pub fn try_load_kb_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
 /// OPTION and nothing else.
 #[allow(dead_code)]
 pub fn try_load_kb_untyped_with(source: &str) -> Result<KnowledgeBase, Vec<String>> {
+    try_load_kb_untyped_with_files(&[source])
+}
+
+/// [`try_load_kb_untyped_with`] over SEPARATE files — a directory of sources read as
+/// declarations, for a census that asks what is declared and not whether it types.
+#[allow(dead_code)]
+pub fn try_load_kb_untyped_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
     try_load_kb_named_prepared_with(
-        &[source],
+        sources,
         None,
         load::LoadOptions {
             run_typer: false,

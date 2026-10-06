@@ -324,14 +324,19 @@ fn the_mechanism_on_a_local_tower() {
 /// THE CONTROL, and it is what says the ticket changed something: the SAME carrier
 /// with one shared chain refuses the WEAK call. That refusal is the shared-chain
 /// over-reach in miniature — `Box` claims `Weak` for every `A`, and its one chain
-/// demands `Strong[A]` at every dispatch through it.
+/// demands `Strong[A]` of every `Box` there is.
+///
+/// REFUSED WHERE THE BOX IS BUILT since WI-20261005-KSSA4 — a construction owes its
+/// sort's requirement, and `box(v: ow)` is a `Box` over a component with no `Strong`. It
+/// was refused one step later, at the `Weak.weak` call the box was built for, naming the
+/// same goal. Either way the weak call does not load, and on the STRONG goal.
 #[test]
 fn the_shared_chain_control_refuses_the_weak_call() {
     let errs = load_errs(&tower(&shared_chain()));
     assert!(
         errs.iter().any(|e| {
-            e.contains("wi869.tower.Weak.weak")
-                && e.contains("unresolved: wi869.tower.Strong[T = wi869.tower.OnlyWeak]")
+            e.contains("`wi869.tower.Strong[T = wi869.tower.OnlyWeak]` of `wi869.tower.Box`")
+                && e.contains("cannot be supplied for the construction `wi869.tower.Box.box`")
         }),
         "with ONE chain the WEAK call must fail, and fail on the STRONG goal — that \
          precise pairing is the over-reach per-provision conditions remove; got {errs:?}",

@@ -17,11 +17,17 @@
 //! `carrier_param_receiver` hands it an empty view + `transitive=true` so the
 //! `carrier_is_abstract_spec` gate defers dispatch to eval. The sibling of WI-608's
 //! `requires`-view for the reflexive relationship.
+//!
+//! WI-20261005-KSSA4 — THE SOURCE IS A VALUE OF A SORT THE SPEC IS REQUIRED OF, and there
+//! is no reflexive case. `src: FiniteCollection[C = SrcC, …]` was a value typed at the
+//! spec, read as a value of its carrier; it is not one, and the reflexive branch is
+//! deleted. Both shapes are written with `src: SrcC` under the `requires
+//! FiniteCollection[C = SrcC, Element = Src, E = ES]` they already declared, which is
+//! what says `collect(src)`'s effect is `ES`.
 
-/// FREE-OP shape: `collect(src)` on `src: FiniteCollection[E = ES]` — the op's own
-/// (skolemized) type params are ground in the body, isolating the result-effect
-/// threading. The op-level `requires FiniteCollection[…]` discharges the abstract
-/// collect dispatch (WI-599 gap-2).
+/// FREE-OP shape: `collect(src)` on `src: SrcC` — the op's own (skolemized) type params are
+/// ground in the body, isolating the result-effect threading. The op-level `requires
+/// FiniteCollection[C = SrcC, …]` licenses the call and says its effect.
 #[test]
 fn wi609_collect_effect_over_finite_collection_param() {
     let src = r#"
@@ -29,7 +35,7 @@ namespace test.wi609b
   import anthill.prelude.{FiniteCollection, List, Modify, EffectsRuntime}
   import anthill.prelude.FiniteCollection.{collect}
 
-  operation probe[SrcC, Src, ES](src: FiniteCollection[C = SrcC, Element = Src, E = ES])
+  operation probe[SrcC, Src, ES](src: SrcC)
     -> List[T = Src] effects ES
     requires FiniteCollection[C = SrcC, Element = Src, E = ES] =
     collect(src)
@@ -47,11 +53,8 @@ end
 }
 
 /// SORT-MEMBER shape (the thin-combinator use): a combinator whose `collect2` body
-/// materializes its `FiniteCollection` source. Threads the receiver's element/effect
-/// through the match destructure via explicit op type params bound from the receiver
-/// (the `FilteredStream.splitFirst` pattern), then relies on the WI-609 reflexive
-/// grounding for `collect(src)`'s result effect. The sort-level `requires
-/// FiniteCollection[…]` discharges the abstract-collect dispatch (WI-599 gap-2).
+/// materializes its source, a value of the sort's own `SrcC`. The sort-level `requires
+/// FiniteCollection[C = SrcC, …]` licenses `collect(src)` and says its effect.
 #[test]
 fn wi609_collect_effect_over_abstract_finite_collection_field() {
     let src = r#"
@@ -68,11 +71,9 @@ namespace test.wi609
     effects ES = ?
     effects EF = ?
     requires FiniteCollection[C = SrcC, Element = Src, E = ES]
-    entity fcm(source: FiniteCollection[C = SrcC, Element = Src, E = ES], fn: (Src) -> T @ {EF})
+    entity fcm(source: SrcC, fn: (Src) -> T @ {EF})
 
-    operation collect2[SrcCc, Srcc, Tt, ESs, EFf](
-        m: FCMapped[SrcC = SrcCc, Src = Srcc, T = Tt, ES = ESs, EF = EFf])
-      -> List[T = Srcc] effects ESs =
+    operation collect2(m: Self) -> List[T = Src] effects ES =
       match m
         case fcm(src, fn) -> collect(src)
   end

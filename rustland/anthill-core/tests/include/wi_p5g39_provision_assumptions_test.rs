@@ -258,7 +258,8 @@ const SPECS: &str = "  sort Lawful\n    sort T = ?\n  end\n  \
 /// refused the explicit form above as well, and every sort with an unprovided ground
 /// `requires` through its derived `Eq` (MEASURED — the `wi1112` fixtures). It is VACUOUS
 /// rather than unsound, and the row pins where it is caught: a USE of the provision is
-/// refused at the call, because nothing supplies `Lo[Cell]`.
+/// refused at the call, because nothing supplies `Lo[Cell]` — and so is BUILDING a `Cell`,
+/// a construction owing its sort's requirement (WI-20261005-KSSA4).
 #[test]
 fn a_ground_requirement_is_assumed_and_its_use_is_refused() {
     let conditioned = format!(
@@ -284,12 +285,22 @@ fn a_ground_requirement_is_assumed_and_its_use_is_refused() {
         panic!("an unused vacuous provision is not refused at its declaration; got {errs:?}");
     }
     let errs = load_errs(&sort_level(
-        "  operation go() -> Int64 = Caller.useIt(cell(a: 1))\n",
+        "  operation go(c: Cell[A = Int64]) -> Int64 = Caller.useIt(c)\n",
     ));
     assert!(
         errs.iter().any(|e| e.contains("cannot be supplied for call to `p5g39.self.Caller.useIt`")
             && e.contains("no impl provides p5g39.self.Lo")),
         "the USE is refused, naming the requirement nothing supplies; got {errs:?}",
+    );
+    let errs = load_errs(&sort_level(
+        "  operation go() -> Int64 = Caller.useIt(cell(a: 1))\n",
+    ));
+    assert!(
+        errs.iter().any(|e| {
+            e.contains("cannot be supplied for the construction `p5g39.self.Cell.cell`")
+                && e.contains("`p5g39.self.Cell` provides no `p5g39.self.Lo`")
+        }),
+        "the CONSTRUCTION is refused, naming the requirement nothing supplies; got {errs:?}",
     );
 }
 

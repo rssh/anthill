@@ -59,15 +59,16 @@ sort anthill.prelude.FiniteCollection
   -- non-stream carrier — a `Map` — gets them too.
   --
   -- THIN: wrap the BARE carrier `c` directly (`mapped(c, f)` / `filtered(c, p)`)
-  -- — no `finiteIterator` indirection. The combinator's `source` field is typed
-  -- `Iterable[C = Source, …]`, and the carrier value `c : C` PROVIDES Iterable, so
-  -- the source carrier + access effect thread off `c`'s own provision (WI-599 gap-1
-  -- `carrier_arg_provision_projection`). Wrapping `c` and NOT `iterator(c)` is what
-  -- keeps the source's SORT in the type for the finiteness witness to read; the
-  -- eager-snapshot reading stays on `Iterable.map`, which does call `iterator(c)`.
+  -- — no `finiteIterator` indirection. The combinator's `source` field is typed by
+  -- its own `Source` parameter, and the combinator requires `Iterable` of that
+  -- parameter. This sort requires `Iterable` of `C`, so the requirement holds at
+  -- `c`, and it says the element and the access effect. Wrapping `c` and NOT
+  -- `iterator(c)` is what keeps the source's SORT in the type for the finiteness
+  -- witness to read; the eager-snapshot reading stays on `Iterable.map`, which does
+  -- call `iterator(c)`.
   --
   -- The return is the BARE CARRIER, not the `FiniteCollection[C = …]` view: the view
-  -- spelling does not load (the value's `EF` is an OPEN row from the `-Modify[x]`
+  -- spelling does not load (the value's `TransformEffects` is an OPEN row from the `-Modify[x]`
   -- lack, and no source spelling produces that form — measured, WI-590). The bare
   -- carrier is what the witness in finite_combinators.anthill keys its provision on,
   -- so `.size()` / `.collect()` / a further `.map` all resolve on the result.
@@ -75,10 +76,10 @@ sort anthill.prelude.FiniteCollection
   -- the element under test (re-walkable lazy view, WI-440); decoupled rows (WI-441):
   -- result access row is the UNION `{E, EffP}`, paid on consume.
   operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
-    -> MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP] =
+    -> MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E, TransformEffects = EffP] =
     mapped(c, f)
 
   operation filter[EffP](c: C, p: (x: Element) -> Bool @ {EffP, -Modify[x]})
-    -> FilteredStream[Source = C, T = Element, ES = E, EF = EffP] =
+    -> FilteredStream[Source = C, T = Element, SourceEffects = E, PredicateEffects = EffP] =
     filtered(c, p)
 end

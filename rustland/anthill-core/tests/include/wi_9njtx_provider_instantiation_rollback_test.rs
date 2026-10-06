@@ -55,6 +55,19 @@
 //! /code-review filed this ticket off that widening. The defect itself is older:
 //! [`a_direct_one_hop_provider_is_captured_too`] is captured through a DIRECT provision
 //! and reaches none of GNPG7's composition.
+//!
+//! WI-20261005-KSSA4 — THE FIXTURE IS A SPEC THAT IS ITS OWN CARRIER NOW. The rows were
+//! written over `Iterable` and `FiniteCollection`, which are specs over a parameter: a
+//! `List` provides them and is not one, so `takes(a: Iterable[Element = Row])` refuses
+//! every argument and the provider view is not reached. `Walk` below receives on `Self`,
+//! so a `Bag` IS a `Walk` and the relation still reads its provision — which RENAMES the
+//! parameter (`Walk.Element ↦ Bag.V`), the shape the capture needs, and reaches `Walk` in
+//! one hop for `Bag` and in two for `Deep`. The verdicts are the table's "after" column.
+//! THE BACK-OUT, RE-MEASURED ON THIS FIXTURE — the instantiation published into the
+//! caller's substitution where the parameter is still free there, so the first instance
+//! compared decides for the rest: the three bold rows fail and the three controls pass, as
+//! the table says, with `wi_0rp29_member_rule_test
+//! …another_parameter_typed_by_the_spec_is_any_provider_control`.
 
 use crate::common::try_load_kb_with;
 
@@ -66,15 +79,41 @@ fn load_errors(src: &str) -> Vec<String> {
 }
 
 /// `Row` exists to give the two arguments DIFFERENT element types — the axis the defect is
-/// about. `List` reaches `Iterable` in two hops (`List provides Stream provides Iterable`).
+/// about. `Bag provides Walk[Element = V]` directly; `Deep` reaches `Walk` in two hops
+/// (`Deep provides Mid[Item = D]`, `Mid provides Walk[Element = Item]`).
 fn program(params: &str, args: &str, call: &str) -> String {
     format!(
         r#"
 namespace test.njtx
-  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream, FiniteCollection}}
+  import anthill.prelude.{{Int64, Bool}}
   sort Row
     import anthill.prelude.Int64
     entity row(a: Int64)
+  end
+  sort Walk
+    import anthill.prelude.Int64
+    sort Element = ?
+    operation steps(w: Self) -> Int64
+  end
+  sort Mid
+    import anthill.prelude.Int64
+    sort Item = ?
+    provides Walk[Element = Item]
+    operation steps(w: Self) -> Int64 = 2
+  end
+  sort Bag
+    import anthill.prelude.Int64
+    sort V = ?
+    entity bag(v: V)
+    provides Walk[Element = V]
+    operation steps(w: Self) -> Int64 = 1
+  end
+  sort Deep
+    import anthill.prelude.Int64
+    sort D = ?
+    entity deep(d: D)
+    provides Mid[Item = D]
+    operation steps(w: Self) -> Int64 = 3
   end
   operation takes({params}) -> Int64 = 1
   operation drive({args}) -> Int64 = takes({call})
@@ -83,14 +122,14 @@ end
     )
 }
 
-/// CONTROL, and the one that makes the two moving rows readable: `List[T = Int64]` IS
-/// admissible at `Iterable[Element = Int64]`. Green either way.
+/// CONTROL, and the one that makes the two moving rows readable: `Deep[D = Int64]` IS
+/// admissible at `Walk[Element = Int64]`. Green either way.
 #[test]
 fn the_second_argument_conforms_on_its_own() {
     assert_eq!(
         load_errors(&program(
-            "b: Iterable[Element = Int64]",
-            "ys: List[T = Int64]",
+            "b: Walk[Element = Int64]",
+            "ys: Deep[D = Int64]",
             "ys"
         )),
         Vec::<String>::new()
@@ -98,14 +137,15 @@ fn the_second_argument_conforms_on_its_own() {
 }
 
 /// THE ROW THAT REJECTS A CORRECT PROGRAM. Both arguments conform. Argument 1 SUCCEEDS and
-/// used to leave `List.T := Row` behind; argument 2's `Element` then composed to `Row` and
-/// was refused against `Int64`. RED before the change, with exactly the `takes.b` error.
+/// used to leave the carrier's parameter bound to `Row` behind; argument 2's `Element` then
+/// composed to `Row` and was refused against `Int64` — RED before the change on the
+/// original fixture, with exactly the `takes.b` error.
 #[test]
 fn a_first_argument_that_conforms_does_not_capture_the_second() {
     assert_eq!(
         load_errors(&program(
-            "a: Iterable[Element = Row], b: Iterable[Element = Int64]",
-            "xs: List[T = Row], ys: List[T = Int64]",
+            "a: Walk[Element = Row], b: Walk[Element = Int64]",
+            "xs: Deep[D = Row], ys: Deep[D = Int64]",
             "xs, ys"
         )),
         Vec::<String>::new()
@@ -117,25 +157,25 @@ fn a_first_argument_that_conforms_does_not_capture_the_second() {
 #[test]
 fn a_failed_first_argument_does_not_capture_the_second() {
     let errs = load_errors(&program(
-        "a: Iterable[Element = Bool], b: Iterable[Element = Int64]",
-        "xs: List[T = Row], ys: List[T = Int64]",
+        "a: Walk[Element = Bool], b: Walk[Element = Int64]",
+        "xs: Deep[D = Row], ys: Deep[D = Int64]",
         "xs, ys",
     ));
     assert_eq!(errs.len(), 1, "expected only the takes.a mismatch, got {errs:#?}");
     assert!(
-        errs[0].contains("takes.a") && errs[0].contains("Iterable[Element = Bool]"),
+        errs[0].contains("takes.a") && errs[0].contains("Walk[Element = Bool]"),
         "wrong error: {errs:#?}"
     );
 }
 
-/// CONTROL — the relation did not get permissive. A `List[T = Int64]` at
-/// `Iterable[Element = Bool]` is still one located mismatch. Green either way; it fails if
+/// CONTROL — the relation did not get permissive. A `Deep[D = Int64]` at
+/// `Walk[Element = Bool]` is still one located mismatch. Green either way; it fails if
 /// the repair were to make the composed `Element` resolve to nothing and wildcard-accept.
 #[test]
 fn a_genuine_mismatch_is_still_refused() {
     let errs = load_errors(&program(
-        "a: Iterable[Element = Bool]",
-        "xs: List[T = Int64]",
+        "a: Walk[Element = Bool]",
+        "xs: Deep[D = Int64]",
         "xs",
     ));
     assert_eq!(errs.len(), 1, "{errs:#?}");
@@ -143,38 +183,35 @@ fn a_genuine_mismatch_is_still_refused() {
 }
 
 /// CONTROL, and the row that says why the fixture varies the ARGUMENT's element type
-/// rather than only the parameter's: with both arguments `List[T = Int64]` the captured
+/// rather than only the parameter's: with both arguments `Deep[D = Int64]` the captured
 /// value is the correct one and the defect is invisible. One error, before and after.
 #[test]
 fn two_arguments_of_one_element_type() {
     let errs = load_errors(&program(
-        "a: Iterable[Element = Bool], b: Iterable[Element = Int64]",
-        "xs: List[T = Int64], ys: List[T = Int64]",
+        "a: Walk[Element = Bool], b: Walk[Element = Int64]",
+        "xs: Deep[D = Int64], ys: Deep[D = Int64]",
         "xs, ys",
     ));
     assert_eq!(errs.len(), 1, "{errs:#?}");
     assert!(errs[0].contains("takes.a"), "{errs:#?}");
 }
 
-/// THE DEFECT IS NOT GNPG7'S. `List provides FiniteCollection[C = List[T], Element = T,
-/// E = {}]` DIRECTLY (list.anthill), so this row is served by `provider_spec_view_bindings`
-/// — the direct reader `subtype_provider_view` tries FIRST — and needs none of GNPG7's
-/// composition. RED before the change, with the same spurious `takes.b`.
+/// THE DEFECT IS NOT GNPG7'S. `Bag provides Walk[Element = V]` DIRECTLY, so this row is
+/// served by `provider_spec_view_bindings` — the direct reader `subtype_provider_view`
+/// tries FIRST — and needs none of GNPG7's composition. RED before the change on the
+/// original fixture, with the same spurious `takes.b`.
 ///
-/// IT HAS TO BE A PROVISION THAT RENAMES THE PARAM. The first cut wrote this row as
-/// `Stream[T = Row, E = {}]`, which is also one hop, and it was GREEN BOTH WAYS: `Stream`
-/// names its element `T` just as `List` does, so the expected `T` finds the actual's own
-/// `T` by key identity and the provider arm — the only reader of the instantiated values —
-/// never runs for it. Only `E` reaches that arm there, and `provides Stream[T, {}]` binds
-/// it to the literal `{}`, which mentions no canonical var and so cannot be captured.
-/// `FiniteCollection.Element ↦ List.T` is the shape the defect is about. Measured, not
-/// reasoned: the `Stream` spelling answers 0 errors on the backed-out tree.
+/// IT HAS TO BE A PROVISION THAT RENAMES THE PARAM. A spec whose parameter the carrier
+/// names alike finds the actual's own argument by key identity, and the provider arm — the
+/// only reader of the instantiated values — never runs for it: the first cut of the
+/// original row, written over `Stream[T = Row, E = {}]`, was GREEN BOTH WAYS for that
+/// reason. `Walk.Element ↦ Bag.V` is the shape the defect is about.
 #[test]
 fn a_direct_one_hop_provider_is_captured_too() {
     assert_eq!(
         load_errors(&program(
-            "a: FiniteCollection[Element = Row], b: FiniteCollection[Element = Int64]",
-            "xs: List[T = Row], ys: List[T = Int64]",
+            "a: Walk[Element = Row], b: Walk[Element = Int64]",
+            "xs: Bag[V = Row], ys: Bag[V = Int64]",
             "xs, ys"
         )),
         Vec::<String>::new()

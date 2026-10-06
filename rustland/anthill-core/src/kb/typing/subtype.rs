@@ -377,9 +377,9 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // /code-review, which read the earlier "NOT HERE" as the wider claim).
                 //
                 // MEASURED, a drivable pair: a DENOTED effect row on the actual
-                // (`MappedStream[…, EF = {Modify[k]}]`) routes here instead of to the term
-                // dispatch, and is REFUSED at `total(c: FiniteCollection)` while the
-                // byte-identical ground-row twin is accepted. The pair is
+                // (`MappedStream[…, TransformEffects = {Modify[k]}]`) routes here instead of
+                // to the term dispatch, and is REFUSED at `total(c: FiniteCollection.C)` while
+                // the byte-identical ground-row twin is accepted. The pair is
                 // `n01py_witness_provision_subtype_test::a_denoted_effect_row_is_a_known_gap`.
                 //
                 // WHY IT CANNOT SIMPLY BE ADDED: `witness_provides_admissibly` asks its
@@ -811,12 +811,12 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
     };
     let cross_sort_provider = cross_sort_provider.map(|(view, _)| view);
     // WI-441: the provider view's binding values carry the CARRIER's canonical
-    // param vars (`provides Stream[T = T, E = {ES, EF}]` holds MappedStream's
-    // own ES/EF alias vars). Instantiate them through THIS actual instance's
-    // bindings (ES := the instance's ES value, …), so the per-param comparison
-    // below sees the instance's row, not the canon vars (a two-row provision
-    // `{ES, EF}` cannot pair against the expected row's tails without it —
-    // two-tail-to-two-tail pairing is ambiguous).
+    // param vars (`provides Stream[T = T, E = {SourceEffects, TransformEffects}]` holds
+    // MappedStream's own SourceEffects/TransformEffects alias vars). Instantiate them through
+    // THIS actual instance's bindings (SourceEffects := the instance's SourceEffects value, …),
+    // so the per-param comparison below sees the instance's row, not the canon vars (a two-row
+    // provision `{SourceEffects, TransformEffects}` cannot pair against the expected row's
+    // tails without it — two-tail-to-two-tail pairing is ambiguous).
     //
     // WI-20260829-9NJTX — THE INSTANTIATION IS A REWRITE OF THE VIEW, NOT A FACT ABOUT THE
     // CALLER'S WORLD, and it is applied here rather than published into `subst`. It used
@@ -2286,7 +2286,7 @@ pub(super) fn sort_provides_admissibly(
     expected_sym: Symbol,
 ) -> bool {
     if sort_provides(kb, actual_sym, expected_sym) {
-        return true;
+        return provider_conforms_to(kb, expected_sym);
     }
     // An entity value's provision comes from its parent sort.
     if let Some(parent_sym) = kb.strict_parent_sort(actual_sym) {
@@ -2355,6 +2355,16 @@ impl WitnessActual {
 
 /// WI-20260829-N01PY — provider admissibility THROUGH A WITNESS: the leg
 /// [`sort_provides_admissibly`] structurally cannot have.
+///
+/// WHERE IT ANSWERS NOW (WI-20261005-KSSA4). A witness provides a spec for another sort by
+/// naming that sort as the spec's carrier parameter, so every spec this leg answers for is
+/// a spec over a parameter — and a sort such a spec is provided for is not a value's type
+/// at it. The leg is read only where a spec stands for its providers
+/// ([`spec_as_its_providers`]: a rule variable's bound, a `Permission` denial); a value
+/// compared with a type is refused before it. What follows is the account the leg was
+/// written under, when a parameter typed at such a spec took a provider's value: its
+/// matrix's spec-typed-argument row is refused for both filings today, and the consumer
+/// it wanted is written over a parameter under a `requires` clause.
 ///
 /// THE TWO READERS. A `provides` clause files `SortProvidesInfo(sort_ref = <the
 /// ENCLOSING sort>, …)` — `load_provides_clause` writes `domain` there — so a WITNESS,
@@ -2533,6 +2543,14 @@ pub(super) fn witness_provides_admissibly(
     actual_base: Symbol,
     expected_spec: Symbol,
 ) -> bool {
+    // WI-20261005-KSSA4 — ONLY WHERE A SPEC STANDS FOR ITS PROVIDERS. A witness provides a
+    // spec FOR another sort by naming it as the spec's carrier parameter, so every spec
+    // this leg can answer for has one, and a sort such a spec is provided for is not a
+    // value's type at it ([`provider_conforms_to`]). First, so comparing a value's type
+    // pays nothing here.
+    if kb.spec_as_providers_depth == 0 {
+        return false;
+    }
     let spec_canon = kb.canonical_sort_sym(expected_spec);
     // THE GATE. Two steps, and the SPLIT is WI-20260829-K0E8T's: the WI-660
     // `by_spec_base` bucket first, and only if it is non-empty the decode +
@@ -2716,6 +2734,11 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
         };
         carrier = parent_sym;
     };
+    // A provider's value is of the spec only where the spec is its own carrier
+    // ([`provider_conforms_to`]). Asked once a provision is found: most compares find none.
+    if !provider_conforms_to(kb, expected_base) {
+        return false;
+    }
     // WI-20260829-XZMGC — the same rule as [`parameterized_compatible_view`]'s, spelled
     // with the actual this site HAS: a composed view carries no carrier param, and here the
     // actual is a BARE sort, so its own type is a bare sort ref. Allocated inside the

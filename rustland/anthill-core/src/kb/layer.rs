@@ -217,6 +217,7 @@ kb_scoped_fields!(
     parameterized_type_sites,
     written_provides_clauses,
     bare_spec_narrowings,
+    rule_sort_uses,
     head_argument_sites,
     rigid_projection_formations,
     unsuppliable_requirements,
@@ -241,6 +242,7 @@ kb_scoped_fields!(
     provision_member_cache,
     sort_param_pairs_cache,
     spec_carrier_param_cache,
+    spec_self_representing_cache,
     resolve_cache,
 );
 
@@ -458,6 +460,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         parameterized_type_sites: _,
         written_provides_clauses: _,
         bare_spec_narrowings: _,
+        rule_sort_uses: _,
         head_argument_sites: _,
         rigid_projection_formations: _,
         unsuppliable_requirements: _,
@@ -475,6 +478,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         provision_member_cache: _,
         sort_param_pairs_cache: _,
         spec_carrier_param_cache: _,
+        spec_self_representing_cache: _,
         resolve_cache: _,
 
         // ── NEITHER: in-flight stack state, in NO list ─────────
@@ -500,6 +504,9 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // nothing of it to roll back. Bound to `_` here and deliberately ABSENT from
         // `kb_scoped_fields!`.
         simp_guard_depth: _,
+        // WI-20261005-KSSA4 — the same class: the type-bound questions currently ON THE
+        // STACK, 0 outside one.
+        spec_as_providers_depth: _,
     } = kb;
 }
 

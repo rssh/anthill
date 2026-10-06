@@ -2414,7 +2414,12 @@ pub(super) fn infer_named_slot_bindings(
                     selected,
                     sub_goal_requires: &[],
                 };
-                let Some(provider) = (match resolve(kb, &goal, &scope) {
+                // ASKED AS THE DICTIONARY BUILD ASKS IT ([`resolve_opening_unwritten_slots`]):
+                // a carrier written as its bare sort is read at its open slots by both, or
+                // this binds nothing where the build then constructs.
+                let asked =
+                    resolve_opening_unwritten_slots(kb, &goal, &scope, DefaultRung::Consult);
+                let Some(provider) = (match asked {
                     ResolutionResult::Resolved(tree) => tree.impl_sort(),
                     // A tie or a miss binds nothing: the dictionary build's own refusal
                     // names the candidates and the bracket to write, which is the better
@@ -2456,7 +2461,7 @@ pub(super) fn infer_named_slot_bindings(
                         selected,
                         sub_goal_requires: &[],
                     };
-                    match resolve(kb, &goal, &scope) {
+                    match resolve_opening_unwritten_slots(kb, &goal, &scope, DefaultRung::Consult) {
                         ResolutionResult::Resolved(tree) => tree.impl_sort(),
                         _ => None,
                     }
@@ -3535,7 +3540,7 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// bindings on refusal.
 ///
 /// DELIBERATELY NARROW — every skip below leaves the tail unbound, which is the
-/// pre-existing behavior (`check_unconstrained_type_params` then reports it), never a
+/// pre-existing behavior (`first_unconstrained_type_param` then reports it), never a
 /// wrong binding:
 ///   * a tail already bound by unification, or a RIGID one (a forall-Skolem is not ours
 ///     to solve — WI-336);
@@ -3558,7 +3563,7 @@ pub(super) fn infer_discharged_row_tails(
         return;
     }
     // Cheap gate: nothing to solve unless some declared type param is still a bare var.
-    // (The same probe `check_unconstrained_type_params` makes, so the pass runs only on
+    // (The same probe `first_unconstrained_type_param` makes, so the pass runs only on
     // the calls that would otherwise be refused for an unconstrained parameter.)
     let any_unbound = op.type_params.iter().any(|(_, var)| {
         let t = type_param_var_term(kb, *var);
@@ -3629,7 +3634,7 @@ pub(super) fn infer_discharged_row_tails(
         // denoted-bearing (`Value::Node`) extra label (deferred at `bind_row_tail` as
         // WI-342 P4-B), a prelude-less KB, the occurs check, and a σ contradiction. Each
         // leaves `tail` unbound, and the symptom the user then sees is
-        // `check_unconstrained_type_params`' "type parameter 'Rho' is unconstrained" —
+        // `first_unconstrained_type_param`' "type parameter 'Rho' is unconstrained" —
         // accurate about the state, silent about the cause. Conservative rather than
         // wrong: the pass never claims a residual it could not bind.
         bind_row_tail(kb, subst, t, &labels, None);
@@ -3639,18 +3644,17 @@ pub(super) fn infer_discharged_row_tails(
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
 /// unification, every declared type-param must resolve to a non-Var
 /// term. An unresolved Var means the caller can't recover the return
-/// type's concrete shape; surface `UnconstrainedTypeParam` with the
+/// type's concrete shape; the caller surfaces `UnconstrainedTypeParam` with the
 /// param's name so the user can pin it via `op[T = …](…)`.
-pub(super) fn check_unconstrained_type_params(
+///
+/// Answers with the first such parameter, by name AND variable: two of an operation's
+/// parameters may share a name (the member sugar mints one per member, and two specs may
+/// each have an `E`), so the name alone does not say which is open.
+pub(super) fn first_unconstrained_type_param(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     op: &OperationInfoFull,
-    fn_sym: Symbol,
-    span: Option<Span>,
-) -> Result<(), TypeError> {
-    if op.type_params.is_empty() {
-        return Ok(());
-    }
+) -> Option<(Symbol, Var)> {
     for (name, var) in &op.type_params {
         let var_term = type_param_var_term(kb, *var);
         // Carrier-agnostic resolve over [`TermView`]: `walk_view` returns a
@@ -3663,12 +3667,8 @@ pub(super) fn check_unconstrained_type_params(
         // param still resolves to a bare var.
         let resolved = walk_view(kb, subst, &TermIdView(var_term));
         if resolved_var(kb, &resolved).is_some() {
-            return Err(TypeError::UnconstrainedTypeParam {
-                span,
-                op: fn_sym,
-                type_param: *name,
-            });
+            return Some((*name, *var));
         }
     }
-    Ok(())
+    None
 }

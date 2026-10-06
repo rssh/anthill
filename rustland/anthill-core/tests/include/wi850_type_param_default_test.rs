@@ -15,7 +15,7 @@
 //! stdlib, examples or `anthill-todo` writes one, and the only occurrences anywhere
 //! were two fixtures asserting that it PARSES (this file's parent commit had them in
 //! `parse_test.rs` and the tree-sitter corpus). Honouring it (fill
-//! `T` from the default at exactly the point `check_unconstrained_type_params` raises)
+//! `T` from the default at exactly the point `first_unconstrained_type_param` raises)
 //! stays available and is a strictly larger design — it needs the default carried
 //! beside the minted var through `OperationInfo`, and a verdict on whether a default
 //! may mention an earlier parameter (`[T, U = List[T]]`).

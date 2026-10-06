@@ -2994,6 +2994,28 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                     (*i, t)
                 })
                 .collect();
+            // WI-20261005-KSSA4 — AND AS VARIABLES, for the clause that spells a type
+            // parameter as one: the member sugar's. `run(self: C, t: Tagger.C)` is
+            // `run[P](self: C, t: P) requires Tagger[C = P]` with `P` a variable no
+            // name in the operation's scope denotes, so the symbol alignment above has
+            // nothing to key on and a member restating the signature verbatim read as
+            // adding a clause — "it strengthens the precondition" (MEASURED). The same
+            // positions, the same arity rule.
+            let type_param_var_align: Vec<(Var, TermId)> = {
+                let mut pairs = Vec::new();
+                if impl_info.type_params.len() == spec_info.type_params.len() {
+                    for ((_, iv), (_, sv)) in impl_info
+                        .type_params
+                        .iter()
+                        .zip(spec_info.type_params.iter())
+                    {
+                        if iv != sv {
+                            pairs.push((*iv, kb.alloc(Term::Var(*sv))));
+                        }
+                    }
+                }
+                pairs
+            };
 
             let full_align: Vec<(Symbol, TermId)> = {
                 let mut a = param_align.clone();
@@ -3189,8 +3211,21 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // WHOLE ROW: an `Eff2` this leg refuses on its own went unreported the
             // moment a `Modify[c]` sat beside it. The fail-open now scopes to the
             // ATOM that earns it, which is what it was always described as doing.
+            //
+            // WI-20261005-KSSA4 — THE SPEC OPERATION'S OWN TYPE PARAMETERS DO NOT PUT THE GATE
+            // UP. `run(self: C, llm: Llm.C) effects {External, Llm.E, Error}` names the one
+            // `Llm.E` every call supplies; no provision instantiates it, so it is not an
+            // unknown that could come to cover a member's effect. Read as one, it suppressed
+            // this leg for the whole row, and a member adding `Filesystem` beside it loaded
+            // (MEASURED on the `guardians` example, once its rows were written with the
+            // member). A parameter of the SPEC still puts the gate up. An atom naming a type
+            // parameter covers nothing here: it is not a variable for the comparison to bind.
+            let spec_own = OwnTypeParams::of(kb, spec_op, &spec_info.type_params);
             let spec_row_is_well_formed = !spec_effs.iter().any(|e| malformed_modify(kb, e));
-            if spec_row_is_well_formed && spec_effs.iter().all(|e| !view_contains_type_param(kb, e))
+            if spec_row_is_well_formed
+                && spec_effs
+                    .iter()
+                    .all(|e| !view_contains_type_param_except(kb, e, &spec_own))
             {
                 // WI-20260823-39AD2 DELETED A SECOND REFUSAL ARM FROM THIS LOOP, and
                 // for the reason its sibling deletion gives: it became unreachable, not
@@ -3215,8 +3250,10 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                         // param names (WI-818 review).
                         let ie_aligned = align_effect_label(kb, ie, &align, &align_syms);
                         let covered = spec_effs.iter().any(|se| {
-                            let mut subst = Substitution::new();
-                            types_compatible(kb, &mut subst, &ie_aligned, se)
+                            decidable(kb, se) && {
+                                let mut subst = Substitution::new();
+                                types_compatible(kb, &mut subst, &ie_aligned, se)
+                            }
                         });
                         if !covered {
                             errors.push(LoadError::IncompatibleOverride {
@@ -3302,6 +3339,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             let spec_pre = user_precondition_clauses(kb, &spec_info.requires);
             for ic in user_precondition_clauses(kb, &impl_info.requires) {
                 let ic = substitute_clause(kb, &ic, &align);
+                let ic = substitute_clause_vars(kb, &ic, &type_param_var_align);
                 if !spec_pre
                     .iter()
                     .any(|sp| views_structurally_equal(kb, sp, &ic))
@@ -3690,11 +3728,11 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<crate::kb
 ///   * EXEMPT while it is a HOLE: a sort's declared effect ROW PARAMETER. `effects
 ///     Effect = ?` (WI-320) lowers to a type parameter, so `effects Effect` inside
 ///     `PersistentCollection` heads as a `SortRef` to `PersistentCollection.Effect`.
-///     Seven are live in the prelude (`Function.E`, `Iterable.E`, `MappedStream.EF`/`ES`,
-///     …), all of them holes. A hole is a slot for a row, not a label — but a BOUND one
-///     (`effects E = Kind`, `sort X = Kind`) is a NAME for what it is bound to and IS
-///     judged; [`effect_label_kind`] carries that distinction and the two programs that
-///     forced it.
+///     Seven are live in the prelude (`Function.E`, `Iterable.E`,
+///     `MappedStream.TransformEffects`/`SourceEffects`, …), all of them holes. A hole is a
+///     slot for a row, not a label — but a BOUND one (`effects E = Kind`, `sort X = Kind`) is a
+///     NAME for what it is bound to and IS judged; [`effect_label_kind`] carries that
+///     distinction and the two programs that forced it.
 ///   * SKIPPED, having no name at all: the engine's own variables
 ///     ([`TypeHead::FlexVar`] / [`TypeHead::Skolem`] — 21 in the prelude, the opened
 ///     row params), and a receiver projection `s.E` ([`TypeHead::ExprCarried`] /

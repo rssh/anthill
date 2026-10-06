@@ -693,7 +693,7 @@ namespace capmatrixcons
   import capmatrixcons.Row.{{row, a_of, is_set}}
   import anthill.prelude.Option.{{none, some}}
 {FIXTURE}
-  operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
   operation cell(xs: List[T = Row]) -> Int64 =
     let s = {body}
     42
@@ -864,7 +864,7 @@ fn an_author_declared_consumer_takes_a_finite_carrier() {
              is maybe-infinite and must NOT be eagerly consumable)"
                 .into(),
             "total(Iterable.map(xs, lambda r -> r.a))".into(),
-            Verdict::RefusesLocated("expected FiniteCollection"),
+            Verdict::RefusesLocated("provides no `anthill.prelude.FiniteCollection`"),
         ),
         // ── CHAINED HOPS (WI-20260829-X13YV) ────────────────────────────────────
         // The rows above all consume a ONE-HOP combinator result. Chaining a SECOND hop
@@ -1846,178 +1846,150 @@ fn a_compound_expression_is_a_value_expression() {
     ]);
 }
 
-/// A SPEC-TYPED PARAMETER AND ITS CARRIER — the `through a provision chain` route.
+/// A CARRIER AT A PARAMETER THAT ASKS FOR A SPEC — the `through a provision chain` route.
 ///
-/// WI-20260829-GNPG7 SETTLED THIS, AND THE TABLE IT WAS FILED FROM MEASURED THE WRONG
-/// AXIS. The reading recorded here was that "what decides admissibility is whether the
-/// parameter's spec type carries BINDINGS" — every bindings-carrying `Iterable` row
-/// refused while the bare one loaded, and `Stream` accepted both. That is a CONFOUND: the
-/// rows also differ in HOP COUNT, because `List` declares `provides Stream[T, {}]` and
-/// reaches `Iterable` only through `Stream provides Iterable`, while `List provides
-/// Stream` is direct.
+/// TWO KINDS OF SPEC, AND THE TABLE HAS A HALF FOR EACH (WI-20261005-KSSA4).
 ///
-/// THE ROW THAT SEPARATES THEM is the `MutableStack` pair below, added when the ticket was
-/// settled: `MutableStack` declares `provides Iterable[C = MutableStack[T], Element = T, E
-/// = {}]` ITSELF, and it is accepted at the FULLY-BOUND spec view naming its own carrier —
-/// the exact shape the "a bindings-carrying spec type is a distinct VIEW" reading says
-/// must be refused. Same spec, same binding shape, opposite verdict from `List`. So
-/// bindings were never the axis; transitivity was.
+/// `Stream` receives on itself, so it is its own carrier: `List provides Stream`, a `List`
+/// is a `Stream`, and a parameter typed `Stream` — bare or with bindings — takes one. Those
+/// are the last two rows, unchanged.
 ///
-/// The cause was one relation with two readers: `sort_provides` (which the bare-spec arms
-/// reach through `sort_provides_admissibly`) walks the whole provision chain, while
-/// `provider_spec_view_bindings` read a single DIRECT fact. Both subtype sites now go
-/// through `transitive_provider_spec_view_bindings`, which already existed for exactly
-/// this chain (WI-714/WI-495).
+/// `Iterable` is a spec over its parameter `C`. A `List` provides it, so `Iterable`'s
+/// operations may be used on a `List`; that does not make a `List` an `Iterable`, and a
+/// parameter typed `Iterable` — bare, with bindings, naming the list as its carrier or the
+/// `Stream` the chain passes through — takes no carrier at all. Every such row REFUSES,
+/// naming `Iterable.C`. What the rows used to measure about the PROVISION — that it is
+/// read through the chain (`List provides Stream provides Iterable`, WI-20260829-GNPG7)
+/// with its bindings, and that the carrier of the composed view is the list itself
+/// (WI-20260829-XZMGC) — is asked where a requirement is SUPPLIED: `ti[P](c: P) requires
+/// Iterable[C = P, Element = Row]`, and the requirement written at the carrier. Those are
+/// the rows between.
 ///
-/// THE LAST ROW MOVED WITH WI-20260829-XZMGC, and its cause was a SECOND defect on the
-/// same chain: the composed view maps the intermediate's PARAMS — `Element ↦ List.T` and
-/// `E ↦ {}` both compose, which is why `Iterable[Element = Row, E = {}]` loaded first —
-/// but kept `C = Stream`, the intermediate's SELF-reference, verbatim.
-/// `compose_provision_views`' doc records that as deliberate and it stays so: none of its
-/// three receiver-grounding consumers reads `C`. The subtype relation is the one that
-/// COMPARES it, and `Iterable.iterator` on a `List` receives the `List` — so
-/// `subtype_provider_view` now excludes the carrier param from a COMPOSED view and each
-/// caller supplies the actual it has.
-///
-/// THE ROW BELOW IS THEREFORE A PAIR, and the second half is what nothing had named: the
-/// same artifact ACCEPTED a `List` at `Iterable[C = Stream]`, a spec view claiming the
-/// carrier is a `Stream`. A silent accept, invisible until someone asked the question from
-/// that side. It is a cell here now so it cannot go quiet again.
+/// THE STRENGTH CONTROL is the requirement at another element than the list walks: it is
+/// refused, which is what makes the loading rows a check and not a name match.
 #[test]
 fn a_spec_typed_parameter_and_its_carrier() {
-    fn program_with(param: &str) -> String {
+    fn program_with(signature: &str, carrier: &str) -> String {
         format!(
             r#"
 namespace capmatrix_prov
-  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream}}
+  import anthill.prelude.{{Int64, Bool, List, Iterable, Stream, MutableStack}}
   sort Row
     import anthill.prelude.{{Int64, Bool}}
     entity row(a: Int64, flag: Bool)
   end
-  operation ti(c: {param}) -> Int64 = 1
-  operation c(rs: List[T = Row]) -> Int64 = ti(rs)
+  operation {signature} = 1
+  operation c(rs: {carrier}[T = Row]) -> Int64 = ti(rs)
 end
 "#
         )
     }
+    let not_an_iterable = Verdict::RefusesLocated("is a spec over its parameter `C`");
     let rows: &[(&str, &str, Verdict)] = &[
-        ("bare spec name", "Iterable", Verdict::Loads),
+        // ── typed at the spec: no carrier is a value of it ──
+        ("bare spec name", "ti(c: Iterable) -> Int64", not_an_iterable),
         (
-            // WI-20260829-XZMGC: was refused, now LOADS. The composed view kept `Stream`,
-            // the intermediate's self-reference, where `List` belongs; the carrier param
-            // is now the ACTUAL's own type.
             "spec bound to its own carrier",
-            "Iterable[C = List[T = Row], Element = Row, E = {}]",
+            "ti(c: Iterable[C = List[T = Row], Element = Row, E = {}]) -> Int64",
+            not_an_iterable,
+        ),
+        (
+            "spec bound to the INTERMEDIATE's carrier",
+            "ti(c: Iterable[C = Stream]) -> Int64",
+            not_an_iterable,
+        ),
+        (
+            "spec with one binding, carrier unbound",
+            "ti(c: Iterable[Element = Row]) -> Int64",
+            not_an_iterable,
+        ),
+        // ── the spec required of the argument's sort: supplied through the chain ──
+        (
+            "requirement, only the carrier written",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P]",
             Verdict::Loads,
         ),
         (
-            // THE OTHER HALF of the same artifact, and it went the other way: the view
-            // SAID the carrier was a `Stream`, so a `List` was ACCEPTED here. A silent
-            // accept, which no earlier row could see.
-            "spec bound to the INTERMEDIATE's carrier",
-            "Iterable[C = Stream]",
-            Verdict::RefusesLocated("expected Iterable[C = Stream]"),
+            "the same, as the member",
+            "ti(c: Iterable.C) -> Int64",
+            Verdict::Loads,
         ),
         (
-            // The strength control: naming the right carrier with the WRONG argument
-            // still refuses, which is what makes the accepting row above a check and not
-            // a base-name match. Green at one hop before this ticket
-            // (`MutableStack[T = Bool]`, below); this is the two-hop twin.
-            "spec bound to its own carrier, WRONG argument",
-            "Iterable[C = List[T = Bool]]",
-            Verdict::RefusesLocated("expected Iterable[C = List[T = Bool]]"),
-        ),
-        (
-            // WI-20260829-GNPG7: was refused, now LOADS. `Element` composes through
-            // `List provides Stream` + `Stream provides Iterable` to `List.T`, which
-            // this instance binds to `Row`.
-            "spec with one binding, carrier unbound",
-            "Iterable[Element = Row]",
+            // `Element` composes through `List provides Stream` + `Stream provides
+            // Iterable` to `List.T`, which this instance binds to `Row`.
+            "requirement with one binding",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Row]",
             Verdict::Loads,
         ),
         (
             // The same, with the effect row written too — `E` composes to the `{}` that
-            // `List provides Stream[T, {}]` supplies. Together with the row above this
-            // says the composition works for every spec param EXCEPT the carrier one.
-            "spec with every non-carrier binding",
-            "Iterable[Element = Row, E = {}]",
+            // `List provides Stream[T, {}]` supplies.
+            "requirement with every binding",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Row, E = {}]",
             Verdict::Loads,
         ),
-        // `Stream` accepts BOTH spellings, which is what makes the rows above an
-        // asymmetry between two specs on one chain rather than a rule about spec params.
-        ("bare Stream (CONTRAST)", "Stream", Verdict::Loads),
         (
-            // `List provides Stream` is DIRECT — one hop — which is why this row loaded
-            // even before WI-20260829-GNPG7, and why reading it as "Stream accepts
-            // bindings, Iterable does not" put the difference on the wrong axis.
+            // Written AT the carrier: the composed provision's carrier is the list, not
+            // the `Stream` the chain passes through.
+            "requirement written at its carrier",
+            "ti(c: List[T = Row]) -> Int64 requires Iterable[C = List[T = Row], Element = Row, E = {}]",
+            Verdict::Loads,
+        ),
+        (
+            // The strength control: the right carrier at the WRONG element.
+            "requirement at the WRONG element",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Bool]",
+            Verdict::RefusesLocated("cannot be supplied for call to `capmatrix_prov.ti`"),
+        ),
+        // ── a spec that is its own carrier: a `List` is one ──
+        ("bare Stream (CONTRAST)", "ti(c: Stream) -> Int64", Verdict::Loads),
+        (
             "Stream WITH bindings (CONTRAST — one hop)",
-            "Stream[T = Row, E = {}]",
+            "ti(c: Stream[T = Row, E = {}]) -> Int64",
             Verdict::Loads,
         ),
     ];
     let mut failures: Vec<String> = Vec::new();
-    for (label, param, want) in rows {
-        if let Err(e) = check_src(label, &program_with(param), *want) {
+    for (label, signature, want) in rows {
+        if let Err(e) = check_src(label, &program_with(signature, "List"), *want) {
             failures.push(e);
         }
     }
 
-    // THE DISCRIMINATOR — the pair the ticket's own table lacked, which is why it read
-    // BINDINGS as the axis. `MutableStack` declares `provides Iterable[C = MutableStack[T],
+    // THE DIRECT PROVIDER — `MutableStack` declares `provides Iterable[C = MutableStack[T],
     // Element = T, E = {}]` ITSELF (mutable_stack.anthill), so its route to `Iterable` is
-    // ONE hop where `List`'s is two. The spec is the same `Iterable` and the binding shapes
-    // are the same as the `List` rows above; only the hop count differs — and the FULLY
-    // BOUND row, naming its own carrier, loads. That is the shape a "spec-with-bindings is
-    // a structurally distinct VIEW" reading has to refuse, so this pair is what refutes it.
-    //
-    // BOTH ROWS PASS EITHER WAY across WI-20260829-GNPG7's change AND across
-    // WI-20260829-XZMGC's, by design: one hop needs no composition, so `subtype_provider_view`
-    // returns on its direct branch and neither the transitive routing nor the carrier-param
-    // exclusion is reached. They are the CONTROL — they say those changes did not disturb
-    // the direct case, and they are why the `List` rows' movement is attributable to
-    // composition rather than to bindings or to the carrier param meaning something new
-    // everywhere.
-    let stack_program = |param: &str| -> String {
-        format!(
-            r#"
-namespace capmatrix_prov_stack
-  import anthill.prelude.{{Int64, Bool, MutableStack, Iterable}}
-  sort Row
-    import anthill.prelude.{{Int64, Bool}}
-    entity row(a: Int64, flag: Bool)
-  end
-  operation ti(c: {param}) -> Int64 = 1
-  operation c(rs: MutableStack[T = Row]) -> Int64 = ti(rs)
-end
-"#
-        )
-    };
-    for (label, param) in [
-        ("DIRECT provider, one binding", "Iterable[Element = Row]"),
+    // ONE hop where `List`'s is two. Same spec, same spellings, same verdicts: the hop
+    // count decides nothing here, on either side of the table.
+    for (label, signature, want) in [
         (
-            "DIRECT provider, spec bound to its own carrier",
-            "Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
+            "DIRECT provider, typed at the spec",
+            "ti(c: Iterable[Element = Row]) -> Int64",
+            not_an_iterable,
+        ),
+        (
+            "DIRECT provider, requirement with one binding",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Row]",
+            Verdict::Loads,
+        ),
+        (
+            "DIRECT provider, requirement written at its carrier",
+            "ti(c: MutableStack[T = Row]) -> Int64 \
+             requires Iterable[C = MutableStack[T = Row], Element = Row, E = {}]",
+            Verdict::Loads,
+        ),
+        (
+            "DIRECT provider, requirement at the WRONG element",
+            "ti[P](c: P) -> Int64 requires Iterable[C = P, Element = Bool]",
+            Verdict::RefusesLocated("cannot be supplied for call to `capmatrix_prov.ti`"),
         ),
     ] {
-        if let Err(e) = check_src(label, &stack_program(param), Verdict::Loads) {
+        if let Err(e) = check_src(label, &program_with(signature, "MutableStack"), want) {
             failures.push(e);
         }
     }
-    // And the one-hop half of the strength control above: naming the right carrier with
-    // the WRONG argument refuses, and always has. It is the row the two-hop
-    // `Iterable[C = List[T = Bool]]` now matches — which is what says WI-20260829-XZMGC
-    // supplied the ACTUAL for the carrier param and not merely its base name.
-    if let Err(e) = check_src(
-        "DIRECT provider, own carrier, WRONG argument",
-        &stack_program("Iterable[C = MutableStack[T = Bool]]"),
-        Verdict::RefusesLocated("expected Iterable[C = MutableStack[T = Bool]]"),
-    ) {
-        failures.push(e);
-    }
     assert!(
         failures.is_empty(),
-        "{} spec-view row(s) moved — if WI-20260829-XZMGC was settled, update these and \
-         close it:\n\n{}",
+        "{} row(s) of the spec-at-a-parameter table moved:\n\n{}",
         failures.len(),
         failures.join("\n\n"),
     );
@@ -2177,14 +2149,16 @@ fn the_grid_census_is_honest() {
 /// which made two cells claim one grid position with opposite verdicts — found by
 /// /code-review; both are relabelled below under what they actually are.
 ///
-/// THE PARAMETER IS THE BARE SPEC NAME, deliberately — per WI-20260829-GNPG7 that is the
-/// only spelling that accepts a carrier at all, so a bound one would red every cell for a
-/// reason that has nothing to do with the position under test.
+/// THE PARAMETER IS `Iterable.C` — a value of any sort of which `Iterable` is required, with
+/// no element written — deliberately: a written one would red every cell whose expression
+/// has another element, for a reason that has nothing to do with the position under test.
+/// (It was the bare spec name `c: Iterable` until WI-20261005-KSSA4: a `List` provides
+/// `Iterable` and is not one, so that slot now takes no carrier at all.)
 ///
 /// AND THE SLOT DISCRIMINATES, which is what stops all-green from being vacuous: `ti`'s
 /// body ignores its argument, so "loads" would mean nothing if the parameter accepted
-/// anything. `ti(1)` and `ti(r)` are the two rows that carry that claim — an `Int64` and
-/// a `Row` are each refused, located.
+/// anything. `ti(1)` and `ti(r)` are the two rows that carry that claim — `Iterable` is
+/// supplied at neither an `Int64` nor a `Row`, and each is refused, located.
 #[test]
 fn every_position_through_a_provision_chain() {
     fn prov_program(decl: &str) -> String {
@@ -2208,7 +2182,7 @@ namespace capmatrix_chain
   operation mk_list() -> List[T = Row] = nil()
   operation mk_box() -> Box = box(rows: nil())
   operation inc(x: Int64) -> Int64 = x + 1
-  operation ti(c: Iterable) -> Int64 = 1
+  operation ti(c: Iterable.C) -> Int64 = 1
 {decl}
 end
 "#
@@ -2260,7 +2234,9 @@ end
         (
             "set literal (REFUSES — Set provides no Iterable chain)".into(),
             "  operation c() -> Int64 = ti({1, 2})".into(),
-            Verdict::RefusesLocated("expected Iterable, got Set[T = Int64]"),
+            Verdict::RefusesLocated(
+                "requirement `anthill.prelude.Iterable[C = anthill.prelude.Set[T = anthill.prelude.Int64]]` cannot be supplied",
+            ),
         ),
         // `match` — an argument position, which WI-20260829-YBBC3 made spellable. It was
         // absent here while the compound forms lived in `_expr_body` alone, and the
@@ -2276,12 +2252,16 @@ end
         (
             "NEGATIVE — an Int64 is not an Iterable".into(),
             "  operation c() -> Int64 = ti(1)".into(),
-            Verdict::RefusesLocated("expected Iterable, got Int64"),
+            Verdict::RefusesLocated(
+                "requirement `anthill.prelude.Iterable[C = anthill.prelude.Int64]` cannot be supplied",
+            ),
         ),
         (
             "NEGATIVE — a Row is not an Iterable".into(),
             "  operation c(r: Row) -> Int64 = ti(r)".into(),
-            Verdict::RefusesLocated("expected Iterable, got Row"),
+            Verdict::RefusesLocated(
+                "requirement `anthill.prelude.Iterable[C = capmatrix_chain.Row]` cannot be supplied",
+            ),
         ),
         (
             // NOT a negative for the SLOT, and the distinction matters: member
@@ -2358,7 +2338,7 @@ namespace capmatrix_rem
   operation pick_ss(sss: List[T = Set[T = Int64]], e: sss.T) -> Int64 = 1
   operation takes_list(xs: List[T = Int64]) -> Int64 = 1
   operation takes_set(xs: Set[T = Int64]) -> Int64 = 1
-  operation ti(c: Iterable) -> Int64 = 1
+  operation ti(c: Iterable.C) -> Int64 = 1
 {decl}
 end
 "#
@@ -2386,9 +2366,9 @@ end
             Verdict::Loads,
         ),
         (
-            "lambda / through a provision chain (CORRECT — an arrow is no Iterable)".into(),
+            "lambda / through a provision chain (CORRECT — an arrow provides no Iterable)".into(),
             "  operation c() -> Int64 = ti(lambda x -> 7)".into(),
-            Verdict::RefusesLocated("expected Iterable"),
+            Verdict::RefusesLocated("a STRUCTURAL FORMER"),
         ),
         (
             "lambda / from a sibling projection".into(),

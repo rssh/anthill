@@ -87,6 +87,22 @@
 //! `expected Box[T = Int64], got Box[T = Box[T = Int64]]`, so it is recorded as not-driven
 //! rather than as the reason.
 
+//!
+//! ## WI-20261005-KSSA4 — the row is written in the REQUIREMENT, where the carrier is a parameter
+//!
+//! `ask(s: Spec[E = {Error}], p)` types `s` at a spec over its parameter `C`, and a value
+//! typed there is not a value of a sort that provides it: `Spec.go(s, p)` refuses it, and
+//! the reflexive arm above — which read such a receiver's own arguments as the spec's — is
+//! gone. "I take a pure model" is written `ask[P](s: P, p) requires Spec[C = P, E = {}]`,
+//! and the rows over a carrier-parameter spec ask the same question there: does the row
+//! WRITTEN IN THE CLAUSE reach the call's effect instantiation, so that a declared row
+//! omitting it is refused by name. The back-out table above was measured on the spec-typed
+//! spelling, on a reader that is deleted; what the rows over a carrier-parameter spec fail
+//! under now is the calling scope's own clause not being read — four of them, in
+//! `wi_kssa4_spec_typed_value_test`'s ledger (part 4). The self-receiver rows are
+//! untouched: a spec that receives on itself is its own carrier, and `s: Spec2[E =
+//! {Error}]` is a value of it.
+
 use crate::common::{assert_refused_naming, try_load_kb_with_files};
 
 /// The load diagnostics for the stdlib plus these sources, empty when it loads.
@@ -193,6 +209,23 @@ end
     )
 }
 
+/// The caller over a spec whose operations receive on its parameter `C`: `s` is a value of
+/// any sort `P`, and the spec is required of `P` at the written `binding`.
+fn requiring_caller(ns: &str, spec_ns: &str, spec: &str, binding: &str, declared: &str) -> String {
+    format!(
+        r#"
+namespace test.pyns2.{ns}
+  import anthill.prelude.{{Error, String, External, EffectsRuntime}}
+  import test.pyns2.out.{{Out}}
+  import test.pyns2.{spec_ns}.{{{spec}}}
+  operation ask[P](s: P, p: String) -> Out
+    effects {declared}
+    requires {spec}[C = P, {binding}] = {spec}.go(s, p)
+end
+"#
+    )
+}
+
 fn expect_loads(what: &str, srcs: &[&str]) {
     let errs = load_errors(srcs);
     assert!(errs.is_empty(), "{what} must load; got: {errs:#?}");
@@ -201,22 +234,18 @@ fn expect_loads(what: &str, srcs: &[&str]) {
 /// THE TICKET'S ACCEPTANCE, first two clauses: the written row REACHES the call, at a
 /// non-empty row and at the empty one.
 ///
-/// BACKED OUT (the reflexive arm returned to UNDER `carrier_is_abstract_spec`): both rows
-/// red, with `expected declared: [Error, Error], got undeclared effect: ?_` and
-/// `expected declared: [Error], got undeclared effect: ?_`.
 #[test]
 fn a_written_row_type_argument_reaches_the_calls_effect_instantiation() {
-    let bound = caller("c1", "spec", "Spec", "E = {Error}", "{s.E, Error}");
+    let bound = requiring_caller("c1", "spec", "Spec", "E = {Error}", "{Error}");
     expect_loads(
-        "a written row type-argument projected into the declared row",
+        "a row written in the requirement, incurred by the call and declared",
         &[OUT, SPEC, &bound],
     );
     // The EMPTY row is the ticket's own control for "the fix binds the row rather than
-    // special-casing a non-empty one". It failed IDENTICALLY before, so within this file it
-    // is coverage and not a control — what it rules out is a repair keyed on the row having
-    // a label in it.
-    let empty = caller("c2", "spec", "Spec", "E = {}", "{s.E, Error}");
-    expect_loads("an EMPTY written row type-argument", &[OUT, SPEC, &empty]);
+    // special-casing a non-empty one" — what it rules out is a reading keyed on the row
+    // having a label in it.
+    let empty = requiring_caller("c2", "spec", "Spec", "E = {}", "{Error}");
+    expect_loads("an EMPTY row written in the requirement", &[OUT, SPEC, &empty]);
 }
 
 /// THE TICKET'S THIRD ACCEPTANCE CLAUSE, and the one that says the row was BOUND rather
@@ -229,7 +258,7 @@ fn a_written_row_type_argument_reaches_the_calls_effect_instantiation() {
 /// separates them.
 #[test]
 fn a_label_the_declared_row_omits_is_refused_by_its_own_name() {
-    let src = caller("c3", "spec", "Spec", "E = {External}", "{Error}");
+    let src = requiring_caller("c3", "spec", "Spec", "E = {External}", "{Error}");
     let errs = load_errors(&[OUT, SPEC, &src]);
     assert_refused_naming(
         &errs,
@@ -242,11 +271,11 @@ fn a_label_the_declared_row_omits_is_refused_by_its_own_name() {
         "no refusal may name an unresolved row var — that is the defect, not the verdict; \
          got: {errs:#?}"
     );
-    // And the row the receiver DOES admit is accepted, so the refusal above is about the
-    // omission and not about `External` being unreachable through a projection at all.
-    let ok = caller("c4", "spec", "Spec", "E = {External}", "{s.E, Error}");
+    // And the row the requirement DOES state is accepted, so the refusal above is about the
+    // omission and not about `External` being unreachable through the clause at all.
+    let ok = requiring_caller("c4", "spec", "Spec", "E = {External}", "{External, Error}");
     expect_loads(
-        "a declared row that projects the receiver's `External`",
+        "a declared row that states the requirement's `External`",
         &[OUT, SPEC, &ok],
     );
 }
@@ -282,12 +311,12 @@ fn a_self_receiver_spec_op_reads_the_written_row() {
 /// guardians `Llm` shape the ticket set out to enable, whose spec has two carriers.
 #[test]
 fn a_provided_spec_reads_the_written_row() {
-    let ok = caller("c7", "provided", "Spec3", "E = {Error}", "{s.E, Error}");
+    let ok = requiring_caller("c7", "provided", "Spec3", "E = {Error}", "{Error}");
     expect_loads(
         "a carrier-param spec op with a provider, at a written row",
         &[OUT, SPEC_PROVIDED, &ok],
     );
-    let bad = caller("c8", "provided", "Spec3", "E = {External}", "{Error}");
+    let bad = requiring_caller("c8", "provided", "Spec3", "E = {External}", "{Error}");
     assert_refused_naming(
         &load_errors(&[OUT, SPEC_PROVIDED, &bad]),
         &["undeclared effect: External"],
@@ -377,7 +406,7 @@ end
 
 #[test]
 fn a_bodyless_op_on_an_unimplemented_spec_agrees_with_its_self_receiver_twin() {
-    let carrier_param = caller("cA", "bodyless", "Spec5", "E = {Error}", "{s.E, Error}");
+    let carrier_param = requiring_caller("cA", "bodyless", "Spec5", "E = {Error}", "{Error}");
     expect_loads(
         "a body-less carrier-param spec op on a spec nothing provides, at a written row",
         &[OUT, SPEC_BODYLESS, &carrier_param],

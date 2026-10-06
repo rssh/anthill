@@ -5,7 +5,7 @@
 //!
 //! Before WI-392, `rewrap[A](b: Box[T = A]) -> Box[T = A] = idbox(b)` failed to
 //! load: `idbox`'s flexible `A` resolved to `rewrap`'s own `A`, an unbound
-//! `Var::Global`, which `check_unconstrained_type_params` reported as
+//! `Var::Global`, which `first_unconstrained_type_param` reported as
 //! "unconstrained — use `idbox[A = …](…)`". Skolemizing `rewrap`'s `A` to a
 //! `Var::Rigid` while checking its body makes that resolution land on a rigid
 //! (which the check passes, since it flags only bare `Global`s), while keeping

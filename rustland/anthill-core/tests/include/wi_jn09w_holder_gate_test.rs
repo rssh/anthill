@@ -1,12 +1,10 @@
-//! WI-20260929-JN09W — a value in scope discharges a requirement only where its type says
-//! what the call pinned.
+//! WI-20260929-JN09W — a value in scope does not stand in for the carrier a call pinned.
 //!
-//! A requirement nothing can build is still met when a value in scope HOLDS it: its type's
-//! carrier answers the requirement (§8.7's route through a value in scope;
-//! `scope_contract_covers_dep`). The provision leg of that route swaps the holder's type in
-//! for the requirement's carrier and asks the provider facts. Where the call PINNED the
-//! carrier, the leg swapped in any holder of the pinned carrier's SORT. MEASURED on the
-//! parent commit, in both spellings of `Buf`'s `N` unless one is named:
+//! A requirement nothing can build is still met when a value in scope HOLDS it (§8.7's
+//! route (2); `scope_contract_covers_dep`). One leg of that route swapped a holder's TYPE
+//! in for the requirement's carrier and asked the provider facts; where the call had PINNED
+//! the carrier, it swapped in any holder of the pinned carrier's SORT. MEASURED on this
+//! ticket's parent commit, in both spellings of `Buf`'s `N` unless one is named:
 //!
 //! * A HOLDER AT ANOTHER BINDING. `User requires Store[State = S]`, `go1(s: S) =
 //!   Store.peek(s)`, and `run(b: Buf[T = Int64, N = Bool], c: Buf[T = String, N = Bool]) =
@@ -23,41 +21,40 @@
 //!   `go13(mkS(), b, b)`, the holder `c` beside it. Read one link, the requirement named no
 //!   `Buf`: at `value` its carrier was then dropped as unpinned and `c` answered (loaded,
 //!   died the same way), and at `typed` it was refused naming `Store[State = User.S]`. Read
-//!   to the chain's end (WI-20260929-020TH) it pins `b`'s type, and only this gate keeps `c`
-//!   from answering for it.
+//!   to the chain's end (WI-20260929-020TH) it pins `b`'s type.
 //!
-//! The swap is now held to being a refinement: the holder's type must say every argument the
-//! pin states (`holder_says_the_pin`). A holder at another binding says something else, one
-//! whose own argument is open says less, and neither is the pinned carrier. A pin that
-//! states nothing — the bare sort, the type of a result nothing has named — is still refined
-//! by its own argument's type.
+//! This ticket held the swap to a REFINEMENT — the holder's type had to say every argument
+//! the pin states. WI-20261005-2KV4Y then deleted the leg: a slot the pin left open was
+//! still filled by any holder, and a carrier the call did not pin at all by any value. The
+//! one thing the swap was FOR — a carrier written as its bare sort, the type of a result
+//! nothing has named — is construction's to answer, and it does: a sort written with slots
+//! left out is asked at its open slots and a dictionary is built
+//! (`resolve_opening_unwritten_slots`). No value's type stands in for a carrier any more.
 //!
 //! A refusal row asserts a LOAD verdict naming the requirement at the binding the call pinned
 //! — nothing there can run, the requirement having no provider — and fails naming every
-//! spelling it failed at. The two refinement rows run.
+//! spelling it failed at. The two bare-carrier rows run.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ───────────────────────────────
 //!
-//! EACH PART backed out present-but-wrong, APPLIED AND RUN over this file's 8 rows. A row
-//! named without a spelling fails at both.
+//! RE-MEASURED with WI-20261005-2KV4Y: each part of the code as it now stands backed out
+//! present-but-wrong, APPLIED AND RUN over this file's 8 rows. A row named without a
+//! spelling fails at both.
 //!
-//! 1. THE COMPARISON — naming the pin's SORT is the whole test again, the parent commit's
-//!    gate. 4 FAIL, each "expected a refusal, got a clean load":
-//!    [`a_holder_at_another_binding_discharges_nothing`],
-//!    [`an_argument_that_says_less_discharges_nothing`],
-//!    [`a_sort_level_requirement_through_the_chain_is_not_held_by_another_buf`],
-//!    [`an_operation_level_requirement_through_the_chain_is_not_held_by_another_buf`].
-//! 2. AN OPEN ARGUMENT OF THE HOLDER IS NOT REFUSED — the comparison left to the cover walks'
-//!    verdict, under which an open variable relates to anything. 1 FAILS:
-//!    [`an_argument_that_says_less_discharges_nothing`].
-//! 3. A PINNED CARRIER IS NEVER SWAPPED — the gate a first cut of this change wrote. 2 FAIL,
-//!    each refused at load: [`an_unnamed_result_pins_the_bare_sort_and_its_own_type_refines_it`]
-//!    and [`an_unnamed_stack_is_measured`]. The same two fail with the holder's bare type not
-//!    expanded before the swap (`expand_sort_application`).
-//! 4. THE CHAIN-END READ of WI-20260929-020TH (`spec_param_binding_term` on the parent
-//!    commit's read). 2 FAIL, the two chain rows: the op-level one loads clean, and so does
-//!    the sort-level one at `value`; at `typed` it is refused naming `Store[State = User.S]`
-//!    — a requirement that names no `Buf`, the only reason no `Buf` in scope was offered.
+//! 1. THE BARE CARRIER NOT OPENED (`resolve_opening_unwritten_slots` answering the goal as
+//!    written). 2 FAIL, each refused at load:
+//!    [`an_unnamed_result_pins_the_bare_sort_and_gets_a_dictionary`] and
+//!    [`an_unnamed_stack_is_measured`].
+//! 2. THE CHAIN-END READ of WI-20260929-020TH (`spec_param_binding_term` on its parent
+//!    commit's read). 2 FAIL, the two chain rows: the op-level one loads clean, and the
+//!    sort-level one is refused at `User.mkS()` and at `User.go13`, each naming
+//!    `Store[State = User.S]` — a requirement that names no `Buf`.
+//!
+//! [`a_holder_at_another_binding_discharges_nothing`] and
+//! [`an_argument_that_says_less_discharges_nothing`] FAIL UNDER NEITHER, and under no other
+//! part of today's code: there is no swap left to back out. Their measurement is this
+//! ticket's own — on its parent commit each was "expected a refusal, got a clean load" —
+//! and what they guard is a value's type being put in a pinned carrier's place again.
 //!
 //! PASS UNDER EVERY ONE, by design: [`with_no_buf_at_the_call_it_is_refused_the_same_way`]
 //! (no `Buf` to offer) and [`without_the_holder_the_call_is_refused_the_same_way`] (the only
@@ -245,13 +242,14 @@ fn an_operation_level_requirement_through_the_chain_is_not_held_by_another_buf()
     });
 }
 
-// ── a pin the holder's type refines ───────────────────────────────────────────────────
+// ── a carrier written as its bare sort ────────────────────────────────────────────────
 
 /// A RESULT NOTHING NAMES keeps its slots open, so `size(PBag.empty())` pins the carrier as
-/// the BARE sort. The argument's own type, applied, says the same carrier more fully and is
-/// swapped in: the call loads and answers 0. The control for a gate that refuses too much.
+/// the BARE sort — which no provision is written at. Asked at the sort's open slots, the
+/// requirement is the one `PBag`'s own provision answers: a dictionary is built, and the
+/// call answers 0.
 #[test]
-fn an_unnamed_result_pins_the_bare_sort_and_its_own_type_refines_it() {
+fn an_unnamed_result_pins_the_bare_sort_and_gets_a_dictionary() {
     let src = r#"
 namespace wijn09w.bag
   import anthill.prelude.{List, Int64}

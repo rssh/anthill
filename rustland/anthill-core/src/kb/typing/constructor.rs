@@ -533,9 +533,8 @@ fn effects_param_head_is(
 /// WI-20260923-32XFQ — the constructor field a receiver projection threads into: `(spec
 /// base, its bindings)` when the declared field type APPLIES a spec (`Stream[Src, ES]`),
 /// else `None` — a bare-sort field has no params to thread, and a structural field (arrow /
-/// row) is not a receiver slot. The prologue [`bare_spec_arg_self_projection`],
-/// [`carrier_arg_provision_projection`] and [`bare_spec_arg_provision_projection`] each
-/// spelled.
+/// row) is not a receiver slot. The prologue [`bare_spec_arg_self_projection`] and
+/// [`bare_spec_arg_provision_projection`] each spelled.
 fn applied_spec_field(
     kb: &KnowledgeBase,
     declared_field_type: &Value,
@@ -569,7 +568,7 @@ fn applied_spec_field(
 /// row parameter as one, and that spelling keeps the wrap it had: no program brings one
 /// here with the carrier named beside it, so changing it would be changing something
 /// nothing measures.
-fn effect_row_param_value(
+pub(super) fn effect_row_param_value(
     kb: &mut KnowledgeBase,
     field_base: Symbol,
     member_short: &str,
@@ -597,13 +596,13 @@ fn effect_row_param_value(
 /// A bare receiver `s: Stream` (no type-args written) carries its element and its
 /// effect row as the projections `s.T` / `s.E` — both equally. But its argument
 /// type, read from the env, is the bare sort ref `Stream`, which carries NEITHER.
-/// Unifying that bare ref against a parameterized field type `source: Stream[Src,
-/// ES]` therefore binds NOTHING — the field's own params stay free. The element
+/// Unifying that bare ref against a parameterized field type `source: Stream[SourceElement,
+/// SourceEffects]` therefore binds NOTHING — the field's own params stay free. The element
 /// only ever appeared to thread because a SIBLING field's declared type wrote the
-/// projection (`mapped`'s transform `fn: (Src) -> T`, fed `f: (x: s.T) -> Dst`,
-/// pins `Src = s.T`); the effect row, written nowhere a value flows through, was
-/// left an unresolved `??_` (and then the provided `Stream[E = {ES, EF}]` could
-/// not match the declared `Stream[E = {s.E, EffP}]` return).
+/// projection (`mapped`'s transform `fn: (SourceElement) -> T`, fed `f: (x: s.T) -> Dst`,
+/// pins `SourceElement = s.T`); the effect row, written nowhere a value flows through, was
+/// left an unresolved `??_` (and then the provided `Stream[E = {SourceEffects,
+/// TransformEffects}]` could not match the declared `Stream[E = {s.E, EffP}]` return).
 ///
 /// When the argument IS such a bare receiver and the field type applies the same
 /// base, rebuild the argument's type as the receiver's self-projection `B[p =
@@ -645,15 +644,15 @@ fn bare_spec_arg_self_projection(
     // receiver, so it must thread the same way — in particular the effect-row param must
     // still bind the single-label ROW `{s.E}` rather than the bare projection, which is
     // the whole point of the loop below. MEASURED: without it, `mapped(s, f)` built
-    // `MappedStream[ES = s.E, …]` where the provider view wants `ES = {s.E}`, and
-    // `bare_map`'s declared `Stream[E = {s.E, EffP}]` return stopped conforming (wi594).
-    // CANONICAL, not raw `Symbol`: one logical sort carries different `Symbol` ids across
-    // import scopes ([`provider_spec_view_bindings`] documents that it does). A raw compare
-    // declines here whenever the field type was resolved in another scope than the argument,
-    // and [`bare_spec_arg_provision_projection`] — which excludes the self case canonically —
-    // declines it too, so the receiver would thread NOWHERE and leak `??_`: the very WI-594
-    // symptom, reintroduced by a spelling. Both sides ask the same question, so both ask it
-    // the same way.
+    // `MappedStream[SourceEffects = s.E, …]` where the provider view wants `SourceEffects =
+    // {s.E}`, and `bare_map`'s declared `Stream[E = {s.E, EffP}]` return stopped conforming
+    // (wi594). CANONICAL, not raw `Symbol`: one logical sort carries different `Symbol` ids
+    // across import scopes ([`provider_spec_view_bindings`] documents that it does). A raw
+    // compare declines here whenever the field type was resolved in another scope than the
+    // argument, and [`bare_spec_arg_provision_projection`] — which excludes the self case
+    // canonically — declines it too, so the receiver would thread NOWHERE and leak `??_`: the
+    // very WI-594 symptom, reintroduced by a spelling. Both sides ask the same question, so
+    // both ask it the same way.
     if bare_receiver_sort(kb, &arg.ty, recv).map(|s| kb.canonical_sort_sym(s))
         != Some(kb.canonical_sort_sym(field_base))
     {
@@ -674,8 +673,9 @@ fn bare_spec_arg_self_projection(
         // `{s.E}`, not the bare projection. The field's effect param is a row TAIL,
         // and a projection in a row is an ATOM (`present`) — the source-written
         // `{s.E, EffP}` return wraps it exactly so. Binding the row keeps the
-        // provision's `{ES, EF}` structurally a present-atom + tail, matching the
-        // declared return. A SORT param threads the bare projection (`Src = s.T`).
+        // provision's `{SourceEffects, TransformEffects}` structurally a present-atom + tail,
+        // matching the declared return. A SORT param threads the bare projection
+        // (`SourceElement = s.T`).
         let proj_val = effect_row_param_value(kb, field_base, &member_short, Value::term(proj));
         // Key by the FIELD's binding symbol so `unify_parameterized_view`'s
         // by-symbol param match threads it.
@@ -737,70 +737,9 @@ pub(super) fn is_self_projection_of(
 
 /// True iff `t` is already an `effects_rows(EffectExpression)` Type — so an
 /// effect-row provision value read pre-wrapped from a provider source is not
-/// double-wrapped by [`carrier_arg_provision_projection`].
+/// double-wrapped by [`effect_row_param_value`].
 fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
     matches!(type_head(kb, &TermIdView(t)), TypeHead::EffectsRows)
-}
-
-/// WI-599 — the per-param values a bare carrier argument supplies for the spec
-/// `field_base`, keyed by `field_base`'s param SHORT names. The binding source
-/// behind [`carrier_arg_provision_projection`].
-///
-/// The supported case is the spec-METHOD one: an op `op(c: C, …)` ON the spec,
-/// where the argument's carrier `arg_carrier` IS the enclosing spec's carrier
-/// param and the enclosing spec IS `field_base` (`FiniteCollection.map`'s
-/// `c : C`). The provision is the spec's own self-type — each param maps to
-/// itself (`C↦C, Element↦Element, E↦E`), so the constructed sort threads the
-/// spec's abstract params onto the field's. The spec's params are RIGIDIFIED
-/// while the body is checked (`op.sort_param_rigids`), so each param's value is
-/// its rigid form — not the pre-rigidify Global var `sort_type_params_as_pairs`
-/// returns — or it would not unify with the sibling field's argument (which
-/// references the body's rigid vars).
-///
-/// (A free op licensing `c` through an ambient `requires FiniteCollection[C = C2,
-/// …]` is NOT handled here: this function answers only for the spec-method face —
-/// the shape the stdlib thin `FiniteCollection.map`/`filter` use — and returns
-/// `None` at the `enclosing_sort() == field_base` gate for anything else. WI-942
-/// removed the reason this used to give, which was that the op's own type params
-/// are `Ref`s "that do not resolve to the body's rigid vars": they do resolve now,
-/// through `TypingEnv::param_rigids`. What is missing is the wiring, not the
-/// information — this site reads the sort prefix, which by construction holds no
-/// op param.)
-pub(super) fn carrier_provision_short_bindings(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    arg_carrier: &str,
-    field_base: Symbol,
-) -> Option<Vec<(String, Value)>> {
-    let spec = env.enclosing_sort()?;
-    if kb.canonical_sort_sym(spec) != kb.canonical_sort_sym(field_base) {
-        return None;
-    }
-    let params = sort_type_params_as_pairs(kb, spec);
-    let (carrier_param, _) = params.first()?;
-    if short_name_of(kb.local_name_of(*carrier_param)) != arg_carrier {
-        return None;
-    }
-    let rigids = env.enclosing_instance_param_rigids().to_vec();
-    Some(
-        params
-            .iter()
-            .map(|(p, t)| {
-                let val = match kb.get_term(*t) {
-                    Term::Var(Var::Global(vid)) => rigids
-                        .iter()
-                        .find(|(v, _)| v == vid)
-                        .map(|(_, r)| *r)
-                        .unwrap_or(*t),
-                    _ => *t,
-                };
-                (
-                    short_name_of(kb.local_name_of(*p)).to_owned(),
-                    Value::term(val),
-                )
-            })
-            .collect(),
-    )
 }
 
 /// WI-20260828-MDWEW — is every TYPE-PARAMETER leaf of `t` a parameter of `sort` ITSELF?
@@ -857,359 +796,106 @@ fn param_leaves_belong_to_sort(kb: &KnowledgeBase, t: TermId, own_params: &[Symb
     }
 }
 
-/// WI-20260828-MDWEW — the AMBIENT-`requires` face of [`carrier_provision_short_bindings`],
-/// the one its own doc named as missing.
+/// WI-20261005-KSSA4 — A CONSTRUCTION MEETS ITS SORT'S REQUIREMENTS WHERE THE VALUE IS BUILT.
 ///
-/// The spec-METHOD face above answers when the op is ON the field's spec, so the spec's own
-/// parameters ARE the provision. An op on a DIFFERENT sort — `FiniteCollection.map`'s
-/// `mapped(c, f)`, whose field is typed on `Iterable` — has no such self-type, and its
-/// argument `c : C` is a bare type parameter with no carrier sort to read a `provides` off.
-/// The statement "`C` provides `Iterable`, with these params" is one level out, in the
-/// ENCLOSING SORT's own `requires Iterable[C = C, Element = Element, E = E]`. This reads it.
+/// The value carries no dictionary. An operation reached THROUGH it — a member dispatched
+/// on the value, an operation of a spec the sort provides — resolves the sort's `requires`
+/// from the value itself, at run time ([`crate::eval`]'s value-directed frame), and enters
+/// the frame without one where nothing answers. So a value built at an instance the
+/// requirement has no supply for is a value no operation of the sort can run on, and the
+/// construction is the last site that knows the instance.
 ///
-/// It is the CONSTRUCTION-side twin of [`enclosing_requires_licensing_clause`] (which does
-/// the same lookup for DISPATCH), and it borrows that function's two load-bearing rules:
+/// MEASURED, with `MappedStream`'s field typed by its own `Source` and this check absent:
+/// `mapped(5, f)` at a return type that pins every parameter loaded clean, was admitted at
+/// `s: Stream`, and died `__req_iterable not bound in caller frame` inside
+/// `MappedStream.splitFirst`. The field used to be typed at the spec, which refused the `5`;
+/// a field typed by the parameter says nothing about the carrier, and the clause is what
+/// does.
 ///
-///   * THE CLAUSE MUST BE ABOUT THIS ARGUMENT. `requires Iterable[C = P]` says nothing about
-///     an argument typed by a different parameter `Q`, so the clause's own CARRIER binding is
-///     resolved and compared against the argument's — by VarId IDENTITY, through the body
-///     rigids. A short-name compare would pair two unrelated `C`s, and a clause may write
-///     another sort's parameters into the slots and PERMUTE them.
-///   * EVERY ENCLOSING PARAMETER IN A VALUE IS RESOLVED TO ITS BODY RIGID, however deep, and
-///     what is still undetermined after that makes the whole clause decline. A `requires`
-///     clause is stored against the pre-rigidify parameter forms while the body references
-///     the rigids, so a clause value naming an enclosing parameter must cross that bridge or
-///     it will not unify with the sibling field's argument — and a COMPOUND value carries
-///     those forms in its leaves, which is why the substitution is a walk and not a lookup.
-///     A GROUND value (`requires Eq[T = Int64]`) survives it and binds verbatim.
+/// SUPPLY IS ASKED THROUGH THE BUILDER A CALL INTO THE SORT ASKS ([`build_concrete_dispatch_
+/// dict`]): a provision at the instance, the constructing scope's own `requires`, a declared
+/// bracket — and, inside the sort at the instance the scope itself runs at, the scope's own
+/// frame. ONE DIFFERENCE, and [`RequirementUse::Construction`] is what tells the builder: a
+/// call needs its dictionary now, so an element it leaves open is refused; a construction
+/// needs none, and a slot it leaves open — fixed by the call the value is then passed to —
+/// is left to that use. What is refused here is a requirement no provision could answer at
+/// what the construction did fix ([`some_provision_could_answer`]). A refusal is raised here
+/// and not parked: the park exists for a callee whose body is not typed yet, and a
+/// construction has none.
 ///
-/// The carrier parameter is the spec's FIRST type parameter — the same convention, and the
-/// same fail-CLOSED limitation, that [`enclosing_requires_licensing_clause`] gate 1 states.
-pub(super) fn enclosing_requires_provision_bindings(
+/// ONLY IN AN OPERATION BODY. A rule's term is matched, not built: its types are whatever
+/// the rule's variables stand for, an element left open there is the ordinary case, and an
+/// operation the rule reaches resolves the requirement from the bound value or suspends
+/// ([`resolve_bridge_requirements`]).
+///
+/// A CONSTANT'S BODY IS NOT REACHED, and that is a gap this leaves as it found it: a
+/// constant is folded to a value and typed as one ([`constructor_value_type`]), a reader
+/// with no refusal to give, so `const c: Hold[E = Other] = hold(other())` loads (MEASURED,
+/// on this tree and its parent alike).
+fn construction_meets_sort_requires(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    arg_id: TermId,
-    field_base: Symbol,
-) -> Option<Vec<(String, Value)>> {
-    let encl = env.enclosing_sort()?;
-    let rigids = env.enclosing_instance_param_rigids().to_vec();
-    if rigids.is_empty() {
-        return None;
+    subst: &Substitution,
+    ctor_sym: Symbol,
+    sort: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if env.enclosing_op().is_none() || direct_requires_chain_rc(kb, sort).is_empty() {
+        return Ok(());
     }
-    // The argument's own parameter, by IDENTITY: it reaches here as that parameter's body
-    // rigid, and the rigid table is the only exact map back to the parameter it stands for.
-    let arg_pvid = rigids.iter().find(|(_, r)| *r == arg_id).map(|(v, _)| *v)?;
-    let encl_params = sort_type_params_as_pairs(kb, encl).to_vec();
-    let encl_param_syms: Vec<Symbol> = encl_params.iter().map(|(p, _)| *p).collect();
-    let spec_params = sort_type_params_as_pairs(kb, field_base).to_vec();
-    let (carrier_param, _) = spec_params.first()?;
-    let carrier_pvid = type_param_vid_in_sort(kb, field_base, *carrier_param)?;
-
-    // A clause value → the enclosing parameter's VarId. SYMBOL IDENTITY against the sort's
-    // own registrations (cf. `enclosing_requires_licensing_clause`'s `rigid_of`), never a
-    // name join: a clause may name another sort's parameters and permute them.
-    let clause_param_vid = |kb: &KnowledgeBase, t: TermId| -> Option<VarId> {
-        match kb.get_term(t) {
-            Term::Ref(sym) => {
-                let sym = *sym;
-                encl_params
-                    .iter()
-                    .find(|(p, _)| *p == sym)
-                    .and_then(|(_, pty)| match kb.get_term(*pty) {
-                        Term::Var(Var::Global(v)) => Some(*v),
-                        _ => None,
-                    })
-            }
-            Term::Var(Var::Global(v)) => Some(*v),
-            _ => None,
-        }
+    let enclosing_sort = env.enclosing_sort();
+    let ctx = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
     };
-
-    // The sort's OWN clauses, not the flattened chain: a TRANSITIVELY required spec's
-    // clause is written in THAT sort's parameters, which resolve to none of the enclosing
-    // sort's rigids — so reading one would either be rejected by the gate below or, worse,
-    // bind a foreign variable. The dispatch-side twin reads `direct_requires` for the same
-    // reason.
-    for entry in direct_requires(kb, encl) {
-        if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(field_base) {
-            continue;
-        }
-        let Some((_base, clause_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            continue;
-        };
-        // Clause binding ↦ the spec parameter it is FOR, by VarId identity (the clause's
-        // keys and the spec's declared parameters are resolved in two scopes).
-        let bound_for = |kb: &KnowledgeBase, want: VarId| -> Option<TermId> {
-            clause_bindings
-                .iter()
-                .find(|(p, _)| type_param_vid_in_sort(kb, field_base, *p) == Some(want))
-                .map(|(_, t)| *t)
-        };
-        // THE CLAUSE MUST BE ABOUT THIS ARGUMENT.
-        let Some(cval) = bound_for(kb, carrier_pvid) else {
-            continue;
-        };
-        if clause_param_vid(kb, cval) != Some(arg_pvid) {
-            continue;
-        }
-        let mut out: Vec<(String, Value)> = Vec::with_capacity(spec_params.len());
-        for (p, _) in spec_params.iter() {
-            // A spec parameter the clause leaves unwritten is OMITTED, not guessed: the
-            // caller `?`-declines the whole projection when the field binds a parameter this
-            // provision does not name, so a partial clause refuses loudly instead of
-            // threading some params and leaking the rest.
-            let Some(pvid) = type_param_vid_in_sort(kb, field_base, *p) else {
-                continue;
-            };
-            let Some(v) = bound_for(kb, pvid) else {
-                continue;
-            };
-            // A leaf naming a FOREIGN sort's parameter is not this clause's to determine, and
-            // the substitution below would silently claim it whenever its short name collides
-            // with one of `encl`'s ([`param_leaves_belong_to_sort`] states the measurement).
-            if !param_leaves_belong_to_sort(kb, v, &encl_param_syms) {
-                return None;
-            }
-            // EVERY enclosing parameter in the value crosses to its BODY RIGID, however deep.
-            // A `requires` clause is stored against the PRE-RIGIDIFY forms while the body
-            // references the rigids, and a COMPOUND value (`Element = Option[T = Other]`, a
-            // row `E = {ES}`) carries those forms in its LEAVES. Resolving only a bare
-            // `Ref`/`Var` and binding anything else as read left those leaves free, and the
-            // sibling field then bound them to whatever the call supplied — `/code-review`
-            // MEASURED a program loading clean whose clause said `Option[T = Other]` while
-            // its callback took `Option[T = Element]`, two INDEPENDENT parameters of the
-            // enclosing sort. That is granting a licence and binding a wrong rigid together,
-            // the hazard the dispatch-side twin's gate-1 doc names. The SHALLOW spelling of
-            // that same disagreement was already refused, so the deep one was a hole in an
-            // otherwise-closed door.
-            let bound = substitute_carrier_params(kb, v, encl, &rigids);
-            // DETERMINED AFTER SUBSTITUTION, or the clause supplies NOTHING. A leaf that
-            // named no enclosing parameter survives substitution unchanged: a concrete sort
-            // is determined and binds verbatim (`requires Eq[T = Int64]`), while a foreign
-            // sort's parameter (`Element = Other.X`) or a leftover pre-rigidify var is a
-            // variable this clause does not decide — and binding one is what made it unify
-            // as if free. Fail-CLOSED for the whole clause, not per param: a half-read
-            // provision would thread some params and leak the rest, which reads as working.
-            if !type_value_is_ground_g(kb, bound, true) {
-                return None;
-            }
-            // Keyed by SHORT NAME because that is [`carrier_provision_short_bindings`]'
-            // contract with its one caller, and safe there: these are the parameters of ONE
-            // sort, whose short names are unique by construction. The JOINS above are all
-            // by VarId; only this output key is a name.
-            out.push((
-                short_name_of(kb.local_name_of(*p)).to_owned(),
-                Value::term(bound),
-            ));
-        }
-        return Some(out);
-    }
-    None
+    let another_instance =
+        enclosing_sort == Some(sort) && !call_is_at_callers_instance(kb, sort, &ctx);
+    let caller_requires = env.enclosing_frame_chain().clone();
+    let caller_requires = if another_instance {
+        chain_at_callers_instance(kb, &caller_requires, env.param_rigids())
+    } else {
+        caller_requires
+    };
+    let refused = |refusal| TypeError::UnsatisfiableRequirement {
+        span,
+        op: ctor_sym,
+        callee_sort: sort,
+        usage: RequirementUse::Construction,
+        refusal,
+    };
+    let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
+    // No held bracket: a `require[…]` is a rule clause's, and this is an operation body.
+    build_concrete_dispatch_dict(
+        kb,
+        None,
+        &[],
+        subst,
+        sort,
+        None,
+        enclosing_sort,
+        &caller_requires,
+        env.param_rigids(),
+        &[],
+        RequirementUse::Construction,
+        Some(&mut unsuppliable),
+    )
+    .map_err(refused)?;
+    unsuppliable.map_or(Ok(()), |refusal| Err(refused(refusal)))
 }
 
-/// WI-20260829-70XVH — every TYPE PARAMETER inside a stored `requires` value, crossed to
-/// the BODY RIGID the operation is being checked at. `None` when one of them is a parameter
-/// this body does not hold.
-///
-/// The IDENTITY-KEYED twin of [`substitute_carrier_params`] + [`param_leaves_belong_to_sort`],
-/// which the two sort faces need as a pair because their leaf join is by LOCAL NAME anchored
-/// to a sort, and so can claim a FOREIGN sort's parameter whose short name collides (that
-/// function's doc carries the measurement). Here the join is the leaf's own canonical
-/// variable ([`type_param_global_var`]) against `rigids`, which IS the list of parameters in
-/// scope for this body — a foreign parameter is simply absent from it, so "is this ours" and
-/// "what is its rigid" have ONE answer and cannot disagree.
-///
-/// Fail-CLOSED, and the caller propagates that to the whole clause: a half-crossed provision
-/// would thread some params and leave the rest free for the sibling field to bind, which is
-/// granting a licence and binding a wrong rigid together.
-fn substitute_body_rigids(
-    kb: &mut KnowledgeBase,
-    tid: TermId,
-    rigids: &[(VarId, TermId)],
-) -> Option<TermId> {
-    // The PRE-RIGIDIFY parameter VARIABLE a row tail carries (`{ES}` lowers to
-    // `open[tail = Var]`, the tail anonymous — cf. `substitute_carrier_params` (1b)).
-    // A `Rigid` is accepted only when it is one THIS body holds, by the same identity test
-    // as every other join here: a stored `requires` is built at LOAD time and rigids are
-    // minted at CHECK time, so nothing can reach that arm today — but "already this body's
-    // own skolem" is an assumption, and left unenforced a FOREIGN body's skolem would pass
-    // the caller's `rigid_ok` groundness gate and be threaded into the field type, which is
-    // the granting-a-licence-and-binding-a-wrong-rigid hazard the sibling's doc names.
-    // (`/code-review`.) Any other var is undetermined and this clause does not decide it.
-    if let Term::Var(v) = kb.get_term(tid) {
-        return match v {
-            Var::Global(g) => {
-                let g = *g;
-                rigids.iter().find(|(rv, _)| *rv == g).map(|(_, r)| *r)
-            }
-            Var::Rigid(_) => rigids.iter().any(|(_, r)| *r == tid).then_some(tid),
-            _ => None,
-        };
-    }
-    if let Term::Ref(sym) | Term::Ident(sym) = kb.get_term(tid) {
-        let sym = *sym;
-        return match type_param_global_var(kb, sym) {
-            Some(vid) => rigids.iter().find(|(rv, _)| *rv == vid).map(|(_, r)| *r),
-            // Not a type parameter at all (`Int64`, a concrete sort): binds verbatim.
-            None => Some(tid),
-        };
-    }
-    // Any other compound: recurse into children, preserving the functor. A functor that is
-    // ITSELF a parameter is left alone and refused downstream by the caller's groundness
-    // gate (`type_value_is_ground_g` tests the functor), so nothing is claimed silently.
-    //
-    // CROSS EVERY CHILD FIRST, and only then rebuild. `map_fn_children` allocates as soon as
-    // any child changed, and `TermStore::alloc` increments the refcount ON A HIT — so
-    // rebuilding at a level this reader is about to DECLINE would pin a term nobody holds,
-    // once per call, on a store that has a free list (`/code-review`). The `?` here returns
-    // before any allocation at this level.
-    if let Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    } = kb.get_term(tid).clone()
-    {
-        let mut new_pos: SmallVec<[TermId; 4]> = SmallVec::with_capacity(pos_args.len());
-        for a in &pos_args {
-            new_pos.push(substitute_body_rigids(kb, *a, rigids)?);
-        }
-        let mut new_named: SmallVec<[(Symbol, TermId); 2]> =
-            SmallVec::with_capacity(named_args.len());
-        for (k, a) in &named_args {
-            new_named.push((*k, substitute_body_rigids(kb, *a, rigids)?));
-        }
-        if new_pos[..] == pos_args[..] && new_named[..] == named_args[..] {
-            return Some(tid);
-        }
-        return Some(kb.alloc(Term::Fn {
-            functor,
-            pos_args: new_pos,
-            named_args: new_named,
-        }));
-    }
-    Some(tid)
-}
-
-/// WI-20260829-70XVH — the OPERATION's own `requires` face of
-/// [`carrier_arg_provision_projection`]: the third and last declaration the statement
-/// "this carrier provides that spec" can be written on.
-///
-/// [`carrier_provision_short_bindings`] answers when the op is ON the field's spec, and
-/// [`enclosing_requires_provision_bindings`] when the ENCLOSING SORT requires it. Both read
-/// a SORT's declaration, and are therefore blind to the shape this one is for: an operation
-/// whose receiver is its OWN type parameter rather than its sort's carrier, carrying the
-/// clause itself — `gmap[Sc, S, …](s: Sc, …) requires Walk[C = Sc, Element = S, …]`. Such an
-/// operation may sit in no sort at all, or (the stdlib shape) in the DATA sort it constructs,
-/// whose own parameters say nothing about `Sc`.
-///
-/// WI-599 EXCLUDED IT AND NAMED A REASON THAT HAS SINCE EXPIRED — "op.rigidify not on env,
-/// requires-entry `Ref`s don't resolve to body rigids". WI-942 put the operation's OWN
-/// parameters into [`TypingEnv::param_rigids`], so a clause `Ref` resolves through
-/// [`type_param_global_var`] to a canonical var this body holds a rigid for; what was left
-/// was the wiring, which is this function.
-///
-/// The two load-bearing rules [`enclosing_requires_provision_bindings`] states hold here
-/// unchanged — THE CLAUSE MUST BE ABOUT THIS ARGUMENT, and EVERY PARAMETER IN A VALUE
-/// CROSSES TO ITS BODY RIGID or the whole clause declines — and both joins are by VarId
-/// identity. Two reads DIFFER, both because the clause is the OPERATION's:
-///
-///   * [`TypingEnv::param_rigids`] IN FULL, not the sort prefix. §5.3 lets an op-level clause
-///     name the operation's own type parameters as well as its enclosing sort's, one list —
-///     and the argument this face exists for is always one of the operation's own, which the
-///     prefix view excludes by construction.
-///   * the clause is decoded by [`op_requires_entry_carrier_map`], NOT
-///     [`unwrap_spec_view_value`]. An op-level `requires` is stored as the bare application
-///     `Fn{Spec, …}` rather than a `SortView` wrapper, and the SortView decoder reads a bare
-///     application as the NO-BINDINGS case — it would hand back an empty map, and this face
-///     would then answer for a clause it never read.
-pub(super) fn op_requires_provision_bindings(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    arg_id: TermId,
-    field_base: Symbol,
-) -> Option<Vec<(String, Value)>> {
-    let rigids = env.param_rigids().to_vec();
-    if rigids.is_empty() {
-        return None;
-    }
-    let spec_params = sort_type_params_as_pairs(kb, field_base).to_vec();
-    let (carrier_param, _) = spec_params.first()?;
-    let carrier_pvid = type_param_vid_in_sort(kb, field_base, *carrier_param)?;
-
-    // [`TypingEnv::op_requires`] is the LICENCE list — every clause the operation wrote,
-    // value preconditions included (see its setter). Only a SPEC requirement can say a
-    // carrier provides anything, so the precondition filter is this reader's own question and
-    // not an inherited one; the sort-symbol test below would drop them anyway, and stating it
-    // keeps a precondition whose functor happens to be a sort's name from ever being read as
-    // a provision.
-    for entry in env.op_requires().to_vec() {
-        if is_value_precondition_clause(kb, &entry.spec)
-            || kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(field_base)
-        {
-            continue;
-        }
-        let clause = op_requires_entry_carrier_map(kb, &entry);
-        // Clause binding ↦ the spec parameter it is FOR, by VarId identity (the clause's
-        // keys and the spec's declared parameters are resolved in two scopes).
-        let bound_for = |kb: &KnowledgeBase, want: VarId| -> Option<TermId> {
-            clause
-                .iter()
-                .find(|(p, _)| type_param_vid_in_sort(kb, field_base, *p) == Some(want))
-                .map(|(_, t)| *t)
-        };
-        // THE CLAUSE MUST BE ABOUT THIS ARGUMENT. `requires Walk[C = P]` says nothing about
-        // an argument typed by a different parameter `Q`; crossing the clause's own carrier
-        // binding to its body rigid and comparing TERM IDENTITY against the argument's is
-        // that question asked exactly. (A short-name compare would pair two unrelated `C`s,
-        // and a clause may write another sort's parameters into the slots and permute them.)
-        let Some(cval) = bound_for(kb, carrier_pvid) else {
-            continue;
-        };
-        if substitute_body_rigids(kb, cval, &rigids) != Some(arg_id) {
-            continue;
-        }
-        let mut out: Vec<(String, Value)> = Vec::with_capacity(spec_params.len());
-        for (p, _) in spec_params.iter() {
-            // A spec parameter the clause leaves unwritten is OMITTED, not guessed: the
-            // caller `?`-declines the whole projection when the field binds a parameter this
-            // provision does not name.
-            let Some(pvid) = type_param_vid_in_sort(kb, field_base, *p) else {
-                continue;
-            };
-            let Some(v) = bound_for(kb, pvid) else {
-                continue;
-            };
-            let bound = substitute_body_rigids(kb, v, &rigids)?;
-            // DETERMINED AFTER THE CROSSING, or the clause supplies NOTHING — the same
-            // fail-closed verdict, and for the same reason, as the sort face states.
-            if !type_value_is_ground_g(kb, bound, true) {
-                return None;
-            }
-            out.push((
-                short_name_of(kb.local_name_of(*p)).to_owned(),
-                Value::term(bound),
-            ));
-        }
-        return Some(out);
-    }
-    None
-}
-
-/// The type an entity FIELD's supplied argument is INFERRED from (WI-594/WI-599).
+/// The type an entity FIELD's supplied argument is INFERRED from (WI-594).
 ///
 /// WI-594: a bare spec receiver into a parameterized field threads its element AND effect
-/// through its self-projection. WI-599: a bare CARRIER value whose sort merely PROVIDES the
-/// field's spec threads through the carrier's provision. WI-20260828-MDWEW: a bare
-/// SPEC-typed argument into a field typed on a spec its sort provides threads through THAT
-/// provision. Else the raw inferred type.
-fn field_arg_type(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    declared_type: &Value,
-    r: &TypeResult,
-) -> Value {
+/// through its self-projection. WI-20260828-MDWEW: a bare SPEC-typed argument into a field
+/// typed on a spec its sort provides — one that is its own carrier, so the argument IS a
+/// value of it — threads through THAT provision. Else the raw inferred type.
+///
+/// A field typed at a spec over a parameter gets no rebuild (WI-20261005-KSSA4): a value
+/// of a sort that provides `Iterable` is not an `Iterable`, and is refused there. A field
+/// that holds any provider is typed by a parameter of its sort, which the sort's
+/// `requires` clause is about ([`bind_sort_params_from_sort_requires_at_construction`]).
+fn field_arg_type(kb: &mut KnowledgeBase, declared_type: &Value, r: &TypeResult) -> Value {
     bare_spec_arg_self_projection(kb, declared_type, r)
-        .or_else(|| carrier_arg_provision_projection(kb, env, declared_type, r))
         .or_else(|| bare_spec_arg_provision_projection(kb, declared_type, r))
         .unwrap_or_else(|| r.ty.clone())
 }
@@ -1232,7 +918,6 @@ fn field_arg_type(
 #[allow(clippy::too_many_arguments)]
 fn validate_field_arg(
     kb: &mut KnowledgeBase,
-    env: &TypingEnv,
     subst: &mut Substitution,
     r: &TypeResult,
     declared_type: &Value,
@@ -1258,7 +943,7 @@ fn validate_field_arg(
         *subst = probe;
         return first;
     }
-    let rebuilt = field_arg_type(kb, env, declared_type, r);
+    let rebuilt = field_arg_type(kb, declared_type, r);
     let mut probe = subst.clone();
     match validate_arg_against_param(
         kb,
@@ -1277,108 +962,28 @@ fn validate_field_arg(
     }
 }
 
-/// WI-599 — a CARRIER-PARAM-spec constructor field fed a carrier VALUE that
-/// PROVIDES that spec. The THIN finite-combinator case: `FiniteCollection.map(c,
-/// f) = mapped(c, f)`, where `mapped`'s `source` field is typed
-/// `Iterable[C = Source, Element = Src, E = ES]` (WI-590) and the argument `c` has
-/// the carrier-param type `C` — NOT the spec itself.
+/// WI-20260828-MDWEW — a BARE argument flowing into a field typed on a spec that the
+/// argument's sort PROVIDES and that is its own carrier: `x: Xchg` into `inner: Slot[Left =
+/// HL, Right = HR]`, where `Xchg provides Slot[…]` and `Slot`'s operations receive on `Self`.
 ///
-/// [`bare_spec_arg_self_projection`] (WI-594) threads a bare spec receiver whose
-/// argument type IS the field's spec base (`s : Stream` into `Stream[…]`) via the
-/// receiver's self-projection `s.T` / `s.E`. Here the argument's type is a
-/// DIFFERENT sort (the carrier param) that merely PROVIDES the spec, so that check
-/// fails and the field's params (`Source`, `Src`, `ES`) leak as `??_` — the source
-/// carrier and its access effect never thread (only the element pins, through the
-/// sibling `fn`'s `(x: Src)`).
+/// The argument IS a `Slot` — a sort that receives on itself is a type of its providers'
+/// values — and its provision says at which arguments. [`bare_spec_arg_self_projection`]
+/// (WI-594) answers only where the field applies the argument's OWN sort; here it applies
+/// another, so unifying the raw type against the field binds nothing and the field's
+/// parameters leak `??_`.
 ///
-/// When the argument is a bare carrier value whose sort provides the field's spec,
-/// rebuild the argument's type as that spec applied to the carrier's own provision
-/// (`carrier_provision_short_bindings`) — keyed by the FIELD's binding symbols so
-/// the ordinary [`unify_parameterized_view`] arm threads every param (carrier `C`,
-/// element AND effect) into the constructed sort's params. An EFFECT-row param's
-/// value is wrapped as a single-label row (`{…}`, mirroring WI-594); a sort param
-/// stays bare. Returns `None` (caller keeps the raw arg type) unless the field
-/// applies a spec, the argument is a bare carrier of a DIFFERENT sort, and a
-/// provision is found.
-pub(super) fn carrier_arg_provision_projection(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    declared_field_type: &Value,
-    arg: &TypeResult,
-) -> Option<Value> {
-    // The field must APPLY a spec (`FiniteCollection[C = …, …]`).
-    let (field_base, bindings) = applied_spec_field(kb, declared_field_type)?;
-    // The argument must be a BARE carrier — a type-param value (`c : C`, possibly
-    // rigidified) or a bare sort ref — naming a sort OTHER than the field's spec
-    // base. (An already-applied `s : Stream[…]` threads through the ordinary arm;
-    // a bare `field_base` receiver is WI-594's self-projection job.)
-    let Value::Term { id: arg_id, .. } = &arg.ty else {
-        return None;
-    };
-    let arg_carrier = typaram_ref_short_name(kb, *arg_id)?;
-    if arg_carrier == short_name_of(kb.qualified_name_of(field_base)) {
-        return None;
-    }
-
-    // The spec-METHOD face first (the op is ON the field's spec), then the enclosing SORT's
-    // ambient `requires`, then the OPERATION's own (WI-20260829-70XVH). Additive in that
-    // order: each runs only where the ones before it declined. The three exhaust where the
-    // statement "this carrier provides that spec" can be written.
-    let provision = carrier_provision_short_bindings(kb, env, &arg_carrier, field_base)
-        .or_else(|| enclosing_requires_provision_bindings(kb, env, *arg_id, field_base))
-        .or_else(|| op_requires_provision_bindings(kb, env, *arg_id, field_base))?;
-
-    let (span, owner) = (arg.node.span, arg.node.owner);
-    let base_ref = kb.make_sort_ref(field_base);
-    let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
-    for (field_key, _) in &bindings {
-        let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
-        let val = provision
-            .iter()
-            .find(|(s, _)| *s == member_short)
-            .map(|(_, v)| v.clone())?;
-        // An EFFECT-ROW param threads as a single-label row (`{c.E}`), matching the
-        // source-written provision; a SORT param threads the bare value. A value
-        // that is already a row is kept as-is (the requires/provider source may
-        // store it pre-wrapped).
-        let proj_val = effect_row_param_value(kb, field_base, &member_short, val);
-        proj_bindings.push((*field_key, proj_val));
-    }
-    Some(parameterized_value(
-        kb,
-        base_ref,
-        &proj_bindings,
-        span,
-        owner,
-    ))
-}
-
-/// WI-20260828-MDWEW — a BARE SPEC-TYPED argument flowing into a field typed on a
-/// DIFFERENT spec that the argument's sort PROVIDES.
+/// The fact that relates the two is the argument sort's own provision, written in the
+/// ARGUMENT SORT's parameters. So: read that view — direct, or composed through the sorts
+/// it provides — then substitute each of those parameters with the receiver's projection of
+/// it ([`substitute_carrier_params`], keyed by the sort's canonical param VarIds), and key
+/// the result by the FIELD's binding symbols so the ordinary [`unify_parameterized_view`]
+/// arm threads every param.
 ///
-/// The third face of the same threading question, and the one no existing reader answers:
-///
-///   * [`bare_spec_arg_self_projection`] (WI-594) wants the field to apply the argument's
-///     OWN spec (`s : Stream` into `Stream[Src, ES]`); its `base == field_base` gate fails
-///     the moment the field is typed on a spec the argument merely provides.
-///   * [`carrier_arg_provision_projection`] (WI-599) wants the argument to be a CARRIER
-///     PARAM and reads the provision off the ENCLOSING SORT (`carrier_provision_short_bindings`
-///     returns `None` unless `env.enclosing_sort() == field_base`), so a FREE operation is
-///     out of its reach entirely.
-///
-/// Here the argument is a bare `s : Stream` and the field is `source: Iterable[C = Source,
-/// Element = Src, E = ES]`. Only `Src` threads, and only by accident — a SIBLING field's
-/// arrow (`fn: (Src) -> T`, fed the `(x: s.T) -> Dst` callback) pins it. `Source` and `ES`
-/// appear nowhere a value flows through, so they leak `??_` and the constructed carrier's
-/// provided row is ungrounded (MEASURED: `Mapped[T = ?Dst, ES = ??_, EF = …, Src = s.Elem,
-/// Source = ??_]` against a declared `Seq[Elem = ?Dst, Row = {s.Row, ?EffP}]`).
-///
-/// The fact that relates the two specs is the argument sort's own provision —
-/// `provides Iterable[C = Stream, Element = T, E = E]` — which is written in the ARGUMENT
-/// SORT's parameters. So: read that view, then substitute each of those parameters with the
-/// receiver's projection of it ([`substitute_carrier_params`], keyed by the sort's canonical
-/// param VarIds), and key the result by the FIELD's binding symbols so the ordinary
-/// [`unify_parameterized_view`] arm threads every param.
+/// A FIELD TYPED AT A SPEC OVER A PARAMETER IS NOT THIS CASE (WI-20261005-KSSA4). `source:
+/// Iterable[C = Source, …]` fed a `Stream` was the shape this was written for: the argument's
+/// sort is the `C` of an `Iterable`, not an `Iterable`, and the field refuses it. A field
+/// that holds any provider is typed `source: Source` under the sort's `requires Iterable[C =
+/// Source, …]`.
 ///
 /// NAMES ARE NOT THE JOIN, on either side, and both matter:
 ///   * the projection MEMBER comes from the ARGUMENT SORT's own parameter (`Element ↦
@@ -1394,10 +999,6 @@ pub(super) fn carrier_arg_provision_projection(
 /// is an ATOM. A value the provision already stores pre-wrapped is kept as read.
 ///
 /// TWO BOUNDARIES, stated because each is a decline and not an oversight:
-///   * ONE HOP. [`provider_spec_view_bindings`] reads the provisions KEYED BY this sort,
-///     so a spec reached only transitively (`MappedStream provides Stream`, `Stream
-///     provides Iterable`) is not composed here and the caller keeps the raw type. There
-///     is no stored fact for a transitive provision to read — it is derived, per reader.
 ///   * CARRIER-KEYED ONLY. A WITNESS provision (`sort MappedStreamFinite provides
 ///     FiniteCollection[C = MappedStream[…]]`) is keyed by the witness's own `sort_ref`,
 ///     so it is not among what this reads for the CARRIER — and that is right: its
@@ -1421,9 +1022,15 @@ pub(super) fn bare_spec_arg_provision_projection(
     declared_field_type: &Value,
     arg: &TypeResult,
 ) -> Option<Value> {
-    // The field must APPLY a spec (`Iterable[C = …, …]`); a bare-sort field has no params
+    // The field must APPLY a spec (`Slot[Left = …, …]`); a bare-sort field has no params
     // to thread, and a structural field (arrow / row) is not a receiver slot.
     let (field_base, bindings) = applied_spec_field(kb, declared_field_type)?;
+    // …AND ONE THAT IS ITS OWN CARRIER (WI-20261005-KSSA4). A sort that provides it is then
+    // a value of it, and its provision says at which arguments. A spec over a parameter is
+    // not that: the argument's sort is its `C`, not the spec, and the field refuses it.
+    if spec_has_carrier_param(kb, field_base) {
+        return None;
+    }
     // Recover the receiver head from a simple value reference; a compound or
     // non-reference argument has no single projectable receiver.
     let recv = leaf_var_ref(&arg.node)?;
@@ -1440,53 +1047,15 @@ pub(super) fn bare_spec_arg_provision_projection(
     // of that param (`xs.T`), which denotes the written argument just as well as an
     // unwritten one. Widened HERE and not inside `bare_receiver_sort`, which
     // [`bare_spec_arg_self_projection`] also reads and whose question is narrower.
-    //
-    // WI-20261001-80ZV8 — AN ABSTRACT SPEC IS A CARRIER HERE TOO (user, 2026-10-03: "expand
-    // `Self` to the sort with all its type parameters, equal to the input's"). `rest :
-    // Stream[T = …, E = …]` — the tail a combinator re-wraps — is typed by a spec, and its
-    // real carrier is not known; what IS known is that it is a `Stream` at those
-    // arguments, and that whole type is what the field's carrier slot takes below
-    // (`arg.ty`), the other slots being read through `Stream`'s own provision.
-    //
-    // This clause used to DECLINE such a receiver, on a measurement: `mapped(rest, fn)`
-    // built `MappedStream[Source = Stream, …]` — the bare spec, read off the provision —
-    // and the stdlib stopped loading. The carrier slot has since stopped being read off
-    // the provision (BH1JZ, below), so the receiver's whole type is what is built; and
-    // declining left `Source` an OPEN VARIABLE instead — MEASURED: `filtered(rest, pred)`
-    // was `FilteredStream[T = ?T, Source = ??_, ES = ?ES, EF = ?EF]` — so the wrapper's
-    // `requires Iterable[C = Source, …]` was resolved for a carrier nobody had named, and
-    // only a provision written with the BARE spec, which accepts an undetermined carrier,
-    // could answer it.
     let arg_sort = bare_receiver_sort(kb, &arg.ty, recv)
         .or_else(|| sort_functor_of_view(kb, &arg.ty))?;
     if kb.canonical_sort_sym(arg_sort) == kb.canonical_sort_sym(field_base) {
         return None;
     }
-    // The relating fact: `arg_sort provides field_base[…]`, in `arg_sort`'s own params.
-    //
-    // WI-20260828-BH1JZ: DIRECT provision first, then the view COMPOSED through
-    // TRANSITIVE provision. `provider_spec_view_bindings` reads `provides` facts whose
-    // carrier IS `arg_sort`, so it finds an explicit `provides Iterable[…]` and misses
-    // `List`, whose Iterable-ness rides through `Stream` (`List provides Stream`,
-    // `Stream provides Iterable`) with no direct fact.
-    //
-    // THE MISS WAS SILENT, which is why it cost a whole investigation: the caller fell
-    // back to the raw `List[T = Int64]`, `unify_types` against `Iterable[C = ?_,
-    // Element = ?_, E = ?_]` answered TRUE while binding nothing useful, and the
-    // constructed carrier's params — INCLUDING the sibling arrow field's row — stayed
-    // free, surfacing far away as `undeclared effect ??_` on the constructing operation.
-    //
-    // [`transitive_provision_view`] already composes exactly this (its own doc names
-    // `List`'s Iterable-ness through `Stream` as the case it is for) and returns the
-    // SAME view shape — keyed by spec param, valued in the carrier's own params — which
-    // is what the σ below consumes. Its first branch is the direct one, so the `or_else`
-    // keeps the hot path off the walk rather than expressing a second policy.
-    let view = provider_spec_view_bindings(kb, arg_sort, field_base).or_else(|| {
-        let carrier_param = spec_carrier_param(kb, field_base)?;
-        let pvid = type_param_vid_in_sort(kb, field_base, carrier_param)?;
-        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-        transitive_provision_view(kb, field_base, pvid, arg_sort, &mut visited).map(|(v, _)| v)
-    })?;
+    // The relating fact: `arg_sort provides field_base[…]`, in `arg_sort`'s own params,
+    // direct or composed through the sorts it provides.
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    let view = transitive_provider_spec_view_bindings(kb, arg_sort, field_base, &mut visited)?;
     // σ: each of `arg_sort`'s parameters ↦ the receiver's projection of THAT parameter.
     //
     // WI-20260828-BH1JZ: a WRITTEN type argument overrides the projection for its own
@@ -1521,31 +1090,10 @@ pub(super) fn bare_spec_arg_provision_projection(
     let (span, owner) = (arg.node.span, arg.node.owner);
     let base_ref = kb.make_sort_ref(field_base);
     let mut proj_bindings: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
-    // WI-20260828-BH1JZ: the spec's CARRIER parameter is the receiver's own type, by
-    // definition, and must not be read off the provision. A self-referential provision
-    // writes the SPEC in that slot (`Stream provides Iterable[C = Stream, …]` — `C = Self`
-    // spelled with the sort's own name), and composing it through a hop substitutes the
-    // intermediate's PARAMS, not that self-reference, so it survives as the literal
-    // `Stream`. THE SAME SENTENCE IS THE SUBTYPE RELATION'S RULE (WI-20260829-XZMGC,
-    // [`subtype_provider_view`]) — this site stated it first, and measured it.
-    // MEASURED: `mapped(xs, inc)` over a `List` inferred
-    // `MappedStream[Source = Stream, …]`, and the finiteness witness — gated on
-    // `requires FiniteCollection[C = S]` — then asked whether the SPEC `Stream` is a
-    // FiniteCollection and got no. Binding it to the receiver's type is right for a
-    // direct provision too, where the view already names exactly that carrier.
-    // Joined by VID and not by Symbol, for the same reason the provision join below is:
-    // the field's binding keys and the spec's own declaration are resolved in two scopes
-    // and can be two Symbols for one parameter.
-    let field_carrier_vid = spec_carrier_param(kb, field_base)
-        .and_then(|cp| type_param_vid_in_sort(kb, field_base, cp));
     for (field_key, _) in &bindings {
         // Identity join on the SPEC's own parameter — the field's binding keys and the
         // provision's are resolved in two scopes and can be two Symbols for one param.
         let key_vid = type_param_vid_in_sort(kb, field_base, *field_key)?;
-        if Some(key_vid) == field_carrier_vid {
-            proj_bindings.push((*field_key, arg.ty.clone()));
-            continue;
-        }
         let raw = view
             .iter()
             .find(|(sp, _)| type_param_vid_in_sort(kb, field_base, *sp) == Some(key_vid))
@@ -1756,7 +1304,7 @@ pub(super) fn check_constructor_iter(
                 .position(|(s, _)| s == field_sym)
                 .map(|idx| &named_results[idx]);
             for r in named.into_iter().chain(pos_results.get(i)).flatten() {
-                let arg_ty = field_arg_type(kb, env, declared_type, r);
+                let arg_ty = field_arg_type(kb, declared_type, r);
                 supplied.push((*field_sym, declared_type.clone(), arg_ty));
             }
         }
@@ -1774,7 +1322,7 @@ pub(super) fn check_constructor_iter(
             .find(|(_, (s, _))| s == field_sym)
         {
             if let Ok(ref r) = named_results[idx] {
-                let arg_ty = field_arg_type(kb, env, declared_type, r);
+                let arg_ty = field_arg_type(kb, declared_type, r);
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -1784,7 +1332,7 @@ pub(super) fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((_, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
-                let arg_ty = field_arg_type(kb, env, declared_type, r);
+                let arg_ty = field_arg_type(kb, declared_type, r);
                 unify_types(kb, &mut subst, &arg_ty, declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -1824,7 +1372,6 @@ pub(super) fn check_constructor_iter(
             if let Ok(ref r) = named_results[idx] {
                 match validate_field_arg(
                     kb,
-                    env,
                     &mut subst,
                     r,
                     declared_type,
@@ -1846,7 +1393,6 @@ pub(super) fn check_constructor_iter(
             if let Ok(r) = r_opt {
                 match validate_field_arg(
                     kb,
-                    env,
                     &mut subst,
                     r,
                     declared_type,
@@ -1863,6 +1409,13 @@ pub(super) fn check_constructor_iter(
     }
     if !field_type_errors.is_empty() {
         return Err(aggregate_errors(field_type_errors));
+    }
+    // WI-20261005-KSSA4 — what the sort's own `requires` clauses say of a parameter no
+    // field is typed by, at the carrier the fields fixed. Above the `expected` seeding, as
+    // the operation-level reading is: a caller's claim about the result is not evidence
+    // about the carrier.
+    if let Some(sort) = parent_sort {
+        bind_sort_params_from_sort_requires_at_construction(kb, &mut subst, Some(env), sort);
     }
     // WI-408: materialize the recorded some-coercions (see check_apply_iter) —
     // every return below reads the (possibly rebuilt) `occ`.
@@ -1902,6 +1455,14 @@ pub(super) fn check_constructor_iter(
     if let Some(exp) = expected {
         let own = own_application(kb, parent_sort.unwrap_or(ctor_sym));
         unify_types(kb, &mut subst, &TermIdView(own), &exp);
+    }
+    // The instance is what the fields, the sort's clauses and the expectation fixed, and
+    // that is the instance the requirement is owed at: asked above the seeding, a parameter
+    // only the expected type says is still open, some provision could answer it, and
+    // `-> Hold[E = Other] = vacant()` loads over an `Other` that provides nothing
+    // (`wi_kssa4_spec_typed_value_test …a_parameter_only_the_expected_type_fixes_is_judged`).
+    if let Some(sort) = parent_sort {
+        construction_meets_sort_requires(kb, env, &subst, ctor_sym, sort, span)?;
     }
 
     // WI-578 — build the parameterized result type via the shared finish tail, so this

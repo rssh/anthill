@@ -297,7 +297,7 @@ namespace {ns}
     sort T = ?
     effects ES = ?
     requires Iter[C = Source, Element = T, E = ES]
-    entity drop(source: Iter[C = Source, Element = T, E = ES], n: Int64)
+    entity drop(source: Source, n: Int64)
     provides Strm[T = T, E = {{ES}}]
     operation splitFirst(d: Self) -> Option[Pair[A = T, B = Strm[T = T, E = {{ES}}]]] effects {{ES}} =
       match d

@@ -151,7 +151,7 @@ namespace test.wi903guarded
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
-    rule pk: pick(?x: Summable, ?y) = ?y :- gt(?y, 0) TAG
+    rule pk: pick(?x: Summable.T, ?y) = ?y :- gt(?y, 0) TAG
   end
 end
 

@@ -304,15 +304,20 @@ end
 /// type-parameter exemption's (which stops the prelude loading and reds everything), by
 /// design: it is what says the refusals are about the LABEL and not about writing a row
 /// at a signature at all.
+///
+/// The body does not use `s`: `Spec` is a spec over its parameter `C`, so a value typed at
+/// it is not one `Spec.go` receives (WI-20261005-KSSA4). The row is judged where it is
+/// written, which is all this control asks.
 #[test]
 fn a_registered_kind_in_a_row_type_argument_still_loads() {
     let src = r#"
 namespace test.v25n3.ok
   import anthill.prelude.{Error, String, EffectsRuntime}
   import test.v25n3.out.{Out}
+  import test.v25n3.out.Out.{out}
   import test.v25n3.spec.{Spec}
   operation ask(s: Spec[E = {Error}], p: String) -> Out
-    effects {s.E, Error} = Spec.go(s, p)
+    effects {Error} = out(v: p)
 end
 "#;
     expect_loads(

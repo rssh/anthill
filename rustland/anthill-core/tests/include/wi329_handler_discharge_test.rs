@@ -40,7 +40,7 @@
 //!       the body does NOT perform it (a pure body, or the outer of two handlers for the
 //!       same label): the declared `K` has no counterpart in the actual row, which is not
 //!       an EQUALITY, so that arm refuses without binding and the call died at
-//!       `check_unconstrained_type_params` ("type parameter 'Rho' is unconstrained") —
+//!       `first_unconstrained_type_param` ("type parameter 'Rho' is unconstrained") —
 //!       while the same program spelled `handle_Error[Rho = {}](…)` loaded. Callback
 //!       conformance is SUBTYPING (`validate_arg_against_param` owns the verdict; the arg
 //!       loops discard unify's boolean), so such a call is admissible and `ρ` is the

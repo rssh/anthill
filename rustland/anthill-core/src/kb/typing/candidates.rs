@@ -507,12 +507,14 @@ pub(super) fn collect_provides_candidates(
 /// `impl_subst` is what [`candidate_provider_sub_goals`] instantiates the carrier's
 /// `requires` chain through, and it is built by matching the PROVISION HEAD against the
 /// goal. A head names only the parameters the spec is about, so every other parameter of
-/// the carrier stays a bare reference into the carrier's own declaration — and
-/// `MappedStream requires Iterable[C = Source, Element = Src, E = ES]` mentions three
-/// parameters that `provides Stream[T = T, E = {ES, EF}]` does not write. The sub-goal
-/// that reached the resolver was therefore `Iterable[C = MappedStream.Source, …]`, which
-/// asks about a PARAMETER; nothing provides that, and `Stream.splitFirst(mapped(xs,
-/// inc))` was refused for a receiver whose type is fully ground.
+/// the carrier stays a bare reference into the carrier's own declaration. The stdlib's
+/// `MappedStream` was the measured case: it declared `requires Iterable[C = Source,
+/// Element = SourceElement, E = SourceEffects]`, three parameters that `provides Stream[T = T,
+/// E = {SourceEffects, TransformEffects}]` does not write, so the sub-goal that reached the
+/// resolver was `Iterable[C = MappedStream.Source, …]`, which asks about a PARAMETER; nothing
+/// provides that, and `Stream.splitFirst(mapped(xs, inc))` was refused for a receiver whose
+/// type is fully ground. (That clause is deleted since WI-20261005-2KV4Y — no body read it; the
+/// shape is driven by `wi_ekwdc_carrier_requires_instantiation_test`'s `Pairer`.)
 ///
 /// ADDITIVE, NEVER OVERRIDING. Only a parameter the head match left unbound is filled.
 /// The head match is what the goal DEMANDED of this provision, so it stays the
@@ -1009,7 +1011,8 @@ pub(super) fn match_candidate_against_goal(
                 // so every σ-less `Eq[T = X.T]` / `Eq[T = ?]` "chose" `SortedSet`,
                 // built its dictionary and recorded its spec half absent (MEASURED:
                 // ~500 of the 720 load-time `Unavailable` slots across the suite,
-                // from the req-insertion DIAGNOSTIC dict and route 4's provision leg).
+                // from the req-insertion DIAGNOSTIC dict and route 4's provision leg,
+                // which WI-20261005-2KV4Y has since deleted).
                 // No answer is the honest one for a goal the call never pinned.
                 return false;
             }
@@ -1269,6 +1272,7 @@ fn match_impl_param(
     per_call_value: TermId,
     impl_subst: &mut SmallVec<[(Symbol, TermId); 2]>,
 ) -> bool {
+    let per_call_value = sole_projected_row(kb, per_call_value);
     let Some(ctx) = sigma else {
         // WI-507: a type-param WILDCARD on the per-call side — the enclosing
         // sort's own param left unpinned because no call arg determined it
@@ -1356,6 +1360,39 @@ fn match_impl_param(
         );
     }
     sigma_pair_precise(kb, ctx, stored, per_call_value)
+}
+
+/// WI-20261005-KSSA4 — a row holding ONE label that is itself a projected row (`{s.E}`)
+/// is that row (`s.E`): the spelling a slot is reconciled in.
+///
+/// A receiver's row slot left to itself is the projection `s.E`, and a row parameter bound
+/// from it is the single-label row `{s.E}` — in a row a projection is an atom
+/// ([`effect_row_param_value`]). Type unification equates the two; this reconciliation
+/// compares structurally and did not, so a goal that names one row both ways —
+/// `Iterable[C = Stream[T, E = s.E], …, E = {s.E}]`, what `MappedStream`'s `requires`
+/// asks of a stream whose row its caller left open — bound the provider's row parameter
+/// twice and was refused "no impl matches" (MEASURED: `MappedStream.map(s, f)` over
+/// `s: Stream[T = Int64]`). The same limit as a row VARIABLE's two spellings, which
+/// `effect_row_param_value` keeps from arising; a projection cannot be kept bare there,
+/// since it must be an atom of the rows it joins.
+fn sole_projected_row(kb: &mut KnowledgeBase, value: TermId) -> TermId {
+    let view = TermIdView(value);
+    if !matches!(type_head(kb, &view), TypeHead::EffectsRows) {
+        return value;
+    }
+    let Some((present, tails, absent)) =
+        decompose_effect_row_raw(kb, &Substitution::new(), &view)
+    else {
+        return value;
+    };
+    match (present.as_slice(), tails.is_empty() && absent.is_empty()) {
+        ([Value::Term { id, .. }], true)
+            if matches!(type_head(kb, &TermIdView(*id)), TypeHead::ExprCarried) =>
+        {
+            *id
+        }
+        _ => value,
+    }
 }
 
 /// The impl param a candidate head value NAMES, if it names one: a bare name — any

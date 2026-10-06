@@ -20,8 +20,8 @@ sort guardians.agent.ContentPrimedGenerator
   entity mk
 
   operation build(self: ContentPrimedGenerator, box: Mailbox,
-                  h: Harness, llm: Llm, wording: Text[Trusted]) -> Source
-    effects {External, llm.E, Error} =
+                  h: Harness.C, llm: Llm.C, wording: Text[Trusted]) -> Source
+    effects {External, Llm.E, Error} =
       let msgs = Email.fetch(box)
       let p = prompt_with(
         instruction: wording,

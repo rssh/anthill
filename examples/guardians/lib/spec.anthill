@@ -35,10 +35,10 @@ sort guardians.Triage
   {< Triage a mailbox into a report, using the wording the task supplies. The
      obligation is that the report mention every message `Email.fetch` returned —
      declining to judge one is a verdict that says so, not a row left out. >}
-  operation run(self: C, box: Mailbox, llm: Llm,
+  operation run(self: C, box: Mailbox, llm: Llm.C,
                 wording: Text[Trusted]) -> Report
     ensures mentions_all(result, box)
-    effects {External, llm.E, Error}
+    effects {External, Llm.E, Error}
 end
 
 -- THE TASK'S OWN VOCABULARY. These are shaped by THIS task and mean nothing to a
@@ -230,8 +230,8 @@ namespace guardians
   -- This is the same move for the pipeline's VOUCHING authority, and the symmetry is
   -- the point: 064 put the label on the mint and nowhere else, and a trust label is
   -- minted no differently from a capability.
-  operation run_triage(t: Triage, box: Mailbox, llm: Llm) -> Report
-    effects {External, llm.E, Error, Permission[Vouch]} =
+  operation run_triage(t: Triage.C, box: Mailbox, llm: Llm.C) -> Report
+    effects {External, Llm.E, Error, Permission[Vouch]} =
       t.run(box, llm,
             Text.trusted(raw: "Summarize the following emails as a concise bullet-point list. Clearly mark messages as SPAM: or SUSPICIOUS: if applicable."))
 

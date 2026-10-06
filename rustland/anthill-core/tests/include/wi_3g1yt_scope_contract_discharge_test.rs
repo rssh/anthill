@@ -9,8 +9,16 @@
 //!
 //! THE POPULATION THAT MADE THE WALKS LOOK NECESSARY is the first row here: 29 stdlib
 //! bodies "declare a chain and never read it", the stdlib's generic consumers among them.
-//! Not one needed the excuse — they are OWED AND HELD, because the caller holds a value
-//! whose type carries the contract.
+//! The consumers did not need the excuse — they are OWED AND HELD, because the caller holds
+//! a value whose type carries the contract. Two that were held only by a value the call
+//! never mentions, `MappedStream.map` and `FilteredStream.filter`, were repaired by deleting
+//! the clause no body read (WI-20261005-2KV4Y).
+//!
+//! WI-20261005-KSSA4 REMOVED THE VALUE HALF OF THE ROUTE. A value typed at a spec over a
+//! parameter is not a value of a sort that provides it, so no value holds a spec's chain:
+//! the consumers are written `c: FiniteCollection.C`, which requires the spec of the
+//! parameter's sort, and the chain is in the dictionary the caller supplies for that
+//! requirement. What the cover still answers for is a declared `require[…]` bracket.
 //!
 //! AND THE ROW THAT BOUNDS IT was written by a review pass over this very change, against
 //! a fixture the suite did not have: an UNRELATED value in scope must not decide a call
@@ -18,6 +26,7 @@
 //! mean, and it FAILED when it was written — see its own site.
 
 use crate::common::try_load_kb_with;
+use anthill_core::kb::term_view::TermView;
 
 fn loads(src: &str) -> bool {
     try_load_kb_with(src).is_ok()
@@ -30,18 +39,44 @@ fn refusal(src: &str, why: &str) -> String {
     }
 }
 
-/// ROUTE 4 PROPER — the ticket's headline shape. `c` is typed at the SPEC, so
-/// `FiniteCollection`'s own `requires Iterable[…]` is carried BY `c`'s type; the call
-/// `size(c)` owes that chain and holds it.
+/// THE TICKET'S HEADLINE SHAPE, IN THE SPELLING THAT SAYS IT. `c: FiniteCollection.C` is a
+/// value of a sort that provides `FiniteCollection`, and the operation requires the spec of
+/// that sort; `FiniteCollection`'s own `requires Iterable[…]` is part of the dictionary the
+/// caller supplies, so `size(c)` reads its chain from the operation's own requirement.
 ///
-/// MEASURED AS THE ROW THIS LEG CARRIES: backing out the chain leg of
-/// `scope_contract_covers_dep` (its `direct_requires_chain` walk) refuses exactly this
-/// shape and nothing else in the probe set — the provision leg beside it carries a
-/// disjoint population (`wi599`, `wi508`).
+/// IT WAS WRITTEN `total(c: FiniteCollection)` — a parameter typed at the spec, read as
+/// "a value that holds the spec's chain" — and that reading is gone (WI-20261005-KSSA4): a
+/// `List` provides `FiniteCollection` and is not one. The row below refuses that spelling.
 #[test]
-fn a_spec_typed_parameter_carries_its_spec_s_requires_chain() {
+fn a_requirement_on_the_parameters_sort_supplies_the_specs_chain() {
     const SRC: &str = r#"
 namespace wi3g1yt.route4
+  import anthill.prelude.{List, Int64, FiniteCollection}
+  import anthill.prelude.FiniteCollection.{size}
+  operation total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E = size(c)
+  operation rows() -> List[T = Int64] = [1, 2, 3, 4]
+  operation drive() -> Int64 = total(rows())
+end
+"#;
+    let mut interp = crate::common::interp_for(SRC);
+    let v = interp
+        .call("wi3g1yt.route4.drive", &[])
+        .unwrap_or_else(|e| panic!("drive: {e:?}"));
+    assert_eq!(
+        v.literal_int64(interp.kb()),
+        Some(4),
+        "`total` is handed `List`'s `FiniteCollection` dictionary, chain and all",
+    );
+}
+
+/// THE SPEC-TYPED SPELLING OF THE SAME PROGRAM IS REFUSED, where it used to be the route's
+/// headline. A value typed at a spec over a parameter is not a value of a sort that
+/// provides it, so the `List` is refused at `total`'s parameter and `c` at `size`'s — each
+/// naming the spelling that says what was meant.
+#[test]
+fn a_parameter_typed_at_the_spec_holds_nothing() {
+    const SRC: &str = r#"
+namespace wi3g1yt.route4spec
   import anthill.prelude.{List, Int64, FiniteCollection}
   import anthill.prelude.FiniteCollection.{size}
   operation total(c: FiniteCollection) -> Int64 effects c.E = size(c)
@@ -49,14 +84,22 @@ namespace wi3g1yt.route4
   operation drive() -> Int64 = total(rows())
 end
 "#;
+    let errs = refusal(SRC, "a `List` is not a `FiniteCollection`");
     assert!(
-        loads(SRC),
-        "a parameter typed at a spec holds that spec's chain, so `size(c)` is discharged"
+        errs.contains("expected FiniteCollection, got List[T = Int64]")
+            && errs.contains("Type this position `anthill.prelude.FiniteCollection.C`"),
+        "the argument is refused at the spec-typed parameter; got:\n{errs}",
+    );
+    assert!(
+        errs.contains("expected anthill.prelude.FiniteCollection.C, got FiniteCollection")
+            && errs.contains("a value typed at it is not a value of a sort that provides it"),
+        "and the spec-typed `c` is refused where the carrier is expected; got:\n{errs}",
     );
 }
 
 /// **AN UNRELATED VALUE IN SCOPE MUST NOT DECIDE A CALL THE CALL ITSELF PINNED**, and
-/// this row exists because the first cut of route 4's provision leg got it wrong.
+/// this row exists because the first cut of route 4 had a second leg that got it wrong
+/// (the leg is gone since WI-20261005-2KV4Y, which refuses the unpinned twin of this row).
 ///
 /// FOUND BY `/code-review` OVER THIS TICKET'S OWN DIFF, and it FAILED when written. The
 /// leg replaced the dep's CARRIER with the holder's type unconditionally, so a
@@ -112,12 +155,13 @@ end
 /// Before WI-456 this program loaded clean and died
 /// `Internal(… __req_weakord not bound … frame binds [])`; route 4 must not re-admit it.
 ///
-/// MEASURED: with the obtainability gate removed, this row and both `wi456_no_scope_route`
-/// refusals went green-to-red together. Since WI-20260923-WN9P8 the program is refused
-/// first as a FORWARD of `insertA`'s own `O`, which the frame holds no dictionary for
-/// (`project_forwarded_slot`, before route 4 is asked). So the gate alone no longer
-/// reddens this row: it reddens with the gate and that forward rule backed out together,
-/// measured, and so do wi456's three no-route rows.
+/// MEASURED: with the rule that it is a SPEC which holds a chain removed
+/// (`sort_is_a_provided_spec`, once one arm of an "obtainability gate"), this row and both
+/// `wi456_no_scope_route` refusals went green-to-red together. Since WI-20260923-WN9P8 the
+/// program is refused first as a FORWARD of `insertA`'s own `O`, which the frame holds no
+/// dictionary for (`project_forwarded_slot`, before route 4 is asked). So that rule alone
+/// no longer reddens this row: it reddens with the rule and that forward rule backed out
+/// together, measured, and so do wi456's three no-route rows.
 #[test]
 fn a_carriers_own_requires_is_not_held_by_a_value_of_it() {
     const SRC: &str = r#"

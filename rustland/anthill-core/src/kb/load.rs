@@ -20,7 +20,7 @@ use super::entity_slots::{self, expr_node};
 use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::term_view::{TermIdView, TermView};
+use super::term_view::{TermIdView, TermView, ViewHead};
 use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use super::{const_value, ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
@@ -3981,6 +3981,49 @@ fn collect_negated_unify_violations(
         }
         if let node_occurrence::NodeKind::Expr { expr, .. } = &occ.kind {
             node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+}
+
+/// WI-20261005-KSSA4 — the sorts named in the type of every `domain(?x, T)` goal at or
+/// under `node`, read off whatever carrier the body lowering gave the type
+/// (`typing::collect_sorts_written_as_types`, the one reader of "which sorts does this
+/// type write").
+fn collect_domain_goal_sorts(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(node)];
+    while let Some(occ) = stack.pop() {
+        if kb.get_builtin_view(&occ) == Some(BuiltinTag::TypeDomain) {
+            if let Some(ty) = occ.pos_arg(kb, 1) {
+                super::typing::collect_sorts_written_as_types(kb, &ty, out);
+            }
+            continue;
+        }
+        if let node_occurrence::NodeKind::Expr { expr, .. } = &occ.kind {
+            node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+}
+
+/// [`collect_domain_goal_sorts`] over a stored TERM — a constraint's body, which is kept
+/// as one and never becomes body occurrences.
+fn collect_domain_goal_sorts_in_term(kb: &KnowledgeBase, term: TermId, out: &mut Vec<Symbol>) {
+    let mut stack = vec![term];
+    while let Some(t) = stack.pop() {
+        let view = TermIdView(t);
+        if kb.get_builtin_view(&view) == Some(BuiltinTag::TypeDomain) {
+            if let Some(ty) = view.pos_arg(kb, 1) {
+                super::typing::collect_sorts_written_as_types(kb, &ty, out);
+            }
+            continue;
+        }
+        if let Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } = kb.get_term(t)
+        {
+            stack.extend(pos_args.iter().copied());
+            stack.extend(named_args.iter().map(|(_, a)| *a));
         }
     }
 }
@@ -15169,6 +15212,13 @@ fn load_phase_inner(
     let narrowings = kb.take_bare_spec_narrowings();
     all_errors.extend(super::typing::check_bare_spec_narrowings(kb, &narrowings));
     mark!("check_bare_spec_narrowings");
+    // WI-20261005-KSSA4: a sort a rule head's bound names is a type of the matched value,
+    // or — written `Spec.Member` — that spec required of the value's sort. Which a sort
+    // admits is a fact of its operations and provisions, so it is asked here, where both
+    // have loaded; the drain is below the `run_typer: false` return, as its neighbours'.
+    let sort_uses = kb.take_rule_sort_uses();
+    all_errors.extend(super::typing::check_rule_sort_uses(kb, &sort_uses));
+    mark!("check_rule_sort_uses");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
     // carrier set (`field_wise_noneq_carriers`, read by the resolver and
     // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
@@ -16098,6 +16148,7 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // program HAVING a secondary entry, which today is none of the corpus, so the
         // cost is zero where it is zero and a rebuild where it is not.
         kb.spec_carrier_param_cache.borrow_mut().clear();
+        kb.spec_self_representing_cache.borrow_mut().clear();
     }
 }
 
@@ -17569,7 +17620,7 @@ pub fn derive_sort_domains(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             .copied();
         let arity_of =
             |kb: &KnowledgeBase, rid: crate::kb::RuleId| match kb.rule_head_value(rid).head(kb) {
-                crate::kb::term_view::ViewHead::Functor { pos_arity, .. } => Some(pos_arity),
+                ViewHead::Functor { pos_arity, .. } => Some(pos_arity),
                 _ => None,
             };
         // THE OLD 2-ARY SPELLING IS REFUSED, with the migration in the message.
@@ -19041,13 +19092,13 @@ fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
 /// a clause exists, so asking it here — where a clause always exists — would always
 /// say no and the check could never fire.
 ///
-/// THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL, and it is not incidental. A
-/// clause on a BUILTIN-BACKED name is inert at SLD: the builtin decides the goal
-/// before any clause is consulted (§"A rule head functor is resolved, not declared"),
-/// so it suppresses nothing and really is a lemma. That is exactly `PartialOrd.gte` /
-/// `.lte`, whose SMT lemmas sit at their own arity — 26 sites the first cut refused.
-/// An operation with no builtin behind it has no such shield: its derived view WOULD
-/// have answered, and a clause there replaces it.
+/// THE BUILTIN GATE IS WHAT KEEPS THE LAWS LEGAL, and it is not incidental. A native
+/// relational implementation already supplies the operation's predicate view, and
+/// WI-899 makes clauses on that symbol ADDITIVE alternatives rather than replacements.
+/// That is exactly `PartialOrd.gte` / `.lte`, whose SMT laws sit at their own arity —
+/// 26 sites the first cut refused. An operation with no builtin behind it has no such
+/// independent implementation: its body-derived view WOULD have answered, and a clause
+/// there replaces it.
 fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
     if kb.builtin_of(f).is_some() {
         return false;
@@ -19098,11 +19149,11 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// SOLUTIONS while the body says `true` — the clause both suppressed the derived view
 /// and contradicted it.
 ///
-/// AND THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL. `PartialOrd.gte` / `.lte` are
-/// bodied Bool ops carrying same-arity SMT lemmas — 26 sites, and §"A rule head
-/// functor is resolved, not declared" states the shape is intended. They survive
-/// because a clause on a BUILTIN-BACKED name is inert at SLD (the builtin decides the
-/// goal first), so it suppresses nothing; [`would_derive_bool_relation`] reads that.
+/// AND THE BUILTIN GATE IS WHAT KEEPS THE LAWS LEGAL. `PartialOrd.gte` / `.lte` are
+/// bodied Bool ops carrying same-arity SMT laws — 26 sites, and §"A rule head functor
+/// is resolved, not declared" states the shape is intended. They survive because
+/// WI-899 makes the native predicate and those clauses additive, so a clause suppresses
+/// nothing; [`would_derive_bool_relation`] reads that.
 ///
 /// THE BODY IS THE DISCRIMINATOR, AND THE STANDARD LIBRARY IS WHY. A BODY-LESS
 /// operation carrying clauses is ONE definition written relationally — that is
@@ -22343,6 +22394,13 @@ struct Loader<'a> {
     // where the reasoning lives. Everywhere else in the same rule (a body goal, a data
     // slot) the name means what it always meant.
     in_rule_head_bound: bool,
+    // WI-20261005-KSSA4: the specs the rule-head bound being lowered reached as a
+    // REQUIREMENT on its variable rather than as a written type — through a
+    // head-introduced type variable's guard ([`Loader::rule_head_bound_alias`]) or through
+    // a spec member named in the bound (`?x: Summable.T`). One entry per occurrence, so
+    // [`Loader::note_rule_head_bound_sorts`] can tell them from the same sort written as
+    // a type; cleared where a bound's lowering starts.
+    rule_head_bound_anchors: Vec<Symbol>,
     // WI-20260909-S8CBV: are we lowering an operation's `requires` clause? (`requires`
     // ALONE — see the set site for why `ensures` is not a type position.)
     // A spec bracket binding there is a TYPE position — `requires Desc[T = x.E]`
@@ -22429,6 +22487,12 @@ struct Loader<'a> {
     // the field is `None`, so the bare-spec arm keeps its loud `RigidTypeProjection`
     // conflation error (the sugar never fires for sort/entity/fact type positions).
     bare_spec_sugar: Option<BareSpecSugar>,
+    // WI-20261005-KSSA4: the spec members the signature of the operation being loaded
+    // named (`llm: Llm.C`, `effects {Llm.E}`), each with its variable, while the
+    // operation's BODY is converted — `Llm.E` written there is that same member. Empty
+    // outside a body, and for a member reached through an alias, which is the alias's
+    // instance and is named through it.
+    signature_spec_members: Vec<((Symbol, Symbol), TermId)>,
     // WI-201: the CARRIER BLOCK whose operations are being loaded — a sort body, or a
     // `namespace <Sort>` entry — with what its `provides` clauses bind each spec member
     // to, pre-scanned BEFORE any operation in it is loaded (so it is order-independent).
@@ -22747,6 +22811,7 @@ impl<'a> Loader<'a> {
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
             in_rule_head_bound: false,
+            rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
             expr_syms,
             expr_work: Vec::with_capacity(64),
@@ -22757,6 +22822,7 @@ impl<'a> Loader<'a> {
             local_names_stack: Vec::new(),
             binder_syms: HashMap::new(),
             bare_spec_sugar: None,
+            signature_spec_members: Vec::new(),
             carrier_block: CarrierBlock::default(),
             prelowered_provision_specs: HashMap::new(),
             signature_place_types: HashMap::new(),
@@ -23388,6 +23454,123 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20261005-KSSA4 — the bound a spec MEMBER named in a rule head lowers to
+    /// (`?x: Summable.T`): the spec, as the requirement anchor on the variable. Records
+    /// the use for `typing::check_rule_sort_uses`, which is where "is `T` the
+    /// parameter `Summable` receives on" can be asked.
+    fn rule_head_spec_member_anchor(
+        &mut self,
+        spec: Symbol,
+        member_name: &str,
+        span: SourceSpan,
+    ) -> TermId {
+        let member = self.kb.intern(member_name);
+        self.rule_head_bound_anchors.push(spec);
+        self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
+            sort: spec,
+            site: crate::kb::RuleSortSite::HeadMember(member),
+            span,
+        });
+        self.kb.make_sort_ref(spec)
+    }
+
+    /// WI-20261005-KSSA4 — the spec and member a DOTTED name in a rule-head bound names,
+    /// where it names a type parameter of a constructor-less sort other than the one the
+    /// rule is written in: the parameter form's reader of `x: Summable.T`. `None` for
+    /// every other name — a sort, an entity, the enclosing sort's own parameter spelled
+    /// qualified.
+    fn rule_head_spec_member(&self, name: &str) -> Option<(Symbol, String)> {
+        let (head, member) = name.rsplit_once('.')?;
+        // The head as [`Self::parse_arg_sort_symbol`] resolves a written sort name.
+        let resolved = if head.contains('.') {
+            resolve_dotted_in_kb(
+                self.kb,
+                head,
+                self.current_scope,
+                DottedVisibility::VisibleOnly,
+            )
+        } else {
+            resolve_name_in_kb(self.kb, head, self.current_scope)
+        };
+        let spec = match resolved {
+            ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort) => r,
+            _ => return None,
+        };
+        if self.kb.sort_has_constructors(spec)
+            || !self.kb.type_params_of_sort(spec).iter().any(|p| p == member)
+        {
+            return None;
+        }
+        // The enclosing sort's own parameter, written qualified, is that parameter.
+        let own = self.kb.type_param_sym_of(spec, member);
+        if let ResolveResult::Found(in_scope) =
+            self.kb.symbols.resolve_in_scope(member, self.current_scope)
+        {
+            if own == Some(in_scope) {
+                return None;
+            }
+        }
+        Some((spec, member.to_owned()))
+    }
+
+    /// WI-20261005-KSSA4 — record every sort name a rule-head bound WROTE AS A TYPE, for
+    /// `typing::check_rule_sort_uses`: each sort the lowered bound holds, less the
+    /// occurrences that are requirement anchors ([`Self::rule_head_bound_anchors`]).
+    /// A written `?x: Pair[A = Summable.T, B = Summable]` holds the spec twice and is
+    /// recorded once, for the `B`.
+    fn note_rule_head_bound_sorts(&mut self, bound: TermId, span: SourceSpan) {
+        let mut sorts: Vec<Symbol> = Vec::new();
+        super::typing::collect_sorts_written_as_types(self.kb, &TermIdView(bound), &mut sorts);
+        for anchor in std::mem::take(&mut self.rule_head_bound_anchors) {
+            if let Some(i) = sorts.iter().position(|s| *s == anchor) {
+                sorts.swap_remove(i);
+            }
+        }
+        for sort in sorts {
+            if self.kb.has_kind(sort, SymbolKind::Sort) {
+                self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
+                    sort,
+                    site: crate::kb::RuleSortSite::HeadBound,
+                    span,
+                });
+            }
+        }
+    }
+
+    /// WI-20261005-KSSA4 — record every sort name a `domain(?x, T)` goal written in a
+    /// rule body puts in its `T`, for `typing::check_rule_sort_uses`. The goal asks
+    /// whether the value is a `T`, the question a head variable's type asks, so a sort
+    /// written there is read the same way. At any depth of a goal: under a negation or
+    /// in a branch of a disjunction it is the same goal.
+    fn note_written_domain_goal_sorts(&mut self, body_nodes: &[Rc<NodeOccurrence>]) {
+        for node in body_nodes {
+            let mut sorts: Vec<Symbol> = Vec::new();
+            collect_domain_goal_sorts(self.kb, node, &mut sorts);
+            self.record_domain_goal_sorts(sorts, node.span);
+        }
+    }
+
+    /// …and in a CONSTRAINT's body, which is the same question written in the same words.
+    /// Unrecorded, `constraint c :- one(?x), domain(?x, Summable)` loaded where the rule
+    /// body `one(?x), domain(?x, Summable)` is a load error (MEASURED).
+    fn note_constraint_domain_goal_sorts(&mut self, body: TermId, span: SourceSpan) {
+        let mut sorts: Vec<Symbol> = Vec::new();
+        collect_domain_goal_sorts_in_term(self.kb, body, &mut sorts);
+        self.record_domain_goal_sorts(sorts, span);
+    }
+
+    fn record_domain_goal_sorts(&mut self, sorts: Vec<Symbol>, span: SourceSpan) {
+        for sort in sorts {
+            if self.kb.has_kind(sort, SymbolKind::Sort) {
+                self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
+                    sort,
+                    site: crate::kb::RuleSortSite::DomainGoal,
+                    span,
+                });
+            }
+        }
+    }
+
     /// WI-20260908-PW9A0 — [`Self::rule_head_tvar`] at a resolution funnel, for the three
     /// funnels a rule-head bound's names travel through (listed there). `Some(sym)` means
     /// this name is an introducer and the funnel must return `sym` INSTEAD of resolving;
@@ -23408,7 +23591,10 @@ impl<'a> Loader<'a> {
             return None;
         }
         match self.rule_head_tvar(name)? {
-            RuleTvar::Bounded(sym) => Some(sym),
+            RuleTvar::Bounded(sym) => {
+                self.rule_head_bound_anchors.push(sym);
+                Some(sym)
+            }
             // NO `unresolved name` HERE, AND NO SECOND ERROR EITHER. An unbounded
             // introducer is a fault `load_rule` has ALREADY reported, by name and with
             // the repair ("expected a `:- Spec[A]` clause to bound it"), before this head
@@ -24207,7 +24393,17 @@ impl<'a> Loader<'a> {
             // `convert_term`'s name resolution at any depth, the bare arm through the
             // shared [`Self::parse_arg_sort_symbol`].
             let saved_bound_ctx = std::mem::replace(&mut self.in_rule_head_bound, true);
-            let bound = if self.parse_arg_type_is_applied(value) {
+            self.rule_head_bound_anchors.clear();
+            let bound_span = self.source_span_of(value);
+            let spec_member = self
+                .parse_arg_type_name(value)
+                .filter(|_| !self.parse_arg_type_is_applied(value))
+                .and_then(|name| self.rule_head_spec_member(&name));
+            let bound = if let Some((spec, member)) = spec_member {
+                // WI-20261005-KSSA4: `x: Summable.T` — the spec required of the
+                // parameter's sort, as in the sigil form.
+                self.rule_head_spec_member_anchor(spec, &member, bound_span)
+            } else if self.parse_arg_type_is_applied(value) {
                 // Converted as a TERM, so it passes none of the doors that lower a written
                 // type — and needs none: a bare sort in a bound is any instance, the
                 // enclosing sort's as another's (proposal 070 §1.3).
@@ -24230,9 +24426,15 @@ impl<'a> Loader<'a> {
                 let bound_sym = self
                     .parse_arg_sort_symbol(&name)
                     .expect("parse_arg_names_a_sort resolved this name to a sort");
+                // A head type variable names the spec its guard requires of the
+                // parameter's sort, not a type the parameter is written at.
+                if matches!(self.rule_head_tvar(&name), Some(RuleTvar::Bounded(_))) {
+                    self.rule_head_bound_anchors.push(bound_sym);
+                }
                 self.kb.make_sort_ref(bound_sym)
             };
             self.in_rule_head_bound = saved_bound_ctx;
+            self.note_rule_head_bound_sorts(bound, bound_span);
             staged_bounds.push((vid, bound));
             param_cols.push((key, self.kb.alloc(Term::Var(Var::Global(vid)))));
         }
@@ -25233,6 +25435,16 @@ impl<'a> Loader<'a> {
                         return term;
                     }
                 }
+                // …AND A MEMBER OF ANOTHER SPEC NAMED THERE (`c: List[T = Summable.T]`) is
+                // that spec required of the element's sort, as the type door lowers it
+                // for `?c: List[T = Summable.T]`. Converted as the name it is, it was a
+                // field access no value's type is: the clause LOADED CLEAN and answered
+                // NOTHING where its sigil twin answers (MEASURED). Not memoized — each
+                // conversion records the use the bound's check reads.
+                if let Some((spec, member)) = self.rule_head_spec_member(&name) {
+                    let span = self.source_span_of(parse_id);
+                    return self.rule_head_spec_member_anchor(spec, &member, span);
+                }
             }
         }
 
@@ -25340,10 +25552,15 @@ impl<'a> Loader<'a> {
                         // with one rule.
                         Some(ty_expr) => {
                             let saved = std::mem::replace(&mut self.in_rule_head_bound, true);
+                            self.rule_head_bound_anchors.clear();
                             let value = self.type_expr_to_value(&ty_expr);
                             self.in_rule_head_bound = saved;
                             match node_occurrence::value_to_term(&mut self.kb, &value) {
-                                Ok(t) => t,
+                                Ok(t) => {
+                                    let span = self.source_span_of(parse_id);
+                                    self.note_rule_head_bound_sorts(t, span);
+                                    t
+                                }
                                 Err(e) => {
                                     // Loud over silent (consistent with the `None`
                                     // arm below): a non-term-representable bound is
@@ -31416,6 +31633,29 @@ impl<'a> Loader<'a> {
                 let var = self.mint_bare_spec_carrier_fixing(base, member_name, bindings, span);
                 return Some(node_occurrence::TypeChild::Interned(var));
             }
+            // IN A RULE HEAD the member lowers to the spec as the variable's requirement
+            // (`rule_head_spec_member_anchor`), which has no place for what the alias
+            // fixes: `?x: IntTagger.C` over `sort IntTagger = Tagger[Out = Int64]` was
+            // read as `Tagger.C`, and matched a value whose sort provides `Tagger` at
+            // another `Out` (MEASURED). Refused; the introducer bounded by the alias says
+            // the instance (`r[A](?x: A) :- IntTagger[A]` — the one guard spelling that
+            // does: a guard written `Tagger[C = A, Out = Int64]` is not taken).
+            if self.in_rule_head_bound
+                && !self.kb.sort_has_constructors(base)
+                && !bindings.is_empty()
+            {
+                let alias = self.kb.qualified_name_of(head).to_owned();
+                let spec = self.kb.qualified_name_of(base).to_owned();
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{}: `{alias}.{member_name}` in a rule head names a member of \
+                         `{spec}` through an alias that fixes other members of it, and a \
+                         rule variable's requirement holds the spec alone. Introduce a type \
+                         variable and bound it by the alias — `r[A](?x: A, …) :- {alias}[A]`",
+                        render_decl_site(self.kb, span),
+                    ),
+                });
+            }
         }
         let base_name = self.kb.local_name_of(base).to_owned();
         self.try_rigid_type_projection(base, &base_name, member_name, span)
@@ -31547,6 +31787,29 @@ impl<'a> Loader<'a> {
             if self.bare_spec_sugar.is_some() && !self.kb.sort_has_constructors(head_sort_sym) {
                 let var = self.mint_bare_spec_carrier(head_sort_sym, member_name, span);
                 return Some(node_occurrence::TypeChild::Interned(var));
+            }
+            // WI-20261005-KSSA4: in the BODY of an operation whose signature named this
+            // member, the same member — `mapElems[EffP = {Llm.E, Error}](…)` under
+            // `llm: Llm.C … effects {Llm.E, Error}`. A member the signature did not
+            // name stays the refusal below: the body has no instance to read it off.
+            let member_sym = self.kb.intern(member_name);
+            if let Some((_, var)) = self
+                .signature_spec_members
+                .iter()
+                .find(|((s, m), _)| *s == head_sort_sym && *m == member_sym)
+            {
+                return Some(node_occurrence::TypeChild::Interned(*var));
+            }
+            // WI-20261005-KSSA4: the same sugar in a RULE HEAD's bound. `?x: Summable.T`
+            // is `[P](?x: P) … :- Summable[P]`: the variable is a value of some sort, and
+            // `Summable` is required of that sort. It lowers to what the introducer
+            // spelling lowers to ([`Self::rule_head_bound_alias`]) — the spec standing as
+            // the variable's bound, proposal 060 §3's requirement anchor — so the two
+            // spellings are one internal form.
+            if self.in_rule_head_bound && !self.kb.sort_has_constructors(head_sort_sym) {
+                return Some(node_occurrence::TypeChild::Interned(
+                    self.rule_head_spec_member_anchor(head_sort_sym, member_name, span),
+                ));
             }
         } else {
             // A NON-param child of the head sort (`Outer.Inner` for a nested alias
@@ -35522,6 +35785,7 @@ impl<'a> Loader<'a> {
         // every variable bound by an earlier positive goal — else NAF on an
         // unbound unification is unsound.
         self.check_negated_unify_allowedness(&body_nodes);
+        self.note_written_domain_goal_sorts(&body_nodes);
 
         // WI-1090 / WI-888: a BODYLESS head written with a connective that does not
         // DEFINE (`lhs === rhs`, `lhs = rhs`) is a definition that cannot define, so it
@@ -36314,18 +36578,49 @@ impl<'a> Loader<'a> {
         // application MENTIONS `?P`, so it licenses dispatch and constrains `?P`.
         let sugar =
             std::mem::replace(&mut self.bare_spec_sugar, prev_bare_spec_sugar).unwrap_or_default();
+        let prev_signature_members = std::mem::replace(
+            &mut self.signature_spec_members,
+            sugar
+                .minted
+                .iter()
+                .filter(|(_, var)| !sugar.fixed.contains_key(var))
+                .copied()
+                .collect(),
+        );
         let mut extra_requires = auto_requires_terms;
+        // ONE CLAUSE PER SPEC, binding every member of it the signature names
+        // (WI-20261005-KSSA4): `total(c: FiniteCollection.C) effects FiniteCollection.E`
+        // is `total[P, Q](c: P) effects Q requires FiniteCollection[C = P, E = Q]` — the
+        // collection `c` is and the effect its own walk incurs, one instance. A clause
+        // per member said two unrelated requirements (`FiniteCollection[C = P]`,
+        // `FiniteCollection[E = Q]`): nothing fixed `Q` at a call, and where the expected
+        // type did, the second was met by whatever provider had that member — MEASURED,
+        // `memberDefaulted(w: Tagger.C) -> Tagger.Out` returned a `B`'s `Int64` tag as a
+        // `String` and died reading a requirement slot. Members reached through an alias
+        // are the alias's instance, grouped by what it fixes.
+        let mut clauses: Vec<(Symbol, Option<&SmallVec<[(Symbol, TermId); 2]>>, Vec<(Symbol, TermId)>)> =
+            Vec::new();
         for ((spec, member), var) in &sugar.minted {
             type_param_var_terms.push(*var);
+            let fixed = sugar.fixed.get(var);
+            match clauses
+                .iter_mut()
+                .find(|(s, f, _)| s == spec && *f == fixed)
+            {
+                Some((_, _, members)) => members.push((*member, *var)),
+                None => clauses.push((*spec, fixed, vec![(*member, *var)])),
+            }
+        }
+        for (spec, fixed, members) in clauses {
             // WI-20260924-SNJPR — through an alias, the bindings it fixes join the
-            // member's, in the canonical order a written clause's arguments take, so the
+            // members', in the canonical order a written clause's arguments take, so the
             // synthesized clause is one term with the same clause written by hand.
             let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-            named_args.extend(sugar.fixed.get(var).into_iter().flatten().copied());
-            named_args.push((*member, *var));
-            self.kb.canonicalize_record_named_args(*spec, &mut named_args);
+            named_args.extend(fixed.into_iter().flatten().copied());
+            named_args.extend(members);
+            self.kb.canonicalize_record_named_args(spec, &mut named_args);
             extra_requires.push(self.kb.alloc(Term::Fn {
-                functor: *spec,
+                functor: spec,
                 pos_args: SmallVec::new(),
                 named_args,
             }));
@@ -36422,6 +36717,7 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
         // WI-489: drop this signature's place→type map (restoring any enclosing one).
         self.signature_place_types = prev_place_types;
+        self.signature_spec_members = prev_signature_members;
 
         // Build OperationInfo term with named args matching the entity definition
         let op_info_sym = self.kb.resolve_symbol("anthill.reflect.OperationInfo");
@@ -36816,7 +37112,8 @@ impl<'a> Loader<'a> {
                 // (WI-023 wires only the quantified forms; enforcing the existing
                 // denial constraints is a separate concern with its own regression
                 // surface — the stdlib relies on them being inert today).
-                self.store_denial_constraint_fact(head, guard.as_deref(), domain);
+                let span = SourceSpan::from_span(self.source_id, c.span);
+                self.store_denial_constraint_fact(head, guard.as_deref(), domain, span);
             }
             ConstraintBody::Quantified { .. } | ConstraintBody::Patterns(_) => {
                 // WI-023: the guard EVALUATOR lowers a quantifier body as a pattern
@@ -36837,6 +37134,8 @@ impl<'a> Loader<'a> {
                 // value, legitimately hash-consable) and handed to the carrier-
                 // agnostic `add_guard` via its `TermView` door.
                 if let Some(lq) = self.build_logical_query(&c.body) {
+                    let span = SourceSpan::from_span(self.source_id, c.span);
+                    self.note_constraint_domain_goal_sorts(lq, span);
                     self.kb.add_guard_labeled(lq, label);
                     self.store_logical_query_constraint_fact(lq, domain);
                 }
@@ -36861,6 +37160,7 @@ impl<'a> Loader<'a> {
         head: &[TermId],
         guard: Option<&[TermId]>,
         domain: Symbol,
+        span: SourceSpan,
     ) {
         let constraint_sort = ClauseKind::Constraint;
         let constraint_sym = self.kb.resolve_symbol("Constraint");
@@ -36893,6 +37193,7 @@ impl<'a> Loader<'a> {
             pos_args,
             named_args: SmallVec::new(),
         });
+        self.note_constraint_domain_goal_sorts(constraint_term, span);
         // WI-5XBBQ — a `constraint` item is SOURCE-WRITTEN, like `fact` and `rule`.
         // It heads at the kernel meta-name `Constraint`, which no candidate program
         // can mint, so the guardians gate refuses one a loaded candidate writes — the

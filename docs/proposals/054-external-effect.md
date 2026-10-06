@@ -273,7 +273,7 @@ WI-320 `effects E = ?` anchor, because spec-anchored call rows are taken
 not one: reads and mutators refine independently (§Faking step 2 gives them
 different rows), so the carrier's outside-ness splits into a read row and a
 write row — precisely the WI-441 decoupled-rows precedent, shipped as
-MappedStream's `ES`/`EF` pair:
+MappedStream's `SourceEffects`/`TransformEffects` pair:
 
 ```anthill
 sort Mirror
@@ -290,7 +290,7 @@ sort Mirror
 --   gh:    provides Mirror[C = GhMirror,   ER = {External}, EW = {External}]
 --   fake:  provides Mirror[C = FakeMirror, ER = {},         EW = {Modify[reg]}]
 --   (fake read = {Error}, fake mutator = {Modify[reg], Error} — verbatim)
--- and the store THREADS them, MappedStream-style (its ES/EF are this split):
+-- and the store THREADS them, MappedStream-style (its SourceEffects/TransformEffects are this split):
 --   CoordState[M]  provides WorkItemStore[S = CoordState[M], E = {ER, EW}]
 --   file backend   provides WorkItemStore[S = WIS,           E = {}]
 ```

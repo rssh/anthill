@@ -3439,6 +3439,10 @@ fn a_return_naming_a_parameter_by_value_is_compared_by_the_specs_names_control()
 /// always admitted (MEASURED: `wi347`'s `a_covariant_return_type_still_discharges_the_result_
 /// clause` beside this row). The spec call runs the member, its result a `Base`. FAILS under
 /// ledger part 65.
+///
+/// `Base` RECEIVES ON ITSELF (`rank(b: Self)`), which is what makes a `Car` one: a sort that
+/// provides a spec over a parameter is that parameter and not the spec, and a member
+/// returning it behind `-> Base` returns no `Base` (WI-20261005-KSSA4).
 #[test]
 fn a_member_returning_a_provider_of_the_specs_bare_sort_fits() {
     let ns = "wi0rp29mr8.ret_provider";
@@ -3448,6 +3452,7 @@ namespace {ns}
   import anthill.prelude.{{Int64, String, List}}
   sort Base
     sort B = ?
+    operation rank(b: Self) -> Int64
   end
   sort Sp
     sort T = ?
@@ -3456,6 +3461,7 @@ namespace {ns}
   sort Car
     entity car(id: Int64)
     provides Base[B = Car]
+    operation rank(b: Car) -> Int64 = 0
     provides Sp[T = Self]
     operation op(x: Car) -> Car = x
   end

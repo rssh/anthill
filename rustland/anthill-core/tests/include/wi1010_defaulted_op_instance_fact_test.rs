@@ -213,7 +213,9 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
 /// THE EVAL HALF. The typer pins the fixtures above statically (the receiver's static
 /// carrier IS `Leaf`), so a program is needed where it cannot: `via_spec` takes an
 /// abstract-spec `Shape`, which `carrier_is_abstract_spec` makes the typer defer on,
-/// and only the runtime value names `Leaf`. This is the only test whose answer the
+/// and only the runtime value names `Leaf`. `Shape` receives on itself (`sides(s: Self)`),
+/// so a `Leaf` is a `Shape` — a spec over a parameter is no type of its providers' values
+/// (WI-20261005-KSSA4). This is the only test whose answer the
 /// eval read ALONE decides — the tie below reaches that read too, but needs the
 /// typer half as well (see the matrix at the top).
 #[test]
@@ -230,6 +232,7 @@ fn an_abstract_receiver_reaches_the_fact_bound_impl() {
 
   sort Shape
     sort E = ?
+    operation sides(s: Self) -> Int64 = 0
   end
 
   sort Leaf

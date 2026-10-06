@@ -5,7 +5,7 @@
 //!
 //!  * THE DECLARATION — what the loader minted. For an OPERATION parameter that is
 //!    `OperationInfo.type_params` (`load_operation`'s `fresh_var`), which
-//!    `rigidify_op_type_params` skolemizes and `check_unconstrained_type_params`
+//!    `rigidify_op_type_params` skolemizes and `first_unconstrained_type_param`
 //!    reads. For a SORT parameter it is the `SortAlias` target.
 //!  * THE SYMBOL — what a WRITTEN occurrence of the parameter resolves through:
 //!    `typing::type_param_global_var`, and so `sigma_class` (via `elem_var_step`)

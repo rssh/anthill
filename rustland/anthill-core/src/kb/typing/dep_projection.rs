@@ -247,7 +247,7 @@ pub fn build_dep_projection(
         selected,
         sub_goal_requires: &[],
     };
-    match resolve_with_rung(kb, &goal, &scope, rung) {
+    match resolve_opening_unwritten_slots(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => {
             emit_tree_as_projection(kb, caller_requires, &tree, syms)
         }
@@ -258,6 +258,125 @@ pub fn build_dep_projection(
             None
         }
     }
+}
+
+/// WI-20261005-2KV4Y — [`resolve_with_rung`], reading A SORT WRITTEN WITH SLOTS LEFT OUT AS
+/// THAT SORT AT AN OPEN SLOT IN EACH where nothing answers the goal as it is written.
+///
+/// The bare spelling is what a result nothing has named is typed at:
+/// `size(MutableStack.new())` binds `FiniteCollection`'s carrier to `MutableStack`, no
+/// brackets, and owes `Iterable[C = MutableStack, …]`. A provision binds the APPLIED form
+/// (`Iterable[C = MutableStack[T], …]`), so the goal as written matches nothing. Expanded
+/// through the one owner of that reading ([`expand_sort_application`]) each left-out slot
+/// is a fresh VARIABLE, and the goal is asked once more.
+///
+/// A VARIABLE, SO IT IS A PROVISION GENERIC IN THE SLOT THAT ANSWERS — one that holds at
+/// every value of it — and two such are a tie. A provision at ONE instance (`provides
+/// Store[State = Bag[T = Int64]]`) does not answer a `Bag` whose `T` nothing said, and the
+/// refusal is the one the goal as written gets. That is narrower than a slot the argument's
+/// own type leaves undetermined (`buf(v: 1)`, `N` open), which one provision at an instance
+/// does answer: the two readings of "open" are WI-20261005-SGXYH's to bring together.
+/// MEASURED, and pinned by `wi_2kv4y_unfixed_carrier_test`'s bare-carrier rows.
+///
+/// EVERY ELEMENT, not the carrier alone. σ writes the arguments' types into each element of
+/// a callee's clause (`requires Conv[From = S, To = U]`), so a bare result sits wherever its
+/// parameter does. Opening only the parameter an operation receives on made the verdict
+/// follow the order the spec declares its parameters in (MEASURED: `User.go2(1,
+/// Bag.empty())` refused with `From` declared first, 7 with `To` first;
+/// `…a_bare_sort_is_opened_in_whichever_element_it_stands`).
+///
+/// ASKED ONLY WHERE NOTHING ANSWERS THE GOAL AS WRITTEN, and that leaves the two spellings
+/// apart in one case. A provision generic in the whole element (`provides Store[State =
+/// X]`) matches the bare sort as written, so beside a provision at the applied sort the
+/// bare spelling runs the generic one where the open-slot spelling reaches the more
+/// specific (MEASURED: 55 against 7, and the same on the parent commit; pinned by
+/// `…beside_a_generic_provision_the_bare_spelling_runs_the_generic_one`;
+/// WI-20261005-SGXYH).
+///
+/// ONLY AN ANSWER IS TAKEN FROM THE SECOND ASKING — a construction, or a tie among
+/// providers. A miss there, or a CYCLE, leaves the goal as written to be reported: the
+/// operation half reads a `Cyclic` as a slot to leave absent in silence, and a goal that
+/// was a refusal as written must not become that by being asked again (MEASURED on a
+/// cyclic pair of conditional provisions: the call loaded and died "`__req_store` not
+/// bound in caller frame", where its parent was refused at load;
+/// `…a_cycle_at_the_open_slots_is_refused_at_load`).
+///
+/// THE NAMED-SLOT INFERENCE ASKS THROUGH THIS TOO ([`infer_named_slot_bindings`]). It runs
+/// before the dictionary is built and writes the ladder's answer into the type; asking the
+/// goal as written it found nothing at a bare carrier, bound nothing, and the build then
+/// met the opened goal with the default withheld — a tie where the open-slot spelling of
+/// the same call takes the carrier's own provision (MEASURED: `Keyed.one(Bag.empty())`
+/// refused "ambiguous among providers" where `Keyed[T = Bag[T = ?]].one(Bag.empty())`
+/// answered 1; on the parent commit the bare spelling loaded with no dictionary and died
+/// reading the slot; `…a_named_slot_at_a_bare_carrier_takes_the_default`).
+///
+/// THIS REPLACES A DISCHARGE. Route 4 used to swap in the type of a value of the pinned
+/// sort — the argument itself, or any other in scope — and take a resolution at THAT type
+/// as the requirement met, building nothing. A value at another binding answered for the
+/// pinned one (WI-20260929-JN09W), and one in scope filled a slot the pin left open; both
+/// loaded clean and died "`__req_…` not bound in caller frame". Asked here the element is
+/// its own type and a dictionary is built.
+pub(super) fn resolve_opening_unwritten_slots(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+    rung: DefaultRung,
+) -> ResolutionResult {
+    let as_written = resolve_with_rung(kb, goal, scope, rung);
+    if !matches!(as_written, ResolutionResult::NoMatch { .. }) {
+        return as_written;
+    }
+    let Some(opened) = with_unwritten_slots_opened(kb, goal) else {
+        return as_written;
+    };
+    match resolve_with_rung(kb, &opened, scope, rung) {
+        answered @ (ResolutionResult::Resolved(_) | ResolutionResult::Ambiguous { .. }) => answered,
+        ResolutionResult::NoMatch { .. } | ResolutionResult::Cyclic { .. } => as_written,
+    }
+}
+
+/// `goal` with every element that is a sort written with slots left out — bare, or applied
+/// at some of its parameters — expanded to that sort at a fresh variable in each; `None`
+/// when no element is one.
+fn with_unwritten_slots_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<SortGoal> {
+    let mut opened = goal.clone();
+    let mut any = false;
+    for (_, element) in opened.bindings.iter_mut() {
+        let written = Value::term(*element);
+        if !applies_a_sort_with_its_variables(kb, &written) {
+            continue;
+        }
+        if let Some(Value::Term { id, .. }) = expand_sort_application(kb, &written) {
+            *element = id;
+            any = true;
+        }
+    }
+    any.then_some(opened)
+}
+
+/// Is `ty` a reference to, or an application of, a sort that declares parameters and has a
+/// variable for each?
+///
+/// [`expand_sort_application`] rebuilds the application from those variables, and its
+/// reader ASSERTS on a declared parameter that has none ([`published_param_var`], WI-954).
+/// One shape has none: the dotted `sort Inner.T = ?` of a secondary entry, which the loader
+/// has already refused and the typer still walks. Expanded on the way to a refusal, such a
+/// sort turned the load's two errors into a panic (MEASURED: `wi1000`'s dotted fixture with
+/// its provision taken away; `wi_2kv4y_unfixed_carrier_test
+/// …a_sort_the_loader_has_refused_is_not_opened`). It is not a sort this reading can state,
+/// and the goal as written is what is reported for it.
+fn applies_a_sort_with_its_variables(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let head = extract_sort_ref_sym(kb, ty).or_else(|| match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, .. } => Some(base),
+        _ => None,
+    });
+    head.is_some_and(|sort| {
+        let declared = kb.type_param_syms_of(sort);
+        !declared.is_empty()
+            && declared
+                .iter()
+                .all(|&param| kb.canonical_type_param_var(param).is_some())
+    })
 }
 
 /// WI-456 — Strategy 2b: project a dep out of the PROVIDER HALF of a caller slot's

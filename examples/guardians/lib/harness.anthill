@@ -15,7 +15,7 @@
 --                                               Welded to `External` here it was a
 --                                               claim about every implementation
 --                                               that only one could honour.
---   generate     {llm.E, Error}                 whatever model it was handed —
+--   generate     {Llm.E, Error}                 whatever model it was handed —
 --                                               generation touches no mailbox
 --   check        {External, Error,
 --                 -Permission[Llm]}             provably not steerable
@@ -191,8 +191,8 @@ sort guardians.Harness
   -- `a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external`
   -- (`rustland/anthill-core/tests/guardians_test.rs`), including that the same row at
   -- `FakeLlm`'s `E = {}` still loads: 054 excludes the CO-OCCURRENCE, not `Branch`.
-  operation generate(self: C, llm: Llm, p: Prompt[Trusted]) -> Source
-    effects {llm.E, Error}
+  operation generate(self: C, llm: Llm.C, p: Prompt[Trusted]) -> Source
+    effects {Llm.E, Error}
 end
 
 sort guardians.Checker
@@ -226,11 +226,11 @@ namespace guardians
   -- the round returns the verdict, not the candidate it judged, so its caller never
   -- holds the `Source` to hand back. Returning it is the single entry point's job
   -- (WI-20260908-K5HVE); the test harness's loop drives the carriers for that reason.
-  operation attempt(h: Harness, llm: Llm, chk: Checker,
+  operation attempt(h: Harness.C, llm: Llm.C, chk: Checker.C,
                     spec: Symbol, tools: List[T = String],
                     feedback: List[T = String],
                     previous: Option[T = Source]) -> CheckResult
-    effects {External, llm.E, Error, Permission[Vouch]} =
+    effects {External, Llm.E, Error, Permission[Vouch]} =
       let p = h.render_task(spec, tools, feedback, previous)
       chk.check(h.generate(llm, p), spec)
 
@@ -243,11 +243,11 @@ namespace guardians
   --
   -- This is where the whole pipeline's model authority enters, ONCE, and the row
   -- says so. `attempt` above is the same round with the capability already in
-  -- hand: the same `{External, llm.E, Error}`, no `Permission`. The one line
+  -- hand: the same `{External, Llm.E, Error}`, no `Permission`. The one line
   -- between them is the entire difference between using authority and obtaining
   -- it. (`External` on both is the CHECKER's, not the model's — `check` declares
-  -- it; the model's share is the `llm.E` beside it.)
-  operation open_round(h: Harness, chk: Checker,
+  -- it; the model's share is the `Llm.E` beside it.)
+  operation open_round(h: Harness.C, chk: Checker.C,
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
                        feedback: List[T = String],
@@ -269,8 +269,8 @@ sort guardians.FileHarness
                         feedback: List[T = String],
                         previous: Option[T = Source]) -> Prompt[Trusted]
     effects {Error, Permission[Vouch]} @[host_implemented]
-  operation generate(self: FileHarness, llm: Llm, p: Prompt[Trusted]) -> Source
-    effects {llm.E, Error} @[host_implemented]
+  operation generate(self: FileHarness, llm: Llm.C, p: Prompt[Trusted]) -> Source
+    effects {Llm.E, Error} @[host_implemented]
   -- `C = FileHarness`, and `C = LoadChecker` below, for the reason `LiveLlm` gives in
   -- lib/llm.anthill: a bare `provides Harness` names no carrier to dispatch at.
   provides Harness[C = FileHarness]

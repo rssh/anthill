@@ -276,7 +276,7 @@ fn a_bare_bracket_off_a_call_is_still_a_syntax_error() {
 /// dropping the re-route also leaves the flattened call to fail on its own.
 #[test]
 fn an_identifier_receiver_dot_call_is_refused_in_the_loader() {
-    let stream_ty = "MappedStream[Source = List[T = Int64], Src = Int64, T = Int64,                      ES = {}, EF = {}]";
+    let stream_ty = "MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,                      SourceEffects = {}, TransformEffects = {}]";
     let program = |body: &str| {
         format!(
             "namespace test.bad3v_ident

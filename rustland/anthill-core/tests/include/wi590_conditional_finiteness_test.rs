@@ -2,16 +2,16 @@
 //! folding the finite twin carriers away.
 //!
 //! Before WI-590 there were two carriers. `Iterable.map` built `mapped`, whose
-//! `source` field was typed `Stream[Src, ES]`; `FiniteCollection.map` built a
+//! `source` field was typed `Stream[SourceElement, SourceEffects]`; `FiniteCollection.map` built a
 //! separate `fmapped`, whose field was typed `FiniteCollection[…]`. Finiteness was
 //! carried by WHICH CARRIER a value was, and a value could not cross between them.
-//! What FORCED the duplication was erasure: `Stream[Src, ES]` does not record which
-//! carrier the source was, so no rule could condition on it.
+//! What FORCED the duplication was erasure: `Stream[SourceElement, SourceEffects]` does not
+//! record which carrier the source was, so no rule could condition on it.
 //!
 //! There is now one carrier, and its source field keeps that sort
 //! (`MappedStream.Source`). The witness sort `MappedStreamFinite` reads it:
 //!
-//!     requires FiniteCollection[C = S, Element = Src, E = ES]
+//!     requires FiniteCollection[C = S, Element = SourceElement, E = SourceEffects]
 //!     provides FiniteCollection[C = MappedStream[Source = S, …], Element = T, …]
 //!
 //! — "a mapped stream is a FiniteCollection exactly when its source is one". The
@@ -105,7 +105,7 @@ fn stdlib_plus_source_errors(extra: &str) -> Vec<String> {
 ///
 /// The probe takes the carrier AS ITS PARAMETER and does not build one. That is
 /// deliberate: constructing `mapped(src, fn)` in a free operation would drag in the
-/// construction-side row threading (the source's access row `ES` has to be read off
+/// construction-side row threading (the source's access row `SourceEffects` has to be read off
 /// the argument's own provision, and in a free op with no enclosing `requires` it
 /// leaks — measured, and it leaks for a `List` source just as it does for `Nats`, so
 /// it would have made BOTH rows red for a reason that is not the witness). Naming
@@ -156,7 +156,7 @@ namespace wi590.conditional
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
 
   operation probe(
-      m: MappedStream[Source = {SOURCE}, Src = Int64, T = Int64, ES = {}, EF = {}])
+      m: MappedStream[Source = {SOURCE}, SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> {RET} =
     {CONSUMER}
 end
@@ -188,7 +188,7 @@ namespace wi590.conditional.filter
   operation addp(a: Int64, b: Int64) -> Int64 = a + b
 
   operation probe(
-      m: FilteredStream[Source = {SOURCE}, T = Int64, ES = {}, EF = {}])
+      m: FilteredStream[Source = {SOURCE}, T = Int64, SourceEffects = {}, PredicateEffects = {}])
     -> {RET} =
     {CONSUMER}
 end

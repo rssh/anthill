@@ -761,7 +761,9 @@ fn without_named_tuple_types(
             }
             Some((_, tty)) => {
                 let mut probe = Substitution::new();
-                if !types_compatible(kb, &mut probe, dty, tty) {
+                // The column's type is its rule's stored bound: see the citation's own
+                // comparison in `relation_reference_type_applied`.
+                if !spec_as_its_providers(kb, |kb| types_compatible(kb, &mut probe, dty, tty)) {
                     return Err(format!(
                         "`Without` drops the field `{}` with a value whose type does not match \
                          its column",

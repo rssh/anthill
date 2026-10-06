@@ -366,19 +366,21 @@ fn a_sibling_call_at_another_instance_owes_that_instances_requirement() {
 }
 
 /// NEVER THE CALLER'S FRAME FOR ANOTHER INSTANCE — the third state. `swap(bx: Self, w:
-/// Tagger) = tagIn(box(v: w))` builds a box of `w`'s carrier, another instance, and `w`'s
-/// type discharges the callee's `Tag` requirement without a dictionary being built (§8.7's
-/// route 4: a spec-typed value in scope holds it). So the callee is handed NOTHING, exactly
-/// as it is when the same call is made from outside the sort.
+/// Tagger.C) = tagIn(box(v: w))` builds a box of `w`'s sort, another instance, and the
+/// callee's `Tag` requirement there is supplied through `swap`'s own requirement of
+/// `Tagger` at that sort — `Tagger` requires `Tag` of its carrier. So the callee is handed
+/// the dictionary of the instance it runs at, exactly as it is when the same call is made
+/// from outside the sort: 2, `B`'s tag, both ways.
 ///
-/// WHAT THAT DOES TODAY IS A KNOWN GAP, AND THE ROW PINS IT ON PURPOSE: `tagIn`'s read of
-/// its `Tag` slot finds none and raises — from inside the sort and from outside it alike
-/// (the second program). That is a defect of route 4 (it discharges at load what eval
-/// cannot reach where the callee's body defers to its frame), and it is LOUD. What this
-/// row is here for is what the sort-side call did before the typer stated the frame: eval
-/// inferred an inherit from "same sort, no dictionary" and the call answered 1 — a `B`
-/// tagged by `A`'s provider — in silence (MEASURED, the inference put back). When route 4
-/// is repaired both programs answer 2 and this row is rewritten to say so.
+/// THIS ROW PINNED A KNOWN GAP UNTIL WI-20261005-KSSA4. Written `w: Tagger`, the value's
+/// type "held" the requirement (§8.7's route (2), a spec-typed value in scope) and no
+/// dictionary was built: `tagIn`'s read of its `Tag` slot found none and raised, from
+/// inside the sort and from outside it alike — loud, and a defect of that route, which
+/// discharged at load what eval could not reach. The route's value half is gone; a value
+/// typed at the spec is no value of a sort that provides it. What the row was first here
+/// for stands: before the typer stated the frame, eval inferred an inherit from "same
+/// sort, no dictionary" and the sort-side call answered 1 — a `B` tagged by `A`'s provider
+/// — in silence (MEASURED, the inference put back).
 #[test]
 fn a_call_at_another_instance_is_never_handed_the_callers_frame() {
     let program = |ns: &str, member: &str, free: &str, go: &str| {
@@ -422,31 +424,29 @@ end
 "#
         )
     };
-    const UNBOUND: &str = "requirement param `__req_tag` not bound in caller frame";
-
     let inside = program(
         "wi80zv8s.r1",
-        "    operation swap(bx: Self, w: Tagger) -> Int64 = tagIn(box(v: w))",
+        "    operation swap(bx: Self, w: Tagger.C) -> Int64 = tagIn(box(v: w))",
         "",
         "Box.swap(box(v: a(k: 0)), b(k: 0))",
     );
-    let from_inside = run_src(&inside, "wi80zv8s.r1.go");
-    assert!(
-        matches!(&from_inside, Err(e) if e.contains(UNBOUND)),
-        "a sibling call at another instance must not run on its caller's dictionaries, got \
-         {from_inside:?}"
+    assert_eq!(
+        run_src(&inside, "wi80zv8s.r1.go"),
+        Ok(2),
+        "a sibling call at another instance runs on THAT instance's dictionary — `B`'s \
+         tag, not the `A` its caller's frame holds",
     );
 
     let outside = program(
         "wi80zv8s.r2",
         "",
-        "  operation outside(w: Tagger) -> Int64 = Box.tagIn(box(v: w))",
+        "  operation outside(w: Tagger.C) -> Int64 = Box.tagIn(box(v: w))",
         "outside(b(k: 0))",
     );
-    let from_outside = run_src(&outside, "wi80zv8s.r2.go");
-    assert!(
-        matches!(&from_outside, Err(e) if e.contains(UNBOUND)),
-        "the call from outside the sort is the reference, got {from_outside:?}"
+    assert_eq!(
+        run_src(&outside, "wi80zv8s.r2.go"),
+        Ok(2),
+        "the call from outside the sort is the reference",
     );
 }
 

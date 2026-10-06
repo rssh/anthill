@@ -513,7 +513,7 @@ triage can mail outside the organisation, whatever it does.
 
 **Control** — `fixtures/agent/internal_send.anthill`, ONE TOKEN away
 (`boss@ourcorp.com` for `it@othercorp.com`), which LOADS on the unchanged
-`{External, llm.E, Error}` row. Two further edits, each reddening exactly one row
+`{External, Llm.E, Error}` row. Two further edits, each reddening exactly one row
 and measured:
 
 | edit | red |
@@ -747,7 +747,7 @@ banks a SECOND `OperationInfo` row for `run`: the reported effects go from
 `[External, Error, External, Error, Filesystem]`.
 
 > **STALE — the base row moved and this was NOT re-run.** `Triage.run` now declares
-> `{External, llm.E, Error}` (`lib/spec.anthill`), so the left-hand row above is no
+> `{External, Llm.E, Error}` (`lib/spec.anthill`), so the left-hand row above is no
 > longer what the load banks; the concatenation on the right is stale with it. The
 > POINT of the record — it loads, and a second row is banked rather than the first
 > being replaced — is untouched, which is why the entry stays. The two rendered rows
@@ -779,7 +779,7 @@ loaded clean while implementing NOTHING was Accepted.
 
 **Measured, now.** `spec` is a `Symbol` reference, and
 `agent/good.anthill` yields `Accepted(carrier: guardians.agent.GoodTriage,
-spec: guardians.Triage, budget: [External, llm.E, Error])`. A candidate that
+spec: guardians.Triage, budget: [External, ?E, Error])`. A candidate that
 declares only under `guardians.agent.` and provides nothing is refused:
 `the candidate declares no carrier that provides 'guardians.Triage'`.
 
@@ -971,7 +971,7 @@ type mismatch in guardians.Email.send.requires:
   expected precondition `deliverable(who)` provable at the call site,
   got unsatisfied precondition
 type mismatch in run.effects (op-effects):
-  expected declared: [External, llm.E, Error],
+  expected declared: [External, ?E, Error],
   got undeclared effect: Permission[T = Outbox]
 ```
 

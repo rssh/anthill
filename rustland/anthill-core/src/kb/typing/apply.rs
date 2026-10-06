@@ -394,6 +394,57 @@ pub(super) fn check_apply_iter(
                 },
             )
         };
+        // WI-20261005-KSSA4 — a value typed at a spec, where this operation receives on its
+        // spec's carrier parameter, is refused where it is written
+        // ([`spec_typed_value_at_carrier_error`]). Before any reading of the receiver: the
+        // legs that took such a value for a carrier are gone, and what is left would fix
+        // the carrier parameter at the spec's own name.
+        if self_recv_spec.is_none() {
+            // Of an operation of a sort that HAS a carrier parameter: a data sort's
+            // parameter is its element, and a sort that receives on itself takes its
+            // parameters as arguments (`Set.insert(s: Self, x: T)`). Asked only where a
+            // parameter is typed by one of the sort's, and of the memoized readers — this
+            // runs on every call of an operation of a parametric sort.
+            let receiving = spec_carrier_param_candidates(kb, &op.params, fn_sym)
+                .filter(|(_, candidates)| !candidates.is_empty())
+                .and_then(|(spec_sort, candidates)| {
+                    let carrier_param = spec_carrier_param(kb, spec_sort)
+                        .filter(|_| spec_has_carrier_param(kb, spec_sort))?;
+                    let carrier_vid = type_param_vid_in_sort(kb, spec_sort, carrier_param)?;
+                    Some((spec_sort, carrier_param, carrier_vid, candidates))
+                });
+            if let Some((spec_sort, carrier_param, carrier_vid, candidates)) = receiving {
+                for (i, pname, pvid) in candidates {
+                    if pvid != carrier_vid {
+                        continue;
+                    }
+                    let Some(recv_ty) = supplied_arg_type(
+                        kb,
+                        &op.params,
+                        &pos_call_params,
+                        i,
+                        pos_results,
+                        named_args,
+                        named_results,
+                    ) else {
+                        continue;
+                    };
+                    if let Some(err) = spec_typed_value_at_carrier_error(
+                        kb,
+                        spec_sort,
+                        carrier_param,
+                        &recv_ty,
+                        span,
+                        TypeErrorContext::OperationArgument {
+                            op_name: fn_sym,
+                            param: pname,
+                        },
+                    ) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
         // The typer's spelling of "this call dispatches on nothing": no self-receiver and no
         // carrier-param receiver. `self_recv_spec.is_some()` FORCES `carrier_param_info` to None
         // above, so testing that alone would read a carrier-param-typed parameter as the
@@ -516,7 +567,7 @@ pub(super) fn check_apply_iter(
         // claim is not evidence about the carrier) and below `seed_op_type_args` (a written
         // bracket outranks the clause). It reports NOTHING — unlike `carrier_bound`, nothing
         // downstream is gated on whether a clause supplied anything; the parameters it leaves
-        // free reach `check_unconstrained_type_params` exactly as before.
+        // free reach `first_unconstrained_type_param` exactly as before.
         //
         // GATED on the callee declaring both, so the >99% of calls whose callee has neither
         // pay one pair of `is_empty()` reads and never build the argument-type table.
@@ -540,7 +591,23 @@ pub(super) fn check_apply_iter(
                     )
                 })
                 .collect();
-            bind_op_type_params_from_op_requires(kb, &mut subst, &op, fn_sym, &arg_tys);
+            bind_op_type_params_from_op_requires(kb, &mut subst, env, &op, fn_sym, &arg_tys);
+        }
+        // WI-20261005-KSSA4 — and the callee's SORT's parameters, from the sort's own
+        // clauses, where no receiver of this call read a provision of that sort (the three
+        // arms above, which own a spec operation's reading of its spec).
+        if let Some(sort) = callee_parent_sort.filter(|_| !carrier_bound) {
+            bind_sort_params_from_sort_requires(kb, &mut subst, env, &op, sort, &|kb, i| {
+                supplied_arg_type(
+                    kb,
+                    &op.params,
+                    &pos_call_params,
+                    i,
+                    pos_results,
+                    named_args,
+                    named_results,
+                )
+            });
         }
 
         // WI-379: synthesize from the ARGUMENTS first (the two loops below);
@@ -866,7 +933,7 @@ pub(super) fn check_apply_iter(
         // argument, which is exactly what makes a shared row tail's lower bound the union
         // of its constraints rather than whichever argument reached it first. Above the
         // signature check so a discharged tail is part of the instantiation that check
-        // reads, and above `check_unconstrained_type_params` so a tail this solves is no
+        // reads, and above `first_unconstrained_type_param` so a tail this solves is no
         // longer reported unconstrained. No-op unless the callee declares type params and
         // one of them is still unbound.
         infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs);
@@ -2067,7 +2134,16 @@ pub(super) fn check_apply_iter(
         // field doc), so skip the whole check in rule-body context — mirroring how
         // WI-557/602 scoped the sibling value-precondition obligation.
         if !env.in_rule_body() {
-            check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
+            if let Some(open) = first_unconstrained_type_param(kb, &subst, &op) {
+                return Err(
+                    unconstrained_for_want_of_a_provision(kb, &subst, fn_sym, open, span)
+                        .unwrap_or(TypeError::UnconstrainedTypeParam {
+                            span,
+                            op: fn_sym,
+                            type_param: open.0,
+                        }),
+                );
+            }
         }
 
         // WI-272's per-call-site type-argument STAMP (`set_resolved_type_args`) was
@@ -2085,25 +2161,16 @@ pub(super) fn check_apply_iter(
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
-        // WI-20260921-3G1YT — ROUTE 4's slot source, for every classification block
-        // below: the spec VIEWS this caller holds values of ([`held_spec_views`]).
+        // WI-20260921-3G1YT — the slot source of the bracket route, for every
+        // classification block below: the spec instances this clause's `require[…]`
+        // brackets declare ([`held_spec_views`]).
         //
         // HERE, and not at the top of this function, because this statement is the
         // lowest point that dominates all of them — everything above returns before any
         // dictionary is built, so a call that builds none pays nothing. Both halves read
         // it: the SORT half through [`build_concrete_dispatch_dict`] and the OP half
         // through [`OpSupplyCtx::held`].
-        // THE ARGUMENT TYPES OF THIS CALL, off the typed results rather than off
-        // `param_to_arg_type`: that map is populated only for a callee whose signature
-        // writes a PROJECTION (`needs_param_arg_types`), so for `MappedStream.map` — the
-        // shape route 4 needs it for — it is empty. `collect_arg_errors` ran at the top of
-        // this function, so every result here is `Ok`.
-        let arg_types: Vec<Value> = pos_results
-            .iter()
-            .chain(named_results.iter())
-            .filter_map(|r| r.as_ref().ok().map(|t| t.ty.clone()))
-            .collect();
-        let held_views = held_spec_views(kb, env, &arg_types);
+        let held_views = held_spec_views(kb, env);
 
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
@@ -3888,7 +3955,7 @@ pub(super) fn check_apply_iter(
                     &projection_receivers,
                     &held_views,
                     span,
-                    false,
+                    RequirementUse::Call,
                 )?;
             }
         } else {
@@ -4050,6 +4117,7 @@ pub(super) fn check_apply_iter(
                         &caller_requires,
                         env.param_rigids(),
                         &selections,
+                        RequirementUse::Call,
                         // WI-945: asked for ONLY inside an operation body — see the park
                         // below for why a rule-body goal is a different question.
                         env.enclosing_op().is_some().then_some(&mut unsuppliable),
@@ -4059,7 +4127,7 @@ pub(super) fn check_apply_iter(
                             span,
                             op: fn_sym,
                             callee_sort: parent_sym,
-                            eta: false,
+                            usage: RequirementUse::Call,
                             refusal,
                         }
                     })?;
@@ -4171,7 +4239,7 @@ pub(super) fn check_apply_iter(
                         &projection_receivers,
                         &held_views,
                         span,
-                        false,
+                        RequirementUse::Call,
                     )?;
                     classify(
                         kb,

@@ -13,6 +13,18 @@ import anthill.parse.{Effect, Operation, TypeExpr, TypeParam}
   */
 object OpGen:
 
+  /** The context clause for a requirement set, or "" for an empty one.
+    *
+    * ONE clause for every dictionary and not one clause each: they are the sort's
+    * requirement set, supplied together, and Scala resolves an anonymous `using`
+    * parameter by TYPE — so the clause needs no names and two requirements of one spec
+    * at different arguments (`Eq[A]`, `Eq[B]`) stay distinguishable. ANONYMOUS also
+    * keeps the emitted name space free of a binder the anthill declaration never wrote.
+    * Shared by an operation's signature and a constructor's parameter list
+    * (`Bootstrap.fieldless`), which ask for the same dictionaries the same way. */
+  def usingClause(evidence: IndexedSeq[String]): String =
+    if evidence.isEmpty then "" else evidence.mkString("(using ", ", ", ")")
+
   /** One operation's abstract signature.
     *
     * `evidence` is the enclosing sort's requirement dictionaries (WI-1022): the
@@ -60,13 +72,7 @@ object OpGen:
       val pTy = TypeGen.render(sym, p.ty, scope)
       s"$pName: $pTy"
     }.mkString("(", ", ", ")")
-    // ONE clause for every dictionary and not one clause each: they are the sort's
-    // requirement set, supplied together at a call site, and Scala resolves an
-    // anonymous `using` parameter by TYPE — so the clause needs no names and two
-    // requirements of one spec at different arguments (`Eq[A]`, `Eq[B]`) stay
-    // distinguishable. ANONYMOUS also keeps the emitted name space free of a binder
-    // the anthill declaration never wrote.
-    val using = if evidence.isEmpty then "" else evidence.mkString("(using ", ", ", ")")
+    val using = usingClause(evidence)
     val ret = renderReturn(op, scope, sym)
     s"def $name$tpStr$params$using: $ret"
 
@@ -103,12 +109,12 @@ object OpGen:
     * (`effects E = ?`), and an operation has no such spelling — `operation
     * map[S, Dst, EffS, EffP]` writes its row variables in the same flat list as its
     * type variables. That is not an omission Bootstrap can route around: the
-    * emitted `MappedStream[Source, Src, T]` has no slot for `EffP`, so
-    * `MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP]`
-    * either drops it or ships a four-argument application of a three-parameter
-    * type. Reading which parameters the signature USES as rows is the same thing a
-    * reader does, and it is entirely local — the declaration's own text, no KB and
-    * no other file (proposal 034).
+    * emitted `MappedStream[Source, SourceElement, T]` has no slot for `EffP`, so
+    * `MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E,
+    * TransformEffects = EffP]` either drops it or ships a four-argument application of a
+    * three-parameter type. Reading which parameters the signature USES as rows is the same
+    * thing a reader does, and it is entirely local — the declaration's own text, no KB and no
+    * other file (proposal 034).
     *
     * A row VARIABLE only: `{EffP, -Modify[x]}` contributes `EffP` and not `Modify`
     * or `x`, because a parameterized element of a row is a concrete effect LABEL

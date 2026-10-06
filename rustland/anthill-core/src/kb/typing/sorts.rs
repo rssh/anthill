@@ -1206,9 +1206,10 @@ fn check_value_against_sort_ref(
                 Literal::Bool(_) => "Bool",
                 _ => "?",
             };
-            // WI-036: a primitive value also satisfies a spec-sort field when
-            // its primitive sort provides the spec (e.g. `5` for a field typed
-            // `Eq`, since `Int provides Eq`).
+            // WI-036: a primitive value also satisfies a field typed at a sort its
+            // primitive sort provides AND IS A VALUE OF — one that is its own carrier.
+            // A spec over a parameter is no type of the value (`5` is the `T` of an `Eq`,
+            // not an `Eq`): see [`lit_sort_provides`].
             if ok || lit_sort_provides(kb, actual, declared_sym) {
                 None
             } else {
@@ -1254,16 +1255,24 @@ fn check_value_against_sort_ref(
     }
 }
 
-/// True if the primitive sort of a literal (`"Int64"`, `"String"`, …) provides
-/// the spec sort `declared_sym` (WI-036 — a primitive value in a spec field).
+/// True if the primitive sort of a literal (`"Int64"`, `"String"`, …) provides the sort
+/// `declared_sym` admissibly (WI-036 — a primitive value in a field typed at a sort it
+/// provides).
+///
+/// ADMISSIBLY, as the operation typer reads the same field ([`sort_provides_admissibly`],
+/// WI-20261005-KSSA4): a fact's value is a value like any other, and this reader kept
+/// the bare `sort_provides` — so `fact Holder(item: widget(7))` over `entity Holder(item:
+/// Comparable)` loaded while `Holder(item: widget(7))` in an operation body was refused
+/// (MEASURED).
 fn lit_sort_provides(kb: &KnowledgeBase, prim: &str, declared_sym: Symbol) -> bool {
     kb.try_resolve_symbol(&format!("anthill.prelude.{prim}"))
-        .is_some_and(|prim_sym| sort_provides(kb, prim_sym, declared_sym))
+        .is_some_and(|prim_sym| sort_provides_admissibly(kb, prim_sym, declared_sym))
 }
 
 /// Shared check for a constructor value against a declared sort: accept direct
 /// membership (the value's parent sort is the declared sort) or, per WI-036,
-/// when the parent sort provides the declared spec sort.
+/// when the parent sort provides the declared sort and is a value of it
+/// ([`lit_sort_provides`]'s note).
 fn check_value_sort_membership(
     kb: &KnowledgeBase,
     parent: Option<Symbol>,
@@ -1277,18 +1286,31 @@ fn check_value_sort_membership(
     if constructor_matches_declared(kb, parent, declared_sym) {
         return None;
     }
-    if sort_provides(kb, parent, declared_sym) {
+    if sort_provides_admissibly(kb, parent, declared_sym) {
         return None;
     }
+    let context = TypeErrorContext::EntityField {
+        entity: entity_sym,
+        field: field_sym,
+    };
+    let got = kb.local_name_of(parent).to_string();
+    // A provider at a spec over a parameter is told so, in the words the operation typer
+    // uses for the same field.
+    let actual = match spec_over_parameter(kb, declared_sym)
+        .filter(|_| sort_provides(kb, parent, declared_sym))
+    {
+        Some(param) => format!(
+            "{got} — {}",
+            provider_is_not_the_spec_note(kb, declared_sym, param, parent, &context),
+        ),
+        None => got,
+    };
     Some(TypeError::Other {
         site: TypeError::here(),
         span,
-        context: TypeErrorContext::EntityField {
-            entity: entity_sym,
-            field: field_sym,
-        },
+        context,
         expected: type_display_name_value(kb, declared_type),
-        actual: kb.local_name_of(parent).to_string(),
+        actual,
     })
 }
 
@@ -1345,13 +1367,20 @@ fn check_value_against_parameterized(
     // sort-NESTED carrier was refused.
     if let Some(parent) = kb.sort_of_constructor(val_functor) {
         if !constructor_matches_declared(kb, parent, base_sym) {
-            let accepted = match declared_type_goal_bindings(kb, &bindings) {
-                None => false,
-                Some(goal_bindings) if goal_bindings.is_empty() => {
-                    sort_provides(kb, parent, base_sym)
-                }
-                Some(goal_bindings) => spec_resolves_at_bindings(kb, base_sym, goal_bindings),
-            };
+            // …and only at a sort the value can be a value OF ([`lit_sort_provides`]'s
+            // note), by a sort that provides it: `spec_resolves_at_bindings` asks whether
+            // the instance EXISTS, which it does for a spec over a parameter too, and
+            // never looks at the value — so a `gadget(…)` was a `Ranked[K = Int64]`
+            // because a `Widget` is one (MEASURED, on the parent commit as on this tree).
+            let accepted = provider_conforms_to(kb, base_sym)
+                && sort_provides(kb, parent, base_sym)
+                && match declared_type_goal_bindings(kb, &bindings) {
+                    None => false,
+                    Some(goal_bindings) if goal_bindings.is_empty() => true,
+                    Some(goal_bindings) => {
+                        spec_resolves_at_bindings(kb, base_sym, goal_bindings)
+                    }
+                };
             if accepted {
                 return None;
             }

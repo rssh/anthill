@@ -1092,6 +1092,9 @@ mod wi896_labeled_predicate_head_test;
 #[path = "include/wi898_equation_functor_kind_test.rs"]
 mod wi898_equation_functor_kind_test;
 
+#[path = "include/wi899_builtin_clause_coexistence_test.rs"]
+mod wi899_builtin_clause_coexistence_test;
+
 #[path = "include/wi900_implicit_tier_agreement_test.rs"]
 mod wi900_implicit_tier_agreement_test;
 
@@ -1899,6 +1902,8 @@ mod wi_wbhtm_value_in_type_call_test;
 mod wi_020th_two_hop_chain_test;
 #[path = "include/wi_jn09w_holder_gate_test.rs"]
 mod wi_jn09w_holder_gate_test;
+#[path = "include/wi_2kv4y_unfixed_carrier_test.rs"]
+mod wi_2kv4y_unfixed_carrier_test;
 #[path = "include/wi_aaqt5_type_application_head_test.rs"]
 mod wi_aaqt5_type_application_head_test;
 #[path = "include/wi_0rp29_nested_projection_value_in_type_test.rs"]
@@ -1953,3 +1958,6 @@ mod wi_vm9q7_string_escape_test;
 mod wi_hsg31_global_declaration_test;
 #[path = "include/wi753_native_rule_body_occurrence_test.rs"]
 mod wi753_native_rule_body_occurrence_test;
+
+#[path = "include/wi_kssa4_spec_typed_value_test.rs"]
+mod wi_kssa4_spec_typed_value_test;

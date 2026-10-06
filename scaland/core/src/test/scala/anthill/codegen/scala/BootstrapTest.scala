@@ -1012,10 +1012,11 @@ class BootstrapTest extends munit.FunSuite:
     // carries NO supertrait where the non-shadowing fixture above keeps one.
     //
     // What IS this ticket's, and is asserted: the arities. The nested
-    // `MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
-    // written with five arguments, of which `ES = E` is a sort effect parameter and
-    // `EF = EffP` is an operation type parameter this signature only ever uses
-    // inside a row — three survive, matching the three the emission declares.
+    // `MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E,
+    // TransformEffects = EffP]` is written with five arguments, of which
+    // `SourceEffects = E` is a sort effect parameter and `TransformEffects = EffP` is
+    // an operation type parameter this signature only ever uses inside a row — three
+    // survive, matching the three the emission declares.
     val src = gen(parseStdlib("anthill/prelude/finite_collection.anthill"))
       .head.contents
     assert(src.contains("trait FiniteCollection[C, Element]:"),
@@ -1033,7 +1034,7 @@ class BootstrapTest extends munit.FunSuite:
     // WITNESSES, and the carrier this signature applies is `MappedStream`.
     val mapped = gen(parseStdlib("anthill/prelude/combinators.anthill"))
       .head.contents
-    assert(mapped.contains("enum MappedStream[Source, Src, T]"),
+    assert(mapped.contains("enum MappedStream[Source, SourceElement, T]"),
       s"the three surviving arguments must be the three the declaration emits:\n$mapped")
   }
 
@@ -1526,9 +1527,10 @@ class BootstrapTest extends munit.FunSuite:
     //
     // THE BOUND IS THE THIRD PIECE and is what makes the parameter a witness slot
     // rather than a phantom: `O <: Ord[T]` is the requirement itself, stated where
-    // §2.7a says an is-a claim belongs — on the type. It is also this data sort's
-    // DISCHARGE (`checkDischarged` would otherwise refuse a requirement no
-    // constructor field carries, and `bin`'s `elem: T` does not carry `Ord[T]`).
+    // §2.7a says an is-a claim belongs — on the type. It is also what carries this
+    // data sort's requirement: an anonymous one no constructor field is typed by is
+    // the constructor's to ask for (`fieldless`), and `bin`'s `elem: T` does not carry
+    // `Ord[T]`.
     val files = gen(parseStdlib("anthill/prelude/sortedset.anthill"))
     val src = files.find(_.relPath.endsWith("/SortedSet.scala"))
       .getOrElse(fail(s"expected SortedSet.scala in: ${files.map(_.relPath)}")).contents
@@ -1585,8 +1587,8 @@ class BootstrapTest extends munit.FunSuite:
     // before the first assert — `operation `empty`: `SortedSet` is the enclosing
     // sort, which declares 1 type parameter(s), but 2 argument(s) were written`;
     // drop `TypeParamDecl.declWith` and the FIRST assertion fails on a bare
-    // `enum SortedSet[T, O]:` (not `checkDischarged`, which is asked only about the
-    // ANONYMOUS requirements and so has nothing to say either way); drop the named
+    // `enum SortedSet[T, O]:` (`fieldless` is asked only about the ANONYMOUS
+    // requirements and so has nothing to say either way); drop the named
     // arm of `requiresMapping`'s evidence and the `using` count is 0. (The
     // qualification's own driver is the next test.)
   }
@@ -1861,22 +1863,30 @@ class BootstrapTest extends munit.FunSuite:
       s"the supertrait control must be unchanged:\n$ord")
     assert(!ord.contains("using"),
       s"a supertrait requirement must not ALSO be passed as a dictionary:\n$ord")
-    // The data shape's control, for the same partition: `MappedStream`'s
-    // requirement is discharged by the constructor FIELD typed by it (WI-1064), which
-    // is a stronger position than a context parameter — it constrains the constructed
-    // value — so its `<Sort>Ops` operations stay bare too.
+    // The data shape, for the same partition: `MappedStream` says its source can be
+    // walked in a `requires` over its `Source` parameter, and its field is typed by
+    // that parameter — `entity mapped(source: Source, fn: …)` — so no field carries the
+    // requirement, and it is evidence: the CONSTRUCTOR asks for the dictionary, since
+    // the value is built where the requirement holds, and so does every operation of
+    // its `<Sort>Ops` (WI-20261005-KSSA4).
     //
-    // READ FROM combinators.anthill, and the move is WI-590's: this control used to
-    // read finite_combinators.anthill, whose `FiniteMappedStream` carried exactly this
-    // shape. That file now holds the finiteness WITNESSES, which declare no
-    // constructor at all — so their `requires FiniteCollection[C = S, …]` has no field
-    // to ride on and correctly BECOMES the dictionary (`trait MappedStreamFinite[S,
-    // Src, T]: def collect(…)(using FiniteCollection[S, Src])`, measured). Pointing
-    // this control at the file that still has the field keeps it a control instead of
-    // silently inverting into an assertion about the other arm.
+    // FAILS WHEN BACKED OUT, both halves measured: hand the data shapes an empty
+    // `ctorEvidence` and the constructor line loses its clause; hand them an empty
+    // `evidence` and the two operations lose theirs. The field-carried arm, where
+    // neither is emitted, is the `Wrapper` / `Holder` / `Many` fixtures below.
+    //
+    // The finiteness WITNESSES in finite_combinators.anthill are the algebra arm: they
+    // declare no constructor, so their `requires FiniteCollection[C = S, …]` is the
+    // operations' dictionary alone (`trait MappedStreamFinite[S, SourceElement, T]:
+    // def collect(…)(using FiniteCollection[S, SourceElement])`, measured).
     val mapped = preludeClosure("combinators").head.contents
-    assert(!mapped.contains("using"),
-      s"a field-discharged requirement must not also be a dictionary:\n$mapped")
+    val walk = "(using _root_.anthill.prelude.Iterable[Source, SourceElement])"
+    assert(mapped.contains(s"  case Mapped(source: Source, fn: (SourceElement) => T)$walk\n"),
+      s"the constructor must ask for the dictionary no field carries:\n$mapped")
+    val defs = mapped.linesIterator.filter(_.trim.startsWith("def ")).toVector
+    assertEquals(defs.length, 2, s"expected `splitFirst` and `map`:\n$mapped")
+    defs.foreach(d => assert(d.contains(s")$walk: "),
+      s"every operation of the sort must take the dictionary: $d"))
   }
 
   test("WI-1055: the enclosing sort written with the WRONG number of arguments is refused") {
@@ -2021,16 +2031,19 @@ class BootstrapTest extends munit.FunSuite:
     ScalaCompile.assertCompiles("the WI-1064 Record fixture", files)
   }
 
-  test("WI-1064: discharge is PER CONSTRUCTOR — a sibling that carries it nowhere is refused") {
+  test("WI-1064: discharge is PER CONSTRUCTOR — a sibling that carries it nowhere asks for it") {
     // Over a sum's flattened field list, one constructor carrying the requirement
     // would discharge it for every other case, which is precisely the silent drop
-    // `checkDischarged` exists to prevent. Both corpus instances are
-    // single-constructor, so the hole was invisible there.
+    // `fieldless` exists to prevent. Both corpus instances are single-constructor, so
+    // the hole is invisible there.
     //
-    // FAILS WHEN BACKED OUT: restore `ctors.flatMap(_.fields)` and this emits
-    // `enum Wrap[SrcC, Src]: case Carried(...); case Bare[SrcC, Src](n: Long)` with
-    // no refusal — `Bare` carries the requirement nowhere.
-    val err = intercept[BootstrapError](gen(parseSource(
+    // THE SIBLING TAKES IT AS ITS OWN CONTEXT PARAMETER (WI-20261005-KSSA4); it used
+    // to be refused. `carried` holds the dictionary in its field and asks for nothing
+    // more — the control that the clause is per constructor in BOTH directions.
+    //
+    // FAILS WHEN BACKED OUT, measured: read the flattened `ctors.flatMap(_.fields)` in
+    // `fieldless` and `Bare` loses its clause, carrying the requirement nowhere.
+    val files = gen(parseSource(
       """namespace anthill.wi1064
         |  import anthill.prelude.{Int64}
         |  sort Walk
@@ -2047,9 +2060,16 @@ class BootstrapTest extends munit.FunSuite:
         |    entity bare(n: Int64)
         |  end
         |end
-        |""".stripMargin, "wrap.anthill")))
-    assert(err.getMessage.contains("constructor `bare`"),
-      s"refusal must name the constructor that carries it nowhere: ${err.getMessage}")
+        |""".stripMargin, "wrap.anthill"))
+    val wrap = files.find(_.relPath.endsWith("/Wrap.scala"))
+      .getOrElse(fail(s"expected Wrap.scala in: ${files.map(_.relPath)}")).contents
+    assert(wrap.contains("  case Carried(source: Walk[SrcC, Src])\n"),
+      s"a constructor whose field carries the requirement asks for no dictionary:\n$wrap")
+    assert(wrap.contains(
+      "  case Bare[SrcC, Src](n: _root_.scala.Long)(using Walk[SrcC, Src]) " +
+        "extends Wrap[SrcC, Src]\n"),
+      s"the sibling that carries it nowhere must ask for it:\n$wrap")
+    ScalaCompile.assertCompiles("the WI-1064 per-constructor fixture", files)
   }
 
   test("WI-1064 CONTROL: a requirement carried NESTED in a field type still discharges") {
@@ -2084,20 +2104,23 @@ class BootstrapTest extends munit.FunSuite:
       s"the nested requirement must reach the emitted field:\n$many")
   }
 
-  test("WI-1064: a data sort's `requires` that NO field carries is REFUSED, not dropped") {
-    // The omission above is admissible only because the emitted tree still carries
-    // the requirement through a field's declared type. Where it would not, omitting
-    // it is a real loss — the emitted `Boxed` says nothing of `Ordering[T]`. It stays
-    // a refusal after WI-1022 emitted §2.7's `using` half, and the message says why:
-    // a DATA sort's requirement constrains the constructed VALUE, which a context
-    // parameter on the operations does not reach. The remedy it points at is the one
-    // that does — NAME the slot (§2.7b) and the bound rides on the declaration. No
-    // prelude file has this shape, which is exactly why emitting `""` for every data
-    // sort unconditionally would have looked right.
+  test("WI-1064: a data sort's `requires` that NO field carries is the constructor's to ask for") {
+    // The omitted `extends` is admissible only because the emitted tree still carries
+    // the requirement. A field typed by it is one place; where there is none, the
+    // CONSTRUCTOR takes the dictionary as its own context parameter — a data sort's
+    // requirement says what every value of the sort is built over, and the
+    // constructor is the one construct that constrains the constructed VALUE
+    // (WI-20261005-KSSA4). The operations take it too, as an algebra sort's do.
     //
-    // FAILS WHEN BACKED OUT: delete the `checkDischarged` call and this `intercept`
-    // finds no throw — the requirement is silently gone from the emitted declaration.
-    val err = intercept[BootstrapError](gen(parseSource(
+    // THIS WAS A REFUSAL, pointing the author at a named slot, while the prelude typed
+    // such a field by the spec (`source: Iterable[C = Source, …]`). The prelude now
+    // types it by the sort's own parameter (`source: Source`) and says the rest in the
+    // clause, which is exactly this shape.
+    //
+    // FAILS WHEN BACKED OUT, measured: hand the data shapes an empty `ctorEvidence`
+    // and the case is `case Boxed(x: T)` — the requirement silently gone from the
+    // declaration, on a sort with no operation to carry it either.
+    val files = gen(parseSource(
       """namespace anthill.wi1064
         |  sort Ordering
         |    sort T = ?
@@ -2110,42 +2133,56 @@ class BootstrapTest extends munit.FunSuite:
         |    entity boxed(x: T)
         |  end
         |end
-        |""".stripMargin, "boxed.anthill")))
-    assert(err.getMessage.contains("`Boxed`"),
-      s"refusal must name the sort: ${err.getMessage}")
-    // "evidence supplied to bodies" and not "constrains an input": the latter is
-    // false of a NULLARY marker requirement, which has no input slot at all, and
-    // `examples/classic-mini/*` write `sort Program { requires anthill.cli.Main }`
-    // — today an algebra, but one `entity` away from reaching this message.
-    assert(err.getMessage.contains("evidence supplied to bodies"),
-      s"refusal must say what a sort-level `requires` IS: ${err.getMessage}")
-    assert(err.getMessage.contains("has no field typed by it"),
-      s"refusal must say why it cannot be carried: ${err.getMessage}")
-    // The remedy, and it must be the one that WORKS for this shape (WI-1022): a
-    // `using` clause on the operations is what an algebra sort's demotion becomes,
-    // and pointing a data sort at it would send the reader to a construct that does
-    // not constrain what their requirement is about.
-    assert(err.getMessage.contains("NAME the slot"),
-      s"refusal must name the remedy that fits a data sort: ${err.getMessage}")
-    assert(err.getMessage.contains("boxed.anthill:"),
-      s"refusal must be located: ${err.getMessage}")
+        |""".stripMargin, "boxed.anthill"))
+    val boxed = files.find(_.relPath.endsWith("/Boxed.scala"))
+      .getOrElse(fail(s"expected Boxed.scala in: ${files.map(_.relPath)}")).contents
+    assert(boxed.contains("enum Boxed[T]:\n  case Boxed(x: T)(using Ordering[T])\n"),
+      s"the constructor must ask for the dictionary, and the enum take no `extends`:\n$boxed")
+    ScalaCompile.assertCompiles("the WI-1064 constructor-evidence fixture", files)
+  }
+
+  test("WI-1064: a data sort's `requires` with NO arguments is still refused") {
+    // A marker is over none of the sort's parameters, so there is no instance a
+    // constructor is built over to ask a dictionary for. On a sort without constructors
+    // it is a supertrait (the WI-1066 marker test); on a data sort nothing carries it,
+    // and it is refused as every uncarried requirement of a data sort once was.
+    //
+    // FAILS WHEN BACKED OUT, measured: drop the refusal from `fieldless` and the
+    // emission is `case class Program(name: String)(using Main)` — a context parameter
+    // no construction site can supply — and this `intercept` finds no throw.
+    val err = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi1064
+        |  import anthill.prelude.{String}
+        |  sort Main
+        |  end
+        |
+        |  sort Program
+        |    requires Main
+        |    entity program(name: String)
+        |  end
+        |end
+        |""".stripMargin, "program.anthill")))
+    assert(err.getMessage.contains("written with no arguments"),
+      s"the refusal says why a context parameter would ask for nothing: ${err.getMessage}")
+    assert(err.getMessage.contains("constructor `program`"),
+      s"the refusal names the constructor: ${err.getMessage}")
   }
 
   test("WI-1064 CORPUS: combinators.anthill emits no `extends`, and still names it") {
-    // THE MEASURED INSTANCE, on emitted TEXT rather than compiled, for the reason
-    // the fixture test states. Both sorts, because both carried the defect.
+    // THE CORPUS INSTANCE, on emitted TEXT rather than compiled, for the reason the
+    // fixture test states. Both sorts, because both carry the shape.
     //
-    // READ FROM combinators.anthill SINCE WI-590. The instance that carried the
-    // defect was finite_combinators.anthill's `FiniteMappedStream`, a data sort whose
-    // `requires` was over its SOURCE parameter; WI-590 folded that twin carrier into
-    // the one `MappedStream`, which now writes the same `requires`-over-the-source
-    // beside the field that carries it. The defect's shape moved files; it did not
-    // stop existing, so the corpus assertion follows it rather than being retired.
-    //
-    // The `requires Iterable[C = Source, …]` these two write sits beside the `entity`
-    // field typed by it, while the sort's actual claim about itself is the `provides
+    // The `requires Iterable[C = Source, …]` these two write is over their SOURCE
+    // parameter, while the sort's actual claim about itself is the `provides
     // Stream[…]` below — which Bootstrap reads nothing of (`emitSort` has no
-    // `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
+    // `ProvidesClauseItem` arm). An `extends` built from the clause would be an is-a
+    // claim about the wrong carrier.
+    //
+    // WHERE THE REQUIREMENT IS NAMED MOVED (WI-20261005-KSSA4). The field is typed by
+    // the sort's own `Source` — a source is a VALUE of a sort that can be walked, not
+    // a walk — so no field carries the requirement and the constructor asks for it.
+    // While the field was typed by the spec, the emitted `Mapped` held the dictionary
+    // in that field and no source at all.
     //
     // `_root_`-ANCHORED SINCE WI-1060, and only the spelling changed: the required
     // spec used to reach [[Placement.Ambient]], which qualifies with the DECLARING
@@ -2153,21 +2190,23 @@ class BootstrapTest extends munit.FunSuite:
     // iterable.anthill's own declaration, which is also what checks the two arguments
     // against the two that declaration emits.
     //
-    // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum MappedStream[Source,
-    // Src, T] extends anthill.prelude.Iterable[Source, Src]:`, whose measured
-    // consequence (on the pre-WI-590 spelling of the same shape) was `class Fmapped
-    // needs to be abstract, since it has 9 unimplemented members`.
+    // FAILS WHEN BACKED OUT, measured: give the data shapes the algebra sort's reading
+    // of a requirement and the declaration is `enum MappedStream[Source, SourceElement,
+    // T] extends _root_.anthill.prelude.Iterable[Source, SourceElement]:`; hand them an
+    // empty `ctorEvidence` and the case names no `Iterable` anywhere.
     val files = preludeClosure("combinators")
     Seq(
-      ("MappedStream", "enum MappedStream[Source, Src, T]:",
-        "case Mapped(source: _root_.anthill.prelude.Iterable[Source, Src],"),
+      ("MappedStream", "enum MappedStream[Source, SourceElement, T]:",
+        "  case Mapped(source: Source, fn: (SourceElement) => T)" +
+          "(using _root_.anthill.prelude.Iterable[Source, SourceElement])\n"),
       ("FilteredStream", "enum FilteredStream[Source, T]:",
-        "case Filtered(source: _root_.anthill.prelude.Iterable[Source, T],"),
-    ).foreach { case (sort, decl, field) =>
+        "  case Filtered(source: Source, pred: (T) => _root_.scala.Boolean)" +
+          "(using _root_.anthill.prelude.Iterable[Source, T])\n"),
+    ).foreach { case (sort, decl, ctor) =>
       val src = files.find(_.relPath.endsWith(s"/$sort.scala"))
         .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
       assert(src.contains(decl), s"$sort must carry no `extends`:\n$src")
-      assert(src.contains(field), s"$sort must still name what it requires:\n$src")
+      assert(src.contains(ctor), s"$sort's constructor must ask for what it requires:\n$src")
     }
   }
 
