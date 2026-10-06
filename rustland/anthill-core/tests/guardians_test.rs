@@ -909,7 +909,19 @@ fn an_external_send_is_refused_by_the_conditional_permission() {
     // none, so an implementation can neither perform it (what fires here) nor
     // declare it (a widening). NO generated triage can mail outside, and that is
     // a property of the spec rather than of this agent.
-    assert_refused("outbox", "undeclared effect: Permission[T = Outbox]");
+    //
+    // THE WHOLE LINE, as README.md quotes it: the undeclared authority, against the row
+    // as the spec writes it. The model's row is `Llm.E`, and by its variable's name it
+    // read `[External, ?E, Error]` (WI-20261006-XQGEW).
+    let errs = errors_for("outbox");
+    assert!(
+        errs.iter().any(|e| e.contains(
+            "run.effects (op-effects): expected declared: [External, Llm.E, Error], \
+             got undeclared effect: Permission[T = Outbox]"
+        )),
+        "agent 'outbox' should be refused for the outbox authority, against the spec's \
+         row; got: {errs:#?}"
+    );
     // AND IT IS THE ONLY ERROR. The body it mails is the `Text[Trusted]` the TASK
     // handed it, not one it minted, so neither tier on `Text.trusted` is touched:
     // one broken rule, one diagnostic. (It used to say the body was a cleared literal
@@ -918,7 +930,6 @@ fn an_external_send_is_refused_by_the_conditional_permission() {
     // because `both_contract_tiers_report_at_one_call` names this row as its control,
     // and a control that does not count is consistent with a checker reporting every
     // tier for every refusal.
-    let errs = errors_for("outbox");
     assert_eq!(
         errs.len(),
         1,
@@ -1580,8 +1591,12 @@ fn the_legitimate_acquisition_path_is_accepted() {
         "guardians.FakeLlm.complete",
         "guardians.summarize",
     ] {
+        // ANY LABEL THAT NAMES `Llm` BUT THE MODEL'S OWN ROW. `attempt`'s row holds
+        // `Llm.E`, the row of the model it is handed, which is printed by its spelling
+        // since WI-20261006-XQGEW and is no authority; every other label naming the
+        // model is one — a `Permission` over it, a denial of one, an alias for either.
         assert!(
-            !row(qn).iter().any(|e| e.contains("Llm")),
+            !row(qn).iter().any(|e| e.contains("Llm") && e != "Llm.E"),
             "{qn} consumes a model it was handed and must carry no Permission[Llm]; got: {:?}",
             row(qn)
         );
@@ -2476,8 +2491,9 @@ fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
     // whatever model it is handed. A budget that said only `External` would be asserting
     // that a `Triage` performs the same effects against a fixture as against a frontier
     // model. `run` writes it `Llm.E` — the row of the `Llm` its `llm: Llm.C` is — which
-    // is a type parameter of `run`, and prints as the variable it is.
-    assert_eq!(v.budget, vec!["External", "?E", "Error"]);
+    // is a type parameter of `run`, and prints as it is written (WI-20261006-XQGEW: by
+    // its variable's name it read `?E`, which does not say whose `E`).
+    assert_eq!(v.budget, vec!["External", "Llm.E", "Error"]);
 }
 
 #[test]
@@ -2510,7 +2526,7 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
         .unwrap_or_else(|e| panic!("attempt: {e:?}"));
     let v = read_verdict(&p.interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
-    assert_eq!(v.budget, vec!["External", "?E", "Error"]);
+    assert_eq!(v.budget, vec!["External", "Llm.E", "Error"]);
 }
 
 /// WI-20260908-H2GDZ's OWN ACCEPTANCE — TWO ROUNDS, THE SECOND BUILT FROM A REAL REFUSAL.

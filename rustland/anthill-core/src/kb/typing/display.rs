@@ -400,11 +400,12 @@ fn like_named_unknowns(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> 
     mentioned_unknowns(kb, expected, &mut e_rigids, &mut e_names);
     mentioned_unknowns(kb, actual, &mut a_rigids, &mut a_names);
     for e in e_rigids.iter().filter(|e| !a_rigids.contains(e)) {
-        let like = a_rigids.iter().any(|a| {
-            !e_rigids.contains(a) && kb.local_name_of(a.name()) == kb.local_name_of(e.name())
-        });
+        let shown = type_var_display_name(kb, *e);
+        let like = a_rigids
+            .iter()
+            .any(|a| !e_rigids.contains(a) && type_var_display_name(kb, *a) == shown);
         if like {
-            return Some(format!("?{}", kb.local_name_of(e.name())));
+            return Some(shown);
         }
     }
     for e in e_names.iter().filter(|e| !a_names.contains(e)) {
@@ -584,7 +585,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
         // canonical-form-stable-across-runs claim of `build_canonical_effects_rows`.
         // Two distinct vars sharing a textual name sort together, deliberately.
         ViewHead::Var(Var::Global(vid)) | ViewHead::Var(Var::Rigid(vid)) => {
-            format!("?{}", kb.local_name_of(vid.name()))
+            type_var_display_name(kb, vid)
         }
         // A De Bruijn index has no name. In practice these do not reach a type display
         // (the typer runs post-binder-open); the arm keeps the walk total.
@@ -854,6 +855,76 @@ pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
         // so the display IS the key.
         _ => type_display_name_view(kb, &v),
     }
+}
+
+/// WI-20261006-XQGEW — `Head.Member`, where `name` is the name of a type parameter the
+/// member sugar minted for that spelling (§5.4); `None` for any other name.
+///
+/// The parameter has no name of its own to print: `name` reads as the bare member, which
+/// is also what the enclosing sort's `E`, a bracket's and another spec's member are
+/// called — `effects {Tagger.E}` was reported as `[?E]`, and `Other.E` beside it as `?E`
+/// too. The spelling is the parameter's, recorded once where its name is minted
+/// ([`KnowledgeBase::mint_member_param_name`]), and every variable that stands for the
+/// parameter carries the name: the loader's, the rigid of a body check, the copy an
+/// operation used as a value is instantiated at. So a variable is printed one way for as
+/// long as it lives, which `build_canonical_effects_rows` needs of this walk.
+pub(super) fn member_param_spelling(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
+    let head = kb.member_param_head(name)?;
+    Some(format!(
+        "{}.{}",
+        kb.local_name_of(head),
+        kb.local_name_of(name)
+    ))
+}
+
+/// WI-20261006-XQGEW — how a member's parameter is written so that a clause can name it:
+/// in the operation's bracket, under the requirement the member spelling stands for.
+/// `None` where `name` is not a member's.
+///
+/// One sentence for three refusals. Two of them would advise a clause over the
+/// parameter, and a clause written over the member spelling is not read as covering it
+/// (MEASURED: `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` is refused as the missing
+/// clause is; WI-20261006-P962X) — `CallerRigidCarrier::repair` and the no-route account
+/// of a sort's requirement, whose member branches go once that lands. The third would
+/// advise a slot declared on the parameter, which a member has no binder for whatever a
+/// clause covers (`UntiedForward::render`).
+///
+/// EVERY MEMBER OF THE SPEC MOVES, NOT THE ONE NAMED. The members of one spec in one
+/// signature are one requirement (§5.4), so a signature that keeps one of them in the
+/// member spelling beside the bracket clause has two instances of the spec — MEASURED:
+/// `f[P](x: P) -> Int64 effects {Tagger.E} requires Tagger[C = P]` is refused in its own
+/// body ("expected declared: [Tagger.E], got undeclared effect: ?_") and at its calls,
+/// where `f[P, Q](x: P) -> Int64 effects {Q} requires Tagger[C = P, E = Q]` loads. The
+/// head is the one the signature wrote: a clause over an alias reads as the alias's
+/// expansion does (MEASURED: `requires PS[D = P]` over `sort PS = S[C = A]`).
+pub(super) fn member_param_bracket_spelling(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
+    let head = kb.local_name_of(kb.member_param_head(name)?);
+    let member = kb.local_name_of(name);
+    Some(format!(
+        "a parameter `P` under `requires {head}[{member} = P]`, with `P` where the \
+         signature has `{head}.{member}`; every other member of `{head}` the signature \
+         writes goes the same way, as one more binding of that one clause"
+    ))
+}
+
+/// The name a type VARIABLE is shown by: the member it stands for
+/// ([`member_param_spelling`]), else `?` and its own name. One function for every site
+/// that prints a variable in a type — this walk, [`like_named_unknowns`] and
+/// `format_term_for_goal` — so a parameter is not `Tagger.E` in one refusal and `?E` in
+/// the next.
+pub(super) fn type_var_display_name(kb: &KnowledgeBase, vid: VarId) -> String {
+    member_param_spelling(kb, vid.name())
+        .unwrap_or_else(|| format!("?{}", kb.local_name_of(vid.name())))
+}
+
+/// The name a type PARAMETER is called by where a message names the parameter rather
+/// than prints a type — "no common type for type parameter `…`", "a type for '…'", the
+/// clause a caller is told to declare: the member it is ([`member_param_spelling`]), else
+/// the short name its declaration wrote. `name` is the parameter's key in its
+/// operation's list, or its variable's.
+pub(super) fn type_param_display_name(kb: &KnowledgeBase, name: Symbol) -> String {
+    member_param_spelling(kb, name)
+        .unwrap_or_else(|| short_name_of(kb.local_name_of(name)).to_string())
 }
 
 /// One named child of `v`, or `None` when the key is absent / unresolvable.

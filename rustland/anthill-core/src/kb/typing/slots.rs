@@ -129,10 +129,9 @@ pub(super) fn seed_op_type_args(
     let Some(type_args) = call_type_args_of(occ) else {
         return Ok(Vec::new());
     };
-    let declared = call_bracket_scopes(kb, op, fn_sym);
     // POSITIONALS reach the operation's OWN parameters only — `declared`'s first
     // segment. See `resolve_call_type_arg_targets`.
-    let positional_limit = op.type_params.len();
+    let (declared, positional_limit) = call_bracket_scopes_split(kb, op, fn_sym);
     let slots = callee_requirement_slots(kb, fn_sym);
     let targets = resolve_call_type_arg_targets(
         kb,
@@ -1477,6 +1476,13 @@ pub struct UntiedForward {
     pub(super) binder: Symbol,
     /// The enclosing parameter, rendered (`probe.R3.P`).
     pub(super) param: String,
+    /// The same, as the advice calls it: the last segment of a declared parameter's
+    /// qualified name (`P`), or the rendering itself where the parameter has none.
+    short: String,
+    /// WI-20261006-XQGEW — the parameter's own name where it is one the member sugar
+    /// minted (`Tagger.C`). It has no declaration to put a slot on, and the advice for it
+    /// is another.
+    member: Option<Symbol>,
     /// The requirement the frame DOES hold for the parameter, rendered, when there is one
     /// and it does not answer this goal (`requires OE: WeakOrd[E]` asked for
     /// `WeakOrd[T = F]`). `None` is the frame holding nothing for it at all.
@@ -1498,14 +1504,32 @@ impl UntiedForward {
         held: &BinderSlots,
     ) -> Self {
         // The parameter's own qualified name where the rigid maps back to one, which is
-        // every declared rigid; the rigid itself otherwise, which still names it.
-        let param = param_of_rigid(kb, bound, ctx)
-            .map(|p| kb.qualified_name_of(p).to_string())
-            .unwrap_or_else(|| format_term_for_goal(kb, bound));
+        // every declared rigid; the rigid itself otherwise, which still names it — and
+        // is then its own short form too: a member's rigid renders `Tagger.C`, which is
+        // no qualified name to take the last segment of (WI-20261006-XQGEW).
+        let (param, short) = match param_of_rigid(kb, bound, ctx) {
+            Some(p) => {
+                let qualified = kb.qualified_name_of(p).to_string();
+                let short = short_name_of(&qualified).to_string();
+                (qualified, short)
+            }
+            None => {
+                let rendered = format_term_for_goal(kb, bound);
+                (rendered.clone(), rendered)
+            }
+        };
+        let member = match kb.get_term(bound) {
+            Term::Var(Var::Rigid(vid) | Var::Global(vid)) => {
+                kb.member_param_head(vid.name()).map(|_| vid.name())
+            }
+            _ => None,
+        };
         UntiedForward {
             owner,
             binder,
             param,
+            short,
+            member,
             held: held
                 .slots
                 .first()
@@ -1517,7 +1541,7 @@ impl UntiedForward {
     /// The sentence every channel says it in: the dictionary build's refusal, and
     /// [`resolve_inner`]'s for the spec route, so the two read alike.
     pub(super) fn render(&self, kb: &KnowledgeBase) -> String {
-        let short = short_name_of(&self.param).to_string();
+        let short = &self.short;
         if self.out_of_reach {
             return format!(
                 "named slot `{b}` of `{o}` is bound to `{p}`, whose dictionary is the enclosing \
@@ -1540,14 +1564,27 @@ impl UntiedForward {
                 p = self.param,
             );
         }
+        // A MEMBER'S PARAMETER HAS NO DECLARATION TO PUT A SLOT ON (WI-20261006-XQGEW): the
+        // clause this advises for a declared one, `requires Tagger.C: …`, is not a binder
+        // a program can write. What can be written is the parameter itself, in the
+        // operation's bracket ([`member_param_bracket_spelling`]), and the slot on that.
+        let repair = match self.member.and_then(|name| member_param_bracket_spelling(kb, name)) {
+            Some(bracket) => format!(
+                "`{short}` is a member's parameter and has no declaration to put a slot on: \
+                 write it in the enclosing operation's bracket — {bracket} — and declare the \
+                 slot on it (`requires P: <the spec above>`)",
+            ),
+            None => format!(
+                "declare a requirement slot for `{short}` on the enclosing SORT or OPERATION, \
+                 wherever `{short}` is declared (`requires {short}: <the spec above>`)"
+            ),
+        };
         format!(
             "named slot `{b}` of `{o}` is bound to `{p}`, a type parameter of the enclosing \
              declaration, and nothing in the enclosing scope holds a dictionary FOR `{short}` \
              (a requirement answers for the parameter it is declared for, so a same-spec \
              requirement of another parameter, or an anonymous one, is not `{short}`'s) — \
-             declare a requirement slot for `{short}` on the enclosing SORT or OPERATION, \
-             wherever `{short}` is declared (`requires {short}: <the spec above>`), or bind \
-             `{b}` to a parameter that already is one",
+             {repair}, or bind `{b}` to a parameter that already is one",
             b = kb.local_name_of(self.binder),
             o = kb.qualified_name_of(self.owner),
             p = self.param,
@@ -2690,16 +2727,49 @@ pub struct SlotSelection {
 /// symbol, while a bracket key lowers to a bare interned `Symbol`
 /// (`build_call_type_args`) and `op.type_params` is keyed the same way (WI-708), and
 /// rung (1) matches by identity.
+///
+/// WI-20261006-XQGEW — THE OPERATION'S OWN ARE THE ONES ITS BRACKET DECLARES
+/// (`op_info::bracket_type_params`), and not the ones the member sugar minted for
+/// `Spec.Member` in its signature. A member's parameter has no name a caller could write;
+/// named after the bare member and listed with the rest, it was a target all the same —
+/// AHEAD of the enclosing sort's, which is what "disjoint by construction" above rests on
+/// and the sugar was no party to. MEASURED, `Holder` declaring `sort E = ?` and
+/// `pick(self: Self, x: X.C) -> X.E`: `Holder.pick[E = String](hold(v: "s"), b(n: 7))`
+/// bound `X.E`, and was refused as returning a `String`; `Holder.pick[E = Int64](…)` over
+/// the same holder of a `String` loaded, the bracket having been held against `X.E`; and
+/// the receiver spelling `Holder[E = …].pick(…)`, which reads the sort's parameters
+/// alone, gave the other verdict both times. A positional landed on one as well, in the
+/// order the loader minted them — the return type's first — which no reader of the
+/// signature can count.
+///
+/// So a member's parameter is bound by the requirement that names it and by nothing a
+/// bracket writes: a key of its name reaches a parameter the operation or its sort
+/// declares under that name where there is one, and a positional counts the written
+/// parameters only. Its name is no other symbol's equal, so the key could not match it
+/// here even listed; it is left out so that the list is what the doc above says it is.
 pub(super) fn call_bracket_scopes(
     kb: &mut KnowledgeBase,
     op: &OperationInfoFull,
     fn_sym: Symbol,
 ) -> Vec<(Symbol, Var)> {
-    let mut declared = op.type_params.clone();
+    call_bracket_scopes_split(kb, op, fn_sym).0
+}
+
+/// [`call_bracket_scopes`], with the length of its first segment — the operation's own
+/// parameters, which is as far as a positional reaches. One computation, so the list and
+/// the count [`resolve_call_type_arg_targets`] indexes it by cannot disagree.
+fn call_bracket_scopes_split(
+    kb: &mut KnowledgeBase,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+) -> (Vec<(Symbol, Var)>, usize) {
+    let mut declared: Vec<(Symbol, Var)> =
+        crate::kb::op_info::bracket_type_params(kb, &op.type_params).collect();
+    let own = declared.len();
     // WI-956: the kind gate is `impl_parent_sort_of_op`'s — under `kind_of` a sort
     // whose Entity role registered first lost its params here, silently.
     let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else {
-        return declared;
+        return (declared, own);
     };
     // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
     // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
@@ -2717,7 +2787,7 @@ pub(super) fn call_bracket_scopes(
         let name_sym = kb.intern(&short);
         declared.push((name_sym, var));
     }
-    declared
+    (declared, own)
 }
 
 /// WI-841 (058 §4.2 rule 2) — one requirement slot a call bracket on `fn_sym` may
@@ -3645,11 +3715,15 @@ pub(super) fn infer_discharged_row_tails(
 /// unification, every declared type-param must resolve to a non-Var
 /// term. An unresolved Var means the caller can't recover the return
 /// type's concrete shape; the caller surfaces `UnconstrainedTypeParam` with the
-/// param's name so the user can pin it via `op[T = …](…)`.
+/// param's name so the user can pin it via `op[T = …](…)` — a parameter written in the
+/// bracket, that is; one the member sugar minted is named by its spelling and told what
+/// fixes it, there being no bracket for it.
 ///
 /// Answers with the first such parameter, by name AND variable: two of an operation's
-/// parameters may share a name (the member sugar mints one per member, and two specs may
-/// each have an `E`), so the name alone does not say which is open.
+/// parameters may READ alike (the member sugar mints one per member, and two specs may
+/// each have an `E`). Each such name is a symbol of its own, so the name does say which
+/// is open; the variable is what `unconstrained_for_want_of_a_provision` asks its
+/// clause about.
 pub(super) fn first_unconstrained_type_param(
     kb: &mut KnowledgeBase,
     subst: &Substitution,

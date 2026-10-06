@@ -238,7 +238,13 @@ impl NoJoin {
     /// parametricity-tie refusal already uses for "the arguments bind one parameter
     /// inconsistently", which is what this is.
     pub(super) fn into_call_error(self, kb: &KnowledgeBase, op: Symbol, span: Option<Span>) -> TypeError {
-        let name = self.type_param.map(|s| kb.local_name_of(s).to_string()).unwrap_or_default();
+        // By the name a message calls a parameter (`type_param_display_name`): a member's
+        // is `Tagger.C`, where the key it is listed under reads as the bare `C` — the
+        // `C` of `Other.C` too (WI-20261006-XQGEW).
+        let name = self
+            .type_param
+            .map(|s| type_param_display_name(kb, s))
+            .unwrap_or_default();
         TypeError::Other {
             site: TypeError::here(),
             span,

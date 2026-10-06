@@ -47,10 +47,13 @@ pub struct OpInfoRecord {
     /// — the fact is then a *value fact* and these labels ride in its value
     /// effects list, not a side-table.
     pub effects: Vec<Value>,
-    /// Operation-level type parameters from `operation foo[A, B](...)`.
-    /// Each entry: `(name_symbol, the parameter's own logical variable)`. The
-    /// typer matches call-site bindings against this table to seed its
-    /// substitution.
+    /// Operation-level type parameters: the ones `operation foo[A, B](...)` writes,
+    /// then the ones the member sugar mints for a `Spec.Member` in the signature
+    /// (WI-20261006-XQGEW). Each entry: `(name_symbol, the parameter's own logical
+    /// variable)`. The typer matches call-site bindings against the WRITTEN ones
+    /// ([`bracket_type_params`]) to seed its substitution; a member's name is a
+    /// symbol of its own that reads as the bare member and is no key's equal
+    /// (`KnowledgeBase::mint_member_param_name`).
     ///
     /// WI-849: a `Var`, not the `TermId` of a `Term::Var` — the entries ARE
     /// variables (the loader mints each one via `fresh_var`, `kb/load.rs`
@@ -464,16 +467,44 @@ pub fn declared_op_with_no_definition(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// then [`lookup_operation_info`] for calls before `build_op_signatures`) and the same
 /// reason for existing — reading one variable should not build an [`OpInfoRecord`] on
 /// the path that already has the answer cached.
+///
+/// WI-20261006-XQGEW — a member's parameter is in that list and is NOT the bracket's
+/// ([`bracket_type_params`]): `operation mk(x: X.C, k: C.K) -> C ensures KVStore[C]` has
+/// one named `C`, and this answered it for the existential carrier `C`.
 pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) -> Option<Var> {
     let pick = |tps: &[(Symbol, Var)]| -> Option<Var> {
-        tps.iter()
+        bracket_type_params(kb, tps)
             .find(|(n, _)| kb.local_name_of(*n) == short)
-            .map(|(_, v)| *v)
+            .map(|(_, v)| v)
     };
     if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
         return pick(&sig.type_params);
     }
     pick(&lookup_operation_info(kb, op_sym)?.type_params)
+}
+
+/// WI-20261006-XQGEW — of the type parameters an operation's record lists, the ones its
+/// declaration WRITES IN ITS BRACKET: every entry but a member's.
+///
+/// `OperationInfo.type_params` holds two families, in this order: the parameters the
+/// bracket declares, then the ones the member sugar mints for `Spec.Member` in the
+/// signature (`load`'s `load_operation`, §5.4). The second has no name a program could
+/// write, and is told from the first by its own — a symbol minted for it alone
+/// ([`KnowledgeBase::member_param_head`]).
+///
+/// THE ONE OWNER of the split, for the two readers that ask "did the bracket declare
+/// it": what a call's bracket may bind (`typing`'s `call_bracket_scopes`), and
+/// [`declared_type_param_var`]. Named after the bare member and listed with the rest, a
+/// member's parameter was a bracket target ahead of the enclosing sort's own parameter of
+/// that name — see `call_bracket_scopes` for what that cost.
+pub(crate) fn bracket_type_params<'a>(
+    kb: &'a KnowledgeBase,
+    type_params: &'a [(Symbol, Var)],
+) -> impl Iterator<Item = (Symbol, Var)> + 'a {
+    type_params
+        .iter()
+        .copied()
+        .filter(|(name, _)| kb.member_param_head(*name).is_none())
 }
 /// WI-20260902-CZJ2N — is `sym` an OPERATION taking no arguments, i.e. a name whose
 /// bare spelling IS a call?

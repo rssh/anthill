@@ -531,6 +531,11 @@ pub enum TypeError {
     /// from caller-side expected type, or from argument inference. Names
     /// the unconstrained parameter so the user can fix the call by
     /// writing `op[T = …](args)`.
+    ///
+    /// WI-20261006-XQGEW — `type_param` is the parameter's name in the operation's list,
+    /// which says by itself whether it is one the member sugar minted for `Spec.Member`.
+    /// That one is named by its spelling, and advised otherwise: no bracket names it
+    /// ([`unconstrained_type_param_text`]).
     UnconstrainedTypeParam {
         span: Option<Span>,
         op: Symbol,
@@ -1305,9 +1310,10 @@ impl TypeError {
             ),
             TypeError::NoSuchTypeParam { op, name, .. } => {
                 format!(
-                    "{} has no type parameter named '{}'",
+                    "{} has no type parameter named '{}'{}",
                     kb.qualified_name_of(*op),
                     kb.local_name_of(*name),
+                    members_no_bracket_names(kb, *op, Some(*name)),
                 )
             }
             TypeError::ExcessCallTypeArgs {
@@ -1315,8 +1321,9 @@ impl TypeError {
             } => {
                 format!(
                     "{} is over-applied at its type-argument bracket: {given} positional \
-                     type argument(s) but {free} type parameter(s) left to bind",
+                     type argument(s) but {free} type parameter(s) left to bind{}",
                     kb.qualified_name_of(*op),
+                    members_no_bracket_names(kb, *op, None),
                 )
             }
             TypeError::DuplicateCallTypeArg { op, name, .. } => {
@@ -1526,12 +1533,10 @@ impl TypeError {
             }
             TypeError::InvalidTypeArgument { sort, problem, .. } => problem.describe(kb, *sort),
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
-                let op_name = kb.qualified_name_of(*op);
+                let (param, advice) = unconstrained_type_param_text(kb, *op, *type_param);
                 format!(
-                    "type parameter '{0}' of {1} is unconstrained — use `{2}[{0} = …](…)`",
-                    kb.local_name_of(*type_param),
-                    op_name,
-                    short_name_of(op_name),
+                    "type parameter '{param}' of {} is unconstrained — {advice}",
+                    kb.qualified_name_of(*op),
                 )
             }
             TypeError::UnconstrainedCitationParam {
@@ -2054,7 +2059,11 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: "declared type-param name".to_string(),
-                actual_type: format!("unknown type-param '{}'", kb.local_name_of(*name)),
+                actual_type: format!(
+                    "unknown type-param '{}'{}",
+                    kb.local_name_of(*name),
+                    members_no_bracket_names(kb, *op, Some(*name)),
+                ),
                 span: self.span(kb),
             },
             TypeError::ExcessCallTypeArgs {
@@ -2064,7 +2073,10 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_arg".to_string(),
                 expected_type: format!("at most {free} positional type argument(s)"),
-                actual_type: format!("{given} — the callee is over-applied"),
+                actual_type: format!(
+                    "{given} — the callee is over-applied{}",
+                    members_no_bracket_names(kb, *op, None),
+                ),
                 span: self.span(kb),
             },
             TypeError::DuplicateCallTypeArg { op, name, .. } => LoadError::TypeMismatch {
@@ -2212,18 +2224,13 @@ impl TypeError {
                 }
             }
             TypeError::UnconstrainedTypeParam { op, type_param, .. } => {
-                let op_qn = kb.qualified_name_of(*op);
-                let suggestion = format!(
-                    "unconstrained — use `{}[{} = …](…)`",
-                    short_name_of(op_qn),
-                    kb.local_name_of(*type_param),
-                );
+                let (param, advice) = unconstrained_type_param_text(kb, *op, *type_param);
                 LoadError::TypeMismatch {
                     origin: None,
-                    entity_name: op_qn.to_string(),
+                    entity_name: kb.qualified_name_of(*op).to_string(),
                     field_name: "type_arg".to_string(),
-                    expected_type: format!("a type for '{}'", kb.local_name_of(*type_param)),
-                    actual_type: suggestion,
+                    expected_type: format!("a type for '{param}'"),
+                    actual_type: format!("unconstrained — {advice}"),
                     span: self.span(kb),
                 }
             }
@@ -2619,6 +2626,83 @@ impl TypeError {
             },
         }
     }
+}
+
+/// WI-20261006-XQGEW — the tail a bracket refusal owes where the operation has parameters
+/// the member sugar minted, which a call's bracket does not name: for a KEY, the members
+/// it reads as (`[E = …]` over a signature naming `Tagger.E`); for a positional left
+/// over, all of them. Empty where the operation has none such, which is every bracket
+/// refusal there was before.
+///
+/// Said because the key and the count are what an author writes who takes the member for
+/// a parameter of the bracket — the reading the list gave until a member's name was its
+/// own — and "unknown type-param 'E'" beside a signature that says `Tagger.E` explains
+/// nothing.
+fn members_no_bracket_names(kb: &KnowledgeBase, op: Symbol, key: Option<Symbol>) -> String {
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+        return String::new();
+    };
+    let members: Vec<String> = info
+        .type_params
+        .iter()
+        .filter_map(|(name, _)| Some((*name, member_param_spelling(kb, *name)?)))
+        // A key reads as a member by the member's own name (`[E = …]`) or by its whole
+        // spelling (`[Tagger.E = …]`), which is what the signature says.
+        .filter(|(name, spelling)| {
+            key.is_none_or(|key| {
+                let key = kb.local_name_of(key);
+                key == kb.local_name_of(*name) || key == spelling
+            })
+        })
+        .map(|(_, spelling)| format!("`{spelling}`"))
+        .collect();
+    match members.as_slice() {
+        [] => String::new(),
+        [one] => format!(" — {one} is a member's parameter, which no bracket names"),
+        several => format!(
+            " — {} are members' parameters, which no bracket names",
+            several.join(", ")
+        ),
+    }
+}
+
+/// What [`TypeError::UnconstrainedTypeParam`] names the parameter and advises, for both of
+/// its renderings: `(parameter, advice)`.
+///
+/// A parameter the operation writes in its bracket is pinned by writing it at the call.
+/// One the member sugar minted for `Spec.Member` (WI-20261006-XQGEW) has no name a bracket
+/// could write, so the advice that fits the first names a key that is refused for the
+/// second. What fixes it at a call is the provision of the spec at a carrier the call
+/// passes, an argument typed by it, or the type its result is expected at — and NOT a
+/// selected provider: MEASURED, `eo[X = W](1)` over `eo(n: Int64) effects {X.E}` and
+/// `eo2[X = AnyX[El = Int64]](1, opaque(v: 3))` over a witness that leaves `E` to its own
+/// `El` both stay unconstrained.
+///
+/// THE MESSAGE CLAIMS NO MORE THAN THAT THIS CALL FIXED IT BY NONE OF THEM. It does not
+/// say a provision is missing: a provision that binds the member in a row holding a
+/// denoted label is not read yet (WI-20260829-2NMXA), and a signature that names the
+/// member and no carrier has no provision to read at all. Where none of the three can
+/// fix it the repair is the declaration's, and is the one spelling that always works —
+/// the parameter written in the operation's own bracket, which a call can bind.
+fn unconstrained_type_param_text(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    type_param: Symbol,
+) -> (String, String) {
+    let param = type_param_display_name(kb, type_param);
+    let op_short = short_name_of(kb.qualified_name_of(op));
+    let advice = match kb.member_param_head(type_param) {
+        None => format!("use `{op_short}[{param} = …](…)`"),
+        Some(head) => format!(
+            "no bracket names a member's parameter: at a call `{param}` is fixed by the \
+             provision of `{}` at a carrier the call passes, by an argument typed by it, or \
+             by the type the result is expected at, and this call fixes it by none of them. \
+             Where none can, write the parameter in `{op_short}`'s own bracket, which a call \
+             can bind",
+            kb.local_name_of(head),
+        ),
+    };
+    (param, advice)
 }
 
 /// WI-20260911-5G28A S1 — the wording of [`TypeError::UnconstrainedCitationParam`], ONE

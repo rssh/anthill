@@ -2934,7 +2934,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // parametricity rule would have no legal spelling.
             //
             // KEYED ON THE OP-SCOPED SYMBOL, not on `OpInfoRecord::type_params`' own
-            // `Symbol`. That field holds the BARE interned name (`B`), while a clause
+            // `Symbol`. That field holds the BARE interned name (`B`) of a parameter the
+            // bracket writes — a member's is a symbol of its own and no clause's
+            // reference at all (WI-20261006-XQGEW) — while a clause
             // reference resolves to the op-scoped `<ns>.<op>.B` — the symbol
             // `substitute_impl_params_alloc` will be matching against. Keying on the bare
             // name would make every substitution a silent no-op, the same failure σ's own

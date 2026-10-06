@@ -1387,6 +1387,21 @@ pub struct KnowledgeBase {
     /// that into the DECLARATION, which is what says whether the parameter is a named
     /// requirement slot and so where the frame holds its dictionary.
     type_param_canonical_vids: HashMap<VarId, Symbol>,
+    /// WI-20261006-XQGEW — the NAMES of the type parameters the member sugar mints for
+    /// `Spec.Member` in a signature (`llm: Llm.C`, `effects {Llm.E}`), each with the head
+    /// it was written with: the spec, or the alias the member was reached through.
+    ///
+    /// SUCH A NAME IS A SYMBOL OF ITS OWN ([`Self::mint_member_param_name`]) that reads as
+    /// the bare member. The parameter has no name a program could write, and named by the
+    /// interned `E` it was the same symbol as the enclosing sort's `E`, a bracket's, and
+    /// another spec's member — which a call's bracket matches by identity, and every
+    /// message printed alike.
+    ///
+    /// KEYED BY THE NAME, NOT BY A VARIABLE, because the spelling is the parameter's and
+    /// a parameter has many variables: the loader's, the rigid a body check makes of it,
+    /// the copy an operation used as a value is instantiated at. Each carries the name
+    /// (`VarId::name`), so one write here answers for all of them.
+    member_param_heads: HashMap<Symbol, Symbol>,
 
     /// WI-743, WI-20260925-SHED7 — every sort with constructors whose domain the loader
     /// derives (or found written), keyed by [`Self::canonical_sort_sym`], mapped to its
@@ -2577,6 +2592,7 @@ impl KnowledgeBase {
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
             type_param_canonical_vids: HashMap::new(),
+            member_param_heads: HashMap::new(),
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
             fill_relations: HashMap::new(),
@@ -3066,6 +3082,24 @@ impl KnowledgeBase {
     /// written by the same one writer, so the two cannot disagree.
     pub(crate) fn type_param_of_canonical_var(&self, vid: VarId) -> Option<Symbol> {
         self.type_param_canonical_vids.get(&vid).copied()
+    }
+
+    /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
+    /// `head.member`: a fresh symbol that reads as `member` and is no other symbol's
+    /// equal, with `head` recorded for it. THE ONE WRITER of
+    /// [`Self::member_param_heads`], so a member's name cannot be made without what it
+    /// was written with.
+    pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
+        let name = self.symbols.intern_unique(member);
+        self.member_param_heads.insert(name, head);
+        name
+    }
+
+    /// WI-20261006-XQGEW — the head `name` was written with, where `name` is the name of
+    /// a member's parameter; `None` for every other symbol — a parameter written in a
+    /// bracket, a sort's own, an inference variable's name.
+    pub(crate) fn member_param_head(&self, name: Symbol) -> Option<Symbol> {
+        self.member_param_heads.get(&name).copied()
     }
 
     /// WI-743, WI-20260925-SHED7 — does this sort HAVE A DOMAIN: a `SortDomain` whose

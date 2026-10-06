@@ -2120,8 +2120,10 @@ pub(super) fn check_apply_iter(
         // is still unbound after all that, the call would silently
         // produce a `Var(?T)`-bearing return type; surface this as a
         // named diagnostic so the user can fix it by writing
-        // `op[T = …](…)`. Replaces the WI-269 Phase D silent-drop
-        // marker.
+        // `op[T = …](…)` — or, for a parameter the member sugar minted,
+        // which no bracket names, by what the message says of it
+        // (`unconstrained_type_param_text`). Replaces the WI-269 Phase D
+        // silent-drop marker.
         //
         // WI-622: this is an OP-BODY call-site obligation (it lets the caller
         // recover the concrete return shape via a `let`-annotation / return

@@ -377,8 +377,13 @@ end
 /// WRITTEN OVER ANY PROVIDER THE GAP IS THE SAME ONE, SEEN FROM THE REQUIREMENT
 /// (WI-20261005-KSSA4): `total`'s row is `FiniteCollection.E`, which the call reads off the
 /// witness's provision, and a provision whose row holds a denoted label is not read — the
-/// row stays open, and the call is refused for a type parameter nothing fixed. Written at
-/// the call (`total[E = {Modify[k]}](m)`) it is one.
+/// row stays open, and the call is refused for a type parameter nothing fixed. No bracket
+/// says it instead: the row is a member's parameter, which a call's bracket does not name
+/// (WI-20261006-XQGEW; `total[E = {Modify[k]}](m)` bound it by the member's bare name
+/// before, and is now "unknown type-param 'E'"). So until the provision is read, the
+/// member spelling of this program has no repair at the call; the one that can be written
+/// is the parameter in the operation's own bracket — `total[P, R](c: P) -> Int64 effects R
+/// requires FiniteCollection[C = P, E = R]` — which `total[R = {Modify[k]}](m)` binds.
 ///
 /// THE CONTROL IS WHAT MAKES THIS A GAP AND NOT A DESIGN: strip the `Modify[k]` and the
 /// identical program loads. FLIP BOTH ROWS TOGETHER when WI-20260829-2NMXA lands.
@@ -409,9 +414,28 @@ end
     });
     assert!(
         errs.iter().any(|e| e.contains("n01pyden.total.type_arg")
-            && e.contains("expected a type for 'E', got unconstrained")),
+            && e.contains("expected a type for 'FiniteCollection.E', got unconstrained")),
         "still refused, but for a DIFFERENT reason than this cell records: {errs:#?}",
     );
+    let bracketed = try_load_kb_with(&DENOTED.replace("    total(m)", "    total[E = {Modify[k]}](m)"))
+        .err()
+        .unwrap_or_default();
+    assert!(
+        bracketed.iter().any(|e| e.contains("n01pyden.total.type_arg")
+            && e.contains("unknown type-param 'E'")),
+        "a bracket does not name the member's parameter: {bracketed:#?}",
+    );
+    // …and the spelling the refusal names does load: the row a parameter in the bracket,
+    // bound at the call.
+    let written = DENOTED
+        .replace(
+            "total(c: FiniteCollection.C) -> Int64 effects FiniteCollection.E",
+            "total[P, R](c: P) -> Int64 effects R requires FiniteCollection[C = P, E = R]",
+        )
+        .replace("    total(m)", "    total[R = {Modify[k]}](m)");
+    if let Err(errs) = try_load_kb_with(&written) {
+        panic!("the parameter written in the bracket is bound at the call: {errs:#?}");
+    }
     if let Err(errs) = try_load_kb_with(GROUND) {
         panic!(
             "THE CONTROL MUST LOAD — without it the row above is satisfied by any refusal              of a declared `MappedStream[…]` parameter and measures nothing: {errs:#?}"

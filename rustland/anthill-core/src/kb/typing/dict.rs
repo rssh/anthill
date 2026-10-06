@@ -1238,9 +1238,38 @@ fn build_dispatching_dict_from_chain(
                             ) => describe_resolution_failure(kb, f),
                             _ => String::new(),
                         };
+                        // WI-20261006-XQGEW — WHERE THE ELEMENT IS A MEMBER'S PARAMETER the
+                        // no-route advice is not a repair: there is no declaration to put
+                        // a slot on, and the clause the account above offers (`add
+                        // requires … in scope`) is not read as covering a member
+                        // (MEASURED: `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` over
+                        // `let b = box(v: x)` is refused as a wildcard cover;
+                        // WI-20261006-P962X). The account then carries the spelling that
+                        // works, and the tail it replaces is not appended.
+                        let member = dep_member_param(kb, dep, ctx).and_then(|m| {
+                            Some((
+                                type_param_display_name(kb, m),
+                                member_param_bracket_spelling(kb, m)?,
+                            ))
+                        });
+                        let (construction, no_scope_route) = match member {
+                            Some((member, bracket)) => (
+                                format!(
+                                    "{construction}{sep}nothing in the enclosing scope \
+                                     supplies it, and its element here is `{member}`, a \
+                                     member's parameter, which a `requires` written over is \
+                                     not read as covering (WI-20261006-P962X): write it in \
+                                     the enclosing operation's bracket — {bracket} — and \
+                                     require this of `P` beside it",
+                                    sep = if construction.is_empty() { "" } else { " — " },
+                                ),
+                                false,
+                            ),
+                            None => (construction, true),
+                        };
                         *slot = Some(Box::new(RequirementRefusal {
-                            no_scope_route: true,
-                            construction_carries_repair: false,
+                            no_scope_route,
+                            construction_carries_repair: !no_scope_route,
                             dep_text: render_requires_entry(kb, dep),
                             unconstrained: Vec::new(),
                             refused_covers: Vec::new(),
@@ -2259,14 +2288,12 @@ pub(super) fn build_op_scoped_dicts(
                                      operation `{}`, which declares no `requires` that \
                                      covers it — the caller's frame is the only thing that \
                                      could ever fill this slot, and it holds nothing for \
-                                     `{}`. Declare `requires {}` on `{}` so the evidence is \
-                                     passed in, or call `{}` with a type whose provision is \
+                                     `{}`. {}, or call `{}` with a type whose provision is \
                                      known here",
                                             c.carrier,
                                             kb.qualified_name_of(enclosing_op),
                                             c.carrier,
-                                            c.clause,
-                                            kb.qualified_name_of(c.declare_on),
+                                            c.repair(kb),
                                             kb.qualified_name_of(callee_op),
                                         ),
                                         pinned: None,
@@ -2388,7 +2415,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
             construction: format!(
                 "no provision of `{spec_qn}` answers at `{carrier_text}`, so nothing says \
                  the `{}` this requirement determines",
-                kb.local_name_of(name),
+                type_param_display_name(kb, name),
             ),
             pinned: None,
             unprovided: Some(UnprovidedProvision {
@@ -3443,6 +3470,48 @@ pub(crate) struct CallerRigidCarrier {
     /// from under it, and the corpus has one of each (`test.xsvcs.fwd.mid`'s `U`,
     /// `test.wi416.Coll`'s `T`).
     declare_on: Symbol,
+    /// WI-20261006-XQGEW — the first element of the clause that is a parameter the member
+    /// sugar minted (`Tagger.C`), by its key in the caller's parameter list. `None` is a
+    /// clause over parameters the caller declared by name. The repair differs:
+    /// [`Self::repair`].
+    ///
+    /// ANY ELEMENT, not the carrier alone. A clause is as unwritable for a member in its
+    /// second binding as in its first — MEASURED: `requires Pair2[A = U, B = Tagger.C]`
+    /// on `f[U](x: U, w: Tagger.C)` is refused as the call without it is.
+    member: Option<Symbol>,
+}
+
+impl CallerRigidCarrier {
+    /// What the caller is told to write so that the evidence is passed in.
+    ///
+    /// For a clause over parameters the caller declared by name, the clause itself. NOT
+    /// where one of them is a parameter the member sugar minted (WI-20261006-XQGEW):
+    /// `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` loads and is refused with this
+    /// same message, the scope not reading a clause over a member's parameter as
+    /// covering it (MEASURED; WI-20261006-P962X). A refusal must not name a repair that
+    /// is not one, so that clause is told the spelling that does work
+    /// ([`member_param_bracket_spelling`]). To be the clause again once P962X lands.
+    fn repair(&self, kb: &KnowledgeBase) -> String {
+        let on = kb.qualified_name_of(self.declare_on);
+        let member = self.member.and_then(|m| {
+            Some((
+                type_param_display_name(kb, m),
+                member_param_bracket_spelling(kb, m)?,
+            ))
+        });
+        match member {
+            None => format!(
+                "Declare `requires {}` on `{on}` so the evidence is passed in",
+                self.clause
+            ),
+            Some((member, bracket)) => format!(
+                "`{member}` is a member's parameter, and a `requires` written over one is \
+                 not read as covering it (WI-20261006-P962X): write it in `{on}`'s bracket \
+                 instead — {bracket} — and declare this requirement beside it, `P` where \
+                 it reads `{member}`, so the evidence is passed in",
+            ),
+        }
+    }
 }
 
 /// WI-20260920-XSVCS — is this unfilled op slot's carrier a type parameter of the
@@ -3506,7 +3575,8 @@ fn caller_rigid_carrier(
 ) -> Option<CallerRigidCarrier> {
     let goal = goal_from_requires_entry(kb, dep)?;
     let params = caller_param_rigids(kb, caller_op, ctx.param_rigids);
-    let mut found: Option<(String, Symbol)> = None;
+    let mut found: Option<(Symbol, Symbol)> = None;
+    let mut member: Option<Symbol> = None;
     let mut bindings: Vec<String> = Vec::new();
     for (k, v) in &goal.bindings {
         // EVERY BINDING MUST BE WRITEABLE BY THE CALLER, or there is no clause to print
@@ -3532,9 +3602,12 @@ fn caller_rigid_carrier(
                 // one clause either way — `clause` carries both — so naming one of them
                 // is a choice of wording, not of verdict.
                 if found.is_none() {
-                    found = Some((name.clone(), *owner));
+                    found = Some((*name, *owner));
                 }
-                name.clone()
+                if member.is_none() && kb.member_param_head(*name).is_some() {
+                    member = Some(*name);
+                }
+                type_param_display_name(kb, *name)
             }
             // Concrete: no σ-class, and it renders as the sort it names.
             None if type_value_is_ground(kb, *v) => format_term_for_goal(kb, *v),
@@ -3553,15 +3626,37 @@ fn caller_rigid_carrier(
         bindings.join(", ")
     );
     Some(CallerRigidCarrier {
-        carrier,
+        carrier: type_param_display_name(kb, carrier),
         clause,
-        declare_on,
+        // A member is the calling operation's own, and a clause that names its bracket's
+        // parameter goes on that operation whatever declares the carrier.
+        declare_on: if member.is_some() { caller_op } else { declare_on },
+        member,
+    })
+}
+
+/// WI-20261006-XQGEW — the first element of `dep` that this use binds to a parameter the
+/// member sugar minted, by the parameter's name.
+///
+/// Read off the variable the element terminates at: a member's rigid carries the
+/// member's own name ([`fresh_rigid_named`]), which is no other parameter's.
+fn dep_member_param(kb: &KnowledgeBase, dep: &RequiresEntry, ctx: &SigmaCtx) -> Option<Symbol> {
+    let goal = goal_from_requires_entry(kb, dep)?;
+    goal.bindings.iter().find_map(|(_, v)| {
+        let (cls, at_rigid) = sigma_class_terminal(kb, ctx, *v)?;
+        (at_rigid && kb.member_param_head(cls.name()).is_some()).then(|| cls.name())
     })
 }
 
 /// WI-20260920-XSVCS — the caller's declared type parameters as `(the rigid its body
 /// skolemized the parameter to, the name the author wrote, the declaration that owns
 /// it)`.
+///
+/// THE NAME IS THE PARAMETER'S KEY, rendered by its reader (`type_param_display_name`):
+/// one the member sugar minted was written `Tagger.C` (WI-20261006-XQGEW), and by the
+/// bare `C` its key reads as, the clause the message printed was `requires Tag[T = C]`,
+/// naming nothing in the caller's scope (MEASURED, `f(x: Tagger.C) = g(x)` over
+/// `g[P](y: P) requires Tag[T = P]`).
 ///
 /// BOTH FAMILIES, because `ctx.param_rigids` is the concatenation of exactly those two
 /// (see [`TypingEnv::param_rigids`]) and the corpus has a live instance of each. Reading
@@ -3577,7 +3672,7 @@ fn caller_param_rigids(
     kb: &KnowledgeBase,
     caller_op: Symbol,
     param_rigids: &[(VarId, TermId)],
-) -> Vec<(VarId, String, Symbol)> {
+) -> Vec<(VarId, Symbol, Symbol)> {
     let mut declared: Vec<(Symbol, VarId, Symbol)> = Vec::new();
     if let Some(info) = lookup_operation_info_full(kb, caller_op) {
         for (name, var) in &info.type_params {
@@ -3599,13 +3694,7 @@ fn caller_param_rigids(
     }
     declared
         .into_iter()
-        .map(|(name, v, owner)| {
-            (
-                canonical_global_var(kb, v, param_rigids),
-                short_name_of(kb.local_name_of(name)).to_owned(),
-                owner,
-            )
-        })
+        .map(|(name, v, owner)| (canonical_global_var(kb, v, param_rigids), name, owner))
         .collect()
 }
 

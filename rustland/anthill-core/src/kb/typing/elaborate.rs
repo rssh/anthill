@@ -1344,9 +1344,19 @@ pub(super) fn rigidify_op_type_params(
 /// (both rigids print identically). The short name makes it `?A` vs `?B`. Purely cosmetic:
 /// a rigid's identity is its fresh `VarId`, never its name (unification compares VarIds;
 /// `SubjectKey` keys on `v.raw()`), so the rename cannot affect any judgement.
+///
+/// WI-20261006-XQGEW — A MEMBER'S NAME IS KEPT AS IT IS, not re-interned by its text: it
+/// is a symbol of its own that says which member the parameter is
+/// ([`KnowledgeBase::member_param_head`]), and its rigid is that member in the body. The
+/// rigid is what a body's diagnostics show, and under the interned `E` it was `?E` —
+/// `effects {Tagger.E}` reported as `[?E]`.
 pub(super) fn fresh_rigid_named(kb: &mut KnowledgeBase, param: Symbol) -> TermId {
-    let name = short_name_of(kb.local_name_of(param)).to_owned();
-    let name_sym = kb.intern(&name);
+    let name_sym = if kb.member_param_head(param).is_some() {
+        param
+    } else {
+        let name = short_name_of(kb.local_name_of(param)).to_owned();
+        kb.intern(&name)
+    };
     let fresh = kb.fresh_var(name_sym);
     kb.alloc(Term::Var(Var::Rigid(fresh)))
 }
