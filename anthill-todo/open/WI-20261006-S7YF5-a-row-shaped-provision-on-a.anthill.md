@@ -1,0 +1,17 @@
+## Attributes
+
+- id: WI-20261006-S7YF5-a-row-shaped-provision-on-a
+- created: 2026-10-06T18:25:28Z
+
+- status: Open
+- status_agent: claude
+- status_at: 2026-10-06T18:25:28Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A ROW-SHAPED PROVISION ON A SPEC THAT RECEIVES ON ITSELF LOSES ITS EFFECTS: under `provides Sp[E = {BE}]` a spec operation's row at the receiver is read as no row, where `provides Sp[E = BE]` reads the carrier's, and a pure-declared operation loads and raises. Over `sort Sp { effects E = ?  operation run(s: Self, x: Int64) -> Int64 effects E  operation twice(s: Self, x: Int64) -> Int64 effects E = run(s, x) + run(s, x) }`, `sort Box { effects BE = ?  entity box(f: (x: Int64) -> Int64 @ {BE})  provides Sp[E = {BE}]  operation run(b: Self, x: Int64) -> Int64 effects {BE} = match b case box(f) -> f(x) }` and `fail(x: Int64) -> Int64 effects {Error[String]} = Error.raise("boom")`: `operation use(v: Box[BE = {Error[String]}]) -> Int64 = Sp.run(v, 5)` — declared pure — LOADS, and the pure `main() -> Int64 = use(box(fail))` dies `Raised { payload: Str("boom") }`. So do `Sp.twice(v, 5)` and `v.twice(5)` in its place. CONTROLS, each refused "type mismatch in use.effects (op-effects): expected declared: [], got undeclared effect: Error[T = String]": the same program with the provision written `provides Sp[E = BE]` (and `run … effects BE`), for `Sp.run` and for `Sp.twice`; and the row-shaped provision asked through the provider's own operation, `Box.run(v, 5)`. With a cell it is the same: `use(k: Cell[V = Int64], v: Box[BE = {Modify[k]}]) -> Int64 effects {} = Sp.twice(v, 5)` loads and writes the cell twice (1010 for answer × 100 + the cell). So what is lost is the spec operation's row `E` at a receiver whose provision binds it to a ROW OVER a parameter (`{BE}`) rather than to the parameter (`BE`). The two spellings denote one row, and the stdlib writes the first: `List provides Stream[E = {}]`, `MappedStream provides Stream[T = T, E = {SourceEffects, TransformEffects}]`. WHERE, as far as it was read: the self-receiver's binding of the spec's parameters from the carrier (`bind_spec_params_from_carrier`, rustland/anthill-core/src/kb/typing/carrier.rs) binds a provision's value where it is a reference to one of the carrier's parameters, looked up in the receiver's arguments, or where it is ground. A binding that still mentions the carrier's own parameters — a row or an application over them — is skipped there on purpose ("binding it verbatim would pin the op param to a carrier-relative `?_`"), the comment naming the threading of such a compound through the receiver's bindings as future work and promising a loud `unconstrained` meanwhile. For a row no such refusal comes: the call carries no effect. NOT TRACED FURTHER — whether the unbound row is closed to the empty row or never read. The carrier-parameter path does the substitution (`substitute_carrier_params`; WI-20260829-2NMXA's rows over `provides Walk[C = Self, E = {A, B}]` drive it at ground rows and at a cell), so the repair is probably that same substitution on the self-receiver path. FOUND while delivering WI-20260829-2NMXA (2026-10-06), the same on the commit before it; filed at the user's word. That ticket's self-receiving rows are written with the bare-parameter provision for this reason.
+
