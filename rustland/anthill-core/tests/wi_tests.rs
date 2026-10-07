@@ -1975,3 +1975,6 @@ mod wi_41yye_enclosing_place_type_test;
 
 #[path = "include/wi_728rw_dotted_spec_member_test.rs"]
 mod wi_728rw_dotted_spec_member_test;
+
+#[path = "include/wi_p962x_member_requirement_test.rs"]
+mod wi_p962x_member_requirement_test;

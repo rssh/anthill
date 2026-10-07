@@ -1238,31 +1238,32 @@ fn build_dispatching_dict_from_chain(
                             ) => describe_resolution_failure(kb, f),
                             _ => String::new(),
                         };
-                        // WI-20261006-XQGEW — WHERE THE ELEMENT IS A MEMBER'S PARAMETER the
-                        // no-route advice is not a repair: there is no declaration to put
-                        // a slot on, and the clause the account above offers (`add
-                        // requires … in scope`) is not read as covering a member
-                        // (MEASURED: `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` over
-                        // `let b = box(v: x)` is refused as a wildcard cover;
-                        // WI-20261006-P962X). The account then carries the spelling that
-                        // works, and the tail it replaces is not appended.
-                        let member = dep_member_param(kb, dep, ctx).and_then(|m| {
-                            Some((
-                                type_param_display_name(kb, m),
-                                member_param_bracket_spelling(kb, m)?,
+                        // WI-P962X: a clause over a signature member now forwards
+                        // evidence. Advise that clause directly; a member still has
+                        // no declaration on which to put a named slot.
+                        let member_clause = dep_member_param(kb, dep, ctx).and_then(|_| {
+                            let goal = goal_from_requires_entry(kb, dep)?;
+                            let bindings = goal
+                                .bindings
+                                .iter()
+                                .map(|(key, value)| {
+                                    let value = match sigma_class_terminal(kb, ctx, value) {
+                                        Some((v, true)) => type_param_display_name(kb, v.name()),
+                                        _ => format_value_for_goal(kb, value),
+                                    };
+                                    format!("{} = {value}", kb.local_name_of(*key))
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            Some(format!(
+                                "{}[{bindings}]",
+                                kb.qualified_name_of(goal.spec_sort)
                             ))
                         });
-                        let (construction, no_scope_route) = match member {
-                            Some((member, bracket)) => (
-                                format!(
-                                    "{construction}{sep}nothing in the enclosing scope \
-                                     supplies it, and its element here is `{member}`, a \
-                                     member's parameter, which a `requires` written over is \
-                                     not read as covering (WI-20261006-P962X): write it in \
-                                     the enclosing operation's bracket — {bracket} — and \
-                                     require this of `P` beside it",
-                                    sep = if construction.is_empty() { "" } else { " — " },
-                                ),
+                        let (construction, no_scope_route) = match member_clause {
+                            Some(clause) => (
+                                format!("{construction}{sep}nothing in the enclosing scope supplies it: declare `requires {clause}` on the enclosing operation so the evidence is passed in",
+                                    sep = if construction.is_empty() { "" } else { " — " }),
                                 false,
                             ),
                             None => (construction, true),
@@ -3462,47 +3463,16 @@ pub(crate) struct CallerRigidCarrier {
     /// from under it, and the corpus has one of each (`test.xsvcs.fwd.mid`'s `U`,
     /// `test.wi416.Coll`'s `T`).
     declare_on: Symbol,
-    /// WI-20261006-XQGEW — the first element of the clause that is a parameter the member
-    /// sugar minted (`Tagger.C`), by its key in the caller's parameter list. `None` is a
-    /// clause over parameters the caller declared by name. The repair differs:
-    /// [`Self::repair`].
-    ///
-    /// ANY ELEMENT, not the carrier alone. A clause is as unwritable for a member in its
-    /// second binding as in its first — MEASURED: `requires Pair2[A = U, B = Tagger.C]`
-    /// on `f[U](x: U, w: Tagger.C)` is refused as the call without it is.
-    member: Option<Symbol>,
 }
 
 impl CallerRigidCarrier {
-    /// What the caller is told to write so that the evidence is passed in.
-    ///
-    /// For a clause over parameters the caller declared by name, the clause itself. NOT
-    /// where one of them is a parameter the member sugar minted (WI-20261006-XQGEW):
-    /// `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` loads and is refused with this
-    /// same message, the scope not reading a clause over a member's parameter as
-    /// covering it (MEASURED; WI-20261006-P962X). A refusal must not name a repair that
-    /// is not one, so that clause is told the spelling that does work
-    /// ([`member_param_bracket_spelling`]). To be the clause again once P962X lands.
+    /// WI-P962X: clauses over signature members forward just as named parameters do.
     fn repair(&self, kb: &KnowledgeBase) -> String {
         let on = kb.qualified_name_of(self.declare_on);
-        let member = self.member.and_then(|m| {
-            Some((
-                type_param_display_name(kb, m),
-                member_param_bracket_spelling(kb, m)?,
-            ))
-        });
-        match member {
-            None => format!(
-                "Declare `requires {}` on `{on}` so the evidence is passed in",
-                self.clause
-            ),
-            Some((member, bracket)) => format!(
-                "`{member}` is a member's parameter, and a `requires` written over one is \
-                 not read as covering it (WI-20261006-P962X): write it in `{on}`'s bracket \
-                 instead — {bracket} — and declare this requirement beside it, `P` where \
-                 it reads `{member}`, so the evidence is passed in",
-            ),
-        }
+        format!(
+            "Declare `requires {}` on `{on}` so the evidence is passed in",
+            self.clause
+        )
     }
 }
 
@@ -3623,7 +3593,6 @@ fn caller_rigid_carrier(
         // A member is the calling operation's own, and a clause that names its bracket's
         // parameter goes on that operation whatever declares the carrier.
         declare_on: if member.is_some() { caller_op } else { declare_on },
-        member,
     })
 }
 

@@ -1618,6 +1618,46 @@ fn type_value_slot(chain: &DictChain, kb: &KnowledgeBase, param: VarId) -> Optio
         .position(|e| type_value_clause_param_at(kb, canon, e) == Some(param))
 }
 
+/// WI-P962X: a value read of `Spec.Member` in an operation reads its
+/// synthesized member parameter. The signature's requirement carries that
+/// identity; the spec's declaration variable belongs to a different binder.
+/// Both lowering and the surviving-read check must use the same identity.
+fn value_read_param(kb: &KnowledgeBase, head: Symbol, chain: &DictChain) -> Option<VarId> {
+    let original = type_param_global_var(kb, head)?;
+    let qn = kb.qualified_name_of(head);
+    if let Some((parent, member)) = qn.rsplit_once('.') {
+        if let Some(&spec) = kb.symbols.by_qualified_name.get(parent) {
+            for entry in chain.entries() {
+                let Some(goal) = goal_from_requires_entry(kb, entry) else {
+                    continue;
+                };
+                if kb.canonical_sort_sym(goal.spec_sort) != kb.canonical_sort_sym(spec) {
+                    continue;
+                }
+                for (key, value) in &goal.bindings {
+                    if kb.local_name_of(*key) != member {
+                        continue;
+                    }
+                    // The unfixed signature instance binds only synthesized
+                    // member parameters. A clause fixing another member belongs
+                    // to an alias instance, even when its written head is dotted.
+                    // Read identity from the clause, never from display metadata.
+                    let unfixed = goal.bindings.iter().all(|(_, v)| {
+                        clause_named_type_param(kb, v)
+                            .is_some_and(|var| kb.member_param_head(var.name()).is_some())
+                    });
+                    if unfixed {
+                        if let Some(var) = clause_named_type_param(kb, value) {
+                            return Some(var);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(original)
+}
+
 /// WI-20260919-N31XX (proposal 065 §1) — LOWER a bare value-position read of a rigid to
 /// `TypeValue[T = B].type_value()`, dispatched through the frame slot that backs it.
 ///
@@ -1650,9 +1690,9 @@ pub(super) fn lower_rigid_read_to_slot(
     occ: &Rc<NodeOccurrence>,
     head: Symbol,
 ) -> Option<Rc<NodeOccurrence>> {
-    let param = type_param_global_var(kb, head)?;
     let enclosing_op = env.enclosing_op()?;
     let chain = env.enclosing_frame_chain();
+    let param = value_read_param(kb, head, chain)?;
     let slot = type_value_slot(chain, kb, param)?;
     // BOTH HALVES OF THE CHAIN ARE LOWERED, and what made the sort half reachable was
     // one line elsewhere rather than anything here.
@@ -1769,6 +1809,7 @@ pub(super) fn type_value_backed_params(kb: &mut KnowledgeBase, op_sym: Symbol) -
 pub(super) fn rigid_value_reads(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
+    chain: &DictChain,
 ) -> Vec<(VarId, Symbol, Option<Span>)> {
     let mut out = Vec::new();
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
@@ -1789,7 +1830,7 @@ pub(super) fn rigid_value_reads(
                 // there. A genuine nominal sort head falls straight through:
                 // `Cell[V = Int64]` reads no rigid, which is 065's "concrete sorts"
                 // exclusion.
-                if let Some(vid) = type_param_global_var(kb, *head) {
+                if let Some(vid) = value_read_param(kb, *head, chain) {
                     out.push((vid, *head, Some(node.span.span)));
                 }
             }

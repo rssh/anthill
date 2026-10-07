@@ -22526,10 +22526,10 @@ struct Loader<'a> {
     bare_spec_sugar: Option<BareSpecSugar>,
     // WI-20261005-KSSA4: the spec members the signature of the operation being loaded
     // named (`llm: Llm.C`, `effects {Llm.E}`), each with its variable, while the
-    // operation's BODY is converted — `Llm.E` written there is that same member. Empty
-    // outside a body, and for a member reached through an alias, which is the alias's
-    // instance and is named through it.
-    signature_spec_members: Vec<((Symbol, Symbol), TermId)>,
+    // operation's BODY and clauses are converted. Empty outside that operation.
+    // WI-P962X: retain the instance an alias fixes as well as its member; the
+    // ordinary body reader uses the unfixed entries, and clauses match the instance.
+    signature_spec_members: Vec<((Symbol, Symbol), SmallVec<[(Symbol, TermId); 2]>, TermId)>,
     // WI-201: the CARRIER BLOCK whose operations are being loaded — a sort body, or a
     // `namespace <Sort>` entry — with what its `provides` clauses bind each spec member
     // to, pre-scanned BEFORE any operation in it is loaded (so it is order-independent).
@@ -26502,19 +26502,10 @@ impl<'a> Loader<'a> {
                 // value-place head" cannot mean one thing in a parameter type and
                 // another in a `requires`.
                 //
-                // ONLY WHERE IT WOULD OTHERWISE FAIL, and that is enforced rather than
-                // assumed. The classifier is asked with the WI-428 rigid-type-projection
-                // route DISABLED (its `allow_rigid_type_projection: false`), so every
-                // head that is not a VALUE PLACE — a namespace, a sort, a type parameter,
-                // an unresolved name — answers `None` and falls to `remap_symbol_strict`
-                // exactly as before. What changes is confined to names that are a load
-                // error at HEAD.
-                //
-                // An earlier draft of this comment CLAIMED that without disabling the
-                // route, and `/code-review` measured the claim false: the shared
-                // classifier routes a two-segment non-value head into
-                // `try_rigid_type_projection`, which mints terms and pushes load errors.
-                // The flag is what makes the sentence above true.
+                // WI-P962X: the classifier also reads a signature's spec member
+                // as that operation's synthesized parameter. A member not named
+                // by the signature is refused; arbitrary rigid projections stay
+                // disabled, and other non-value names use the ordinary resolver.
                 if self.in_op_contract_clause {
                     if let Some(child) = self.try_contract_projection(sym, span) {
                         self.term_map.insert(parse_id.raw(), child);
@@ -31000,7 +30991,73 @@ impl<'a> Loader<'a> {
         }
         let segs: Vec<String> = name.split('.').map(|s| s.to_owned()).collect();
         let source_span = SourceSpan::from_span(self.source_id, span);
-        match self.try_expr_carried_projection_segments(&segs, source_span, self.current_owner, false)? {
+        // WI-P962X: a spec member named by the signature denotes the operation's
+        // synthesized parameter in its clauses too, never the spec's own variable.
+        // Keep this separate from arbitrary rigid projections: a clause must not
+        // introduce an instance the signature never named.
+        let head_path = segs[..segs.len() - 1].join(".");
+        let head = self
+            .kb
+            .symbols
+            .resolve_in_scope(&head_path, self.current_scope)
+            .or_else(|| self.resolve_dotted(&head_path, DottedVisibility::VisibleOnly));
+        if let ResolveResult::Found(head) = head {
+            let (base, fixed) = match super::typing::alias_expansion(self.kb, head) {
+                Some(super::typing::AliasExpansion::Sort { base, bindings }) => (base, bindings),
+                _ => (head, SmallVec::new()),
+            };
+            let member = segs.last().unwrap();
+            if !self.kb.sort_has_constructors(base)
+                && self
+                    .kb
+                    .type_params_of_sort(base)
+                    .iter()
+                    .any(|p| p == member)
+            {
+                // A member the alias fixes is a concrete binding, even when
+                // another spelling of the underlying spec names an open member.
+                if let Some((_, value)) = fixed
+                    .iter()
+                    .find(|(p, _)| self.kb.local_name_of(*p) == member)
+                {
+                    return Some(self.type_canon_binding(*value));
+                }
+                let member_sym = self.kb.intern(member);
+                if let Some((_, _, var)) =
+                    self.signature_spec_members
+                        .iter()
+                        .find(|((s, m), bindings, _)| {
+                            *s == base && *m == member_sym && *bindings == fixed
+                        })
+                {
+                    return Some(*var);
+                }
+                // A member in its own declaring scope is the ordinary sort
+                // parameter, rather than the operation's member sugar.
+                let own_member = match self.kb.symbols.resolve_in_scope(member, self.current_scope)
+                {
+                    ResolveResult::Found(s) => self
+                        .kb
+                        .qualified_name_of(s)
+                        .rsplit_once('.')
+                        .is_some_and(|(parent, _)| parent == self.kb.qualified_name_of(base)),
+                    _ => false,
+                };
+                if !own_member {
+                    self.errors.push(LoadError::InvalidTypeArgument {
+                        detail: format!("`{name}` has no instance in this operation's signature; name the member in the signature before using it in a contract clause"),
+                        span: Some(span),
+                    });
+                    return Some(self.kb.alloc(Term::Bottom));
+                }
+            }
+        }
+        match self.try_expr_carried_projection_segments(
+            &segs,
+            source_span,
+            self.current_owner,
+            false,
+        )? {
             node_occurrence::TypeChild::Interned(tid) => Some(tid),
             node_occurrence::TypeChild::Node(_) => {
                 // SPANNED, and through the same variant the sibling rule-body walk uses
@@ -31867,10 +31924,10 @@ impl<'a> Loader<'a> {
             // `llm: Llm.C … effects {Llm.E, Error}`. A member the signature did not
             // name stays the refusal below: the body has no instance to read it off.
             let member_sym = self.kb.intern(member_name);
-            if let Some((_, var)) = self
+            if let Some((_, _, var)) = self
                 .signature_spec_members
                 .iter()
-                .find(|((s, m), _)| *s == head_sort_sym && *m == member_sym)
+                .find(|((s, m), fixed, _)| *s == head_sort_sym && *m == member_sym && fixed.is_empty())
             {
                 return Some(node_occurrence::TypeChild::Interned(*var));
             }
@@ -36672,8 +36729,7 @@ impl<'a> Loader<'a> {
             sugar
                 .minted
                 .iter()
-                .filter(|(_, var)| !sugar.fixed.contains_key(var))
-                .copied()
+                .map(|(key, var)| (*key, sugar.fixed.get(var).cloned().unwrap_or_default(), *var))
                 .collect(),
         );
         let mut extra_requires = auto_requires_terms;

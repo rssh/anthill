@@ -42,6 +42,9 @@
 //! A refusal row asserts a LOAD verdict naming what is refused; a row that runs asserts the
 //! value.
 //!
+//! P962X supersedes the historical bracket-only repair notes below: clauses over
+//! signature members now cover and forward. The four affected tests advise clauses.
+//!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ───────────────────────────────
 //!
 //! EACH PART backed out present-but-wrong, APPLIED AND RUN over this file's 25 rows, the 67
@@ -560,22 +563,7 @@ fn what_a_missing_provision_would_say_is_named() {
     );
 }
 
-/// A FORWARD OVER A MEMBER IS TOLD THE SPELLING THAT WORKS. `f` hands its `Tagger.C` to
-/// `g`, which requires `Tag` of it, and `f` holds no such requirement. The carrier is
-/// named as `f`'s signature has it — it read `C`, which names nothing in `f`'s scope — and
-/// the repair is the parameter written in `f`'s bracket, which is then run.
-///
-/// WHEN THE THIRD PROGRAM LOADS, WI-20261006-P962X HAS LANDED. The clause this refusal
-/// advises for a parameter declared by name, `requires …Tag[T = Tagger.C]`, is written on
-/// `f` and refused with this same message — which is why a member is told another
-/// spelling, a refusal naming no repair that is not one. Once the clause covers, it is the
-/// repair again: this assertion turns, and the member branches of the two refusals that
-/// are there for it go — `CallerRigidCarrier::repair`'s and the no-route account's. The
-/// third reader of `member_param_bracket_spelling`, a named slot's, stays: a member has no
-/// binder to declare a slot under whatever a clause covers.
-///
-/// CONTROL, in the same row: a parameter `mid` declares by name is told to declare the
-/// clause, as before. Passes with or without the change, as the program that runs does.
+/// P962X: a missing clause is advised over the member, and that clause forwards. The bracket form remains an execution control.
 #[test]
 fn a_forward_over_a_member_is_told_the_spelling_that_works() {
     let ns = "xqgew.forward";
@@ -589,18 +577,10 @@ fn a_forward_over_a_member_is_told_the_spelling_that_works() {
         &errs,
         &[
             &refused,
-            "its carrier is `Tagger.C`, a type parameter of the CALLING operation",
-            &format!(
-                "write it in `{ns}.f`'s bracket instead — a parameter `P` under `requires \
-                 Tagger[C = P]`, with `P` where the signature has `Tagger.C`"
-            ),
-            "and declare this requirement beside it, `P` where it reads `Tagger.C`",
+            "its carrier is `Tagger.C`",
+            &format!("Declare `requires {ns}.Tag[T = Tagger.C]` on `{ns}.f`"),
         ],
-        "the caller's parameter by its spelling, and the repair that loads",
-    );
-    assert!(
-        !errs.iter().any(|e| e.contains("Declare `requires")),
-        "a clause over a member's parameter is not advised while it does not cover: {errs:#?}"
+        "P962X: advise the clause over the member",
     );
     assert_eq!(
         run_int64(
@@ -615,15 +595,8 @@ fn a_forward_over_a_member_is_told_the_spelling_that_works() {
         Ok(50),
         "the spelling the refusal advises runs"
     );
-    assert_refused_naming(
-        &load_errors_of(&program(
-            ns,
-            &[TWO_SPECS, TAG_SPEC, G],
-            "  operation f(x: Tagger.C) -> Int64 requires Tag[T = Tagger.C] = g(x)",
-        )),
-        &[&refused, "its carrier is `Tagger.C`"],
-        "a clause over the member does not cover it yet",
-    );
+    assert_eq!(run_int64(&program(ns, &[TWO_SPECS, TAG_SPEC, TAGGED, G],
+        "operation f(x: Tagger.C) -> Int64 requires Tag[T = Tagger.C] = g(x)\noperation go() -> Int64 = f(ta())"), &format!("{ns}.go")), Ok(50), "P962X: the member clause forwards");
 
     let errs = load_errors_of(&program(
         ns,
@@ -640,15 +613,7 @@ fn a_forward_over_a_member_is_told_the_spelling_that_works() {
     );
 }
 
-/// EVERY MEMBER OF THE SPEC MOVES TO THE BRACKET, the second half of that advice. `f`
-/// names `Tagger.C` and `Tagger.E`, which are one requirement; the refusal names the member
-/// the clause is wanted of and says the others go the same way. With `Tagger.C` moved
-/// alone, `Tagger.E` is an instance of its own and the signature is refused in its own
-/// body; both moved, as one clause, it runs.
-///
-/// The two rewritten programs are written in the bracket and behave so with or without
-/// the change — the first's refusal but for its spelling of the row. The advice fails
-/// with the sentence cut to the one member, (17).
+/// P962X: requiring Tag over Tagger.C keeps the signature instance. Moving one member into a separate bracket clause still creates a different instance.
 #[test]
 fn every_member_of_the_spec_moves_to_the_bracket() {
     let ns = "xqgew.every_member";
@@ -657,11 +622,9 @@ fn every_member_of_the_spec_moves_to_the_bracket() {
         &load_errors_of(&with(
             "  operation f(x: Tagger.C) -> Int64 effects {Tagger.E} = Tagger.tag(x) + g(x)",
         )),
-        &[
-            "a parameter `P` under `requires Tagger[C = P]`, with `P` where the signature has \
-             `Tagger.C`; every other member of `Tagger` the signature writes goes the same \
-             way, as one more binding of that one clause",
-        ],
+        &[&format!(
+            "Declare `requires {ns}.Tag[T = Tagger.C]` on `{ns}.f`"
+        )],
         "the members move together",
     );
     assert_refused_naming(
@@ -686,15 +649,7 @@ fn every_member_of_the_spec_moves_to_the_bracket() {
     );
 }
 
-/// A MEMBER IN A LATER BINDING OF THE CLAUSE TAKES THE MEMBER'S REPAIR. The requirement is
-/// `Pair2[A = U, B = Tagger.C]`: its carrier is `f`'s own `U`, and its second element the
-/// member. A clause naming the member is no more written for the second binding than for
-/// the first, and the refusal advised `Declare `requires …Pair2[A = U, B = Tagger.C]``,
-/// which is refused as the call without it is (MEASURED; found by /code-review). The
-/// spelling it advises now runs.
-///
-/// Fails with the branch taken on the carrier alone, and its third program with the clause
-/// sent where the carrier is declared — (14). The programs that run pass either way.
+/// P962X: a member in any binding is expressible in the advised clause, which belongs to the operation that introduced that member.
 #[test]
 fn a_member_in_a_later_binding_takes_the_members_repair() {
     let ns = "xqgew.later_binding";
@@ -724,17 +679,10 @@ fn a_member_in_a_later_binding_takes_the_members_repair() {
         &errs,
         &[
             &format!("requirement `{ns}.Pair2[A = U, B = Tagger.C]` cannot be supplied"),
-            "its carrier is `U`, a type parameter of the CALLING operation",
-            "`Tagger.C` is a member's parameter, and a `requires` written over one is not read \
-             as covering it",
-            &format!("write it in `{ns}.f`'s bracket instead — a parameter `P` under `requires Tagger[C = P]`"),
-            "and declare this requirement beside it, `P` where it reads `Tagger.C`",
+            "its carrier is `U`",
+            &format!("Declare `requires {ns}.Pair2[A = U, B = Tagger.C]` on `{ns}.f`"),
         ],
-        "the member, wherever in the clause it stands",
-    );
-    assert!(
-        !errs.iter().any(|e| e.contains("Declare `requires")),
-        "a clause naming a member's parameter is not advised: {errs:#?}"
+        "P962X: a later member binding can be named by its clause",
     );
     assert_eq!(
         run_int64(
@@ -768,7 +716,7 @@ fn a_member_in_a_later_binding_takes_the_members_repair() {
         &load_errors_of(&holder("(self: Self, w: Tagger.C) -> Int64")),
         &[
             "its carrier is `T`, a type parameter of the CALLING operation",
-            &format!("write it in `{ns}.Holder.m`'s bracket instead"),
+            &format!("Declare `requires {ns}.Pair2[A = T, B = Tagger.C]` on `{ns}.Holder.m`"),
         ],
         "the operation's bracket, whatever declares the carrier",
     );
@@ -784,17 +732,7 @@ fn a_member_in_a_later_binding_takes_the_members_repair() {
     );
 }
 
-/// A CONSTRUCTION OVER A MEMBER IS TOLD THE SPELLING THAT WORKS. `Box` requires `Tag` of
-/// its parameter, and `f` builds one over its `Tagger.C` with nothing in scope to supply
-/// it. The refusal for a parameter declared by name says to declare a requirement slot for
-/// it; a member has no declaration to put one on, and the clause the account offers is not
-/// read as covering it, so the member is named and told the bracket. The spelling it
-/// advises runs.
-///
-/// Fails with the member not looked for among the requirement's elements, (15).
-///
-/// CONTROL, in the same row: a parameter `f` declares by name keeps the advice it had, with
-/// no word of members. Passes with or without the change, as the program that runs does.
+/// P962X: a construction over a member is repaired by a clause over that member. A named parameter keeps the existing slot advice.
 #[test]
 fn a_construction_over_a_member_is_told_the_spelling_that_works() {
     let ns = "xqgew.construction";
@@ -817,10 +755,7 @@ fn a_construction_over_a_member_is_told_the_spelling_that_works() {
         &errs,
         &[
             &refused,
-            "its element here is `Tagger.C`, a member's parameter",
-            "write it in the enclosing operation's bracket — a parameter `P` under `requires \
-             Tagger[C = P]`, with `P` where the signature has `Tagger.C`",
-            "and require this of `P` beside it",
+            &format!("declare `requires {ns}.Tag[T = Tagger.C]` on the enclosing operation"),
         ],
         "the member, and the repair that loads",
     );

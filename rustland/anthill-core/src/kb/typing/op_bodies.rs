@@ -616,7 +616,7 @@ pub(super) fn check_operation_bodies(
                 // dot backstop above: the repair is a single clause on the signature, so
                 // reporting every read of the same parameter would be one fix told many
                 // times.
-                let reads = rigid_value_reads(kb, &result.node);
+                let reads = rigid_value_reads(kb, &result.node, result.env.enclosing_frame_chain());
                 if !reads.is_empty() {
                     let backed = type_value_backed_params(kb, op.op_sym);
                     if let Some((_, param, span)) =

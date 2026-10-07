@@ -3,9 +3,9 @@
 - id: WI-20261006-P962X-a-requires-clause-over-a
 - created: 2026-10-06T09:03:21Z
 
-- status: Open
-- status_agent: claude
-- status_at: 2026-10-06T09:03:21Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-07T08:51:05Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -24,4 +24,8 @@ A MESSAGE WAITS ON THIS. The forward refusal ("its carrier is … a type paramet
 ### 2026-10-06T11:18:30Z — feedback — claude
 
 THREE MESSAGES NOW, TWO OF WHICH WAIT ON THIS, AND THE ROW THAT SAYS WHEN. This supersedes the note above, which names one. WI-20261006-XQGEW gives a member one repair sentence (`member_param_bracket_spelling`, rustland/anthill-core/src/kb/typing/display.rs: the parameter written in the bracket under `requires Spec[Member = P]`, every other member of the spec the signature writes going with it as one more binding of that one clause) and three refusals read it. Two are there because a clause over a member does not cover. (a) `CallerRigidCarrier::repair` (dict.rs) — taken where ANY element of the clause is a member, not the carrier alone: `requires Pair2[A = U, B = Tagger.C]` on `f[U](x: U, w: Tagger.C)` is refused as the call without it is. (b) The no-route account of a SORT-level requirement (dict.rs, where `no_scope_route` is decided): `let b = box(v: x)` over `x: Tagger.C` with `Box requires Tag[T = T]`. That is this ticket in a construction, and with the clause written it has a message of its own — `f(x: Tagger.C) -> Int64 requires Tag[T = Tagger.C] = let b = box(v: x) …` is refused "the enclosing scope's `requires …Tag[T = …Tagger.C]` covers only as a wildcard and is not forwarded — its element is a different type parameter under this construction", the clause printing the spec's member by its qualified name where the signature's parameter prints `Tagger.C`. The third reader, a named slot bound to a member (`UntiedForward::render`, slots.rs), stays whatever is done here: a member has no binder to declare a slot under. THE ROW: `wi_xqgew_member_param_test::a_forward_over_a_member_is_told_the_spelling_that_works` asserts that `f(x: Tagger.C) -> Int64 requires Tag[T = Tagger.C] = g(x)` is refused. When it loads, branches (a) and (b) go back to advising the clause, and the rows `a_forward_…`, `every_member_of_the_spec_moves_to_the_bracket`, `a_member_in_a_later_binding_takes_the_members_repair` and `a_construction_over_a_member_is_told_the_spelling_that_works` are rewritten to it. MEASURED on the tree that delivers XQGEW, the bracket twin of each program running (50, 51, 7, 50).
+
+### 2026-10-07T08:51:04Z — feedback — codex
+
+Implemented P962X: requires clauses resolve members from the exact signature instance, including partially fixed aliases and dotted paths. Fixed aliases retain their fixed bindings; members absent from the signature are rejected. TypeValue reads use distinct synthesized member identities and receive their dictionaries; clauses now cover forwarding and construction. Updated obsolete bracket-only repairs and XQGEW expectations. Added 10 executing regression/control tests. Back-out measurement: original implementation fails eight regressions while the bracket control passes; reverting the final alias-instance guard fails the dotted-alias rejection regression. Full Rust gate via scripts/test.sh: 8730 passed, 0 failed, 14 ignored. Scala sbt testFull: 600 passed, 0 failed. git diff --check passed. Manual code review completed; /code-review skill unavailable and therefore not run. No canonical specification changes. Open unblocked queue measured at 166 before delivery.
 
