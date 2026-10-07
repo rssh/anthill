@@ -1208,13 +1208,15 @@ pub(super) fn defer_defaulted_call_to_slot(
     fn_sym: Symbol,
     op_short_sym: Symbol,
     selections: &[InstanceSelection],
+    carrier_licensed: bool,
 ) -> bool {
     // WI-841 tier 1 — A PIN AT THIS CALL OUTRANKS THE FORWARD, the same gate all three
     // sort-level defer sites keep. Not an early return: it is the gate on the SORT half
     // below and is handed to the op half, which asks it in its own words, so the two
     // halves refuse a pinned call for one reason rather than two.
     let pinned_spec = pinned_witness_for(kb, selections, spec_sort).is_some();
-    // EXACTLY ONE CLAUSE OVER THE SPEC, OR NOTHING IS DIRECTED — the same refusal
+    // FOR A RECEIVER-LESS CALL: EXACTLY ONE CLAUSE OVER THE SPEC, OR NOTHING IS DIRECTED.
+    // This is the same refusal
     // [`bind_sort_params_from_sole_enclosing_requirement`] applies to the same shape, and
     // asked through the same owner so the two cannot drift.
     //
@@ -1228,8 +1230,13 @@ pub(super) fn defer_defaulted_call_to_slot(
     // two_clauses_over_one_spec_are_refused_at_load`). Both are the ORDER-DEPENDENT
     // answer, reached through the soft first-match tie-break the locating walks fall back
     // to when no clause is σ-precise; the walks are right to be soft for a call that
-    // pins something, and this route is for calls that pin nothing at all.
-    if sole_chain_entry_over_spec(kb, env.enclosing_frame_chain(), spec_sort).is_none() {
+    // pins something; the original receiver-less route pins nothing at all.
+    // DF0TS: a clause at this receiver's rigid carrier is instance-precise
+    // evidence; the slot walks below check σ and can distinguish two clauses.
+    // A receiver-less call still needs the original sole-clause gate.
+    if !carrier_licensed
+        && sole_chain_entry_over_spec(kb, env.enclosing_frame_chain(), spec_sort).is_none()
+    {
         return false;
     }
     let enclosing_sort = env.enclosing_sort();

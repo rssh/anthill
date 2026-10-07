@@ -1981,3 +1981,6 @@ mod wi_p962x_member_requirement_test;
 
 #[path = "include/wi_gvgsq_instance_member_test.rs"]
 mod wi_gvgsq_instance_member_test;
+
+#[path = "include/wi_df0ts_default_instance_test.rs"]
+mod wi_df0ts_default_instance_test;

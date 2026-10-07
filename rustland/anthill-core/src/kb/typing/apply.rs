@@ -2562,18 +2562,12 @@ pub(super) fn check_apply_iter(
                     selected: &selections,
                     sub_goal_requires: &[],
                 };
-                // WI-1091 — `Conditional` ONLY, where WI-1093's draft took `Leaf` too.
-                // The defect is precisely that the WI-415 parent bundle carries the
-                // SPEC's chain at the carrier and none of the carrier's PROVISION
-                // CONDITIONS; a provision with no conditions has nothing the bundle is
-                // missing, so preferring an instance there changes the dictionary an
-                // author sees for no reason and — measured on the stdlib — for a cost:
-                // `Iterable.find` at `List` and `FiniteCollection.filter` at a carrier
-                // that inherits `filter` from `Iterable` both resolve `Leaf`, and eval's
-                // `dispatch_via_sort_ops_table` then walks that instance to a member of a
-                // THIRD sort whose slots it does not carry (`Stream.find`,
-                // `Iterable.filter`), which is `expand_dispatching_dict`'s WI-857 raise
-                // and its `push_op_scoped_slots` twin.
+                // DF0TS: leaf instances need the same self dictionary as conditional
+                // ones when the spec's own default forwards its instance. Discarding
+                // a leaf left Coll.viaHelper / viaBuild with no __req_self.
+                // The target-equality gate below still excludes the WI-1091 third-sort
+                // redirects (Iterable.find -> Stream.find), whose frames need another
+                // layout. A leaf is admitted only when this default actually runs.
                 // WI-883 — no supplier, and the carrier may not be an instance at all.
                 if let Some(refusal) = defaulted_call_at_non_instance(
                     kb,
@@ -2588,9 +2582,10 @@ pub(super) fn check_apply_iter(
                     return Err(refusal);
                 }
                 let default_tree = match resolve(kb, &goal, &scope) {
-                    ResolutionResult::Resolved(tree @ ResolvedRequiresNode::Conditional { .. }) => {
-                        Some(tree)
-                    }
+                    ResolutionResult::Resolved(
+                        tree @ (ResolvedRequiresNode::Conditional { .. }
+                        | ResolvedRequiresNode::Leaf { .. }),
+                    ) => Some(tree),
                     // WI-20260829-H0YCE — A GROUND GOAL THAT DOES NOT RESOLVE IS REFUSED,
                     // as the body-less arm's dispatch refuses it. The instance gate above
                     // is binding-BLIND: `MappedStream` HAS a `FiniteCollection` row (the
@@ -2737,13 +2732,15 @@ pub(super) fn check_apply_iter(
             // on the fixture load behind this ticket: 119 calls reach this block, 4 reach
             // the leg.
             if carrier.is_none()
-                && call_names_no_carrier(
-                    kb,
-                    spec_sort,
-                    &recv_carrier,
-                    carrier_param_sym,
-                    &op.params,
-                )
+                // DF0TS: a receiver-precise clause can forward its dictionary too.
+                && (enclosing_requires_clause.is_some()
+                    || call_names_no_carrier(
+                        kb,
+                        spec_sort,
+                        &recv_carrier,
+                        carrier_param_sym,
+                        &op.params,
+                    ))
             {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
@@ -2756,6 +2753,7 @@ pub(super) fn check_apply_iter(
                     fn_sym,
                     op_short_sym,
                     &selections,
+                    enclosing_requires_clause.is_some(),
                 ) {
                     return Ok(TypeResult {
                         ty: resolved_ret,

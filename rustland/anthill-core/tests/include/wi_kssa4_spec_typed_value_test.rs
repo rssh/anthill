@@ -1218,9 +1218,9 @@ namespace {ns}
     sort C = ?
     effects E = ?
     operation size(c: C) -> Int64 effects E
-    operation wrap(c: C) -> Int64 =
+    operation wrap(c: C) -> Int64 effects E =
       let h = hold(c)
-      1
+      Holder.read(h)
   end
 
   sort Holder
@@ -1228,6 +1228,8 @@ namespace {ns}
     effects XE = ?
     requires Coll[C = X, E = XE]
     entity hold(x: X)
+    operation read(h: Self) -> Int64 effects XE =
+      match h case hold(x) -> Coll.size(x)
   end
 
   sort L
@@ -1240,7 +1242,7 @@ namespace {ns}
 end
 "#
     );
-    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(1));
+    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(3));
 }
 
 /// A REQUIREMENT AT OTHER ARGUMENTS OF THE SORT IS REFUSED, whatever it leaves open. The one
