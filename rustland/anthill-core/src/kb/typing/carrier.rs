@@ -1141,14 +1141,12 @@ pub(super) fn bind_spec_params_from_carrier(
         //    `List provides Stream[E = {}]`): the value itself. The pre-WI-393
         //    code `continue`-skipped this (only a ref mapped), dropping the `{}`
         //    so a cross-sort `collect`'s `Eff` never grounded.
-        // The [`type_is_ground`] guard on the non-ref arm is load-bearing: a
-        // non-ref provider binding that still mentions the carrier's OWN params
-        // (`provides Stream[T = Pair[A = C.T, B = C.T]]`) is not ground, and
-        // binding it verbatim would pin the op param to a carrier-relative `?_`
-        // (the receiver's actual argument is never substituted in) — silently
-        // wrong. Skip it: the op param stays unbound and surfaces a LOUD
-        // `unconstrained` instead. (Threading such a compound through
-        // `recv_bindings` is future work — see WI-380 follow-ups.)
+        // S7YF5: a compound provision is relative to the carrier, just like a
+        // bare parameter. Substitute the receiver's arguments before binding it;
+        // `{BE}` at `Box[BE = {Modify[k]}]` denotes `{Modify[k]}`, not an empty
+        // effect row. Share the carrier-param path's structural substitution.
+        // Only bind a determined result here, so an unresolved carrier-relative
+        // parameter cannot escape into the consuming operation's types.
         let concrete: Option<Value> = if ref_shape {
             typaram_ref_vid(kb, &carrier_value, carrier_sym).and_then(|vid| {
                 recv_bindings
@@ -1157,30 +1155,27 @@ pub(super) fn bind_spec_params_from_carrier(
                     .map(|e| e.1.clone())
             })
         } else if type_is_ground(kb, &carrier_value) {
-            Some(carrier_value)
+            // A partial sort application leaves its missing slots for the
+            // arguments to infer. Open them once, shared by alias and op param,
+            // rather than pinning the alias to an unexpanded declaration.
+            Some(once_per_call(kb, &carrier_value))
         } else {
-            None
+            let at_receiver =
+                substitute_carrier_params(kb, &carrier_value, carrier_sym, &recv_bindings);
+            type_is_determined(kb, &at_receiver).then(|| once_per_call(kb, &at_receiver))
         };
         let Some(concrete) = concrete else { continue };
 
-        // (a) The spec sort's OWN alias var — kept for the WI-325 abstract-
-        //     coverage check on a dispatched body-less op (it resolves the spec
-        //     param's alias var in the subst, and the dispatch goal is built from
-        //     it). Only a type-param-ref binding (the element); a written effect
-        //     row is not bound onto the spec alias (effects aren't expressible
-        //     there — WI-301; the coverage check reads the provider view's
-        //     groundness directly for that). Only fill a genuinely-empty slot:
-        //     `bind_value` flags a CONTRADICTION against a differing existing
-        //     binding (it does not rebind), and an alias whose root is bound
-        //     resolves anyway.
-        if ref_shape {
-            if let Some(spec_vid) = spec_vid {
-                if subst.resolve_as_value(spec_vid).is_none()
-                    && !occurs_in_view(kb, spec_vid, &concrete)
-                {
-                    subst.bind_value(kb, spec_vid, concrete.clone());
-                    any = true;
-                }
+        // (a) The spec sort's own alias, used by dispatch and by an operation
+        // whose row is the enclosing sort's E. Compound rows must bind this
+        // alias too: otherwise E stays unresolved and effect closing drops it.
+        // The value above is already instantiated and opened for this call.
+        if let Some(spec_vid) = spec_vid {
+            if subst.resolve_as_value(spec_vid).is_none()
+                && !occurs_in_view(kb, spec_vid, &concrete)
+            {
+                subst.bind_value(kb, spec_vid, concrete.clone());
+                any = true;
             }
         }
 

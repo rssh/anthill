@@ -352,13 +352,15 @@ pub(super) enum BindingKeyMatch {
     /// This mode is NOT a barrier between two sorts' slots, and must not be read as one.
     /// Identity is tried first regardless of mode, and a WRITTEN key is `reintern(p.last())`
     /// — the bare symbol `T`, ONE globally-interned symbol shared by every sort. So two
-    /// different sorts' bare-written `T` slots already pair by raw identity, exactly as they
-    /// did before WI-764. Measured over the `wi_tests` corpus: of 47,432 calls, 19,463 have
+    /// different sorts' bare-written `T` slots can pair by raw identity. Before S7YF5,
+    /// providers were compared this way too. Measured over the `wi_tests` corpus: of 47,432 calls, 19,463 have
     /// different-sort bases and 16,681 of those share an exact key symbol — chiefly
     /// `MappedStream`/`Stream` and `List`/`Stream` on `T`. That pairing is CORRECT there
     /// only by convention: `stdlib/anthill/prelude/combinators.anthill` deliberately names
-    /// each carrier's params to match `Stream`'s. What this mode withholds is the
-    /// *additional* bare↔foreign-qualified match, nothing more.
+    /// each carrier's params to match `Stream`'s. S7YF5 now translates provider instances
+    /// through their provision before comparing slots, in both subtype and unify.
+    /// What this mode withholds is the additional bare↔foreign-qualified match;
+    /// a caller still has to establish which sort owns the slots it compares.
     ///
     /// And nothing catches a misuse at runtime: [`same_label`]'s `debug_assert` fires only
     /// when BOTH names are dotted, while the characteristic input here is a bare key whose
@@ -506,11 +508,11 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
     // base is a sort; present it as a bare `Ref(S)` and recurse `unify_types`,
     // preserving the full base relation (incl. WI-344 provider admissibility),
     // not a sort-symbol shortcut.
-    let (a_base, a_bindings) = match extract_type(kb, a) {
+    let (a_base, mut a_bindings) = match extract_type(kb, a) {
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
-    let (b_base, b_bindings) = match extract_type(kb, b) {
+    let (b_base, mut b_bindings) = match extract_type(kb, b) {
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
@@ -536,7 +538,23 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
     // key MISS was indistinguishable from a genuinely absent binding, so the slot was
     // skipped, `unify_types` returned true without binding it, and the op type param
     // surfaced later as `UnconstrainedTypeParam` far from the cause.
-    let key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
+    let mut key_match = BindingKeyMatch::for_bases(kb, a_base, b_base);
+    if key_match == BindingKeyMatch::Identity {
+        // Inference owes the same translation as subtyping: Car.T and Sp.T
+        // may have the same written key while the provision binds Sp.T to
+        // List[T = Car.T]. Pairing raw keys would infer Int64 instead of List[Int64].
+        if let Some((view, _)) = subtype_provider_view(kb, b_base, a_base) {
+            b_bindings = provider_view_at_instance(kb, subst, b_base, &b_bindings, view)
+                .0
+                .into_vec();
+            key_match = BindingKeyMatch::Label;
+        } else if let Some((view, _)) = subtype_provider_view(kb, a_base, b_base) {
+            a_bindings = provider_view_at_instance(kb, subst, a_base, &a_bindings, view)
+                .0
+                .into_vec();
+            key_match = BindingKeyMatch::Label;
+        }
+    }
     // WI-20260904-60143 — EVERY SLOT, THEN THE VERDICT (`&=`, not `return false`). See
     // [`unify_types`]' "what survives a `false`" note: the discarding callers read this σ,
     // and THIS LIST'S ORDER IS THE AUTHOR'S, so stopping at the first disagreeing slot made

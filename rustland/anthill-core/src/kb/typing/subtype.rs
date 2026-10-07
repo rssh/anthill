@@ -839,57 +839,16 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
     // WI-20261001-80ZV8 — the view's bindings that hold a variable the PROVISION wrote
     // ([`ProvisionOpening`]); empty for every provision that writes none.
     let mut opened_view: SmallVec<[Symbol; 2]> = SmallVec::new();
-    let cross_sort_provider = match cross_sort_provider {
-        None => None,
-        Some(view) => {
-            let mut instance = Substitution::with_parent(subst.clone());
-            for (ap, av) in &actual_bindings {
-                let q = format!(
-                    "{}.{}",
-                    kb.qualified_name_of(actual_base),
-                    kb.local_name_of(*ap)
-                );
-                let Some(qsym) = kb.try_resolve_symbol(&q) else {
-                    continue;
-                };
-                let Some(target) = resolve_sort_alias(kb, qsym) else {
-                    continue;
-                };
-                let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
-                    continue;
-                };
-                let vid = *vid;
-                instance.bind_value(kb, vid, av.clone());
-            }
-            // Read off the view AS THE PROVISION STORED IT, before it is read at this
-            // instance: what the instance's own type arguments bring in is not the
-            // provision's ([`ProvisionOpening::of`]).
-            let opening = ProvisionOpening::of(kb, view.iter().map(|(_, v)| v));
-            let mut instantiated: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-            for (p, v) in view {
-                // Deep, on the value walk: an argument of the instance that holds a value
-                // is spliced where its parameter stood, on the carrier it rides.
-                instantiated.push((p, walk_type_deep_value(kb, &instance, &v)));
-            }
-            if let Some(opening) = opening {
-                opened_view = opening.open_view(kb, subst, &mut instantiated);
-            }
-            Some(instantiated)
-        }
-    };
+    let cross_sort_provider = cross_sort_provider.map(|view| {
+        let (instantiated, opened) =
+            provider_view_at_instance(kb, subst, actual_base, &actual_bindings, view);
+        opened_view = opened;
+        instantiated
+    });
     for (param, ev) in &expected_bindings {
-        // The actual-side value to check against the expected binding `ev`:
-        // normally the actual's OWN binding for `param`. WI-387 FIX 2: when the
-        // actual lacks it AND the actual is a CROSS-SORT provider of the expected
-        // (`List` lacks `Stream.E` but provides `Stream`), fall back to the value
-        // the actual's provider fact supplies for that param (matched by short
-        // name) — so `List[Elem]` conforms to `Stream[T = Elem, E = {}]` via
-        // `provides Stream[E = {}]`. The actual was never translated through its
-        // provider into the expected sort's param space before, so the missing
-        // expected param rejected unconditionally. A param absent on BOTH sides,
-        // or a SAME-base actual genuinely missing the param (`cross_sort_provider`
-        // is `None`), still rejects: this LOOSENS the cross-sort case only and
-        // cannot newly-reject existing code.
+        // A same-sort comparison reads the actual's own parameter slots; a
+        // cross-sort comparison reads the instantiated provision. A bare key
+        // shared by two sorts does not make their parameters identical.
         //
         // WI-1056 — THE SAME-BASE MISSING PARAM is taken by the arm below, and the case
         // for it is not the spec sentence but a MEASUREMENT of the language as it stands.
@@ -934,9 +893,16 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                 continue;
             }
         }
-        // WI-764: keyed via [`binding_for_param`] — raw identity here rejected a WRITTEN
-        // `Relation[T = .., E = ..]` annotation against the very relation it describes.
-        let ok = match binding_for_param(kb, &actual_bindings, *param, key_match) {
+        // A carrier's parameter and its spec's parameter are different slots,
+        // even when both written keys are the globally interned bare `T`.
+        // Across sorts, read the instantiated provision below; the carrier's
+        // own bindings are meaningful directly only for the same sort.
+        let own_binding = if same_sort_canonical(kb, actual_base, expected_base) {
+            binding_for_param(kb, &actual_bindings, *param, key_match)
+        } else {
+            None
+        };
+        let ok = match own_binding {
             Some(av) => check_binding_by_variance(kb, subst, expected_base, *param, av, ev),
             None => {
                 let short = short_name_of(kb.local_name_of(*param));
@@ -3004,6 +2970,52 @@ impl ProvisionOpening {
         }
         opened
     }
+}
+
+/// A provision's bindings read at one carrier instance, without binding the
+/// carrier's canonical variables in the caller's substitution. Subtyping and
+/// unification must use this same view when two sorts reuse a parameter label.
+pub(super) fn provider_view_at_instance(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    carrier_base: Symbol,
+    carrier_bindings: &[(Symbol, Value)],
+    view: SmallVec<[(Symbol, Value); 2]>,
+) -> (SmallVec<[(Symbol, Value); 2]>, SmallVec<[Symbol; 2]>) {
+    let mut opened = SmallVec::new();
+    let mut instance = Substitution::with_parent(subst.clone());
+    for (ap, av) in carrier_bindings {
+        let q = format!(
+            "{}.{}",
+            kb.qualified_name_of(carrier_base),
+            kb.local_name_of(*ap)
+        );
+        let Some(qsym) = kb.try_resolve_symbol(&q) else {
+            continue;
+        };
+        let Some(target) = resolve_sort_alias(kb, qsym) else {
+            continue;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(target) else {
+            continue;
+        };
+        let vid = *vid;
+        instance.bind_value(kb, vid, av.clone());
+    }
+    // Read off the view AS THE PROVISION STORED IT, before it is read at this
+    // instance: what the instance's own type arguments bring in is not the
+    // provision's ([`ProvisionOpening::of`]).
+    let opening = ProvisionOpening::of(kb, view.iter().map(|(_, v)| v));
+    let mut instantiated: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (p, v) in view {
+        // Deep, on the value walk: an argument of the instance that holds a value
+        // is spliced where its parameter stood, on the carrier it rides.
+        instantiated.push((p, walk_type_deep_value(kb, &instance, &v)));
+    }
+    if let Some(opening) = opening {
+        opened = opening.open_view(kb, subst, &mut instantiated);
+    }
+    (instantiated, opened)
 }
 
 /// WI-401 — detect an ABSTRACTING (sealing) return so the base model stays escape-free

@@ -309,7 +309,9 @@ fn a_provision_at_a_wildcard_is_provided_at_every_instance() {
     let src = provision_program("wi80zv8q.v3", "Car[V = ?]", "Car[V = ?]", "other(n: 3)");
     assert_refused_naming(
         &load_errors(&src),
-        &["both.s (op-arg): expected Sp[T = Other], got Car[V = Int64]"],
+        // S7YF5 reads the provision during inference too, so T is already
+        // Car[V = ?] and the incompatible second argument is named directly.
+        &["both.o (op-arg): expected Car[V = ?_], got Other"],
         "an argument that is no `Car`",
     );
 }
