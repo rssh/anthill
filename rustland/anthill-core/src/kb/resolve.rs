@@ -6782,6 +6782,29 @@ impl KnowledgeBase {
                     .to_string(),
             ));
         };
+        // 8DXVK: a generated annotation guard can carry a provider requirement;
+        // source `domain` asks about a value type. Check provenance explicitly,
+        // rather than letting a query inherit the nominal-bound interpretation
+        // merely because it bypassed the loader's source-type validation.
+        let generated = match goal.as_bind_value() {
+            super::persist_subst::BindValue::Value(Value::Node(ref node)) => node
+                .synthesized_by()
+                .is_some_and(|by| super::typing::is_typed_head_domain_pass(self, by)),
+            _ => false,
+        };
+        if !guard && !generated {
+            if let Some((spec, param)) =
+                super::typing::parameter_spec_written_as_type(self, bound.carried())
+            {
+                return BuiltinResult::Error(ResolveError::new(format!(
+                    "a `domain` goal asks whether a value is a `{}`, a spec over its \
+                     parameter `{}`: a provider's value is its carrier, not the spec; \
+                     use a typed-head requirement instead",
+                    self.qualified_name_of(spec),
+                    self.local_name_of(param),
+                )));
+            }
+        }
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
         }
