@@ -31081,13 +31081,36 @@ impl<'a> Loader<'a> {
             if !self.symbol_is_value_place(resolved) {
                 // WI-428: a TYPE head — a rigid type-parameter (`P.Key`) or a sort
                 // (`MemStore.Key`) — classifies as a `RigidTypeProjection`, the
-                // type-keyed sibling of `ExprCarried` (design §5.3). Two-segment only;
-                // anything else stays on the `remap_name` path.
-                if allow_rigid_type_projection && segs.len() == 2 {
-                    if let Some(child) =
-                        self.try_rigid_type_projection(resolved, resolved, &member_name, span)
-                    {
-                        return Some(child);
+                // type-keyed sibling of `ExprCarried` (design §5.3).
+                // WI-728RW: the head can itself be a path (`Outer.Spec.C`,
+                // `ns.Spec.C`). Resolve it with the ordinary dotted-name ladder;
+                // only the resulting sort's declared member takes the sugar.
+                // Qualified constructors/nested sorts retain the ordinary route.
+                if allow_rigid_type_projection {
+                    let head_path = segs[..segs.len() - 1].join(".");
+                    let head = if segs.len() == 2 {
+                        ResolveResult::Found(resolved)
+                    } else {
+                        self.kb
+                            .symbols
+                            .resolve_in_scope(&head_path, self.current_scope)
+                            .or_else(|| {
+                                self.resolve_dotted(&head_path, DottedVisibility::VisibleOnly)
+                            })
+                    };
+                    if let ResolveResult::Found(head) = head {
+                        // The head symbol selects the declaration; this separate
+                        // spelling is display metadata, never a resolution key.
+                        let written = if segs.len() == 2 {
+                            head
+                        } else {
+                            self.kb.intern(&head_path)
+                        };
+                        if let Some(child) =
+                            self.try_rigid_type_projection(head, written, &member_name, span)
+                        {
+                            return Some(child);
+                        }
                     }
                 }
                 return None;

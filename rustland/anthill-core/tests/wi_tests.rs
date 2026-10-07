@@ -1972,3 +1972,6 @@ mod wi_s7yf5_self_receiver_row_test;
 
 #[path = "include/wi_41yye_enclosing_place_type_test.rs"]
 mod wi_41yye_enclosing_place_type_test;
+
+#[path = "include/wi_728rw_dotted_spec_member_test.rs"]
+mod wi_728rw_dotted_spec_member_test;
