@@ -219,6 +219,10 @@ pub(super) fn type_check_sorts_collect(
         }
     }
 
+    // HK87X: check constant defining occurrences as well as operation bodies.
+    // This reaches construction checks even when no operation ever reads the constant.
+    check_constant_bodies(kb, &mut errors, &mut sources);
+
     // WI-945: every call site whose parent-bundle dictionary could not be built for an
     // element nothing at the call pins. HERE and not inside either sweep above: the
     // verdict reads the CALLEE's body classifications, and only now has every body
@@ -344,6 +348,37 @@ pub(super) fn type_check_sorts_collect(
     // parallel to `errors`.
     sources.resize(errors.len(), None);
     (errors, sources)
+}
+
+/// HK87X: a folded value has no construction site to refuse. Check the original
+/// initializer through the occurrence typer, with the declared type as its hint.
+/// Host-supplied constants have no initializer and are absent from this iterator.
+fn check_constant_bodies(
+    kb: &mut KnowledgeBase,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    let constants: Vec<_> = kb
+        .const_bodies_iter()
+        .map(|(symbol, body)| (symbol, Rc::clone(body)))
+        .collect();
+    sources.resize(errors.len(), None);
+    for (symbol, body) in constants {
+        let expected = kb
+            .const_type(symbol)
+            .expect("a constant initializer has a declared type")
+            .clone();
+        let mut env = TypingEnv::empty();
+        env.enclosing_const = Some(symbol);
+        // No runtime requirement frame belongs to a constant initializer.
+        // Keep this validation on the stored source, without simp write-back.
+        if let Err(error) = type_check_node_gated(kb, &env, &body, Some(expected), false, &[]) {
+            for error in error.flatten() {
+                errors.push(error);
+                sources.push(Some(body.span.source));
+            }
+        }
+    }
 }
 
 /// WI-398: reject a CYCLIC cross-parameter type projection (`f(a: b.T, b: a.T)`, or the

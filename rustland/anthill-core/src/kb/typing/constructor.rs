@@ -817,15 +817,9 @@ fn param_leaves_belong_to_sort<V: TermView>(kb: &KnowledgeBase, t: &V, own_param
 /// and not parked: the park exists for a callee whose body is not typed yet, and a
 /// construction has none.
 ///
-/// ONLY IN AN OPERATION BODY. A rule's term is matched, not built: its types are whatever
-/// the rule's variables stand for, an element left open there is the ordinary case, and an
-/// operation the rule reaches resolves the requirement from the bound value or suspends
-/// ([`resolve_bridge_requirements`]).
-///
-/// A CONSTANT'S BODY IS NOT REACHED, and that is a gap this leaves as it found it: a
-/// constant is folded to a value and typed as one ([`constructor_value_type`]), a reader
-/// with no refusal to give, so `const c: Hold[E = Other] = hold(other())` loads (MEASURED,
-/// on this tree and its parent alike).
+/// IN VALUE DEFINITIONS: operation bodies and constant initializers (HK87X).
+/// A rule's term is matched, not built: an operation reached from that rule
+/// resolves its requirements from the bound value or suspends.
 fn construction_meets_sort_requires(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -834,7 +828,9 @@ fn construction_meets_sort_requires(
     sort: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    if env.enclosing_op().is_none() || direct_requires_chain_rc(kb, sort).is_empty() {
+    if (env.enclosing_op().is_none() && env.enclosing_const.is_none())
+        || direct_requires_chain_rc(kb, sort).is_empty()
+    {
         return Ok(());
     }
     let enclosing_sort = env.enclosing_sort();
@@ -858,7 +854,7 @@ fn construction_meets_sort_requires(
         refusal,
     };
     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
-    // No held bracket: a `require[…]` is a rule clause's, and this is an operation body.
+    // No held bracket: a `require[…]` is a rule clause's, not a value definition's.
     build_concrete_dispatch_dict(
         kb,
         None,

@@ -37,8 +37,8 @@
 //! in caller frame"). A slot the construction leaves open is left to the call that fixes
 //! it, and so is a choice between two providers
 //! ([`a_slot_the_construction_leaves_open_is_left_to_the_call`],
-//! [`a_tie_is_left_to_the_use_that_selects`]). A constant's body is not reached: it is
-//! folded to a value, whose typer refuses nothing ([`a_constants_body_is_not_reached`]).
+//! [`a_tie_is_left_to_the_use_that_selects`]). HK87X now checks a constant's
+//! initializer too ([`a_constants_body_is_checked_at_its_construction`]).
 //!
 //! The rule in the RULE LANGUAGE — `?x: Summable` and a written `domain(?x, Summable)`
 //! refused, `?x: Summable.T` and the introducer taken — is driven in
@@ -216,8 +216,7 @@
 //! PASS UNDER EVERY PART THAT LEAVES THE LIBRARY LOADING, by design:
 //! [`the_member_spelling_runs`] and [`the_bound_spelling_runs`], which ran on the parent
 //! commit and must still; [`a_list_at_a_stream_parameter_loads_as_before`], the control
-//! that the refusal is about specs over a parameter; [`a_constants_body_is_not_reached`],
-//! which records a gap; and the two programs of
+//! that the refusal is about specs over a parameter; and the two programs of
 //! [`what_a_field_fixed_is_asked_for_and_not_held_against_the_clause`] that run, which pin
 //! a verdict this change's first cut made and its final one does not.
 
@@ -1507,25 +1506,35 @@ fn what_a_field_fixed_is_asked_for_and_not_held_against_the_clause() {
     );
 }
 
-/// A CONSTANT'S BODY IS NOT REACHED — a gap, recorded so that closing it is noticed. A
-/// constant is folded to a value and typed as one, by a reader with no refusal to give, so
-/// the `Hold` over an `Other` that an operation body may not build is built here. The same
-/// on the parent commit. When a constant's body is typed as an operation's is, this row
-/// becomes the refusal [`a_construction_over_a_non_provider_is_refused_where_it_is_built`]
-/// asserts.
+/// HK87X: constants obey the same construction requirement as operation bodies.
+/// The refusal fails backed out; the executing provider control passes either way.
 #[test]
-fn a_constants_body_is_not_reached() {
+fn a_constants_body_is_checked_at_its_construction() {
     let ns = "kssa4.constant";
     let errs = load_errors_of(&holder(
         ns,
         "  const bad: Hold[E = Other] = hold(other())\n  operation go() -> Int64 = 0",
     ));
-    assert!(
-        errs.is_empty(),
-        "THE GAP HAS CLOSED, or moved — a constant built over a sort that provides nothing \
-         is now refused. If the refusal is the construction's, assert it here and delete \
-         this row's account of the gap: {errs:#?}"
+    assert_refused_naming(
+        &errs,
+        &[
+            "requirement",
+            &format!("{ns}.Shown[T = {ns}.Other]"),
+            "Hold",
+            "construction",
+            "Hold.hold",
+        ],
+        "constant construction",
     );
+}
+
+#[test]
+fn a_constant_over_a_provider_is_built_and_read() {
+    let src = holder(
+        "kssa4.constant_good",
+        "const good: Hold[E = Leaf] = hold(leaf())\noperation go() -> Int64 = Hold.read(good)",
+    );
+    assert_eq!(run_int64(&src, "kssa4.constant_good.go"), Ok(7));
 }
 
 // ── the census ────────────────────────────────────────────────────────────────────────
@@ -1658,4 +1667,63 @@ fn the_library_and_the_examples_type_no_position_at_a_spec() {
             }
         }
     }
+}
+
+/// HK87X: the expected type pins a constructor with no field carrying its member.
+/// Refusal fails backed out; the valid constant is evaluated rather than only loaded.
+#[test]
+fn a_constant_cannot_hide_an_unsuppliable_requirement_in_an_empty_constructor() {
+    let ns = "kssa4.constant_empty";
+    let errs = load_errors_of(&holder(ns, "const bad: Hold[E = Other] = vacant()"));
+    assert_refused_naming(
+        &errs,
+        &[
+            "construction",
+            "Hold.vacant",
+            &format!("{ns}.Shown[T = {ns}.Other]"),
+        ],
+        "empty constant construction",
+    );
+    let good = holder(
+        "kssa4.constant_empty_good",
+        "const good: Hold[E = Leaf] = vacant()\noperation go() -> Int64 = Hold.read(good)",
+    );
+    assert_eq!(run_int64(&good, "kssa4.constant_empty_good.go"), Ok(0));
+}
+
+/// HK87X review: report every failed construction in one initializer.
+/// Fails with the first draft, which converted an aggregate to its first error.
+#[test]
+fn a_constant_reports_each_invalid_construction_in_its_initializer() {
+    let ns = "kssa4.constant_siblings";
+    let src = holder(ns, "sort Another\n entity another\nend\nconst bad: (left: Hold[E = Other], right: Hold[E = Another]) = (left: hold(other()), right: hold(another()))");
+    let errs = load_errors_of(&src);
+    assert_refused_naming(
+        &errs,
+        &[
+            "construction",
+            "Hold.hold",
+            &format!("Shown[T = {ns}.Other]"),
+            &format!("Shown[T = {ns}.Another]"),
+        ],
+        "sibling constant constructions",
+    );
+}
+
+/// HK87X review: initializer spans belong to the constant's own file.
+/// Fails without source tagging in the constant-body pass.
+#[test]
+fn a_constants_construction_error_names_its_source_file() {
+    let src = holder(
+        "kssa4.constant_source",
+        "const bad: Hold[E = Other] = hold(other())",
+    );
+    let errors = crate::common::try_load_kb_with_named_files(&[("bad-constant.anthill", &src)])
+        .err()
+        .expect("invalid constant must be refused");
+    assert_refused_naming(
+        &errors,
+        &["bad-constant.anthill:", "construction", "Hold.hold"],
+        "constant source attribution",
+    );
 }

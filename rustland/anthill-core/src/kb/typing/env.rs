@@ -200,6 +200,8 @@ pub struct TypingEnv {
     /// (its sort's chain then its own) and a sort alone cannot name the op half.
     /// `None` outside an operation body — the rule-body dot-dispatch sweep.
     pub(super) enclosing_op: Option<Symbol>,
+    /// HK87X: a constant initializer constructs values, like an operation body.
+    pub(super) enclosing_const: Option<Symbol>,
     /// WI-282: the enclosing RULE's De Bruijn variable types, keyed by De Bruijn
     /// index — the rule-body analog of `var_bindings` (which is keyed by the
     /// SYMBOL name a param/let/lambda binds under). A rule body has no lexical
@@ -301,6 +303,7 @@ impl TypingEnv {
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
             enclosing_op: None,
+            enclosing_const: None,
             debruijn_types: Rc::new(HashMap::new()),
             rule_body_dispatch: false,
             diagnostics: Vec::new(),
