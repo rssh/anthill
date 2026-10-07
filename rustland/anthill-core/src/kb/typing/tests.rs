@@ -5891,11 +5891,12 @@ mod wi_2nmxa_value_holding_type_reader_tests {
     //!
     //! 2. THE TWO GROUNDNESS GATES DIFFER IN ONE THING. `type_is_ground` asks what a type
     //!    IS, `resolved_type_is_ground` whether the argument check can compare it, and the
-    //!    second asks one thing more: that a value the type holds be closed. BACKED OUT
+    //!    second asks one thing more within a callable: its values need binder alignment.
+    //!    WI-41YYE: an enclosing cell outside that boundary compares by identity. BACKED OUT
     //!    (`type_is_ground` as the plain view walk it first was): the guarded-atom row
     //!    fails — the view presents a guard as a child, and the gate has never read one.
-    //!    The row that names a cell is the CONTROL and passes either way by design: it
-    //!    states the one difference.
+    //!    The standalone cell row is now a WI-41YYE regression; its callable twin
+    //!    remains deferred, as the alignment-aware validator owns that comparison.
     use super::super::*;
     use crate::eval::value::Value;
     use crate::intern::SymbolKind;
@@ -5969,9 +5970,9 @@ mod wi_2nmxa_value_holding_type_reader_tests {
         );
     }
 
-    /// CONTROL — PASSES EITHER WAY BY DESIGN: the one difference between the two gates.
+    /// WI-41YYE: standalone row fails backed out; callable control passes either way.
     #[test]
-    fn a_row_that_names_a_place_is_ground_and_not_closed() {
+    fn a_place_row_is_comparable_outside_a_callable_boundary() {
         let mut kb = kb();
         let g = kb.global_scope();
         let sp = empty_span();
@@ -5990,10 +5991,29 @@ mod wi_2nmxa_value_holding_type_reader_tests {
         let present = kb.make_present_occ(TypeChild::Node(label), sp, None);
         let row = Value::Node(kb.make_effects_rows_occ(TypeChild::Node(present), sp, None));
 
-        assert!(type_is_ground(&kb, &row), "`{{Modify[k]}}` holds no variable");
         assert!(
-            !resolved_type_is_ground(&kb, &row),
-            "and names a place, which the argument check compares only once binders are aligned"
+            type_is_ground(&kb, &row),
+            "`{{Modify[k]}}` holds no variable"
+        );
+        assert!(
+            resolved_type_is_ground(&kb, &row),
+            "an enclosing place outside a callable compares by identity"
+        );
+        let Value::Node(row_node) = row else {
+            unreachable!()
+        };
+        let arrow = Value::Node(kb.make_arrow_occ(
+            TypeChild::Interned(base),
+            TypeChild::Interned(base),
+            TypeChild::Node(row_node),
+            1,
+            sp,
+            None,
+        ));
+        assert!(type_is_ground(&kb, &arrow), "the arrow holds no variable");
+        assert!(
+            !resolved_type_is_ground(&kb, &arrow),
+            "a callable's place-bearing row needs binder alignment"
         );
     }
 }

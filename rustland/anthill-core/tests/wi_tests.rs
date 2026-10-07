@@ -1969,3 +1969,6 @@ mod wi_xqgew_member_param_test;
 
 #[path = "include/wi_s7yf5_self_receiver_row_test.rs"]
 mod wi_s7yf5_self_receiver_row_test;
+
+#[path = "include/wi_41yye_enclosing_place_type_test.rs"]
+mod wi_41yye_enclosing_place_type_test;

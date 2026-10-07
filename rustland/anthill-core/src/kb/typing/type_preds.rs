@@ -122,8 +122,8 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// stands for.
 ///
 /// NOT [`resolved_type_is_ground`], which is the gate of the argument check and asks one
-/// thing more of an occurrence: that a value it holds be CLOSED, a reference to a
-/// parameter (`Modify[k]`) being comparable only once binders are aligned. What a
+/// thing more of a callable occurrence: its own value binders need alignment.
+/// Outside a callable, an enclosing place (`Modify[k]`) compares by identity. What a
 /// provision's binding IS at a receiver is not that question — `{Modify[k]}` holds nothing
 /// a later pass could decide, and is as much the answer as `{}` is.
 ///
@@ -142,8 +142,10 @@ pub(super) fn type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool {
 /// What a groundness gate asks of a VALUE standing in a type position (`denoted`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DenotedReading {
-    /// That it be CLOSED ([`denoted_value_is_closed`]): the argument check's question,
-    /// which can compare a place only once binders are aligned.
+    /// WI-41YYE: outside a callable, a value place is a stable identity. Inside a
+    /// callable, its binders require the alignment-aware callback validator.
+    Comparable,
+    /// Within a callable: withhold whole-type comparison of place-bearing types.
     Closed,
     /// That it hold no variable, as any other part of the type: what the type IS.
     AsWritten,
@@ -247,7 +249,7 @@ pub(super) fn resolved_type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool
 /// the shared view walk [`type_view_is_ground_g`] (which is where the old `_ => false`
 /// went — one type, one answer, whatever carrier it rides in on).
 fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> bool {
-    value_type_is_ground_g(kb, v, rigid_ok, DenotedReading::Closed)
+    value_type_is_ground_g(kb, v, rigid_ok, DenotedReading::Comparable)
 }
 
 /// The one walk under [`resolved_type_is_ground_g`] and [`type_is_ground`], which differ
@@ -315,18 +317,16 @@ fn node_type_is_ground_g(
             // is the ticket for exactly this class of two-carriers-two-answers bug).
             TypeNode::Var(Var::Rigid(_)) => rigid_ok,
             TypeNode::Var(_) => false,
-            // WI-470: a denoted (value-in-type) is ground for THIS gate iff its value
-            // is CLOSED — see [`denoted_value_is_closed`]. A closed denoted
-            // (`Vector[Int64, 3]`, `Modify[store]`) is conformance-checked; a var-bearing
-            // (`Vector[Int64, ?n]`) or binder-relative (`Modify[c]`, `c` a callback param)
-            // denoted is deferred to the validator that can decide it (unification /
-            // the alignment-aware `validate_callback_effect_row`). Nothing is skipped.
+            // WI-470 / WI-41YYE: logical variables defer to inference. Value
+            // places defer to binder alignment only within a callable; outside
+            // that boundary they are determined identities and MUST be checked.
             //
             // The other gate asks only what the type IS ([`DenotedReading::AsWritten`]):
             // the value is read as any other part of it, a variable in it the one thing
             // that leaves it open.
             TypeNode::Denoted { value } => match denoted {
                 DenotedReading::Closed => denoted_value_is_closed(kb, value),
+                DenotedReading::Comparable => denoted_value_is_comparable(kb, value),
                 DenotedReading::AsWritten => type_view_is_ground_g(kb, value, rigid_ok),
             },
             TypeNode::Parameterized { base, bindings } => {
@@ -342,10 +342,22 @@ fn node_type_is_ground_g(
                 effects,
                 arity,
             } => {
-                child_ground(param)
-                    && child_ground(result)
-                    && child_ground(effects)
-                    && child_ground(arity)
+                // WI-41YYE: only the callable introduces a binder-alignment
+                // boundary. A Box's row naming the enclosing cell is comparable;
+                // an arrow's row may name its own binder and belongs to the
+                // component-wise/alignment-aware validators. Keep their routing.
+                let reading = match denoted {
+                    DenotedReading::Comparable => DenotedReading::Closed,
+                    other => other,
+                };
+                let callable_child = |c: &TypeChild| match c {
+                    TypeChild::Interned(t) => type_value_is_ground_g(kb, *t, rigid_ok),
+                    TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok, reading),
+                };
+                callable_child(param)
+                    && callable_child(result)
+                    && callable_child(effects)
+                    && callable_child(arity)
             }
             // A projection's RECEIVER is a value path, not a type: `s.T`'s rides the term carrier
             // as a bare reference, which reads as ground, and a FIELD PATH's (`s.provider.K`)
@@ -423,6 +435,21 @@ fn expr_is_value_path(occ: &Rc<NodeOccurrence>) -> bool {
 /// [`node_type_is_ground`], never the term-side `type_value_is_ground` — the
 /// param-relative refinement lives on the one carrier it flows through.)
 pub(super) fn denoted_value_is_closed(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
+    denoted_value_is_decidable(kb, value, true)
+}
+
+/// WI-41YYE: a value outside a callable's binder boundary compares by identity.
+/// Logical variables still defer to inference; enclosing params, fields, results
+/// and let locals do not. The callable boundary retains the closed reading above.
+fn denoted_value_is_comparable(kb: &KnowledgeBase, value: &Rc<NodeOccurrence>) -> bool {
+    denoted_value_is_decidable(kb, value, false)
+}
+
+fn denoted_value_is_decidable(
+    kb: &KnowledgeBase,
+    value: &Rc<NodeOccurrence>,
+    defer_places: bool,
+) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(value)];
     while let Some(occ) = stack.pop() {
         match occ.as_expr() {
@@ -437,12 +464,12 @@ pub(super) fn denoted_value_is_closed(kb: &KnowledgeBase, value: &Rc<NodeOccurre
             // set the loader's `symbol_is_value_place` uses (no drift — the CallbackParam
             // own-param case `Modify[a]` is the one this gate must defer).
             Some(Expr::Ref(s)) | Some(Expr::Ident(s))
-                if kb.kind_of(*s).is_some_and(|k| k.is_value_place()) =>
+                if defer_places && kb.kind_of(*s).is_some_and(|k| k.is_value_place()) =>
             {
                 return false;
             }
             // A bare local-binder read (`?x` — a let/lambda binder) is binder-relative too.
-            Some(Expr::VarRef { .. }) => return false,
+            Some(Expr::VarRef { .. }) if defer_places => return false,
             // A literal / global ref (Sort/Entity/Operation) / compound value — recurse
             // children (a field-path receiver may still reach a value-place ref).
             Some(e) => for_each_child(e, |c| stack.push(Rc::clone(c))),
