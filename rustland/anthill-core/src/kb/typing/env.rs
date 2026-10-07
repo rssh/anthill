@@ -113,6 +113,10 @@ pub struct TypingEnv {
     /// the signature took ([`written_type_at_body_rigids`]). Empty outside an operation
     /// body.
     body_rigidify: Rc<Substitution>,
+    /// GVGSQ / §5.4: omitted members belong to the required instance, not to
+    /// each call's inference. Shared across clones of this body's environment.
+    pub(super) instance_member_rigids:
+        Rc<std::cell::RefCell<HashMap<(Symbol, TermId, VarId), TermId>>>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection.
     pub(super) enclosing_sort: Option<Symbol>,
@@ -288,6 +292,7 @@ impl TypingEnv {
             param_rigids: Rc::new(Vec::new()),
             sort_rigid_len: 0,
             body_rigidify: Rc::new(Substitution::new()),
+            instance_member_rigids: Rc::new(std::cell::RefCell::new(HashMap::new())),
             local_resources: Vec::new(),
             enclosing_sort: None,
             rule_scope: None,

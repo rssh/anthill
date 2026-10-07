@@ -31,8 +31,8 @@
 //!
 //!  * A member the signature does NOT name (`Other.E` in the ticket's `both`) is no
 //!    parameter at all: it is read in the body as a free variable, prints `?_`, and takes
-//!    any type (WI-20261006-GVGSQ). [`a_members_parameter_is_declared_by_its_spelling`]
-//!    asserts the declared half of that program's refusal and says nothing of the other.
+//!    any type (WI-20261006-GVGSQ, now fixed).
+//!    [`a_members_parameter_is_declared_by_its_spelling`] now pins both halves.
 //!  * A `requires` clause over a member the signature names is not supplied at a call, nor
 //!    read as covering in the body (WI-20261006-P962X).
 //!  * A member written through a dotted head (`X.SX.E`) is not the sugar
@@ -228,8 +228,8 @@ fn program(ns: &str, fixtures: &[&str], body: &str) -> String {
 /// THE TICKET'S PROGRAM. `both` declares `{Tagger.E}` and its body incurs more; the row it
 /// is held to is reported as the author wrote it. Was `expected declared: [?E]`.
 ///
-/// The undeclared half of this refusal is a member the signature does not name, which is
-/// no parameter today and prints as an unknown; this row says nothing of it.
+/// GVGSQ: the undeclared half is the other instance's omitted member, named by
+/// its own spec. Both halves are now pinned.
 #[test]
 fn a_members_parameter_is_declared_by_its_spelling() {
     let ns = "xqgew.both";
@@ -241,7 +241,7 @@ fn a_members_parameter_is_declared_by_its_spelling() {
     ));
     assert_refused_naming(
         &errs,
-        &["both.effects (op-effects): expected declared: [Tagger.E], got undeclared effect"],
+        &["both.effects (op-effects): expected declared: [Tagger.E], got undeclared effect: Other.E"],
         "the declared row names the member",
     );
 }

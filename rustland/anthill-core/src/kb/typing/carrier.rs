@@ -1641,6 +1641,64 @@ pub(super) fn scope_clause_at_carrier(
                 out.push((spec_vid, r));
             }
         }
+        // GVGSQ / §5.4: a member left out of the clause is still this
+        // instance's. A fresh call variable would let the declared return type
+        // choose it (an Int64 operation returning a provider's String).
+        // Only OMITTED slots are completed here: an explicitly written value
+        // that failed the crossing above must retain its existing refusal.
+        for (param, _) in sort_type_params_as_pairs(kb, spec_sort).iter() {
+            let vid = type_param_global_var(kb, *param)
+                .expect("a declared spec parameter has a canonical variable");
+            if vid == carrier_pvid
+                || bindings
+                    .iter()
+                    .any(|(key, _)| type_param_vid_in_sort(kb, spec_sort, *key) == Some(vid))
+            {
+                continue;
+            }
+            let key = (spec_canon, recv_carrier, vid);
+            let cached = env.instance_member_rigids.borrow().get(&key).copied();
+            let rigid = cached.unwrap_or_else(|| {
+                let head = match kb.get_term(recv_carrier) {
+                    Term::Var(Var::Rigid(v)) => kb.member_param_head(v.name()).filter(|head| {
+                        let base = match alias_expansion(kb, *head) {
+                            Some(AliasExpansion::Sort { base, .. }) => base,
+                            None => *head,
+                            Some(_) => return false,
+                        };
+                        kb.canonical_sort_sym(base) == spec_canon
+                    }),
+                    _ => None,
+                }
+                .unwrap_or_else(|| {
+                    let carrier_param = kb
+                        .type_param_of_canonical_var(carrier_pvid)
+                        .expect("a declared spec carrier has a canonical parameter");
+                    let carrier_name = match kb.get_term(recv_carrier) {
+                        Term::Var(Var::Rigid(v)) => type_param_display_name(kb, v.name()),
+                        _ => type_display_name(kb, recv_carrier),
+                    };
+                    let label = format!(
+                        "{}[{} = {}]",
+                        kb.local_name_of(spec_sort),
+                        type_param_display_name(kb, carrier_param),
+                        carrier_name
+                    );
+                    kb.intern(&label)
+                });
+                let member = kb
+                    .local_name_of(*param)
+                    .rsplit('.')
+                    .next()
+                    .unwrap()
+                    .to_owned();
+                let name = kb.mint_member_param_name(head, &member);
+                let rigid = fresh_rigid_named(kb, name);
+                env.instance_member_rigids.borrow_mut().insert(key, rigid);
+                rigid
+            });
+            out.push((vid, Value::term(rigid)));
+        }
         return Some(LicensingClause {
             carrier: recv_carrier,
             bindings: out,

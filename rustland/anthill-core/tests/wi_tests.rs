@@ -1978,3 +1978,6 @@ mod wi_728rw_dotted_spec_member_test;
 
 #[path = "include/wi_p962x_member_requirement_test.rs"]
 mod wi_p962x_member_requirement_test;
+
+#[path = "include/wi_gvgsq_instance_member_test.rs"]
+mod wi_gvgsq_instance_member_test;
