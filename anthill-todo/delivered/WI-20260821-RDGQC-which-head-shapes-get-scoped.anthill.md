@@ -403,3 +403,7 @@ FOUND IN SCALAND AND NOT CHANGED, each pre-existing and none filed:
  3. The parser has no `..name` spelling, so the census drives the qualified reason with `nosuch.xyz`.
 The multi-head shape stays NE0E4's in both implementations; the scaland census pins it at 2 and 2.
 
+### 2026-10-08T10:08:42Z — feedback — claude
+
+THE THREE SCALAND GAPS THE PREVIOUS NOTE LISTS AS 'none filed' ARE NOW FILED, Open, at the user's word (2026-10-08): WI-20261008-JRV1T (a name qualified relative to its scope does not resolve), WI-20261008-G2BXZ (a host block is loaded only for `language anthill`, in the scope it is written in), WI-20261008-T290W (the parser has no `..name` spelling). None is a part of this ticket's goal, so none is a dependency of it. The port is commit 3fde6df4.
+
