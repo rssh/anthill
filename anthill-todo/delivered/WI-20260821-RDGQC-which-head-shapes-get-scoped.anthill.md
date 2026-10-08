@@ -3,9 +3,9 @@
 - id: WI-20260821-RDGQC-which-head-shapes-get-scoped
 - created: 2026-08-21T10:29:37Z
 
-- status: Claimed
-- status_agent: user
-- status_at: 2026-09-17T09:42:30Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-08T10:08:13Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -369,4 +369,37 @@ TWICE WRONG ON THIS ITEM, both times from a measurement I did not check: first t
 population ("bracketed", when the bracketless form has the identical defect), then the
 scope. Recorded because the pattern is the reusable part — I was reading greps for absence,
 and an absence needs a positive control before it means anything.
+
+### 2026-10-08T09:46:09Z — feedback — claude
+
+THE SCALAND HALF, MEASURED AND PORTED (2026-10-08). The earlier notes left `scaland-sbt-test` not run (no sbt on that machine) and said scaland had the same divergence. It did.
+
+MEASURED IN SCALAND BEFORE THE CHANGE, each beside its `rule` spelling:
+  two namespaces, `fact pick(1)` / `fact pick(2)`, each read by its own rule   2 and 2, neither name resolves   (rule spelling: 1 and 1)
+  `fact pick` in a namespace and in a sort nested in it                        loads, one shared predicate      (rule spelling: refused, 845G7)
+  one predicate's facts in two files of one namespace                           loads, 2 answers                 (rule spelling: refused, 061)
+  `import X.{freshp}` of a name only a fact head introduces                    unresolved import                (rustland: loads, 2 answers)
+  heads in two namespaces' `provides Rec language anthill` blocks              the FALSE namespace answers 1; the fact reader 2 and 2
+
+WHAT CHANGED, all in scaland's Loader:
+ A. `NoIntroduction` — the five reasons as one enum; `ruleIntroducedFunctor` returns Either; the second walk `bodylessDeclaresNothingDetail` is deleted together with its 'the loader's two readings disagree — please report this' sentence. `RuleReading.Declaration` carries the name and `DeclaresNothing` the reason, which removed an AssertionError arm and a `getOrElse("")`.
+ B. A fact head is a head site, asked the same shape questions as a rule's subject (`introducedName`), so it reaches the same three refusals.
+ C. `RuleHeadCollectPass.atItem` names every Item kind (a non-exhaustive match is a compile error in this build); the fact sat under its `case _`.
+ D. Heads in a `language anthill` block are collected at the scope scaland asserts the block's clauses in — the scope the block is written in — behind one predicate both readers ask.
+
+ONLY TWO ROWS OF THE SCALAND SUITE ASSERTED THE OLD BEHAVIOUR (rustland had 36): LoaderTest's WI-1007 control found its fact by `kb.intern("marker")`, and RuleHeadDeclarationTest's §6.1 row asserted `None` with 'a separate ticket, not this one'. Both now assert the name.
+
+`HeadIntroductionCensusTest` — 13 rows. BACK-OUTS, each applied and run: the fact arm fells 5 rows there and 7 of 613 over the suite; the block arm 1; the block's gate 1 (the same row, its `language rust` half); the bare-name arm 2; the dot refusal 3; two reasons sharing a sentence 1. Three rows pass under every back-out by design and say so at their site.
+
+SAME ANSWER AS RUSTLAND, measured through `anthill query` on the same programs: the pair, the nested refusal, the two-file refusal (also at the top level), a fact beside a rule of one name (one predicate, 2 clauses), an imported head, a wildcard import (refused), a fact of an entity declared at the top level (lands on the entity), a fact named like a rule label.
+
+ACCEPTANCE: cargo-test — full rustland/scripts/test.sh, 36 binaries, 8795 passed, 0 failed (no rustland file is touched). scaland-sbt-test — `sbt -batch testFull`, 613 + 35 + 1 passed, 0 failed.
+
+/code-review high on the diff: nine findings. Fixed: the block helper returned a scope but not the qualified-name prefix the mint needs (now a shared yes/no gate); no row drove the import-capture refusal with fact heads; the gate's back-out had not been run; two stale docs. Left: the refusals say 'rule head' for a fact head (rustland prints the same sentence); one ladder lookup per fact where one per (file, scope, name) would do (rustland does the same); a hand-written `fact entity_of(…)` no longer joins the loader's bare-interned functor (the rule spelling never did).
+
+FOUND IN SCALAND AND NOT CHANGED, each pre-existing and none filed:
+ 1. A host block is loaded only for `language anthill`, in the scope it is written in; rustland loads every language's block in the scope of the sort it realizes (TTHRK, APXSS). Two blocks for two sorts in one namespace therefore share one predicate here.
+ 2. A head qualified RELATIVE to its scope does not land: `namespace n { sort Rec { rule p(1) :- true  rule see(?x) :- p(?x) }  fact Rec.p(2) }` loads clean and `n.Rec.see` answers 1; rustland answers 2. The `rule Rec.p(2) :- true` spelling does the same, and the fully qualified `fact n.Rec.p(2)` answers 2.
+ 3. The parser has no `..name` spelling, so the census drives the qualified reason with `nosuch.xyz`.
+The multi-head shape stays NE0E4's in both implementations; the scaland census pins it at 2 and 2.
 

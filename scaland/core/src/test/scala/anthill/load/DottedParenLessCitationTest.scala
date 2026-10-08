@@ -82,8 +82,8 @@ class DottedParenLessCitationTest extends munit.FunSuite:
       )
   }
 
-  /** THE FACT HEAD — §6.1 makes a fact head unscoped (it introduces no name), but a
-    * DOTTED head REFERENCES, and the reference was landing under `field_access`. */
+  /** THE FACT HEAD — a DOTTED head REFERENCES, in a fact as in a rule, and the reference
+    * was landing under `field_access`. */
   test("a dotted paren-less fact head asserts on the name") {
     for (label, tag, mark) <- Seq(("bare", "719FtBare", ""), ("parens", "719FtParen", "()")) do
       val kb = LoadFixture.loaded(

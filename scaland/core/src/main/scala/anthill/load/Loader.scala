@@ -387,14 +387,18 @@ object Loader:
 
     /** Every item that does not open a scope, with the scope and prefix enclosing it.
       *
-      * WI-1007: [[LoadPass]]'s implementation is EXHAUSTIVE and the other three end in a
+      * WI-1007: [[LoadPass]]'s implementation is EXHAUSTIVE and three others end in a
       * catch-all, which is a decision and not drift. `LoadPass` is the pass whose job is
       * "everything that reaches the KB reaches it here", so an `Item` kind it does not
       * name is data loss — that is how `ConstraintItem` was found being dropped in
-      * silence. The other three are narrow scans (`DefinePass` defines names,
-      * `ImportPass` handles imports, `DeclarePredicatePass` and `RuleHeadCollectPass`
-      * handle 2 of 23 kinds each), where a
-      * catch-all says "not my job" honestly and enumerating would be 18 arms of noise. */
+      * silence. `DefinePass` (defines names), `ImportPass` (handles imports) and
+      * `DeclarePredicatePass` (2 of 23 kinds) are narrow scans, where a catch-all says
+      * "not my job" honestly and enumerating would be 18 arms of noise.
+      *
+      * [[RuleHeadCollectPass]] IS EXHAUSTIVE TOO (WI-20260821-RDGQC), for `LoadPass`'s
+      * reason: it must see every item that lands a clause head, and one it does not see
+      * loses its name without a word — a `fact` sat under its catch-all, and its head
+      * took the bare intern. */
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit
 
   /** Walk a whole file for one pass, from the scope its top-level declarations land in.
@@ -667,58 +671,54 @@ object Loader:
       * changes it from a silent remapping to that method's loud
       * "was never brought into existence". */
     private def declare(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
-      if ruleReading(rule, fileSym, fileTerms) == RuleReading.Declaration then
-        // A `Declaration` reading is reached only through the `Some((_, Goal))` arm of
-        // that very call, so a `None` here would mean the two disagree — which is the
-        // defect this pairing exists to make impossible. Raised rather than skipped.
-        ruleIntroducedFunctor(rule, fileSym, fileTerms) match
-          case Some((name, kind)) =>
-            // A DECLARATION MAY NOT SHADOW A NAME THE LADDER REACHES AS SOMETHING A RULE
-            // CANNOT DECLARE. [[refuseDeclarationThatCannotStand]] makes exactly this
-            // refusal from the scope's OWN locals — `operation has(x) -> Bool` beside
-            // `rule has(?x)` — and says at its site that the ladder is the wrong
-            // instrument for it, which is right for a name of a DECLARABLE kind and
-            // wrong for one of any other. Asked there it also cannot fire: pass 1b's
-            // mint is in `locals` by then, so the lookup finds the fresh `Goal` and the
-            // construct it displaced is already invisible. So it is asked HERE, before
-            // the mint, and only about the kinds that were never a rule's to declare.
-            //
-            // MEASURED WITHOUT IT: `namespace hp { rule ite(?a, ?b, ?c) }` minted a
-            // local `Goal` that shadowed the prelude's OPERATION for the whole scope —
-            // `resolveRecursive` reads `locals` before `imports` and before any parent —
-            // and nothing said so. `headNameCollisions` could not: the head DENOTES once
-            // minted, so it filters out.
-            //
-            // A DECLARABLE KIND IS LEFT ALONE, and that is 061's rule rather than a
-            // concession: a sort body may declare a predicate its namespace also
-            // declares, and the two are separate predicates BECAUSE BOTH ARE WRITTEN
-            // (`845G7 channel 1`'s `body5` arm drives it). Refusing on the ladder
-            // outright collapsed that pair into one predicate — measured, that arm reds.
-            // AN AMBIGUOUS ANSWER IS LEFT TO ITS OWN DIAGNOSTIC. This refusal is about
-            // one name a rule may not take over; a contested set is a different defect
-            // and reporting it here would name only whichever candidate came first.
-            // THE HEAD'S OWN LADDER (WI-20260821-HSG31): a `<global>` name is not what a
-            // declaration inside a namespace shadows, any more than it is what a bodied
-            // head there joins — refusing it here and minting it there made the two
-            // spellings of one predicate disagree.
-            val shadowed = ruleHeadLadderAnswer(kb, name, scope) match
-              case ResolveResult.Found(sym) => kb.symbols.get(sym) match
-                case SymbolDef.Resolved(_, _, k, _) if !DeclarableByARule.contains(k) => Some(k)
-                case _ => None
+      ruleReading(rule, fileSym, fileTerms) match
+        // The reading CARRIES the name it declares, so this mint and the load's refusal
+        // to assert cannot be about two different names.
+        case RuleReading.Declaration(name) =>
+          // A DECLARATION MAY NOT SHADOW A NAME THE LADDER REACHES AS SOMETHING A RULE
+          // CANNOT DECLARE. [[refuseDeclarationThatCannotStand]] makes exactly this
+          // refusal from the scope's OWN locals — `operation has(x) -> Bool` beside
+          // `rule has(?x)` — and says at its site that the ladder is the wrong
+          // instrument for it, which is right for a name of a DECLARABLE kind and
+          // wrong for one of any other. Asked there it also cannot fire: pass 1b's
+          // mint is in `locals` by then, so the lookup finds the fresh `Goal` and the
+          // construct it displaced is already invisible. So it is asked HERE, before
+          // the mint, and only about the kinds that were never a rule's to declare.
+          //
+          // MEASURED WITHOUT IT: `namespace hp { rule ite(?a, ?b, ?c) }` minted a
+          // local `Goal` that shadowed the prelude's OPERATION for the whole scope —
+          // `resolveRecursive` reads `locals` before `imports` and before any parent —
+          // and nothing said so. `headNameCollisions` could not: the head DENOTES once
+          // minted, so it filters out.
+          //
+          // A DECLARABLE KIND IS LEFT ALONE, and that is 061's rule rather than a
+          // concession: a sort body may declare a predicate its namespace also
+          // declares, and the two are separate predicates BECAUSE BOTH ARE WRITTEN
+          // (`845G7 channel 1`'s `body5` arm drives it). Refusing on the ladder
+          // outright collapsed that pair into one predicate — measured, that arm reds.
+          // AN AMBIGUOUS ANSWER IS LEFT TO ITS OWN DIAGNOSTIC. This refusal is about
+          // one name a rule may not take over; a contested set is a different defect
+          // and reporting it here would name only whichever candidate came first.
+          // THE HEAD'S OWN LADDER (WI-20260821-HSG31): a `<global>` name is not what a
+          // declaration inside a namespace shadows, any more than it is what a bodied
+          // head there joins — refusing it here and minting it there made the two
+          // spellings of one predicate disagree.
+          val shadowed = ruleHeadLadderAnswer(kb, name, scope) match
+            case ResolveResult.Found(sym) => kb.symbols.get(sym) match
+              case SymbolDef.Resolved(_, _, k, _) if !DeclarableByARule.contains(k) => Some(k)
               case _ => None
-            shadowed match
-              case Some(k) =>
-                errors += LoadError.Other(
-                  s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
-                    s"names something this scope reaches (kind: $k), which a rule cannot " +
-                    "declare — the declaration would shadow it for the whole scope. " +
-                    "Rename the predicate, or drop the line if the head meant to cite it",
-                  rule.span)
-              case None =>
-                defineSymbolOnce(kb, name, makeQualified(prefix, name), kind, scope)
-          case None =>
-            throw AssertionError(
-              "internal: a Declaration reading must name the predicate it declares")
+            case _ => None
+          shadowed match
+            case Some(k) =>
+              errors += LoadError.Other(
+                s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
+                  s"names something this scope reaches (kind: $k), which a rule cannot " +
+                  "declare — the declaration would shadow it for the whole scope. " +
+                  "Rename the predicate, or drop the line if the head meant to cite it",
+                rule.span)
+            case None =>
+              defineSymbolOnce(kb, name, makeQualified(prefix, name), SymbolKind.Goal, scope)
+        case RuleReading.Clause | RuleReading.DeclaresNothing(_) =>
 
   /** Define an ABSTRACT sort in `scope` and, when `isParam` and the scope is a
     * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
@@ -942,14 +942,16 @@ object Loader:
     * `fileIdx` indexes `scanDefinitions`' own `files`/`fileIds` — the file this head is
     * WRITTEN in, so the decision can be taken on that file's behalf (imports are
     * file-local, WI-995) and the 061 file rule can count files. `span` is the RULE's own
-    * span, which carries the file name a refusal prints. */
+    * span — or the FACT's, a fact head being a site like any other — which carries the
+    * file name a refusal prints. */
   private case class RuleHeadSite[S](
     fileIdx: Int, scope: S, prefix: String, name: String, kind: SymbolKind, span: Span
   )
 
-  /** Sub-pass 3, PHASE 1 — read each rule head's introduced name and remember WHERE it
-    * is written. Takes no decision and mints nothing, so nothing it does depends on the
-    * order it runs in; [[scanRuleGoal]] is the mint.
+  /** Sub-pass 3, PHASE 1 — read the name each clause head introduces and remember WHERE
+    * it is written: a rule's head, a fact's, and those inside a `provides … language
+    * anthill` block. Takes no decision and mints nothing, so nothing it does depends on
+    * the order it runs in; [[scanRuleGoal]] is the mint.
     *
     * WI-894/896/898 is what the mint is FOR. `ite` is the motivating case —
     * `bool.anthill` declares no `ite` operation; its two `@[simp]` equations ARE its
@@ -974,11 +976,57 @@ object Loader:
       item match
         case Item.RuleItem(rule) => collect(rule, scope, prefix)
         case Item.RuleBlockItem(block) => for rule <- block.entries do collect(rule, scope, prefix)
-        case _ =>
+        // WI-20260821-RDGQC — A FACT HEAD INTRODUCES ITS NAME WHERE IT IS WRITTEN, as the
+        // `rule H :- true` spelling of the same clause does (§6.1: they are one clause).
+        // MEASURED before this arm: `namespace a { fact p(1)  rule see(?x) :- p(?x) }`
+        // beside the same in `b` with `p(2)` gave 2 answers in EACH namespace and
+        // neither `a.p` nor `b.p` resolved — one uncitable global held both clauses —
+        // while the `rule` spelling gave 1 each, its own. Mirrors rustland's
+        // `RuleHeadCollectPass::collect_fact`.
+        case Item.FactItem(fact) => collectFact(fact, scope, prefix)
+        // A block's heads are collected exactly when [[loadProvidesBlock]] asserts its
+        // clauses ([[loadsProvidesBlockClauses]] answers for both), and at the scope
+        // that method asserts them in: the one the block is written in.
+        case Item.ProvidesBlockItem(pb) =>
+          if loadsProvidesBlockClauses(fileSym, pb) then for inner <- pb.items do
+            inner match
+              case ProvidesItem.RuleI(rule) => collect(rule, scope, prefix)
+              case ProvidesItem.RuleBlockI(block) =>
+                for rule <- block.entries do collect(rule, scope, prefix)
+              case ProvidesItem.FactI(fact) => collectFact(fact, scope, prefix)
+              // No clause of a predicate: a verdict, a provision, and the realization
+              // bindings themselves.
+              case ProvidesItem.ProofI(_) | ProvidesItem.ProvidesClauseI(_)
+                 | ProvidesItem.ArtifactI(_) | ProvidesItem.CarrierI(_)
+                 | ProvidesItem.NamespaceMapI(_) | ProvidesItem.OperationMapI(_)
+                 | ProvidesItem.ConstMapI(_) =>
+
+        // ENUMERATED, not swept up by `case _`: which head shapes introduce a name is
+        // this pass's whole question, and a shape that falls through does so silently —
+        // its head takes the bare intern, one global name every scope shares. A new
+        // `Item` kind must fail to compile here (E029 is an error in this build) and be
+        // classified. None of these writes a clause head: a `constraint` has no head,
+        // and the rest declare, import, or record a verdict or a provision.
+        case Item.AbstractSortItem(_) | Item.EntityItem(_) | Item.OperationItem(_)
+           | Item.OperationBlockItem(_) | Item.ConstItem(_) | Item.ConstraintItem(_)
+           | Item.RequiresDeclItem(_) | Item.ImportItem(_) | Item.ProofItem(_)
+           | Item.ProvidesClauseItem(_) | Item.DescribeItem(_) | Item.ProjectItem(_)
+           | Item.ToolItem(_) | Item.WorkItemItem(_) | Item.FeedbackItem(_)
+           | Item.ImportToolsItem(_) =>
+        // Never reach `atItem`: [[walkScopes]] descends into the two scope openers.
+        case Item.NamespaceItem(_) | Item.SortWithBodyItem(_) =>
 
     private def collect(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
       for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
         sites += RuleHeadSite(fileIdx, scope, prefix, name, kind, rule.span)
+
+    /** A fact is the one-head PREDICATE rule, so it is asked [[introducedName]]'s
+      * questions and nothing else: there is no equation reading to make (a `<=>` head is
+      * the desugar's node, which introduces nothing), and a QUALIFIED fact head
+      * references — `fact Rec.p(2)` lands its clause on `Rec.p`. */
+    private def collectFact(fact: Fact, scope: kb.ScopeId, prefix: String): Unit =
+      for name <- introducedName(fileSym, fileTerms, fact.term) do
+        sites += RuleHeadSite(fileIdx, scope, prefix, name, SymbolKind.Goal, fact.span)
 
   /** Sub-pass 3, PHASE 3 — the MINT, and no longer the DECISION.
     *
@@ -1434,8 +1482,11 @@ object Loader:
       *
       * A SECOND DECLARATION OF ONE PREDICATE AT ONE SCOPE IS IDEMPOTENT, and admitted:
       * a predicate declaration carries no signature, no arity claim and no clause, so
-      * two of them name the same symbol and lose nothing. */
-    case Declaration
+      * two of them name the same symbol and lose nothing.
+      *
+      * `name` is the predicate it declares — carried, so pass 1b's mint and the load's
+      * refusals read the one answer instead of walking the head again. */
+    case Declaration(name: String)
     /** Anything with a body — and the shapes 061 leaves alone, which are the
       * equality-family connective heads: `<=>` DEFINES (its clauses index under the
       * connective, so its subject owns none and there is no predicate to declare —
@@ -1448,8 +1499,9 @@ object Loader:
       * whose functor introduces no name at all — a QUALIFIED head, which references
       * rather than introduces, or a desugared one (`?x.m(?y)` carries the converter's
       * `dot_apply`). Under 061 such a rule asserts nothing and declares nothing, so it
-      * is refused rather than dropped in silence. */
-    case DeclaresNothing
+      * is refused rather than dropped in silence — with `why`, the one reason both the
+      * verdict and the author's sentence read. */
+    case DeclaresNothing(why: NoIntroduction)
 
   /** [[RuleReading]] for one rule — the single decider, asked by pass 1's mint
     * ([[DeclarePredicatePass]]) and by [[loadRuleHeads]]. Both must give the same answer:
@@ -1467,14 +1519,14 @@ object Loader:
         case RuleHead.Bottom      => false)
     then RuleReading.Clause
     else ruleIntroducedFunctor(rule, fileSym, fileTerms) match
-      case Some((_, SymbolKind.Goal)) => RuleReading.Declaration
+      case Right((name, SymbolKind.Goal)) => RuleReading.Declaration(name)
       // An EQUATION reaches here only through a head this function already sent to
       // `Clause`; the arm is stated rather than fused so a future head shape cannot
       // acquire a declaration reading by accident. `SymbolKind.EquationFunctor` is the
       // introduction kind [[ruleIntroducedFunctor]] stamps for it — WI-898's split, and
       // this is its first reader in scaland.
-      case Some((_, _)) => RuleReading.Clause
-      case None         => RuleReading.DeclaresNothing
+      case Right(_)  => RuleReading.Clause
+      case Left(why) => RuleReading.DeclaresNothing(why)
 
   /** The kinds a body-less rule's own mint can produce, and therefore the ones a
     * DECLARATION may find already sitting at its scope without having declared nothing:
@@ -1484,51 +1536,6 @@ object Loader:
     * construct's declaration that pass 1's `define` merged into. */
   private val DeclarableByARule: Set[SymbolKind] =
     Set(SymbolKind.Goal, SymbolKind.EquationFunctor, SymbolKind.Rule)
-
-  /** WHY a [[RuleReading.DeclaresNothing]] rule declares nothing, in the author's terms.
-    * Asks the SAME shape questions [[ruleIntroducedFunctor]] asks, in its order, so the
-    * message and the verdict cannot describe different rules. Mirrors rustland's
-    * `bodyless_declares_nothing_detail`. */
-  private def bodylessDeclaresNothingDetail(
-    rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
-  ): String =
-    val prefix = "a body-less rule DECLARES its predicate (proposal 061, §5.3), but this " +
-      "one declares nothing: "
-    if rule.heads.length != 1 then
-      return prefix + s"it writes ${rule.heads.length} heads at once, and a declaration " +
-        "declares ONE predicate"
-    val tid = rule.heads.head match
-      case RuleHead.TermHead(t) => t
-      case RuleHead.Bottom =>
-        return prefix + "a `⊥` denial names no predicate, so there is nothing for it to declare"
-    // A DOTTED PAREN-LESS HEAD IS MINTED AND STILL NAMES SOMETHING (WI-20260901-719FJ),
-    // so it is asked ahead of the desugaring sentence — the same order
-    // [[ruleIntroducedFunctor]] takes, because the two walks must describe one rule.
-    val chain = dottedCitationName(fileSym, fileTerms, tid)
-    if chain.isEmpty && fileTerms.isMinted(tid) then
-      return prefix + "its head functor is the DESUGARING's (`?x.m(?y)` carries " +
-        "`dot_apply`, `?a + ?b` carries `add`), not a name the rule introduces"
-    // A BARE NAME DOES NOT REACH THE FALLTHROUGH (WI-20260821-P85Z7):
-    // [[ruleIntroducedFunctor]] reads a `Term.Ident` head as an application of arity 0,
-    // so it carries a name and the qualified test below must run for it — this walk has
-    // to agree or the two describe different rules. What still reaches the fallthrough
-    // is a bare VARIABLE head (`rule ?x`).
-    val name = chain.orElse(fileTerms.get(tid) match
-      case fn: Term.Fn    => Some(fileSym.name(fn.functor))
-      case id: Term.Ident => Some(fileSym.name(id.sym))
-      case _              => None)
-    name match
-      case None =>
-        prefix + "its head is not a functor application, so it names no predicate"
-      case Some(n) if n.contains('.') =>
-        prefix + s"`$n` is a QUALIFIED name, and a qualified name references an " +
-          "existing predicate — it never introduces one"
-      case Some(n) =>
-        // Every shape [[ruleIntroducedFunctor]] refuses has been named above, so
-        // reaching here means the two walks have diverged. Said rather than left as a
-        // plausible-looking sentence — and NOT thrown: this is a DIAGNOSTIC path, and
-        // aborting while rendering an error would replace a message with a crash.
-        prefix + s"the loader's two readings of `$n` disagree — please report this"
 
   /** Proposal 061 — the two ways a DECLARATION can be written and still stand for
     * nothing, refused rather than dropped in silence. Mirrors rustland's
@@ -1542,12 +1549,12 @@ object Loader:
   private def refuseDeclarationThatCannotStand(
     kb: KnowledgeBase,
     rule: Rule,
+    name: String,
     fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
-    val name = ruleIntroducedFunctor(rule, fileSym, fileTerms).map(_._1).getOrElse("")
     // A declaration stores no clause, so there is nothing for a citation handle or a
     // `@[…]` tag to attach to. Refused rather than dropped: a label on a declaration
     // defines a `Rule` symbol that `using` then finds nothing under, and both carriers
@@ -1575,8 +1582,8 @@ object Loader:
         kb.symbols.scope(scope).flatMap(_.locals.get(name)) match
           // NOTHING WAS MINTED HERE. One shape reaches this: the interior of a
           // `provides … language … end` block, which [[walkScopes]] hands to `atItem`
-          // and no scan pass descends into — so the declaration would introduce nothing
-          // AND assert nothing.
+          // and pass 1b does not descend into — so the declaration would introduce
+          // nothing AND assert nothing.
           case None =>
             errors += LoadError.Other(
               s"`$name` was never brought into existence: the defining pass does not " +
@@ -1637,79 +1644,114 @@ object Loader:
         }
       case _ => false
 
-  /** The functor a rule introduces, and which kind of introduction it is — or `None`
-    * when the rule introduces nothing. Mirrors rustland's
-    * `rule_introduced_functor_name`, including its three refusals:
+  /** WI-20260821-RDGQC — THE ENUMERATION: every reason a head introduces no name of its
+    * own, stated ONCE so that the VERDICT and the author's SENTENCE cannot describe
+    * different rules. Mirrors rustland's `load::NoIntroduction`.
     *
-    *  - a MULTI-head rule, or a denial head, introduces nothing;
-    *  - a MINTED subject introduces nothing (WI-618) — the desugar's functor is the
-    *    desugar's name, not the rule's, so `rule ?x.m(?y) :- p(?x)` must not mint
-    *    `dot_apply` and shadow reserved kernel vocab for the whole scope;
-    *  - a QUALIFIED (dotted) head REFERENCES an existing symbol and never introduces
-    *    one — otherwise `rule String.isEmpty(?s) <=> true` defines a symbol whose
-    *    SHORT name is literally `String.isEmpty`.
+    * The verdict was a bare `None` from [[ruleIntroducedFunctor]], and the sentence came
+    * from a SECOND walk that re-asked the same shape questions in the same order and
+    * ended in "the loader's two readings disagree — please report this" for the case
+    * where they had stopped agreeing. The reason now IS the refusal, and [[detail]] is a
+    * `match` on it with no shape question of its own.
     *
-    * A BARE NAME IS AN APPLICATION OF ARITY 0 on the PREDICATE path (P85Z7): `rule
-    * holds :- base(1)` introduces `holds`, scoped where it is written, exactly as
-    * `rule holds()` does. On the EQUATION path it introduces nothing, deliberately —
-    * a `@[simp]` head is an application, so a bare subject matches no redex.
+    * A FACT head needs no variant: it is the one-head predicate rule (§6.1) and gets
+    * these answers through [[introducedName]]. A MULTI-head rule's leak is not one
+    * either — [[SeveralHeads]] says only that the rule names no single predicate, while
+    * each of its heads still lands a clause under a functor no scope owns
+    * (WI-20260908-NE0E4). */
+  private enum NoIntroduction:
+    /** SEVERAL HEADS name no single predicate. Carries the count the sentence quotes. */
+    case SeveralHeads(count: Int)
+    /** A `⊥` denial, which names no predicate. */
+    case DenialHead
+    /** The subject carries the DESUGAR's functor, not the rule's (WI-618): `?x.m(?y)`
+      * is `dot_apply`, `?a + ?b` is `add`. Minting it would shadow reserved kernel
+      * vocabulary for the whole scope. */
+    case DesugaredSubject
+    /** The subject is neither an application nor a bare name — a bare VARIABLE head
+      * (`rule ?x`) is the shape that reaches this; a bare LITERAL is refused earlier
+      * with its own sentence. */
+    case NotAnApplication
+    /** A QUALIFIED spelling REFERENCES an existing predicate and never introduces one —
+      * a rule about the SPELLING, so a dotted head that resolves to nothing still
+      * introduces nothing. Otherwise `rule String.isEmpty(?s) <=> true` defines a symbol
+      * whose SHORT name is literally `String.isEmpty`. */
+    case QualifiedSpelling(name: String)
+
+    /** WHY this head introduces nothing, in the author's terms. */
+    def detail: String = this match
+      case SeveralHeads(count) =>
+        s"it writes $count heads at once, and a declaration declares ONE predicate"
+      case DenialHead =>
+        "a `⊥` denial names no predicate, so there is nothing for it to declare"
+      case DesugaredSubject =>
+        "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, " +
+          "`?a + ?b` carries `add`), not a name the rule introduces"
+      case NotAnApplication =>
+        "its head is not a functor application, so it names no predicate"
+      case QualifiedSpelling(name) =>
+        s"`$name` is a QUALIFIED name, and a qualified name references an existing " +
+          "predicate — it never introduces one"
+
+  /** The name the SUBJECT node `subject` introduces — the shape questions, asked in one
+    * order of a rule's subject and of a fact's head alike.
     *
-    * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) =
+    * A DOTTED PAREN-LESS subject is asked ahead of the minted test (WI-20260901-719FJ):
+    * the parser folds `ns.tgt` into a minted `field_access` chain, whose functor really
+    * is the desugar's but which SPELLS A NAME — a qualified one, so it references.
+    *
+    * A BARE NAME IS AN APPLICATION OF ARITY 0 (WI-20260821-P85Z7): the parser gives it a
+    * `Term.Ident`, not a zero-argument `Term.Fn`, and reading only the `Fn` shape made
+    * `rule holds()` scoped where it was written while `rule holds` fell to the bare
+    * intern. On BOTH paths since WI-20260902-CZJ2N — the two spellings are one term, so
+    * a bare `rule tau <=> …` defines exactly as `rule tau() <=> …` does. */
+  private def introducedName(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, subject: TermId
+  ): Either[NoIntroduction, String] =
+    def unqualified(name: String) =
+      if name.contains('.') then Left(NoIntroduction.QualifiedSpelling(name)) else Right(name)
+    dottedCitationName(fileSym, fileTerms, subject) match
+      case Some(chain) => Left(NoIntroduction.QualifiedSpelling(chain))
+      case None if fileTerms.isMinted(subject) => Left(NoIntroduction.DesugaredSubject)
+      case None => fileTerms.get(subject) match
+        case fn: Term.Fn    => unqualified(fileSym.name(fn.functor))
+        case id: Term.Ident => unqualified(fileSym.name(id.sym))
+        case _              => Left(NoIntroduction.NotAnApplication)
+
+  /** The functor a rule introduces and which kind of introduction it is, or the
+    * [[NoIntroduction]] reason it introduces nothing. Mirrors rustland's
+    * `rule_introduced_functor_name`.
+    *
+    * THE HEAD COUNT IS ASKED FIRST: a multi-head rule whose first head is also malformed
+    * is told it writes several heads, not that its first one is unreadable.
+    *
+    * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) <=>
     * ?t`) that is the LHS; for a predicate head it is the head itself. This is the one
-    * place the two part ways, and the answer travels with the name so a second walk
-    * cannot disagree (WI-898). The rule's LABEL is deliberately never read. */
+    * place the two part ways, and the kind travels with the name so a second walk cannot
+    * disagree (WI-898). The rule's LABEL is deliberately never read. */
   private def ruleIntroducedFunctor(
     rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
-  ): Option[(String, SymbolKind)] =
-    if rule.heads.length != 1 then return None
-    val headId = rule.heads.head match
-      case RuleHead.TermHead(t) => t
-      case RuleHead.Bottom => return None
-    // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
-    // ordinary predicate whose head happens to be an equality goal).
-    //
-    // §8.3 — an equation is BODYLESS, which is a property of the RULE, so the question
-    // goes through the ONE owner of it ([[ruleBodyIsEmptyConjunction]]) rather than off
-    // `body.isDefined` directly: since 061 `rule f(?x) <=> ?x :- true` is the explicit
-    // spelling of the same empty body, and it must read as the equation it is HERE and
-    // at [[loadRuleHeads]] alike.
-    val equationLhs =
-      if ruleBodyIsEmptyConjunction(rule, fileTerms) then parseEquationLhs(fileSym, fileTerms, headId)
-      else None
-    val (subject, kind) = equationLhs match
-      case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
-      case None      => (headId, SymbolKind.Goal)
-    if fileTerms.isMinted(subject) then return None
-    fileTerms.get(subject) match
-      case fn: Term.Fn =>
-        val name = fileSym.name(fn.functor)
-        if name.contains('.') then None else Some((name, kind))
-      // A PAREN-LESS NULLARY PREDICATE HEAD is an application of arity 0 (rustland
-      // WI-20260821-P85Z7). The parser gives a bare name a `Term.Ident`, not a
-      // zero-argument `Term.Fn`, so reading only the `Fn` shape made the two spellings
-      // of one nullary predicate opposite programs: `rule holds()` scoped where it was
-      // written, `rule holds` introduced NOTHING ANYWHERE and fell to the bare intern —
-      // one global name two scopes' same-spelled heads then share, WI-894's defect
-      // class.
-      //
-      // WI-20260902-CZJ2N — THE EQUATION PATH MINTS TOO, and the `kind == Goal` guard
-      // that stood here is what it deletes. P85Z7 admitted only the PREDICATE path, on
-      // the reading that a `@[simp]` head is an APPLICATION which a bare name is not — so
-      // `rule tau <=> …` matched no redex and minting `tau` would have stamped it
-      // `EquationFunctor` for a law that can never run. CZJ2N makes the two spellings
-      // ONE TERM, so the bare law DOES define and refusing to mint its subject would be
-      // a new spelling-dependent rule: refusing at arity 0 only, on the equation path
-      // only. `docs/kernel-language.md` §5.3 now says so, and rustland's
-      // `load::head_subject_name` deleted the same guard — the two loaders must agree on
-      // what a rule introduced, which is why `SymbolKind.EquationFunctor` exists here at
-      // all with no reader yet.
-      //
-      // A dotted paren-less head never reaches here — the converter folds a
-      // multi-segment name into a MINTED `field_access` chain, refused above.
-      case id: Term.Ident =>
-        val name = fileSym.name(id.sym)
-        if name.contains('.') then None else Some((name, kind))
-      case _ => None
+  ): Either[NoIntroduction, (String, SymbolKind)] =
+    rule.heads match
+      case IndexedSeq(RuleHead.Bottom) => Left(NoIntroduction.DenialHead)
+      case IndexedSeq(RuleHead.TermHead(headId)) =>
+        // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
+        // ordinary predicate whose head happens to be an equality goal).
+        //
+        // §8.3 — an equation is BODYLESS, which is a property of the RULE, so the
+        // question goes through the ONE owner of it ([[ruleBodyIsEmptyConjunction]])
+        // rather than off `body.isDefined` directly: since 061 `rule f(?x) <=> ?x :-
+        // true` is the explicit spelling of the same empty body, and it must read as the
+        // equation it is HERE and at [[loadRuleHeads]] alike.
+        val equationLhs =
+          if ruleBodyIsEmptyConjunction(rule, fileTerms) then
+            parseEquationLhs(fileSym, fileTerms, headId)
+          else None
+        val (subject, kind) = equationLhs match
+          case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
+          case None      => (headId, SymbolKind.Goal)
+        introducedName(fileSym, fileTerms, subject).map((_, kind))
+      case heads => Left(NoIntroduction.SeveralHeads(heads.length))
 
   /** THE SHAPE: a head the infix desugar wrote with an equality-family connective —
     * its functor spelling and its LHS operand — or `None` when `head` is not one. The
@@ -2370,11 +2412,14 @@ object Loader:
     // clause this pass declines to store cannot disagree.
     ruleReading(rule, fileSym, fileTerms) match
       case RuleReading.Clause => ()
-      case RuleReading.Declaration =>
-        refuseDeclarationThatCannotStand(kb, rule, fileSym, fileTerms, scope, errors)
+      case RuleReading.Declaration(name) =>
+        refuseDeclarationThatCannotStand(kb, rule, name, fileSym, fileTerms, scope, errors)
         return
-      case RuleReading.DeclaresNothing =>
-        errors += LoadError.Other(bodylessDeclaresNothingDetail(rule, fileSym, fileTerms), rule.span)
+      case RuleReading.DeclaresNothing(why) =>
+        errors += LoadError.Other(
+          "a body-less rule DECLARES its predicate (proposal 061, §5.3), but this one " +
+          s"declares nothing: ${why.detail}",
+          rule.span)
         return
 
     // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
@@ -2401,7 +2446,7 @@ object Loader:
       // this denial among the facts.
       //
       // REFUSED, MATCHING THE BODY-LESS SPELLING. `rule ⊥` is already refused
-      // ([[bodylessDeclaresNothingDetail]]), and §6.1 makes `:- true` the SAME empty
+      // ([[NoIntroduction.DenialHead]]), and §6.1 makes `:- true` the SAME empty
       // body — so admitting one spelling and refusing the other is the disagreement
       // this delivery exists to remove. The strip's purpose is `fact H` / `rule H :-
       // true` equivalence for POSITIVE heads; a denial has no `fact` spelling to be
@@ -2474,6 +2519,22 @@ object Loader:
     val provSort = kb.makeNameTerm("Requirement")
     kb.assertFact(provTerm, provSort, scope)
 
+  /** DOES scaland load the rules and facts of this `provides … language … end` block?
+    * ONE answer, read by [[loadProvidesBlock]] and by [[RuleHeadCollectPass]]: a head
+    * minted for a clause that is never asserted is a name that resolves and answers
+    * nothing, and a clause asserted with no head minted falls to the bare intern.
+    *
+    * ONLY A `language anthill` BLOCK, which is scaland's own limit and not the rule:
+    * rustland loads a block's clauses for every language, in the scope of the sort the
+    * block realizes. Here the block opens no scope, so both readers use the scope it is
+    * written in. Opening the carrier's scope is the port that remains (see the
+    * `ProvidesClauseI` arm below), and it moves the scope AND the qualified-name prefix
+    * at both readers. */
+  private def loadsProvidesBlockClauses(
+    fileSym: SymbolTable, pb: anthill.parse.ProvidesBlock
+  ): Boolean =
+    fileSym.name(pb.language) == "anthill"
+
   private def loadProvidesBlock(
     kb: KnowledgeBase,
     pb: anthill.parse.ProvidesBlock,
@@ -2482,7 +2543,7 @@ object Loader:
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
-    if fileSym.name(pb.language) != "anthill" then return
+    if !loadsProvidesBlockClauses(fileSym, pb) then return
     val ruleSort = findSortTerm(kb, "anthill.reflect.Rule")
     val factSort = findSortTerm(kb, "anthill.reflect.Fact")
     for item <- pb.items do item match
