@@ -938,6 +938,15 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
     }
 }
 
+/// The scope a visibility question is asked from: `scope`'s own, or the global scope for
+/// code written at the top level, which no symbol of the frame names.
+pub(super) fn visibility_scope(kb: &KnowledgeBase, scope: Option<Symbol>) -> ScopeId {
+    match scope {
+        Some(s) => kb.symbols.scope_id(s),
+        None => kb.global_scope(),
+    }
+}
+
 /// WI-759 — the `internal` constructor hiding `m`'s field from `scope`, if any (WI-369).
 /// Shared by both directions so they cannot disagree about visibility.
 ///
@@ -971,10 +980,7 @@ pub(super) fn hidden_field_owner(
     m: &ProjectedMember,
     scope: Option<Symbol>,
 ) -> Option<(Symbol, Symbol, ScopeId)> {
-    let from = match scope {
-        Some(s) => kb.symbols.scope_id(s),
-        None => kb.global_scope(),
-    };
+    let from = visibility_scope(kb, scope);
     m.owners
         .iter()
         .find(|(ctor, _)| internal_field_hidden_from(kb, from, *ctor))

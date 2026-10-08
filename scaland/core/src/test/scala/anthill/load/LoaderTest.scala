@@ -582,9 +582,10 @@ class LoaderTest extends munit.FunSuite:
         .allSolutions(kb).length
 
     // CONTROL: the fact in the same file resolves through this very call shape.
-    // `marker` interns UNQUALIFIED — a fact's functor is a predicate name reached by
-    // `resolveName`'s intern rung, not a declaration a scope prefixes.
-    assertEquals(solutionsOf(kb.intern("marker")), 1, "the control fact must resolve")
+    // `marker` is looked up as the declaration it is — a fact head declares its
+    // predicate where it is written (WI-20260821-RDGQC), here at the top level.
+    val markerSym = kb.tryResolveSymbol("marker").getOrElse(fail("`marker` must be defined"))
+    assertEquals(solutionsOf(markerSym), 1, "the control fact must resolve")
 
     // The body would have been `inc`'s only definition.
     assertEquals(solutionsOf(incSym), 0, "no clause: the body was not loaded")

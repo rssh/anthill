@@ -168,6 +168,14 @@ pub struct RequirementRefusal {
     /// the same standing WI-456(b) recorded for its own at-call-goal-tie-under-a-pin shape.
     /// A reader who finds a reaching fixture should turn this paragraph into a driver.
     pub(super) construction_carries_repair: bool,
+    /// [`Self::construction`] NAMES EVERY REPAIR THIS REFUSAL HAS, the unconstrained element's
+    /// included, so [`Self::render`] appends nothing after it. The rule-body account's
+    /// ([`unrescuable_rule_body_refusal`]), and the reason is what the generic tail offers
+    /// there: an explicit type argument, which a rule-body call refuses as its own load
+    /// error, and an enclosing `requires` to align, which a rule has not got. Wider than
+    /// [`Self::construction_carries_repair`], which stands aside for an unconstrained element
+    /// because a tie's advice does not cover one; this account's does.
+    pub(super) account_names_every_repair: bool,
     /// The enclosing scope offers NO ROUTE to this dep — no chain entry covers it, no
     /// sub-chain projection reaches it, construction found nothing, and none of the four
     /// signatures above explains why. The plainest shape was a signature that QUANTIFIES a
@@ -526,7 +534,9 @@ impl RequirementRefusal {
         // carried the tie's repair and the `None` arm appended a contradicting second.
         // GATED ON `unconstrained` BEING EMPTY, which is what keeps it from silencing the
         // case that arm exists for — see [`Self::construction_carries_repair`].
-        if self.construction_carries_repair && self.unconstrained.is_empty() {
+        if self.account_names_every_repair
+            || (self.construction_carries_repair && self.unconstrained.is_empty())
+        {
             return msg;
         }
         msg.push_str(match self.pinned {
@@ -795,6 +805,7 @@ fn explain_dep_refusal(
     // WI-841: this explainer is the σ-signature one; a PIN refusal is built by the
     // caller, which is the only place that knows a pin was in force.
     Some(RequirementRefusal {
+        account_names_every_repair: false,
         no_scope_route: false,
         construction_carries_repair: false,
         dep_text,
@@ -954,6 +965,7 @@ fn build_dispatching_dict_from_chain(
                 // explicit instruction ignored on top.
                 if let Some(w) = pinned_witness {
                     return Err(Box::new(RequirementRefusal {
+                        account_names_every_repair: false,
                         no_scope_route: false,
                         construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, dep),
@@ -1083,12 +1095,15 @@ fn build_dispatching_dict_from_chain(
                             .map(|ctx| unconstrained_elements(kb, dep, ctx))
                             .unwrap_or_default();
                         let dep_text = render_requires_entry(kb, dep);
+                        let holder =
+                            sort_is_a_provided_spec(kb, callee_spec_sort).then_some(callee_spec_sort);
                         return Err(Box::new(unrescuable_rule_body_refusal(
                             kb,
                             dep,
                             dep_text,
                             unconstrained,
                             callee_op,
+                            holder,
                         )));
                     }
                 }
@@ -1149,6 +1164,7 @@ fn build_dispatching_dict_from_chain(
                     };
                     if let Some(unprovided) = unprovided_at_all {
                         *slot = Some(Box::new(RequirementRefusal {
+                            account_names_every_repair: false,
                             no_scope_route: false,
                             construction_carries_repair: false,
                             dep_text: render_requires_entry(kb, dep),
@@ -1161,6 +1177,7 @@ fn build_dispatching_dict_from_chain(
                         }));
                     } else if !unconstrained.is_empty() {
                         *slot = Some(Box::new(RequirementRefusal {
+                            account_names_every_repair: false,
                             no_scope_route: false,
                             construction_carries_repair: false,
                             dep_text: render_requires_entry(kb, dep),
@@ -1192,6 +1209,7 @@ fn build_dispatching_dict_from_chain(
                         if let Some(unprovided) = unprovided_provision(kb, dep) {
                             let construction = describe_resolution_failure(kb, nomatch);
                             *slot = Some(Box::new(RequirementRefusal {
+                                account_names_every_repair: false,
                                 no_scope_route: false,
                                 construction_carries_repair: false,
                                 dep_text: render_requires_entry(kb, dep),
@@ -1269,6 +1287,7 @@ fn build_dispatching_dict_from_chain(
                             None => (construction, true),
                         };
                         *slot = Some(Box::new(RequirementRefusal {
+                            account_names_every_repair: false,
                             no_scope_route,
                             construction_carries_repair: !no_scope_route,
                             dep_text: render_requires_entry(kb, dep),
@@ -1884,6 +1903,7 @@ pub(super) fn build_op_scoped_dicts(
                     supply: entry.supply,
                 };
                 return Err(Box::new(RequirementRefusal {
+                    account_names_every_repair: false,
                     no_scope_route: false,
                     construction_carries_repair: false,
                     dep_text: render_requires_entry(kb, &shown),
@@ -1991,6 +2011,7 @@ pub(super) fn build_op_scoped_dicts(
                 if !param_arg_types.contains_key(&param) {
                     kb.unsuppliable_requirements.truncate(parked_mark);
                     return Err(Box::new(RequirementRefusal {
+                        account_names_every_repair: false,
                         no_scope_route: false,
                         construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, &dep),
@@ -2027,6 +2048,7 @@ pub(super) fn build_op_scoped_dicts(
                         )
                         .map_err(|e| {
                             Box::new(RequirementRefusal {
+                                account_names_every_repair: false,
                                 no_scope_route: false,
                                 construction_carries_repair: false,
                                 dep_text: render_requires_entry(kb, &dep),
@@ -2113,6 +2135,7 @@ pub(super) fn build_op_scoped_dicts(
                 // it is not silent any more, but neither is it decided here.
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 return Err(Box::new(RequirementRefusal {
+                    account_names_every_repair: false,
                     no_scope_route: false,
                     // WI-456 — the account below carries the TIE'S OWN repair, so the
                     // generic tail must not append a second one contradicting it. This is
@@ -2214,6 +2237,7 @@ pub(super) fn build_op_scoped_dicts(
                     dep_text,
                     Vec::new(),
                     callee_op,
+                    None,
                 )));
             }
             if let Some(site) = park.filter(|s| s.enclosing_op.is_some()) {
@@ -2232,6 +2256,7 @@ pub(super) fn build_op_scoped_dicts(
                 };
                 let refusal = match unprovided {
                     Some((unprovided, construction)) => Some(RequirementRefusal {
+                        account_names_every_repair: false,
                         no_scope_route: false,
                         construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, &dep),
@@ -2252,6 +2277,7 @@ pub(super) fn build_op_scoped_dicts(
                             Some(ResolutionResult::NoMatch { .. }) => {
                                 no_provision_agrees_with_pins(kb, &dep).map(|construction| {
                                     RequirementRefusal {
+                                        account_names_every_repair: false,
                                         no_scope_route: false,
                                         construction_carries_repair: true,
                                         dep_text: render_requires_entry(kb, &dep),
@@ -2274,6 +2300,7 @@ pub(super) fn build_op_scoped_dicts(
                             site.enclosing_op.and_then(|enclosing_op| {
                                 caller_rigid_carrier(kb, &dep, &disambig, enclosing_op).map(|c| {
                                     RequirementRefusal {
+                                        account_names_every_repair: false,
                                         // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
                                         // still names the CALLEE's formal (`tyOf.B`), and an author
                                         // told to declare `requires TT[T = tyOf.B]` would be copying
@@ -2313,6 +2340,7 @@ pub(super) fn build_op_scoped_dicts(
                             Some(r) => Some(r),
                             None => former_carrier(kb, &dep, callee_op).map(|former| {
                                 RequirementRefusal {
+                                    account_names_every_repair: false,
                                     no_scope_route: false,
                                     // THE ACCOUNT CARRIES ITS OWN REPAIR — there is no
                                     // `provides` to suggest, so the generic "declare it on
@@ -2407,6 +2435,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
         callee_sort: fn_sym,
         usage: RequirementUse::Call,
         refusal: Box::new(RequirementRefusal {
+            account_names_every_repair: false,
             no_scope_route: false,
             construction_carries_repair: false,
             dep_text: format!("{spec_qn}[{carrier_short} = {carrier_text}]"),
@@ -2505,14 +2534,34 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
 /// only in which read predicate gates them (per-sort vs per-slot); the verdict and its
 /// wording are one thing, and a copy would let the two drift the way WI-456(b) records for
 /// the tie repairs.
+///
+/// `holder`: the spec whose `require[…]` bracket would hold this dep, where there is one to
+/// name — the callee's own sort, on the sort half, when it is a spec some sort provides. A
+/// bracket holds what its spec REQUIRES ([`scope_contract_covers_dep`] walks the declared
+/// spec's direct chain), so a bracket of the dep's own spec holds nothing here. The advice
+/// named that one until WI-20260925-P7VP4 ran it — MEASURED: `require[Iterable[C = List[T =
+/// String]]], size(?ls, ?n)` is refused with this same message where
+/// `require[FiniteCollection[C = List[T = String]]]` loads, and `require[WeakOrd[T]]` beside
+/// `?c = Util.sign(?a, ?b)` is refused the same way. An operation-level clause, and a
+/// sort-level one whose sort nothing provides, have no bracket to name and get none.
 fn unrescuable_rule_body_refusal(
     kb: &KnowledgeBase,
     dep: &RequiresEntry,
     dep_text: String,
     unconstrained: Vec<String>,
     callee_op: Symbol,
+    holder: Option<Symbol>,
 ) -> RequirementRefusal {
+    let repairs = match holder {
+        Some(holder) => format!(
+            "Declare `require[{}[…]]` in the clause, whose `requires` hold it, pin the \
+             element at this call",
+            kb.qualified_name_of(holder),
+        ),
+        None => "Pin the element at this call".to_string(),
+    };
     RequirementRefusal {
+        account_names_every_repair: true,
         no_scope_route: false,
         construction_carries_repair: false,
         dep_text,
@@ -2520,14 +2569,13 @@ fn unrescuable_rule_body_refusal(
         refused_covers: Vec::new(),
         construction: format!(
             "this is a RULE-body goal, and nothing in the clause determines which \
-             `{spec}` instance it means: the clause declares no `require[{spec}[…]]`, \
+             `{spec}` instance it means: no `require[…]` the clause declares holds it, \
              this call pins no element, and `{spec}`'s provider facts do not decide one \
              either. Taking the dictionary from the argument's RUNTIME VALUE instead \
              would turn a load error into a run-time one — the clause would load and \
              then report by not answering (WI-20260922-0DK3H) — so it is refused where \
-             it is written. Declare `require[{spec}[…]]` in the clause, pin the element \
-             at this call, or call `{callee}` from an operation that declares the \
-             matching `requires`",
+             it is written. {repairs}, or call `{callee}` from an operation that \
+             declares the matching `requires`",
             spec = kb.qualified_name_of(dep.required_sort),
             callee = kb.qualified_name_of(callee_op),
         ),
@@ -3251,6 +3299,7 @@ pub(super) fn unprovided_spec_at_carrier(
         callee_sort: callee_op,
         usage: RequirementUse::Call,
         refusal: Box::new(RequirementRefusal {
+            account_names_every_repair: false,
             no_scope_route: false,
             construction_carries_repair: false,
             dep_text: format_goal(kb, goal),

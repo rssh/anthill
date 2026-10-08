@@ -1440,6 +1440,7 @@ pub(super) fn project_forwarded_slot(
     });
     let untied = |kb: &mut KnowledgeBase| {
         Box::new(RequirementRefusal {
+            account_names_every_repair: false,
             no_scope_route: false,
             construction_carries_repair: false,
             dep_text: render_requires_entry(kb, dep),

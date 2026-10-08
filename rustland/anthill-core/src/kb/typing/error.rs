@@ -831,6 +831,16 @@ pub enum TypeError {
         /// from the frame names.
         from_scope: ScopeId,
     },
+    /// An `internal` operation or constructor reached through a receiver that denotes
+    /// its sort (`let t = Box; t.secret()`), from a scope that cannot see it. The
+    /// written `Box.secret()` is refused where the name is resolved; this is the same
+    /// refusal for the spelling that reaches the member without writing its name path.
+    ForbiddenInternalMember {
+        span: Option<Span>,
+        member: Symbol,
+        /// The scope the dot was written in.
+        from_scope: ScopeId,
+    },
     /// WI-757 (the WI-722 macro contract's diagnostic channel): a `@[simp]` lowering
     /// whose macro-headed RHS was expanded here, and the MACRO rejected the
     /// occurrences it was handed — `where(λ c -> ite(true, true, false))`, whose
@@ -882,6 +892,13 @@ pub enum TypeError {
         // WI-510: construction site — see `TypeMismatch::site`.
         site: &'static std::panic::Location<'static>,
     },
+}
+
+/// `(declaring scope, name)` of an `internal` member, as both renderings of
+/// [`TypeError::ForbiddenInternalMember`] name it.
+fn internal_member_address(kb: &KnowledgeBase, member: Symbol) -> (&str, &str) {
+    let qualified = kb.qualified_name_of(member);
+    qualified.rsplit_once('.').unwrap_or(("", qualified))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1756,6 +1773,17 @@ impl TypeError {
                     kb.scope_display_name(*from_scope),
                 )
             }
+            TypeError::ForbiddenInternalMember {
+                member, from_scope, ..
+            } => {
+                let (declared_in, name) = internal_member_address(kb, *member);
+                format!(
+                    "'{}' is internal to '{}' and cannot be referenced from scope '{}'",
+                    name,
+                    declared_in,
+                    kb.scope_display_name(*from_scope),
+                )
+            }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
             // shared with the eval `Display` and both `LoadError` renderings.
             TypeError::MacroRejected {
@@ -1864,6 +1892,7 @@ impl TypeError {
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
+            | TypeError::ForbiddenInternalMember { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
             | TypeError::MacroRejected { span, .. }
             | TypeError::BottomExpr { span } => *span,
@@ -2527,6 +2556,17 @@ impl TypeError {
                     // `from scope 'another scope'`: a `scope_name` slot filled with
                     // prose, reading as a scope so named. The variant carries the
                     // real one now, so this is the same answer as every other site.
+                    scope_name: kb.scope_display_name(*from_scope).to_string(),
+                    span: self.span(kb).unwrap_or_default(),
+                }
+            }
+            TypeError::ForbiddenInternalMember {
+                member, from_scope, ..
+            } => {
+                let (declared_in, name) = internal_member_address(kb, *member);
+                LoadError::ForbiddenInternalAccess {
+                    name: name.to_string(),
+                    declared_in: declared_in.to_string(),
                     scope_name: kb.scope_display_name(*from_scope).to_string(),
                     span: self.span(kb).unwrap_or_default(),
                 }

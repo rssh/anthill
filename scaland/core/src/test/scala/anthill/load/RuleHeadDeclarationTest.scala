@@ -264,11 +264,11 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     assertEquals(answers(kb, "sbz.tt.readq", 1), 1, "and so does `fact`")
     assertEquals(clauses(kb, "sbz.tt.p"), Some(1),
       "one clause — the `true` contributed no goal, it IS the empty body")
-    // The one place the two spellings still differ, and it is a KNOWN GAP rather than a
-    // consequence of the desugaring: a `fact` head introduces no scoped name, so `q`
-    // reaches the bare global intern. rustland records the same gap at the same row.
-    assertEquals(clauses(kb, "sbz.tt.q"), None,
-      "a `fact` head is NOT scoped where it is written — a separate ticket, not this one")
+    // AND THEY AGREE ON THE NAME (WI-20260821-RDGQC). This row asserted `None` — a
+    // `fact` head introduced no scoped name, so `q` reached the bare global intern —
+    // and called it a known gap. `HeadIntroductionCensusTest` drives the pair.
+    assertEquals(clauses(kb, "sbz.tt.q"), Some(1),
+      "a `fact` head is scoped where it is written, as the `rule` spelling is")
   }
 
   test("J38JE GAP: a boolean constant goal has no reading below the top level") {

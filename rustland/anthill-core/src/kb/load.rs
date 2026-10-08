@@ -20221,17 +20221,34 @@ pub(crate) fn find_operation_in_scope(
     sort_ref_tid: TermId,
     short_name: &str,
 ) -> Option<Symbol> {
-    let op_info_sym = match kb.try_resolve_symbol("anthill.reflect.OperationInfo") {
-        Some(sym) => sym,
-        None => return None,
-    };
     // Get the sort symbol from the sort_ref term
     let sort_sym = match kb.get_term(sort_ref_tid) {
         Term::Fn { functor, .. } => *functor,
         Term::Ref(sym) => *sym,
         _ => return None,
     };
+    find_operation_in_sort(kb, sort_sym, short_name)
+}
 
+/// Why a companion receiver's bracket on `callee` is refused. One sentence for the written
+/// `Sort[…].ctor(…)` and for the same call made through a name bound to `Sort[…]`.
+pub(crate) fn companion_bracket_not_read(callee: &str) -> String {
+    format!(
+        "a companion receiver's type bracket is not read here — `{callee}` is \
+         not a call whose result it can type (proposal 035 form (3) applies to \
+         an operation call, not to an entity constructor or a fact / rule head). \
+         Drop the bracket, or annotate the result where one is accepted"
+    )
+}
+
+/// [`find_operation_in_scope`] for a caller that holds the sort's symbol and not a term
+/// naming it.
+pub(crate) fn find_operation_in_sort(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+    short_name: &str,
+) -> Option<Symbol> {
+    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
     let rule_ids = kb.rules_by_functor(op_info_sym);
     for rid in rule_ids {
         if !kb.is_fact(rid) {
@@ -29006,12 +29023,7 @@ impl<'a> Loader<'a> {
             let span = self.parsed.terms.span(id);
             let callee = self.parsed.symbols.local_name(functor).to_string();
             self.errors.push(LoadError::InvalidTypeArgument {
-                detail: format!(
-                    "a companion receiver's type bracket is not read here — `{callee}` is \
-                     not a call whose result it can type (proposal 035 form (3) applies to \
-                     an operation call, not to an entity constructor or a fact / rule head). \
-                     Drop the bracket, or annotate the result where one is accepted"
-                ),
+                detail: companion_bracket_not_read(&callee),
                 span: Some(span),
             });
         }

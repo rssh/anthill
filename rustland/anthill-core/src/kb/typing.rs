@@ -17,8 +17,8 @@
 //!    `result` (`TypeResult`), `type_ctor` (type-level constructors, relation schemas).
 //!  * The expression walker — `expr` (entry points, work ops), `visit` / `build` (the two
 //!    halves of the iterative typer), `forms`, `apply` (`check_apply_iter`), `arg_hints`,
-//!    `args`, `constructor`, `callable`, `relation`, `eta`, `dot_rule`, `pattern`,
-//!    `projection`.
+//!    `args`, `constructor`, `callable`, `relation`, `eta`, `dot_rule`, `type_receiver`
+//!    (a dot on a receiver that denotes a sort), `pattern`, `projection`.
 //!  * Dispatch and dictionaries — `call_class`, `dispatch`, `slots`, `dict`,
 //!    `dep_projection`, `bridge`, `requires`.
 //!  * Instance synthesis and provisions — `synth`, `candidates`, `provides_index`,
@@ -127,6 +127,7 @@ mod subtype;
 mod synth;
 mod tuples;
 mod type_ctor;
+mod type_receiver;
 mod type_preds;
 mod unify;
 mod value_type;
@@ -181,6 +182,7 @@ pub use subtype::*;
 pub use synth::*;
 use tuples::*;
 use type_ctor::*;
+use type_receiver::*;
 pub use type_preds::*;
 pub use unify::*;
 pub use value_type::*;

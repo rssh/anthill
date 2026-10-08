@@ -873,9 +873,8 @@ impl<'a> Converter<'a> {
             // WI-312: a bare `name` object is no longer possible — a bare/dotted
             // identifier path is a `name` node (not a `field_access`), so a
             // qualified-companion `field_access` only ever has an `application`
-            // receiver or a nested `field_access`. (A degenerate paren-wrapped
-            // path like `(p).y` reaches here with a `paren_expr` object; its
-            // segments are dropped as before — pre-existing, out of scope.)
+            // receiver or a nested `field_access`. (A paren-wrapped receiver,
+            // `(p).y`, is a value and never reaches here — `is_value_receiver`.)
         }
         if let Some(f) = field {
             let sym = self.intern(self.text(f));
@@ -1675,10 +1674,16 @@ impl<'a> Converter<'a> {
 
     /// Whether a dot receiver denotes a runtime *value* (→ `dot_apply`) vs a
     /// sort/namespace *name* (→ qualified-name flattening / field_access).
-    /// Walks the receiver down its `field_access` / `paren_expr` chain to the
-    /// root atom: a name iff that root is an `identifier` or `instantiation_term`
-    /// (`Foo.bar`, `Map[K=…].empty`, the deferred `p.x` identifier case); a
-    /// value otherwise (`?x`, a call result like `xs.map(f)`, a literal, …).
+    /// Walks the receiver down its `field_access` chain to the root atom: a name
+    /// iff that root is an `identifier` or `instantiation_term` (`Foo.bar`,
+    /// `Map[K=…].empty`, the deferred `p.x` identifier case); a value otherwise
+    /// (`?x`, a call result like `xs.map(f)`, a literal, …).
+    ///
+    /// A parenthesized receiver is an expression, and so a value: `(Box[V =
+    /// Int64]).tag()` is a dot on the type value `Box[V = Int64]`, and `(p).x` a dot
+    /// on `p`. The name path has no place for one — its segments are read off a
+    /// `name` or an `application` — so walking through the parentheses to a name
+    /// root dropped the receiver and left the member standing alone.
     /// WI-278; the chain walk is what lets `?x.y.z` and `?xs.map(?f).filter(?p)`
     /// route every level to `dot_apply` rather than dropping the receiver.
     ///
@@ -1701,10 +1706,7 @@ impl<'a> Converter<'a> {
                     Some(o) => cur = o,
                     None => return false,
                 },
-                "paren_expr" => match cur.named_child(0) {
-                    Some(inner) => cur = inner,
-                    None => return true,
-                },
+                "paren_expr" => return true,
                 "name" | "application" => return false,
                 _ => return true,
             }

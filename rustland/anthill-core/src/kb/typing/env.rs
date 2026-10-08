@@ -29,9 +29,9 @@ pub struct TypingEnv {
     pub(super) receiver_aliases: HashMap<Symbol, Vec<Symbol>>,
     /// WI-20260824-PAPX0 (proposal 055 umbrella A step 4, design §4) — the
     /// `Expr::TypeValue` occurrence a let-bound name DENOTES: `let t = Box[V =
-    /// Int64]` records `t → that node`. Read at the `DotApply` frame, where
-    /// option B says a dot on a type value resolves its member in the DENOTED
-    /// sort's scope rather than among `Type`'s own members.
+    /// Int64]` records `t → that node`. Read at the `DotApply` frame, where a dot
+    /// on a receiver that denotes a sort resolves its member among that sort's
+    /// members and not among `Type`'s own (`denoted_sort_dot`).
     ///
     /// A SECOND CHANNEL BESIDE `receiver_aliases`, NOT A WIDENING OF IT, and the
     /// reason is that they answer different questions. `receiver_aliases` maps a

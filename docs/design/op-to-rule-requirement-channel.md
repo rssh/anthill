@@ -535,6 +535,13 @@ forms are alternatives and the choice belongs to that document, which still owes
    reading one spec at different column types are REFUSED naming both. CONTROLS: a predicate with
    no read behaves exactly as today; an UNTYPED caller `a(?x) :- b(?x)` loads with `?fresh` —
    both passing either way by design, said at the site.
+   NARROWED 2026-09-25 (user, on WI-20260925-P7VP4): a callee's `requires` become the
+   calling clause's conditions by inference, and this step's refusal of `a(?x: A) :- b(?x)`
+   with `a` holding no `Eq[A]` "narrows to a concrete carrier with no provision" (the
+   ticket's words). What `a` then holds is not decided there; the reading that follows from
+   the decision — `a` takes the entry as its own implicit parameter — is this note's, and is
+   S7's to settle. P7VP4 built the inference for a rule→op edge only; the rule→rule edge is
+   `060-implementation.md` §7.3's S7, and is measured unbuilt in §8.9 there (row C6).
 2. **The push binds the arguments — driven on the rule→rule edge.** Goals carry their implicit
    arguments through the seven goal-list constructions (§1); `with_fresh_vars` opens them with
    the body; the push binds `?rⱼ := tⱼ`. Acceptance: §1's `a(3, nil())` answers through `a`'s
