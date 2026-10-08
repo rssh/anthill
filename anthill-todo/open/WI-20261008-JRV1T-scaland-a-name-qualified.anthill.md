@@ -43,3 +43,7 @@ ACCEPTANCE: drive it. The program above answers 2 through `n.Rec.see`, in the fa
 
 ONE MORE SPELLING IN THIS TICKET'S POPULATION since WI-20261008-T290W, 2026-10-08: `Ref(Rec.E)`. `Ref(…)` used to read its last segment, so this resolved through the sort's variant exposure; it carries the whole path now, as a call functor does, and resolves to nothing exactly as `Rec.E(…)` does. `AbsoluteNameTest`, row `a RELATIVE path in Ref resolves as the call spelling of it does — not yet`, pins the pair at (`Rec.E`, unresolved) with the logical answer named. It must flip when the relative reading lands.
 
+### 2026-10-08T14:36:36Z — feedback — claude
+
+A THIRD CARRIER, 2026-10-08 (WI-20261008-T290W's addendum): a type written inside a term. `fact typeRel(Box[T = Rec.E])` binds a bare symbol spelled `Rec.E`, as `Ref(Rec.E)` and `Rec.E(…)` do; it read its last segment before and so resolved through the sort's variant exposure. The same `AbsoluteNameTest` row pins all three as one answer.
+
