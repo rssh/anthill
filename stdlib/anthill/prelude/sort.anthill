@@ -34,6 +34,10 @@ namespace anthill.prelude
   -- until WI-20260917-S8JYF retired that spelling; a provision names its
   -- provider by WHERE it is written, so the `namespace Type` block is what says
   -- the carrier — nothing is derived from a binding value any more.
+  --
+  -- These operations are reached on a type value by name, `PartialEq.eq(t, u)`,
+  -- or by a dot on a `Type` whose sort is not known at the dot. A receiver that
+  -- denotes a sort resolves its dot in that sort (kernel-language.md §5.4).
   namespace Type
     provides PartialEq[T = Type]      -- WI-644: Eq requires the PartialEq base
     provides Eq[T = Type]
