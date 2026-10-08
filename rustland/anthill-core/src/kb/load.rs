@@ -973,6 +973,23 @@ pub enum LoadError {
         carrier: String,
         providers: Vec<String>,
     },
+    /// WI-20261006-SZKV7 — what decides the equality of a composite an EARLIER load
+    /// defined has changed: who supplies its `eq`, or which provisions of `PartialEq` /
+    /// `Eq` / `NonEq` name it. Refused: the derivation reads both through negations
+    /// (nothing supplies an `eq`, nothing speaks for the sort), so a composite's equality
+    /// is closed by the load that defines it, and by the time a later load adds to it,
+    /// derived rows and resolved calls rest on what was there.
+    /// [`super::eq_derive::later_equality_refusals`] carries the measurement and why the
+    /// rows are not taken back instead.
+    ///
+    /// Not an ambiguity — there may be exactly one `eq`, which is the point — so it is its
+    /// own variant and not a second meaning of [`Self::AmbiguousEqDispatch`]. Keyed on the
+    /// carrier for that variant's reason; `changes` says how the sort's equality differs
+    /// from what the previous load left recorded, each in the terms it was written in.
+    EqualityOfEarlierSort {
+        carrier: String,
+        changes: Vec<String>,
+    },
     /// WI-1125 — a carrier supplies its own **`neq`**. Refused, because `neq` is not
     /// an override point at all: `neq(a, b) <=> not(eq(a, b))` (§8.3,
     /// `stdlib/anthill/prelude/eq.anthill`) makes `neq` DERIVED, and every evaluator
@@ -3207,6 +3224,9 @@ impl LoadError {
                     None => msg,
                 }
             }
+            LoadError::EqualityOfEarlierSort { carrier, changes } => {
+                equality_of_earlier_sort_message(carrier, changes)
+            }
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
                     providers.len(), carrier, providers.join("; "))
@@ -4679,6 +4699,11 @@ impl std::fmt::Display for LoadError {
                 write!(f, "ambiguous provider kinds: '{}' for carrier '{}' is provided by {} instance fact(s) AND {} witness sort(s) ({}) — keep one kind",
                     spec, carrier, fact_count, witnesses.len(), witnesses.join(", "))
             }
+            LoadError::EqualityOfEarlierSort { carrier, changes } => write!(
+                f,
+                "{}",
+                equality_of_earlier_sort_message(carrier, changes)
+            ),
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
                     providers.len(), carrier, providers.join("; "))
@@ -14965,6 +14990,13 @@ fn load_phase_inner(
     // Load-blocking.
     all_errors.extend(build_eq_dispatch_index(kb));
     mark!("build_eq_dispatch_index");
+    // WI-20261006-SZKV7 — before this load derives anything: a composite whose equality
+    // no longer matches what the last load recorded is a load error. A VERDICT, not an
+    // unwinding: the sources are in, and the eq-dispatch index built above already
+    // answers by them — which is why the carriers it names stay held in the record.
+    let (equality_refusals, equality_held) = super::eq_derive::later_equality_refusals(kb);
+    all_errors.extend(equality_refusals);
+    mark!("eq_derive::later_equality_refusals");
     // WI-664/WI-1098: classify every composite carrier as lawful-`Eq` (Total) or
     // `NonEq` (Partial). HERE, because every input the fixpoint reads is final by this
     // line — the entity field-type registry, the sort-ops table, the eq-dispatch index
@@ -15173,6 +15205,8 @@ fn load_phase_inner(
         super::typing::claim_written_row_bindings(kb);
         // A partial load is still the load: what it produced is "as loaded".
         kb.mark_loaded();
+        // WI-20261006-SZKV7 — what the NEXT load is held to; see the full exit.
+        super::eq_derive::record_equality_signatures(kb, &equality_held);
         return if all_errors.is_empty() {
             Ok((
                 LoadResult {
@@ -15483,6 +15517,11 @@ fn load_phase_inner(
     // After the guards: their resolution may synthesize rules, and those are as much
     // a product of loading these sources as anything above.
     kb.mark_loaded();
+    // WI-20261006-SZKV7 — the equality of every composite, as the next load must find it.
+    // At BOTH exits and whether or not the load succeeded; the composites this load was
+    // refused over keep the entry they had. `record_equality_signatures` says why each.
+    super::eq_derive::record_equality_signatures(kb, &equality_held);
+    mark!("eq_derive::record_equality_signatures");
     if all_errors.is_empty() {
         Ok((
             LoadResult {
@@ -15769,6 +15808,25 @@ fn load_with_visited(
         // Merged-only — see the field.
         loaded_rules: 0..0,
     })
+}
+
+/// The ONE wording of [`LoadError::EqualityOfEarlierSort`], shared by its located and its
+/// plain rendering. It says what is closed and why, how it changed, and the repair —
+/// which is not a different spelling but a different place for the declaration. It does
+/// not say "this load": a knowledge base left behind by a refused load is refused again.
+fn equality_of_earlier_sort_message(carrier: &str, changes: &[String]) -> String {
+    format!(
+        "the equality of '{carrier}' is closed, and has changed since the load that defined \
+         it: {}. What decides a sort's equality — who supplies its `eq`, and which \
+         provisions of `PartialEq` / `Eq` / `NonEq` name it — is fixed by the load that \
+         defines the sort: that load derives the sort's equality from what it finds, \
+         derives the same for every sort holding a '{carrier}', and every `=` over its \
+         values is answered by the result. A later load may add nothing to it. Put the \
+         declaration in the source that defines '{carrier}', or load that source together \
+         with the one that adds to it; a source loaded into a knowledge base that already \
+         holds '{carrier}' cannot change its equality",
+        changes.join("; "),
+    )
 }
 
 /// WI-745 — every error from one file's loader belongs to THAT file: stamp its

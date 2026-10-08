@@ -53,9 +53,11 @@ side in `target/`; raw `cargo test` / `cargo build` are the unoptimized one.
 `anthill-core`'s shared load helpers (`tests/common/mod.rs`, `LoadRecipe`) hand the stdlib
 and a test's own files to the loader in TWO `load_all` calls instead of one. It is a
 control, not a second gate: the two recipes must give every test the same verdict, and a
-test that differs is either an assertion on the recipe or a loader finding
-(WI-20261006-SZKV7; `docs/design/test-infrastructure.md` §5.3 lists the ones that differ
-today). Run it optimized, as any crate-wide selection:
+test that differs is an assertion on the recipe, a loader finding, or a fixture that by
+the language's own rule belongs in the stdlib's load — one that adds to the equality of a
+stdlib sort, which a later load may not do (`kernel-language.md` §8.3). The last kind is
+pinned to one load BY NAME, with the reason at its site (WI-20261006-SZKV7;
+`docs/design/test-infrastructure.md` §5.3 has the list). Run it optimized, as any crate-wide selection:
 
 ```bash
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core

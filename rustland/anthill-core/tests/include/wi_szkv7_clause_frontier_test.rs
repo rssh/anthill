@@ -37,12 +37,13 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::eval::EvalError;
-use anthill_core::kb::load::{self, LoadError, LoadOptions, NullResolver};
+use anthill_core::kb::load::{self, LoadOptions};
 use anthill_core::kb::typing::type_check_sorts;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-use crate::common::{expect_loaded, interp_for, load_kb_with, recipe_load, LoadRecipe};
+use crate::common::{
+    expect_loaded, interp_for, load_in_a_later_call, load_kb_with, recipe_load, LoadRecipe,
+};
 
 /// The earlier load: one entity with a typed field, and a well-typed fact of it.
 const BASE: &str = r#"
@@ -80,19 +81,7 @@ fn assert_names_the_field(errors: &[String], why: &str) {
     );
 }
 
-fn rendered(errors: Vec<LoadError>) -> Vec<String> {
-    errors.iter().map(|e| e.to_string()).collect()
-}
-
-/// `source` loaded into `kb` in a call of its own — the second call, by name.
-fn load_in_a_later_call(
-    kb: &mut KnowledgeBase,
-    source: &str,
-    options: LoadOptions,
-) -> Result<load::LoadResult, Vec<LoadError>> {
-    let parsed = parse::parse(source).expect("parse the later call's source");
-    load::load_all_with(kb, &[&parsed], &NullResolver, options)
-}
+use crate::common::rendered_load_errors as rendered;
 
 #[test]
 fn a_later_calls_fact_over_an_earlier_calls_entity_is_field_checked() {

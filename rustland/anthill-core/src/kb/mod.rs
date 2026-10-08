@@ -2055,6 +2055,20 @@ pub struct KnowledgeBase {
     /// row came from so the diagnostic can say so.
     derived_provision_origin: std::collections::HashMap<RuleId, Symbol>,
 
+    /// WI-20261006-SZKV7 — what decided each composite's equality AS THE LAST LOAD LEFT
+    /// IT, keyed by canonical sort: who supplied its `eq`, and which provisions of
+    /// `PartialEq` / `Eq` / `NonEq` were about it ([`eq_derive::EqualitySignature`]).
+    /// Written at the end of every load — whether it succeeded or not, except that a
+    /// composite the load was REFUSED over keeps its entry — and read at the next one,
+    /// which is refused if an entry no longer matches: a composite's equality is closed
+    /// by the load that defines it ([`eq_derive::later_equality_refusals`] has the
+    /// reason, [`eq_derive::record_equality_signatures`] the rule for a failed load).
+    ///
+    /// A record of the KB's STATE, not of what a pass did — the same function computes
+    /// both sides of the comparison — and scoped: a layer's discard restores it with the
+    /// declarations it describes.
+    equality_signatures: std::collections::HashMap<Symbol, eq_derive::EqualitySignature>,
+
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
 
@@ -2667,6 +2681,7 @@ impl KnowledgeBase {
             judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
             derived_provision_origin: std::collections::HashMap::new(),
+            equality_signatures: std::collections::HashMap::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
@@ -2964,6 +2979,22 @@ impl KnowledgeBase {
 
     pub(crate) fn mark_unbacked_derived_provision(&mut self, rid: RuleId) {
         self.unbacked_derived_provisions.insert(rid);
+    }
+
+    /// WI-20261006-SZKV7 — see [`Self::equality_signatures`].
+    pub(crate) fn recorded_equality_signatures(
+        &self,
+    ) -> &std::collections::HashMap<Symbol, eq_derive::EqualitySignature> {
+        &self.equality_signatures
+    }
+
+    /// Replace the record — called by `eq_derive::record_equality_signatures` alone, at
+    /// the end of a load.
+    pub(crate) fn set_equality_signatures(
+        &mut self,
+        signatures: std::collections::HashMap<Symbol, eq_derive::EqualitySignature>,
+    ) {
+        self.equality_signatures = signatures;
     }
 
     // ── Source & occurrence access ─────────────────────────────

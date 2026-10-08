@@ -905,6 +905,46 @@ pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) 
         .collect()
 }
 
+/// WI-20261006-SZKV7 — one provision of `spec`, with the sort it is ABOUT.
+pub(crate) struct ProvisionAbout {
+    /// The row, which is the provision's identity: restating it lands on the same row.
+    pub(crate) row: crate::kb::RuleId,
+    /// The `sort_ref`: who provides.
+    pub(crate) provider: Symbol,
+    /// The sort bound to the spec's carrier parameter — canonical — or the provider where
+    /// the provision names no other sort.
+    pub(crate) about: Symbol,
+}
+
+/// Every provision of `spec_sort` with the sort it is about, read off the binding of the
+/// spec's carrier parameter on the SECOND rung too ([`spec_carrier_param_or_sole`]).
+///
+/// NOT [`provision_carriers_of_spec`], and the difference is the reason this exists.
+/// That one answers through [`witness_dispatch_carrier`], whose carrier parameter is the
+/// one an operation RECEIVES on: right for a dispatch, and `None` for `Eq` and `NonEq`,
+/// which declare no such operation — so a witness `provides Eq[T = Reading]` is filed
+/// there under the WITNESS. For "whose equality does this provision speak about" the
+/// sole parameter is the answer, and without it a witness that writes `Eq` alone (the
+/// spelling `eq.anthill` advertises, `PartialEq` then being forwarded) adds to a
+/// carrier's equality where nothing looking at the carrier can see it (/code-review).
+pub(crate) fn provisions_about(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<ProvisionAbout> {
+    let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
+    provides_rows_of_spec(kb, spec_sort)
+        .map(|row| {
+            let view = Value::term(row.spec_view);
+            let about = carrier_param
+                .filter(|_| view_is_sort_view(kb, &view))
+                .and_then(|param| provision_binding_at_param(kb, param, &view))
+                .map_or(row.provider, |(_, base)| base);
+            ProvisionAbout {
+                row: row.rid,
+                provider: row.provider,
+                about: kb.canonical_sort_sym(about),
+            }
+        })
+        .collect()
+}
+
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
 /// three different syntaxes, so a diagnostic that lists candidates must say which is
 /// which for the author to know what to delete — and only the witness has a name to

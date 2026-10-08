@@ -33,3 +33,9 @@ CONTROL. The count (§10): the suite traced under the switch, where a `load_with
 
 DONE WHEN: no file outside `tests/common` collects the stdlib and calls `load_all` except those pinned by name; the gate is green; one `anthill-core` run under the switch is recorded with its differences classified; §2.4's table is re-taken.
 
+## Changes
+
+### 2026-10-08T08:41:40Z — feedback — claude
+
+TWO FILES THAT WILL NEED A PIN, known in advance (2026-10-08). `wi224_sld_resolution_test` and `typing_test` each carry a fixture that supplies an `eq` for the stdlib's `List` (`provides PartialEq[T = List[T = A]]` / `provides Eq[T = List[T = A]]`), and both load the stdlib themselves today, so they run in one call. Since the second finding of WI-20261006-SZKV7 was settled, loading such a file AFTER the stdlib is a load error (`EqualityOfEarlierSort`; kernel-language.md §8.3): a composite's equality is closed by the load that defines it. Moved onto the recipe those fixtures must name `LoadRecipe::OneShot` and say why at the site, as `wi228_tree_threaded_dispatch_test` does. Four other files supply an equality for `Map` or `Set`, which have no constructors and so are no composites — the rule's domain; it does not touch them. A fixture supplying one for a composite the stdlib defines (`Pair`, `Option`, `SortedSet`, …) is in the rule's reach and needs the same pin.
+

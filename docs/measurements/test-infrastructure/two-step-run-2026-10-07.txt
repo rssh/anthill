@@ -125,3 +125,49 @@ The two runs with the fix in, 2026-10-08 08:18 and 08:46, same machine (a busy o
       load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: one shot
 The thirteen more tests than the night before are wi_szkv7_clause_frontier_test's rows. One doc comment in
 kb/typing/sorts.rs was added after these runs; the control and that file's rows were re-run on it.
+
+== the second finding, 2026-10-08 — what a later `eq` for an earlier load's sort did, and the refusal
+Probed on the tree before the refusal (temporary tests, not committed). `equality providers` is
+common::sort_provisions_all filtered to Eq / PartialEq / NonEq; the later file is a witness sort
+`provides PartialEq[T = S]`, `provides Eq[T = S]`, `operation eq(a: S, b: S) -> Bool = true`, and a call.
+
+  S = reading(v: Float)                 equality providers                                   eq(reading(1.5), reading(2.5))
+    earlier file alone                  Reading: PartialEq, NonEq                            -
+    both files, ONE load                ReadingEq: PartialEq, Eq                             true
+    earlier file, THEN the later        Reading: PartialEq, NonEq; ReadingEq: PartialEq, Eq  false     <- the value differs
+
+  S = point(x: Int64, y: Int64)         equality providers                                   eq(point(1,2), point(3,4))
+    earlier file alone                  Point: PartialEq, Eq                                 -
+    both files, ONE load                PointAlwaysEq: PartialEq, Eq                         true
+    earlier file, THEN the later        Point: PartialEq, Eq; PointAlwaysEq: PartialEq, Eq   true      (and through an operation of
+                                                                                                        the EARLIER file, and List.contains)
+
+  a dependent, sample(id: Int64, r: Reading), in the earlier file
+    earlier file alone                  Reading: PartialEq, NonEq; Sample: PartialEq, NonEq
+    both files, ONE load                ReadingEq: PartialEq, Eq            (nothing for Reading, nothing for Sample)
+    earlier file, THEN the later        all four derived rows, and ReadingEq's two
+
+Why: eq_derive::classify classifies a composite only if NOTHING supplies an `eq` for it (the boundary test) — the
+one negation in the derivation — and the next load reads an earlier load's derived `NonEq` back as a leaf.
+
+The later load is now a load error (LoadError::EqualityOfEarlierSort; kernel-language.md 8.3): a load may change nothing about
+the equality of a composite an earlier load defined — who supplies its `eq`, which provisions of PartialEq / Eq / NonEq are
+about it. Decided by comparing each composite's equality signature with what the previous load left recorded.
+
+It took four cuts, each but the last found wanting by /code-review, and the runs under the switch say what each refused:
+  a record of the sorts an earlier load DERIVED for      7 903 passed, 1 failed (wi228, by the refusal)      11:14
+  what the load ADDED, read off its rule slots           stopped at 7 437 passed, none failed                12:14
+  the state comparison, first form                       stopped at 5 176 passed, none failed                12:57
+  the state comparison, as committed                     7 923 passed, 0 failed, 6 ignored — the whole run   13:34
+The last is ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core: 5 560 s by the wall clock, of which
+the build and the binaries' own clocks account for about 1 700 (334 s of compile; wi_tests 6 327 passed in 1 309 s) — not a
+timing to quote. With
+      load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: TWO-STEP
+wi228's fixture supplies an `eq` for the stdlib's `List`; it is pinned to LoadRecipe::OneShot by name, with the reason at its
+site, and is the only test the rule touches. Four small edits followed that run (three comments, one dead branch); the
+one-shot gate after it was built with them.
+
+What the two passes cost, by the loader's own trace (ANTHILL_LOAD_TIMING=1, opt-level 0, one test, 12 threads idle otherwise):
+  eq_derive::later_equality_refusals      27-75 us in a first load (nothing recorded yet)    6.0 ms in a later load
+  eq_derive::record_equality_signatures   3.3-3.8 ms in either
+  — and 47 ms for the check in a later load before it built the provider index for its read.

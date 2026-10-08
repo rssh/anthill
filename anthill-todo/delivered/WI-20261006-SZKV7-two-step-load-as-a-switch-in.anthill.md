@@ -50,3 +50,11 @@ FINDING 2, OPEN — the user's call on the semantics. Derived equality is not ta
 
 GATE: 8 766 passed, 0 failed, 14 ignored (one shot, 2026-10-08). NOT DONE HERE, not filed: routing the ~175 own-load test files through the recipe (§8.6 c).
 
+### 2026-10-08T12:45:30Z — feedback — claude
+
+FINDING 2 SETTLED, 2026-10-08 (user: refuse) — a composite's equality is closed by the load that defines it. What decides it is who supplies its `eq` and which provisions of `PartialEq` / `Eq` / `NonEq` are about it; a load derives the equality from what it finds and reads both through negations, which are sound within a load and false across loads. A later load that changes either for a composite an earlier load defined is now a load error (`LoadError::EqualityOfEarlierSort`; kernel-language.md §8.3), one load of both sources being unchanged. Measured before it: `reading(v: Float)` loaded and then a witness `eq … = true` for it answered `eq(reading(1.5), reading(2.5))` false where one load answers true.
+
+DECIDED BY COMPARING STATES (`eq_derive::EqualitySignature`, recorded at every exit of a load, recomputed at the next): three cuts that read what a load DID were each wrong somewhere, by /code-review. NOT COVERED, and said so in the spec: sorts that are no composite; what a supplier computes or what shape the sort has (a redeclaration).
+
+`wi_szkv7_later_equality_test`: 25 rows, eleven back-outs measured. `wi228`'s fixture supplies an `eq` for the stdlib's `List` and is pinned to one load by name — the one test the rule touches. Under the switch the suite is now GREEN: 7 923 passed, 0 failed, 6 ignored. Gate: 8 803 passed, 0 failed, 14 ignored.
+

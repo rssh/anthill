@@ -5,8 +5,9 @@ the gate** — a full `scripts/test.sh` run builds `anthill-core` optimized, a s
 does not (WI-20261006-ZVV24: §1.1, §2.5, §4 A1), and that day's re-measurement on a quiet machine
 corrected several of the first day's numbers — each correction is dated where it stands.
 **The two-step load switch landed 2026-10-07** (WI-20261006-SZKV7: §5.3) and found the
-equivalence levers A3 and B rest on broken in two places (§4 A3); the first was fixed the
-next day, the second is open.
+equivalence levers A3 and B rest on broken in two places (§4 A3). Both were settled the
+next day — the first fixed, the second made a load error — and the suite is green under
+the switch.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -566,17 +567,42 @@ pass this section proposes to change:
   (4 600 slots walked in 3 ms). Two things it does NOT settle, both stated at the site:
   the two recipes give the same diagnostics but not always in the same ORDER, and a
   fact a later load merely RESTATES is the earlier load's, not re-checked.
-- **Equality derivation is not monotone in what has been loaded.** A written
-  `provides Eq[T = List[T = A]]` loaded TOGETHER with the stdlib leaves `List` with no
-  derived `PartialEq` / `Eq` / `NonEq` provision; loaded AFTER it, the rows the stdlib's
-  own call derived are still there beside the written ones. So "derive for the new sorts
-  and for old sorts whose fields mention them", above, is not the whole invalidation set
-  for `eq_derive`: a new written provider for an OLD sort has to take the old derived rows
-  back, or the load has to refuse it.
+- **Equality derivation is not monotone in what has been loaded — REFUSED 2026-10-08
+  (user).** A written `provides Eq[T = List[T = A]]` loaded TOGETHER with the stdlib
+  leaves `List` with no derived `PartialEq` / `Eq` / `NonEq` provision; loaded AFTER it,
+  the rows the stdlib's own call derived were still there beside the written ones. The
+  derivation reads what decides a composite's equality through NEGATIONS — it
+  classifies a composite only if nothing supplies its `eq` (`eq_derive::classify`, the
+  boundary test) and derives for it only if nothing already speaks for it — and those
+  are sound within a load and false across loads, both sets growing after the rows are
+  written. With the rows stay the derived rows of every sort HOLDING the first, every
+  call the earlier typer resolved against them, and for a sort that reaches a `Float`
+  its own derived `NonEq`, which the next classification reads back as a hand-written
+  leaf: `reading(v: Float)` and then a witness `eq … = true` for it answered
+  `eq(reading(1.5), reading(2.5))` FALSE where one load answers TRUE. Taking the rows
+  back was weighed and not done: it means re-deriving every dependent and re-resolving
+  every call that read them, and it makes an earlier load's facts something a later one
+  can change — which is what every frontier-driven pass of this section would then have
+  to allow for. So a load may change NOTHING about the equality of a composite an
+  earlier load defined — who supplies its `eq`, which provisions of the three specs name
+  it, under what conditions — and doing so is a LOAD ERROR (`EqualityOfEarlierSort`),
+  one load of both being unchanged; `kernel-language.md` §8.3 has the rule. It is
+  decided by comparing STATES: each composite's equality signature is recorded when a
+  load ends, and recomputed by the same function at the next. Three cuts that read
+  what a load DID instead were each wrong somewhere (/code-review): a record of the
+  sorts derived for refused a later load it had no business refusing; the rows in the
+  load's rule slots miss a row that repeats an earlier one; the operations it declared
+  include every source presented again. Not covered by it, and said so at the site and
+  in the spec: sorts that are no composite; what the load's own later passes add to an
+  earlier composite; and what a supplier computes or what shape the sort has, an
+  operation or a sort declared again being a redeclaration. **The base is sealed** as
+  far as who decides equality goes, which is the premise the rest of this section
+  assumed.
 
 Neither is a hypothetical for the tests alone: `KB.loaded` (`eval/builtins.rs`,
 `kb_loaded`) calls `load_all` on the live KB, which is the second call of a two-step load.
-Until the fix above it accepted `fact box(n: "seven")` over a base `box(n: Int64)`.
+Until the fix above it accepted `fact box(n: "seven")` over a base `box(n: Int64)`, and
+until the refusal it accepted a candidate that replaced a base sort's equality.
 
 ### A4. Hot spots inside the passes
 
@@ -696,15 +722,22 @@ binary and failed again in a second switched run. Raw: `two-step-run-2026-10-07.
 | test | class | what differs |
 |---|---|---|
 | `wi830_extent_binding_test::a_role_that_is_not_a_role_is_refused_at_load` | loader finding, **fixed 2026-10-08** | a fact over the stdlib's `ExtentBinding` with a `role` that is no `ExtentRole` was refused one-shot and LOADED CLEAN two-step: the typer reaches a clause through the sorts the call defined, and the fact's entity was defined by the earlier call (§4 A3). `wi_szkv7_clause_frontier_test` drives it, and the rule-shaped siblings no test in the suite had, without the switch |
-| `wi228_tree_threaded_dispatch_test::pin_now_threads_conditional_tree_into_nested_dictionary_nodes` | loader finding | a user sort providing `Eq[T = List[T = A]]`: one-shot, `List` gets no derived equality rows and the call `eq(x, y)` at `List[Int64]` is pinned to the user's `eq`; two-step, the stdlib call's derived `List → PartialEq / Eq / NonEq` rows stay beside the written ones and the call carries no `CallClass` (§4 A3). The program's VALUE is the same under both |
+| `wi228_tree_threaded_dispatch_test::pin_now_threads_conditional_tree_into_nested_dictionary_nodes` | loader finding, **refused since 2026-10-08**; the test is PINNED to one load by name | a user sort providing `Eq[T = List[T = A]]`: one-shot, `List` gets no derived equality rows and the call `eq(x, y)` at `List[Int64]` is pinned to the user's `eq`; two-step, the stdlib call's derived `List → PartialEq / Eq / NonEq` rows stayed beside the written ones and the call carried no `CallClass` (§4 A3). Here the program's value was the same under both; with a `Float` field it was not. Loading it after the stdlib is now a load error, so the fixture has to be in the stdlib's load, and says so at its site |
 
-Neither test was adjusted, and none is pinned to the one-shot recipe: under the switch
-the suite had these two red rows. The first was not the tests' alone — `KB.loaded` is a
+Neither test was adjusted to fit the two-step recipe; under the switch the suite had
+these two red rows, and one of them has since been pinned to one load BY NAME, for the
+reason its row above gives. The first was not the tests' alone — `KB.loaded` is a
 second `load_all` on a live KB, and it accepted a source whose `fact box(n: "seven")`
 over the base's `box(n: Int64)` a one-shot load refuses (probed; the raw file has it).
-**With the first fixed, 2026-10-08, the same run is 7 885 passed, 1 failed, 6 ignored** —
-the second row alone, until that finding is settled — and that morning's one-shot gate
-is 8 766 / 0 / 14.
+**With the first fixed, 2026-10-08, the same run was 7 885 passed, 1 failed, 6 ignored**
+— the second row alone. **With the second refused the same day, and the one test it
+touches pinned to one load by name, the run is 7 923 passed, 0 failed, 6 ignored** — the
+first green run under the switch, and the evidence that the rule refuses no later load
+it should not: every one of the suite's two-step loads passes through its check. Of seven test files that
+supply an equality for a prelude container, it is the only one the rule touches: four
+supply it for `Map` or `Set`, which have no constructors and so are no composites — the
+rule's domain — and two load the stdlib themselves and are not reached by the switch
+(they will need the same pin when WI-20261008-RAH0Z moves them).
 
 **No test differs for a reason that is the recipe's own.** Nothing within the switch's
 reach reads `Symbol` numbering, the order of diagnostics, or `fact_dedup` state in a way
@@ -849,12 +882,13 @@ informed; it does not recommend changing the rule until A and B have been measur
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
-   (b) Equality derivation that a later written provider does not take back: a bug,
-   or a rule to state — a later load may not provide for an earlier load's sort what the
-   earlier load derived — and refuse. (c) The test files that carry their own copy of the
-   load: routing them through the recipe is what puts them under the two-step control and,
-   later, on the base KB — filed 2026-10-08 as WI-20261008-RAH0Z (user). (b) is not filed. Until (b) is settled the control A3 rests on is not green, so
-   it comes before the first A3 ticket.
+   (b) Equality derivation that a later written provider does not take back: decided
+   2026-10-08 (user) — a rule, refused at load, and implemented inline: a non-monotone
+   update is refused because other facts depend on what it would change. (c) The test
+   files that carry their own copy of the load: routing them through the recipe is what
+   puts them under the two-step control and, later, on the base KB — filed 2026-10-08 as
+   WI-20261008-RAH0Z (user). With (a) and (b) settled the control A3 rests on is green
+   for every test it reaches.
 
 ## 9. Recommended sequence, with the measurement at each step
 
@@ -862,7 +896,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 |---|---|---|---|
 | 0 | re-take §2 on a quiet machine; the opt-level rows and the compile deltas | the bench + `cargo test --no-run` after a one-line edit | **done 2026-10-06** — level 2 (§2.5) |
 | 1 | A1: `anthill-core` at 2 and the tree-sitter crates at 3, for the gate | one full run, same log format as §1 | **done 2026-10-06** — 3 h 27 min → 30 min 40 s cold, 15 min 45 s warm (§1.1) |
-| 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differ, both loader findings (§5.3), one fixed since; the switch reaches only the loads that go through the recipe (§2.4) |
+| 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
 | 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
 | 5 | B: `Clone` + `Send` + base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 659 s → one to two minutes: loads are 89 % of it (§2.4) |

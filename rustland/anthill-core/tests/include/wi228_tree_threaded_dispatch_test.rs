@@ -23,7 +23,8 @@
 //! ("Output ResolvedRequiresNode is the direct input to the requirement-
 //! insertion pass"); WI-227 commit 91578d2 for the IR emitter.
 
-use crate::common::interp_for;
+use crate::common::{expect_loaded, recipe_load, LoadRecipe};
+use anthill_core::kb::load::LoadOptions;
 use anthill_core::kb::typing::{CallClass, ResolvedRequiresNode};
 
 #[test]
@@ -62,8 +63,22 @@ namespace test.wi228.pin_now_tree
   end
 end
 "#;
-    let interp = interp_for(src);
-    let kb = interp.kb();
+    // PINNED TO ONE LOAD, BY NAME (WI-20261006-SZKV7). `EqList` supplies an `eq` for the
+    // stdlib's `List`, and a composite's equality is closed by the load that defines it —
+    // the stdlib's load DERIVES `List`'s when it finds none supplied — so the stdlib's
+    // load is the one this fixture has to be in. Loaded after it, it is a load error
+    // (`EqualityOfEarlierSort`), and before that refusal existed it loaded into a KB
+    // holding both equalities, where this call carried no `CallClass` at all: the one
+    // test that differed under `ANTHILL_TEST_TWO_STEP_LOAD=1`.
+    // `wi_szkv7_later_equality_test` pins the refusal with this very fixture.
+    let (kb, _) = expect_loaded(recipe_load(
+        &[src],
+        None,
+        LoadOptions::default(),
+        LoadRecipe::OneShot,
+        |_| {},
+    ));
+    let kb = &kb;
 
     let int_sym = kb
         .try_resolve_symbol("anthill.prelude.Int64")

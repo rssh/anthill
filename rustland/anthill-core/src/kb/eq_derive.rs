@@ -291,7 +291,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
     ) else {
         return;
     };
-    let spoken_for: HashSet<Symbol> = ["PartialEq", "Eq", "NonEq"]
+    let spoken_for: HashSet<Symbol> = EQUALITY_SPECS
         .into_iter()
         .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
         .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))
@@ -645,6 +645,270 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
     }
 }
 
+/// WI-20261006-SZKV7 — what decides ONE composite's equality, as a value two loads can
+/// be compared by: who supplies its `eq`, and which provisions of the equality family
+/// name it. See [`later_equality_refusals`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EqualitySignature {
+    /// The operations supplying its `eq`, through any of the three routes — the
+    /// eq-dispatch candidates, by canonical symbol. WHO supplies it, not what the
+    /// supplier computes: an operation declared again with another body is the same
+    /// supplier, and a layer overriding a base operation is not this check's business.
+    suppliers: HashSet<Symbol>,
+    /// The provisions of `PartialEq` / `Eq` / `NonEq` that are about it.
+    provisions: HashSet<EqualityProvision>,
+}
+
+/// One provision in an [`EqualitySignature`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EqualityProvision {
+    /// The provision row. Its identity: a source presented again lands on the same row,
+    /// a provision of another instantiation (`List[T = String]` beside `List[T = Int64]`)
+    /// is another.
+    row: RuleId,
+    provider: Symbol,
+    spec: Symbol,
+    /// Whether `provider`'s provision of `spec` is conditional, and how many written
+    /// clauses made it. Both are the PROVIDER's for the spec — conditions are filed per
+    /// provider and spec, not per row — so a clause added for another carrier shows here
+    /// too: that is how the provision is read from then on, for this carrier as well.
+    conditional: bool,
+    clauses: u32,
+}
+
+/// The equality-family specs, in the order a diagnostic lists them.
+const EQUALITY_SPECS: [&str; 3] = ["PartialEq", "Eq", "NonEq"];
+
+/// The [`EqualitySignature`] of every composite the KB holds now, by canonical sort.
+fn equality_signatures(
+    kb: &mut KnowledgeBase,
+) -> std::collections::HashMap<Symbol, EqualitySignature> {
+    let composites: Vec<Symbol> = composite_sorts(kb)
+        .into_iter()
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    let mut out: std::collections::HashMap<Symbol, EqualitySignature> = composites
+        .iter()
+        .map(|&s| (s, EqualitySignature::default()))
+        .collect();
+    // (provider, spec) → (conditional?, clause count), asked once per pair rather than
+    // once per row: the two are the provider's for the spec, whichever row asks.
+    let mut read: std::collections::HashMap<(Symbol, Symbol), (bool, u32)> =
+        std::collections::HashMap::new();
+    for name in EQUALITY_SPECS {
+        let Some(spec) = kb.try_resolve_symbol(&format!("anthill.prelude.{name}")) else {
+            continue;
+        };
+        let spec_canon = kb.canonical_sort_sym(spec);
+        for provision in super::typing::provisions_about(kb, spec) {
+            let Some(signature) = out.get_mut(&provision.about) else {
+                // Not a composite: a primitive, an abstract sort, a spec's own
+                // parameter. Out of this check's domain — see [`later_equality_refusals`].
+                continue;
+            };
+            let provider = kb.canonical_sort_sym(provision.provider);
+            let (conditional, clauses) = *read.entry((provider, spec_canon)).or_insert_with(|| {
+                (
+                    kb.provision_has_conditions(provision.provider, spec),
+                    kb.provides_clause_count(provision.provider, spec),
+                )
+            });
+            signature.provisions.insert(EqualityProvision {
+                row: provision.row,
+                provider,
+                spec: spec_canon,
+                conditional,
+                clauses,
+            });
+        }
+    }
+    // No `PartialEq.eq` ⇒ no `eq` spec op, and nothing can supply an impl of it.
+    if let Some(eq_index) = super::load::EqDispatchIndex::build(kb) {
+        for &carrier in &composites {
+            let suppliers: Vec<Symbol> = eq_index
+                .candidates(kb, carrier)
+                .iter()
+                .map(|c| kb.canonical_sym(c.target))
+                .collect();
+            if let Some(signature) = out.get_mut(&carrier) {
+                signature.suppliers.extend(suppliers);
+            }
+        }
+    }
+    out
+}
+
+/// Record the equality signatures of the KB as it stands — at EVERY exit of
+/// `load::load_phase_inner`, and by nothing else.
+///
+/// `held` are the composites this load's [`later_equality_refusals`] refused. They KEEP
+/// the entry they had, so the knowledge base a refused load leaves behind — a plain load
+/// does not unwind — is refused again, by any later load, until it is repaired or
+/// discarded. Every OTHER composite is recorded as it now is, whether the load succeeded
+/// or failed for some unrelated reason, and both halves of that matter:
+///
+///   * a sort the failed load DEFINED must be in the record, or the next load could
+///     change its equality with nothing to be held to;
+///   * a row the failed load's passes DERIVED for an earlier composite (a field's
+///     abstract sort was just given an equality) must be in it too, or the corrected
+///     retry would be refused over a row no source wrote.
+pub(crate) fn record_equality_signatures(kb: &mut KnowledgeBase, held: &[Symbol]) {
+    let mut signatures = equality_signatures(kb);
+    for carrier in held {
+        // `held` is drawn from the record's own keys, so there is an entry to keep.
+        if let Some(was) = kb.recorded_equality_signatures().get(carrier).cloned() {
+            signatures.insert(*carrier, was);
+        }
+    }
+    kb.set_equality_signatures(signatures);
+}
+
+/// WI-20261006-SZKV7 — A COMPOSITE'S EQUALITY IS CLOSED BY THE LOAD THAT DEFINES IT.
+///
+/// What decides a composite's equality is who supplies its `eq` and which provisions of
+/// `PartialEq`, `Eq` and `NonEq` name it, and this module reads both through NEGATIONS:
+/// a composite is classified only if it is NOT a lawful-`Eq` boundary (nothing supplies
+/// its `eq`), and derived for only if nothing already SPEAKS for it (`spoken_for`, in the
+/// two total derivations). Within one load that is sound — both sets are complete before
+/// [`classify`] reads them. ACROSS loads it is not: they keep growing after the rows were
+/// written down, and nothing takes a row back. A later load that adds to an earlier
+/// sort's equality leaves in place
+///
+///   * that sort's derived rows, beside whatever the later load wrote;
+///   * the derived rows of every composite HOLDING the sort, partiality being propagated
+///     through fields;
+///   * every call the earlier load's typer resolved against them — while the eq-dispatch
+///     index, rebuilt per load, now answers `=` over the sort's values by the late `eq`;
+///   * and, for a sort that reaches a `Float`, its own derived `NonEq`, which the next
+///     classification reads back as a hand-written leaf ([`noneq_provider_sorts`]'s doc
+///     names the hazard).
+///
+/// MEASURED before this refusal, `reading(v: Float)` loaded and then a witness sort
+/// `provides Eq[T = Reading]` with `eq … = true`: the KB provides BOTH `NonEq` and `Eq`
+/// for the one type, and `eq(reading(1.5), reading(2.5))` is `false` where one load of
+/// the two sources answers `true`.
+///
+/// REFUSED, not repaired. Taking the rows back would oblige re-deriving every dependent
+/// and re-resolving every call that read them, and would make an earlier load's facts
+/// something a later load can change. A non-monotone update is refused; the same two
+/// sources in ONE load are accepted, the derivation seeing everything at once.
+///
+/// BY COMPARING STATES, not by reading what the load did. Each composite's
+/// [`EqualitySignature`] is recorded when a load ends, and here — after this load's
+/// sources are in and before it derives anything — recomputed by the same function for
+/// every composite in the record. A signature that differs is the refusal, whatever
+/// route changed it: a witness sort's provision or a binding in a later entry, with an
+/// `eq` or without; an `eq` member added to the sort, or to a witness an earlier load
+/// declared; a condition attached to a provision; the sort declared again with more in
+/// it. Earlier cuts read the load's additions instead — the sorts it derived for, the
+/// rows in its rule slots, the operations it declared — and each notion leaks
+/// (/code-review): an assert that repeats an earlier row lands on the earlier slot, and
+/// a source presented again is declared again without adding anything.
+///
+/// WHAT IT DOES NOT SEE, stated rather than left to be found:
+///
+///   * COMPOSITES only — the sorts this module classifies. An `eq` for an abstract sort
+///     is what a host's bindings do for the primitives, in whichever load they arrive;
+///     it can still move the equality of a composite that HOLDS such a sort.
+///   * what this load's own LATER passes add to an earlier composite — a provision
+///     forwarded onto it through a spec other than these three, an `Eq` derived for it
+///     because a field's sort has just been given one. Those are in the record by the
+///     next load.
+///   * what a supplier COMPUTES, and the composite's own shape: an `eq` operation
+///     declared again with another body, a sort declared again with another
+///     constructor. Declaring again across loads is how a layer overrides its base, and
+///     whether that may reach an equality is a question about redeclaration, not this.
+///
+/// Returns the refusals with the carriers they are about, which the caller hands to
+/// [`record_equality_signatures`] so that those stay held. Called once this load's
+/// sources are in and the eq-dispatch index is built, before [`classify`]; above the
+/// `run_typer` fork, so a partial load refuses the same thing.
+pub(crate) fn later_equality_refusals(
+    kb: &mut KnowledgeBase,
+) -> (Vec<super::load::LoadError>, Vec<Symbol>) {
+    if kb.recorded_equality_signatures().is_empty() {
+        // Nothing has loaded into this KB before, or nothing with a composite in it:
+        // there is no earlier sort to hold this load to. (A load that FAILED recorded
+        // too, so this is not the state it leaves.)
+        return (Vec::new(), Vec::new());
+    }
+    // The provider index, for this read alone. The signature asks each provision for its
+    // provider's conditions, and unindexed that is a scan of the whole conditions
+    // relation per provider — MEASURED on a later load at opt-level 0: 47 ms without the
+    // index, 6 ms with it (and 3–4 ms for the same function at the end of a load, where
+    // the index stands). Dropped again at once: the derivations below run unindexed by
+    // design, the rows they assert not being in it.
+    super::typing::build_provides_index(kb);
+    let now = equality_signatures(kb);
+    kb.provides_index = None;
+    let mut changed: Vec<(Symbol, Vec<String>)> = kb
+        .recorded_equality_signatures()
+        .iter()
+        .filter_map(|(&carrier, was)| match now.get(&carrier) {
+            Some(is) if is == was => None,
+            Some(is) => Some((carrier, describe_equality_change(kb, carrier, was, is))),
+            // Nothing un-declares a constructor, and a layer's discard restores the
+            // record with the declarations — so this is not a state a load can reach,
+            // and if one does it is refused rather than passed over.
+            None => Some((carrier, vec!["it is no longer a composite sort".to_string()])),
+        })
+        .collect();
+    changed.sort_by(|(a, _), (b, _)| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
+    let held: Vec<Symbol> = changed.iter().map(|(carrier, _)| *carrier).collect();
+    let refusals = changed
+        .into_iter()
+        .map(|(carrier, changes)| super::load::LoadError::EqualityOfEarlierSort {
+            carrier: kb.qualified_name_of(carrier).to_string(),
+            changes,
+        })
+        .collect();
+    (refusals, held)
+}
+
+/// How `is` differs from `was`, each difference in the terms it was written in. Sorted,
+/// so a refusal reads the same on every load.
+fn describe_equality_change(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    was: &EqualitySignature,
+    is: &EqualitySignature,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for &s in is.suppliers.difference(&was.suppliers) {
+        out.push(format!("`{}` now supplies its `eq`", kb.qualified_name_of(s)));
+    }
+    for &s in was.suppliers.difference(&is.suppliers) {
+        out.push(format!("`{}` no longer supplies its `eq`", kb.qualified_name_of(s)));
+    }
+    let by = |provider: Symbol| {
+        if provider == carrier {
+            "its own".to_string()
+        } else {
+            format!("`{}`'s", kb.qualified_name_of(provider))
+        }
+    };
+    let same_row = |sig: &EqualitySignature, row: RuleId| {
+        sig.provisions.iter().any(|p| p.row == row)
+    };
+    for p in is.provisions.difference(&was.provisions) {
+        let spec_name = kb.local_name_of(p.spec);
+        out.push(if same_row(was, p.row) {
+            format!("{} provision of `{spec_name}` for it has changed", by(p.provider))
+        } else {
+            format!("{} provision of `{spec_name}` for it is new", by(p.provider))
+        });
+    }
+    for p in was.provisions.difference(&is.provisions) {
+        if !same_row(is, p.row) {
+            let spec_name = kb.local_name_of(p.spec);
+            out.push(format!("{} provision of `{spec_name}` for it is gone", by(p.provider)));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// WI-20260919-HXGXF — assert `carrier provides spec` with `conds` as its ONE clause's
 /// conditions, and hand back nothing: the shared spelling of what this module has always
 /// done inline, so `type_value_derive` files its rows exactly as the equality derivations
@@ -805,7 +1069,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let parametric = |kb: &KnowledgeBase, s: Symbol| !kb.type_param_syms_of(s).is_empty();
     // Every carrier ANY equality provision already names — read carrier-side, which is
     // a DIFFERENT question from the three above (WI-1069). See the seed's comment.
-    let spoken_for: HashSet<Symbol> = ["PartialEq", "Eq", "NonEq"]
+    let spoken_for: HashSet<Symbol> = EQUALITY_SPECS
         .into_iter()
         .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
         .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))

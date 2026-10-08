@@ -126,13 +126,11 @@ fn the_switch_selects_the_recipe_the_helpers_run() {
 
     // What the helpers RAN, read off the load and not off any variable. Written to the
     // handle directly because libtest captures `eprintln!` of a passing test and this
-    // line is for the run's log (see the module doc).
+    // line is for the run's log (see the module doc) — and in ONE write: formatted piece
+    // by piece, another thread's `test … ok` landed in the middle of it.
     let observed = if names.contains(STDLIB_SORT) { "one shot" } else { "TWO-STEP" };
-    let _ = writeln!(
-        std::io::stderr(),
-        "load recipe OBSERVED by {}: {observed}",
-        module_path!()
-    );
+    let line = format!("load recipe OBSERVED by {}: {observed}\n", module_path!());
+    let _ = std::io::stderr().write_all(line.as_bytes());
 
     if switched {
         assert_two_step(&names);

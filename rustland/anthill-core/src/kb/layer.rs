@@ -142,6 +142,7 @@ kb_scoped_fields!(
     judged_row_binding_clauses,
     unbacked_derived_provisions,
     derived_provision_origin,
+    equality_signatures,
     // ── declarations: what makes a name MEAN something ─────────
     builtins,
     entity_fields,
@@ -387,6 +388,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         judged_row_binding_clauses: _,
         unbacked_derived_provisions: _,
         derived_provision_origin: _,
+        equality_signatures: _,
         builtins: _,
         entity_fields: _,
         entity_field_types: _,

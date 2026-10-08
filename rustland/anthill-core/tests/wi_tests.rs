@@ -1996,3 +1996,6 @@ mod wi_szkv7_two_step_load_test;
 
 #[path = "include/wi_szkv7_clause_frontier_test.rs"]
 mod wi_szkv7_clause_frontier_test;
+
+#[path = "include/wi_szkv7_later_equality_test.rs"]
+mod wi_szkv7_later_equality_test;

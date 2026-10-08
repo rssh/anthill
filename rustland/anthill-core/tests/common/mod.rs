@@ -484,6 +484,27 @@ pub fn recipe_load(
     Ok((kb, result))
 }
 
+/// WI-20261006-SZKV7 — `source` loaded into `kb` in a `load_all` of its OWN: the LATER
+/// call of a staged load, made by name. For a test whose subject is what a later load
+/// may do to an earlier one — it must make that call whatever the switch says, so it
+/// cannot go through a helper that makes one call or two by [`LoadRecipe::from_env`].
+#[allow(dead_code)]
+pub fn load_in_a_later_call(
+    kb: &mut KnowledgeBase,
+    source: &str,
+    options: load::LoadOptions,
+) -> Result<load::LoadResult, Vec<load::LoadError>> {
+    let parsed = parse::parse(source).expect("parse the later call's source");
+    load::load_all_with(kb, &[&parsed], &NullResolver, options)
+}
+
+/// The loader's errors as the strings a test asserts on — `LoadError`'s `Display`, which
+/// is what the `try_load_kb_*` helpers return.
+#[allow(dead_code)]
+pub fn rendered_load_errors(errors: Vec<load::LoadError>) -> Vec<String> {
+    errors.iter().map(|e| e.to_string()).collect()
+}
+
 /// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.
 ///
 /// [`try_load_kb_with_files`]'s sources are path-less, so a diagnostic that NAMES the
