@@ -133,6 +133,9 @@ fn stored_bindings(kb: &KnowledgeBase, rule_qn: &str) -> Option<Vec<(String, Str
             if !kb.qualified_name_of(*functor).ends_with("find_dictionary") {
                 continue;
             }
+            // Inspect the authored instance; a generated carrier-type dictionary
+            // read is separately stored and has a Spliced type-expression slot.
+            if matches!(pos_args.first()?.as_expr(),Some(Expr::Spliced(_))) { continue; }
             let slot = pos_args.first()?;
             let name_of = |v: &Rc<NodeOccurrence>| match v.as_expr() {
                 Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => kb.local_name_of(*s).to_owned(),
@@ -485,15 +488,14 @@ fn a_head_introduced_type_variable_resolves_inside_the_bracket() {
          rule anchored[A](?x: A, ?d) :- Desc[A], ?d = require[Desc[T = A]], seed(?x)\n",
     );
     let kb = crate::common::load_kb_with(&src);
-    // `A` denotes `Desc` — its guard-given bound — so that is what the retained binding
-    // holds. Asserting the VALUE, not merely that something is there: an `A` that failed
-    // to resolve would have been dropped by the same rule that drops a free `T`, and this
-    // row would then read `[]` and pass for the wrong reason.
-    assert_eq!(
-        stored_bindings(&kb, "test.w51w18.tv.anchored"),
-        Some(vec![("T".into(), "Desc".into())]),
-        "the introducer must resolve to its guard-given bound and be retained",
-    );
+    // A is the clause's actual carrier type variable. The authored bracket
+    // retains that very slot, rather than storing the spec as the value's type.
+    let rid = kb.rule_id_by_qn("test.w51w18.tv.anchored").unwrap();
+    let Term::Var(anthill_core::kb::term::Var::DeBruijn(carrier)) = kb.get_term(kb.rule_type_bounds(rid)[0].1) else {
+        panic!("the introduced type is a carrier variable");
+    };
+    assert_eq!(stored_bindings(&kb,"test.w51w18.tv.anchored"),
+        Some(vec![("T".into(),format!("Some(Var(DeBruijn({carrier})))"))]));
     // AND IT THREADS, asserted BY VALUE. The header said "loads and THREADS" while the
     // only assertion was a stored SHAPE — so if threading stopped and `Desc.describe`
     // fell back to the spec default, the row stayed green. `7` is the carrier's own

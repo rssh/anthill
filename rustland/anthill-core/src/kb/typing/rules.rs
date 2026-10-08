@@ -573,7 +573,10 @@ const TYPED_HEAD_DOMAIN_PASS: &str = "anthill.kb.passes.typed_head_domain";
 /// Did [`install_typed_head_domain_goals`] synthesize a node stamped `by`? The read-only face
 /// of [`typed_head_domain_pass`], for the resolver: a lookup in the intern map, never a
 /// registration from a resolution.
-pub(crate) fn is_typed_head_domain_pass(kb: &KnowledgeBase, by: crate::kb::occurrence::PassId) -> bool {
+pub(crate) fn is_typed_head_domain_pass(
+    kb: &KnowledgeBase,
+    by: crate::kb::occurrence::PassId,
+) -> bool {
     kb.symbols
         .lookup(TYPED_HEAD_DOMAIN_PASS)
         .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
@@ -639,9 +642,10 @@ pub(crate) fn is_typed_head_domain_pass(kb: &KnowledgeBase, by: crate::kb::occur
 /// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
 /// an empty body (§6.1) and is still a clause that answers.
 pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
-    let (Some(dom_sym), Some(guard_sym)) =
-        (kb.try_resolve_symbol(TYPE_DOMAIN_GOAL), kb.try_resolve_symbol(TYPE_DOMAIN_GUARD))
-    else {
+    let (Some(dom_sym), Some(guard_sym)) = (
+        kb.try_resolve_symbol(TYPE_DOMAIN_GOAL),
+        kb.try_resolve_symbol(TYPE_DOMAIN_GUARD),
+    ) else {
         return; // builtins not registered — nothing to generate against
     };
     let pass = typed_head_domain_pass(kb);
@@ -710,9 +714,8 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // `?x` rides as the SAME DeBruijn index the bound is keyed by
             // (`install_rule_type_bounds` stores `len - 1 - position`), so the goal names
             // the head variable itself and the rule's arity is unchanged.
-            let var = || {
-                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner)
-            };
+            let var =
+                || NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
             // The bound rides as the interned type term the loader resolved, in a `Spliced`
             // leaf (`Value::carried` cancels the wrapper at the resolver).
             let ty = || {
@@ -736,6 +739,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // WRITTEN domain's own clause (it IS the generator), a type with no domain, or a
             // KB that never declared `SortDomain` — the check then still guards the bound.
             let fill: Option<Vec<Rc<NodeOccurrence>>> = if written_domain
+                || kb.rule_bound_has_provider_requirement(rid, bound_tid)
                 || !bound_is_fillable(kb, bound_tid)
             {
                 None
@@ -771,9 +775,10 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
 
 /// Can a value of the bound's type be FILLED: its sort has a `SortDomain`, and so does every
 /// argument that sort's `fill` reads — its conditions? A variable counts, being pinned when the
-/// clause runs. A bound that names a SPEC — WI-582's `[A]` introducer records `A`'s spec, so
-/// `?a: List[T = A]` is stored `List[T = Summable]` — or a function type, a tuple, an abstract
-/// sort, names a type nothing fills, and keeps the conformance check.
+/// clause runs. Provider-constrained carrier variables are gated separately by
+/// rule_bound_has_provider_requirement; their obligation is a dictionary read,
+/// not a fillable spec type. A function type, tuple or abstract sort keeps only
+/// the conformance check.
 fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
     match kb.get_term(t) {
         Term::Var(_) => true,
@@ -857,7 +862,11 @@ fn implicit_domain_goals(
         Expr::Apply {
             recv_type: None,
             functor: fd,
-            pos_args: vec![node(Expr::Ref(spec)), node(Expr::Ref(spec)), node(Expr::Var(Var::DeBruijn(db_index)))],
+            pos_args: vec![
+                node(Expr::Ref(spec)),
+                node(Expr::Ref(spec)),
+                node(Expr::Var(Var::DeBruijn(db_index))),
+            ],
             named_args: vec![(out_label, node(Expr::Var(Var::DeBruijn(xd_index))))],
             type_args: Vec::new(),
         },
@@ -882,7 +891,7 @@ fn type_term_head_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
 /// Does this rule-body occurrence hold a WOVEN call — an `apply_within` a requirement weave
 /// put there (`rule_requirements::weave_calls`, WI-1040 and WI-20260925-P7VP4)? Iterative, like the
 /// other rule-body walks.
-fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
+pub(crate) fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         let Some(expr) = o.as_expr() else { continue };

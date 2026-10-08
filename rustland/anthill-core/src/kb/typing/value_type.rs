@@ -1793,6 +1793,40 @@ pub(crate) fn fetch_dictionary(
             },
         };
     };
+    fetch_built_dictionary(kb, goal, from_carried_types, rung)
+}
+
+pub(crate) fn fetch_dictionary_from_type(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    instance: &Value,
+    carrier_type: &Value,
+    rung: DefaultRung,
+    provider: Option<Symbol>,
+) -> FindDictFetch {
+    let goal = match provider_requirement_goal_with_provider(
+        kb,
+        subst,
+        carrier_type,
+        instance,
+        provider,
+    ) {
+        Ok(goal) => goal,
+        Err(TypeBoundVerdict::Refuted) => return FindDictFetch::Guard(FindDictOutcome::DontFire),
+        Err(TypeBoundVerdict::Suspend) => return FindDictFetch::Guard(FindDictOutcome::Suspend),
+        Err(TypeBoundVerdict::Holds) => {
+            unreachable!("building a requirement returns its goal on success")
+        }
+    };
+    fetch_built_dictionary(kb, goal, false, rung)
+}
+
+fn fetch_built_dictionary(
+    kb: &mut KnowledgeBase,
+    goal: SortGoal,
+    from_carried_types: bool,
+    rung: DefaultRung,
+) -> FindDictFetch {
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
@@ -2300,17 +2334,19 @@ pub(crate) fn typed_pattern_bounds_hold(
     rid: crate::kb::RuleId,
     msubst: &Substitution,
     fresh: &[VarId],
-) -> bool {
+) -> Option<Substitution> {
     let bounds = kb.rule_type_bounds(rid).to_vec();
     if bounds.is_empty() {
-        return true;
+        return Some(msubst.clone());
     }
+    kb.open_rule_provider_requirements(rid, fresh);
+    let mut check = msubst.clone();
     for (db_index, bound_tid) in bounds {
         let Some(&gvid) = fresh.get(db_index as usize) else {
-            return false; // no opened global for the bound slot → cannot decide
+            return None; // no opened global for the bound slot → cannot decide
         };
-        let Some(matched) = msubst.bindings.get(&gvid).cloned() else {
-            return false; // the bound var did not match → cannot decide
+        let Some(matched) = check.resolve_as_value(gvid).cloned() else {
+            return None; // the bound var did not match → cannot decide
         };
         // WI-20260911-5G28A — OPEN THE BOUND against the same `fresh` globals the head
         // was opened with. A bound's own type variables are frame slots since this
@@ -2322,17 +2358,46 @@ pub(crate) fn typed_pattern_bounds_hold(
         // COLLAPSE, deliberately: a rewrite has two outcomes, so `Suspend` and
         // `Refuted` are both "don't fire" here. The goal reader (WI-742) keeps
         // them apart — that is the whole reason the decision is factored out.
-        if type_bound_verdict(kb, msubst, &matched, bound_tid) != TypeBoundVerdict::Holds {
-            return false;
+        let bound = walk_type_deep_value(kb, &check, &Value::term(bound_tid));
+        match pin_bound_from_value(kb, &check, &matched, &bound) {
+            TypeBoundPin::Pinned { pin, .. } => {
+                for (&v, value) in pin.iter() {
+                    check.bind_value(kb, v, value.clone());
+                }
+                if check.is_contradiction() {
+                    return None;
+                }
+            }
+            TypeBoundPin::NotApplicable => {
+                if type_bound_verdict_view(kb, &check, &matched, &bound) != TypeBoundVerdict::Holds
+                {
+                    return None;
+                }
+            }
+            TypeBoundPin::Refuted | TypeBoundPin::Suspend => return None,
         }
     }
-    true
+    for r in kb.rule_provider_requirements(rid).to_vec() {
+        let carrier = check.resolve_as_value(fresh[r.carrier as usize])?.clone();
+        let instance = kb.term_from_debruijn(r.instance, fresh);
+        let instance = walk_type_deep_value(kb, &check, &Value::term(instance));
+        let FindDictFetch::Fetched(dictionary) =
+            fetch_dictionary_from_type(kb, &check, &instance, &carrier, DefaultRung::Consult, None)
+        else {
+            return None;
+        };
+        check.bind_value(kb, fresh[r.dictionary as usize], dictionary);
+        if check.is_contradiction() {
+            return None;
+        }
+    }
+    Some(check)
 }
 
 /// WI-742 — the three-valued answer to "does this value's CARRIED type satisfy
 /// this declared bound", the one decision behind both readings of a `?x: T`
 /// annotation: WI-582's rewrite guard ([`typed_pattern_bounds_hold`], which
-/// collapses it to a bool) and proposal 060 §2's generated `domain(?x, T)` body
+/// collapses suspension to no match) and proposal 060 §2's generated `domain(?x, T)` body
 /// goal (which needs all three).
 ///
 /// ONE PREDICATE, TWO READERS — not two implementations. The equational and
@@ -2361,7 +2426,7 @@ pub(crate) enum TypeBoundVerdict {
 ///
 /// The carried type is [`value_type_term`] (WI-578) — the value's full stored
 /// type term, never collapsed to a head symbol. Conformance is the ordinary
-/// [`types_compatible`], which is subsort for a nominal sort bound and `provides`
+/// [`types_compatible`], which is subsort for a nominal sort bound and explicit obligations
 /// for a spec bound; both read load-built relations, so this performs no typing
 /// operation in the staging sense (proposal 060's rule).
 ///
@@ -2428,9 +2493,7 @@ pub(crate) fn type_bound_verdict_view(
     // its member (`?x: Summable.T`) or a type variable: the matched value's sort provides
     // it. The spec written as the variable's type is refused at load
     // ([`check_rule_sort_uses`]), so no bound holds one as a type.
-    let holds = spec_as_its_providers(kb, |kb| {
-        types_compatible(kb, &mut Substitution::new(), &ty, bound)
-    });
+    let holds = types_compatible(kb, &mut Substitution::new(), &ty, bound);
     if holds {
         TypeBoundVerdict::Holds
     } else {
@@ -2521,12 +2584,9 @@ pub(crate) fn pin_bound_from_value_open(
 /// [`pin_bound_from_value_open`] (`open: true`), which differ in how they read the value's
 /// type — and, for the open reading, a bound σ has already pinned.
 ///
-/// A RULE BOUND IS READ AS ONE HERE TOO ([`spec_as_its_providers`]). A spec over a
-/// parameter standing in the bound is the requirement a head wrote through its member or a
-/// type variable, wherever in the bound it stands; compared as a value's type beside a
-/// variable, `?p: Pair[A = Summable.T]` — whose unwritten `B` is a variable — refuted
-/// every provider and the rule answered nothing, while its fully written twin, which has
-/// no variable and so takes [`type_bound_verdict_view`], answered (MEASURED).
+/// The bound is an actual type expression. Provider requirements belong to its
+/// carrier variables and are checked explicitly, including nested occurrences;
+/// no nominal spec is reinterpreted as its providers for this comparison.
 fn pin_bound(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -2534,7 +2594,7 @@ fn pin_bound(
     bound: &Value,
     open: bool,
 ) -> TypeBoundPin {
-    spec_as_its_providers(kb, |kb| pin_bound_as_a_bound(kb, subst, value, bound, open))
+    pin_bound_as_a_bound(kb, subst, value, bound, open)
 }
 
 fn pin_bound_as_a_bound(
@@ -2592,7 +2652,11 @@ fn pin_bound_as_a_bound(
 /// WI-20260925-SHED7 — `value`'s type with its unknowns OPEN — each a fresh logic variable —
 /// or `None` while the type has no head (the value is itself unbound). `[]` reads as
 /// `List[T = ?t]`: the type of a value whose element type nothing names yet.
-pub(crate) fn value_type_open(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value) -> Option<Value> {
+pub(crate) fn value_type_open(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+) -> Option<Value> {
     let ty = value_type_term(kb, subst, value);
     if !type_head_is_decidable(kb, &ty) {
         return None;
@@ -2652,6 +2716,9 @@ pub(super) fn pin_type_vars(
 ) -> bool {
     if let Some(vid) = bindable_type_var(kb, bound) {
         let ty_val = walk_type_deep_value(kb, pin, ty);
+        if carrier_requirements_hold(kb, pin, vid, &ty_val) == TypeBoundVerdict::Refuted {
+            return false;
+        }
         return match pin.resolve_as_value(vid).cloned() {
             Some(prev) => types_compatible(kb, pin, &ty_val, &prev),
             None => bind_resolved(kb, pin, vid, ty_val),
@@ -2748,7 +2815,7 @@ pub(super) fn pin_type_vars(
 /// EVERY OTHER SHAPE IS DETERMINED and gets a real answer: `arrow` and `named_tuple` have
 /// their own subtyping arms, and a shape with no arm falls to `false`, which for a bound
 /// the value does not satisfy is the RIGHT answer — the guard restricts.
-fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
+pub(super) fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
     if !type_head_is_decidable(kb, ty) {
         return true;
     }

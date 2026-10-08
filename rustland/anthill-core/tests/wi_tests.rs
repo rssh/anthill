@@ -1985,6 +1985,12 @@ mod wi_gvgsq_instance_member_test;
 #[path = "include/wi_df0ts_default_instance_test.rs"]
 mod wi_df0ts_default_instance_test;
 
+#[path = "include/wi_8dxvk_rule_requirements_test.rs"]
+mod wi_8dxvk_rule_requirements_test;
+
+#[path = "include/wi_8dxvk_provider_representation_test.rs"]
+mod wi_8dxvk_provider_representation_test;
+
 #[path = "include/wi_szkv7_two_step_load_test.rs"]
 mod wi_szkv7_two_step_load_test;
 

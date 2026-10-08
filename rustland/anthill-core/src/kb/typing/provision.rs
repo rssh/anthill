@@ -629,14 +629,10 @@ pub(crate) fn check_rule_sort_uses(
                 // writes the spec as a type as surely as the bracket does. Read as its own
                 // name it was no spec at all, and `?xs: Sums` loaded and matched by
                 // provision — the reading its spelled-out twin is refused for (MEASURED).
-                let mut named = vec![sort];
-                if let Some(target) = alias_leaf(kb, sort) {
-                    named.clear();
-                    collect_sorts_written_as_types(kb, &TermIdView(target), &mut named);
-                }
-                let Some((spec, param)) = named.into_iter().find_map(|s| {
-                    spec_over_parameter(kb, s).map(|p| (kb.canonical_sort_sym(s), p))
-                }) else {
+                let written_type = kb.make_sort_ref(sort);
+                let Some((spec, param)) =
+                    parameter_spec_written_as_type(kb, &TermIdView(written_type))
+                else {
                     continue;
                 };
                 let site = crate::kb::load::render_decl_site(kb, written.span);
@@ -690,6 +686,30 @@ pub(crate) fn check_rule_sort_uses(
         errors.push(crate::kb::load::LoadError::Other { message });
     }
     errors
+}
+
+/// 8DXVK: source-written type membership never interprets a parameter-carried
+/// spec as its providers. Queries bypass loading, so the resolver needs the
+/// same verdict, including aliases and nested type positions.
+pub(crate) fn parameter_spec_written_as_type<V: TermView>(
+    kb: &mut KnowledgeBase,
+    ty: &V,
+) -> Option<(Symbol, Symbol)> {
+    let mut pending = Vec::new();
+    collect_sorts_written_as_types(kb, ty, &mut pending);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(written) = pending.pop() {
+        let sort = kb.canonical_sort_sym(written);
+        if !visited.insert(sort) {
+            continue;
+        }
+        if let Some(target) = alias_leaf(kb, sort) {
+            collect_sorts_written_as_types(kb, &TermIdView(target), &mut pending);
+        } else if let Some(param) = spec_over_parameter(kb, sort) {
+            return Some((sort, param));
+        }
+    }
+    None
 }
 
 /// WI-20260913-KXNEX — does a spec reference AS WRITTEN bind `param` to ANYTHING?

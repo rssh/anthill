@@ -19,11 +19,11 @@ use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
-use super::FrameReqFailure;
 use super::error::EvalError;
 use super::frame::{AwaitState, ChildFrameContext, Frame};
 use super::pattern::{constructor_pattern_name, match_pattern};
 use super::value::Value;
+use super::FrameReqFailure;
 use super::Interpreter;
 
 pub enum StepOutcome {
@@ -403,9 +403,7 @@ impl Interpreter {
                         let target = occ.classified_apply_target().unwrap_or(*functor);
                         // WI-20260921-28TAT: …and the callee's own op-scoped slots, if
                         // it declares any. See [`Self::start_apply_with_op_slots`].
-                        self.start_apply_with_op_slots(
-                            target, &op_dicts, pos_args, named_args,
-                        )
+                        self.start_apply_with_op_slots(target, &op_dicts, pos_args, named_args)
                     }
                 }
             }
@@ -427,14 +425,7 @@ impl Interpreter {
                 // dict against the provider's chain alone.
                 // WI-822 LEG 1: no op-scoped slots — the IR `apply_within` form carries
                 // only the instance channel, and this arm is rebuild-only (see above).
-                self.start_apply_within(
-                    *functor,
-                    *functor,
-                    args,
-                    named_args,
-                    requirements,
-                    &[],
-                )
+                self.start_apply_within(*functor, *functor, args, named_args, requirements, &[])
             }
             Expr::Constructor {
                 name,
@@ -517,10 +508,10 @@ impl Interpreter {
         if !crate::kb::typing::is_sort_param_symbol(&self.kb, head) {
             return Ok(());
         }
-        let running = self
-            .stack
-            .top()
-            .map_or_else(|| "<no frame>".to_string(), |f| self.kb.qualified_name_of(f.op).to_string());
+        let running = self.stack.top().map_or_else(
+            || "<no frame>".to_string(),
+            |f| self.kb.qualified_name_of(f.op).to_string(),
+        );
         Err(EvalError::UnboundTypeParam {
             param: self.kb.qualified_name_of(head).to_string(),
             running,
@@ -1302,6 +1293,13 @@ impl Interpreter {
             }
         };
         match expr {
+            // A typed rewrite binds an ordinary dictionary Value and splices it
+            // into the RHS. Read it through the same validated structural view
+            // used by reflected dictionaries; no eval-only representation is made.
+            Expr::Spliced(value) => super::value::Dictionary::from_view(&self.kb, value)
+                .ok_or_else(|| {
+                    EvalError::Internal("a spliced requirement is not a complete dictionary".into())
+                }),
             Expr::RequirementAtSort { chain, slot } => {
                 let parent = self.eval_requirement_chain_node(chain)?;
                 self.project_requirement(&parent, *slot as usize, "this chain")
@@ -1397,6 +1395,14 @@ impl Interpreter {
             }
         };
         match expr {
+            // A typed rewrite binds an ordinary dictionary Value and splices it
+            // into the RHS. Read it through the same validated structural view
+            // used by reflected dictionaries; no eval-only representation is made.
+            Expr::Spliced(value) => super::value::Dictionary::from_view(&self.kb, value)
+                .map(Some)
+                .ok_or_else(|| {
+                    EvalError::Internal("a spliced requirement is not a complete dictionary".into())
+                }),
             Expr::RequirementAtSort { chain, slot } => {
                 let Some(parent) = self.try_eval_requirement_chain_node(chain)? else {
                     return Ok(None);
@@ -2043,9 +2049,7 @@ impl Interpreter {
             let mut reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
             self.push_op_scoped_slots(target, target, op_dicts, &mut reqs)?;
             if !reqs.is_empty() {
-                return self.dispatch_apply_with_requirements(
-                    target, reqs, pos_args, named_args,
-                );
+                return self.dispatch_apply_with_requirements(target, reqs, pos_args, named_args);
             }
         }
         self.start_apply(target, pos_args, named_args)
@@ -2336,11 +2340,7 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         let total_args = pos_args.len() + named_args.len();
         if total_args == 0 {
-            return self.dispatch_call_with_requirements(
-                target,
-                Vec::new(),
-                requirements,
-            );
+            return self.dispatch_call_with_requirements(target, Vec::new(), requirements);
         }
         let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
         for a in pos_args.iter() {
@@ -2750,13 +2750,7 @@ impl Interpreter {
                     }
                 }
             }
-            return self.enter_operation(
-                target,
-                body_node,
-                &params,
-                arg_values,
-                requirements,
-            );
+            return self.enter_operation(target, body_node, &params, arg_values, requirements);
         }
 
         // 3b. WI-350 — a body-less spec op left un-rewritten by the typer
@@ -3807,9 +3801,10 @@ impl Interpreter {
                              ran with none",
                             self.kb.local_name_of(n),
                         ),
-                        FrameReqFailure::NoDictionarySort =>
+                        FrameReqFailure::NoDictionarySort => {
                             "this KB never loaded `anthill.realization.runtime.Dictionary`"
-                                .to_string(),
+                                .to_string()
+                        }
                     };
                     eprintln!(
                         "[req] `{}`: op-scoped slot(s) NOT filled at entry — {why}",

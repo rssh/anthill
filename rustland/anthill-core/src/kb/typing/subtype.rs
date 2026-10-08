@@ -52,6 +52,22 @@ pub fn types_compatible<A: TermView, B: TermView>(
     actual: &A,
     expected: &B,
 ) -> bool {
+    if let ViewHead::Var(Var::Global(carrier)) = expected.head(kb) {
+        if !kb.type_var_provider_requirements(carrier).is_empty() {
+            let actual_value = match actual.as_bind_value() {
+                BindValue::Term(t) => Value::term(t),
+                BindValue::Value(v) => v,
+                BindValue::Path(_) => {
+                    unreachable!("a concrete type view cannot be an unresolved extraction path")
+                }
+            };
+            if carrier_requirements_hold(kb, subst, carrier, &actual_value)
+                == TypeBoundVerdict::Refuted
+            {
+                return false;
+            }
+        }
+    }
     match (actual.as_bind_value(), expected.as_bind_value()) {
         (BindValue::Term(a), BindValue::Term(e)) => types_compatible_term_dispatch(kb, subst, a, e),
         _ => types_compatible_view_structural(kb, subst, actual, expected),

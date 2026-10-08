@@ -334,6 +334,20 @@ pub enum ClauseOrigin {
 
 // ── Rule entry ──────────────────────────────────────────────────
 
+/// A provider proof has its own dictionary slot; the carrier slot is a type.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RuleProviderRequirement {
+    pub carrier: u32,
+    pub instance: TermId,
+    pub dictionary: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TypeVarProviderRequirement {
+    instance: TermId,
+    dictionary: VarId,
+}
+
 #[derive(Clone)]
 struct RuleEntry {
     /// The fact/rule head, carrier-agnostic (WI-348 Phase B): `Value::Term`
@@ -381,12 +395,15 @@ struct RuleEntry {
     /// WI-582 — typed rule-pattern bounds: `(debruijn_index, bound_type)` pairs
     /// from explicit `?x: T` head annotations. Each entry says "the variable at
     /// this DeBruijn index must, when the rule fires, bind to a value whose
-    /// carried type conforms to `bound_type`" (subsort for a sort bound, provides
-    /// for a spec bound). Empty for untyped rules — the discrimination tree keys
+    /// carried type conforms to `bound_type`". Provider obligations and their
+    /// dictionary slots are separate from the carrier type. Empty for untyped rules — the discrimination tree keys
     /// only on the (structurally identical) head, so the bound rides HERE, off
     /// the structural index (carrier-neutral, M1). Read at fire by
     /// `apply_eq_rules`'s post-match conforms check.
     type_bounds: Vec<(u32, TermId)>,
+    /// Provider obligations on carrier-type frame slots, closed against the same
+    /// frame as type_bounds. These are spec instances, never value types.
+    provider_requirements: Vec<RuleProviderRequirement>,
     /// WI-635: the stored head's `Var::Global`s, in first-occurrence order —
     /// empty when the head is ground. Collected carrier-agnostically at assert
     /// (`push_value_head_entry` → `collect_head_global_vars`) and read two ways,
@@ -1771,6 +1788,11 @@ pub struct KnowledgeBase {
     /// [`Self::simp_guard_depth`] is.
     pub(crate) spec_as_providers_depth: usize,
 
+    /// Explicit obligations attached to opened carrier type variables. Rule
+    /// entries close these into provider_requirements; activations and citations
+    /// reopen them with their own fresh frame, preserving rigid variable identity.
+    type_var_provider_requirements: HashMap<VarId, Vec<TypeVarProviderRequirement>>,
+
     /// WI-627: the resolved `anthill.prelude.PartialEq.eq` / `anthill.kernel.unify`
     /// connective symbols, cached at [`Self::register_builtin_tags`] time
     /// (re-synced in [`Self::resolve_builtins`]) so
@@ -2623,6 +2645,7 @@ impl KnowledgeBase {
             simp_gate_cache: None,
             simp_guard_depth: 0,
             spec_as_providers_depth: 0,
+            type_var_provider_requirements: HashMap::new(),
             eq_connective_sym: None,
             or_connective_sym: None,
             and_connective_sym: None,
@@ -3145,7 +3168,11 @@ impl KnowledgeBase {
     /// WI-743 — record `sort`'s parameter list for the derivation of its domain. Keyed by
     /// [`Self::canonical_sort_sym`] on BOTH sides, so a sort reached under a second
     /// spelling of its name is the same row.
-    pub(crate) fn record_domain_params(&mut self, sort: Symbol, params: Vec<fill_derive::DomainParam>) {
+    pub(crate) fn record_domain_params(
+        &mut self,
+        sort: Symbol,
+        params: Vec<fill_derive::DomainParam>,
+    ) {
         let canon = self.canonical_sort_sym(sort);
         self.domain_params.insert(canon, params);
     }
@@ -3860,7 +3887,10 @@ impl KnowledgeBase {
     /// parameters a positional is the WI-407 carrier slot, not an argument. So: an
     /// over-application of a spec that HAS parameters, given the [`Self::positional_param_slots`]
     /// of the application, or `None`.
-    pub fn excess_positional(declared: &[String], slots: &[Option<usize>]) -> Option<TypeArgProblem> {
+    pub fn excess_positional(
+        declared: &[String],
+        slots: &[Option<usize>],
+    ) -> Option<TypeArgProblem> {
         (!declared.is_empty() && slots.iter().any(Option::is_none)).then(|| {
             TypeArgProblem::ExcessPositional {
                 given: slots.len(),
@@ -4291,6 +4321,7 @@ impl KnowledgeBase {
             shared_arity: 0,
             label: None,
             type_bounds: Vec::new(),
+            provider_requirements: Vec::new(),
             head_vars,
             // WI-458: filled by the loader via `set_rule_head_span` once it has
             // this rule's RuleId; a synthesized head keeps `None`.
@@ -7453,13 +7484,16 @@ impl KnowledgeBase {
         spec: Symbol,
         conditions: Vec<crate::eval::value::Value>,
     ) {
-        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
+        let key = (
+            self.canonical_sort_sym(carrier),
+            self.canonical_sort_sym(spec),
+        );
         let known = self.provides_clause_counts.get(&key).is_some_and(|seen| {
             seen.iter().any(|c| {
                 c.len() == conditions.len()
-                    && c.iter().zip(&conditions).all(|(a, b)| {
-                        crate::kb::term_view::views_structurally_equal(self, a, b)
-                    })
+                    && c.iter()
+                        .zip(&conditions)
+                        .all(|(a, b)| crate::kb::term_view::views_structurally_equal(self, a, b))
             })
         });
         if !known {
@@ -7479,8 +7513,13 @@ impl KnowledgeBase {
 
     /// Proposal 066 §7.5 — how many written clauses of `carrier` provide `spec`.
     pub fn provides_clause_count(&self, carrier: Symbol, spec: Symbol) -> u32 {
-        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
-        self.provides_clause_counts.get(&key).map_or(0, |s| s.len() as u32)
+        let key = (
+            self.canonical_sort_sym(carrier),
+            self.canonical_sort_sym(spec),
+        );
+        self.provides_clause_counts
+            .get(&key)
+            .map_or(0, |s| s.len() as u32)
     }
 
     /// WI-20260925-P5G39 — does one of `carrier`'s written clauses provide `spec` with NO
@@ -7490,7 +7529,10 @@ impl KnowledgeBase {
     /// itself rather than as a count difference: two clauses writing the SAME conditions
     /// are one entry there and two groups in `provision_conditions`.
     pub(crate) fn provides_unconditioned_clause(&self, carrier: Symbol, spec: Symbol) -> bool {
-        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
+        let key = (
+            self.canonical_sort_sym(carrier),
+            self.canonical_sort_sym(spec),
+        );
         self.provides_clause_counts
             .get(&key)
             .is_some_and(|clauses| clauses.iter().any(|c| c.is_empty()))
@@ -8622,14 +8664,7 @@ impl KnowledgeBase {
         domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
-        self.assert_rule_debruijn_with_bound_vars(
-            head,
-            body_nodes,
-            &[],
-            clause_kind,
-            domain,
-            meta,
-        )
+        self.assert_rule_debruijn_with_bound_vars(head, body_nodes, &[], clause_kind, domain, meta)
     }
 
     /// WI-20260911-5G28A — [`Self::assert_rule_debruijn_with_nodes`] admitting a
@@ -8940,13 +8975,181 @@ impl KnowledgeBase {
                 ),
             }
         }
+        let mut requirements = Vec::new();
+        for (position, &vid) in globals.iter().enumerate() {
+            for requirement in self
+                .type_var_provider_requirements
+                .get(&vid)
+                .cloned()
+                .unwrap_or_default()
+            {
+                let dictionary_position = globals
+                    .iter()
+                    .position(|v| *v == requirement.dictionary)
+                    .expect("the provider dictionary belongs to the rule frame");
+                requirements.push(RuleProviderRequirement {
+                    carrier: (globals.len() - 1 - position) as u32,
+                    instance: self.term_to_debruijn(requirement.instance, &globals),
+                    dictionary: (globals.len() - 1 - dictionary_position) as u32,
+                });
+            }
+        }
         self.rules[id.index()].type_bounds = bounds;
+        self.rules[id.index()].provider_requirements = requirements;
     }
 
     /// WI-582 — the typed rule-pattern bounds for `id`: `(debruijn_index,
     /// bound_type)` pairs the firing check reads. Empty for untyped rules.
     pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, TermId)] {
         &self.rules[id.index()].type_bounds
+    }
+
+    /// Register one explicit provider obligation on a carrier type variable.
+    pub(crate) fn add_type_var_provider_requirement(&mut self, carrier: VarId, instance: TermId) {
+        if self
+            .type_var_provider_requirements
+            .get(&carrier)
+            .is_some_and(|r| r.iter().any(|r| r.instance == instance))
+        {
+            return;
+        }
+        let name = self.intern("provider_dictionary");
+        let dictionary = self.fresh_var(name);
+        self.type_var_provider_requirements
+            .entry(carrier)
+            .or_default()
+            .push(TypeVarProviderRequirement {
+                instance,
+                dictionary,
+            });
+    }
+
+    pub(crate) fn type_var_provider_requirements(&self, carrier: VarId) -> Vec<TermId> {
+        self.type_var_provider_requirements
+            .get(&carrier)
+            .into_iter()
+            .flatten()
+            .map(|r| r.instance)
+            .collect()
+    }
+
+    pub(crate) fn provider_requirement_frame_vars(&self, carrier: VarId) -> Vec<VarId> {
+        let mut vars = Vec::new();
+        for r in self
+            .type_var_provider_requirements
+            .get(&carrier)
+            .into_iter()
+            .flatten()
+        {
+            vars.extend(self.collect_vars(&r.instance));
+            vars.push(r.dictionary);
+        }
+        vars
+    }
+
+    pub(crate) fn rule_provider_requirements(&self, id: RuleId) -> &[RuleProviderRequirement] {
+        &self.rules[id.index()].provider_requirements
+    }
+
+    /// Open both type and dictionary slots against the clause's own fresh frame.
+    pub(crate) fn open_rule_provider_requirements(&mut self, id: RuleId, fresh: &[VarId]) {
+        for r in self.rule_provider_requirements(id).to_vec() {
+            let carrier = fresh[r.carrier as usize];
+            let dictionary = fresh[r.dictionary as usize];
+            let instance = self.term_from_debruijn(r.instance, fresh);
+            let requirements = self
+                .type_var_provider_requirements
+                .entry(carrier)
+                .or_default();
+            if !requirements.iter().any(|r| r.instance == instance) {
+                requirements.push(TypeVarProviderRequirement {
+                    instance,
+                    dictionary,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn rule_bound_has_provider_requirement(&self, id: RuleId, bound: TermId) -> bool {
+        match self.get_term(bound) {
+            Term::Var(Var::DeBruijn(i)) => self
+                .rule_provider_requirements(id)
+                .iter()
+                .any(|r| r.carrier == *i),
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => pos_args
+                .iter()
+                .copied()
+                .chain(named_args.iter().map(|(_, t)| *t))
+                .any(|t| self.rule_bound_has_provider_requirement(id, t)),
+            _ => false,
+        }
+    }
+
+    /// The requirements visible from each typed value column, for dictionary
+    /// attribution. This view contains obligations, not value types: ordinary
+    /// type checking continues to read rule_type_bounds.
+    pub(crate) fn rule_requirement_anchor_bounds(&mut self, id: RuleId) -> Vec<(u32, TermId)> {
+        fn project(kb: &mut KnowledgeBase, term: TermId, requirements: &[(u32, TermId)]) -> TermId {
+            match kb.get_term(term).clone() {
+                Term::Var(Var::DeBruijn(index)) => {
+                    if let Some((_, instance)) = requirements.iter().find(|(i, _)| *i == index) {
+                        // The type variable is the carrier, not an instance element
+                        // to recursively project back into its own requirement.
+                        match kb.get_term(*instance).clone() {
+                            Term::Fn {
+                                functor,
+                                pos_args,
+                                mut named_args,
+                            } => {
+                                named_args.retain(|(_, v)| !matches!(kb.get_term(*v), Term::Var(Var::DeBruijn(i)) if *i == index));
+                                kb.alloc(Term::Fn {
+                                    functor,
+                                    pos_args,
+                                    named_args,
+                                })
+                            }
+                            _ => *instance,
+                        }
+                    } else {
+                        term
+                    }
+                }
+                Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                } => {
+                    let pos_args = pos_args
+                        .into_iter()
+                        .map(|t| project(kb, t, requirements))
+                        .collect();
+                    let named_args = named_args
+                        .into_iter()
+                        .map(|(k, t)| (k, project(kb, t, requirements)))
+                        .collect();
+                    kb.alloc(Term::Fn {
+                        functor,
+                        pos_args,
+                        named_args,
+                    })
+                }
+                _ => term,
+            }
+        }
+        let requirements: Vec<_> = self
+            .rule_provider_requirements(id)
+            .iter()
+            .map(|r| (r.carrier, r.instance))
+            .collect();
+        self.rule_type_bounds(id)
+            .to_vec()
+            .into_iter()
+            .map(|(i, t)| (i, project(self, t, &requirements)))
+            .collect()
     }
 
     /// WI-20260911-5G28A — grow an asserted rule's frame by `extra` variables and REPLACE
@@ -9000,6 +9203,15 @@ impl KnowledgeBase {
             node_occurrence::node_to_debruijn(self, &occ, &globals)
         };
         self.rules[id.index()].rhs_node = Some(closed);
+    }
+
+    /// Replace an already-closed RHS after dictionary weaving, preserving its frame.
+    pub(crate) fn replace_closed_rule_equation_rhs_node(
+        &mut self,
+        id: RuleId,
+        rhs: Rc<NodeOccurrence>,
+    ) {
+        self.rules[id.index()].rhs_node = Some(rhs);
     }
 
     /// WI-20260903-FCZ3N — this equation's WRITTEN RHS occurrence, still De Bruijn-closed
@@ -9671,6 +9883,7 @@ impl KnowledgeBase {
             // De Bruijn path: allocate N fresh vars, open DeBruijn to Global
             let name_sym = self.intern("_");
             let fresh_vars: Vec<VarId> = (0..arity).map(|_| self.fresh_var(name_sym)).collect();
+            self.open_rule_provider_requirements(id, &fresh_vars);
 
             // Build answer_links (query var → fresh var) and body_rename
             // (fresh var → concrete value from head match).
@@ -10641,9 +10854,8 @@ impl KnowledgeBase {
     pub fn try_make_sort_ref_by_name(&mut self, name: &str) -> Option<TermId> {
         match self.resolve_name_in_global(name) {
             crate::intern::ResolveResult::Found(s) => Some(self.make_sort_ref(s)),
-            crate::intern::ResolveResult::Ambiguous(..) | crate::intern::ResolveResult::NotFound => {
-                None
-            }
+            crate::intern::ResolveResult::Ambiguous(..)
+            | crate::intern::ResolveResult::NotFound => None,
         }
     }
 
@@ -11703,11 +11915,17 @@ impl KnowledgeBase {
         self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GOAL, BuiltinTag::TypeDomain);
         // WI-20260925-SHED7 — the type test in front of a typed head's body, beside its fill.
         // Minted by the typer only. See [`BuiltinTag::TypeDomainGuard`].
-        self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GUARD, BuiltinTag::TypeDomainGuard);
+        self.register_builtin_tag(
+            crate::kb::typing::TYPE_DOMAIN_GUARD,
+            BuiltinTag::TypeDomainGuard,
+        );
         // WI-20260911-5G28A S3 — the typed-head sweep's metacall: run the domain a
         // `SortDomain` dictionary names. Minted by the typer, never by the converter, like
         // `TYPE_DOMAIN_GOAL` above. See [`BuiltinTag::ApplyDomain`].
-        self.register_builtin_tag(crate::kb::typing::APPLY_DOMAIN_GOAL, BuiltinTag::ApplyDomain);
+        self.register_builtin_tag(
+            crate::kb::typing::APPLY_DOMAIN_GOAL,
+            BuiltinTag::ApplyDomain,
+        );
         // WI-20260925-SHED7 — the sub-dictionary selector a derived `fill` clause writes in
         // `apply_domain`'s operand. Never a goal; see [`BuiltinTag::DomainSub`].
         self.register_builtin_tag(crate::kb::fill_derive::DOMAIN_SUB, BuiltinTag::DomainSub);

@@ -32,7 +32,16 @@ pub(super) fn relation_reference_type(
     let column_types: Vec<(Symbol, Value)> =
         columns.iter().map(|c| (c.name, c.ty.clone())).collect();
     let ty = relation_type_from_columns(kb, sym, columns, occ.span, span)?;
-    let ty = settle_citation_type(kb, site.env, &mut subst, sym, span, opened, site.expected, ty)?;
+    let ty = settle_citation_type(
+        kb,
+        site.env,
+        &mut subst,
+        sym,
+        span,
+        opened,
+        site.expected,
+        ty,
+    )?;
     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
     // routed over the columns' own types at this citation. QUEUED, not computed — see
     // [`PendingCitationRoutes`].
@@ -534,6 +543,7 @@ pub(super) fn relation_reference_type_applied(
             bound_types.push((*cname, arg.ty.clone()));
             // Resolve the column type through the accumulated σ (a correlated
             // column's var may already be pinned by an earlier argument).
+            let declared_col_ty = col_ty.clone();
             let col_ty = walk_type_deep_value(kb, &subst, &col_ty);
             // An UNCONSTRAINED column (a bare type var — a head param the body pins to
             // no concrete type, e.g. `rel(?x, ?y) :- eq(?x, ?y)`) accepts ANY argument:
@@ -543,8 +553,8 @@ pub(super) fn relation_reference_type_applied(
             // unconstrained column via `types_compatible` alone would spuriously reject
             // (a raw `Var::Global` is not its `TypeVar` wildcard), rejecting the valid,
             // runnable `rel(5)`.
-            let ok = if let Some(vid) = resolved_var(kb, &col_ty) {
-                bind_resolved(kb, &mut subst, vid, arg.ty.clone())
+            let ok = if resolved_var(kb, &col_ty).is_some() {
+                pin_type_vars(kb, &mut subst, &arg.ty, &col_ty)
             } else if type_mentions_flex_var(kb, &col_ty) {
                 // WI-20260911-5G28A — A COLUMN WHOSE TYPE *MENTIONS* A VARIABLE IS
                 // CORRELATED TOO, and before this ticket only a column that WAS one
@@ -578,17 +588,17 @@ pub(super) fn relation_reference_type_applied(
                 // brings the subtype FALLBACK with it: `unify_types` alone (this arm's
                 // first cut) refused an argument whose type is a legitimate subtype of the
                 // column's, since unification is not subsumption — found by `/code-review`.
-                spec_as_its_providers(kb, |kb| pin_type_vars(kb, &mut subst, &arg.ty, &col_ty))
+                pin_type_vars(kb, &mut subst, &arg.ty, &col_ty)
             } else {
-                // A COLUMN'S TYPE IS ITS RULE'S STORED BOUND, and a spec over a parameter
-                // in it is the requirement the head wrote (`?x: Summable.T`), which a value
-                // meets by its sort providing the spec. Compared as a value's type, `keep(1)`
-                // was refused at a column no spelling could then be cited at (MEASURED).
-                spec_as_its_providers(kb, |kb| {
-                    types_compatible(kb, &mut subst, &arg.ty, &col_ty)
-                })
+                // Stored column types name the actual carrier. Its separate
+                // provider obligations are checked below before substitution
+                // can erase the declared carrier variable.
+                types_compatible(kb, &mut subst, &arg.ty, &col_ty)
             };
-            if !ok {
+            if !ok
+                || carrier_requirements_in_type(kb, &subst, &declared_col_ty)
+                    == TypeBoundVerdict::Refuted
+            {
                 return Err(arg_err(
                     kb,
                     format!(
@@ -614,7 +624,16 @@ pub(super) fn relation_reference_type_applied(
         })
         .collect();
     let ty = relation_type_from_columns(kb, sym, free, occ.span, span)?;
-    let ty = settle_citation_type(kb, site.env, &mut subst, sym, span, opened, site.expected, ty)?;
+    let ty = settle_citation_type(
+        kb,
+        site.env,
+        &mut subst,
+        sym,
+        span,
+        opened,
+        site.expected,
+        ty,
+    )?;
     queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst);
     Ok(ty)
 }
@@ -727,6 +746,35 @@ fn citation_requirement_routes(
     let mut any = false;
     for rid in rids {
         let slots = rule_head_var_slots(kb, rid);
+        let name = kb.intern("citation_carrier");
+        let fresh: Vec<_> = if kb.rule_provider_requirements(rid).is_empty() {
+            Vec::new()
+        } else {
+            (0..kb.rule_arity(rid))
+                .map(|_| kb.fresh_var(name))
+                .collect()
+        };
+        let mut carrier_subst = Substitution::with_parent(subst.clone());
+        for (column, bound) in kb
+            .rule_type_bounds(rid)
+            .to_vec()
+            .into_iter()
+            .filter(|_| !fresh.is_empty())
+        {
+            let Some((_, name, _)) = slots.iter().find(|(_, _, d)| *d == column) else {
+                continue;
+            };
+            let actual = bound_types
+                .iter()
+                .find(|(n, _)| n == name)
+                .or_else(|| column_types.iter().find(|(n, _)| n == name));
+            if let Some((_, ty)) = actual {
+                let bound = kb.term_from_debruijn(bound, &fresh);
+                if !pin_type_vars(kb, &mut carrier_subst, ty, &Value::term(bound)) {
+                    carrier_subst.contradiction = true;
+                }
+            }
+        }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
         for node in &body {
             if requirement_read_out(kb, fd, node).is_none() {
@@ -747,6 +795,8 @@ fn citation_requirement_routes(
                 pos_args,
                 named_args,
                 &slots,
+                &fresh,
+                &carrier_subst,
                 column_types,
                 bound_types,
                 subst,
@@ -772,19 +822,71 @@ fn route_requirement_read(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     slots: &[(SlotKey, Symbol, u32)],
+    fresh: &[VarId],
+    carrier_subst: &Substitution,
     column_types: &[(Symbol, Value)],
     bound_types: &[(Symbol, Value)],
     subst: &Substitution,
 ) -> Option<TermId> {
-    let spec_sort = occ_head_symbol(&pos_args[0])?;
+    let spec_sort = sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))?;
+    if named_args
+        .iter()
+        .any(|(k, _)| kb.local_name_of(*k) == PROVIDER_CARRIER_TYPE_LABEL)
+    {
+        if carrier_subst.is_contradiction() {
+            return None;
+        }
+        let Some(Expr::Spliced(Value::Term { id, .. })) = pos_args[0].as_expr() else {
+            return None;
+        };
+        let instance = kb.term_from_debruijn(*id, fresh);
+        let instance = walk_type_deep_value(kb, carrier_subst, &Value::term(instance));
+        let bracket = requirement_bracket(kb, &instance);
+        // Omitted companion elements impose no restriction. Forward a uniquely
+        // covering caller slot using the existing sigma-precise requirement
+        // cover, rather than inventing rigid defaults for those elements.
+        let demand = RequiresEntry {
+            required_sort: spec_sort,
+            spec: instance.clone(),
+            supply: SupplySource::Required,
+        };
+        let sigma = SigmaCtx {
+            subst,
+            param_rigids,
+        };
+        let covering: Vec<_> = chain
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| entries_cover(kb, entry, &demand, Some(&sigma)).then_some(i))
+            .collect();
+        if let [index] = covering.as_slice() {
+            let syms = ProjectionSyms::resolve(kb)?;
+            let tree = ResolvedRequiresNode::FromScope {
+                scope_index: *index,
+                spec_sort,
+                projection: SmallVec::new(),
+            };
+            return emit_tree_as_projection(kb, chain, &tree, &syms);
+        }
+        let Some(Expr::Var(Var::DeBruijn(d))) = pos_args.get(2)?.as_expr() else {
+            return None;
+        };
+        let carrier = carrier_subst
+            .resolve_as_value(*fresh.get(*d as usize)?)?
+            .clone();
+        let built = anchor_sort_goal(kb, spec_sort, &[carrier], &bracket.written)?;
+        return resolve_route(kb, chain, param_rigids, subst, &built.goal);
+    }
     let op_functor = occ_head_symbol(&pos_args[1])?;
     let bracket = requirement_bracket(kb, &Value::Node(Rc::clone(&pos_args[0])));
     let mut arg_types: Vec<Value> = Vec::with_capacity(pos_args.len().saturating_sub(2));
     for witness in &pos_args[2..] {
         let column = match witness.as_expr() {
-            Some(Expr::Var(Var::DeBruijn(d))) => {
-                slots.iter().find(|(_, _, di)| di == d).map(|(_, name, _)| *name)
-            }
+            Some(Expr::Var(Var::DeBruijn(d))) => slots
+                .iter()
+                .find(|(_, _, di)| di == d)
+                .map(|(_, name, _)| *name),
             _ => None,
         };
         let ty = column.and_then(|name| {
@@ -856,7 +958,10 @@ fn resolve_route(
 
 /// WI-20260925-P7VP4 — the slot index `k` of a SLOT read (`slot: k`), or `None` for any
 /// other read.
-fn slot_read_index(kb: &KnowledgeBase, named_args: &[(Symbol, Rc<NodeOccurrence>)]) -> Option<usize> {
+fn slot_read_index(
+    kb: &KnowledgeBase,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<usize> {
     let (_, v) = named_args
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_SLOT_LABEL)?;
@@ -905,9 +1010,20 @@ fn op_slot_route(
     // WI-20260926-NEKR0 — BUT A TYPE PARAMETER SEVERAL ARGUMENTS BIND IS THEIR JOIN, first, as
     // the typer instantiates it; the loop below then pins only what that leaves free. A call
     // with no join routes nothing — the typer has refused it.
-    let refs: Vec<(Symbol, &Value, &Value)> =
-        rec.params.iter().zip(arg_types).map(|((p, pty), aty)| (*p, pty, aty)).collect();
-    if join_repeated_type_params(kb, &mut pins, JoinCandidates::TypeParams(&rec.type_params), &refs).is_err() {
+    let refs: Vec<(Symbol, &Value, &Value)> = rec
+        .params
+        .iter()
+        .zip(arg_types)
+        .map(|((p, pty), aty)| (*p, pty, aty))
+        .collect();
+    if join_repeated_type_params(
+        kb,
+        &mut pins,
+        JoinCandidates::TypeParams(&rec.type_params),
+        &refs,
+    )
+    .is_err()
+    {
         return None;
     }
     for ((_, pty), aty) in rec.params.iter().zip(arg_types) {
@@ -972,13 +1088,7 @@ fn op_slot_route(
         }
     })
     .unwrap_or_else(|| entry.spec.clone());
-    let goal = goal_from_requires_entry(
-        kb,
-        &RequiresEntry {
-            spec,
-            ..entry
-        },
-    )?;
+    let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
     resolve_route(kb, chain, param_rigids, subst, &goal)
 }
 
@@ -1016,7 +1126,15 @@ fn sort_domain_route(
         let bare = kb.alloc(Term::Ref(h));
         let target = dealias_type(kb, bare);
         if target != bare {
-            return sort_domain_route(kb, chain, param_rigids, subst, spec, &Value::term(target), syms);
+            return sort_domain_route(
+                kb,
+                chain,
+                param_rigids,
+                subst,
+                spec,
+                &Value::term(target),
+                syms,
+            );
         }
     }
     if let Some((head, entry)) = head.and_then(|h| kb.sort_domain(h).cloned().map(|e| (h, e))) {
@@ -1026,7 +1144,15 @@ fn sort_domain_route(
             .collect();
         for &j in &entry.conditions {
             let arg = crate::kb::fill_derive::condition_arg(kb, &ty, &entry.params[j])?.to_value();
-            subs.push(sort_domain_route(kb, chain, param_rigids, subst, spec, &arg, syms)?);
+            subs.push(sort_domain_route(
+                kb,
+                chain,
+                param_rigids,
+                subst,
+                spec,
+                &arg,
+                syms,
+            )?);
         }
         return Some(build_dictionary_term(kb, syms, head, &subs));
     }
@@ -2367,6 +2493,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
                 }
             })
             .collect();
+        kb.open_rule_provider_requirements(rid, &fresh_frame);
         stored_bounds
             .into_iter()
             .map(|(i, t)| (i, kb.term_from_debruijn(t, &fresh_frame)))

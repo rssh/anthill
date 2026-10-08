@@ -78,13 +78,19 @@ fn typed_pattern_bound_installed_on_rule() {
         1,
         "keep must carry exactly one typed-pattern bound (?x: Summable.T); got {bounds:?}",
     );
-    // ?x is the FIRST head variable (globals[0]); the DeBruijn convention is
-    // reversed (index = arity - 1 - position), so for the 2-var head keep(?x, ?y)
-    // ?x's DeBruijn index is 1, not 0. (Storing the raw position 0 was the bug the
-    // mixed-type firing test guards.)
+    // ?x is first in the frame. Its bound's carrier type and dictionary also
+    // occupy frame slots, so use the complete arity when reversing the index.
     assert_eq!(
-        bounds[0].0, 1,
-        "the bound must key ?x's DeBruijn index (arity-1-0 = 1)"
+        bounds[0].0,
+        kb.rule_arity(rid) - 1,
+        "the bound must key ?x's DeBruijn index"
+    );
+    assert!(
+        matches!(
+            kb.get_term(bounds[0].1),
+            Term::Var(anthill_core::kb::term::Var::DeBruijn(_))
+        ),
+        "the bound names a real carrier type slot, not the spec instance"
     );
 }
 
@@ -223,8 +229,12 @@ fn tparam_form_folds_guard_into_bound_and_fires() {
         1,
         "the [T] form must install one folded bound on ?x; got {bounds:?}",
     );
-    // ?x's DeBruijn index in the 2-var head keep(?x, ?y) is arity-1-0 = 1.
-    assert_eq!(bounds[0].0, 1, "the bound must key ?x's DeBruijn index (1)");
+    // The value, carrier type and dictionary slots share one reversed frame.
+    assert_eq!(
+        bounds[0].0,
+        kb.rule_arity(rid) - 1,
+        "the bound keys ?x in the frame including its carrier type variable"
+    );
 
     let keep = kb
         .try_resolve_symbol("test.wi582tp.Lib.keep")
@@ -508,24 +518,19 @@ fn a_domain_goal_in_a_constraint_is_refused_too() {
     ));
     assert_eq!(errs.len(), 1, "one refusal, at the goal; got {errs:#?}");
     assert!(
-        errs[0].contains(&format!("a `domain` goal asks whether a value is a `{ns}.Summable`"))
-            && errs[0].contains("so the goal holds of nothing"),
+        errs[0].contains(&format!(
+            "a `domain` goal asks whether a value is a `{ns}.Summable`"
+        )) && errs[0].contains("so the goal holds of nothing"),
         "the refusal says what the goal asks; got {}",
         errs[0],
     );
 }
 
-/// A MEMBER REACHED THROUGH AN ALIAS THAT FIXES OTHER MEMBERS IS REFUSED. `sort IntTagger =
-/// Tagger[Out = Int64]`, `?x: IntTagger.C`: the requirement a rule variable carries is the
-/// spec alone, so the `Out = Int64` the alias fixes would be dropped — the rule held of a
-/// `String`, which provides `Tagger` at another `Out`. Refused where it is written, naming
-/// the spelling that states the instance: the introducer bounded by the alias, which
-/// holds of the `Int64` item alone.
-///
-/// FAILS with the member taken through the alias as through the spec: the rule loads and
-/// answers both items. The introducer half passes either way.
+/// 8DXVK closes KSSA4's temporary refusal: an aliased member retains the instance
+/// rather than dropping Out. Both spellings execute and admit only the integer.
+/// Backing out 8DXVK refuses the member half; the introducer remains a control.
 #[test]
-fn a_member_through_an_alias_that_fixes_others_is_refused() {
+fn a_member_through_an_alias_retains_the_members_it_fixes() {
     let ns = "test.wi582aliasmember";
     let program = |rule: &str| {
         format!(
@@ -560,23 +565,17 @@ end
 "#
         )
     };
-    let errs = crate::common::load_errors_of(&program("rule ints(?x: IntTagger.C) :- item(?x)"));
-    assert_eq!(errs.len(), 1, "one refusal, at the bound; got {errs:#?}");
-    assert!(
-        errs[0].contains(&format!("`{ns}.IntTagger.C` in a rule head names a member of `{ns}.Tagger`"))
-            && errs[0].contains("through an alias that fixes other members of it")
-            && errs[0].contains(&format!(":- {ns}.IntTagger[A]")),
-        "the refusal names the alias, the spec and the introducer; got {}",
-        errs[0],
-    );
-    let mut kb = crate::common::load_kb_with(&program(
+    for rule in [
+        "rule ints(?x: IntTagger.C) :- item(?x)",
         "rule ints[A](?x: A) :- item(?x), IntTagger[A]",
-    ));
-    let rows = crate::common::query_unary(&mut kb, &format!("{ns}.ints"));
-    assert!(
-        matches!(rows.as_slice(), [(anthill_core::eval::Value::Int(1), _)]),
-        "the spelling the refusal names holds of the `Int64` item alone; got {rows:?}",
-    );
+    ] {
+        let mut kb = crate::common::load_kb_with(&program(rule));
+        let rows = crate::common::query_unary(&mut kb, &format!("{ns}.ints"));
+        assert!(
+            matches!(rows.as_slice(), [(anthill_core::eval::Value::Int(1), true)]),
+            "{rule} holds of the `Int64` item alone; got {rows:?}",
+        );
+    }
 }
 
 /// THE MEMBER NAMED IS THE ONE A PROVIDER IS. `Tagger`'s operations receive on `C`, so a

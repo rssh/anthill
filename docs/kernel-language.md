@@ -2902,7 +2902,10 @@ type of the values of the sorts that provide it, so a variable typed at one matc
 nothing, and `?x: Summable` is a load error where it is written — bare, inside a
 bound (`?x: List[T = Summable]`), under an alias of the spec (`sort Sum1 = Summable`,
 `?x: Sum1`), in either spelling of the head, and as the type of a `domain(?x,
-Summable)` goal written in the body of a rule or of a constraint. A label of an effect
+Summable)` goal written in the body of a rule or of a constraint. The same source goal
+in a query reports a diagnostic rather than answering by provision, including under
+negation; qualified sort operands, aliases and nested type positions have the same
+verdict (WI-20261006-8DXVK). A label of an effect
 row inside a bound (`?f: (Int64) -> Int64 @ {Error[String]}`) is not what the variable
 is typed at. The requirement that the matched
 value's sort provide the spec is written with the spec's member, as in an operation's
@@ -2919,15 +2922,37 @@ receive on, since that is what a provider is of it — another member of the spe
 refused naming that one, and `?x: Stream.T` is refused the other way: `Stream` is its
 own carrier, and the variable is typed `Stream`. A member may stand anywhere inside
 a bound (`?x: List[T = Summable.T]`), and the parameter form takes it as the sigil
-form does. The member is named off the spec itself: through an alias that fixes other
-members (`sort IntTagger = Tagger[Out = Int64]`, `?x: IntTagger.C`) it is refused,
-since the requirement a variable carries is the spec alone; the introducer bounded by
-the alias states the instance (`r[A](?x: A) :- IntTagger[A]`).
+form does. A member reached through an alias that fixes other members
+(`sort IntTagger = Tagger[Out = Int64]`, `?x: IntTagger.C`) retains those instance
+bindings, just as the introducer bounded by the alias does
+(`r[A](?x: A) :- IntTagger[A]`). KSSA4's temporary refusal prevented silently
+dropping them; WI-20261006-8DXVK retains them instead.
 
 The **introducer** spelling of the same requirement binds a type variable in the
 head and states the spec of it as a guard — `keep[T](?x: T, ?y) = ?x :- Summable[T]
 @[simp]` — which the loader **folds out of the body**, so the rule is still an
 equation. The two spellings are one clause.
+Named and positional bindings normalize against the spec's declared parameters:
+`Tagger[C = A, Out = Int64]` and `Tagger[A, Int64]` retain the same instance
+restriction. The introduced variable must bind the carrier member; other written
+bindings and those fixed by aliases survive in the requirement and in a dictionary
+read through proposal 060's channel. A bare `Tagger[A]` leaves the other members
+unspecified (WI-20261006-8DXVK).
+
+The introduced name denotes a **carrier type**, shared by every occurrence of that
+name in the clause. In `r[A](?x: A, ?y: A) :- src(?x, ?y), Tagger[C = A, Out = Int64]`,
+`?x` and `?y` are ordinary values of the same `A`; neither becomes a spec or a
+dictionary. The full `Tagger` requirement and its dictionary occupy separate clause
+bindings. Carrier-bearing operations at those values, and a carrier-less operation
+uniquely covered by the requirement, dispatch through that dictionary. The rule
+reads it through `find_dictionary` without needing an additional authored
+`require[...]`. A generic caller can pass its dictionary through the existing
+citation channel: the clause's fresh `A` binds to the caller's rigid type while the
+caller type stays rigid. Separate member annotations (`?x: Tagger.C`,
+`?y: Tagger.C`) introduce separate anonymous carrier types; they do not assert the
+shared identity an explicit `A` asserts. A call covered by distinct carrier
+requirements without a unique attribution is a load error.
+
 The bound is read by whichever of the annotation's two readers the rule has, so
 an introducer is equally at home on a **relational** head: `rule g[A](?a: A, ?b)
 :- src(?a, ?b), Summable[A]` is an ordinary bounded clause, its bound read by the
