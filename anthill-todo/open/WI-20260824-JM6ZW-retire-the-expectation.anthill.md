@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260824-Q0093-every-operation-expression, WI-20260824-PAPX0-decide-and-encode-the-dot
+- depends_on: WI-20260824-Q0093-every-operation-expression
 
 - tags: proposal-055
 
@@ -26,4 +26,10 @@ DIAGNOSTICS (design §8) belonging to umbrella A: a wrong destination reads `exp
 CONTROL -- THE SHARPEST IN THE UMBRELLA, and the reason this must not be folded into WAHB6. Two back-outs, stated separately: (1) restore the hints while keeping the record -- the classification tests still pass, which is what proves the hint is no longer load-bearing; if any row needs the hint back, the record did not reach that site and the finding belongs here, not in a later ticket; (2) remove the record while the hints are gone -- the WI-206 / WI-707 rows fail. A change that passes both ways measures nothing; name the rows for each direction at the test site.
 
 ACCEPTANCE: WI-206 / WI-707 / WI-709 / WI-710 controls remain green; full Rust workspace via rustland/scripts/test.sh; run the /code-review skill before commit.
+
+## Changes
+
+### 2026-10-08T09:06:43Z — feedback — claude
+
+DEPENDENCY ON WI-20260824-PAPX0 REMOVED (user's go, 2026-10-08). What this ticket waited on PAPX0 for is settled in fd1cf282: the dot split is encoded, and the diagnostic this Description lists -- "the companion-versus-`Type`-member ambiguity names both routes, if WI-20260824-PAPX0 has not already landed it" -- no longer exists. PAPX0's decided rule is that a receiver denoting a sort resolves its dot in that sort only, so no surface names both a companion member and a member of `Type` (kernel-language.md sec 5.4; design 055 sec 4 and sec 8 are corrected). PAPX0 stays open over three spelling asymmetries this ticket does not need: WI-20261008-R653S, WI-20261008-7B15V, WI-20261008-A3FY2.
 

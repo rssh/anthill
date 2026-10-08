@@ -3,13 +3,13 @@
 - id: WI-20260824-PAPX0-decide-and-encode-the-dot
 - created: 2026-08-24T05:05:04Z
 
-- status: Claimed
+- status: Open
 - status_agent: claude
-- status_at: 2026-09-13T21:52:33Z
+- status_at: 2026-10-08T09:06:41Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once
+- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261008-A3FY2-in-a-rule-body-a-parenthesized
 
 - tags: proposal-055
 
@@ -484,4 +484,12 @@ ACCEPTANCE. Full Rust workspace via rustland/scripts/test.sh: 36 suites, 8795 pa
 ### 2026-10-08T08:54:19Z — feedback — user
 
 USER CONFIRMED 2026-10-08 ("Ok, agree"): the removed two-route refusal stands, and so does the paragraph for kernel-language.md sec 5.4, which is now written as agreed. docs/design/055-implementation.md sec 4 and sec 8 are corrected to the decided rule. Gap 8 of the 2026-09-13 list is closed for the spec; the doc block of `Type` in prelude/sort.anthill is unchanged. The five measured items (a)-(e) of the previous entry stay open and have no ticket. scaland: sbt testFull, 636 passed, 0 failed (no Scala or stdlib file changed).
+
+### 2026-10-08T09:06:44Z — feedback — claude
+
+WIRING (user's go, 2026-10-08). Released to Open. This ticket is done when one type value gives one answer in every spelling, and three measured items still break that; each is now a ticket this one depends on: WI-20261008-R653S (a paren-less `t.zero` calls where the written `Box.zero` is refused), WI-20261008-7B15V (`let t = CB[Int64]` over an alias is refused where `CB[Int64].wrap(5)` loads), WI-20261008-A3FY2 (a parenthesized type receiver in a rule body). The other two items of the 2026-10-08 list are not parts of this ticket -- both spellings already agree -- and are filed on their own with no edge here: the value dot reaching an `internal` operation, and an alias's fixed parameters not riding a companion call. WI-20260824-JM6ZW no longer depends on this ticket; the umbrella WI-20260823-ZF3AK still does. First increment of the rule: fd1cf282, pushed.
+
+### 2026-10-08T09:16:58Z — feedback — claude
+
+The comment above `namespace Type` in stdlib/anthill/prelude/sort.anthill now says how `Type`'s operations are reached -- by name, or by a dot on a `Type` whose sort is not known at the dot (user's go, 2026-10-08). With the spec paragraph this closes item 8 of the 2026-09-13 list. Full Rust gate (36 suites, 8795 passed, 0 failed) and sbt testFull (636 passed) re-run on that tree.
 
