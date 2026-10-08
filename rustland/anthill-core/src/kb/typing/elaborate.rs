@@ -1754,6 +1754,44 @@ pub(super) fn lower_rigid_read_to_slot(
     Some(node)
 }
 
+/// The type parameter a value read denotes: `B` as written, or the slot dispatch
+/// [`lower_rigid_read_to_slot`] replaced it with. `None` for every other expression.
+///
+/// A reader that wants the TYPE a written type expression stands for meets its type
+/// parameters in both forms — typing lowers the reads a `requires TypeValue[…]` clause
+/// backs and leaves the others — and the lowered call says nothing of the parameter on
+/// its own: it is nullary, and its dispatch is a slot index. The node it was built from
+/// is the read the author wrote, so that is what is asked.
+pub(super) fn value_read_type_param(
+    kb: &KnowledgeBase,
+    chain: &DictChain,
+    node: &Rc<NodeOccurrence>,
+) -> Option<VarId> {
+    let read = match node.as_expr()? {
+        Expr::TypeValue { .. } => node,
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if pos_args.is_empty()
+            && named_args.is_empty()
+            && kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value") == Some(*functor) =>
+        {
+            node.synthesized_from()?
+        }
+        _ => return None,
+    };
+    match read.as_expr()? {
+        Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && named_args.is_empty() => value_read_param(kb, *head, chain),
+        _ => None,
+    }
+}
+
 pub(super) fn type_value_backed_params(kb: &mut KnowledgeBase, op_sym: Symbol) -> HashSet<VarId> {
     let Some(canon) = type_value_spec_sym(kb).map(|tv| kb.canonical_sort_sym(tv)) else {
         return HashSet::new();

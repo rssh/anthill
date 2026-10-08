@@ -444,3 +444,44 @@ both driven by /code-review:
     `print_roots` hits its `nil()` case and `cmd_graph`'s only empty-guard
     (`count_rows == 0`) does not fire. `list` on the same store prints both items.
 
+### 2026-10-08T08:40:58Z — feedback — user
+
+USER DECISION 2026-10-08, AND THE SECOND INCREMENT BUILT ON IT. Not committed at the time of writing.
+
+THE DECISION. Asked whether a written `Box[V = Int64].eq(u)` should reach the `eq` that `Type` provides (the let-bound `t.eq(u)` did, the written form did not), the user answered: `eq` is defined on `Type` and not on `Box`, so `t.eq(u)` is a REJECTION. A receiver that denotes a sort resolves `.m` among THAT SORT's members and nowhere else.
+
+WHAT FOLLOWS FROM IT (my reading; the user was told both points in the session):
+  * the fall-through from a denoting receiver to `Type`'s own dot is gone. `t.eq(u)` and a member declared only on `Type` are refused about the denoted sort; the refusal names the member of `Type` and its spelling (`anthill.prelude.PartialEq.eq(t, u)`), which a row runs.
+  * the two-route ambiguity refusal (control 3 of the Description, design 055 sec 4/8) has nothing left to compare: a member of `Type` is never a candidate for a denoting receiver. With `Type.tag(t)` declared, `Box.tag()`, `Box[V = Int64].tag()` and `t.tag()` all answer 7 and the member of `Type` is `Type.tag(t)`. The refusal and its row are removed.
+
+THE RULE AS BUILT (`kb/typing/type_receiver.rs`, `denoted_sort_dot`). A receiver that denotes a sort -- a written type, or a name a `let` bound to one -- takes `.m(args)` as the call the written `Sort[...].m(args)` makes: `m` is an operation or a constructor of the sort, the arguments are the call's as written (the receiver fills no parameter), the bracket binds the sort's parameters. A `Type` that denotes nothing known at the dot (a parameter, a call's result) is a value and keeps `Type`'s dot.
+
+GAPS OF THE 2026-09-13 LIST:
+  1, 2, 3 (ambiguity check) -- moot, the check is removed.
+  4 -- measured: written and let-bound build the same call; nothing to do.
+  5 (constructors) -- closed. `let t = Box; t.mk(5)` constructs; a bracketed receiver is refused in the written form's own sentence.
+  6 (positional bracket) -- closed. `Box[Int64]` is named against the sort's parameters, nested brackets too.
+  7 (type parameter in the bracket) -- closed. `let t = Box[V = T]` needs `requires TypeValue[T = T]` (proposal 065); with it `t.wrap(y)` answers as `Box[V = T].wrap(y)` does.
+  8 (spec) -- OPEN. A paragraph for kernel-language.md sec 5.4 is drafted and waits for the user's word; design 055 sec 4 and sec 8 still describe the removed refusal.
+  The "instance member" filter of 2026-09-13 is REMOVED: `Box[V = Int64].combine(mk(v: 1), mk(v: 2))` loads and answers 1, so `t.combine(...)` does too.
+
+ALSO IN THIS INCREMENT:
+  * `(Box[V = Int64]).tag()` -- a parenthesized receiver is a value receiver in the converter (`is_value_receiver`); it used to drop the receiver of a call. This is the side finding of 2026-09-13.
+  * an alias is read as a name path reads it: a pure alias is its target sort, one that owns members is read as written.
+  * an `internal` member is refused from outside its sort, as its written name is (`TypeError::ForbiddenInternalMember`).
+
+MEASURED AND NOT CHANGED, each a question for the user rather than a decision taken:
+  a. paren-less: `let t = Box; t.zero` calls `zero`, while the written `Box.zero` / `Box[...].zero` is refused as a rule-citation spelling. `Expr::DotApply` has no paren-less marker.
+  b. the ordinary value dot reaches an `internal` operation from another namespace (`b.peek()` answers where `Box.peek(b)` is refused). Pre-existing.
+  c. the parameters an alias fixes do not ride a call through it, in either spelling: with `sort CA = Box[V = Int64]`, `CA.wrap("s")` passes the argument check.
+  d. in a rule body `(Box).tag()` is refused with "Box.name: expected resolved name, got unresolved"; `Box.tag()` binds 7 there.
+  e. `let t = CB[Int64]` over `sort CB = Box` is refused as over-applied where the written `CB[Int64].wrap(5)` loads.
+
+CONTROLS. `wi_papx0_dot_receiver_split_test`, 25 rows, one fixture per row. Each piece backed out on its own in a temporary one-file test binary: the rung (21 rows fail, 3 fences and the parenthesized-value row pass), bracket naming (3), its constant-argument arm (1), the constructor arm (3), the alias read and its owns-members clause (1 each), the visibility check (1), the converter change (2). The header lists the rows by name.
+
+ACCEPTANCE. Full Rust workspace via rustland/scripts/test.sh: 36 suites, 8795 passed, 0 failed, 14 ignored, exit 0. /code-review run: 12 findings, 6 fixed, 1 not needed, 5 left as the questions above and the spec.
+
+### 2026-10-08T08:54:19Z — feedback — user
+
+USER CONFIRMED 2026-10-08 ("Ok, agree"): the removed two-route refusal stands, and so does the paragraph for kernel-language.md sec 5.4, which is now written as agreed. docs/design/055-implementation.md sec 4 and sec 8 are corrected to the decided rule. Gap 8 of the 2026-09-13 list is closed for the spec; the doc block of `Type` in prelude/sort.anthill is unchanged. The five measured items (a)-(e) of the previous entry stay open and have no ticket. scaland: sbt testFull, 636 passed, 0 failed (no Scala or stdlib file changed).
+

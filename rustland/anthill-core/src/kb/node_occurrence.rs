@@ -890,6 +890,19 @@ impl NodeOccurrence {
         }
     }
 
+    /// The occurrence this one was SYNTHESIZED from, or `None` for a source (or
+    /// rebuilt-from-source) node. A pass that replaces a node keeps the original here, so
+    /// a later reader can ask what the author wrote.
+    pub fn synthesized_from(&self) -> Option<&Rc<NodeOccurrence>> {
+        match &self.kind {
+            NodeKind::Expr {
+                origin: OccurrenceOrigin::Synthesized { from, .. },
+                ..
+            } => Some(from),
+            _ => None,
+        }
+    }
+
     /// Build a rule-head occurrence.
     pub fn new_rule_head(
         functor: Symbol,

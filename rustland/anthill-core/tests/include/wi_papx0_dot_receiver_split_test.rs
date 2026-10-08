@@ -1,137 +1,165 @@
-//! WI-20260824-PAPX0 — the dot-receiver split (proposal 055 umbrella A step 4,
-//! `docs/design/055-implementation.md` §4). DECISION: option B, THE DENOTATION
-//! DECIDES — a receiver whose type is `Type` and whose denotation is a known
-//! sort resolves `.m` in THAT SORT's scope, not among `Type`'s own members.
+//! WI-20260824-PAPX0 — a dot on a receiver that denotes a sort (proposal 055 umbrella A
+//! step 4, `docs/design/055-implementation.md` §4).
 //!
-//! WHAT WAS WRONG. One value, three spellings, two answers, decided by whether
-//! the receiver's root happened to be let-bound:
+//! THE RULE. A receiver that denotes a sort — a written type, or a name a `let` bound to
+//! one — takes `.m(…)` as the call the written `Sort[…].m(…)` makes: `m` is looked up
+//! among that sort's operations and constructors, the arguments are the call's as
+//! written, and the bracket binds the sort's parameters. The members of `Type` itself are
+//! not reached through such a receiver. So one type value gives one answer in every
+//! spelling:
 //!
-//!   Box.tag()                            -> 7   (loader: the qualified name
-//!                                                 resolves whole, rung 1)
-//!   Box[V = Int64].tag()                 -> 7   (converter: the object is an
-//!                                                 `application`, so a NAME)
-//!   let t = Box[V = Int64]; t.tag()      -> REFUSED, "no such member (dot
-//!                                          dispatch)" against
-//!                                          `anthill.prelude.Type`
+//!   Box[V = Int64].tag()      (Box[V = Int64]).tag()      let t = Box[V = Int64]; t.tag()
 //!
-//! `sort Type = ?` is an opaque handle declaring no members, so every dispatch
-//! rung answered about the wrong sort. And the third spelling is the ONLY one
-//! that reaches the typer's `DotApply` frame at all: a syntactically-type
-//! receiver arrives as a NAME and bypasses the dot frame entirely, which is why
-//! the fix is a binder channel rather than a receiver-node classification.
+//! A `Type` that denotes nothing known at the dot — a parameter, a call's result — is a
+//! value, and its dot is `Type`'s.
 //!
-//! CONTROLS — which rows fail when the change is backed out (drop the
-//! `type_denotations` lookup in the `DotApply` frame), and which do not:
+//! EVERY ROW HAS ITS OWN SOURCE. A row that shares a fixture with a row that stops
+//! loading measures the fixture: the whole KB fails and the surviving row cannot be
+//! called either.
 //!
-//!   FAIL ON BACK-OUT (they are the change):
-//!     `a_let_bound_type_receiver_resolves_in_the_denoted_sort`
-//!     `the_denoted_sorts_type_arguments_ride_the_call`
-//!     `a_missing_member_names_the_denoted_sort_not_type`
-//!   PASS EITHER WAY BY DESIGN (they are the fences):
-//!     `the_two_name_route_spellings_are_unchanged` — neither ever reached the
-//!        dot frame, so this row says the fix did not disturb the routes that
-//!        already worked.
-//!     `a_shadowing_rebind_drops_the_denotation` — the SOUNDNESS row. It passes
-//!        on back-out because without the channel nothing resolves in `Box`
-//!        anyway. AND IT DOES NOT DRIVE THE `clear_type_denotation` ARM EITHER:
-//!        measured, removing that arm leaves all six rows GREEN. `let t = 1`
-//!        mints a FRESH binder symbol (WI-550's shadowing-correct identities),
-//!        so the denotation map — keyed by `Symbol` — never collides, and a
-//!        lambda binder shadowing a let does not inherit it either (its
-//!        receiver types as `<unresolved receiver>`, so the branch never runs).
-//!        NOTHING IN THIS SUITE DRIVES THAT ARM. It is kept as the pairing
-//!        `clear_receiver_alias` already has, and this row is what would catch
-//!        the regression if binder freshness ever changed — but calling it a
-//!        control for the clear would credit it with an observation nobody
-//!        made.
-//!     `a_denotation_lost_through_a_call_still_refuses` — the declared SCOPE
-//!        BOUNDARY. Recovering it needs a `Type` that carries its head, which
-//!        is a different ticket; this row pins that it is out and stays out.
+//! CONTROLS — measured, each piece of the change backed out on its own:
+//!
+//!   the rung (`denoted_sort_dot` answering `NotDenoting` always) — FAIL:
+//!     a_let_bound_type_receiver_resolves_in_the_denoted_sort
+//!     the_denoted_sorts_type_arguments_ride_the_call
+//!     a_missing_member_is_refused_about_the_denoted_sort
+//!     an_alias_hop_keeps_the_denotation
+//!     a_member_of_type_is_not_reached_through_a_denoting_receiver
+//!     eq_is_refused_on_a_denoting_receiver_and_the_named_call_answers
+//!     a_member_on_both_the_sort_and_type_is_the_sorts
+//!     a_receiver_denoting_type_itself_is_types_own_call
+//!     a_member_taking_values_of_the_sort_is_called_as_written
+//!     a_positional_bracket_binds_the_next_parameter
+//!     a_nested_positional_bracket_is_named_too
+//!     a_constructor_is_reached_through_a_let_bound_type
+//!     a_bracket_on_a_constructor_is_refused_as_the_written_one_is
+//!     a_type_parameter_in_the_bracket_is_that_parameter
+//!     a_parenthesized_type_is_a_receiver
+//!     an_alias_denotes_what_it_stands_for
+//!     a_declaration_that_is_no_call_is_refused_truthfully
+//!     an_internal_member_is_hidden_as_its_written_name_is
+//!     a_constant_in_the_bracket_is_part_of_the_denoted_type
+//!     a_spec_is_denoted_as_any_sort_is
+//!     a_lambda_under_the_binding_sees_the_denotation
+//!   naming the bracket's arguments (`type_value_denoted_type` replaced by the node's
+//!   term twin) — FAIL:
+//!     a_positional_bracket_binds_the_next_parameter
+//!     a_nested_positional_bracket_is_named_too
+//!     a_type_parameter_in_the_bracket_is_that_parameter
+//!   its arm for an argument that is not a nominal type (answering `None`) — FAIL:
+//!     a_constant_in_the_bracket_is_part_of_the_denoted_type
+//!   the constructor arm — FAIL:
+//!     a_constructor_is_reached_through_a_let_bound_type
+//!     a_bracket_on_a_constructor_is_refused_as_the_written_one_is
+//!     an_alias_denotes_what_it_stands_for (its constructor case)
+//!   the alias read, and separately its "owns no members" clause — FAIL:
+//!     an_alias_denotes_what_it_stands_for
+//!   the visibility check — FAIL:
+//!     an_internal_member_is_hidden_as_its_written_name_is
+//!   the converter's parenthesized receiver — FAIL:
+//!     a_parenthesized_type_is_a_receiver
+//!     a_parenthesized_value_is_a_receiver
+//!
+//!   PASS UNDER EVERY BACK-OUT, by design — they are the fences:
+//!     the_written_spellings_are_unchanged — neither reaches the typer's dot frame.
+//!     a_shadowing_rebind_drops_the_denotation — without the rung nothing resolves in
+//!       `Box` anyway. It does not drive `clear_type_denotation` either: `let t = 1`
+//!       mints a fresh binder symbol, so the map, keyed by symbol, never collides.
+//!     a_type_that_denotes_nothing_here_is_a_value — the boundary: a parameter and a
+//!       call's result keep `Type`'s own dot.
 
 use anthill_core::eval::Value;
 
 use crate::common::{interp_for, try_load_kb_with};
 
-const SRC: &str = r#"
-namespace test.papx0
+/// The sort every row is about, indented for a namespace body.
+const BOX: &str = r#"
   sort Box[V]
     entity mk(v: V)
     operation tag() -> Int64 = 7
     operation wrap(x: V) -> V = x
+    operation combine(a: Box[V], b: Box[V]) -> Int64 = 1
+    operation unbox(b: Box[V]) -> V = match b
+      case mk(v) -> v
   end
-
-  operation bare_name() -> Int64 = Box.tag()
-  operation written_bracket() -> Int64 = Box[V = Int64].tag()
-
-  operation via_binder() -> Int64 =
-    let t = Box[V = Int64]
-    t.tag()
-
-  operation binder_carries_args() -> Int64 =
-    let t = Box[V = Int64]
-    t.wrap(5)
-end
 "#;
 
-fn call_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
-    match interp
-        .call(&format!("test.papx0.{op}"), &[])
-        .unwrap_or_else(|e| panic!("{op}: {e:?}"))
-    {
+/// A namespace `test.<ns>` holding [`BOX`] and `body`, preceded by `prefix` (a reopening
+/// of `anthill.prelude.Type`, for the rows that give `Type` a member).
+fn source(ns: &str, prefix: &str, body: &str) -> String {
+    format!(
+        "{prefix}\nnamespace test.{ns}\n  import anthill.prelude.{{Type, Bool}}\n{BOX}\n{body}\nend\n"
+    )
+}
+
+/// Load, call `test.<ns>.go()`, and hand back its value.
+fn run(ns: &str, prefix: &str, body: &str) -> Value {
+    let mut interp = interp_for(&source(ns, prefix, body));
+    interp
+        .call(&format!("test.{ns}.go"), &[])
+        .unwrap_or_else(|e| panic!("{ns}: {e:?}"))
+}
+
+fn run_int(ns: &str, prefix: &str, body: &str) -> i64 {
+    match run(ns, prefix, body) {
         Value::Int(n) => n,
-        other => panic!("{op}: expected an Int64, got {other:?}"),
+        other => panic!("{ns}: expected an Int64, got {other:?}"),
     }
 }
 
-/// THE ROW THIS TICKET EXISTS FOR. Before the change this did not merely answer
-/// differently — it refused to load.
-#[test]
-fn a_let_bound_type_receiver_resolves_in_the_denoted_sort() {
-    let mut interp = interp_for(SRC);
-    assert_eq!(
-        call_int(&mut interp, "via_binder"),
-        7,
-        "`t.tag()` with `t` denoting Box must reach Box's `tag`, not look for a \
-         member of the opaque `Type`"
-    );
+/// The refusals of a source that must not load, rendered.
+fn refusal(ns: &str, prefix: &str, body: &str) -> String {
+    let errs = try_load_kb_with(&source(ns, prefix, body))
+        .err()
+        .unwrap_or_else(|| panic!("{ns}: must be refused, and loaded clean"));
+    format!("{errs:?}")
 }
 
-/// The denotation is the INSTANTIATION, not just the head: `Box[V = Int64]` and
-/// `Box[V = String]` denote different things, and the member's signature must be
-/// read at the receiver's bindings. Driven in both directions — the value comes
-/// back, AND a wrong-typed argument is refused against `Int64` rather than
-/// unifying with a free `V`.
+/// `Type` reopened with a member that takes the type value.
+const TYPE_TAG: &str = r#"
+namespace anthill.prelude
+  sort Type
+    operation tag(t: Type) -> Int64 = 99
+  end
+end
+"#;
+
+// ── the rule ────────────────────────────────────────────────────────────────
+
+/// The row the ticket was opened for. Before the rung this did not load.
+#[test]
+fn a_let_bound_type_receiver_resolves_in_the_denoted_sort() {
+    let got = run_int(
+        "papx0",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.tag()",
+    );
+    assert_eq!(got, 7, "`t.tag()` with `t` denoting Box is Box's `tag`");
+}
+
+/// The denotation is the instantiation, not the head alone: the member's signature is
+/// read at the receiver's bindings. Driven both ways — the value comes back, and a
+/// wrong-typed argument is refused at `Int64` rather than unifying with a free `V`.
 #[test]
 fn the_denoted_sorts_type_arguments_ride_the_call() {
-    let mut interp = interp_for(SRC);
-    assert_eq!(call_int(&mut interp, "binder_carries_args"), 5);
-
-    // The discriminating half: with the bindings dropped, `V` would be free and
-    // `"s"` would unify with it. It must be refused at `Int64`.
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0bad
-  sort Box[V]
-    entity mk(v: V)
-    operation wrap(x: V) -> V = x
-  end
-  operation binder_bad() -> Int64 =
-    let t = Box[V = Int64]
-    t.wrap("s")
-end
-"#,
-    )
-    .err()
-    .expect("a String argument must be refused at V = Int64");
-    let rendered = format!("{errs:?}");
-    // THE SITE, NOT JUST THE SUBSTRINGS. Measured: with the bindings dropped the
-    // refusal is `binder_bad.return (op-return): expected Int64, got String`, which
-    // contains BOTH substrings too — so asserting only those passed in both worlds
-    // and measured nothing. Only `wrap.x (op-arg)` says the receiver's `V = Int64`
-    // reached the ARGUMENT check.
+    assert_eq!(
+        run_int(
+            "papx0args",
+            "",
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.wrap(5)",
+        ),
+        5
+    );
+    let rendered = refusal(
+        "papx0argsbad",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.wrap(\"s\")",
+    );
+    // The site, not just the two type names: with the bindings dropped the refusal is
+    // `go.return (op-return): expected Int64, got String`, which holds both names too.
     assert!(
         rendered.contains("wrap.x") && rendered.contains("op-arg"),
-        "the refusal must land on the ARGUMENT, not the return: {rendered}"
+        "the refusal must land on the argument, not the return: {rendered}"
     );
     assert!(
         rendered.contains("expected Int64") && rendered.contains("got String"),
@@ -139,371 +167,568 @@ end
     );
 }
 
-/// The denotation is KNOWN and the sort has no such member: the refusal must
-/// name the denoted sort. Reporting "no such member of `anthill.prelude.Type`"
-/// is a true sentence about the wrong sort and sends the author looking for a
-/// member of `Type`.
+/// A member the denoted sort does not declare is refused about THAT sort.
 #[test]
-fn a_missing_member_names_the_denoted_sort_not_type() {
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0miss
-  sort Box[V]
-    entity mk(v: V)
-  end
-  operation gone() -> Int64 =
-    let t = Box[V = Int64]
-    t.nosuch()
-end
-"#,
-    )
-    .err()
-    .expect("a missing member must still be refused");
-    let rendered = format!("{errs:?}");
+fn a_missing_member_is_refused_about_the_denoted_sort() {
+    let rendered = refusal(
+        "papx0miss",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.nosuch()",
+    );
     assert!(
-        rendered.contains("Box"),
-        "the refusal must name the DENOTED sort: {rendered}"
+        rendered.contains("papx0miss.Box.nosuch") && rendered.contains("no such member"),
+        "the refusal must name the denoted sort: {rendered}"
     );
     assert!(
         !rendered.contains("prelude.Type"),
-        "the refusal must NOT name the opaque Type handle: {rendered}"
+        "and not the `Type` handle: {rendered}"
     );
 }
 
-/// FENCE. Both name-route spellings bypass the typer's dot frame entirely, so
-/// the change cannot have moved them. Passes either way by design; its job is to
-/// say the two routes that already worked still do, at the same values.
-///
-/// ITS OWN SOURCE, NOT `SRC`, AND THAT IS THE WHOLE POINT. Measured: sharing
-/// `SRC` with the arms made this row fail on back-out too -- not because a
-/// name-route spelling moved, but because `SRC` also contains `via_binder`,
-/// which does not LOAD once the branch is gone, so the KB never builds and
-/// `bare_name` cannot be called either. A control that shares a fixture with
-/// the thing it controls measures the fixture.
+/// `let u = t` keeps what `t` denotes.
 #[test]
-fn the_two_name_route_spellings_are_unchanged() {
-    let mut interp = interp_for(
-        r#"
-namespace test.papx0names
-  sort Box[V]
-    entity mk(v: V)
-    operation tag() -> Int64 = 7
-  end
-  operation bare_name() -> Int64 = Box.tag()
-  operation written_bracket() -> Int64 = Box[V = Int64].tag()
-end
-"#,
+fn an_alias_hop_keeps_the_denotation() {
+    let got = run_int(
+        "papx0hop",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    let u = t\n    u.tag()",
     );
-    for op in ["bare_name", "written_bracket"] {
-        let got = interp
-            .call(&format!("test.papx0names.{op}"), &[])
-            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        assert!(
-            matches!(got, Value::Int(7)),
-            "{op}: the name routes never reach the dot frame and must be untouched,              got {got:?}"
-        );
-    }
+    assert_eq!(got, 7);
 }
 
-/// SOUNDNESS. A shadowing `let` rebinds the name's identity, so the outer
-/// denotation must not survive it -- the same hazard `clear_receiver_alias`
-/// guards for the alias channel. The inner `t` is an `Int64`, and the dot must
-/// dispatch there, never in `Box`.
-#[test]
-fn a_shadowing_rebind_drops_the_denotation() {
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0shadow
-  sort Box[V]
-    entity mk(v: V)
-    operation tag() -> Int64 = 7
-  end
-  operation shadowed() -> Int64 =
-    let t = Box[V = Int64]
-    let t = 1
-    t.tag()
-end
-"#,
-    )
-    .err()
-    .expect("`tag` is not a member of Int64, so this must refuse");
-    let rendered = format!("{errs:?}");
-    assert!(
-        rendered.contains("Int64"),
-        "the inner binding decides the receiver: {rendered}"
-    );
-    assert!(
-        !rendered.contains("papx0shadow.Box"),
-        "the outer denotation must not survive the rebind: {rendered}"
-    );
-}
+// ── `Type`'s own members ────────────────────────────────────────────────────
 
-/// SCOPE BOUNDARY, pinned so it is a decision rather than a surprise. The
-/// denotation is lost through an operation call -- `Type` is opaque and carries
-/// no head -- so this stays refused under option B. Recovering it needs a `Type`
-/// that carries its instantiation, which is a separate ticket.
+/// A member declared on `Type` and not on the denoted sort is not an answer. The refusal
+/// names both, and the spelling it advises is run.
 #[test]
-fn a_denotation_lost_through_a_call_still_refuses() {
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0thru
-  import anthill.prelude.{Type}
-  sort Box[V]
-    entity mk(v: V)
-    operation tag() -> Int64 = 7
-  end
-  operation id_ty(x: Type) -> Type = x
-  operation through_call() -> Int64 =
-    let t = id_ty(Box[V = Int64])
-    t.tag()
-end
-"#,
-    )
-    .err()
-    .expect("the denotation does not survive a call under option B");
-    let rendered = format!("{errs:?}");
-    assert!(
-        rendered.contains("Type"),
-        "with no denotation the receiver is the opaque Type, and the refusal says so: \
-         {rendered}"
-    );
-}
-
-/// CONTROL (3) OF THE TICKET — the ambiguity refusal, DRIVEN rather than shipped
-/// as an unreachable guard.
-///
-/// Design §4 closes with "if a surface can name both a companion member and a
-/// `Type` member and no existing rule orders them, refuse the ambiguity naming
-/// both routes", and §8 repeats it. Under option B that collision needs `Type`
-/// to declare a member, and today's stdlib `sort Type = ?` declares none — so
-/// the trigger had to be CONSTRUCTED, not found. It is constructible: `Type` is
-/// an ordinary sort a program can reopen, and a fixture that adds `tag` to it
-/// loads clean.
-///
-/// MEASURED BEFORE THE GUARD: with `tag` on BOTH `Type` and `Box`, `t.tag()`
-/// answered 7 and never mentioned the other route — the lookup-order settlement
-/// §4 forbids. FAILS ON BACK-OUT of the two-route lookup (it answers 7 again).
-///
-/// Both lookups ALWAYS run. That is what separates this from §8's banned
-/// fallback, which is retrying one route after the other FAILS; no answer here
-/// depends on which question was asked first.
-#[test]
-fn a_member_on_both_routes_is_refused_naming_both() {
-    let errs = try_load_kb_with(
-        r#"
-namespace anthill.prelude
-  sort Type
-    -- a genuine member OF THE `Type` VALUE: it takes the receiver, which is
-    -- what makes `t.tag()` a second live route beside `Box`'s companion `tag()`.
-    operation tag(t: Type) -> Int64 = 99
-  end
-end
-
-namespace test.papx0ambig
-  sort Box[V]
-    entity mk(v: V)
-    operation tag() -> Int64 = 7
-  end
-  operation both() -> Int64 =
-    let t = Box[V = Int64]
-    t.tag()
-end
-"#,
-    )
-    .err()
-    .expect("a member on both routes must be refused, not silently resolved");
-    let rendered = format!("{errs:?}");
-    // BOTH routes must be named -- asserting only that "some diagnostic mentioning
-    // the sort was raised" is what this ticket's control text rules out.
-    assert!(
-        rendered.contains("Box.tag"),
-        "the companion route must be named: {rendered}"
-    );
-    assert!(
-        rendered.contains("Type.tag"),
-        "the `Type`-member route must be named: {rendered}"
-    );
-    assert!(
-        rendered.contains("no rule orders them"),
-        "the refusal must say WHY it refuses rather than report a miss: {rendered}"
-    );
-}
-
-/// FENCE for the arm above: a member that exists ONLY on `Type` is not the
-/// companion arm's business. It must fall through to the ordinary dispatch --
-/// which is already asking about `Type` -- and resolve there, not be swallowed
-/// by the two-route check or refused as missing from the denoted sort.
-#[test]
-fn a_member_only_on_type_still_resolves_by_the_ordinary_route() {
-    let mut interp = interp_for(
-        r#"
+fn a_member_of_type_is_not_reached_through_a_denoting_receiver() {
+    const ONLY_ON_TYPE: &str = r#"
 namespace anthill.prelude
   sort Type
     operation only_on_type(t: Type) -> Int64 = 99
   end
 end
-
-namespace test.papx0onlytype
-  sort Box[V]
-    entity mk(v: V)
-  end
-  operation reach() -> Int64 =
-    let t = Box[V = Int64]
-    t.only_on_type()
-end
-"#,
+"#;
+    let rendered = refusal(
+        "papx0onlytype",
+        ONLY_ON_TYPE,
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.only_on_type()",
     );
-    let got = interp
-        .call("test.papx0onlytype.reach", &[])
-        .unwrap_or_else(|e| panic!("only_on_type: {e:?}"));
     assert!(
-        matches!(got, Value::Int(99)),
-        "a `Type`-only member must still reach `Type`'s ordinary dispatch, got {got:?}"
+        rendered.contains("`Box` declares no `only_on_type`"),
+        "the denoted sort is the one searched: {rendered}"
     );
-}
-
-/// REGRESSION ROW (/code-review, driven). The first cut of this arm RETURNED
-/// unconditionally, which made every rung below it unreachable for a
-/// `Type`-typed receiver: `try_fire_dot_rule`, `find_spec_op_for_provided_sort`,
-/// the JSFHG parent rung, field access and relation projection. `sort.anthill`
-/// declares `fact Eq[T = Type]`, so `t.eq(u)` had WORKED through the spec route
-/// and stopped loading — while the same call with the denotation lost still
-/// loaded beside it. A new admission is a RUNG, never a gate in front of the
-/// ladder.
-///
-/// FAILS if the arm ever returns unconditionally again.
-#[test]
-fn a_spec_route_reachable_through_type_is_not_shadowed_by_the_new_rung() {
-    let mut interp = interp_for(
-        r#"
-namespace test.papx0spec
-  sort Box[V]
-    entity mk(v: V)
-  end
-  operation same() -> Bool =
-    let t = Box[V = Int64]
-    let u = Box[V = Int64]
-    t.eq(u)
-end
-"#,
-    );
-    let got = interp
-        .call("test.papx0spec.same", &[])
-        .unwrap_or_else(|e| panic!("eq through the Type spec route: {e:?}"));
     assert!(
-        matches!(got, Value::Bool(_)),
-        "`fact Eq[T = Type]` makes `eq` reachable on a type value; the denoted-sort \
-         rung must not shadow it, got {got:?}"
+        rendered.contains("anthill.prelude.Type.only_on_type(…)"),
+        "the member of `Type` is named with its spelling: {rendered}"
+    );
+    // The advised spelling.
+    assert_eq!(
+        run_int(
+            "papx0onlytypenamed",
+            ONLY_ON_TYPE,
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    anthill.prelude.Type.only_on_type(t)",
+        ),
+        99
     );
 }
 
-/// SOUNDNESS (/code-review, driven). Only a COMPANION member — one that does not
-/// take the receiver — may be called with the args unshifted. An INSTANCE member
-/// resolved here and synthesized that way silently DROPPED the receiver:
-/// `t.combine(p, q)` became `combine(p, q)` and LOADED. Worse than a miss: the
-/// same member then behaved oppositely depending only on whether the binder held
-/// a type or a value.
+/// The stdlib's own case: `Type` provides `Eq`, `Box` declares no `eq`. `t.eq(u)` is
+/// refused, as the written `Box[V = Int64].eq(u)` is, and the named call compares the
+/// two type values.
 #[test]
-fn an_instance_member_of_the_denoted_sort_is_not_called_with_the_receiver_dropped() {
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0inst
-  sort Box[V]
-    entity mk(v: V)
-    operation combine(a: Box[V], b: Box[V]) -> Int64 = 1
-  end
-  operation drop_it() -> Int64 =
-    let t = Box[V = Int64]
-    t.combine(mk(v: 1), mk(v: 2))
-end
-"#,
-    )
-    .err()
-    .expect("an instance member must not be taken by the companion rung");
-    let rendered = format!("{errs:?}");
+fn eq_is_refused_on_a_denoting_receiver_and_the_named_call_answers() {
+    let rendered = refusal(
+        "papx0eq",
+        "",
+        "  operation go() -> Bool =\n    let t = Box[V = Int64]\n    let u = Box[V = Int64]\n    t.eq(u)",
+    );
     assert!(
-        rendered.contains("combine"),
-        "the refusal should still be about `combine`: {rendered}"
+        rendered.contains("`Box` declares no `eq`")
+            && rendered.contains("anthill.prelude.PartialEq.eq(…)"),
+        "{rendered}"
+    );
+    // The written spelling refuses the same program.
+    let written = refusal(
+        "papx0eqwritten",
+        "",
+        "  operation go() -> Bool = Box[V = Int64].eq(Box[V = Int64])",
+    );
+    assert!(written.contains("Box.eq"), "{written}");
+    // The advised spelling.
+    let got = run(
+        "papx0eqnamed",
+        "",
+        "  operation go() -> Bool =\n    let t = Box[V = Int64]\n    let u = Box[V = Int64]\n    anthill.prelude.PartialEq.eq(t, u)",
+    );
+    assert!(matches!(got, Value::Bool(true)), "got {got:?}");
+}
+
+/// A name both the sort and `Type` declare: the receiver denotes the sort, so it is the
+/// sort's — in all three spellings — and the member of `Type` is the named call.
+#[test]
+fn a_member_on_both_the_sort_and_type_is_the_sorts() {
+    for (ns, body) in [
+        ("papx0bothbare", "  operation go() -> Int64 = Box.tag()"),
+        ("papx0bothwritten", "  operation go() -> Int64 = Box[V = Int64].tag()"),
+        (
+            "papx0bothbound",
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.tag()",
+        ),
+    ] {
+        assert_eq!(run_int(ns, TYPE_TAG, body), 7, "{ns}");
+    }
+    assert_eq!(
+        run_int(
+            "papx0bothnamed",
+            TYPE_TAG,
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    Type.tag(t)",
+        ),
+        99
     );
 }
 
-/// One alias hop must keep the denotation. `let u = t` records `u -> [t]` in the
-/// peer `receiver_aliases` channel; without de-aliasing the read, this restored
-/// the VERBATIM pre-fix diagnostic one `let` later.
+/// The boundary of the rule. A `Type` that denotes nothing known at the dot is a value:
+/// a call's result reaches `Type`'s `eq` and a member declared on `Type`, and a parameter
+/// is refused about `Type`.
 #[test]
-fn an_alias_hop_keeps_the_denotation() {
-    let mut interp = interp_for(
-        r#"
-namespace test.papx0hop
-  sort Box[V]
-    entity mk(v: V)
-    operation tag() -> Int64 = 7
-  end
-  operation hop() -> Int64 =
-    let t = Box[V = Int64]
-    let u = t
-    u.tag()
-end
-"#,
+fn a_type_that_denotes_nothing_here_is_a_value() {
+    let got = run(
+        "papx0lost",
+        "",
+        "  operation id_ty(x: Type) -> Type = x\n  operation go() -> Bool =\n    let t = id_ty(Box[V = Int64])\n    t.eq(Box[V = Int64])",
     );
-    let got = interp
-        .call("test.papx0hop.hop", &[])
-        .unwrap_or_else(|e| panic!("alias hop: {e:?}"));
-    assert!(matches!(got, Value::Int(7)), "got {got:?}");
-}
-
-/// A POSITIONAL bracket is not admitted by this rung, and the row exists because
-/// admitting it was a FALSE ACCEPT rather than a gap: `recv_type` is read
-/// downstream by `term_backed_bindings`, which consults named keys only, so
-/// `Box[Int64]` arrived with no bindings, `V` went free, and `t.wrap("s")` LOADED
-/// where the written `Box[Int64].wrap("s")` correctly refuses. The rung stands
-/// down and the ladder answers exactly as it did before.
-#[test]
-fn a_positional_bracket_is_not_admitted_and_does_not_loosen_the_argument_check() {
-    let errs = try_load_kb_with(
-        r#"
-namespace test.papx0pos
-  sort Box[V]
-    entity mk(v: V)
-    operation wrap(x: V) -> V = x
-  end
-  operation pos_bad() -> Int64 =
-    let t = Box[Int64]
-    t.wrap("s")
-end
-"#,
-    )
-    .err()
-    .expect("a positional denotation must not silently accept a String at V = Int64");
-    let rendered = format!("{errs:?}");
-    assert!(!rendered.is_empty(), "{rendered}");
-}
-
-/// A receiver denoting `Type` ITSELF made both lookups return the SAME symbol, so
-/// the ambiguity refusal reported one route as two.
-#[test]
-fn a_receiver_denoting_type_itself_is_not_reported_as_two_routes() {
-    let errs = try_load_kb_with(
-        r#"
-namespace anthill.prelude
-  sort Type
-    operation tag(t: Type) -> Int64 = 99
-  end
-end
-
-namespace test.papx0self
-  import anthill.prelude.{Type}
-  operation selfish() -> Int64 =
-    let t = Type
-    t.tag()
-end
-"#,
+    assert!(matches!(got, Value::Bool(true)), "got {got:?}");
+    assert_eq!(
+        run_int(
+            "papx0lostmember",
+            TYPE_TAG,
+            "  operation id_ty(x: Type) -> Type = x\n  operation go() -> Int64 =\n    let t = id_ty(Box[V = Int64])\n    t.tag()",
+        ),
+        99
     );
-    if let Err(e) = errs {
-        let rendered = format!("{e:?}");
+    for (ns, body) in [
+        (
+            "papx0param",
+            "  operation f(t: Type) -> Int64 = t.tag()\n  operation go() -> Int64 = f(Box)",
+        ),
+        (
+            "papx0lostmiss",
+            "  operation id_ty(x: Type) -> Type = x\n  operation go() -> Int64 =\n    let t = id_ty(Box[V = Int64])\n    t.tag()",
+        ),
+    ] {
+        let rendered = refusal(ns, "", body);
         assert!(
-            !rendered.contains("names BOTH"),
-            "one route must not be reported as two: {rendered}"
+            rendered.contains("anthill.prelude.Type.tag") && rendered.contains("no such member"),
+            "{ns}: {rendered}"
         );
     }
+}
+
+/// The sort denoted is `Type`: its member is called as the written `Type.tag()` calls it,
+/// with no argument for the parameter, and refused in the same words.
+#[test]
+fn a_receiver_denoting_type_itself_is_types_own_call() {
+    let bound = refusal(
+        "papx0self",
+        TYPE_TAG,
+        "  operation go() -> Int64 =\n    let t = Type\n    t.tag()",
+    );
+    let written = refusal("papx0selfwritten", TYPE_TAG, "  operation go() -> Int64 = Type.tag()");
+    for rendered in [&bound, &written] {
+        assert!(
+            rendered.contains("tag.arity") && rendered.contains("no argument fills parameter `t`"),
+            "{rendered}"
+        );
+    }
+}
+
+// ── the call is the written one ─────────────────────────────────────────────
+
+/// A member whose parameters are values of the sort is called with the arguments as
+/// written — the receiver is a type and fills none of them — as `Box[V = Int64].combine(…)`
+/// is. The bracket reaches the argument check here too.
+#[test]
+fn a_member_taking_values_of_the_sort_is_called_as_written() {
+    for (ns, body) in [
+        (
+            "papx0instwritten",
+            "  operation go() -> Int64 = Box[V = Int64].combine(mk(v: 1), mk(v: 2))",
+        ),
+        (
+            "papx0instbound",
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.combine(mk(v: 1), mk(v: 2))",
+        ),
+    ] {
+        assert_eq!(run_int(ns, "", body), 1, "{ns}");
+    }
+    for (ns, body) in [
+        (
+            "papx0instwrittenbad",
+            "  operation go() -> Int64 = Box[V = Int64].combine(mk(v: \"a\"), mk(v: 2))",
+        ),
+        (
+            "papx0instboundbad",
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    t.combine(mk(v: \"a\"), mk(v: 2))",
+        ),
+    ] {
+        let rendered = refusal(ns, "", body);
+        assert!(
+            rendered.contains("combine.a") && rendered.contains("expected Box[V = Int64]"),
+            "{ns}: {rendered}"
+        );
+    }
+}
+
+/// `Box[Int64]` is `Box[V = Int64]`: the positional argument binds the next parameter.
+/// It was refused, and before that admitted with `V` left free.
+#[test]
+fn a_positional_bracket_binds_the_next_parameter() {
+    assert_eq!(
+        run_int(
+            "papx0pos",
+            "",
+            "  operation go() -> Int64 =\n    let t = Box[Int64]\n    t.wrap(5)",
+        ),
+        5
+    );
+    for (ns, body) in [
+        ("papx0poswritten", "  operation go() -> Int64 = Box[Int64].wrap(\"s\")"),
+        (
+            "papx0posbound",
+            "  operation go() -> Int64 =\n    let t = Box[Int64]\n    t.wrap(\"s\")",
+        ),
+    ] {
+        let rendered = refusal(ns, "", body);
+        assert!(
+            rendered.contains("wrap.x") && rendered.contains("expected Int64"),
+            "{ns}: {rendered}"
+        );
+    }
+    // Named and positional mixed: the positional skips the parameter a name took.
+    const PAIR: &str = "  sort Pair2[L, R]\n    entity pr(l: L, r: R)\n    operation second(x: R) -> R = x\n  end\n";
+    assert_eq!(
+        run_int(
+            "papx0mixed",
+            "",
+            &format!("{PAIR}  operation go() -> Int64 =\n    let t = Pair2[R = Int64, String]\n    t.second(5)"),
+        ),
+        5
+    );
+    let rendered = refusal(
+        "papx0mixedbad",
+        "",
+        &format!("{PAIR}  operation go() -> Int64 =\n    let t = Pair2[Int64, String]\n    t.second(5)"),
+    );
+    assert!(
+        rendered.contains("second.x") && rendered.contains("expected String"),
+        "{rendered}"
+    );
+}
+
+/// A positional bracket inside the bracket is named as the outer one is.
+#[test]
+fn a_nested_positional_bracket_is_named_too() {
+    for (ns, body) in [
+        (
+            "papx0nestwritten",
+            "  operation go() -> Int64 = Box.unbox(Box[V = Box[Int64]].wrap(mk(v: 3)))",
+        ),
+        (
+            "papx0nestbound",
+            "  operation go() -> Int64 =\n    let t = Box[V = Box[Int64]]\n    Box.unbox(t.wrap(mk(v: 3)))",
+        ),
+    ] {
+        assert_eq!(run_int(ns, "", body), 3, "{ns}");
+    }
+}
+
+/// `let t = Box; t.mk(5)` constructs, as `Box.mk(5)` does.
+#[test]
+fn a_constructor_is_reached_through_a_let_bound_type() {
+    for (ns, body) in [
+        ("papx0ctorwritten", "  operation go() -> Int64 = Box.unbox(Box.mk(5))"),
+        (
+            "papx0ctorbound",
+            "  operation go() -> Int64 =\n    let t = Box\n    Box.unbox(t.mk(5))",
+        ),
+    ] {
+        assert_eq!(run_int(ns, "", body), 5, "{ns}");
+    }
+}
+
+/// A bracket on a constructor's receiver is not read, and both spellings say so in one
+/// sentence.
+#[test]
+fn a_bracket_on_a_constructor_is_refused_as_the_written_one_is() {
+    for (ns, body) in [
+        (
+            "papx0ctorbrwritten",
+            "  operation go() -> Int64 = Box.unbox(Box[V = Int64].mk(5))",
+        ),
+        (
+            "papx0ctorbrbound",
+            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    Box.unbox(t.mk(5))",
+        ),
+    ] {
+        let rendered = refusal(ns, "", body);
+        assert!(
+            rendered.contains("a companion receiver's type bracket is not read here — `Box.mk`"),
+            "{ns}: {rendered}"
+        );
+    }
+}
+
+/// A type parameter in the bracket is that parameter, read as the written
+/// `Box[V = T].wrap(y)` reads it. The value read of `T` needs its `TypeValue` clause.
+#[test]
+fn a_type_parameter_in_the_bracket_is_that_parameter() {
+    assert_eq!(
+        run_int(
+            "papx0rigidwritten",
+            "",
+            "  operation written[T](y: T) -> T = Box[V = T].wrap(y)\n  operation go() -> Int64 = written(5)",
+        ),
+        5
+    );
+    assert_eq!(
+        run_int(
+            "papx0rigid",
+            "",
+            "  operation bound[T](y: T) -> T\n    requires anthill.reflect.TypeValue[T = T]\n  =\n    let t = Box[V = T]\n    t.wrap(y)\n  operation go() -> Int64 = bound(5)",
+        ),
+        5
+    );
+}
+
+/// Parentheses make an expression: `(Box[V = Int64]).tag()` is a dot on the type value,
+/// and the bracket rides it.
+#[test]
+fn a_parenthesized_type_is_a_receiver() {
+    assert_eq!(
+        run_int("papx0paren", "", "  operation go() -> Int64 = (Box[V = Int64]).tag()"),
+        7
+    );
+    assert_eq!(
+        run_int("papx0parenbare", "", "  operation go() -> Int64 = (Box).tag()"),
+        7
+    );
+    let rendered = refusal(
+        "papx0parenbad",
+        "",
+        "  operation go() -> Int64 = (Box[V = Int64]).wrap(\"s\")",
+    );
+    assert!(
+        rendered.contains("wrap.x") && rendered.contains("expected Int64"),
+        "{rendered}"
+    );
+}
+
+/// The same for a value: `(b).unbox()` is `b.unbox()`. A parenthesized receiver of a
+/// CALL was dropped, leaving `unbox()` standing alone. (The member read `(b).v` already
+/// kept its receiver; it is here as the fence.)
+#[test]
+fn a_parenthesized_value_is_a_receiver() {
+    assert_eq!(
+        run_int(
+            "papx0parencall",
+            "",
+            "  operation go() -> Int64 =\n    let b = mk(v: 4)\n    (b).unbox()",
+        ),
+        4
+    );
+    assert_eq!(
+        run_int(
+            "papx0parenfield",
+            "",
+            "  operation go() -> Int64 =\n    let b = mk(v: 4)\n    (b).v",
+        ),
+        4
+    );
+}
+
+/// An alias is read as a name path reads it: a pure alias is the sort it stands for,
+/// through a chain of aliases too, and one that owns members of its own is read as
+/// written. The parameters an alias fixes do not ride a call through it — in either
+/// spelling, which is why the wrong-typed argument is compared and not pinned to a site.
+#[test]
+fn an_alias_denotes_what_it_stands_for() {
+    const ALIASES: &str = "  sort CA = Box[V = Int64]\n  sort CB = Box\n  sort CC = CA\n";
+    for (ns, alias, call, want) in [
+        ("papx0aliastag", "CA", "t.tag()", 7),
+        ("papx0aliaswrap", "CA", "t.wrap(5)", 5),
+        ("papx0aliasbare", "CB", "t.wrap(5)", 5),
+        ("papx0aliaschain", "CC", "t.wrap(5)", 5),
+        ("papx0aliasctor", "CA", "Box.unbox(t.mk(5))", 5),
+    ] {
+        let body = format!("{ALIASES}  operation go() -> Int64 =\n    let t = {alias}\n    {call}");
+        assert_eq!(run_int(ns, "", &body), want, "{ns}");
+    }
+    let written = refusal(
+        "papx0aliasbadwritten",
+        "",
+        &format!("{ALIASES}  operation go() -> Int64 = CA.wrap(\"s\")"),
+    );
+    let bound = refusal(
+        "papx0aliasbadbound",
+        "",
+        &format!("{ALIASES}  operation go() -> Int64 =\n    let t = CA\n    t.wrap(\"s\")"),
+    );
+    assert!(!bound.contains("no such member"), "`wrap` is reached: {bound}");
+    assert_eq!(
+        written.contains("wrap.x"),
+        bound.contains("wrap.x"),
+        "one refusal site for both spellings:\n{written}\n{bound}"
+    );
+
+    // An alias with members of its own: `extra` is the alias's, and `tag` — the target's —
+    // is not reached through it, as the written `CA.tag()` is not.
+    const OWNING: &str =
+        "  sort CA = Box[V = Int64]\n  namespace CA\n    operation extra() -> Int64 = 11\n  end\n";
+    for (ns, body) in [
+        ("papx0ownwritten", "  operation go() -> Int64 = CA.extra()"),
+        ("papx0ownbound", "  operation go() -> Int64 =\n    let t = CA\n    t.extra()"),
+    ] {
+        assert_eq!(run_int(ns, "", &format!("{OWNING}{body}")), 11, "{ns}");
+    }
+    for (ns, body) in [
+        ("papx0owntagwritten", "  operation go() -> Int64 = CA.tag()"),
+        ("papx0owntagbound", "  operation go() -> Int64 =\n    let t = CA\n    t.tag()"),
+    ] {
+        let rendered = refusal(ns, "", &format!("{OWNING}{body}"));
+        assert!(rendered.contains("CA.tag"), "{ns}: {rendered}");
+    }
+}
+
+/// A constant in the bracket is part of the type: `Vec[Int64, 3]` is not a
+/// `Vec[Int64, 4]`, through the bound name as written.
+#[test]
+fn a_constant_in_the_bracket_is_part_of_the_denoted_type() {
+    const VEC: &str = "  sort Vec[E, N]\n    entity vec(e: E)\n    operation same(x: Vec[E, N]) -> Vec[E, N] = x\n  end\n";
+    for (ns, body) in [
+        (
+            "papx0constwritten",
+            "  operation go() -> Int64 =\n    let v: Vec[Int64, 4] = Vec[Int64, 3].same(vec(e: 1))\n    2",
+        ),
+        (
+            "papx0constbound",
+            "  operation go() -> Int64 =\n    let t = Vec[Int64, 3]\n    let v: Vec[Int64, 4] = t.same(vec(e: 1))\n    2",
+        ),
+    ] {
+        let rendered = refusal(ns, "", &format!("{VEC}{body}"));
+        assert!(
+            rendered.contains("expected Vec[E = Int64, N = 4], got Vec[E = Int64, N = 3]"),
+            "{ns}: {rendered}"
+        );
+    }
+}
+
+/// The receiver denotes a spec: the member is the spec's operation at the bracket's
+/// carrier, as `Desc[T = Leaf].label()` is.
+#[test]
+fn a_spec_is_denoted_as_any_sort_is() {
+    const SPEC: &str = "  sort Desc\n    sort T = ?\n    operation label() -> Int64\n  end\n  sort Leaf\n    entity leaf\n    provides Desc[T = Leaf]\n    operation label() -> Int64 = 7\n  end\n";
+    for (ns, body) in [
+        ("papx0specwritten", "  operation go() -> Int64 = Desc[T = Leaf].label()"),
+        (
+            "papx0specbound",
+            "  operation go() -> Int64 =\n    let t = Desc[T = Leaf]\n    t.label()",
+        ),
+    ] {
+        assert_eq!(run_int(ns, "", &format!("{SPEC}{body}")), 7, "{ns}");
+    }
+}
+
+/// A lambda written under the `let` sees what the name denotes.
+#[test]
+fn a_lambda_under_the_binding_sees_the_denotation() {
+    let got = run_int(
+        "papx0lambda",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    let f = lambda (x: Int64) -> t.wrap(x)\n    f(3)",
+    );
+    assert_eq!(got, 3);
+}
+
+/// A nested sort is declared in `Box` and is not a call. The refusal says that, and does
+/// not say `Box` has no such member.
+#[test]
+fn a_declaration_that_is_no_call_is_refused_truthfully() {
+    let rendered = refusal(
+        "papx0nested",
+        "",
+        "  namespace Box\n    sort Inner\n      entity inn\n    end\n  end\n  operation go() -> Type =\n    let t = Box\n    t.Inner",
+    );
+    assert!(
+        rendered.contains("`Inner` is declared in `Box` and is neither"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("no such member"), "{rendered}");
+}
+
+/// An `internal` member is hidden from a dot written outside its sort, as the written
+/// `Vault.secret()` is, and reached from inside it.
+#[test]
+fn an_internal_member_is_hidden_as_its_written_name_is() {
+    let lib = |ns: &str, body: &str| {
+        format!(
+            "namespace lib.{ns}\n  sort Vault\n    entity open\n    internal entity sealed(k: Int64)\n    internal operation secret() -> Int64 = 13\n    operation inside() -> Int64 =\n      let t = Vault\n      t.secret()\n  end\nend\nnamespace test.{ns}\n  import lib.{ns}.Vault\n{body}\nend\n"
+        )
+    };
+    for (ns, body, hidden) in [
+        ("papx0hidwritten", "  operation go() -> Int64 = Vault.secret()", "secret"),
+        (
+            "papx0hidbound",
+            "  operation go() -> Int64 =\n    let t = Vault\n    t.secret()",
+            "secret",
+        ),
+        (
+            "papx0hidctor",
+            "  operation go() -> Vault =\n    let t = Vault\n    t.sealed(1)",
+            "sealed",
+        ),
+    ] {
+        let errs = try_load_kb_with(&lib(ns, body))
+            .err()
+            .unwrap_or_else(|| panic!("{ns}: an internal member must be refused from outside"));
+        let rendered = format!("{errs:?}");
+        assert!(
+            rendered.contains(&format!("{hidden}' is internal to 'lib.{ns}.Vault'"))
+                && rendered.contains(&format!("from scope 'test.{ns}.go'")),
+            "{ns}: {rendered}"
+        );
+    }
+    let mut interp = interp_for(&lib("papx0hidinside", "  operation go() -> Int64 = Vault.inside()"));
+    let got = interp
+        .call("test.papx0hidinside.go", &[])
+        .unwrap_or_else(|e| panic!("inside: {e:?}"));
+    assert!(matches!(got, Value::Int(13)), "got {got:?}");
+}
+
+// ── fences ──────────────────────────────────────────────────────────────────
+
+/// Neither written spelling reaches the typer's dot frame; both answer as before.
+#[test]
+fn the_written_spellings_are_unchanged() {
+    for (ns, body) in [
+        ("papx0bare", "  operation go() -> Int64 = Box.tag()"),
+        ("papx0written", "  operation go() -> Int64 = Box[V = Int64].tag()"),
+    ] {
+        assert_eq!(run_int(ns, "", body), 7, "{ns}");
+    }
+}
+
+/// A shadowing `let` is a new name: the inner `t` is an `Int64` and the dot is its.
+#[test]
+fn a_shadowing_rebind_drops_the_denotation() {
+    let rendered = refusal(
+        "papx0shadow",
+        "",
+        "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    let t = 1\n    t.tag()",
+    );
+    assert!(rendered.contains("Int64"), "the inner binding decides: {rendered}");
+    assert!(
+        !rendered.contains("papx0shadow.Box"),
+        "the outer denotation must not survive the rebind: {rendered}"
+    );
 }

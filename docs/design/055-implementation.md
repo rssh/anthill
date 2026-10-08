@@ -127,9 +127,14 @@ enum ResolvedReceiver {
 }
 ```
 
-Existing companion syntax and lookup remain authoritative. If a surface can
-name both a companion member and a `Type` member and no existing rule orders
-them, refuse the ambiguity naming both routes.
+Decided (WI-20260824-PAPX0): the denotation decides. A receiver that denotes a
+sort — a written type, or a name a `let` bound to one — takes `.m(…)` as the
+call the written `Sort[…].m(…)` makes, and `m` is looked up among that sort's
+operations and constructors only. The members of `Type` itself are not reached
+through such a receiver, so no surface names both a companion member and a
+`Type` member and there is no ambiguity to refuse. A `Type` that denotes no
+sort known at the dot (a parameter, a call's result) is a value, and its dot
+is `Type`'s. The rule is stated in `kernel-language.md` §5.4.
 
 ## 5. Structural type expressions
 
@@ -225,7 +230,9 @@ Required diagnostics are local to classification or ordinary validation:
   or trace must name the denoted sort so the implicit reading is visible;
 - structural type written without `type_value`: point to
   `type_value[<type>]()`;
-- ambiguous companion versus `Type` member: name both lookup routes.
+- a member the denoted sort does not declare: refuse about that sort, and
+  where `Type` has a member of the name, say so and give its spelling
+  (`PartialEq.eq(t, …)`).
 
 Do not retain a fallback that retries a failed value resolution as a type (or
 the reverse). Resolve the symbol once and classify loudly.
