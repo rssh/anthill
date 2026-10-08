@@ -86,3 +86,13 @@ what scaland does with one -- if the rung lands without a refusal the next mis-a
 target is silent again. Say at each site which scaland test fails when it is backed out.
 `sbt test` green.
 
+## Changes
+
+### 2026-10-08T14:18:36Z — feedback — claude
+
+PARTLY DELIVERED by WI-20261008-T290W, 2026-10-08; this ticket stays Open for `or` / `and`.
+
+LANDED. The `..` rung (`Loader.lookupWritten`, `anthill.intern.absolutePathTarget`). The written `not` / `!` is NAF: 1 over an empty predicate, 0 over one that holds, the comma control beside it. The loud half: a `..` path naming nothing is `unresolved name`, minted or written, so an operator in a KB without the stdlib is a load error. The census: a clean stdlib load plus all fourteen operators in goal position holds no symbol named `..…`. All in `AbsoluteNameTest`, row `the address an operator is minted with resolves, or is refused`.
+
+REMAINS. `or` / `and` resolve to `anthill.kernel.or` / `.and` and answer nothing; `orFirst`, `barFirst`, `andBoth`, `ampBoth` are pinned at 0 in that row. The kernel defines them over `push_choice` / `push_and`, resolver primitives scaland does not have.
+
