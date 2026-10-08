@@ -1991,13 +1991,8 @@ impl SearchStream {
             ));
         }
         let stack_len = self.stack.len();
-        let step = self.continue_with_goals(
-            kb,
-            Substitution::new(),
-            goals,
-            depth,
-            delay_mode.clone(),
-        );
+        let step =
+            self.continue_with_goals(kb, Substitution::new(), goals, depth, delay_mode.clone());
         // `continue_with_goals` normally re-enters through `Init`. The WI-899
         // clause branch must retain its mode after argument evaluation; otherwise
         // the evaluated goal would rebuild the combined choice point and run the
@@ -4980,11 +4975,10 @@ impl SearchStream {
             // clause has its `out` bound to the dictionary the citation captured for it,
             // so the read CHECKS it (060 §4) instead of deriving its own.
             if let Some((relation, dicts)) = within_requirements_args(kb, &original_goal) {
-                let layout = Rc::clone(
-                    self.read_layout_cache
-                        .entry(relation)
-                        .or_insert_with(|| super::typing::requirement_read_counts(kb, relation).into()),
-                );
+                let layout =
+                    Rc::clone(self.read_layout_cache.entry(relation).or_insert_with(|| {
+                        super::typing::requirement_read_counts(kb, relation).into()
+                    }));
                 bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
             }
 
@@ -5500,18 +5494,14 @@ impl HeadCheck {
                 match head.functor_sym() {
                     // A sort/constructor head reads the O(1) per-constructor NonEq
                     // classification and STOPS (no descent into a shielded field).
-                    Some(f) if kb.field_wise_noneq_carriers.contains(&f) => {
-                        HeadVerdict::Stop(true)
-                    }
+                    Some(f) if kb.field_wise_noneq_carriers.contains(&f) => HeadVerdict::Stop(true),
                     // WI-20260918-CKD4J — …except a PARAMETRIC composite's constructor,
                     // whose partiality is its arguments': `some(nan)` reaches `Float`,
                     // `some(1)` does not, and no per-constructor verdict can say both.
                     // MEASURED before: `eq(some(nan), some(nan))`, `eq(cons(nan, nil),
                     // …)` and `eq(holder(o: some(nan)), …)` all answered TRUE — the
                     // structural shortcut on a value the gate never looked inside.
-                    Some(f) if kb.partial_transparent_carriers.contains(&f) => {
-                        HeadVerdict::Recurse
-                    }
+                    Some(f) if kb.partial_transparent_carriers.contains(&f) => HeadVerdict::Recurse,
                     Some(_) => HeadVerdict::Stop(false),
                     // A functor-less aggregate (tuple/unit) has no sort to key on.
                     None => HeadVerdict::Recurse,
@@ -5797,9 +5787,10 @@ impl KnowledgeBase {
                 continue;
             }
             // WI-582 typed-pattern bounds, keyed by the opened globals.
-            if !super::typing::typed_pattern_bounds_hold(self, rid, &msubst, &fresh) {
+            let Some(msubst) = super::typing::typed_pattern_bounds_hold(self, rid, &msubst, &fresh)
+            else {
                 continue;
-            }
+            };
             // WI-20260820-8RJK8: the equation's own `:- guard`, proved post-match
             // against the head match by a nested definite-only search. LAST of the
             // three post-match filters deliberately — it is the only one that runs a
@@ -5831,6 +5822,28 @@ impl KnowledgeBase {
                 Value::Node(occ) => Value::Node(super::simp_rewrite::instantiate_rhs_verbatim(
                     self, rid, rhs, &fresh, build, occ,
                 )),
+                _ if self
+                    .rule_equation_rhs_node(rid)
+                    .is_some_and(|n| super::typing::occ_holds_woven_call(&n)) =>
+                {
+                    // The persisted RHS term predates dictionary weaving. Instantiate
+                    // the closed occurrence template, then preserve the term carrier
+                    // through the reflect encoding of apply_within and its dictionary.
+                    let template = self
+                        .rule_equation_rhs_node(rid)
+                        .expect("a woven RHS has a template");
+                    let from = NodeOccurrence::new_expr(
+                        Expr::Spliced(redex.clone()),
+                        template.span,
+                        template.owner,
+                    );
+                    let node = super::simp_rewrite::instantiate_rhs_verbatim(
+                        self, rid, rhs, &fresh, build, &from,
+                    );
+                    let term = super::node_occurrence::try_occurrence_to_term(self, &node)
+                        .expect("a dictionary-woven RHS must have a term encoding");
+                    Value::term(term)
+                }
                 _ => self.reify(rhs, build),
             };
             return Some((rid, rewritten));
@@ -6031,18 +6044,30 @@ impl KnowledgeBase {
             BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst, faults),
             BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst, faults),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst, faults),
-            BuiltinTag::Gt => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Greater, faults)
-            }
-            BuiltinTag::Lt => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord == std::cmp::Ordering::Less, faults)
-            }
-            BuiltinTag::Gte => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Less, faults)
-            }
-            BuiltinTag::Lte => {
-                self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater, faults)
-            }
+            BuiltinTag::Gt => self.builtin_cmp(
+                goal,
+                answer_subst,
+                |ord| ord == std::cmp::Ordering::Greater,
+                faults,
+            ),
+            BuiltinTag::Lt => self.builtin_cmp(
+                goal,
+                answer_subst,
+                |ord| ord == std::cmp::Ordering::Less,
+                faults,
+            ),
+            BuiltinTag::Gte => self.builtin_cmp(
+                goal,
+                answer_subst,
+                |ord| ord != std::cmp::Ordering::Less,
+                faults,
+            ),
+            BuiltinTag::Lte => self.builtin_cmp(
+                goal,
+                answer_subst,
+                |ord| ord != std::cmp::Ordering::Greater,
+                faults,
+            ),
             // The i64 slots are CHECKED and report `Overflow`, so an overflowing
             // `add`/`sub`/`mul` faults instead of panicking in debug and WRAPPING in
             // release (WI-875 — the release half was a silently wrong answer). BigInt
@@ -6671,9 +6696,8 @@ impl KnowledgeBase {
                 let ref_term = self.alloc(Term::Ref(sym));
                 self.finish_result(target, ref_term)
             }
-            crate::intern::ResolveResult::Ambiguous(..) | crate::intern::ResolveResult::NotFound => {
-                BuiltinResult::Failure
-            }
+            crate::intern::ResolveResult::Ambiguous(..)
+            | crate::intern::ResolveResult::NotFound => BuiltinResult::Failure,
         }
     }
 
@@ -6782,17 +6806,9 @@ impl KnowledgeBase {
                     .to_string(),
             ));
         };
-        // 8DXVK: a generated annotation guard can carry a provider requirement;
-        // source `domain` asks about a value type. Check provenance explicitly,
-        // rather than letting a query inherit the nominal-bound interpretation
-        // merely because it bypassed the loader's source-type validation.
-        let generated = match goal.as_bind_value() {
-            super::persist_subst::BindValue::Value(Value::Node(ref node)) => node
-                .synthesized_by()
-                .is_some_and(|by| super::typing::is_typed_head_domain_pass(self, by)),
-            _ => false,
-        };
-        if !guard && !generated {
+        // Provider obligations have their own channel. Every domain operand is
+        // a value type, regardless of whether the source or compiler wrote it.
+        if !guard {
             if let Some((spec, param)) =
                 super::typing::parameter_spec_written_as_type(self, bound.carried())
             {
@@ -6971,12 +6987,18 @@ impl KnowledgeBase {
     /// names the provider, its `fill` is found in the provider's `SortDomain` entry (which
     /// the loader recorded — never a name built here), and the provider's clauses are
     /// handed the WHOLE dictionary on their `SortDomain` read.
-    pub(crate) fn lower_apply_domain(&mut self, goal: &Value, subst: &Substitution) -> ApplyDomainLowering {
+    pub(crate) fn lower_apply_domain(
+        &mut self,
+        goal: &Value,
+        subst: &Substitution,
+    ) -> ApplyDomainLowering {
         let ViewHead::Functor { pos_arity, .. } = goal.head(self) else {
             return ApplyDomainLowering::Error("apply_domain: not an application".to_string());
         };
         let Some(x_item) = goal.pos_arg(self, 1) else {
-            return ApplyDomainLowering::Error("apply_domain: the goal carries no value operand".to_string());
+            return ApplyDomainLowering::Error(
+                "apply_domain: the goal carries no value operand".to_string(),
+            );
         };
         let x = x_item.to_value();
         // The σ the evidence is read under: the caller's, plus the conform pin — built only
@@ -6990,7 +7012,9 @@ impl KnowledgeBase {
                 self.walk_arg(goal.pos_arg(self, 1), subst),
                 self.walk_arg(goal.pos_arg(self, 2), subst),
             ) else {
-                return ApplyDomainLowering::Error("apply_domain: the typed-head form carries no bound".to_string());
+                return ApplyDomainLowering::Error(
+                    "apply_domain: the typed-head form carries no bound".to_string(),
+                );
             };
             let bound = bound.carried().clone();
             let mut bound_now = bound.clone();
@@ -7022,7 +7046,9 @@ impl KnowledgeBase {
             };
         } else {
             let Some(d) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
-                return ApplyDomainLowering::Error("apply_domain: the goal carries no dictionary operand".to_string());
+                return ApplyDomainLowering::Error(
+                    "apply_domain: the goal carries no dictionary operand".to_string(),
+                );
             };
             evidence = d;
         }
@@ -7102,7 +7128,9 @@ impl KnowledgeBase {
                     super::typing::TypeBoundVerdict::Suspend => ApplyDomainLowering::NotYet,
                 }
             }
-            DomainEvidence::NoDomain(why) => ApplyDomainLowering::Error(format!("apply_domain: {why}")),
+            DomainEvidence::NoDomain(why) => {
+                ApplyDomainLowering::Error(format!("apply_domain: {why}"))
+            }
         }
     }
 
@@ -7175,7 +7203,11 @@ impl KnowledgeBase {
                 let ty = Value::term(self.alloc(Term::Ref(s)));
                 return self.domain_evidence_of_type(ty, subst);
             }
-            other => return DomainEvidence::NoDomain(format!("the dictionary operand is not a dictionary or a type ({other:?})")),
+            other => {
+                return DomainEvidence::NoDomain(format!(
+                    "the dictionary operand is not a dictionary or a type ({other:?})"
+                ))
+            }
         };
         if self.builtin_of(functor) == Some(BuiltinTag::DomainSub) && pos_arity == 2 {
             let (Some(inner), Some(k)) = (
@@ -7199,7 +7231,10 @@ impl KnowledgeBase {
                 // it stands: a routed dictionary crosses every `fill` step this way, and
                 // rebuilding it copied it each time. Only a CONSTRUCTION is evaluated.
                 if self.is_built_dictionary(&v, ctor) {
-                    return DomainEvidence::Dict { impl_sort, value: v };
+                    return DomainEvidence::Dict {
+                        impl_sort,
+                        value: v,
+                    };
                 }
                 let mut subs: Vec<Value> = Vec::with_capacity(pos_arity);
                 for i in 0..pos_arity {
@@ -7238,7 +7273,9 @@ impl KnowledgeBase {
     /// malformed one is.
     fn dictionary_impl(&self, dict: &Value, impl_key: Symbol) -> Result<Symbol, DomainEvidence> {
         let Some(impl_item) = dict.named_arg(self, impl_key) else {
-            return Err(DomainEvidence::NoDomain("a dictionary with no `impl`".to_string()));
+            return Err(DomainEvidence::NoDomain(
+                "a dictionary with no `impl`".to_string(),
+            ));
         };
         match impl_item.to_value().head(self) {
             ViewHead::Ident(s)
@@ -7247,7 +7284,9 @@ impl KnowledgeBase {
                 pos_arity: 0,
                 ..
             } => Ok(s),
-            _ => Err(DomainEvidence::NoDomain("a dictionary whose `impl` names no sort".to_string())),
+            _ => Err(DomainEvidence::NoDomain(
+                "a dictionary whose `impl` names no sort".to_string(),
+            )),
         }
     }
 
@@ -7277,7 +7316,12 @@ impl KnowledgeBase {
     /// sibling sub normalized — built the parent dictionary to take one child of it. A
     /// dictionary is read at its slot; anything else (a nested `__domain_sub`, a TYPE, whose
     /// dictionary is laid out one level deep) is evaluated first.
-    fn domain_sub_evidence(&mut self, inner: Value, k: usize, subst: &Substitution) -> DomainEvidence {
+    fn domain_sub_evidence(
+        &mut self,
+        inner: Value,
+        k: usize,
+        subst: &Substitution,
+    ) -> DomainEvidence {
         let inner = match self.bound_evidence(inner, subst) {
             Ok(v) => v,
             Err(not_yet) => return not_yet,
@@ -7346,7 +7390,9 @@ impl KnowledgeBase {
             return DomainEvidence::NoDomainType(ty);
         };
         let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) else {
-            return DomainEvidence::NoDomain("this KB never loaded `anthill.realization.runtime.Dictionary`".to_string());
+            return DomainEvidence::NoDomain(
+                "this KB never loaded `anthill.realization.runtime.Dictionary`".to_string(),
+            );
         };
         // THE TYPER'S LAYOUT (`typing::sort_domain_sub_offset`): the slots before the
         // conditions — `SortDomain`'s own chain, the sort's sort-level `requires` — are never
@@ -7860,9 +7906,9 @@ impl KnowledgeBase {
             // A linear scan, not a map: an entity has a handful of fields, and a map built
             // per call is an allocation on every entity construction and query lowering.
             // Field names are distinct, so the first position is the only one.
-            Some(fields) => named.sort_by_key(|(s, _)| {
-                fields.iter().position(|f| f == s).unwrap_or(usize::MAX)
-            }),
+            Some(fields) => {
+                named.sort_by_key(|(s, _)| fields.iter().position(|f| f == s).unwrap_or(usize::MAX))
+            }
             None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
@@ -8843,7 +8889,11 @@ impl KnowledgeBase {
     /// turns into either the ≥2-arg form or a hard load error, so it is unreachable
     /// from a clean load; only a direct hand-written call reaches it — declines to
     /// fire (returns `Failure`) rather than wrongly succeeding.
-    fn builtin_find_dictionary<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+    fn builtin_find_dictionary<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } => pos_arity,
             _ => return BuiltinResult::Failure,
@@ -8918,10 +8968,38 @@ impl KnowledgeBase {
         // sweep would still weave the call while this read found no `out` and quietly
         // fell back to check-only — a dispatch that stops happening with nothing
         // saying so. One spelling of the question, on both sides.
+        let typed_instance = keys
+            .iter()
+            .any(|k| self.local_name_of(*k) == super::typing::PROVIDER_CARRIER_TYPE_LABEL)
+            .then_some(&spec_arg_val);
         let out_sym = keys
             .into_iter()
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
+            if let Some(instance) = typed_instance {
+                let Some(carrier_type) = arg_vals.first() else {
+                    return BuiltinResult::Error(ResolveError::new(
+                        "a provider read has no carrier type".into(),
+                    ));
+                };
+                return match super::typing::fetch_dictionary_from_type(
+                    self,
+                    subst,
+                    instance,
+                    carrier_type,
+                    super::typing::DefaultRung::Consult,
+                    None,
+                ) {
+                    super::typing::FindDictFetch::Fetched(_) => BuiltinResult::Success,
+                    super::typing::FindDictFetch::Guard(
+                        super::typing::FindDictOutcome::DontFire,
+                    ) => BuiltinResult::Failure,
+                    super::typing::FindDictFetch::Defect { detail } => {
+                        BuiltinResult::Error(ResolveError::new(detail))
+                    }
+                    _ => BuiltinResult::delay(),
+                };
+            }
             return match super::typing::find_dictionary_guard(
                 self, subst, spec_sort, op_functor, &arg_vals, &bracket,
             ) {
@@ -8940,9 +9018,15 @@ impl KnowledgeBase {
         // what makes it the σ-VALUE rather than the variable leaf.
         let out_slot = goal.named_arg(self, out_sym);
         match self.walk_arg(out_slot, subst) {
-            Some(out) => {
-                self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out, &bracket)
-            }
+            Some(out) => self.read_dictionary_into(
+                subst,
+                spec_sort,
+                op_functor,
+                &arg_vals,
+                out,
+                &bracket,
+                typed_instance,
+            ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
     }
@@ -8981,6 +9065,7 @@ impl KnowledgeBase {
         // the FETCH sees the same carrier type the GUARD did AND the elements the author
         // named.
         bracket: &super::typing::RequirementBracket,
+        typed_instance: Option<&Value>,
     ) -> BuiltinResult {
         use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
         // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
@@ -9042,9 +9127,26 @@ impl KnowledgeBase {
         } else {
             DefaultRung::Consult
         };
-        let dict = match super::typing::fetch_dictionary(
-            self, subst, spec_sort, op_functor, arg_vals, bracket, rung,
-        ) {
+        let fetched = if let Some(instance) = typed_instance {
+            let Some(carrier_type) = arg_vals.first() else {
+                return BuiltinResult::Error(ResolveError::new(
+                    "a provider read has no carrier type".into(),
+                ));
+            };
+            super::typing::fetch_dictionary_from_type(
+                self,
+                subst,
+                instance,
+                carrier_type,
+                rung,
+                crate::eval::value::Dictionary::from_view(self, &out).map(|d| d.impl_sort()),
+            )
+        } else {
+            super::typing::fetch_dictionary(
+                self, subst, spec_sort, op_functor, arg_vals, bracket, rung,
+            )
+        };
+        let dict = match fetched {
             FindDictFetch::Fetched(dict) => dict,
             FindDictFetch::Guard(FindDictOutcome::Fire) => {
                 unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
@@ -10029,10 +10131,7 @@ impl KnowledgeBase {
         subst: &Substitution,
         op: &'static str,
         int_op: impl Fn(i64, i64) -> ArithOutcome<i64>,
-        bigint_op: impl Fn(
-            &num_bigint::BigInt,
-            &num_bigint::BigInt,
-        ) -> ArithOutcome<num_bigint::BigInt>,
+        bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> ArithOutcome<num_bigint::BigInt>,
         float_op: impl Fn(f64, f64) -> ArithOutcome<f64>,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
@@ -11053,7 +11152,13 @@ impl KnowledgeBase {
                     named_args: named_args.clone(),
                     type_args: type_args.clone(),
                 });
-                (call, slots.iter().any(Option::is_some).then(|| WovenDispatch::Slots(slots)))
+                (
+                    call,
+                    slots
+                        .iter()
+                        .any(Option::is_some)
+                        .then(|| WovenDispatch::Slots(slots)),
+                )
             } else {
                 let Some((target, dict)) =
                     self.dictionary_dispatch_target(*functor, requirements, subst)
@@ -11815,7 +11920,9 @@ impl KnowledgeBase {
             // `operand_label`, which is a SORT labeller — `Error.raise("disk full")`
             // printed "RAISED `String`". `render_raised_payload` is the one owner of a
             // payload's text and every other consumer of a raise already uses it.
-            crate::eval::BridgeDisposition::Fault => faults.fault(self.bridge_fault_message(op, &e)),
+            crate::eval::BridgeDisposition::Fault => {
+                faults.fault(self.bridge_fault_message(op, &e))
+            }
         }
         None
     }
@@ -14356,7 +14463,10 @@ pub(crate) fn within_requirements_goal(
 pub(crate) enum ApplyDomainLowering {
     /// Replace the goal with the provider's `fill` goal, merging the conform `pin` (the
     /// bound's variables, read off the value) into σ.
-    Goal { goal: Value, pin: Option<Substitution> },
+    Goal {
+        goal: Value,
+        pin: Option<Substitution>,
+    },
     /// The bound's type has no domain and the value conforms: nothing is left to run.
     Holds { pin: Option<Substitution> },
     /// The value does not conform to the bound.

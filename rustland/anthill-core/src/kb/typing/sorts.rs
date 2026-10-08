@@ -289,6 +289,7 @@ pub(super) fn type_check_sorts_collect(
     install_typed_head_domain_goals(kb);
 
     errors.extend(record_find_dictionary_grounding(kb));
+    errors.extend(install_rule_provider_dictionaries(kb));
     // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN

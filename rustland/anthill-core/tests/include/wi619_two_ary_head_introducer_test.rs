@@ -137,6 +137,6 @@ end
         "the equational 2-ary head must still fold `[T]` and install the one \
          `?x: T` bound; got {bounds:?}",
     );
-    // ?x is the first head variable; the DeBruijn index is arity-1-position = 1.
-    assert_eq!(bounds[0].0, 1, "the bound must key ?x's DeBruijn index (1)");
+    // The carrier type and dictionary occupy slots in the same frame as ?x.
+    assert_eq!(bounds[0].0, kb.rule_arity(rid) - 1, "the bound keys ?x in the complete frame");
 }

@@ -3,9 +3,9 @@
 - id: WI-20261006-8DXVK-how-a-rule-asks-for-a-value
 - created: 2026-10-06T06:39:39Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: codex
-- status_at: 2026-10-07T18:35:15Z
+- status_at: 2026-10-08T06:22:19Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -36,4 +36,10 @@ Scope corrected by user: remove the replacement proposal and repair existing 060
 ### 2026-10-07T20:07:53Z — feedback — user
 
 Final verification completed: rustland/scripts/test.sh exit 0, 8757 passed, 0 failed, 14 ignored across 36 test targets (test-run-20261007-200410.log). Scala sbt testFull: 600 passed, 0 failed. All 726 include files are registered exactly once across integration binaries; git diff --check passes. Changes are uncommitted. The functional guard/instance/query fixes are verified; item remains claimed for the separately documented nominal-bound representation gap.
+
+### 2026-10-08T06:22:18Z — feedback — codex
+
+Implemented the user-agreed replacement of nominal provider bounds. Value columns store actual carrier types; each explicit introducer shares one carrier slot, while separate member annotations mint independent carriers. Full spec obligations and dictionary slots close/open with the same clause frame. Generated type-based find_dictionary reads weave covered calls, preserving authored selections. Rigid generic citations forward the caller dictionary without rebinding the caller type; partial callee requirements retain selected companion values even when they differ from the carrier default. Typed rewrite matches bind carrier types and dictionaries before instantiating the RHS, on both occurrence and term carriers. Ordinary bound/citation comparisons no longer enable spec_as_its_providers. Carrier classification and operation-free compatibility are retained as agreed; no new proposal or ticket. Canonical section 5.3 and the existing design gap analysis document the agreed behavior.
+
+Back-out against ef6a3b09: 69 passed, 5 failed in the original 74-test focused population; shared type identity, automatic dictionary dispatch, rigid caller, rewrite RHS and representation inspection distinguish the change. Expanded focused suite: 128 passed (test-run-20261008-061623.log), including the repaired negative citation and composed-provider controls and partial selected-provider variants. Temporary binary removed; all 727 include files registered once. Final full Rust workspace gate: 8762 passed, 0 failed, 14 ignored, 36 targets, exit 0 (test-run-20261008-061804.log). Scala sbt testFull: 600 passed. Manual diff review completed; /code-review skill is unavailable and was not run. git diff --check passes. Queue: 162 open unblocked items. Representation changes remain uncommitted.
 

@@ -1987,3 +1987,6 @@ mod wi_df0ts_default_instance_test;
 
 #[path = "include/wi_8dxvk_rule_requirements_test.rs"]
 mod wi_8dxvk_rule_requirements_test;
+
+#[path = "include/wi_8dxvk_provider_representation_test.rs"]
+mod wi_8dxvk_provider_representation_test;

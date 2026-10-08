@@ -26,8 +26,8 @@ providers at different `Out` values and consume the selected dictionary through
 Source query `domain` now applies the same type-position validation as a rule
 or constraint. A parameter-carried spec is diagnosed even with an unbound value
 or under negation. Qualified sort operands are converted to sort values, so a
-dotted spelling cannot evade that check. Generated annotation guards keep their
-provider-requirement interpretation.
+dotted spelling cannot evade that check. Generated annotation guards read actual
+carrier type variables; provider requirements are separate dictionary reads.
 
 ## Retained boundaries
 
@@ -37,12 +37,35 @@ necessarily the carrier: existing member-free `DataProvider[K]` binds `K` to
 parameter count broke existing tests and was withdrawn. The user agreed to
 retain existing classification while fixing the implementation gaps.
 
-The stored requirement now carries the instance, but existing nominal-bound
-readers and `spec_as_its_providers` remain. This change does not claim to replace
-that internal representation or implement independent unbounded rule type
-variables. Design 060-implementation §8.7 already records that the polymorphic
-anchor example needs a bounding guard. Removing that dependence is separate
-from preserving the instance through the supported guard and dictionary path.
+## Carrier and dictionary representation
+
+Following the agreed representation change, `RuleEntry.type_bounds` stores the
+actual carrier type expression. An introduced `A` is one real clause variable,
+shared across its annotated columns. Member sugar introduces an anonymous carrier
+for each annotation. Neither stores the spec instance as the value's nominal type.
+
+`RuleProviderRequirement` separately records the carrier type slot, complete spec
+instance, and dictionary slot. All three channels close against the same clause
+frame. Companion type variables and dictionary variables belong to that frame
+from assertion, so activations and citations open them together.
+
+Relational clauses receive generated type-based `find_dictionary` reads. Covered
+calls carry the dictionary slot. A rigid caller's citation instantiates the clause's
+type slots from its columns and routes the full instance through the existing
+requirement channel. The caller's rigid type is never rebound. Written dictionary
+calls retain their explicit selection.
+
+A directional rewrite keeps an empty body. Its match-time check extends the match
+with carrier types and dictionary values before instantiating the woven RHS.
+Both occurrence and term redexes preserve that dictionary call; the term form uses
+the existing reflect encoding of `apply_within`. Evaluation accepts the ordinary,
+structurally validated dictionary Value spliced into the RHS.
+
+Rule-bound and citation comparisons use ordinary type compatibility, with explicit
+obligations attached to the carrier variable. Their `spec_as_its_providers` mode
+was removed. Uses of that mode for permission/effect capabilities are independent
+and remain. Independent unbounded rule type introducers are still outside this
+change; design 060-implementation §8.7 requires a bounding guard.
 
 ## Verification
 
@@ -51,3 +74,30 @@ application of introduced bounds, dictionary-selected operations and query
 validation. Its operation-free Marker case is a compatibility control. The
 updated WI-582 alias-member test executes the previously refused spelling.
 Final test and back-out counts are recorded in the work item's feedback.
+
+The representation suite drives shared carrier identity, independent anonymous
+carriers, dictionary dispatch without an authored `require`, a rigid caller's
+selected rival, and rewrite RHS execution on both carriers. The focused suite and
+back-out measurement are recorded below after validation.
+
+Measured on 2026-10-07: the temporary focused binary passed all 74 tests with the
+change (`test-run-20261007-211637.log`). Against ef6a3b09 it passed 69 and failed
+5 (`test-run-20261007-211718.log`): shared carrier identity admitted the mixed
+row; automatic dispatch and rewrite RHS used default 1; the rigid caller was
+refused; the WI-582 inspection still found a nominal spec bound. The independent
+member control passed in both runs. The new suite is registered in `wi_tests`;
+the temporary binary was removed before the workspace gate.
+
+The expanded focused suite passed all 128 tests on 2026-10-08
+(`test-run-20261008-061623.log`). Its rigid-caller test covers both a fully
+specified callee requirement and a partial one, including a selected provider
+whose omitted companion differs from the carrier's default provider. Citation
+conformance retains the original carrier obligation after type substitution;
+written composed carrier restrictions compare the actual type constructor.
+Authored requirement brackets refer to the actual carrier variable. The expanded
+temporary binary was removed before the final workspace gate.
+
+Final gate: `rustland/scripts/test.sh` exited 0 with 8,762 passed, 0 failed,
+14 ignored across 36 targets (`test-run-20261008-061804.log`). Scala
+`sbt testFull` passed all 600 tests. Manual diff review completed; the
+`/code-review` skill was unavailable.

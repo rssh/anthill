@@ -75,7 +75,7 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
         // anchor. Read here (not inside the rewrite) because this is the loop that holds
         // the `RuleId`; empty for every untyped clause, which is what keeps the anchor
         // scan off every rule that has no annotation to ground anything with.
-        let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
+        let bounds: Vec<(u32, TermId)> = kb.rule_requirement_anchor_bounds(rid);
         let rule_sym = match kb.rule_head_value(rid).clone() {
             Value::Term { id, .. } => head_functor_sym(kb, id),
             _ => None,
@@ -289,6 +289,157 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
     errors
 }
 
+/// Compile carrier obligations into reads of their separate dictionary slots.
+/// Written dictionary calls have already been woven and retain their selection.
+pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors = Vec::new();
+    let Some(fd) = find_dictionary_symbol(kb) else {
+        return errors;
+    };
+    let pass = kb.register_pass("anthill.kb.passes.carrier_provider_dictionary");
+    let out_label = kb.intern("out");
+    let carrier_label = kb.intern(PROVIDER_CARRIER_TYPE_LABEL);
+    for rid in kb.live_rule_ids() {
+        let requirements = kb.rule_provider_requirements(rid).to_vec();
+        if requirements.is_empty() {
+            continue;
+        }
+        let equation = kb.is_directional_equation(rid);
+        let body = if equation {
+            vec![kb
+                .rule_equation_rhs_node(rid)
+                .expect("a source equation retains its RHS")]
+        } else {
+            kb.rule_body_nodes(rid).to_vec()
+        };
+        if body.iter().any(|n| n.synthesized_by() == Some(pass)) {
+            continue;
+        }
+        let anchor = body.first().cloned().unwrap_or_else(|| {
+            NodeOccurrence::new_expr(
+                Expr::Bottom,
+                kb.rule_head_span(rid)
+                    .expect("a typed source clause has a span"),
+                Some(kb.rule_domain(rid)),
+            )
+        });
+        let mut goals = Vec::new();
+        let mut targets: Vec<WeaveTarget> = Vec::new();
+        for requirement in requirements {
+            let instance = requirement.instance;
+            let spec = sort_functor_of_view(kb, &Value::term(instance))
+                .expect("provider obligation names a spec");
+            let out = NodeOccurrence::new_expr(
+                Expr::Var(Var::DeBruijn(requirement.dictionary)),
+                anchor.span,
+                anchor.owner,
+            );
+            let at: Vec<_> = kb.rule_type_bounds(rid).iter().filter_map(|(v,t)|
+                matches!(kb.get_term(*t), Term::Var(Var::DeBruijn(i)) if *i == requirement.carrier)
+                    .then(|| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(*v)), anchor.span, anchor.owner))).collect();
+            for call in collect_covered_calls(kb, &body, kb.canonical_sort_sym(spec), &at) {
+                let Some(Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                }) = call.as_expr()
+                else {
+                    unreachable!("a covered operation call is an application");
+                };
+                // A carrier-bearing call belongs to this type slot even when
+                // the spec supplies a default body for its operation.
+                if op_has_spec_carrier_param(kb, *functor, kb.canonical_sort_sym(spec))
+                    && !call_carrier_args(
+                        kb,
+                        *functor,
+                        pos_args,
+                        named_args,
+                        kb.canonical_sort_sym(spec),
+                    )
+                    .iter()
+                    .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
+                {
+                    continue;
+                }
+                if targets
+                    .iter()
+                    .any(|(previous, _)| Rc::ptr_eq(previous, &call))
+                {
+                    errors.push(TypeError::Other {
+                        site: TypeError::here(),
+                        span: Some(call.span.span),
+                        context: TypeErrorContext::Rule {
+                            name: spec,
+                            field: RuleField::Body,
+                        },
+                        expected: "one carrier requirement to select this call's dictionary".into(),
+                        actual: "the call is covered by distinct carrier requirements".into(),
+                    });
+                } else {
+                    targets.push((call, vec![out.clone()]));
+                }
+            }
+            let spec_node = NodeOccurrence::new_expr(
+                Expr::Spliced(Value::term(kb.alloc(Term::Ref(spec)))),
+                anchor.span,
+                anchor.owner,
+            );
+            goals.push(NodeOccurrence::synthesized_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: fd,
+                    pos_args: vec![
+                        NodeOccurrence::new_expr(
+                            Expr::Spliced(Value::term(instance)),
+                            anchor.span,
+                            anchor.owner,
+                        ),
+                        spec_node,
+                        NodeOccurrence::new_expr(
+                            Expr::Var(Var::DeBruijn(requirement.carrier)),
+                            anchor.span,
+                            anchor.owner,
+                        ),
+                    ],
+                    named_args: vec![
+                        (out_label, out),
+                        (
+                            carrier_label,
+                            NodeOccurrence::new_expr(
+                                Expr::Const(Literal::Bool(true)),
+                                anchor.span,
+                                anchor.owner,
+                            ),
+                        ),
+                    ],
+                    type_args: Vec::new(),
+                },
+                anchor.clone(),
+                pass,
+                anchor.owner,
+            ));
+        }
+        let mut reached = vec![false; targets.len()];
+        let body: Vec<_> = body
+            .iter()
+            .map(|n| weave_calls(n, &targets, &mut reached))
+            .collect();
+        assert!(
+            reached.iter().all(|r| *r),
+            "every covered call belongs to the clause body"
+        );
+        if equation {
+            let rhs = body.into_iter().next().expect("an equation has one RHS");
+            kb.replace_closed_rule_equation_rhs_node(rid, rhs);
+        } else {
+            kb.set_rule_body_nodes(rid, body);
+            kb.prepend_generated_body_goals(rid, goals);
+        }
+    }
+    errors
+}
+
 /// The synthesizing pass that owns every INFERRED requirement read — the provenance stamp,
 /// and with it both the idempotence test of [`infer_rule_body_requirements`] and the
 /// line between a read the author WROTE and one the typer inferred, which the two static
@@ -493,7 +644,16 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); body.len()];
         let mut targets: Vec<WeaveTarget> = Vec::new();
         for (gi, witness, calls) in groups {
-            let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, witness.spec, &witness.call, None);
+            let (read, out) = inferred_read(
+                kb,
+                rid,
+                fd_sym,
+                pass,
+                &labels,
+                witness.spec,
+                &witness.call,
+                None,
+            );
             reads_before[gi].push(read);
             for call in calls {
                 targets.push((call, vec![Rc::clone(&out)]));
@@ -2514,8 +2674,8 @@ fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 /// that. Declining here falls to the caller's refusal, which is the honest answer until
 /// the match compares applied brackets structurally.
 ///
-/// A SORT, AND NOT THE SPEC ITSELF. `rule_type_bounds` records a head-introduced tvar by
-/// its substituted bound, so an introducer `?x: A` under `:- Desc[A]` is stored as `Desc`
+/// A SORT, AND NOT THE SPEC ITSELF. The requirement anchor view projects an
+/// introduced carrier's obligation to `Desc`; its actual type bound stays `A`
 /// — and a written `require[Desc[T = Desc]]` would then "match" it by accidental symbol
 /// collision and silently pick the polymorphic head variable over the concrete one.
 /// Driven by `/code-review`: it answered the OTHER carrier's value on a clean load, where
@@ -2855,7 +3015,9 @@ pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Ve
                 continue;
             }
             out.push(match n.as_expr() {
-                Some(Expr::Apply { pos_args, .. }) => occ_head_symbol(&pos_args[0]),
+                Some(Expr::Apply { pos_args, .. }) => {
+                    sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
+                }
                 _ => None,
             });
         }
@@ -2875,7 +3037,10 @@ pub(crate) fn find_dictionary_symbol(kb: &KnowledgeBase) -> Option<Symbol> {
 /// the order the relation's clauses are enumerated (`rule_ids_by_qn`). The FLAT layout of
 /// a citation's implicit arguments is clause after clause, read after read; this is what
 /// turns a clause's `RuleId` into its offset in that layout.
-pub(crate) fn requirement_read_counts(kb: &KnowledgeBase, relation: Symbol) -> Vec<(RuleId, usize)> {
+pub(crate) fn requirement_read_counts(
+    kb: &KnowledgeBase,
+    relation: Symbol,
+) -> Vec<(RuleId, usize)> {
     let Some(fd) = find_dictionary_symbol(kb) else {
         return Vec::new();
     };

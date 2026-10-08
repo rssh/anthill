@@ -809,6 +809,16 @@ fn children_of(kb: &KnowledgeBase, node: &Value) -> Vec<Value> {
 fn reassemble_value(kb: &mut KnowledgeBase, node: &Value, new_children: &[Value]) -> Value {
     match node {
         Value::Node(occ) => {
+            // Match children_of's descent gate. A dictionary-bearing RHS is a
+            // post-elaboration leaf here, even though reassemble can rebuild it
+            // for the occurrence substitution walkers that do descend it.
+            if !is_rewritable(occ.as_expr()) {
+                assert!(
+                    new_children.is_empty(),
+                    "an opaque rewrite node has no descended children"
+                );
+                return node.clone();
+            }
             // Descent kept every occurrence child a `Value::Node` (the carrier is
             // closed), so unwrap each back to its `Rc<NodeOccurrence>`.
             let occs: Vec<Rc<NodeOccurrence>> = new_children
@@ -1905,6 +1915,7 @@ pub(super) fn open_equation(
     let (opened, fresh) = if arity > 0 {
         let name = kb.intern("_");
         let fresh: Vec<VarId> = (0..arity).map(|_| kb.fresh_var(name)).collect();
+        kb.open_rule_provider_requirements(rid, &fresh);
         (kb.term_from_debruijn(head, &fresh), fresh)
     } else {
         // WI-20260903-2M5XR — A LEGACY ARITY-0 GLOBAL HEAD HAS A FRAME TOO, and this

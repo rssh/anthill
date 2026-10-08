@@ -2938,6 +2938,21 @@ restriction. The introduced variable must bind the carrier member; other written
 bindings and those fixed by aliases survive in the requirement and in a dictionary
 read through proposal 060's channel. A bare `Tagger[A]` leaves the other members
 unspecified (WI-20261006-8DXVK).
+
+The introduced name denotes a **carrier type**, shared by every occurrence of that
+name in the clause. In `r[A](?x: A, ?y: A) :- src(?x, ?y), Tagger[C = A, Out = Int64]`,
+`?x` and `?y` are ordinary values of the same `A`; neither becomes a spec or a
+dictionary. The full `Tagger` requirement and its dictionary occupy separate clause
+bindings. Carrier-bearing operations at those values, and a carrier-less operation
+uniquely covered by the requirement, dispatch through that dictionary. The rule
+reads it through `find_dictionary` without needing an additional authored
+`require[...]`. A generic caller can pass its dictionary through the existing
+citation channel: the clause's fresh `A` binds to the caller's rigid type while the
+caller type stays rigid. Separate member annotations (`?x: Tagger.C`,
+`?y: Tagger.C`) introduce separate anonymous carrier types; they do not assert the
+shared identity an explicit `A` asserts. A call covered by distinct carrier
+requirements without a unique attribution is a load error.
+
 The bound is read by whichever of the annotation's two readers the rule has, so
 an introducer is equally at home on a **relational** head: `rule g[A](?a: A, ?b)
 :- src(?a, ?b), Summable[A]` is an ordinary bounded clause, its bound read by the

@@ -164,6 +164,7 @@ kb_scoped_fields!(
     // gone, and `is_canonical_type_param_var` would keep answering `true` for a type
     // parameter the layer took away.
     type_param_canonical_vids,
+    type_var_provider_requirements,
     domain_params,
     sort_domains,
     fill_relations,
@@ -402,6 +403,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         named_requirement_slots: _,
         type_param_canonical_var: _,
         type_param_canonical_vids: _,
+        type_var_provider_requirements: _,
         domain_params: _,
         sort_domains: _,
         fill_relations: _,

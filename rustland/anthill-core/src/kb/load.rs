@@ -320,7 +320,10 @@ pub enum RequirementFailure {
     /// other types for an omission.
     Unwritten { goal: String, params: Vec<String> },
     /// More than one does, and none is more specific.
-    Ambiguous { goal: String, candidates: Vec<String> },
+    Ambiguous {
+        goal: String,
+        candidates: Vec<String>,
+    },
     /// Resolving it re-enters a goal it is already resolving.
     Cyclic { path: Vec<String> },
     /// The chosen provider cannot serve the goal at all here — a named slot its carrier's
@@ -336,7 +339,11 @@ pub enum RequirementFailure {
 }
 
 /// The clause after "which requires `{required}`" in an [`LoadError::UnsatisfiedProviderRequires`].
-fn requirement_failure_clause(carrier: &str, required: &str, failure: &RequirementFailure) -> String {
+fn requirement_failure_clause(
+    carrier: &str,
+    required: &str,
+    failure: &RequirementFailure,
+) -> String {
     match failure {
         RequirementFailure::NoProvider {
             about_carrier: true,
@@ -7697,9 +7704,9 @@ impl NoIntroduction<'_> {
     /// reach a different one.
     fn detail(&self) -> String {
         match self {
-            Self::SeveralHeads(n) => format!(
-                "it writes {n} heads at once, and a declaration declares ONE predicate"
-            ),
+            Self::SeveralHeads(n) => {
+                format!("it writes {n} heads at once, and a declaration declares ONE predicate")
+            }
             Self::DenialHead => {
                 "a `⊥` denial names no predicate, so there is nothing for it to declare"
                     .to_owned()
@@ -8117,9 +8124,9 @@ fn provides_at_alias_address_message(
     head: Option<&(String, bool)>,
 ) -> String {
     let repair = match head {
-        Some((h, true)) => format!(
-            "write it where '{h}' is declared, or in a `namespace {h}` entry"
-        ),
+        Some((h, true)) => {
+            format!("write it where '{h}' is declared, or in a `namespace {h}` entry")
+        }
         Some((h, false)) => format!(
             "write it where '{h}' is declared or in a `namespace {h}` entry — a clause \
              there speaks for every '{h}', not only '{target}'"
@@ -11417,13 +11424,7 @@ struct RuleHeadCollectPass<'a, 'f> {
 }
 
 impl<'f> RuleHeadCollectPass<'_, 'f> {
-    fn collect(
-        &mut self,
-        r: &Rule,
-        resolves_in: ScopeId,
-        written_in: ScopeId,
-        prefix: &str,
-    ) {
+    fn collect(&mut self, r: &Rule, resolves_in: ScopeId, written_in: ScopeId, prefix: &str) {
         let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
         // ONE SHAPE WALK, TWO CENSUSES — and the clause census is the wider on BOTH
         // axes (WI-20260827-APXSS):
@@ -11581,13 +11582,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
     /// A fact is a one-head predicate rule (§6.1), including inside a host block.
     /// `resolves_in` is where its clause and introduced name belong; `written_in` is
     /// retained separately for 059 R3's entry census.
-    fn collect_fact(
-        &mut self,
-        f: &Fact,
-        resolves_in: ScopeId,
-        written_in: ScopeId,
-        prefix: &str,
-    ) {
+    fn collect_fact(&mut self, f: &Fact, resolves_in: ScopeId, written_in: ScopeId, prefix: &str) {
         let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms) else {
             return;
         };
@@ -11912,8 +11907,11 @@ fn report_rule_head_import_captures<'f>(
     let mut mixed: Vec<((ScopeId, &'f str), Vec<usize>, Vec<usize>)> = groups
         .into_iter()
         .filter_map(|(key, (imported, introducing))| {
-            (!imported.is_empty() && !introducing.is_empty())
-                .then_some((key, imported, introducing))
+            (!imported.is_empty() && !introducing.is_empty()).then_some((
+                key,
+                imported,
+                introducing,
+            ))
         })
         .collect();
     mixed.sort_by_key(|((scope, name), _, _)| {
@@ -12089,7 +12087,9 @@ fn run_deferred_alias_work(
         } => {
             let previous = kb.symbols.set_asking_file(Some(source_ids[file_idx]));
             let mut errs = Vec::new();
-            process_one_import(kb, &import, scope, &mut errs, pending, file_idx, origin, retry);
+            process_one_import(
+                kb, &import, scope, &mut errs, pending, file_idx, origin, retry,
+            );
             kb.symbols.set_asking_file(previous);
             errors.extend(errs.into_iter().map(|e| (file_idx, e)));
         }
@@ -12336,14 +12336,8 @@ fn process_one_import(
                     let short = last_segment(&path);
                     // WI-369: a plain import of an `internal` name across scopes
                     // is a forbidden reference.
-                    if !forbid_internal_import(
-                        kb,
-                        original_sym,
-                        short,
-                        scope_id,
-                        imp.span,
-                        errors,
-                    ) {
+                    if !forbid_internal_import(kb, original_sym, short, scope_id, imp.span, errors)
+                    {
                         kb.symbols.add_import(scope_id, short, original_sym, origin);
                     }
                 }
@@ -19703,7 +19697,10 @@ pub(crate) fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option
 /// [`provides_spec_base_sym`] of a spec — or of a binding's value, whose head it reads the
 /// same way — on any carrier: a hash-consed one is read as the term it is, and one on
 /// another carrier, which is always an application, through the view.
-pub(crate) fn provides_spec_base_sym_view<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<Symbol> {
+pub(crate) fn provides_spec_base_sym_view<V: TermView>(
+    kb: &KnowledgeBase,
+    spec: &V,
+) -> Option<Symbol> {
     if let crate::kb::persist_subst::BindValue::Term(t) = spec.as_bind_value() {
         return provides_spec_base_sym(kb, t);
     }
@@ -22140,6 +22137,15 @@ enum RuleTvar {
 struct RuleProviderRequirement {
     spec: Symbol,
     instance: TermId,
+    carrier: Option<VarId>,
+    carrier_param: Option<Symbol>,
+}
+
+#[derive(Clone, Copy)]
+struct RuleBoundAnchor {
+    spec: Symbol,
+    carrier: Option<VarId>,
+    carrier_param: Option<Symbol>,
 }
 
 /// WI-20260904-B8ESG — the clause head being converted, and which of its parse nodes
@@ -22455,7 +22461,7 @@ struct Loader<'a> {
     // a spec member named in the bound (`?x: Summable.T`). One entry per occurrence, so
     // [`Loader::note_rule_head_bound_sorts`] can tell them from the same sort written as
     // a type; cleared where a bound's lowering starts.
-    rule_head_bound_anchors: Vec<Symbol>,
+    rule_head_bound_anchors: Vec<RuleBoundAnchor>,
     // WI-20260909-S8CBV: are we lowering an operation's `requires` clause? (`requires`
     // ALONE — see the set site for why `ensures` is not a type position.)
     // A spec bracket binding there is a TYPE position — `requires Desc[T = x.E]`
@@ -23521,7 +23527,11 @@ impl<'a> Loader<'a> {
     ) -> TermId {
         let (spec, fixed) = self.type_alias_application(spec);
         let member = self.kb.intern(member_name);
-        self.rule_head_bound_anchors.push(spec);
+        self.rule_head_bound_anchors.push(RuleBoundAnchor {
+            spec,
+            carrier: None,
+            carrier_param: Some(member),
+        });
         self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
             sort: spec,
             site: crate::kb::RuleSortSite::HeadMember(member),
@@ -23587,11 +23597,12 @@ impl<'a> Loader<'a> {
     /// occurrences that are requirement anchors ([`Self::rule_head_bound_anchors`]).
     /// A written `?x: Pair[A = Summable.T, B = Summable]` holds the spec twice and is
     /// recorded once, for the `B`.
-    fn note_rule_head_bound_sorts(&mut self, bound: TermId, span: SourceSpan) {
+    fn note_rule_head_bound_sorts(&mut self, bound: TermId, span: SourceSpan) -> TermId {
         let mut sorts: Vec<Symbol> = Vec::new();
         super::typing::collect_sorts_written_as_types(self.kb, &TermIdView(bound), &mut sorts);
-        for anchor in std::mem::take(&mut self.rule_head_bound_anchors) {
-            if let Some(i) = sorts.iter().position(|s| *s == anchor) {
+        let mut anchors = std::mem::take(&mut self.rule_head_bound_anchors);
+        for anchor in &anchors {
+            if let Some(i) = sorts.iter().position(|s| *s == anchor.spec) {
                 sorts.swap_remove(i);
             }
         }
@@ -23603,6 +23614,71 @@ impl<'a> Loader<'a> {
                     span,
                 });
             }
+        }
+        self.materialize_rule_carrier_bound(bound, &mut anchors)
+    }
+
+    /// Separate the annotation's carrier type from its provider obligation.
+    /// Introducer occurrences share a carrier variable; member sugar introduces
+    /// an anonymous one. The requirement retains its complete instance.
+    fn materialize_rule_carrier_bound(
+        &mut self,
+        bound: TermId,
+        anchors: &mut Vec<RuleBoundAnchor>,
+    ) -> TermId {
+        let head = super::typing::sort_functor_of_view(self.kb, &TermIdView(bound));
+        if let Some(index) = anchors
+            .iter()
+            .position(|a| a.carrier_param.is_some() && Some(a.spec) == head)
+        {
+            let anchor = anchors.remove(index);
+            let carrier = anchor.carrier.unwrap_or_else(|| {
+                let name = self.kb.intern("carrier");
+                self.kb.fresh_var(name)
+            });
+            let ty = self.kb.alloc(Term::Var(Var::Global(carrier)));
+            let param = anchor
+                .carrier_param
+                .expect("a materialized provider anchor has a carrier parameter");
+            let mut bindings = match self.kb.get_term(bound).clone() {
+                Term::Fn { named_args, .. } => named_args,
+                _ => SmallVec::new(),
+            };
+            if !bindings
+                .iter()
+                .any(|(key, _)| self.kb.local_name_of(*key) == self.kb.local_name_of(param))
+            {
+                bindings.push((param, ty));
+            }
+            let instance = self.kb.alloc(Term::Fn {
+                functor: anchor.spec,
+                pos_args: SmallVec::new(),
+                named_args: bindings,
+            });
+            self.kb.add_type_var_provider_requirement(carrier, instance);
+            return ty;
+        }
+        match self.kb.get_term(bound).clone() {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                let pos_args = pos_args
+                    .into_iter()
+                    .map(|t| self.materialize_rule_carrier_bound(t, anchors))
+                    .collect();
+                let named_args = named_args
+                    .into_iter()
+                    .map(|(k, t)| (k, self.materialize_rule_carrier_bound(t, anchors)))
+                    .collect();
+                self.kb.alloc(Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                })
+            }
+            _ => bound,
         }
     }
 
@@ -23661,7 +23737,11 @@ impl<'a> Loader<'a> {
         }
         match self.rule_head_tvar(name)? {
             RuleTvar::Bounded(requirement) => {
-                self.rule_head_bound_anchors.push(requirement.spec);
+                self.rule_head_bound_anchors.push(RuleBoundAnchor {
+                    spec: requirement.spec,
+                    carrier: requirement.carrier,
+                    carrier_param: requirement.carrier_param,
+                });
                 Some(requirement.spec)
             }
             // NO `unresolved name` HERE, AND NO SECOND ERROR EITHER. An unbounded
@@ -24498,14 +24578,18 @@ impl<'a> Loader<'a> {
                 // A head type variable names the spec its guard requires of the
                 // parameter's sort, not a type the parameter is written at.
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
-                    self.rule_head_bound_anchors.push(requirement.spec);
+                    self.rule_head_bound_anchors.push(RuleBoundAnchor {
+                        spec: requirement.spec,
+                        carrier: requirement.carrier,
+                        carrier_param: requirement.carrier_param,
+                    });
                     requirement.instance
                 } else {
                     self.kb.make_sort_ref(bound_sym)
                 }
             };
             self.in_rule_head_bound = saved_bound_ctx;
-            self.note_rule_head_bound_sorts(bound, bound_span);
+            let bound = self.note_rule_head_bound_sorts(bound, bound_span);
             staged_bounds.push((vid, bound));
             param_cols.push((key, self.kb.alloc(Term::Var(Var::Global(vid)))));
         }
@@ -24989,6 +25073,22 @@ impl<'a> Loader<'a> {
         // way. Asked here so that rung's "asked FIRST" reasoning stays true as written.
         if matches!(self.parsed.terms.get(parse_id), Term::Var(_)) {
             return SpecBindingLowering::Lowered(self.build_body_atom_occurrence(parse_id));
+        }
+        if let Some(name) = self
+            .parse_arg_type_name(parse_id)
+            .filter(|_| !self.parse_arg_type_is_applied(parse_id))
+        {
+            if let Some(RuleTvar::Bounded(RuleProviderRequirement {
+                carrier: Some(carrier),
+                ..
+            })) = self.rule_head_tvar(&name)
+            {
+                return SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
+                    Expr::Var(Var::Global(carrier)),
+                    self.source_span_of(parse_id),
+                    self.current_owner,
+                ));
+            }
         }
         let Some(sym) = self.require_spec_binding_sort(parse_id) else {
             return SpecBindingLowering::Dropped;
@@ -25475,7 +25575,11 @@ impl<'a> Loader<'a> {
         if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
             if let Some(name) = self.parse_arg_type_name(parse_id) {
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
-                    self.rule_head_bound_anchors.push(requirement.spec);
+                    self.rule_head_bound_anchors.push(RuleBoundAnchor {
+                        spec: requirement.spec,
+                        carrier: requirement.carrier,
+                        carrier_param: requirement.carrier_param,
+                    });
                     return requirement.instance;
                 }
             }
@@ -25640,8 +25744,7 @@ impl<'a> Loader<'a> {
                             match node_occurrence::value_to_term(&mut self.kb, &value) {
                                 Ok(t) => {
                                     let span = self.source_span_of(parse_id);
-                                    self.note_rule_head_bound_sorts(t, span);
-                                    t
+                                    self.note_rule_head_bound_sorts(t, span)
                                 }
                                 Err(e) => {
                                     // Loud over silent (consistent with the `None`
@@ -26111,12 +26214,14 @@ impl<'a> Loader<'a> {
                         // conversion hint only wants a ground `TermId` (a
                         // denoted-bearing field is no literal-typing hint → None).
                         let exp = some_payload_hint.or_else(|| {
-                            self.kb.written_entity_field_types(new_functor).and_then(|ft| {
-                                ft.get(i).and_then(|(_, t)| match t {
-                                    Value::Term { id: t, .. } => Some(*t),
-                                    _ => None,
+                            self.kb
+                                .written_entity_field_types(new_functor)
+                                .and_then(|ft| {
+                                    ft.get(i).and_then(|(_, t)| match t {
+                                        Value::Term { id: t, .. } => Some(*t),
+                                        _ => None,
+                                    })
                                 })
-                            })
                         });
                         let converted = self.convert_arg_value(id, exp);
                         self.wrap_bare_option_value(converted, exp)
@@ -26165,14 +26270,16 @@ impl<'a> Loader<'a> {
                         // WI-408: `some(value: x)` payload takes the peeled hint
                         // (see `some_payload_hint` above the positional loop).
                         let exp = some_payload_hint.or_else(|| {
-                            self.kb.written_entity_field_types(new_functor).and_then(|ft| {
-                                ft.iter()
-                                    .find(|(s, _)| *s == new_sym)
-                                    .and_then(|(_, t)| match t {
-                                        Value::Term { id: t, .. } => Some(*t),
-                                        _ => None,
-                                    })
-                            })
+                            self.kb
+                                .written_entity_field_types(new_functor)
+                                .and_then(|ft| {
+                                    ft.iter().find(|(s, _)| *s == new_sym).and_then(
+                                        |(_, t)| match t {
+                                            Value::Term { id: t, .. } => Some(*t),
+                                            _ => None,
+                                        },
+                                    )
+                                })
                         });
                         let converted = self.convert_arg_value(id, exp);
                         (new_sym, self.wrap_bare_option_value(converted, exp))
@@ -26556,7 +26663,11 @@ impl<'a> Loader<'a> {
                     let declared = self.kb.type_params_of_sort(new_functor);
                     let slots = KnowledgeBase::positional_param_slots(
                         &declared,
-                        |d| new_named.iter().any(|(s, _)| self.kb.local_name_of(*s) == d),
+                        |d| {
+                            new_named
+                                .iter()
+                                .any(|(s, _)| self.kb.local_name_of(*s) == d)
+                        },
                         new_pos.len(),
                     );
                     if let Some(problem) = KnowledgeBase::excess_positional(&declared, &slots) {
@@ -31641,7 +31752,10 @@ impl<'a> Loader<'a> {
     /// reading resolves (`alias_expansion`), each fixed binding in the TYPE canon (a type
     /// parameter as its variable, where the clause canon holds `Ref(param)`); `(written,
     /// [])` for any other name.
-    fn type_alias_application(&mut self, written: Symbol) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
+    fn type_alias_application(
+        &mut self,
+        written: Symbol,
+    ) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
         let Some(super::typing::AliasExpansion::Sort { base, bindings }) =
             super::typing::alias_expansion(self.kb, written)
         else {
@@ -32012,10 +32126,12 @@ impl<'a> Loader<'a> {
             // `llm: Llm.C … effects {Llm.E, Error}`. A member the signature did not
             // name stays the refusal below: the body has no instance to read it off.
             let member_sym = self.kb.intern(member_name);
-            if let Some((_, _, var)) = self
-                .signature_spec_members
-                .iter()
-                .find(|((s, m), fixed, _)| *s == head_sort_sym && *m == member_sym && fixed.is_empty())
+            if let Some((_, _, var)) =
+                self.signature_spec_members
+                    .iter()
+                    .find(|((s, m), fixed, _)| {
+                        *s == head_sort_sym && *m == member_sym && fixed.is_empty()
+                    })
             {
                 return Some(node_occurrence::TypeChild::Interned(*var));
             }
@@ -32779,7 +32895,11 @@ impl<'a> Loader<'a> {
                 if self.in_rule_head_bound && name.segments.len() == 1 {
                     let name = self.parsed.symbols.local_name(name.segments[0]);
                     if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(name) {
-                        self.rule_head_bound_anchors.push(requirement.spec);
+                        self.rule_head_bound_anchors.push(RuleBoundAnchor {
+                            spec: requirement.spec,
+                            carrier: requirement.carrier,
+                            carrier_param: requirement.carrier_param,
+                        });
                         return node_occurrence::TypeChild::Interned(requirement.instance);
                     }
                 }
@@ -33237,7 +33357,10 @@ impl<'a> Loader<'a> {
                     .into_iter()
                     .map(|param| {
                         let short = self.kb.local_name_of(param).to_owned();
-                        (self.kb.intern(&short), Value::term(self.kb.make_sort_ref(param)))
+                        (
+                            self.kb.intern(&short),
+                            Value::term(self.kb.make_sort_ref(param)),
+                        )
                     })
                     .collect();
                 if named.is_empty() {
@@ -33868,11 +33991,7 @@ impl<'a> Loader<'a> {
     /// Pass 1 has already defined every declaration before either caller runs, so a
     /// resolved name without a declaring scope is an internal phase-order violation,
     /// not a source case to recover from by silently using `enclosing`.
-    fn declaration_symbol_scope(
-        &mut self,
-        name: &Name,
-        enclosing: ScopeId,
-    ) -> (Symbol, ScopeId) {
+    fn declaration_symbol_scope(&mut self, name: &Name, enclosing: ScopeId) -> (Symbol, ScopeId) {
         let sym = self.remap_name(name);
         if name.segments.len() == 1 {
             return (sym, enclosing);
@@ -35384,6 +35503,8 @@ impl<'a> Loader<'a> {
                 RuleProviderRequirement {
                     spec: written,
                     instance,
+                    carrier: None,
+                    carrier_param: None,
                 },
             ));
         }
@@ -35406,6 +35527,7 @@ impl<'a> Loader<'a> {
             });
             return None;
         }
+        let mut carrier_param = None;
         let values = pos_args
             .iter()
             .copied()
@@ -35416,6 +35538,9 @@ impl<'a> Loader<'a> {
             let param = self.kb.intern(key);
             let is_carrier = matches!(self.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
                 if self.parsed.symbols.local_name(*sym) == tvar);
+            if is_carrier {
+                carrier_param = Some(param);
+            }
             if is_carrier && (!named_args.is_empty() || pos_args.len() > 1) {
                 let member = self.kb.intern(&key);
                 self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
@@ -35437,7 +35562,17 @@ impl<'a> Loader<'a> {
                 named_args: fixed,
             })
         };
-        Some((tvar, RuleProviderRequirement { spec, instance }))
+        let name = self.kb.intern(&tvar);
+        let carrier = self.kb.fresh_var(name);
+        Some((
+            tvar,
+            RuleProviderRequirement {
+                spec,
+                instance,
+                carrier: Some(carrier),
+                carrier_param,
+            },
+        ))
     }
 
     /// WI-20260901-719FJ — THE NAME A CLAUSE HEAD WRITES, whatever shape the converter
@@ -36215,6 +36350,13 @@ impl<'a> Loader<'a> {
                             }
                         }
                     }
+                    for carrier in vars.clone() {
+                        for v in self.kb.provider_requirement_frame_vars(carrier) {
+                            if bound_var_joins_frame(self.kb, v, equational) && !vars.contains(&v) {
+                                vars.push(v);
+                            }
+                        }
+                    }
                     vars
                 })
                 .unwrap_or_default();
@@ -36930,7 +37072,13 @@ impl<'a> Loader<'a> {
             sugar
                 .minted
                 .iter()
-                .map(|(key, var)| (*key, sugar.fixed.get(var).cloned().unwrap_or_default(), *var))
+                .map(|(key, var)| {
+                    (
+                        *key,
+                        sugar.fixed.get(var).cloned().unwrap_or_default(),
+                        *var,
+                    )
+                })
                 .collect(),
         );
         let mut extra_requires = auto_requires_terms;
@@ -36944,8 +37092,11 @@ impl<'a> Loader<'a> {
         // `memberDefaulted(w: Tagger.C) -> Tagger.Out` returned a `B`'s `Int64` tag as a
         // `String` and died reading a requirement slot. Members reached through an alias
         // are the alias's instance, grouped by what it fixes.
-        let mut clauses: Vec<(Symbol, Option<&SmallVec<[(Symbol, TermId); 2]>>, Vec<(Symbol, TermId)>)> =
-            Vec::new();
+        let mut clauses: Vec<(
+            Symbol,
+            Option<&SmallVec<[(Symbol, TermId); 2]>>,
+            Vec<(Symbol, TermId)>,
+        )> = Vec::new();
         for ((spec, member), var) in &sugar.minted {
             type_param_var_terms.push(*var);
             let fixed = sugar.fixed.get(var);
@@ -37795,7 +37946,9 @@ impl<'a> Loader<'a> {
         for tp in &o.type_params {
             if is_self(self, tp.name) {
                 self.errors.push(LoadError::SelfTypeMisuse {
-                    problem: SelfTypeProblem::Declared { what: "type parameter" },
+                    problem: SelfTypeProblem::Declared {
+                        what: "type parameter",
+                    },
                     span: tp.span,
                 });
             }
@@ -39863,7 +40016,13 @@ impl<'a> Loader<'a> {
         self.kb.make_name_term_from_sym(kind_sym)
     }
 
-    fn emit_declaration_meta(&mut self, sym: Symbol, kind: MemberKind, meta: TermId, domain: Symbol) {
+    fn emit_declaration_meta(
+        &mut self,
+        sym: Symbol,
+        kind: MemberKind,
+        meta: TermId,
+        domain: Symbol,
+    ) {
         let functor = self.kb.resolve_symbol("anthill.reflect.DeclarationMeta");
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
@@ -40066,8 +40225,12 @@ impl ScopePass for LoadPass<'_, '_> {
                 // idempotence guard returns before a second `sort T = ?` of one name —
                 // `sort Box[T]`'s desugared `T` and a written `sort T = ? @[M]` — is read.
                 let sym = self.loader.remap_name(&s.name);
-                self.loader
-                    .record_declaration_block(sym, MemberKind::Sort, s.meta.as_ref(), domain);
+                self.loader.record_declaration_block(
+                    sym,
+                    MemberKind::Sort,
+                    s.meta.as_ref(),
+                    domain,
+                );
                 "AbstractSort"
             }
             Item::Rule(r) => {
