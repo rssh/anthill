@@ -14,28 +14,12 @@
 //!   `<Sort>.induction` rules actually prove their universal from a
 //!   base case + IH-using step case.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 fn resolve_one(kb: &mut KnowledgeBase, goal: TermId) -> bool {
     let cfg = ResolveConfig::default();

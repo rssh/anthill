@@ -7,25 +7,11 @@
 //! `result`) and must declare it. These tests pin both directions —
 //! including the let-bound escaping case that wi205 does not exercise.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load stdlib + user source together (mirrors `common::load_kb_with`, the
 /// path the effect check runs on) and surface load errors as strings
 /// rather than panicking.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 #[test]

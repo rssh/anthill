@@ -7,38 +7,13 @@
 //! leaves `===` structural. Phase-1 behaviour verified here: `===` is a total,
 //! dispatch-free structural equality test that needs no `Eq` instance.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parsed_extra);
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => {}
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("LOAD ERR: {}", e);
-            }
-            panic!("load failed with {} errors", errs.len());
-        }
-    }
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 fn int_term(kb: &mut KnowledgeBase, n: i64) -> TermId {
     kb.alloc(Term::Const(Literal::Int(n)))

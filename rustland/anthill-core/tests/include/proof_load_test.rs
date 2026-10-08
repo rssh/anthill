@@ -1,29 +1,10 @@
 //! Verifies the loader emits a ProofRecord fact per `proof` block
 //! and that its strategy/body fields round-trip the parsed info.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 fn render_facts_for(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<String> {
     // WI-922: these clauses are found by their HEAD FUNCTOR, which is the

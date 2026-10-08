@@ -1,43 +1,21 @@
-use anthill_core::kb::load::{self, NullResolver};
+//! Integration tests for Ring/Polynom testcase.
+//!
+//! Verifies:
+//! - Ring spec with infix operators (+, *) in rules
+//! - Polynom sort with `requires Ring[R]` (positional binding)
+//! - Arrow types `(R) -> R` and `(R, R) -> R` in operation params
+//! - All files parse and load into KB without errors
 use anthill_core::kb::KnowledgeBase;
-/// Integration tests for Ring/Polynom testcase.
-///
-/// Verifies:
-/// - Ring spec with infix operators (+, *) in rules
-/// - Polynom sort with `requires Ring[R]` (positional binding)
-/// - Arrow types `(R) -> R` and `(R, R) -> R` in operation params
-/// - All files parse and load into KB without errors
-use anthill_core::parse;
 
 /// Load stdlib + ring-polynom testcase into a fresh KB.
 fn load_ring_polynom_kb() -> KnowledgeBase {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
-
     let testcases_dir = crate::common::testcases_dir();
     let ring_path = testcases_dir.join("ring-polynom/ring.anthill");
     let polynom_path = testcases_dir.join("ring-polynom/polynom.anthill");
-    files.push(ring_path);
-    files.push(polynom_path);
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    if let Err(errs) = &result {
-        for e in errs {
-            eprintln!("Load error: {}", e);
-        }
-        panic!("load failed with {} errors", errs.len());
-    }
-    kb
+    crate::common::load_kb_with_user_files(&[
+        crate::common::UserFile::Path(&ring_path),
+        crate::common::UserFile::Path(&polynom_path),
+    ])
 }
 
 #[test]

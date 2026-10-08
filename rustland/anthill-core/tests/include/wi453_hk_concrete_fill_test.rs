@@ -11,10 +11,6 @@
 //! AND yields the bound impl (`unit ↦ optionUnit`). A carrier with no instance is a
 //! LOUD error (the undischarged obligation), never a silent accept.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// The §5.4 `CpsMonad` spec in the marked enclosing-list form + the `Option`
 /// instance fact, shared by the cases below (with `$BODY` appended).
 fn cps_src(body: &str) -> String {
@@ -46,24 +42,7 @@ end
     )
 }
 
-fn load_errors(src: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(src).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of as load_errors;
 
 /// RESULT-carrier (`F` only in the return) typechecks: `unit(42)` fills `F := Option`
 /// from the expected type.

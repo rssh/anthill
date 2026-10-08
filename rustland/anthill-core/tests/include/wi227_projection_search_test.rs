@@ -18,34 +18,18 @@
 //! Reference: docs/design/operation-call-model.md §"Call rewrite cases",
 //! §"Two primitives".
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     build_dep_projection, get_named_arg, ProjectionSyms, RequiresEntry,
 };
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
-use crate::common::{collect_stdlib_and_rust_bindings, interp_for};
+use crate::common::interp_for;
 
 /// Load stdlib + Rust host bindings only — no user source. Used by the
 /// nested-handle synthetic which constructs its `RequiresEntry`s by
 /// hand against stdlib symbols (Eq, Ord).
-fn load_stdlib_only() -> KnowledgeBase {
-    let files = collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).expect("read stdlib file");
-            parse::parse(&src).expect("parse stdlib file")
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load stdlib");
-    kb
-}
+use crate::common::load_stdlib_kb as load_stdlib_only;
 
 /// WI-237 names-model regression: a sort declaring `requires Spec[T]` and calling
 /// `Spec.op(...)` must rewrite to `apply_within(fn = Ref(Spec.op),

@@ -78,13 +78,12 @@ const PROJECT_SRC: &str = r#"
 /// documents. Pass 1 defines every name across every file first, so the
 /// project's `Option`/`some`/`none` still resolve.
 fn load_facts_first() -> KnowledgeBase {
-    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed = vec![parse::parse(PROJECT_SRC).expect("parse project src")];
-    for p in &stdlib {
-        let src = std::fs::read_to_string(p).unwrap();
-        parsed.push(parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display())));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the recipe hands the loader the
+    // stdlib FIRST — in the one call, or in a call of its own — and the subject here is
+    // the project file ordered BEFORE it in ONE call.
+    let project = parse::parse(PROJECT_SRC).expect("parse project src");
+    let mut refs = vec![&project];
+    refs.extend(crate::common::stdlib_parsed());
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
     kb

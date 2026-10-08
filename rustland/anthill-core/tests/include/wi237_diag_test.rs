@@ -5,16 +5,13 @@
 //! Not a real test — `#[ignore]` by default; run with
 //!   cargo test -p anthill-core --test wi237_diag_test -- --ignored --nocapture
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 #[test]
 #[ignore]
 fn dump_eq_lt_rewrites() {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
     files
         .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/rules.anthill"));
@@ -32,19 +29,11 @@ fn dump_eq_lt_rewrites() {
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/main.anthill"));
 
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::register_forge_host_stand_ins(&mut kb);
-    let load_result = load::load_all(&mut kb, &refs, &NullResolver);
+    let (kb, load_result) = crate::common::load_outcome_files(
+        &crate::common::user_paths(&files),
+        crate::common::register_forge_host_stand_ins,
+    )
+    .into_parts();
     match &load_result {
         Ok(_) => println!("[wi237] load OK"),
         Err(errs) => {

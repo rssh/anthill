@@ -20,24 +20,10 @@
 //! undischarged one surfaces the conservatively-present `Boom` as an undeclared
 //! effect — exactly the WI-478 harness, read in reverse.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load stdlib + user source together and surface load errors as strings.
 /// Identical harness to `wi478_guarded_effect_test::load_result`.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 /// The shared callee: `risky` carries a guarded `Boom`. It returns `Int64` so a

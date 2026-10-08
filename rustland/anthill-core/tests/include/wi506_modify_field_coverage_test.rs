@@ -9,22 +9,8 @@
 //! parameter for coverage: a declared `Modify[c]` (path `[c]`) covers an incurred
 //! `Modify[c.rep]` (path `[c, rep]`) because `[c]` is a prefix.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 /// The trip-wire: a field-projection body (`Cell.set(c.rep, …)`, NO pattern

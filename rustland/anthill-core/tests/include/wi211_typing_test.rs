@@ -6,29 +6,12 @@
 //! sort-level type-param Vars so that the return type `Option[T = T]` walks
 //! down to `Option[T = Term]`.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{extract_sort_ref_sym, get_named_arg, type_check_expr, TypingEnv};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 use smallvec::SmallVec;
 
-fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 #[test]
 fn stream_head_option_on_concrete_stream_yields_option_with_concrete_t() {

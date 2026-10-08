@@ -6,9 +6,7 @@
 //! placeholders and the cross-sort dispatch mis-resolves.
 
 use anthill_core::eval::{self, EvalError, Interpreter, Value};
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Polymorphic Driver: `sort State = ?; requires WorkItemStore[State]`
@@ -34,42 +32,7 @@ end
 "#;
 
 fn load_with_driver() -> KnowledgeBase {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files
-        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
-    // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
-    // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
-    );
-    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
-    // makes the declaration's condition of loading (its `Forge` operations are
-    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
-    // names, registered on the KB before load.
-    files.extend(crate::common::anthill_todo_coordination_files());
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(POLY_DRIVER).expect("parse driver"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::register_forge_host_stand_ins(&mut kb);
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-        for e in &errs {
-            eprintln!("{}", e);
-        }
-        panic!("load failed with {} errors", errs.len());
-    });
-    kb
+    crate::common::expect_loaded(crate::common::load_anthill_todo_store_bundle(&[POLY_DRIVER]).into_result())
 }
 
 /// Build a Value::Cell holding `wis(FakeBackend)`. The backend is a
@@ -242,41 +205,9 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     // call sits in a sibling op, not the entry op itself. The typer's
     // dispatch classification must still fire so the runtime reaches
     // the impl body instead of erroring `unknown operation: lookup`.
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files
-        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
-    // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
-    // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
+    let kb = crate::common::expect_loaded(
+        crate::common::load_anthill_todo_store_bundle(&[MULTI_OP_DRIVER]).into_result(),
     );
-    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
-    // makes the declaration's condition of loading (its `Forge` operations are
-    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
-    // names, registered on the KB before load.
-    files.extend(crate::common::anthill_todo_coordination_files());
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(MULTI_OP_DRIVER).expect("parse multi-op driver"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::register_forge_host_stand_ins(&mut kb);
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-        for e in &errs {
-            eprintln!("{}", e);
-        }
-        panic!("load failed with {} errors", errs.len());
-    });
 
     let mut interp = Interpreter::new(kb);
     eval::builtins::register_standard_builtins(&mut interp).expect("builtins");

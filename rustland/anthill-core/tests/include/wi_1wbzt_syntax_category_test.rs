@@ -95,7 +95,7 @@ fn a_carrier_that_only_adds_gets_plus_from_one_fact() {
 /// `+`" is satisfied just as well by the old bundle.
 #[test]
 fn and_the_carrier_claims_nothing_else() {
-    let (kb, _) = crate::common::load_stdlib_kb_with_source(MONEY_ADDITIVE);
+    let kb = crate::common::load_kb_with(MONEY_ADDITIVE);
     let mine: Vec<String> = sort_provisions(&kb)
         .into_iter()
         .filter(|(carrier, _)| carrier == "test.wbzt.money.Money")

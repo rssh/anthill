@@ -35,17 +35,23 @@ pub fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
 pub fn read_anthill_dir_parsed(dir: &std::path::Path) -> Vec<parse::ir::ParsedFile> {
     collect_anthill_files(dir)
         .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|errors| {
-                let located: Vec<String> =
-                    anthill_core::parse::error::ParseError::all_located(&errors, path, &source)
-                        .collect();
-                panic!("parse {}:\n{}", path.display(), located.join("\n"))
-            })
-        })
+        .map(|path| read_parsed(path))
         .collect()
+}
+
+/// Read and parse ONE file — the one place a test reads a source from disk, so every
+/// such read fails the same way: an unreadable file or a parse fault panics (a broken
+/// fixture is a test-authoring bug), the fault rendered `path:line:col` as
+/// [`read_anthill_dir_parsed`] says. The file is NOT stamped with its path; a caller
+/// that wants diagnostics to name it chains `.with_path(path)`.
+fn read_parsed(path: &std::path::Path) -> parse::ir::ParsedFile {
+    let source =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    parse::parse(&source).unwrap_or_else(|errors| {
+        let located: Vec<String> =
+            anthill_core::parse::error::ParseError::all_located(&errors, path, &source).collect();
+        panic!("parse {}:\n{}", path.display(), located.join("\n"))
+    })
 }
 
 /// Workspace root (the `oss/anthill/` directory containing rustland/, stdlib/,
@@ -82,8 +88,11 @@ pub fn rust_stl_dir() -> PathBuf {
 /// and anything reaching the eval bridge dies `OperationBodyMissing`. Three fixtures were
 /// loading half the library and measuring half the language when the reflect family
 /// migrated; WI-1103 had already made the same call for `incremental_load_test`.
-#[allow(dead_code)]
-pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
+///
+/// PRIVATE since WI-20261008-RAH0Z: 174 test files took this list and built their own
+/// load from it, outside the one recipe. [`STDLIB_PARSED`] is its only reader now; a
+/// test that must make its own `load_all` takes [`stdlib_parsed`].
+fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
     let mut files = collect_anthill_files(&stdlib_dir());
     files.extend(collect_anthill_files(&rust_stl_dir()));
     files.sort();
@@ -107,6 +116,35 @@ pub fn anthill_todo_coordination_files() -> [PathBuf; 2] {
         dir.join("coordination.anthill"),
         dir.join("coordination_rust.anthill"),
     ]
+}
+
+/// anthill-todo's STORE BUNDLE, in the order it loads: `domain`, then `version` — the
+/// `StoreFormat` entity `store` imports (WI-434) — then the coordination pair
+/// ([`anthill_todo_coordination_files`]: `MirrorEntry`, which `store` imports for the
+/// delete cascade, WI-1117), then `store`.
+///
+/// ONE list (WI-20261008-RAH0Z): five loaders spelled it out, so a file added to the
+/// bundle — as `version` and the coordination pair each were — had to be added in every
+/// copy, and a copy that missed it loaded a different bundle in silence.
+#[allow(dead_code)]
+pub fn anthill_todo_store_bundle_files() -> Vec<PathBuf> {
+    let dir = workspace_root().join("rustland/anthill-todo/anthill");
+    let mut files = vec![dir.join("domain.anthill"), dir.join("version.anthill")];
+    files.extend(anthill_todo_coordination_files());
+    files.push(dir.join("store.anthill"));
+    files
+}
+
+/// The stdlib, [`anthill_todo_store_bundle_files`] and each of `drivers` — a test's own
+/// sources over the bundle — through the one recipe, on a KB carrying the stand-ins for
+/// the `Forge` host functions the bundle's binding names
+/// ([`register_forge_host_stand_ins`] — before the load, WI-1122).
+#[allow(dead_code)]
+pub fn load_anthill_todo_store_bundle(drivers: &[&str]) -> LoadOutcome {
+    let files = anthill_todo_store_bundle_files();
+    let mut user = user_paths(&files);
+    user.extend(drivers.iter().map(|d| UserFile::Text(d)));
+    load_outcome_files(&user, register_forge_host_stand_ins)
 }
 
 /// The five `forge_*` keys `coordination_rust.anthill` names, with the arity each
@@ -180,15 +218,40 @@ static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
     std::sync::LazyLock::new(|| {
         let files = collect_stdlib_and_rust_bindings();
         assert!(!files.is_empty(), "stdlib empty");
-        files
-            .iter()
-            .map(|p| {
-                let src = std::fs::read_to_string(p)
-                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-                parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-            })
-            .collect()
+        files.iter().map(|p| read_parsed(p)).collect()
     });
+
+/// [`STDLIB_PARSED`] for a test that makes its OWN `load_all` call — BY NAME, with the
+/// reason at its site (WI-20261008-RAH0Z).
+///
+/// A load built on this is outside the one recipe: `ANTHILL_TEST_TWO_STEP_LOAD=1` does
+/// not reach it, and neither will a stdlib loaded once per binary. So it is for a test
+/// whose SUBJECT is the load's shape — how many calls, in what order, through which
+/// entry point or with which options — and for nothing else; `grep stdlib_parsed` is
+/// the list of them. An ordinary test wants [`load_kb_with`], [`load_outcome`] or
+/// [`load_stdlib_kb`].
+#[allow(dead_code)]
+pub fn stdlib_parsed() -> Vec<&'static parse::ir::ParsedFile> {
+    STDLIB_PARSED.iter().collect()
+}
+
+/// The stdlib AND `sources` presented to `kb` in one `load_all` — for a test whose
+/// subject is that loading files a KB already holds changes nothing (an auto-registered
+/// record is not registered twice, a declaration is not a redeclaration). That call is
+/// made whatever the switch says, which is what [`stdlib_parsed`] is for.
+#[allow(dead_code)]
+pub fn present_all_again(
+    kb: &mut KnowledgeBase,
+    sources: &[&str],
+) -> Result<load::LoadResult, Vec<load::LoadError>> {
+    let user: Vec<_> = sources
+        .iter()
+        .map(|s| parse::parse(s).expect("parse user source"))
+        .collect();
+    let mut refs = stdlib_parsed();
+    refs.extend(user.iter());
+    load::load_all(kb, &refs, &NullResolver)
+}
 
 /// Turn a loader `Result` into a test failure that NAMES the errors. The one
 /// owner of the "a load error fails the test" policy for suites that build
@@ -361,17 +424,20 @@ fn try_load_kb_named_prepared(
 /// ONE function for the reason stated above — the option is a parameter of it, never a
 /// second copy that a pipeline change could leave behind.
 ///
-/// WI-20261006-SZKV7: which load it performs is [`LoadRecipe::from_env`] — THE one read of
-/// the switch on the helpers' path — and it returns the loader's `LoadResult` beside the
-/// KB, which its callers drop and [`recipe_control_load`] keeps.
+/// WI-20261006-SZKV7: which load it performs is the switch's ([`run_switched_recipe`]),
+/// and it returns the loader's `LoadResult` beside the KB, which its callers drop and
+/// [`recipe_control_load`] keeps.
 fn try_load_kb_named_prepared_with(
     sources: &[&str],
     names: Option<&[&str]>,
     options: load::LoadOptions,
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<(KnowledgeBase, load::LoadResult), Vec<String>> {
-    recipe_load(sources, names, options, LoadRecipe::from_env(), prepare)
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect())
+    let run = run_switched_recipe(&user_files(sources, names), options, prepare);
+    match run.result {
+        Ok(result) => Ok((run.kb, result)),
+        Err(errors) => Err(rendered_load_errors(errors)),
+    }
 }
 
 /// FOR `wi_szkv7_two_step_load_test`'s CONTROL AND NOTHING ELSE: [`try_load_kb_with`] with
@@ -431,19 +497,135 @@ impl LoadRecipe {
     }
 }
 
-/// The body of the one recipe, with the [`LoadRecipe`] a PARAMETER: parse each source as
-/// its own file, build a fresh KB, run `prepare` on it, then load. Returns the loader's
-/// own `LoadResult` and `LoadError`s — under [`LoadRecipe::TwoStep`] those of the USER's
-/// call, which is what makes the recipe observable (see `wi_szkv7_two_step_load_test`).
+/// One file of a test's OWN, as the recipe is handed it beside the stdlib.
+///
+/// WI-20261008-RAH0Z: the recipe took source TEXT only, which is why a test that loads a
+/// directory beside the stdlib — an example, a testcase, anthill-todo's domain — built its
+/// own load and stayed outside the switch.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub enum UserFile<'a> {
+    /// Source text with no path: a diagnostic that names its file renders `<file N>`.
+    Text(&'a str),
+    /// Source text that knows the path it would have on disk — `(name, text)`. See
+    /// [`try_load_kb_with_named_files`] for why a test wants one.
+    Named(&'a str, &'a str),
+    /// A file on disk, read here, which knows its path. Reach for
+    /// [`collect_anthill_files`] to take a whole directory: naming files literally means
+    /// one added later is silently never loaded.
+    Path(&'a std::path::Path),
+}
+
+impl UserFile<'_> {
+    /// Parse failures panic: a fixture that does not parse is a test-authoring bug
+    /// ([`parse_errs`] is for a test whose subject is the parse error).
+    fn parsed(self) -> parse::ir::ParsedFile {
+        match self {
+            UserFile::Text(text) => parse::parse(text).expect("parse user source"),
+            UserFile::Named(name, text) => parse::parse(text)
+                .unwrap_or_else(|e| panic!("parse {name}: {e:?}"))
+                .with_path(std::path::Path::new(name)),
+            UserFile::Path(path) => read_parsed(path).with_path(path),
+        }
+    }
+}
+
+/// [`UserFile::Path`] for each of `paths` — a directory's worth, from
+/// [`collect_anthill_files`].
+#[allow(dead_code)]
+pub fn user_paths(paths: &[PathBuf]) -> Vec<UserFile<'_>> {
+    paths.iter().map(|p| UserFile::Path(p)).collect()
+}
+
+/// What ONE run of the recipe produced, with nothing thrown away.
+struct RecipeRun {
+    /// The KB the run left, whatever the verdict.
+    kb: KnowledgeBase,
+    /// The verdict of the call that was handed the user's files — the only call under
+    /// [`LoadRecipe::OneShot`], the second under [`LoadRecipe::TwoStep`] — or the
+    /// stdlib call's errors if that one was refused.
+    result: Result<load::LoadResult, Vec<load::LoadError>>,
+}
+
+/// THE BODY OF THE ONE RECIPE, with the [`LoadRecipe`] a parameter: parse each of the
+/// user's files, build a fresh KB, run `prepare` on it, then load.
 ///
 /// `prepare` runs before the FIRST load under both recipes, and both calls take the same
 /// `options`. A stdlib that fails to load under `TwoStep` is returned as the error it is.
+fn run_recipe(
+    user: &[UserFile<'_>],
+    options: load::LoadOptions,
+    recipe: LoadRecipe,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> RecipeRun {
+    // Under the loader's own trace switch, say that this load is the recipe's and which
+    // one — a traced run then counts the loads that came through here against the
+    // loader's `load_with_visited x N` lines, which every load prints
+    // (`docs/design/test-infrastructure.md` §10).
+    if std::env::var("ANTHILL_LOAD_TIMING").is_ok_and(|v| v == "1") {
+        eprintln!("[load_timing] recipe_load {recipe:?} user_files={}", user.len());
+    }
+    let user: Vec<_> = user.iter().map(|f| f.parsed()).collect();
+    let stdlib_refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
+    let user_refs: Vec<&parse::ir::ParsedFile> = user.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    prepare(&mut kb);
+    let result = match recipe {
+        LoadRecipe::OneShot => {
+            let all = [stdlib_refs, user_refs].concat();
+            load::load_all_with(&mut kb, &all, &NullResolver, options)
+        }
+        LoadRecipe::TwoStep => {
+            match load::load_all_with(&mut kb, &stdlib_refs, &NullResolver, options) {
+                Ok(_) => load::load_all_with(&mut kb, &user_refs, &NullResolver, options),
+                Err(errors) => Err(errors),
+            }
+        }
+    };
+    RecipeRun { kb, result }
+}
+
+/// [`run_recipe`] AS THE SWITCH SAYS — THE one read of [`LoadRecipe::from_env`] on the
+/// helpers' path. Every helper that follows the switch ends here, the `try_load_kb_*`
+/// family and the [`LoadOutcome`] one alike, so
+/// `wi_szkv7_two_step_load_test::the_switch_selects_the_recipe_the_helpers_run` is the
+/// control for all of them: a second read would be a second thing to get wrong, with no
+/// row watching it.
+fn run_switched_recipe(
+    user: &[UserFile<'_>],
+    options: load::LoadOptions,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> RecipeRun {
+    run_recipe(user, options, LoadRecipe::from_env(), prepare)
+}
+
+/// `sources` as the recipe takes them: [`UserFile::Named`] where `names` — parallel to
+/// `sources` — gives one, [`UserFile::Text`] otherwise.
+fn user_files<'a>(sources: &[&'a str], names: Option<&[&'a str]>) -> Vec<UserFile<'a>> {
+    if let Some(names) = names {
+        assert_eq!(names.len(), sources.len(), "one name per source");
+    }
+    sources
+        .iter()
+        .enumerate()
+        .map(|(i, text)| match names {
+            Some(names) => UserFile::Named(names[i], text),
+            None => UserFile::Text(text),
+        })
+        .collect()
+}
+
+/// The one recipe with the [`LoadRecipe`] NAMED. Returns the loader's own `LoadResult`
+/// and `LoadError`s — under [`LoadRecipe::TwoStep`] those of the USER's call, which is
+/// what makes the recipe observable (see `wi_szkv7_two_step_load_test`). `names`, when
+/// given, is parallel to `sources`.
 ///
 /// NAMING THE RECIPE HERE TAKES A TEST OUT OF THE SWITCH'S REACH, so it is for the control
 /// and for a test that is pinned to one recipe ON PURPOSE, with the reason at its site
 /// ([`load_stdlib_kb_with_source`]: a re-type test needs the user's own `LoadResult`). It
 /// is not the way to get typed `LoadError`s out of an ordinary load — `OneShot` written
-/// here runs one-shot under `ANTHILL_TEST_TWO_STEP_LOAD=1` and says nothing.
+/// here runs one-shot under `ANTHILL_TEST_TWO_STEP_LOAD=1` and says nothing. That is
+/// [`load_outcome`].
 #[allow(dead_code)]
 pub fn recipe_load(
     sources: &[&str],
@@ -452,36 +634,123 @@ pub fn recipe_load(
     recipe: LoadRecipe,
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<(KnowledgeBase, load::LoadResult), Vec<load::LoadError>> {
-    if let Some(names) = names {
-        assert_eq!(names.len(), sources.len(), "one name per source");
-    }
-    let user: Vec<_> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let mut f = parse::parse(s).expect("parse user source");
-            if let Some(names) = names {
-                f.path = Some(std::sync::Arc::from(std::path::Path::new(names[i])));
-            }
-            f
-        })
-        .collect();
+    recipe_load_files(&user_files(sources, names), options, recipe, prepare)
+}
 
-    let stdlib_refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
-    let user_refs: Vec<&parse::ir::ParsedFile> = user.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    prepare(&mut kb);
-    let result = match recipe {
-        LoadRecipe::OneShot => {
-            let all = [stdlib_refs, user_refs].concat();
-            load::load_all_with(&mut kb, &all, &NullResolver, options)?
+/// [`recipe_load`] over [`UserFile`]s — for a test PINNED to one recipe, with the reason
+/// at its site, whose files are on disk.
+#[allow(dead_code)]
+pub fn recipe_load_files(
+    user: &[UserFile<'_>],
+    options: load::LoadOptions,
+    recipe: LoadRecipe,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<(KnowledgeBase, load::LoadResult), Vec<load::LoadError>> {
+    let run = run_recipe(user, options, recipe, prepare);
+    run.result.map(|result| (run.kb, result))
+}
+
+/// WI-20261008-RAH0Z — what a load through the one recipe left, with NOTHING thrown
+/// away: the KB whatever the verdict, and the loader's own verdict.
+///
+/// The `try_load_kb_*` helpers return a KB or rendered errors. A test that wants more —
+/// the loader's `LoadError` values to match on, the warnings of a clean load, the KB a
+/// REFUSED load left behind — used to build its own stdlib load to get it, which took it
+/// out of the switch's reach ([`LoadRecipe`]); 174 files did. This is what they want,
+/// from the recipe.
+///
+/// It carries the warnings and NOT the `LoadResult`: `defined_sorts`, `fact_rule_ids`
+/// and `loaded_rules` are one CALL's, so they are the whole load's under
+/// [`LoadRecipe::OneShot`] and the user's files' alone under [`LoadRecipe::TwoStep`] —
+/// an assertion on one would depend on the switch. A test that reads them names its
+/// recipe ([`load_stdlib_kb_with_source`]).
+///
+/// THE WARNINGS are those of the call that was handed the user's files. The one
+/// producer today, the requires-shadow lint, sweeps the WHOLE KB at every load, so that
+/// call reports a stdlib sort's shadow too and the list is the same under either
+/// recipe. A warning raised per FILE for a stdlib file would be the stdlib call's, and
+/// absent here under `TwoStep`; the stdlib loads with none
+/// (`wi345_warnings_channel_test`).
+///
+/// THE HALVES ARE PRIVATE, so the KB cannot be taken and the verdict dropped by a field
+/// access — the discard WI-966 forbids, in a spelling its guard would not see. Every
+/// accessor that hands out the KB hands the verdict over with it. There is no lenient
+/// one: the two helpers that discarded the verdict when this type was written
+/// (`wi210_dispatch_test`, `wi221_defer_to_requirement_test`) were given a named
+/// discard that PRINTED what it tolerated, and it printed thirty-five errors of a
+/// fixture nobody knew was refused.
+#[allow(dead_code)]
+pub struct LoadOutcome {
+    /// The KB the load left — after a refusal too, as far as the loader got. Under
+    /// `TwoStep` a refused user call leaves the stdlib fully loaded beside it.
+    kb: KnowledgeBase,
+    /// The warnings of a clean load, or the errors of a refused one.
+    verdict: Result<Vec<load::LoadWarning>, Vec<load::LoadError>>,
+}
+
+#[allow(dead_code)]
+impl LoadOutcome {
+    /// The loader's errors, and no KB — empty when the load was clean.
+    pub fn errors(self) -> Vec<load::LoadError> {
+        self.verdict.err().unwrap_or_default()
+    }
+
+    /// The KB whatever the verdict, beside the loader's errors — empty when clean.
+    pub fn kb_and_errors(self) -> (KnowledgeBase, Vec<load::LoadError>) {
+        (self.kb, self.verdict.err().unwrap_or_default())
+    }
+
+    /// The KB whatever the verdict, beside the verdict itself: a clean load's warnings,
+    /// or a refused one's errors.
+    pub fn into_parts(
+        self,
+    ) -> (
+        KnowledgeBase,
+        Result<Vec<load::LoadWarning>, Vec<load::LoadError>>,
+    ) {
+        (self.kb, self.verdict)
+    }
+
+    /// The KB of a clean load, or the loader's errors.
+    pub fn into_result(self) -> Result<KnowledgeBase, Vec<load::LoadError>> {
+        self.verdict.map(|_| self.kb)
+    }
+
+    /// The rendered warnings of a clean load, or the rendered errors of a refused one.
+    pub fn rendered_warnings(self) -> Result<Vec<String>, Vec<String>> {
+        match self.verdict {
+            Ok(warnings) => Ok(warnings.iter().map(|w| w.to_string()).collect()),
+            Err(errors) => Err(rendered_load_errors(errors)),
         }
-        LoadRecipe::TwoStep => {
-            load::load_all_with(&mut kb, &stdlib_refs, &NullResolver, options)?;
-            load::load_all_with(&mut kb, &user_refs, &NullResolver, options)?
-        }
-    };
-    Ok((kb, result))
+    }
+}
+
+/// The stdlib and `user` through the one recipe, as [`LoadRecipe::from_env`] says —
+/// see [`LoadOutcome`]. `prepare` runs on the fresh KB before the first load
+/// ([`try_load_kb_prepared`] says what needs that).
+#[allow(dead_code)]
+pub fn load_outcome_files(
+    user: &[UserFile<'_>],
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> LoadOutcome {
+    let run = run_switched_recipe(user, load::LoadOptions::default(), prepare);
+    LoadOutcome {
+        kb: run.kb,
+        verdict: run.result.map(|result| result.warnings),
+    }
+}
+
+/// [`load_outcome_files`] for ONE source text — the stdlib plus `source`.
+#[allow(dead_code)]
+pub fn load_outcome(source: &str) -> LoadOutcome {
+    load_outcome_files(&[UserFile::Text(source)], |_| {})
+}
+
+/// The stdlib plus `user`, loaded clean: the KB, or a panic that names the errors.
+/// [`load_kb_with`] for files on disk.
+#[allow(dead_code)]
+pub fn load_kb_with_user_files(user: &[UserFile<'_>]) -> KnowledgeBase {
+    expect_loaded(load_outcome_files(user, |_| {}).into_result())
 }
 
 /// WI-20261006-SZKV7 — `source` loaded into `kb` in a `load_all` of its OWN: the LATER
@@ -578,6 +847,19 @@ pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
 #[allow(dead_code)]
 pub fn load_errors_of(source: &str) -> Vec<String> {
     try_load_kb_with(source).err().unwrap_or_default()
+}
+
+/// [`load_errors_of`] over SEPARATE files, each its own `ParsedFile`.
+#[allow(dead_code)]
+pub fn load_errors_of_files(sources: &[&str]) -> Vec<String> {
+    try_load_kb_with_files(sources).err().unwrap_or_default()
+}
+
+/// [`load_errors_of`] with the loader's own `LoadError` values instead of their
+/// rendering, for a test that matches on the variant or reads a span.
+#[allow(dead_code)]
+pub fn unrendered_load_errors_of(source: &str) -> Vec<load::LoadError> {
+    load_outcome(source).errors()
 }
 
 /// Load `source` and call `entry`: its `Int64`, or WHY it did not load or run — the harness of
@@ -679,19 +961,27 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
 /// switch says, which is what this and [`load_stdlib_kb_with_source`] provide.
 #[allow(dead_code)]
 pub fn load_stdlib_kb() -> KnowledgeBase {
-    let files = collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p:?}: {e}"));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {p:?}: {e:?}"))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-    kb
+    load_stdlib_kb_prepared(|_| {}).0
+}
+
+/// [`load_stdlib_kb`] with a hook on the fresh KB before the load, returning the stdlib
+/// load's own `LoadResult` — for a test that re-types the stdlib itself
+/// (`type_check_sorts(&mut kb, result.loaded())`) or reads the warnings it loaded with.
+///
+/// ONE `load_all` under either setting of the switch: with no user file there is no
+/// second call to make, so this is the recipe's first and the `LoadResult` is the
+/// stdlib's whatever [`LoadRecipe::from_env`] says. The parsed files are
+/// [`STDLIB_PARSED`]'s (WI-20261008-RAH0Z; it re-read and re-parsed them at every call).
+#[allow(dead_code)]
+pub fn load_stdlib_kb_prepared(
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> (KnowledgeBase, load::LoadResult) {
+    expect_loaded(recipe_load_files(
+        &[],
+        load::LoadOptions::default(),
+        LoadRecipe::OneShot,
+        prepare,
+    ))
 }
 
 /// The MIRROR IMAGE of [`load_stdlib_kb`]: the user sources with NO stdlib files —

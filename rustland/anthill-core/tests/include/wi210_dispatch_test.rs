@@ -7,62 +7,22 @@
 //! existing proposal-030 / WI-119 specialization-witness machinery
 //! (and WI-210's upcoming dispatch query) can find the impl.
 
-use anthill_core::kb::load::{self, LoadResult, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
     find_unique_impl_op, lookup_spec_op_dispatch, type_check_expr, DispatchOutcome, GoalCarrier,
     TypingEnv,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
-/// Phase 1/2 helper: discards errors. Used by tests that only inspect
-/// post-load KB state (e.g. SortProvidesInfo emission) and don't
-/// require the load to be error-free.
-fn load_with(extra: &str) -> KnowledgeBase {
-    load_capturing_errors(extra).0
-}
+/// Phase 1/2 helper, for the tests that inspect post-load KB state (e.g.
+/// SortProvidesInfo emission).
+use crate::common::load_kb_with as load_with;
 
-/// [`load_with`] over anthill-todo bundle sources that include `coordination.anthill`:
-/// the same load, on a KB carrying the stand-ins for the `Forge` host functions its
-/// binding names (WI-20260922-BRT4Y — see [`bundle_sources`]).
-fn load_with_forge_stand_ins(extra: &str) -> KnowledgeBase {
-    load_capturing_errors_prepared(extra, crate::common::register_forge_host_stand_ins).0
-}
-
-/// Phase 3 helper: returns errors so dispatch-failure diagnostics
-/// can be asserted directly. The WI-210 dispatch-failure marker
+/// Phase 3 helper: the KB beside the loader's verdict, so dispatch-failure
+/// diagnostics can be asserted directly. The WI-210 dispatch-failure marker
 /// surfaces as a LoadError via load_phase_inner's all_errors.
-fn load_capturing_errors(extra: &str) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
-    load_capturing_errors_prepared(extra, |_| {})
-}
-
-/// [`load_capturing_errors`] with a hook on the FRESH KB, for the embedder seams that
-/// must be mounted before load (`register_host_fn`).
-fn load_capturing_errors_prepared(
-    extra: &str,
-    prepare: impl FnOnce(&mut KnowledgeBase),
-) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    prepare(&mut kb);
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(r) => (kb, r, vec![]),
-        Err(errs) => (kb, LoadResult::default(), errs),
-    }
-}
+use crate::common::load_outcome as load_capturing_errors;
 
 /// Render every `SortProvidesInfo` head the KB knows about, sorted.
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
@@ -326,34 +286,16 @@ fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Subs
     subst_with_param(kb, spec_qn, "T", carrier_qn)
 }
 
-/// Read `rustland/anthill-todo/anthill/store.anthill` and load it on top of stdlib + rustland
-/// bindings. Used by the WorkItemStore dispatch tests below.
+/// anthill-todo's store bundle on top of stdlib + rustland bindings, LOADED CLEAN. Used
+/// by the WorkItemStore dispatch tests below.
+///
+/// WI-20261008-RAH0Z: this used to hand the loader `coordination`, its binding and
+/// `store` alone, with the verdict discarded — and `store` imports `WorkItem`,
+/// `WorkStatus`, `Feedback`, `Tag` and `StoreFormat` from `domain` and `version`, so the
+/// load was REFUSED with some thirty-five errors and the three tests below read what
+/// the loader had recorded by then. The whole bundle is one list in `common` now.
 fn load_with_store() -> KnowledgeBase {
-    load_with_forge_stand_ins(&bundle_sources(&[
-        "coordination.anthill",
-        "coordination_rust.anthill",
-        "store.anthill",
-    ]))
-}
-
-/// The named bundle assets, concatenated. WI-1117: `store.anthill` imports
-/// `MirrorEntry` from `coordination.anthill`, so the two travel together — and since
-/// WI-20260922-BRT4Y with `coordination_rust.anthill` as well, because the declaration's
-/// `Forge` operations are `@[host_implemented]` and do not load without their binding.
-/// The binding names host functions only the anthill-todo binary registers, so a load
-/// of these goes through [`load_with_forge_stand_ins`].
-fn bundle_sources(names: &[&str]) -> String {
-    names
-        .iter()
-        .map(|name| {
-            let path = crate::common::workspace_root()
-                .join("rustland/anthill-todo/anthill")
-                .join(name);
-            std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::common::expect_loaded(crate::common::load_anthill_todo_store_bundle(&[]).into_result())
 }
 
 /// Run dispatch for `WorkItemStore.<op_short>` at the State=WIS binding;
@@ -767,14 +709,7 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     use smallvec::SmallVec;
     // Exercises the typer's check_apply path end-to-end (parse → unify →
     // dispatch), not just the manual-subst entry point above.
-    let combined = bundle_sources(&[
-        "domain.anthill",
-        "coordination.anthill",
-        "coordination_rust.anthill",
-        "store.anthill",
-    ]);
-
-    let mut kb = load_with_forge_stand_ins(&combined);
+    let mut kb = load_with_store();
     let commit_sym = kb
         .try_resolve_symbol("anthill.todo.store.WorkItemStore.commit")
         .expect("WorkItemStore.commit registered");
@@ -941,7 +876,7 @@ fn dispatch_int_add_x_x_type_checks_via_spec_satisfaction() {
 
 #[test]
 fn requires_user_with_same_named_op_does_not_provide_or_override() {
-    let (mut kb, load_result, _errs) = load_capturing_errors(
+    let (mut kb, verdict) = load_capturing_errors(
         r#"
         namespace ovr.req_vs_prov
           sort OvrSpec
@@ -961,7 +896,8 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
           end
         end
     "#,
-    );
+    )
+    .into_parts();
 
     // 1. The provider emits SortProvidesInfo; the requires-user does NOT.
     let heads = provides_info_heads(&mut kb);
@@ -1018,17 +954,15 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
     // 4. WI-346: the same-named op on the requires-user is now flagged as an
     //    advisory shadow (the WI-345 channel's first consumer). It does not
     //    override, so the author is warned they likely meant `provides`.
+    //    A warning is a clean load's, so the verdict is read here.
+    let warnings = crate::common::expect_loaded(verdict);
     assert!(
-        load_result.warnings.iter().any(|w| {
+        warnings.iter().any(|w| {
             let s = w.to_string();
             s.contains("OvrReq") && s.contains("ovr_op") && s.contains("OvrSpec")
         }),
         "expected a RequiresShadow warning for OvrReq.ovr_op shadowing OvrSpec.ovr_op; \
          got: {:?}",
-        load_result
-            .warnings
-            .iter()
-            .map(|w| w.to_string())
-            .collect::<Vec<_>>()
+        warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>()
     );
 }

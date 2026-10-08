@@ -12,8 +12,6 @@
 //! `sort F { … }` stays `is_type_param: false`.
 
 use anthill_core::intern::SymbolTable;
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::{
     self,
     ir::{AbstractSort, Item, SortWithBody, TypeExpr},
@@ -139,24 +137,7 @@ end
 // ── Load equivalence: the marker is inert until WI-452, so the enclosing form
 //    loads identically to the body form. ──────────────────────────────────────
 
-fn load_errors(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of as load_errors;
 
 /// `sort CpsMonad[F[T]]` whose ops reference `F[T = A]` loads clean — the desugar
 /// yields the body-form equivalent (F a concrete nested sort pre-WI-452).

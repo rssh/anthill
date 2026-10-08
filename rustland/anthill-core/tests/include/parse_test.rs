@@ -27,7 +27,7 @@ use anthill_core::parse;
 use anthill_core::parse::desugar_target as dt;
 use anthill_core::parse::ir::*;
 
-use crate::common::{collect_anthill_files, collect_stdlib_and_rust_bindings, stdlib_dir};
+use crate::common::{collect_anthill_files, stdlib_dir};
 use anthill_core::kb::ClauseKind;
 
 /// The `fmt_ir_term` rendering of a desugar target's application: the MARKED address
@@ -1846,55 +1846,11 @@ fn stdlib_parse_all_files() {
 
 #[test]
 fn stdlib_load_all_into_kb() {
-    let files = collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty());
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let load_result = load::load_all(&mut kb, &refs, &NullResolver);
-
+    // A refused stdlib panics in `load_stdlib_kb`, naming every error.
+    let kb = crate::common::load_stdlib_kb();
     assert!(
         kb.fact_count() > 0,
-        "KB should contain facts after loading {} stdlib files",
-        files.len()
-    );
-
-    if let Err(ref errors) = load_result {
-        // Print diagnostics before asserting so they're visible on failure
-        let mut unresolved: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for e in errors {
-            if let load::LoadError::UnresolvedName {
-                name, scope_name, ..
-            } = e.peel()
-            {
-                *unresolved
-                    .entry(format!("{name} (in {scope_name})"))
-                    .or_default() += 1;
-            }
-        }
-        eprintln!(
-            "stdlib load: {} errors from {} files:",
-            errors.len(),
-            files.len()
-        );
-        for (key, count) in &unresolved {
-            eprintln!("  {key}: {count}x");
-        }
-    }
-    assert!(
-        load_result.is_ok(),
-        "stdlib should load with 0 errors, got {}",
-        load_result.as_ref().err().map_or(0, |e| e.len())
+        "KB should contain facts after loading the stdlib"
     );
 }
 
@@ -1912,21 +1868,8 @@ fn nested_namespace_sees_outer_imports() {
     );
 
     // Also load stdlib prelude so that List, String, Bool are available
-    let mut all_files = crate::common::collect_stdlib_and_rust_bindings();
-    all_files.extend(files);
-
-    let parsed: Vec<_> = all_files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let load_result = load::load_all(&mut kb, &refs, &NullResolver);
+    let load_result = crate::common::load_outcome_files(&crate::common::user_paths(&files), |_| {})
+        .into_result();
 
     if let Err(ref errors) = load_result {
         for e in errors {
@@ -5224,22 +5167,7 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
 fn try_load_with_stdlib(
     extra_source: &str,
 ) -> Result<KnowledgeBase, Vec<anthill_core::kb::load::LoadError>> {
-    let files = collect_stdlib_and_rust_bindings();
-    let mut all_parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-    let extra = parse::parse(extra_source).expect("parse extra source failed");
-    all_parsed.push(extra);
-
-    let refs: Vec<_> = all_parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)?;
-    Ok(kb)
+    crate::common::load_outcome(extra_source).into_result()
 }
 
 /// Helper (WI-305): the operation body is no longer a fact field — it lives in

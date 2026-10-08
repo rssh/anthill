@@ -14,30 +14,13 @@
 //! spec-satisfaction method (the `(3).min(5) -> WeakOrd.min` shape) did not
 //! dispatch.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::load::LoadError;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 /// Load stdlib + `extra` source; return the KB plus any load errors
 /// (type-check errors surface here via the load pipeline).
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
@@ -152,28 +135,6 @@ fn dot_no_provided_spec_still_reports_no_match() {
 
 // ── The acceptance shape on a real builtin: Int64 → WeakOrd.min ───────────
 
-/// Like `load_capturing_errors` but also loads the Rust host bindings
-/// (`anthill-stl/anthill/`), where `fact Eq/Ord/Numeric[T = Int64]` live.
-fn load_capturing_errors_with_stl(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
-}
-
 #[test]
 fn dot_min_dispatches_via_int_ordered() {
     // `?x.min(?y)` where `x, y: Int64`. `Int64` declares no `min`, but provides
@@ -189,7 +150,9 @@ fn dot_min_dispatches_via_int_ordered() {
           end
         end
     "#;
-    let (_kb, errs) = load_capturing_errors_with_stl(src);
+    // The recipe's stdlib is the full closure: the Rust host bindings
+    // (`anthill-stl/anthill/`), where `fact Eq/Ord/Numeric[T = Int64]` live, are in it.
+    let (_kb, errs) = load_capturing_errors(src);
     assert!(
         errs.is_empty(),
         "expected ?x.min(?y) to dispatch to WeakOrd.min via fact Ord[Int64]; got:\n{}",

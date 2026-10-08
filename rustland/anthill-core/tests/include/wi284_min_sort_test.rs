@@ -16,34 +16,15 @@
 use std::rc::Rc;
 
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term, Var};
 use anthill_core::kb::typing::{sort_functor_of, sort_functor_of_view, type_check_node, TypingEnv};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
 /// stdlib + a small `Color` sort (for the entity-value case).
 fn load_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load failed");
-
-    let color =
-        parse::parse("sort Color {\n  entity red\n  entity green\n}\n").expect("parse Color");
-    load::load_all(&mut kb, &[&color], &NullResolver).expect("Color load failed");
-    kb
+    crate::common::load_kb_with("sort Color {\n  entity red\n  entity green\n}\n")
 }
 
 /// A source-origin expression occurrence with a throwaway span.

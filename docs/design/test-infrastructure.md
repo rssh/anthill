@@ -7,7 +7,9 @@ corrected several of the first day's numbers — each correction is dated where 
 **The two-step load switch landed 2026-10-07** (WI-20261006-SZKV7: §5.3) and found the
 equivalence levers A3 and B rest on broken in two places (§4 A3). Both were settled the
 next day — the first fixed, the second made a load error — and the suite is green under
-the switch.
+the switch. **The tests that built their own stdlib load were moved onto the one recipe
+the same day** (WI-20261008-RAH0Z: §2.4, §5.3), so the switch reaches every such load
+but those of the tests pinned to a recipe by name: 66, where it was 1 028.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -299,6 +301,42 @@ already); about thirty want what the recipe did not expose until this item, the 
 `LoadError`s or its `LoadResult`. They are outside the two-step control (§5.3) and would
 be outside lever B: neither reaches a test except through the recipe. The library's 79
 are a different change — `src/` cannot use `tests/common` at all.
+
+**Re-taken 2026-10-08 — the copies moved onto the recipe**
+(`one-recipe-run-2026-10-08.txt`; WI-20261008-RAH0Z). The same traced run, the gate's
+build, 12 threads; the "through the recipe" column is read off a line the recipe prints
+under `ANTHILL_LOAD_TIMING=1`, which is in the tree now (§10).
+
+| | stdlib loads executed | through the recipe, in two calls | one-shot, not reached | the stdlib alone |
+|---|---:|---:|---:|---:|
+| `wi_tests` | 8 995 | 8 815 (98 %) | 62 | 118 |
+| `parse_tests` | 247 | 42 | 0 | 205 |
+| the other nine integration binaries | 484 | 472 | 4 | 8 |
+| lib unit tests (their own loader, `kb/test_support.rs`) | 104 | 0 | 79 | 25 |
+| **all twelve** | **9 830** | **9 329 (95 %)** | **145** | **356** |
+
+In the integration binaries the one-shot loads the switch does not reach went from
+**1 028 to 66**, and every one of the 66 is made by a test pinned BY NAME, with the
+reason at its site: 15 are the recipe itself with `LoadRecipe::OneShot` written out (the
+switch's own controls, `incremental_load_test`'s comparison of the two recipes, and
+`wi228`'s fixture, which the language's rule puts in the stdlib's load), and 51 are made
+by hand, over `common::stdlib_parsed()` or the stdlib's paths — a project file ordered
+BEFORE the stdlib, a load through `load_all_per_file`, the batches of a test about which
+batch judges a clause, every loaded file presented to the KB again, a corpus audited by
+path. The list
+is in the tree as `wi_rah0z_one_recipe_test::PINNED`, which is also the guard: a test
+file that takes the stdlib's files, names a `LoadRecipe`, or calls a helper that names
+one is on that list with its reason and its count, or the suite fails. Of the stdlib
+loaded alone, 325 of 331 go through `common::load_stdlib_kb`, which parses nothing —
+it re-read all 87 files at each call before.
+
+What the copies were FOR, now that they are gone: 139 of the 196 local helpers were the
+recipe verbatim. The rest wanted something `common` did not hand out — the loader's
+`LoadError` values, a clean load's warnings, the KB a refused load left, a file read
+from disk beside the stdlib — and it does now (`LoadOutcome`, `UserFile`), through one
+read of the switch. The two shapes the ticket set aside as decisions were both settled
+by giving the recipe the capability: it returns the KB whatever the verdict, and it
+takes paths. The library's 79 stay as they were.
 
 ### 2.5 The optimized-build numbers
 
@@ -685,7 +723,9 @@ if contention shows.
 
 ### 5.3 Where the switch lives, and the control
 
-The one recipe, `try_load_kb_named_prepared_with` in `anthill-core/tests/common/mod.rs`.
+The one recipe, in `anthill-core/tests/common/mod.rs` — `run_recipe` since
+WI-20261008-RAH0Z, which every helper reaches through the one read of the switch,
+`run_switched_recipe`; it was `try_load_kb_named_prepared_with` when this was written.
 Today it builds `STDLIB_PARSED ∪ user` and loads into `KnowledgeBase::new()`. The change
 is in that one function: clone the base, load `user`. Because it is the one function:
 
@@ -736,8 +776,22 @@ first green run under the switch, and the evidence that the rule refuses no late
 it should not: every one of the suite's two-step loads passes through its check. Of seven test files that
 supply an equality for a prelude container, it is the only one the rule touches: four
 supply it for `Map` or `Set`, which have no constructors and so are no composites — the
-rule's domain — and two load the stdlib themselves and are not reached by the switch
-(they will need the same pin when WI-20261008-RAH0Z moves them).
+rule's domain — and two loaded the stdlib themselves and were not reached by the switch.
+WI-20261008-RAH0Z moved both onto the recipe the same day and NEITHER needed the pin:
+`wi224_sld_resolution_test` has supplied its `Eq` for a local container, not for `List`,
+since WI-20260918-CKD4J, and `typing_test`'s `List` fixture already went through a
+`common` helper and asserts a refusal that holds under both recipes.
+
+**The run after the copies moved, 2026-10-08 (WI-20261008-RAH0Z).** One `anthill-core`
+run under the switch, traced, the gate's build: **7 943 passed, 0 failed, 6 ignored** —
+no test differs, with 1 107 more stdlib loads under the switch than the run above had
+(9 329 through the recipe in two calls, against 8 222; §2.4). So the ticket's "expect
+findings" found none in the loader. It found one in the TESTS, and not by the switch:
+`wi210_dispatch_test` had been loading anthill-todo's store bundle without `domain` and
+`version`, the load was refused with 35 errors, its helper discarded the verdict, and
+three tests read what the loader had recorded by then. The recipe's new entries hand
+out no KB without the verdict, which is how it showed; the bundle is one list in
+`common` now and loads clean. Raw: `one-recipe-run-2026-10-08.txt`.
 
 **No test differs for a reason that is the recipe's own.** Nothing within the switch's
 reach reads `Symbol` numbering, the order of diagnostics, or `fact_dedup` state in a way
@@ -752,6 +806,8 @@ suite ASSERTS, in two ways narrower than "the recipes are equivalent":
 - **The switch reaches 85 % of the stdlib loads the suites execute** — 8 222 of 9 695,
   counted (§2.4). Another 1 107 ran one-shot whatever the switch said: 1 028 made by test
   files that carry their own copy of the load, 79 by the library's own unit tests.
+  **Since WI-20261008-RAH0Z, 2026-10-08: 95 %** — 9 329 of 9 830; 145 run one-shot
+  whatever it says, 66 made by tests pinned to a recipe by name and the library's 79.
 
 ### 5.4 The subprocess suites
 
@@ -887,8 +943,9 @@ informed; it does not recommend changing the rule until A and B have been measur
    update is refused because other facts depend on what it would change. (c) The test
    files that carry their own copy of the load: routing them through the recipe is what
    puts them under the two-step control and, later, on the base KB — filed 2026-10-08 as
-   WI-20261008-RAH0Z (user). With (a) and (b) settled the control A3 rests on is green
-   for every test it reaches.
+   WI-20261008-RAH0Z (user), and delivered the same day (§2.4). With (a) and (b) settled
+   the control A3 rests on is green for every test it reaches, and since (c) that is
+   every test but the ones pinned to a recipe by name.
 
 ## 9. Recommended sequence, with the measurement at each step
 
@@ -897,6 +954,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 0 | re-take §2 on a quiet machine; the opt-level rows and the compile deltas | the bench + `cargo test --no-run` after a one-line edit | **done 2026-10-06** — level 2 (§2.5) |
 | 1 | A1: `anthill-core` at 2 and the tree-sitter crates at 3, for the gate | one full run, same log format as §1 | **done 2026-10-06** — 3 h 27 min → 30 min 40 s cold, 15 min 45 s warm (§1.1) |
 | 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
+| 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
 | 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
 | 5 | B: `Clone` + `Send` + base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 659 s → one to two minutes: loads are 89 % of it (§2.4) |
@@ -954,9 +1012,15 @@ ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
 # switch on. A `load_with_visited x N` with N ABOVE the stdlib's file count (87 today) is
 # the stdlib and another file in ONE call — a one-shot load that is not the recipe's.
 # N equal to it is a call given the stdlib alone: the recipe's first, or `load_stdlib_kb`.
+# Under the same switch the recipe prints a line of its own for each load it makes
+# (`tests/common`, `run_recipe`): `recipe_load <OneShot|TwoStep> user_files=<n>`.
+#   TwoStep, n > 0   a load that followed the switch, or one pinned to two calls by name
+#   OneShot, n > 0   a load pinned to ONE call by name (`LoadRecipe::OneShot`)
+#   OneShot, n = 0   the stdlib alone, through `load_stdlib_kb`
+# An N > 87 load with no `OneShot, n > 0` line is one a test made by hand.
 ANTHILL_LOAD_TIMING=1 ANTHILL_TEST_TWO_STEP_LOAD=1 RUST_TEST_THREADS=12 \
   cargo test --no-fail-fast -p anthill-core -- --nocapture 2>&1 \
-  | grep -a -E 'load_with_visited x|Running ' > load-trace.log
+  | grep -a -E 'load_with_visited x|recipe_load|Running |Doc-tests|test result' > load-trace.log
 ```
 
 Everything in §1 came from `rustland/scripts/test.sh`'s own log: its elapsed-seconds

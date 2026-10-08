@@ -11,57 +11,15 @@
 //! Body `eq` is `BuiltinTag::Eq` (structural), so the fire/don't-fire/suspend outcome
 //! is governed ENTIRELY by the `requires` guard.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parsed_extra);
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => {}
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("LOAD ERR: {}", e);
-            }
-            panic!("load failed with {} errors", errs.len());
-        }
-    }
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 /// Like [`load_with`] but returns the load errors instead of panicking.
-fn try_load_with(extra: &str) -> Result<KnowledgeBase, Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parsed_extra);
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => Ok(kb),
-        Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
-    }
-}
+use crate::common::try_load_kb_with as try_load_with;
 
 const SRC: &str = r#"
     namespace test.wi300

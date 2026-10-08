@@ -14,26 +14,9 @@
 //! a mismatch can be traced to its origin without hand-instrumenting each
 //! candidate.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
+use anthill_core::kb::load::LoadError;
 
-fn try_load(extra: &str) -> Vec<load::LoadError> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap()
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .err()
-        .unwrap_or_default()
-}
+use crate::common::unrendered_load_errors_of as try_load;
 
 /// Whether a construction site (`Location::file()`) lies in the typer's source: the
 /// module file `kb/typing.rs` or any file under `kb/typing/`, which is where the typer's

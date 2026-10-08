@@ -29,40 +29,15 @@ use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{self, Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
 /// Load the stdlib plus `extras`, returning either the KB or the load errors.
-/// `ParsedFile` is not publicly nameable, so the parse list is built inline —
-/// the same shape every other loader-driven test in this suite uses.
-fn load_with(extras: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    // FOOTGUN, paid for once already: `anthill run` MUTES load errors, so the
-    // loader's verdict is taken from `load_all` directly.
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => Ok(kb),
-        Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
-    }
-}
+use crate::common::try_load_kb_with_files as load_with;
 
 /// The KB for sources that are meant to load clean; panics WITH the errors.
 fn load_ok(extras: &[&str]) -> KnowledgeBase {

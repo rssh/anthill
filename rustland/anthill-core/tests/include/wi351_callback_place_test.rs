@@ -12,23 +12,8 @@
 //! full stdlib load path WI-352 will run on; the place→role contract
 //! (`PlaceRole`, `pub(crate)`) is unit-tested in `kb::load`.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load stdlib + a user source together (the path the effect check runs on).
-fn load_with(source: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib + user load");
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 #[test]
 fn foldleft_callback_places_resolve() {

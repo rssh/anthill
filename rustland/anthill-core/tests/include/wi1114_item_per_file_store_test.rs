@@ -93,24 +93,19 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().to_path_buf();
 
-        let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-        let mut sources: Vec<String> = stdlib
-            .iter()
-            .map(|p| std::fs::read_to_string(p).expect("read stdlib file"))
-            .collect();
-        sources.push(DOMAIN.to_string());
+        // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the store is seeded from
+        // `load_all_per_file`'s result — one `LoadResult` per FILE, whose `fact_rule_ids`
+        // pair with that file's fact spans — and the recipe returns the merged one.
+        let stdlib = crate::common::stdlib_parsed();
+        let mut own = vec![parse::parse(DOMAIN).expect("fixture parses")];
         for (rel, src) in files {
             let path = root.join(rel);
             std::fs::create_dir_all(path.parent().expect("has a parent")).expect("mkdir");
             std::fs::write(&path, src).expect("write fixture file");
-            sources.push((*src).to_string());
+            own.push(parse::parse(src).expect("fixture parses"));
         }
-
-        let parsed: Vec<_> = sources
-            .iter()
-            .map(|s| parse::parse(s).expect("fixture parses"))
-            .collect();
-        let refs: Vec<_> = parsed.iter().collect();
+        let mut refs = stdlib.clone();
+        refs.extend(own.iter());
         let mut kb = KnowledgeBase::new();
         let (_, per_file) = crate::common::expect_loaded(load::load_all_per_file(
             &mut kb,
@@ -119,10 +114,11 @@ impl Fixture {
         ));
 
         let mut store = ItemPerFileStore::new(root.clone(), ItemFields::new("status", "id", "workitem"));
+        // `own[0]` is the domain; the fixture's files follow it, in both lists.
         let offset = stdlib.len() + 1;
         let mut rows = Vec::new();
         for (i, (rel, src)) in files.iter().enumerate() {
-            let spans = parsed[offset + i].fact_spans();
+            let spans = own[1 + i].fact_spans();
             let ids = per_file[offset + i].fact_rule_ids.clone();
             assert_eq!(ids.len(), spans.len(), "{rel}: one RuleId per fact span");
             let pairs: Vec<_> = ids.iter().copied().zip(spans).collect();

@@ -5,50 +5,13 @@
 //! the refactor is blocked on a typer/eval gap rather than a
 //! mechanical rewrite of main.anthill.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 /// Load stdlib + Rust stl bindings + anthill-todo/domain.anthill +
 /// rustland/anthill-todo/anthill/store.anthill + the given driver source. Returns the
 /// loaded KB if all phases succeed; panics with diagnostics otherwise.
 fn load_bundle_context(driver_src: &str) -> KnowledgeBase {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
-    files
-        .push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"));
-    // version.anthill defines the bundle's `StoreFormat` entity that store.anthill
-    // now imports (WI-434) — load it before store or the import is unresolved.
-    files.push(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
-    );
-    // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
-    // makes the declaration's condition of loading (its `Forge` operations are
-    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
-    // names, registered on the KB before load.
-    files.extend(crate::common::anthill_todo_coordination_files());
-    files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(driver_src).expect("parse driver"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::register_forge_host_stand_ins(&mut kb);
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-        for e in &errs {
-            eprintln!("{}", e);
-        }
-        panic!("load failed with {} errors", errs.len());
-    });
-    kb
+    crate::common::expect_loaded(crate::common::load_anthill_todo_store_bundle(&[driver_src]).into_result())
 }
 
 #[test]

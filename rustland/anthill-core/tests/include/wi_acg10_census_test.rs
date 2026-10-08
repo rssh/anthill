@@ -36,7 +36,6 @@ use anthill_core::parse;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 
 #[derive(Default)]
 struct Census {
@@ -316,16 +315,23 @@ fn head_args(kb: &KnowledgeBase, v: &Value) -> Vec<Value> {
     out
 }
 
+/// NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the census files each rule under a
+/// project by the PATH of the source it is written in, the stdlib's own rules among
+/// them, and the recipe's parsed stdlib carries no path — `kb.source_name` answers
+/// `<unknown>` for it. Moved onto the recipe, the stdlib group counted NOTHING and said
+/// so nowhere (found by /code-review); `acg10_census` now refuses that zero.
 fn load_project(name: &str, own: &[PathBuf]) -> Option<KnowledgeBase> {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
+    let mut files = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    files.extend(crate::common::collect_anthill_files(&crate::common::rust_stl_dir()));
+    files.sort();
     files.extend(own.iter().cloned());
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {
             let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            let mut f = parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()));
-            f.path = Some(Arc::from(p.as_path()));
-            f
+            parse::parse(&src)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+                .with_path(p.as_path())
         })
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
@@ -467,6 +473,13 @@ fn acg10_census() {
     // stdlib alone first: its rules are counted once, here.
     let kb = load_project("stdlib", &[]).expect("stdlib must load");
     let c = census(&kb, &|p| p.starts_with(stdlib.to_str().unwrap()) || p.starts_with(stl.to_str().unwrap()));
+    assert!(
+        c.rules > 0,
+        "the stdlib census counted NO rule: no source in the KB is named by a path under \
+         {} or {} — the files were loaded without their paths",
+        stdlib.display(),
+        stl.display()
+    );
     report("stdlib (+ rust stl bindings)", &c);
 
     let mut failed = Vec::new();

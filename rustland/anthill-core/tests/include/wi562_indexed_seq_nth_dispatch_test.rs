@@ -22,31 +22,12 @@
 //! `eq` is still licensed in its body and resolves by the element's own sort at
 //! eval.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
+use anthill_core::kb::load::LoadError;
 
-/// Load the stdlib plus `extra` in one batch and return any load-time errors.
+/// Load the stdlib plus `extra` through the one recipe and return any load-time errors.
 /// `load_all`'s finalize runs the full check pipeline (`type_check_sorts` plus
 /// `req_insertion`), mirroring `anthill check`.
-fn type_check_user(extra: &str) -> Vec<LoadError> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs,
-    }
-}
+use crate::common::unrendered_load_errors_of as type_check_user;
 
 fn errors_text(errs: &[LoadError]) -> String {
     errs.iter()

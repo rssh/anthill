@@ -15,8 +15,9 @@
 //!   call: the first FAILS. The second passes either way BY DESIGN — it says the two-step
 //!   KB is a working one, not which recipe built it.
 //! * `the_switch_selects_the_recipe_the_helpers_run` is the control for a SWITCHED run.
-//!   `try_load_kb_named_prepared_with` made to pass `LoadRecipe::OneShot` instead of
-//!   reading the switch: it FAILS under `ANTHILL_TEST_TWO_STEP_LOAD=1`, and passes without
+//!   `common::run_switched_recipe` — the one read of the switch, which every helper that
+//!   follows it ends in — made to pass `LoadRecipe::OneShot` instead of reading the
+//!   switch: it FAILS under `ANTHILL_TEST_TWO_STEP_LOAD=1`, and passes without
 //!   the variable BY DESIGN — an ordinary gate has no switch to ignore. The name in
 //!   `common`'s constant changed by one letter: it FAILS under the switch the same way,
 //!   which is why the row spells the name out instead of importing it.

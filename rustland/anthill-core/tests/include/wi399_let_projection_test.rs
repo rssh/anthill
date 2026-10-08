@@ -20,30 +20,7 @@
 //! Design: `docs/design/expansion-during-unification.md` §4 (Placement) + §7 Layer 2.
 //! Spun out of WI-376.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
-fn load_errors(extras: &[&str]) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of_files as load_errors;
 
 /// A `let` annotation that is a projection off a CONCRETE in-scope binding conforms:
 /// `let k: s.cell.T = "abc"` on `s : Wrapper[P = Inner[T = String]]` resolves

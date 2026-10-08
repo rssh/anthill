@@ -163,11 +163,9 @@
 //! why that is not taken on this ticket's evidence.
 
 use anthill_core::eval::value::Value;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 use crate::common::{load_kb_bare, scalar_int};
@@ -217,26 +215,11 @@ fn definite(kb: &mut KnowledgeBase, goals: &[TermId]) -> Vec<anthill_core::kb::r
 }
 
 /// The stdlib **and the Rust bindings** plus one extra file — the shape the reader rows
-/// need (`eq`, `append`, `Numeric.add` all live there). `collect_stdlib_and_rust_bindings`
-/// rather than the stdlib alone: the primitive spec FACTS (`fact Numeric[Int64]` and
-/// friends) live in the binding files, and without them a `dbl(3, ?r)` control answers
-/// nothing for a reason that has nothing to do with this ticket — measured.
-fn load_with_stdlib(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
-    kb
-}
+/// need (`eq`, `append`, `Numeric.add` all live there), and the recipe's corpus. The
+/// bindings rather than the stdlib alone: the primitive spec FACTS (`fact Numeric[Int64]`
+/// and friends) live in the binding files, and without them a `dbl(3, ?r)` control
+/// answers nothing for a reason that has nothing to do with this ticket — measured.
+use crate::common::load_kb_with as load_with_stdlib;
 
 // ── THE MEASUREMENT ──────────────────────────────────────────────────────────
 

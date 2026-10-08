@@ -11,28 +11,11 @@
 //! (`candidate_provider_sub_goals` — `candidate_sub_goals_owned` before WI-857 split
 //! the dictionary's spec and provider halves — plus `collect_provides_candidates`).
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::load::LoadError;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 fn errors_text(errs: &[LoadError]) -> String {

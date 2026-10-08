@@ -8,11 +8,9 @@
 use std::collections::HashSet;
 
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 const REDUCE: &str = r#"
@@ -28,17 +26,7 @@ end
 "#;
 
 fn load_reduce() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(REDUCE).expect("parse reduce"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    // flow_derive runs in the load pipeline regardless of any typecheck errors.
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
+    crate::common::load_kb_with(REDUCE)
 }
 
 /// Resolve `anthill.test.wi352.reduce.<suffix>` to its place symbol.

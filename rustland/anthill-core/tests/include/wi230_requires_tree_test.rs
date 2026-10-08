@@ -8,32 +8,13 @@
 //! 3. `flatten_requires_tree` reproduces the same set of entries that
 //!    `requires_chain` returns (consistency between tree and flat views).
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     flatten_requires_tree, requires_chain, requires_tree, RequiresEntry, RequiresNode,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-use crate::common::collect_stdlib_and_rust_bindings;
-
-fn load_with(source: &str) -> KnowledgeBase {
-    let mut files = collect_stdlib_and_rust_bindings();
-    files.sort();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).expect("read stdlib file");
-            parse::parse(&src).expect("parse stdlib file")
-        })
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load");
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 #[test]
 fn tree_shape_mirrors_declared_requires_hierarchy() {

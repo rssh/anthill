@@ -944,16 +944,12 @@ end
     for (half, offender, expected_in_batch_one) in
         [("clause", clauses, 2usize), ("site", site, 0usize)]
     {
-        let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
+        // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): which BATCH judges a clause is
+        // the subject, so the batches are made here, call by call.
+        let mut parsed: Vec<_> = [OUT, SPEC]
             .iter()
-            .map(|p| {
-                parse::parse(&std::fs::read_to_string(p).expect("read stdlib"))
-                    .expect("parse stdlib")
-            })
+            .map(|extra| parse::parse(extra).expect("parse extra"))
             .collect();
-        for extra in [OUT, SPEC] {
-            parsed.push(parse::parse(extra).expect("parse extra"));
-        }
         // The CLAUSE half loads its offender in batch 1 too, so the claim it needs to
         // leave behind exists to be dropped; the SITE half must NOT, because a site is
         // judged in the batch that wrote it and the question is what a later batch
@@ -961,7 +957,8 @@ end
         if expected_in_batch_one > 0 {
             parsed.push(parse::parse(offender).expect("parse offender"));
         }
-        let refs: Vec<_> = parsed.iter().collect();
+        let mut refs = crate::common::stdlib_parsed();
+        refs.extend(parsed.iter());
         let mut kb = KnowledgeBase::new();
         let first = errs_of(load::load_all(&mut kb, &refs, &NullResolver));
         assert_eq!(
@@ -1110,16 +1107,14 @@ namespace test.v25n3.inc2
   end
 end
 "#;
-    let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): which BATCH judges a clause is the
+    // subject, so the batches are made here, call by call.
+    let parsed: Vec<_> = [OUT, SPEC, bad]
         .iter()
-        .map(|p| {
-            parse::parse(&std::fs::read_to_string(p).expect("read stdlib")).expect("parse stdlib")
-        })
+        .map(|extra| parse::parse(extra).expect("parse extra"))
         .collect();
-    for extra in [OUT, SPEC, bad] {
-        parsed.push(parse::parse(extra).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
+    let mut refs = crate::common::stdlib_parsed();
+    refs.extend(parsed.iter());
     let mut kb = KnowledgeBase::new();
     let first: Vec<String> = match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(_) => vec![],
@@ -1302,16 +1297,14 @@ end
 
     // Batch 1: the stdlib and the spec, WITHOUT the offender — that is the whole
     // difference from the test above, and it is what makes batch 2's clauses fresh.
-    let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): which BATCH judges a clause is the
+    // subject, so the batches are made here, call by call.
+    let parsed: Vec<_> = [OUT, SPEC]
         .iter()
-        .map(|p| {
-            parse::parse(&std::fs::read_to_string(p).expect("read stdlib")).expect("parse stdlib")
-        })
+        .map(|extra| parse::parse(extra).expect("parse extra"))
         .collect();
-    for extra in [OUT, SPEC] {
-        parsed.push(parse::parse(extra).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
+    let mut refs = crate::common::stdlib_parsed();
+    refs.extend(parsed.iter());
     let mut kb = KnowledgeBase::new();
     let first = errs_of(load::load_all(&mut kb, &refs, &NullResolver));
     assert_eq!(
@@ -1494,15 +1487,14 @@ end
             Err(e) => e.iter().map(|x| x.to_string()).collect(),
         }
     };
-    let base = || {
-        let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): which BATCH judges a clause is the
+    // subject, so the batches are made here, call by call. `base` is the user's half of
+    // batch 1; the stdlib goes in front of it at each call.
+    let base = || -> Vec<parse::ir::ParsedFile> {
+        [OUT, SPEC]
             .iter()
-            .map(|p| parse::parse(&std::fs::read_to_string(p).expect("read")).expect("parse"))
-            .collect();
-        for extra in [OUT, SPEC] {
-            parsed.push(parse::parse(extra).expect("parse extra"));
-        }
-        parsed
+            .map(|extra| parse::parse(extra).expect("parse extra"))
+            .collect()
     };
     let written = "`test.v47vwx.fwd.CF provides test.v47vwx.fwd.SpecHi`";
     let derived = "`test.v47vwx.fwd.CF provides test.v47vwx.fwd.SpecLo`";
@@ -1513,7 +1505,8 @@ end
     {
         let mut parsed = base();
         parsed.push(parse::parse(fwd).expect("parse fwd"));
-        let refs: Vec<_> = parsed.iter().collect();
+        let mut refs = crate::common::stdlib_parsed();
+        refs.extend(parsed.iter());
         let mut kb = KnowledgeBase::new();
         let e = errs_of(load::load_all(&mut kb, &refs, &NullResolver));
         // A SET, NOT A SEQUENCE: `rows` sorts, so the pair's ORDER here means nothing and
@@ -1531,7 +1524,8 @@ end
     }
 
     let parsed = base();
-    let refs: Vec<_> = parsed.iter().collect();
+    let mut refs = crate::common::stdlib_parsed();
+    refs.extend(parsed.iter());
     let mut kb = KnowledgeBase::new();
     let first = errs_of(load::load_all(&mut kb, &refs, &NullResolver));
     assert!(

@@ -99,25 +99,11 @@
 //! SINGLE goal naming both a type-level variable and a value parameter. Its verdict
 //! is decided by the LABEL in every state, which is why it needs no rule of its own.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load stdlib + user source together; surface load errors as strings. Identical
 /// harness to `wi539_call_site_contracts_test::load_result`, whose call-site
 /// contract check this exercises through its type-level half.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 /// The taint vocabulary of `docs/measurements/guardians/d2c_callsite.anthill`: a

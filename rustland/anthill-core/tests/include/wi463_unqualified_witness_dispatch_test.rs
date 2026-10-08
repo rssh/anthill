@@ -24,10 +24,6 @@
 //! This pins that completion — the unqualified witness call both LOADS clean
 //! and DISPATCHES to the witness member at eval (result `99`).
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// The witness scenario with the spec op brought into scope by a self-namespace
 /// import, so the unqualified `combine(tag, tag)` call resolves to the SPEC op
 /// `Combiner.combine` (and dispatches to the witness member at eval).
@@ -60,24 +56,7 @@ const SRC: &str = r#"namespace test.wi463.eval
 end
 "#;
 
-fn load_errors(src: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&s).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(src).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of as load_errors;
 
 /// LOAD — the unqualified witness scenario loads clean: `combine` resolves to
 /// the spec op through the self-namespace import (no `UnknownOperation`, no

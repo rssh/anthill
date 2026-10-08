@@ -4,11 +4,9 @@
 /// using the github-todo example (domain, project, tools, workitems, rules, feedback).
 mod common;
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 use smallvec::SmallVec;
@@ -16,59 +14,18 @@ use smallvec::SmallVec;
 // ── KB loader ───────────────────────────────────────────────────
 
 fn load_github_todo_kb() -> KnowledgeBase {
-    let example_dir = common::examples_dir().join("github-todo");
-
-    let mut files = common::collect_stdlib_and_rust_bindings();
-    files.extend(common::collect_anthill_files(&example_dir));
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    if let Err(errs) = &result {
-        for e in errs {
-            eprintln!("Load warning: {e}");
-        }
-    }
-    kb
+    let files = common::collect_anthill_files(&common::examples_dir().join("github-todo"));
+    common::load_kb_with_user_files(&common::user_paths(&files))
 }
 
 /// Load stdlib + github-todo example + an extra inline source (additional
 /// `anthill.stage0` facts). Used by the WI-433 coverage test to add a dependent
 /// whose deps are Verified without mutating the shared example fixture.
 fn load_github_todo_kb_with_extra(extra: &str) -> KnowledgeBase {
-    let example_dir = common::examples_dir().join("github-todo");
-
-    let mut files = common::collect_stdlib_and_rust_bindings();
-    files.extend(common::collect_anthill_files(&example_dir));
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra source"));
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-        for e in &errs {
-            eprintln!("Load error: {e}");
-        }
-        panic!("load failed with {} errors", errs.len());
-    });
-    kb
+    let files = common::collect_anthill_files(&common::examples_dir().join("github-todo"));
+    let mut user = common::user_paths(&files);
+    user.push(common::UserFile::Text(extra));
+    common::load_kb_with_user_files(&user)
 }
 
 fn resolve_config() -> ResolveConfig {

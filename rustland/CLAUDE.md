@@ -56,8 +56,9 @@ control, not a second gate: the two recipes must give every test the same verdic
 test that differs is an assertion on the recipe, a loader finding, or a fixture that by
 the language's own rule belongs in the stdlib's load — one that adds to the equality of a
 stdlib sort, which a later load may not do (`kernel-language.md` §8.3). The last kind is
-pinned to one load BY NAME, with the reason at its site (WI-20261006-SZKV7;
-`docs/design/test-infrastructure.md` §5.3 has the list). Run it optimized, as any crate-wide selection:
+pinned to one load BY NAME, with the reason at its site (WI-20261006-SZKV7; the list of
+every test outside the switch is `PINNED` in `wi_rah0z_one_recipe_test`, and
+`docs/design/test-infrastructure.md` §5.3 has the runs). Run it optimized, as any crate-wide selection:
 
 ```bash
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
@@ -65,8 +66,9 @@ ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
 
 The log carries the recipe the script was asked for (`load:`) and the one the control
 test observed (`load recipe OBSERVED`). The switch reaches a test only through a `common`
-helper — a file that builds its own stdlib load, the library's unit tests and every other
-crate run one-shot whatever it says, which is one more reason not to write such a file.
+helper — the tests pinned by name, the library's unit tests and every other crate run
+one-shot whatever it says. Since WI-20261008-RAH0Z that is 66 of the ~9 700 stdlib
+loads `anthill-core`'s integration binaries execute; it was 1 028.
 
 The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
 optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
@@ -163,8 +165,31 @@ binary — stays a direct child of `tests/`, and says at its site why.
 ## Test Patterns
 
 Integration tests in `anthill-core/tests/` follow:
-1. Load stdlib via `common::collect_anthill_files(&common::stdlib_dir())`
-2. Parse + `load_all` — which BOOTSTRAPS. Do not call `register_prelude` or the
+1. Load through a `tests/common` helper — THE ONE RECIPE. Do not collect the stdlib and
+   call `load_all` yourself: 174 files once did (WI-20261008-RAH0Z), each re-reading
+   and re-parsing the stdlib at every load, and each outside the two-step control
+   above. Pick by what the test reads:
+
+   | the test wants | helper |
+   |---|---|
+   | a KB; a load error fails the test | `load_kb_with(src)`; files on disk: `load_kb_with_user_files(&user_paths(&files))` |
+   | the errors, rendered | `load_errors_of(src)`, `load_errors_of_files(&[..])`; `try_load_kb_with*` for a `Result` |
+   | the loader's `LoadError` values | `unrendered_load_errors_of(src)` |
+   | a clean load's warnings, or the KB a REFUSED load left beside its errors | `load_outcome(src)`, `load_outcome_files(&[UserFile::..], prepare)` — a `LoadOutcome` |
+   | the stdlib alone | `load_stdlib_kb()`; `load_stdlib_kb_prepared(hook)` for its `LoadResult` or a hook before the load |
+   | anthill-todo's store bundle under a driver | `load_anthill_todo_store_bundle(&[driver])` |
+   | the user file's own `LoadResult` (a re-type test) | `load_stdlib_kb_with_source(src)` — two calls, by name |
+
+   A local helper that only forwards is an alias — `use crate::common::load_errors_of
+   as load_errors;` — not a `fn`: a function is where the next copy starts.
+
+   A test whose SUBJECT is the load's shape — how many calls, in what order, through
+   which entry point or with which options — makes its own `load_all` over
+   `common::stdlib_parsed()`, or names its `LoadRecipe`, and says why at the site
+   (`NOT THE RECIPE, BY NAME`). `wi_rah0z_one_recipe_test` enforces it: a test file
+   that names a way out of the recipe is in that file's `PINNED` list, with its reason
+   and its count, or the guard fails.
+2. `load_all` BOOTSTRAPS. Do not call `register_prelude` or the
    builtin-tag pass first; every load entry point owns that, and the
    pre-registering "house sequence" was deleted from 172 files (WI-967).
    `register_prelude` is for a hand-built KB that never loads; the KB method

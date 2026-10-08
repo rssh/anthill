@@ -1,24 +1,7 @@
 //! Logic.Minimal / Logic.Constructive / Logic.Classical land in the
 //! stdlib and form a `requires` chain.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
-fn load_stdlib() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap()
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_stdlib_kb as load_stdlib;
 
 #[test]
 fn logic_sorts_are_in_stdlib() {

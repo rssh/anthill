@@ -15,16 +15,6 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
-fn parse_files(paths: &[std::path::PathBuf]) -> Vec<anthill_core::parse::ir::ParsedFile> {
-    paths
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).expect("read");
-            parse::parse(&src).expect("parse")
-        })
-        .collect()
-}
-
 /// Phase 1 over the FULL closure — `stdlib/anthill/` **plus** `anthill-stl/anthill/`.
 ///
 /// WI-1103 moved these fixtures off the stdlib-ALONE corpus, which is why the whole
@@ -38,23 +28,13 @@ fn parse_files(paths: &[std::path::PathBuf]) -> Vec<anthill_core::parse::ir::Par
 ///
 /// CONTROL — MEASURED by backing the WI-1103 change out (the
 /// `is_unbacked_derived_provision` skip in `check_provider_operations`): the two
-/// callers of this helper that go on to `load_all` into a live KB
-/// (`load_incremental_does_not_touch_stdlib_facts`, and the sibling closure in
+/// rows that go on to `load_all` into a live KB
+/// (`load_incremental_does_not_touch_stdlib_facts`, and the two-step load in
 /// `load_incremental_equivalent_to_load_all`) FAIL with five
 /// `UnbackedProviderOperation`s. `resolve_instantiations_is_idempotent` and
 /// `at_least_one_requires_fact_marked_resolved` pass either way BY DESIGN — they stop
 /// at phase 1, which never re-walks a derived row.
-fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-
-    let parsed = parse_files(&files);
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 /// Canonical text form of every SortRequiresInfo fact in the KB, sorted.
 fn canonical_requires_facts(kb: &KnowledgeBase) -> BTreeSet<String> {
@@ -183,26 +163,26 @@ end
 
 /// WI-1103 — also over the FULL closure (see [`load_stdlib_kb`] for why, and for the
 /// measured back-out). One of this file's two CONTROLs for that change: it FAILS at
-/// the SECOND `load_all` line below without it, because `check_provider_operations`
-/// re-walks phase 1's derived `NonEq` rows and refuses all five.
+/// the TWO-STEP load below without it, because `check_provider_operations` re-walks
+/// phase 1's derived `NonEq` rows and refuses all five.
 #[test]
 fn load_incremental_equivalent_to_load_all() {
-    // Build KB-A via one-shot load_all.
-    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-    let stdlib_parsed = parse_files(&stdlib);
-    let user_parsed = parse::parse(USER_SOURCE).expect("parse user");
-
-    let mut all_refs: Vec<&_> = stdlib_parsed.iter().collect();
-    all_refs.push(&user_parsed);
-
-    let mut kb_a = KnowledgeBase::new();
-    load::load_all(&mut kb_a, &all_refs, &NullResolver).expect("one-shot load");
-
-    // Build KB-B in two batches: the stdlib, then the user file into that live KB.
-    let mut kb_b = KnowledgeBase::new();
-    let stdlib_refs: Vec<&_> = stdlib_parsed.iter().collect();
-    load::load_all(&mut kb_b, &stdlib_refs, &NullResolver).expect("stdlib load");
-    load::load_all(&mut kb_b, &[&user_parsed], &NullResolver).expect("incremental load");
+    // BOTH RECIPES, BY NAME (WI-20261008-RAH0Z): comparing the two IS this test, so
+    // neither side may follow `ANTHILL_TEST_TWO_STEP_LOAD`.
+    let load_by = |recipe| {
+        crate::common::expect_loaded(crate::common::recipe_load(
+            &[USER_SOURCE],
+            None,
+            load::LoadOptions::default(),
+            recipe,
+            |_| {},
+        ))
+        .0
+    };
+    // KB-A: one `load_all` over the stdlib and the user file.
+    let kb_a = load_by(crate::common::LoadRecipe::OneShot);
+    // KB-B: two batches — the stdlib, then the user file into that live KB.
+    let kb_b = load_by(crate::common::LoadRecipe::TwoStep);
 
     // Compare canonical SortRequiresInfo fact sets.
     let a = canonical_requires_facts(&kb_a);

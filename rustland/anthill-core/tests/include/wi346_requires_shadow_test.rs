@@ -11,36 +11,17 @@
 //! A sort that *provides* the spec (`provides Spec[sort]`) is NOT flagged: there
 //! the own op IS the override (own-op-beats-inherited).
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load the stdlib plus `extra`, expecting a clean load (warnings are
 /// non-fatal), and return the warning strings.
 fn load_warnings(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+    crate::common::load_outcome(extra)
+        .rendered_warnings()
+        .unwrap_or_else(|errs| {
+            panic!(
+                "expected a clean load (the shadow is advisory, not fatal); got errors:\n{}",
+                errs.join("\n")
+            )
         })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(result) => result.warnings.iter().map(|w| w.to_string()).collect(),
-        Err(errs) => panic!(
-            "expected a clean load (the shadow is advisory, not fatal); got errors:\n{}",
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-    }
 }
 
 // ── requires + same-named op → warning ──────────────────────────────────

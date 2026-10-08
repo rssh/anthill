@@ -67,36 +67,15 @@
 //!     control above is the one that isolates the axis.
 
 use anthill_core::eval::{Interpreter, Value};
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term_view::TermView;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-/// The load errors of stdlib + `extra`, empty on a clean load.
+/// The load errors of stdlib + `extra` through the one recipe, empty on a clean load.
 ///
-/// ONE `load_all` over both, deliberately: the whole-KB passes — op-body type
-/// checking among them — belong to `load_all`, so a second incremental `load` of
-/// `extra` on top of an already-loaded stdlib KB is not the loader's verdict on
-/// this source, and a test reading it would assert over checks that never ran.
-fn stdlib_plus_source_errors(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => Vec::new(),
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+/// Every call the recipe makes is a `load_all`, so the whole-KB passes — op-body type
+/// checking among them — run over `extra` under either setting of
+/// `ANTHILL_TEST_TWO_STEP_LOAD`. The retired single-file `load::load` did not run
+/// them, which is why this helper was once a load of its own.
+use crate::common::load_errors_of as stdlib_plus_source_errors;
 
 /// An INFINITE source, and the probe over it. `Nats` provides `Stream` and so
 /// provides `Iterable` transitively (WI-495) — a perfectly good `MappedStream`

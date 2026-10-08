@@ -1999,3 +1999,6 @@ mod wi_szkv7_clause_frontier_test;
 
 #[path = "include/wi_szkv7_later_equality_test.rs"]
 mod wi_szkv7_later_equality_test;
+
+#[path = "include/wi_rah0z_one_recipe_test.rs"]
+mod wi_rah0z_one_recipe_test;

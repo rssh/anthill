@@ -11,28 +11,11 @@
 //! makes the satisfaction fact unsound, so the loader rejects it with a hard
 //! `UnbackedProviderOperation` error.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::load::LoadError;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 fn errors_text(errs: &[LoadError]) -> String {
@@ -155,24 +138,8 @@ fn stdlib_with_bindings_is_op_complete() {
     // Iterable, …). After WI-362 every provided spec is op-complete; host
     // carriers (Int64/Float/…) are backed by their artifacts and skipped. Pins
     // that WI-363 does not regress the standard library.
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs,
-    };
-    assert!(
-        unbacked(&errs).is_empty(),
-        "stdlib + Rust bindings should have no unbacked provider operations; got:\n{}",
-        errors_text(&unbacked(&errs).into_iter().cloned().collect::<Vec<_>>())
-    );
+    // `load_stdlib_kb` expects a CLEAN load, which says more than the filter this test
+    // used to apply to the errors: no load error at all, an unbacked provider operation
+    // among them.
+    crate::common::load_stdlib_kb();
 }

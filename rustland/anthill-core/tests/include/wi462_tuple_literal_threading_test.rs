@@ -10,30 +10,7 @@
 //! component, then walk) — the tuple-literal twin of the constructor's expected-seed. A
 //! CONCRETE element that genuinely mismatches the declared component is still rejected.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
-fn load_errors(extras: &[&str]) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of_files as load_errors;
 
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp

@@ -266,17 +266,7 @@ end
 #[test]
 fn source_fact_for_owned_functor_refused_at_load() {
     // Phase 1: load stdlib + BASE (declares WorkItem, no facts).
-    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-    let stdlib_parsed: Vec<_> = stdlib
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).expect("parse stdlib"))
-        .collect();
-    let base_parsed = parse::parse(BASE).expect("parse base");
-    let mut refs: Vec<&_> = stdlib_parsed.iter().collect();
-    refs.push(&base_parsed);
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("phase-1 load");
+    let mut kb = crate::common::load_kb_with(BASE);
 
     // Phase 2: mount WorkItem, THEN load a file that seeds a resident fact for it.
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");
@@ -309,17 +299,7 @@ end
 fn source_rule_for_owned_functor_refused_at_load() {
     // Same as (4), but the offending clause is a bodied `rule` (the WI refuses "a
     // fact OR a same-head bodied rule"). Its head functor is the mounted one.
-    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-    let stdlib_parsed: Vec<_> = stdlib
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).expect("parse stdlib"))
-        .collect();
-    let base_parsed = parse::parse(BASE).expect("parse base");
-    let mut refs: Vec<&_> = stdlib_parsed.iter().collect();
-    refs.push(&base_parsed);
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("phase-1 load");
+    let mut kb = crate::common::load_kb_with(BASE);
 
     let functor = kb.try_resolve_symbol(WORKITEM_QN).expect("WorkItem loaded");
     let id_field = kb.intern("id");

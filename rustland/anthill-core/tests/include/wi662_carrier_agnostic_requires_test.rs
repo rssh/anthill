@@ -16,19 +16,16 @@
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::typing::{requires_chain, requires_tree};
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
 /// Stdlib + a two-sort source (`Foo` the required spec, `Carrier` the requiring
 /// sort) → the loaded KB.
 fn load_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
     let src = r#"
 namespace test.wi662
   import anthill.prelude.{Int64}
@@ -40,18 +37,7 @@ namespace test.wi662
   end
 end
 "#;
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s = std::fs::read_to_string(p).expect("read stdlib");
-            parse::parse(&s).expect("parse stdlib")
-        })
-        .collect();
-    parsed.push(parse::parse(src).expect("parse test source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load");
-    kb
+    crate::common::load_kb_with(src)
 }
 
 /// Assert a `SortRequiresInfo` fact `Carrier requires <spec>` through the SAME
@@ -159,7 +145,6 @@ fn ground_sort_requires_still_rides_as_term() {
 /// preserving the denoted `E` binding (a `Value::Node` a `TermId` can't carry).
 #[test]
 fn denoted_child_spec_type_binding_is_root_scoped() {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
     // `Parent requires Middle[T = Int64]` loads via natural syntax (a ground
     // SortView fact); the denoted `Middle requires Foo[...]` is asserted directly
     // (no surface syntax produces a value-fact requires — see the module note).
@@ -177,17 +162,7 @@ namespace test.wi662b
   end
 end
 "#;
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s = std::fs::read_to_string(p).expect("read stdlib");
-            parse::parse(&s).expect("parse stdlib")
-        })
-        .collect();
-    parsed.push(parse::parse(src).expect("parse test source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load");
+    let mut kb = crate::common::load_kb_with(src);
 
     let middle = kb.try_resolve_symbol("test.wi662b.Middle").expect("Middle");
     let foo = kb.try_resolve_symbol("test.wi662b.Foo").expect("Foo");

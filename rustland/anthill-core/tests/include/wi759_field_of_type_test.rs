@@ -29,21 +29,7 @@ use anthill_core::parse;
 
 use crate::common::try_load_kb_with;
 
-fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p:?}: {e}"));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {p:?}: {e:?}"))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
     let mut kb = load_stdlib_kb();

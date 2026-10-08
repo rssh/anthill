@@ -336,19 +336,9 @@ fn two_identical_files_are_two_declarations() {
 /// among them) and takes all three `*_idempotent_across_loads` suites down with it.
 #[test]
 fn re_presenting_the_same_files_is_not_a_duplicate() {
-    use anthill_core::kb::load::{self, NullResolver};
-    use anthill_core::parse;
-
     let src = "namespace wi1049dup.reload\n  sort Z\n    entity z\n  end\nend\n";
     let mut kb = crate::common::load_kb_with(src);
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(src).unwrap());
-    let refs: Vec<_> = parsed.iter().collect();
-    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
+    let errs = match crate::common::present_all_again(&mut kb, &[src]) {
         Ok(_) => Vec::new(),
         Err(e) => e.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
     };

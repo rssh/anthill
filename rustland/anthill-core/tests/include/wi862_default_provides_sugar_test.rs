@@ -451,45 +451,29 @@ fn default_on_a_variable_spec_is_refused() {
 
 /// Load the stdlib plus `extra` and return the WARNING strings.
 ///
-/// Built here rather than reached for: `anthill-core`'s ordinary test helpers all
-/// discard `load_all`'s `LoadResult`, so warnings are invisible from `tests/` and a
-/// probe written on one would measure an empty list and report it as a finding. This is
-/// `wi346_requires_shadow_test`'s helper, which is the only one that reads the channel.
+/// Through [`crate::common::load_outcome_files`], which keeps the channel: the
+/// `try_load_kb_*` helpers return a KB or errors and drop a clean load's warnings, so a
+/// probe written on one would measure an empty list and report it as a finding.
 fn load_warnings(extra: &str) -> Vec<String> {
-    // stdlib AND the Rust host bindings: when this helper drove 058 §4's deprecation,
-    // 21 of the migration's 39 sites lived in `anthill-stl/anthill/*.anthill`, so
-    // `stdlib_dir()` alone would have left more than half the corpus unread and still
-    // reported zero. The breadth is kept for whatever advisory reads the channel next.
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            anthill_core::parse::parse(&src)
-                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    if !extra.is_empty() {
-        let mut probe = anthill_core::parse::parse(extra).expect("parse extra");
-        // A PATH, so the `Located` wrapper's `path` arm is exercised rather than left to
-        // the `None` fallback: `parse::parse` sets none, and the whole reason the wrapper
-        // exists is to render `path:line:col:`.
-        probe.path = Some(std::sync::Arc::from(std::path::Path::new("probe.anthill")));
-        parsed.push(probe);
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match anthill_core::kb::load::load_all(&mut kb, &refs, &anthill_core::kb::load::NullResolver) {
-        Ok(result) => result.warnings.iter().map(|w| w.to_string()).collect(),
-        Err(errs) => panic!(
+    // stdlib AND the Rust host bindings — the recipe's corpus: when this helper drove
+    // 058 §4's deprecation, 21 of the migration's 39 sites lived in
+    // `anthill-stl/anthill/*.anthill`, so `stdlib_dir()` alone would have left more than
+    // half the corpus unread and still reported zero.
+    //
+    // A PATH, so the `Located` wrapper's `path` arm is exercised rather than left to
+    // the `None` fallback: `parse::parse` sets none, and the whole reason the wrapper
+    // exists is to render `path:line:col:`.
+    crate::common::load_outcome_files(
+        &[crate::common::UserFile::Named("probe.anthill", extra)],
+        |_| {},
+    )
+    .rendered_warnings()
+    .unwrap_or_else(|errs| {
+        panic!(
             "expected a clean load (the deprecation is advisory); got errors:\n{}",
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-    }
+            errs.join("\n")
+        )
+    })
 }
 
 

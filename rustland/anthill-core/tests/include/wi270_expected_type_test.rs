@@ -17,29 +17,14 @@
 //! `type_check_sorts` walks operations per-sort; free-standing
 //! namespace-level operations aren't reached by the typer pass.
 
-use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::load::{self};
 use anthill_core::kb::typing::TypeError;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 /// Stdlib + extra source → (kb, load errors). The caller asserts the
 /// diagnostic shape it expects (or absence of typer-level errors).
 fn try_load(extra: &str) -> (KnowledgeBase, Vec<load::LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    let errs = result.err().unwrap_or_default();
-    (kb, errs)
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 /// Render load errors as joined strings so an assertion failure shows

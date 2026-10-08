@@ -13,8 +13,6 @@
 //! machinery end-to-end.
 
 use anthill_core::intern::SymbolTable;
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::{
     self,
     ir::{Item, Name, SortWithBody, TypeExpr},
@@ -217,24 +215,7 @@ end
 
 // ── Load equivalence: the per-statement form rides WI-452/453 end-to-end ──────
 
-fn load_errors(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of as load_errors;
 
 /// The §5.4 HK carrier written with per-statement bracket binders loads clean —
 /// the desugar is identical to the enclosing `sort CpsMonad[F[T]]` form WI-451/453

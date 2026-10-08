@@ -142,11 +142,6 @@ fn skipping_req_insertion_leaves_dispatch_rewrites_empty() {
     // req_insertion::run. dispatch_rewrites must stay empty — proving
     // the factor is real (rewrites flow only through the insertion
     // pass, not from the typer inline).
-    use crate::common::collect_stdlib_and_rust_bindings;
-    use anthill_core::kb::load::{self, NullResolver};
-    use anthill_core::kb::KnowledgeBase;
-    use anthill_core::parse;
-
     let src = r#"
 namespace test.wi231.skip_pass
   import anthill.prelude.Eq.{eq}
@@ -159,28 +154,10 @@ namespace test.wi231.skip_pass
 end
 "#;
 
-    // Reconstruct what load_all does — but stop after typing, skipping
-    // req_insertion::run. We can't reuse load_all because it always
-    // runs the pass. So we replicate the inner steps.
-    let files = collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s = std::fs::read_to_string(p).expect("read");
-            parse::parse(&s).expect("parse")
-        })
-        .collect();
-    parsed.push(parse::parse(src).expect("parse user"));
-
-    let mut kb = KnowledgeBase::new();
-
-    // Scan + load WITHOUT the trailing req_insertion::run.
-    // The simplest way to do this: invoke the inner scan/load functions
-    // directly. As a proxy: just compare the rewrite count BEFORE and
-    // AFTER manually invoking req_insertion::run starting from an empty
-    // KB plus the source.
-    let refs: Vec<_> = parsed.iter().collect();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load");
+    // `load_all` always runs the pass, so a load that stops after typing cannot be
+    // driven through it. As a PROXY: load the standard way, then compare the rewrites
+    // before and after invoking `req_insertion::run` by hand.
+    let mut kb = crate::common::load_kb_with(src);
 
     let eq_sym = kb
         .try_resolve_symbol("anthill.prelude.PartialEq.eq")

@@ -22,35 +22,19 @@ use std::rc::Rc;
 
 use anthill_core::eval::value::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence, Pattern};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::term_view::{goal_fingerprint, views_structurally_equal, TermView, ViewHead};
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::parse::desugar_target as dt;
 use anthill_core::span::{SourceId, SourceSpan};
 use smallvec::SmallVec;
 
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// lambda_expr and Pattern encodings use is resolved, as in any loader-built KB.
-fn stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib loads");
-    kb
-}
+use crate::common::load_stdlib_kb as stdlib_kb;
 
 fn span() -> SourceSpan {
     SourceSpan::new(SourceId::from_raw(0), 0, 0)

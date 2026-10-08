@@ -14,38 +14,26 @@
 
 mod common;
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_example(name: &str) -> KnowledgeBase {
-    let mut files = common::collect_stdlib_and_rust_bindings();
-    files.extend(common::collect_anthill_files(
-        &common::examples_dir().join("classic-mini").join(name),
-    ));
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
-        for e in &errs {
-            eprintln!("load error: {e}");
+    let files =
+        common::collect_anthill_files(&common::examples_dir().join("classic-mini").join(name));
+    match common::load_outcome_files(&common::user_paths(&files), |_| {}).into_result() {
+        Ok(kb) => kb,
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("load error: {e}");
+            }
+            panic!(
+                "examples/classic-mini/{name} must LOAD; got {} error(s)",
+                errs.len()
+            );
         }
-        panic!(
-            "examples/classic-mini/{name} must LOAD; got {} error(s)",
-            errs.len()
-        );
     }
-    kb
 }
 
 fn fresh(kb: &mut KnowledgeBase, name: &str) -> TermId {

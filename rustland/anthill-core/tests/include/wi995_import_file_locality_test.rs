@@ -37,6 +37,10 @@ use std::path::PathBuf;
 
 /// Load one corpus group with the audit running, and render the report.
 /// Returns `(report text, cross-file site count, unattributed site count)`.
+///
+/// NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): a group is a list of PATHS loaded in
+/// one call, the stdlib's among them, and the report names the file that asked for each
+/// resolution by its index in that call.
 fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
     let parsed: Vec<_> = files
         .iter()
@@ -255,31 +259,15 @@ end
 "#;
 
     let audit_of = |sources: &[&str]| -> (usize, u64) {
-        let parsed: Vec<_> = sources
+        let user: Vec<_> = sources
             .iter()
-            .map(|s| parse::parse(s).expect("fixture parses"))
+            .map(|s| crate::common::UserFile::Text(s))
             .collect();
-        // The full closure: since WI-20260922-BRT4Y the stdlib alone does not load.
-        let stdlib = crate::common::collect_stdlib_and_rust_bindings();
-        let stdlib_parsed: Vec<_> = stdlib
-            .iter()
-            .map(|p| {
-                let src = std::fs::read_to_string(p).expect("read stdlib file");
-                parse::parse(&src)
-                    .expect("stdlib parses")
-                    .with_path(p.clone())
-            })
-            .collect();
-        let mut refs: Vec<&parse::ir::ParsedFile> = stdlib_parsed.iter().collect();
-        refs.extend(parsed.iter());
-        let mut kb = KnowledgeBase::new();
-        kb.begin_import_audit();
         // The fixtures are about RESOLUTION, not about loading clean; read the verdict
         // anyway so a fixture that stops loading cannot masquerade as a quiet result.
-        let load_errors = match load::load_all(&mut kb, &refs, &NullResolver) {
-            Ok(_) => Vec::new(),
-            Err(e) => e.iter().map(|e| e.to_string()).collect(),
-        };
+        let (kb, load_errors) =
+            crate::common::load_outcome_files(&user, |kb| kb.begin_import_audit())
+                .kb_and_errors();
         let audit = kb.take_import_audit().expect("audit was begun");
         let cross = audit.uses.values().filter(|u| u.asking.is_some()).count();
         // The split fixtures are SUPPOSED to stop loading — that is the rule working —

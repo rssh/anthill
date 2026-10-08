@@ -11,10 +11,6 @@
 //! fallback on the receiver's sort. A head naming a sort/namespace keeps the
 //! `field_access` path.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     match interp
         .call(op, &[])
@@ -25,26 +21,7 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     }
 }
 
-fn load_errors(extras: &[&str]) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of_files as load_errors;
 
 /// THE acceptance shape: `b.value` on a bare `Box` PARAM types and EVALs the
 /// field — for both a POSITIONAL `box(42)` and a NAMED `box(value: 42)`

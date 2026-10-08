@@ -13,26 +13,9 @@
 //!      forms LOAD clean — the runtime some-shape is pinned in
 //!      `wi408_some_coercion_test.rs`.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
+use anthill_core::kb::load::{self};
 
-fn try_load(extra: &str) -> Vec<load::LoadError> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap()
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .err()
-        .unwrap_or_default()
-}
+use crate::common::unrendered_load_errors_of as try_load;
 
 fn errors_text(errs: &[load::LoadError]) -> String {
     errs.iter()

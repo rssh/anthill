@@ -13,11 +13,10 @@
 //! substitution transparency (a rule's validity must not depend on the callee's
 //! body complexity). The interpreter bridge for complex bodies is a follow-up.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::load::LoadError;
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Load `extra` over the FULL library closure, keeping the loader's verdict instead of
@@ -42,23 +41,7 @@ use smallvec::SmallVec;
 /// `incremental_load_test` and for the same reason — a fixture that loads half the
 /// library measures half the language.
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 fn errors_text(errs: &[LoadError]) -> String {

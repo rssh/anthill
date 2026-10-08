@@ -13,22 +13,7 @@ use anthill_core::parse;
 
 /// Full stdlib (reflect sorts etc.) + builtins — the op-body loader resolves
 /// `anthill.reflect.Expr.*` functor symbols, so the reflect stdlib must load.
-fn stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load failed");
-    kb
-}
+use crate::common::load_stdlib_kb as stdlib_kb;
 
 fn load_src(kb: &mut KnowledgeBase, source: &str) {
     let parsed = parse::parse(source).expect("parse failed");

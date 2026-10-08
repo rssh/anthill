@@ -20,32 +20,8 @@
 //! bare-vs-bare expansion is only needed when the producer erases the row
 //! (bare `-> Stream`).
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Stdlib + extra sources → load-error strings (empty Vec on clean load).
-fn load_errors(extras: &[&str]) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of_files as load_errors;
 
 /// An abstract `Producer` whose two stream-producing ops WRITE their result's
 /// observation effect in the type: `pure_stream` is `E = {}` (pure), and

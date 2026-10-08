@@ -30,32 +30,8 @@
 //! (`wi413_lazy_filter_skips_via_self_recursion`). This file pins the minimal
 //! repro so a regression points straight at the threading gap.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Stdlib + extra sources → load-error strings (empty Vec on clean load).
-fn load_errors(extras: &[&str]) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of_files as load_errors;
 
 /// The minimal repro: a parametric carrier `Rec` that provides `Stream`, whose
 /// own `splitFirst` impl self-recurses on a RECONSTRUCTED `recw(rest)`. With the

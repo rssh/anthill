@@ -51,21 +51,7 @@ use anthill_core::span::{SourceId, SourceSpan};
 
 /// A KB with the full stdlib loaded — every prelude / reflect symbol the
 /// `List[type_arg]` encoding resolves is defined, as in any loader-built KB.
-fn stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib loads");
-    kb
-}
+use crate::common::load_stdlib_kb as stdlib_kb;
 
 fn span() -> SourceSpan {
     SourceSpan::new(SourceId::from_raw(0), 0, 0)

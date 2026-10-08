@@ -1,32 +1,13 @@
 //! Auto-generated `<Sort>.induction(?P) :- ho_apply(?P, ctor1), …`
 //! emitted by the loader for sorts/enums with constructors.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 #[allow(unused_imports)]
 use anthill_core::persistence::print::TermPrinter;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 fn induction_rule_head_for(kb: &KnowledgeBase, qn_prefix: &str) -> Option<TermId> {
     // Find the auto-generated induction rule by its functor.

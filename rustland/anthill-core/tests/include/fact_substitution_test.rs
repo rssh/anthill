@@ -1,45 +1,20 @@
-use anthill_core::kb::load::{self, NullResolver};
+//! Integration tests for operation binding via instantiation substitution.
+//!
+//! Tests load source files into a KB and verify:
+//! - base_subst computed from SortInfo
+//! - SortRequiresInfo spec (SortView) completed with all bindings
+//! - resolve_sort_instantiation_param builtin extracts bindings
+//! - auto-bind works for same-named operations
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
 use anthill_core::kb::KnowledgeBase;
-/// Integration tests for operation binding via instantiation substitution.
-///
-/// Tests load source files into a KB and verify:
-/// - base_subst computed from SortInfo
-/// - SortRequiresInfo spec (SortView) completed with all bindings
-/// - resolve_sort_instantiation_param builtin extracts bindings
-/// - auto-bind works for same-named operations
-use anthill_core::parse;
 
 use smallvec::SmallVec;
 
 /// Load stdlib + test files into a fresh KB with builtins registered.
 fn load_monoid_kb() -> KnowledgeBase {
-    let mut files = crate::common::collect_stdlib_and_rust_bindings();
-
-    let testcases_dir = crate::common::testcases_dir();
-    let monoid_path = testcases_dir.join("fact-substitution/monoid.anthill");
-    files.push(monoid_path);
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    if let Err(errs) = &result {
-        for e in errs {
-            eprintln!("Load error: {}", e);
-        }
-        panic!("stdlib load failed with {} errors", errs.len());
-    }
-    kb
+    let monoid_path = crate::common::testcases_dir().join("fact-substitution/monoid.anthill");
+    crate::common::load_kb_with_user_files(&[crate::common::UserFile::Path(&monoid_path)])
 }
 
 fn default_config() -> ResolveConfig {

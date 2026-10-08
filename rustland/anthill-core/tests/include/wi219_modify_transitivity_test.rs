@@ -10,29 +10,13 @@ use anthill_core::kb::typing::type_check_sorts;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
-fn load_stdlib_kb() -> KnowledgeBase {
-    load_stdlib_into(KnowledgeBase::new())
-}
-
-/// The library load, into a KB the caller may have PREPARED — an embedder's host
-/// functions must be registered before the first load (WI-1122 seals the table there).
-fn load_stdlib_into(mut kb: KnowledgeBase) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 fn load_stdlib_and_project_kb() -> KnowledgeBase {
     // The `Forge` stand-ins go on the FRESH KB, before the library phase seals the table
-    // — see the coordination note below.
-    let mut fresh = KnowledgeBase::new();
-    crate::common::register_forge_host_stand_ins(&mut fresh);
-    let mut kb = load_stdlib_into(fresh);
+    // (WI-1122) — see the coordination note below.
+    let (mut kb, _) =
+        crate::common::load_stdlib_kb_prepared(crate::common::register_forge_host_stand_ins);
     // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus,
     // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — without it store.anthill's import is unresolved.

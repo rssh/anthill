@@ -122,7 +122,7 @@ fn no_alias_left_behind() {
 /// actually negates — the claim neither symbol-identity test makes.
 #[test]
 fn naf_answers_from_inside_the_reflect_subtree() {
-    let (mut kb, _) = crate::common::load_stdlib_kb_with_source(REFLECT_SUBTREE);
+    let mut kb = crate::common::load_kb_with(REFLECT_SUBTREE);
     let sols = crate::common::query_unary(&mut kb, "anthill.reflect.mh90f.mh90fNafHolds");
     assert_eq!(
         sols.len(),
@@ -137,7 +137,7 @@ fn naf_answers_from_inside_the_reflect_subtree() {
 /// the 1 above meaningless.
 #[test]
 fn naf_over_a_provable_goal_finds_no_solution() {
-    let (mut kb, _) = crate::common::load_stdlib_kb_with_source(REFLECT_SUBTREE);
+    let mut kb = crate::common::load_kb_with(REFLECT_SUBTREE);
     let sols = crate::common::query_unary(&mut kb, "anthill.reflect.mh90f.mh90fNafFails");
     assert!(
         sols.is_empty(),

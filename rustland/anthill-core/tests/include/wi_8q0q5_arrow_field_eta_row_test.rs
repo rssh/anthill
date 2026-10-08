@@ -47,31 +47,10 @@
 //! FIELD PATH rather than about eta-lift or about arrows: each changes exactly one
 //! thing and was already green. The last row is the over-widening guard.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
-/// Load stdlib + `extra` in ONE `load_all` and return the errors (empty when clean).
-/// The whole-KB passes — op-body type checking among them — belong to `load_all`, so
-/// a second incremental `load_all` would not be the loader's verdict on this source.
-fn errors_for(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => Vec::new(),
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+/// Load stdlib + `extra` through the one recipe and return the errors (empty when
+/// clean). The whole-KB passes — op-body type checking among them — belong to
+/// `load_all`, and every call the recipe makes is one.
+use crate::common::load_errors_of as errors_for;
 
 /// The carrier every row below shares: ONE arrow field whose row is a sort parameter,
 /// and a consumer that declares exactly that row. `{ARG}` is the only text that varies.

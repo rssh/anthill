@@ -12,7 +12,6 @@
 //! 6. NoMatch diagnostic with helpful hint.
 //! 7. Coherence at diamond join points (Example 3).
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::typing::{
@@ -20,7 +19,6 @@ use anthill_core::kb::typing::{
     ResolvedRequiresNode, SortGoal,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Load stdlib + rustland bindings + an extra source string.
@@ -37,23 +35,11 @@ fn load_with(extra: &str) -> KnowledgeBase {
 /// conditional-resolution tests could not tell "the fixture is incoherent on
 /// purpose" from "the fixture stopped loading". Both now say which they are.
 fn load_expecting(extra: &str, expected: &[&str]) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
+    let (kb, verdict) = crate::common::load_outcome(extra).into_parts();
     if expected.is_empty() {
-        crate::common::expect_loaded(result);
+        crate::common::expect_loaded(verdict);
     } else {
-        crate::common::expect_load_errors(result, expected);
+        crate::common::expect_load_errors(verdict, expected);
     }
     kb
 }

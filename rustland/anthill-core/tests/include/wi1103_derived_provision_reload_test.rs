@@ -77,28 +77,11 @@ namespace test.wi1103
 end
 "#;
 
-fn parse_files(paths: &[std::path::PathBuf]) -> Vec<anthill_core::parse::ir::ParsedFile> {
-    paths
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).expect("read");
-            parse::parse(&src).expect("parse")
-        })
-        .collect()
-}
-
 /// Phase 1 over the FULL closure — `stdlib/anthill/` **plus** `anthill-stl/anthill/`.
 /// The host bindings are what make this reach the defect: `fact Eq[Int64]` /
 /// `fact NonEq[Float]` live there, and without them the classifier has no lawful-`Eq`
 /// leaves to propagate from and no partial leaf to propagate (see the module header).
-fn phase_one_full_closure() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed = parse_files(&files);
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("phase 1: full-closure stdlib load");
-    kb
-}
+use crate::common::load_stdlib_kb as phase_one_full_closure;
 
 fn load_phase_two(kb: &mut KnowledgeBase, src: &str) -> Result<(), Vec<String>> {
     let user = parse::parse(src).expect("parse user source");

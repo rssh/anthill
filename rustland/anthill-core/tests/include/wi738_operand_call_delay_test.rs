@@ -40,11 +40,9 @@
 //! separates "refuted / undecided" from "proved". Before the fix `not_diag(2,1)`
 //! produced a DEFINITE solution (the structural lie); after, it produces none.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 const SRC: &str = r#"
@@ -79,20 +77,7 @@ end
 "#;
 
 fn load_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(SRC).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
-    kb
+    crate::common::load_kb_with(SRC)
 }
 
 fn int(kb: &mut KnowledgeBase, n: i64) -> TermId {

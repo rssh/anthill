@@ -199,6 +199,8 @@ fn the_file_backends_provide_their_store_traits() {
 /// provision" vacuously.
 #[test]
 fn stdlib_alone_declares_no_store_provision() {
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the recipe's stdlib is the full
+    // closure, and the subject here is `stdlib/anthill/` WITHOUT its binding layer.
     let parsed: Vec<_> = crate::common::collect_anthill_files(&crate::common::stdlib_dir())
         .iter()
         .map(|p| {

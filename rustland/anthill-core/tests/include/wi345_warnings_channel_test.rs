@@ -7,24 +7,10 @@
 //! an (empty) `warnings` vec all the way out through `load_all`. WI-346 is
 //! the first pass that actually emits into the channel.
 
-use anthill_core::kb::load::{self, LoadError, LoadResult, LoadWarning, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
+use anthill_core::kb::load::{LoadResult, LoadWarning};
 
-fn load_stdlib_result() -> Result<LoadResult, Vec<LoadError>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
+fn load_stdlib_result() -> LoadResult {
+    crate::common::load_stdlib_kb_prepared(|_| {}).1
 }
 
 #[test]
@@ -65,7 +51,7 @@ fn clean_stdlib_load_carries_no_warnings() {
     // lint is NOT retired — `wi346_requires_shadow_test` and
     // `wi1048_requires_shadow_refinement_test::parametric_same_signature_shadow_still_warns`
     // are the same-signature cases that must, and do, still warn.
-    let result = load_stdlib_result().expect("stdlib should load cleanly");
+    let result = load_stdlib_result();
     let msgs: Vec<String> = result.warnings.iter().map(|w| w.to_string()).collect();
     assert!(
         msgs.is_empty(),

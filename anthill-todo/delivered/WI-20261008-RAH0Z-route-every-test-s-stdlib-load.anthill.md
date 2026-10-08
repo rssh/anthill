@@ -3,9 +3,9 @@
 - id: WI-20261008-RAH0Z-route-every-test-s-stdlib-load
 - created: 2026-10-08T06:26:34Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-08T06:26:34Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-08T19:47:30Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -38,4 +38,26 @@ DONE WHEN: no file outside `tests/common` collects the stdlib and calls `load_al
 ### 2026-10-08T08:41:40Z — feedback — claude
 
 TWO FILES THAT WILL NEED A PIN, known in advance (2026-10-08). `wi224_sld_resolution_test` and `typing_test` each carry a fixture that supplies an `eq` for the stdlib's `List` (`provides PartialEq[T = List[T = A]]` / `provides Eq[T = List[T = A]]`), and both load the stdlib themselves today, so they run in one call. Since the second finding of WI-20261006-SZKV7 was settled, loading such a file AFTER the stdlib is a load error (`EqualityOfEarlierSort`; kernel-language.md §8.3): a composite's equality is closed by the load that defines it. Moved onto the recipe those fixtures must name `LoadRecipe::OneShot` and say why at the site, as `wi228_tree_threaded_dispatch_test` does. Four other files supply an equality for `Map` or `Set`, which have no constructors and so are no composites — the rule's domain; it does not touch them. A fixture supplying one for a composite the stdlib defines (`Pair`, `Option`, `SortedSet`, …) is in the rule's reach and needs the same pin.
+
+### 2026-10-08T19:47:27Z — feedback — claude
+
+DELIVERED. No file outside `tests/common` collects the stdlib and calls `load_all` but the ones pinned by name. 196 local load helpers in 174 files (172 under `tests/include`, `classic_mini_test.rs`, `github_todo_test.rs`) now load through the one recipe: 139 were the recipe verbatim and were replaced by script, 57 by hand; the 117 that were left forwarding one call are aliases (`use crate::common::load_errors_of as load_errors`), a function being where the next copy starts. `common::load_stdlib_kb` reads `STDLIB_PARSED`.
+
+WHAT `tests/common` GAINED, each following the switch through ONE read of it (`run_switched_recipe`): `LoadOutcome` — the loader's `LoadError` values, a clean load's warnings, the KB a REFUSED load left; `UserFile` — a file read from disk beside the stdlib; `load_stdlib_kb_prepared`; and for a test that keeps its own `load_all`, `stdlib_parsed()` and `present_all_again`. `collect_stdlib_and_rust_bindings` is private.
+
+THE TWO SHAPES "that need a decision" were settled by giving the recipe the capability, and are the user's to reverse: (1) it hands back the KB of a load that failed; (2) it takes paths, so the examples, the testcases and anthill-todo's store bundle are under the switch.
+
+THE COUNT (docs/design/test-infrastructure.md §2.4, §5.3; raw: docs/measurements/test-infrastructure/one-recipe-run-2026-10-08.txt): one-shot loads the switch does not reach in the integration binaries, 1 028 -> 66; through the recipe in two calls, 8 222 of 9 591 -> 9 329 of 9 726. Every one of the 66 is a test pinned by name and listed with its reason. The library's 79 are as they were, out of scope.
+
+THE RUN UNDER THE SWITCH: 7 943 passed, 0 failed, 6 ignored, OBSERVED TWO-STEP — no test differs, so "expect findings" found none in the loader. The two files the note of 2026-10-08 said would need a pin did NOT: `wi224_sld_resolution_test` supplies its `Eq` for a local container, not for `List`, since WI-20260918-CKD4J, and `typing_test`'s `List` fixture already went through a `common` helper and asserts a refusal that holds under both recipes.
+
+NOT IN THE TICKET, ADDED: a guard, `wi_rah0z_one_recipe_test`. A test file that takes the stdlib's files, names a `LoadRecipe`, or calls a helper that names one is in its `PINNED` list with a reason and a line count, or the suite fails; a second row is the control that `LoadOutcome`'s entries follow the switch. Six back-outs measured, in its module doc and the raw file. Three test files that were pinned to two calls for no stated reason (`wi_1wbzt`, `wimh90f`, `wi284`) follow the switch now.
+
+FOUND ON THE WAY, FIXED HERE: `wi210_dispatch_test` loaded anthill-todo's store bundle without `domain` and `version`; the load was REFUSED with 35 errors, the helper discarded the verdict, and three tests read what the loader had recorded by then. The bundle is one list in `common` (five loaders spelled it out) and loads clean; `wi210`, `wi221` and `github_todo_test` load strictly; no accessor of `LoadOutcome` hands out the KB without the verdict.
+
+/code-review ran on the move (12 findings, all taken). One was a regression the move made: `wi_acg10_census_test` (ignored, a measurement) files rules by source PATH and the recipe's stdlib has none, so its stdlib group counted 0 rules in silence — it loads by path again, by name, and refuses a zero (re-run: 434 rules). What was changed in answer to the review — `LoadOutcome`'s private halves, the aliases, the guard's counts, the bundle helper — was checked by hand and by the runs, not by a second review.
+
+RECORDED, NOT DONE: the stdlib's parsed files carry no path (a diagnostic located in one renders `<file N>`); stamping them would have fixed the census at its root and changes what every test's KB reports as a source name, so it was left. `wi925` and `wi926` reach the stdlib through a `FileSourceResolver`, which the guard does not see and says so.
+
+Gate, on main as merged (08f70bf8 plus this): rustland 8 823 / 0 / 14, scaland 630.
 

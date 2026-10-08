@@ -13,28 +13,8 @@
 //! tests pin that down — two clash cases plus a positive control that
 //! compatible branches still load clean (guarding against over-rejection).
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Stdlib + extra source → load errors (empty Vec on clean load).
-fn try_load(extra: &str) -> Vec<load::LoadError> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .err()
-        .unwrap_or_default()
-}
+use crate::common::unrendered_load_errors_of as try_load;
 
 /// An `if` in synthesis position (value of an unannotated `let`) whose
 /// branches return incompatible types — `Int64` vs `String`, with no

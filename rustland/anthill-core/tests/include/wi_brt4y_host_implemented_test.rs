@@ -194,6 +194,8 @@ fn the_same_body_without_the_attribute_loads() {
 /// load itself refuses — once per operation, each naming its owner's binding block.
 #[test]
 fn the_stdlib_without_its_binding_layer_does_not_load() {
+    // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the recipe's stdlib is the full
+    // closure, and the subject here is `stdlib/anthill/` WITHOUT its binding layer.
     let files = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
     let parsed: Vec<_> = files
         .iter()

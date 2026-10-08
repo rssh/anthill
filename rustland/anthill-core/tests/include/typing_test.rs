@@ -15,30 +15,7 @@ use anthill_core::kb::ClauseKind;
 use smallvec::SmallVec;
 
 /// Load stdlib + typing rules into a fresh KB with builtins registered.
-fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    if let Err(errs) = &result {
-        for e in errs {
-            eprintln!("Load error: {}", e);
-        }
-        panic!("stdlib load failed with {} errors", errs.len());
-    }
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 /// Load user source on top of an existing KB (stdlib already loaded).
 fn load_source(kb: &mut KnowledgeBase, source: &str) {
@@ -2186,30 +2163,7 @@ fn wi305_operation_body_discriminates_some_vs_none() {
 
 /// Helper: load only stdlib, returning both KB and LoadResult (all stdlib sorts).
 fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|path| {
-            let source = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            parse::parse(&source).unwrap_or_else(|e| panic!("parse {}: {e:?}", path.display()))
-        })
-        .collect();
-
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    let result = load::load_all(&mut kb, &refs, &NullResolver);
-    match result {
-        Ok(load_result) => (kb, load_result),
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("Load error: {}", e);
-            }
-            panic!("stdlib load failed with {} errors", errs.len());
-        }
-    }
+    crate::common::load_stdlib_kb_prepared(|_| {})
 }
 
 /// WI-420 helper: load full stdlib (incl. the Rust host bindings, so concrete
@@ -6280,20 +6234,7 @@ end
 
 #[test]
 fn rule_typing_stdlib_no_spurious_errors() {
-    let (mut kb, result) = {
-        let files = crate::common::collect_stdlib_and_rust_bindings();
-        let parsed: Vec<_> = files
-            .iter()
-            .map(|path| {
-                let source = std::fs::read_to_string(path).unwrap();
-                anthill_core::parse::parse(&source).unwrap()
-            })
-            .collect();
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-        (kb, result)
-    };
+    let (mut kb, result) = load_stdlib_kb_with_result();
     let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
@@ -6343,20 +6284,7 @@ end
 #[test]
 fn pattern_fragment_stdlib_valid() {
     // stdlib should have no pattern fragment violations
-    let (mut kb, result) = {
-        let files = crate::common::collect_stdlib_and_rust_bindings();
-        let parsed: Vec<_> = files
-            .iter()
-            .map(|path| {
-                let source = std::fs::read_to_string(path).unwrap();
-                anthill_core::parse::parse(&source).unwrap()
-            })
-            .collect();
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-        (kb, result)
-    };
+    let (mut kb, result) = load_stdlib_kb_with_result();
     let errors = type_check_sorts(&mut kb, result.loaded());
     // Filter to only pattern-fragment errors (not type errors)
     let ho_errors: Vec<_> = errors
@@ -6380,20 +6308,7 @@ fn pattern_fragment_stdlib_valid() {
 #[test]
 fn effect_scoping_stdlib_no_spurious_errors() {
     // Stdlib operations should produce no effect scoping errors
-    let (mut kb, result) = {
-        let files = crate::common::collect_stdlib_and_rust_bindings();
-        let parsed: Vec<_> = files
-            .iter()
-            .map(|path| {
-                let source = std::fs::read_to_string(path).unwrap();
-                anthill_core::parse::parse(&source).unwrap()
-            })
-            .collect();
-        let refs: Vec<_> = parsed.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-        (kb, result)
-    };
+    let (mut kb, result) = load_stdlib_kb_with_result();
     let errors = type_check_sorts(&mut kb, result.loaded());
     let effect_errors: Vec<_> = errors
         .iter()

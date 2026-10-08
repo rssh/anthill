@@ -10,42 +10,13 @@
 //! Reference: docs/design/operation-call-model.md
 //! §"Defer-to-requirement detection".
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
     find_unique_impl_op, lookup_spec_op_dispatch, requires_chain, DispatchOutcome,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => kb,
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("{e}");
-            }
-            // Tests below tolerate non-fatal load issues — the post-load
-            // KB still carries the requires/SortProvidesInfo records the
-            // dispatch outcome depends on. Mirrors the load_with helper
-            // in wi210_dispatch_test.rs.
-            kb
-        }
-    }
-}
+use crate::common::load_kb_with as load_with;
 
 /// Build a per-call substitution that binds the named type-param of
 /// `spec_qn` (e.g. "T") to the named carrier sort. Mirrors the helper

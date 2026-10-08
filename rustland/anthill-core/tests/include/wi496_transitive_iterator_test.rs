@@ -19,28 +19,9 @@
 //! `IntBar` (a WITNESS `fact Bar[T = Int64]`): both still dispatch concretely to
 //! their own impl — only the provides-chain carrier defers.
 
-use anthill_core::kb::load::{self, LoadError, NullResolver};
 use anthill_core::kb::term_view::TermView;
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-fn load_errs(extra: &str) -> Vec<LoadError> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .err()
-        .unwrap_or_default()
-}
+use crate::common::unrendered_load_errors_of as load_errs;
 
 const SRC: &str = r#"
 namespace wi496.transitive

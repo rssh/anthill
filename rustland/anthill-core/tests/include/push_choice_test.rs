@@ -12,11 +12,9 @@
 //! `or(?a, ?b) :- push_choice(?a, ?b)` rule lifts the primitive to a
 //! regular rule head.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Build a `Term::Ref(qualified_name_sym)` term — matches how entities
@@ -32,30 +30,7 @@ fn ref_term(kb: &mut KnowledgeBase, qualified: &str) -> TermId {
 /// `operation_map` clauses, so without them the reflection accessors are unimplemented
 /// and `contains`'s eval bridge — which reads `a.k` through `field_access` — dies
 /// `OperationBodyMissing`. Invisible while those were registered by hardcoded name.
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).unwrap();
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parsed_extra);
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => {}
-        Err(errs) => {
-            for e in &errs {
-                eprintln!("LOAD ERR: {}", e);
-            }
-            panic!("load failed with {} errors", errs.len());
-        }
-    }
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 #[test]
 fn push_choice_yields_two_solutions_via_facts() {

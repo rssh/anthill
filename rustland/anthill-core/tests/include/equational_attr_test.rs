@@ -4,29 +4,12 @@
 //! its SMT-side semantics — auto-include in proof preamble — are
 //! deferred for v0; the attribute itself parses and stores cleanly.)
 
-use anthill_core::kb::load::{self, is_equational_head, NullResolver};
+use anthill_core::kb::load::is_equational_head;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 /// Count equational-headed rules indexed in rules_by_functor. Walks
 /// every rules_by_functor entry whose head term parses as an equation

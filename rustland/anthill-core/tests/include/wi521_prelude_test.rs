@@ -33,29 +33,8 @@
 //! sixty-two names — `the_refusal_population_is_the_ten_spec_operations` declares all
 //! sixty-two free-standing in one load and asserts which ten come back.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load the full stdlib plus `extra`, returning load/type error strings ([] = clean).
-fn load_stdlib_errors(extra: &str) -> Vec<String> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    }
-}
+use crate::common::load_errors_of as load_stdlib_errors;
 
 /// THIS TEST'S POLARITY WAS INVERTED BY WI-20260824-BFB9A, and the inversion is the
 /// point rather than an edit made in passing.

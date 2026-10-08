@@ -1,0 +1,135 @@
+# anthill-core's suites after every test's stdlib load was routed through the one recipe (WI-20261008-RAH0Z),
+# under the TWO-STEP load recipe and traced, 2026-10-08 22:06-22:25.
+#   ANTHILL_LOAD_TIMING=1 ANTHILL_TEST_TWO_STEP_LOAD=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+#     --config <the three opt lines> -- --nocapture 2>&1 \
+#     | grep -a -E 'load_with_visited x|recipe_load|Running |Doc-tests|test result|FAILED|OBSERVED'
+# Tree:    5f7f3aae plus the change as committed — the run was taken after /code-review's findings were in. The four
+#          commits main gained meanwhile (to 08f70bf8) touch scaland, docs and the tracker, and no Rust source.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build).
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No other gate in flight; load average 17 before
+#          the run, so the seconds are an order of magnitude and nothing more.
+# Result:  7 943 passed, 0 failed, 6 ignored — NO test differs under the switch.
+#          load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: TWO-STEP
+#
+# The stdlib is 87 files (73 stdlib/anthill, 14 anthill-stl/anthill). Columns, per test binary:
+#   2-step,n>0   `recipe_load TwoStep user_files=n` lines, n > 0 — a load through tests/common's recipe in two calls:
+#                one that FOLLOWED the switch, or one pinned to two calls by name (`load_stdlib_kb_with_source`)
+#   2-step,n=0   the same with no user file (a test that hands the recipe an empty list): two calls, the second empty
+#   1-shot,n>0   `recipe_load OneShot`, n > 0 — the recipe NAMED `LoadRecipe::OneShot`: a test pinned to one call
+#   1-shot,n=0   `recipe_load OneShot`, n = 0 — the stdlib alone, through `load_stdlib_kb`
+#   N==87        `load_with_visited x 87` — a call given the stdlib alone, by any route
+#   N>87         the stdlib and at least one more file in ONE call — a one-shot load the switch did not reach
+#   N<87         everything else: the recipe's second call, bare loads, a later load made by hand
+# The `recipe_load` line is printed by `run_recipe` under ANTHILL_LOAD_TIMING=1 and is in the tree now; on 2026-10-07 it
+# was a temporary eprintln.
+binary                              2-step,n>0  2-step,n=0  1-shot,n>0  1-shot,n=0       N==87        N>87        N<87   passed failed ignored  finished in
+unittests src/lib.rs                         0           0           0           0          25          79          26      666      0       0  8.25s
+tests/algebra_tests.rs                      27           0           0           3          30           0          27       24      0       0  3.37s
+tests/builtin_tests.rs                      80           0           0           0          80           0          92       81      0       0  9.68s
+tests/classic_mini_test.rs                   4           0           0           0           4           0           4        4      0       0  0.82s
+tests/eval_tests.rs                        123           0           0           0         123           0         123      119      0       0  13.77s
+tests/github_todo_test.rs                   15           0           0           0          15           0          15       15      0       0  1.93s
+tests/guardians_test.rs                     83           0           0           0          83           0         103       67      0       2  12.22s
+tests/induction_tests.rs                    11           0           0           2          13           3          11       13      0       0  1.83s
+tests/parse_tests.rs                        42           0           0         204         247           0         267      463      0       0  25.29s
+tests/resolve_tests.rs                     121           0           1           2         124           1         125      133      0       0  14.21s
+tests/sql_store_example_test.rs              8           0           0           0           8           0           8        7      0       0  1.38s
+tests/wi_tests.rs                         8809           6          14         114        8933          62        9006     6347      0       4  975.37s
+Doc-tests anthill_core                       0           0           0           0           0           0           0        4      0       0  1.55s
+TOTAL                                     9323           6          15         325        9685         145        9807     7943      0       6
+
+== against 2026-10-07 (two-step-run-2026-10-07.txt), the eleven integration binaries
+                                             2026-10-07     2026-10-08
+  stdlib loads executed (N==87 + N>87)            9 591          9 726
+  through the recipe, in two calls                8 222          9 329     85 % -> 96 %
+  ONE-SHOT, NOT REACHED BY THE SWITCH (N>87)      1 028             66
+    of them the recipe, named `OneShot`               0             15
+    of them made by hand                          1 028             51
+  the stdlib alone                                  341            331     325 of them through `load_stdlib_kb` now
+The library's own unit tests are as they were: 104 stdlib loads, 79 of them one-shot with another file, through
+`kb/test_support.rs` — `src/` cannot use `tests/common`, and the ticket left them out.
+135 more stdlib loads than the day before, over 70 more tests (7 943 against 7 873).
+
+== the 66: every one is a test pinned BY NAME, and these are the files
+`wi_rah0z_one_recipe_test::PINNED` is this list in the tree, with a count per file that the guard checks. A file is on it
+when it takes the stdlib's files to load by hand, names a `LoadRecipe`, or calls a `common` helper that names one.
+  made by hand, over `common::stdlib_parsed()` or the stdlib's paths                                          (one-shot)
+    wi718_prelude_ctor_preregistration_test      orders the project file BEFORE the stdlib in one call
+    wi1114_item_per_file_store_test              seeds a store from `load_all_per_file`'s per-FILE results
+    wi_v25n3_written_row_label_test              which BATCH judges a clause: the batches are made call by call
+    wi995_import_file_locality_test              `audit_corpus`: corpus groups are lists of PATHS, one call each, and the
+                                                 report names the asking file by its index in that call
+    induction_axiom_witness_test, scope_axiom_witness_test, specialization_witness_test,
+    wi1049_duplicate_operation_declaration_test  present every loaded file to the KB AGAIN (`common::present_all_again`):
+                                                 a registration is not made twice, a re-load is not a redeclaration
+  the recipe, named `LoadRecipe::OneShot` (and `TwoStep` beside it)
+    incremental_load_test                        compares a one-shot load with a two-step one
+    wi228_tree_threaded_dispatch_test            supplies an `eq` for the stdlib's `List`, which only the stdlib's own
+                                                 load may do (kernel-language.md 8.3)
+    wi_szkv7_two_step_load_test, wi_szkv7_clause_frontier_test, wi_szkv7_later_equality_test
+                                                 the switch's own control, and what a LATER load checks and may change:
+                                                 each fixture under both recipes
+  on the list, and not among the 66 (their loads are not the stdlib with another file in one call)
+    wi931_free_standing_provider_backing_test, wi_brt4y_host_implemented_test
+                                                 `stdlib/anthill/` WITHOUT its binding layer — 73 files, refused
+    parse_test                                   parses every file under `stdlib/anthill/` and loads none
+    wi732_project_ctor_test, wi946_belongs_to_readers_test, wi_ej5f5_bare_ctor_pattern_test
+                                                 two calls by name: a re-type from the user file's own `LoadResult`, or
+                                                 the typer driven by hand over a load that stops before it
+    wi_acg10_census_test (ignored: a measurement)  a census by source PATH, the stdlib's own among them
+
+== what moved, and how
+196 local load helpers in 174 files (172 under tests/include, classic_mini_test.rs, github_todo_test.rs) built a KB,
+collected the stdlib and called `load_all`. By what they returned: 43 `(&[&str]) -> Vec<String>`, 24 + 23 a KB, 15
+`Vec<LoadError>`, 15 `(KnowledgeBase, Vec<LoadError>)`, 12 `Result<(), Vec<String>>`, 12 `(&str) -> Vec<String>`, and a
+tail of 52 in about forty shapes. 139 were the recipe verbatim and were replaced by script; 57 by hand.
+`tests/common` gained what about thirty of them were built to get: `LoadOutcome` (the loader's `LoadError` values, a clean
+load's warnings, the KB a REFUSED load left) and `UserFile` (a file read from disk beside the stdlib). Both follow the
+switch through ONE read of it, `run_switched_recipe`.
+117 of the helpers were left forwarding one call; each is an alias now (`use crate::common::load_errors_of as load_errors`).
+
+The ticket's two shapes "that need a decision":
+  the KB of a load that FAILED     the recipe hands it back (`LoadOutcome::kb_and_errors`, `into_parts`). Of about twenty
+                                   helpers of that shape most read the KB only after asserting a clean load.
+  a directory beside the stdlib    the recipe takes paths (`UserFile::Path`, `user_paths`): the examples, the testcases and
+                                   anthill-todo's store bundle are under the switch.
+The ticket's two files "that will need a pin" did not: `wi224_sld_resolution_test` has supplied its `Eq` for a local
+container, not for `List`, since WI-20260918-CKD4J, and `typing_test`'s `List` fixture already went through a `common`
+helper and asserts a refusal that holds under both recipes.
+
+== found on the way
+`wi210_dispatch_test`'s `load_with_store` handed the loader anthill-todo's `coordination`, its binding and `store` — and not
+`domain` or `version`, from which `store` imports `WorkItem`, `WorkStatus`, `Feedback`, `Tag` and `StoreFormat`. The load was
+REFUSED with 35 errors (the five unresolved imports and what follows from them), the helper discarded the verdict, and three
+tests read what the loader had recorded by then: `store_anthill_emits_provides_info_for_workitemstore` and the two
+`dispatch_unique_finds_filebased_impl_for_workitemstore_*`. A fourth bundle in the file lacked `version` alone (2 errors). Seen when
+/code-review asked that a discard of the verdict have a NAME: the named discard printed what it tolerated. The bundle is one
+list in `common` now (`anthill_todo_store_bundle_files`; five loaders spelled it out), `wi210`, `wi221` and `github_todo_test`
+load strictly, and no accessor of `LoadOutcome` hands out the KB without the verdict.
+/code-review also found the one regression the move made: `wi_acg10_census_test` (ignored, a measurement) files rules under a
+project by source PATH, and the recipe's parsed stdlib has none — its stdlib group counted 0 rules and said nothing. It loads
+by path again, by name, and refuses a zero; re-run: 434 rules, 981 goals.
+
+== the controls, each measured by making the change and running the row (opt-level 0, the `wi_tests` binary)
+  wi_rah0z_one_recipe_test::every_way_out_of_the_recipe_is_pinned_by_name
+    a `stdlib_parsed()` call added to an unlisted file (cut_test.rs)                FAILED, naming the file
+    the same added to a listed file (wi718...)                                      FAILED: "listed with 1, has 2"
+    the wi718 entry deleted                                                         FAILED, naming the file as unlisted
+    an entry added for a file that names no way out                                 FAILED, naming the entry as stale
+  wi_rah0z_one_recipe_test::the_outcome_entries_follow_the_switch   ANTHILL_TEST_TWO_STEP_LOAD=1 unless said otherwise
+    as written, switch off / on                                                     ok / ok
+    `load_outcome_files` made to name `LoadRecipe::OneShot`                         FAILED (the szkv7 control: ok)
+    `run_switched_recipe` made to name `LoadRecipe::OneShot`                        FAILED, and the szkv7 control with it
+
+== the same suite before /code-review's findings were taken, 2026-10-08 18:02 (a machine at load average 39-155)
+7 943 passed, 0 failed, 6 ignored; OBSERVED: TWO-STEP; N>87: 145 in all, 66 in the integration binaries — the same count.
+One-shot, the same day and tree (ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core, 17:33): 7 940 passed, 0 failed, 6
+ignored — three rows fewer, `wi_rah0z_one_recipe_test`'s, which was registered after that build.
+
+== the gate on the committed tree, one-shot, 2026-10-08 22:28 (rustland/scripts/test.sh, full workspace, same machine)
+On 08f70bf8 plus the change — main as it stood, the four later commits in. 8 823 passed, 0 failed, 14 ignored in 1 122 s
+(150 s of it compile). anthill-core's thirteen binaries: 7 943 passed, 0 failed, 6 ignored — the two-step run's own
+totals; wi_tests 6 347 passed in 643 s, against 975 s two-step and traced. The log's own lines:
+  load:    one shot (ANTHILL_TEST_TWO_STEP_LOAD=0)
+  load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: one shot
+scaland, `sbt testFull` on the same tree: 630 passed, 0 failed.

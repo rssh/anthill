@@ -42,12 +42,10 @@
 //! the gate cannot answer and does not need to ask.
 
 use anthill_core::eval::value::Value;
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 const SRC: &str = r#"
@@ -113,22 +111,7 @@ fn load_kb() -> KnowledgeBase {
     load_src(SRC)
 }
 
-fn load_src(src: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(src).unwrap_or_else(|e| panic!("parse extra: {e:?}")));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|e| panic!("load: {e:?}"));
-    kb
-}
+use crate::common::load_kb_with as load_src;
 
 fn fresh(kb: &mut KnowledgeBase, name: &str) -> TermId {
     let sym = kb.intern(name);

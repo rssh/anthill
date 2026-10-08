@@ -13,31 +13,14 @@
 
 use std::rc::Rc;
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::Literal;
 use anthill_core::kb::typing::{type_check_node, TypingEnv};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::span::{SourceId, SourceSpan};
 
 /// stdlib only — these cases need just the prelude sorts.
-fn load_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    assert!(!files.is_empty(), "no stdlib files found");
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load failed");
-    kb
-}
+use crate::common::load_stdlib_kb as load_kb;
 
 /// A source-origin expression occurrence with a throwaway span.
 fn occ(expr: Expr) -> Rc<NodeOccurrence> {

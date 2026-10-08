@@ -10,13 +10,12 @@
 //! equations (`is_equation`) and fired by the resolver's `apply_eq_rules`.
 
 use anthill_core::eval::value::Value;
-use anthill_core::kb::load::{self, LoadError, NullResolver};
+use anthill_core::kb::load::{self, LoadError};
 use anthill_core::kb::resolve::{ReduceFaults, ResolveConfig, TermUnification};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::views_structurally_equal;
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
 /// Mint a fresh global logic variable and return its `Term::Var` carrier — the
@@ -28,23 +27,7 @@ fn fresh_var_term(kb: &mut KnowledgeBase, name: &str) -> TermId {
 }
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => (kb, vec![]),
-        Err(errs) => (kb, errs),
-    }
+    crate::common::load_outcome(extra).kb_and_errors()
 }
 
 fn load_ok(extra: &str) -> KnowledgeBase {

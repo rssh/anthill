@@ -2,28 +2,10 @@
 //! principles as ProofRecord facts with `ScopeAxiom(aspect:
 //! "induction")` witnesses.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
-fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
-    kb
-}
+use crate::common::load_kb_with as load_with;
 
 fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
     // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
@@ -88,17 +70,7 @@ fn induction_registration_is_idempotent_across_loads() {
         .filter(|r| r.contains("test.induction_idem.Mode.induction"))
         .count();
     // Re-load: idempotence must dedupe.
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let s = std::fs::read_to_string(p).unwrap();
-            parse::parse(&s).unwrap()
-        })
-        .collect();
-    parsed.push(parse::parse(src).unwrap());
-    let refs: Vec<_> = parsed.iter().collect();
-    crate::common::expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
+    crate::common::expect_loaded(crate::common::present_all_again(&mut kb, &[src]));
     let count2 = proof_records(&mut kb)
         .iter()
         .filter(|r| r.contains("test.induction_idem.Mode.induction"))

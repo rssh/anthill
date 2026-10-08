@@ -53,26 +53,12 @@
 //! does NOT entail non-emptiness, and a fix that discharged on "a `not` /
 //! `isEmpty` fact is somewhere in Γ" would turn them green.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
 /// Load stdlib + user source and surface load errors as strings — the shared
 /// WI-478 / WI-067 guarded-effect harness. The effect check runs during
 /// loading, so a DISCHARGED call lets the caller omit the effect and load
 /// clean, and an undischarged one surfaces it as undeclared.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 /// A caller over ONE list parameter, declaring NO effects — so it loads iff

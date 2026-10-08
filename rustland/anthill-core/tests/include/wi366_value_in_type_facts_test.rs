@@ -23,35 +23,17 @@
 //! ground-alias guard are unchanged.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::load::{self, NullResolver};
+use anthill_core::kb::load::{self};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 /// Stdlib + extra sources → the loaded KB (kept regardless of typecheck outcome,
 /// so a value-in-type that may not fully type-check is still inspectable) plus
 /// the load-error strings. A panic here is itself a test failure — it would mean
 /// a fact reader hit the term-only `rule_head` on a value head.
 fn load_kb(extras: &[&str]) -> (KnowledgeBase, Vec<String>) {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    for ex in extras {
-        parsed.push(parse::parse(ex).expect("parse extra"));
-    }
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => vec![],
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    };
-    (kb, errs)
+    let user: Vec<_> = extras.iter().map(|s| crate::common::UserFile::Text(s)).collect();
+    let (kb, errs) = crate::common::load_outcome_files(&user, |_| {}).kb_and_errors();
+    (kb, crate::common::rendered_load_errors(errs))
 }
 
 /// Whether a value head transitively carries a `Value::Node` occurrence — the

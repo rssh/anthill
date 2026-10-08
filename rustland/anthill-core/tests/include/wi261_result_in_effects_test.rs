@@ -9,20 +9,9 @@
 //! No grammar or new IR — only the loader's scope registration changes.
 
 use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
-fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
-    kb
-}
+use crate::common::load_stdlib_kb;
 
 #[test]
 fn result_in_effects_single_return() {

@@ -10,31 +10,14 @@
 //!    predicate rejects, the search falls through to the next
 //!    strategy.
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     build_dep_projection, requires_chain, ProjectionSyms, RequiresEntry,
 };
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use smallvec::SmallVec;
 
-use crate::common::collect_stdlib_and_rust_bindings;
-
-fn load_stdlib_only() -> KnowledgeBase {
-    let files = collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src = std::fs::read_to_string(p).expect("read stdlib file");
-            parse::parse(&src).expect("parse stdlib file")
-        })
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("load stdlib");
-    kb
-}
+use crate::common::load_stdlib_kb as load_stdlib_only;
 
 #[test]
 fn requires_chain_memoizes_top_level_query() {

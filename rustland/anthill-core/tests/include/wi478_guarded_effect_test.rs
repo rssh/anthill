@@ -11,26 +11,13 @@
 //!   * the conservative-presence behaviour at a call site (the guarded effect
 //!     propagates exactly like an unconditional one until WI-067 lands).
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 /// Load stdlib + user source together (the path the effect check runs on) and
 /// surface load errors as strings rather than panicking. Mirrors the WI-377
 /// effect-row harness.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    parsed.push(parse::parse(source).expect("parse user source"));
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map(|_| ())
-        .map_err(|errs| errs.iter().map(|e| format!("{}", e)).collect())
+    crate::common::try_load_kb_with(source).map(|_| ())
 }
 
 #[test]
@@ -168,14 +155,7 @@ fn ground_guarded_effect_renders_with_guard_not_dropped() {
     // round-trip data loss). Build `effects_rows(merge(guarded(Boom, [g]), …))`
     // directly and render it through the public `print_term` path
     // (EffectsRows → write_effect_row → collect_effect_atoms).
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let parsed: Vec<_> = files
-        .iter()
-        .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
-        .collect();
-    let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib loads");
+    let mut kb = crate::common::load_stdlib_kb();
 
     let label = kb.make_name_term("Boom");
     let goal = kb.make_name_term("g");

@@ -21,37 +21,16 @@
 //! stdlib's own zero-warning pin lives with the channel it belongs to, in
 //! `wi345_warnings_channel_test::clean_stdlib_load_carries_no_warnings`.
 
-use anthill_core::kb::load::{self, NullResolver};
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-
-/// Load the stdlib and `extra` TOGETHER, returning either the warning strings
-/// (clean load) or the load errors.
+/// Load the stdlib and `extra` through the one recipe, returning either the warning
+/// strings (clean load) or the load errors.
 ///
-/// ONE `load_all` over stdlib + extra, deliberately: `load::load` of `extra` on
-/// top of an already-loaded stdlib KB reports NO error for the row-A probe
-/// below (measured). The whole-KB passes — op-body type checking and this very
-/// lint among them — belong to `load_all`, so an incremental second `load` is
-/// not the loader's verdict on this source, and a test reading it would assert
-/// over checks that never ran.
+/// Every call the recipe makes is a `load_all`, so the whole-KB passes — op-body type
+/// checking and this very lint among them — run over `extra` under either setting of
+/// `ANTHILL_TEST_TWO_STEP_LOAD`. The retired single-file `load::load` did not run them:
+/// on top of an already-loaded stdlib KB it reported NO error for the row-A probe
+/// below (measured), which is why this helper was once a load of its own.
 fn load_stdlib_with(extra: &str) -> Result<Vec<String>, Vec<String>> {
-    let files = crate::common::collect_stdlib_and_rust_bindings();
-    let mut parsed: Vec<_> = files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    parsed.push(parse::parse(extra).expect("parse extra"));
-    let refs: Vec<_> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
-    match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(result) => Ok(result.warnings.iter().map(|w| w.to_string()).collect()),
-        Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
-    }
+    crate::common::load_outcome(extra).rendered_warnings()
 }
 
 /// The warning strings of a load that must be clean — a shadow is advisory, so
