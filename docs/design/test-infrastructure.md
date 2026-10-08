@@ -289,7 +289,7 @@ two columns' sum without it.)
 | lib unit tests (their own loader, `kb/test_support.rs`) | 104 | 0 | 79 | 25 |
 | **all twelve** | **9 695** | **8 222 (85 %)** | **1 107** | **366** |
 
-Outside the library's own 79, the 1 028 are the copies: **175 files under
+Outside the library's own 79, the 1 028 are the copies: **172 files under
 `tests/include`** (by grep), and `classic_mini_test.rs` and `github_todo_test.rs`, build a
 KB, collect the stdlib and call `load_all` themselves.
 Most are the recipe verbatim (of their local helpers, 55 return `Vec<String>`, 29 a
@@ -846,14 +846,14 @@ informed; it does not recommend changing the rule until A and B have been measur
    which §9 did not have as a step of its own), and WI-059 rewritten as B. A3 goes one
    ticket per pass, filed one at a time (user, 2026-10-06). Not filed: A2, `Clone + Send`,
    §5.4 a, the §7 fresh-clone trap.
-6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things, none
-   filed. (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
+6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
+   (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
    (b) Equality derivation that a later written provider does not take back: a bug,
    or a rule to state — a later load may not provide for an earlier load's sort what the
    earlier load derived — and refuse. (c) The test files that carry their own copy of the
    load: routing them through the recipe is what puts them under the two-step control and,
-   later, on the base KB. Until (b) is settled the control A3 rests on is not green, so
+   later, on the base KB — filed 2026-10-08 as WI-20261008-RAH0Z (user). (b) is not filed. Until (b) is settled the control A3 rests on is not green, so
    it comes before the first A3 ticket.
 
 ## 9. Recommended sequence, with the measurement at each step
