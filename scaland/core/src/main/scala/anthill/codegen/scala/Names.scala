@@ -94,6 +94,15 @@ object Names:
   def scalaPackagePath(segments: Seq[String]): String =
     segments.map(scalaPackageSegment).mkString(".")
 
+  /** A written name as the emitter reads it: whether it is ABSOLUTE (`..a.b.T`, kernel
+    * §8.6), and the path it spells, with the marker off its head segment. ONE split, so
+    * the reader that places a name and the reader that asks whether it is the enclosing
+    * sort cannot come to disagree about a marked one. */
+  def writtenPath(segments: IndexedSeq[String]): (Boolean, IndexedSeq[String]) =
+    anthill.intern.absolutePathTarget(segments.head) match
+      case Some(head) => (true, head +: segments.tail)
+      case None       => (false, segments)
+
   /** The same rule for a path a caller already holds JOINED — `ScalaTypes`'
     * `autoImportPackage`, which arrives as one dotted string.
     *

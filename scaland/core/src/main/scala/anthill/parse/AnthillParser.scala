@@ -1,6 +1,6 @@
 package anthill.parse
 
-import anthill.intern.{TermSymbol, SymbolTable}
+import anthill.intern.{ABSOLUTE_PATH_MARKER, TermSymbol, SymbolTable}
 import anthill.term.{Term, TermId, Var, VarId, Literal, OrderedDouble}
 import anthill.span.{LineIndex, Span}
 import fastparse.*
@@ -89,6 +89,14 @@ private object Tokens:
 
   def identToken[$: P]: P[String] =
     P(CharIn("a-zA-Z_") ~ CharsWhileIn("a-zA-Z0-9_\\-", 0)).!
+
+  /** The head segment of an ABSOLUTE path, marker included (`..outer`). ONE token, the
+    * marker and the identifier with nothing between them — so `.. a` is refused, as
+    * `? x` is — and it is what keeps `...` (the variadic capture) distinct: the marker
+    * must be followed by an identifier character. Mirrors `grammar.js`'s
+    * `_absolute_head`. */
+  def absoluteHeadToken[$: P]: P[String] =
+    P(ABSOLUTE_PATH_MARKER ~ identToken).!
 
   def variableToken[$: P]: P[String] =
     P("?" ~ (CharIn("a-zA-Z_") ~ CharsWhileIn("a-zA-Z0-9_\\-", 0)).?.!)
@@ -558,6 +566,22 @@ private class AnthillParserImpl(
       Name(first +: rest.toIndexedSeq, span)
     }
 
+  /** An ABSOLUTE path, `..a.b.c`: a [[Name]] whose HEAD SEGMENT carries the marker in its
+    * text, and that is the whole representation — the segment count is the path's, and
+    * every reader that joins segments spells the marked path with nothing new to learn.
+    * Mirrors rustland's `convert_name`, which reads an `absolute_name` the same way. */
+  private def absoluteName[$: P]: P[Name] =
+    P(located(Tokens.absoluteHeadToken.map(intern) ~ ("." ~ ident).rep)).map {
+      case ((first, rest), span) => Name(first +: rest.toIndexedSeq, span)
+    }
+
+  /** What a REFERENCE position takes — a relative path or an absolute one. A DECLARATION
+    * takes [[name]], which is what keeps `namespace ..a.b` a parse error (§2.3). The
+    * positions are `grammar.js`'s `_ref_name` / `absolute_name` ones: a term atom and a
+    * call or application head, `Ref(…)`, a type, a proof target and a mapping source.
+    * (`describe`, the remaining one there, is not parsed here at all.) */
+  private def refName[$: P]: P[Name] = P(absoluteName | name)
+
   private def simpleName[$: P]: P[Name] =
     P(located(ident)).map { case (sym, span) => Name.simple(sym, span) }
 
@@ -634,10 +658,10 @@ private class AnthillParserImpl(
   private def nonArrowType[$: P]: P[TypeExpr] =
     P(parameterizedType | tupleType | variableType | simpleType)
 
-  private def simpleType[$: P]: P[TypeExpr] = P(name).map(TypeExpr.Simple(_))
+  private def simpleType[$: P]: P[TypeExpr] = P(refName).map(TypeExpr.Simple(_))
 
   private def parameterizedType[$: P]: P[TypeExpr] =
-    P(name ~ "[" ~ sortBinding.rep(1, sep = ",") ~ "]").map { case (n, bs) =>
+    P(refName ~ "[" ~ sortBinding.rep(1, sep = ",") ~ "]").map { case (n, bs) =>
       TypeExpr.Parameterized(n, bs.toIndexedSeq)
     }
 
@@ -1228,7 +1252,7 @@ private class AnthillParserImpl(
     * the failing segment's: a `Name` carries one span for `a.b.c`, and pointing at
     * the dotted name is truthful where inventing a per-segment offset would not be. */
   private def fnOrInstOrIdent[$: P]: P[TermId] =
-    P(name ~ nameSuffix).map { case (n, suffix) =>
+    P(refName ~ nameSuffix).map { case (n, suffix) =>
       suffix match
         case NameSuffix.FnArgs(args) =>
           val posArgs = ArrayBuffer.empty[TermId]
@@ -1625,8 +1649,12 @@ private class AnthillParserImpl(
         else shortName(fn.functor) + "[" + args.mkString(", ") + "]"
       case other => other.toString
 
+  /** `Ref(a.b)` / `Ref(..a.b)` — the WHOLE written path is the name, as a call functor's
+    * is (rustland's `ref_term` arm interns it the same way). Reading the last segment
+    * alone dropped the qualification, and with it the marker. */
   private def refTerm[$: P]: P[TermId] =
-    P(keyword("Ref") ~ "(" ~/ name ~ ")").map(n => terms.allocAt(Term.Ref(n.last), n.span))
+    P(keyword("Ref") ~ "(" ~/ refName ~ ")").map(n =>
+      terms.allocAt(Term.Ref(intern(renderName(n))), n.span))
 
   private def prefixTerm[$: P]: P[TermId] =
     P(prefixOp ~ atomWithFieldAccess).map { case (op, operand) =>
@@ -1815,7 +1843,7 @@ private class AnthillParserImpl(
     * continuation; mirrors rustland's `proof_statement` shape (which rides the
     * proof metadata as a `ParseAux::ProofStmt`). */
   private def proofStatement[$: P]: P[TermId] =
-    P(spanOfToken(keyword("proof")) ~/ name ~ (keyword("using") ~/ proofUsingList).? ~
+    P(spanOfToken(keyword("proof")) ~/ refName ~ (keyword("using") ~/ proofUsingList).? ~
       (keyword("by") ~/ proofStrategy).? ~ (keyword("conclude") ~/ term).? ~
       keyword("end") ~ exprBody).map {
       case (kwSpan, target, _using, _strategy, conclude, body) =>
@@ -2660,7 +2688,7 @@ private class AnthillParserImpl(
     // The grammar allows an optional trailing `end <name>`, dropped here:
     // `name.?` after `end` would greedily consume an outer scope's `end`
     // keyword (parsed as an ident). The trailing name is decorative.
-    P(located(keyword("proof") ~/ name ~ proofBodyForm ~ keyword("end"))).map {
+    P(located(keyword("proof") ~/ refName ~ proofBodyForm ~ keyword("end"))).map {
       case ((target, (using0, strategy, body)), span) =>
         resetVarScope()
         ProofDecl(target, strategy, body, using0, span)
@@ -2726,7 +2754,7 @@ private class AnthillParserImpl(
     P("{" ~/ mappingEntry.rep(1, sep = ",") ~ ",".? ~ "}").map(es => MappingBlock(es.toIndexedSeq))
 
   private def mappingEntry[$: P]: P[MappingEntry] =
-    P(name ~ "->" ~/ (stringText | name.map(n => n.segments.map(symbols.name).mkString(".")))).map {
+    P(refName ~ "->" ~/ (stringText | name.map(n => n.segments.map(symbols.name).mkString(".")))).map {
       case (src, target) => MappingEntry(src, target)
     }
 

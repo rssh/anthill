@@ -46,8 +46,12 @@ import anthill.resolve.SearchStream
   *
   * Every back-out leaves the PARENS arm of each pair untouched, which is what makes each
   * pair a measurement of the SPELLING. `a data slot still stores the chain on both sides
-  * of a match` and `a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling` pass
-  * under ALL FOUR by design — they are what the change must not move.
+  * of a match` passes under ALL FOUR by design — it is what the change must not move.
+  *
+  * A LATER ROW, `` `not` negates its negand in every spelling, dotted ones included ``
+  * (WI-20261008-T290W), is not in those counts. It has a back-out of its own, stated at
+  * its site, and it reads the collapse through a GOAL SLOT — so it fails under THE
+  * COLLAPSE as well, measured on the suite of that date.
   */
 class DottedParenLessCitationTest extends munit.FunSuite:
 
@@ -164,39 +168,61 @@ class DottedParenLessCitationTest extends munit.FunSuite:
     )
   }
 
-  /** THE BOUNDARY THIS PORT DOES NOT CROSS, MEASURED rather than assumed. rustland routes
-    * `not`'s NEGAND as a goal of its own (`goal_arg_slots`), so its dotted citation
-    * collapses there too; scaland does not, and the twin could never be driven from HERE.
-    * This row is the measurement that says so: an EMPTY predicate's negation answers 0,
-    * where NAF would answer 1, for every NEGAND spelling — applied, one-segment, and
-    * dotted alike. So there is no negand position to route yet; when one appears,
-    * `reallocTerm`'s `Term.Fn` arm is where the descent goes, and the comment there says it.
+  /** A NEGAND IS A GOAL, SO ITS DOTTED CITATION IS THE NAME TOO. rustland routes `not`'s
+    * negand as a goal of its own (`goal_arg_slots`); `reallocTerm`'s `Term.Fn` arm now
+    * does, from `KnowledgeBase.goalArgSlots`.
     *
-    * WHAT VARIES HERE IS THE NEGAND, NOT `not` ITSELF, and the difference is load-bearing
-    * (WI-20260902-EQG4F item 2). Every row below writes the ONE-SEGMENT `not`, which lands
-    * on a symbol that is not `anthill.kernel.not` — which is why they all answer 0. Written
-    * DOTTED, `anthill.kernel.not(unA(999))` DOES reach NAF and answers 1; the earlier
-    * reading of this comment — that a rule-body `not(…)` never reaches NAF here — was too
-    * strong. `NullaryBuiltinGoalTest` holds both spellings side by side. */
-  test("a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling") {
+    * THIS ROW RECORDED A BOUNDARY UNTIL WI-20261008-T290W: every spelling answered 0,
+    * the one-segment `not` landing on a bare symbol spelled `..anthill.kernel.not` — the
+    * address the operator is minted with, which the loader could not resolve
+    * (WI-20260902-373AW) — so there was no negand position to route. Resolving the
+    * address made NAF live and the descent drivable, and due.
+    *
+    * EACH NEGAND TWICE, over an EMPTY predicate and over one that HOLDS, so a 1 is NAF
+    * and not a goal that answers whatever it is given.
+    *
+    * BACK-OUT (the descent — `goalSlots` always empty in `reallocTerm`), run over the
+    * whole core suite: 2 ROWS FAIL. This one, on its two DOTTED EMPTY cells — `nDot719`
+    * and `nAbs719` answer 0 — and on no other: a data-slot negand keeps the
+    * `field_access` chain, whose builtin suspends, and the residual counts as a
+    * solution of the negand, so its negation fails whatever the predicate holds. And
+    * `DottedGoalReadingTest`'s operation row, whose dotted `Not` cell leaves its
+    * one-segment twin. The one-segment and applied cells pass either way by design:
+    * their terms are the same in a data slot as in a goal slot. */
+  test("`not` negates its negand in every spelling, dotted ones included") {
     val kb = LoadFixture.loaded(
       """fact b719(1)
         |namespace zz719Nf
         |  rule un(?n) :- b719(?n)
         |  rule bare :- b719(999)
         |  rule paren() :- b719(999)
+        |  rule full :- b719(1)
         |  rule nUnary(1) :- not(un(999))
         |  rule nBare(1) :- not(bare)
         |  rule nParen(1) :- not(paren())
+        |  rule nUnaryFull(1) :- not(un(1))
+        |  rule nBareFull(1) :- not(full)
+        |  rule nParenFull(1) :- not(full())
         |end
-        |rule nDot719(1) :- not(zz719Nf.bare)""".stripMargin,
+        |rule nDot719(1) :- not(zz719Nf.bare)
+        |rule nAbs719(1) :- not(..zz719Nf.bare)
+        |rule nTwo719(1) :- anthill.kernel.not(zz719Nf.bare, 0)
+        |rule nDotFull719(1) :- not(zz719Nf.full)
+        |rule nAbsFull719(1) :- not(..zz719Nf.full)""".stripMargin,
       "naf.anthill",
     )
-    for q <- Seq("zz719Nf.nUnary", "zz719Nf.nBare", "zz719Nf.nParen", "nDot719") do
-      assertEquals(
-        answers(kb, q), 0,
-        s"$q: every one of these negands is EMPTY, so NAF would answer 1 — scaland " +
-          "answers 0 for all four, which is what makes the dotted one no worse than " +
-          "its neighbours and the goal-slot descent undrivable here",
-      )
+    // ONE COMPARISON OVER EVERY CELL, so a failure shows the whole table and not the
+    // first cell to diverge.
+    // `nTwo719` IS MALFORMED — `not` takes one argument, and neither implementation
+    // refuses the extra one at load. It is here for one thing: the resolver negates the
+    // FIRST argument at any arity, so the loader must read that same argument as the
+    // goal. BACK-OUT (`goalArgSlots` gated on arity 1): this cell alone answers 0.
+    val empty = Seq("zz719Nf.nUnary", "zz719Nf.nBare", "zz719Nf.nParen", "nDot719", "nAbs719",
+                    "nTwo719")
+    val full = Seq("zz719Nf.nUnaryFull", "zz719Nf.nBareFull", "zz719Nf.nParenFull",
+                   "nDotFull719", "nAbsFull719")
+    assertEquals(
+      (empty ++ full).map(q => q -> answers(kb, q)),
+      empty.map(_ -> 1) ++ full.map(_ -> 0),
+      "an EMPTY negand's negation holds and a negand that HOLDS has none")
   }

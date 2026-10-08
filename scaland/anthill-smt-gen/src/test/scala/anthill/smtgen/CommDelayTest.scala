@@ -13,7 +13,7 @@ class CommDelayTest extends munit.FunSuite:
     */
   private val source = """
     namespace test.smt_gen.lf1
-      import anthill.prelude.{Float, Int}
+      import anthill.prelude.{Float, Int64}
       import anthill.prelude.Numeric.{add, mul}
       import anthill.prelude.Float.{div}
 
@@ -21,8 +21,8 @@ class CommDelayTest extends munit.FunSuite:
         range_max:    Float,
         signal_speed: Float,
         baud_rate:    Float,
-        byte_size:    Int,
-        packet_size:  Int
+        byte_size:    Int64,
+        packet_size:  Int64
       )
 
       entity KinematicAssumptions(

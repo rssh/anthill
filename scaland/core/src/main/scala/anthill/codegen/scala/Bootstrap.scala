@@ -1329,9 +1329,13 @@ object Bootstrap:
   private def isSelfType(
     sym: SymbolTable, te: TypeExpr, sortLeaf: String, sortPkg: String
   ): Boolean =
+    // AN ABSOLUTE PATH NAMES THE SORT BY ITS PACKAGE, like a qualified one — and a
+    // one-segment `..T` names the TOP-LEVEL `T`, so unlike a bare `T` it is this sort
+    // only when this sort is top-level.
     def matches(n: anthill.parse.Name) =
-      sym.name(n.last) == sortLeaf &&
-        (n.isSimple || Names.scalaPackagePath(n.segments.dropRight(1).map(sym.name)) == sortPkg)
+      val (absolute, path) = Names.writtenPath(n.segments.map(sym.name))
+      path.last == sortLeaf &&
+        ((path.length == 1 && !absolute) || Names.scalaPackagePath(path.init) == sortPkg)
     te match
       // WI-20261001-80ZV8: `s: Self` IS a receiver of the declaring sort (proposal 070
       // §1.2). Read by the leaf alone, a sort whose operations all write `Self` was

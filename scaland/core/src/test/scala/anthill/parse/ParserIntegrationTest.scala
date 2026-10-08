@@ -88,11 +88,10 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(result.isRight, s"Parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
 
     val pf = result.toOption.get
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-
-    val loadErrors = Loader.loadAll(kb, IndexedSeq(pf))
-    assert(loadErrors.isEmpty, s"Load errors: $loadErrors")
+    // WITH THE STDLIB: ring.anthill's laws are written with `+` and `*`, which are
+    // minted with the addresses of `anthill.prelude`'s operations, and an address naming
+    // nothing is a load error (WI-20261008-T290W). `kbWith` asserts the load is clean.
+    val kb = anthill.codegen.scala.StdlibFixture.kbWith(pf)
 
     // Ring sort registered
     assert(kb.hasQualifiedName("Ring"), "Ring sort should be registered")
@@ -115,9 +114,13 @@ class ParserIntegrationTest extends munit.FunSuite:
       assert(kb.hasQualifiedName(s"Ring.$opName"), s"Ring.$opName should be registered")
 
     // Rules in ring.anthill have no :- body, so they are stored as facts.
-    // 8 rule-items + 1 fact-item = 9 total facts (body-less rules)
-    val totalEntries = kb.factCount + kb.ruleCount
-    assert(totalEntries >= 9, s"Expected at least 9 KB entries (8 rules + 1 fact), got facts=${kb.factCount} rules=${kb.ruleCount}")
+    // 8 rule-items + 1 fact-item = 9 total facts (body-less rules) — counted AGAINST THE
+    // STDLIB ALONE, which this KB also holds: an absolute count is satisfied by the
+    // stdlib's own clauses and would say nothing about what ring.anthill contributed.
+    val stdlibOnly = anthill.codegen.scala.StdlibFixture.kbWith()
+    val contributed =
+      (kb.factCount + kb.ruleCount) - (stdlibOnly.factCount + stdlibOnly.ruleCount)
+    assert(contributed >= 9, s"Expected at least 9 KB entries from ring.anthill (8 rules + 1 fact), got $contributed")
   }
 
   // ── Test 3: Parse polynom.anthill ─────────────────────────────
@@ -1623,14 +1626,16 @@ class ParserIntegrationTest extends munit.FunSuite:
     * draws the migration line at the EMPTY BODY and `map.anthill` writes one directly
     * beneath its `<=>` siblings. Passes with and without WI-888, by design. */
   test("WI-888: a guarded `=` equation keeps its spelling") {
-    val (_, errs) = loadFixture(
+    // WITH THE STDLIB, whose clean load `kbWith` asserts: `=` is minted with the address
+    // `..anthill.prelude.PartialEq.eq`, and an address naming nothing is a load error
+    // (WI-20261008-T290W).
+    anthill.codegen.scala.StdlibFixture.kbWith(anthill.kb.LoadFixture.parsed(
       """namespace p888c
         |  sort S
         |    rule p888(?x) :- ?x === 1
         |    rule g888(?x) = ?x :- p888(?x)
         |  end
-        |end""".stripMargin)
-    assert(errs.isEmpty, s"a guarded `=` equation is not a bodyless head; got $errs")
+        |end""".stripMargin, "<pass3>"))
   }
 
   /** THE DEFECT THE RELABEL SURFACED, mirrored from rustland. A namespace that declares

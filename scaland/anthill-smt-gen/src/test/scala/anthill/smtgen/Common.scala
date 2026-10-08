@@ -24,8 +24,9 @@ object Common:
 
   /** Load the stdlib chain plus a user-supplied anthill source string
     * into a fresh KB. Mirrors the rustland test helper of the same
-    * name. Load warnings are dropped — callers that need them can
-    * use `Loader.loadAll` directly.
+    * name. The loader's verdict is READ: a KB that did not finish loading
+    * would let a row pass over a half-built index, and did — `CommDelayTest`
+    * imported a prelude name that no longer exists, unnoticed.
     */
   def loadKbWith(source: String): KnowledgeBase =
     val kb = KnowledgeBase()
@@ -34,5 +35,6 @@ object Common:
       case Right(pf) => pf
       case Left(errs) => throw new AssertionError(
         s"parse failed: ${errs.map(_.message).mkString(", ")}")
-    val _ = Loader.loadAll(kb, stdlibParsed :+ userPf)
+    val loadErrs = Loader.loadAll(kb, stdlibParsed :+ userPf)
+    if loadErrs.nonEmpty then throw new AssertionError(s"load errors: $loadErrs")
     kb

@@ -281,28 +281,43 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     // because a loader strip over the body's top-level goal list can never reach a goal
     // nested under `not` or `|`.
     //
-    // SCALAND HAS THE STRIP AND NOT THE ARM, so the three rows below diverge from
-    // rustland. They are asserted at the values scaland ACTUALLY gives, with the logical
-    // answer named, so the row fails the day the arm lands and has to be updated on
-    // purpose. J38JE's item 4 — a NON-Bool constant goal — is the same hole: `:- 42`
-    // loads clean and never matches, where rustland refuses it, located.
-    val kb = loaded("j.anthill" ->
+    // SCALAND HAS THE STRIP AND NOT THE ARM, so the rows below diverge from rustland.
+    // They are asserted at the values scaland ACTUALLY gives, with the logical answer
+    // named, so the row fails the day the arm lands and has to be updated on purpose.
+    // J38JE's item 4 — a NON-Bool constant goal — is the same hole: `:- 42` loads clean
+    // and never matches, where rustland refuses it, located.
+    //
+    // WITH THE STDLIB, because `|` is minted with the address `..anthill.kernel.or`,
+    // and an address naming nothing is a load error (WI-20261008-T290W) —
+    // `kernel.anthill` is what declares it.
+    val kb = anthill.codegen.scala.StdlibFixture.kbWith(LoadFixture.parsed(
       """namespace jj
         |  fact base(7)
         |  rule ptrue(1) :- true
         |  rule pfalse(1) :- false
         |  rule pint(1) :- 42
         |  rule notfalse(1) :- not(false)
+        |  rule nottrue(1) :- not(true)
         |  rule ortrue(1) :- base(9) | true
-        |end""".stripMargin)
+        |end""".stripMargin, "j.anthill"))
     // THE TWO THE STRIP REACHES, and they are right.
     assertEquals(answers(kb, "jj.ptrue", 1), 1, "a top-level `true` is erased: the clause fires")
     assertEquals(answers(kb, "jj.pfalse", 1), 0,
       "and `false` answers 0 — BY ACCIDENT: a constant names no name, so it resolves to " +
       "no clause and no builtin; it does not FAIL, it never becomes a goal")
-    // THE THREE IT DOES NOT.
-    assertEquals(answers(kb, "jj.notfalse", 1), 0, "GAP: logic says 1 — `not` of a failing goal")
-    assertEquals(answers(kb, "jj.ortrue", 1), 0, "GAP: logic says 1 — `base(9)` fails, `true` succeeds")
+    // ONE MORE IS RIGHT SINCE `not` REACHES NAF (WI-20261008-T290W; it was 0), and by
+    // the same accident: the negand `false` is a goal nothing proves, so its negation
+    // holds.
+    assertEquals(answers(kb, "jj.notfalse", 1), 1, "`not` of a goal nothing proves")
+    // THE THREE THE STRIP DOES NOT REACH. `not(true)` IS THE ONE THAT SEPARATES THE TWO
+    // READINGS, and it went WRONG when NAF went live: a constant negand is a goal
+    // nothing proves, `true` as much as `false`, so both negations hold. While `not` was
+    // dead it answered 0, the same accident as `false`. WI-20260908-NARC7 owns the arm.
+    assertEquals(answers(kb, "jj.nottrue", 1), 1,
+      "GAP (WI-20260908-NARC7): logic says 0 — `true` succeeds, so its negation fails")
+    assertEquals(answers(kb, "jj.ortrue", 1), 0,
+      "GAP: logic says 1 — `base(9)` fails, `true` succeeds. `or` is the kernel rule " +
+      "over `push_choice`, a resolver primitive scaland lacks (WI-20260902-373AW)")
     assertEquals(answers(kb, "jj.pint", 1), 0,
       "GAP: rustland REFUSES `:- 42`, located (J38JE item 4); here the clause is silently dead")
   }

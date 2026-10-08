@@ -27,6 +27,31 @@ package anthill.intern
   * since a grammar change starts there. */
 val GLOBAL_SCOPE_NAME: String = "<global>"
 
+/** The marker an ABSOLUTE path carries: `..a.b.c` names the symbol whose OWN qualified
+  * name is `a.b.c`, looked up directly — the channel `import` uses — so nothing in scope
+  * can shadow it. An unmarked `a.b.c` is read where it is written.
+  *
+  * IT RIDES ON THE HEAD SEGMENT'S TEXT (`Tokens.absoluteHeadToken` is one token), so a
+  * marked path is one string wherever a name is joined — a call functor, a `Name`'s
+  * segments — and one that resolves to nothing is interned and reported under the text
+  * the author wrote. `Tokens.identToken` admits only `[a-zA-Z_][a-zA-Z0-9_-]*`, so no
+  * identifier contains it and a marked head collides with no user symbol.
+  *
+  * RUSTLAND HOLDS THE SAME SPELLING AND THE SAME CARRIER, at
+  * `intern::ABSOLUTE_PATH_MARKER`; its doc says why the marker is the separator doubled. */
+val ABSOLUTE_PATH_MARKER: String = ".."
+
+/** The qualified name `name` asks for ABSOLUTELY, or `None` for an ordinary name. The
+  * SOLE reader of [[ABSOLUTE_PATH_MARKER]], so "is this path absolute" has one spelling
+  * whoever wrote the path: `Tokens.absoluteHeadToken` for a path in source, and
+  * `Pratt`'s operator addresses (`..anthill.kernel.not`), which are marked names the
+  * desugar mints. Mirrors rustland's `absolute_path_target`.
+  *
+  * A single segment counts: `..top` asks for the top-level `top` by the rule `..top.f`
+  * asks for `top.f` — an exact lookup of the name written, not a search for a short one. */
+def absolutePathTarget(name: String): Option[String] =
+  Option.when(name.startsWith(ABSOLUTE_PATH_MARKER))(name.substring(ABSOLUTE_PATH_MARKER.length))
+
 // ── Symbol handle ───────────────────────────────────────────────
 
 opaque type TermSymbol = Int

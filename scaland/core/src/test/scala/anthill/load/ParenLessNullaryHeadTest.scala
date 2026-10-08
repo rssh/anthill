@@ -108,13 +108,16 @@ class ParenLessNullaryHeadTest extends munit.FunSuite:
     * minus sits in an ARGUMENT, and all three variants passed it — the row measured
     * nothing until the `-` moved to the front. */
   test("a label followed by a prefix-minus head keeps its label") {
-    val kb = LoadFixture.loaded(
+    // WITH THE STDLIB: a prefix `-` is minted with the address
+    // `..anthill.prelude.Additive.neg`, and an address naming nothing is a load error
+    // (WI-20261008-T290W) — so the program needs the library that declares it.
+    val kb = anthill.codegen.scala.StdlibFixture.kbWith(LoadFixture.parsed(
       """namespace zzP85Lbl
         |  fact base(1)
         |  rule lblq: -negp(1) :- base(1)
         |end""".stripMargin,
       "lbl.anthill",
-    )
+    ))
     assert(
       kb.hasQualifiedName("zzP85Lbl.lblq"),
       "`lblq:` is a rule LABEL — the `:-` lookahead must not reject a colon followed by " +

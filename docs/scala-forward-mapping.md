@@ -333,9 +333,22 @@ which is re-anchoring by another route: `util.text.Escaper` written in `app` whe
 `util.text.Escaper` in the closure.
 
 That is the difference from the bare chain of §2.1a, which searches for a *leaf* up the
-mentioning declaration's ancestors and has no prefix to honour. (The `..a.b.c` absolute
-spelling is a separate reading the kernel defines and the `scaland` grammar does not yet
-accept, so no occurrence reaching this rule is one.)
+mentioning declaration's ancestors and has no prefix to honour.
+
+**An absolute name places by the package it spells.** `..a.b.C` is the kernel's
+absolute spelling: the path is the type's own qualified name, read from the root. There
+is no head to search for — the enclosing namespaces are not consulted, so a nearer
+`<enclosing>.a` cannot take the path — and no value reading, an absolute path being a
+whole name and never a projection. The package the prefix spells answers as a bound head
+does in the list below, and a package or a leaf nothing in the closure declares is a
+refusal. With `other.lib.Option` and `my.app.other.lib.Option` both in the closure,
+`other.lib.Option` written in `my.app` is `_root_.my.app.other.lib.Option` and
+`..other.lib.Option` is `_root_.other.lib.Option`.
+
+A one-segment `..C` is refused. It names the top-level `C`, which is emitted into
+Scala's empty package, and a member of the empty package has no qualified spelling:
+`_root_.C` does not reach it. The bare `C` is the only text Scala offers, and it is the
+shadowable one the marker opts out of.
 
 What the qualified reading consults, in order, within the package it settled on:
 

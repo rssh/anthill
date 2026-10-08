@@ -620,7 +620,27 @@ class KnowledgeBase:
     * untagged builtin goal "resolves and does nothing", which is the silence
     * `PreludeScopesTest` exists to catch from the other side. */
   def getBuiltin(goal: TermId): Option[BuiltinTag] =
-    headFunctorOf(goal).flatMap(f => builtins_.get(TermSymbol.raw(f)))
+    headFunctorOf(goal).flatMap(builtinOf)
+
+  /** The builtin tag a SYMBOL carries — [[getBuiltin]]'s answer for a goal that is not a
+    * term yet, which is what the loader has while it is still building one. */
+  def builtinOf(functor: TermSymbol): Option[BuiltinTag] =
+    builtins_.get(TermSymbol.raw(functor))
+
+  /** The POSITIONAL slots of `functor` the resolver evaluates as GOALS TO PROVE, and
+    * nothing else — empty for a plain predicate or a data constructor. Mirrors rustland's
+    * `KnowledgeBase::goal_arg_slots`.
+    *
+    * ONE ROW, because the resolver has one such dispatch: `not`, which
+    * [[anthill.resolve.SearchStream]] negates by proving its FIRST argument, whatever
+    * follows it ([[anthill.resolve.Builtins.firstArg]]). The row says the same, so the
+    * loader reads as a goal exactly the argument the resolver proves. Keyed on the TAG —
+    * a node is a connective because of what it resolves to, never because of its
+    * spelling. `or` / `and` join here when the resolver gains them. */
+  def goalArgSlots(functor: TermSymbol, posArity: Int): Set[Int] =
+    builtinOf(functor) match
+      case Some(BuiltinTag.Not) if posArity >= 1 => Set(0)
+      case _                                     => Set.empty
 
 // ── BuiltinTag ────────────────────────────────────────────────
 

@@ -16,8 +16,8 @@ import anthill.term.{Term, Var}
   * Restore `firstArg`'s `case _ => goal` (and `stepNaf`'s `None` frame-pop): the two
   * NULLARY rows below die `StackOverflowError` — not a wrong count, a crash, which is why
   * each runs on its own bounded thread rather than inline. Both APPLIED rows pass either
-  * way BY DESIGN: they are what the change must not move, and `notAppliedDotted` is the
-  * one that shows NAF genuinely works here, so a nullary row's 0 is a REFUSAL and not
+  * way BY DESIGN: they are what the change must not move, and the applied `not` one is
+  * what shows NAF genuinely works here, so a nullary row's 0 is a REFUSAL and not
   * merely NAF being dead in scaland.
   *
   * PARITY, MEASURED not assumed: rustland answers 0 for `:- anthill.kernel.not` (its
@@ -75,28 +75,29 @@ class NullaryBuiltinGoalTest extends munit.FunSuite:
     )
   }
 
-  /** THE CONTROL THE NULLARY ROWS NEED: NAF is not simply dead here. A dotted APPLIED
-    * `not` reaches `stepNaf` and answers, so a nullary row's 0 measures the missing
-    * negand and not a resolver that never negates. The one-segment applied spelling
-    * lands on a different symbol and answers 0 — a separate, pre-existing gap
-    * (`DottedParenLessCitationTest` records it), unmoved by this change. */
-  test("an APPLIED `not` is untouched: dotted reaches NAF, one-segment does not") {
+  /** THE CONTROL THE NULLARY ROWS NEED: NAF is not simply dead here. An APPLIED `not`
+    * reaches `stepNaf` and answers, so a nullary row's 0 measures the missing negand and
+    * not a resolver that never negates.
+    *
+    * BOTH SPELLINGS, SINCE WI-20261008-T290W. The one-segment `not(…)` and the prefix
+    * `!…` are minted with the address `..anthill.kernel.not`, which the loader could not
+    * resolve — the goal landed on a bare symbol of that spelling and answered 0 where
+    * NAF answers 1 (WI-20260902-373AW). The `Full` row is what makes a 1 NAF and not a
+    * goal that answers whatever it is given. */
+  test("an APPLIED `not` reaches NAF in every spelling of the operator") {
     val kb = kbWith(
       """fact bNa(1)
         |rule unA(?n) :- bNa(?n)
         |rule naDotted(1) :- anthill.kernel.not(unA(999))
         |rule naBare(1) :- not(unA(999))
+        |rule naBang(1) :- !unA(999)
+        |rule naFull(1) :- not(unA(1))
         |""".stripMargin,
       "appliedNot.anthill",
     )
-    assertEquals(
-      answers(kb, "naDotted"), 1,
-      "`unA(999)` is empty, so NAF succeeds — this is what makes the nullary 0s a refusal",
-    )
-    assertEquals(
-      answers(kb, "naBare"), 0,
-      "the one-segment applied spelling does not reach NAF (pre-existing, unmoved here)",
-    )
+    for q <- Seq("naDotted", "naBare", "naBang") do
+      assertEquals(answers(kb, q), 1, s"$q: `unA(999)` is empty, so NAF succeeds")
+    assertEquals(answers(kb, "naFull"), 0, "`unA(1)` holds, so its negation fails")
   }
 
   /** THE SHAPE THE `None` ALSO CATCHES, censused rather than left to be rediscovered: a

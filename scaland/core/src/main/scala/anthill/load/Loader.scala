@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, SortKind}
-import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult, ImportOrigin, FileId}
+import anthill.intern.{TermSymbol, SymbolTable, SymbolKind, SymbolDef, ResolveResult, ImportOrigin, FileId, absolutePathTarget}
 import anthill.term.{Term, TermId, Var, VarId, Literal}
 import anthill.parse.*
 import anthill.span.Span
@@ -2144,7 +2144,12 @@ object Loader:
       case TypeExpr.Simple(name) => Some(name)
       case TypeExpr.Parameterized(name, _) => Some(name)
       case _ => None
-    ).exists(n => joinSegments(fileSym, n.segments) == "anthill.prelude.EffectsRuntime")
+    ).exists { n =>
+      // Either spelling of the one sort: unmarked, the dotted rung reads it as its own
+      // qualified name, which is what the marker says outright.
+      val written = joinSegments(fileSym, n.segments)
+      absolutePathTarget(written).getOrElse(written) == "anthill.prelude.EffectsRuntime"
+    }
 
   /** Resolve a spec instantiation by its BASE NAME and link the spec's scope as a
     * parent of `scope`. Shared by `requires` and by a provision's `:- goals`;
@@ -2287,7 +2292,7 @@ object Loader:
           }
 
         case Item.ProofItem(p) =>
-          loadProof(kb, p, fileSym, scope)
+          loadProof(kb, p, fileSym, scope, errors)
 
         case Item.ProvidesClauseItem(pc) =>
           loadProvidesClause(kb, pc, fileSym, scope)
@@ -2423,9 +2428,8 @@ object Loader:
         return
 
     // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
-    // citation written there is the NAME. Only the top level, and that is a
-    // MEASUREMENT rather than an omission — see `reallocTerm`'s `Term.Fn` arm, and
-    // the row `a ONE-SEGMENT `not` does not reach NAF, for any NEGAND spelling`.
+    // citation written there is the NAME. Below the top level a goal is found by
+    // `reallocTerm`'s `Term.Fn` arm, in the slots the resolver proves.
     // §6.1 — a top-level `true` is ERASED, so the body stays EMPTY. That is what makes
     // `rule H :- true` the exact spelling of `fact H`: the same clause, with the same
     // empty body, reached by the two syntaxes §6.1 says mean one thing. It is NOT what
@@ -2474,9 +2478,17 @@ object Loader:
     kb: KnowledgeBase,
     p: anthill.parse.ProofDecl,
     fileSym: SymbolTable,
-    scope: kb.ScopeId
+    scope: kb.ScopeId,
+    errors: ArrayBuffer[LoadError]
   ): Unit =
     val targetStr = joinSegments(fileSym, p.target.segments)
+    // The target is recorded AS WRITTEN and not resolved — scaland discharges no proof.
+    // An ABSOLUTE one is still asked whether it names anything: it claims a symbol by
+    // its own qualified name, so a miss is the same loud miss [[resolveName]] gives a
+    // marked name in a term, and not a string that happens to be recorded.
+    if absolutePathTarget(targetStr).isDefined
+      && lookupWritten(kb, targetStr, scope) == ResolveResult.NotFound then
+      errors += LoadError.UnresolvedName(targetStr, p.target.span, kb.scopeDisplayName(scope))
     val targetTerm = kb.alloc(Term.Const(Literal.StringLit(targetStr)))
     val strategyStr = p.strategy.map(s => fileSym.name(s.name)).getOrElse("derivation")
     val strategyTerm = kb.alloc(Term.Const(Literal.StringLit(strategyStr)))
@@ -2558,7 +2570,7 @@ object Loader:
         val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true)
         kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
-        loadProof(kb, p, fileSym, scope)
+        loadProof(kb, p, fileSym, scope, errors)
       // WI-862 (058 §4): PARSED, and deliberately not filed — the one thing this arm
       // must not do is call `loadProvidesClause`. That helper files the provision at
       // `scope`, and `scope` here is the ENCLOSING namespace, not the carrier: a
@@ -2681,8 +2693,8 @@ object Loader:
       * a rule-body goal? See the collapse below for what it decides, and
       * [[dottedCitationName]] for what a dotted paren-less citation is. `false` for a
       * DATA slot, which keeps the chain: a fact's argument and the pattern that searches
-      * for it must build ONE term. It is NOT propagated to any child — see the `Term.Fn`
-      * arm for the measurement that says scaland has no goal-carrying argument yet. */
+      * for it must build ONE term. It reaches a child only through a GOAL SLOT of this
+      * node — see the `Term.Fn` arm. */
     atGoal: Boolean = false
   ): TermId =
     // WI-1009: refuse a PARSE-TIME MARKER before anything below reads its functor name.
@@ -2763,20 +2775,18 @@ object Loader:
         val name = fileSym.name(fn.functor)
         val kbFunctor = mintedConnectiveSymbol(kb, fileTerms, name, termId)
           .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId)))
-        // WI-20260901-719FJ — NO GOAL DESCENT, and that is a MEASUREMENT rather than an
-        // omission. rustland routes `not`'s negand as a goal of its own
-        // (`goal_arg_slots`); the twin here would be keyed on the resolved functor's
-        // builtin tag, and it could never fire: `kb.getBuiltin` answers `None` for a
-        // loaded rule-body `not(…)`, so scaland's NAF is not reached from a rule body at
-        // all. Driven — `rule r(1) :- not(un(999))` over an EMPTY `un` answers 0, as does
-        // `not(un(1))` over a provable one, and as does every nullary spelling, dotted or
-        // not. There is no negand POSITION here to route yet; a branch nothing can drive
-        // is not a fix. When `not` reaches NAF in a rule body, this is the line that has
-        // to grow the descent, and the dotted spelling will be wrong there until it does.
-        // Every argument is therefore DATA, which keeps a fact's slot and the pattern
-        // that searches for it spelling one term.
-        val kbPos = IArray.from(fn.posArgs.map(id =>
-          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap)))
+        // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
+        // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
+        // the predicate `ns.flag`, where a data reading would negate a `field_access`
+        // chain. The slots are [[KnowledgeBase.goalArgSlots]]'s, keyed by the tag the
+        // resolver dispatches on and asked of the RESOLVED functor, and only under a
+        // node that is itself a goal: `holds(not(a.b))` stores data. Every other
+        // argument is DATA, which keeps a fact's slot and the pattern that searches for
+        // it spelling one term. Mirrors rustland's `goal_arg_slots` descent.
+        val goalSlots =
+          if atGoal then kb.goalArgSlots(kbFunctor, fn.posArgs.length) else Set.empty[Int]
+        val kbPos = IArray.from(fn.posArgs.zipWithIndex.map((id, i) =>
+          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap, atGoal = goalSlots(i))))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
           (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap))
@@ -2853,13 +2863,22 @@ object Loader:
     * short name is never answered by, and then render `in scope '<the declaring scope>'`:
     * a claim about a search it had not performed, and false whenever the name really did
     * resolve there (an imported spec). One order is one thing to keep true; rustland has
-    * had one (`resolve_name_in_kb`) all along. */
+    * had one (`resolve_name_in_kb`) all along.
+    *
+    * AN ABSOLUTE PATH (`..a.b.c`) HAS ONE RUNG AND NO SCOPE: the symbol whose own
+    * qualified name is `a.b.c`, or nothing (§8.6). Asked ahead of the dot test because
+    * `..top` asks the same question `..top.f` does — it is the one spelling by which a
+    * SHORT name reaches the qualified-name table, as an exact lookup of the name written.
+    * A miss does not fall to the scope walk: that walk is what the marker opts out of. */
   private def lookupWritten(kb: KnowledgeBase, name: String, scope: kb.ScopeId): ResolveResult =
-    if name.contains('.') then
-      kb.symbols.byQualifiedName.get(name) match
-        case Some(sym) => ResolveResult.Found(sym)
-        case None => kb.symbols.resolveInScope(name, scope)
-    else kb.symbols.resolveInScope(name, scope)
+    absolutePathTarget(name) match
+      case Some(path) =>
+        kb.symbols.byQualifiedName.get(path).fold(ResolveResult.NotFound)(ResolveResult.Found(_))
+      case None if name.contains('.') =>
+        kb.symbols.byQualifiedName.get(name) match
+          case Some(sym) => ResolveResult.Found(sym)
+          case None => kb.symbols.resolveInScope(name, scope)
+      case None => kb.symbols.resolveInScope(name, scope)
 
   /** Resolve a name in scope, falling back to intern for user-defined predicates.
     *
@@ -2888,6 +2907,13 @@ object Loader:
           name, qualNames, span, kb.scopeDisplayName(scope))
         kb.intern(name)
       case ResolveResult.NotFound =>
+        // AN ABSOLUTE MISS IS LOUD. An unmarked name nothing answers is interned as a
+        // predicate the program introduces by using it; a marked one cannot be that —
+        // it names a symbol by its own qualified name, and no such symbol exists. The
+        // intern below is under the text the author wrote, marker included, so the
+        // term that could not be resolved collides with no declared name.
+        if absolutePathTarget(name).isDefined then
+          errors += LoadError.UnresolvedName(name, span, kb.scopeDisplayName(scope))
         kb.intern(name)
 
   /** Auto-import prelude sort contents into global scope.

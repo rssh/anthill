@@ -4249,6 +4249,116 @@ class BootstrapTest extends munit.FunSuite:
       s"${abstractErr.getMessage}")
   }
 
+  test("an absolute written path places by the package it spells, from the root") {
+    // `..a.b.T` (kernel §8.6) is the ONE spelling a nearer package cannot take: a
+    // written `a.b.T` binds its head in the enclosing namespace first, an absolute one
+    // does not look there at all. WI-20261008-T290W gave the parser the spelling; this
+    // is what the emitter does with one.
+    //
+    // MEASURED BEFORE `TypeScope.placeAbsolute`, with the marker reaching the relative
+    // reading: `..other.lib.Option` was refused for a head segment `..other` that names
+    // no package (read as `my.app...other`), and the ONE-SEGMENT `..Top` was EMITTED —
+    // `def get(o: my.app...Top[X]): X`, text that is not Scala.
+    //
+    // FAILS WHEN BACKED OUT (`placePath` reading every path as unmarked): this row, at
+    // its first absolute arm, and no other row of the suite. The `writtenRelative`
+    // control and the unmarked spellings of the `Holder` self row are what the back-out
+    // leaves standing by design.
+    def holder(ty: String) = parseSource(
+      s"""namespace my.app
+         |  sort Holder
+         |    sort X = ?
+         |    operation get(o: $ty) -> X
+         |  end
+         |end
+         |""".stripMargin, "holder.anthill")
+    def lib(ns: String) = parseSource(
+      s"""namespace $ns
+         |  sort Option
+         |    sort T = ?
+         |  end
+         |end
+         |""".stripMargin, s"$ns.anthill")
+    val withBoth = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(lib("other.lib"), lib("my.app.other.lib")))
+
+    // THE PAIR THAT MUST DIFFER: with a NEARER `my.app.other.lib` in the closure the
+    // relative spelling moves to it and the absolute one does not.
+    val absolute = genWith(holder("..other.lib.Option[T = X]"), withBoth).head.contents
+    assert(absolute.contains("def get(o: _root_.other.lib.Option[X]): X"),
+      s"an absolute path names its package from the root:\n$absolute")
+    val writtenRelative = genWith(holder("other.lib.Option[T = X]"), withBoth).head.contents
+    assert(writtenRelative.contains("def get(o: _root_.my.app.other.lib.Option[X]): X"),
+      s"CONTROL: the unmarked path binds its head in the enclosing namespace:\n$writtenRelative")
+
+    // What ONE package says, asked the way the qualified reading asks it: a prelude
+    // sort, and a scalar in the package that declares it.
+    assert(gen(holder("..anthill.prelude.Option[T = X]")).head.contents
+      .contains("def get(o: _root_.anthill.prelude.Option[X]): X"))
+    assert(gen(holder("..anthill.prelude.Int64")).head.contents
+      .contains("def get(o: _root_.scala.Long): X"))
+
+    // THE ENCLOSING SORT, named absolutely, is the enclosing sort: the same answer —
+    // here the same refusal, a bare sort being any instance of it — as the qualified
+    // and the one-segment spellings give.
+    val selves = Seq("..my.app.Holder", "my.app.Holder", "Holder").map(ty =>
+      intercept[BootstrapError](gen(holder(ty))).getMessage.replace(s"`$ty`", "`<it>`"))
+    assert(selves.head.contains("is the enclosing sort"), selves.head)
+    assertEquals(selves.distinct.length, 1, s"three spellings of one sort, one verdict: $selves")
+
+    // A MISS IS LOUD, and says which half missed.
+    val noPackage = intercept[BootstrapError](gen(holder("..no.such.Option[T = X]")))
+    assert(noPackage.getMessage.contains("names package `no.such` from the root"),
+      noPackage.getMessage)
+    val noLeaf = intercept[BootstrapError](genWith(holder("..other.lib.Nope"), withBoth))
+    assert(noLeaf.getMessage.contains("nothing Bootstrap can see declares `Nope`"),
+      noLeaf.getMessage)
+    // IT DOES NOT FALL BACK TO THE NEARER PACKAGE: `my.app.other.lib` declares `Option`
+    // and `other.lib` is absent from this closure, so the absolute path names nothing —
+    // while the relative one, the control, places there.
+    val nearerOnly = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(lib("my.app.other.lib")))
+    intercept[BootstrapError](genWith(holder("..other.lib.Option[T = X]"), nearerOnly))
+    assert(genWith(holder("other.lib.Option[T = X]"), nearerOnly).head.contents
+      .contains("def get(o: _root_.my.app.other.lib.Option[X]): X"))
+
+    // ONE SEGMENT: the top-level `Top`, which Scala cannot name from anywhere.
+    val top = parseSource("sort Top\n  sort T = ?\nend\n", "top.anthill")
+    val withTop = ScalaTypes.resolve(stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(top))
+    val oneSegment = intercept[BootstrapError](genWith(holder("..Top[T = X]"), withTop))
+    assert(oneSegment.getMessage.contains("empty package"), oneSegment.getMessage)
+
+    // THE CARRIER READING HONOURS THE MARKER AS IT HONOURS A PREFIX (`Bootstrap.
+    // isSelfType`, and the row above it in this file for the unmarked spelling): an
+    // absolute mention of THIS sort is a self receiver, so `requires Eq[T]` is evidence;
+    // an absolute mention of the same-leaf sort one package down is not, so it is the
+    // supertype. BACK-OUT (`isSelfType` comparing the marked prefix as written): the
+    // first assertion fails — the self receiver is missed and `Eq[T]` becomes `extends`.
+    def payload(receiver: String) = gen(parseSource(
+      s"""namespace app
+         |  namespace model
+         |    sort Payload
+         |      operation tag(x: Int64) -> Int64
+         |    end
+         |  end
+         |  sort Payload
+         |    sort T = ?
+         |    requires Eq[T]
+         |    operation use(p: $receiver) -> Int64
+         |  end
+         |end
+         |""".stripMargin, "carrier_absolute.anthill"))
+      .find(_.relPath.endsWith("/app/Payload.scala")).getOrElse(fail("expected app/Payload.scala"))
+      .contents
+    val selfSrc = payload("..app.Payload[T = T]")
+    assert(!selfSrc.contains("extends _root_.anthill.prelude.Eq[T]"),
+      s"an ABSOLUTE self-mention reads as the sort itself:\n$selfSrc")
+    val foreignSrc = payload("..app.model.Payload")
+    assert(foreignSrc.contains("extends _root_.anthill.prelude.Eq[T]"),
+      s"an absolute mention of another sort of the same leaf is not a self receiver:\n$foreignSrc")
+  }
+
   test("an import table with one leaf from two packages is refused, not last-wins") {
     // THE AMBIGUITY THE PLACING IMPORT RUNG MADE LOAD-BEARING. `Bootstrap.importedNames`
     // folded with `acc ++ …`, so the LAST import of a leaf won and the loser vanished. It

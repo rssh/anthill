@@ -20,7 +20,7 @@ import anthill.resolve.SearchStream
   * | `fact p(1)`, `fact p`                 | YES     | A, 1 and 1, as `rule … :- true` |
   * | head in `provides … language anthill` | YES     | A, 0 and 1 — see that row       |
   * | `rule l: p(1), q(9) :- …`             | **no**  | B, 2 and 2 (NE0E4)              |
-  * | `rule ns.p …`, `fact ns.p(…)`         | n/a     | C, D — REFERENCES, by design    |
+  * | `rule ns.p …`, `fact ns.p(…)`, `..p`  | n/a     | C, D — REFERENCES, by design    |
   * | `rule ?x.m(?y)`                       | n/a     | C — the desugar's functor       |
   *
   * A `provides … language rust` block is not in the table: scaland loads no clause from
@@ -257,8 +257,9 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
 
   test("every NoIntroduction reason is reachable and distinct") {
     // The five reasons, each driven from source through the one diagnostic that renders
-    // them. A sixth variant with no producer, or without a sentence of its own, shows
-    // here as an unreached row or a duplicate.
+    // them — `QualifiedSpelling` twice, a qualified name having two spellings. A sixth
+    // variant with no producer, or without a sentence of its own, shows here as an
+    // unreached row or a duplicate.
     //
     // `SeveralHeads` needs the LABEL in scaland: an unlabeled multi-head rule is refused
     // one step earlier, for wanting a citation handle.
@@ -270,7 +271,12 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
       ("DesugaredSubject", "rule ?x.m(?y)", "its head functor is the DESUGARING's"),
       ("NotAnApplication", "rule ?x",
         "its head is not a functor application, so it names no predicate"),
-      ("QualifiedSpelling", "rule nosuch.xyz()", "`nosuch.xyz` is a QUALIFIED name"))
+      ("QualifiedSpelling", "rule nosuch.xyz()", "`nosuch.xyz` is a QUALIFIED name"),
+      // THE MARKED ABSOLUTE SPELLING of the same reason, paren-less: one segment, so a
+      // bare `Term.Ident` whose NAME carries the dot — the shape rustland's census
+      // drives this reason with, and the one that read as `NotAnApplication` there
+      // while its applied twin read as this.
+      ("QualifiedSpelling, marked", "rule ..nosuchxyz", "`..nosuchxyz` is a QUALIFIED name"))
     val seen = for (reason, head, sentence) <- rows yield
       val got = declaresNothing(s"namespace zzC.c\n  $head\nend")
       assert(got.contains(sentence), s"$reason: expected `$sentence`, got `$got`")
@@ -285,10 +291,15 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
     // chain, and written WITH them is an application whose functor carries the dot: two
     // shapes, one head. With the sentence chosen by a second walk the two could be told
     // different things (rustland measured exactly that); one walk cannot.
-    assertEquals(
-      declaresNothing("namespace zzC.q1\n  rule nosuch.xyz\nend"),
-      declaresNothing("namespace zzC.q2\n  rule nosuch.xyz()\nend"),
-      "one head, one verdict, one sentence")
+    //
+    // THE MARKED ABSOLUTE HEAD IS THE SAME PAIR ONE SHAPE OVER: paren-less it is a bare
+    // `Term.Ident` and not a chain, so it reaches the reason through the `Ident` arm's
+    // dot test rather than through `dottedCitationName` — two more routes to one answer.
+    for head <- Seq("nosuch.xyz", "..nosuchxyz", "..nosuch.xyz") do
+      assertEquals(
+        declaresNothing(s"namespace zzC.q1\n  rule $head\nend"),
+        declaresNothing(s"namespace zzC.q2\n  rule $head()\nend"),
+        s"`$head`: one head, one verdict, one sentence")
   }
 
   // ── PART D — A FACT HEAD MEETS WHAT ITS RULE SPELLING MEETS ─────────────────

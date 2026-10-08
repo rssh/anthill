@@ -18,8 +18,8 @@ import anthill.resolve.SearchStream
   *   * an OPERATION BODY is parsed and DROPPED (WI-1007, `Loader`'s `OperationItem` arm:
   *     scaland has no typer and no evaluator to consume one, and the KB no slot to hold
   *     it), so a nullary op goal has nothing to reduce and answers 0 in all four
-  *     spellings — as does `not(…)` of it, since a rule-body `not` does not reach NAF here
-  *     either (719FJ measured that and this file's own op rows re-measure it); and
+  *     spellings — and `not(…)` of it answers 1 in both columns, NAF of a goal nothing
+  *     proves (this file's own op rows measure it); and
   *   * §8.3's PARTIAL ENTITY PATTERNS are absent whole — `KnowledgeBase.entityFieldNames`
   *     is filled and has no reader in the main tree — so `acct` and `acct()` alike match
   *     only a fact spelling them identically, and both answer 0 while `acct(n: 1)`
@@ -73,8 +73,11 @@ class DottedGoalReadingTest extends munit.FunSuite:
   }
 
   /** A NULLARY OPERATION AS A GOAL — 0 IN ALL FOUR SPELLINGS, because the body is
-    * dropped at load (WI-1007) so there is nothing to reduce, and `not(…)` of it is 0 too
-    * because a rule-body `not` does not reach NAF here.
+    * dropped at load (WI-1007) so there is nothing to reduce. `not(…)` of it is therefore
+    * 1 in both: NAF of a goal nothing proves. That cell was 0 until WI-20261008-T290W,
+    * when the one-segment `not` did not reach NAF at all (WI-20260902-373AW); it is the
+    * WRONG answer for an operation whose body is `true`, and for the reason the other
+    * two cells are — the body is not there.
     *
     * PAIRED, not absolute: what this ticket owns is that the DOTTED column equals the
     * ONE-SEGMENT column. When scaland grows operation bodies, the two must move together
@@ -96,20 +99,21 @@ class DottedGoalReadingTest extends munit.FunSuite:
         |end""".stripMargin,
       "vnwawop.anthill",
     )
-    for cell <- Seq("Bare", "Paren", "Not") do
+    for (cell, inert) <- Seq("Bare" -> 0, "Paren" -> 0, "Not" -> 1) do
       val one = answers(kb, s"zzvnOp.inner.s$cell")
       val dot = answers(kb, s"zzvnOp.outer.d$cell")
       assertEquals(
         dot, one,
         s"d$cell must answer what s$cell answers — the qualification decides NOTHING " +
-          "about a goal's reading (rustland's WI-20260902-VNWAW). Both are 0 here " +
-          "because an operation BODY is dropped at load (WI-1007)",
+          "about a goal's reading (rustland's WI-20260902-VNWAW)",
       )
       assertEquals(
-        one, 0,
-        s"s$cell: and the shared answer is 0, not a coincidence of two broken columns — " +
-          "when scaland grows operation bodies this row goes red and VNWAW's reading has " +
-          "to be ported to `reallocTerm`'s dotted branch",
+        one, inert,
+        s"s$cell: and the shared answer is the inert one, not a coincidence of two " +
+          "broken columns — an operation BODY is dropped at load (WI-1007), so the goal " +
+          "proves nothing and its negation holds. When scaland grows operation bodies " +
+          "this row goes red and VNWAW's reading has to be ported to `reallocTerm`'s " +
+          "dotted branch",
       )
   }
 

@@ -1,6 +1,6 @@
 package anthill.codegen.scala
 
-import anthill.intern.SymbolTable
+import anthill.intern.{ABSOLUTE_PATH_MARKER, SymbolTable}
 import anthill.parse.{Name, TypeExpr}
 import anthill.span.Span
 
@@ -431,12 +431,12 @@ case class TypeScope(
    * package, and its last clause is what tells a reader the head was read as one. */
   def placeName(sym: SymbolTable, n: Name): NamePlacement =
     val segments = n.segments.map(sym.name)
-    if segments.length == 1 then NamePlacement.Direct(place(segments.head))
-    else values.get(segments.head) match
+    // A projection is read off a VALUE, and `values` is keyed by parameter names — so a
+    // marked head never finds one: an absolute path is a whole name, never a projection.
+    values.get(segments.head).filter(_ => segments.length > 1) match
       case Some(receiver) =>
         projection(segments.head, receiver, segments.tail, segments.mkString("."))
-      case None => NamePlacement.Direct(
-        placeQualified(segments.init.map(Names.scalaPackageSegment), segments.last))
+      case None => NamePlacement.Direct(placePath(segments))
 
   /** The one lookup, as a precedence chain. Mostly most-local-first, which is also
     * anthill's own order: a type parameter shadows a sort of the same name, and the
@@ -569,7 +569,7 @@ case class TypeScope(
             "named\"), not the enclosing sort's parameter, and Scala has no term for it; " +
             "a POSITIONAL argument names no slot at all")
         case ReceiverType.Bare(head) =>
-          val self = headPlacement(head) match
+          val self = placePath(head) match
             // `Self` IS THIS INSTANCE (proposal 070 §1.2), and only `Self`: the sort's
             // own NAME was read alike until stage (e) — `b: Box` inside `sort Box` made
             // `b.T` the sort's `T`, the implicit tie. It is any `Box` now (§1.3), whose
@@ -607,12 +607,47 @@ case class TypeScope(
           "a projection is read off the receiver's declared SORT occurrence, and there " +
           "is none here")
 
-  /** Where the head of a receiver's declared type goes — the ONE reader of "is this
-    * written name the enclosing sort", shared with every other occurrence so a
-    * qualified self-mention and a bare one answer alike (WI-1081). */
-  private def headPlacement(head: IndexedSeq[String]): Placement =
-    if head.length == 1 then place(head.head)
-    else placeQualified(head.init.map(Names.scalaPackageSegment), head.last)
+  /** Where a written PATH goes once it is known to name a type and not a projection —
+    * a mentioned name and the head of a receiver's declared type alike. The ONE reader
+    * of "which reading does this spelling take", and so of "is this written name the
+    * enclosing sort": a qualified self-mention, an absolute one and a bare one answer
+    * alike (WI-1081). */
+  private def placePath(segments: IndexedSeq[String]): Placement =
+    Names.writtenPath(segments) match
+      case (true, path)                      => placeAbsolute(path)
+      case (false, path) if path.length == 1 => place(path.head)
+      case (false, path) =>
+        placeQualified(path.init.map(Names.scalaPackageSegment), path.last)
+
+  /** Where an ABSOLUTE written name goes (`..a.b.T`, kernel §8.6): the package its prefix
+    * SPELLS, at the root. ONE reading and no search — the head is not looked for in the
+    * enclosing namespaces, so a nearer `<enclosing>.a` cannot take the path, which is
+    * the whole of what the marker says. It asks [[inPackage]], as an `import` of the
+    * same path does and as [[placeQualified]] does once its head has bound; a miss is a
+    * refusal for the reason given there.
+    *
+    * A ONE-SEGMENT PATH IS REFUSED, and that is Scala's limit rather than this
+    * emitter's: `..T` names the top-level `T`, which is emitted into the empty package,
+    * and a member of the empty package has no qualified spelling — `_root_.T` does not
+    * reach it (MEASURED at WI-1022: `type RootSet is not a member of <root>`). The bare
+    * `T` is the only text Scala offers and it is exactly the shadowable one, so there is
+    * nothing to emit that means what the marker asks for. */
+  private def placeAbsolute(path: IndexedSeq[String]): Placement =
+    val written = ABSOLUTE_PATH_MARKER + path.mkString(".")
+    if path.length == 1 then Placement.Unplaceable(
+      s"`$written` names the top-level `${path.head}` whatever is in scope, and a " +
+      "top-level type is emitted into Scala's empty package, whose members have no " +
+      s"qualified spelling (`_root_.${path.head}` does not reach one) — only the bare " +
+      "name, which is the shadowable one the marker opts out of")
+    else
+      val owner = Names.scalaPackagePath(path.init)
+      if !packageExists(owner) then Placement.Unplaceable(
+        s"`$written` names package `$owner` from the root, and no supplied file " +
+        "declares anything in it. Add the declaring file to the closure passed to " +
+        "`ScalaTypes.resolve`")
+      else inPackage(owner, path.last).getOrElse(Placement.Unplaceable(
+        s"`$written` names package `$owner` from the root, and nothing Bootstrap can " +
+        s"see declares `${path.last}` in it"))
 
   /** Where a QUALIFIED written name goes (WI-1081): HEAD-QUALIFICATION, which is the
     * language's own reading of a written path — kernel §"`a.b.c` — **relative**, and
@@ -627,8 +662,8 @@ case class TypeScope(
     * the LEAF instead would let a nearer package that merely lacks it hand the name to a
     * farther one, which is re-anchoring by another route.
     *
-    * (The `..a.b.c` ABSOLUTE spelling is a separate reading the kernel defines and the
-    * fastparse grammar does not yet accept, so no occurrence reaching here is one.)
+    * (The `..a.b.c` ABSOLUTE spelling is a separate reading, [[placeAbsolute]]; no
+    * occurrence reaching here is one.)
     *
     * THE PREFIX IS WHAT IS RESOLVED, which is the whole content of the defect: the bare
     * chain ([[ScalaTypes.packagePlacement]]) looks for a LEAF up the mentioning

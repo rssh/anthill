@@ -172,9 +172,9 @@ object SmtGen:
     * (`..anthill.prelude.Additive.add`), so every arm here would miss it. The marker is
     * stripped ONCE rather than by adding a `..`-prefixed twin to each arm: these are the
     * same names the arms already list, wearing the spelling `parse.Pratt` now mints.
-    * Rustland's `intern.absolutePathTarget` is the same projection. */
+    * Read through `anthill.intern.absolutePathTarget`, the marker's one reader. */
   private[smtgen] def stripAbsolute(qn: String): String =
-    if qn.startsWith("..") then qn.drop(2) else qn
+    anthill.intern.absolutePathTarget(qn).getOrElse(qn)
 
   private[smtgen] def mapUnaryOp(qn: String): Option[String] = stripAbsolute(qn) match
     case "anthill.prelude.Float.abs" | "Float.abs" | "abs" => Some("anthill_abs")
