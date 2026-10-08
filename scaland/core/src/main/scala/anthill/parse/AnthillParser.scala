@@ -582,6 +582,13 @@ private class AnthillParserImpl(
     * (`describe`, the remaining one there, is not parsed here at all.) */
   private def refName[$: P]: P[Name] = P(absoluteName | name)
 
+  /** The ONE symbol a written path is carried under when it becomes a term: the WHOLE
+    * path, marker included, as a call functor's is. Reading the last segment instead
+    * drops the qualification — `a.E` and `b.E` become one name — and with it the marker
+    * of an absolute path, in a position the grammar admits one. */
+  private def writtenSymbol(n: Name): TermSymbol =
+    if n.isSimple then n.last else intern(renderName(n))
+
   private def simpleName[$: P]: P[Name] =
     P(located(ident)).map { case (sym, span) => Name.simple(sym, span) }
 
@@ -1436,10 +1443,10 @@ private class AnthillParserImpl(
     // WI-957: a WRITTEN type name locates at the name it was written as; the
     // structural lowerings below (arrow, tuple, effect row) mint `TypeExtractor`
     // functors that appear nowhere in the source and take a derived span.
-    case TypeExpr.Simple(n) => terms.allocAt(Term.Ref(n.last), n.span)
+    case TypeExpr.Simple(n) => terms.allocAt(Term.Ref(writtenSymbol(n)), n.span)
     case TypeExpr.Parameterized(n, bindings) =>
       val (posArgs, namedArgs) = lowerBindings(bindings, n.span)
-      terms.allocAt(Term.Fn(n.last, posArgs, namedArgs), n.span)
+      terms.allocAt(Term.Fn(writtenSymbol(n), posArgs, namedArgs), n.span)
     case TypeExpr.Variable(tid, _) => tid
     // WI-288 / WI-361: arrow and tuple types lower to the structural
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
@@ -1581,6 +1588,12 @@ private class AnthillParserImpl(
     // The key is fully structural (see `canonicalAtomKey`) so this drops only
     // genuinely-identical atoms — matching rustland's hash-consed-TermId
     // `atoms.dedup()`, NOT collapsing distinct effects that share a base.
+    //
+    // TWO KEYS, because the two steps ask two questions. ORDER is by SHORT name, which
+    // is rustland's. IDENTITY is by the name AS WRITTEN: `a.E` and `b.E` share a short
+    // name and are two effects, and `..E` is not the `E` in scope. Whether two
+    // SPELLINGS name one symbol is not known here — nothing is resolved yet — so they
+    // stay two atoms; rustland de-duplicates after resolution and would merge them.
     // WI-964, the same principle one function up: `canonicalAtomKey` is a full
     // structural walk, so it is derived ONCE PER ATOM and carried. `sortBy(f)` is
     // `sorted(Ordering.by(f))` — it re-ran the walk per COMPARISON, and the dedup then
@@ -1591,7 +1604,8 @@ private class AnthillParserImpl(
     // parity, pinned by `ParseTest`'s row-order assertion — and dropping it as "implied
     // by the dedup" would leave every dedup assertion green while the row silently
     // stopped being canonical.
-    val deduped = atoms.map(a => (canonicalAtomKey(a), a)).sortBy(_._1).distinctBy(_._1).map(_._2)
+    val deduped = atoms.map(a => (canonicalAtomKey(a), writtenAtomKey(a), a))
+      .sortBy(k => (k._1, k._2)).distinctBy(_._2).map(_._3)
     // Seed: innermost tail — `open(?ρ)` when a row var was present, else the
     // closed `empty_row`; any extra tails fold in as `open(…)` merges. Then
     // right-fold `merge(atom, …)` back through the sorted atoms.
@@ -1637,16 +1651,22 @@ private class AnthillParserImpl(
     * distinct effects — `{Modify[c1], Modify[c2]}`, `{+A, +B}` — into one. A
     * fully-structural key makes the dedup drop only true duplicates, matching
     * rustland's TermId-based dedup. */
-  private def canonicalAtomKey(tid: TermId): String =
+  private def canonicalAtomKey(tid: TermId): String = atomKey(tid, shortName)
+
+  /** [[canonicalAtomKey]] over the names AS WRITTEN — the row's IDENTITY key, where that
+    * one is its ORDER key. A short name is not an identity: two paths can end in it. */
+  private def writtenAtomKey(tid: TermId): String = atomKey(tid, symbols.name)
+
+  private def atomKey(tid: TermId, nameOf: TermSymbol => String): String =
     terms.get(tid) match
-      case Term.Ref(sym)   => shortName(sym)
-      case Term.Ident(sym) => shortName(sym)
-      case Term.Var(v)     => "?" + shortName(v.varId.name)
+      case Term.Ref(sym)   => nameOf(sym)
+      case Term.Ident(sym) => nameOf(sym)
+      case Term.Var(v)     => "?" + nameOf(v.varId.name)
       case fn: Term.Fn =>
-        val args = fn.posArgs.map(canonicalAtomKey) ++
-          fn.namedArgs.map((k, v) => s"${shortName(k)} = ${canonicalAtomKey(v)}")
-        if args.isEmpty then shortName(fn.functor)
-        else shortName(fn.functor) + "[" + args.mkString(", ") + "]"
+        val args = fn.posArgs.map(atomKey(_, nameOf)) ++
+          fn.namedArgs.map((k, v) => s"${nameOf(k)} = ${atomKey(v, nameOf)}")
+        if args.isEmpty then nameOf(fn.functor)
+        else nameOf(fn.functor) + "[" + args.mkString(", ") + "]"
       case other => other.toString
 
   /** `Ref(a.b)` / `Ref(..a.b)` — the WHOLE written path is the name, as a call functor's
@@ -1654,7 +1674,7 @@ private class AnthillParserImpl(
     * alone dropped the qualification, and with it the marker. */
   private def refTerm[$: P]: P[TermId] =
     P(keyword("Ref") ~ "(" ~/ refName ~ ")").map(n =>
-      terms.allocAt(Term.Ref(intern(renderName(n))), n.span))
+      terms.allocAt(Term.Ref(writtenSymbol(n)), n.span))
 
   private def prefixTerm[$: P]: P[TermId] =
     P(prefixOp ~ atomWithFieldAccess).map { case (op, operand) =>

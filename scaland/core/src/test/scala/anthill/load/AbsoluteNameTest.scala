@@ -29,15 +29,16 @@ import anthill.resolve.SearchStream
   * absolute written path places by the package it spells, from the root`).
   *
   * ── WHICH ROWS FAIL WHEN WHAT IS BACKED OUT — each applied and run over the whole
-  *    core suite (628 rows), so each count is exhaustive over it ──
+  *    core suite (630 rows), so each count is exhaustive over it ──
   *
-  *  * **THE SPELLING** — `refName` reading `name` alone. **15 ROWS FAIL**: the eleven
+  *  * **THE SPELLING** — `refName` reading `name` alone. **17 ROWS FAIL**: the twelve
   *    here that write the spelling, `HeadIntroductionCensusTest`'s two qualified rows,
-  *    `DottedParenLessCitationTest`'s negand row and `BootstrapTest`'s absolute row.
+  *    `DottedParenLessCitationTest`'s negand row, `BootstrapTest`'s absolute row and
+  *    `ParseTest`'s effect-row one.
   *    Three here pass either way BY DESIGN: `a declaration cannot be spelled absolutely`
   *    is the refusal the spelling must not lift, and the operator row and the relative
   *    `Ref` row write no `..`.
-  *  * **THE ROOT RUNG** — `lookupWritten` without its `absolutePathTarget` arm. **148
+  *  * **THE ROOT RUNG** — `lookupWritten` without its `absolutePathTarget` arm. **149
   *    ROWS FAIL**, because the stdlib stops loading: its own `not(…)` and `=` goals are
   *    addresses that then name nothing, and the loud miss says so. Before the loud miss
   *    existed this was the silent state the ticket above describes.
@@ -48,9 +49,11 @@ import anthill.resolve.SearchStream
   *  * **THE LOUD MISS** — `resolveName` interning a marked miss in silence. **2 ROWS
   *    FAIL**: `an absolute path that names nothing is refused`, and the operator row on
   *    its last arm.
-  *  * **`Ref(…)` READING ITS LAST SEGMENT** — `refTerm` allocating `Term.Ref(n.last)`.
-  *    **3 ROWS FAIL**: `Ref of an absolute path is the symbol the path names`, the miss
-  *    row on its `Ref` line, and the relative `Ref` row, whose pair comes apart.
+  *  * **A PATH CARRIED AS ITS LAST SEGMENT** — `writtenSymbol` answering `n.last`, the
+  *    one function `Ref(…)` and a type lowered to a term both carry a path through.
+  *    **5 ROWS FAIL**: `Ref of an absolute path is the symbol the path names`, the miss
+  *    row on its `Ref` line, the relative `Ref` row, whose pair comes apart, `a type
+  *    written inside a term is the path it writes`, and `ParseTest`'s effect-row one.
   *  * **THE PROOF TARGET** — `loadProof` asking nothing of a marked target. **1 ROW
   *    FAILS**: `an absolute proof target that names nothing is refused`.
   *  * **THE EFFECTS ANCHOR** — the exemption comparing the written text alone. **1 ROW
@@ -257,6 +260,7 @@ class AbsoluteNameTest extends munit.FunSuite:
         |  end
         |  fact refRel(Ref(Rec.E))
         |  fact callRel(Rec.E(v: 1))
+        |  fact typeRel(Box[T = Rec.E])
         |  fact refLeaf(Ref(E))
         |  fact refFull(Ref(zzAbs.rr.Rec.E))
         |end""".stripMargin)
@@ -271,10 +275,56 @@ class AbsoluteNameTest extends munit.FunSuite:
       case other         => fail(s"unexpected carrier $other")
     assertEquals(named(held("refRel")), named(held("callRel")),
       "`Ref(Rec.E)` and `Rec.E(…)` name one path and must resolve alike")
+    // A TYPE WRITTEN INSIDE A TERM is the third carrier of the same path, and went the
+    // same way for the same reason: it read its last segment too.
+    val typeRel = held("typeRel") match
+      case fn: Term.Fn => kb.getTerm(fn.namedArgs.head._2)
+      case other       => fail(s"`typeRel` holds $other, not an application")
+    assertEquals(named(typeRel), named(held("callRel")),
+      "`Box[T = Rec.E]` binds the path `Rec.E(…)` calls")
     assertEquals(named(held("refRel")), ("Rec.E", false),
       "GAP (WI-20261008-JRV1T): logic says `zzAbs.rr.Rec.E` — the head `Rec` is in scope")
     assertEquals(named(held("refLeaf")), ("zzAbs.rr.Rec.E", true))
     assertEquals(named(held("refFull")), ("zzAbs.rr.Rec.E", true))
+  }
+
+  test("a type written inside a term is the path it writes") {
+    // A binding's VALUE inside a term is a type position (`Box[T = ..a.b.C]`), lowered
+    // to a term by the parser. That lowering read the path's LAST SEGMENT, so a
+    // multi-segment absolute path lost its marker with its qualification and resolved
+    // as the bare `C` — here the namespace's OWN `C`, the one thing the marker exists to
+    // step around. The unmarked qualified path had the same defect, so it is not the
+    // control: it is the second arm. THE CONTROL is the bare `C`, which is the
+    // namespace's own in every reading.
+    val kb = loaded(
+      """namespace zzAbs.tn
+        |  sort C
+        |    entity c0(v: Int64)
+        |  end
+        |end
+        |namespace zzAbs.tm
+        |  sort C
+        |    entity c1(v: Int64)
+        |  end
+        |  fact viaAbs(Box[T = ..zzAbs.tn.C])
+        |  fact viaQual(Box[T = zzAbs.tn.C])
+        |  fact viaBare(Box[T = C])
+        |end""".stripMargin)
+    def bound(holder: String): String =
+      val sym = kb.tryResolveSymbol(s"zzAbs.tm.$holder").getOrElse(fail(s"`$holder` must resolve"))
+      val box = kb.getTerm(kb.factTerm(kb.byFunctor(sym).head)) match
+        case fn: Term.Fn => kb.getTerm(fn.posArgs(0))
+        case other       => fail(s"`$holder`'s fact is not an application: $other")
+      val value = box match
+        case fn: Term.Fn => kb.getTerm(fn.namedArgs.head._2)
+        case other       => fail(s"`$holder` holds $other, not an application")
+      value match
+        case Term.Ref(target) => kb.qualifiedNameOf(target)
+        case fn: Term.Fn      => kb.qualifiedNameOf(fn.functor)
+        case other            => fail(s"`$holder` binds $other")
+    assertEquals(
+      (bound("viaAbs"), bound("viaQual"), bound("viaBare")),
+      ("zzAbs.tn.C", "zzAbs.tn.C", "zzAbs.tm.C"))
   }
 
   test("a data slot holds one term for the marked and the unmarked path") {

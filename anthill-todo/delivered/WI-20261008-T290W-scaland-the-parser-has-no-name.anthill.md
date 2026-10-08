@@ -47,3 +47,11 @@ PINNED, NOT FIXED. `not(true)` answers 1 (WI-20260908-NARC7). `Ref(Rec.E)`, a re
 
 `AbsoluteNameTest` (14 rows) and the negand row in `DottedParenLessCitationTest`; their headers state the back-outs, measured over the core suite. /code-review: 12 findings, 8 fixed. One fix made the smt-gen fixture read load errors and found a stale `import anthill.prelude.{Int}` in `CommDelayTest`. scaland: sbt testFull, 628 + 35 + 1 passed. rustland untouched and not run.
 
+### 2026-10-08T14:36:35Z — feedback — claude
+
+ADDENDUM, 2026-10-08 — one position was missed, found answering the user's question about an effect row. A TYPE WRITTEN INSIDE A TERM read its path's last segment (`AnthillParser.typeExprToRef`), so `fact viaAbs(Box[T = ..zzAbs.tn.C])`, written in a namespace with its own `C`, bound that namespace's `C`: the marker was dropped with the qualification. The unmarked `zzAbs.tn.C` had the same defect before this ticket. Both bind `zzAbs.tn.C` now; `Ref(…)` and a lowered type carry a path through one function, `writtenSymbol`.
+
+THE EFFECT ROW. `{a.E, b.E}` on an arrow type kept one label, `Ref(E)` — the same lowering, not the de-duplication, which my delivery note blamed. Only the one-segment `..E` kept its text and was then dropped by the short-name key. The row is ordered by short name and told apart by the name written, so `{a.E, b.E}`, `{..a.E, a.E}` and `{E, ..E}` keep two labels and `{E, E}` one. Two spellings of one symbol stay two atoms: the parser resolves nothing, where rustland de-duplicates after resolution.
+
+A relative path in a type inside a term (`Box[T = Rec.E]`) resolves to nothing, as `Ref(Rec.E)` and `Rec.E(…)` do (WI-20261008-JRV1T); the three are pinned as one in `AbsoluteNameTest`. Rows: `a type written inside a term is the path it writes` there, and `a canonical row tells effects apart by the name written, not by its last segment` in `ParseTest`; back-outs measured. kernel-language.md §8.6 and proposal 044 now say scaland implements the absolute reading only (user, 2026-10-08). scaland: sbt testFull, 630 + 35 + 1 passed.
+

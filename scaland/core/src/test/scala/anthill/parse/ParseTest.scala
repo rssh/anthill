@@ -817,6 +817,50 @@ class ParseTest extends munit.FunSuite:
       "a literal duplicate effect collapses to one atom")
   }
 
+  test("a canonical row tells effects apart by the name written, not by its last segment") {
+    // TWO PATHS ENDING IN ONE SEGMENT ARE TWO EFFECTS, and `..E` is not the `E` in scope
+    // (WI-20261008-T290W). MEASURED BEFORE: every row below held ONE label, `Ref(E)` —
+    // the type-to-term lowering read a path's last segment, so `a.E` and `b.E` were one
+    // term before the dedup ran, and a multi-segment absolute path lost its marker with
+    // its qualification. The one-segment `..E` kept its text and was then dropped by the
+    // dedup's short-name key, whichever of the pair was written second.
+    //
+    // BACK-OUTS, each run over the core suite (630 rows). `writtenSymbol` answering the
+    // last segment: 5 rows — this one and four of `AbsoluteNameTest`'s, listed in its
+    // header. The dedup keyed on the short name alone: this row and no other. The
+    // duplicate arms and the WI-340 row above pass either way by design.
+    def names(effectSrc: String): List[String] =
+      val (pf, op) = parseDemoOp(
+        s"  operation f() -> Int =\n    let x : (A) -> B @ {$effectSrc} = 1 in x")
+      def collect(node: TermId): List[TermId] =
+        shortFunctor(pf, node) match
+          case "empty_row" => Nil
+          case "present"   => List(namedArg(pf, node, "label"))
+          case "merge" =>
+            val left = namedArg(pf, node, "left")
+            val here =
+              if shortFunctor(pf, left) == "present" then List(namedArg(pf, left, "label")) else Nil
+            here ++ collect(namedArg(pf, node, "right"))
+          case other => fail(s"unexpected EffectExpression head `$other`")
+      val effectsField =
+        namedArg(pf, namedArg(pf, op.body.getOrElse(fail("no body")), "type_name"), "effects")
+      collect(namedArg(pf, effectsField, "effects_expr")).map(l => pf.terms.get(l) match
+        case Term.Ref(sym) => pf.symbols.name(sym)
+        case fn: Term.Fn   => pf.symbols.name(fn.functor)
+        case other         => fail(s"unexpected label $other"))
+    // ORDER is by short name and then by the name written, so it does not depend on
+    // which was written first.
+    assertEquals(names("a.E, b.E"), List("a.E", "b.E"))
+    assertEquals(names("b.E, a.E"), List("a.E", "b.E"))
+    assertEquals(names("E, ..E"), List("..E", "E"))
+    assertEquals(names("..a.E, a.E"), List("..a.E", "a.E"))
+    assertEquals(names("a.Modify[x], b.Modify[x]"), List("a.Modify", "b.Modify"))
+    // THE CONTROL: one name written twice is still one effect, in every spelling.
+    assertEquals(names("E, E"), List("E"))
+    assertEquals(names("a.E, a.E"), List("a.E"))
+    assertEquals(names("..a.E, ..a.E"), List("..a.E"))
+  }
+
   test("WI-562: a plain-term op body after an `=`-ending ensures clause is captured, not swallowed") {
     // `ensures result = mul(2, x)` ends in `=`; the trailing `= mul(2, x)` is the
     // operation BODY, not a chained equality (equality is non-associative). The

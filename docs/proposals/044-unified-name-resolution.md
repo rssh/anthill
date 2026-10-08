@@ -43,8 +43,8 @@ The name-resolution algorithm and visibility model are as written in
    under that binding — a miss under that head is **loud**, and the path is never
    re-anchored elsewhere. `..a.b.c` goes straight to `by_qualified_name`, the
    channel `import` already uses, so nothing can shadow it. See §"Absolute paths"
-   below and `kernel-language.md` §8.6 (canonical). rustland only; `scaland`
-   implements neither reading yet.
+   below and `kernel-language.md` §8.6 (canonical). rustland; `scaland`
+   implements the absolute reading only.
 
 ## Absolute paths (WI-1075)
 

@@ -5579,7 +5579,7 @@ where one symbol carries two declarations (an eponymous sort and constructor).
 **Dotted names — the fallback ladder.** When `resolve_in_scope` leaves a name
 unresolved and it is a *path* — it contains a `.`, or carries the `..` marker —
 which reading applies is decided by **how the path is spelled** (Rust; `scaland`
-implements neither reading yet):
+implements the absolute reading only):
 
 - `a.b.c` — **relative**, and only relative (**head-qualification**): resolve the
   *first* segment in scope, append the remaining segments to its
