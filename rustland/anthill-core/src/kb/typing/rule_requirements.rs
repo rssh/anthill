@@ -483,8 +483,9 @@ fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bo
 /// it (060-implementation §7.3, S2) and an uncited clause derives it from the carrier's
 /// value, as value-directed dispatch did. So what inference changes is WHO MAY SUPPLY the
 /// instance; for a clause no caller hands one to, the answers are the ones value dispatch
-/// gave, except that a woven call whose arguments are not yet ground DELAYS where the
-/// unwoven one answered nothing ([`inferred_slot_demand`] says why). Decided by the user,
+/// gives — a goal-position call whose arguments are not yet ground waits either way since
+/// WI-20260926-CYNPE, measured for a spec-op goal and a slot goal
+/// (`wi_p7vp4_rule_body_requirements_test`'s two delay rows). Decided by the user,
 /// 2026-09-25: INFER, rather than refuse the clause until the author restates it.
 ///
 /// WHERE A CALL GETS ONE: the read runs immediately before the top-level goal, so only a
@@ -926,11 +927,10 @@ fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
 ///
 /// Each slot becomes a condition of the clause, and the call carries them. A condition no
 /// citation fills stays UNBOUND, and the bridge then derives that slot from the argument
-/// values as it did before ([`resolve_bridge_requirements`]). ONE THING DOES CHANGE for an
-/// uncited clause, and it is the woven call's, not the slot's: a woven call whose arguments
+/// values as it did before ([`resolve_bridge_requirements`]). A woven call whose arguments
 /// are not yet ground DELAYS (the WI-938 hook routes a woven goal to `unify`, which waits on
-/// an unevaluated call) where the same call unwoven answered nothing — increment 1's
-/// `an_unground_woven_call_delays`, and `an_unground_slot_call_delays` for this one.
+/// an unevaluated call), as the same call unwoven does since WI-20260926-CYNPE — increment
+/// 1's `an_unground_woven_call_delays`, and `an_unground_slot_call_delays` for this one.
 ///
 /// Declined: a spec op (a [`inferred_demand`] or a builtin); a builtin or host-implemented
 /// callee; a callee the bridge does not run from a rule body (`functional_relation_arity`

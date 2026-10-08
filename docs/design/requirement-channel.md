@@ -25,6 +25,12 @@ payload-carrying positional children make "the children are sub-dictionaries" fa
 meaning while true in form). The marker is already a *symbol* both producers can name,
 so the reason is keyed by it in a KB side table (`KnowledgeBase::absence_records`) and
 the crossing still carries one shape.
+**§5's "the call site drives it" is delivered** (WI-20260925-P7VP4): a rule-body call whose
+callee's requirement sits at a carrier not known at load gets its `find_dictionary` goal
+generated and is woven through it, for a spec operation and for an ordinary operation's
+own `requires`, at goal position and in a value slot of `<=>`. Where it does not reach
+yet — an operand of `=`, a member of a sort that `requires`, a call reached through another
+rule's goal — is measured in `060-implementation.md` §8.9.
 **Consumers:** WI-1037; **WI-070** (`Branch` effect) and **WI-069** (`Suspension`
 snapshot/resume) — jointly 027.2's eval↔SLD switch.
 

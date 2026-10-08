@@ -1734,6 +1734,82 @@ must not fold a default. Row (k) — a covered call under a typed head already a
 `7` by value-dispatch — remains no argument either way: value-direction reaches the same
 answer at ONE supplier and refuses at two (058 §4.9, WI-1040's two-supplier fixture).
 
+### MEASURED 2026-10-08 — the callee half as WI-20260925-P7VP4 built it
+
+The user decided the callee half on 2026-09-25: INFER. A rule-body call whose callee's
+requirement sits at a carrier not known at load makes that requirement a condition of the
+clause — a read before the goal holding the call, the call woven through it
+(`infer_rule_body_requirements`) — filled by an operation that cites the clause while
+holding a dictionary for it, and derived from the value otherwise. Measured on `81ea3c9e`
+over two rival `Ord[T = Int64]` providers (`Descending` answers `4` for `compare(1, 5)`,
+`Ascending` `-4`, `Int64`'s own `-1`), each clause cited from
+`cite[A](x: A, y: A) requires WeakOrd[T = A] = r(x, y).head.c` under each rival, and
+uncited:
+
+| | the clause's call, `?a` `?b` untyped head variables | Descending / Ascending / uncited |
+|---|---|---|
+| C1 | `WeakOrd.compare(?a, ?b, ?c)` — a spec operation | `4` / `-4` / `-1` |
+| C2 | `Util.sign(?a, ?b, ?c)`, over `sign[A](x: A, y: A) requires WeakOrd[T = A]` | `4` / `-4` / `-1` |
+| C3 | `?c <=> Util.sign(?a, ?b)` | `4` / `-4` / `-1` |
+| C4 | `?c = Util.sign(?a, ?b)`, `PartialEq.eq(Util.sign(?a, ?b), ?c)` | LOAD ERROR — "this is a RULE-body goal, and nothing in the clause determines which `anthill.prelude.WeakOrd` instance it means" |
+| C5 | `Holder.hsign(?a, ?b, ?c)`, over `sort Holder { sort A = ?; requires WeakOrd[T = A]; operation hsign(x: A, y: A) }`, in any position | the same LOAD ERROR |
+| C6 | `r(?a, ?b, ?c) :- inner(?a, ?b, ?c)`, `inner` being C1's clause | `-1` / `-1` / `-1` |
+| C7 | `Mk.mk(?c)`, over `mk[B]() requires WeakOrd[T = B] = 5` | loads; `5` / `5` / `5` |
+
+C1–C3 are the decision, delivered. The rest are where it does not reach yet, each pinned by a
+row at the end of `wi_p7vp4_rule_body_requirements_test.rs`:
+
+- **C4, C5 — the typer refuses before the inference runs.** `call_dispatch_shape` decides
+  what the rule-body typer checks: a member of a parametric sort wherever it is written, as
+  a spec operation is, and with it its arguments — so an ordinary operation written as an
+  operand of `=` (`PartialEq.eq`) is checked there. The check is an operation body's
+  (`build_op_scoped_dicts`, `build_dispatching_dict_from_chain`), whose rule-body arm refuses
+  a requirement the clause's own text does not determine. An ordinary operation at goal
+  position is a subgoal and in another value slot a data term, neither checked, so the same
+  call there reaches the inference instead. Nothing the clause writes beside the call cures
+  C4 or C5 while the arguments are rule variables — `require[WeakOrd[T]]`, a head typed
+  `?a: Int64`, that head with `require[WeakOrd[T = Int64]]`, the introducer
+  `r[A](?a: A, …) :- WeakOrd[A]`: one refusal per clause, driven by the rows. Lifting the
+  refusal alone does not make C5 a condition (measured with the arm switched off: it loads
+  and answers `-1` under both rivals): `Holder.hsign` is classified a spec operation of
+  `Holder`, whose woven call carries one dispatch dictionary for a provision of `Holder`,
+  and there is none. One classification of a rule-body call, read by the typer and by the
+  inference, is WI-20260926-7D48J's; an operand of `=` that calls an operation with
+  `requires` is also not reduced at run time — `?c = Util.sign(1, 5)` loads and the goal is
+  undecided, `relation_floundered` from an operation — which is WI-20260926-DSEXA's item 3.
+
+  **What does answer, each run in the rows.** C4: the call as the `<=>` operand (C3) or as a
+  goal of its own (C2). C5: an argument whose type is known at load (`Holder.hsign(1, 5, ?c)`
+  is `Int64`'s own), or `hsign` called from an operation that declares the requirement,
+  that operation written as the clause's goal — `rule r(?a, ?b, ?c) :- Via.hs(?a, ?b, ?c)`
+  over `hs[A](x: A, y: A) requires WeakOrd[T = A] = Holder.hsign(x, y)` answers `4` / `-4` /
+  `-1`, the caller's dictionary reaching `hsign` through `hs`'s slot.
+
+  **The refusal's advice was wrong and is corrected** (`unrescuable_rule_body_refusal`). It
+  said "Declare `require[<the requirement's spec>[…]]` in the clause". A bracket holds what
+  its spec REQUIRES (`scope_contract_covers_dep` walks the declared spec's direct chain), so
+  that bracket holds nothing: `require[Iterable[C = List[T = String]]], size(?ls, ?n)` is
+  refused with the same message, where `require[FiniteCollection[C = List[T = String]]]`
+  loads and answers. The refusal names the callee's sort now, where that is a spec some
+  sort provides, and no bracket otherwise (C4, C5). It also ended with the generic tail of
+  an unconstrained element — "bind it through an argument or an explicit type argument, or
+  align the enclosing `requires`" — of which a rule body has neither the bracket (a call-site
+  type argument on a rule-body call is its own load error) nor an enclosing `requires`; the
+  account names every repair it has and the tail is no longer appended to it
+  (`RequirementRefusal::account_names_every_repair`). Each repair it names, and each it
+  named, is run in `the_refusal_names_no_repair_that_is_not_one`.
+- **C6 — a rule goal passes its callee nothing.** A clause's condition is filled at a
+  citation from an operation body (§7.3's S2); a body goal of another rule carries no
+  implicit arguments. §7.3's S7.
+- **C7 — a requirement no argument names is not checked at goal position.** An operation body
+  calling `Mk.mk()` is refused for the unconstrained `B`; the goal-position call is not
+  typed, gets no condition (it has no argument whose type is unknown) and runs a body that
+  never reads the slot. WI-20260926-7D48J's, with C4 and C5.
+
+The enclosing half — a rule sees its own sort's `requires` (user, 2026-09-25) — is
+WI-20260925-0RRQP's and is as measured there. Builtins (`eq`, `<`) read no dictionary and
+wait on WI-20260909-SM910.
+
 ## 8.10 Build sequence — filed 2026-09-09, VVM1R as umbrella
 
 | stage | ticket | what | depends |
@@ -1751,7 +1827,9 @@ riding on S2's steps 1–2, smaller than its own ticket"; **that reason is stale
 fold is now better justified than it was**. The check tier is not a load-time verdict at
 all (§8.8): it emits the same goal the bind tier does, so it is not a stage riding on S2 —
 it is the SAME code path with `out:` absent, and giving it its own ticket would have
-meant two owners for one relation. §8.9's question has no stage — see above.
+meant two owners for one relation. §8.9's question had no stage here; its callee half was
+built as WI-20260925-P7VP4 and its enclosing half is WI-20260925-0RRQP's — see §8.9's last
+measurement.
 
 ## 9. C666A — the guarded join
 

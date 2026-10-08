@@ -43,6 +43,22 @@
 //! pass's `has_equational_head` exclusion and the EQUATION row fails — stdlib's inert
 //! `rule isEmpty(?s) <=> eq(length(?s), 0)` gets a read and a woven call. The CONTROL rows
 //! pass either way by design, and each says why at its site.
+//!
+//! ## Stated limits (measured 2026-10-08)
+//!
+//! Where a callee's requirement at a rule variable is NOT a condition today, one row each at
+//! the end of the file, with its owner: a call reached through another rule's goal (the
+//! caller's dictionary stops at the first rule); an operation's own `requires` as an operand
+//! of `=` and a member of a sort that `requires`, both refused at load by the rule-body
+//! typer before the inference runs, under each `require`, head type and introducer the rows
+//! write; a
+//! requirement no argument names, which loads at goal position. Each row says at its site
+//! which half fails with the inference backed out and which passes either way, and runs the
+//! spelling that does answer. The refusal those rows read advised a `require[…]` that is
+//! refused when written, and a type argument a rule-body call refuses; it names a bracket
+//! that holds the requirement now, or none, and nothing after its own repairs
+//! (`the_refusal_names_no_repair_that_is_not_one` — with the bracket advice restored, that
+//! row and the operand row fail; with the tail restored, that row; and no other).
 
 use std::rc::Rc;
 
@@ -232,7 +248,13 @@ fn an_equation_gets_no_inferred_condition() {
 /// gets no condition and keeps the old outcome, is
 /// `wi1043_bodyless_rule_body_test::an_unground_body_less_goal_binds_no_residual`.
 ///
-/// FAILS with the inference backed out — the row then answers nothing.
+/// NO SINGLE BACK-OUT REDDENS IT NOW. Since WI-20260926-CYNPE an unwoven call that did not
+/// run waits too, so with the inference backed out the row is the same one (MEASURED
+/// 2026-10-08), and with it in place the woven call waits on its own read, whatever that
+/// hook does (the row is not in CYNPE's back-out list, `wi_cynpe_waiting_goals_test`). What
+/// it pins is the answer's shape — one undecided row, `?r` free, never the un-reduced call —
+/// and the two back-outs together were not run. Before CYNPE it failed without the
+/// inference, answering nothing.
 #[test]
 fn an_unground_woven_call_delays() {
     const PROGRAM: &str = r#"
@@ -657,10 +679,11 @@ end
     }
 }
 
-/// An UNCITED slot call whose arguments nothing binds now DELAYS — the woven call waits on
-/// an unevaluated call, as increment 1's does — where the unwoven call answered nothing.
-/// Pinned so the change is stated rather than silent. FAILS with the inference backed out
-/// (no row at all).
+/// An UNCITED slot call whose arguments nothing binds DELAYS — the woven call waits on an
+/// unevaluated call, as increment 1's does. No single back-out reddens it now, for
+/// [`an_unground_woven_call_delays`]' reason: since WI-20260926-CYNPE the unwoven call waits
+/// too (MEASURED 2026-10-08, the inference backed out). Before it the unwoven call answered
+/// nothing and this row failed without the inference.
 #[test]
 fn an_unground_slot_call_delays() {
     let mut kb = crate::common::load_kb_with(&fix_program(
@@ -1214,4 +1237,276 @@ end
     let mut kb = crate::common::load_kb_with(LAW);
     let shown = crate::common::shown_rows(&mut kb, "wip7vp4.law.r");
     assert_eq!(shown, vec![("l1".to_string(), true)], "the law's left projection");
+}
+
+// ── Stated limits, measured 2026-10-08: where a callee's requirement is not yet a condition ──
+
+/// A sort `sort` whose `cite` cites `rule(x, y)` holding `WeakOrd[A]`, with a nullary entry
+/// under each rival (`desc`, `asc`) and one that holds no dictionary (`plain`).
+fn cite_driver(sort: &str, rule: &str) -> String {
+    format!(
+        "  sort {sort}\n    \
+         operation cite[A](x: A, y: A) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
+         requires WeakOrd[T = A] = {rule}(x, y).head.c\n    \
+         operation desc() -> Int64 effects {{Error, Error[EmptyStream]}} =\n      \
+         cite[A = Int64, WeakOrd = Descending](1, 5)\n    \
+         operation asc() -> Int64 effects {{Error, Error[EmptyStream]}} =\n      \
+         cite[A = Int64, WeakOrd = Ascending](1, 5)\n    \
+         operation plain() -> Int64 effects {{Error, Error[EmptyStream]}} = {rule}(1, 5).head.c\n  \
+         end\n"
+    )
+}
+
+/// `(desc, asc, plain)` of a [`cite_driver`] sort of the loaded program — one interpreter for
+/// the three: none of them may trap, and a trap fails the row at its own call.
+fn cited(interp: &mut anthill_core::eval::Interpreter, ns: &str, sort: &str) -> (i64, i64, i64) {
+    let mut run = |entry: &str| match interp.call(&format!("{ns}.{sort}.{entry}"), &[]) {
+        Ok(Value::Int(n)) => n,
+        other => panic!("{sort}.{entry}: expected an Int64, got {other:?}"),
+    };
+    (run("desc"), run("asc"), run("plain"))
+}
+
+/// The refusals of a [`fix_program`] whose every clause in `clauses` is refused as a
+/// rule-body goal no route discharges: each names `callee` and `WeakOrd`, and there is one
+/// per clause — a clause that started to load takes one away.
+fn refused_per_clause(ns: &str, decls: &str, clauses: &[&str], callee: &str) -> Vec<String> {
+    let errs = crate::common::load_errors_of(&fix_program(ns, &format!("{decls}{}", clauses.concat())));
+    crate::common::assert_refused_naming(
+        &errs,
+        &[callee, "anthill.prelude.WeakOrd", "RULE-body goal"],
+        "a requirement at a rule variable, in a position the rule-body typer checks",
+    );
+    let refused = errs.iter().filter(|e| e.contains("RULE-body goal") && e.contains(callee)).count();
+    assert_eq!(refused, clauses.len(), "one refusal per clause; got:\n{}", errs.join("\n"));
+    errs
+}
+
+/// A sort that `requires`: its member's dictionary chain is its sort's, not its own.
+const HOLDER: &str = "  sort Holder\n    sort A = ?\n    requires WeakOrd[T = A]\n    \
+    operation hsign(x: A, y: A) -> Int64 = WeakOrd.compare(x, y)\n  end\n";
+
+/// A RULE GOAL PASSES ITS CALLEE NOTHING. `r` reaches the call through `inner`, a goal of its
+/// body, and a clause's condition is filled only where an OPERATION cites it: the caller's
+/// `Descending` stops at `r`, and `inner` derives `Int64`'s own from the values. Cited
+/// directly, `inner` answers through the caller — the control, in the same program.
+/// Rule-to-rule implicit arguments are 060-implementation §7.3's S7 (WI-20260911-5G28A),
+/// and this row turns when they land: `(4, -4, -1)` through `r` too. The DIRECT half FAILS
+/// with the inference backed out (`-1, -1, -1`); the half through `r` passes either way.
+#[test]
+fn a_rule_goal_passes_its_callee_no_dictionary() {
+    let ns = "wip7vp4.viarule";
+    let body = format!(
+        "  rule inner(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule r(?a, ?b, ?c) :- inner(?a, ?b, ?c)\n{}{}",
+        cite_driver("Direct", "inner"),
+        cite_driver("Through", "r"),
+    );
+    let mut interp = crate::common::interp_for(&fix_program(ns, &body));
+    assert_eq!(
+        cited(&mut interp, ns, "Direct"),
+        (4, -4, -1),
+        "cited directly, `inner` is handed the rival its caller chose",
+    );
+    assert_eq!(
+        cited(&mut interp, ns, "Through"),
+        (-1, -1, -1),
+        "through `r` nothing is passed on: `inner` derives `Int64`'s own",
+    );
+}
+
+/// AN OPERATION'S OWN `requires` IS A CONDITION IN A VALUE SLOT OF `<=>`, AND A LOAD ERROR AS
+/// AN OPERAND OF `=`. `?c <=> Util.sign(?a, ?b)` is woven like the goal form and answers
+/// through the caller's dictionary; FAILS with the inference backed out (`-1, -1, -1`).
+///
+/// The same call as an operand of `=` is refused, whatever the clause writes beside it. An
+/// ordinary operation at goal position is a subgoal and in a value slot a data term, neither
+/// type-checked; `=` is `PartialEq.eq`, a spec operation, which the rule-body typer checks
+/// with its arguments (`call_dispatch_shape`), and the requirement check of an operation
+/// body then refuses a requirement the clause's text does not determine, before the
+/// inference runs. A `require[WeakOrd[…]]` does not discharge it — a bracket holds what its
+/// spec REQUIRES, not the spec (`scope_contract_covers_dep`); the refusal advised that
+/// bracket until this ticket ran it, and no longer does — nor does a typed head or the
+/// introducer. Of the two repairs it still names, an argument whose type is known loads
+/// (`lit`) and then is not reduced: an operand of `=` that calls an operation with
+/// `requires` stays a term and the goal is undecided (WI-20260926-DSEXA's item 3). What
+/// answers is the call written as the `<=>` operand above, or as a goal of its own.
+/// One classification of a rule-body call for the typer and the inference is
+/// WI-20260926-7D48J's; the refusals and `lit` pass either way and turn when those land.
+#[test]
+fn an_operations_own_requires_is_inferred_in_a_value_slot_and_refused_as_an_eq_operand() {
+    let ns = "wip7vp4.operand";
+    let woven = format!(
+        "  rule r(?a, ?b, ?c) :- ?c <=> Util.sign(?a, ?b)\n  \
+         rule lit(?c) :- ?c = Util.sign(1, 5)\n{}",
+        cite_driver("Driver", "r"),
+    );
+    let mut interp = crate::common::interp_for(&fix_program(ns, &woven));
+    assert_eq!(
+        cited(&mut interp, ns, "Driver"),
+        (4, -4, -1),
+        "`sign`'s `WeakOrd[A]` is `r`'s condition where the call is a `<=>` operand",
+    );
+    let mut kb = crate::common::load_kb_with(&fix_program(ns, &woven));
+    let rows = crate::common::query_unary(&mut kb, &format!("{ns}.lit"));
+    assert!(
+        rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
+        "at literals the clause loads and its `=` is undecided, `?c` free: {rows:?}",
+    );
+    let errs = refused_per_clause(
+        "wip7vp4.operandno",
+        "",
+        &[
+            "  rule r1(?a, ?b, ?c) :- ?c = Util.sign(?a, ?b)\n",
+            "  rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n",
+            "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], ?c = Util.sign(?a, ?b)\n",
+            "  rule r4(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], ?c = Util.sign(?a, ?b)\n",
+            "  rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n",
+        ],
+        "Util.sign",
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("Declare `require[")),
+        "no bracket holds an operation's own requirement, and none is advised: {errs:?}",
+    );
+}
+
+/// A MEMBER OF A SORT THAT `requires` IS REFUSED AT LOAD wherever its arguments are rule
+/// variables — as a goal, in a value slot, with a `require` of the spec, over a head typed
+/// `Int64`, with both, and under the introducer. Its chain is its sort's; the rule-body
+/// typer checks a member of a parametric sort wherever it is written, as it checks a spec
+/// operation; and `Holder` is no spec any sort provides, so neither a bracket nor an
+/// inferred read has an instance of it to name. Turns with WI-20260926-7D48J's
+/// classification; the refusals pass either way.
+///
+/// THE REPAIRS THE REFUSAL NAMES, EACH RUN. An argument whose type is known at load pins
+/// the chain: `lit` answers `Int64`'s own. And `hsign` called from an operation that declares
+/// the requirement, that operation written as the clause's goal: its `requires` is the
+/// clause's condition, and the caller's dictionary reaches `hsign` through it — FAILS with
+/// the inference backed out (`-1, -1, -1`).
+#[test]
+fn a_member_of_a_sort_that_requires_is_refused_at_rule_variables() {
+    refused_per_clause(
+        "wip7vp4.memberno",
+        HOLDER,
+        &[
+            "  rule m1(?a, ?b, ?c) :- Holder.hsign(?a, ?b, ?c)\n",
+            "  rule m2(?a, ?b, ?c) :- ?c <=> Holder.hsign(?a, ?b)\n",
+            "  rule m3(?a, ?b, ?c) :- require[WeakOrd[T]], Holder.hsign(?a, ?b, ?c)\n",
+            "  rule m4(?a: Int64, ?b: Int64, ?c) :- Holder.hsign(?a, ?b, ?c)\n",
+            "  rule m5(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], Holder.hsign(?a, ?b, ?c)\n",
+            "  rule m6[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n",
+        ],
+        "Holder.hsign",
+    );
+    let ns = "wip7vp4.memberok";
+    let repaired = format!(
+        "{HOLDER}  sort Via\n    \
+         operation hs[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = Holder.hsign(x, y)\n  \
+         end\n  \
+         rule r(?a, ?b, ?c) :- Via.hs(?a, ?b, ?c)\n  \
+         rule lit(?c) :- Holder.hsign(1, 5, ?c)\n{}",
+        cite_driver("Driver", "r"),
+    );
+    let mut interp = crate::common::interp_for(&fix_program(ns, &repaired));
+    assert_eq!(
+        cited(&mut interp, ns, "Driver"),
+        (4, -4, -1),
+        "through an operation that declares the requirement, written as a goal",
+    );
+    let mut kb = crate::common::load_kb_with(&fix_program(ns, &repaired));
+    assert_eq!(
+        crate::common::one_definite_int(&mut kb, &format!("{ns}.lit")),
+        Some(-1),
+        "at literals the chain is pinned at load: `Int64`'s own `compare`",
+    );
+}
+
+/// A REQUIREMENT NO ARGUMENT NAMES LOADS AT GOAL POSITION. `mk`'s `WeakOrd[T = B]` is at a
+/// parameter no argument fixes: an operation body calling `Mk.mk()` is refused for the
+/// unconstrained `B`. At goal position an ordinary operation is a subgoal the rule-body
+/// typer does not type, so the clause loads; it gets no condition — the inference reads one
+/// only where some argument's type is unknown, and there is no argument — and it answers from
+/// a body that never reads the slot. Passes either way; a goal-position call typed as its
+/// operand twin is, WI-20260926-7D48J's, makes this a load error.
+#[test]
+fn a_requirement_no_argument_names_loads_at_goal_position() {
+    let decl = "  sort Mk\n    operation mk[B]() -> Int64 requires WeakOrd[T = B] = 5\n  end\n";
+    let mut kb = crate::common::load_kb_with(&fix_program(
+        "wip7vp4.unanchored",
+        &format!("{decl}  rule five(?c) :- Mk.mk(?c)\n"),
+    ));
+    let woven = kb
+        .rule_ids_by_qn("wip7vp4.unanchored.five")
+        .into_iter()
+        .any(|rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call));
+    assert!(!woven, "no argument's type is unknown at load: no condition, no weave");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.unanchored.five"), Some(5));
+    let errs = crate::common::load_errors_of(&fix_program(
+        "wip7vp4.unanchoredop",
+        &format!("{decl}  sort User\n    operation use() -> Int64 = Mk.mk()\n  end\n"),
+    ));
+    crate::common::assert_refused_naming(
+        &errs,
+        &["expected a type for 'B', got unconstrained"],
+        "an operation body is refused for the parameter nothing fixes",
+    );
+}
+
+/// THE REFUSAL NAMES NO REPAIR THAT IS NOT ONE, each one run. A bare `size(?ls, ?n)` owes
+/// `FiniteCollection`'s `Iterable[…]` and is refused. The refusal named a bracket of the
+/// REQUIREMENT's spec, `require[Iterable[…]]`, which holds nothing — a bracket holds what
+/// its spec requires — and ended with the tail every such refusal gets, offering an explicit
+/// type argument, which a rule-body call refuses. It names the callee's spec now, and no
+/// tail:
+///   * the advised `require[FiniteCollection[C = List[T = String]]]` loads and answers the
+///     list's size, and so does an argument whose type is known at load (`pinned`);
+///   * the bracket advised before, and the type argument the tail offered, are each a load
+///     error.
+/// FAILS with the advice naming the requirement's spec again, and with the tail appended
+/// again; the four verdicts pass either way
+/// (`wi_nx4fd_functional_relation_row_param_test::the_woven_spelling_is_the_repair` is the
+/// bracket's own row).
+#[test]
+fn the_refusal_names_no_repair_that_is_not_one() {
+    let program = |clause: &str| {
+        format!(
+            "namespace wip7vp4.advice\n  \
+             import anthill.prelude.{{Int64, String, List, FiniteCollection, Iterable}}\n  \
+             import anthill.prelude.FiniteCollection.{{size}}\n  \
+             rule sized(?ls, ?n) :- {clause}(?ls, ?n)\n  \
+             rule two(?n) :- sized([\"a\", \"b\"], ?n)\n  \
+             rule pinned(?n) :- size([\"a\", \"b\"], ?n)\nend\n"
+        )
+    };
+    let bare = crate::common::load_errors_of(&program("size"));
+    crate::common::assert_refused_naming(
+        &bare,
+        &[
+            "RULE-body goal",
+            "Declare `require[anthill.prelude.FiniteCollection[…]]` in the clause",
+            "pin the element at this call",
+        ],
+        "the bare goal is refused and told the bracket that holds `Iterable`",
+    );
+    assert!(
+        !bare.iter().any(|e| e.contains("Declare `require[anthill.prelude.Iterable[")
+            || e.contains("explicit type argument")),
+        "neither a bracket that holds nothing nor a type argument is advised: {bare:?}",
+    );
+    let mut kb = crate::common::load_kb_with(&program(
+        "require[FiniteCollection[C = List[T = String]]], size",
+    ));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.two"), Some(2));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.pinned"), Some(2));
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("require[Iterable[C = List[T = String]]], size")),
+        &["RULE-body goal", "anthill.prelude.Iterable"],
+        "the bracket advised before holds nothing",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("size[C = List[T = String]]")),
+        &["call-site type arguments"],
+        "the type argument the tail offered is no rule-body spelling",
+    );
 }
