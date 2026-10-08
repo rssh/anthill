@@ -306,6 +306,7 @@ pub fn try_load_kb_untyped_with_files(sources: &[&str]) -> Result<KnowledgeBase,
         },
         |_| {},
     )
+    .map(|(kb, _)| kb)
 }
 
 /// WI-1122 — [`try_load_kb_with`] with a hook that runs on the FRESH KB before
@@ -353,17 +354,104 @@ fn try_load_kb_named_prepared(
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<KnowledgeBase, Vec<String>> {
     try_load_kb_named_prepared_with(sources, names, load::LoadOptions::default(), prepare)
+        .map(|(kb, _)| kb)
 }
 
 /// [`try_load_kb_named_prepared`] with explicit [`load::LoadOptions`]. The recipe stays
 /// ONE function for the reason stated above — the option is a parameter of it, never a
 /// second copy that a pipeline change could leave behind.
+///
+/// WI-20261006-SZKV7: which load it performs is [`LoadRecipe::from_env`] — THE one read of
+/// the switch on the helpers' path — and it returns the loader's `LoadResult` beside the
+/// KB, which its callers drop and [`recipe_control_load`] keeps.
 fn try_load_kb_named_prepared_with(
     sources: &[&str],
     names: Option<&[&str]>,
     options: load::LoadOptions,
     prepare: impl FnOnce(&mut KnowledgeBase),
-) -> Result<KnowledgeBase, Vec<String>> {
+) -> Result<(KnowledgeBase, load::LoadResult), Vec<String>> {
+    recipe_load(sources, names, options, LoadRecipe::from_env(), prepare)
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect())
+}
+
+/// FOR `wi_szkv7_two_step_load_test`'s CONTROL AND NOTHING ELSE: [`try_load_kb_with`] with
+/// the recipe's own return value kept, so the control sees what every other helper ran.
+///
+/// Not a helper to build a test on. The `LoadResult` is the whole load's under
+/// [`LoadRecipe::OneShot`] and the USER's call alone under [`LoadRecipe::TwoStep`] — which is
+/// exactly what the control reads, and what would make any other test's `defined_sorts`,
+/// `fact_rule_ids` or `warnings` assertion depend on the switch. A test that needs a
+/// `LoadResult` pins its recipe by name: [`load_stdlib_kb_with_source`].
+#[allow(dead_code)]
+pub fn recipe_control_load(source: &str) -> Result<(KnowledgeBase, load::LoadResult), Vec<String>> {
+    try_load_kb_named_prepared_with(&[source], None, load::LoadOptions::default(), |_| {})
+}
+
+/// WI-20261006-SZKV7 — HOW the one recipe hands the stdlib and the user's files to the
+/// loader. Every test builds its own fresh KB under both; the number of `load_all` calls
+/// is the only thing that varies.
+///
+/// `TwoStep` exists as a CONTROL (`docs/design/test-infrastructure.md` §4 A3, §5.3).
+/// Making a load pass frontier-driven, and loading the stdlib once per test binary, both
+/// rest on `load_all(S ∪ U)` and `load_all(S); load_all(U)` giving a test the same
+/// verdict — and a pass that skips an item it should have checked fails in SILENCE. So the
+/// suite has to be runnable both ways before either is built, and a test that differs is
+/// either an assertion on the recipe itself or a loader finding.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadRecipe {
+    /// `load_all(stdlib ∪ user)` — the default, and what the CLI does.
+    OneShot,
+    /// `load_all(stdlib)`, then `load_all(user)` into that same KB.
+    TwoStep,
+}
+
+/// The switch: `ANTHILL_TEST_TWO_STEP_LOAD=1` flips every recipe load of the test binary
+/// to [`LoadRecipe::TwoStep`]. `scripts/test.sh` validates it and writes it into the run's
+/// log; the control writes there what it OBSERVED.
+const TWO_STEP_LOAD_ENV: &str = "ANTHILL_TEST_TWO_STEP_LOAD";
+
+impl LoadRecipe {
+    /// The recipe the environment selects. Unset, empty or `0` is [`LoadRecipe::OneShot`]
+    /// — the three `scripts/test.sh` also reads as "off" — and `1` is
+    /// [`LoadRecipe::TwoStep`]. Any other value is REFUSED, because a run that misspelt
+    /// the value would otherwise report "green under two-step" having measured the
+    /// one-shot recipe.
+    ///
+    /// Read at every load and NOT cached: a `LazyLock` whose initializer panics is
+    /// poisoned, so only the first test would name the bad value and the thousands after
+    /// it would fail on the poison (/code-review).
+    #[allow(dead_code)]
+    pub fn from_env() -> Self {
+        match std::env::var(TWO_STEP_LOAD_ENV).as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("") | Ok("0") => LoadRecipe::OneShot,
+            Ok("1") => LoadRecipe::TwoStep,
+            other => panic!("{TWO_STEP_LOAD_ENV}={other:?}: expected 0 or 1"),
+        }
+    }
+}
+
+/// The body of the one recipe, with the [`LoadRecipe`] a PARAMETER: parse each source as
+/// its own file, build a fresh KB, run `prepare` on it, then load. Returns the loader's
+/// own `LoadResult` and `LoadError`s — under [`LoadRecipe::TwoStep`] those of the USER's
+/// call, which is what makes the recipe observable (see `wi_szkv7_two_step_load_test`).
+///
+/// `prepare` runs before the FIRST load under both recipes, and both calls take the same
+/// `options`. A stdlib that fails to load under `TwoStep` is returned as the error it is.
+///
+/// NAMING THE RECIPE HERE TAKES A TEST OUT OF THE SWITCH'S REACH, so it is for the control
+/// and for a test that is pinned to one recipe ON PURPOSE, with the reason at its site
+/// ([`load_stdlib_kb_with_source`]: a re-type test needs the user's own `LoadResult`). It
+/// is not the way to get typed `LoadError`s out of an ordinary load — `OneShot` written
+/// here runs one-shot under `ANTHILL_TEST_TWO_STEP_LOAD=1` and says nothing.
+#[allow(dead_code)]
+pub fn recipe_load(
+    sources: &[&str],
+    names: Option<&[&str]>,
+    options: load::LoadOptions,
+    recipe: LoadRecipe,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> Result<(KnowledgeBase, load::LoadResult), Vec<load::LoadError>> {
     if let Some(names) = names {
         assert_eq!(names.len(), sources.len(), "one name per source");
     }
@@ -379,14 +467,21 @@ fn try_load_kb_named_prepared_with(
         })
         .collect();
 
-    let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.extend(user.iter());
+    let stdlib_refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
+    let user_refs: Vec<&parse::ir::ParsedFile> = user.iter().collect();
     let mut kb = KnowledgeBase::new();
     prepare(&mut kb);
-    match load::load_all_with(&mut kb, &refs, &NullResolver, options) {
-        Ok(_) => Ok(kb),
-        Err(errs) => Err(errs.iter().map(|e| e.to_string()).collect()),
-    }
+    let result = match recipe {
+        LoadRecipe::OneShot => {
+            let all = [stdlib_refs, user_refs].concat();
+            load::load_all_with(&mut kb, &all, &NullResolver, options)?
+        }
+        LoadRecipe::TwoStep => {
+            load::load_all_with(&mut kb, &stdlib_refs, &NullResolver, options)?;
+            load::load_all_with(&mut kb, &user_refs, &NullResolver, options)?
+        }
+    };
+    Ok((kb, result))
 }
 
 /// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.
@@ -556,10 +651,11 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
 /// wi211, wi219, wi759, and its own) — a change to the load sequence otherwise has to land in
 /// every one, and the copy that misses it fails as though the code under test were broken.
 ///
-/// Distinct from [`try_load_kb_with`], which loads the stdlib AND a user source in one shot and
-/// returns only errors. A caller needing the `LoadResult` (to type-check the user file's OWN
-/// sorts, then RE-type-check to exercise the free-op sweep) needs the two steps split, which
-/// is what this and [`load_stdlib_kb_with_source`] provide.
+/// Distinct from [`try_load_kb_with`], which hands the stdlib AND a user source to the one
+/// recipe — one `load_all` unless the switch says two ([`LoadRecipe`]) — and returns only
+/// errors. A caller needing the `LoadResult` (to type-check the user file's OWN sorts, then
+/// RE-type-check to exercise the free-op sweep) needs the two steps split whatever the
+/// switch says, which is what this and [`load_stdlib_kb_with_source`] provide.
 #[allow(dead_code)]
 pub fn load_stdlib_kb() -> KnowledgeBase {
     let files = collect_stdlib_and_rust_bindings();
@@ -603,17 +699,24 @@ pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
 }
 
 /// [`load_stdlib_kb`] plus ONE user source, returning the `LoadResult` too — the split-step
-/// form a re-type test needs (`type_check_sorts(&result.defined_sorts)`, then
-/// `type_check_sorts(&[])`). Parse and load failures panic: both are test-authoring bugs here,
+/// form a re-type test needs (`type_check_sorts(&mut kb, result.loaded())`, then
+/// `type_check_sorts(&mut kb, Loaded::nothing())`). Parse and load failures panic: both are test-authoring bugs here,
 /// since a test asserting a LOAD error uses [`try_load_kb_with`] instead.
+///
+/// PINNED to [`LoadRecipe::TwoStep`] by name (WI-20261006-SZKV7): the `LoadResult` these
+/// tests read has to be the USER's call alone under either setting of the switch. It is
+/// the recipe's own two-step arm, not a second spelling of it.
 #[allow(dead_code)]
 pub fn load_stdlib_kb_with_source(
     source: &str,
 ) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
-    let mut kb = load_stdlib_kb();
-    let parsed = parse::parse(source).expect("parse failed");
-    let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
-    (kb, result)
+    expect_loaded(recipe_load(
+        &[source],
+        None,
+        load::LoadOptions::default(),
+        LoadRecipe::TwoStep,
+        |_| {},
+    ))
 }
 
 /// WI-20260901-Q68AK — [`load_stdlib_kb_with_source`] that STOPS BEFORE THE TYPER and

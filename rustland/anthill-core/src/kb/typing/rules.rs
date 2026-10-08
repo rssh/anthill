@@ -18,53 +18,65 @@ pub(super) fn check_pattern_fragment(
     };
 
     for rid in kb.by_domain(sort_name) {
-        if kb.is_fact(rid) {
-            continue;
-        } // skip facts — only check rules
+        check_rule_pattern_fragment(kb, rid, ho_apply_sym, errors);
+    }
+}
 
-        // Head stays a hash-consed term (it is searched in the discrim tree),
-        // so the head checks remain term-based.
-        let head = kb.rule_head(rid);
+/// [`check_pattern_fragment`] for ONE clause — a fact is no rule and is left alone.
+/// Split out so a rule a LATER load writes into an earlier load's sort is checked
+/// without re-walking that sort (`sorts::check_late_clauses`).
+pub(super) fn check_rule_pattern_fragment(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    ho_apply_sym: Symbol,
+    errors: &mut Vec<TypeError>,
+) {
+    if kb.is_fact(rid) {
+        return;
+    } // skip facts — only check rules
 
-        // WI-20260902-CZJ2N: a NULLARY head is stored bare. Without the `Ref`/`Ident`
-        // arm every 0-ary-headed rule (`rule flag :- …`, and now its parenthesised
-        // twin, which is the same term) was skipped entirely — head rule 1 AND the
-        // per-goal `check_ho_apply_pattern_occ` body walk — so a load-time refusal
-        // silently stopped running on a whole class of rules.
-        let head_sym = match kb.get_term(head) {
-            Term::Fn { functor, .. } => *functor,
-            Term::Ref(s) | Term::Ident(s) => *s,
-            _ => continue,
-        };
-        // WI-458: the rule's OWN head span, keyed by RuleId. Deliberately no
-        // `term_span(head)` fallback: the loader records a `term_spans` entry only
-        // for op-body subterms and FACT heads, never for a rule head — so a hit
-        // there could only be another construct that happened to intern the same
-        // head TermId, i.e. exactly the cross-file span this WI removes. `None`
-        // (no location) beats a confidently wrong file:line.
-        let span = kb.rule_head_span(rid).map(|s| s.span);
+    // Head stays a hash-consed term (it is searched in the discrim tree),
+    // so the head checks remain term-based.
+    let head = kb.rule_head(rid);
 
-        // Rule 1: head must not contain ho_apply (no predicate variables in head)
-        if term_contains_functor(kb, head, ho_apply_sym) {
-            errors.push(TypeError::Other {
-                site: TypeError::here(),
-                span,
-                context: TypeErrorContext::Rule {
-                    name: head_sym,
-                    field: RuleField::Head,
-                },
-                expected: "no predicate variables in rule head".to_string(),
-                actual: "ho_apply in head position".to_string(),
-            });
-        }
+    // WI-20260902-CZJ2N: a NULLARY head is stored bare. Without the `Ref`/`Ident`
+    // arm every 0-ary-headed rule (`rule flag :- …`, and now its parenthesised
+    // twin, which is the same term) was skipped entirely — head rule 1 AND the
+    // per-goal `check_ho_apply_pattern_occ` body walk — so a load-time refusal
+    // silently stopped running on a whole class of rules.
+    let head_sym = match kb.get_term(head) {
+        Term::Fn { functor, .. } => *functor,
+        Term::Ref(s) | Term::Ident(s) => *s,
+        _ => return,
+    };
+    // WI-458: the rule's OWN head span, keyed by RuleId. Deliberately no
+    // `term_span(head)` fallback: the loader records a `term_spans` entry only
+    // for op-body subterms and FACT heads, never for a rule head — so a hit
+    // there could only be another construct that happened to intern the same
+    // head TermId, i.e. exactly the cross-file span this WI removes. `None`
+    // (no location) beats a confidently wrong file:line.
+    let span = kb.rule_head_span(rid).map(|s| s.span);
 
-        // Check body goals for pattern fragment violations — WI-246: walk the
-        // OCCURRENCE body (`rule_body_nodes`), not the term body. `ho_apply` is
-        // not a recognized reflect materialize key, so it stays faithful
-        // (`Expr::Apply { functor: ho_apply, … }`) in the occurrence form.
-        for goal in kb.rule_body_nodes(rid) {
-            check_ho_apply_pattern_occ(kb, goal, ho_apply_sym, head_sym, span, errors);
-        }
+    // Rule 1: head must not contain ho_apply (no predicate variables in head)
+    if term_contains_functor(kb, head, ho_apply_sym) {
+        errors.push(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: head_sym,
+                field: RuleField::Head,
+            },
+            expected: "no predicate variables in rule head".to_string(),
+            actual: "ho_apply in head position".to_string(),
+        });
+    }
+
+    // Check body goals for pattern fragment violations — WI-246: walk the
+    // OCCURRENCE body (`rule_body_nodes`), not the term body. `ho_apply` is
+    // not a recognized reflect materialize key, so it stays faithful
+    // (`Expr::Apply { functor: ho_apply, … }`) in the occurrence form.
+    for goal in kb.rule_body_nodes(rid) {
+        check_ho_apply_pattern_occ(kb, goal, ho_apply_sym, head_sym, span, errors);
     }
 }
 

@@ -2366,7 +2366,7 @@ end
 fact Circle(color: Red, radius: 42)
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct fact should produce no errors, got: {:?}",
@@ -2489,7 +2489,7 @@ end
 "#;
     // Entity definition itself has type terms, not instances — no facts to check
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "entity definitions should not produce errors, got: {:?}",
@@ -2554,7 +2554,7 @@ fn typer_error_is_file_located() {
 #[test]
 fn type_check_stdlib_no_spurious_errors() {
     let (mut kb, result) = load_stdlib_kb_with_result();
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "stdlib should produce no type errors, got: {:?}",
@@ -2586,7 +2586,7 @@ end
     // RE-type over a rewritten body, and its cleanliness is the first half of the same
     // assertion the second call makes — kept because it localises a regression to the
     // pass that broke.
-    let errors1 = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors1 = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors1.is_empty(),
         "re-type over the loaded (already rewritten) body should be clean, got: {:?}",
@@ -2594,7 +2594,7 @@ end
     );
     // Re-type-check with no sort owning `Box.put`: the free-op sweep re-visits
     // the rewritten body — the WI-509 path. Must stay clean.
-    let errors2 = type_check_sorts(&mut kb, &[]);
+    let errors2 = type_check_sorts(&mut kb, Loaded::nothing());
     assert!(
         errors2.is_empty(),
         "re-type-check of a field-projection body must be clean, got: {:?}",
@@ -2614,7 +2614,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct literal body should produce no errors, got: {:?}",
@@ -2658,7 +2658,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct var ref should produce no errors, got: {:?}",
@@ -2694,7 +2694,7 @@ sort Factory
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct constructor return should produce no errors, got: {:?}",
@@ -2815,7 +2815,7 @@ end
 #[test]
 fn type_check_op_stdlib_no_spurious_errors() {
     let (mut kb, result) = load_stdlib_kb_with_result();
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "stdlib operations should produce no type errors, got: {:?}",
@@ -2835,7 +2835,7 @@ sort Logic
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct if_expr should produce no errors, got: {:?}",
@@ -2875,7 +2875,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct let_expr should produce no errors, got: {:?}",
@@ -2898,7 +2898,7 @@ sort Palette
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct match should produce no errors, got: {:?}",
@@ -2953,7 +2953,7 @@ sort S
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "applying a Function-typed param should typecheck, got: {:?}",
@@ -2976,7 +2976,7 @@ sort S
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "inline lambda arg should typecheck, got: {:?}",
@@ -2999,7 +2999,7 @@ sort S
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "let-bound lambda should typecheck, got: {:?}",
@@ -3013,7 +3013,7 @@ end
 
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
-    check_obligations, is_subtype, transitive_required_sorts, type_check_sorts,
+    check_obligations, is_subtype, transitive_required_sorts, type_check_sorts, Loaded,
     types_compatible as raw_types_compatible,
 };
 
@@ -5372,7 +5372,7 @@ end
 operation get_color() -> Color = red
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "red <: Color, should be no errors, got: {:?}",
@@ -5399,7 +5399,7 @@ sort Canvas
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "Canvas.paint returns red <: Color, got: {:?}",
@@ -5849,7 +5849,7 @@ end
 fact Thing(name: "hello", color: red)
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct fact should produce no errors, got: {:?}",
@@ -5880,7 +5880,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct literal body should produce no errors, got: {:?}",
@@ -5900,7 +5900,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "let with Int64 annotation should typecheck, got: {:?}",
@@ -5925,7 +5925,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "annotated let should typecheck, got: {:?}",
@@ -5944,7 +5944,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "add(x,x) with x:Int should return Int64 via type param instantiation, got: {:?}",
@@ -5978,7 +5978,7 @@ end
 fact Box(items: cons(head: 42, tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "correct List[T=Int64] value should produce no errors, got: {:?}",
@@ -6020,7 +6020,7 @@ fact Foo(x: "wrong")
         !result.defined_sorts.is_empty(),
         "should have defined sorts"
     );
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(!errors.is_empty(), "should detect type error in user sort");
 }
 
@@ -6229,7 +6229,7 @@ sort Math
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "consistent variable types should produce no errors, got: {:?}",
@@ -6270,7 +6270,7 @@ sort Items
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "?c consistently Color should be fine, got: {:?}",
@@ -6294,7 +6294,7 @@ fn rule_typing_stdlib_no_spurious_errors() {
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "stdlib rules should produce no type errors, got: {:?}",
@@ -6316,7 +6316,7 @@ sort TestSort
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "valid ho_apply in body should be fine, got: {:?}",
@@ -6357,7 +6357,7 @@ fn pattern_fragment_stdlib_valid() {
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     // Filter to only pattern-fragment errors (not type errors)
     let ho_errors: Vec<_> = errors
         .iter()
@@ -6394,7 +6394,7 @@ fn effect_scoping_stdlib_no_spurious_errors() {
         let result = load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
         (kb, result)
     };
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     let effect_errors: Vec<_> = errors
         .iter()
         .filter(|e| {
@@ -6427,7 +6427,7 @@ fact Holder(items: cons(head: 42, tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
     // Use parameterized field checking (already works for facts)
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "cons(head: 42, tail: nil) in List[T=Int64] field should pass, got: {:?}",
@@ -6446,7 +6446,7 @@ end
 fact Holder(items: cons(head: "hello", tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "cons(head: \"hello\", tail: nil) in List[T=String] field should pass, got: {:?}",
@@ -6467,7 +6467,7 @@ end
 fact Holder(ints: cons(head: 42, tail: nil), strings: cons(head: "hello", tail: nil))
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "two different List instantiations in same entity should work, got: {:?}",
@@ -6507,7 +6507,7 @@ sort Container
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "rule with two different List instantiations should be fine, got: {:?}",
@@ -6553,7 +6553,7 @@ sort Test
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "exhaustive match should be fine, got: {:?}",
@@ -7155,7 +7155,7 @@ sort Test
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "wildcard should cover remaining cases, got: {:?}",
@@ -7178,7 +7178,7 @@ sort Test
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "var pattern should cover all cases, got: {:?}",
@@ -7197,7 +7197,7 @@ end
 fact Thing(count: "oops")
 "#;
     let (mut kb, result) = load_untyped(source);
-    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts_typed(&mut kb, result.loaded());
     assert_eq!(errors.len(), 1, "expected one type error, got: {errors:?}");
     match &errors[0] {
         TypeError::Other {
@@ -7227,7 +7227,7 @@ sort Test
 end
 "#;
     let (mut kb, result) = load_untyped(source);
-    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts_typed(&mut kb, result.loaded());
     let return_err = errors
         .iter()
         .find(|e| {
@@ -7264,7 +7264,7 @@ end
 fn typed_span_resolves_to_source_position() {
     let source = "sort Item\n  entity Thing(count: Int64)\nend\nfact Thing(count: \"oops\")\n";
     let (mut kb, result) = load_untyped(source);
-    let errors = type_check_sorts_typed(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts_typed(&mut kb, result.loaded());
     let span = errors[0].span(&kb);
     assert!(
         span.is_some(),
@@ -7290,7 +7290,7 @@ namespace test.wi186_smoke
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "free-standing op with ?a in param type should typecheck cleanly, got: {:?}",
@@ -7310,7 +7310,7 @@ namespace test.wi186_ret
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "free-standing op with ?a in return type should typecheck cleanly, got: {:?}",
@@ -7332,7 +7332,7 @@ namespace test.wi186_pair
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "free-standing op returning Pair[?a, ?b] should typecheck cleanly, got: {:?}",
@@ -7357,7 +7357,7 @@ namespace test.wi186_call
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "concrete call site for free-standing parametric op should typecheck, got: {:?}",
@@ -7380,7 +7380,7 @@ namespace test.wi186_call_int
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "Int64-Int64 instantiation should typecheck, got: {:?}",
@@ -7405,7 +7405,7 @@ namespace test.wi237_concrete
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "bare-Var ctor field should propagate scrutinee type-arg, got: {:?}",
@@ -7449,7 +7449,7 @@ namespace test.wi237_buried
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(errors.is_empty(),
         "parameterized field type should propagate scrutinee type-arg into inner pattern, got: {:?}",
         errors);
@@ -7468,7 +7468,7 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     let (mut kb, result) = load_stdlib_kb_with_result();
 
     // 2) Run the WI-031 typing pass on every loaded sort.
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "stdlib should type-check clean, got: {:?}",
@@ -7563,7 +7563,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "explicit positional binding should pin return type, got: {:?}",
@@ -7583,7 +7583,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "explicit named binding should pin return type, got: {:?}",
@@ -7605,7 +7605,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "partial explicit + arg inference should typecheck, got: {:?}",
@@ -7626,7 +7626,7 @@ sort Demo
 end
 "#;
     let (mut kb, result) = load_with_result(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     assert!(
         errors.is_empty(),
         "arg-driven inference should pin A to Int64, got: {:?}",

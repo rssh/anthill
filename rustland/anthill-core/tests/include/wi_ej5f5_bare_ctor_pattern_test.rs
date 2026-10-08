@@ -435,7 +435,7 @@ fn the_annotation_opt_out_reaches_the_exhaustiveness_check_too() {
         // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
         // The verdict is bound, not discarded (WI-966).
         let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
-        anthill_core::kb::typing::type_check_sorts(&mut kb, &result.defined_sorts)
+        anthill_core::kb::typing::type_check_sorts(&mut kb, result.loaded())
             .iter()
             .map(|e| format!("{e}"))
             .filter(|s| s.contains("missing"))

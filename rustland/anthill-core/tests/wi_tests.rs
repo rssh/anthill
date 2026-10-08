@@ -1984,3 +1984,9 @@ mod wi_gvgsq_instance_member_test;
 
 #[path = "include/wi_df0ts_default_instance_test.rs"]
 mod wi_df0ts_default_instance_test;
+
+#[path = "include/wi_szkv7_two_step_load_test.rs"]
+mod wi_szkv7_two_step_load_test;
+
+#[path = "include/wi_szkv7_clause_frontier_test.rs"]
+mod wi_szkv7_clause_frontier_test;

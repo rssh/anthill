@@ -23,7 +23,7 @@
 //! by integers, `Vec[T = Int64, N = 3]`).
 
 use anthill_core::kb::load::{self, LoadResult, NullResolver};
-use anthill_core::kb::typing::{sort_functor_of_view, type_check_sorts};
+use anthill_core::kb::typing::{sort_functor_of_view, type_check_sorts, Loaded};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
@@ -61,12 +61,12 @@ fn load_with_result(source: &str) -> (KnowledgeBase, LoadResult) {
 /// what made the first call here the original pass.
 fn retype_errors(source: &str) -> Vec<String> {
     let (mut kb, result) = load_with_result(source);
-    let first = type_check_sorts(&mut kb, &result.defined_sorts);
+    let first = type_check_sorts(&mut kb, result.loaded());
     assert!(
         first.is_empty(),
         "first type-check must be clean, got: {first:?}"
     );
-    type_check_sorts(&mut kb, &[])
+    type_check_sorts(&mut kb, Loaded::nothing())
         .iter()
         .map(|e| e.to_string())
         .collect()
@@ -79,12 +79,12 @@ fn retype_errors(source: &str) -> Vec<String> {
 /// signature would read back `Term`, and one that left the constructor unreduced `FieldOf`.
 fn retyped_body_sort(source: &str, op_qn: &str) -> String {
     let (mut kb, result) = load_with_result(source);
-    let first = type_check_sorts(&mut kb, &result.defined_sorts);
+    let first = type_check_sorts(&mut kb, result.loaded());
     assert!(
         first.is_empty(),
         "first type-check must be clean, got: {first:?}"
     );
-    let second = type_check_sorts(&mut kb, &[]);
+    let second = type_check_sorts(&mut kb, Loaded::nothing());
     assert!(
         second.is_empty(),
         "re-type-check must be clean, got: {second:?}"

@@ -4,6 +4,9 @@
 the gate** — a full `scripts/test.sh` run builds `anthill-core` optimized, a selected run
 does not (WI-20261006-ZVV24: §1.1, §2.5, §4 A1), and that day's re-measurement on a quiet machine
 corrected several of the first day's numbers — each correction is dated where it stands.
+**The two-step load switch landed 2026-10-07** (WI-20261006-SZKV7: §5.3) and found the
+equivalence levers A3 and B rest on broken in two places (§4 A3); the first was fixed the
+next day, the second is open.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -271,6 +274,31 @@ by phase is also what §2.2 measured at opt-level 0, to within a point or two:
 `type_check_sorts` 38 %, `load_with_visited` 21 %, `eq_derive`'s classify and derive 10 %,
 `check_provider_requires` 8 %, `type_value_derive` 4 %, `sort_domain_derive` 4 %.
 
+**Counted 2026-10-07 — how many of them go through the recipe**
+(`two-step-run-2026-10-07.txt`; WI-20261006-SZKV7). The same trace with the two-step
+switch on separates them: a call given the stdlib AND another file at once is a one-shot
+load the switch did not reach. (The "through the recipe" column needed one more line in
+the trace, printed by the recipe for this run and not kept; §10's recipe gives the other
+two columns' sum without it.)
+
+| | stdlib loads executed | through the recipe | one-shot, not reached | the stdlib alone, by other means |
+|---|---:|---:|---:|---:|
+| `wi_tests` | 8 860 | 7 847 (89 %) | 885 | 128 |
+| `parse_tests` | 247 | 18 | 25 | 204 |
+| the other nine integration binaries | 484 | 357 | 118 | 9 |
+| lib unit tests (their own loader, `kb/test_support.rs`) | 104 | 0 | 79 | 25 |
+| **all twelve** | **9 695** | **8 222 (85 %)** | **1 107** | **366** |
+
+Outside the library's own 79, the 1 028 are the copies: **175 files under
+`tests/include`** (by grep), and `classic_mini_test.rs` and `github_todo_test.rs`, build a
+KB, collect the stdlib and call `load_all` themselves.
+Most are the recipe verbatim (of their local helpers, 55 return `Vec<String>`, 29 a
+`KnowledgeBase`, 12 a `Result<(), Vec<String>>` — all of which a `common` helper returns
+already); about thirty want what the recipe did not expose until this item, the loader's
+`LoadError`s or its `LoadResult`. They are outside the two-step control (§5.3) and would
+be outside lever B: neither reaches a test except through the recipe. The library's 79
+are a different change — `src/` cannot use `tests/common` at all.
+
 ### 2.5 The optimized-build numbers
 
 `rustland/Cargo.toml` has no `[profile]` section, and until WI-20261006-ZVV24 nothing
@@ -512,6 +540,44 @@ switch) and by a focused test per pass whose fixture is a `U` that invalidates a
 Expected: `incr` from 2.9 s to under 0.1 s. Note this does **not** make the one-shot full
 load faster; it makes the second call cheap. Its value is lever B.
 
+**Measured 2026-10-07 — the equivalence does not hold today, in two places**
+(WI-20261006-SZKV7; §5.3 has the run). Both were found by the two-step switch before any
+pass was touched, which is what it was built first for, and each is a statement about a
+pass this section proposes to change:
+
+- **The sort loop had the wrong frontier already — FIXED 2026-10-08.** The typer's
+  loop over `sort_names` (`kb/typing/sorts.rs`) reaches a fact through its constructor's
+  SORT and a rule through its domain SORT, and a load hands it the sorts that load
+  defined. A clause THIS call asserted under a sort an EARLIER call defined is under no
+  sort in the list and was never checked. One-shot the two sets coincide, which is why
+  nothing noticed. Three shapes, each refused in one call and loading clean in two until
+  the fix: `fact box(n: "seven")` over a base `box(n: Int64)`; its other spelling
+  `rule box(n: "seven") :- true`; and a rule with contradictory variable types, or
+  outside the pattern fragment, written into the base's sort through a second `namespace`
+  entry. The two-step run found the first; /code-review of its fix found the other two,
+  which the fix had left open by taking its work list from `LoadResult.fact_rule_ids` —
+  a list one producer feeds. The typer is now handed what the call ADDED as one value
+  (`typing::Loaded`, from `LoadResult::loaded`): the sorts it defined and the RANGE OF
+  RULE SLOTS it filled before its typer ran, which no producer can be left off. It is
+  the typer's only argument — a list of sorts alone no longer compiles — so a hand-driven
+  call and the pipeline's own are given the same thing. It is the first pass with a
+  frontier of items rather than of sorts, and the shape the others need: what the call
+  added, not what the KB holds. Measured in one call over the stdlib it checks nothing
+  (4 600 slots walked in 3 ms). Two things it does NOT settle, both stated at the site:
+  the two recipes give the same diagnostics but not always in the same ORDER, and a
+  fact a later load merely RESTATES is the earlier load's, not re-checked.
+- **Equality derivation is not monotone in what has been loaded.** A written
+  `provides Eq[T = List[T = A]]` loaded TOGETHER with the stdlib leaves `List` with no
+  derived `PartialEq` / `Eq` / `NonEq` provision; loaded AFTER it, the rows the stdlib's
+  own call derived are still there beside the written ones. So "derive for the new sorts
+  and for old sorts whose fields mention them", above, is not the whole invalidation set
+  for `eq_derive`: a new written provider for an OLD sort has to take the old derived rows
+  back, or the load has to refuse it.
+
+Neither is a hypothetical for the tests alone: `KB.loaded` (`eval/builtins.rs`,
+`kb_loaded`) calls `load_all` on the live KB, which is the second call of a two-step load.
+Until the fix above it accepted `fact box(n: "seven")` over a base `box(n: Int64)`.
+
 ### A4. Hot spots inside the passes
 
 For when A1–A3 are in and the profile is re-taken (the ranking will shift):
@@ -614,6 +680,45 @@ user's — which is what the re-type tests want anyway), diagnostics for a refus
 whole-KB passes re-report nothing for the base, since the base loads clean — but A3 must
 keep it so), and `fact_dedup` / discrimination-tree state for a `U` that re-asserts a
 stdlib fact.
+
+**The run, 2026-10-07 (WI-20261006-SZKV7).** The recipe now takes a `LoadRecipe`, and
+`ANTHILL_TEST_TWO_STEP_LOAD=1` makes every helper load `load_all(stdlib)` and then
+`load_all(user)` into the same fresh KB. There is no `Clone` and no shared base, so the
+number of `load_all` calls is the only thing that varies. `wi_szkv7_two_step_load_test`
+is the control that a switched run measured what it says — the user call's
+`LoadResult.defined_sorts` holds the user's sorts and no stdlib one. `test.sh` writes the
+recipe it was ASKED for into the run's log and the control writes the one it OBSERVED,
+so a log carries both. One `anthill-core` run under the switch, the gate's build,
+12 threads: **7 871 passed, 2 failed, 6 ignored**, against 7 873 / 0 / 6 for the same
+thirteen binaries in that night's one-shot gate; both failures pass one-shot on the same
+binary and failed again in a second switched run. Raw: `two-step-run-2026-10-07.txt`.
+
+| test | class | what differs |
+|---|---|---|
+| `wi830_extent_binding_test::a_role_that_is_not_a_role_is_refused_at_load` | loader finding, **fixed 2026-10-08** | a fact over the stdlib's `ExtentBinding` with a `role` that is no `ExtentRole` was refused one-shot and LOADED CLEAN two-step: the typer reaches a clause through the sorts the call defined, and the fact's entity was defined by the earlier call (§4 A3). `wi_szkv7_clause_frontier_test` drives it, and the rule-shaped siblings no test in the suite had, without the switch |
+| `wi228_tree_threaded_dispatch_test::pin_now_threads_conditional_tree_into_nested_dictionary_nodes` | loader finding | a user sort providing `Eq[T = List[T = A]]`: one-shot, `List` gets no derived equality rows and the call `eq(x, y)` at `List[Int64]` is pinned to the user's `eq`; two-step, the stdlib call's derived `List → PartialEq / Eq / NonEq` rows stay beside the written ones and the call carries no `CallClass` (§4 A3). The program's VALUE is the same under both |
+
+Neither test was adjusted, and none is pinned to the one-shot recipe: under the switch
+the suite had these two red rows. The first was not the tests' alone — `KB.loaded` is a
+second `load_all` on a live KB, and it accepted a source whose `fact box(n: "seven")`
+over the base's `box(n: Int64)` a one-shot load refuses (probed; the raw file has it).
+**With the first fixed, 2026-10-08, the same run is 7 885 passed, 1 failed, 6 ignored** —
+the second row alone, until that finding is settled — and that morning's one-shot gate
+is 8 766 / 0 / 14.
+
+**No test differs for a reason that is the recipe's own.** Nothing within the switch's
+reach reads `Symbol` numbering, the order of diagnostics, or `fact_dedup` state in a way
+the second call changes; the files that read `LoadResult.defined_sorts` (the control
+aside) already load in two calls by hand and never pass through the recipe. That is a
+statement about what the
+suite ASSERTS, in two ways narrower than "the recipes are equivalent":
+
+- **The oracle is the assertions.** A KB that differs where no test looks is invisible to
+  it — the second finding was caught by ONE test that reads a `CallClass`, while every
+  test that only ran such a program saw the same value.
+- **The switch reaches 85 % of the stdlib loads the suites execute** — 8 222 of 9 695,
+  counted (§2.4). Another 1 107 ran one-shot whatever the switch said: 1 028 made by test
+  files that carry their own copy of the load, 79 by the library's own unit tests.
 
 ### 5.4 The subprocess suites
 
@@ -741,6 +846,15 @@ informed; it does not recommend changing the rule until A and B have been measur
    which §9 did not have as a step of its own), and WI-059 rewritten as B. A3 goes one
    ticket per pass, filed one at a time (user, 2026-10-06). Not filed: A2, `Clone + Send`,
    §5.4 a, the §7 fresh-clone trap.
+6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things, none
+   filed. (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
+   a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
+   (b) Equality derivation that a later written provider does not take back: a bug,
+   or a rule to state — a later load may not provide for an earlier load's sort what the
+   earlier load derived — and refuse. (c) The test files that carry their own copy of the
+   load: routing them through the recipe is what puts them under the two-step control and,
+   later, on the base KB. Until (b) is settled the control A3 rests on is not green, so
+   it comes before the first A3 ticket.
 
 ## 9. Recommended sequence, with the measurement at each step
 
@@ -748,7 +862,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 |---|---|---|---|
 | 0 | re-take §2 on a quiet machine; the opt-level rows and the compile deltas | the bench + `cargo test --no-run` after a one-line edit | **done 2026-10-06** — level 2 (§2.5) |
 | 1 | A1: `anthill-core` at 2 and the tree-sitter crates at 3, for the gate | one full run, same log format as §1 | **done 2026-10-06** — 3 h 27 min → 30 min 40 s cold, 15 min 45 s warm (§1.1) |
-| 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | the list of tests that differ — B's real cost, before B |
+| 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differ, both loader findings (§5.3), one fixed since; the switch reaches only the loads that go through the recipe (§2.4) |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
 | 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
 | 5 | B: `Clone` + `Send` + base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 659 s → one to two minutes: loads are 89 % of it (§2.4) |
@@ -797,6 +911,18 @@ THREADS=12 ITERS=3 ./target/debug/examples/bench_load
 # (plain cargo is the unoptimized build; add the three --config lines above for the gate's)
 ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core -- --nocapture > load-trace.log 2>&1
 grep -c 'load_with_visited x' load-trace.log
+
+# the suite under the two-step recipe (§5.3). The log says which recipe was asked for
+# (its `load:` line) and which one the control observed (`load recipe OBSERVED`).
+ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+
+# how many of the stdlib loads the switch does NOT reach (§2.4): the trace above with the
+# switch on. A `load_with_visited x N` with N ABOVE the stdlib's file count (87 today) is
+# the stdlib and another file in ONE call — a one-shot load that is not the recipe's.
+# N equal to it is a call given the stdlib alone: the recipe's first, or `load_stdlib_kb`.
+ANTHILL_LOAD_TIMING=1 ANTHILL_TEST_TWO_STEP_LOAD=1 RUST_TEST_THREADS=12 \
+  cargo test --no-fail-fast -p anthill-core -- --nocapture 2>&1 \
+  | grep -a -E 'load_with_visited x|Running ' > load-trace.log
 ```
 
 Everything in §1 came from `rustland/scripts/test.sh`'s own log: its elapsed-seconds

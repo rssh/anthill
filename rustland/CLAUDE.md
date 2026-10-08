@@ -49,6 +49,23 @@ So: iterate on a few tests with a selected run, set `ANTHILL_TEST_OPT=2` for a W
 selection (a whole crate), and let the full run be the gate. The two builds live side by
 side in `target/`; raw `cargo test` / `cargo build` are the unoptimized one.
 
+**Two load recipes; the gate runs one.** `ANTHILL_TEST_TWO_STEP_LOAD=1` makes
+`anthill-core`'s shared load helpers (`tests/common/mod.rs`, `LoadRecipe`) hand the stdlib
+and a test's own files to the loader in TWO `load_all` calls instead of one. It is a
+control, not a second gate: the two recipes must give every test the same verdict, and a
+test that differs is either an assertion on the recipe or a loader finding
+(WI-20261006-SZKV7; `docs/design/test-infrastructure.md` §5.3 lists the ones that differ
+today). Run it optimized, as any crate-wide selection:
+
+```bash
+ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+```
+
+The log carries the recipe the script was asked for (`load:`) and the one the control
+test observed (`load recipe OBSERVED`). The switch reaches a test only through a `common`
+helper — a file that builds its own stdlib load, the library's unit tests and every other
+crate run one-shot whatever it says, which is one more reason not to write such a file.
+
 The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
 optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
 `kb/resolve.rs` before changing anything on that path.
@@ -154,8 +171,14 @@ Integration tests in `anthill-core/tests/` follow:
    host fns on an `Interpreter`, and you DO call it per fresh interpreter (WI-968).
 3. Need the file in the KB *without* the checks? `load_all_with(.., LoadOptions {
    run_typer: false, .. })` — it stops immediately before the typer, so everything the
-   typer reads is built and a hand-driven `type_check_sorts` cannot disagree with the
-   pipeline's own. There is no separate single-file `load` any more (WI-20260901-Q68AK);
+   typer reads is built. Then drive the typer with `type_check_sorts(&mut kb,
+   result.loaded())` — the load's own work list, the sorts it defined AND the clauses it
+   asserted — and it cannot disagree with the pipeline's own call, which is given
+   exactly that. The typer takes nothing else: a list of sorts alone used to be accepted
+   and missed every fact and rule a file wrote under a sort an EARLIER load defined
+   (WI-20261006-SZKV7). `Loaded::nothing()` re-runs the whole-KB passes (the free-op
+   sweep) over a KB nothing was added to.
+   There is no separate single-file `load` any more (WI-20260901-Q68AK);
    it was a second copy of the prologue and its earlier stop point is what let a shipped
    test assert a refusal the real pipeline never makes (WI-20260901-7ZZ1Z).
 4. READ the loader's verdict — never `let _ = load_all(..)`. A discarded `Err` is

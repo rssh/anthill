@@ -27,7 +27,7 @@
 //! needs no denoted for the same job because it reads only its `Drop` record's FIELD NAMES —
 //! a projection cannot, because a rename has a source AND a result.
 
-use anthill_core::kb::typing::{extract_type, type_check_sorts, TypeExtractor};
+use anthill_core::kb::typing::{extract_type, type_check_sorts, Loaded, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
 
 use crate::common::{load_stdlib_kb_with_source, try_load_kb_with};
@@ -43,12 +43,12 @@ use crate::common::{load_stdlib_kb_with_source, try_load_kb_with};
 /// `Project[..]`.
 fn retyped_body_schema(source: &str, op_qn: &str) -> String {
     let (mut kb, result) = load_stdlib_kb_with_source(source);
-    let first = type_check_sorts(&mut kb, &result.defined_sorts);
+    let first = type_check_sorts(&mut kb, result.loaded());
     assert!(
         first.is_empty(),
         "first type-check must be clean, got: {first:?}"
     );
-    let second = type_check_sorts(&mut kb, &[]);
+    let second = type_check_sorts(&mut kb, Loaded::nothing());
     assert!(
         second.is_empty(),
         "re-type-check must be clean, got: {second:?}"

@@ -84,7 +84,7 @@ fn store_anthill_typechecks() {
     let store_src = std::fs::read_to_string(&store_path).expect("read store.anthill");
     let parsed = parse::parse(&store_src).expect("parse store.anthill");
     let result = load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load store.anthill");
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     let effect_errors: Vec<_> = errors
         .iter()
         .filter(|e| {
@@ -138,7 +138,7 @@ namespace anthill.test.wi219.commit_test
 end
 "#;
     let (mut kb, result) = load_with_stdlib(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     let effect_errors: Vec<_> = errors
         .iter()
         .filter(|e| {
@@ -190,7 +190,7 @@ namespace anthill.test.wi219
 end
 "#;
     let (mut kb, result) = load_with_stdlib(source);
-    let errors = type_check_sorts(&mut kb, &result.defined_sorts);
+    let errors = type_check_sorts(&mut kb, result.loaded());
     let effect_errors: Vec<_> = errors
         .iter()
         .filter(|e| format!("{}", e).contains("undeclared effect"))

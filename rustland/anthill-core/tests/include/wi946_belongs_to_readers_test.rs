@@ -52,7 +52,7 @@ fn typed_errors(source: &str) -> Vec<TypeError> {
     // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
     // The verdict is bound, not discarded (WI-966).
     let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
-    type_check_sorts_typed(&mut kb, &result.defined_sorts)
+    type_check_sorts_typed(&mut kb, result.loaded())
 }
 
 /// Load-time errors (the channel that carries op-return conformance and
@@ -761,7 +761,7 @@ fn probe_pattern_var_ctor_fallback_is_unreachable() {
         // `type_check_sorts` itself over a fixture the pipeline refuses on purpose.
         // The verdict is bound, not discarded (WI-966).
         let (mut kb, result) = crate::common::load_stdlib_kb_untyped(source);
-        type_check_sorts(&mut kb, &result.defined_sorts)
+        type_check_sorts(&mut kb, result.loaded())
             .iter()
             .map(|e| format!("{e}"))
             .filter(|s| s.contains("missing"))

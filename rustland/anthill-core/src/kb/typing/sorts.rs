@@ -3,11 +3,68 @@
 
 use super::*;
 
-/// Type-check the given sort terms and return errors as `LoadError` for
-/// the load pipeline. Use [`type_check_sorts_typed`] when structured
-/// `TypeError` values are needed (programmatic access, IDE diagnostics).
-pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<LoadError> {
-    let (typed, sources) = type_check_sorts_collect(kb, sort_names);
+/// What ONE `load_all` call added to the KB — the typer's work list.
+///
+/// TWO HALVES THAT TRAVEL TOGETHER, and for a long time only the first existed. The sort
+/// loop reaches a fact through its constructor's SORT and a rule through its domain SORT,
+/// so given the sorts a call defined it checks exactly the clauses written under THOSE.
+/// Loaded in one call with the stdlib, that is every clause there is. Loaded in a LATER
+/// call, a clause under a sort the earlier call defined is under no sort in the list and
+/// was never checked. MEASURED over a base `box(n: Int64)`, each refused in one call and
+/// loading clean in two — through a second `load_all` and through `KB.loaded` alike:
+///
+///   * `fact box(n: "seven")`, and its exact other spelling `rule box(n: "seven") :- true`;
+///   * a rule with contradictory variable types, written into the base's sort through a
+///     second `namespace` entry.
+///
+/// Found by running the suite with the stdlib and the test's files loaded in two calls
+/// (WI-20261006-SZKV7; `docs/design/test-infrastructure.md` §4 A3).
+///
+/// THE CLAUSES ARE A RANGE OF RULE SLOTS, not a list a producer keeps. Every clause the
+/// call asserted before its typer is in it whatever wrote it — a `fact`, a `rule`, a
+/// derivation — which is what the sort loop's bucket walk sees in one call, and what a
+/// list fed by ONE producer (`LoadResult::fact_rule_ids`, pushed to by `load_fact` alone)
+/// does not.
+///
+/// BUILT BY A LOAD, NOT BY A CALLER: [`LoadResult::loaded`](crate::kb::load::LoadResult)
+/// for the load that just ran, [`Loaded::nothing`] to re-run the typer over a KB nothing
+/// was added to. The fields are the crate's, so "these sorts and no clauses" — the call
+/// that reproduces the defect above — is not something a test can write by accident.
+#[derive(Clone, Debug)]
+pub struct Loaded<'a> {
+    /// The sorts the call defined — `LoadResult::defined_sorts`. The sort loop's list.
+    pub(crate) sorts: &'a [Symbol],
+    /// Sorts the call defined in a file that then FAILED to load. The loop does not visit
+    /// them — a file that did not load was never typed, and still is not — but they are
+    /// this call's all the same, so a clause under one is not "under a sort an earlier
+    /// call defined". Empty for a load that succeeded.
+    pub(crate) refused_sorts: &'a [Symbol],
+    /// The clauses the call asserted before its typer — `LoadResult::loaded_rules`.
+    pub(crate) rules: Range<usize>,
+}
+
+impl Loaded<'_> {
+    /// Nothing added: a RE-RUN of the typer's whole-KB passes — the free-op sweep, the
+    /// signature and rule-body checks — over what the KB already holds.
+    pub fn nothing() -> Self {
+        Loaded {
+            sorts: &[],
+            refused_sorts: &[],
+            rules: 0..0,
+        }
+    }
+}
+
+/// THE typer entry: check what one `load_all` call added (see [`Loaded`]) and return
+/// errors as `LoadError`. Use [`type_check_sorts_typed`] when structured `TypeError`
+/// values are needed (programmatic access, IDE diagnostics).
+///
+/// It is what the load pipeline calls, and — because its argument can only come from a
+/// load — what a hand-driven call after a `run_typer: false` load runs too:
+/// `type_check_sorts(&mut kb, result.loaded())` is given the same work list the
+/// pipeline's own call would have been, so the two cannot disagree.
+pub fn type_check_sorts(kb: &mut KnowledgeBase, loaded: Loaded<'_>) -> Vec<LoadError> {
+    let (typed, sources) = type_check_sorts_collect(kb, loaded);
     typed
         .iter()
         .zip(sources.iter())
@@ -24,9 +81,6 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<Lo
         .collect()
 }
 
-/// Structured form of [`type_check_sorts`]: returns `Vec<TypeError>`,
-/// preserving occurrence ids and term ids so consumers can format on
-/// demand or filter by variant.
 /// Feature flag — type-check + simp-rewrite operations declared at
 /// *namespace* level (free functions, e.g. the `anthill.cli.parse` parser).
 /// They have bodies in `op_bodies` but no `SortInfo`, so the sort loop in
@@ -42,8 +96,11 @@ pub fn type_check_sorts(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<Lo
 /// stays greppable); the `false` path is retained only as a debug kill-switch.
 const TYPECHECK_FREE_OPS: bool = true;
 
-pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> Vec<TypeError> {
-    type_check_sorts_collect(kb, sort_names).0
+/// Structured form of [`type_check_sorts`]: returns `Vec<TypeError>`,
+/// preserving occurrence ids and term ids so consumers can format on
+/// demand or filter by variant.
+pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, loaded: Loaded<'_>) -> Vec<TypeError> {
+    type_check_sorts_collect(kb, loaded).0
 }
 
 /// WI-745: like [`type_check_sorts_typed`], but also returns, parallel to the
@@ -55,8 +112,9 @@ pub fn type_check_sorts_typed(kb: &mut KnowledgeBase, sort_names: &[Symbol]) -> 
 /// (signature/rule-body/provider checks) leave `None`.
 pub(super) fn type_check_sorts_collect(
     kb: &mut KnowledgeBase,
-    sort_names: &[Symbol],
+    loaded: Loaded<'_>,
 ) -> (Vec<TypeError>, Vec<Option<crate::span::SourceId>>) {
+    let sort_names = loaded.sorts;
     let mut errors: Vec<TypeError> = Vec::new();
     // Parallel to `errors`: the file each error belongs to, where known.
     let mut sources: Vec<Option<crate::span::SourceId>> = Vec::new();
@@ -158,8 +216,26 @@ pub(super) fn type_check_sorts_collect(
     let region_sorts = crate::kb::region::region_sorts(kb);
 
     if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
-        for &sort_sym in sort_names {
-            let sort_info = find_sort_info(kb, sort_sym);
+        // Each sort's constructors and operations, read ONCE: the loop below walks them,
+        // and the pass before it needs the constructors to know which clauses are the
+        // loop's. `SortInfo` is frozen by now, so the answer cannot change under either.
+        let sort_infos: Vec<(Symbol, Option<(Vec<Symbol>, Vec<Symbol>)>)> = sort_names
+            .iter()
+            .map(|&sort_sym| (sort_sym, find_sort_info(kb, sort_sym)))
+            .collect();
+        // The call's clauses under sorts an EARLIER call defined — BEFORE the loop, where
+        // one call over both would have met them: the earlier sorts come first in its
+        // list. Inside this guard on purpose: without reflect the loop checks no clause
+        // at all, and a later call must not be held to more than one call is.
+        check_late_clauses(
+            kb,
+            &loaded,
+            &sort_infos,
+            &mut rule_typing_reportable,
+            &mut errors,
+            &mut sources,
+        );
+        for (sort_sym, sort_info) in sort_infos {
             let (ctor_syms, op_syms) = match sort_info {
                 Some((ctors, ops)) => (ctors, ops),
                 // WI-928 — JUSTIFIED, and only since this ticket. `sort_names` is
@@ -1527,132 +1603,236 @@ pub(super) fn spec_resolves_at_bindings(
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }
 
+/// The declared field types a fact of `ctor_sym` is held to, or `None` when there is
+/// nothing to hold it to: a declaration record, a functor that declares no fields.
+fn checkable_field_types(kb: &KnowledgeBase, ctor_sym: Symbol) -> Option<Vec<(Symbol, Value)>> {
+    // WI-928 — DECLARATION RECORDS are out of this check's domain, and the
+    // reason is what the check IS: `check_value_against_type` asks a SUBTYPE
+    // question, and a reflect record's slots do not hold values of their
+    // declared sorts — they hold reflect HANDLES. `EntityInfo.name: Symbol`
+    // holds the loader's name term for the entity, `ProofRecord.witness: Term`
+    // an axiom record, `OperationInfo.params: List[FieldInfo]` lowered field
+    // types. Reaching a handle from a value is a CONVERSION (`as_term` /
+    // `term_as_entity`, WI-406), deliberately NOT subsumption — `Term` is not a
+    // top type — so a subtype check over these slots reports a mismatch for
+    // every well-formed record the loader writes. MEASURED on stdlib + the Rust
+    // host bindings: 685 such reports, in 7 classes, ALL of them loader-emitted
+    // records and NONE a user fact.
+    //
+    // This is not a new exemption — it is the status quo, stated. These
+    // functors are declared as free-standing entities in reflect.anthill /
+    // realization.anthill, and until this ticket a free-standing entity emitted
+    // no `SortInfo`, so no constructor list ever named one and their facts were
+    // never reached here. What changed is that they are now reachable, so the
+    // boundary has to be written down instead of falling out of an omission.
+    // Whether the reflect schema and the loader's writes can be brought into
+    // agreement — declaring what these slots actually hold, or converting at the
+    // write — is WI-930, filed with this measurement.
+    //
+    // Keyed by [`KnowledgeBase::is_metadata_functor`], the same predicate the
+    // WI-630 write-side tripwire uses, so the set the loader may WRITE and the
+    // set this check SKIPS cannot drift apart. A user-written `fact
+    // Implementation(…)` (examples/webots-modelling) is skipped by the same
+    // rule and for the same reason: its slots hold the same handles.
+    if kb.is_metadata_functor(ctor_sym) {
+        return None;
+    }
+    let field_types = kb.entity_field_types(ctor_sym)?;
+    (!field_types.is_empty()).then(|| field_types.to_vec())
+}
+
 /// Check all facts for the given entity constructors against their declared field types.
 fn check_entity_facts(
     kb: &mut KnowledgeBase,
     ctor_syms: &[Symbol],
     errors: &mut Vec<TypeError>,
     // WI-745: parallel to `errors`; each error is tagged with the `source_id` of
-    // the fact it came from. On entry `sources` is parallel to `errors`; restored
-    // on exit. See `check_operation_bodies` for the lazy-tag rationale.
+    // the fact it came from. Parallel on entry and on exit.
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
-    // The file whose fact the current errors come from (lazily flushed).
-    let mut cur_src: Option<crate::span::SourceId> = None;
     for &ctor_sym in ctor_syms {
-        // WI-928 — DECLARATION RECORDS are out of this check's domain, and the
-        // reason is what the check IS: `check_value_against_type` asks a SUBTYPE
-        // question, and a reflect record's slots do not hold values of their
-        // declared sorts — they hold reflect HANDLES. `EntityInfo.name: Symbol`
-        // holds the loader's name term for the entity, `ProofRecord.witness: Term`
-        // an axiom record, `OperationInfo.params: List[FieldInfo]` lowered field
-        // types. Reaching a handle from a value is a CONVERSION (`as_term` /
-        // `term_as_entity`, WI-406), deliberately NOT subsumption — `Term` is not a
-        // top type — so a subtype check over these slots reports a mismatch for
-        // every well-formed record the loader writes. MEASURED on stdlib + the Rust
-        // host bindings: 685 such reports, in 7 classes, ALL of them loader-emitted
-        // records and NONE a user fact.
-        //
-        // This is not a new exemption — it is the status quo, stated. These
-        // functors are declared as free-standing entities in reflect.anthill /
-        // realization.anthill, and until this ticket a free-standing entity emitted
-        // no `SortInfo`, so no constructor list ever named one and their facts were
-        // never reached here. What changed is that they are now reachable, so the
-        // boundary has to be written down instead of falling out of an omission.
-        // Whether the reflect schema and the loader's writes can be brought into
-        // agreement — declaring what these slots actually hold, or converting at the
-        // write — is WI-930, filed with this measurement.
-        //
-        // Keyed by [`KnowledgeBase::is_metadata_functor`], the same predicate the
-        // WI-630 write-side tripwire uses, so the set the loader may WRITE and the
-        // set this check SKIPS cannot drift apart. A user-written `fact
-        // Implementation(…)` (examples/webots-modelling) is skipped by the same
-        // rule and for the same reason: its slots hold the same handles.
-        if kb.is_metadata_functor(ctor_sym) {
+        let Some(field_types) = checkable_field_types(kb, ctor_sym) else {
             continue;
-        }
-        let field_types = match kb.entity_field_types(ctor_sym) {
-            Some(ft) => ft.to_vec(),
-            None => continue,
         };
-        if field_types.is_empty() {
-            continue;
-        }
-
         for rid in kb.rules_by_functor(ctor_sym) {
-            if !kb.is_fact(rid) {
-                continue;
-            }
-
-            // WI-515: no skip-list needed. It existed to exempt the loader's
-            // same-functor `Entity` schema fact (field TYPES in the data
-            // slots), which is no longer asserted; the other names it listed
-            // (EntityInfo/SortInfo/…) never appear as fact SORTS — loader
-            // metadata facts are asserted under "Sort"/"Operation" with their
-            // own reflect functors, so they never reach a user constructor's
-            // rules_by_functor bucket anyway.
-
-            let Some(head) = kb.fact_head_term(rid) else {
-                continue;
-            };
-            let named_args = match kb.get_term(head) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => continue,
-            };
-
-            // WI-458: this fact's OWN head span, keyed by RuleId. The dropped
-            // `term_span(head)` step keyed on the hash-consed head TermId, which
-            // a same-head/different-domain fact in ANOTHER file shares (they are
-            // distinct rules — `assert_fact` dedups only when term+sort+domain all
-            // match — but alias onto one first-write-wins span). That aliasing hit
-            // WI-745's `cur_src` too: the file an error is ATTRIBUTED to came from
-            // the same lookup, so a cross-file alias mislabelled the file, not just
-            // the offsets. Every source-written fact records a head span here, so
-            // the dropped step only ever fired for a synthesized head, where it
-            // could only alias. The `functor_span` fallback stays: it is the
-            // constructor's own declaration site, a documented representative
-            // span, not an alias.
-            let head_ss = kb.rule_head_span(rid).or_else(|| kb.functor_span(ctor_sym));
-            let span: Option<Span> = head_ss.map(|s| s.span);
-            // WI-745: flush the previous fact's errors, then adopt this fact's
-            // file for the errors its field checks below push.
-            while sources.len() < errors.len() {
-                sources.push(cur_src);
-            }
-            cur_src = head_ss.map(|s| s.source);
-
-            for (field_sym, declared_type) in &field_types {
-                let field_sym = *field_sym;
-                let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
-                    Some((_, v)) => *v,
-                    None => continue,
-                };
-
-                if matches!(
-                    kb.get_term(field_value),
-                    Term::Var(Var::Global(_) | Var::DeBruijn(_))
-                ) {
-                    continue;
-                }
-
-                // WI-342: the field type is a carrier-agnostic `Value` — checked in
-                // place, no re-ground.
-                if let Some(err) = check_value_against_type(
-                    kb,
-                    field_value,
-                    declared_type,
-                    ctor_sym,
-                    field_sym,
-                    span,
-                ) {
-                    errors.push(err);
-                }
+            if kb.is_fact(rid) {
+                check_entity_fact(kb, ctor_sym, rid, &field_types, errors, sources);
             }
         }
     }
-    // WI-745: flush the last fact's errors and restore the parallel invariant.
-    while sources.len() < errors.len() {
-        sources.push(cur_src);
+}
+
+/// Check ONE fact of `ctor_sym` against that constructor's declared `field_types`
+/// ([`checkable_field_types`]). `sources` is parallel to `errors` on entry and on exit:
+/// the errors pushed here are tagged with this fact's own file.
+fn check_entity_fact(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    rid: RuleId,
+    field_types: &[(Symbol, Value)],
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    // WI-515: no skip-list needed. It existed to exempt the loader's
+    // same-functor `Entity` schema fact (field TYPES in the data
+    // slots), which is no longer asserted; the other names it listed
+    // (EntityInfo/SortInfo/…) never appear as fact SORTS — loader
+    // metadata facts are asserted under "Sort"/"Operation" with their
+    // own reflect functors, so they never reach a user constructor's
+    // rules_by_functor bucket anyway.
+
+    let Some(head) = kb.fact_head_term(rid) else {
+        return;
+    };
+    let named_args = match kb.get_term(head) {
+        Term::Fn { named_args, .. } => named_args.clone(),
+        _ => return,
+    };
+
+    // WI-458: this fact's OWN head span, keyed by RuleId. The dropped
+    // `term_span(head)` step keyed on the hash-consed head TermId, which
+    // a same-head/different-domain fact in ANOTHER file shares (they are
+    // distinct rules — `assert_fact` dedups only when term+sort+domain all
+    // match — but alias onto one first-write-wins span). That aliasing hit
+    // WI-745's `cur_src` too: the file an error is ATTRIBUTED to came from
+    // the same lookup, so a cross-file alias mislabelled the file, not just
+    // the offsets. Every source-written fact records a head span here, so
+    // the dropped step only ever fired for a synthesized head, where it
+    // could only alias. The `functor_span` fallback stays: it is the
+    // constructor's own declaration site, a documented representative
+    // span, not an alias.
+    let head_ss = kb.rule_head_span(rid).or_else(|| kb.functor_span(ctor_sym));
+    let span: Option<Span> = head_ss.map(|s| s.span);
+
+    for (field_sym, declared_type) in field_types {
+        let field_sym = *field_sym;
+        let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
+            Some((_, v)) => *v,
+            None => continue,
+        };
+
+        if matches!(
+            kb.get_term(field_value),
+            Term::Var(Var::Global(_) | Var::DeBruijn(_))
+        ) {
+            continue;
+        }
+
+        // WI-342: the field type is a carrier-agnostic `Value` — checked in
+        // place, no re-ground.
+        if let Some(err) =
+            check_value_against_type(kb, field_value, declared_type, ctor_sym, field_sym, span)
+        {
+            errors.push(err);
+        }
+    }
+    // WI-745: this fact's errors belong to this fact's file.
+    sources.resize(errors.len(), head_ss.map(|s| s.source));
+}
+
+/// The clauses ONE load asserted under sorts an EARLIER load defined — what
+/// [`Loaded::rules`] is for. The sort loop of [`type_check_sorts_collect`] reaches a
+/// clause through a sort the call defined; these are the call's other clauses, held to
+/// exactly what that loop holds its own to:
+///
+///   * a bodyless clause under a constructor: its fields, by [`check_entity_fact`];
+///   * a rule whose domain is a sort: the pattern fragment, and a place in
+///     `rule_typing_reportable` so `type_rule_bodies` reports its contradiction.
+///
+/// A clause under one of the call's OWN sorts is left to the loop — it walks the whole
+/// bucket — so nothing is reported twice. "Own" includes [`Loaded::refused_sorts`]: the
+/// loop does not visit a sort whose file failed to load, and neither does this, so a
+/// batch with a refused file reports what it always did and nothing cascades from it.
+///
+/// THE SAME DIAGNOSTICS AS ONE CALL, NOT ALWAYS IN ITS ORDER. One call reports a clause
+/// when the loop reaches its sort; this reports the call's clauses in the order they
+/// were asserted, ahead of the loop.
+///
+/// IN ONE CALL OVER THE STDLIB THIS CHECKS NOTHING — measured, stdlib + the Rust host
+/// bindings + one user file in one call: of 4 600 rule slots, 370 are bodyless clauses
+/// under a constructor outside the loop's sorts, and not one of those constructors
+/// declares checkable field types; no rule's domain is a sort outside them. The walk
+/// itself is 3 ms at opt-level 0, beside a 2 s load.
+fn check_late_clauses(
+    kb: &mut KnowledgeBase,
+    loaded: &Loaded<'_>,
+    sort_infos: &[(Symbol, Option<(Vec<Symbol>, Vec<Symbol>)>)],
+    rule_typing_reportable: &mut HashSet<RuleId>,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    if loaded.rules.is_empty() {
+        return;
+    }
+    let own_sorts: HashSet<Symbol> = loaded
+        .sorts
+        .iter()
+        .chain(loaded.refused_sorts)
+        .copied()
+        .collect();
+    // The constructors of the call's own sorts, off their `SortInfo` — the list the loop
+    // walks. A sort with no record would contribute none HERE while still being "own" for
+    // the rule arm; there is no such sort: both producers of `defined_sorts` write the
+    // record in the step that lists the sort, with no exit between (WI-928, and the
+    // loop's `None` arm, which two full runs with a panic in it never reached).
+    let mut own_ctors: HashSet<Symbol> = sort_infos
+        .iter()
+        .filter_map(|(_, info)| info.as_ref())
+        .flat_map(|(ctors, _)| ctors.iter().copied())
+        .collect();
+    for &sort_sym in loaded.refused_sorts {
+        if let Some((ctors, _)) = find_sort_info(kb, sort_sym) {
+            own_ctors.extend(ctors);
+        }
+    }
+    let ho_apply_sym = kb.try_resolve_symbol(dt::qualified(dt::HO_APPLY));
+    // Decided once per constructor / per domain the call's clauses touch.
+    let mut field_types: HashMap<Symbol, Option<Vec<(Symbol, Value)>>> = HashMap::new();
+    let mut domain_is_sort: HashMap<Symbol, bool> = HashMap::new();
+
+    for index in loaded.rules.clone() {
+        let rid = RuleId::from_index(index);
+        // Retracted in the same call it was asserted in (a requires fact re-resolved, a
+        // layer's tombstone): not a clause of the KB, and its head may be gone.
+        if !kb.is_rule_alive(rid) {
+            continue;
+        }
+        if kb.is_fact(rid) {
+            // Carrier-agnostic, as `retract` reads it. No functor, no constructor.
+            let Some(ctor_sym) = TermView::head(kb.rule_head_value(rid), kb).functor_sym() else {
+                continue;
+            };
+            if own_ctors.contains(&ctor_sym) {
+                continue;
+            }
+            let field_types = field_types
+                .entry(ctor_sym)
+                .or_insert_with(|| checkable_field_types(kb, ctor_sym));
+            if let Some(field_types) = field_types {
+                check_entity_fact(kb, ctor_sym, rid, field_types, errors, sources);
+            }
+        } else {
+            let domain = kb.rule_domain(rid);
+            if own_sorts.contains(&domain) {
+                continue;
+            }
+            // The loop's own test for "a sort it visits": one with a `SortInfo`. A rule
+            // written at namespace level has a namespace for its domain and stays
+            // outside both checks, as it does in one call.
+            let is_sort = *domain_is_sort
+                .entry(domain)
+                .or_insert_with(|| find_sort_info(kb, domain).is_some());
+            if !is_sort {
+                continue;
+            }
+            rule_typing_reportable.insert(rid);
+            if let Some(ho_apply_sym) = ho_apply_sym {
+                check_rule_pattern_fragment(kb, rid, ho_apply_sym, errors);
+                // Per-rule diagnostics with no one file to attribute them to, as the
+                // loop pads after `check_pattern_fragment`.
+                sources.resize(errors.len(), None);
+            }
+        }
     }
 }
 

@@ -1,0 +1,127 @@
+# anthill-core's suites under the TWO-STEP load recipe (WI-20261006-SZKV7), 2026-10-07 22:39.
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 rustland/scripts/test.sh -p anthill-core
+# Tree:    2ce32719 plus the change that adds the switch, as it stood BEFORE /code-review. 12 test threads.
+#          What the review changed afterwards does not touch how a test loads under the switch: the switch is
+#          read at every load instead of cached, an empty value means "off", the control prints what it
+#          observed, and `load_stdlib_kb_with_source` calls the recipe's two-step arm instead of spelling it out.
+#          Re-checked on the final tree: see the last section.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build).
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No other gate in flight, but NOT a
+#          quiet machine: Spotlight was indexing (load average 7-10 before the run), and two single tests
+#          were run by hand beside it. Read the seconds as an order of magnitude, not as a measurement.
+# Result:  7 871 passed, 2 failed, 6 ignored. The two failures PASS under the one-shot recipe on the same
+#          binary, and failed again in the traced run below: they are the recipe's, not noise.
+# compile: 338 s (anthill-core had moved 22 commits since this checkout's last optimized build)
+# wall = seconds from the binary's 'Running' line to its 'test result' line; 'finished in' is libtest's own clock
+#   wall  binary                                                 passed failed ignored  finished in
+    12  unittests src/lib.rs [anthill_core]                       666      0       0  11.28s
+     4  tests/algebra_tests.rs [algebra_tests]                     24      0       0  3.90s
+    11  tests/builtin_tests.rs [builtin_tests]                     81      0       0  11.15s
+     1  tests/classic_mini_test.rs [classic_mini_test]              4      0       0  0.71s
+    18  tests/eval_tests.rs [eval_tests]                          119      0       0  17.78s
+     2  tests/github_todo_test.rs [github_todo_test]               15      0       0  2.09s
+    16  tests/guardians_test.rs [guardians_test]                   67      0       2  15.36s
+     3  tests/induction_tests.rs [induction_tests]                 13      0       0  2.62s
+    37  tests/parse_tests.rs [parse_tests]                        463      0       0  35.88s
+    15  tests/resolve_tests.rs [resolve_tests]                    133      0       0  15.26s
+     3  tests/sql_store_example_test.rs [sql_store_example_test]    7      0       0  2.09s
+  1186  tests/wi_tests.rs [wi_tests]                             6275      2       4  1185.22s
+     4  Doc-tests anthill_core                                      4      0       0  1.05s
+
+== the two tests that differ (each run alone on the same binary under both recipes: one-shot ok, two-step FAILED)
+
+wi830_extent_binding_test::a_role_that_is_not_a_role_is_refused_at_load
+    panicked at anthill-core/tests/include/wi830_extent_binding_test.rs:170:18:
+    a role that is not an ExtentRole must not load
+  The fixture writes `fact ExtentBinding(.., role: Alpha831(), covers: [Alpha831])`; `ExtentBinding` is the
+  stdlib's and declares `role: ExtentRole`. One-shot: refused. Two-step: loads clean.
+
+wi228_tree_threaded_dispatch_test::pin_now_threads_conditional_tree_into_nested_dictionary_nodes
+    panicked at anthill-core/tests/include/wi228_tree_threaded_dispatch_test.rs:103:10:
+    Driver.drive's eq() must classify as ConcreteApplyWithin → EqList.eq
+  The fixture declares `sort EqList` with `provides PartialEq[T = List[T = A]]`, `provides Eq[T = List[T = A]]`
+  and `Driver.drive(x, y: List[T = Int64]) = eq(x, y)`. Probed (a temporary eprintln, not committed):
+    one-shot  the body carries ONE CallClass, ConcreteApplyWithin -> EqList.eq with the conditional tree;
+              provision rows over PartialEq / Eq / NonEq naming List or EqList (common::sort_provisions_all):
+                EqList -> PartialEq, EqList -> Eq, reflect.ListLiteral -> PartialEq, reflect.ListLiteral -> Eq
+    two-step  the body carries NO CallClass;
+              the same rows, PLUS  prelude.List -> PartialEq, prelude.List -> Eq, prelude.List -> NonEq
+  `operation probe() -> Bool = drive([1], [2])` evaluates to `true` under BOTH (EqList.eq is `true`; structural
+  equality would say `false`), so the program's value is the same and the difference is in the KB.
+
+== the first one outside the tests: `KB.loaded` is a second `load_all` on a live KB (eval/builtins.rs, kb_loaded)
+Probed 2026-10-07 23:29 (a temporary test, not committed), one-shot recipe, base file
+`namespace probe.base / sort Box / entity box(n: Int64) / end / fact box(n: 1) / end`:
+  `fact box(n: "seven")` in the base file itself          refused: type mismatch in box.n (entity-field): expected Int64, got String
+  the same fact in a second file of the SAME load_all       refused: the same message
+  the same fact in a source handed to `KB.loaded`           LOADED — the call returned a KB
+
+== how many stdlib loads the switch REACHED, 2026-10-07 23:09 (the suite again, traced; same two failures)
+#   ANTHILL_LOAD_TIMING=1 ANTHILL_TEST_TWO_STEP_LOAD=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+#     --config <the three opt lines> -- --nocapture 2>&1 | grep -a -E 'load_with_visited x|recipe_load|Running |test result'
+# The stdlib is 87 files (73 stdlib/anthill, 14 anthill-stl/anthill). Under the switch:
+#   recipe   `recipe_load` lines — loads that came through tests/common's one recipe: one stdlib call, one user call each.
+#            The line was a TEMPORARY eprintln in `recipe_load`, gated like the loader's trace; it is not in the tree.
+#   N == 87  `load_with_visited x 87` — a call given the stdlib alone: the recipe's first call, or `load_stdlib_kb` and its like
+#   N > 87   the stdlib and at least one more file in ONE call — a one-shot load the switch did not reach
+#   N < 87   everything else: the recipe's second call, bare loads, a second phase loaded by hand
+binary                               recipe      N==87       N>87       N<87
+unittests src/lib.rs                      0         25         79         26
+tests/algebra_tests.rs                   11         14         16         11
+tests/builtin_tests.rs                   80         80          0         92
+tests/classic_mini_test.rs                0          0          4          0
+tests/eval_tests.rs                     123        123          0        123
+tests/github_todo_test.rs                 0          0         15          0
+tests/guardians_test.rs                  83         83          0        103
+tests/induction_tests.rs                  0          2         14          0
+tests/parse_tests.rs                     18        222         25        242
+tests/resolve_tests.rs                   52         56         69         57
+tests/sql_store_example_test.rs           8          8          0          8
+tests/wi_tests.rs                      7847       7975        885       8005
+TOTAL                                  8222       8588       1107       8667
+# stdlib loads executed: 8 588 + 1 107 = 9 695. Through the recipe: 8 222 (85 %). One-shot and NOT reached: 1 107 (11 %),
+# 79 of them in the library's own unit tests, which have their own loader (kb/test_support.rs). Given the stdlib alone
+# by something other than the recipe: 366 (4 %), 204 of them in parse_tests.
+# wi_tests: 7 847 of 8 860 through the recipe (89 %), 885 one-shot and not reached.
+# wi_tests took 961 s in this run, traced, against 1 185 s above untraced: the machine, not the recipe.
+
+== the final tree, one-shot — the gate, 2026-10-07 23:55 (rustland/scripts/test.sh, full workspace, same machine)
+# 8 753 passed, 0 failed, 14 ignored in 1 070 s (73 s of it compile). anthill-core's part, the same thirteen
+# binaries as the table at the top: 7 873 passed, 0 failed, 6 ignored — wi_tests 6 277 passed in 647 s.
+# So the two-step run's 7 871 + 2 is the same 7 873 tests, and its wi_tests took 1.8x the one-shot's on a busier
+# machine (1 185 s against 647 s); the ticket expected about 1.5x. The log's own lines:
+#   load:    one shot (ANTHILL_TEST_TWO_STEP_LOAD=0)
+#   load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: one shot
+# The gate before /code-review's changes (23:29, 1 393 s) had the same totals.
+#
+# Re-checked on that gate's optimized wi_tests binary, the control's three rows and the two tests above:
+#   ANTHILL_TEST_TWO_STEP_LOAD=0   5 passed;           OBSERVED: one shot
+#   ANTHILL_TEST_TWO_STEP_LOAD=1   3 passed, 2 FAILED — wi228…pin_now…, wi830…a_role_that_is_not_a_role…; OBSERVED: TWO-STEP
+# The whole suite was NOT run a third time under the switch after the review.
+
+== the first finding fixed, 2026-10-08 — and two more shapes of it, found by /code-review of the fix
+Each of these was refused in ONE call and loaded clean in TWO (probed on the tree as it stood, base
+`sort Box / entity box(n: Int64)`, resp. `sort Rec / entity box(n: Int64) / entity tag(s: String)`):
+  fact box(n: "seven")                                    in a later call               the two-step run's finding
+  rule box(n: "seven") :- true                            in a later call               the same clause, other spelling
+  rule bad(?x) :- box(n: ?x), tag(s: ?x)                  in a later `namespace …Rec`   contradictory variable types
+  rule nested(?x) :- box(n: ?x), ho_apply(ho_apply(..))   in a later `namespace …Rec`   outside the pattern fragment
+The typer's sort loop reaches a clause through a sort THE CALL defined; a later call's clause under an earlier
+call's sort was under no sort in its list. The typer is now handed the range of rule slots the call filled as
+well (`typing::Loaded`), and checks the clauses in it that the loop does not reach.
+What that pass does in ONE call, measured (stdlib + the Rust host bindings + one user file, opt-level 0):
+  sorts=207  rule slots=4600  alive=4560  bodyless clauses under a constructor outside the loop's sorts=370
+  of those, with checkable field types: 0      rules whose domain is a sort outside the loop's: 0      2.8-5.9 ms
+and in the user's call of a two-step load of the same file:  sorts=1  slots=32  such clauses=30  checked=0  54 us
+
+The two runs with the fix in, 2026-10-08 08:18 and 08:46, same machine (a busy one: load average 23-28 before them):
+  ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+      7 885 passed, 1 failed, 6 ignored in 1 707 s (287 s of it compile); wi_tests 6 289 + 1 in 1 313 s.
+      The one: wi228_tree_threaded_dispatch_test::pin_now_threads_conditional_tree_into_nested_dictionary_nodes.
+      wi830_extent_binding_test::a_role_that_is_not_a_role_is_refused_at_load passes.
+      load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: TWO-STEP
+  scripts/test.sh    (the gate: full workspace, one shot)
+      8 766 passed, 0 failed, 14 ignored in 1 501 s (496 s of it compile); wi_tests 6 290 in 678 s.
+      load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: one shot
+The thirteen more tests than the night before are wi_szkv7_clause_frontier_test's rows. One doc comment in
+kb/typing/sorts.rs was added after these runs; the control and that file's rows were re-run on it.

@@ -65,6 +65,24 @@
 # to 2 for a WIDE selection — `-p anthill-core` is 13 min optimized and over two
 # hours not. Debug assertions and overflow checks are on in both. The two are
 # separate builds in the same target/, each kept current by the runs that use it.
+#
+# ── Two load recipes: one shot, or the stdlib and then the user's files ──────
+#
+#   ANTHILL_TEST_TWO_STEP_LOAD=1   anthill-core's shared load helpers call
+#                                  `load_all(stdlib)` and then `load_all(user)`
+#   unset or 0                     one `load_all(stdlib ∪ user)` — the gate
+#
+# The two must give every test the same verdict; the switch is how that is
+# measured (WI-20261006-SZKV7, `LoadRecipe` in anthill-core/tests/common/mod.rs).
+# Run it optimized, like any crate-wide selection:
+#
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+# Nothing is rebuilt: the test binaries read it at run time, so this script only
+# validates it and writes into the log what was ASKED FOR. It reaches the loads
+# that go through those helpers and nothing else — the library's unit tests, a
+# test file with its own copy of the load and every other crate run one shot —
+# so the log also carries what anthill-core's control test OBSERVED.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -135,6 +153,15 @@ case "$ANTHILL_TEST_OPT" in
      opt_note="dev profile, opt-level 0" ;;
   *) echo "test.sh: ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT}: expected 0 or 2" >&2; exit 2 ;;
 esac
+
+# ── Which load recipe (see the header) ───────────────────────────────────────
+: "${ANTHILL_TEST_TWO_STEP_LOAD:=0}"
+case "$ANTHILL_TEST_TWO_STEP_LOAD" in
+  0) load_note="one shot" ;;
+  1) load_note="TWO-STEP in anthill-core's tests/common helpers, one shot everywhere else" ;;
+  *) echo "test.sh: ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD}: expected 0 or 1" >&2; exit 2 ;;
+esac
+export ANTHILL_TEST_TWO_STEP_LOAD
 
 # ── anthill-core must be ONE build, whatever is selected ─────────────────────
 #
@@ -219,7 +246,12 @@ run_tier() {
 echo "log:  rustland/${log}  (-> rustland/target/test-run-latest.log)"
 echo "tail: tail -f rustland/target/test-run-latest.log"
 echo "threads: ${ANTHILL_TEST_THREADS} (compute) / ${ANTHILL_CLI_TEST_THREADS} (spawning) on ${cpus} CPUs"
-echo "build:   ${opt_note} (ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT})"
+# What was MEASURED goes into the log too: the lines above say where to look, these
+# two say what a reader of the log is looking at.
+{
+  echo "build:   ${opt_note} (ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT})"
+  echo "load:    ${load_note} (ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD})"
+} | tee -a "${log}"
 echo "---"
 
 overall=0

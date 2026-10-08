@@ -39,8 +39,8 @@ use crate::span::{LineIndex, SourceId, SourceSpan, Span};
 /// Contains the sort/enum names defined, for targeted type checking.
 #[derive(Debug, Default)]
 pub struct LoadResult {
-    /// Sort and enum NAMES defined during this load — the work list
-    /// [`crate::kb::typing::type_check_sorts`] checks. A name, not a term:
+    /// Sort and enum NAMES defined during this load — one half of the work list the
+    /// typer checks ([`Self::loaded`]); `loaded_rules` is the other. A name, not a term:
     /// the typer looks each one up (`SortInfo` by functor, `by_domain` for the
     /// sort's own rules), both of which key on the symbol.
     pub defined_sorts: Vec<Symbol>,
@@ -53,6 +53,44 @@ pub struct LoadResult {
     /// Populated only on the `Ok` path: a failing load returns
     /// `Err(errors)` and drops warnings — you fix the errors first.
     pub warnings: Vec<LoadWarning>,
+    /// The clauses this load put in BEFORE ITS TYPER RAN, as the range of rule slots it
+    /// filled from entry to that point — facts and rules, written and derived, whichever
+    /// producer asserted them. The other half of the typer's work list ([`Self::loaded`]).
+    ///
+    /// * A RANGE, not a list a producer keeps: `fact_rule_ids` above is `load_fact`'s
+    ///   alone and misses a bodyless `rule H :- true`, which is the same clause.
+    /// * UP TO THE TYPER, for a full load and a `run_typer: false` one alike, so the two
+    ///   give a hand-driven typer call the same list the pipeline's own was given. What
+    ///   the typer and the passes after it assert is not in it.
+    /// * WHAT THE LOAD ADDED. A clause it restated — deduplicated onto a slot an earlier
+    ///   load filled — is that earlier load's, and was checked, or not, when it was
+    ///   asserted. Some slots in the range may since be retracted.
+    /// * Of the MERGED result only. A per-file result carries an empty range: a file's
+    ///   declarations are asserted by passes that run over every file before any one is
+    ///   loaded, so no range is "this file's".
+    pub loaded_rules: std::ops::Range<usize>,
+}
+
+impl LoadResult {
+    /// What this load added, as the typer takes it — see
+    /// [`Loaded`](crate::kb::typing::Loaded). `type_check_sorts(&mut kb, result.loaded())`
+    /// is the pipeline's own typer call, made by hand.
+    pub fn loaded(&self) -> super::typing::Loaded<'_> {
+        super::typing::Loaded {
+            sorts: &self.defined_sorts,
+            // A `LoadResult` exists only for a load every file of which loaded.
+            refused_sorts: &[],
+            rules: self.loaded_rules.clone(),
+        }
+    }
+}
+
+/// A file whose items did not all load: its diagnostics, and the sorts it had defined
+/// by then. The sorts are kept because they are THIS load's — see
+/// [`Loaded::refused_sorts`](crate::kb::typing::Loaded).
+struct RefusedFile {
+    errors: Vec<LoadError>,
+    defined_sorts: Vec<Symbol>,
 }
 
 // ── Source resolution ──────────────────────────────────────────
@@ -13908,8 +13946,10 @@ pub struct LoadOptions {
     ///
     /// STOPPING HERE AND NOT EARLIER IS THE POINT. Everything the typer reads is built by
     /// then — the sort-ops table, the provider/requires indexes, `derive_forwarded_provisions`
-    /// and `eq_derive::derive_total_eq` — so a hand-driven `type_check_sorts` sees the same
-    /// KB this function's own call would. The retired `load` stopped far earlier, which is
+    /// and `eq_derive::derive_total_eq` — so a hand-driven
+    /// `type_check_sorts(kb, result.loaded())` sees the same KB this function's own call
+    /// would, and is handed the same work list: the sorts this load defined and the
+    /// clauses it asserted (WI-20261006-SZKV7). The retired `load` stopped far earlier, which is
     /// why its typer could DISAGREE with the pipeline's: WI-20260901-7ZZ1Z was a shipped
     /// test asserting a refusal that only held because `derive_total_eq` had not run.
     pub run_typer: bool,
@@ -14812,6 +14852,8 @@ fn load_phase_inner(
     let mut loaded_paths = HashSet::new();
     let mut all_sorts = Vec::new();
     let mut all_fact_ids = Vec::new();
+    // Sorts a file defined before it failed to load — see `typing::Loaded::refused_sorts`.
+    let mut refused_sorts: Vec<Symbol> = Vec::new();
     let mut per_file: Vec<LoadResult> = Vec::with_capacity(files.len());
     // WI-936 — the DECLARATION pass, over EVERY file, before any file's terms are
     // converted. This is what makes the conversion's expected-type hint (and so the
@@ -14854,8 +14896,9 @@ fn load_phase_inner(
                 all_warnings.extend(result.warnings.iter().cloned());
                 per_file.push(result);
             }
-            Err(errs) => {
-                all_errors.extend(errs);
+            Err(refused) => {
+                all_errors.extend(refused.errors);
+                refused_sorts.extend(refused.defined_sorts);
                 per_file.push(LoadResult::default());
             }
         }
@@ -15125,6 +15168,10 @@ fn load_phase_inner(
     //   `derive_forwarded_provisions` that no census of the loader's own writers caught.
     //
     // See [`crate::kb::LoadCheckMarks`] and [`super::typing::RowBindingRun`].
+    // What this call added before its typer — the typer's work list beside `all_sorts`
+    // (`typing::Loaded`) and the result's `loaded_rules`. Taken HERE, above the
+    // `run_typer` fork, so the partial exit and the full one record the same range.
+    let loaded_rules = phase_first_rule..kb.rules.len();
     if !options.run_typer {
         if let Some(marks) = check_marks {
             kb.restore_load_check_marks(marks);
@@ -15138,6 +15185,7 @@ fn load_phase_inner(
                     defined_sorts: all_sorts,
                     fact_rule_ids: all_fact_ids,
                     warnings: all_warnings,
+                    loaded_rules,
                 },
                 per_file,
             ))
@@ -15149,7 +15197,14 @@ fn load_phase_inner(
             Err(dedup_rendered_load_errors(all_errors))
         };
     }
-    all_errors.extend(super::typing::type_check_sorts(kb, &all_sorts));
+    all_errors.extend(super::typing::type_check_sorts(
+        kb,
+        super::typing::Loaded {
+            sorts: &all_sorts,
+            refused_sorts: &refused_sorts,
+            rules: loaded_rules.clone(),
+        },
+    ));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
     // with a `CallClass`; run the requirement-insertion pass to emit
@@ -15440,6 +15495,7 @@ fn load_phase_inner(
                 defined_sorts: all_sorts,
                 fact_rule_ids: all_fact_ids,
                 warnings: all_warnings,
+                loaded_rules,
             },
             per_file,
         ))
@@ -15687,7 +15743,7 @@ fn load_with_visited(
     resolver: &dyn SourceResolver,
     loaded_paths: &mut HashSet<String>,
     source_id: SourceId,
-) -> Result<LoadResult, Vec<LoadError>> {
+) -> Result<LoadResult, RefusedFile> {
     let global = kb.global_scope();
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
     loader.load_items(&parsed.items);
@@ -15699,7 +15755,13 @@ fn load_with_visited(
     // file whose only bracket is a receiver's would have swept nothing.
     loader.check_unconsumed_recv_types();
 
-    let result = LoadResult {
+    if !loader.errors.is_empty() {
+        return Err(RefusedFile {
+            errors: stamped_file_errors(loader.errors, parsed),
+            defined_sorts: loader.defined_sorts,
+        });
+    }
+    Ok(LoadResult {
         defined_sorts: loader.defined_sorts,
         fact_rule_ids: loader.fact_rule_ids,
         // WI-862 — stamped HERE for the same reason `stamped_file_errors` stamps errors
@@ -15710,12 +15772,9 @@ fn load_with_visited(
             .into_iter()
             .map(|w| w.located_in(parsed))
             .collect(),
-    };
-    if loader.errors.is_empty() {
-        Ok(result)
-    } else {
-        Err(stamped_file_errors(loader.errors, parsed))
-    }
+        // Merged-only — see the field.
+        loaded_rules: 0..0,
+    })
 }
 
 /// WI-745 — every error from one file's loader belongs to THAT file: stamp its
@@ -40131,7 +40190,9 @@ rule at_the_top(1)
 
         let load_errors =
             load_with_visited(&mut kb, &file, &NullResolver, &mut loaded_paths, source_id)
-                .expect_err("a file the defining pass never saw cannot load");
+                .err()
+                .expect("a file the defining pass never saw cannot load")
+                .errors;
         assert_eq!(
             missed(&load_errors),
             vec!["demo".to_string()],
