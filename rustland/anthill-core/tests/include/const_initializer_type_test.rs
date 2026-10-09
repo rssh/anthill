@@ -15,6 +15,8 @@
 //!   the comparison backed out (`check_constant_bodies` typing the initializer and
 //!   stopping there) — FAIL:
 //!     a_const_given_a_value_of_another_type_is_refused
+//!     and, in `alias_written_name_test`,
+//!     a_const_typed_by_an_alias_keeps_the_alias_it_was_written_by
 //!   the two compared without unifying first — FAIL:
 //!     a_slot_the_declared_type_leaves_out_is_the_initializers, at its written `?`
 //!

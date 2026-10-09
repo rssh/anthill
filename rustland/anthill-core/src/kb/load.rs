@@ -31495,8 +31495,8 @@ impl<'a> Loader<'a> {
     }
 
     /// [`Self::type_expr_to_value`] of a type a DECLARATION writes — an operation's
-    /// parameter, its result, an entity's field — where a type alias written bare keeps
-    /// the name it was written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    /// parameter, its result, an entity's field, a const — where a type alias written bare
+    /// keeps the name it was written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
     fn declared_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let saved = std::mem::replace(&mut self.alias_nodes, true);
         let value = self.type_expr_to_value(ty);
@@ -37298,7 +37298,7 @@ impl<'a> Loader<'a> {
         self.record_declaration_block(const_sym, MemberKind::Const, c.meta.as_ref(), domain);
 
         // Declared type — always present (grammar-mandatory); store it for the typer.
-        let declared_type = self.type_expr_to_value(&c.ty);
+        let declared_type = self.declared_type_to_value(&c.ty);
         self.kb.set_const_type(const_sym, declared_type);
 
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).

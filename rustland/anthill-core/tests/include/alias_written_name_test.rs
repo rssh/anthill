@@ -1,9 +1,10 @@
 //! A type written through an alias keeps the name it was written by.
 //!
-//! THE RULE. A type alias written bare in an operation's parameter or result type is the
-//! type it stands for to everything that reads the type — the checks, dispatch, the index,
-//! a rule — and a mismatch message leads with the name as written: `expected IntBox
-//! (Box[V = Int64]), got String`.
+//! THE RULE. A type alias written bare in an operation's parameter or result type, or in a
+//! const's, is the type it stands for to everything that reads the type — the checks,
+//! dispatch, the index, a rule — and a mismatch message leads with the name as written:
+//! `expected IntBox (Box[V = Int64]), got String`. (`declared_field_type_readers_test`
+//! holds an entity's field.)
 //!
 //! HOW. The declared type is lowered to an occurrence that holds the alias beside the
 //! type it stands for (`TypeNode::Aliased`); the carrier-neutral view reads the type, and
@@ -41,6 +42,10 @@
 //!     two_variants_named_through_aliases_join_at_their_sort
 //!     the result-type lookup reading a term alone (`lookup_operation_return_type`):
 //!     a_result_type_keeps_the_alias_it_was_written_by, its nullary half
+//!
+//!   a const's type lowered without the node (`load_const` calling
+//!   `type_expr_to_value`) — FAIL:
+//!     a_const_typed_by_an_alias_keeps_the_alias_it_was_written_by
 //!
 //!   PASS EITHER WAY, by design:
 //!     an_alias_typed_parameter_is_the_type_it_stands_for — the fence: what the node must
@@ -285,6 +290,35 @@ fn two_variants_named_through_aliases_join_at_their_sort() {
              match r\n      case cat(n) -> n\n      case dog(n) -> n"
         ),
         2
+    );
+}
+
+// ── a const ─────────────────────────────────────────────────────────────────
+
+/// A const typed by an alias is a value of the type, and a mismatch names the alias on
+/// whichever side the const stands: at its own value, and where it is handed on.
+#[test]
+fn a_const_typed_by_an_alias_keeps_the_alias_it_was_written_by() {
+    assert_eq!(
+        run("awnconst", "  const LIMIT: Money = 5\n  operation go() -> Int64 = LIMIT + 1"),
+        6
+    );
+    let refused = refusal(
+        "awnconstvalue",
+        "  const LIMIT: Money = \"s\"\n  operation go() -> Int64 = 1",
+    );
+    assert!(
+        refused.contains("LIMIT.value (const): expected Money (Int64), got String"),
+        "{refused}"
+    );
+    let refused = refusal(
+        "awnconstuse",
+        "  const LIMIT: Money = 5\n  operation show(s: String) -> Int64 = 1\n  \
+         operation go() -> Int64 = show(LIMIT)",
+    );
+    assert!(
+        refused.contains("show.s (op-arg): expected String, got Money (Int64)"),
+        "{refused}"
     );
 }
 
