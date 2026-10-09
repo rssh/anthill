@@ -3137,11 +3137,11 @@ pub(super) fn call_type_args_of(
 
 /// WI-20260829-W6JH0 — the form-(3) COMPANION RECEIVER's type on this call, if it wrote
 /// one (`Map[K = String, V = Int64].empty()`). The twin of [`call_type_args_of`] on the
-/// channel beside it.
+/// channel beside it. A construction's receiver (`Box[V = Int64].mk(5)`) is read here too.
 pub(super) fn call_recv_type_of(occ: &Rc<NodeOccurrence>) -> Option<&crate::eval::value::Value> {
     match &occ.kind {
         NodeKind::Expr {
-            expr: Expr::Apply { recv_type, .. },
+            expr: Expr::Apply { recv_type, .. } | Expr::Constructor { recv_type, .. },
             ..
         } => recv_type.as_ref(),
         _ => None,

@@ -12250,7 +12250,12 @@ enum AliasPath {
     /// A segment is an alias whose head the scan has not resolved yet.
     Pending,
     /// Every alias segment replaced by the qualified name of the sort it stands for.
-    Through(String),
+    /// `receiver` is the alias the LAST container segment is, when it is one: the alias a
+    /// member is reached through directly (`CA` in `ns.CA.wrap`).
+    Through {
+        path: String,
+        receiver: Option<Symbol>,
+    },
 }
 
 /// WI-20260924-SNJPR — read `path`'s segments through the type aliases among them:
@@ -12266,6 +12271,7 @@ fn read_path_through_aliases(kb: &KnowledgeBase, path: &str, upto: usize) -> Ali
     let segs: Vec<&str> = path.split('.').collect();
     let mut cur = String::new();
     let mut crossed = false;
+    let mut receiver = None;
     for (i, seg) in segs.iter().enumerate() {
         if !cur.is_empty() {
             cur.push('.');
@@ -12274,6 +12280,7 @@ fn read_path_through_aliases(kb: &KnowledgeBase, path: &str, upto: usize) -> Ali
         if i >= upto {
             continue;
         }
+        receiver = None;
         let Some(&sym) = kb.symbols.by_qualified_name.get(&cur) else {
             continue;
         };
@@ -12284,12 +12291,16 @@ fn read_path_through_aliases(kb: &KnowledgeBase, path: &str, upto: usize) -> Ali
             Some(head) => {
                 cur = kb.qualified_name_of(head).to_owned();
                 crossed = true;
+                receiver = Some(sym);
             }
             None => return AliasPath::Pending,
         }
     }
     match crossed {
-        true => AliasPath::Through(cur),
+        true => AliasPath::Through {
+            path: cur,
+            receiver,
+        },
         false => AliasPath::AsWritten,
     }
 }
@@ -12358,7 +12369,7 @@ fn process_one_import(
         // stands for: `import qa.StoreAlias.{peek}` is `import qa.Store.{peek}`.
         let raw_path = match read_path_through_aliases(kb, &raw_path, containers) {
             AliasPath::AsWritten => raw_path,
-            AliasPath::Through(p) => p,
+            AliasPath::Through { path, .. } => path,
             AliasPath::Pending => match deferred {
                 Some(d) => {
                     d.push(DeferredAliasWork::Import {
@@ -20230,13 +20241,14 @@ pub(crate) fn find_operation_in_scope(
     find_operation_in_sort(kb, sort_sym, short_name)
 }
 
-/// Why a companion receiver's bracket on `callee` is refused. One sentence for the written
-/// `Sort[…].ctor(…)` and for the same call made through a name bound to `Sort[…]`.
+/// Why a companion receiver's bracket on `callee` is refused where nothing reads it.
 pub(crate) fn companion_bracket_not_read(callee: &str) -> String {
     format!(
         "a companion receiver's type bracket is not read here — `{callee}` is \
          not a call whose result it can type (proposal 035 form (3) applies to \
-         an operation call, not to an entity constructor or a fact / rule head). \
+         an operation call, and to a constructor call in an operation body; a \
+         constructor in a rule body, a fact / rule head or a pattern is a term \
+         the clause matches, and takes none). \
          Drop the bracket, or annotate the result where one is accepted"
     )
 }
@@ -21774,12 +21786,8 @@ fn resolve_dotted_in_kb_with(
     // split below guards the RELATIVE reading, whose rung needs a head to qualify
     // against.
     if let Some(path) = absolute_path_target(name) {
-        return dotted_absolute(kb, path)
-            .filter(not_a_field)
-            .or_else(|| match aliases {
-                AliasReading::ReadThrough => dotted_through_alias(kb, path).filter(not_a_field),
-                AliasReading::AsDeclared => None,
-            })
+        return dotted_join(kb, dotted_absolute(kb, path), || path.to_owned(), aliases)
+            .map(|joined| joined.member)
             .filter(admits)
             .map_or(ResolveResult::NotFound, ResolveResult::Found);
     }
@@ -21798,20 +21806,16 @@ fn resolve_dotted_in_kb_with(
         }
         ResolveResult::NotFound => None,
     };
-    // WI-20260924-SNJPR — below the declared-member join: a path that joins as written
-    // keeps its answer, so reading an alias through can only turn a MISS into one.
-    let through_alias = || match (aliases, head_sym) {
-        (AliasReading::ReadThrough, Some(h)) => {
-            let full = format!("{}.{tail}", kb.qualified_name_of(h));
-            dotted_through_alias(kb, &full).filter(not_a_field)
-        }
-        _ => None,
-    };
-    let hit = match dotted_by_head(kb, head_sym, tail)
-        .filter(not_a_field)
-        .or_else(through_alias)
-    {
-        Some(hit) => hit,
+    let joined = head_sym.and_then(|h| {
+        dotted_join(
+            kb,
+            dotted_by_head(kb, head_sym, tail),
+            || format!("{}.{tail}", kb.qualified_name_of(h)),
+            aliases,
+        )
+    });
+    let hit = match joined {
+        Some(joined) => joined.member,
         // WI-20260825-X9RRN — THE PROVISION RUNG, and it is part of the RELATIVE reading
         // rather than a new one: `Numeric.add` still means "member `add` of the head
         // `Numeric`", the question is only which members `Numeric` HAS. A spec's
@@ -21900,6 +21904,74 @@ pub fn reset_absolute_fallthrough_hits() {
     ABSOLUTE_FALLTHROUGH_HITS.with(|c| c.set(0));
 }
 
+/// What the dotted ladder's member join answers: the member a path names, and the type
+/// alias the path reaches it through when its last container is one — `CA` in `CA.wrap`
+/// over `sort CA = Box[V = Int64]`. A call made through such a path is at the parameters
+/// the alias fixes ([`dotted_alias_receiver`]).
+#[derive(Clone, Copy)]
+struct DottedJoin {
+    member: Symbol,
+    through: Option<Symbol>,
+}
+
+/// The member join of either reading of a dotted path, absolute or relative: the member
+/// the path names as written (`declared`, the reading's own join), and below it the member
+/// `full` — the same path fully spelled — reaches once its aliases are read through
+/// ([`dotted_through_alias`]). A path that joins as written keeps its answer, so reading
+/// an alias through can only turn a miss into one.
+///
+/// A field is no answer on either rung: it is reached by dot dispatch on a value and
+/// never by a path (WI-751, WI-1075).
+fn dotted_join(
+    kb: &KnowledgeBase,
+    declared: Option<Symbol>,
+    full: impl FnOnce() -> String,
+    aliases: AliasReading,
+) -> Option<DottedJoin> {
+    let not_a_field = |sym: &Symbol| !matches!(kb.kind_of(*sym), Some(SymbolKind::Field));
+    if let Some(member) = declared.filter(not_a_field) {
+        return Some(DottedJoin {
+            member,
+            through: None,
+        });
+    }
+    match aliases {
+        AliasReading::ReadThrough => {
+            dotted_through_alias(kb, &full()).filter(|joined| not_a_field(&joined.member))
+        }
+        AliasReading::AsDeclared => None,
+    }
+}
+
+/// The type alias the call written `name` at `scope` reaches `callee` through, or `None`
+/// when the path joins as written or its last container is no alias. Asks the ladder's
+/// own join ([`dotted_join`]), and answers only where that join is `callee`, the symbol
+/// the name resolved to: a name another rung answered was not read through an alias.
+fn dotted_alias_receiver(
+    kb: &KnowledgeBase,
+    name: &str,
+    scope: ScopeId,
+    callee: Symbol,
+) -> Option<Symbol> {
+    let aliases = AliasReading::ReadThrough;
+    let joined = match absolute_path_target(name) {
+        Some(path) => dotted_join(kb, dotted_absolute(kb, path), || path.to_owned(), aliases)?,
+        None => {
+            let (head, tail) = name.split_once('.')?;
+            let ResolveResult::Found(head) = kb.symbols.resolve_in_scope(head, scope) else {
+                return None;
+            };
+            dotted_join(
+                kb,
+                dotted_by_head(kb, Some(head), tail),
+                || format!("{}.{tail}", kb.qualified_name_of(head)),
+                aliases,
+            )?
+        }
+    };
+    joined.through.filter(|_| joined.member == callee)
+}
+
 /// WI-20260924-SNJPR — the member a fully qualified `path` names once each type alias
 /// among its CONTAINER segments is read as the sort it stands for: `t.StoreAlias.peek`
 /// over `sort StoreAlias = Store` is `t.Store.peek`, `t.WisStore.peek` is too. `None` when
@@ -21910,9 +21982,13 @@ pub fn reset_absolute_fallthrough_hits() {
 /// binding the alias fixes and read as the wildcard spec member. A type member reached
 /// through an alias is the type-position reader's (`Loader::alias_type_member`), which
 /// reads the alias's bindings.
-fn dotted_through_alias(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
+fn dotted_through_alias(kb: &KnowledgeBase, path: &str) -> Option<DottedJoin> {
     let containers = path.split('.').count() - 1;
-    let AliasPath::Through(through) = read_path_through_aliases(kb, path, containers) else {
+    let AliasPath::Through {
+        path: through,
+        receiver,
+    } = read_path_through_aliases(kb, path, containers)
+    else {
         return None;
     };
     kb.symbols
@@ -21920,6 +21996,10 @@ fn dotted_through_alias(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
         .get(&through)
         .copied()
         .filter(|m| !super::typing::is_sort_param_symbol(kb, *m))
+        .map(|member| DottedJoin {
+            member,
+            through: receiver,
+        })
 }
 
 /// The RELATIVE reading — HEAD-SEGMENT qualification: append the trailing segments to
@@ -28046,6 +28126,13 @@ impl<'a> Loader<'a> {
         let Some(sym) = self.resolve_qualified_rule_readonly(name) else {
             return false;
         };
+        // A rule cited through an alias is cited at the parameters the alias fixes: the
+        // zero-argument call the written `Sort[…].rule` lowers to, which has the receiver
+        // slot a leaf has not.
+        if let Some(recv_type) = self.alias_recv_type_of(name, sym) {
+            self.push_zero_arg_apply(parse_id, sym, recv_type, results);
+            return true;
+        }
         // Emit the bare-unqualified rule-reference form + its leaf occurrence —
         // mirrors the `Term::Ident` arm of `visit_load` (via `load_var_ref`).
         let kb_id = self.mk_var_ref(sym);
@@ -28053,6 +28140,42 @@ impl<'a> Loader<'a> {
         results.push(kb_id);
         self.push_leaf_occ(parse_id, kb_id);
         true
+    }
+
+    /// The call `functor()` at the receiver `recv_type`, as the op-body walk's
+    /// `ApplyOrConstructor` frame builds an applied callee with no arguments.
+    fn push_zero_arg_apply(
+        &mut self,
+        parse_id: TermId,
+        functor: Symbol,
+        recv_type: crate::eval::value::Value,
+        results: &mut Vec<TermId>,
+    ) {
+        let args_list = self.kb.build_list(&[]);
+        let name_ref = self.kb.alloc(Term::Ref(functor));
+        let s = &self.expr_syms;
+        let kb_id = self.kb.alloc(Term::Fn {
+            functor: s.apply,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(s.k_fn, name_ref), (s.k_args, args_list)]),
+        });
+        self.create_occurrence(parse_id, kb_id);
+        results.push(kb_id);
+        if self.occ_suppress == 0 {
+            let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
+            node_occurrence::build_frame(
+                self.kb,
+                node_occurrence::BuildFrame::Apply {
+                    span,
+                    functor,
+                    pos_count: 0,
+                    named_keys: Vec::new(),
+                    type_args: Vec::new(),
+                    recv_type: Some(recv_type),
+                },
+                &mut self.expr_occ_results,
+            );
+        }
     }
 
     /// [`field_access_dotted_name_of`] at this loader's parse tables. The walk itself is
@@ -28697,17 +28820,28 @@ impl<'a> Loader<'a> {
                 };
                 let type_args_tid = self.type_args_term_handle(&type_args);
 
-                // WI-20260829-W6JH0 — proposal 035 form (3). Gated exactly as `type_args`
-                // is, and for the same reason: an ENTITY-headed or type-value callee
-                // builds a shape with nowhere to put it, and reading the channel there
-                // would be the silent drop WI-839 exists to prevent. The grammar cannot
-                // produce a receiver bracket on either of those (both are reached through
-                // a `name`, not a `field_access` over an `application`), so the gate never
-                // actually fires — it is written to keep the two channels' rules one rule.
-                let recv_type = if is_entity || is_type_value {
+                // WI-20260829-W6JH0 — proposal 035 form (3). A type-value callee builds a
+                // shape with nowhere to put a receiver, and reading the channel there would
+                // be the silent drop WI-839 exists to prevent; the grammar cannot produce
+                // one on it, so that gate never fires and keeps the two channels' rules one
+                // rule.
+                //
+                // A CONSTRUCTOR IS A CALL, and its receiver — a written `Box[V = Int64].mk(5)`
+                // or an alias, `CA.mk(5)` — binds the sort's parameters for it as an
+                // operation's does. The constructor node has the receiver's slot, as the
+                // application has.
+                //
+                // NOT IN A RULE'S COMPOUND EXPRESSION, which is a rule body: a constructor
+                // there is a term the clause matches, typed with the clause and not as a
+                // call, and no reader there takes a receiver. It keeps the rule body's
+                // reading ([`Self::entity_ctor_expr`]) — a written bracket is left unread
+                // for the end-of-file sweep to refuse — so one rule body gives the spelling
+                // one verdict, whether or not an `if` stands above it.
+                let recv_type = if is_type_value || (is_entity && self.lowering_rule_compound_expr)
+                {
                     None
                 } else {
-                    self.build_recv_type(outer_parse_id)
+                    self.build_recv_type(outer_parse_id, kb_functor)
                 };
 
                 let s = &self.expr_syms;
@@ -28770,6 +28904,7 @@ impl<'a> Loader<'a> {
                             // carries it; nothing downstream can re-derive it, because
                             // the desugared term is identical to the hand-written tuple.
                             from_projection: self.parsed.terms.is_projection(outer_parse_id),
+                            recv_type,
                         }
                     } else {
                         // WI-342: the occurrence carries the carrier-agnostic
@@ -29348,10 +29483,53 @@ impl<'a> Loader<'a> {
     /// A FIRST CUT ADDED ITS OWN `check_sort_type_args` HERE and reported the same fault
     /// TWICE. Kept as a note because the duplicate is what led to the shared checker: the
     /// question "who validates a written type" already had an owner.
-    fn build_recv_type(&mut self, parse_id: TermId) -> Option<crate::eval::value::Value> {
-        let te = self.read_parse_recv_type(parse_id)?;
+    ///
+    /// A CALL THROUGH AN ALIAS IS AT THE PARAMETERS THE ALIAS FIXES. `CA.wrap(…)` over
+    /// `sort CA = Box[V = Int64]` writes no bracket, and its receiver is the one
+    /// `Box[V = Int64].wrap(…)` writes ([`Self::alias_recv_type`]).
+    fn build_recv_type(
+        &mut self,
+        parse_id: TermId,
+        callee: Symbol,
+    ) -> Option<crate::eval::value::Value> {
+        let Some(te) = self.read_parse_recv_type(parse_id) else {
+            return self.alias_recv_type(parse_id, callee);
+        };
         self.consumed_recv_types.insert(parse_id);
         Some(self.type_expr_to_value(&te))
+    }
+
+    /// The receiver of a call to `callee`, named through a type alias, bare: the sort the
+    /// alias stands for at the parameters it fixes. `None` for every other callee, and for
+    /// an alias that fixes nothing.
+    ///
+    /// The callee's written name is the node's own: a paren-less dotted citation spells
+    /// it as a chain ([`dotted_citation_name`]), every other callee as one symbol.
+    fn alias_recv_type(
+        &mut self,
+        parse_id: TermId,
+        callee: Symbol,
+    ) -> Option<crate::eval::value::Value> {
+        let parsed = self.parsed;
+        if let Some(chain) = dotted_citation_name(&parsed.symbols, &parsed.terms, parse_id) {
+            return self.alias_recv_type_of(&chain, callee);
+        }
+        let written = match parsed.terms.get(parse_id) {
+            Term::Fn { functor, .. } => *functor,
+            Term::Ref(sym) | Term::Ident(sym) => *sym,
+            _ => return None,
+        };
+        self.alias_recv_type_of(parsed.symbols.local_name(written), callee)
+    }
+
+    /// [`Self::alias_recv_type`] for a callee whose written name the caller holds.
+    fn alias_recv_type_of(
+        &mut self,
+        written: &str,
+        callee: Symbol,
+    ) -> Option<crate::eval::value::Value> {
+        let alias = dotted_alias_receiver(self.kb, written, self.current_scope, callee)?;
+        super::typing::alias_receiver_type(self.kb, alias).map(crate::eval::value::Value::term)
     }
 
     /// Build an `ApplyArg(name: …, value: …)` term using cached syms.
@@ -30059,16 +30237,9 @@ impl<'a> Loader<'a> {
                 ..
             } => (pos_args, named_args),
             // `KnowledgeBase::nullary_canon` folds a 0-field constructor's `Fn{f,[],[]}`
-            // to its bare name, and `visit_term`'s `Term::Ref` arm builds exactly this.
-            //
-            // NO `build_recv_type` HERE, and that is a HOLE rather than a decision: an
-            // `Expr::Ref` has no `recv_type` slot to put one in, so a proposal-035 form-(3)
-            // receiver written on a ZERO-FIELD constructor is still never consumed and
-            // still refused by `check_unconsumed_recv_types`. The `Expr::Apply` tail below
-            // closes that for every constructor that HAS fields. I did not drive the
-            // zero-field case; it is not a regression (the round-trip consumed nothing
-            // either), and it belongs with **WI-20260902-2NXAC**'s finding (2), which owns
-            // the same channel for the reflect forms. Found by `/code-review`.
+            // to its bare name, and `visit_term`'s `Term::Ref` arm builds exactly this. No
+            // receiver is read, as on the `Expr::Apply` tail below, so a bracket written
+            // here is refused by `check_unconsumed_recv_types`.
             Term::Ref(s) => return Some(Expr::Ref(s)),
             _ => return None,
         };
@@ -30199,28 +30370,21 @@ impl<'a> Loader<'a> {
         }
 
         Some(Expr::Apply {
-            // NOT `build_recv_type`, AND THAT IS THE WHOLE POINT OF THIS SLOT BEING `None`.
+            // NO RECEIVER IS READ HERE. A constructor in a rule body is a TERM the clause
+            // matches — `?v <=> mk(5)`, the goal `mk(?x)` — typed with the clause, and no
+            // reader of it takes a receiver: read here, a bracket would be consumed and
+            // then bind nothing. MEASURED with the read in: `rule cc(1) :- ?v <=>
+            // Box[V = Int64].mk("s")` loaded clean. So a written bracket stays unconsumed
+            // and `check_unconsumed_recv_types` refuses it, and a constructor named
+            // through an alias is the sort's constructor, as in a fact head. In an
+            // OPERATION body a constructor is a call and its receiver is read
+            // (`LoadBuildFrame::ApplyOrConstructor`).
             //
-            // A form-(3) companion receiver (`Map[K = String].empty()`, proposal 035)
-            // types the result of an OPERATION CALL. On an ENTITY CONSTRUCTOR it is
-            // meaningless, and `check_unconsumed_recv_types` says so in as many words:
-            // "form (3) applies to an operation call, not to an entity constructor or a
-            // fact / rule head". That sweep refuses every bracket nobody CONSUMED — so
-            // calling `build_recv_type` here would consume it and DELETE the refusal.
-            //
-            // MEASURED, and it is why this comment exists: the first cut of
-            // WI-20260902-2SZ88 did call it, reading the round-trip's silence as a loss to
-            // repair. `rule cc(1) :- ?v <=> Bx[T = Int64].bx(k: 1)` is REFUSED on the
-            // baseline and LOADED CLEAN with that call in — a silent acceptance of a
-            // bracket the spec rejects, which is the direction that matters
-            // (WI-20260901-92VA4). Found by a question about what a form-(3) receiver is.
-            //
-            // A form-(3) call INSIDE a constructor's argument is a different node and is
-            // unaffected: `boxm(m: Map[K = String].empty())` puts the bracket on `empty`,
-            // whose occurrence the child walk builds through the generic arm, which reads
-            // it correctly. `a_form_three_receiver_type_under_a_literal_is_not_refused`
-            // covers that row and `a_form_three_receiver_on_a_constructor_is_refused`
-            // covers this one; they are the two halves and they disagree on purpose.
+            // A receiver on a call INSIDE a constructor's argument is a different node and
+            // is unaffected: `boxm(m: Map[K = String].empty())` puts the bracket on
+            // `empty`, whose occurrence the child walk builds through the generic arm.
+            // `a_form_three_receiver_type_under_a_literal_is_not_refused` covers that row
+            // and `a_form_three_receiver_on_a_constructor_is_refused` covers this one.
             recv_type: None,
             functor,
             pos_args: pos,
@@ -30275,7 +30439,7 @@ impl<'a> Loader<'a> {
     fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
             return Expr::Apply {
-                recv_type: self.build_recv_type(parse_id),
+                recv_type: self.build_recv_type(parse_id, sym),
                 functor: sym,
                 pos_args: Vec::new(),
                 named_args: Vec::new(),
@@ -30759,7 +30923,7 @@ impl<'a> Loader<'a> {
                         recv_type: if reread_reflect_form {
                             None
                         } else {
-                            self.build_recv_type(parse_id)
+                            self.build_recv_type(parse_id, new_functor)
                         },
                         functor: new_functor,
                         pos_args: pos,
@@ -31348,7 +31512,7 @@ impl<'a> Loader<'a> {
                     .iter()
                     .find(|(p, _)| self.kb.local_name_of(*p) == member)
                 {
-                    return Some(self.type_canon_binding(*value));
+                    return Some(super::typing::type_canon_binding(self.kb, *value));
                 }
                 let member_sym = self.kb.intern(member);
                 if let Some((_, _, var)) =
@@ -31885,28 +32049,8 @@ impl<'a> Loader<'a> {
         &mut self,
         written: Symbol,
     ) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
-        let Some(super::typing::AliasExpansion::Sort { base, bindings }) =
-            super::typing::alias_expansion(self.kb, written)
-        else {
-            return (written, SmallVec::new());
-        };
-        let fixed = bindings
-            .into_iter()
-            .map(|(p, v)| (p, self.type_canon_binding(v)))
-            .collect();
-        (base, fixed)
-    }
-
-    /// A binding an alias fixes, recorded in the CLAUSE canon (`record_alias_target`), as
-    /// a TYPE position spells it: a type parameter's `Ref(param)` is the parameter's
-    /// variable there. Anything else is one term in both.
-    fn type_canon_binding(&self, value: TermId) -> TermId {
-        match self.kb.get_term(value) {
-            Term::Ref(p) if super::typing::is_sort_param_symbol(self.kb, *p) => {
-                super::typing::resolve_sort_alias(self.kb, *p).unwrap_or(value)
-            }
-            _ => value,
-        }
+        super::typing::alias_type_application(self.kb, written)
+            .unwrap_or((written, SmallVec::new()))
     }
 
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias
@@ -32075,7 +32219,7 @@ impl<'a> Loader<'a> {
             if let Some(value) = fixed {
                 // The clause canon spells a type PARAMETER as `Ref(param)`; a type
                 // position spells it as the parameter's variable.
-                let value = self.type_canon_binding(value);
+                let value = super::typing::type_canon_binding(self.kb, value);
                 return Some(node_occurrence::TypeChild::Interned(value));
             }
             if self.bare_spec_sugar.is_some()

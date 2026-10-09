@@ -1677,6 +1677,19 @@ pub(super) fn check_apply_iter(
         // polarity. It is reported here, at the receiver, because that is where the wrong
         // claim is; the arguments are not at fault and reporting against them would send
         // the author to the wrong line.
+        //
+        // A RECEIVER THAT NAMES THE CALLEE'S OWN SORT NAMES THE INSTANCE THE CALL IS AT, AND
+        // SAYS NOTHING MORE OF THE RESULT. It has bound that sort's parameters for the call
+        // already ([`seed_receiver_type_args`]), so a return that names them (`-> Self`) is
+        // at the receiver's instance with nothing left to compare, and a return that does
+        // not is the operation's own statement: `ints() -> Cell[V = Int64]` is a cell of
+        // `Int64` at whatever instance it is called, and `empty() -> Cell` is some cell,
+        // the operation's to choose. `Cell[V = String].ints()` and `Cell[V = Int64].empty()`
+        // are then the calls `Cell.ints[V = String]()` and `Cell.empty[V = Int64]()` make.
+        // Compared with such a return the receiver refused the call at its own return,
+        // whatever used the result. An operation's OWN parameter in the return
+        // (`make[A]() -> Opt[T = A]`) is not the sort's and the receiver does not fix it:
+        // the arguments, the callee's bracket or the expected type do, as at any call.
         let proj_return_type = match call_recv_type_of(occ) {
             Some(rt)
                 if matches!(
@@ -1695,7 +1708,14 @@ pub(super) fn check_apply_iter(
                     type_head(kb, &proj_return_type),
                     TypeHead::Parameterized { .. }
                 );
-                if !unify_types(kb, &mut subst, &proj_return_type, &rt) {
+                let receiver_bound_the_call = match (type_head(kb, &rt), callee_parent_sort) {
+                    (TypeHead::Parameterized { base }, Some(parent)) => {
+                        same_sort_canonical(kb, base, parent)
+                    }
+                    _ => false,
+                };
+                let compared = !(declared_carries_slots && receiver_bound_the_call);
+                if compared && !unify_types(kb, &mut subst, &proj_return_type, &rt) {
                     let actual = walk_type_deep_value(kb, &subst, &proj_return_type);
                     let surface = surface_of(kb, occ, fn_sym);
                     return Err(TypeError::TypeMismatch {

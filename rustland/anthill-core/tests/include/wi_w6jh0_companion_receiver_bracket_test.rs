@@ -193,7 +193,7 @@ fn the_two_bracket_spelling_honours_the_receiver() {
     ));
     assert_eq!(errs.len(), 1, "{errs:#?}");
     assert!(
-        errs[0].contains("expected the receiver bracket's K = Bool")
+        errs[0].contains("expected the receiver's K = Bool")
             && errs[0].contains("got the callee bracket's K = String"),
         "{errs:#?}"
     );
@@ -423,23 +423,14 @@ fn a_contradicting_partial_receiver_bracket_is_refused() {
     assert!(errs[0].contains("expected Bool, got Int64"), "{errs:#?}");
 }
 
-/// FINDINGS 3 AND 4 — ONE MECHANISM. The channel had no "read or reported" sweep, so every
-/// position that does not read it dropped the bracket in silence: an ENTITY-CONSTRUCTOR
-/// callee (which builds an `Expr::Constructor`, with nowhere to put it), a fact head, and a
-/// `@[simp]` rule head. The `type_args` twin is a loud refusal in all three. The gate on the
-/// entity arm is therefore a REAL gate, not the dead one its first comment claimed.
-///
-/// Every form-(3) call in the corpus is on an operation (`Map[…].empty()`), so nothing
-/// that loaded before is newly refused — [`a_correct_receiver_bracket_still_loads`] and
-/// `map_builtins_test`'s evaluating row are the controls for that.
+/// A CONSTRUCTOR READS ITS RECEIVER BRACKET (WI-20261008-HZVQA). It used to be one of the
+/// positions that left the bracket unread, refused by the sweep below. Read, the bracket
+/// is held to what a written type is held to — a key that names no parameter of the sort
+/// is refused as that — and it binds the sort's parameter for the fields.
 #[test]
-fn an_unread_receiver_bracket_is_refused_rather_than_dropped() {
-    // Entity constructor callee.
-    for body in [
-        r#"size(put(Map.empty(), "a", Option[Bogus = Int64].some(1)))"#,
-        r#"size(put(Map.empty(), "a", List[Bogus = Int64].cons(1, nil())))"#,
-    ] {
-        let errs = load_errors(&format!(
+fn a_constructor_reads_its_receiver_bracket() {
+    let build = |body: &str| {
+        format!(
             r#"
 namespace test.w6jh0u
   import anthill.prelude.{{Map, Option, List, Int64, String, Bool}}
@@ -452,11 +443,43 @@ namespace test.w6jh0u
   operation build() -> Int64 = {body}
 end
 "#
-        ));
+        )
+    };
+    for body in [
+        r#"size(put(Map.empty(), "a", Option[Bogus = Int64].some(1)))"#,
+        r#"size(put(Map.empty(), "a", List[Bogus = Int64].cons(1, nil())))"#,
+    ] {
+        let errs = load_errors(&build(body));
         assert_eq!(errs.len(), 1, "{errs:#?}");
-        assert!(errs[0].contains("not read here"), "{errs:#?}");
+        assert!(
+            errs[0].contains("has no type parameter named 'Bogus'"),
+            "{errs:#?}"
+        );
     }
+    // The bracket binds: the field is checked at it, and the agreeing twin loads.
+    let errs = load_errors(&build(
+        r#"size(put(Map.empty(), "a", Option[T = String].some(1)))"#,
+    ));
+    assert_eq!(errs.len(), 1, "{errs:#?}");
+    assert!(
+        errs[0].contains("some.value (entity-field): expected String, got Int64"),
+        "{errs:#?}"
+    );
+    let errs = load_errors(&build(
+        r#"size(put(Map.empty(), "a", Option[T = Int64].some(1)))"#,
+    ));
+    assert!(errs.is_empty(), "{errs:#?}");
+}
 
+/// FINDINGS 3 AND 4 — ONE MECHANISM. The channel had no "read or reported" sweep, so every
+/// position that does not read it dropped the bracket in silence: a fact head and a
+/// `@[simp]` rule head. The `type_args` twin is a loud refusal in each.
+///
+/// Every form-(3) call in the corpus is on an operation (`Map[…].empty()`), so nothing
+/// that loaded before is newly refused — [`a_correct_receiver_bracket_still_loads`] and
+/// `map_builtins_test`'s evaluating row are the controls for that.
+#[test]
+fn an_unread_receiver_bracket_is_refused_rather_than_dropped() {
     // Fact head — a position with no call to type at all.
     let errs = load_errors(
         r#"

@@ -1535,11 +1535,13 @@ impl<'kb> Emitter<'kb> {
                 pos_args,
                 named_args,
                 from_projection,
+                recv_type,
             } => Expr::Constructor {
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
                 from_projection: *from_projection,
+                recv_type: recv_type.clone(),
             },
             Expr::Instantiation {
                 name,

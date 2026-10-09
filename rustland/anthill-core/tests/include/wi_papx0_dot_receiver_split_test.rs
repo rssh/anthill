@@ -32,7 +32,7 @@
 //!     a_positional_bracket_binds_the_next_parameter
 //!     a_nested_positional_bracket_is_named_too
 //!     a_constructor_is_reached_through_a_let_bound_type
-//!     a_bracket_on_a_constructor_is_refused_as_the_written_one_is
+//!     a_bracket_on_a_constructor_binds_in_both_spellings
 //!     a_type_parameter_in_the_bracket_is_that_parameter
 //!     a_parenthesized_type_is_a_receiver
 //!     an_alias_denotes_what_it_stands_for
@@ -50,7 +50,7 @@
 //!     a_constant_in_the_bracket_is_part_of_the_denoted_type
 //!   the constructor arm — FAIL:
 //!     a_constructor_is_reached_through_a_let_bound_type
-//!     a_bracket_on_a_constructor_is_refused_as_the_written_one_is
+//!     a_bracket_on_a_constructor_binds_in_both_spellings
 //!     an_alias_denotes_what_it_stands_for (its constructor case)
 //!   the alias read, and separately its "owns no members" clause — FAIL:
 //!     an_alias_denotes_what_it_stands_for
@@ -79,6 +79,7 @@ const BOX: &str = r#"
     operation tag() -> Int64 = 7
     operation wrap(x: V) -> V = x
     operation combine(a: Box[V], b: Box[V]) -> Int64 = 1
+    operation count(b: Box) -> Int64 = 3
     operation unbox(b: Box[V]) -> V = match b
       case mk(v) -> v
   end
@@ -457,24 +458,22 @@ fn a_constructor_is_reached_through_a_let_bound_type() {
     }
 }
 
-/// A bracket on a constructor's receiver is not read, and both spellings say so in one
-/// sentence.
+/// A bracket on a constructor's receiver binds the sort's parameters, in both spellings:
+/// the field is checked at them (`wi_hzvqa_alias_receiver_test` has the rule's own rows).
 #[test]
-fn a_bracket_on_a_constructor_is_refused_as_the_written_one_is() {
-    for (ns, body) in [
-        (
-            "papx0ctorbrwritten",
-            "  operation go() -> Int64 = Box.unbox(Box[V = Int64].mk(5))",
-        ),
-        (
-            "papx0ctorbrbound",
-            "  operation go() -> Int64 =\n    let t = Box[V = Int64]\n    Box.unbox(t.mk(5))",
-        ),
+fn a_bracket_on_a_constructor_binds_in_both_spellings() {
+    for (ns, bind, recv) in [
+        ("papx0ctorbrwritten", "", "Box[V = Int64]"),
+        ("papx0ctorbrbound", "    let t = Box[V = Int64]\n", "t"),
     ] {
-        let rendered = refusal(ns, "", body);
+        let body = format!("  operation go() -> Int64 =\n{bind}    Box.unbox({recv}.mk(5))");
+        assert_eq!(run_int(ns, "", &body), 5, "{ns}");
+        let bad = format!("{ns}bad");
+        let body = format!("  operation go() -> Int64 =\n{bind}    Box.count({recv}.mk(\"s\"))");
+        let rendered = refusal(&bad, "", &body);
         assert!(
-            rendered.contains("a companion receiver's type bracket is not read here — `Box.mk`"),
-            "{ns}: {rendered}"
+            rendered.contains("mk.v (entity-field): expected Int64, got String"),
+            "{bad}: {rendered}"
         );
     }
 }
@@ -549,8 +548,8 @@ fn a_parenthesized_value_is_a_receiver() {
 
 /// An alias is read as a name path reads it: a pure alias is the sort it stands for,
 /// through a chain of aliases too, and one that owns members of its own is read as
-/// written. The parameters an alias fixes do not ride a call through it — in either
-/// spelling, which is why the wrong-typed argument is compared and not pinned to a site.
+/// written. The parameters an alias fixes ride a call through it in both spellings
+/// (`wi_hzvqa_alias_receiver_test` has the rule's own rows).
 #[test]
 fn an_alias_denotes_what_it_stands_for() {
     const ALIASES: &str = "  sort CA = Box[V = Int64]\n  sort CB = Box\n  sort CC = CA\n";
@@ -574,12 +573,12 @@ fn an_alias_denotes_what_it_stands_for() {
         "",
         &format!("{ALIASES}  operation go() -> Int64 =\n    let t = CA\n    t.wrap(\"s\")"),
     );
-    assert!(!bound.contains("no such member"), "`wrap` is reached: {bound}");
-    assert_eq!(
-        written.contains("wrap.x"),
-        bound.contains("wrap.x"),
-        "one refusal site for both spellings:\n{written}\n{bound}"
-    );
+    for rendered in [&written, &bound] {
+        assert!(
+            rendered.contains("wrap.x (op-arg): expected Int64, got String"),
+            "one refusal site for both spellings:\n{written}\n{bound}"
+        );
+    }
 
     // An alias with members of its own: `extra` is the alias's, and `tag` — the target's —
     // is not reached through it, as the written `CA.tag()` is not.

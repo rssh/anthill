@@ -497,11 +497,13 @@ impl Copier {
                 pos_args,
                 named_args,
                 from_projection,
+                recv_type,
             } => Expr::Constructor {
                 name: plain(name),
                 pos_args: self.nodes(pos_args),
                 named_args: self.named_nodes(named_args),
                 from_projection: plain(from_projection),
+                recv_type: recv_type.as_ref().map(|ty| self.value(ty)),
             },
             Expr::Match {
                 scrutinee,

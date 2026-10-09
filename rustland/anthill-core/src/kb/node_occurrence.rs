@@ -1448,6 +1448,16 @@ pub enum Expr {
         /// materializes the projection is already a `project_run` call" — is a claim
         /// about pass ordering that nothing checks; the structural one does not decay.)
         from_projection: bool,
+        /// The receiver the construction is called at — a written `Box[V = Int64].mk(5)`,
+        /// or a constructor named through an alias that fixes parameters, `CA.mk(5)` —
+        /// which binds the sort's parameters for it as [`Expr::Apply`]'s `recv_type` does
+        /// for an operation call. `None` for a construction that names no instance. Set in
+        /// an operation body only: a constructor in a rule body is a term the clause
+        /// matches and takes none.
+        ///
+        /// A field of the `Expr` for the reason `from_projection` is one: every rebuild
+        /// site decides whether it carries it.
+        recv_type: Option<Value>,
     },
     /// `match` expression with branches.
     Match {
@@ -2562,14 +2572,17 @@ pub fn open_debruijn_node(
             pos_args,
             named_args,
             from_projection,
+            recv_type,
         } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
-            (c1 || c2).then(|| Expr::Constructor {
+            let (rt, c3) = walk_recv_type(recv_type, |v| open_value_type(kb, v, fresh));
+            (c1 || c2 || c3).then(|| Expr::Constructor {
                 name: *name,
                 pos_args: pos,
                 named_args: named,
                 from_projection: *from_projection,
+                recv_type: rt,
             })
         }
         Expr::Instantiation {
@@ -2729,14 +2742,17 @@ pub fn node_to_debruijn(
             pos_args,
             named_args,
             from_projection,
+            recv_type,
         } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
-            (c1 || c2).then(|| Expr::Constructor {
+            let (rt, c3) = walk_recv_type(recv_type, |v| close_value_type(kb, v, var_order));
+            (c1 || c2 || c3).then(|| Expr::Constructor {
                 name: *name,
                 pos_args: pos,
                 named_args: named,
                 from_projection: *from_projection,
+                recv_type: rt,
             })
         }
         Expr::Instantiation {
@@ -2957,6 +2973,21 @@ fn open_type_args(
         out.push((*name, nv));
     }
     (out, changed)
+}
+
+/// A receiver type through one of the type-channel walks — the opener, the closer, the σ
+/// substitution — with whether it changed.
+fn walk_recv_type(
+    recv_type: &Option<Value>,
+    walk: impl FnOnce(&Value) -> (Value, bool),
+) -> (Option<Value>, bool) {
+    match recv_type {
+        Some(v) => {
+            let (walked, changed) = walk(v);
+            (Some(walked), changed)
+        }
+        None => (None, false),
+    }
 }
 
 /// WI-342/WI-378: DeBruijn-open the vars of a carrier-agnostic type `Value` — the
@@ -4559,6 +4590,7 @@ pub fn build_occurrence_cons_list(
                 pos_args: Vec::new(),
                 named_args: named,
                 from_projection: false,
+                recv_type: None,
             },
             span,
             None,
@@ -5970,15 +6002,18 @@ pub fn substitute_occurrence(
             pos_args,
             named_args,
             from_projection,
+            recv_type,
         } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
-            (c1 || c2).then(|| {
+            let (rt, c3) = walk_recv_type(recv_type, |v| subst_value_type(kb, v, subst));
+            (c1 || c2 || c3).then(|| {
                 occ.rebuilt_expr(Expr::Constructor {
                     name: *name,
                     pos_args: pos,
                     named_args: named,
                     from_projection: *from_projection,
+                    recv_type: rt,
                 })
             })
         }
@@ -6990,6 +7025,9 @@ pub(crate) enum BuildFrame {
         /// WI-762 — see [`Expr::Constructor::from_projection`]. Only the loader
         /// (which can read the parse store's provenance) ever sets this true.
         from_projection: bool,
+        /// The receiver the construction is called at — see [`Expr::Constructor`]'s
+        /// field of the name.
+        recv_type: Option<Value>,
     },
     /// Proposal 055 — an APPLIED nominal type value (`Cell[V = Int64]`) in value
     /// position. Only the loader builds it, because only the loader can read the
@@ -7338,6 +7376,7 @@ fn visit_fn(
                         pos_count,
                         named_keys,
                         from_projection: false,
+                        recv_type: None,
                     }
                 },
                 span,
@@ -7827,6 +7866,7 @@ pub(crate) fn build_frame(
             pos_count,
             named_keys,
             from_projection,
+            recv_type,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Constructor {
@@ -7834,6 +7874,7 @@ pub(crate) fn build_frame(
                 pos_args,
                 named_args,
                 from_projection,
+                recv_type,
             };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }

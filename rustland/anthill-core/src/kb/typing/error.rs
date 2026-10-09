@@ -1359,7 +1359,7 @@ impl TypeError {
                 ..
             } => {
                 format!(
-                    "the receiver bracket and the callee bracket on the call to {} bind \
+                    "the receiver and the callee bracket on the call to {} bind \
                      '{}' differently: '{}' at the receiver, '{}' at the callee",
                     kb.qualified_name_of(*op),
                     kb.local_name_of(*param),
@@ -2130,7 +2130,7 @@ impl TypeError {
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "type_args".to_string(),
                 expected_type: format!(
-                    "the receiver bracket's {} = {}",
+                    "the receiver's {} = {}",
                     kb.local_name_of(*param),
                     type_display_name_value(kb, receiver),
                 ),

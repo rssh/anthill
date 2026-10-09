@@ -411,11 +411,11 @@ fn a_form_three_receiver_type_under_a_literal_is_not_refused() {
 /// **E — AND A FORM-(3) RECEIVER ON A CONSTRUCTOR IS STILL REFUSED.** The other half of D,
 /// and the row that says D's repair did not overshoot into a silent acceptance.
 ///
-/// A companion receiver types the result of an OPERATION CALL. On an entity constructor it
-/// is meaningless, and `check_unconsumed_recv_types` refuses it in as many words — "form
-/// (3) applies to an operation call, not to an entity constructor or a fact / rule head".
-/// That sweep works by refusing every bracket nobody CONSUMED, so anything that consumes
-/// one DELETES the refusal.
+/// A companion receiver is read on a CALL. A constructor in a RULE BODY is a term the
+/// clause matches, and no reader takes a receiver there, so `check_unconsumed_recv_types`
+/// refuses it. (In an OPERATION body a constructor is a call and its receiver is read —
+/// WI-20261008-HZVQA.) That sweep works by refusing every bracket nobody CONSUMED, so
+/// anything that consumes one DELETES the refusal.
 ///
 /// WI-20260902-2SZ88 DID EXACTLY THAT AND IT SHIPPED. `entity_ctor_expr` called
 /// `build_recv_type`, reading the round-trip's silence about `recv_type` as a loss to

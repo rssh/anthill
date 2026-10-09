@@ -64,14 +64,14 @@ pub(super) fn denoted_sort_dot(
     let bracketed = !(type_pos.is_empty() && type_named.is_empty());
     // An alias is read as a name path reads it (`read_path_through_aliases`): a pure
     // alias is the sort it stands for, and one that owns members of its own — a
-    // `namespace CA` beside `sort CA = Box[V = Int64]` — is read as written. The
-    // parameters an alias fixes do not ride a call through it, in either spelling. (An
-    // alias is written bare; an applied one is refused where the type value is typed.)
-    let head = match *head {
+    // `namespace CA` beside `sort CA = Box[V = Int64]` — is read as written. A call
+    // through it is at the parameters it fixes, as the written `CA.m(…)` is. (An alias
+    // is written bare; an applied one is refused where the type value is typed.)
+    let (head, alias) = match *head {
         alias if !bracketed && kb.is_scan_alias(alias) && !owns_members(kb, alias) => {
-            kb.alias_head(alias).unwrap_or(alias)
+            (kb.alias_head(alias).unwrap_or(alias), Some(alias))
         }
-        written => written,
+        written => (written, None),
     };
     let short = short_name_of(kb.local_name_of(member)).to_string();
     let span = Some(occ.span.span);
@@ -98,29 +98,38 @@ pub(super) fn denoted_sort_dot(
         })
     };
 
+    // The receiver the call is made at: the bracket rides it as the written companion
+    // receiver's does, and so do the parameters an alias fixes. A bare sort says nothing
+    // of its parameters, and neither does the call.
+    let receiver = |kb: &mut KnowledgeBase| -> Result<Option<Value>, DenotedDot> {
+        if !bracketed {
+            return Ok(alias
+                .and_then(|alias| alias_receiver_type(kb, alias))
+                .map(Value::term));
+        }
+        match type_value_denoted_type(kb, env, &denotation) {
+            Some(id) => Ok(Some(Value::term(id))),
+            None => {
+                let written =
+                    crate::persistence::print::TermPrinter::new(kb).print_occurrence(&denotation);
+                Err(refused(
+                    TypeError::here(),
+                    "a receiver whose type arguments are written types".to_string(),
+                    format!(
+                        "`{written}` has an argument that names no type here; write the call on the type itself, `{written}.{short}(…)`"
+                    ),
+                ))
+            }
+        }
+    };
+
     if let Some(op) = crate::kb::load::find_operation_in_sort(kb, head, &short) {
         if let Some(refusal) = hidden(kb, op) {
             return refusal;
         }
-        // The bracket rides the call as the written companion receiver's does. A bare
-        // sort says nothing of its parameters, and neither does the call.
-        let recv_type = if bracketed {
-            match type_value_denoted_type(kb, env, &denotation) {
-                Some(id) => Some(Value::term(id)),
-                None => {
-                    let written =
-                        crate::persistence::print::TermPrinter::new(kb).print_occurrence(&denotation);
-                    return refused(
-                        TypeError::here(),
-                        "a receiver whose type arguments are written types".to_string(),
-                        format!(
-                            "`{written}` has an argument that names no type here; write the call on the type itself, `{written}.{short}(…)`"
-                        ),
-                    );
-                }
-            }
-        } else {
-            None
+        let recv_type = match receiver(kb) {
+            Ok(recv_type) => recv_type,
+            Err(refusal) => return refusal,
         };
         let pass = crate::kb::simp_rewrite::simp_pass(kb);
         return DenotedDot::Call(NodeOccurrence::synthesized_expr(
@@ -145,14 +154,10 @@ pub(super) fn denoted_sort_dot(
         if let Some(refusal) = hidden(kb, constructor) {
             return refusal;
         }
-        if bracketed {
-            let callee = format!("{}.{short}", kb.local_name_of(head));
-            return refused(
-                TypeError::here(),
-                "a call whose result the receiver's type bracket can type".to_string(),
-                crate::kb::load::companion_bracket_not_read(&callee),
-            );
-        }
+        let recv_type = match receiver(kb) {
+            Ok(recv_type) => recv_type,
+            Err(refusal) => return refusal,
+        };
         let pass = crate::kb::simp_rewrite::simp_pass(kb);
         return DenotedDot::Call(NodeOccurrence::synthesized_expr(
             Expr::Constructor {
@@ -160,6 +165,7 @@ pub(super) fn denoted_sort_dot(
                 pos_args: pos_args.to_vec(),
                 named_args: named_args.to_vec(),
                 from_projection: false,
+                recv_type,
             },
             Rc::clone(occ),
             pass,
