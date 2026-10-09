@@ -281,15 +281,18 @@ pub fn read_sort_infos(
 }
 
 /// One `OperationInfo` fact for a sort, decoded carrier-faithfully through the
-/// `op_info` funnel. `name` / `return_type` / `meta` / the `params` FieldInfo
-/// list are ground `TermId`s; `effects` / `requires` / `ensures` are
-/// carrier-agnostic `Value`s (a `denoted` label rides as a `Value::Node`). An op
-/// whose `name` or `return_type` is itself `denoted` (not a ground `TermId`) is
-/// skipped — mirrors the interpreter's prior loop.
+/// `op_info` funnel. `name` / `meta` are ground `TermId`s. Every field that holds a TYPE
+/// — `return_type`, each `params` FieldInfo record, `effects` — and the `requires` /
+/// `ensures` clauses are `Value`s, on whichever carrier the declaration's type rides: a
+/// type that holds a value, or one written through an alias, is an occurrence.
+///
+/// `return_type` and `params` were read as terms: an operation whose result type rode an
+/// occurrence was skipped, and one with such a parameter answered an EMPTY parameter list
+/// — `KB.operations` over `pay(a: Acct, m: Money)` said `pay` takes nothing.
 pub struct OperationRecord {
     pub name: TermId,
-    pub return_type: TermId,
-    pub params: Vec<TermId>,
+    pub return_type: Value,
+    pub params: Vec<Value>,
     pub effects: Vec<Value>,
     pub requires: Vec<Value>,
     pub ensures: Vec<Value>,
@@ -321,13 +324,11 @@ pub fn read_operations(
         if scope_sym != sort_sym {
             continue;
         }
-        let return_type = match op_info::head_field_term(kb, &head, "return_type") {
-            Some(t) => t,
+        let return_type = match op_info::head_field_value(kb, &head, "return_type") {
+            Some(ty) => ty,
             None => continue,
         };
-        let params = op_info::head_field_term(kb, &head, "params")
-            .map(|t| collect_list_terms(kb, t))
-            .unwrap_or_default();
+        let params = op_info::clause_list_field(kb, &head, "params");
         let effects = op_info::effects_of_head(kb, &head);
         let requires = op_info::clause_list_field(kb, &head, "requires");
         let ensures = op_info::clause_list_field(kb, &head, "ensures");

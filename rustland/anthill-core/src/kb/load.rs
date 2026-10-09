@@ -22669,8 +22669,8 @@ struct Loader<'a> {
     in_type_position: bool,
     /// While set, a type alias written bare is lowered to a
     /// [`node_occurrence::TypeNode::Aliased`] occurrence, which keeps the name beside the
-    /// type it stands for, instead of to that type's shared term. Set around an operation
-    /// parameter's type.
+    /// type it stands for, instead of to that type's shared term. Set around a type a
+    /// declaration writes ([`Self::declared_type_to_value`]).
     alias_nodes: bool,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
@@ -31526,6 +31526,16 @@ impl<'a> Loader<'a> {
         self.type_expr_to_value_at(ty, TypeSite::Type)
     }
 
+    /// [`Self::type_expr_to_value`] of a type a DECLARATION writes — an operation's
+    /// parameter — where a type alias written bare keeps the name it was written by
+    /// ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    fn declared_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        let saved = std::mem::replace(&mut self.alias_nodes, true);
+        let value = self.type_expr_to_value(ty);
+        self.alias_nodes = saved;
+        value
+    }
+
     /// [`Self::type_expr_to_value`] for an element of an operation's own `effects` clause
     /// ([`TypeSite::OwnRowElement`]).
     fn own_row_element_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
@@ -37544,9 +37554,7 @@ impl<'a> Loader<'a> {
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
                 // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
-                let saved_alias_nodes = std::mem::replace(&mut self.alias_nodes, true);
-                let type_value = self.type_expr_to_value(&p.ty);
-                self.alias_nodes = saved_alias_nodes;
+                let type_value = self.declared_type_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in
