@@ -7,6 +7,8 @@
 //!   full       — fresh KB + load_all(stdlib + bindings + one small user file)   [what every test pays]
 //!   pre_typer  — same, LoadOptions { run_typer: false }                          [everything before the typer]
 //!   incr       — load_all(one small user file) INTO an already-loaded stdlib KB  [what a cached-KB design pays]
+//!   clone      — KnowledgeBase::deep_clone of the loaded stdlib                     [WI-20261009-D0SD4]
+//!   clone+incr — the copy, then the user file loaded into it                        [what WI-059 would pay per test]
 //!
 //! ITERS=<n> picks the iteration count (default 5). LOOP=1 runs `full` forever for a sampler.
 //! THREADS=<n> runs `full` on n threads at once, ITERS loads each, and reports the
@@ -139,4 +141,22 @@ fn main() {
         t.push(s.elapsed());
     }
     stats("incr", &t);
+
+    // clone: a deep copy of the loaded stdlib (WI-20261009-D0SD4) — what a test pays
+    // INSTEAD of the stdlib's load once the base is shared (WI-059).
+    // clone+incr: the copy, then the user file loaded into it — the whole of what a
+    // test pays then, beside `full`.
+    let refs: Vec<&parse::ir::ParsedFile> = parsed.iter().collect();
+    let mut base = KnowledgeBase::new();
+    load::load_all(&mut base, &refs, &NullResolver).map_err(|e| e.len()).unwrap();
+    let (mut copy_only, mut copy_and_load) = (vec![], vec![]);
+    for _ in 0..iters {
+        let s = Instant::now();
+        let mut kb = base.deep_clone().expect("a loaded stdlib copies");
+        copy_only.push(s.elapsed());
+        load::load_all(&mut kb, &[&user], &NullResolver).map_err(|e| e.len()).unwrap();
+        copy_and_load.push(s.elapsed());
+    }
+    stats("clone", &copy_only);
+    stats("clone+incr", &copy_and_load);
 }

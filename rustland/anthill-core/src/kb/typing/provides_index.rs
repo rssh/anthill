@@ -184,6 +184,38 @@ pub(crate) struct ProvidesIndex {
     pub(super) witness_carriers: std::cell::RefCell<HashMap<Symbol, Rc<[Symbol]>>>,
 }
 
+impl ProvidesIndex {
+    /// WI-20261009-D0SD4 — this index for an independent copy of its KB
+    /// ([`crate::kb::KnowledgeBase::deep_clone`]): the derived `Clone` shares the
+    /// `Rc<[Symbol]>` rows of `witness_carriers`, and that copy may share none.
+    pub(crate) fn deep_clone_with(
+        &self,
+        copier: &mut crate::kb::deep_clone::Copier,
+    ) -> ProvidesIndex {
+        use crate::kb::deep_clone::plain;
+        let ProvidesIndex {
+            by_spec_base,
+            by_carrier,
+            carrier_edges,
+            conditions_by_carrier,
+            witness_carriers,
+        } = self;
+        ProvidesIndex {
+            by_spec_base: plain(by_spec_base),
+            by_carrier: plain(by_carrier),
+            carrier_edges: plain(carrier_edges),
+            conditions_by_carrier: plain(conditions_by_carrier),
+            witness_carriers: std::cell::RefCell::new(
+                witness_carriers
+                    .borrow()
+                    .iter()
+                    .map(|(carrier, witnesses)| (plain(carrier), copier.symbols(witnesses)))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
 /// bucket when the index is built, else a live scan of every provides fact (the
 /// pre-build / no-index fallback). Collapses the identical fast-path/fallback selection

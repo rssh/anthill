@@ -1,0 +1,73 @@
+# What a deep copy of a loaded stdlib costs (WI-20261009-D0SD4), 2026-10-09 08:44-08:53.
+#   cp docs/measurements/test-infrastructure/bench_load.rs rustland/anthill-core/examples/
+#   cd rustland && ITERS=<n> cargo run -q --example bench_load -p anthill-core [--config <the three opt lines>]
+# Tree:    ebe92670 plus the change as it stood before /code-review.
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No gate in flight. The load average was 6-9
+#          for the dev run and 46 (falling — this session's own optimized compile had just ended) for the last
+#          optimized one, which was run from the built binary with no build beside it. One thread, so the
+#          seconds are usable; compare within a block, not across.
+#
+# Rows `parse` .. `incr` are §2.1's. The two new ones:
+#   clone        KnowledgeBase::deep_clone of the loaded stdlib (87 files)
+#   clone+incr   the copy, then one 4-line user file loaded into it — what a test would pay under WI-059,
+#                beside `full`, which is what it pays today
+
+== dev profile (opt-level 0), ITERS=7 ==
+parse      n= 7  min=   258.3ms  median=   284.3ms  max=   401.7ms
+full       n= 7  min=  2306.6ms  median=  2548.5ms  max=  3008.7ms
+pre_typer  n= 7  min=  1079.1ms  median=  1351.1ms  max=  1490.0ms
+incr       n= 7  min=  1256.2ms  median=  1513.9ms  max=  2301.8ms
+clone      n= 7  min=   109.5ms  median=   124.1ms  max=   154.9ms
+clone+incr n= 7  min=  1471.0ms  median=  1551.0ms  max=  1818.7ms
+# Taken BEFORE the discrimination tree's tables were cloned in place (below); not re-taken at opt-level 0.
+# full / (clone+incr) = 1.64
+
+== the gate's build (anthill-core at 2, the two tree-sitter crates at 3), ITERS=9 — first cut of the copier ==
+full       n= 9  min=   305.0ms  median=   313.6ms  max=   508.9ms
+incr       n= 9  min=   179.6ms  median=   189.1ms  max=   257.9ms
+clone      n= 9  min=    28.7ms  median=    31.2ms  max=    44.9ms
+clone+incr n= 9  min=   224.8ms  median=   244.0ms  max=   333.7ms
+
+== where the copy's time went, same build, one copy (temporary `eprintln!`s in `deep_clone`, not kept) ==
+TOTAL       38.8 ms      (the timed copy is slower than the untimed: 31 ms above)
+discrim     28.6 ms      the discrimination tree — one `HashMap` a node, collected anew, every key re-hashed
+terms        3.9 ms      the hash-consed term store
+rules        2.7 ms      clause heads and body trees
+symbols      1.5 ms
+op_records   0.9 ms      operation signatures and body trees
+fact_dedup, value_fact_dedup, term_spans, sources: under 0.05 ms each
+memo rows   5 421        distinct `Rc` allocations copied through the memo (occurrences and value payloads)
+
+== the same build after `DiscrimNode::deep_clone` clones each table and overwrites its children, ITERS=15 ==
+parse      n=15  min=    73.4ms  median=    79.2ms  max=    87.3ms
+full       n=15  min=   303.3ms  median=   319.7ms  max=   334.0ms
+pre_typer  n=15  min=   154.5ms  median=   158.9ms  max=   168.7ms
+incr       n=15  min=   174.4ms  median=   182.9ms  max=   215.3ms
+clone      n=15  min=    20.6ms  median=    23.5ms  max=    28.2ms
+clone+incr n=15  min=   206.2ms  median=   218.5ms  max=   253.7ms
+# full / (clone+incr) = 1.46 — what sharing the base buys a load TODAY, with the second call's whole-KB passes
+#                              still running (§2.3). §5.1 had "at most ~1.7x" from incr alone, with no copy to pay.
+# full / clone        = 13.6 — the ceiling once those passes do work proportional to what a call added (§4 A3):
+#                              the copy is then most of what a test pays, and the tree is most of the copy.
+
+== AS LANDED, after /code-review (09:26): the discrimination tree's children are `Arc`, so the tree is no longer
+== copied at all — a copy SHARES its subtrees with the original and each side path-copies what it writes.
+== The same build, the binary run twice with no build beside it (load average 9-14), ITERS=15 ==
+parse      n=15  min=    72.4ms  median=    81.4ms  max=   124.2ms
+full       n=15  min=   288.7ms  median=   301.8ms  max=   369.2ms
+pre_typer  n=15  min=   150.1ms  median=   160.5ms  max=   169.7ms
+incr       n=15  min=   166.1ms  median=   183.9ms  max=   190.3ms
+clone      n=15  min=     6.7ms  median=     7.3ms  max=     8.4ms
+clone+incr n=15  min=   187.0ms  median=   201.2ms  max=   213.4ms
+--
+parse      n=15  min=    72.2ms  median=    77.4ms  max=    90.2ms
+full       n=15  min=   289.1ms  median=   312.7ms  max=   336.1ms
+pre_typer  n=15  min=   151.5ms  median=   169.9ms  max=   192.0ms
+incr       n=15  min=   167.2ms  median=   180.3ms  max=   203.4ms
+clone      n=15  min=     6.2ms  median=     7.4ms  max=     8.4ms
+clone+incr n=15  min=   179.3ms  median=   193.6ms  max=   204.9ms
+# clone 23.5 ms -> 7.3 ms. `full` and `incr` did not move with the atomic counts (320 -> 302 / 313, 183 -> 184 / 180:
+# inside the run-to-run spread), so the tree's other users — the fact index, the typer's Γ overlay — pay nothing
+# this bench can see.
+# full / (clone+incr) = 1.50 and 1.61 over the two runs; full / clone = 41-43.
+# clone+incr is 7-10 ms MORE than clone + incr taken apart: the first writes into a shared tree copy the path.

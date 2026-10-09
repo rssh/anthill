@@ -1,6 +1,7 @@
 pub(crate) mod body_specialize;
 pub mod call_form;
 pub(crate) mod const_value;
+pub mod deep_clone;
 pub mod defaults;
 pub(crate) mod discrim;
 pub(crate) mod entity_slots;

@@ -188,6 +188,7 @@ impl SourceSpan {
 
 /// A registered source: its display name plus (WI-745) the on-disk path and full
 /// text, so a `SourceId` carried by a span can be rendered as `path:line:col`.
+#[derive(Clone)]
 struct SourceEntry {
     name: String,
     /// The file's source text. Empty for sources registered by name only
@@ -200,6 +201,20 @@ struct SourceEntry {
 /// Registry mapping SourceId → file name + (WI-745) path + source text.
 pub struct SourceRegistry {
     entries: Vec<SourceEntry>,
+}
+
+impl SourceRegistry {
+    /// WI-20261009-D0SD4 — an independent copy, for
+    /// [`crate::kb::KnowledgeBase::deep_clone`]. Not `Clone`: the registry is an
+    /// interner, and `kb/layer.rs` must not be able to snapshot it by listing it. A
+    /// source's text and path are `Arc`s and are SHARED with the original — immutable,
+    /// and counted atomically.
+    pub(crate) fn duplicate(&self) -> SourceRegistry {
+        let SourceRegistry { entries } = self;
+        SourceRegistry {
+            entries: crate::kb::deep_clone::plain(entries),
+        }
+    }
 }
 
 impl SourceRegistry {

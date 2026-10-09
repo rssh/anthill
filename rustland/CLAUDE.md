@@ -243,3 +243,12 @@ Integration tests in `anthill-core/tests/` follow:
   read from the other side is at `KnowledgeBase::resolve_qualified_name_term`.
 - `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).
 - `FnArg` is `Copy` (both `TermId` and `Symbol` are `Copy`).
+- `KnowledgeBase::deep_clone` (`kb/deep_clone.rs`, WI-20261009-D0SD4) returns a copy that
+  shares NO `Rc` with its original, and the test suites' `common::SendableKb` hands such
+  a copy to another thread on that promise — its `unsafe impl Send` is sound only while
+  the promise holds. So the copy is a struct literal with no `..`, and a field passes
+  either `plain` (bounded `Clone + Send`: the compiler's proof that it holds no `Rc`) or
+  a hand-written copier. When a new field, or an `Rc` added to an old type, stops that
+  file compiling: WRITE THE COPIER (new `Rc`, every leaf through `plain`) or refuse the
+  state with a `DeepCloneError`. Never loosen the bound and never `clone()` an
+  `Rc`-bearing value there — that compiles, passes most runs, and corrupts a count.

@@ -13,7 +13,8 @@
 //! Rust host bindings, 1722 ms): a FULL deep clone of everything a layer must scope is
 //! **2.7 ms — 0.16 % of one load**. Of that, `by_qualified_name` + `scopes` is 2.0 ms and
 //! every clause-side index together is 0.12 ms; [`crate::kb::discrim::SubstTree`] needs
-//! nothing at all, since WI-537's Γ overlay already made it `Rc`-COW (37 µs).
+//! nothing at all, since WI-537's Γ overlay already made it copy-on-write (37 µs; its
+//! children are `Arc` since WI-20261009-D0SD4).
 //!
 //! So the KB's `HashMap`s are NOT retyped as `imbl` HAMTs. That would tax every load and
 //! every resolution — the hot paths — to save 2.7 ms on an operation invoked once per

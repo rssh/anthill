@@ -235,6 +235,63 @@ pub fn stdlib_parsed() -> Vec<&'static parse::ir::ParsedFile> {
     STDLIB_PARSED.iter().collect()
 }
 
+/// WI-20261009-D0SD4 — A KNOWLEDGE BASE THAT MAY CROSS THREADS, so that a `static` can
+/// hold ONE loaded KB for a whole test binary and each test, on its own thread, takes a
+/// copy of it. `KnowledgeBase` is not `Send`: it is `Rc` throughout, and making it
+/// `Send` in earnest would put a lock on every interpreter arena and typer stamp
+/// (`docs/design/test-infrastructure.md` §5.2).
+///
+/// The KB in here is reachable in exactly two ways, both of which go through
+/// [`KnowledgeBase::deep_clone`]: [`Self::copy_of`] puts a deep copy IN, and
+/// [`Self::instance`] hands a deep copy OUT. It is never lent, and never taken out.
+#[allow(dead_code)]
+pub struct SendableKb(KnowledgeBase);
+
+// SAFETY: `Rc` is not `Send` because its count is not atomic, so two threads holding
+// clones of one `Rc` race on it. Sending is sound when NO `Rc` reachable from the value
+// has a clone outside it — then every count is only ever touched by whichever one thread
+// has the value. That holds here by construction:
+//
+//  * the KB inside was made by `KnowledgeBase::deep_clone`, whose result shares no `Rc`
+//    with the KB it was copied from (`anthill_core::kb::deep_clone`: every field either
+//    passes a `Clone + Send` bound, which the compiler refuses for a type holding an
+//    `Rc`, or goes through a copier that allocates anew). The copiers for body trees
+//    and for every payload of a `Value` have rows that fail when one shares; that
+//    module's tests say which two copiers have none and rest on review alone;
+//  * the only access is `instance`, which takes `&self` and returns another deep copy —
+//    no `Rc` of the KB inside leaves it. While it runs it bumps and restores counts
+//    inside (a `Weak::upgrade`, `RefCell` borrow flags), which is why this is `Send`
+//    and NOT `Sync`: a `static` needs a `Mutex` around it, and the lock makes that
+//    one thread at a time;
+//  * nothing else `KnowledgeBase` holds is bound to a thread: `deep_clone` REFUSES a
+//    closure host function, a mounted backend and an interpreter-arena handle, which
+//    are the three things a `Send` bound on the rest could not vouch for. What a copy
+//    does share with its original — a source's text, the discrimination tree's
+//    subtrees — is behind an `Arc`, immutable where shared.
+//
+// Whatever breaks the first point breaks this, with no compile error and no failing
+// test here — the failure is a corrupted count on some later run. That is why the
+// claim is checked where it is made, in `kb/deep_clone.rs`.
+unsafe impl Send for SendableKb {}
+
+#[allow(dead_code)]
+impl SendableKb {
+    /// A deep copy of `kb`, sendable. `Err` for a KB that cannot be copied
+    /// ([`anthill_core::kb::deep_clone::DeepCloneError`]).
+    pub fn copy_of(
+        kb: &KnowledgeBase,
+    ) -> Result<SendableKb, anthill_core::kb::deep_clone::DeepCloneError> {
+        kb.deep_clone().map(SendableKb)
+    }
+
+    /// A KB of the caller's own, on the caller's thread.
+    pub fn instance(&self) -> KnowledgeBase {
+        self.0
+            .deep_clone()
+            .expect("the knowledge base in here was copied once already, by the same function")
+    }
+}
+
 /// The stdlib AND `sources` presented to `kb` in one `load_all` — for a test whose
 /// subject is that loading files a KB already holds changes nothing (an auto-registered
 /// record is not registered twice, a declaration is not a redeclaration). That call is

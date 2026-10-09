@@ -918,6 +918,15 @@ impl SymbolTable {
     }
 }
 
+/// Why a [`SymbolTable`] could not be copied just now ([`SymbolTable::duplicate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolTableBusy {
+    /// An import audit is live.
+    ImportAudit,
+    /// A per-file pass is running.
+    FilePass,
+}
+
 impl Default for SymbolTable {
     fn default() -> Self {
         Self::new()
@@ -945,6 +954,58 @@ impl SymbolTable {
         let interned = st.intern(GLOBAL_SCOPE_NAME);
         debug_assert_eq!(interned, global_owner);
         st
+    }
+
+    /// WI-20261009-D0SD4 — an independent copy, for
+    /// [`crate::kb::KnowledgeBase::deep_clone`]. Not `Clone`, because it can REFUSE:
+    ///
+    /// * while an import audit is live ([`Self::begin_import_audit`]) — the audit's
+    ///   record belongs to the run that turned it on, so a copy carrying it would count
+    ///   one run's resolutions twice and a copy dropping it would stop auditing in
+    ///   silence;
+    /// * while a per-file pass is running (an asking file is set) — nothing in the copy
+    ///   would ever run the pass's end, and the copy would resolve every later name as
+    ///   that file for good.
+    ///
+    /// Written as a destructuring with no `..`, so a new field does not compile here
+    /// until it is copied; each goes through [`crate::kb::deep_clone::plain`].
+    pub(crate) fn duplicate(&self) -> Result<SymbolTable, SymbolTableBusy> {
+        use crate::kb::deep_clone::plain;
+        use std::sync::atomic::Ordering;
+        let SymbolTable {
+            global,
+            defs,
+            intern_map,
+            by_qualified_name,
+            scopes,
+            internal_syms,
+            import_origin,
+            import_parent_origin,
+            asking_file_plus_one,
+            auditing,
+            import_audit,
+        } = self;
+        if auditing.load(Ordering::Relaxed)
+            || import_audit.lock().expect("import audit lock").is_some()
+        {
+            return Err(SymbolTableBusy::ImportAudit);
+        }
+        if asking_file_plus_one.load(Ordering::Relaxed) != 0 {
+            return Err(SymbolTableBusy::FilePass);
+        }
+        Ok(SymbolTable {
+            global: plain(global),
+            defs: plain(defs),
+            intern_map: plain(intern_map),
+            by_qualified_name: plain(by_qualified_name),
+            scopes: plain(scopes),
+            internal_syms: plain(internal_syms),
+            import_origin: plain(import_origin),
+            import_parent_origin: plain(import_parent_origin),
+            asking_file_plus_one: std::sync::atomic::AtomicU32::new(0),
+            auditing: std::sync::atomic::AtomicBool::new(false),
+            import_audit: std::sync::Mutex::new(None),
+        })
     }
 
     /// WI-915 — the TOP-LEVEL scope. THE sole owner of the sentinel: minted once in

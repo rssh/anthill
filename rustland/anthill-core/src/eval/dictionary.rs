@@ -60,6 +60,24 @@ use super::value::Value;
 pub struct Dictionary(Value);
 
 impl Dictionary {
+    /// WI-20261009-D0SD4 — this dictionary with every `Rc` in it made anew; see
+    /// [`crate::kb::deep_clone`].
+    pub(crate) fn deep_clone_with(&self, copier: &mut crate::kb::deep_clone::Copier) -> Dictionary {
+        let Dictionary(value) = self;
+        Dictionary(copier.value(value))
+    }
+}
+
+#[cfg(test)]
+impl Dictionary {
+    /// A dictionary over ANY value, for a test of code that only CARRIES one (the deep
+    /// copy's rows). Not a dictionary anything could dispatch through.
+    pub(crate) fn wrapping_for_test(value: Value) -> Dictionary {
+        Dictionary(value)
+    }
+}
+
+impl Dictionary {
     /// Build `Dictionary(subs…, impl: impl_sort)`.
     ///
     /// `None` in a KB that never loaded `anthill.realization.runtime` — the

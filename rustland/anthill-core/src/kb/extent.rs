@@ -683,6 +683,39 @@ pub(crate) struct ExtentScopeSnapshot {
 }
 
 impl ExtentRegistry {
+    /// WI-20261009-D0SD4 — why this registry cannot be part of an independent copy of
+    /// its KB ([`crate::kb::KnowledgeBase::deep_clone`]), or `None` when it is bare.
+    ///
+    /// A mounted source or a mirror store is a LIVE HOST BACKEND — a connection, a
+    /// file, a channel — that nothing here can duplicate, and two KBs writing through
+    /// one would not be independent. So a registry that holds one, OR ANY RECORD OF
+    /// ONE, is refused rather than copied without it.
+    ///
+    /// The records and not only the backends, because a backend can be out of the
+    /// registry while its record is in: `take_mirror` removes the store for the length
+    /// of the call that hands it the KB (`persist_resident`, `persistence_flush`), and
+    /// a copy taken there would carry `mirror_of` and `mirror_monotonicity` naming a
+    /// store it never had. Exhaustively destructured, as [`Self::snapshot_scoped`] is.
+    pub(crate) fn deep_clone_refusal(&self) -> Option<crate::kb::deep_clone::DeepCloneError> {
+        let ExtentRegistry {
+            sources,
+            mounts,
+            profiles,
+            mirrors,
+            mirror_of,
+            mirror_monotonicity,
+        } = self;
+        let records =
+            mounts.len() + profiles.len() + mirror_of.len() + mirror_monotonicity.len();
+        (!sources.is_empty() || !mirrors.is_empty() || records > 0).then(|| {
+            crate::kb::deep_clone::DeepCloneError::LiveBackend {
+                sources: sources.len(),
+                mirrors: mirrors.len(),
+                records,
+            }
+        })
+    }
+
     /// WI-SPGBP — capture the scoped mount tables. Exhaustively destructured, so a field
     /// added to the registry fails to compile until it is classified.
     pub(crate) fn snapshot_scoped(&self) -> ExtentScopeSnapshot {

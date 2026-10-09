@@ -12,6 +12,7 @@
 /// See: docs/stage0/rust-term-store-design.md §7.6
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::node_occurrence::NodeOccurrence;
 use super::persist_subst::{ArgPos, BindValue, PersistSubst, SmallSubst, VarPath};
@@ -46,9 +47,9 @@ pub(crate) enum DiscrimKey {
 
 // ── DiscrimNode — tree node ─────────────────────────────────────
 
-/// Children are `Rc<DiscrimNode>`, making the tree a PERSISTENT (path-copying)
+/// Children are `Arc<DiscrimNode>`, making the tree a PERSISTENT (path-copying)
 /// structure: `Clone` is O(1) — a shallow copy of this node's edge maps as
-/// `Rc` bumps, sharing every subtree. Mutation goes through `Rc::make_mut`, so
+/// `Arc` bumps, sharing every subtree. Mutation goes through `Arc::make_mut`, so
 /// `insert` clones only the nodes along the touched path and leaves the rest
 /// shared (proposal-050 / WI-537: a `FlowEnv`'s Γ overlay forks at every
 /// control-flow split, and each fork must be O(path), not O(tree) — see
@@ -60,10 +61,19 @@ pub(crate) enum DiscrimKey {
 /// clone-wise, so index build cost is unchanged). `Drop` recurses only into
 /// uniquely-owned children (see below), so a shared subtree is never freed
 /// twice and a deep unique chain never overflows the host stack.
+///
+/// `Arc`, NOT `Rc`, since WI-20261009-D0SD4, and it is what lets a third consumer in:
+/// a tree holds keys, variables and leaves and nothing bound to a thread, so with
+/// atomic counts it is `Send + Sync` and [`crate::kb::KnowledgeBase::deep_clone`] takes
+/// it as it takes any plain field — an O(fan-out) clone that SHARES the subtrees with
+/// the original, each side path-copying what it later writes. Copied node by node, as
+/// an `Rc` tree had to be, it was three quarters of what a copy of a loaded stdlib
+/// cost (28.6 ms of 38, optimized), and that copy recursed over the tree's depth, which
+/// the `Drop` below exists to avoid.
 #[derive(Clone)]
 struct DiscrimNode<L> {
-    concrete: HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
-    var_edges: Vec<(Var, Rc<DiscrimNode<L>>)>,
+    concrete: HashMap<DiscrimKey, Arc<DiscrimNode<L>>>,
+    var_edges: Vec<(Var, Arc<DiscrimNode<L>>)>,
     leaves: Vec<L>,
 }
 
@@ -103,17 +113,17 @@ impl<L> Drop for DiscrimNode<L> {
 }
 
 fn steal_discrim_children<L>(node: &mut DiscrimNode<L>, stack: &mut Vec<DiscrimNode<L>>) {
-    // Children are `Rc`-shared: descend only into one we solely own
+    // Children are `Arc`-shared: descend only into one we solely own
     // (`into_inner` is `Some` iff refcount was 1, consuming it). A child still
-    // shared by another snapshot is left to its other owners — its `Rc` here
+    // shared by another snapshot is left to its other owners — its `Arc` here
     // just decrements: no recursion, no double free.
     for (_, child) in std::mem::take(&mut node.concrete) {
-        if let Some(inner) = Rc::into_inner(child) {
+        if let Some(inner) = Arc::into_inner(child) {
             stack.push(inner);
         }
     }
     for (_, child) in std::mem::take(&mut node.var_edges) {
-        if let Some(inner) = Rc::into_inner(child) {
+        if let Some(inner) = Arc::into_inner(child) {
             stack.push(inner);
         }
     }
@@ -122,17 +132,17 @@ fn steal_discrim_children<L>(node: &mut DiscrimNode<L>, stack: &mut Vec<DiscrimN
 }
 
 /// Descend into the child under `key` (creating it if absent), forking it for
-/// writing via `Rc::make_mut`. The single home of the persistent-tree write
+/// writing via `Arc::make_mut`. The single home of the persistent-tree write
 /// invariant on the concrete-edge insert path: a node shared with another
 /// snapshot (a Γ overlay's COW fork) is path-copied here, while a uniquely-owned
 /// node (the main index during its build, refcount 1) is edited in place.
 fn make_mut_child<L: Clone>(
-    map: &mut HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
+    map: &mut HashMap<DiscrimKey, Arc<DiscrimNode<L>>>,
     key: DiscrimKey,
 ) -> &mut DiscrimNode<L> {
-    Rc::make_mut(
+    Arc::make_mut(
         map.entry(key)
-            .or_insert_with(|| Rc::new(DiscrimNode::new())),
+            .or_insert_with(|| Arc::new(DiscrimNode::new())),
     )
 }
 
@@ -140,10 +150,10 @@ fn make_mut_child<L: Clone>(
 /// writing, or `None` if absent. Same `make_mut` discipline — only the main
 /// (unshared) index ever removes, so this never actually clones in practice.
 fn get_mut_child<'a, L: Clone>(
-    map: &'a mut HashMap<DiscrimKey, Rc<DiscrimNode<L>>>,
+    map: &'a mut HashMap<DiscrimKey, Arc<DiscrimNode<L>>>,
     key: &DiscrimKey,
 ) -> Option<&'a mut DiscrimNode<L>> {
-    map.get_mut(key).map(Rc::make_mut)
+    map.get_mut(key).map(Arc::make_mut)
 }
 
 // ── SubstTree — top-level structure ─────────────────────────────
@@ -247,7 +257,7 @@ impl OwnedView {
 
 // ── View-driven insert ──────────────────────────────────────────
 
-// `L: Clone` because `insert` / `remove` descend through `Rc::make_mut`, which
+// `L: Clone` because `insert` / `remove` descend through `Arc::make_mut`, which
 // clones a node when it is shared (a Γ snapshot). The main index is uniquely
 // owned, so `make_mut` there never actually clones.
 impl<L: Clone> SubstTree<L> {
@@ -288,11 +298,11 @@ impl<L: Clone> SubstTree<L> {
             }
             let pos = node.var_edges.iter().position(|(v, _)| *v == var);
             return if let Some(idx) = pos {
-                Rc::make_mut(&mut node.var_edges[idx].1)
+                Arc::make_mut(&mut node.var_edges[idx].1)
             } else {
-                node.var_edges.push((var, Rc::new(DiscrimNode::new())));
+                node.var_edges.push((var, Arc::new(DiscrimNode::new())));
                 let last = node.var_edges.len() - 1;
-                Rc::make_mut(&mut node.var_edges[last].1)
+                Arc::make_mut(&mut node.var_edges[last].1)
             };
         }
         match view.head(kb) {

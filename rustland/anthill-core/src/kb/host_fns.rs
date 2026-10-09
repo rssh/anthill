@@ -213,7 +213,59 @@ pub struct HostFnRegistry {
     sealed: bool,
 }
 
+impl HostFn {
+    /// WI-20261009-D0SD4 — this entry for an independent copy of its KB. A plain `fn`
+    /// is copied. A CLOSURE is REFUSED: it is shared state of the embedder's, nothing
+    /// bounds it `Send`, and a copy holding the same closure is neither independent of
+    /// the original nor safe to hand to another thread.
+    pub(crate) fn deep_clone_with(
+        &self,
+        key: &str,
+        copier: &mut crate::kb::deep_clone::Copier,
+    ) -> HostFn {
+        use crate::kb::deep_clone::{plain, DeepCloneError};
+        let HostFn { arity, f } = self;
+        match f {
+            HostFnImpl::Static(f) => HostFn {
+                arity: plain(arity),
+                f: HostFnImpl::Static(plain(f)),
+            },
+            HostFnImpl::Dynamic(_) => {
+                copier.refuse(DeepCloneError::DynamicHostFn { key: key.to_string() });
+                self.clone()
+            }
+        }
+    }
+}
+
 impl HostFnRegistry {
+    /// WI-20261009-D0SD4 — the key of a host function that is a CLOSURE, the first in
+    /// name order, or `None` when every entry is a plain `fn`. What
+    /// [`crate::kb::KnowledgeBase::deep_clone`] refuses on, asked before anything is
+    /// copied; in name order so that the refusal names the same entry every run.
+    pub(crate) fn first_closure(&self) -> Option<&str> {
+        self.by_key
+            .iter()
+            .filter(|(_, f)| matches!(f.f, HostFnImpl::Dynamic(_)))
+            .map(|(key, _)| key.as_str())
+            .min()
+    }
+
+    /// WI-20261009-D0SD4 — see [`HostFn::deep_clone_with`].
+    pub(crate) fn deep_clone_with(
+        &self,
+        copier: &mut crate::kb::deep_clone::Copier,
+    ) -> HostFnRegistry {
+        let HostFnRegistry { by_key, sealed } = self;
+        HostFnRegistry {
+            by_key: by_key
+                .iter()
+                .map(|(key, f)| (key.clone(), f.deep_clone_with(key, copier)))
+                .collect(),
+            sealed: *sealed,
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

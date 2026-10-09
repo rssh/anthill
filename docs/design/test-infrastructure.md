@@ -10,6 +10,9 @@ next day — the first fixed, the second made a load error — and the suite is 
 the switch. **The tests that built their own stdlib load were moved onto the one recipe
 the same day** (WI-20261008-RAH0Z: §2.4, §5.3), so the switch reaches every such load
 but those of the tests pinned to a recipe by name: 66, where it was 1 028.
+**A knowledge base can be deep-copied since 2026-10-09** (WI-20261009-D0SD4: §5.2), which
+is the half of lever B that §5.2 had wrong: a KB cannot be made `Send`, so the base is
+copied instead, and one copy is 7.3 ms beside a 300 ms load (§5.1).
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -692,6 +695,32 @@ maps and vectors, so tens of milliseconds in debug is the expectation. With 12 t
 cloning under one mutex that is still far below one load; a pool of N bases is the fallback
 if contention shows.
 
+**Measured 2026-10-09** (WI-20261009-D0SD4; raw: `clone-cost-2026-10-09.txt`), one thread,
+the same machine with no gate in flight:
+
+| | `full` | `incr` | `clone` | `clone + incr` | `full / (clone + incr)` |
+|---|---:|---:|---:|---:|---:|
+| dev (opt-level 0), the first cut | 2.55 s | 1.51 s | 124 ms | 1.55 s | 1.64× |
+| the gate's build, the first cut | 320 ms | 183 ms | 23.5 ms | 219 ms | 1.46× |
+| the gate's build, **as landed** (two runs) | 302 / 313 ms | 184 / 180 ms | **7.3 ms** | 201 / 194 ms | **1.5–1.6×** |
+
+So the base KB buys a load about 1.5× today — below the 1.7× read off `incr` alone, the
+second call being still 60 % of a load. With A3 in, a test pays the copy and little
+else: a fortieth of a load.
+
+The first cut copied the discrimination tree node by node, and that one field was three
+quarters of the copy (28.6 ms of 38: a `HashMap` a node). /code-review pointed out that
+the tree holds nothing bound to a thread; its children are `Arc` now, so it passes the
+copy as any plain field does and its subtrees are SHARED between a copy and its
+original, each side path-copying what it writes. `full` and `incr` did not move with
+the atomic counts. What is left of the copy is mostly the term store, the clauses with
+their body trees, and the symbol table — 3.9, 2.7 and 1.5 ms in the first cut's
+breakdown, which was taken with timers in and ran a fifth slower than the copy alone.
+
+And twelve threads copying under one mutex is no longer "far below one load" once A3
+lands: at ~15 ms a test, twelve threads ask for ~800 copies a second and one lock gives
+~135. The pool of bases is then a requirement, not a fallback — WI-059's to size.
+
 ### 5.2 What has to be true of `KnowledgeBase`
 
 - **`Clone`.** No `impl Clone` exists. The struct (`kb/mod.rs`, lines 919–2275) is
@@ -718,6 +747,50 @@ if contention shows.
   `-smt-gen`; `HostFnImpl::Dynamic` is an `Arc<dyn Fn>` with no `Send + Sync` bound.
   Suggested shape: a `Shared<T>` alias first (mechanical, no behaviour change), so the
   flip to `Arc` is one line and is measured against a one-line back-out.
+  **Corrected 2026-10-09 — it is not `Rc → Arc` at all** (WI-20261009-D0SD4). Asked a
+  field at a time, the compiler says 25 of `KnowledgeBase`'s 116 fields hold something
+  that is not `Send`, and two of the reasons no `Arc` removes. `Value` carries the
+  interpreter's five arenas (`Rc<RefCell<CellArena | MapArena | StreamArena |
+  ClosureArena | SubstArena>>`) and the layer arena, so a `Send` `Value` is a lock on
+  each. And every expression node has four `RefCell` slots the typer writes in place
+  (`classification`, `op_dicts`, `inferred_type`, `lowered_receiver`), and an `Arc` of a
+  type holding a `RefCell` is not `Send` either. The count above is also low: 2 030 `Rc`
+  uses in 72 files of `anthill-core/src`.
+
+  The first bullet is wrong for the same slots: **the `Rc`s of a body tree are not
+  shared-immutable.** A second `load_all` re-types every operation body already in the
+  KB (the free-op sweep, `typing/sorts.rs`) and writes its verdicts into the nodes, so
+  two KBs sharing a tree would each stamp what the other reads. The layer snapshot
+  (`kb/layer.rs`) clones `op_records` and `const_bodies` by `Rc` and so has this shape;
+  whether `KB.loaded` can leave a base call site carrying a discarded layer's verdict
+  is NOT TESTED.
+
+  **What was built instead (user, 2026-10-09).** `KnowledgeBase::deep_clone`
+  (`kb/deep_clone.rs`), safe code: a copy that shares NO `Rc` with its original — a new
+  allocation for every body tree and value payload, the sharing WITHIN the copy kept by
+  a memo. (The discrimination tree is the one large thing shared with the original, and
+  through an `Arc`: §5.1.) It is a struct literal over every field with
+  no `..`; a field with no `Rc` in it goes through one helper bounded `Clone + Send`,
+  which is the compiler's own proof that it holds none, and the 25 others through
+  copiers that are exhaustive matches for the same reason. It REFUSES what it could
+  neither duplicate nor leave out: a closure host function, a mounted backend or a
+  record of one, an interpreter-arena handle, an applied layer, a live import audit, a
+  KB caught mid-load or mid-search, a receiver twin the KB does not own, and a body
+  nested deeper than a megabyte of stack — the copiers recurse, and a refusal is better
+  than an abort. The memo caches whose rows hold an `Rc` start empty in the copy. Then `common::SendableKb`
+  (`tests/common/mod.rs`) wraps such a copy and carries the ONE `unsafe impl Send` of
+  the change, in test support and not in the library: sending is sound because nothing
+  outside the wrapper holds an `Rc` into it, which is exactly what the deep copy
+  establishes. `Send` is decided from a type's fields, never from a value, so no amount
+  of copying makes the compiler see it; the only safe alternative is a second,
+  `Rc`-free type to freeze the base into and thaw a KB out of — about twenty mirror
+  types and a conversion each way, not taken. The claim is checked where it is made:
+  five rows in `kb/deep_clone.rs` (the original is dropped and every occurrence and
+  payload it held is freed; every payload a `Value` can carry is made anew; the typer's
+  stamps come across and are then independent; the refusals; the stack budget), fifteen
+  back-outs measured against them and tabled there with the two copiers no row covers,
+  and three more rows from outside the crate, one of which takes copies on eight
+  threads at once.
 - **Not `Sync`** is fine: the `Mutex` provides exclusive access for the clone.
 - `Interpreter::new(kb)` takes the KB by value (81 sites) — a clone is exactly what it wants.
 
@@ -934,7 +1007,9 @@ informed; it does not recommend changing the rule until A and B have been measur
    change), WI-20261006-SZKV7 (the two-step load switch — the control A3 and B rest on,
    which §9 did not have as a step of its own), and WI-059 rewritten as B. A3 goes one
    ticket per pass, filed one at a time (user, 2026-10-06). Not filed: A2, `Clone + Send`,
-   §5.4 a, the §7 fresh-clone trap.
+   §5.4 a, the §7 fresh-clone trap. **`Clone + Send` filed 2026-10-09** (user) as
+   WI-20261009-D0SD4, a deep copy and a wrapper rather than what the name says (§5.2);
+   WI-059 depends on it.
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
@@ -957,7 +1032,8 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
 | 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
-| 5 | B: `Clone` + `Send` + base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | `wi_tests` 659 s → one to two minutes: loads are 89 % of it (§2.4) |
+| 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
+| 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | re-derived 2026-10-09: loads ~1.5× cheaper WITHOUT step 4, so `wi_tests` ~600 s → ~410 s; with step 4, a fortieth of a load and a pool of bases (§5.1) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
 | 7 | A4 hot spots as a level-2 profile ranks them; A5 allocator | the bench, one full run | single-digit % each. C3 thread count is measured and is not a lever (§6) |
 
@@ -994,6 +1070,9 @@ cargo run -q --example bench_load -p anthill-core \
   --config 'profile.dev.package.anthill-core.opt-level=2' \
   --config 'profile.dev.package.tree-sitter.opt-level=3' \
   --config 'profile.dev.package.tree-sitter-anthill.opt-level=3'
+
+# the bench also prints `clone` — KnowledgeBase::deep_clone of the loaded stdlib — and
+# `clone+incr`, the copy and then the user file loaded into it (§5.1's table)
 
 # do loads scale across threads? N threads, ITERS loads each (§2.5's thread columns)
 THREADS=12 ITERS=3 ./target/debug/examples/bench_load

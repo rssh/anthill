@@ -330,6 +330,33 @@ impl TermStore {
         self.pinned += 1;
     }
 
+    /// WI-20261009-D0SD4 — an independent copy, for
+    /// [`crate::kb::KnowledgeBase::deep_clone`]. NOT `Clone`, because one state must
+    /// not be copied: `None` while a scoped-KB layer holds the store pinned. The
+    /// snapshot that discards that layer is the interpreter's, so a copy would stay
+    /// frozen for good. (And a `Clone` here would let `kb/layer.rs` list `terms` among
+    /// its scoped fields, which it must never do.)
+    pub(crate) fn duplicate(&self) -> Option<TermStore> {
+        use crate::kb::deep_clone::plain;
+        let TermStore {
+            terms,
+            hash_index,
+            refcounts,
+            free_list,
+            pinned,
+        } = self;
+        if *pinned > 0 {
+            return None;
+        }
+        Some(TermStore {
+            terms: plain(terms),
+            hash_index: plain(hash_index),
+            refcounts: plain(refcounts),
+            free_list: plain(free_list),
+            pinned: 0,
+        })
+    }
+
     /// The other half of [`Self::pin`]. Saturating rather than asserting: an unmatched
     /// unpin would mean a snapshot was restored twice, which `restore_scoped`'s own
     /// `defs` length assertion already catches with a message that names the cause.
