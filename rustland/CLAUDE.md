@@ -84,8 +84,8 @@ whatever the switches say.
 carrier-neutral view (`TermView`, `extract_type`), and a reader that matches the carrier
 instead — a `Value::Term` gate, a `_ => false` for "a carrier this cannot read" — answers
 for a term and not for the same type on an occurrence. `ANTHILL_TEST_NODE_CARRIER=1` makes
-the loader put every sort named in an operation parameter's type on the occurrence a type
-alias written there rides (`TypeNode::Aliased`), standing for itself:
+the loader put every sort named in an operation's parameter or result type on the
+occurrence a type alias written there rides (`TypeNode::Aliased`), standing for itself:
 
 ```bash
 ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh          # the whole workspace, every load

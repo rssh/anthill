@@ -6546,7 +6546,6 @@ mod wi_1qvwa_op_info_index_tests {
         operation_is_declared,
     };
     use crate::kb::resolve::PredicateProof;
-    use crate::kb::term::TermId;
     use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
 
@@ -6565,8 +6564,8 @@ end
 
     /// Every keyed reader of the `OperationInfo` facts, answering about one symbol, as one
     /// comparable value. [`lookup_operation_info`] is reduced to its per-field COUNTS plus
-    /// the return type's `TermId`: its `Value` fields have no equality worth comparing, and
-    /// a bucket that served a different fact would move exactly these.
+    /// the return type AS IT PRINTS: its `Value` fields have no equality worth comparing,
+    /// and a bucket that served a different fact would move exactly these.
     fn answers(
         kb: &KnowledgeBase,
         sym: Symbol,
@@ -6574,14 +6573,15 @@ end
         bool,
         Option<usize>,
         Option<(usize, usize, usize)>,
-        Option<TermId>,
+        Option<String>,
     ) {
         (
             operation_is_declared(kb, sym),
             declared_arity(kb, sym),
             lookup_operation_info(kb, sym)
                 .map(|r| (r.params.len(), r.effects.len(), r.type_params.len())),
-            super::super::lookup_operation_return_type(kb, sym),
+            super::super::lookup_operation_return_type(kb, sym)
+                .map(|ty| crate::kb::typing::type_display_name_value(kb, &ty)),
         )
     }
 

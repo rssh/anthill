@@ -1,6 +1,6 @@
 //! A type that holds a value (`Foo[T = Int64, N = 3]`) is not a hash-consed term: it rides
 //! an occurrence, and a type applied to one (`Bag[T = Foo[T = Int64, N = 3]]` once a
-//! substitution put it there) an entity. Four readers in the typer answered for the term
+//! substitution put it there) an entity. Eight readers in the typer answered for the term
 //! carrier alone, and each gave such a type a different verdict from its term twin.
 //!
 //! THE RULE. A reader of a type gives one answer for the type, whichever carrier it rides.
@@ -21,6 +21,21 @@
 //!   * `Sp.each(Car.car(1), lambda q -> mk(q.n))` over `each(s: Self, f: (q: T) -> Foo[T =
 //!     Int64, N = 3])` was REFUSED, "Sp.T.n: … no such member": the gate that types a
 //!     receiver before the lambda it hints read a callback's type as a term only.
+//!   * a bare reference to a nullary `origin() -> Foo[T = Int64, N = 3]` was REFUSED,
+//!     "origin.name: expected resolved name, got unresolved": the zero-arg-call reading
+//!     asks for the operation's result type, which was looked up as a term only.
+//!   * `send(fetch())` over `send(body: Text[L = ?l]) requires allowed(?l)` LOADED with
+//!     `fetch() -> Text[L = Tag[N = 3]]` and no `allowed` fact for that label: bound to an
+//!     occurrence, the variable made the goal an entity, and a goal that is no term was
+//!     held undetermined and skipped. The same with a label that is a callable whose
+//!     effect names a place, `(x: Int64) -> Unit @ Modify[c]`: a place is no variable.
+//!   * `relay(t: Text[L = ?m]) = send2(t, fetch())` over `send2(…) requires pair_ok(?l,
+//!     ?k)` was told the fact was missing at the call, where its twin at a plain label is
+//!     told that `relay` owes the declaration: which of the two a refusal says was read
+//!     off a term only.
+//!   * `counter(n: Int64) -> (x: Foo[T = Int64, N = 3]) -> Cell[V = Int64]` LOADED handing
+//!     back a fresh cell with no `Modify[result]` declared: whether a result type can
+//!     carry a region out was asked of a term, and answered "no" for anything else.
 //!
 //! CONTROLS — measured, each piece backed out on its own:
 //!
@@ -46,6 +61,24 @@
 //!
 //!   The two `still_warns` rows above also pass with the shadow comparison on terms alone,
 //!   where such a type was never compared: they guard the comparison this change adds.
+//!
+//!   an operation's result type read as a term alone
+//!   (`lookup_operation_return_type` answering `None` off the term carrier) — FAIL:
+//!     a_bare_nullary_name_is_its_call_at_a_result_type_holding_a_value
+//!   a precondition floated whenever it is no term (`value_carries_undecided_var`
+//!   answering `true` for an entity) — FAIL:
+//!     a_precondition_at_a_type_holding_a_value_is_judged
+//!     a_precondition_at_a_callable_label_naming_a_place_is_judged
+//!     a_wrapper_is_told_to_declare_a_precondition_at_a_type_holding_a_value
+//!   a type occurrence in a precondition asked whether it COMPARES
+//!   (`resolved_type_is_determined`) and not whether it holds a variable — FAIL:
+//!     a_precondition_at_a_callable_label_naming_a_place_is_judged
+//!   which repair a refusal names read off a term alone (`clause_rigid_kind` answering
+//!   `None` for an entity) — FAIL:
+//!     a_wrapper_is_told_to_declare_a_precondition_at_a_type_holding_a_value
+//!   the region check answering for a term alone (`op_boundary_effects` asking
+//!   `result_type_admits_region` of a `Value::Term` only) — FAIL:
+//!     a_fresh_cell_behind_a_result_type_holding_a_value_owes_its_effect
 //!
 //!   PASS EITHER WAY, by design:
 //!     two_instances_at_one_type_holding_a_value_conform — the fence: what must keep
@@ -278,5 +311,113 @@ fn a_lambda_is_hinted_from_a_computed_sibling_beside_a_dependent_absence() {
     assert_eq!(
         run("vhhintabsence", &format!("{decls}  operation go() -> Int64 = apply(mkWrap(), lambda x -> x.n)")),
         9
+    );
+}
+
+// ── a result type that holds a value ────────────────────────────────────────
+
+/// A bare reference to a NULLARY operation is its zero-arg call, also when the result
+/// type holds a value: the result type is what decides that reading.
+#[test]
+fn a_bare_nullary_name_is_its_call_at_a_result_type_holding_a_value() {
+    assert_eq!(
+        run(
+            "vhnullary",
+            "  operation origin() -> Foo[T = Int64, N = 3] = mk(4)\n  \
+             operation go() -> Int64 =\n    let o = origin\n    o.v"
+        ),
+        4
+    );
+}
+
+/// Text carrying a label, and the labels: the fixture of the precondition rows.
+const LABELS: &str = "  sort Level\n    entity Public\n    entity Untrusted\n  end\n  \
+                      sort Tag\n    sort N = ?\n    entity tag\n  end\n  \
+                      sort Text\n    sort L = ?\n    entity text(s: String)\n  end\n";
+
+/// A precondition over a variable the call binds to a type that holds a value is
+/// judged, not skipped: `send(fetch())` owes `allowed(Tag[N = 3])`, which nothing gives.
+#[test]
+fn a_precondition_at_a_type_holding_a_value_is_judged() {
+    let decls = format!(
+        "{LABELS}  fact allowed(Public)\n  \
+         operation fetch() -> Text[L = Tag[N = 3]] = text(s: \"x\")\n  \
+         operation banner() -> Text[L = Public] = text(s: \"y\")\n  \
+         operation send(body: Text[L = ?l]) -> Int64 requires allowed(?l) = 1\n"
+    );
+    let refused = refusal(
+        "vhprecond",
+        &format!("{decls}  operation go() -> Int64 = send(fetch())"),
+    );
+    assert!(
+        refused.contains("precondition `allowed(Tag[N = 3])`")
+            && refused.contains("unsatisfied precondition"),
+        "{refused}"
+    );
+    // The label a fact does give is admitted, as it was.
+    assert_eq!(run("vhprecondok", &format!("{decls}  operation go() -> Int64 = send(banner())")), 1);
+}
+
+/// … and over a label that is a callable whose effect names a place: a place is no
+/// variable, so the obligation is decided, and nothing gives it.
+#[test]
+fn a_precondition_at_a_callable_label_naming_a_place_is_judged() {
+    let refused = refusal(
+        "vhplace",
+        &format!(
+            "  import anthill.prelude.{{Cell, Unit}}\n{LABELS}  fact allowed(Public)\n  \
+             operation send(body: Text[L = ?l]) -> Int64 requires allowed(?l) = 1\n  \
+             operation relay(c: Cell[V = Int64], t: Text[L = (x: Int64) -> Unit @ Modify[c]]) -> Int64 =\n    \
+             send(t)"
+        ),
+    );
+    assert!(
+        refused.contains("send.requires") && refused.contains("unsatisfied precondition"),
+        "{refused}"
+    );
+}
+
+/// A wrapper that hands its own label on owes the precondition a DECLARATION, and the
+/// refusal says so, also when the other label holds a value. Written — the label named
+/// through an alias — the declaration is what the body is checked under.
+#[test]
+fn a_wrapper_is_told_to_declare_a_precondition_at_a_type_holding_a_value() {
+    let decls = format!(
+        "{LABELS}  sort T3 = Tag[N = 3]\n  fact pair_ok(Public, Public)\n  \
+         operation fetch() -> Text[L = Tag[N = 3]] = text(s: \"x\")\n  \
+         operation send2(a: Text[L = ?l], b: Text[L = ?k]) -> Int64 requires pair_ok(?l, ?k) = 1\n"
+    );
+    let refused = refusal(
+        "vhwrapper",
+        &format!("{decls}  operation relay(t: Text[L = ?m]) -> Int64 = send2(t, fetch())"),
+    );
+    assert!(
+        refused.contains("relay.requires")
+            && refused.contains("precondition `pair_ok(?m, Tag[N = 3])` declared here"),
+        "{refused}"
+    );
+    let declared = load_errors_of(&source(
+        "vhwrapperok",
+        &format!(
+            "{decls}  operation relay(t: Text[L = ?m]) -> Int64 requires pair_ok(?m, T3) =\n    \
+             send2(t, fetch())"
+        ),
+    ));
+    assert!(declared.is_empty(), "{declared:#?}");
+}
+
+/// An operation that hands back a function returning its fresh cell owes
+/// `Modify[result]`, also when the function's type holds a value.
+#[test]
+fn a_fresh_cell_behind_a_result_type_holding_a_value_owes_its_effect() {
+    let refused = refusal(
+        "vhregion",
+        "  import anthill.prelude.{Cell}\n  \
+         operation counter(n: Int64) -> (x: Foo[T = Int64, N = 3]) -> Cell[V = Int64] =\n    \
+         let c = Cell.new(n)\n    lambda x -> c",
+    );
+    assert!(
+        refused.contains("counter.effects (op-effects)") && refused.contains("Modify[T = result]"),
+        "{refused}"
     );
 }

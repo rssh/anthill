@@ -880,7 +880,7 @@ pub(super) fn check_bare_ref(
                 // `operation_is_nullary`, which alone has both readings).
                 let eta_shadows_return_type = operation_is_nullary(kb, sym)
                     && lookup_operation_return_type(kb, sym).is_some_and(|ret| {
-                        types_compatible(kb, &mut Substitution::new(), &TermIdView(ret), exp)
+                        types_compatible(kb, &mut Substitution::new(), &ret, exp)
                     });
                 if !eta_shadows_return_type {
                     // WI-1083 — ∀-ELIMINATION AT THE REFERENCE, and this is the ONE site:
@@ -1027,7 +1027,7 @@ pub(super) fn check_bare_ref(
     // no parameter list is not a case to guess at either: `params` is what decides which
     // reading applies, so an unreadable one is a loud error rather than a silent default to
     // either side.
-    if let Some(ret_ty) = lookup_operation_return_type(kb, sym) {
+    if let Some(ret) = lookup_operation_return_type(kb, sym) {
         let Some(op_info) = lookup_operation_info_full(kb, sym) else {
             return Err(TypeError::Other {
                 site: TypeError::here(),
@@ -1160,7 +1160,6 @@ pub(super) fn check_bare_ref(
         // eta reading, which returned above with an arrow type; here the return type is the
         // result and it is genuinely checked (a wrong ELEMENT type is refused at this site
         // today), so the row must be too.
-        let ret = Value::term(ret_ty);
         let ret = open_existential_return(
             kb,
             sym,

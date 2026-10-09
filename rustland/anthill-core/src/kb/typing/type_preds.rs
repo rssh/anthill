@@ -194,7 +194,7 @@ pub(crate) fn term_any_subterm(
 ///
 /// A child the view names and cannot hand out counts as NO hit here and as a FAILURE in
 /// [`view_all_children`], which is what each walker's `is_some_and` answered.
-pub(super) fn view_any_child<V: TermView>(
+pub(crate) fn view_any_child<V: TermView>(
     kb: &KnowledgeBase,
     v: &V,
     pos_arity: usize,

@@ -1,11 +1,11 @@
 //! A type written through an alias keeps the name it was written by.
 //!
-//! THE RULE. A type alias written bare in an operation parameter's type is the type it
-//! stands for to everything that reads the type — the checks, dispatch, the index, a rule —
-//! and a mismatch message leads with the name as written: `expected IntBox (Box[V =
-//! Int64]), got String`.
+//! THE RULE. A type alias written bare in an operation's parameter or result type is the
+//! type it stands for to everything that reads the type — the checks, dispatch, the index,
+//! a rule — and a mismatch message leads with the name as written: `expected IntBox
+//! (Box[V = Int64]), got String`.
 //!
-//! HOW. The parameter's type is lowered to an occurrence that holds the alias beside the
+//! HOW. The declared type is lowered to an occurrence that holds the alias beside the
 //! type it stands for (`TypeNode::Aliased`); the carrier-neutral view reads the type, and
 //! the name is read by `written_alias` alone.
 //!
@@ -30,9 +30,23 @@
 //!   the slot's charge asked of the binding on any carrier
 //!   (`callable_effect_present_values` reading a term alone) — FAIL: the same test.
 //!
+//!   a result type lowered without the node (`declared_type_to_value` not used for it) —
+//!   FAIL:
+//!     a_result_type_keeps_the_alias_it_was_written_by
+//!   with the node at a result type, each of these backed out — FAIL:
+//!     the region check reading a term alone (`result_type_admits_region` answering no
+//!     off the term carrier): a_fresh_cell_returned_through_an_alias_owes_its_effect,
+//!     a_fresh_cell_inside_a_result_typed_through_an_alias_owes_its_effect
+//!     the join's widening reading a term alone (`widen_value`):
+//!     two_variants_named_through_aliases_join_at_their_sort
+//!     the result-type lookup reading a term alone (`lookup_operation_return_type`):
+//!     a_result_type_keeps_the_alias_it_was_written_by, its nullary half
+//!
 //!   PASS EITHER WAY, by design:
 //!     an_alias_typed_parameter_is_the_type_it_stands_for — the fence: what the node must
 //!       not change. `wi_zy11j_alias_typed_value_test` holds the rest of it.
+//!     a_result_field_effect_is_checked_through_an_alias — the same fence at the result:
+//!       the field path of `Modify[result.a]` is walked over the type the alias stands for.
 //!     a_rule_reads_the_type_and_no_alias — the fence for a rule: the same answers with
 //!       the alias lowered to its type's term.
 //!     a_type_written_without_an_alias_is_shown_once — the other side of the message.
@@ -96,18 +110,23 @@ fn an_alias_typed_parameter_is_the_type_it_stands_for() {
 /// A rule over the reflect relations reads the parameter's type, and no alias: the
 /// `FieldInfo` of `pay(m: Money)` holds `Int64` to a goal that asks for it, and is no
 /// answer to one that asks for `Money`. (What that goal does find is every operation whose
-/// one parameter is a type variable, which takes any type.)
+/// one parameter is a type variable, which takes any type.) The result of `price() ->
+/// Money` reads the same way.
 #[test]
 fn a_rule_reads_the_type_and_no_alias() {
     let mut kb = load_kb_with(&source(
         "awnrule",
         "  import anthill.reflect.{OperationInfo, FieldInfo}\n  \
          operation pay(m: Money) -> Int64 = m + 1\n  \
+         operation price() -> Money = 5\n  \
          fact asks(Int64)\n  fact asks_by_alias(Money)\n  \
          rule takes_one_int(?op) :- asks(?t), OperationInfo(name: ?op, params: [FieldInfo(name: ?, type_name: ?t)])\n  \
-         rule takes_one_money(?op) :- asks_by_alias(?t), OperationInfo(name: ?op, params: [FieldInfo(name: ?, type_name: ?t)])",
+         rule takes_one_money(?op) :- asks_by_alias(?t), OperationInfo(name: ?op, params: [FieldInfo(name: ?, type_name: ?t)])\n  \
+         rule gives_int(?op) :- asks(?t), OperationInfo(name: ?op, return_type: ?t)\n  \
+         rule gives_money(?op) :- asks_by_alias(?t), OperationInfo(name: ?op, return_type: ?t)",
     ));
     let pay = kb.resolve_symbol("test.awnrule.pay");
+    let price = kb.resolve_symbol("test.awnrule.price");
     let answers = |kb: &mut anthill_core::kb::KnowledgeBase, rule: &str| -> Vec<anthill_core::intern::Symbol> {
         query_unary(kb, rule)
             .into_iter()
@@ -116,6 +135,8 @@ fn a_rule_reads_the_type_and_no_alias() {
     };
     assert!(answers(&mut kb, "test.awnrule.takes_one_int").contains(&pay), "`pay` takes an `Int64`");
     assert!(!answers(&mut kb, "test.awnrule.takes_one_money").contains(&pay), "its slot holds no alias");
+    assert!(answers(&mut kb, "test.awnrule.gives_int").contains(&price), "`price` gives an `Int64`");
+    assert!(!answers(&mut kb, "test.awnrule.gives_money").contains(&price), "its result holds no alias");
 }
 
 // ── the name it was written by ──────────────────────────────────────────────
@@ -167,6 +188,103 @@ fn a_type_written_without_an_alias_is_shown_once() {
     assert!(
         refused.contains("unbox.b (op-arg): expected Box[V = Int64], got String"),
         "{refused}"
+    );
+}
+
+// ── a result type ───────────────────────────────────────────────────────────
+
+/// An operation's result type keeps its alias as a parameter's does: the mismatch names
+/// it, and a bare reference to a nullary operation is still its call.
+#[test]
+fn a_result_type_keeps_the_alias_it_was_written_by() {
+    let refused = refusal(
+        "awnresult",
+        "  operation make() -> IntBox = \"s\"\n  operation go() -> Int64 = 1",
+    );
+    assert!(
+        refused.contains("make.return (op-return): expected IntBox (Box[V = Int64]), got String"),
+        "{refused}"
+    );
+    assert_eq!(
+        run("awnnullary", "  operation unit() -> Money = 5\n  operation go() -> Int64 = unit + 1"),
+        6
+    );
+}
+
+/// An operation that returns a fresh cell owes `Modify[result]`, also when its result is
+/// typed by an alias of the cell's sort.
+#[test]
+fn a_fresh_cell_returned_through_an_alias_owes_its_effect() {
+    let refused = refusal(
+        "awnregion",
+        "  import anthill.prelude.{Cell}\n  sort Counter = Cell\n  \
+         operation dup(n: Int64) -> Counter =\n    let c = Cell.new(n)\n    c\n  \
+         operation go() -> Int64 = 1",
+    );
+    assert!(
+        refused.contains("dup.effects (op-effects)") && refused.contains("Modify[T = result]"),
+        "{refused}"
+    );
+}
+
+/// … and when the cell sits inside the result's type: an element, a component, the result
+/// of a function handed back.
+#[test]
+fn a_fresh_cell_inside_a_result_typed_through_an_alias_owes_its_effect() {
+    for (ns, result, body) in [
+        ("awnregionlist", "List[T = Counter]", "[c]"),
+        ("awnregiontuple", "(Counter, Int64)", "(c, 1)"),
+        ("awnregionarrow", "(x: Int64) -> Counter", "lambda x -> c"),
+    ] {
+        let refused = refusal(
+            ns,
+            &format!(
+                "  import anthill.prelude.{{Cell}}\n  sort Counter = Cell[V = Int64]\n  \
+                 operation mk(n: Int64) -> {result} =\n    let c = Cell.new(n)\n    {body}\n  \
+                 operation go() -> Int64 = 1"
+            ),
+        );
+        assert!(
+            refused.contains("mk.effects (op-effects)") && refused.contains("Modify[T = result]"),
+            "{ns}: {refused}"
+        );
+    }
+}
+
+/// An effect on a field of the result is checked against the result's type, read through
+/// the alias: a field the type has is taken, one it has not is refused.
+#[test]
+fn a_result_field_effect_is_checked_through_an_alias() {
+    let decls = "  import anthill.prelude.{Cell}\n  \
+                 sort Two = (a: Cell[V = Int64], b: Cell[V = Int64])\n";
+    let taken = load_errors_of(&source(
+        "awnfield",
+        &format!("{decls}  operation pair() -> Two\n    effects {{Modify[result.a], Modify[result.b]}}"),
+    ));
+    assert!(taken.is_empty(), "{taken:#?}");
+    let refused = refusal(
+        "awnfieldbad",
+        &format!("{decls}  operation pair() -> Two\n    effects Modify[result.nonexistent]"),
+    );
+    assert!(
+        refused.contains("field projection") && refused.contains("nonexistent"),
+        "{refused}"
+    );
+}
+
+/// Two branches typed by aliases of two variants of one sort join at that sort.
+#[test]
+fn two_variants_named_through_aliases_join_at_their_sort() {
+    assert_eq!(
+        run(
+            "awnjoin",
+            "  sort Animal\n    entity cat(n: Int64)\n    entity dog(n: Int64)\n  end\n  \
+             sort Kitty = Animal.cat\n  sort Doggy = Animal.dog\n  \
+             operation aCat() -> Kitty = cat(n: 1)\n  operation aDog() -> Doggy = dog(n: 2)\n  \
+             operation go() -> Int64 =\n    let r = if false then aCat() else aDog()\n    \
+             match r\n      case cat(n) -> n\n      case dog(n) -> n"
+        ),
+        2
     );
 }
 

@@ -31527,8 +31527,8 @@ impl<'a> Loader<'a> {
     }
 
     /// [`Self::type_expr_to_value`] of a type a DECLARATION writes — an operation's
-    /// parameter — where a type alias written bare keeps the name it was written by
-    /// ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    /// parameter, its result — where a type alias written bare keeps the name it was
+    /// written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
     fn declared_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let saved = std::mem::replace(&mut self.alias_nodes, true);
         let value = self.type_expr_to_value(ty);
@@ -37494,7 +37494,7 @@ impl<'a> Loader<'a> {
                     domain,
                 )
             }
-            None => self.type_expr_to_value(&o.return_type),
+            None => self.declared_type_to_value(&o.return_type),
         };
 
         // WI-489: record the `result` binder's static type so a `Modify[result.a]`
