@@ -1287,27 +1287,17 @@ end
     let account = kb.resolve_qualified_name_term("bank.Account");
 
     // Visible to reflect: an EntityInfo fact whose `name` arg is bank.Account is
-    // present (bank.Account's fields are all ground → a Term::Fn head).
+    // present.
     let ei_sym = kb.resolve_symbol("anthill.reflect.EntityInfo");
-    let name_sym = kb.intern("name");
     let account_functor = match kb.get_term(account) {
         Term::Fn { functor, .. } => *functor,
         Term::Ref(s) => *s,
         _ => panic!("bank.Account should resolve to a functor term"),
     };
     let has_account_info = kb.rules_by_functor(ei_sym).iter().any(|&rid| {
-        if !kb.is_fact(rid) {
-            return false;
-        }
-        let head = kb.rule_head(rid);
-        let Term::Fn { named_args, .. } = kb.get_term(head) else {
-            return false;
-        };
-        named_args.iter().any(|(k, v)| {
-            *k == name_sym
-                && matches!(
-            kb.get_term(*v), Term::Ref(s) | Term::Fn { functor: s, .. } if *s == account_functor)
-        })
+        kb.is_fact(rid)
+            && anthill_core::kb::op_info::head_name_ref(&kb, kb.rule_head_value(rid))
+                == Some(account_functor)
     });
     assert!(
         has_account_info,

@@ -202,6 +202,13 @@ fn named_as_written(kb: &KnowledgeBase, ty: &Value, rendered: String) -> String 
     }
 }
 
+/// A declared type as one side of a mismatch whose other side is no type value — a
+/// literal's sort, a constructor's — led by the name it was written by, as
+/// [`render_mismatch_pair`] leads its sides.
+pub(super) fn declared_type_display(kb: &KnowledgeBase, ty: &Value) -> String {
+    named_as_written(kb, ty, type_display_name_value(kb, ty))
+}
+
 /// [`render_mismatch_pair`]'s two sides as the types they are.
 fn render_mismatch_pair_as_types(
     kb: &KnowledgeBase,

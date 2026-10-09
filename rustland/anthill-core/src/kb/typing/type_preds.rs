@@ -206,6 +206,26 @@ pub(crate) fn view_any_child<V: TermView>(
             .any(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
 }
 
+/// Does this type hold a VALUE anywhere — `Buf[N = 3]`, `Modify[c]`, a callback whose row
+/// names one — or project off one (`x.E`)? Such a type has no spelling as a plain type
+/// term, and none in a host language. Asked of the type through the view, so the answer
+/// does not depend on the carrier it rides: a type written through an alias rides an
+/// occurrence too, and holds none.
+pub fn type_holds_a_value<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    if matches!(
+        extract_type(kb, ty),
+        TypeExtractor::Denoted(_) | TypeExtractor::ExprCarried { .. }
+    ) {
+        return true;
+    }
+    match ty.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => {
+            view_any_child(kb, ty, pos_arity, |c| type_holds_a_value(kb, c))
+        }
+        _ => false,
+    }
+}
+
 /// [`view_any_child`]'s universal twin: does EVERY child of `v` satisfy `f`?
 pub(super) fn view_all_children<V: TermView>(
     kb: &KnowledgeBase,

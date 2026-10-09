@@ -20557,8 +20557,8 @@ fn list_literal_lowering(
     functor: Symbol,
     has_named_args: bool,
     from_bracket_surface: bool,
-    expected: Option<TermId>,
-) -> Option<Option<TermId>> {
+    expected: Option<&Value>,
+) -> Option<Option<Value>> {
     if !from_bracket_surface
         || has_named_args
         || kb.qualified_name_of(functor) != dt::qualified(dt::LIST_LITERAL)
@@ -20566,26 +20566,21 @@ fn list_literal_lowering(
         return None;
     }
     match expected {
-        Some(e) if super::typing::is_type_variable(kb, &TermIdView(e)) => Some(None),
+        Some(e) if super::typing::is_type_variable(kb, e) => Some(None),
         Some(e) => Loader::find_list_element_type(kb, e),
         None => Some(None),
     }
 }
 
-/// WI-1096 — the declared type of `functor`'s `field` argument, narrowed to a ground
-/// `TermId`, or `None` when the functor declares no such field. The query converter's
-/// read of the same registry [`Loader::convert_term_with_expected`] uses, so both feed
-/// [`list_literal_lowering`] the same hint. WI-342: a `denoted`-bearing field type
-/// rides as `Value::Node` and is no literal-typing hint — narrowed out here exactly as
-/// the loader narrows it.
-fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Option<TermId> {
+/// WI-1096 — the declared type of `functor`'s `field` argument, on whichever carrier it
+/// rides, or `None` when the functor declares no such field. The query converter's read
+/// of the same registry [`Loader::convert_term_with_expected`] uses, so both feed
+/// [`list_literal_lowering`] the same hint.
+fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Option<Value> {
     kb.entity_field_types(functor)?
         .iter()
         .find(|(s, _)| *s == field)
-        .and_then(|(_, t)| match t {
-            Value::Term { id, .. } => Some(*id),
-            _ => None,
-        })
+        .map(|(_, t)| t.clone())
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -20773,9 +20768,9 @@ fn query_child_fold(
     kb: &KnowledgeBase,
     fold: ConstFold,
     slot: Option<&super::GoalSlot>,
-    expected: Option<TermId>,
+    expected: Option<&Value>,
 ) -> ConstFold {
-    if expected.is_some_and(|e| super::typing::is_reflect_term_type(kb, &TermIdView(e))) {
+    if expected.is_some_and(|e| super::typing::is_reflect_term_type(kb, e)) {
         return ConstFold::Off;
     }
     fold.child(slot)
@@ -20791,7 +20786,7 @@ fn convert_query_term_expecting(
     parse_id: TermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
     // WI-20261001-KDMQS — this node's const-fold state (`ConstFold`): the pattern itself is
     // a goal, its arguments data slots, where a const is its value — so a pattern and the
     // fact it searches for fold alike.
@@ -20866,7 +20861,7 @@ fn convert_query_term_expecting(
                 kb_functor,
                 !named_args.is_empty(),
                 parse_terms.is_collection_literal(parse_id),
-                expected,
+                expected.as_ref(),
             ) {
                 let items: Vec<Rc<NodeOccurrence>> = pos_args
                     .iter()
@@ -20878,7 +20873,7 @@ fn convert_query_term_expecting(
                             id,
                             scope,
                             var_map,
-                            elem_expected,
+                            elem_expected.clone(),
                             fold.child(None),
                         )
                     })
@@ -20934,8 +20929,12 @@ fn convert_query_term_expecting(
                 .enumerate()
                 .map(|(i, &id)| {
                     let exp = pos_field_type(kb, i);
-                    let child =
-                        query_child_fold(kb, fold, goal_slots.iter().find(|s| s.index == i), exp);
+                    let child = query_child_fold(
+                        kb,
+                        fold,
+                        goal_slots.iter().find(|s| s.index == i),
+                        exp.as_ref(),
+                    );
                     convert_query_term_expecting(
                         kb,
                         parse_terms,
@@ -20954,7 +20953,7 @@ fn convert_query_term_expecting(
                     let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
                     let exp = declared_field_type(kb, kb_functor, kb_sym);
-                    let child = query_child_fold(kb, fold, None, exp);
+                    let child = query_child_fold(kb, fold, None, exp.as_ref());
                     (
                         kb_sym,
                         convert_query_term_expecting(
@@ -24436,10 +24435,9 @@ impl<'a> Loader<'a> {
         n == "anthill.prelude.List" || n == "anthill.prelude.List.List"
     }
 
-    /// True iff `ty` is the `List` sort. WI-361 dual-form: the term-backed bare
-    /// sort `Ref(List)` or the deep `sort_ref(name: Ref(List))`.
-    fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
-        extract_sort_ref_sym(kb, &TermIdView(ty)).is_some_and(|s| Self::is_list_sort_sym(kb, s))
+    /// True iff `ty` is the `List` sort, written bare.
+    fn is_list_sort_ref(kb: &KnowledgeBase, ty: &Value) -> bool {
+        extract_sort_ref_sym(kb, ty).is_some_and(|s| Self::is_list_sort_sym(kb, s))
     }
 
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
@@ -24459,15 +24457,13 @@ impl<'a> Loader<'a> {
     /// place it does. Found by review of the WI-1096 default change: the behaviour
     /// predates it, but that change makes "a declared non-`List` collection keeps its
     /// literal as written" normative (spec §4.6), which this was quietly violating.
-    fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
+    fn find_list_element_type(kb: &KnowledgeBase, ty: &Value) -> Option<Option<Value>> {
         if Self::is_list_sort_ref(kb, ty) {
             return Some(None);
         }
-        // WI-361: a parameterized `List[T=X]` is deep `parameterized(base: List,
-        // bindings)` or term-backed `Fn{List, named}` — read base + bindings
-        // form-agnostically via `extract_type`.
-        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(ty))
-        else {
+        // WI-361: a parameterized `List[T=X]` — read base + bindings on whichever carrier
+        // the type rides, via `extract_type`.
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, ty) else {
             return None;
         };
         if Self::is_list_sort_sym(kb, base) {
@@ -24476,26 +24472,18 @@ impl<'a> Loader<'a> {
             let hint = bindings
                 .iter()
                 .find(|(p, _)| kb.local_name_of(*p) == "T")
-                .and_then(|(_, v)| match v {
-                    Value::Term { id: t, .. } => Some(*t),
-                    _ => None,
-                });
+                .map(|(_, v)| v.clone());
             return Some(hint);
         }
 
         // The payload descent, gated on the wrapper the loader also coerces INTO —
         // see the WI-1096 note above for why the two must agree.
-        if !super::typing::is_option_type(kb, &TermIdView(ty)) {
+        if !super::typing::is_option_type(kb, ty) {
             return None;
         }
-        for (_param, value) in &bindings {
-            if let Value::Term { id: v, .. } = value {
-                if let Some(inner) = Self::find_list_element_type(kb, *v) {
-                    return Some(inner);
-                }
-            }
-        }
-        None
+        bindings
+            .iter()
+            .find_map(|(_param, value)| Self::find_list_element_type(kb, value))
     }
 
     /// WI-408 (loader leg of the some-insertion pass): a bare value supplied
@@ -24509,9 +24497,9 @@ impl<'a> Loader<'a> {
     /// headed by `Option.some`/`Option.none`. A constructor PATTERN in an
     /// Option slot (`depends_on: cons(…)` in a rule body) wraps like a value
     /// — the pattern then matches the wrapped facts, preserving rule meaning.
-    fn wrap_bare_option_value(&mut self, term: TermId, expected: Option<TermId>) -> TermId {
+    fn wrap_bare_option_value(&mut self, term: TermId, expected: Option<&Value>) -> TermId {
         let Some(exp) = expected else { return term };
-        if !super::typing::is_option_type(self.kb, &TermIdView(exp)) {
+        if !super::typing::is_option_type(self.kb, exp) {
             return term;
         }
         let head_functor = match self.kb.get_term(term) {
@@ -25839,9 +25827,10 @@ impl<'a> Loader<'a> {
     /// would silently match only `E`s whose optional field is `none()`. Clear
     /// `in_value_position` for that field's subtree; every other field converts under
     /// the ambient context.
-    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
-        let quoted =
-            expected.is_some_and(|e| super::typing::is_reflect_term_type(self.kb, &TermIdView(e)));
+    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
+        let quoted = expected
+            .as_ref()
+            .is_some_and(|e| super::typing::is_reflect_term_type(self.kb, e));
         // WI-20260904-B8ESG — AND THE NAMES INSIDE IT DENOTE NOTHING BY DESIGN, which is
         // why this flag is separate from the `in_value_position` clear below rather than
         // folded into it: that one is conditional on already being in a value position,
@@ -25895,7 +25884,7 @@ impl<'a> Loader<'a> {
     /// WI-20261001-KDMQS: and `const_fold` the same way. A node sets its children's state
     /// before converting each one, so the CALLER's state must come back when the node is
     /// done.
-    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
         self.term_depth = saved + 1;
@@ -25905,7 +25894,7 @@ impl<'a> Loader<'a> {
         converted
     }
 
-    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
             if let Some(name) = self.parse_arg_type_name(parse_id) {
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
@@ -26366,17 +26355,15 @@ impl<'a> Loader<'a> {
                 // when they did, a query could not match the fact it had just printed.
                 // Its doc carries the rule and the measurement.
                 //
-                // WI-342: a `denoted`-bearing (value-in-type) field type never reaches
-                // here — the `exp` reads below narrow to a ground `TermId` — so it
-                // arrives as `None` and takes the default. No such collection sort
-                // exists today; a future one would need a carrier-agnostic read at the
-                // hint, not a wider default here.
+                // The hint is the declared type on whichever carrier it rides: a
+                // collection of a type that holds a value names its collection as any
+                // other does.
                 let lower_as_list = list_literal_lowering(
                     self.kb,
                     new_functor,
                     !named_args.is_empty(),
                     self.parsed.terms.is_collection_literal(parse_id),
-                    expected,
+                    expected.as_ref(),
                 );
                 if let Some(elem_expected) = lower_as_list {
                     let items: Vec<TermId> = pos_args
@@ -26384,7 +26371,7 @@ impl<'a> Loader<'a> {
                         // WI-716: route through `convert_arg_value` so a `List[Term]`
                         // element (a quoted pattern) clears the value flag like a bare
                         // `Term` field — its omitted optionals stay vars, not `none()`.
-                        .map(|&id| self.convert_arg_value(id, elem_expected))
+                        .map(|&id| self.convert_arg_value(id, elem_expected.clone()))
                         .collect();
                     let kb_id = self.kb.build_list(&items);
                     self.term_map.insert(parse_id.raw(), kb_id);
@@ -26404,18 +26391,11 @@ impl<'a> Loader<'a> {
                 // would lose the `List[String]` hint and never desugar.
                 let is_some_ctor =
                     self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some";
-                let some_payload_hint: Option<TermId> = if is_some_ctor {
+                let some_payload_hint: Option<Value> = if is_some_ctor {
                     expected
-                        .filter(|e| super::typing::is_option_type(self.kb, &TermIdView(*e)))
-                        .and_then(|e| {
-                            super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
-                        })
-                        // A denoted/occurrence (`Value::Node`) payload type is no
-                        // literal-typing hint — narrow to the ground `TermId` only.
-                        .and_then(|v| match v {
-                            Value::Term { id: t, .. } => Some(t),
-                            _ => None,
-                        })
+                        .as_ref()
+                        .filter(|e| super::typing::is_option_type(self.kb, *e))
+                        .and_then(|e| super::typing::extract_type_param(self.kb, e, "T"))
                 } else {
                     None
                 };
@@ -26544,21 +26524,15 @@ impl<'a> Loader<'a> {
                                 }
                             };
                         }
-                        // WI-342: field types are carrier-agnostic; the
-                        // conversion hint only wants a ground `TermId` (a
-                        // denoted-bearing field is no literal-typing hint → None).
-                        let exp = some_payload_hint.or_else(|| {
+                        // The conversion hint is the declared field type, on
+                        // whichever carrier it rides.
+                        let exp = some_payload_hint.clone().or_else(|| {
                             self.kb
                                 .written_entity_field_types(new_functor)
-                                .and_then(|ft| {
-                                    ft.get(i).and_then(|(_, t)| match t {
-                                        Value::Term { id: t, .. } => Some(*t),
-                                        _ => None,
-                                    })
-                                })
+                                .and_then(|ft| ft.get(i).map(|(_, t)| t.clone()))
                         });
-                        let converted = self.convert_arg_value(id, exp);
-                        self.wrap_bare_option_value(converted, exp)
+                        let converted = self.convert_arg_value(id, exp.clone());
+                        self.wrap_bare_option_value(converted, exp.as_ref())
                     })
                     .collect();
                 // WI-271: skip parse-only ParseAux children (let_expr's
@@ -26603,20 +26577,17 @@ impl<'a> Loader<'a> {
                         let new_sym = self.reintern(sym);
                         // WI-408: `some(value: x)` payload takes the peeled hint
                         // (see `some_payload_hint` above the positional loop).
-                        let exp = some_payload_hint.or_else(|| {
+                        let exp = some_payload_hint.clone().or_else(|| {
                             self.kb
                                 .written_entity_field_types(new_functor)
                                 .and_then(|ft| {
-                                    ft.iter().find(|(s, _)| *s == new_sym).and_then(
-                                        |(_, t)| match t {
-                                            Value::Term { id: t, .. } => Some(*t),
-                                            _ => None,
-                                        },
-                                    )
+                                    ft.iter()
+                                        .find(|(s, _)| *s == new_sym)
+                                        .map(|(_, t)| t.clone())
                                 })
                         });
-                        let converted = self.convert_arg_value(id, exp);
-                        (new_sym, self.wrap_bare_option_value(converted, exp))
+                        let converted = self.convert_arg_value(id, exp.clone());
+                        (new_sym, self.wrap_bare_option_value(converted, exp.as_ref()))
                     })
                     .collect();
 
@@ -30408,11 +30379,8 @@ impl<'a> Loader<'a> {
         let Some(ft) = self.kb.written_entity_field_types(functor) else {
             return false;
         };
-        ft.iter().any(|(s, t)| {
-            *s == field
-                && matches!(t, Value::Term { id, .. }
-                    if super::typing::is_reflect_term_type(self.kb, &TermIdView(*id)))
-        })
+        ft.iter()
+            .any(|(s, t)| *s == field && super::typing::is_reflect_term_type(self.kb, t))
     }
 
     fn entity_ctor_children(
@@ -31527,8 +31495,8 @@ impl<'a> Loader<'a> {
     }
 
     /// [`Self::type_expr_to_value`] of a type a DECLARATION writes — an operation's
-    /// parameter, its result — where a type alias written bare keeps the name it was
-    /// written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    /// parameter, its result, an entity's field — where a type alias written bare keeps
+    /// the name it was written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
     fn declared_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let saved = std::mem::replace(&mut self.alias_nodes, true);
         let value = self.type_expr_to_value(ty);
@@ -34292,7 +34260,7 @@ impl<'a> Loader<'a> {
             .fields
             .iter()
             .map(|f| {
-                let ty = self.type_expr_to_value(&f.ty);
+                let ty = self.declared_type_to_value(&f.ty);
                 (self.reintern(f.name), ty)
             })
             .collect();
@@ -35151,7 +35119,7 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-743 — the type TERM behind a lowered field type, or `None` when the field's
-    /// type has no term spelling (a `Value::Node` carrier).
+    /// type has no term spelling: one that holds a value, or is a projection off one.
     fn domain_field_type_term(&mut self, v: &crate::eval::value::Value) -> Option<TermId> {
         use crate::eval::value::Value;
         match v.carried() {
@@ -35159,6 +35127,11 @@ impl<'a> Loader<'a> {
             // A type PARAMETER in value-position spelling (WI-20260904-02ERR) — the
             // same variable, one carrier out.
             Value::Var(v) => Some(self.kb.alloc(Term::Var(*v))),
+            // A type that rides an occurrence and holds no value — one written through
+            // an alias, at any depth — is named by the term of the type it is.
+            other if !super::typing::type_holds_a_value(self.kb, other) => {
+                node_occurrence::value_to_term(self.kb, other).ok()
+            }
             _ => None,
         }
     }

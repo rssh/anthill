@@ -2019,3 +2019,5 @@ mod wi_d0sd4_deep_clone_test;
 mod value_holding_type_readers_test;
 #[path = "include/alias_written_name_test.rs"]
 mod alias_written_name_test;
+#[path = "include/declared_field_type_readers_test.rs"]
+mod declared_field_type_readers_test;

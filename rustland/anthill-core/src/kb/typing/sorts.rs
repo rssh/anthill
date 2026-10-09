@@ -1332,7 +1332,7 @@ fn check_value_against_sort_ref(
                         entity: entity_sym,
                         field: field_sym,
                     },
-                    expected: type_display_name_value(kb, declared_type),
+                    expected: declared_type_display(kb, declared_type),
                     actual: actual.to_string(),
                 })
             }
@@ -1421,7 +1421,7 @@ fn check_value_sort_membership(
         site: TypeError::here(),
         span,
         context,
-        expected: type_display_name_value(kb, declared_type),
+        expected: declared_type_display(kb, declared_type),
         actual,
     })
 }
@@ -1505,7 +1505,7 @@ fn check_value_against_parameterized(
                     entity: entity_sym,
                     field: field_sym,
                 },
-                expected: type_display_name_value(kb, declared_type),
+                expected: declared_type_display(kb, declared_type),
                 actual: kb.local_name_of(parent).to_string(),
             });
         }

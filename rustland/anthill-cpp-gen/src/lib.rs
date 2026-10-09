@@ -54,7 +54,9 @@ use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
-use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
+use anthill_core::kb::typing::{
+    extract_sort_ref_sym, extract_type, type_holds_a_value, TypeExtractor,
+};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::desugar_target as dt;
 
@@ -1286,7 +1288,7 @@ fn entity_struct_members(
 
     let mut fields_text = String::new();
     for (field_sym, field_ty) in &fields {
-        if type_holds_value(kb, field_ty) {
+        if type_holds_a_value(kb, field_ty) {
             return Err(CppCodegenError {
                 message: format!(
                     "entity '{qualified}' field '{}' has a type that holds a value, \
@@ -1379,7 +1381,7 @@ fn lower_one_const(
     // WI-760: `.cloned()` first, as the body path below does — the arm hands the
     // value to a `&mut` call, which would otherwise keep the KB borrowed across it.
     let cpp_type = match kb.const_type(sym).cloned() {
-        Some(ty) if !type_holds_value(kb, &ty) => {
+        Some(ty) if !type_holds_a_value(kb, &ty) => {
             let t = lower_type(kb, ctx, &ty)?;
             // A `String` const cannot be `constexpr std::string` — std::string
             // is not a literal type before C++20. `std::string_view` is literal
@@ -2161,7 +2163,7 @@ fn operations_in_sort(
         // rides. One that HOLDS A VALUE — an op returning a `Modify`-carrying callback —
         // is unsupported by C++ codegen (never materialized).
         let return_ty = rec.return_type.clone();
-        if type_holds_value(kb, &return_ty) {
+        if type_holds_a_value(kb, &return_ty) {
             return Err(CppCodegenError {
                 message: format!(
                     "operation '{name}' has a denoted-bearing return type \
@@ -2176,7 +2178,7 @@ fn operations_in_sort(
             // WI-341 Stage A: param types are carrier-agnostic. A type lowers on any
             // carrier; one that holds a value (a callback arrow whose row names
             // `Modify[c]`) is not supported by C++ codegen (and is never materialized).
-            if type_holds_value(kb, p_type) {
+            if type_holds_a_value(kb, p_type) {
                 return Err(CppCodegenError {
                     message: format!(
                         "operation '{name}' parameter '{}' has a denoted-bearing \
@@ -2852,25 +2854,6 @@ fn type_references_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param_names: &
                     ty.named_arg(kb, k)
                         .is_some_and(|c| type_references_param(kb, &c, param_names))
                 })
-        }
-        _ => false,
-    }
-}
-
-/// Does this type hold a VALUE anywhere — `Modify[c]`, `Buf[N = 3]`, a callback
-/// whose row names one? C++ has no spelling for such a type. Asked of the type,
-/// through the view, so the answer does not depend on the carrier it rides.
-fn type_holds_value<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
-    if matches!(extract_type(kb, ty), TypeExtractor::Denoted(_)) {
-        return true;
-    }
-    match ty.head(kb) {
-        ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| ty.pos_arg(kb, i).is_some_and(|c| type_holds_value(kb, &c)))
-                || ty
-                    .named_keys(kb)
-                    .into_iter()
-                    .any(|k| ty.named_arg(kb, k).is_some_and(|c| type_holds_value(kb, &c)))
         }
         _ => false,
     }
