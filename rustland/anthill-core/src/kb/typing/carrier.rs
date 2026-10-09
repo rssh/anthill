@@ -1081,15 +1081,35 @@ pub(super) fn bind_spec_params_from_carrier(
     let Some(recv_ty) = recv_ty else {
         return false;
     };
+    bind_spec_params_from_provision(kb, subst, spec_sort, carrier_sym, &recv_ty, &op.params[idx].1)
+}
 
-    let mut any = bind_this_instance_params(kb, subst, spec_sort, carrier_sym, &recv_ty);
+/// What a self-receiver spec operation's receiver binds through its carrier's provision of
+/// `spec_sort`, read at a receiver of type `recv_ty`: the spec's own parameters, and the
+/// operation's where its receiver parameter (`recv_param_ty`, `s: Stream[T = Elem]`) names
+/// them. The one reading of a provision at a receiver, asked by the call once its
+/// arguments are typed ([`bind_spec_params_from_carrier`]) and by a lambda's hint before
+/// they are ([`bind_self_receiver_params_for_hint`]), so a callback's parameter is hinted
+/// with the type the call will hold it to.
+///
+/// The hint used to read only the parameters the provision binds to THIS instance
+/// ([`bind_this_instance_params`]): over `Wrap[A] provides Sp[T = A]`, `Sp.each(w, lambda q
+/// -> q.n)` hinted `q` with the spec's own `T` and the body's `q.n` found no member.
+pub(super) fn bind_spec_params_from_provision(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec_sort: Symbol,
+    carrier_sym: Symbol,
+    recv_ty: &Value,
+    recv_param_ty: &Value,
+) -> bool {
+    let mut any = bind_this_instance_params(kb, subst, spec_sort, carrier_sym, recv_ty);
 
     // The receiver's own type arguments, keyed by the carrier sort's canonical
-    // param VarId (WI-600 — the identity key carrier grounding joins on).
-    let recv_bindings = parameterized_vid_bindings(kb, &recv_ty, carrier_sym);
-    if recv_bindings.is_empty() {
-        return any;
-    }
+    // param VarId (WI-600 — the identity key carrier grounding joins on). Empty for a
+    // carrier that takes none, or a receiver that writes none: what the provision binds
+    // to a type of its own (`T = Rec`, `E = {}`) is read all the same.
+    let recv_bindings = parameterized_vid_bindings(kb, recv_ty, carrier_sym);
 
     // The carrier's provider fact maps each spec parameter to a carrier-side value
     // (`fact Stream[T = T]` ⇒ spec `T` ↦ carrier `T`). WI-714: TRANSITIVE — a
@@ -1114,7 +1134,7 @@ pub(super) fn bind_spec_params_from_carrier(
     // (the pre-rewrite ops) — then only the spec sort's params bind, exactly as
     // before. WI-600: keyed by the SPEC sort's canonical param VarId (the op's
     // self-receiver `Stream[T = Elem]` binds the spec's `T`), matched by identity.
-    let op_param_map: Vec<(VarId, Value)> = match extract_type(kb, &op.params[idx].1) {
+    let op_param_map: Vec<(VarId, Value)> = match extract_type(kb, recv_param_ty) {
         TypeExtractor::Parameterized { bindings, .. } => bindings
             .into_iter()
             .filter_map(|(p, v)| type_param_vid_in_sort(kb, spec_sort, p).map(|vid| (vid, v)))
@@ -1127,9 +1147,9 @@ pub(super) fn bind_spec_params_from_carrier(
         // WI-600: a type-param REF SHAPE (bare `Ref`/`Ident`/nullary `Fn`/`Var`) —
         // distinct from a written row / compound. The distinction (not "does it
         // resolve to a carrier param") drives the branch: a ref shape that names a
-        // NON-carrier-param (a concrete leaf `Int64`) resolves to no VarId, finds
-        // no receiver arg, and is skipped — it must NOT fall to the ground-verbatim
-        // arm (WI-383 reserves ground value-params to the late pass).
+        // NON-carrier-param (a concrete leaf `Int64`) resolves to no VarId and finds
+        // no receiver arg: it is a type of the provision's own, bound as the ground
+        // row below is.
         let ref_shape = typaram_occurrence_sym(kb, &carrier_value).is_some();
         // The carrier-side CONCRETE value for this spec parameter, on the carrier it
         // rides:
@@ -1147,18 +1167,30 @@ pub(super) fn bind_spec_params_from_carrier(
         // effect row. Share the carrier-param path's structural substitution.
         // Only bind a determined result here, so an unresolved carrier-relative
         // parameter cannot escape into the consuming operation's types.
-        let concrete: Option<Value> = if ref_shape {
-            typaram_ref_vid(kb, &carrier_value, carrier_sym).and_then(|vid| {
-                recv_bindings
-                    .iter()
-                    .find(|e| e.0 == vid)
-                    .map(|e| e.1.clone())
-            })
+        //  - a PLAIN type of the provision's own (`Sp.T` ↦ `Rec` at `Cg provides Sp[T
+        //    = Rec]`): that type. It was skipped here and read nowhere: a callback
+        //    parameter typed `T` was hinted with the spec's own `T` (`Sp.each(b, lambda q
+        //    -> q.n)` found no `n`), and a result typed `T` took the caller's expected
+        //    type — `operation go() -> String = Feed.next(gf)` over `GF provides Feed[T =
+        //    Int64]` loaded, and answered 5.
+        let carrier_param = if ref_shape {
+            typaram_ref_vid(kb, &carrier_value, carrier_sym)
+        } else {
+            None
+        };
+        let concrete: Option<Value> = if let Some(vid) = carrier_param {
+            recv_bindings
+                .iter()
+                .find(|e| e.0 == vid)
+                .map(|e| e.1.clone())
         } else if type_is_ground(kb, &carrier_value) {
             // A partial sort application leaves its missing slots for the
             // arguments to infer. Open them once, shared by alias and op param,
             // rather than pinning the alias to an unexpanded declaration.
             Some(once_per_call(kb, &carrier_value))
+        } else if ref_shape {
+            // A leaf that is neither: another sort's parameter, a variable.
+            None
         } else {
             let at_receiver =
                 substitute_carrier_params(kb, &carrier_value, carrier_sym, &recv_bindings);
