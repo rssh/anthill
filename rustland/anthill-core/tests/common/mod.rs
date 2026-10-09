@@ -956,6 +956,36 @@ pub fn load_outcome(source: &str) -> LoadOutcome {
     load_outcome_files(&[UserFile::Text(source)])
 }
 
+/// A fact's head as the term it is, on whichever carrier it rides. A test that reads what
+/// a fact SAYS walks this, and asserts nothing about how the fact is stored.
+#[allow(dead_code)]
+pub fn fact_as_term(kb: &mut KnowledgeBase, id: anthill_core::kb::RuleId) -> anthill_core::kb::term::TermId {
+    let head = kb.rule_head_value(id).clone();
+    type_as_term(kb, &head)
+}
+
+/// A type — or any structural value — as its term, on whichever carrier it rides.
+#[allow(dead_code)]
+pub fn type_as_term(
+    kb: &mut KnowledgeBase,
+    ty: &anthill_core::eval::Value,
+) -> anthill_core::kb::term::TermId {
+    anthill_core::kb::node_occurrence::value_to_term(kb, ty)
+        .unwrap_or_else(|e| panic!("a value with no term form: {e:?}"))
+}
+
+/// A type printed in surface syntax, on whichever carrier it rides.
+#[allow(dead_code)]
+pub fn print_type(kb: &KnowledgeBase, ty: &anthill_core::eval::Value) -> String {
+    use anthill_core::eval::Value;
+    use anthill_core::persistence::print::TermPrinter;
+    match ty {
+        Value::Term { id, .. } => TermPrinter::new(kb).print_term(*id),
+        Value::Node(occ) => TermPrinter::new(kb).print_occurrence(occ),
+        other => panic!("a type on a carrier the printer has no entry for: {other:?}"),
+    }
+}
+
 /// The stdlib plus `user`, loaded clean: the KB, or a panic that names the errors.
 /// [`load_kb_with`] for files on disk.
 #[allow(dead_code)]

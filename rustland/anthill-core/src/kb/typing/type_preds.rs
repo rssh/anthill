@@ -317,6 +317,7 @@ fn node_type_is_ground_g(
             // is the ticket for exactly this class of two-carriers-two-answers bug).
             TypeNode::Var(Var::Rigid(_)) => rigid_ok,
             TypeNode::Var(_) => false,
+            TypeNode::Aliased { stands_for, .. } => child_ground(stands_for),
             // WI-470 / WI-41YYE: logical variables defer to inference. Value
             // places defer to binder alignment only within a callable; outside
             // that boundary they are determined identities and MUST be checked.

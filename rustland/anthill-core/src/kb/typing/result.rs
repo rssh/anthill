@@ -1170,6 +1170,14 @@ pub(super) fn rewrite_type_occ_deep(
             // WI-20260904-02ERR: substituting a var can change its CARRIER, which a
             // `NodeKind` cannot express — so it is done one level up, in `child` above.
             TypeNode::Var(_) => None,
+            // The name stays; σ acts on the type it stands for.
+            TypeNode::Aliased { alias, stands_for } => {
+                let s = child(kb, subst, stands_for, ground, &mut changed);
+                Some(NodeKind::Type(TypeNode::Aliased {
+                    alias: *alias,
+                    stands_for: s,
+                }))
+            }
             TypeNode::Arrow {
                 param,
                 result,

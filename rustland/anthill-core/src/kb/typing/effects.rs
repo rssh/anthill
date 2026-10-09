@@ -2258,18 +2258,32 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    // WI-342 P4-B: a denoted-bearing extra label (`Value::Node`) would require
-    // synthesizing a *Value-carried* row occurrence (`make_present_occ` …) and
-    // binding the tail via `bind_value`. That path (open rows carrying a
-    // denoted-bearing label, e.g. `{Modify[c] | ρ}`) is deferred — refuse
-    // rather than mis-bind (sound). The ground extras below cover the closed-row
-    // cross-carrier target this slice validates. In B1 `decompose_effect_row`
-    // walks a `TermId` row, so every extra is already `Value::Term` here.
+    // A label on the term carrier joins a term row. One that rides another carrier and
+    // holds no value — written through an alias, or rebuilt around one — makes the row an
+    // occurrence, built as [`make_arrow_value`] builds an inferred row and bound by
+    // `bind_value`: refused, the callee's row variable stayed unbound — "expected a type
+    // for 'Rho', got unconstrained" — on a callback whose row names `Error[Oth]` over
+    // `sort Oth = Other` (MEASURED).
+    //
+    // WI-342 P4-B: one that HOLDS A VALUE (`{Modify[c] | ρ}`) is still refused rather than
+    // mis-bound, as before. That refusal is what rejects a modifying callback against an
+    // open lacks-row today (`wi440_callback_lacks_test`, `wi441_iterable_arrow_pred_test`):
+    // bound, those callbacks were admitted (MEASURED). Binding it wants the lacks check to
+    // read a value-carried label first.
     let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
+    let mut all_terms = true;
     for l in extra_labels {
         match l {
             Value::Term { id: t, .. } => ground_extras.push(*t),
-            _ => return false,
+            other => {
+                let holds_value = type_any_part(kb, other, &|te| {
+                    matches!(te, TypeExtractor::Denoted(_)).then_some(true)
+                });
+                if holds_value {
+                    return false;
+                }
+                all_terms = false;
+            }
         }
     }
 
@@ -2296,22 +2310,41 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    // Build the inner tail: open(fresh) if shared, empty_row if closed.
-    let inner = match final_tail {
-        Some(ft) => kb.make_effect_expression_open(ft),
-        None => kb.make_effect_expression_empty_row(),
-    };
-    // Right-fold extras into the inner tail.
-    let mut acc = inner;
-    for &l in ground_extras.iter().rev() {
-        let p = kb.make_effect_expression_present(l);
-        acc = kb.make_effect_expression_merge(p, acc);
-    }
+    if all_terms {
+        // Build the inner tail: open(fresh) if shared, empty_row if closed.
+        let inner = match final_tail {
+            Some(ft) => kb.make_effect_expression_open(ft),
+            None => kb.make_effect_expression_empty_row(),
+        };
+        // Right-fold extras into the inner tail.
+        let mut acc = inner;
+        for &l in ground_extras.iter().rev() {
+            let p = kb.make_effect_expression_present(l);
+            acc = kb.make_effect_expression_merge(p, acc);
+        }
 
-    if occurs_in(kb, vid, acc) {
-        return false;
+        if occurs_in(kb, vid, acc) {
+            return false;
+        }
+        subst.bind(kb, vid, acc);
+    } else {
+        // The same right fold on the occurrence carrier.
+        let span = crate::kb::node_occurrence::empty_span();
+        let mut row = match final_tail {
+            Some(ft) => kb.make_open_occ(TypeChild::Interned(ft), span, None),
+            None => kb.make_empty_row_occ(span, None),
+        };
+        for label in extra_labels.iter().rev() {
+            let label_child = value_to_type_child_at(kb, label, span, None);
+            let atom = kb.make_present_occ(label_child, span, None);
+            row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, None);
+        }
+        let row = Value::Node(row);
+        if occurs_in_view(kb, vid, &row) {
+            return false;
+        }
+        subst.bind_value(kb, vid, row);
     }
-    subst.bind(kb, vid, acc);
     if subst.is_contradiction() {
         return false;
     }

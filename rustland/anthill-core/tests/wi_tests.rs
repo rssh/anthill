@@ -2017,3 +2017,5 @@ mod wi_rah0z_one_recipe_test;
 mod wi_d0sd4_deep_clone_test;
 #[path = "include/value_holding_type_readers_test.rs"]
 mod value_holding_type_readers_test;
+#[path = "include/alias_written_name_test.rs"]
+mod alias_written_name_test;

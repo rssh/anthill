@@ -22500,6 +22500,17 @@ impl ClauseHead {
     }
 }
 
+/// THE NODE-CARRIER CONTROL — `ANTHILL_TEST_NODE_CARRIER=1`. Every sort named where a type
+/// alias written bare rides its node ([`Loader::bare_alias_read`]) rides one too, standing
+/// for itself. The node changes no meaning, so a suite must give every test the same
+/// verdict with the switch as without it; a test that differs names a reader that does
+/// not read a type through the carrier-neutral view. Read once per process.
+/// `rustland/CLAUDE.md` has the run.
+fn node_carrier_control() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ANTHILL_TEST_NODE_CARRIER").is_ok_and(|v| v == "1"))
+}
+
 /// Where a written type stands ([`Loader::type_expr_to_child`]), which decides whether a
 /// type alias written bare is read through ([`Loader::bare_alias_type`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22656,6 +22667,11 @@ struct Loader<'a> {
     // `s.Member` spelling must never load as an opaque nominal sort literally
     // named "Sort.Member".
     in_type_position: bool,
+    /// While set, a type alias written bare is lowered to a
+    /// [`node_occurrence::TypeNode::Aliased`] occurrence, which keeps the name beside the
+    /// type it stands for, instead of to that type's shared term. Set around an operation
+    /// parameter's type.
+    alias_nodes: bool,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
     // a value expression in an op body means the dispatched Bool VALUE op
@@ -23171,6 +23187,7 @@ impl<'a> Loader<'a> {
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
             in_type_position: false,
+            alias_nodes: false,
             in_op_body_value: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
@@ -32174,24 +32191,61 @@ impl<'a> Loader<'a> {
     /// position ([`Self::bare_alias_type`]). Asked of the child and not of the name, so
     /// every way a name reaches its symbol is covered by one reading: a bare name, a
     /// qualified one, a child of a sort (`Host.HA`), a child reached by a provision.
+    ///
+    /// Where [`Self::alias_nodes`] is set the alias is an OCCURRENCE that holds the name
+    /// as written beside the type it stands for ([`node_occurrence::TypeNode::Aliased`]).
+    /// Every reader of the type's structure reads the type; a message can say the name.
     fn bare_alias_read(
         &self,
         child: node_occurrence::TypeChild,
         site: TypeSite,
+        span: SourceSpan,
+        owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
-        let node_occurrence::TypeChild::Interned(named) = &child else {
+        use node_occurrence::TypeChild;
+        let TypeChild::Interned(named) = &child else {
             return child;
         };
         if site != TypeSite::Type {
             return child;
         }
-        let Term::Ref(alias) = self.kb.get_term(*named) else {
+        let Term::Ref(written) = self.kb.get_term(*named) else {
             return child;
         };
-        match self.bare_alias_type(*alias) {
-            Some(stands_for) => node_occurrence::TypeChild::Interned(stands_for),
-            None => child,
+        let written = *written;
+        let stands_for = match self.bare_alias_type(written) {
+            // An alias of a type parameter (`sort OS = S` inside `sort Outer[S]`) is that
+            // parameter's variable, and stays it: a variable has its own spellings, and
+            // the readers that ask "is this type a variable" match them by carrier
+            // (`typing::resolved_var`, `leaf_held_as_term`, the σ chain end). Wrapped in
+            // a node it was a variable none of them saw — MEASURED: `own(x: OS) -> S = x`
+            // refused, "expected ?S, got ?S".
+            Some(ty) if matches!(self.kb.get_term(ty), Term::Var(_)) => {
+                return TypeChild::Interned(ty)
+            }
+            Some(ty) => TypeChild::Interned(ty),
+            // The node-carrier control: a sort that is no alias rides the node too,
+            // standing for itself. A type PARAMETER's own name is left alone, as an alias
+            // of one is above.
+            None if self.alias_nodes
+                && node_carrier_control()
+                && !super::typing::is_sort_param_symbol(self.kb, written) =>
+            {
+                child
+            }
+            None => return child,
+        };
+        if !self.alias_nodes {
+            return stands_for;
         }
+        TypeChild::Node(NodeOccurrence::new_type(
+            node_occurrence::TypeNode::Aliased {
+                alias: written,
+                stands_for,
+            },
+            span,
+            owner,
+        ))
     }
 
     /// The type a type ALIAS written bare in a type position stands for — `Box[V = Int64]`
@@ -33389,7 +33443,7 @@ impl<'a> Loader<'a> {
                 if name.segments.len() >= 2 {
                     if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
                         // A dotted path to a child of a sort (`Host.HA`) names it here.
-                        return self.bare_alias_read(child, site);
+                        return self.bare_alias_read(child, site, span, owner);
                     }
                     // WI-302 (proposal 027.1): a value FIELD-access path (`result.a`,
                     // `c.contents`, lowercase last segment off a value head) is a
@@ -33403,7 +33457,7 @@ impl<'a> Loader<'a> {
                 }
                 let sort_sym = self.remap_name(name);
                 let child = self.type_name_child(sort_sym, span, owner);
-                self.bare_alias_read(child, site)
+                self.bare_alias_read(child, site, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let written_sym = self.remap_name(name);
@@ -37490,7 +37544,9 @@ impl<'a> Loader<'a> {
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
                 // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
+                let saved_alias_nodes = std::mem::replace(&mut self.alias_nodes, true);
                 let type_value = self.type_expr_to_value(&p.ty);
+                self.alias_nodes = saved_alias_nodes;
                 self.arrow_binder_scope.clear();
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in

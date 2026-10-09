@@ -333,12 +333,7 @@ fn the_two_arrow_spellings_print_distinctly_and_round_trip() {
                 let info =
                     anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
                 let (_, ty) = info.params.first().expect("callback param");
-                match ty {
-                    anthill_core::eval::Value::Term { id, .. } => {
-                        anthill_core::persistence::print::TermPrinter::new(&kb).print_term(*id)
-                    }
-                    other => panic!("callback param should be a ground type, got {other:?}"),
-                }
+                crate::common::print_type(&kb, ty)
             })
             .collect()
     }

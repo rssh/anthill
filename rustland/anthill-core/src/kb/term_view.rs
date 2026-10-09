@@ -1666,7 +1666,17 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
     if let TypeNode::Var(v) = tn {
         return ViewHead::Var(*v);
     }
+    // A type written through an alias heads as the type it stands for: no reader of a
+    // type's structure can tell the two apart.
+    if let TypeNode::Aliased { stands_for, .. } = tn {
+        return match stands_for {
+            TypeChild::Interned(t) => t.head(kb),
+            TypeChild::Node(n) => n.head(kb),
+        };
+    }
     let (functor, named_arity) = match tn {
+        // Unreachable: returned above, as `Var` is.
+        TypeNode::Aliased { .. } => (None, 0),
         // Unreachable: returned above. Kept so this match stays exhaustive over `TypeNode`
         // and a future arm still has to answer here.
         TypeNode::Var(_) => (None, 0),
@@ -1708,6 +1718,12 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
     let short_keys: &[&str] = match tn {
         // WI-20260904-02ERR: a leaf has no children, hence no named-arg keys.
         TypeNode::Var(_) => &[],
+        TypeNode::Aliased { stands_for, .. } => {
+            return match stands_for {
+                TypeChild::Interned(t) => t.named_keys(kb),
+                TypeChild::Node(n) => n.named_keys(kb),
+            };
+        }
         // Bindings ARE the named args (WI-361) — the keys are the binding params,
         // which come from terms (already interned), so return them directly.
         TypeNode::Parameterized { bindings, .. } => {
@@ -1727,9 +1743,17 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         .collect()
 }
 
-fn type_node_named<'a>(tn: &'a TypeNode, kb: &KnowledgeBase, sym: Symbol) -> Option<ViewItem<'a>> {
+fn type_node_named<'a>(
+    tn: &'a TypeNode,
+    kb: &'a KnowledgeBase,
+    sym: Symbol,
+) -> Option<ViewItem<'a>> {
     let key = |k: &str| kb.lookup_symbol(k);
     match tn {
+        TypeNode::Aliased { stands_for, .. } => match stands_for {
+            TypeChild::Interned(t) => t.named_arg(kb, sym),
+            TypeChild::Node(n) => n.named_arg(kb, sym),
+        },
         TypeNode::Denoted { value } if Some(sym) == key("value") => {
             Some(ViewItem::Node(Rc::clone(value)))
         }
@@ -1874,7 +1898,7 @@ fn effect_expr_named<'a>(
 /// `Rc`-returning `occ_named_child`.
 fn occ_type_named<'a>(
     occ: &'a NodeOccurrence,
-    kb: &KnowledgeBase,
+    kb: &'a KnowledgeBase,
     sym: Symbol,
 ) -> Option<ViewItem<'a>> {
     if let Some(tn) = occ.as_type() {
@@ -3099,6 +3123,15 @@ fn occ_view_pos_arg<'a>(
     if let Some(v) = spliced_value(occ) {
         return v.pos_arg(kb, i);
     }
+    // A type written through an alias has the children of the type it stands for — here
+    // as in the head, the keys and the named children, so the head never announces a
+    // child this does not supply.
+    if let Some(TypeNode::Aliased { stands_for, .. }) = occ.as_type() {
+        return match stands_for {
+            TypeChild::Interned(t) => t.pos_arg(kb, i),
+            TypeChild::Node(n) => n.pos_arg(kb, i),
+        };
+    }
     occ_pos_child(occ, kb, i).map(ViewItem::Node)
 }
 
@@ -3138,6 +3171,13 @@ fn occ_view_bind_value(occ: &Rc<NodeOccurrence>) -> BindValue {
 fn occ_view_index_var(occ: &Rc<NodeOccurrence>, kb: &KnowledgeBase) -> Option<Var> {
     if let Some(v) = spliced_value(occ) {
         return v.index_var(kb);
+    }
+    // An alias of a type parameter is indexed as that parameter's variable is.
+    if let Some(TypeNode::Aliased { stands_for, .. }) = occ.as_type() {
+        return match stands_for {
+            TypeChild::Interned(t) => t.index_var(kb),
+            TypeChild::Node(n) => n.index_var(kb),
+        };
     }
     occ_index_var(occ)
 }

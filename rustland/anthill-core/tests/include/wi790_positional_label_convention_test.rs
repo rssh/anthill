@@ -247,12 +247,8 @@ end
             .try_resolve_symbol(&format!("test.wi790.print.{op}"))
             .expect("op symbol");
         let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
-        match info.params.first().expect("param") {
-            (_, anthill_core::eval::Value::Term { id, .. }) => {
-                anthill_core::persistence::print::TermPrinter::new(&kb).print_term(*id)
-            }
-            (_, other) => panic!("param should be a ground type, got {other:?}"),
-        }
+        let (_, ty) = info.params.first().expect("param");
+        crate::common::print_type(&kb, ty)
     };
 
     // THE TWO FIXES. Each printing is the source text verbatim, so it reparses to
@@ -300,12 +296,8 @@ end
                 .try_resolve_symbol(&format!("test.wi790.fix.{op}"))
                 .expect("op symbol");
             let info = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("op info");
-            match info.params.first().expect("param") {
-                (_, anthill_core::eval::Value::Term { id, .. }) => {
-                    anthill_core::persistence::print::TermPrinter::new(&kb).print_term(*id)
-                }
-                (_, other) => panic!("param should be a ground type, got {other:?}"),
-            }
+            let (_, ty) = info.params.first().expect("param");
+            crate::common::print_type(&kb, ty)
         })
     };
 

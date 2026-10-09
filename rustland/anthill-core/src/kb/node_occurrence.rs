@@ -154,6 +154,7 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match tn {
         // WI-20260904-02ERR: a leaf owns no `Rc`, so there is nothing to drain.
         TypeNode::Var(_) => {}
+        TypeNode::Aliased { stands_for, .. } => drain_type_child(stands_for, stack),
         TypeNode::Denoted { value } => {
             let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
             stack.push(std::mem::replace(value, placeholder));
@@ -1930,6 +1931,33 @@ pub enum TypeNode {
     /// the projected type member as `TypeChild::Interned(Ref(sym))` — mirroring the
     /// term form so `TermView` reads both carriers identically.
     ExprCarried { value: TypeChild, member: TypeChild },
+    /// A type written through a type ALIAS: `alias` is the name as written (`IntBox`), and
+    /// `stands_for` the type it stands for (`Box[V = Int64]`), read off the alias's
+    /// declaration where the name was lowered.
+    ///
+    /// It is here under the membership rule's second clause — it needs an identity of its
+    /// own: the name written at this place, which the shared term of the type it stands
+    /// for cannot say.
+    ///
+    /// NO `Type` ENTITY VARIANT IS BEHIND IT. Every structural read — [`TermView`]'s head,
+    /// keys and children, the index, unification — is the read of `stands_for`, so an
+    /// alias is invisible to whatever asks what the type is. The name is read by
+    /// [`written_alias`] alone, for a message.
+    Aliased { alias: Symbol, stands_for: TypeChild },
+}
+
+/// The alias a type was written through, when `occ` is one ([`TypeNode::Aliased`]) —
+/// `IntBox` of a type written `IntBox`. `None` for any other occurrence, and for a sort
+/// that stands for itself (the node-carrier control's wrapper), which is no alias.
+pub fn written_alias(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
+    let NodeKind::Type(TypeNode::Aliased { alias, stands_for }) = &occ.kind else {
+        return None;
+    };
+    let stands_for_itself = matches!(
+        stands_for,
+        TypeChild::Interned(t) if matches!(kb.get_term(*t), Term::Ref(s) if s == alias)
+    );
+    (!stands_for_itself).then_some(*alias)
 }
 
 /// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
@@ -3102,6 +3130,17 @@ fn map_type_node<R: TypeChildRewrite>(
         // `Interned`. A BARE type variable in VALUE position never reaches here either: it
         // rides `Value::Var`, which σ already substitutes (`subst_var_leaf`).
         TypeNode::Var(v) => (TypeNode::Var(*v), false),
+        // The name stays; the type it stands for is rewritten as any child is.
+        TypeNode::Aliased { alias, stands_for } => {
+            let (ns, ch) = map_type_child(r, kb, stands_for);
+            (
+                TypeNode::Aliased {
+                    alias: *alias,
+                    stands_for: ns,
+                },
+                ch,
+            )
+        }
         TypeNode::Denoted { value } => {
             let nv = r.node(kb, value);
             let ch = !Rc::ptr_eq(&nv, value);
@@ -4111,6 +4150,7 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::Var(_) => {}
+        TypeNode::Aliased { stands_for, .. } => collect_type_child(kb, stands_for, vars, seen),
         TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
         TypeNode::Parameterized { base, bindings } => {
             collect_type_child(kb, base, vars, seen);
@@ -4775,6 +4815,8 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         // WI-20260904-02ERR: this function's whole job is "give me the hash-consed twin",
         // so interning here is the CALLER's request, not the leak the ticket removes.
         TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
+        // The hash-consed twin is the type's: a term has no place for the written name.
+        TypeNode::Aliased { stands_for, .. } => type_child_to_term(kb, stands_for),
         TypeNode::Denoted { value } => {
             let v = occurrence_to_term(kb, value);
             kb.make_denoted(v)
@@ -6129,6 +6171,10 @@ pub(crate) fn substitute_ref_syms_occ(
             let rebuilt = match tn {
                 // WI-20260904-02ERR: a variable carries no `Ref` to re-key.
                 TypeNode::Var(v) => TypeNode::Var(*v),
+                TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
+                    alias: *alias,
+                    stands_for: rewrite_ref_child(stands_for, map),
+                },
                 TypeNode::Denoted { value } => TypeNode::Denoted {
                     value: rewrite_ref_expr(value, map),
                 },

@@ -322,6 +322,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // WI-20260904-02ERR: rendered by the SHARED `write_var`, so a type variable
             // reads identically whether it arrived interned or occurrence-carried.
             TypeNode::Var(v) => self.write_var(*v, buf),
+            // A type written through an alias prints as the type it stands for, like every
+            // other read of it.
+            TypeNode::Aliased { stands_for, .. } => self.write_type_child(stands_for, buf),
             // A value-in-type prints as the value it carries — `Buf[N = 3]`, as
             // `write_type_term`'s `Denoted` arm prints its term twin.
             TypeNode::Denoted { value } => self.write_occurrence(value, buf),

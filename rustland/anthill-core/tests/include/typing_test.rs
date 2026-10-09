@@ -2665,7 +2665,7 @@ sort Math
   operation id(x: Int64) -> Int64 = x
 end
 "#;
-    let kb = load_with_source(source);
+    let mut kb = load_with_source(source);
     let op_info_sym = kb
         .try_resolve_symbol("anthill.reflect.OperationInfo")
         .expect("OperationInfo should be defined");
@@ -2674,16 +2674,13 @@ end
     let mut param_sym: Option<Symbol> = None;
     let mut body_var_sym: Option<Symbol> = None;
 
-    for rid in kb.rules_by_functor(op_info_sym) {
+    let op_facts: Vec<_> = kb.rules_by_functor(op_info_sym).into_iter().collect();
+    for rid in op_facts {
         if !kb.is_fact(rid) {
             continue;
         }
-        // WI-348: skip value-fact heads (an op with a `denoted` effect, e.g.
-        // stdlib's Cell.set) — `id` has none, so its head is a hash-consed term.
-        let head = match kb.rule_head_value(rid) {
-            anthill_core::eval::Value::Term { id: t, .. } => *t,
-            _ => continue,
-        };
+        // Read as its term on whichever carrier the fact rides.
+        let head = crate::common::fact_as_term(&mut kb, rid);
         if let Term::Fn { named_args, .. } = kb.get_term(head) {
             // Check if this is the "id" operation
             let is_id = named_args

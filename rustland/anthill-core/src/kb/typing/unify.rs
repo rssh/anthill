@@ -1259,6 +1259,7 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             // `?T := List[?T]` through and build an infinite type.
             TypeNode::Var(Var::Global(w)) => *w == vid,
             TypeNode::Var(_) => false,
+            TypeNode::Aliased { stands_for, .. } => child(kb, stands_for),
             // A `denoted`'s carried value is a VALUE reference — an `Expr::Ref` or a
             // WI-302 field-access path (`c.contents`, a `DotApply` chain over value
             // Refs + field names) — never a type var, so it cannot capture `vid`.
