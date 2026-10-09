@@ -1,0 +1,70 @@
+# The suites on the SHARED BASE (WI-059): anthill-core's test helpers start a test from a deep copy of the stdlib
+# loaded once per test binary. 2026-10-09, 09:27-11:10.
+# Tree:    ebe92670 plus WI-20261009-D0SD4 and WI-059 as they stood before /code-review of the second.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build). 12 test threads.
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No other GATE in flight — but ANOTHER JOB
+#          WAS: JVM processes (bloop, sbt) that were taken for idle servers when this was first written. At
+#          11:45, during a later run, `top` showed one at 116 % CPU with 102 threads, three more at 15-33 %, and
+#          `wi_tests` itself at 65 % of the 1 200 % it can use; the load average was 352. That job came and went
+#          through the morning, so NO RATIO BELOW IS CLEAN, the back-to-back one included. What the six runs
+#          do show: the same recipe's `wi_tests` took 625, 724 and 763 s one-shot and 412, 419 and 491 s on the
+#          base, and the two sets do not overlap.
+#
+# `load recipe OBSERVED` is what wi_szkv7_two_step_load_test's control wrote into each log.
+
+== 1. two full gates, `scripts/test.sh`, about an hour apart ==
+                                          one shot (09:27)         shared base (10:00)
+                                          the old default,         the default
+                                          D0SD4's tree
+unittests src/lib.rs          671 tests        9.15 s                 12.57 s     (its own loader: not reached by either)
+algebra_tests                  24              2.12                    2.08
+builtin_tests                  81              5.54                    6.17
+classic_mini_test               4              0.51                    0.99
+eval_tests                    119              8.54                    7.53
+github_todo_test               15              1.30                    1.73
+guardians_test                 67              8.79                   13.54      (11 of its loads take a hook: fresh)
+induction_tests                13              1.50                    1.78
+parse_tests                   463             23.87                   13.88
+resolve_tests                 133              9.29                    8.56
+sql_store_example_test          7              0.87                    1.23
+wi_tests                     6350            624.73                  490.73
+anthill-cli   cli_tests       198             32.02                   35.32      (spawns the CLI: not reached)
+anthill-todo  cmd_tests       295            142.18                  153.69      (spawns the CLI: not reached)
+the whole gate, wall                        1329 s                   1151 s
+result                             8 831 / 0 / 14            8 831 / 0 / 14      passed / failed / ignored
+load recipe OBSERVED                    (one shot)              SHARED BASE
+# The rows the change does not reach moved by 8-37 % between the two, slower in the second. So 625 -> 491 s
+# (1.27x) UNDERSTATES what the base did to `wi_tests`, by an amount this pair cannot give.
+
+== 2. the control: `ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core` (10:20) ==
+result                7 951 passed, 0 failed, 6 ignored      load recipe OBSERVED: one shot
+wi_tests              763.28 s      parse_tests 26.50 s      unittests 11.32 s
+# Green under the fresh recipe: no test differs between the two. Its seconds are the slowest of the day (the
+# load average was above 100 when it started, left by the gate before it) and are not compared with anything.
+
+== 3. `wi_tests` alone, three runs back to back (10:40-11:10): `ANTHILL_TEST_OPT=2 [ANTHILL_TEST_FRESH_LOAD=1] scripts/test.sh -p anthill-core --test wi_tests` ==
+run   recipe         OBSERVED       wi_tests     load average when it started
+A     shared base    SHARED BASE    411.84 s     31
+B     fresh          one shot       724.35 s     85
+C     shared base    SHARED BASE    419.18 s     29
+# 6 350 passed, 0 failed, 4 ignored in each. B / mean(A, C) = 1.74 — NOT TO BE QUOTED: B started at a load
+# average of 85, which this file first read as what run A had left behind and which was the other job (above).
+#
+# THE LOAD AVERAGE IS NOT THE RECIPE'S. Sampled at 11:44, 90 s into `wi_tests` on the shared base (`sample <pid>
+# 5`): 13 threads in the process, and the top of their stacks is the load's own work — SipHash `write` 2 335
+# samples, `memcmp` 2 099, `HashMap::get` 1 727, `free` 1 114, `malloc` 934, then typer functions. Waiting on a
+# mutex appears on 36 lines of the call tree and nowhere near the top: the one lock a copy is made under is not
+# where the threads are. So the "85-97 after a shared-base run, 29 after a fresh one" this file first reported
+# as unexplained was the other job's coming and going, read off the wrong process.
+
+# NOT RE-TAKEN: §2.4's count of loads by route (it needs a traced run). The trace line is there for it:
+# `recipe_load SharedBase user_files=<n>`, n = 0 for `load_stdlib_kb`.
+
+== 4. THE TREE AS DELIVERED, after /code-review of WI-059 (11:36-12:50), three runs one after another ==
+run                                                              result (passed / failed / ignored)   OBSERVED       wi_tests
+`scripts/test.sh` — the gate, shared base                        8 831 / 0 / 14                       SHARED BASE     945 s
+`ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 … -p anthill-core`    7 951 / 0 / 6                        one shot       1 017 s
+`ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 … -p anthill-core` 7 951 / 0 / 6                        TWO-STEP       1 247 s
+# Green under all three recipes; no test differs. These are the runs the verdict rests on.
+# THE SECONDS ARE NOT A MEASUREMENT OF ANYTHING: the other job was at its busiest through all three (load average
+# 350 at 11:45, 78-188 at 12:50), and every figure is about twice what the same recipe took earlier in the day.

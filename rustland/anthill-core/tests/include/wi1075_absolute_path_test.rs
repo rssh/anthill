@@ -618,13 +618,25 @@ fn wi1075_rung_two_census_stays_zero() {
         // the loudest possible form of "a corpus site depended on the implicit absolute
         // reading", and a census run over a KB that never finished loading would report
         // its zero for the wrong reason.
-        crate::common::try_load_kb_with_files(&refs).unwrap_or_else(|errs| {
+        //
+        // NOT THE RECIPE, BY NAME (WI-059): the census's instrument is a THREAD-LOCAL
+        // count, so it sees only what THIS thread loads — and on the shared base the
+        // stdlib is loaded once, by whichever test thread asked first. `OneShot` loads
+        // it here, under every project, which is what the comment above counts on.
+        crate::common::recipe_load(
+            &refs,
+            None,
+            load::LoadOptions::default(),
+            crate::common::LoadRecipe::OneShot,
+            |_| {},
+        )
+        .unwrap_or_else(|errs| {
             panic!(
                 "{} no longer loads. WI-1075 retired the implicit ABSOLUTE reading of an \
                  unmarked path — if a site here meant the root, spell it `..a.b.c`; \
                  got:\n{}",
                 dir.display(),
-                errs.join("\n")
+                crate::common::rendered_load_errors(errs).join("\n")
             )
         });
     }

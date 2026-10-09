@@ -66,16 +66,23 @@
 # hours not. Debug assertions and overflow checks are on in both. The two are
 # separate builds in the same target/, each kept current by the runs that use it.
 #
-# ── Two load recipes: one shot, or the stdlib and then the user's files ──────
+# ── Three load recipes: the shared base, one shot, or two steps ──────────────
 #
-#   ANTHILL_TEST_TWO_STEP_LOAD=1   anthill-core's shared load helpers call
-#                                  `load_all(stdlib)` and then `load_all(user)`
-#   unset or 0                     one `load_all(stdlib ∪ user)` — the gate
+#   neither set, or both 0         anthill-core's shared load helpers take a COPY of
+#                                  the stdlib loaded once per test binary, and
+#                                  `load_all(user)` into it — the gate (WI-059)
+#   ANTHILL_TEST_FRESH_LOAD=1      one `load_all(stdlib ∪ user)` into a fresh KB,
+#                                  for every load — what the CLI does, and the
+#                                  recipe to bisect a difference against
+#   ANTHILL_TEST_TWO_STEP_LOAD=1   `load_all(stdlib)` and then `load_all(user)`
+#                                  into a fresh KB
 #
-# The two must give every test the same verdict; the switch is how that is
-# measured (WI-20261006-SZKV7, `LoadRecipe` in anthill-core/tests/common/mod.rs).
-# Run it optimized, like any crate-wide selection:
+# The three must give every test the same verdict; the switches are how that is
+# measured (WI-20261006-SZKV7, WI-059; `LoadRecipe` in
+# anthill-core/tests/common/mod.rs). Setting both is refused. Run a control
+# optimized, like any crate-wide selection:
 #
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core
 #   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
 #
 # Nothing is rebuilt: the test binaries read it at run time, so this script only
@@ -156,12 +163,15 @@ esac
 
 # ── Which load recipe (see the header) ───────────────────────────────────────
 : "${ANTHILL_TEST_TWO_STEP_LOAD:=0}"
-case "$ANTHILL_TEST_TWO_STEP_LOAD" in
-  0) load_note="one shot" ;;
-  1) load_note="TWO-STEP in anthill-core's tests/common helpers, one shot everywhere else" ;;
-  *) echo "test.sh: ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD}: expected 0 or 1" >&2; exit 2 ;;
+: "${ANTHILL_TEST_FRESH_LOAD:=0}"
+case "${ANTHILL_TEST_FRESH_LOAD}${ANTHILL_TEST_TWO_STEP_LOAD}" in
+  00) load_note="SHARED BASE in anthill-core's tests/common helpers, one shot everywhere else" ;;
+  10) load_note="one shot" ;;
+  01) load_note="TWO-STEP in anthill-core's tests/common helpers, one shot everywhere else" ;;
+  11) echo "test.sh: ANTHILL_TEST_FRESH_LOAD=1 and ANTHILL_TEST_TWO_STEP_LOAD=1: each names a recipe, set one" >&2; exit 2 ;;
+  *) echo "test.sh: ANTHILL_TEST_FRESH_LOAD=${ANTHILL_TEST_FRESH_LOAD} ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD}: expected 0 or 1 for each" >&2; exit 2 ;;
 esac
-export ANTHILL_TEST_TWO_STEP_LOAD
+export ANTHILL_TEST_TWO_STEP_LOAD ANTHILL_TEST_FRESH_LOAD
 
 # ── anthill-core must be ONE build, whatever is selected ─────────────────────
 #
@@ -250,7 +260,7 @@ echo "threads: ${ANTHILL_TEST_THREADS} (compute) / ${ANTHILL_CLI_TEST_THREADS} (
 # two say what a reader of the log is looking at.
 {
   echo "build:   ${opt_note} (ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT})"
-  echo "load:    ${load_note} (ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD})"
+  echo "load:    ${load_note} (ANTHILL_TEST_FRESH_LOAD=${ANTHILL_TEST_FRESH_LOAD} ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD})"
 } | tee -a "${log}"
 echo "---"
 

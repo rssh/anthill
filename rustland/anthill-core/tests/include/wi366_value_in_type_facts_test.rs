@@ -32,7 +32,7 @@ use anthill_core::kb::KnowledgeBase;
 /// a fact reader hit the term-only `rule_head` on a value head.
 fn load_kb(extras: &[&str]) -> (KnowledgeBase, Vec<String>) {
     let user: Vec<_> = extras.iter().map(|s| crate::common::UserFile::Text(s)).collect();
-    let (kb, errs) = crate::common::load_outcome_files(&user, |_| {}).kb_and_errors();
+    let (kb, errs) = crate::common::load_outcome_files(&user).kb_and_errors();
     (kb, crate::common::rendered_load_errors(errs))
 }
 

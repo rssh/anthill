@@ -2574,7 +2574,7 @@ fn the_primers_example_loads() {
             .expect("the primer has its example section"),
     );
     assert!(example.contains("provides Greeter[C = PoliteGreeter]"), "extracted: {example}");
-    let kb = common::try_load_kb_prepared_files(&[example.as_str()], |_| {})
+    let kb = common::try_load_kb_with_files(&[example.as_str()])
         .unwrap_or_else(|e| panic!("the primer's example must load: {e:#?}"));
     assert!(kb.try_resolve_symbol("demo.agent.PoliteGreeter.greet_all").is_some());
 }

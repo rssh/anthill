@@ -22,7 +22,7 @@ use smallvec::SmallVec;
 fn load_example(name: &str) -> KnowledgeBase {
     let files =
         common::collect_anthill_files(&common::examples_dir().join("classic-mini").join(name));
-    match common::load_outcome_files(&common::user_paths(&files), |_| {}).into_result() {
+    match common::load_outcome_files(&common::user_paths(&files)).into_result() {
         Ok(kb) => kb,
         Err(errs) => {
             for e in &errs {

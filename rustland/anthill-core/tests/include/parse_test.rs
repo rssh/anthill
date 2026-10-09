@@ -1868,7 +1868,7 @@ fn nested_namespace_sees_outer_imports() {
     );
 
     // Also load stdlib prelude so that List, String, Bool are available
-    let load_result = crate::common::load_outcome_files(&crate::common::user_paths(&files), |_| {})
+    let load_result = crate::common::load_outcome_files(&crate::common::user_paths(&files))
         .into_result();
 
     if let Err(ref errors) = load_result {

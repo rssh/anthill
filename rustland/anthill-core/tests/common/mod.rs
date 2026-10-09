@@ -144,7 +144,7 @@ pub fn load_anthill_todo_store_bundle(drivers: &[&str]) -> LoadOutcome {
     let files = anthill_todo_store_bundle_files();
     let mut user = user_paths(&files);
     user.extend(drivers.iter().map(|d| UserFile::Text(d)));
-    load_outcome_files(&user, register_forge_host_stand_ins)
+    load_outcome_files_prepared(&user, register_forge_host_stand_ins)
 }
 
 /// The five `forge_*` keys `coordination_rust.anthill` names, with the arity each
@@ -424,7 +424,7 @@ pub fn try_load_kb_untyped_with_files(sources: &[&str]) -> Result<KnowledgeBase,
             run_typer: false,
             ..Default::default()
         },
-        |_| {},
+        NO_HOOK,
     )
     .map(|(kb, _)| kb)
 }
@@ -449,20 +449,21 @@ pub fn try_load_kb_prepared(
 /// (two files whose entities reference each other's sorts must both load).
 #[allow(dead_code)]
 pub fn try_load_kb_with_files(sources: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
-    try_load_kb_prepared_files(sources, |_| {})
+    try_load_kb_named_prepared(sources, None, NO_HOOK)
 }
 
-/// The shared body of [`try_load_kb_with_files`] and [`try_load_kb_prepared`]: parse
-/// each source as its own file, build a fresh KB, run `prepare` on it, then load it.
-/// ONE recipe rather than two, so a change to the load pipeline (a different resolver,
-/// an added pass) cannot reach the ~683 ordinary call sites while leaving the
-/// prepared-KB tests on an older one.
+/// [`try_load_kb_prepared`] over several sources: parse each as its own file, build a
+/// FRESH KB, run `prepare` on it, then load it. The same recipe body as the ordinary
+/// call sites end in ([`run_switched_recipe`]), so a change to the load pipeline (a
+/// different resolver, an added pass) cannot reach those while leaving the prepared-KB
+/// tests on an older one — but NOT on the shared base, by what a hook is: the base's
+/// stdlib is loaded already, and there is no "before" left to run in ([`Selected`]).
 #[allow(dead_code)]
 pub fn try_load_kb_prepared_files(
     sources: &[&str],
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<KnowledgeBase, Vec<String>> {
-    try_load_kb_named_prepared(sources, None, prepare)
+    try_load_kb_named_prepared(sources, None, Some(prepare))
 }
 
 /// The one recipe, with the file NAMES optional — see [`try_load_kb_with_named_files`]
@@ -471,7 +472,7 @@ pub fn try_load_kb_prepared_files(
 fn try_load_kb_named_prepared(
     sources: &[&str],
     names: Option<&[&str]>,
-    prepare: impl FnOnce(&mut KnowledgeBase),
+    prepare: Option<impl FnOnce(&mut KnowledgeBase)>,
 ) -> Result<KnowledgeBase, Vec<String>> {
     try_load_kb_named_prepared_with(sources, names, load::LoadOptions::default(), prepare)
         .map(|(kb, _)| kb)
@@ -488,7 +489,7 @@ fn try_load_kb_named_prepared_with(
     sources: &[&str],
     names: Option<&[&str]>,
     options: load::LoadOptions,
-    prepare: impl FnOnce(&mut KnowledgeBase),
+    prepare: Option<impl FnOnce(&mut KnowledgeBase)>,
 ) -> Result<(KnowledgeBase, load::LoadResult), Vec<String>> {
     let run = run_switched_recipe(&user_files(sources, names), options, prepare);
     match run.result {
@@ -501,18 +502,19 @@ fn try_load_kb_named_prepared_with(
 /// the recipe's own return value kept, so the control sees what every other helper ran.
 ///
 /// Not a helper to build a test on. The `LoadResult` is the whole load's under
-/// [`LoadRecipe::OneShot`] and the USER's call alone under [`LoadRecipe::TwoStep`] — which is
-/// exactly what the control reads, and what would make any other test's `defined_sorts`,
+/// [`LoadRecipe::OneShot`] and the USER's call alone on the shared base and under
+/// [`LoadRecipe::TwoStep`] — which is exactly what the control reads, and what would make any other test's `defined_sorts`,
 /// `fact_rule_ids` or `warnings` assertion depend on the switch. A test that needs a
 /// `LoadResult` pins its recipe by name: [`load_stdlib_kb_with_source`].
 #[allow(dead_code)]
 pub fn recipe_control_load(source: &str) -> Result<(KnowledgeBase, load::LoadResult), Vec<String>> {
-    try_load_kb_named_prepared_with(&[source], None, load::LoadOptions::default(), |_| {})
+    try_load_kb_named_prepared_with(&[source], None, load::LoadOptions::default(), NO_HOOK)
 }
 
-/// WI-20261006-SZKV7 — HOW the one recipe hands the stdlib and the user's files to the
-/// loader. Every test builds its own fresh KB under both; the number of `load_all` calls
-/// is the only thing that varies.
+/// WI-20261006-SZKV7 — HOW a FRESH load hands the stdlib and the user's files to the
+/// loader. Under both a test builds its own KB from nothing; the number of `load_all`
+/// calls is the only thing that varies. These are the two recipes a test can NAME
+/// ([`recipe_load`]); what a load that follows the switch gets is [`Selected`].
 ///
 /// `TwoStep` exists as a CONTROL (`docs/design/test-infrastructure.md` §4 A3, §5.3).
 /// Making a load pass frontier-driven, and loading the stdlib once per test binary, both
@@ -523,34 +525,150 @@ pub fn recipe_control_load(source: &str) -> Result<(KnowledgeBase, load::LoadRes
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadRecipe {
-    /// `load_all(stdlib ∪ user)` — the default, and what the CLI does.
+    /// `load_all(stdlib ∪ user)` — what the CLI does, and the recipe of
+    /// `ANTHILL_TEST_FRESH_LOAD=1`.
     OneShot,
     /// `load_all(stdlib)`, then `load_all(user)` into that same KB.
     TwoStep,
 }
 
-/// The switch: `ANTHILL_TEST_TWO_STEP_LOAD=1` flips every recipe load of the test binary
-/// to [`LoadRecipe::TwoStep`]. `scripts/test.sh` validates it and writes it into the run's
-/// log; the control writes there what it OBSERVED.
-const TWO_STEP_LOAD_ENV: &str = "ANTHILL_TEST_TWO_STEP_LOAD";
+/// WI-059 — what the environment selects for a load that FOLLOWS THE SWITCH.
+///
+/// The default is the shared base: the stdlib is loaded ONCE per test binary and a test
+/// starts from a deep copy of it ([`SendableKb`], `KnowledgeBase::deep_clone`), into
+/// which its own files are loaded. That is [`LoadRecipe::TwoStep`] with the first call
+/// made once for everybody, so the two must agree for every test.
+///
+/// NOT A [`LoadRecipe`], and the split is what keeps two things from being written at
+/// all: a test cannot NAME the shared base for a load that has a hook, and the fresh
+/// recipe's body has no arm for a KB it did not build. The base is the stdlib as the
+/// default options load it into a KB nothing was done to first; a load that asks for a
+/// hook before the stdlib's load, or for other options, is not that load, and
+/// [`run_switched_recipe`] gives it a fresh KB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Selected {
+    SharedBase,
+    Fresh(LoadRecipe),
+}
 
-impl LoadRecipe {
-    /// The recipe the environment selects. Unset, empty or `0` is [`LoadRecipe::OneShot`]
-    /// — the three `scripts/test.sh` also reads as "off" — and `1` is
-    /// [`LoadRecipe::TwoStep`]. Any other value is REFUSED, because a run that misspelt
-    /// the value would otherwise report "green under two-step" having measured the
-    /// one-shot recipe.
+/// `ANTHILL_TEST_FRESH_LOAD=1` selects [`LoadRecipe::OneShot`] for every load of the test
+/// binary that follows the switch, and `ANTHILL_TEST_TWO_STEP_LOAD=1` selects
+/// [`LoadRecipe::TwoStep`]. `scripts/test.sh` validates both and writes the selection
+/// into the run's log; the control writes there what it OBSERVED.
+const TWO_STEP_LOAD_ENV: &str = "ANTHILL_TEST_TWO_STEP_LOAD";
+const FRESH_LOAD_ENV: &str = "ANTHILL_TEST_FRESH_LOAD";
+
+impl Selected {
+    /// What the environment selects: the shared base with neither variable set, and the
+    /// recipe a variable names when it is `1`. Unset, empty and `0` are the three
+    /// `scripts/test.sh` also reads as "off". Any other value is REFUSED, and so are
+    /// both at once, because a run that misspelt one would otherwise report "green
+    /// under two-step" having measured another recipe.
     ///
     /// Read at every load and NOT cached: a `LazyLock` whose initializer panics is
     /// poisoned, so only the first test would name the bad value and the thousands after
     /// it would fail on the poison (/code-review).
-    #[allow(dead_code)]
-    pub fn from_env() -> Self {
-        match std::env::var(TWO_STEP_LOAD_ENV).as_deref() {
-            Err(std::env::VarError::NotPresent) | Ok("") | Ok("0") => LoadRecipe::OneShot,
-            Ok("1") => LoadRecipe::TwoStep,
-            other => panic!("{TWO_STEP_LOAD_ENV}={other:?}: expected 0 or 1"),
+    fn from_env() -> Self {
+        let set = |name: &str| match std::env::var(name).as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("") | Ok("0") => false,
+            Ok("1") => true,
+            other => panic!("{name}={other:?}: expected 0 or 1"),
+        };
+        match (set(FRESH_LOAD_ENV), set(TWO_STEP_LOAD_ENV)) {
+            (false, false) => Selected::SharedBase,
+            (true, false) => Selected::Fresh(LoadRecipe::OneShot),
+            (false, true) => Selected::Fresh(LoadRecipe::TwoStep),
+            (true, true) => panic!(
+                "{FRESH_LOAD_ENV}=1 and {TWO_STEP_LOAD_ENV}=1: each names a recipe, set one"
+            ),
         }
+    }
+}
+
+/// "No hook before the load" — what lets a load start from the shared base. A closure
+/// that does nothing is NOT this: the recipe cannot see inside one, and treats every
+/// hook as one that needs the KB fresh. So a helper that takes a hook is a way OUT of
+/// the default recipe, and `wi_rah0z_one_recipe_test` lists every test file that calls
+/// one, with its reason.
+const NO_HOOK: Option<fn(&mut KnowledgeBase)> = None;
+
+thread_local! {
+    /// How many times the recipe handed the stdlib's files to the loader ON THIS THREAD.
+    static STDLIB_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times the recipe has loaded the stdlib on the calling thread — what tells a
+/// load that started from the shared base (none) from one that built its own KB (one).
+/// For `wi_szkv7_two_step_load_test`'s control.
+#[allow(dead_code)]
+pub fn stdlib_loads_by_this_thread() -> usize {
+    STDLIB_LOADS.with(|n| n.get())
+}
+
+/// How many times THIS PROCESS has built the shared base: 0 before any load asked for
+/// it, and 1 for ever after. For the same control — a base that was per-thread would
+/// count one a test.
+#[allow(dead_code)]
+pub fn shared_base_builds() -> usize {
+    SHARED_BASE_BUILDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static SHARED_BASE_BUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// THE ONE LOADED STDLIB OF THIS TEST BINARY (WI-059), built by the first load that
+/// asks for it: the recipe's own one-shot load of the stdlib alone, then a deep copy
+/// into a [`SendableKb`]. A test takes [`shared_base_instance`].
+///
+/// The initializer NEVER PANICS — a refused load, a refused copy and a panic inside
+/// either are all kept as the `Err` they are. One that panicked would poison the
+/// `LazyLock`: the first test would say why and the thousands after it would fail on
+/// the poison, where before this each test made its own load and reported its own.
+static SHARED_BASE: std::sync::LazyLock<Result<std::sync::Mutex<SendableKb>, String>> =
+    std::sync::LazyLock::new(|| {
+        SHARED_BASE_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let built = std::panic::catch_unwind(|| {
+            let run = run_recipe(&[], load::LoadOptions::default(), LoadRecipe::OneShot, NO_HOOK);
+            if let Err(errors) = run.result {
+                return Err(format!(
+                    "the stdlib does not load:\n{}",
+                    rendered_load_errors(errors).join("\n")
+                ));
+            }
+            SendableKb::copy_of(&run.kb)
+                .map(std::sync::Mutex::new)
+                .map_err(|why| format!("the loaded stdlib cannot be copied: {why}"))
+        });
+        built.unwrap_or_else(|panic| {
+            let said = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("(a panic that carried no message)");
+            Err(format!("loading the stdlib for the shared base panicked: {said}"))
+        })
+    });
+
+/// A KB holding the stdlib and nothing else, the caller's own: a deep copy of
+/// [`SHARED_BASE`]. The copy is made under the base's lock — 7 ms beside a 300 ms load
+/// (`docs/design/test-infrastructure.md` §5.1), so one base serves twelve test threads
+/// for as long as a test still pays a second-call load of its own.
+fn shared_base_instance() -> KnowledgeBase {
+    let base = SHARED_BASE.as_ref().unwrap_or_else(|why| panic!("{why}"));
+    // A test that panicked while it held the lock was only READING the base.
+    base.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .instance()
+}
+
+/// Under the loader's own trace switch, say that a load is the recipe's and which one —
+/// a traced run then counts the loads that came through here against the loader's
+/// `load_with_visited x N` lines, which every load prints
+/// (`docs/design/test-infrastructure.md` §10). ONE spelling, for the three places that
+/// print it.
+fn trace_recipe_load(recipe: &str, user_files: usize) {
+    if std::env::var("ANTHILL_LOAD_TIMING").is_ok_and(|v| v == "1") {
+        eprintln!("[load_timing] recipe_load {recipe} user_files={user_files}");
     }
 }
 
@@ -599,12 +717,13 @@ struct RecipeRun {
     /// The KB the run left, whatever the verdict.
     kb: KnowledgeBase,
     /// The verdict of the call that was handed the user's files — the only call under
-    /// [`LoadRecipe::OneShot`], the second under [`LoadRecipe::TwoStep`] — or the
-    /// stdlib call's errors if that one was refused.
+    /// [`LoadRecipe::OneShot`], the second under [`LoadRecipe::TwoStep`], the one made
+    /// into a copy of the shared base — or the stdlib call's errors if that one was
+    /// refused.
     result: Result<load::LoadResult, Vec<load::LoadError>>,
 }
 
-/// THE BODY OF THE ONE RECIPE, with the [`LoadRecipe`] a parameter: parse each of the
+/// THE BODY OF A FRESH LOAD, with the [`LoadRecipe`] a parameter: parse each of the
 /// user's files, build a fresh KB, run `prepare` on it, then load.
 ///
 /// `prepare` runs before the FIRST load under both recipes, and both calls take the same
@@ -613,20 +732,17 @@ fn run_recipe(
     user: &[UserFile<'_>],
     options: load::LoadOptions,
     recipe: LoadRecipe,
-    prepare: impl FnOnce(&mut KnowledgeBase),
+    prepare: Option<impl FnOnce(&mut KnowledgeBase)>,
 ) -> RecipeRun {
-    // Under the loader's own trace switch, say that this load is the recipe's and which
-    // one — a traced run then counts the loads that came through here against the
-    // loader's `load_with_visited x N` lines, which every load prints
-    // (`docs/design/test-infrastructure.md` §10).
-    if std::env::var("ANTHILL_LOAD_TIMING").is_ok_and(|v| v == "1") {
-        eprintln!("[load_timing] recipe_load {recipe:?} user_files={}", user.len());
-    }
+    trace_recipe_load(&format!("{recipe:?}"), user.len());
     let user: Vec<_> = user.iter().map(|f| f.parsed()).collect();
     let stdlib_refs: Vec<&parse::ir::ParsedFile> = STDLIB_PARSED.iter().collect();
     let user_refs: Vec<&parse::ir::ParsedFile> = user.iter().collect();
     let mut kb = KnowledgeBase::new();
-    prepare(&mut kb);
+    if let Some(prepare) = prepare {
+        prepare(&mut kb);
+    }
+    STDLIB_LOADS.with(|n| n.set(n.get() + 1));
     let result = match recipe {
         LoadRecipe::OneShot => {
             let all = [stdlib_refs, user_refs].concat();
@@ -642,18 +758,43 @@ fn run_recipe(
     RecipeRun { kb, result }
 }
 
-/// [`run_recipe`] AS THE SWITCH SAYS — THE one read of [`LoadRecipe::from_env`] on the
-/// helpers' path. Every helper that follows the switch ends here, the `try_load_kb_*`
-/// family and the [`LoadOutcome`] one alike, so
-/// `wi_szkv7_two_step_load_test::the_switch_selects_the_recipe_the_helpers_run` is the
-/// control for all of them: a second read would be a second thing to get wrong, with no
-/// row watching it.
+/// WI-059 — THE BODY OF A LOAD ON THE SHARED BASE: a copy of the binary's one loaded
+/// stdlib, and the user's files loaded into it with the default options. The result is
+/// the USER's call's, as it is under [`LoadRecipe::TwoStep`].
+fn run_on_shared_base(user: &[UserFile<'_>]) -> RecipeRun {
+    trace_recipe_load("SharedBase", user.len());
+    let user: Vec<_> = user.iter().map(|f| f.parsed()).collect();
+    let user_refs: Vec<&parse::ir::ParsedFile> = user.iter().collect();
+    let mut kb = shared_base_instance();
+    let result = load::load_all_with(&mut kb, &user_refs, &NullResolver, load::LoadOptions::default());
+    RecipeRun { kb, result }
+}
+
+/// A LOAD AS THE SWITCH SAYS — one of the TWO reads of [`Selected::from_env`]; the other
+/// is [`load_stdlib_kb`], the stdlib alone. Every helper that follows the switch with a
+/// file of its own ends here, the `try_load_kb_*` family and the [`LoadOutcome`] one
+/// alike, so `wi_szkv7_two_step_load_test::the_switch_selects_the_recipe_the_helpers_run`
+/// is the control for all of them, and it reads `load_stdlib_kb` too: a read with no row
+/// watching it would be a thing to get wrong in silence.
+///
+/// And the one place a load is taken OFF the shared base for what it asks ([`Selected`]):
+/// a hook to run before the stdlib's load, or options other than the default, get the
+/// fresh one-shot load. Which helpers those are is said at each —
+/// [`try_load_kb_prepared`] and its `_files`, [`load_outcome_files_prepared`], the
+/// `*_untyped` ones — and a test file that calls one is on
+/// `wi_rah0z_one_recipe_test`'s list.
 fn run_switched_recipe(
     user: &[UserFile<'_>],
     options: load::LoadOptions,
-    prepare: impl FnOnce(&mut KnowledgeBase),
+    prepare: Option<impl FnOnce(&mut KnowledgeBase)>,
 ) -> RecipeRun {
-    run_recipe(user, options, LoadRecipe::from_env(), prepare)
+    match Selected::from_env() {
+        Selected::SharedBase if prepare.is_none() && options == load::LoadOptions::default() => {
+            run_on_shared_base(user)
+        }
+        Selected::SharedBase => run_recipe(user, options, LoadRecipe::OneShot, prepare),
+        Selected::Fresh(recipe) => run_recipe(user, options, recipe, prepare),
+    }
 }
 
 /// `sources` as the recipe takes them: [`UserFile::Named`] where `names` — parallel to
@@ -672,16 +813,17 @@ fn user_files<'a>(sources: &[&'a str], names: Option<&[&'a str]>) -> Vec<UserFil
         .collect()
 }
 
-/// The one recipe with the [`LoadRecipe`] NAMED. Returns the loader's own `LoadResult`
+/// A FRESH load with its [`LoadRecipe`] NAMED. Returns the loader's own `LoadResult`
 /// and `LoadError`s — under [`LoadRecipe::TwoStep`] those of the USER's call, which is
 /// what makes the recipe observable (see `wi_szkv7_two_step_load_test`). `names`, when
 /// given, is parallel to `sources`.
 ///
-/// NAMING THE RECIPE HERE TAKES A TEST OUT OF THE SWITCH'S REACH, so it is for the control
-/// and for a test that is pinned to one recipe ON PURPOSE, with the reason at its site
-/// ([`load_stdlib_kb_with_source`]: a re-type test needs the user's own `LoadResult`). It
-/// is not the way to get typed `LoadError`s out of an ordinary load — `OneShot` written
-/// here runs one-shot under `ANTHILL_TEST_TWO_STEP_LOAD=1` and says nothing. That is
+/// NAMING THE RECIPE HERE TAKES A TEST OUT OF THE SWITCH'S REACH AND OFF THE SHARED BASE,
+/// so it is for the control and for a test that is pinned to one recipe ON PURPOSE, with
+/// the reason at its site (a fixture that by the language's rule belongs in the stdlib's
+/// own load; an instrument that counts the loads made on the test's own thread). It is
+/// not the way to get typed `LoadError`s out of an ordinary load — `OneShot` written
+/// here runs one-shot whatever the switches say, and says nothing. That is
 /// [`load_outcome`].
 #[allow(dead_code)]
 pub fn recipe_load(
@@ -703,7 +845,7 @@ pub fn recipe_load_files(
     recipe: LoadRecipe,
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> Result<(KnowledgeBase, load::LoadResult), Vec<load::LoadError>> {
-    let run = run_recipe(user, options, recipe, prepare);
+    let run = run_recipe(user, options, recipe, Some(prepare));
     run.result.map(|result| (run.kb, result))
 }
 
@@ -782,15 +924,26 @@ impl LoadOutcome {
     }
 }
 
-/// The stdlib and `user` through the one recipe, as [`LoadRecipe::from_env`] says —
-/// see [`LoadOutcome`]. `prepare` runs on the fresh KB before the first load
-/// ([`try_load_kb_prepared`] says what needs that).
+/// The stdlib and `user` through the one recipe, as [`Selected::from_env`] says —
+/// see [`LoadOutcome`].
 #[allow(dead_code)]
-pub fn load_outcome_files(
+pub fn load_outcome_files(user: &[UserFile<'_>]) -> LoadOutcome {
+    load_outcome_of(run_switched_recipe(user, load::LoadOptions::default(), NO_HOOK))
+}
+
+/// [`load_outcome_files`] with a hook that runs on the FRESH KB before the first load
+/// ([`try_load_kb_prepared`] says what needs that). NOT ON THE SHARED BASE, by what it
+/// is: the base's stdlib is loaded already, so there is no "before" left to run in
+/// ([`Selected`]).
+#[allow(dead_code)]
+pub fn load_outcome_files_prepared(
     user: &[UserFile<'_>],
     prepare: impl FnOnce(&mut KnowledgeBase),
 ) -> LoadOutcome {
-    let run = run_switched_recipe(user, load::LoadOptions::default(), prepare);
+    load_outcome_of(run_switched_recipe(user, load::LoadOptions::default(), Some(prepare)))
+}
+
+fn load_outcome_of(run: RecipeRun) -> LoadOutcome {
     LoadOutcome {
         kb: run.kb,
         verdict: run.result.map(|result| result.warnings),
@@ -800,20 +953,20 @@ pub fn load_outcome_files(
 /// [`load_outcome_files`] for ONE source text — the stdlib plus `source`.
 #[allow(dead_code)]
 pub fn load_outcome(source: &str) -> LoadOutcome {
-    load_outcome_files(&[UserFile::Text(source)], |_| {})
+    load_outcome_files(&[UserFile::Text(source)])
 }
 
 /// The stdlib plus `user`, loaded clean: the KB, or a panic that names the errors.
 /// [`load_kb_with`] for files on disk.
 #[allow(dead_code)]
 pub fn load_kb_with_user_files(user: &[UserFile<'_>]) -> KnowledgeBase {
-    expect_loaded(load_outcome_files(user, |_| {}).into_result())
+    expect_loaded(load_outcome_files(user).into_result())
 }
 
 /// WI-20261006-SZKV7 — `source` loaded into `kb` in a `load_all` of its OWN: the LATER
 /// call of a staged load, made by name. For a test whose subject is what a later load
 /// may do to an earlier one — it must make that call whatever the switch says, so it
-/// cannot go through a helper that makes one call or two by [`LoadRecipe::from_env`].
+/// cannot go through a helper that makes one call or two by [`Selected::from_env`].
 #[allow(dead_code)]
 pub fn load_in_a_later_call(
     kb: &mut KnowledgeBase,
@@ -845,7 +998,7 @@ pub fn rendered_load_errors(errors: Vec<load::LoadError>) -> Vec<String> {
 #[allow(dead_code)]
 pub fn try_load_kb_with_named_files(files: &[(&str, &str)]) -> Result<KnowledgeBase, Vec<String>> {
     let (names, sources): (Vec<&str>, Vec<&str>) = files.iter().copied().unzip();
-    try_load_kb_named_prepared(&sources, Some(&names), |_| {})
+    try_load_kb_named_prepared(&sources, Some(&names), NO_HOOK)
 }
 
 /// The messages of a source that must NOT parse — for a rule enforced at
@@ -1012,13 +1165,25 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
 /// every one, and the copy that misses it fails as though the code under test were broken.
 ///
 /// Distinct from [`try_load_kb_with`], which hands the stdlib AND a user source to the one
-/// recipe — one `load_all` unless the switch says two ([`LoadRecipe`]) — and returns only
-/// errors. A caller needing the `LoadResult` (to type-check the user file's OWN sorts, then
+/// recipe — a copy of the shared base and one `load_all` of the user's file, unless the
+/// switch names a fresh recipe ([`Selected`]) — and returns only errors. A caller needing the `LoadResult` (to type-check the user file's OWN sorts, then
 /// RE-type-check to exercise the free-op sweep) needs the two steps split whatever the
 /// switch says, which is what this and [`load_stdlib_kb_with_source`] provide.
+///
+/// Since WI-059 it is a COPY OF THE SHARED BASE and no load at all, unless the
+/// environment names a fresh recipe ([`Selected::from_env`]).
 #[allow(dead_code)]
 pub fn load_stdlib_kb() -> KnowledgeBase {
-    load_stdlib_kb_prepared(|_| {}).0
+    // The second of the two reads of the switch; [`run_switched_recipe`] has the first
+    // and says which row watches both.
+    match Selected::from_env() {
+        Selected::SharedBase => {
+            trace_recipe_load("SharedBase", 0);
+            shared_base_instance()
+        }
+        // With no file of the user's there is one call to make under either.
+        Selected::Fresh(_) => load_stdlib_kb_prepared(|_| {}).0,
+    }
 }
 
 /// [`load_stdlib_kb`] with a hook on the fresh KB before the load, returning the stdlib
@@ -1027,7 +1192,7 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
 ///
 /// ONE `load_all` under either setting of the switch: with no user file there is no
 /// second call to make, so this is the recipe's first and the `LoadResult` is the
-/// stdlib's whatever [`LoadRecipe::from_env`] says. The parsed files are
+/// stdlib's whatever [`Selected::from_env`] says. The parsed files are
 /// [`STDLIB_PARSED`]'s (WI-20261008-RAH0Z; it re-read and re-parsed them at every call).
 #[allow(dead_code)]
 pub fn load_stdlib_kb_prepared(
@@ -1071,20 +1236,22 @@ pub fn load_kb_bare(sources: &[&str]) -> KnowledgeBase {
 /// `type_check_sorts(&mut kb, Loaded::nothing())`). Parse and load failures panic: both are test-authoring bugs here,
 /// since a test asserting a LOAD error uses [`try_load_kb_with`] instead.
 ///
-/// PINNED to [`LoadRecipe::TwoStep`] by name (WI-20261006-SZKV7): the `LoadResult` these
-/// tests read has to be the USER's call alone under either setting of the switch. It is
-/// the recipe's own two-step arm, not a second spelling of it.
+/// TWO CALLS BY NAME (WI-20261006-SZKV7): the `LoadResult` these tests read has to be
+/// the USER's call alone whatever the switch says. Since WI-059 the first of the two is
+/// [`load_stdlib_kb`] — a copy of the shared base, or the stdlib's own fresh load when
+/// the environment names a fresh recipe — and the second is made here, as
+/// [`load_stdlib_kb_untyped`] makes its own.
 #[allow(dead_code)]
 pub fn load_stdlib_kb_with_source(
     source: &str,
 ) -> (KnowledgeBase, anthill_core::kb::load::LoadResult) {
-    expect_loaded(recipe_load(
-        &[source],
-        None,
+    let mut kb = load_stdlib_kb();
+    let result = expect_loaded(load_in_a_later_call(
+        &mut kb,
+        source,
         load::LoadOptions::default(),
-        LoadRecipe::TwoStep,
-        |_| {},
-    ))
+    ));
+    (kb, result)
 }
 
 /// WI-20260901-Q68AK — [`load_stdlib_kb_with_source`] that STOPS BEFORE THE TYPER and

@@ -62,10 +62,12 @@
 //! (`wi718…`) — it FAILS naming the file and both counts.
 //!
 //! AND THE ENTRIES THE COPIES MOVED TO FOLLOW THE SWITCH, which is the point of moving
-//! them: `the_outcome_entries_follow_the_switch` is the control for a SWITCHED run.
-//! `common::load_outcome_files` made to name `LoadRecipe::OneShot` instead of reading
-//! the switch: it FAILS under `ANTHILL_TEST_TWO_STEP_LOAD=1`, and passes without the
-//! variable BY DESIGN — an ordinary gate has no switch to ignore.
+//! them: `the_outcome_entries_follow_the_switch` is the control. `common::
+//! load_outcome_files` made to name `LoadRecipe::OneShot` instead of reading the
+//! switch: it FAILS under `ANTHILL_TEST_TWO_STEP_LOAD=1` (measured, WI-20261008-RAH0Z)
+//! and, since WI-059 made the shared base the default, in an ordinary gate too —
+//! measured with `run_switched_recipe` made never to choose the base. It passes under
+//! `ANTHILL_TEST_FRESH_LOAD=1` BY DESIGN: one shot is then what was asked for.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -82,6 +84,13 @@ const WAYS_OUT: &[&str] = &[
     "present_all_again(",
     "load_stdlib_kb_with_source(",
     "load_stdlib_kb_untyped(",
+    // WI-059: a hook before the load is a FRESH load, off the shared base — and the
+    // recipe cannot tell a hook that does nothing from one that does, so a no-op
+    // closure here would take a test off the default recipe in silence.
+    "try_load_kb_prepared(",
+    "try_load_kb_prepared_files(",
+    "load_outcome_files_prepared(",
+    "load_stdlib_kb_prepared(",
 ];
 
 /// Every file that makes a stdlib load of its own, or names its recipe: its path relative
@@ -155,8 +164,9 @@ const PINNED: &[(&str, usize, &str)] = &[
     ),
     (
         "include/wi_brt4y_host_implemented_test.rs",
-        1,
-        "loads `stdlib/anthill/` WITHOUT its binding layer, which is refused",
+        3,
+        "loads `stdlib/anthill/` WITHOUT its binding layer, which is refused; and (WI-059) \
+         mounts a host function before the load, twice",
     ),
     (
         "include/wi_ej5f5_bare_ctor_pattern_test.rs",
@@ -182,6 +192,54 @@ const PINNED: &[(&str, usize, &str)] = &[
         "include/wi_v25n3_written_row_label_test.rs",
         5,
         "which BATCH judges a clause: the batches are made call by call",
+    ),
+    // ── WI-059: a load with a HOOK before it, or a recipe named so that the stdlib is
+    //    loaded on the test's own thread — fresh, off the shared base.
+    (
+        "guardians_test.rs",
+        10,
+        "mounts the guardians' host functions before the load: one registered after a \
+         load is refused",
+    ),
+    (
+        "include/typing_test.rs",
+        1,
+        "reads the `LoadResult` of the stdlib's OWN load, which a copy of the base has not got",
+    ),
+    (
+        "include/wi1075_absolute_path_test.rs",
+        1,
+        "its census is a thread-local count, so the stdlib has to load on the test's thread",
+    ),
+    (
+        "include/wi1122_embedder_host_fn_test.rs",
+        3,
+        "registers an embedder's host function before the load, which is its subject",
+    ),
+    (
+        "include/wi219_modify_transitivity_test.rs",
+        1,
+        "mounts the forge host stand-ins before the stdlib's own load, for its `LoadResult`",
+    ),
+    (
+        "include/wi237_diag_test.rs",
+        1,
+        "mounts the forge host stand-ins before loading anthill-todo's sources",
+    ),
+    (
+        "include/wi345_warnings_channel_test.rs",
+        1,
+        "reads the warnings of the stdlib's OWN load, which a copy of the base has not got",
+    ),
+    (
+        "include/wi995_import_file_locality_test.rs",
+        1,
+        "turns the import audit on before the load it audits",
+    ),
+    (
+        "include/wi_2858g_reentrant_host_call_test.rs",
+        1,
+        "registers a host function before the load",
     ),
 ];
 
@@ -327,7 +385,10 @@ fn the_outcome_entries_follow_the_switch() {
     // Read HERE and spelled out, as `wi_szkv7_two_step_load_test`'s control does and for
     // its reason: the row is a control on the read of the switch, so it cannot take
     // that read's word.
-    let switched = std::env::var("ANTHILL_TEST_TWO_STEP_LOAD").is_ok_and(|v| v == "1");
+    //
+    // WI-059: the user's file is a LATER load under every recipe but the fresh one-shot
+    // — a copy of the shared base has the stdlib loaded already, as a two-step KB has.
+    let switched = !std::env::var("ANTHILL_TEST_FRESH_LOAD").is_ok_and(|v| v == "1");
 
     let errors = crate::common::load_outcome(AN_EQ_FOR_THE_STDLIBS_LIST).errors();
     let refused_as_a_later_load = errors
@@ -338,8 +399,9 @@ fn the_outcome_entries_follow_the_switch() {
     if switched {
         assert!(
             refused_as_a_later_load,
-            "under the switch `load_outcome` hands the user's file to a LATER load, which \
-             may not supply an `eq` for the stdlib's `List`; got: {rendered:#?}"
+            "on the shared base and under two steps `load_outcome` hands the user's file \
+             to a LATER load, which may not supply an `eq` for the stdlib's `List`; got: \
+             {rendered:#?}"
         );
     } else {
         assert!(

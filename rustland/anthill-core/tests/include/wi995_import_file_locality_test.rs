@@ -266,7 +266,7 @@ end
         // The fixtures are about RESOLUTION, not about loading clean; read the verdict
         // anyway so a fixture that stops loading cannot masquerade as a quiet result.
         let (kb, load_errors) =
-            crate::common::load_outcome_files(&user, |kb| kb.begin_import_audit())
+            crate::common::load_outcome_files_prepared(&user, |kb| kb.begin_import_audit())
                 .kb_and_errors();
         let audit = kb.take_import_audit().expect("audit was begun");
         let cross = audit.uses.values().filter(|u| u.asking.is_some()).count();

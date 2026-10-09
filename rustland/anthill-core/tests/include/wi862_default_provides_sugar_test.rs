@@ -463,10 +463,7 @@ fn load_warnings(extra: &str) -> Vec<String> {
     // A PATH, so the `Located` wrapper's `path` arm is exercised rather than left to
     // the `None` fallback: `parse::parse` sets none, and the whole reason the wrapper
     // exists is to render `path:line:col:`.
-    crate::common::load_outcome_files(
-        &[crate::common::UserFile::Named("probe.anthill", extra)],
-        |_| {},
-    )
+    crate::common::load_outcome_files(&[crate::common::UserFile::Named("probe.anthill", extra)])
     .rendered_warnings()
     .unwrap_or_else(|errs| {
         panic!(

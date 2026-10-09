@@ -29,7 +29,7 @@ fn dump_eq_lt_rewrites() {
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/main.anthill"));
 
-    let (kb, load_result) = crate::common::load_outcome_files(
+    let (kb, load_result) = crate::common::load_outcome_files_prepared(
         &crate::common::user_paths(&files),
         crate::common::register_forge_host_stand_ins,
     )

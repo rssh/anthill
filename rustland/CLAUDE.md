@@ -49,26 +49,36 @@ So: iterate on a few tests with a selected run, set `ANTHILL_TEST_OPT=2` for a W
 selection (a whole crate), and let the full run be the gate. The two builds live side by
 side in `target/`; raw `cargo test` / `cargo build` are the unoptimized one.
 
-**Two load recipes; the gate runs one.** `ANTHILL_TEST_TWO_STEP_LOAD=1` makes
-`anthill-core`'s shared load helpers (`tests/common/mod.rs`, `LoadRecipe`) hand the stdlib
-and a test's own files to the loader in TWO `load_all` calls instead of one. It is a
-control, not a second gate: the two recipes must give every test the same verdict, and a
-test that differs is an assertion on the recipe, a loader finding, or a fixture that by
-the language's own rule belongs in the stdlib's load — one that adds to the equality of a
-stdlib sort, which a later load may not do (`kernel-language.md` §8.3). The last kind is
-pinned to one load BY NAME, with the reason at its site (WI-20261006-SZKV7; the list of
-every test outside the switch is `PINNED` in `wi_rah0z_one_recipe_test`, and
-`docs/design/test-infrastructure.md` §5.3 has the runs). Run it optimized, as any crate-wide selection:
+**Three load recipes; the gate runs the shared base.** `anthill-core`'s shared load
+helpers (`tests/common/mod.rs`, `LoadRecipe`) give a test a COPY of the stdlib loaded
+ONCE per test binary and `load_all` the test's own files into it (WI-059;
+`KnowledgeBase::deep_clone`, WI-20261009-D0SD4). The stdlib is 0.3 s to load and 7 ms to
+copy. Two switches select the other recipes, for every such load of the run:
 
 ```bash
-ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core   # one `load_all(stdlib ∪ user)`, fresh KB
+ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core   # stdlib, then user, fresh KB
 ```
 
+They are controls, not more gates: the three must give every test the same verdict. Reach
+for `ANTHILL_TEST_FRESH_LOAD=1` FIRST when a test fails in a way that looks like the
+load's — it is what the CLI does. A test that differs is an assertion on the recipe, a
+loader finding, or a fixture that by the language's own rule belongs in the stdlib's
+load: under the shared base and under two steps a test's files are a LATER load than the
+stdlib's, and a later load may not add to the equality of a stdlib sort
+(`kernel-language.md` §8.3). That last kind is pinned to one load BY NAME, with the
+reason at its site (WI-20261006-SZKV7; the list of every test outside the switch is
+`PINNED` in `wi_rah0z_one_recipe_test`, and `docs/design/test-infrastructure.md` §5.3 has
+the runs).
+
 The log carries the recipe the script was asked for (`load:`) and the one the control
-test observed (`load recipe OBSERVED`). The switch reaches a test only through a `common`
-helper — the tests pinned by name, the library's unit tests and every other crate run
-one-shot whatever it says. Since WI-20261008-RAH0Z that is 66 of the ~9 700 stdlib
-loads `anthill-core`'s integration binaries execute; it was 1 028.
+test observed (`load recipe OBSERVED`). A load is OFF the shared base, and gets a fresh
+KB, when it asks for something the base cannot give: a hook run before the stdlib's load
+(`try_load_kb_prepared*`, `load_outcome_files_prepared`, `load_stdlib_kb_prepared` — a
+closure that does nothing still counts, the recipe cannot see inside one), load options
+other than the default (the `*_untyped` helpers), or a recipe named at the call. The
+tests pinned by name, the library's unit tests and every other crate run one-shot
+whatever the switches say.
 
 The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
 optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
@@ -167,16 +177,16 @@ binary — stays a direct child of `tests/`, and says at its site why.
 Integration tests in `anthill-core/tests/` follow:
 1. Load through a `tests/common` helper — THE ONE RECIPE. Do not collect the stdlib and
    call `load_all` yourself: 174 files once did (WI-20261008-RAH0Z), each re-reading
-   and re-parsing the stdlib at every load, and each outside the two-step control
-   above. Pick by what the test reads:
+   and re-parsing the stdlib at every load, and each outside the recipe's switches
+   above — and, now, off the shared base. Pick by what the test reads:
 
    | the test wants | helper |
    |---|---|
    | a KB; a load error fails the test | `load_kb_with(src)`; files on disk: `load_kb_with_user_files(&user_paths(&files))` |
    | the errors, rendered | `load_errors_of(src)`, `load_errors_of_files(&[..])`; `try_load_kb_with*` for a `Result` |
    | the loader's `LoadError` values | `unrendered_load_errors_of(src)` |
-   | a clean load's warnings, or the KB a REFUSED load left beside its errors | `load_outcome(src)`, `load_outcome_files(&[UserFile::..], prepare)` — a `LoadOutcome` |
-   | the stdlib alone | `load_stdlib_kb()`; `load_stdlib_kb_prepared(hook)` for its `LoadResult` or a hook before the load |
+   | a clean load's warnings, or the KB a REFUSED load left beside its errors | `load_outcome(src)`, `load_outcome_files(&[UserFile::..])` — a `LoadOutcome`; `load_outcome_files_prepared(.., hook)` when something must be mounted BEFORE the load (a fresh KB, off the shared base) |
+   | the stdlib alone | `load_stdlib_kb()` — a copy of the shared base, no load; `load_stdlib_kb_prepared(hook)` for its `LoadResult` or a hook before the load (a fresh load) |
    | anthill-todo's store bundle under a driver | `load_anthill_todo_store_bundle(&[driver])` |
    | the user file's own `LoadResult` (a re-type test) | `load_stdlib_kb_with_source(src)` — two calls, by name |
 

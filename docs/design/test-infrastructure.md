@@ -13,6 +13,9 @@ but those of the tests pinned to a recipe by name: 66, where it was 1 028.
 **A knowledge base can be deep-copied since 2026-10-09** (WI-20261009-D0SD4: §5.2), which
 is the half of lever B that §5.2 had wrong: a KB cannot be made `Send`, so the base is
 copied instead, and one copy is 7.3 ms beside a 300 ms load (§5.1).
+**Lever B landed the same day** (WI-059: §5.3): the test helpers start from a copy of one
+stdlib per test binary, the suite is green under it and under the fresh recipe, and
+`wi_tests` ran in 412–491 s where the fresh recipe took 625–763 s that day.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -34,7 +37,7 @@ Three levers, in the order they should be pulled:
 |---|---|---|---|
 | A1. build `anthill-core` optimized (§4 A1) — **DONE 2026-10-06** | the 4.8 s | measured: the load 6.8× faster with every check still on, the gate **3 h 27 min → 15 min 45 s** warm, 30 min 40 s cold (§1.1) | three `--config` lines in `test.sh`, for a full run only: optimized, a rebuild after most edits costs 1–2 min more (§2.5), so the edit loop is left at opt-level 0 |
 | A2–A4. hashing, frontier-driven passes, hot spots (§4) | the load (0.31 s since A1), and the "incremental" load (0.15 s since A1) | tens of % each; A3 is what makes B pay | hours to days each |
-| B. load the stdlib once per process, clone per test (§5) | the ×3 100 | wi_tests from hours to minutes — **but only after A3**, which is a prerequisite | days |
+| B. load the stdlib once per process, clone per test (§5) — **DONE 2026-10-09, before A3** | the ×3 100 | measured, beside another job: `wi_tests` 625–763 s → 412–491 s over three runs of each, the gate 1 329 s → 1 151 s (§5.3). A3 is what takes the rest: a test still pays its second-call load | days |
 | C. run less per gate, or on more machines (§6) | the policy | whatever the policy allows | a decision |
 
 The ordering is not free: B without A3 wins at most ~1.7×, because today loading a
@@ -882,6 +885,66 @@ suite ASSERTS, in two ways narrower than "the recipes are equivalent":
   **Since WI-20261008-RAH0Z, 2026-10-08: 95 %** — 9 329 of 9 830; 145 run one-shot
   whatever it says, 66 made by tests pinned to a recipe by name and the library's 79.
 
+**The shared base, 2026-10-09 (WI-059).** The recipe has a third way to load,
+`LoadRecipe::SharedBase`, and it is the default: a test's KB is a deep copy of the
+stdlib loaded once per test binary (`common::SendableKb`, §5.2), and the test's own
+files are loaded into the copy. `ANTHILL_TEST_FRESH_LOAD=1` selects the one-shot recipe
+for every load and `ANTHILL_TEST_TWO_STEP_LOAD=1` the two-step one; `test.sh` validates
+both and refuses the two together. `load_stdlib_kb` is a copy and no load at all. The
+one read of the switch (`run_switched_recipe`) is also the one place a load is taken OFF
+the base for what it asks: a hook to run before the stdlib's load, or options other than
+the default — the two things the base, being loaded already and loaded one way, cannot
+give. Those helpers say so at their definitions; `load_outcome_files` lost its hook
+parameter to a `_prepared` twin so that the common case has none to pass.
+
+The control is the two-step switch's, extended: it tells the three recipes apart by which
+call defined the stdlib's sorts and by whether the test's own thread loaded the stdlib at
+all, and writes what it OBSERVED into the log. Two back-outs fail it — the switch never
+choosing the base, and `load_stdlib_kb` loading for itself.
+
+One full gate on the base: **8 831 passed, 0 failed, 14 ignored**, observed SHARED BASE.
+`anthill-core` under `ANTHILL_TEST_FRESH_LOAD=1`: **7 951 passed, 0 failed, 6 ignored**,
+observed one shot. No test differs, which the two-step runs above predicted: the base is
+the two-step recipe with its first call made once for everybody. One row of the guard
+had to change, and it is the rule's own consequence rather than a finding — under the
+default a test's files are now a LATER load than the stdlib's, so
+`wi_rah0z_one_recipe_test`'s fixture that supplies an `eq` for the stdlib's `List` is
+refused by default and loads clean only under the fresh recipe.
+
+**What /code-review of it found** (13 findings, all taken but the one that is a decision,
+§8.7). The one that mattered: `wi1075`'s census counts loader events in a THREAD-LOCAL,
+and on the shared base the stdlib is no longer loaded on the test's own thread, so the
+census had stopped seeing the stdlib and stayed green. It loads one-shot by name now. The
+same reasoning made every helper that takes a hook a way OUT of the default recipe in the
+guard's eyes (`wi_rah0z_one_recipe_test`): the recipe cannot tell a closure that does
+nothing from one that mounts a host function, so a no-op hook would take a test off the
+base in silence — one test did — and nine test files are listed with the reason they
+load fresh. The rest: the base's build cannot panic and poison its `LazyLock` (a load
+that panics is kept as the error every test then reports); the control also reads a
+SECOND thread, which a per-thread base fails and the first reading does not; the shared
+base is not a `LoadRecipe` a test can name, so "the base, with a hook" cannot be written;
+`load_stdlib_kb_with_source` starts from the base like its untyped twin.
+
+What it bought (raw: `shared-base-run-2026-10-09.txt`):
+
+| | one shot | shared base |
+|---|---:|---:|
+| `wi_tests`, three runs of each over the morning | 625, 724, 763 s | **412, 419, 491 s** |
+| `parse_tests`, two full gates an hour apart | 23.9 s | 13.9 s |
+| the whole gate, the same two | 1 329 s | 1 151 s |
+
+**No ratio here is clean.** Another job was running on the machine through the morning
+— JVM processes, taken for idle servers until `top` showed one at 116 % CPU and
+`wi_tests` at 65 % of its 1 200 %. So the two sets of runs do not overlap, and that is
+what can be said: somewhere between the 1.27× of the two gates and the 1.74× of one
+back-to-back triple, with §5.1's 1.5–1.6× for one load on one quiet thread the number to
+plan from. The load average that the first write-up of these runs called unexplained
+(85–97 after a shared-base run, 29 after a fresh one) was that job's, not the recipe's:
+a five-second sample of `wi_tests` on the base shows its threads hashing, comparing and
+allocating, and waiting on the base's lock nowhere near the top of any stack. §2.4's
+count of loads by route was not re-taken, and the table wants re-taking on a quiet
+machine.
+
 ### 5.4 The subprocess suites
 
 `cmd_tests` (46 min) and `cli_tests` (7 min) do not benefit from an in-process base: every
@@ -995,7 +1058,8 @@ informed; it does not recommend changing the rule until A and B have been measur
    `BRIDGE_REENTRY_CAP` in `kb/resolve.rs`, rather than guarded (user, same day).
 2. **Order of A3 and B.** The doc's recommendation (§9) is A3 first because B is capped at
    ~1.7× without it; the alternative is B first at the capped gain, which still halves
-   `wi_tests`, and A3 after.
+   `wi_tests`, and A3 after. **B first, 2026-10-09 (user)** — done; A3 is next, one
+   ticket a pass.
 3. **`anthill-todo` in-process entry point** (§5.4 a): a change to the product's structure
    (a library crate with `main` as a wrapper), not only to tests. Both CLI crates are
    bin-only today and `anthill-todo/src/main.rs` writes through 129 `println!`/`eprintln!`
@@ -1022,6 +1086,19 @@ informed; it does not recommend changing the rule until A and B have been measur
    the control A3 rests on is green for every test it reaches, and since (c) that is
    every test but the ones pinned to a recipe by name.
 
+7. **Should a gate also run the fresh recipe?** (2026-10-09, /code-review of WI-059; NOT
+   decided.) With the shared base the default, the ~9 000 helper loads of `anthill-core`
+   no longer hand the loader the stdlib and a user file in ONE call — the shape the CLI
+   uses. What still does: the library's own unit tests (their loader), the tests pinned
+   to one shot by name, every load with a hook, and every other crate, the two CLI
+   suites among them. So a loader change that misbehaves only when stdlib and user items
+   share a batch has those to get past, and not `wi_tests`. And one class of legal
+   program now gets a different verdict from `load_kb_with` than from `anthill`: a file
+   that supplies an equality for a stdlib sort loads in one call and is refused as a
+   later one (§4 A3). The options: leave it to whoever runs
+   `ANTHILL_TEST_FRESH_LOAD=1` (the ticket's design); run `anthill-core` under it as a
+   second tier of the gate (13–18 min more); or on a schedule rather than per commit.
+
 ## 9. Recommended sequence, with the measurement at each step
 
 | step | what | measured by | expected / outcome |
@@ -1033,7 +1110,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
 | 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
 | 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
-| 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | re-derived 2026-10-09: loads ~1.5× cheaper WITHOUT step 4, so `wi_tests` ~600 s → ~410 s; with step 4, a fortieth of a load and a pool of bases (§5.1) |
+| 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
 | 7 | A4 hot spots as a level-2 profile ranks them; A5 allocator | the bench, one full run | single-digit % each. C3 thread count is measured and is not a lever (§6) |
 
@@ -1083,8 +1160,10 @@ THREADS=12 ITERS=3 ./target/debug/examples/bench_load
 ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core -- --nocapture > load-trace.log 2>&1
 grep -c 'load_with_visited x' load-trace.log
 
-# the suite under the two-step recipe (§5.3). The log says which recipe was asked for
-# (its `load:` line) and which one the control observed (`load recipe OBSERVED`).
+# the suite under each of the other two recipes (§5.3); the default is the shared base.
+# The log says which recipe was asked for (its `load:` line) and which one the control
+# observed (`load recipe OBSERVED`).
+ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
 
 # how many of the stdlib loads the switch does NOT reach (§2.4): the trace above with the
