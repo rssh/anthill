@@ -2015,3 +2015,5 @@ mod wi_rah0z_one_recipe_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;
+#[path = "include/value_holding_type_readers_test.rs"]
+mod value_holding_type_readers_test;

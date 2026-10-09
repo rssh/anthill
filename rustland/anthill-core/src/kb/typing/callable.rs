@@ -76,14 +76,30 @@ pub(super) fn type_head_is_callable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> 
 /// head test is not a cheaper approximation of this one; it is the wrong question here.
 ///
 /// Runs on the DEEP-WALKED value, so it also catches a callable σ INTRODUCES that the
-/// shallow reading never showed (`List[T = X]` with `X := (Int64) -> Bool`). Conservative
-/// on a carrier it cannot read: a non-`Term`/`Node` value answers `true` (withhold), since
-/// "might contain a callable" must not license the widening.
+/// shallow reading never showed (`List[T = X]` with `X := (Int64) -> Bool`).
+///
+/// ONE ANSWER PER TYPE, whichever carrier it rides. An application with a child on another
+/// carrier is an entity (`KnowledgeBase::fn_value`), and is read as its term twin is: its
+/// head, else any child's, each child on its own carrier. It answered `true` — "a carrier
+/// this cannot read" — and that withheld the argument check from a type applied to one that
+/// holds a value: `Bag.merge(a, b)` over a `Bag[T = Foo[T = Int64, N = 3]]` and a `Bag[T =
+/// Foo[T = String, N = 3]]` loaded (MEASURED). A leaf — a variable, a name, a literal — is
+/// no callable on any spelling, as its term is not.
 pub(super) fn type_contains_callable(kb: &KnowledgeBase, v: &Value) -> bool {
     match v {
         Value::Term { id: t, .. } => term_contains_callable(kb, *t),
         Value::Node(occ) => node_contains_callable(kb, occ),
-        _ => true,
+        other => {
+            type_head_is_callable(kb, other)
+                || match other.head(kb) {
+                    ViewHead::Functor { pos_arity, .. } => {
+                        view_any_child(kb, other, pos_arity, |c| {
+                            type_contains_callable(kb, &c.to_value())
+                        })
+                    }
+                    _ => false,
+                }
+        }
     }
 }
 
