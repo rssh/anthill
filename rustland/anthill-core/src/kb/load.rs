@@ -22671,6 +22671,11 @@ struct Loader<'a> {
     /// type it stands for, instead of to that type's shared term. Set around a type whose
     /// written name is kept ([`Self::written_type_to_value`]).
     alias_nodes: bool,
+    /// The annotations of the typed binders (`(x: T)`) of the expression being converted
+    /// whose type was written through a type alias, each under its binder's own symbol,
+    /// until the frame that builds the binder's pattern occurrence places it
+    /// ([`Self::pattern_src`]). The pattern's term cannot hold the name.
+    written_binder_anns: HashMap<Symbol, Rc<NodeOccurrence>>,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
     // a value expression in an op body means the dispatched Bool VALUE op
@@ -23187,6 +23192,7 @@ impl<'a> Loader<'a> {
             in_effect_absence: false,
             in_type_position: false,
             alias_nodes: false,
+            written_binder_anns: HashMap::new(),
             in_op_body_value: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
@@ -27124,6 +27130,7 @@ impl<'a> Loader<'a> {
         // root is popped below. `convert_expr_term` is never re-entrant.
         self.expr_occ_results.clear();
         self.expr_match_metas.clear();
+        self.written_binder_anns.clear();
         debug_assert_eq!(
             self.occ_suppress, 0,
             "convert_expr_term: stale occ_suppress on entry"
@@ -28521,8 +28528,9 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let pattern = self.pattern_src(pattern, span, None);
                     self.expr_match_metas.push(node_occurrence::BranchMeta {
-                        pattern: node_occurrence::Src::Term(pattern),
+                        pattern,
                         has_guard,
                         span,
                     });
@@ -28575,7 +28583,7 @@ impl<'a> Loader<'a> {
                 // `GoalKey`. Riding the pattern child fixes that with no new slot
                 // on `let_expr` and no new mechanism — the pattern's `type_ann` is
                 // the one the WI-517 binder channel already used.
-                let pattern = self.annotate_let_pattern(outer_parse_id, pattern);
+                let (pattern, written_ann) = self.annotate_let_pattern(outer_parse_id, pattern);
                 let named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
                     (self.expr_syms.k_pattern, pattern),
                     (self.expr_syms.k_value, value),
@@ -28593,12 +28601,10 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let pattern = self.pattern_src(pattern, span, written_ann);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let {
-                            span,
-                            pattern: node_occurrence::Src::Term(pattern),
-                        },
+                        node_occurrence::BuildFrame::Let { span, pattern },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -28621,12 +28627,10 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let param = self.pattern_src(param, span, None);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Lambda {
-                            span,
-                            param: node_occurrence::Src::Term(param),
-                        },
+                        node_occurrence::BuildFrame::Lambda { span, param },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -29443,6 +29447,12 @@ impl<'a> Loader<'a> {
     /// annotation back out of it into the pattern occurrence, so the two carriers
     /// hold one value by construction rather than by two writes that must agree.
     ///
+    /// Returned beside it: the annotation as an occurrence, where the type was written
+    /// through a type alias. The term holds the type that stands for and has no place
+    /// for the name, so the frame puts this on the pattern occurrence instead
+    /// ([`Self::pattern_src`]). Both come from one lowering
+    /// ([`Self::lower_written_annotation`]).
+    ///
     /// The lowering is `type_expr_to_value` + `value_to_term` — the SAME pair
     /// `load_pattern_var` has used for a WI-517 typed binder (`(x: T)`) all
     /// along, which is why the "a denoted-bearing type cannot ride a term"
@@ -29456,9 +29466,13 @@ impl<'a> Loader<'a> {
     /// Loud error rather than silently keeping one: before WI-819 the outer one
     /// won and the inner was dropped without a word, which is precisely the kind
     /// of shape-dependent, invisible choice this ticket removes.
-    fn annotate_let_pattern(&mut self, let_parse_id: TermId, pattern: TermId) -> TermId {
+    fn annotate_let_pattern(
+        &mut self,
+        let_parse_id: TermId,
+        pattern: TermId,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         let Some(ty_expr) = self.read_parse_type_annotation(let_parse_id) else {
-            return pattern;
+            return (pattern, None);
         };
         let type_ann_key = self.kb.intern("type_ann");
         // Normalize both spellings of a pattern term up front so the annotation
@@ -29476,22 +29490,22 @@ impl<'a> Loader<'a> {
                 let span = self.parsed.terms.span(let_parse_id);
                 self.errors
                     .push(LoadError::LetAnnotationOnNonPattern { span });
-                return pattern;
+                return (pattern, None);
             }
         };
         if named_args.iter().any(|(k, _)| *k == type_ann_key) {
             let span = self.parsed.terms.span(let_parse_id);
             self.errors.push(LoadError::PatternAnnotatedTwice { span });
-            return pattern;
+            return (pattern, None);
         }
-        let value = self.type_expr_to_value(&ty_expr);
-        let ann = self.lower_pattern_annotation(&value);
+        let (ann, written) = self.lower_written_annotation(&ty_expr, let_parse_id);
         named_args.push((type_ann_key, ann));
-        self.kb.alloc(Term::Fn {
+        let annotated = self.kb.alloc(Term::Fn {
             functor,
             pos_args,
             named_args,
-        })
+        });
+        (annotated, written)
     }
 
     /// WI-819: lower a type `Value` to the `TermId` a pattern's `type_ann` slot
@@ -29509,6 +29523,50 @@ impl<'a> Loader<'a> {
             );
             self.kb.alloc(Term::Bottom)
         })
+    }
+
+    /// A written annotation lowered both ways: the TERM a pattern's `type_ann` slot holds,
+    /// and — where the type was written through a type alias — the occurrence that keeps
+    /// the name for the binder ([`node_occurrence::written_pattern_annotation`]). One
+    /// lowering, so the two say one type.
+    fn lower_written_annotation(
+        &mut self,
+        ty_expr: &TypeExpr,
+        at: TermId,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
+        let value = self.written_type_to_value(ty_expr);
+        let ann = self.lower_pattern_annotation(&value);
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(at));
+        let written = node_occurrence::written_pattern_annotation(self.kb, &value, span);
+        (ann, written)
+    }
+
+    /// The pattern a frame hands the occurrence builder: its term, or — where an
+    /// annotation in it was written through a type alias — the occurrence, built here
+    /// with that annotation on the binder that carries it (`root`: the pattern's own,
+    /// `let p: T`).
+    fn pattern_src(
+        &mut self,
+        pattern: TermId,
+        span: SourceSpan,
+        root: Option<Rc<NodeOccurrence>>,
+    ) -> node_occurrence::Src {
+        if root.is_none() && self.written_binder_anns.is_empty() {
+            return node_occurrence::Src::Term(pattern);
+        }
+        let own = root.is_some();
+        let waiting = self.written_binder_anns.len();
+        let built = node_occurrence::term_to_param_occurrence(self.kb, pattern, span);
+        let placed = node_occurrence::with_written_annotations(
+            &built,
+            root,
+            &mut self.written_binder_anns,
+        );
+        // A pattern that took none of them is still its term's.
+        if !own && self.written_binder_anns.len() == waiting {
+            return node_occurrence::Src::Term(pattern);
+        }
+        node_occurrence::Src::Node(placed)
     }
 
     /// WI-271: the `let pat : T = …` annotation child of a let_expr.
@@ -31288,6 +31346,7 @@ impl<'a> Loader<'a> {
     /// no `type` arg, so `type_ann` stays `none()`.
     fn load_pattern_var(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let name_term = self.parsed.terms.get(pos_args[0]).clone();
+        let mut binder: Option<Symbol> = None;
         let name_ref = if let Term::Ident(sym) = name_term {
             // WI-550: the binder's identity is the per-site fresh Symbol minted
             // (keyed by this `pattern_var` node) when its scope frame was built —
@@ -31296,6 +31355,7 @@ impl<'a> Loader<'a> {
             // un-framed pattern (none reach here) still gets a unique identity.
             let name = self.parsed.symbols.local_name(sym).to_owned();
             let kb_sym = self.binder_sym(&name, parse_id);
+            binder = Some(kb_sym);
             self.kb.alloc(Term::Ref(kb_sym))
         } else {
             self.convert_term(pos_args[0])
@@ -31304,16 +31364,20 @@ impl<'a> Loader<'a> {
         // an absent key and a `none()` payload carry the same information, and
         // conditional presence is the rule shared by all five pattern entities
         // (it is what keeps `wildcard` NULLARY). Lowered through the same
-        // `lower_pattern_annotation` the `let p: T` spelling uses.
-        let type_ann = self
-            .read_parse_aux(parse_id, "type", |aux| match aux {
-                crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
-                _ => None,
-            })
-            .map(|ty_expr| {
-                let value = self.type_expr_to_value(&ty_expr);
-                self.lower_pattern_annotation(&value)
-            });
+        // `lower_written_annotation` the `let p: T` spelling uses; the written form,
+        // where there is one, waits under the binder's symbol for the frame that
+        // builds this pattern's occurrence.
+        let written_type = self.read_parse_aux(parse_id, "type", |aux| match aux {
+            crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+            _ => None,
+        });
+        let type_ann = written_type.map(|ty_expr| {
+            let (ann, written) = self.lower_written_annotation(&ty_expr, parse_id);
+            if let (Some(binder), Some(written)) = (binder, written) {
+                self.written_binder_anns.insert(binder, written);
+            }
+            ann
+        });
         let var_pattern_sym = self
             .kb
             .resolve_symbol("anthill.reflect.Pattern.var_pattern");

@@ -766,7 +766,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
 /// **A ROW IS RENDERED AS A ROW, not as its fold.** `build_canonical_effects_rows` folds
 /// a row into `merge(a₁, merge(a₂, …, empty_row))`, so a naive `merge => "{l}, {r}"` plus
 /// an empty `empty_row` prints `{External, }` — a trailing separator on every row in the
-/// system, empty rows included. [`join_row_parts`] drops the empty terminator instead.
+/// system, empty rows included. [`row_display`] drops the empty terminator instead.
 ///
 /// **AND AN `absent` KEEPS ITS `-`.** Rendering it as its bare LABEL — which is what the
 /// occurrence renderer did, and what the first draft of this merge adopted — makes
@@ -817,10 +817,7 @@ fn qualified_form_display<V: TermView>(
         // `Stream[E = {empty_row}]` on that carrier. Five refusal assertions pinned that
         // text and now pin `E = {}` (WI-1059 ×2, WI-1061 ×2, WI-1063).
         "empty_row" => Some(String::new()),
-        "merge" => Some(join_row_parts(
-            named_child_display(kb, v, "left", spelling),
-            named_child_display(kb, v, "right", spelling),
-        )),
+        "merge" => Some(row_display(kb, v, spelling)),
         // A constructor under this prefix that is none of the above: not a form this
         // renders, so it takes the generic application arm and shows its children rather
         // than being guessed at.
@@ -828,13 +825,57 @@ fn qualified_form_display<V: TermView>(
     }
 }
 
-/// Join two rendered halves of a `merge` spine, dropping an EMPTY one — which is what the
-/// `empty_row` terminator renders to. Without this every row carries a trailing `", "`.
-fn join_row_parts(left: String, right: String) -> String {
-    match (left.is_empty(), right.is_empty()) {
-        (true, _) => right,
-        (_, true) => left,
-        _ => format!("{left}, {right}"),
+/// The elements of a `merge` spine in the order a row is canonically held in — its labels
+/// by [`effect_atom_order_key`], then what is left of it (a tail) — and an EMPTY part
+/// dropped, which is what the `empty_row` terminator renders to.
+///
+/// A row is a set, and its printed order is not the carrier's to choose. A term's row is
+/// stored in this order; an occurrence's is stored as written, and printed as stored it
+/// read `{Error[T = Foo], -?R}` where its term twin reads `{-?R, Error[T = Foo]}`.
+fn row_display<V: TermView>(kb: &KnowledgeBase, row: &V, spelling: Spelling) -> String {
+    let mut labels: Vec<(String, String)> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    collect_row_parts(kb, row, spelling, &mut labels, &mut rest);
+    labels.sort_by(|a, b| a.0.cmp(&b.0));
+    labels
+        .into_iter()
+        .map(|(_, rendered)| rendered)
+        .chain(rest)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`row_display`]'s walk: each label of the spine under `part` with its order key, and
+/// every other part as rendered.
+fn collect_row_parts<V: TermView>(
+    kb: &KnowledgeBase,
+    part: &V,
+    spelling: Spelling,
+    labels: &mut Vec<(String, String)>,
+    rest: &mut Vec<String>,
+) {
+    let form = match part.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => kb
+            .qualified_name_of(f)
+            .strip_prefix("anthill.prelude.EffectExpression."),
+        _ => None,
+    };
+    match form {
+        Some("merge") => {
+            for side in ["left", "right"] {
+                if let Some(child) = named_child(kb, part, side) {
+                    collect_row_parts(kb, &child, spelling, labels, rest);
+                }
+            }
+        }
+        Some("present" | "absent" | "guarded") => labels.push((
+            effect_atom_order_key_of(kb, part),
+            type_display_name_view(kb, part, spelling),
+        )),
+        _ => rest.push(type_display_name_view(kb, part, spelling)),
     }
 }
 
@@ -950,16 +991,20 @@ fn type_application_display<V: TermView>(
 /// representative it had last release — rows are rebuilt from source at load, and both
 /// sides of any comparison go through this one key.
 pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
-    let v = TermIdView(t);
+    effect_atom_order_key_of(kb, &TermIdView(t))
+}
+
+/// [`effect_atom_order_key`] of an atom on whichever carrier it rides.
+fn effect_atom_order_key_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
             functor: Some(f),
             pos_arity,
             ..
-        } => type_application_display(kb, &v, f, pos_arity, NamedOrder::Stored, Spelling::Meaning),
+        } => type_application_display(kb, v, f, pos_arity, NamedOrder::Stored, Spelling::Meaning),
         // Not an application (a bare row-tail var, a literal) — nothing to disambiguate,
         // so the display IS the key.
-        _ => type_display_name_view(kb, &v, Spelling::Meaning),
+        _ => type_display_name_view(kb, v, Spelling::Meaning),
     }
 }
 

@@ -1,10 +1,17 @@
 //! A type written through an alias keeps the name it was written by.
 //!
 //! THE RULE. A type alias written bare in an operation's parameter or result type, in a
-//! const's, or in the type arguments a call writes, is the type it stands for to
-//! everything that reads the type — the checks, dispatch, the index, a rule — and a
-//! mismatch message leads with the name as written: `expected IntBox (Box[V = Int64]), got
-//! String`. (`declared_field_type_readers_test` holds an entity's field.)
+//! const's, in the type arguments a call writes, or in the annotation of a `let` or of a
+//! typed binder, is the type it stands for to everything that reads the type — the checks,
+//! dispatch, the index, a rule — and a mismatch message leads with the name as written:
+//! `expected IntBox (Box[V = Int64]), got String`. (`declared_field_type_readers_test`
+//! holds an entity's field.)
+//!
+//! AN ANNOTATION'S NAME RIDES THE BINDER. A pattern's term has no place for the name, so
+//! it holds the type the annotation stands for, and the binder's occurrence carries the
+//! type as written beside it — one lowering, two renderings. One that holds a variable is
+//! carried as the type alone: `let p: Pair[A = Money, B = ?a]` is told `expected Pair[A =
+//! Int64, B = ?a]`.
 //!
 //! HOW. The declared type is lowered to an occurrence that holds the alias beside the
 //! type it stands for (`TypeNode::Aliased`); the carrier-neutral view reads the type, and
@@ -50,7 +57,24 @@
 //!   receiver (`build_recv_type`), each on its own — FAIL:
 //!     a_type_argument_written_at_a_call_keeps_its_alias, at that half
 //!
+//!   an annotation lowered without the node (`lower_written_annotation` calling
+//!   `type_expr_to_value`), or read back as a term alone (`pattern_annotation_value`
+//!   without its carried-type arm) — FAIL:
+//!     a_let_annotation_keeps_the_alias_it_was_written_by
+//!     a_typed_binder_keeps_the_alias_it_was_written_by
+//!   a `let`'s own annotation not placed on its pattern (the `let` frame handing
+//!   `pattern_src` no annotation) — FAIL: the first of those.
+//!   the search for an alias in the annotation stopping at an effect row
+//!   (`value_holds_alias_node` answering no for an effect expression) — FAIL: the first,
+//!   at its row.
+//!   a typed binder's annotation not kept for its frame (`load_pattern_var` recording
+//!   none) — FAIL: the second.
+//!   a row printed in the order its carrier stores it (`row_display` joining the spine as
+//!   it stands) — FAIL:
+//!     a_row_in_an_annotation_written_through_an_alias_is_printed_in_the_rows_order
+//!
 //!   PASS EITHER WAY, by design:
+//!     an_annotation_holding_a_variable_names_the_type_alone — the stated limit.
 //!     an_alias_typed_parameter_is_the_type_it_stands_for — the fence: what the node must
 //!       not change. `wi_zy11j_alias_typed_value_test` holds the rest of it.
 //!     a_result_field_effect_is_checked_through_an_alias — the same fence at the result:
@@ -353,6 +377,117 @@ fn a_type_argument_written_at_a_call_keeps_its_alias() {
             "{ns}: {refused}"
         );
     }
+}
+
+// ── an annotation ───────────────────────────────────────────────────────────
+
+/// A `let` annotation written through an alias keeps the name: at its own value, inside
+/// the type, on a pattern that is no single name, and where the name it binds is handed on.
+#[test]
+fn a_let_annotation_keeps_the_alias_it_was_written_by() {
+    assert_eq!(
+        run("awnlet", "  operation go() -> Int64 =\n    let x: Money = 4\n    x + 1"),
+        5
+    );
+    for (ns, body, expected) in [
+        (
+            "awnletvalue",
+            "    let x: Money = \"s\"\n    1",
+            "x.annotation (let-binding): expected Money (Int64), got String",
+        ),
+        (
+            "awnletbox",
+            "    let b: IntBox = mk(v: \"s\")\n    1",
+            "b.annotation (let-binding): expected IntBox (Box[V = Int64]), got Box[V = String]",
+        ),
+        (
+            "awnletinside",
+            "    let xs: List[T = Money] = [\"a\"]\n    1",
+            "expected Money (Int64), got String",
+        ),
+        (
+            "awnlettuple",
+            "    let (a, b): (Money, String) = (1, 2)\n    a",
+            "expected (_1: Money, _2: String) ((_1: Int64, _2: String)), got (_1: Int64, _2: Int64)",
+        ),
+        (
+            "awnletuse",
+            "    let x: Money = 4\n    show(x)",
+            "show.s (op-arg): expected String, got Money (Int64)",
+        ),
+        (
+            "awnletrow",
+            "    let s: Lazy[E = {Error[Oops]}] = \"s\"\n    1",
+            "expected Lazy[E = {Error[T = Oops]}] (Lazy[E = {Error[T = String]}]), got String",
+        ),
+    ] {
+        let refused = refusal(
+            ns,
+            &format!(
+                "  sort Lazy\n    sort E = ?\n    entity lazy(v: Int64)\n  end\n  \
+                 operation show(s: String) -> Int64 = 1\n  operation go() -> Int64 =\n{body}"
+            ),
+        );
+        assert!(refused.contains(expected), "{ns}: {refused}");
+    }
+}
+
+/// A typed binder written through an alias keeps the name for the value it binds.
+#[test]
+fn a_typed_binder_keeps_the_alias_it_was_written_by() {
+    let decls = "  operation show(s: String) -> Int64 = 1\n  \
+                 operation ap(f: (Int64) -> Int64) -> Int64 = f(1)\n";
+    assert_eq!(
+        run(
+            "awnbinder",
+            &format!("{decls}  operation go() -> Int64 = ap(lambda (m: Money) -> m + 1)")
+        ),
+        2
+    );
+    let refused = refusal(
+        "awnbinderuse",
+        &format!("{decls}  operation go() -> Int64 = ap(lambda (m: Money) -> show(m))"),
+    );
+    assert!(
+        refused.contains("show.s (op-arg): expected String, got Money (Int64)"),
+        "{refused}"
+    );
+}
+
+/// A row is printed in one order, whichever carrier its type rides: with a label written
+/// through an alias, the row rides an occurrence, and reads as its twin without one does.
+#[test]
+fn a_row_in_an_annotation_written_through_an_alias_is_printed_in_the_rows_order() {
+    for (ns, label) in [("awnrowplain", "Foo"), ("awnrowalias", "MyFoo")] {
+        let refused = refusal(
+            ns,
+            &format!(
+                "  sort Foo\n    entity foo\n  end\n  sort Bar\n    entity bar\n  end\n  \
+                 sort Baz\n    entity baz\n  end\n  sort MyFoo = Foo\n  \
+                 operation use(g: (x: Int64) -> Bool @ {{Error[Foo], Error[Bar], Error[Baz]}}) -> Bool effects {{Error[Foo], Error[Bar], Error[Baz]}} =\n    \
+                 let h: (x: Int64) -> Bool @ {{Error[{label}], Error[Bar]}} = g\n    h(1)"
+            ),
+        );
+        assert!(
+            refused.contains("expected Int64 -> Bool @ {Error[T = Bar], Error[T = Foo]}, got"),
+            "{ns}: {refused}"
+        );
+    }
+}
+
+/// An annotation that holds a variable is carried as the type it stands for alone.
+#[test]
+fn an_annotation_holding_a_variable_names_the_type_alone() {
+    let refused = refusal(
+        "awnopen",
+        "  sort Pair\n    sort A = ?\n    sort B = ?\n    entity pair(a: A, b: B)\n  end\n  \
+         operation pick(x: ?a) -> Int64 =\n    let p: Pair[A = Money, B = ?a] = \"s\"\n    1\n  \
+         operation go() -> Int64 = 1",
+    );
+    assert!(
+        refused.contains("p.annotation (let-binding): expected Pair[A = Int64, B = ?a], got String"),
+        "{refused}"
+    );
 }
 
 // ── two readers only an alias-carried type reaches ──────────────────────────

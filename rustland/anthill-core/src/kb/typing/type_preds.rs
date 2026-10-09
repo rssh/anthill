@@ -130,7 +130,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// THAT IS THE ONLY DIFFERENCE ([`DenotedReading`]): the two gates are one walk, so what
 /// either says of a ∀, of a guarded atom's guard or of a projection's receiver is what the
 /// other says.
-pub(super) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
+pub(crate) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     value_type_is_ground_g(kb, v, false, DenotedReading::AsWritten)
 }
 
