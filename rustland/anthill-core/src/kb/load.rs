@@ -22413,6 +22413,22 @@ impl ClauseHead {
     }
 }
 
+/// Where a written type stands ([`Loader::type_expr_to_child`]), which decides whether a
+/// type alias written bare is read through ([`Loader::bare_alias_type`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TypeSite {
+    /// A type: a parameter's, a result's, a field's, an annotation's, a type argument —
+    /// and an element of a row written in one, an arrow's or a type argument's. An alias
+    /// written bare here is the type it stands for.
+    Type,
+    /// An element of an OPERATION'S OWN `effects` clause, and the label under its `-` or
+    /// its guard. The alias is kept as it is written: this is the row the effect rules
+    /// judge, and they follow a bound alias themselves and name the element as the author
+    /// wrote it beside the label it stands for (`typing::effect_element_labels`). The
+    /// types inside an applied label (`Error[T = Name]`) are types again.
+    OwnRowElement,
+}
+
 /// WI-20261001-KDMQS — where a walk stands with respect to a CLAUSE, which decides whether
 /// a `const` written there is folded to its value (`kb::const_value`).
 ///
@@ -31403,13 +31419,27 @@ impl<'a> Loader<'a> {
     /// `requires` / fact `provides`, via `sort_inst_to_value`). A thin wrapper
     /// over [`Self::type_expr_to_child`].
     fn type_expr_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        self.type_expr_to_value_at(ty, TypeSite::Type)
+    }
+
+    /// [`Self::type_expr_to_value`] for an element of an operation's own `effects` clause
+    /// ([`TypeSite::OwnRowElement`]).
+    fn own_row_element_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        self.type_expr_to_value_at(ty, TypeSite::OwnRowElement)
+    }
+
+    fn type_expr_to_value_at(
+        &mut self,
+        ty: &TypeExpr,
+        site: TypeSite,
+    ) -> crate::eval::value::Value {
         let span = self.type_expr_span(ty);
         let owner = self.current_owner;
         // WI-20260904-02ERR: through `type_child_to_value`, which restores the
         // VALUE-position spelling of a variable (`Value::Var`) rather than leaving a bare
         // `TypeNode::Var` occurrence σ's occurrence walk cannot re-carry. Same reason as
         // `build_named_tuple_fields_value`; both are widenings out of the `TypeChild` spine.
-        let child = self.type_expr_to_child(ty, span, owner);
+        let child = self.type_expr_to_child_at(ty, span, owner, site);
         node_occurrence::type_child_as_value(&child)
     }
 
@@ -32051,6 +32081,50 @@ impl<'a> Loader<'a> {
     ) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
         super::typing::alias_type_application(self.kb, written)
             .unwrap_or((written, SmallVec::new()))
+    }
+
+    /// What a written NAME lowered to, read through where it named a type alias in a type
+    /// position ([`Self::bare_alias_type`]). Asked of the child and not of the name, so
+    /// every way a name reaches its symbol is covered by one reading: a bare name, a
+    /// qualified one, a child of a sort (`Host.HA`), a child reached by a provision.
+    fn bare_alias_read(
+        &self,
+        child: node_occurrence::TypeChild,
+        site: TypeSite,
+    ) -> node_occurrence::TypeChild {
+        let node_occurrence::TypeChild::Interned(named) = &child else {
+            return child;
+        };
+        if site != TypeSite::Type {
+            return child;
+        }
+        let Term::Ref(alias) = self.kb.get_term(*named) else {
+            return child;
+        };
+        match self.bare_alias_type(*alias) {
+            Some(stands_for) => node_occurrence::TypeChild::Interned(stands_for),
+            None => child,
+        }
+    }
+
+    /// The type a type ALIAS written bare in a type position stands for — `Box[V = Int64]`
+    /// for `CA` over `sort CA = Box[V = Int64]`, `Box` for `CB` over `sort CB = Box` — or
+    /// `None` for a name that is no alias, and for an alias that is read as written.
+    ///
+    /// So `b: CA` is `b: Box[V = Int64]` and `b: CB` is `b: Box`, its slots left open as
+    /// the written name leaves them. Left as the alias's own name the type named no sort:
+    /// nothing is provided at an alias, it is not the sort its target's operations take,
+    /// and a slot the alias leaves open was open to anything — `via(b: CB) -> Int64 = b.v`
+    /// loaded, and returned what the box held.
+    ///
+    /// The alias's own type, as its declaration lowered it ([`KnowledgeBase::alias_types`]):
+    /// the aliases its definition names were recorded before it
+    /// ([`declare_type_aliases`]), so they are read through already, and one left as
+    /// written — a chain that comes back to itself — stays so. An alias that also owns
+    /// members (`namespace X` beside `sort X = …`) has two readings as a NAME and one as a
+    /// type, and is read through here like any other.
+    fn bare_alias_type(&self, written: Symbol) -> Option<TermId> {
+        self.kb.alias_types.get(&written).copied()
     }
 
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias
@@ -32891,6 +32965,16 @@ impl<'a> Loader<'a> {
         span: SourceSpan,
         owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
+        self.type_expr_to_child_at(ty, span, owner, TypeSite::Type)
+    }
+
+    fn type_expr_to_child_at(
+        &mut self,
+        ty: &TypeExpr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        site: TypeSite,
+    ) -> node_occurrence::TypeChild {
         // WI-429: everything beneath here is TYPE position — an unresolvable
         // Capitalized dotted name is load-blocking (`remap_name`'s
         // `UnresolvedTypeName` arm). Save/restore (not just set) so a value
@@ -32900,7 +32984,7 @@ impl<'a> Loader<'a> {
         // is not a clause data slot, even when the type is written inside one (`fact
         // f[T = …]`, `?x: T`).
         let saved_fold = std::mem::replace(&mut self.const_fold, ConstFold::Off);
-        let child = self.type_expr_to_child_inner(ty, span, owner);
+        let child = self.type_expr_to_child_inner(ty, span, owner, site);
         self.const_fold = saved_fold;
         self.in_type_position = saved_type_pos;
         child
@@ -33140,6 +33224,7 @@ impl<'a> Loader<'a> {
         ty: &TypeExpr,
         span: SourceSpan,
         owner: Option<Symbol>,
+        site: TypeSite,
     ) -> node_occurrence::TypeChild {
         match ty {
             // Proposal 070 §1.2 — `Self`, asked before anything resolves the name: it
@@ -33199,7 +33284,8 @@ impl<'a> Loader<'a> {
                 // normal sort-ref path.
                 if name.segments.len() >= 2 {
                     if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
-                        return child;
+                        // A dotted path to a child of a sort (`Host.HA`) names it here.
+                        return self.bare_alias_read(child, site);
                     }
                     // WI-302 (proposal 027.1): a value FIELD-access path (`result.a`,
                     // `c.contents`, lowercase last segment off a value head) is a
@@ -33212,7 +33298,8 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sort_sym = self.remap_name(name);
-                self.type_name_child(sort_sym, span, owner)
+                let child = self.type_name_child(sort_sym, span, owner);
+                self.bare_alias_read(child, site)
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let written_sym = self.remap_name(name);
@@ -33431,7 +33518,8 @@ impl<'a> Loader<'a> {
                 // WI-440: flag the inner lowering so an unresolved name there
                 // is a load-blocking error (a vacuous absence), not a warning.
                 let saved_absence = std::mem::replace(&mut self.in_effect_absence, true);
-                let inner_child = self.type_expr_to_child(inner, span, owner);
+                // The label under the `-` stands where the atom does.
+                let inner_child = self.type_expr_to_child_at(inner, span, owner, site);
                 self.in_effect_absence = saved_absence;
                 match inner_child {
                     node_occurrence::TypeChild::Interned(t) => {
@@ -33470,7 +33558,8 @@ impl<'a> Loader<'a> {
                         self.var_ref_signature_places(t)
                     })
                     .collect();
-                let label_child = self.type_expr_to_child(label, span, owner);
+                // The guarded label stands where the atom does.
+                let label_child = self.type_expr_to_child_at(label, span, owner, site);
                 match label_child {
                     node_occurrence::TypeChild::Interned(label_t) => {
                         let guard_list = self.kb.build_list(&guard_terms);
@@ -33648,7 +33737,10 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
-                Value::term(self.kb.make_sort_ref(sort_sym))
+                match self.clause_alias_type(sort_sym) {
+                    Some(stands_for) => Value::term(stands_for),
+                    None => Value::term(self.kb.make_sort_ref(sort_sym)),
+                }
             }
             // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
             // = V]`) is lowered to the PLAIN parameterized application `Pair[A = K, B =
@@ -34397,7 +34489,9 @@ impl<'a> Loader<'a> {
 
     /// WI-20260924-F8PYZ — record a TYPE ALIAS for the reader that asks while files still
     /// load (`KnowledgeBase::alias_targets`, read by `typing::alias_expansion`): a spec
-    /// clause reads the alias as the spec it stands for.
+    /// clause reads the alias as the spec it stands for. And, beside it, the TYPE the
+    /// alias stands for (`stands_for`, the target its `SortAlias` fact was just given),
+    /// for an alias written where a type is (`KnowledgeBase::alias_types`).
     ///
     /// Recorded as a clause's BINDING is lowered (`sort_binding_to_value`), not as the type
     /// the `SortAlias` fact holds, because that is what the reader splices into a clause.
@@ -34417,14 +34511,33 @@ impl<'a> Loader<'a> {
     /// `lower_value_or_gate` has refused at the declaration. First wins, as
     /// `build_sort_alias_index` files the facts; the callers' dedup guard makes a second
     /// declaration of one source unreachable anyway.
-    fn record_alias_target(&mut self, sort_term: TermId, definition: &TypeExpr) {
+    fn record_alias_target(
+        &mut self,
+        sort_term: TermId,
+        definition: &TypeExpr,
+        stands_for: Option<TermId>,
+    ) {
         let source = self.kb.name_term_sym(sort_term);
         if super::typing::is_sort_param_symbol(self.kb, source) {
             return;
         }
+        // The type the `SortAlias` fact was just given ([`KnowledgeBase::alias_types`]).
+        if let Some(stands_for) = stands_for {
+            self.kb.alias_types.entry(source).or_insert(stands_for);
+        }
         let marks = self.kb.load_check_marks();
         let reported = self.errors.len();
-        let reading = self.sort_binding_to_value(definition);
+        let reading = match definition {
+            // A BARE LINK (`sort S2 = S1`) is recorded as the name it is written with:
+            // its reader follows the chain and judges it link by link
+            // (`typing::alias_expansion` — a link that owns members, a chain that comes
+            // back), which a link already read through to its type would hide.
+            TypeExpr::Simple(name) if !self.is_self_type_name(name) => {
+                let linked = self.remap_name(name);
+                crate::eval::value::Value::term(self.kb.make_sort_ref(linked))
+            }
+            _ => self.sort_binding_to_value(definition),
+        };
         self.kb.restore_load_check_marks(marks);
         self.errors.truncate(reported);
         if let Ok(target) = node_occurrence::value_to_term(&mut self.kb, &reading) {
@@ -34514,9 +34627,13 @@ impl<'a> Loader<'a> {
         // hash-consed `Term::Fn`.
         let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
+        let stands_for = match &target_value {
+            crate::eval::value::Value::Term { id, .. } => Some(*id),
+            _ => None,
+        };
         self.assert_sort_alias(sort_term, target_value, domain);
         if !matches!(s.definition, TypeExpr::Variable { .. }) {
-            self.record_alias_target(sort_term, &s.definition);
+            self.record_alias_target(sort_term, &s.definition, stands_for);
             self.refuse_public_alias_of_internal(sort_term, s);
         }
 
@@ -37322,7 +37439,7 @@ impl<'a> Loader<'a> {
         let effect_values: Vec<crate::eval::value::Value> = o
             .effects
             .iter()
-            .map(|e| self.type_expr_to_value(&e.type_expr))
+            .map(|e| self.own_row_element_to_value(&e.type_expr))
             .collect();
 
         // Build requires and ensures lists. Auto-requires inference
@@ -39065,6 +39182,22 @@ impl<'a> Loader<'a> {
         Err(written)
     }
 
+    /// The type a type ALIAS stands for where it is written as a clause binding's VALUE —
+    /// `requires Show[T = SI]`, `provides Tag[T = CA]` — in a sort's clause and in an
+    /// operation's `requires` alike: `Show` is asked, and `Tag` provided, at the type a
+    /// value typed by the alias is at ([`Self::bare_alias_type`]). Left as the alias's
+    /// name, the clause was about a sort nothing is a value of: the requirement could not
+    /// be supplied where the same clause with the type written out could, and of two
+    /// provisions of one type, one written through the alias, a call ran one in silence.
+    ///
+    /// Of an alias with a ground type only, which is one term in the clause canon and in
+    /// a type position. An alias that names a type parameter stays as written: the clause
+    /// canon spells a parameter its own way.
+    fn clause_alias_type(&self, sym: Symbol) -> Option<TermId> {
+        self.bare_alias_type(sym)
+            .filter(|stands_for| super::typing::type_value_is_ground(self.kb, *stands_for))
+    }
+
     /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as
     /// the clause's spec: a type alias read through (`read_spec_alias`), exactly as the
     /// bracketed application in `convert_term`'s `Term::Fn` arm reads one — `requires
@@ -39074,8 +39207,16 @@ impl<'a> Loader<'a> {
     /// shape a bare `requires Store` has. Any other name, or one in any other position, is
     /// the `Ref` it always was.
     fn bare_contract_spec(&mut self, sym: Symbol, span: Span) -> Term {
-        if self.term_depth != 1 || !self.in_op_contract_clause {
+        if !self.in_op_contract_clause {
             return Term::Ref(sym);
+        }
+        if self.term_depth != 1 {
+            // Inside the spec's bracket: a binding's value, where an alias is its type
+            // as it is in a sort's clause ([`Self::clause_alias_type`]).
+            return match self.clause_alias_type(sym) {
+                Some(stands_for) => self.kb.get_term(stands_for).clone(),
+                None => Term::Ref(sym),
+            };
         }
         match self.read_spec_alias(sym, span) {
             Ok((base, fixed)) if base != sym => match fixed.is_empty() {

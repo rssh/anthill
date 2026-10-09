@@ -184,9 +184,10 @@ fn a_bare_reference_to_the_enclosing_sort_is_not_this_instance() {
 /// A PARTIAL reference leaves the rest open, and an ALIAS of the sort is the sort it stands
 /// for: `Pair[L = Int64]` takes any `R`; `sort MyPair = Pair` is any `Pair`; `sort IntPair =
 /// Pair[L = Int64]` is a `Pair` of `Int64` and any `R` — and holds its argument to the `L` it
-/// fixes. The refusal prints the alias by its name, as it does outside the sort (while the
-/// loader wrote the `?` into such a reference it printed the expansion, `Pair[L = Int64, R =
-/// ?_]`).
+/// fixes. The refusal prints the type the alias stands for as the alias wrote it, `Pair[L =
+/// Int64]`: an alias written bare is that type (WI-20261009-ZY11J; before, it printed the
+/// alias's name, and while the loader wrote the `?` into such a reference it printed the
+/// expansion, `Pair[L = Int64, R = ?_]`).
 #[test]
 fn a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard() {
     let program = |ns: &str, go: &str| {
@@ -218,7 +219,7 @@ end
             "wi80zv8b.fixed",
             "Pair.il(pair(l: 1, r: 2), pair(l: \"x\", r: 1))",
         )),
-        &["il.o (op-arg): expected IntPair, got Pair[L = String"],
+        &["il.o (op-arg): expected Pair[L = Int64], got Pair[L = String"],
         "an argument against the slot the alias fixes",
     );
 }

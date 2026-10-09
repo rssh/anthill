@@ -458,8 +458,23 @@ fn an_alias_applied_to_further_arguments_is_its_sort_applied() {
 /// such member (dot dispatch)" for every alias, bindings or not.
 #[test]
 fn a_value_typed_by_an_alias_has_its_fields() {
-    for ty in ["Pair[L = Int64]", "IntPair", "P2", "Full"] {
+    for ty in ["Pair[L = Int64]", "IntPair", "Full"] {
         assert_eq!(run(&pair_field(ty)), 3, "x: {ty}");
+    }
+}
+
+/// … and no more than them. `sort P2 = Pair` fixes nothing, so `x: P2` is `x: Pair` and
+/// its `l` is the open `x.L`, which `f` may not return as an `Int64`. This row stood among
+/// the ones above and ran to 3: the alias's open slot was open to anything, where the
+/// written `Pair` was refused (WI-20261009-ZY11J).
+#[test]
+fn a_field_of_a_slot_the_alias_leaves_open_is_that_slot() {
+    for ty in ["Pair", "P2"] {
+        assert_refused_naming(
+            &load_errors(&pair_field(ty)),
+            &["f.return (op-return): expected Int64, got x.L"],
+            &format!("x: {ty}"),
+        );
     }
 }
 
