@@ -32123,8 +32123,25 @@ impl<'a> Loader<'a> {
     /// written — a chain that comes back to itself — stays so. An alias that also owns
     /// members (`namespace X` beside `sort X = …`) has two readings as a NAME and one as a
     /// type, and is read through here like any other.
+    ///
+    /// AN ALIAS THAT NAMES A TYPE PARAMETER of the sort declaring it — `sort OS = S`,
+    /// `sort OB = Box[V = S]` inside `sort Outer[S]` — is that type INSIDE the sort,
+    /// where the parameter is the sort's. Outside it the parameter is nobody's: read
+    /// through there, `f(x: Outer.OS) -> Int64 = x` took `x` for any type at all, and
+    /// `f("s")` answered the string. It stays the alias's own name there, which nothing
+    /// conforms to.
     fn bare_alias_type(&self, written: Symbol) -> Option<TermId> {
-        self.kb.alias_types.get(&written).copied()
+        let stands_for = *self.kb.alias_types.get(&written)?;
+        let names_no_parameter = super::typing::type_value_is_ground(self.kb, stands_for);
+        (names_no_parameter || self.within_declaring_scope_of(written)).then_some(stands_for)
+    }
+
+    /// Is the scope being lowered in the scope `sym` is declared in, or inside it?
+    fn within_declaring_scope_of(&self, sym: Symbol) -> bool {
+        self.kb.symbols.declaring_scope(sym).is_some_and(|declared_in| {
+            declared_in == self.current_scope
+                || self.kb.symbols.encloses(declared_in, self.current_scope)
+        })
     }
 
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias

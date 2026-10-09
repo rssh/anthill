@@ -64,6 +64,10 @@
 //!     a_spec_named_through_a_chain_is_refused_where_a_link_owns_members
 //!     wi_fs8m3_provides_at_alias_address_test::a_provision_at_an_alias_of_an_alias_names_the_sort
 //!
+//!   a parameter-naming alias read through wherever it is written
+//!   (`Loader::within_declaring_scope_of` answering `true`) — FAIL:
+//!     an_alias_that_names_a_parameter_is_read_only_inside_its_sort
+//!
 //!   PASS WITH THE READING BACKED OUT, by design:
 //!     an_operations_own_row_names_its_alias_as_written — THE FENCE: it fails with either
 //!       site of the exception backed out;
@@ -515,6 +519,38 @@ fn an_alias_of_its_sorts_parameter_is_that_parameter() {
         let rendered = refusal(&ns, &format!("{cell}  operation go() -> {go}"));
         assert!(rendered.contains(refused), "{ns}: {rendered}");
     }
+}
+
+/// OUTSIDE the sort that declares the parameter, an alias that names it is not read
+/// through: the parameter is nobody's there. `f(x: Outer.OS) -> Int64 = x` is refused,
+/// the alias being a name nothing conforms to. Read through — as the first delivery of
+/// this change did — `x` was any type at all, the declaration loaded, and `f("s")`
+/// answered the string. Inside the sort, and in an entry at its address, the same alias
+/// is the parameter.
+#[test]
+fn an_alias_that_names_a_parameter_is_read_only_inside_its_sort() {
+    let outer = "  sort Outer[S]\n    sort OB = Box[V = S]\n    sort OS = S\n    entity outer(o: S)\n    \
+                 operation inside(b: OB) -> S = Box.unbox(b)\n    operation own(x: OS) -> S = x\n  end\n";
+    for (name, decl, arg, refused) in [
+        ("param", "via(x: Outer.OS) -> Int64 = x", "\"s\"", "via.x (op-arg): expected OS, got String"),
+        ("applied", "via(b: Outer.OB) -> Int64 = 1", "Box.mk(\"s\")", "via.b (op-arg): expected OB, got Box[V = String]"),
+    ] {
+        let ns = format!("zy11joutside{name}");
+        let rendered = refusal(&ns, &format!("{outer}{}", through(decl, arg)));
+        assert!(rendered.contains(refused), "{ns}: {rendered}");
+    }
+    for (name, go) in [
+        ("inside", "Outer.inside(Box.mk(5))"),
+        ("own", "Outer.own(5)"),
+    ] {
+        let ns = format!("zy11jwithin{name}");
+        assert_eq!(run(&ns, &format!("{outer}  operation go() -> Int64 = {go}")), "5", "{ns}");
+    }
+    let entry = format!(
+        "{outer}  namespace Outer\n    operation later(b: OB) -> S = Box.unbox(b)\n  end\n  \
+         operation go() -> Int64 = Outer.later(Box.mk(5))"
+    );
+    assert_eq!(run("zy11jwithinentry", &entry), "5");
 }
 
 /// An alias that names a parameter of the sort declaring it is at that parameter:

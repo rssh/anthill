@@ -1675,7 +1675,18 @@ had been resolved in the writing scope, found nothing, and let the clause throug
 - a type position applying an alias further: `IntPair[R = String]` over `sort IntPair =
   Pair[L = Int64]` is `Pair[L = Int64, R = String]`, and a positional binds the next
   parameter the alias left open. Binding again what the alias fixes (`IntPair[L = Bool]`)
-  is refused, naming both.
+  is refused, naming both;
+- a type written bare: `b: IntBox` over `sort IntBox = Box[V = Int64]` is `b: Box[V =
+  Int64]`, and `b: AnyBox` over `sort AnyBox = Box` is `b: Box`, its parameters left open
+  as the written name leaves them. It holds for a parameter, a result, a field, an
+  annotation, a type argument and a row written inside one (an arrow's `@ {E}`), and for
+  an alias reached by a path (`Host.IntBox`). An alias that names a type parameter of the
+  sort declaring it is read this way only inside that sort. Among the elements of an
+  operation's own `effects` clause the alias is kept as written: the effect rules follow
+  it (§5.5) and name the element as the author wrote it;
+- a clause binding's value: `requires Show[T = IntBox]` and `provides Tag[T = IntBox]` are
+  about `Box[V = Int64]`, in a sort's clause and in an operation's. An alias that names a
+  type parameter of the sort declaring it stays as written there.
 
 It does not matter where the alias is declared: every alias of every file is recorded
 before any other declaration reads one, an alias after the aliases its definition names —
