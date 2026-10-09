@@ -53,7 +53,7 @@ use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
-use anthill_core::kb::term_view::{TermIdView, TermView};
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::desugar_target as dt;
@@ -1238,19 +1238,17 @@ fn entity_struct_members(
     // the symbol and the type's TermId are needed, so project to those rather
     // than cloning each `Value`.
     //
-    // WI-342: field types are carrier-agnostic; codegen handles only ground
-    // types — a value-in-type / denoted field is not C++-representable and does
-    // not occur in codegen'd entities, so a non-`Term` carrier is dropped here.
-    let fields: Vec<(Symbol, TermId)> = kb
+    // WI-342: field types are carrier-agnostic, and every field is lowered on the
+    // carrier it rides. A field whose type holds a value is not C++-representable
+    // and is refused where it is lowered, by name — it was dropped from the struct
+    // here, in silence.
+    let fields: Vec<(Symbol, Value)> = kb
         .entity_field_types(functor)
         .ok_or_else(|| CppCodegenError {
             message: format!("'{qualified}' has no registered fields — is it really an entity?"),
         })?
         .iter()
-        .filter_map(|(sym, v)| match v {
-            Value::Term { id, .. } => Some((*sym, *id)),
-            _ => None,
-        })
+        .map(|(sym, v)| (*sym, v.clone()))
         .collect();
     let field_names: Vec<&str> = fields
         .iter()
@@ -1287,8 +1285,17 @@ fn entity_struct_members(
     let _guard = ctx.push_type_params(type_params);
 
     let mut fields_text = String::new();
-    for (field_sym, type_tid) in &fields {
-        let cpp_type = lower_type(kb, ctx, *type_tid)?;
+    for (field_sym, field_ty) in &fields {
+        if type_holds_value(kb, field_ty) {
+            return Err(CppCodegenError {
+                message: format!(
+                    "entity '{qualified}' field '{}' has a type that holds a value, \
+                     unsupported by C++ codegen",
+                    kb.local_name_of(*field_sym)
+                ),
+            });
+        }
+        let cpp_type = lower_type(kb, ctx, field_ty)?;
         let field_name = cpp_identifier(kb.local_name_of(*field_sym));
         fields_text.push_str(
             &TEMPLATE_FIELD
@@ -1366,17 +1373,14 @@ fn lower_one_const(
 ) -> Result<(String, String), CppCodegenError> {
     let qn = kb.qualified_name_of(sym).to_string();
 
-    // Declared type: `const_type` is a `Value`; a simple sort type (the
-    // common case — `Int64`, `Float`) lowers as a ground `Value::Term`.
+    // Declared type: `const_type` is a `Value`, lowered on the carrier it rides.
+    // A type that holds a value is refused below; C++ has no spelling for it.
     //
-    // WI-760: this matches the KB borrow directly while the body path below
-    // must `.cloned()` first. The difference is what each arm carries out: here
-    // the only value used past the borrow is a `Copy` `TermId`, so the borrow
-    // ends at `*tid`; there the arm hands a `&Rc<NodeOccurrence>` to a `&mut`
-    // call, which would keep the KB borrowed across it.
-    let cpp_type = match kb.const_type(sym) {
-        Some(anthill_core::eval::value::Value::Term { id: tid, .. }) => {
-            let t = lower_type(kb, ctx, *tid)?;
+    // WI-760: `.cloned()` first, as the body path below does — the arm hands the
+    // value to a `&mut` call, which would otherwise keep the KB borrowed across it.
+    let cpp_type = match kb.const_type(sym).cloned() {
+        Some(ty) if !type_holds_value(kb, &ty) => {
+            let t = lower_type(kb, ctx, &ty)?;
             // A `String` const cannot be `constexpr std::string` — std::string
             // is not a literal type before C++20. `std::string_view` is literal
             // and binds a string literal directly, so it works under C++17.
@@ -1754,10 +1758,10 @@ struct ParamInfo {
     source_name: String,
     name: String,
     cpp_type: String,
-    /// The param's anthill type term, kept so body synthesis can look
+    /// The param's anthill type, kept so body synthesis can look
     /// up a marshalled representation (WI-088) and `lower` the argument
     /// when the host API wants the foreign rep.
-    type_term: TermId,
+    ty: Value,
 }
 
 /// Whether an operation's return type is "body-emittable" — i.e.,
@@ -1778,9 +1782,9 @@ struct ParamInfo {
 fn is_body_emittable(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    type_term: TermId,
+    ty: &Value,
 ) -> Result<bool, CppCodegenError> {
-    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
+    if let Some(sym) = extract_sort_ref_sym(kb, ty) {
         let qualified = kb.qualified_name_of(sym).to_string();
         if ctx.carriers.lookup(&qualified).is_some() {
             return Ok(true);
@@ -1788,7 +1792,7 @@ fn is_body_emittable(
         let short = short_name_of(&qualified);
         return Ok(resolve_type_mapping(kb, ctx, &[short], None)?.is_some());
     }
-    let Some((base_sym, binding_values)) = unpack_parameterized(kb, type_term) else {
+    let Some((base_sym, binding_values)) = unpack_parameterized(kb, ty) else {
         return Ok(false);
     };
     let base_qn = kb.qualified_name_of(base_sym).to_string();
@@ -1802,7 +1806,7 @@ fn is_body_emittable(
     // a plain `.all()` won't do: short-circuit on the first non-emittable value,
     // and a bodied-rule refusal in a nested `resolve_type_mapping` propagates.
     for (_, v) in &binding_values {
-        if !is_body_emittable(kb, ctx, *v)? {
+        if !is_body_emittable(kb, ctx, v)? {
             return Ok(false);
         }
     }
@@ -1815,31 +1819,20 @@ fn is_body_emittable(
 /// Shared between `lower_parameterized` (which formats the C++ template
 /// expression) and `is_body_emittable` (which decides whether a body
 /// can be synthesised).
-fn unpack_parameterized(
+fn unpack_parameterized<V: TermView>(
     kb: &KnowledgeBase,
-    term: TermId,
-) -> Option<(Symbol, Vec<(Symbol, TermId)>)> {
+    ty: &V,
+) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
     // WI-361: read base + `(param, value)` bindings form-agnostically — deep
-    // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`.
-    // The param symbol is kept so `lower_parameterized` can order the template
-    // args by the sort's DECLARATION order (the bindings are stored in canonical
-    // symbol-interning order, NOT declaration order, post the WI-361 flip).
-    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(term))
-    else {
-        return None;
-    };
-    // cpp-gen operates on well-formed ground parameterized types: every binding is
-    // a `TypeBinding(param, value)` whose value is a hash-consed `TermId`. (A
-    // non-`Term` value maps to `None` → whole result `None`; a binding missing
-    // `value` is skipped by `extract_type` — both unreachable for loader types.)
-    let values: Option<Vec<(Symbol, TermId)>> = bindings
-        .iter()
-        .map(|(p, v)| match v {
-            Value::Term { id: t, .. } => Some((*p, *t)),
-            _ => None,
-        })
-        .collect();
-    Some((base, values?))
+    // `parameterized(base: sort_ref(S), bindings)` or term-backed `Fn{S, named}`,
+    // on whichever carrier the type rides. The param symbol is kept so
+    // `lower_parameterized` can order the template args by the sort's DECLARATION
+    // order (the bindings are stored in canonical symbol-interning order, NOT
+    // declaration order, post the WI-361 flip).
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => Some((base, bindings)),
+        _ => None,
+    }
 }
 
 /// Convert a snake_case identifier to camelCase. Naive transform —
@@ -1875,14 +1868,13 @@ fn snake_to_camel(snake: &str) -> String {
 fn marshal_for_type(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    type_term: TermId,
+    ty: &Value,
     binding: Option<&str>,
 ) -> Result<Option<Marshal>, CppCodegenError> {
-    let sym =
-        extract_sort_ref_sym(kb, &TermIdView(type_term)).or_else(|| match kb.get_term(type_term) {
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            _ => None,
-        });
+    let sym = extract_sort_ref_sym(kb, ty).or_else(|| match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) | TypeExtractor::TypeVar(s) => Some(s),
+        _ => None,
+    });
     let Some(sym) = sym else { return Ok(None) };
     let qualified = kb.qualified_name_of(sym).to_string();
     let short = short_name_of(&qualified);
@@ -1952,7 +1944,7 @@ fn synthesise_body_for(
     name: &str,
     params: &[ParamInfo],
     return_type: &str,
-    return_term: TermId,
+    return_ty: &Value,
 ) -> Result<Option<String>, CppCodegenError> {
     // (1) Expression body via OperationImpl — sourced from
     // `kb.op_body_node` as a NodeOccurrence tree after WI-249.
@@ -2016,7 +2008,7 @@ fn synthesise_body_for(
     // at all is a normal value and passes through bare; only the "marshalled, but
     // no anthill->foreign adapter" case is unhandleable.
     for p in params.iter().skip(1) {
-        if matches!(marshal_for_type(kb, ctx, p.type_term, binding)?, Some(m) if m.lower.is_none())
+        if matches!(marshal_for_type(kb, ctx, &p.ty, binding)?, Some(m) if m.lower.is_none())
         {
             return Ok(Some(unlowerable_body(
                 ctx,
@@ -2042,7 +2034,7 @@ fn synthesise_body_for(
         .skip(1)
         .map(|p| -> Result<String, CppCodegenError> {
             Ok(
-                match marshal_for_type(kb, ctx, p.type_term, binding)?.and_then(|m| m.lower) {
+                match marshal_for_type(kb, ctx, &p.ty, binding)?.and_then(|m| m.lower) {
                     Some(lower) => format!("{lower}({})", p.name),
                     None => p.name.clone(),
                 },
@@ -2057,7 +2049,7 @@ fn synthesise_body_for(
     // to lift it back to the anthill type (`const double * -> Vec3`).
     // Takes precedence over plain dispatch — the lift applies even when
     // the return would otherwise have been body-emittable.
-    if let Some(lift) = marshal_for_type(kb, ctx, return_term, binding)?.and_then(|m| m.lift) {
+    if let Some(lift) = marshal_for_type(kb, ctx, return_ty, binding)?.and_then(|m| m.lift) {
         if return_type == "void" {
             // Nothing to lift from a void return — a `lift` here is a spec error,
             // degraded via `unlowerable_body` (WI-891) rather than emitting
@@ -2075,7 +2067,7 @@ fn synthesise_body_for(
     }
 
     // (3) Plain carrier dispatch (no return marshalling).
-    if !is_body_emittable(kb, ctx, return_term)? {
+    if !is_body_emittable(kb, ctx, return_ty)? {
         return Ok(None);
     }
     Ok(Some(if return_type == "void" {
@@ -2165,46 +2157,41 @@ fn operations_in_sort(
             _op_guard = Some(ctx.push_type_params(frame));
         }
 
-        // WI-341: the return type is carrier-agnostic; a denoted-bearing
-        // (`Value::Node`) return — an op returning a `Modify`-carrying callback —
+        // WI-341: the return type is carrier-agnostic, and is lowered on the carrier it
+        // rides. One that HOLDS A VALUE — an op returning a `Modify`-carrying callback —
         // is unsupported by C++ codegen (never materialized).
-        let return_term = match &rec.return_type {
-            anthill_core::eval::Value::Term { id: t, .. } => *t,
-            _ => {
-                return Err(CppCodegenError {
-                    message: format!(
-                        "operation '{name}' has a denoted-bearing return type \
-                         unsupported by C++ codegen"
-                    ),
-                })
-            }
-        };
-        let return_type_cpp = lower_type(kb, ctx, return_term)?;
+        let return_ty = rec.return_type.clone();
+        if type_holds_value(kb, &return_ty) {
+            return Err(CppCodegenError {
+                message: format!(
+                    "operation '{name}' has a denoted-bearing return type \
+                     unsupported by C++ codegen"
+                ),
+            });
+        }
+        let return_type_cpp = lower_type(kb, ctx, &return_ty)?;
 
         let mut params = Vec::new();
         for (p_name_sym, p_type) in &rec.params {
-            // WI-341 Stage A: param types are carrier-agnostic. A ground type
-            // lowers as before; a denoted-bearing (`Value::Node`) callback-arrow
-            // param is not supported by C++ codegen (and is never materialized).
-            let p_term = match p_type {
-                anthill_core::eval::Value::Term { id: t, .. } => *t,
-                _ => {
-                    return Err(CppCodegenError {
-                        message: format!(
-                            "operation '{name}' parameter '{}' has a denoted-bearing \
-                             type unsupported by C++ codegen",
-                            kb.local_name_of(*p_name_sym)
-                        ),
-                    })
-                }
-            };
-            let cpp_type = lower_type(kb, ctx, p_term)?;
+            // WI-341 Stage A: param types are carrier-agnostic. A type lowers on any
+            // carrier; one that holds a value (a callback arrow whose row names
+            // `Modify[c]`) is not supported by C++ codegen (and is never materialized).
+            if type_holds_value(kb, p_type) {
+                return Err(CppCodegenError {
+                    message: format!(
+                        "operation '{name}' parameter '{}' has a denoted-bearing \
+                         type unsupported by C++ codegen",
+                        kb.local_name_of(*p_name_sym)
+                    ),
+                });
+            }
+            let cpp_type = lower_type(kb, ctx, p_type)?;
             let source_name = kb.local_name_of(*p_name_sym).to_string();
             params.push(ParamInfo {
                 name: cpp_identifier(&source_name),
                 source_name,
                 cpp_type,
-                type_term: p_term,
+                ty: p_type.clone(),
             });
         }
         refuse_cpp_identifier_collisions(
@@ -2280,7 +2267,7 @@ fn operations_in_sort(
             &name,
             &params,
             &return_type_cpp,
-            return_term,
+            &return_ty,
         )?;
         let template_prefix =
             member_template_prefix(&op_param_decls, &params, &return_type_cpp, &body);
@@ -2844,41 +2831,46 @@ fn constructor_uses_params(kb: &KnowledgeBase, entity_sym: Symbol, param_names: 
     let Some(fields) = kb.entity_field_types(entity_sym) else {
         return false;
     };
-    for (_, type_term) in fields {
-        // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Value::Term { id: t, .. } = type_term {
-            if term_references_param(kb, *t, param_names) {
-                return true;
-            }
-        }
-    }
-    false
+    fields
+        .iter()
+        .any(|(_, field_ty)| type_references_param(kb, field_ty, param_names))
 }
 
-/// Recursively scan a type term for references to any of the named
-/// type parameters. Catches both bare `?T` (`Term::Var`) and nested
+/// Recursively scan a type for references to any of the named type
+/// parameters, on whichever carrier it rides. Catches both bare `?T` and nested
 /// occurrences inside parameterized wrappers (`Vec[T = ?T]`).
-fn term_references_param(kb: &KnowledgeBase, term: TermId, param_names: &[String]) -> bool {
-    match kb.get_term(term) {
-        Term::Var(v) => {
-            let name_sym = match v {
-                anthill_core::kb::term::Var::Global(vid) => vid.name(),
-                _ => return false,
-            };
-            let name = kb.local_name_of(name_sym);
+fn type_references_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param_names: &[String]) -> bool {
+    match ty.head(kb) {
+        ViewHead::Var(Var::Global(vid)) => {
+            let name = kb.local_name_of(vid.name());
             param_names.iter().any(|p| p == name)
         }
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            pos_args
-                .iter()
-                .any(|a| term_references_param(kb, *a, param_names))
-                || named_args
-                    .iter()
-                    .any(|(_, a)| term_references_param(kb, *a, param_names))
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity)
+                .any(|i| ty.pos_arg(kb, i).is_some_and(|c| type_references_param(kb, &c, param_names)))
+                || ty.named_keys(kb).into_iter().any(|k| {
+                    ty.named_arg(kb, k)
+                        .is_some_and(|c| type_references_param(kb, &c, param_names))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Does this type hold a VALUE anywhere — `Modify[c]`, `Buf[N = 3]`, a callback
+/// whose row names one? C++ has no spelling for such a type. Asked of the type,
+/// through the view, so the answer does not depend on the carrier it rides.
+fn type_holds_value<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    if matches!(extract_type(kb, ty), TypeExtractor::Denoted(_)) {
+        return true;
+    }
+    match ty.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => {
+            (0..pos_arity).any(|i| ty.pos_arg(kb, i).is_some_and(|c| type_holds_value(kb, &c)))
+                || ty
+                    .named_keys(kb)
+                    .into_iter()
+                    .any(|k| ty.named_arg(kb, k).is_some_and(|c| type_holds_value(kb, &c)))
         }
         _ => false,
     }
@@ -3113,42 +3105,49 @@ fn collect_entity_deps(
     let Some(fields) = kb.entity_field_types(entity_sym) else {
         return;
     };
-    for (_, type_term) in fields {
-        // WI-342: ground field types only (denoted fields don't occur in codegen).
-        if let Value::Term { id: t, .. } = type_term {
-            collect_type_term_refs(kb, *t, in_band, out);
-        }
+    for (_, field_ty) in fields {
+        collect_type_refs(kb, field_ty, in_band, out);
     }
 }
 
-fn collect_type_term_refs(
+fn collect_type_refs<V: TermView>(
     kb: &KnowledgeBase,
-    term: TermId,
+    ty: &V,
     in_band: &std::collections::HashSet<Symbol>,
     out: &mut std::collections::HashSet<Symbol>,
 ) {
-    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(term)) {
+    if let Some(sym) = extract_sort_ref_sym(kb, ty) {
         if in_band.contains(&sym) {
             out.insert(sym);
         }
         return;
     }
-    match kb.get_term(term) {
-        Term::Ref(s) | Term::Ident(s) => {
-            if in_band.contains(s) {
-                out.insert(*s);
+    match ty.head(kb) {
+        ViewHead::Ident(s) => {
+            if in_band.contains(&s) {
+                out.insert(s);
             }
         }
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
+        ViewHead::Functor {
+            functor, pos_arity, ..
         } => {
-            for a in pos_args {
-                collect_type_term_refs(kb, *a, in_band, out);
+            let keys = ty.named_keys(kb);
+            if pos_arity == 0 && keys.is_empty() {
+                // A bare name: its own constructor applied to nothing.
+                if let Some(s) = functor.filter(|s| in_band.contains(s)) {
+                    out.insert(s);
+                }
+                return;
             }
-            for (_, a) in named_args {
-                collect_type_term_refs(kb, *a, in_band, out);
+            for i in 0..pos_arity {
+                if let Some(c) = ty.pos_arg(kb, i) {
+                    collect_type_refs(kb, &c, in_band, out);
+                }
+            }
+            for k in keys {
+                if let Some(c) = ty.named_arg(kb, k) {
+                    collect_type_refs(kb, &c, in_band, out);
+                }
             }
         }
         _ => {}
@@ -4091,20 +4090,26 @@ fn is_higher_kinded_param(kb: &KnowledgeBase, sort_sym: Symbol, param: &str) -> 
 /// return `"Error"`; `Modify[T = …]` returns `"Modify"`. Unknown
 /// effects map to their short name. Returns `None` for terms that
 /// don't look like an effect reference at all.
-fn effect_kind_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+fn effect_kind_short<V: TermView>(kb: &KnowledgeBase, label: &V) -> Option<String> {
     let short_of = |sym: Symbol| short_name_of(kb.qualified_name_of(sym)).to_string();
     // Unwrap `sort_ref(...)` and `parameterized(base: ..., bindings: ...)`
     // envelopes via the existing helpers — pre-typing forms like
     // `Error[T = X]` or `Modify(self)` fall through to the bare
     // functor short name.
-    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(term)) {
+    if let Some(sym) = extract_sort_ref_sym(kb, label) {
         return Some(short_of(sym));
     }
-    if let Some((base, _)) = unpack_parameterized(kb, term) {
+    if let Some((base, _)) = unpack_parameterized(kb, label) {
         return Some(short_of(base));
     }
-    // Bare functor/ref short name — shared with `EffectMapping.receiver` reads.
-    functor_or_ref_short(kb, term)
+    // Bare functor/ref short name, as `functor_or_ref_short` reads a term's.
+    match label.head(kb) {
+        ViewHead::Ident(s)
+        | ViewHead::Functor {
+            functor: Some(s), ..
+        } => Some(short_of(s)),
+        _ => None,
+    }
 }
 
 /// WI-576: what one declared effect label denotes to the capability gate.
@@ -4125,60 +4130,35 @@ enum EffectLabel {
     Unreadable,
 }
 
-/// Carrier-agnostic [`effect_kind_short`]: classify a declared effect label as
-/// `OperationInfo` stores it (`OpInfoRecord.effects`, WI-348). A ground label
-/// (`Error`) rides as `Value::Term`; a `denoted`-bearing one (`Modify[self]`)
-/// cannot hash-cons and rides as a `Value::Node` whose `TypeNode::Parameterized`
-/// base holds the effect sort — the ONLY part the gate needs, since a profile
-/// realizes an effect KIND, not a particular carrier binding.
+/// Classify a declared effect label as `OperationInfo` stores it
+/// (`OpInfoRecord.effects`, WI-348), on whichever carrier it rides: a ground label
+/// (`Error`) is a term, one that holds a value (`Modify[self]`) an occurrence. The
+/// gate needs the effect SORT alone — a profile realizes an effect KIND, not a
+/// particular binding — and reads it through the view.
 ///
-/// Every other carrier — a `Value::Entity` label, a `Node` that is not a
-/// parameterized type — is `Unreadable` ON PURPOSE rather than given a best
-/// guess: the gate then reports the carrier it actually saw instead of passing
-/// an effect it never checked. No producer mints those shapes today; if one
-/// appears, the error names it.
+/// A label the view names no kind for is `Unreadable` ON PURPOSE rather than given
+/// a best guess: the gate then reports it instead of passing an effect it never
+/// checked.
 fn classify_effect_label(
     kb: &KnowledgeBase,
     eff: &Value,
     type_params: &[(Symbol, Var)],
 ) -> EffectLabel {
-    use anthill_core::kb::node_occurrence::{NodeKind, TypeChild, TypeNode};
-    let kind_of = |t: TermId| match effect_kind_short(kb, t) {
-        Some(name) => EffectLabel::Kind(name),
-        // `OpInfoRecord.type_params` carries each param's own `Var` (WI-849), and
-        // the effect row carries the SAME variable as a hash-consed `Term::Var` —
-        // so `EffP` in the row and `EffP` in the type-param list are one variable.
-        // The test is therefore by VARIABLE IDENTITY (a `VarId` compare, WI-632),
-        // not a name-string match; before WI-849 the same judgement was spelled as
-        // a `TermId` compare, which held only because vars hash-cons.
-        None if matches!(kb.get_term(t), Term::Var(v) if type_params.iter().any(|(_, p)| p == v)) => {
+    // THE ROW PARAMETER. `OpInfoRecord.type_params` carries each param's own `Var`
+    // (WI-849), and the effect row carries the SAME variable — so `EffP` in the row
+    // and `EffP` in the type-param list are one variable. The test is by VARIABLE
+    // IDENTITY (a `VarId` compare, WI-632), not a name-string match, and the same on
+    // every spelling of a variable (WI-20260904-02ERR).
+    if let ViewHead::Var(v) = eff.head(kb) {
+        return if type_params.iter().any(|(_, p)| *p == v) {
             EffectLabel::RowParam
-        }
+        } else {
+            EffectLabel::Unreadable
+        };
+    }
+    match effect_kind_short(kb, eff) {
+        Some(name) => EffectLabel::Kind(name),
         None => EffectLabel::Unreadable,
-    };
-    match eff {
-        Value::Term { id, .. } => kind_of(*id),
-        Value::Node(occ) => match &occ.kind {
-            NodeKind::Type(TypeNode::Parameterized {
-                base: TypeChild::Interned(t),
-                ..
-            }) => kind_of(*t),
-            // WI-20260904-02ERR: THE ROW PARAMETER, occurrence-carried. `kind_of`'s
-            // `Term::Var` test above is the interned spelling of this SAME judgement, and
-            // once a type variable can ride un-interned that test alone stops seeing it —
-            // the label would fall to the `_` below and read `Unreadable`, silently, which
-            // is the failure mode this ticket's census was looking for. Same VarId identity
-            // compare (WI-632/WI-849), so the two carriers answer alike.
-            NodeKind::Type(TypeNode::Var(v)) => {
-                if type_params.iter().any(|(_, p)| p == v) {
-                    EffectLabel::RowParam
-                } else {
-                    EffectLabel::Unreadable
-                }
-            }
-            _ => EffectLabel::Unreadable,
-        },
-        _ => EffectLabel::Unreadable,
     }
 }
 
@@ -4966,90 +4946,94 @@ fn lower_literal(lit: &Literal) -> String {
 fn lower_type(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    type_term: TermId,
+    ty: &Value,
 ) -> Result<String, CppCodegenError> {
-    if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(type_term)) {
+    if let Some(sym) = extract_sort_ref_sym(kb, ty) {
         return sort_to_cpp(kb, ctx, sym);
     }
-
-    let term = kb.get_term(type_term);
-    match term {
-        Term::Ref(sym) | Term::Ident(sym) => sort_to_cpp(kb, ctx, *sym),
-        // Logic variable in a type position — references to a sort's
-        // declared type parameter (`?T`) lower to the C++ template
-        // parameter name. The Var's `name` symbol matches the
-        // `add_type_param` entry in the sort body's scope.
-        Term::Var(v) => {
-            let name_sym = match v {
-                anthill_core::kb::term::Var::Global(vid) => vid.name(),
-                anthill_core::kb::term::Var::DeBruijn(_) => {
-                    return Err(CppCodegenError {
-                        message: "DeBruijn var in type position — should have been opened".into(),
-                    })
-                }
-                anthill_core::kb::term::Var::Rigid(_) => {
-                    return Err(CppCodegenError {
-                        message: "Rigid var in type position — only valid during proof".into(),
-                    })
-                }
-            };
-            let name = kb.local_name_of(name_sym).to_string();
+    // Logic variable in a type position — references to a sort's
+    // declared type parameter (`?T`) lower to the C++ template
+    // parameter name. The Var's `name` symbol matches the
+    // `add_type_param` entry in the sort body's scope.
+    match ty.head(kb) {
+        ViewHead::Var(Var::Global(vid)) => {
+            let name = kb.local_name_of(vid.name()).to_string();
             if let Some(cpp) = ctx.lookup_type_param(&name) {
                 return Ok(cpp);
             }
-            Err(CppCodegenError {
+            return Err(CppCodegenError {
                 message: format!(
                     "type variable '?{name}' is not bound by any enclosing \
                      sort's type parameters — declare `sort {name} = ?` in \
                      the sort body, or pass an explicit binding"
                 ),
+            });
+        }
+        ViewHead::Var(Var::DeBruijn(_)) => {
+            return Err(CppCodegenError {
+                message: "DeBruijn var in type position — should have been opened".into(),
             })
         }
-        Term::Fn { functor, .. } => {
-            // WI-575 (proposal 002): structural TYPE functors that are not
-            // parameterized sorts — lower them to their C++ shapes rather than
-            // erroring. Read through the typed, carrier-agnostic `extract_type`
-            // (the same accessor `unpack_parameterized` uses) so both the deep
-            // and term-backed carriers decode uniformly. An arrow type →
-            // `std::function<R(Args...)>` (its effect row is erased — a
-            // spec-side concern with no C++ type witness, per proposal 002
-            // §"Effect Subtyping"); a `named_tuple` → `std::tuple<…>`.
-            match extract_type(kb, &TermIdView(type_term)) {
-                TypeExtractor::Arrow {
-                    param,
-                    result,
-                    arity,
-                    ..
-                } => {
-                    return lower_arrow_type(kb, ctx, &param, &result, arity);
-                }
-                TypeExtractor::NamedTuple(fields) => {
-                    ctx.requested_includes
-                        .borrow_mut()
-                        .insert("#include <tuple>".to_string());
-                    let elems = lower_tuple_elem_types(kb, ctx, &fields)?;
-                    return Ok(format!("std::tuple<{}>", elems.join(", ")));
-                }
-                _ => {}
-            }
-            // Parameterized type — the deep `parameterized(base: sort_ref(S),
-            // bindings)` OR the term-backed `Fn{S, named}` form (WI-361).
-            // `unpack_parameterized` reads both; a non-parameterized Fn (e.g.
-            // an unrecognised structural type) falls through to error.
-            if unpack_parameterized(kb, type_term).is_some() {
-                return lower_parameterized(kb, ctx, type_term);
-            }
-            let qualified = kb.qualified_name_of(*functor);
-            Err(CppCodegenError {
-                message: format!(
-                    "unexpected non-parameterized Fn term as type: '{qualified}' \
-                     (expected a sort ref, a parameterized type, or a term-backed Fn{{S, named}})"
-                ),
+        ViewHead::Var(Var::Rigid(_)) => {
+            return Err(CppCodegenError {
+                message: "Rigid var in type position — only valid during proof".into(),
             })
         }
-        other => Err(CppCodegenError {
-            message: format!("cannot lower term to C++ type: {other:?}"),
+        _ => {}
+    }
+    // Read through the typed, carrier-agnostic `extract_type`, so a type lowers the
+    // same whichever carrier it rides. WI-575 (proposal 002): an arrow type →
+    // `std::function<R(Args...)>` (its effect row is erased — a spec-side concern
+    // with no C++ type witness, per proposal 002 §"Effect Subtyping"); a
+    // `named_tuple` → `std::tuple<…>`.
+    match extract_type(kb, ty) {
+        // A bare name `extract_sort_ref_sym` did not answer for: a type parameter
+        // written by its own name.
+        TypeExtractor::SortRef(sym) | TypeExtractor::TypeVar(sym) => sort_to_cpp(kb, ctx, sym),
+        TypeExtractor::Arrow {
+            param,
+            result,
+            arity,
+            ..
+        } => lower_arrow_type(kb, ctx, &param, &result, arity),
+        TypeExtractor::NamedTuple(fields) => {
+            ctx.requested_includes
+                .borrow_mut()
+                .insert("#include <tuple>".to_string());
+            let elems = lower_tuple_elem_types(kb, ctx, &fields)?;
+            Ok(format!("std::tuple<{}>", elems.join(", ")))
+        }
+        // Parameterized type — the deep `parameterized(base: sort_ref(S),
+        // bindings)` OR the term-backed `Fn{S, named}` form (WI-361).
+        TypeExtractor::Parameterized { .. } => lower_parameterized(kb, ctx, ty),
+        TypeExtractor::Denoted(_) => Err(CppCodegenError {
+            message: "a type that holds a value has no C++ type".into(),
         }),
+        _ => match ty.head(kb) {
+            // A bare name the reader gave no type form to: lowered as the name it is, as
+            // a `Ref` / `Ident` term always was.
+            ViewHead::Ident(sym)
+            | ViewHead::Functor {
+                functor: Some(sym),
+                pos_arity: 0,
+                named_arity: 0,
+            } => sort_to_cpp(kb, ctx, sym),
+            ViewHead::Functor {
+                functor: Some(functor),
+                ..
+            } => {
+                let qualified = kb.qualified_name_of(functor);
+                Err(CppCodegenError {
+                    message: format!(
+                        "unexpected non-parameterized Fn term as type: '{qualified}' \
+                         (expected a sort ref, a parameterized type, or a term-backed Fn{{S, named}})"
+                    ),
+                })
+            }
+            other => Err(CppCodegenError {
+                message: format!("cannot lower term to C++ type: {other:?}"),
+            }),
+        },
     }
 }
 
@@ -5066,7 +5050,7 @@ fn lower_arrow_type(
     result: &Value,
     arity: usize,
 ) -> Result<String, CppCodegenError> {
-    let r = lower_type_value(kb, ctx, result)?;
+    let r = lower_type(kb, ctx, result)?;
 
     // A multi-param / nullary arrow carries its params as a `named_tuple`; a
     // unary arrow carries the single param type directly. Decode through the
@@ -5081,14 +5065,11 @@ fn lower_arrow_type(
     // flattened the latter into a two-argument `std::function` the anthill side
     // calls with one `std::tuple`. Arity one now lowers as ONE argument.
     let args: Vec<String> = if arity == 1 {
-        vec![lower_type_value(kb, ctx, param)?]
+        vec![lower_type(kb, ctx, param)?]
     } else {
-        match param {
-            Value::Term { id: t, .. } => match extract_type(kb, &TermIdView(*t)) {
-                TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
-                _ => vec![lower_type(kb, ctx, *t)?],
-            },
-            _ => vec![lower_type_value(kb, ctx, param)?],
+        match extract_type(kb, param) {
+            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
+            _ => vec![lower_type(kb, ctx, param)?],
         }
     };
 
@@ -5096,23 +5077,6 @@ fn lower_arrow_type(
         .borrow_mut()
         .insert("#include <functional>".to_string());
     Ok(format!("std::function<{r}({})>", args.join(", ")))
-}
-
-/// Lower a type carried as a [`Value`]. A ground type rides as `Value::Term`;
-/// a denoted-bearing (`Value::Node`) type — a callback arrow whose effect
-/// carries a value like `Modify[c]` — has no C++ type witness and is a loud
-/// error here, matching how op param / return lowering rejects the same shape.
-fn lower_type_value(
-    kb: &mut KnowledgeBase,
-    ctx: &CodegenContext,
-    v: &Value,
-) -> Result<String, CppCodegenError> {
-    match v {
-        Value::Term { id: t, .. } => lower_type(kb, ctx, *t),
-        _ => Err(CppCodegenError {
-            message: "denoted-bearing type carrier is unsupported by C++ codegen".into(),
-        }),
-    }
 }
 
 /// Lower the element field-types of a `named_tuple` to C++, in declaration
@@ -5126,7 +5090,7 @@ fn lower_tuple_elem_types(
 ) -> Result<Vec<String>, CppCodegenError> {
     fields
         .iter()
-        .map(|(_, v)| lower_type_value(kb, ctx, v))
+        .map(|(_, v)| lower_type(kb, ctx, v))
         .collect()
 }
 
@@ -5138,10 +5102,10 @@ fn lower_tuple_elem_types(
 fn lower_parameterized(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    type_term: TermId,
+    ty: &Value,
 ) -> Result<String, CppCodegenError> {
     let (base_sym, binding_pairs) =
-        unpack_parameterized(kb, type_term).ok_or_else(|| CppCodegenError {
+        unpack_parameterized(kb, ty).ok_or_else(|| CppCodegenError {
             message: "expected a parameterized(base: ..., bindings: [...]) term".into(),
         })?;
 
@@ -5185,16 +5149,16 @@ fn lower_parameterized(
     // flip). Reorder by `type_params_of_sort` (source/declaration order); fall back
     // to stored order if the sort exposes no declared params (defensive).
     let decl_order = kb.type_params_of_sort(base_sym);
-    let ordered: Vec<TermId> = if decl_order.is_empty() {
-        binding_pairs.iter().map(|(_, v)| *v).collect()
+    let ordered: Vec<Value> = if decl_order.is_empty() {
+        binding_pairs.iter().map(|(_, v)| v.clone()).collect()
     } else {
-        let mut out: Vec<TermId> = decl_order
+        let mut out: Vec<Value> = decl_order
             .iter()
             .filter_map(|pname| {
                 binding_pairs
                     .iter()
                     .find(|(p, _)| kb.local_name_of(*p) == pname.as_str())
-                    .map(|(_, v)| *v)
+                    .map(|(_, v)| v.clone())
             })
             .collect();
         // Defensive: append any binding whose param wasn't in the declared set
@@ -5204,14 +5168,14 @@ fn lower_parameterized(
                 .iter()
                 .any(|n| kb.local_name_of(*p) == n.as_str())
             {
-                out.push(*v);
+                out.push(v.clone());
             }
         }
         out
     };
 
     let mut args = Vec::with_capacity(ordered.len());
-    for value in ordered {
+    for value in &ordered {
         args.push(lower_type(kb, ctx, value)?);
     }
 
