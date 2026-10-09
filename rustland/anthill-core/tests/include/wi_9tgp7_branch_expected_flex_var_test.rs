@@ -261,7 +261,9 @@ end
         .err()
         .unwrap_or_else(|| panic!("a MappedStream is not an Int64"));
     assert!(
-        errs.iter().any(|e| e.contains("MappedStream[T = Int64")),
+        errs.iter().any(|e| e.contains(
+            "MappedStream[Source = List[T = Row], SourceElement = Row, T = Int64"
+        )),
         "the match arm's Int64 must reach the call's result type; got: {errs:#?}",
     );
 }

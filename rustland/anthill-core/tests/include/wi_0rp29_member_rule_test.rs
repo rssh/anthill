@@ -2979,7 +2979,7 @@ end
     assert_refused_naming(
         &load_errors(src),
         &[
-            "parameter 1 (`c: Graph[E = E, N = N]`) is the receiver",
+            "parameter 1 (`c: Graph[N = N, E = E]`) is the receiver",
             "which writes one of `Graph`'s own parameters inside its own slot",
         ],
         "a binding circular around another parameter",

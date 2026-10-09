@@ -259,7 +259,7 @@ fn an_alias_written_positionally_or_fixing_a_constant_is_at_it() {
             format!("{VEC}  operation go() -> Int64 =\n{bind}    let v: Vec[Int64, {n}] = {call}\n    2")
         };
         let rendered = refusal(ns, &go(4));
-        assert!(rendered.contains("got Vec[N = 3, E = Int64]"), "{ns}: {rendered}");
+        assert!(rendered.contains("got Vec[E = Int64, N = 3]"), "{ns}: {rendered}");
         let ok = format!("{ns}ok");
         assert_eq!(run(&ok, &go(3)), "2", "{ok}");
     }

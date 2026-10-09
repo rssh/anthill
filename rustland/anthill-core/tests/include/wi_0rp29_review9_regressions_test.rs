@@ -622,7 +622,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["both.y (op-arg): expected Box[C = Car, B = Int64], got Box[C = Car, B = String]"],
+        &["both.y (op-arg): expected Box[B = Int64, C = Car], got Box[B = String, C = Car]"],
         "two instances of one unwritten slot at a self-receiver call",
     );
 }
@@ -661,7 +661,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["both.y (op-arg): expected Box[C = Car, B = Int64], got Box[C = Car, B = String]"],
+        &["both.y (op-arg): expected Box[B = Int64, C = Car], got Box[B = String, C = Car]"],
         "two instances of one unwritten slot at a carrier-param call",
     );
 }
