@@ -1001,6 +1001,10 @@ pub enum TypeErrorContext {
     LetBinding {
         var: Symbol,
     },
+    /// A const's initializer whose type is not the const's declared type.
+    ConstValue {
+        name: Symbol,
+    },
     /// WI-420: a bare operation reference rejected as a first-class function
     /// value (eta-expansion) because its enclosing sort carries a `requires`
     /// chain — the runtime `Value::OpRef` cannot carry the requirement
@@ -1118,6 +1122,7 @@ impl TypeErrorContext {
             }
             TypeErrorContext::Rule { name, .. } => kb.local_name_of(*name).to_string(),
             TypeErrorContext::LetBinding { var } => kb.local_name_of(*var).to_string(),
+            TypeErrorContext::ConstValue { name } => kb.local_name_of(*name).to_string(),
             TypeErrorContext::OperationAsFunctionValue { op_name }
             | TypeErrorContext::OperationTypeParams { op_name } => {
                 kb.local_name_of(*op_name).to_string()
@@ -1148,6 +1153,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationMatch { .. } => "op-match",
             TypeErrorContext::Rule { .. } => "rule",
             TypeErrorContext::LetBinding { .. } => "let-binding",
+            TypeErrorContext::ConstValue { .. } => "const",
             TypeErrorContext::OperationAsFunctionValue { .. } => "op-as-fn-value",
             TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
             TypeErrorContext::DotProjection { .. } => "dot-projection",
@@ -1175,6 +1181,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationMatch { .. } => "match".to_string(),
             TypeErrorContext::Rule { field, .. } => field.name().to_string(),
             TypeErrorContext::LetBinding { .. } => "annotation".to_string(),
+            TypeErrorContext::ConstValue { .. } => "value".to_string(),
             TypeErrorContext::OperationAsFunctionValue { .. } => "function-value".to_string(),
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
             TypeErrorContext::DotProjection { member } => kb.local_name_of(*member).to_string(),

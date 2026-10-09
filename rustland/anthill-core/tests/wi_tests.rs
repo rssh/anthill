@@ -2021,3 +2021,5 @@ mod value_holding_type_readers_test;
 mod alias_written_name_test;
 #[path = "include/declared_field_type_readers_test.rs"]
 mod declared_field_type_readers_test;
+#[path = "include/const_initializer_type_test.rs"]
+mod const_initializer_type_test;

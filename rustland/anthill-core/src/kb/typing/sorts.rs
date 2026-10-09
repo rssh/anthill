@@ -430,15 +430,24 @@ pub(super) fn type_check_sorts_collect(
 /// HK87X: a folded value has no construction site to refuse. Check the original
 /// initializer through the occurrence typer, with the declared type as its hint.
 /// Host-supplied constants have no initializer and are absent from this iterator.
+///
+/// AND THE INITIALIZER IS OF THE DECLARED TYPE: `: Type` is the name's contract (§5.9).
+/// The hint alone directs the forms that read one — a branch, a list element — and a
+/// value that reads none was never compared, so `const LIMIT: Int64 = "s"` and `const
+/// B: String = A` over `const A: Int64` loaded, and failed where they were used
+/// (MEASURED). Compared as a `let` annotation is with its value, after the two unify: a
+/// slot the declared type leaves out is the declaration's to pick.
 fn check_constant_bodies(
     kb: &mut KnowledgeBase,
     errors: &mut Vec<TypeError>,
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
-    let constants: Vec<_> = kb
+    let mut constants: Vec<_> = kb
         .const_bodies_iter()
         .map(|(symbol, body)| (symbol, Rc::clone(body)))
         .collect();
+    // In the order they were written, so the refusals of one load read the same each run.
+    constants.sort_by_key(|(_, body)| (body.span.source.index(), body.span.span.start));
     sources.resize(errors.len(), None);
     for (symbol, body) in constants {
         let expected = kb
@@ -449,10 +458,36 @@ fn check_constant_bodies(
         env.enclosing_const = Some(symbol);
         // No runtime requirement frame belongs to a constant initializer.
         // Keep this validation on the stored source, without simp write-back.
-        if let Err(error) = type_check_node_gated(kb, &env, &body, Some(expected), false, &[]) {
-            for error in error.flatten() {
-                errors.push(error);
-                sources.push(Some(body.span.source));
+        match type_check_node_gated(kb, &env, &body, Some(expected.clone()), false, &[]) {
+            Err(error) => {
+                for error in error.flatten() {
+                    errors.push(error);
+                    sources.push(Some(body.span.source));
+                }
+            }
+            Ok(result) => {
+                // The slots the declaration leaves open are the initializer's to fill, so
+                // the two unify before they are compared, as an operation's result and its
+                // body do: `const d: Car[V = ?] = car(v: 3)` is a `Car[V = Int64]`.
+                let mut probe = Substitution::new();
+                let mut subst = if unify_types(kb, &mut probe, &result.ty, &expected) {
+                    probe
+                } else {
+                    Substitution::new()
+                };
+                let value_ty = walk_type_deep_value(kb, &subst, &result.ty);
+                let declared = walk_type_deep_value(kb, &subst, &expected);
+                if !types_compatible(kb, &mut subst, &value_ty, &declared) {
+                    errors.push(conformance_error(
+                        kb,
+                        expected,
+                        value_ty,
+                        Some(body.span.span),
+                        TypeErrorContext::ConstValue { name: symbol },
+                        Some(&result.node),
+                    ));
+                    sources.push(Some(body.span.source));
+                }
             }
         }
     }
