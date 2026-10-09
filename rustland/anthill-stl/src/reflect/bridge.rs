@@ -258,13 +258,14 @@ impl KbBridge {
             )
             .unwrap_or_else(|e| panic!("KB.fields: {e}"));
         for row in rows {
-            let head = match row {
-                anthill_core::eval::Value::Term { id: t, .. } => t,
-                _ => continue,
-            };
-            match kb.get_term(head) {
-                CoreTerm::Fn { named_args, .. } => {
-                    return Some(named_args.iter().map(|&(s, _)| s).collect())
+            // The fact's fields, read through the view on whichever carrier it rides.
+            // Read off a term alone, a relation whose facts all held an occurrence had
+            // no schema here, and its query fell to the arity-1 goal below, which
+            // matches none of them (MEASURED: `OperationInfo` with every parameter
+            // type an occurrence answered zero rows).
+            match row.head(&kb) {
+                anthill_core::kb::term_view::ViewHead::Functor { .. } => {
+                    return Some(row.named_keys(&kb))
                 }
                 // WI-20260902-CZJ2N — a NULLARY fact head is stored bare, and its
                 // schema is the EMPTY field list. Without this arm the scan answered
@@ -273,7 +274,7 @@ impl KbBridge {
                 // `KB.query` over an undeclared 0-ary fact functor returned zero rows
                 // where the `Fn` arm used to answer `Some(vec![])` and build a correct
                 // 0-ary goal.
-                CoreTerm::Ref(_) | CoreTerm::Ident(_) => return Some(Vec::new()),
+                anthill_core::kb::term_view::ViewHead::Ident(_) => return Some(Vec::new()),
                 _ => {}
             }
         }
@@ -1391,6 +1392,35 @@ sort Store {
                 .all(|s| matches!(s, Solution::Definite { .. })),
             "sort-query solutions should be definite"
         );
+    }
+
+    /// A relation with no declared schema is found through its facts on whichever
+    /// carrier they ride. Both operations take a parameter whose type holds a value,
+    /// so every `OperationInfo` fact of this KB holds an occurrence.
+    ///
+    /// BACKED OUT (`find_entity_schema` reading a fact's fields off a term alone):
+    /// this test FAILS, zero rows.
+    #[test]
+    fn execute_sort_query_finds_operations_whose_types_hold_a_value() {
+        let bridge = load_source_bridge(
+            r#"
+sort Buf {
+  sort T = ?
+  sort N = ?
+  entity buf(v: T)
+}
+sort Store {
+  entity store
+  operation persist(s: Store, b: Buf[T = Int64, N = 3]) -> Int64
+  operation retract(s: Store, b: Buf[T = Int64, N = 4]) -> Int64
+}
+"#,
+        );
+        let query = LogicalQuery::SortQuery {
+            sort: sort_ref(&bridge, "anthill.reflect.OperationInfo"),
+        };
+        let results = drain(bridge.execute(query).expect("execute failed"));
+        assert_eq!(results.len(), 2, "one row per operation");
     }
 
     #[test]
