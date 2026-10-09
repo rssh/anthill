@@ -355,7 +355,7 @@ fn the_carrier_slot_takes_the_arguments_whole_type() {
     let probe = "                  let probe: Int64 = drop(rest, n - 1)\n                  none";
     assert_refused_naming(
         &load_errors(&wrapper_program("wi80zv8c.d4", "Self", probe)),
-        &["probe.annotation (let-binding): expected Int64, got Drop[T = ?T, Source = Strm[T = ?T, E = ?ES], ES = ?ES]"],
+        &["probe.annotation (let-binding): expected Int64, got Drop[Source = Strm[T = ?T, E = ?ES], T = ?T, ES = ?ES]"],
         "the type of `drop(rest, n - 1)`",
     );
 }

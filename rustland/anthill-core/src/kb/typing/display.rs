@@ -691,7 +691,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
                 // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
                 // or an `Expr::Apply` read off a matched fact's carrier binding), and the
                 // raw-term fallback for everything that is not one of the forms above.
-                _ => type_application_display(kb, v, f, pos_arity),
+                _ => type_application_display(kb, v, f, pos_arity, NamedOrder::Declared),
             }
         }
     }
@@ -775,6 +775,44 @@ fn join_row_parts(left: String, right: String) -> String {
     }
 }
 
+/// The order [`type_application_display`] writes an application's own named arguments in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NamedOrder {
+    /// As the carrier holds them: an effect atom's own arguments, where the string is a
+    /// canonical order key ([`effect_atom_order_key`]) and stays what it was. The
+    /// applications NESTED in an atom are written by the display walk, in declared order,
+    /// like any other — the key is a function of the term either way.
+    Stored,
+    /// As the sort declares its parameters ([`declared_order`]): what a diagnostic shows.
+    Declared,
+}
+
+/// `keys` — an application's named-argument keys — in the order `functor` declares its
+/// type parameters, `Vec[E = Int64, N = 3]` over `sort Vec[E, N]`. A key that names no
+/// declared parameter keeps its place after them; a functor that declares none (a
+/// constructor, a raw term) leaves the keys as they are.
+///
+/// A carrier holds them in canonical order, which follows the order the parameter NAMES
+/// were first interned in. That is no order an author wrote, and it is not one order
+/// either: two sorts sharing a name (`E`, `N`) interned by an earlier load print
+/// `Vec[E = Int64, N = 3]` where the same source loaded in one call prints `Vec[N = 3, E =
+/// Int64]`.
+fn declared_order(kb: &KnowledgeBase, functor: Symbol, keys: &mut [Symbol]) {
+    let declared = kb.type_param_syms_of(functor);
+    if declared.is_empty() {
+        return;
+    }
+    let rank = |key: &Symbol| {
+        let name = kb.local_name_of(*key);
+        declared
+            .iter()
+            .position(|p| kb.local_name_of(*p) == name)
+            .unwrap_or(declared.len())
+    };
+    // Stable: the keys no parameter claims stay in the order they were held in.
+    keys.sort_by_key(rank);
+}
+
 /// The generic `name(pos…)[k = v, …]` rendering — [`type_display_name_view`]'s default
 /// arm, and the whole of [`effect_atom_order_key`].
 ///
@@ -788,6 +826,7 @@ fn type_application_display<V: TermView>(
     v: &V,
     functor: Symbol,
     pos_arity: usize,
+    order: NamedOrder,
 ) -> String {
     let mut out = kb.local_name_of(functor).to_string();
     if pos_arity > 0 {
@@ -799,7 +838,10 @@ fn type_application_display<V: TermView>(
             .collect();
         out.push_str(&format!("({})", ps.join(", ")));
     }
-    let keys = v.named_keys(kb);
+    let mut keys = v.named_keys(kb);
+    if order == NamedOrder::Declared {
+        declared_order(kb, functor, &mut keys);
+    }
     if !keys.is_empty() {
         let ps: Vec<String> = keys
             .iter()
@@ -850,7 +892,7 @@ pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
             functor: Some(f),
             pos_arity,
             ..
-        } => type_application_display(kb, &v, f, pos_arity),
+        } => type_application_display(kb, &v, f, pos_arity, NamedOrder::Stored),
         // Not an application (a bare row-tail var, a literal) — nothing to disambiguate,
         // so the display IS the key.
         _ => type_display_name_view(kb, &v),

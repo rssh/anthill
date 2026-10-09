@@ -280,7 +280,7 @@ fn a_receiver_bracket_on_a_non_constructor_callee_is_read() {
     // String` (proposal 070 §5: "stays refused, now by the written `Self`").
     assert!(errs[0].contains("size.m (op-arg)"), "{errs:#?}");
     assert!(
-        errs[0].contains("expected Map[V = Bool, K = Bool], got Map[V = Int64, K = String]"),
+        errs[0].contains("expected Map[K = Bool, V = Bool], got Map[K = String, V = Int64]"),
         "{errs:#?}"
     );
 

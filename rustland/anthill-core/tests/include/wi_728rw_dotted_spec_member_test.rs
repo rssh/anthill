@@ -128,7 +128,9 @@ fn fixed_nested_alias_member_remains_the_fixed_type() {
             &load_errors_of(&program(&format!(
                 "{body}\noperation main() -> Int64 = f(\"s\")"
             ))),
-            &["f.b (op-arg)", "expected C", "got String"],
+            // The member is the alias `sort C = Int64`, and an alias written where a type
+            // is expected is that type (WI-20261009-ZY11J; it printed `expected C`).
+            &["f.b (op-arg)", "expected Int64", "got String"],
             member,
         );
     }

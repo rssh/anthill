@@ -28,7 +28,7 @@ pub(crate) fn is_type_param_view<V: TermView>(kb: &KnowledgeBase, value: &V) -> 
 /// carrier's `Stream.E`) COVERS its spec param in the abstract/requires-coverage
 /// check, whereas a binding that mentions a type-param (`Stream.T ↦ List.T`, or
 /// a nested `C = List[T]`) stays abstract and still demands a `requires`.
-pub(super) fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
+pub(crate) fn type_value_is_ground(kb: &KnowledgeBase, tid: TermId) -> bool {
     type_value_is_ground_g(kb, tid, false)
 }
 

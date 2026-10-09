@@ -1514,6 +1514,17 @@ pub struct KnowledgeBase {
     /// stdlib load, one of them an alias, against ~165 spec clauses asking.
     pub(crate) alias_targets: HashMap<Symbol, TermId>,
 
+    /// Each type alias's TYPE, as its declaration lowered it — the target its `SortAlias`
+    /// fact holds — for the readers that ask while files still load: an alias written
+    /// where a type is (`Loader::bare_alias_type`) and as a clause binding's value
+    /// (`Loader::clause_alias_type`). Recorded beside [`Self::alias_targets`], which
+    /// holds the same alias as a CLAUSE spells it; the two differ at a type parameter.
+    ///
+    /// An alias only, as there: not a `sort T = ?` parameter or an opaque sort. O(1),
+    /// where reading the fact before the type check builds [`Self::sort_alias_index`] is a
+    /// scan of every `SortAlias` fact, once per use of an alias.
+    pub(crate) alias_types: HashMap<Symbol, TermId>,
+
     /// WI-20260924-SNJPR — each TYPE ALIAS's target HEAD, as a SYMBOL (`sort WisStore =
     /// Store[State = WIS]` ↦ `Store`), known from the SCAN on: the scan resolves each
     /// alias's written target in the scope that declares it once imports are wired
@@ -2645,6 +2656,7 @@ impl KnowledgeBase {
             provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             alias_targets: HashMap::new(),
+            alias_types: HashMap::new(),
             alias_heads: HashMap::new(),
             aliases_applying: HashSet::new(),
             scan_alias_decls: HashMap::new(),

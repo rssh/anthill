@@ -259,17 +259,7 @@ fn an_alias_written_positionally_or_fixing_a_constant_is_at_it() {
             format!("{VEC}  operation go() -> Int64 =\n{bind}    let v: Vec[Int64, {n}] = {call}\n    2")
         };
         let rendered = refusal(ns, &go(4));
-        // EITHER ORDER of the two bindings. Which comes first in a rendered type follows
-        // the numbering of the parameters' symbols, and that differs with the load:
-        // `Vec[N = 3, E = Int64]` when the stdlib and this file go to the loader in one
-        // call, `Vec[E = Int64, N = 3]` — the declared order — when this file is a later
-        // load, which is what a test gets since WI-059 (measured under each recipe by
-        // name; the verdict is the same under both, here and for `go(3)` below).
-        assert!(
-            rendered.contains("got Vec[N = 3, E = Int64]")
-                || rendered.contains("got Vec[E = Int64, N = 3]"),
-            "{ns}: {rendered}"
-        );
+        assert!(rendered.contains("got Vec[E = Int64, N = 3]"), "{ns}: {rendered}");
         let ok = format!("{ns}ok");
         assert_eq!(run(&ok, &go(3)), "2", "{ok}");
     }

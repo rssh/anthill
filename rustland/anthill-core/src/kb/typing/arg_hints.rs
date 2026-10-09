@@ -685,7 +685,7 @@ pub(super) fn one_arg_hint(
 /// The spec parameters a SELF-RECEIVER spec operation's receiver binds through its carrier's own
 /// provision (`Sp.each(k, …)` over `each(s: Sp, f: (q: T) -> Int64, z: T)` at `Car provides Sp[T =
 /// Option[T = Car]]`), read as the call reads them ([`concrete_receiver_carrier`],
-/// [`bind_this_instance_params`]) — into the hint's σ before any sibling argument pins them.
+/// [`bind_spec_params_from_provision`]) — into the hint's σ before any sibling argument pins them.
 /// Nothing when the operation has no self-receiver, its receiver's type is not known yet, or the
 /// receiver is no concrete carrier.
 pub(super) fn bind_self_receiver_params_for_hint(
@@ -705,7 +705,7 @@ pub(super) fn bind_self_receiver_params_for_hint(
         return;
     };
     if let Some(carrier) = concrete_receiver_carrier(kb, spec_sort, &recv_ty) {
-        bind_this_instance_params(kb, subst, spec_sort, carrier, &recv_ty);
+        bind_spec_params_from_provision(kb, subst, spec_sort, carrier, &recv_ty, &params[idx].1);
     }
 }
 
@@ -770,16 +770,21 @@ pub(super) fn bind_spec_params_for_hint(
     else {
         return false;
     };
-    bind_spec_params_from_carrier_param(
+    let bound = bind_spec_params_from_carrier_param(
         kb,
         subst,
         spec_sort,
         carrier_sym,
         carrier_pvid,
         &recv_ty,
-        view,
+        view.clone(),
         recv_arg_sym,
-    )
+    );
+    // And what the provision binds to a type of its own (`Bag provides Holder[C = Bag,
+    // Element = Rec]`), which the call binds after its arguments: a hint has no arguments
+    // to wait for.
+    let ground = bind_ground_value_params_from_provider(kb, subst, spec_sort, &view);
+    bound || ground
 }
 
 /// WI-275: the top-down hints for every argument of a call, positional then named.

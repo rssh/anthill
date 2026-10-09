@@ -1068,6 +1068,7 @@ impl KnowledgeBase {
             sort_domain_declined: plain(&self.sort_domain_declined),
             sort_alias_index: plain(&self.sort_alias_index),
             alias_targets: plain(&self.alias_targets),
+            alias_types: plain(&self.alias_types),
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
             scan_alias_decls: plain(&self.scan_alias_decls),
