@@ -1,10 +1,10 @@
 //! A type written through an alias keeps the name it was written by.
 //!
-//! THE RULE. A type alias written bare in an operation's parameter or result type, or in a
-//! const's, is the type it stands for to everything that reads the type — the checks,
-//! dispatch, the index, a rule — and a mismatch message leads with the name as written:
-//! `expected IntBox (Box[V = Int64]), got String`. (`declared_field_type_readers_test`
-//! holds an entity's field.)
+//! THE RULE. A type alias written bare in an operation's parameter or result type, in a
+//! const's, or in the type arguments a call writes, is the type it stands for to
+//! everything that reads the type — the checks, dispatch, the index, a rule — and a
+//! mismatch message leads with the name as written: `expected IntBox (Box[V = Int64]), got
+//! String`. (`declared_field_type_readers_test` holds an entity's field.)
 //!
 //! HOW. The declared type is lowered to an occurrence that holds the alias beside the
 //! type it stands for (`TypeNode::Aliased`); the carrier-neutral view reads the type, and
@@ -31,7 +31,7 @@
 //!   the slot's charge asked of the binding on any carrier
 //!   (`callable_effect_present_values` reading a term alone) — FAIL: the same test.
 //!
-//!   a result type lowered without the node (`declared_type_to_value` not used for it) —
+//!   a result type lowered without the node (`written_type_to_value` not used for it) —
 //!   FAIL:
 //!     a_result_type_keeps_the_alias_it_was_written_by
 //!   with the node at a result type, each of these backed out — FAIL:
@@ -46,6 +46,9 @@
 //!   a const's type lowered without the node (`load_const` calling
 //!   `type_expr_to_value`) — FAIL:
 //!     a_const_typed_by_an_alias_keeps_the_alias_it_was_written_by
+//!   a call's bracket lowered without the node (`build_call_type_args`), or its written
+//!   receiver (`build_recv_type`), each on its own — FAIL:
+//!     a_type_argument_written_at_a_call_keeps_its_alias, at that half
 //!
 //!   PASS EITHER WAY, by design:
 //!     an_alias_typed_parameter_is_the_type_it_stands_for — the fence: what the node must
@@ -320,6 +323,36 @@ fn a_const_typed_by_an_alias_keeps_the_alias_it_was_written_by() {
         refused.contains("show.s (op-arg): expected String, got Money (Int64)"),
         "{refused}"
     );
+}
+
+// ── the type arguments a call writes ────────────────────────────────────────
+
+/// A type argument written at a call, in its bracket or on its receiver, is the type it
+/// stands for, and a mismatch against it names the alias.
+#[test]
+fn a_type_argument_written_at_a_call_keeps_its_alias() {
+    let decls = "  sort Vault\n    sort V = ?\n    entity vault(v: V)\n    \
+                 operation wrap(x: V) -> Vault[V = V] = vault(v: x)\n  end\n";
+    assert_eq!(
+        run(
+            "awncall",
+            &format!(
+                "{decls}  operation go() -> Int64 =\n    \
+                 Vault[V = Money].wrap(4).v + Vault.wrap[V = Money](5).v"
+            )
+        ),
+        9
+    );
+    for (ns, call) in [
+        ("awncallrecv", "Vault[V = Money].wrap(\"s\").v"),
+        ("awncallbracket", "Vault.wrap[V = Money](\"s\").v"),
+    ] {
+        let refused = refusal(ns, &format!("{decls}  operation go() -> Int64 = {call}"));
+        assert!(
+            refused.contains("wrap.x (op-arg): expected Money (Int64), got String"),
+            "{ns}: {refused}"
+        );
+    }
 }
 
 // ── two readers only an alias-carried type reaches ──────────────────────────

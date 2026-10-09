@@ -22668,8 +22668,8 @@ struct Loader<'a> {
     in_type_position: bool,
     /// While set, a type alias written bare is lowered to a
     /// [`node_occurrence::TypeNode::Aliased`] occurrence, which keeps the name beside the
-    /// type it stands for, instead of to that type's shared term. Set around a type a
-    /// declaration writes ([`Self::declared_type_to_value`]).
+    /// type it stands for, instead of to that type's shared term. Set around a type whose
+    /// written name is kept ([`Self::written_type_to_value`]).
     alias_nodes: bool,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
@@ -29145,7 +29145,7 @@ impl<'a> Loader<'a> {
                     };
                     self.kb.intern(&raw)
                 });
-                let value = self.type_expr_to_value(&b.bound);
+                let value = self.written_type_to_value(&b.bound);
                 (name, value)
             })
             .collect()
@@ -29587,7 +29587,7 @@ impl<'a> Loader<'a> {
             return self.alias_recv_type(parse_id, callee);
         };
         self.consumed_recv_types.insert(parse_id);
-        Some(self.type_expr_to_value(&te))
+        Some(self.written_type_to_value(&te))
     }
 
     /// The receiver of a call to `callee`, named through a type alias, bare: the sort the
@@ -31494,10 +31494,11 @@ impl<'a> Loader<'a> {
         self.type_expr_to_value_at(ty, TypeSite::Type)
     }
 
-    /// [`Self::type_expr_to_value`] of a type a DECLARATION writes — an operation's
-    /// parameter, its result, an entity's field, a const — where a type alias written bare
-    /// keeps the name it was written by ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
-    fn declared_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+    /// [`Self::type_expr_to_value`] of a type whose written name is kept: one a
+    /// declaration writes — an operation's parameter, its result, an entity's field, a
+    /// const — and one a call writes, in its bracket or on its receiver. A type alias
+    /// written bare there rides its node ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    fn written_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         let saved = std::mem::replace(&mut self.alias_nodes, true);
         let value = self.type_expr_to_value(ty);
         self.alias_nodes = saved;
@@ -34260,7 +34261,7 @@ impl<'a> Loader<'a> {
             .fields
             .iter()
             .map(|f| {
-                let ty = self.declared_type_to_value(&f.ty);
+                let ty = self.written_type_to_value(&f.ty);
                 (self.reintern(f.name), ty)
             })
             .collect();
@@ -37298,7 +37299,7 @@ impl<'a> Loader<'a> {
         self.record_declaration_block(const_sym, MemberKind::Const, c.meta.as_ref(), domain);
 
         // Declared type — always present (grammar-mandatory); store it for the typer.
-        let declared_type = self.declared_type_to_value(&c.ty);
+        let declared_type = self.written_type_to_value(&c.ty);
         self.kb.set_const_type(const_sym, declared_type);
 
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).
@@ -37467,7 +37468,7 @@ impl<'a> Loader<'a> {
                     domain,
                 )
             }
-            None => self.declared_type_to_value(&o.return_type),
+            None => self.written_type_to_value(&o.return_type),
         };
 
         // WI-489: record the `result` binder's static type so a `Modify[result.a]`
@@ -37527,7 +37528,7 @@ impl<'a> Loader<'a> {
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
                 // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
-                let type_value = self.declared_type_to_value(&p.ty);
+                let type_value = self.written_type_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in
