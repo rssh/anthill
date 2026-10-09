@@ -835,29 +835,40 @@ fn a_cyclic_alias_is_refused_naming_its_chain() {
     );
 }
 
-/// … refused ONCE: the provision is not filed, so its `where` block's member is not
-/// reported again as belonging to nothing. Was: one clause, then two diagnostics.
+/// The two aliases a clause refuses, each applied as the clause applies it, with what the
+/// clause says of it and how many refusals the load makes in all: the clause's one — and,
+/// for the alias whose chain comes back, the two its declarations make as well, each alias
+/// on the chain being refused where it is declared.
+const REFUSED_ALIASES: [(&str, &str, usize); 2] = [
+    ("  sort CA = (Int64, Bool)", "which is not a sort", 1),
+    ("  sort CA = CB\n  sort CB = CA", "comes back to itself", 3),
+];
+
+/// … refused ONCE by the clause: the provision is not filed, so its `where` block's member
+/// is not reported again as belonging to nothing. Was: one clause, then two diagnostics.
 #[test]
 fn a_where_block_over_a_refused_alias_reports_once() {
-    let extra = "  sort CA = CB\n  sort CB = CA\n  sort FileStore\n    \
-                 provides CA[State = WIS] where\n      \
-                 operation peek(s: WIS) -> Int64 = s.n\n    end\n  end";
-    let errs = load_errors(&program(extra, "1"));
-    assert_alias_refused(&errs, "t.CA", &["comes back to itself"], "a cyclic alias");
-    assert_eq!(errs.len(), 1, "the refusal alone: {errs:#?}");
+    for (aliases, why, refusals) in REFUSED_ALIASES {
+        let extra = format!(
+            "{aliases}\n  sort FileStore\n    provides CA[State = WIS] where\n      \
+             operation peek(s: WIS) -> Int64 = s.n\n    end\n  end"
+        );
+        let errs = load_errors(&program(&extra, "1"));
+        assert_alias_refused(&errs, "t.CA", &[why], aliases);
+        assert_eq!(errs.len(), refusals, "{aliases}: nothing about the block: {errs:#?}");
+    }
 }
 
 /// … and a `default` mark over it is not refused a second time, as naming "no plain sort":
 /// a refused alias files nothing, its mark included. Was: loaded, about the alias.
 #[test]
 fn a_default_mark_over_a_refused_alias_reports_once() {
-    let extra = format!(
-        "  sort CA = CB\n  sort CB = CA\n{}",
-        file_store("default provides CA[State = WIS]")
-    );
-    let errs = load_errors(&program(&extra, "1"));
-    assert_alias_refused(&errs, "t.CA", &["comes back to itself"], "a cyclic alias");
-    assert_eq!(errs.len(), 1, "the refusal alone: {errs:#?}");
+    for (aliases, why, refusals) in REFUSED_ALIASES {
+        let extra = format!("{aliases}\n{}", file_store("default provides CA[State = WIS]"));
+        let errs = load_errors(&program(&extra, "1"));
+        assert_alias_refused(&errs, "t.CA", &[why], aliases);
+        assert_eq!(errs.len(), refusals, "{aliases}: nothing about the mark: {errs:#?}");
+    }
 }
 
 /// An alias of a tuple stands for no sort. Was: loaded, about the alias.

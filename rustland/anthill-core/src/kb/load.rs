@@ -15591,9 +15591,9 @@ fn declare_file_field_types(
 /// finds its canonical variable.
 ///
 /// In rounds: each walks every file and records the aliases whose named aliases are all
-/// recorded. A chain that comes back to itself never becomes ready; the last round records
-/// what is left in source order, and the readers refuse such an alias by name
-/// (`alias_expansion`'s `Cycle`). Both emitters dedup, so the declaration and load passes
+/// recorded. A chain that comes back to itself never becomes ready: the last round refuses
+/// each alias on one where it is declared ([`AliasRound::Rest`]) and records what is left
+/// in source order. Both emitters dedup, so the declaration and load passes
 /// re-encountering an alias no-op.
 fn declare_type_aliases(
     kb: &mut KnowledgeBase,
@@ -15605,6 +15605,7 @@ fn declare_type_aliases(
     let global = kb.global_scope();
     let mut errors = Vec::new();
     let mut pending: HashSet<Symbol> = HashSet::new();
+    let mut names: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
     let mut round = AliasRound::Collect;
     loop {
         let mut progress = false;
@@ -15615,6 +15616,7 @@ fn declare_type_aliases(
             let mut pass = AliasDeclarePass {
                 loader: &mut loader,
                 pending: &mut pending,
+                names: &mut names,
                 round,
                 progress: &mut progress,
             };
@@ -15627,7 +15629,8 @@ fn declare_type_aliases(
             AliasRound::Collect => AliasRound::Ready,
             AliasRound::Ready if pending.is_empty() => break,
             AliasRound::Ready if progress => AliasRound::Ready,
-            AliasRound::Ready => AliasRound::Rest,
+            AliasRound::Ready => AliasRound::Names,
+            AliasRound::Names => AliasRound::Rest,
             AliasRound::Rest => break,
         };
     }
@@ -15641,13 +15644,23 @@ enum AliasRound {
     Collect,
     /// Record each pending alias whose definition names no pending alias.
     Ready,
-    /// Record what is left — a cycle — in source order.
+    /// Of each alias still pending, note the pending aliases its definition names: the
+    /// graph the last round reads a chain off.
+    Names,
+    /// What is left never became ready: an alias whose definition reaches its own name,
+    /// and the aliases that name one. The first is refused where it is declared, naming
+    /// the chain; each is recorded, in source order and as written, so a name that cites
+    /// it still resolves. A use of a refused alias is judged like any other and may be
+    /// reported beside the refusal: `f(5)` over `f(x: A)` is "expected B, got Int64".
     Rest,
 }
 
 struct AliasDeclarePass<'l, 'a> {
     loader: &'l mut Loader<'a>,
     pending: &'l mut HashSet<Symbol>,
+    /// The pending aliases each still-pending alias's definition names
+    /// ([`AliasRound::Names`]).
+    names: &'l mut HashMap<Symbol, Vec<Symbol>>,
     round: AliasRound,
     progress: &'l mut bool,
 }
@@ -15678,9 +15691,19 @@ impl AliasDeclarePass<'_, '_> {
                     if !self.pending.contains(&sym) {
                         continue;
                     }
-                    if round == AliasRound::Ready && self.names_pending_alias(&abs.definition, sym)
-                    {
-                        continue;
+                    match round {
+                        AliasRound::Collect => unreachable!("`Collect` is the arms above"),
+                        AliasRound::Ready => {
+                            if !self.pending_aliases_named(&abs.definition).is_empty() {
+                                continue;
+                            }
+                        }
+                        AliasRound::Names => {
+                            let named = self.pending_aliases_named(&abs.definition);
+                            self.names.insert(sym, named);
+                            continue;
+                        }
+                        AliasRound::Rest => self.refuse_alias_reaching_itself(sym, abs),
                     }
                     self.loader.load_abstract_sort(abs, domain);
                     self.pending.remove(&sym);
@@ -15690,18 +15713,82 @@ impl AliasDeclarePass<'_, '_> {
         }
     }
 
-    /// Does `ty` name — by any leading part of any name in it — an alias still waiting to
-    /// be recorded, other than `this`?
-    fn names_pending_alias(&self, ty: &TypeExpr, this: Symbol) -> bool {
+    /// The aliases still waiting to be recorded that `ty` names — by any leading part of
+    /// any name in it — the alias being declared among them: an alias that names itself
+    /// is never ready.
+    fn pending_aliases_named(&self, ty: &TypeExpr) -> Vec<Symbol> {
         let mut heads: Vec<String> = Vec::new();
         collect_type_expr_heads(&self.loader.parsed.symbols, ty, &mut heads);
-        heads.iter().any(|h| {
-            matches!(
-                resolve_name_in_kb(self.loader.kb, h, self.loader.current_scope),
-                ResolveResult::Found(s) if s != this && self.pending.contains(&s)
-            )
-        })
+        let mut named: Vec<Symbol> = Vec::new();
+        for head in &heads {
+            if let ResolveResult::Found(s) =
+                resolve_name_in_kb(self.loader.kb, head, self.loader.current_scope)
+            {
+                if self.pending.contains(&s) && !named.contains(&s) {
+                    named.push(s);
+                }
+            }
+        }
+        named
     }
+
+    /// A type alias whose definition reaches its own name — `sort S = S`, `sort A = B`
+    /// with `sort B = A`, `sort Loop = List[T = Loop]` — is refused where it is declared,
+    /// naming the chain. An alias is its definition, so such a one would be an infinite
+    /// type; a recursive type is written through a sort with a constructor, which gives
+    /// the recursion a value to stand on.
+    ///
+    /// It loaded, and was a name nothing conforms to: `f(x: A)` refused every argument,
+    /// and a type naming `Loop` twice read it at two depths.
+    fn refuse_alias_reaching_itself(&mut self, alias: Symbol, decl: &AbstractSort) {
+        let Some(chain) = chain_back_to(alias, self.names) else {
+            // It names an alias that reaches itself, and is not on the chain: that one is
+            // refused at its own declaration.
+            return;
+        };
+        let kb = &*self.loader.kb;
+        let chain: Vec<&str> = chain.iter().map(|s| kb.local_name_of(*s)).collect();
+        let site = SourceSpan::from_span(self.loader.source_id, decl.span);
+        self.loader.errors.push(LoadError::Other {
+            message: format!(
+                "{}: type alias `{}` reaches its own name through its definition ({}), so it \
+                 stands for no type. An alias is the type it is defined as; write a \
+                 recursive type as a sort with a constructor (`sort Loop  entity \
+                 loop(items: List[T = Self])  end`)",
+                render_decl_site(kb, site),
+                kb.qualified_name_of(alias),
+                chain.join(" -> "),
+            ),
+        });
+    }
+}
+
+/// The chain from `alias` back to itself through the aliases each definition names —
+/// `[A, B, A]` for `sort A = B`, `sort B = A` — or `None` when `alias` is not on one.
+/// Breadth-first, so the chain named is a shortest one.
+fn chain_back_to(alias: Symbol, names: &HashMap<Symbol, Vec<Symbol>>) -> Option<Vec<Symbol>> {
+    let mut reached: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut queue: std::collections::VecDeque<Symbol> = std::collections::VecDeque::new();
+    queue.push_back(alias);
+    while let Some(at) = queue.pop_front() {
+        for &next in names.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+            if next == alias {
+                let mut chain = vec![alias, at];
+                let mut back = at;
+                while back != alias {
+                    back = reached[&back];
+                    chain.push(back);
+                }
+                chain.reverse();
+                return Some(chain);
+            }
+            if !reached.contains_key(&next) {
+                reached.insert(next, at);
+                queue.push_back(next);
+            }
+        }
+    }
+    None
 }
 
 /// Every leading part of every name written in `ty` — `WisStore` and `WisStore.State` of

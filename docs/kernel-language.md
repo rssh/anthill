@@ -1985,6 +1985,8 @@ sort Velocity = Float                -- Velocity is an alias for Float
 
 An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` — and in a name, wherever the name is used (§5.1, which lists the clauses, the names, and what is refused). Being read through, an alias is no more visible than what it names: a public alias of an `internal` sort is refused (§8.6).
 
+An alias whose definition names the alias itself is refused where it is declared, and the message names the chain: `sort S = S`; `sort A = B` with `sort B = A`; `sort Loop = List[T = Loop]`. A recursive type is written as a sort with a constructor: `sort Loop  entity loop(items: List[T = Self])  end`.
+
 Unspecified properties are expressed as accessor operations within the enclosing sort body:
 
 ```

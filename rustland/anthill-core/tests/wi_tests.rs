@@ -27,6 +27,8 @@ mod wi_zy11j_alias_typed_value_test;
 mod wi_zy11j_provision_at_receiver_test;
 #[path = "include/wi_zy11j_type_display_order_test.rs"]
 mod wi_zy11j_type_display_order_test;
+#[path = "include/wi_2hjw8_recursive_alias_test.rs"]
+mod wi_2hjw8_recursive_alias_test;
 
 #[path = "include/wi206_is_modifiable_test.rs"]
 mod wi206_is_modifiable_test;
