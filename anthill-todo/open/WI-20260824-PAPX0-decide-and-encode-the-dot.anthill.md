@@ -493,3 +493,7 @@ WIRING (user's go, 2026-10-08). Released to Open. This ticket is done when one t
 
 The comment above `namespace Type` in stdlib/anthill/prelude/sort.anthill now says how `Type`'s operations are reached -- by name, or by a dot on a `Type` whose sort is not known at the dot (user's go, 2026-10-08). With the spec paragraph this closes item 8 of the 2026-09-13 list. Full Rust gate (36 suites, 8795 passed, 0 failed) and sbt testFull (636 passed) re-run on that tree.
 
+### 2026-10-09T06:58:07Z — feedback — claude
+
+WI-20261008-HZVQA (delivered 2026-10-09) moved two sentences of THE RULE AS BUILT above. A receiver that is an alias now binds the parameters the alias fixes, written and let-bound alike; it had said they do not ride a call. A bracket on a constructor's receiver now binds the sort's parameters for the construction, in both spellings; it had been refused as unread. In `wi_papx0_dot_receiver_split_test`, `an_alias_denotes_what_it_stands_for` pins `wrap.x (op-arg): expected Int64, got String` for both spellings, and `a_bracket_on_a_constructor_is_refused_as_the_written_one_is` is now `a_bracket_on_a_constructor_binds_in_both_spellings`.
+

@@ -1265,6 +1265,12 @@ pub(super) fn check_constructor_iter(
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
 
+    // A RECEIVER BINDS THE SORT'S PARAMETERS BEFORE THE FIELDS ARE READ, as it does for an
+    // operation call and through the same reader: `Box[V = Int64].mk("s")`, and `CA.mk("s")`
+    // over `sort CA = Box[V = Int64]`, are refused at the field, and `Box[V = Int64].mk(5)`
+    // is a `Box[V = Int64]`. A construction with no receiver has none to read.
+    seed_receiver_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
+
     // WI-384: fields unify FIRST so each argument pins its param, THEN the caller
     // `expected` fills only the still-free params (the args-before-expected order of
     // `check_apply_iter`, WI-379). A field that CONTRADICTS `expected` then wins in the

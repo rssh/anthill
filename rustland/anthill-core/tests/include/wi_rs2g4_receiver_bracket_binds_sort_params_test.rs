@@ -242,7 +242,7 @@ fn two_disagreeing_brackets_are_one_contradiction() {
     );
     assert_eq!(errs.len(), 1, "{errs:#?}");
     assert!(
-        errs[0].contains("expected the receiver bracket's T = Letter")
+        errs[0].contains("expected the receiver's T = Letter")
             && errs[0].contains("got the callee bracket's T = Int64"),
         "the message must name the parameter and both sources: {errs:#?}"
     );
@@ -265,7 +265,7 @@ fn two_disagreeing_brackets_are_one_contradiction() {
     );
     assert_eq!(bare.len(), 1, "{bare:#?}");
     assert!(
-        bare[0].contains("the receiver bracket's T = List,"),
+        bare[0].contains("the receiver's T = List,"),
         "the written value, not the expansion: {bare:#?}"
     );
 }

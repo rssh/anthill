@@ -7835,6 +7835,7 @@ impl KnowledgeBase {
                         pos_args: Vec::new(),
                         named_args: named,
                         from_projection: false,
+                        recv_type: None,
                     },
                     node.span,
                     None,
@@ -13349,6 +13350,7 @@ impl KnowledgeBase {
                             pos_args: Vec::new(),
                             named_args: named,
                             from_projection: false,
+                            recv_type: None,
                         },
                         span,
                         None,
@@ -13419,9 +13421,11 @@ impl KnowledgeBase {
                 pos_args,
                 named_args,
                 from_projection,
+                recv_type,
             } => {
                 let name = *name;
                 let from_projection = *from_projection;
+                let recv_type = recv_type.clone();
                 let pos_c = pos_args.clone();
                 let named_c = named_args.clone();
                 let mut pos = Vec::with_capacity(pos_c.len());
@@ -13515,6 +13519,7 @@ impl KnowledgeBase {
                             pos_args: pos,
                             named_args: named,
                             from_projection,
+                            recv_type,
                         },
                         span,
                         None,

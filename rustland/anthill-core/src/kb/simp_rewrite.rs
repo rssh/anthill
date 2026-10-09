@@ -1122,7 +1122,7 @@ fn fold_capture_redex(
     // arm and could not reach it today (a capture rule on a constructor head is refused at
     // load as a constructor-arity error), so this is a LATENT trap closed, not a live bug
     // fixed — and it is closed by construction rather than by remembering.
-    let (functor, occ_pos, occ_named, ctor_from_projection) = match occ.as_expr()? {
+    let (functor, occ_pos, occ_named, ctor_from_projection, occ_recv_type) = match occ.as_expr()? {
         Expr::Apply {
             functor,
             pos_args,
@@ -1133,20 +1133,28 @@ fn fold_capture_redex(
             // A call-site type-argument bracket is not part of the Inc-1 macro surface
             // (`try_expand_macro` declines a template carrying one), so a capture rule
             // declines it here rather than dropping the bracket in the reshaped redex.
-            // WI-20260829-W6JH0: a form-(3) COMPANION RECEIVER is declined on the same
-            // grounds and in the same test — it is a type claim about the call's result,
-            // and the reshaped redex has nowhere to put it.
-            if !type_args.is_empty() || recv_type.is_some() {
+            if !type_args.is_empty() {
                 return None;
             }
-            (*functor, pos_args, named_args, None)
+            // A COMPANION RECEIVER rides the reshaped redex. It says which instance of the
+            // sort the call is at and nothing about the arguments the head captures, so the
+            // rule fires on `Sort[…].f(…)`, and on `f` reached through an alias that fixes
+            // parameters, as it does on `Sort.f(…)` — as a rule with no capture does.
+            (*functor, pos_args, named_args, None, recv_type.clone())
         }
         Expr::Constructor {
             name,
             pos_args,
             named_args,
             from_projection,
-        } => (*name, pos_args, named_args, Some(*from_projection)),
+            recv_type,
+        } => (
+            *name,
+            pos_args,
+            named_args,
+            Some(*from_projection),
+            recv_type.clone(),
+        ),
         _ => return None,
     };
     if occ_pos.len() != declared_pos {
@@ -1196,6 +1204,7 @@ fn fold_capture_redex(
             // here, from the redex's leftover named arguments — there is no prior mark to
             // carry, and a capture record is not a distributive projection.
             from_projection: false,
+            recv_type: None,
         },
         Rc::clone(occ),
         pass,
@@ -1211,10 +1220,11 @@ fn fold_capture_redex(
             // The REDEX's own mark, carried — never re-decided here. Reshaping a node's
             // argument list is not a statement about where the node came from.
             from_projection,
+            recv_type: occ_recv_type,
         }
     } else {
         Expr::Apply {
-            recv_type: None,
+            recv_type: occ_recv_type,
             functor,
             pos_args,
             named_args: kept,
@@ -2183,6 +2193,7 @@ pub(super) fn reassemble(
             pos_args,
             named_args,
             from_projection,
+            recv_type,
         } => Expr::Constructor {
             name: *name,
             pos_args: cur.take_vec(pos_args),
@@ -2190,6 +2201,7 @@ pub(super) fn reassemble(
             // WI-762: a rewritten CHILD does not stop this node being the tuple a
             // projection desugared into — the receiver moved, the form did not.
             from_projection: *from_projection,
+            recv_type: recv_type.clone(),
         },
         Expr::Instantiation {
             name,

@@ -19,6 +19,8 @@ mod wi009_phase3_builtins_test;
 
 #[path = "include/wi_papx0_dot_receiver_split_test.rs"]
 mod wi_papx0_dot_receiver_split_test;
+#[path = "include/wi_hzvqa_alias_receiver_test.rs"]
+mod wi_hzvqa_alias_receiver_test;
 
 #[path = "include/wi206_is_modifiable_test.rs"]
 mod wi206_is_modifiable_test;

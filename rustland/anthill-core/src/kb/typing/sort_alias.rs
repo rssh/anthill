@@ -924,6 +924,50 @@ pub(crate) fn alias_expansion(kb: &KnowledgeBase, sym: Symbol) -> Option<AliasEx
     }
 }
 
+/// A binding an alias fixes, recorded in the CLAUSE canon (`Loader::record_alias_target`),
+/// as a TYPE position spells it: a type parameter's `Ref(param)` is the parameter's
+/// variable there. Anything else is one term in both.
+pub(crate) fn type_canon_binding(kb: &KnowledgeBase, value: TermId) -> TermId {
+    match kb.get_term(value) {
+        Term::Ref(p) if is_sort_param_symbol(kb, *p) => resolve_sort_alias(kb, *p).unwrap_or(value),
+        _ => value,
+    }
+}
+
+/// The sort the alias `written` stands for and the bindings it fixes, each in the TYPE
+/// canon ([`type_canon_binding`]) — `(Box, [V = Int64])` for `sort CA = Box[V = Int64]`.
+/// `None` for a name [`alias_expansion`] does not read as a sort application.
+pub(crate) fn alias_type_application(
+    kb: &KnowledgeBase,
+    written: Symbol,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    let AliasExpansion::Sort { base, bindings } = alias_expansion(kb, written)? else {
+        return None;
+    };
+    let fixed = bindings
+        .into_iter()
+        .map(|(p, v)| (p, type_canon_binding(kb, v)))
+        .collect();
+    Some((base, fixed))
+}
+
+/// The receiver a member reached through the alias `alias` is called at: the sort the
+/// alias stands for at the parameters it fixes, which is the receiver the same call has
+/// with the type written out — `CA.wrap(…)` over `sort CA = Box[V = Int64]` is
+/// `Box[V = Int64].wrap(…)`. A parameter the alias leaves open is left to the call, as a
+/// written bracket leaves it.
+///
+/// `None` for an alias that fixes nothing (`sort CB = Box`): a bare sort says nothing of
+/// its parameters, and neither does a call through it.
+pub(crate) fn alias_receiver_type(kb: &mut KnowledgeBase, alias: Symbol) -> Option<TermId> {
+    let (base, fixed) = alias_type_application(kb, alias)?;
+    if fixed.is_empty() {
+        return None;
+    }
+    let base = kb.make_sort_ref(base);
+    Some(kb.make_parameterized_type(base, &fixed))
+}
+
 /// Does `sym` own a declaration's members — anything pass 1 defined inside it? A sort
 /// body's parameters and operations, or a `namespace` entry's items, live in the owner's
 /// scope; a `sort X = T` alias opens no scope, so a pure alias owns nothing. Pass 1

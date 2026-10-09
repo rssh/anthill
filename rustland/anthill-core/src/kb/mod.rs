@@ -15558,6 +15558,7 @@ mod wi518_occurrence_guard_resolution_tests {
                 pos_args: vec![var_occ.clone(), var_occ],
                 named_args: Vec::new(),
                 from_projection: false,
+                recv_type: None,
             },
             span(),
             None,

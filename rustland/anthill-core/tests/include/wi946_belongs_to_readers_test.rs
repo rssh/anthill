@@ -669,6 +669,7 @@ fn synthesizes_at(source: &str, op_qn: &str, ctor_qn: &str, field: &str) -> bool
             pos_args: vec![],
             named_args: vec![(fsym, five)],
             from_projection: false,
+            recv_type: None,
         },
         sp,
         None,
