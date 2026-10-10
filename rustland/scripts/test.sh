@@ -69,11 +69,14 @@
 # ── Three load recipes: the shared base, one shot, or two steps ──────────────
 #
 #   neither set, or both 0         anthill-core's shared load helpers take a COPY of
-#                                  the stdlib loaded once per test binary, and
-#                                  `load_all(user)` into it — the gate (WI-059)
+#                                  the stdlib loaded once per test binary, sealed,
+#                                  and `load_all(user)` into it — the gate (WI-059),
+#                                  and the ORDER the product loads in
+#                                  (`load::load_program`, WI-20261009-AN6CQ)
 #   ANTHILL_TEST_FRESH_LOAD=1      one `load_all(stdlib ∪ user)` into a fresh KB,
-#                                  for every load — what the CLI does, and the
-#                                  recipe to bisect a difference against
+#                                  for every load — how the library's own files
+#                                  are loaded, and the recipe to bisect a
+#                                  difference in the ORDER against
 #   ANTHILL_TEST_TWO_STEP_LOAD=1   `load_all(stdlib)` and then `load_all(user)`
 #                                  into a fresh KB
 #
@@ -87,9 +90,11 @@
 #
 # Nothing is rebuilt: the test binaries read it at run time, so this script only
 # validates it and writes into the log what was ASKED FOR. It reaches the loads
-# that go through those helpers and nothing else — the library's unit tests, a
-# test file with its own copy of the load and every other crate run one shot —
-# so the log also carries what anthill-core's control test OBSERVED.
+# that go through those helpers and nothing else: a test pinned to a recipe by
+# name runs that one, and the library's unit tests, the other crates' harnesses
+# and the binaries the CLI suites spawn load as the product does — the library,
+# sealed, and then the program (`load::load_program`) — whatever is set here.
+# So the log also carries what anthill-core's control test OBSERVED.
 #
 # ── Which carrier a declared type rides: a term, or a node ───────────────────
 #
@@ -182,9 +187,9 @@ esac
 : "${ANTHILL_TEST_TWO_STEP_LOAD:=0}"
 : "${ANTHILL_TEST_FRESH_LOAD:=0}"
 case "${ANTHILL_TEST_FRESH_LOAD}${ANTHILL_TEST_TWO_STEP_LOAD}" in
-  00) load_note="SHARED BASE in anthill-core's tests/common helpers, one shot everywhere else" ;;
-  10) load_note="one shot" ;;
-  01) load_note="TWO-STEP in anthill-core's tests/common helpers, one shot everywhere else" ;;
+  00) load_note="SHARED BASE in anthill-core's tests/common helpers, the library and then the program everywhere else" ;;
+  10) load_note="ONE SHOT in anthill-core's tests/common helpers, the library and then the program everywhere else" ;;
+  01) load_note="TWO-STEP in anthill-core's tests/common helpers, the library and then the program everywhere else" ;;
   11) echo "test.sh: ANTHILL_TEST_FRESH_LOAD=1 and ANTHILL_TEST_TWO_STEP_LOAD=1: each names a recipe, set one" >&2; exit 2 ;;
   *) echo "test.sh: ANTHILL_TEST_FRESH_LOAD=${ANTHILL_TEST_FRESH_LOAD} ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD}: expected 0 or 1 for each" >&2; exit 2 ;;
 esac

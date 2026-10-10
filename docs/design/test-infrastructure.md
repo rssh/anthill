@@ -16,6 +16,12 @@ copied instead, and one copy is 7.3 ms beside a 300 ms load (§5.1).
 **Lever B landed the same day** (WI-059: §5.3): the test helpers start from a copy of one
 stdlib per test binary, the suite is green under it and under the fresh recipe, and
 `wi_tests` ran in 412–491 s where the fresh recipe took 625–763 s that day.
+**The library's load is sealed and its bodies are typed once since 2026-10-10**
+(WI-20261009-4ZRTG, WI-20261010-9BKZ4: §4 A3), the first pass of A3: a test's load on
+the shared base 179 ms → 107 ms.
+**And the product loads the way the tests do since the same day** (WI-20261009-AN6CQ:
+§8.7): the standard library first, on its own and sealed, the program after it — so the
+gate's default recipe is the order users run.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -577,7 +583,8 @@ sealed:
 **The trap this must not fall into** is the one the repo's principles name: a pass that
 skips an item it should have checked fails *silently*, and the suite stays green. The
 control is cheap and must be stated at the site: the one-shot full load stays exactly as it
-is (it is still what the CLI does), and the equivalence `load_all(S ∪ U)` ≡
+is (it is still what the CLI does — until WI-20261009-AN6CQ, 2026-10-10, since when the
+CLI loads in two calls and one shot is how a library's own files are loaded: §8.7), and the equivalence `load_all(S ∪ U)` ≡
 `load_all(S); load_all(U)` — same KB observable facts, same diagnostics for the same `U` —
 is asserted by running the entire `anthill-core` suite under both recipes (§5.3 has the
 switch) and by a focused test per pass whose fixture is a `U` that invalidates an old item.
@@ -1180,7 +1187,35 @@ informed; it does not recommend changing the rule until A and B have been measur
    load, so the gate's default order now refuses what one call refuses in the three
    shapes measured; the same ticket made a later load register the proof records one
    call registers, and turned a one-call loader panic into the refusal it was meant
-   to be. The question above stays open until AN6CQ lands.
+   to be.
+
+   **ANSWERED 2026-10-10: the product loads as the tests do, and the question is
+   gone** (WI-20261009-AN6CQ). The CLI, anthill-todo and a generated Rust bundle hand
+   the loader the standard library with its host bindings first, SEAL that load, and
+   load the program in a later one (`load::load_program`; kernel-language.md §8.3). So
+   the gate's default recipe is the order users run, a program is held to the three
+   rules a test's file was already held to — the equality of a library composite, a
+   library name declared again, a library body reached into — and the fresh recipe is
+   what it says: one call, which is how a library's OWN files are loaded, kept to
+   bisect a difference in the order. Each rule is driven through the built `anthill`
+   and `anthill-todo` binaries with its back-out measured; that a generated bundle
+   refuses the same is NOT driven, nothing in the tree running one. The harnesses of
+   the other crates and the core's own unit tests load the same way, so no switch
+   reaches them and none needs to. No fixture of any suite is refused by the order.
+
+   One thing stays one load, on purpose: `--no-stdlib` with a library named on the
+   command line. It is the only way the CLI has to load a library's own files, and a
+   program named beside them is then part of that library's load and judged as part
+   of it — pinned by a row, and said in the flag's help.
+
+   What it costs a CLI start, the gate's build (`stdlib-first-cost-2026-10-10.txt`):
+   about **0.1 s**, 450–470 ms → 550–556 ms for a six-line file by the minima, beside
+   a JVM job. Measured on the parked branch a day earlier, before the seal and before
+   a sealed load's bodies were typed once, it was 0.2 s (480–520 → 660–720 ms): the
+   seal took back half. The rest is step 4's — the second call's other whole-KB
+   passes. The gate on the landed tree: 9 038 passed, 0 failed, 14 ignored, with
+   `cli_tests` 36 s and `cmd_tests` 163 s, neither above what the same day's gates on
+   main took.
 
 ## 9. Recommended sequence, with the measurement at each step
 

@@ -23,10 +23,7 @@
 
 use std::path::PathBuf;
 
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
-use anthill_core::parse::ir::ParsedFile;
 
 use super::common::{self, collect_anthill_files};
 use anthill_smt_gen::emit_satisfiability_check;
@@ -35,30 +32,11 @@ use anthill_smt_gen::emit_satisfiability_check;
 fn lf1_kb() -> KnowledgeBase {
     let lf1_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/webots-modelling/lf1");
-    let mut all_files = common::collect_stdlib_and_rust_bindings();
-    all_files.extend(collect_anthill_files(&lf1_root));
-
-    let parsed: Vec<ParsedFile> = all_files
-        .iter()
-        .map(|p| {
-            let src =
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-        })
-        .collect();
-    let refs: Vec<&ParsedFile> = parsed.iter().collect();
-
-    let mut kb = KnowledgeBase::new();
     // WI-966: strict, and MEASURED to load clean. This fixture is the real lf1
     // example, so a discarded `Err` here would let every proof below be emitted
-    // from a half-loaded spec.
-    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
-        panic!(
-            "stdlib + lf1 must load clean; got: {:?}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-        );
-    }
-    kb
+    // from a half-loaded spec. WI-20261009-AN6CQ: and loaded as `anthill` loads it —
+    // the stdlib first, on its own, the spec's files after it.
+    common::load_kb_with_files(&collect_anthill_files(&lf1_root))
 }
 
 #[test]

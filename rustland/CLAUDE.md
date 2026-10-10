@@ -60,9 +60,14 @@ ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core 
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core   # stdlib, then user, fresh KB
 ```
 
-They are controls, not more gates: the three must give every test the same verdict. Reach
-for `ANTHILL_TEST_FRESH_LOAD=1` FIRST when a test fails in a way that looks like the
-load's — it is what the CLI does. A test that differs is an assertion on the recipe, a
+The default is the PRODUCT's order: the CLI, anthill-todo and a generated bundle load
+the standard library first, on its own, SEAL that load, and load the program in a later
+one (`load::load_program`, WI-20261009-AN6CQ; `kernel-language.md` §8.3). The other two are
+controls, not more gates: the three must give every test the same verdict.
+`ANTHILL_TEST_TWO_STEP_LOAD=1` is the default without the copy, so it says whether a
+difference is the COPY's; `ANTHILL_TEST_FRESH_LOAD=1` is one call over everything, which
+is how the library's own files are loaded together, so it says whether a difference is
+the ORDER's. A test that differs is an assertion on the recipe, a
 loader finding, or a fixture that by the language's own rule belongs in the stdlib's
 load: under the shared base and under two steps a test's files are a LATER load than the
 stdlib's, and a later load may not add to the equality of a stdlib sort, declare one of
@@ -79,11 +84,17 @@ KB, when it asks for something the base cannot give: a hook run before the stdli
 (`try_load_kb_prepared*`, `load_outcome_files_prepared`, `load_stdlib_kb_prepared` — a
 closure that does nothing still counts, the recipe cannot see inside one), load options
 other than the default (the `*_untyped` helpers), or a recipe named at the call. The
-tests pinned by name, the library's unit tests and every other crate run one-shot
-whatever the switches say.
+switches reach those helpers and nothing else. A test pinned by name runs the recipe it
+names; `anthill-core`'s unit tests (`kb/test_support.rs`), the harnesses of the other
+crates and the binaries the CLI suites spawn all load as the product does — the library
+first, sealed, then the fixture, through `load::load_program` — whatever the switches
+say. A new harness that builds a KB from the stdlib and a fixture calls `load_program`
+too: `load_all` over both is the library's own load, and judges the fixture as part of
+the library.
 
 **A sealed load's bodies are typed once** (WI-20261010-9BKZ4). Every recipe SEALS the
-stdlib's load (`load::seal_declarations*`, WI-20261009-4ZRTG), and the typer's two
+stdlib's load (`load::seal_declarations*`, WI-20261009-4ZRTG), as `load::load_program`
+does for the product, and the typer's two
 whole-KB sweeps — the free-operation sweep, the rule-body sweep — skip what a seal holds;
 what a later load could have changed in a sealed body is a load error instead
 (`kb/typing/sealed.rs`, `LoadError::ChangesSealedCode`) — raised by the TYPER, so a run

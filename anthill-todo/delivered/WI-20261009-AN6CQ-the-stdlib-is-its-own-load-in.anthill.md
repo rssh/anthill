@@ -3,9 +3,9 @@
 - id: WI-20261009-AN6CQ-the-stdlib-is-its-own-load-in
 - created: 2026-10-09T18:53:27Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-09T18:53:43Z
+- status_at: 2026-10-10T15:56:23Z
 
 - acceptance: cargo-test
 
@@ -42,4 +42,26 @@ WHAT IS ON THE BRANCH, all of it green when it was parked: `load::load_program` 
 WHY PARKED. /code-review (14 findings) reproduced, and I reproduced after it: with the library loaded first a program can REDECLARE A LIBRARY OPERATION and REOPEN A LIBRARY TYPE in silence — one call refuses both — and `anthill check` lists 15 pending proof records for the library's own derived provisions. The ticket's claim that one kind of program is judged differently by the two orders was wrong: it was what the suites assert, and no fixture redeclares a library name. The census and the cause are in WI-20261009-4ZRTG.
 
 ALSO FROM THAT REVIEW, to take when this resumes: `wi966_loader_verdict_test`'s list of loader entry points does not know `load_program(`; `scripts/test.sh`'s `load:` line and rustland/CLAUDE.md say every other crate runs one shot, which the moved harnesses make false, and no switch reaches them; `ProgramLoad::warnings()` would report a library advisory twice (the program's load re-runs the whole-KB lint); `load_program` with both slices empty does not bootstrap, and an empty program yields an invented `LoadResult`; `lf1_real_spec_test` still loads in one call; `--no-stdlib` with the on-disk library is one call, so the CLI still gives one program two verdicts, now in both directions; the bundle's row reads the emitted text and the compile check is `#[ignore]`; two stale comments and an unused `mut`.
+
+### 2026-10-10T15:27:35Z — feedback — user
+
+RESUMED 2026-10-10 after WI-20261009-4ZRTG and WI-20261010-9BKZ4 landed; main merged into `wi-an6cq-stdlib-first` (dc379f4d). READY ON THE BRANCH, GATED, NOT COMMITTED — two things are the user's before it lands: the wording of the §8.3 bullet (the ticket's SPEC clause asked for it; it now says the library's load is SEALED and three rules bind every program), and `--no-stdlib` (below).
+
+WHAT IS BUILT. `load::load_program` loads the library, SEALS that load (`seal_declarations`), and loads the program in a later one — so a program is held to all three rules a test's file already was: a library composite's equality (SZKV7), a library name declared again (4ZRTG), a library body reached into (9BKZ4). It bootstraps for itself; an empty library is one load and no seal; an empty program is no second load, reported as none (`program: Option<ProgramFiles>`, one field where the first cut had two that had to agree). The CLI's two sites, anthill-todo and the generated Rust bundle call it; so do the core's unit-test loader and the harnesses of anthill-cpp-gen, anthill-smt-gen and anthill-stl.
+
+THE PARKED REVIEW'S LEFTOVERS, each taken: `wi966_loader_verdict_test` knows `load_program(`; `scripts/test.sh`'s `load:` line and rustland/CLAUDE.md say that everything outside anthill-core's helpers loads the library and then the program, whatever the switches; `ProgramLoad::warnings()` gives a library advisory once (the requires-shadow lint reads the whole KB at every load — `LoadWarning::is_raised_again_by_a_later_load`, an exhaustive match); both slices empty still bootstraps and an empty program invents no result; `lf1_real_spec_test` loads through `load_program`; the bundle's row pins the template's wiring and `emitted_bundle_compiles` was RUN by hand and passes; the stale comments and the unused `mut` are gone. `--no-stdlib` with a library named on the command line STAYS ONE LOAD, on purpose and not asked: it is the only way the CLI has to load a library's own files, so a program named beside them is part of that library's load and judged as part of it — said in the flag's help and in §8.3, pinned by a row. The alternative is a flag that names an on-disk library AS the library.
+
+CONTROLS, each back-out MEASURED in one build with env-switched back-outs, since removed: `wi_an6cq_load_program_test` (anthill-core, 6 rows over a small library of its own) — no seal: 2 rows fail; no bootstrap: 1; the advisory not deduplicated: 1. `wi_an6cq_stdlib_first_test` (anthill-cli, 10 rows through the built binary) — no seal: the operation, the type, the `@[simp]` rule and the on-disk library beside the embedded one all load; main.rs at one call: the `eq` for `List` and the `@[simp]` rule load; run.rs at one call: the `run` row; 4ZRTG's skip of derived provisions backed out: `check` lists 142 records for 127. The same file in anthill-todo (3 rows) — no seal: the operation; one call: the equality. The measurements were taken before /code-review's reshaping of `ProgramLoad`, which moved fields and no logic.
+
+/code-review ran once on the resumed diff (8 findings, no correctness bug in `load_program`): 7 taken — the one `Option`; a `Library` enum in the CLI in place of a flag and a list that could say 'bindings and no stdlib'; the `check` row pairs its absent names with a present one of the same spelling (`Float`'s written `NonEq` against `Option`'s and `List`'s derived); anthill-cpp-gen's lenient helper panics on a refusal that is the ORDER's; anthill-smt-gen's three loaders are one and a file on disk knows its path; the comments; the bundle row. NOT taken, said at the site: making the requires-shadow lint skip what a seal holds — a frontier-driven pass with its own question (a later load can write an operation or a `requires` into a sealed sort, or a provision that withdraws the advisory), and this ticket's scope excludes making the second call cheap.
+
+NOT DRIVEN: that a generated bundle refuses what the CLI refuses. Nothing in the tree runs one; it rests on the one function all three sites call.
+
+COST (docs/measurements/test-infrastructure/stdlib-first-cost-2026-10-10.txt), the gate's build, beside a JVM job: `anthill load` of a six-line file 450-470 ms -> 550-556 ms by the minima, about +0.1 s a start, where the unsealed branch measured +0.2 s on 2026-10-09.
+
+GATE on the tree as it stands: 9 038 passed, 0 failed, 14 ignored, observed SHARED BASE; cli_tests 36 s, cmd_tests 163 s, wi_tests 236 s. scaland not touched — it has neither this order nor a seal (WI-20261009-S723J covers the order and the equality rule, not the seal).
+
+### 2026-10-10T15:56:19Z — feedback — user
+
+DELIVERED 2026-10-10. The entry above left two things to the user — the wording of the §8.3 bullet, and `--no-stdlib` over a library named on the command line staying one load; the answer to it was 'let deliver ticket, commit and push', and neither was changed. The Scala half is WI-20261009-S723J's, extended the same day (user) to the seal and to what a sealed body is protected from, with a list of what scaland has to be checked for first. Gate on the sources as delivered: 9 038 passed, 0 failed, 14 ignored, observed SHARED BASE; the design doc, the measurement file, this tracker and one status line of the spec changed after it. Landed on main as ONE commit: the branch's first commit was a WIP marked not for main.
 

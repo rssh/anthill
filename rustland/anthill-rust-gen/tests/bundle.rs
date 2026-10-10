@@ -95,7 +95,61 @@ fn bundle_emits_expected_file_layout() {
     );
 }
 
-/// WI-880 — THE HOST BINDINGS ARE VENDORED, and the emitted `EMBEDDED_SOURCES` names
+/// WI-20261009-AN6CQ — the emitted loader hands the standard library to the loader
+/// FIRST, in a load of its own, and the program in a later one — as the CLI does.
+///
+/// READ OFF THE EMITTED TEXT, AND THAT IS ALL IT IS: the two tables hold what their
+/// names say, each is parsed into the argument its name says, and the loader makes the
+/// one call that takes them apart. `emitted_bundle_compiles` (opt-in, below) is what
+/// says the call exists with that shape. Nothing in the tree RUNS an emitted bundle,
+/// so that a bundle REFUSES what `anthill` and `anthill-todo` refuse is not driven
+/// here: it rests on `load::load_program` being the one function all three call, whose
+/// seal `anthill-core`'s `wi_an6cq_load_program_test` and the two binaries' rows drive.
+///
+/// FAILS when the template goes back to one table and one `load_all` (measured: with
+/// the pre-ticket template, no `EMBEDDED_PROGRAM` is found).
+#[test]
+fn the_emitted_loader_loads_the_stdlib_before_the_program() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    generate_bundle(&options(), dir.path()).expect("bundle");
+    let main_rs = std::fs::read_to_string(dir.path().join("src/main.rs")).expect("main.rs");
+
+    let table = |name: &str| -> &str {
+        let start = main_rs
+            .find(&format!("static {name}: &[(&str, &str)] = &["))
+            .unwrap_or_else(|| panic!("the emitted loader has no `{name}` table:\n{main_rs}"));
+        let end = main_rs[start..].find("];").expect("the table closes") + start;
+        &main_rs[start..end]
+    };
+    let (stdlib, program) = (table("EMBEDDED_STDLIB"), table("EMBEDDED_PROGRAM"));
+    assert!(
+        stdlib.contains("(\"stdlib/") && !stdlib.contains("(\"user/"),
+        "the stdlib's table holds the stdlib's files and no file of the program:\n{stdlib}"
+    );
+    assert!(
+        program.contains("(\"user/") && !program.contains("(\"stdlib/"),
+        "the program's table holds the program's files and none of the stdlib's:\n{program}"
+    );
+    for wiring in [
+        "let stdlib = parse_embedded(EMBEDDED_STDLIB)?;",
+        "let program = parse_embedded(EMBEDDED_PROGRAM)?;",
+        "let library: Vec<_> = stdlib.iter().collect();",
+        "let program: Vec<_> = program.iter().collect();",
+        "load::load_program(&mut kb, &library, &program, &NullResolver)",
+    ] {
+        assert!(
+            main_rs.contains(wiring),
+            "the stdlib's table is the library and the program's the program, through \
+             `load_program`; missing `{wiring}` in:\n{main_rs}"
+        );
+    }
+    assert!(
+        !main_rs.contains("load::load_all("),
+        "and no `load_all` of everything at once is left beside it"
+    );
+}
+
+/// WI-880 — THE HOST BINDINGS ARE VENDORED, and the emitted `EMBEDDED_STDLIB` names
 /// them.
 ///
 /// A bundle vendored `stdlib/anthill` and nothing else, which was invisible while every
@@ -134,7 +188,7 @@ fn bundle_vendors_the_rust_host_bindings() {
     let main_rs = std::fs::read_to_string(dir.path().join("src/main.rs")).expect("main.rs");
     assert!(
         main_rs.contains("stdlib/host-rust/reflect.anthill"),
-        "…and `EMBEDDED_SOURCES` must NAME it: vendoring a file the generated loader \
+        "…and `EMBEDDED_STDLIB` must NAME it: vendoring a file the generated loader \
          never lists would leave the bundle exactly as broken, and this is the half a \
          file-layout check cannot see:\n{main_rs}"
     );

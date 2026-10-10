@@ -1,0 +1,25 @@
+# What it costs the product to load the standard library first, on its own (WI-20261009-AN6CQ). 2026-10-09 ~17:30.
+#   `anthill load small.anthill` — a 6-line file: one sort, one entity, one fact — run 30 times, wall clock of the
+#   whole process (start, parse of the 87 embedded files, load, exit).
+# Build:   the gate's — anthill-core at opt-level 2, the two tree-sitter crates at 3.
+# BEFORE:  the same tree with `anthill-cli/src/main.rs` handing `load_program` everything as the program, which is
+#          one `load_all` of the library and the file together — the pre-ticket shape. Only that crate rebuilds.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. `top` before and after: no build or test job, no JVM
+#          above a few percent; a browser and the window server at 30-40 % of one core. One process at a time.
+
+AFTER   the library, then the file     n=30  min=657ms  median=723ms  max=845ms
+AFTER   (again)                        n=30  min=672ms  median=720ms  max=881ms
+BEFORE  one call                       n=30  min=480ms  median=508ms  max=605ms
+BEFORE  (again)                        n=30  min=524ms  median=676ms  max=881ms      <- a noisy run; its min agrees with the first
+AFTER   (after rebuilding back)        n=30  min=668ms  median=769ms  max=1145ms
+
+# About +0.2 s a start: 480-520 ms -> 660-720 ms, +40 % of the whole process. It is the second call's whole-KB
+# passes over a library that did not change (docs/design/test-infrastructure.md §2.3) — what the frontier-driven
+# passes (§4 A3) remove, and what a precompiled library would make the first call's instead.
+
+# The two suites that spawn the binary, each ONE run in the gate's build, hours apart and on a machine that was
+# busier for the earlier ones — an order of magnitude, not a measurement:
+#                 before (three gates today)      after (17:00)
+#   cli_tests     32.0, 35.3, (—) s               42.8 s        198 tests
+#   cmd_tests     142.2, 153.7, 270.3 s           166.5 s       295 tests, ~10 spawns a test
+# Both green after: 198 / 0 and 295 / 0 — NO fixture of either was refused by the new order.

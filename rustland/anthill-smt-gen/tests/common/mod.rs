@@ -1,5 +1,5 @@
-//! Shared test helpers — load a KB from an inline source plus the
-//! cached stdlib. Mirrors anthill-cpp-gen's `tests/common/mod.rs`.
+//! Shared test helpers — load a KB from the cached stdlib and then an inline
+//! source. Mirrors anthill-cpp-gen's `tests/common/mod.rs`.
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -37,19 +37,40 @@ pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
     files
 }
 
-static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
-    let files = collect_stdlib_and_rust_bindings();
+static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> =
+    LazyLock::new(|| read_parsed(&collect_stdlib_and_rust_bindings()));
+
+/// Read and parse each of `files`, panicking with the file's name on either fault.
+/// Each knows the path it was read from (WI-745), so a load error it gives renders
+/// `path:line:col`.
+fn read_parsed(files: &[PathBuf]) -> Vec<ParsedFile> {
     files
         .iter()
         .map(|p| {
             let src =
                 std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+            parse::parse(&src)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+                .with_path(p.clone())
         })
         .collect()
-});
+}
 
-/// Load the cached stdlib + `source` into a fresh KB, PANICKING on a load error.
+/// THE ONE LOAD of this crate's tests: the cached stdlib FIRST, on its own and sealed,
+/// and then `program` in a later load — as the product loads
+/// (`load::load_program`, WI-20261009-AN6CQ). Hands back the KB whatever the verdict,
+/// and the verdict as each error rendered; the three helpers below differ only in
+/// what they do with it.
+fn load_after_stdlib(program: &[&ParsedFile]) -> (KnowledgeBase, Result<(), Vec<String>>) {
+    let library: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    let verdict = load::load_program(&mut kb, &library, program, &NullResolver)
+        .map(|_| ())
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect());
+    (kb, verdict)
+}
+
+/// Load the cached stdlib and then `source` into a fresh KB, PANICKING on a load error.
 ///
 /// WI-966 dissolved a name trap here rather than renaming around it. This crate
 /// used to spell the DISCARDING loader `load_kb_with` while
@@ -69,14 +90,25 @@ static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
 #[allow(dead_code)]
 pub fn load_kb_with(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.push(&user);
+    let (kb, verdict) = load_after_stdlib(&[&user]);
+    if let Err(errs) = verdict {
+        panic!("load must be clean for a test that depends on name resolution; got: {errs:?}");
+    }
+    kb
+}
 
-    let mut kb = KnowledgeBase::new();
-    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+/// [`load_kb_with`] for a program that lives ON DISK: the cached stdlib, and then
+/// `files`. Panics on a load error, which names the file it is in.
+#[allow(dead_code)]
+pub fn load_kb_with_files(files: &[PathBuf]) -> KnowledgeBase {
+    let program = read_parsed(files);
+    let program: Vec<&ParsedFile> = program.iter().collect();
+    let (kb, verdict) = load_after_stdlib(&program);
+    if let Err(errs) = verdict {
         panic!(
-            "load must be clean for a test that depends on name resolution; got: {:?}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+            "the stdlib and then {} file(s) must load clean; got:\n{}",
+            files.len(),
+            errs.join("\n")
         );
     }
     kb
@@ -99,14 +131,8 @@ pub fn load_kb_with(source: &str) -> KnowledgeBase {
 #[allow(dead_code)]
 pub fn load_kb_with_lenient(source: &str) -> (KnowledgeBase, Vec<String>) {
     let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.push(&user);
-    let mut kb = KnowledgeBase::new();
-    let errs = match load::load_all(&mut kb, &refs, &NullResolver) {
-        Ok(_) => Vec::new(),
-        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
-    };
-    (kb, errs)
+    let (kb, verdict) = load_after_stdlib(&[&user]);
+    (kb, verdict.err().unwrap_or_default())
 }
 
 #[allow(dead_code)]

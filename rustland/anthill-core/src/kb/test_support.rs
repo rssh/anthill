@@ -27,7 +27,7 @@ static STL_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
 });
 
 /// The stdlib and the `anthill-stl` host bindings, plus an optional fixture source
-/// loaded alongside them.
+/// loaded after them.
 ///
 /// BOTH, and there is no stdlib-only variant any more: WI-20260922-BRT4Y made the stdlib
 /// declare its host-backed operations `@[host_implemented]`, and a declared operation
@@ -66,7 +66,8 @@ fn parse_dir(dir: &Path) -> Vec<ParsedFile> {
         .collect()
 }
 
-/// `libs` plus `extra`, loaded into one fresh KB.
+/// `libs`, and then `extra`, loaded into one fresh KB — two loads, the libraries'
+/// sealed, as the product makes them (`load::load_program`).
 ///
 /// Every failure is RAISED — there is no lenient variant, because WI-959
 /// measured that nothing here needs one. `region.rs`'s copy discarded the load
@@ -79,17 +80,19 @@ fn parse_dir(dir: &Path) -> Vec<ParsedFile> {
 /// silent `let _ =` at a call site.
 fn load_libraries(libs: &[&Vec<ParsedFile>], extra: Option<&str>) -> KnowledgeBase {
     let extra_parsed = extra.map(|src| parse::parse(src).expect("parse fixture"));
-    let mut refs: Vec<&ParsedFile> = libs.iter().flat_map(|lib| lib.iter()).collect();
-    refs.extend(extra_parsed.iter());
+    // WI-20261009-AN6CQ: as the product loads — the libraries first, in a load of
+    // their own, and the fixture in a later one.
+    let library: Vec<&ParsedFile> = libs.iter().flat_map(|lib| lib.iter()).collect();
+    let program: Vec<&ParsedFile> = extra_parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
-    // The subject is "library + fixture", NOT "stdlib". `extra` loads in the same
-    // batch and is by far the likelier culprit, so labelling this a stdlib error
-    // blames the wrong file — the misdiagnosis the walk above is loud to avoid,
+    // The subject is "library + fixture", NOT "stdlib". `extra` is the later load
+    // and by far the likelier culprit, so labelling this a stdlib error blames
+    // the wrong file — the misdiagnosis the walk above is loud to avoid,
     // reintroduced one line down. Each error names its own origin already: WI-745
     // renders a library error as `path:line:col` and the path-less `extra` as a
     // bare `line:col`, so the label must not pre-empt them.
-    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {
+    if let Err(errs) = load::load_program(&mut kb, &library, &program, &NullResolver) {
         panic!(
             "load errors (library + fixture): {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()

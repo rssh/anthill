@@ -185,12 +185,14 @@ fn build_kb(paths: &[PathBuf]) -> Result<KnowledgeBase, i32> {
     let mut kb = KnowledgeBase::new();
     let resolver = FileSourceResolver::new(base_dirs_for(paths));
 
-    let mut all_refs: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
-    all_refs.extend(user_parsed.iter());
-    match load::load_all(&mut kb, &all_refs, &resolver) {
-        Ok(result) => {
+    // WI-20261009-AN6CQ: the standard library first, on its own, and sealed; the
+    // program is a later load (`load::load_program` says what that holds it to).
+    let library: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
+    let program: Vec<&ParsedFile> = user_parsed.iter().collect();
+    match load::load_program(&mut kb, &library, &program, &resolver) {
+        Ok(loaded) => {
             // WI-346: surface advisory load warnings (e.g. requires-shadow).
-            for w in &result.warnings {
+            for w in loaded.warnings() {
                 eprintln!("{w}");
             }
         }

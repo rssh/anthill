@@ -5338,6 +5338,24 @@ impl LoadWarning {
             inner: Box::new(self),
         }
     }
+
+    /// WI-20261009-AN6CQ — whether a LATER load into the same KB raises this warning
+    /// again: it comes from a lint that reads the whole KB at every load, not from
+    /// loading one file. [`ProgramLoad::warnings`] asks, so that an advisory about the
+    /// library is printed once and not once a load.
+    ///
+    /// An exhaustive match on purpose — a new variant has to say which it is. The
+    /// wrong answer is not symmetric: `false` for a whole-KB lint prints its advisory
+    /// twice, `true` for a per-file one LOSES the library's. So `Other`, which no pass
+    /// raises today, is `false`.
+    pub fn is_raised_again_by_a_later_load(&self) -> bool {
+        match self {
+            // `check_requires_shadows` walks every sort the KB holds.
+            LoadWarning::RequiresShadow { .. } => true,
+            LoadWarning::Other { .. } => false,
+            LoadWarning::Located { inner, .. } => inner.is_raised_again_by_a_later_load(),
+        }
+    }
 }
 
 impl std::fmt::Display for LoadWarning {
@@ -8583,8 +8601,8 @@ pub struct SealedDeclarations {
 }
 
 impl SealedDeclarations {
-    /// Nothing is sealed — the universal case outside the test recipes, and what every
-    /// reader checks first.
+    /// Nothing is sealed — a plain sequence of loads, `KB.loaded` over one, a KB built
+    /// with no library — and what every reader checks first.
     pub(crate) fn is_empty(&self) -> bool {
         self.types.is_empty() && self.ops.is_empty()
     }
@@ -8630,8 +8648,8 @@ impl SealedDeclarations {
 ///
 /// Call it after the load to be sealed — it reads that load's own ledgers, which the
 /// NEXT scan and load replace. Sealing the same load twice seals it once. The test
-/// recipes seal the standard library's load; the product will when it loads the
-/// library on its own (WI-20261009-AN6CQ). A plain sequence of `load_all` calls seals
+/// recipes seal the standard library's load, and so does the product, between the two
+/// loads of [`load_program`] (WI-20261009-AN6CQ). A plain sequence of `load_all` calls seals
 /// nothing and behaves as it did — a source may be presented again to a KB nothing
 /// sealed — and so does `KB.loaded` over one.
 pub fn seal_declarations(kb: &mut KnowledgeBase) {
@@ -14335,6 +14353,120 @@ fn load_phase(
     options: LoadOptions,
 ) -> Result<LoadResult, Vec<LoadError>> {
     load_phase_inner(kb, files, resolver, options).map(|(merged, _)| merged)
+}
+
+/// WI-20261009-AN6CQ — what [`load_program`] loaded: the library's load and the
+/// program's, kept apart.
+#[derive(Debug)]
+pub struct ProgramLoad {
+    /// The library's own load; `None` when no library was handed in.
+    pub library: Option<LoadResult>,
+    /// The program's load; `None` when no program was handed in. Not an empty result:
+    /// no load was made, and one over no files would still have run every whole-KB
+    /// pass and could carry their advisories.
+    pub program: Option<ProgramFiles>,
+}
+
+/// The program's half of a [`ProgramLoad`] — ONE load, read two ways.
+#[derive(Debug)]
+pub struct ProgramFiles {
+    /// Merged over the program's files.
+    pub merged: LoadResult,
+    /// File by file, parallel to the `program` slice handed in (see
+    /// [`load_all_per_file`] for who needs the boundary).
+    pub per_file: Vec<LoadResult>,
+}
+
+impl ProgramLoad {
+    /// Every advisory of both loads, EACH ONCE: what a library FILE raised while it
+    /// was loaded, then the program load's whole list.
+    ///
+    /// The two lists overlap. A lint that reads the whole KB runs at every load, so
+    /// the program's load raises the library's advisories again beside its own
+    /// ([`LoadWarning::is_raised_again_by_a_later_load`]); where a program was loaded
+    /// those are taken from ITS list, which holds them for both — in the lint's order,
+    /// the library's among the program's.
+    ///
+    /// The overlap is removed HERE and not in the lint. Making
+    /// `check_requires_shadows` skip what a seal holds is a frontier-driven pass with
+    /// its own question to answer first (`docs/design/test-infrastructure.md` §4 A3):
+    /// a later load can write an operation or a `requires` into a sealed sort, which
+    /// raises an advisory about it, and a provision of the spec, which withdraws one.
+    /// So a later load's own list still names the library's advisories, for whoever
+    /// reads one directly.
+    pub fn warnings(&self) -> impl Iterator<Item = &LoadWarning> {
+        let again = self.program.is_some();
+        self.library
+            .iter()
+            .flat_map(|library| library.warnings.iter())
+            .filter(move |warning| !(again && warning.is_raised_again_by_a_later_load()))
+            .chain(
+                self.program
+                    .iter()
+                    .flat_map(|program| program.merged.warnings.iter()),
+            )
+    }
+
+    /// The program's load file by file, parallel to the `program` slice handed in —
+    /// so empty when that was.
+    pub fn into_program_per_file(self) -> Vec<LoadResult> {
+        self.program.map(|program| program.per_file).unwrap_or_default()
+    }
+}
+
+/// WI-20261009-AN6CQ — A PROGRAM OVER ITS LIBRARY: `library` is handed to the loader
+/// FIRST, in a `load_all` of its own, that load is SEALED, and `program` is loaded in
+/// a LATER one.
+///
+/// This is how the product loads — the CLI, anthill-todo, a generated Rust bundle —
+/// with the standard library and its host bindings as `library`. It is not a second
+/// spelling of `load_all(library ∪ program)`: the language says a program is a later
+/// load than the standard library (`docs/kernel-language.md` §8.3), and the program is
+/// held to what that load left:
+///
+/// * it may not change the equality of a composite the library defines — an `eq` for
+///   the library's `List` is [`LoadError::EqualityOfEarlierSort`], where one call of
+///   both would have let it replace the derived one (WI-20261006-SZKV7);
+/// * it may not declare a library operation or type again ([`seal_declarations`],
+///   WI-20261009-4ZRTG) — unsealed, a later load's declaration is not seen as a second
+///   one, and its body replaced the library's in silence;
+/// * it may not reach into a library body, which the seal has typed once
+///   ([`LoadError::ChangesSealedCode`], WI-20261010-9BKZ4).
+///
+/// The seal is also what makes the second call cheap: the typer's whole-KB sweeps skip
+/// the library's bodies.
+///
+/// An empty `library` is no first call and NO SEAL — a KB built with no standard
+/// library, or with the library's own files as the program: one load, judged as one.
+/// An empty `program` is no second call. The KB is bootstrapped either way, as every
+/// load entry point leaves it ([`register_prelude`]). A library that does not load is
+/// returned as the errors it gave, like any other, and is not sealed.
+pub fn load_program(
+    kb: &mut KnowledgeBase,
+    library: &[&ParsedFile],
+    program: &[&ParsedFile],
+    resolver: &dyn SourceResolver,
+) -> Result<ProgramLoad, Vec<LoadError>> {
+    // With both slices empty neither call below is made, and each bootstraps for itself.
+    register_prelude(kb);
+    let library = if library.is_empty() {
+        None
+    } else {
+        let loaded = load_all(kb, library, resolver)?;
+        seal_declarations(kb);
+        Some(loaded)
+    };
+    if program.is_empty() {
+        return Ok(ProgramLoad {
+            library,
+            program: None,
+        });
+    }
+    let (merged, per_file) = load_all_per_file(kb, program, resolver)?;
+    Ok(ProgramLoad {
+        library,
+        program: Some(ProgramFiles { merged, per_file }),
+    })
 }
 
 /// Same as [`load_phase`] but also returns each file's individual

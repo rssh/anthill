@@ -176,11 +176,14 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     let user = parse::parse(source).expect("parse user source");
     let extras = parse_files(extra_paths);
 
-    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.extend(RUST_BINDINGS_PARSED.iter());
-    refs.extend(CPP_BINDINGS_PARSED.iter());
-    refs.extend(extras.iter());
-    refs.push(&user);
+    // WI-20261009-AN6CQ: as the product loads — the standard library with its host
+    // bindings first, on its own, and the program (here the extras and the fixture)
+    // in a later load.
+    let mut library: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    library.extend(RUST_BINDINGS_PARSED.iter());
+    library.extend(CPP_BINDINGS_PARSED.iter());
+    let mut program: Vec<&ParsedFile> = extras.iter().collect();
+    program.push(&user);
 
     let mut kb = KnowledgeBase::new();
     // WI-966: unconditionally strict. The panic used to be skipped when
@@ -188,7 +191,7 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     // workspace ever set, and one that silently downgraded EVERY test in this
     // crate to asserting over a half-loaded KB. A fixture that must load dirty
     // opts in by NAME, through `load_kb_with_lenient`.
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+    load::load_program(&mut kb, &library, &program, &NullResolver).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("{}", e);
         }
@@ -207,13 +210,12 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
 #[allow(dead_code)]
 pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&ParsedFile> = STDLIB_MINUS_CPP_PROFILE_PARSED.iter().collect();
-    refs.extend(RUST_BINDINGS_PARSED.iter());
-    refs.extend(CPP_BINDINGS_PARSED.iter());
-    refs.push(&user);
+    let mut library: Vec<&ParsedFile> = STDLIB_MINUS_CPP_PROFILE_PARSED.iter().collect();
+    library.extend(RUST_BINDINGS_PARSED.iter());
+    library.extend(CPP_BINDINGS_PARSED.iter());
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+    load::load_program(&mut kb, &library, &[&user], &NullResolver).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("{}", e);
         }
@@ -239,13 +241,34 @@ pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
 #[allow(dead_code)]
 pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
-    refs.extend(RUST_BINDINGS_PARSED.iter());
-    refs.extend(CPP_BINDINGS_PARSED.iter());
-    refs.push(&user);
+    let mut library: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    library.extend(RUST_BINDINGS_PARSED.iter());
+    library.extend(CPP_BINDINGS_PARSED.iter());
     let mut kb = KnowledgeBase::new();
     // The workspace's only discarded loader `Err`, and it is discarded HERE, once,
     // under a name that says so — not at 57 call sites that read as strict.
-    let _ = load::load_all(&mut kb, &refs, &NullResolver);
+    //
+    // What is discarded is a refusal of the FIXTURE'S OWN — a kind error, a recursive
+    // anonymous lambda. One raised because the fixture is a later load than the
+    // library (WI-20261009-AN6CQ: it changes a library sort's equality, or reaches
+    // into a library body) is the subject of no caller, and would leave its test
+    // asserting over a KB refused for another reason than the one it names. (A library
+    // name declared AGAIN is not told apart here: that error is a fixture's own when
+    // both declarations are in it.)
+    if let Err(errs) = load::load_program(&mut kb, &library, &[&user], &NullResolver) {
+        let the_orders = errs.iter().find(|e| {
+            matches!(
+                e.peel(),
+                load::LoadError::EqualityOfEarlierSort { .. }
+                    | load::LoadError::ChangesSealedCode { .. }
+            )
+        });
+        if let Some(e) = the_orders {
+            panic!(
+                "a lenient fixture is refused for what it does to the LIBRARY, which is \
+                 not the refusal its test is about: {e}"
+            );
+        }
+    }
     kb
 }

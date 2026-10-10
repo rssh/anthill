@@ -267,8 +267,11 @@ struct LoadArgs {
     verbose: bool,
 
     /// Do not auto-include the embedded standard library. By default
-    /// `anthill load` parses the stdlib alongside the requested paths
-    /// so that prelude / reflect / realization references resolve.
+    /// `anthill load` loads the stdlib first, on its own, so that prelude /
+    /// reflect / realization references resolve, and the requested paths
+    /// after it, as a program. With this flag the paths are ONE load: a
+    /// standard library named among them is loaded together with the rest,
+    /// which is then part of the library and not a program over it.
     #[arg(long = "no-stdlib")]
     no_stdlib: bool,
 }
@@ -317,7 +320,8 @@ struct QueryArgs {
 
     /// Answer from the given paths ALONE, without the embedded stdlib. WI-1047:
     /// the stdlib is included by DEFAULT (as it already was for `check`) — this
-    /// is the opt-out, and the same spelling `check` uses.
+    /// is the opt-out, and the same spelling `check` uses. The paths are then
+    /// ONE load, a standard library named among them included.
     #[arg(long)]
     no_stdlib: bool,
 }
@@ -540,7 +544,38 @@ fn output_filename(input: &Path) -> String {
 /// `check` already loaded the stdlib and already had `--no-stdlib`; `query` was the one
 /// command with neither, which is what marks this an oversight rather than a policy.
 fn load_kb(paths: &[PathBuf], verbose: bool, include_stdlib: bool) -> Result<KnowledgeBase, i32> {
-    load_kb_with_stdlib(paths, verbose, include_stdlib, &[])
+    load_kb_with_stdlib(paths, verbose, Library::embedded(include_stdlib))
+}
+
+/// WI-20261009-AN6CQ — what the CLI loads BEFORE the paths it is given, as their
+/// LIBRARY: in a load of its own, sealed (`load::load_program`).
+///
+/// An enum and not "a flag and a list of extras", which could also say "host bindings
+/// and no standard library": the bindings would then have been loaded alone, without
+/// the library they bind, and sealed as one (/code-review).
+#[derive(Clone, Copy)]
+enum Library {
+    /// `--no-stdlib`: no library. The paths are ONE load whatever they hold — a
+    /// standard library named on the command line is loaded together with the rest,
+    /// which is the only way the CLI has to load a library's own files.
+    None,
+    /// The embedded standard library, whose list ends with the Rust host bindings.
+    Stdlib,
+    /// The embedded standard library, and these embedded `(label, source)` host
+    /// bindings straight after it — the same position and ordering rationale as
+    /// `anthill::stdlib::SOURCES`' own trailing binding entries.
+    StdlibAnd(&'static [(&'static str, &'static str)]),
+}
+
+impl Library {
+    /// The embedded standard library, or none at all.
+    fn embedded(include_stdlib: bool) -> Self {
+        if include_stdlib {
+            Library::Stdlib
+        } else {
+            Library::None
+        }
+    }
 }
 
 /// WI-886 — the KB a C++ codegen run needs: the embedded stdlib PLUS this
@@ -556,18 +591,24 @@ fn load_kb(paths: &[PathBuf], verbose: bool, include_stdlib: bool) -> Result<Kno
 /// which would pull the rust bindings out of `SOURCES` too; one non-rust backend does
 /// not pay for that mechanism yet.
 fn load_kb_for_cpp_codegen(paths: &[PathBuf], verbose: bool) -> Result<KnowledgeBase, i32> {
-    load_kb_with_stdlib(paths, verbose, true, anthill_cpp_gen::BINDING_SOURCES)
+    load_kb_with_stdlib(
+        paths,
+        verbose,
+        Library::StdlibAnd(anthill_cpp_gen::BINDING_SOURCES),
+    )
 }
 
-/// `embedded_extras` is a slice of `(label, source)` pairs loaded straight after the
-/// stdlib and before the user's files — the same position and ordering rationale as
-/// `anthill::stdlib::SOURCES`' own trailing binding entries.
+/// The KB over `paths`, with `library` loaded before them — see [`Library`].
 fn load_kb_with_stdlib(
     paths: &[PathBuf],
     verbose: bool,
-    include_stdlib: bool,
-    embedded_extras: &[(&str, &str)],
+    library: Library,
 ) -> Result<KnowledgeBase, i32> {
+    let (include_stdlib, embedded_extras): (bool, &[(&str, &str)]) = match library {
+        Library::None => (false, &[]),
+        Library::Stdlib => (true, &[]),
+        Library::StdlibAnd(bindings) => (true, bindings),
+    };
     let files = match collect_anthill_files(paths) {
         Ok(f) => f,
         Err(errs) => {
@@ -610,6 +651,12 @@ fn load_kb_with_stdlib(
         parsed_files.extend(extra_files);
         errors.extend(extra_errors);
     }
+
+    // WI-20261009-AN6CQ: everything parsed so far is the LIBRARY ([`Library`]) and is
+    // loaded first, on its own, and sealed; what the user named is the program, a
+    // later load (`load::load_program`). With no library this is 0, and the paths are
+    // one load.
+    let library_len = parsed_files.len();
 
     for file in &files {
         let source = match fs::read_to_string(file) {
@@ -667,10 +714,11 @@ fn load_kb_with_stdlib(
     let resolver = FileSourceResolver::new(base_dirs);
 
     let refs: Vec<&ParsedFile> = parsed_files.iter().collect();
-    match load::load_all(&mut kb, &refs, &resolver) {
-        Ok(result) => {
+    let (library, program) = refs.split_at(library_len);
+    match load::load_program(&mut kb, library, program, &resolver) {
+        Ok(loaded) => {
             // WI-346: surface advisory load warnings (e.g. requires-shadow).
-            for w in &result.warnings {
+            for w in loaded.warnings() {
                 eprintln!("{w}");
             }
         }
@@ -1437,7 +1485,7 @@ CFLAGS += -std=c++20 -Wall -Wextra
 // ── Load command ────────────────────────────────────────────────────
 
 fn run_load(args: &LoadArgs) -> Result<(), i32> {
-    let kb = load_kb_with_stdlib(&args.paths, args.verbose, !args.no_stdlib, &[])?;
+    let kb = load_kb_with_stdlib(&args.paths, args.verbose, Library::embedded(!args.no_stdlib))?;
     println!(
         "loaded: {} facts, {} rules",
         kb.fact_count(),
@@ -2108,7 +2156,7 @@ fn resolve_listing_name(
 // ── Check command ───────────────────────────────────────────────────
 
 fn run_check(args: &CheckArgs) -> Result<(), i32> {
-    let mut kb = load_kb_with_stdlib(&args.paths, false, true, &[])?;
+    let mut kb = load_kb_with_stdlib(&args.paths, false, Library::Stdlib)?;
     println!(
         "loaded: {} facts, {} rules",
         kb.fact_count(),

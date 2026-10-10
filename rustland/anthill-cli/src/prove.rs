@@ -25,7 +25,7 @@ use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
 
 use crate::check::rand_suffix;
 use crate::witness::{ProofWitness, SmtVerdict};
-use crate::{load_kb_with_stdlib, ProveArgs};
+use crate::{load_kb_with_stdlib, Library, ProveArgs};
 use anthill_core::kb::ClauseKind;
 
 pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
@@ -36,7 +36,7 @@ pub(crate) fn run_prove(args: &ProveArgs) -> Result<(), i32> {
         return run_gc_cache(args, days);
     }
 
-    let mut kb = load_kb_with_stdlib(&args.paths, args.verbose, true, &[])?;
+    let mut kb = load_kb_with_stdlib(&args.paths, args.verbose, Library::Stdlib)?;
 
     let report = discharge_loaded_kb(&mut kb, args, false);
     if report.collected == 0 {
@@ -2608,7 +2608,7 @@ mod wi558_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("src.anthill");
         std::fs::write(&path, src).unwrap();
-        crate::load_kb_with_stdlib(&[path], false, true, &[])
+        crate::load_kb_with_stdlib(&[path], false, crate::Library::Stdlib)
             .unwrap_or_else(|c| panic!("load failed with code {c}"))
     }
 

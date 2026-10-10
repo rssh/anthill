@@ -2034,3 +2034,5 @@ mod provision_written_through_alias_test;
 mod wi_4zrtg_sealed_library_test;
 #[path = "include/wi_9bkz4_sealed_bodies_test.rs"]
 mod wi_9bkz4_sealed_bodies_test;
+#[path = "include/wi_an6cq_load_program_test.rs"]
+mod wi_an6cq_load_program_test;

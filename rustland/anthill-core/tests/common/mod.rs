@@ -545,8 +545,11 @@ pub fn recipe_control_load(source: &str) -> Result<(KnowledgeBase, load::LoadRes
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadRecipe {
-    /// `load_all(stdlib ∪ user)` — what the CLI does, and the recipe of
-    /// `ANTHILL_TEST_FRESH_LOAD=1`.
+    /// `load_all(stdlib ∪ user)` — the recipe of `ANTHILL_TEST_FRESH_LOAD=1`. It is how
+    /// the standard library's OWN files are loaded together, and since
+    /// WI-20261009-AN6CQ it is NOT how a program is: the product loads the library first
+    /// and the program after it (`load::load_program`), which is the order of the other
+    /// two recipes and of the shared base.
     OneShot,
     /// `load_all(stdlib)`, then `load_all(user)` into that same KB.
     TwoStep,
@@ -557,7 +560,8 @@ pub enum LoadRecipe {
 /// The default is the shared base: the stdlib is loaded ONCE per test binary and a test
 /// starts from a deep copy of it ([`SendableKb`], `KnowledgeBase::deep_clone`), into
 /// which its own files are loaded. That is [`LoadRecipe::TwoStep`] with the first call
-/// made once for everybody, so the two must agree for every test.
+/// made once for everybody, so the two must agree for every test — and it is the order
+/// the product loads a program in (`load::load_program`, WI-20261009-AN6CQ).
 ///
 /// NOT A [`LoadRecipe`], and the split is what keeps two things from being written at
 /// all: a test cannot NAME the shared base for a load that has a hook, and the fresh

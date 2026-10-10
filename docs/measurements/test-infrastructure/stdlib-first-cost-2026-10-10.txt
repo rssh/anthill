@@ -1,0 +1,37 @@
+# What it costs the product to load the standard library first, on its own, SEALED (WI-20261009-AN6CQ, as landed).
+# 2026-10-10 18:24-18:30. The same measurement as stdlib-first-cost-2026-10-09.txt, which was taken on the parked
+# branch BEFORE the library could be sealed (WI-20261009-4ZRTG) and before a sealed load's bodies were typed once
+# (WI-20261010-9BKZ4): there the second call typed the whole library again.
+#   `anthill load small.anthill` — a 6-line file: one sort, one entity, one fact — run 30 times, wall clock of the
+#   whole process (start, parse of the embedded files, load, exit).
+#   python3 time_start.py: subprocess.run([anthill, "load", file]) under time.perf_counter, one process at a time.
+# Build:   the gate's — anthill-core at opt-level 2, the two tree-sitter crates at 3.
+# BEFORE:  the same tree with `anthill-cli/src/main.rs` handing `load_program` everything as the program
+#          (`library_len = 0`), which is one load of the library and the file together — the pre-ticket shape.
+#          Only anthill-cli rebuilds.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. NOT QUIET: `top` before and after shows a JVM
+#          (not this session's) at 47-51 % of one core and the window server at 27-32 %; no build or test job.
+#          Compare within this block, and read the MINIMA first.
+
+AFTER   the library, sealed, then the file   n=30  min=556ms  median=595ms  max=674ms
+AFTER   (again)                              n=30  min=550ms  median=587ms  max=737ms
+BEFORE  one call                             n=30  min=471ms  median=578ms  max=730ms      <- a noisy run; its min agrees with the next
+BEFORE  (again)                              n=30  min=450ms  median=467ms  max=528ms
+AFTER   (after rebuilding back)              n=30  min=554ms  median=575ms  max=793ms
+
+# About +0.1 s a start: 450-470 ms -> 550-556 ms by the minima, 467 -> 575-595 ms by the medians of the quieter
+# runs. On 2026-10-09, unsealed, it was about +0.2 s (480-520 -> 660-720 ms): sealing the library took back half
+# of what loading it apart costs. What is left is the second call's other whole-KB passes over a library that did
+# not change — equality derivation, check_provider_requires, the tail (sealed-bodies-2026-10-10.txt has the split)
+# — and the library's derived rules, which no seal holds.
+
+# The two suites that spawn the binary, ONE run each, the gate on this tree (18:12, 670 s in all, of which about
+# 100 s of compile — most artifacts were left by a run that had stopped on a full disk minutes before):
+#   cli_tests     35.6 s     209 tests
+#   cmd_tests    162.8 s     298 tests, ~10 spawns a test
+#   wi_tests     235.6 s    6 537 tests
+# Beside the gate on main at 16:20 the same day (cli_tests 69.0 s for 198 tests, cmd_tests 251.3 s for 295) and
+# the three gates of 2026-10-09 (cmd_tests 142-270 s): hours apart, on a machine with other work on it — an order
+# of magnitude, not a measurement. Nothing here shows the new order as a cost to the gate.
+# The gate: 9 038 passed, 0 failed, 14 ignored; load recipe OBSERVED: SHARED BASE. No fixture of either spawning
+# suite, and none of anthill-cpp-gen, anthill-smt-gen or anthill-stl, is refused by the new order.

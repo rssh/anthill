@@ -1280,7 +1280,7 @@ mod tests {
         KbBridge::new(kb)
     }
 
-    /// Load the full stdlib plus `source` into a KbBridge. Needed when the test
+    /// Load the full stdlib and then `source` into a KbBridge. Needed when the test
     /// exercises a path that depends on the reflect stdlib being present — e.g.
     /// a quantified `constraint`, whose loader lowering + guard trigger-sort
     /// extraction resolve `anthill.reflect.LogicalQuery.*` symbols.
@@ -1305,17 +1305,18 @@ mod tests {
         collect(&root.join("../../stdlib/anthill"), &mut files);
         collect(&root.join("anthill"), &mut files);
         assert!(!files.is_empty(), "stdlib empty");
-        let mut parsed: Vec<_> = files
+        let parsed: Vec<_> = files
             .iter()
             .map(|f| {
                 let src = std::fs::read_to_string(f).expect("read stdlib");
                 parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
             })
             .collect();
-        parsed.push(parse::parse(source).expect("parse user source"));
-        let refs: Vec<_> = parsed.iter().collect();
+        // WI-20261009-AN6CQ: as the product loads — the library first, on its own.
+        let user = parse::parse(source).expect("parse user source");
+        let library: Vec<_> = parsed.iter().collect();
         let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
+        load::load_program(&mut kb, &library, &[&user], &NullResolver).unwrap_or_else(|errs| {
             for e in load::LoadError::render_all(&errs) {
                 eprintln!("{e}");
             }

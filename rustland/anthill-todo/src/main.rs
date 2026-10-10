@@ -5119,16 +5119,19 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
         eprintln!("error: {e}");
         return runner::EXIT_COMPILE;
     }
-    let all_refs: Vec<&ParsedFile> = stdlib_parsed
+    // WI-20261009-AN6CQ: the standard library is its own load, FIRST, and sealed;
+    // this program — the embedded bundle and the project's files — is a later one,
+    // and may not declare a library name again or supply a library sort's equality.
+    let library: Vec<&ParsedFile> = stdlib_parsed.iter().collect();
+    let program: Vec<&ParsedFile> = bundle_parsed
         .iter()
-        .chain(bundle_parsed.iter())
         .chain(project_items.iter().map(|pf| &pf.parsed))
         .collect();
-    let project_offset = stdlib_parsed.len() + bundle_parsed.len();
-    let per_file_results = match load::load_all_per_file(&mut kb, &all_refs, &NullResolver) {
-        // `merged.warnings` is dropped deliberately: the stdlib and bundle are
+    let project_offset = bundle_parsed.len();
+    let per_file_results = match load::load_program(&mut kb, &library, &program, &NullResolver) {
+        // The warnings are dropped deliberately: the stdlib and bundle are
         // EMBEDDED, so their advisories name files the user cannot act on. WI-745.
-        Ok((_merged, per_file)) => per_file,
+        Ok(loaded) => loaded.into_program_per_file(),
         // WI-744: every `LoadError` blocks (see `LoadError`'s doc), so there is no
         // fallback value here. The old fall-through returned an EMPTY per-file
         // result, and `record_source` zips `project_items` against it — so zero

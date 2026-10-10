@@ -57,6 +57,12 @@ fn discards_a_loader_verdict(line: &str) -> bool {
         // fixing, which is exactly why the guard has to carry the name now rather than
         // when one appears.
         "load_all_per_file(",
+        // WI-20261009-AN6CQ — and the fourth: `load_program(`, the entry point the
+        // PRODUCT loads through and, since that ticket, every other crate's test
+        // harness. It contains none of the three above, so `let _ =
+        // load::load_program(…)` was the discard this guard could not see
+        // (/code-review).
+        "load_program(",
         "load_incremental(",
         "load::load(",
         "scan_definitions(",
@@ -136,6 +142,8 @@ fn the_recogniser_fires_on_the_pattern_and_not_on_prose() {
         "let _ = load::load_incremental(&mut kb, &refs, &NullResolver);",
         "    let _ = load::load(&mut kb, &parsed, &NullResolver);",
         "let _ = load::load_all_with(&mut kb, &refs, &NullResolver, opts);",
+        "    let _ = load::load_all_per_file(&mut kb, &refs, &NullResolver);",
+        "    let _ = load::load_program(&mut kb, &library, &[&user], &NullResolver);",
         "    let _ = load::scan_definitions(&mut kb, &[&parsed]);",
     ] {
         assert!(discards_a_loader_verdict(fires), "must flag: {fires}");

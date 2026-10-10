@@ -261,13 +261,16 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
         entry = opts.entry_qname,
     ));
 
-    // Embedded sources table.
-    out.push_str("static EMBEDDED_SOURCES: &[(&str, &str)] = &[\n");
+    // Embedded sources: TWO tables, because they are two loads (WI-20261009-AN6CQ) —
+    // the standard library first, on its own and sealed, and the program after it.
+    out.push_str("static EMBEDDED_STDLIB: &[(&str, &str)] = &[\n");
     for rel in stdlib_rel {
         out.push_str(&format!(
             "    (\"stdlib/{rel}\", include_str!(\"../spec/stdlib/{rel}\")),\n"
         ));
     }
+    out.push_str("];\n\n");
+    out.push_str("static EMBEDDED_PROGRAM: &[(&str, &str)] = &[\n");
     for rel in user_rel {
         out.push_str(&format!(
             "    (\"user/{rel}\", include_str!(\"../spec/user/{rel}\")),\n"
@@ -276,9 +279,9 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
     out.push_str("];\n\n");
 
     out.push_str(&format!(
-        r#"fn build_kb() -> Result<KnowledgeBase, String> {{
+        r#"fn parse_embedded(sources: &[(&str, &str)]) -> Result<Vec<parse::ir::ParsedFile>, String> {{
     let mut parsed = Vec::new();
-    for (path, source) in EMBEDDED_SOURCES {{
+    for (path, source) in sources {{
         match parse::parse(source) {{
             Ok(p) => parsed.push(p),
             Err(errs) => {{
@@ -289,9 +292,18 @@ fn render_main(opts: &BundleOptions, user_rel: &[String], stdlib_rel: &[String])
             }}
         }}
     }}
-    let refs: Vec<_> = parsed.iter().collect();
+    Ok(parsed)
+}}
+
+fn build_kb() -> Result<KnowledgeBase, String> {{
+    let stdlib = parse_embedded(EMBEDDED_STDLIB)?;
+    let program = parse_embedded(EMBEDDED_PROGRAM)?;
+    let library: Vec<_> = stdlib.iter().collect();
+    let program: Vec<_> = program.iter().collect();
     let mut kb = KnowledgeBase::new();
-    if let Err(errs) = load::load_all(&mut kb, &refs, &NullResolver) {{
+    // The standard library first, on its own, and sealed; the program is a later
+    // load, held to what the library's load left (`load::load_program`).
+    if let Err(errs) = load::load_program(&mut kb, &library, &program, &NullResolver) {{
         // Batched: each source is indexed once, not re-walked per error.
         let detail: Vec<String> = load::LoadError::render_all(&errs).collect();
         return Err(format!("load failed: {{}}", detail.join("; ")));

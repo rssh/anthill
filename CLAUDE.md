@@ -102,6 +102,17 @@ Variables: `?name` (named, shared within scope), `?` (anonymous, each occurrence
   → load → KnowledgeBase
 ```
 
+**The standard library is its own load, SEALED, and a program is a later one**
+(WI-20261009-AN6CQ; `load::load_program`, `docs/kernel-language.md` §8.3). The CLI,
+anthill-todo and a generated bundle hand the loader the stdlib with its host bindings
+FIRST, seal that load, and load the program's files in a second `load_all`. What a
+program is held to by it: it may not supply the equality of a composite the stdlib
+defines (`List`, `Option`, …) — it wraps the value in a sort of its own; it may not
+declare a stdlib operation or type again; and it may not reach into a stdlib body, with
+a `@[simp]` rule that rewrites one or a provision at stdlib types that changes who
+answers a dispatch there. `load_all` over everything in one call is still how the
+library's own files are loaded — `anthill … --no-stdlib <the library's directories>`.
+
 **Cross-file mutual recursion is supported** (WI-321): pass 1 defines every name
 across every file before any pass 2 runs, so two files whose sorts reference each
 other both load. This ordering is load-bearing — see the `scan_definitions`

@@ -154,3 +154,6 @@ mod wiejmw4_init_project_config_test;
 
 #[path = "include/cmd_dependents_test.rs"]
 mod cmd_dependents_test;
+
+#[path = "include/wi_an6cq_stdlib_first_test.rs"]
+mod wi_an6cq_stdlib_first_test;
