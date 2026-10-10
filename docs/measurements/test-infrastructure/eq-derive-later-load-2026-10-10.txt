@@ -1,0 +1,71 @@
+# Where equality derivation's time goes, in a full load and in a LATER one — and what the same reads cost through
+# the provider index. 2026-10-10, 22:43-22:52. For lever A3's second pass (docs/design/test-infrastructure.md §4 A3).
+#   cp docs/measurements/test-infrastructure/bench_load.rs rustland/anthill-core/examples/
+#   cd rustland && cargo build --example bench_load -p anthill-core --config <the three opt lines>
+#   ANTHILL_LOAD_TIMING=1 ITERS=15 ./target/debug/examples/bench_load
+# Tree:    5273d5a2 (main), plus TEMPORARY marks, NOT KEPT, in kb/eq_derive.rs: an `[eq_timing]` line after each
+#          step of `classify`, `total_composites`, `derive_total_eq` and `derive_conditional_eq`, with the size of
+#          what the step produced (`#n`); and the probe of the second block.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build). ONE thread.
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No cargo beside the runs; a bloop JVM held
+#          half of one core before and during them (`top`: java 51 %).
+# Medians of 15. The bench's first block is `full` — a fresh KB, the stdlib's 87 files and one small user file in
+# ONE call; its last is `sealed clone+incr` — a copy of the sealed base, then the user file loaded into it, which
+# is what a test on the shared base pays. The user file defines no composite, so its load derives nothing.
+
+== 1. the pass as it is ==
+                                                                 full load          later load, on a sealed copy
+the whole load                                                    283.0 ms           110.0 ms
+eq_derive::classify + derive_total_eq + derive_conditional_eq      25.5 ms   9.0 %    43.0 ms  39.1 %
+  classify                                                          0.6               1.0
+      EqDispatchIndex::build                                        0.07              0.21
+      composite_sorts                          (127 composites)     0.05              0.06
+      the boundary set                         (3)                  0.06              0.07
+      each composite's field sorts                                  0.29              0.29
+      noneq_provider_sorts                     (1 leaf / 6)         0.06              0.29
+      the partial fixpoint                     (6 partial)          0.07              0.05
+  derive_total_eq                                                   2.4               6.8
+      total_composites                                              1.77              6.43
+          its seed filter: `sort_provides(s, Eq)` per composite     1.36  (110 seeded)  5.53  (55 seeded)
+          its fixpoint                                              0.24  (41 total)    0.62  (0 total)
+      asserting the total rows                                      0.44              0.03
+      `PartialEq` for the partial composites                        0.21              0.35
+  derive_conditional_eq                                            22.1              34.1
+      spoken_for                               (59 / 76 carriers)   0.14              0.28
+      the candidates filter: two `sort_provides` per composite      3.66  (77 candidates)  12.81  (60 candidates)
+      the fixpoint for `PartialEq`                                  6.48  (17 derivable)    9.69  (0 derivable)
+      asserting its rows                                            0.24              0.07
+      the fixpoint for `Eq`                                        11.33  (17 derivable)   11.18  (0 derivable)
+      asserting its rows                                            0.24              0.07
+# The classification — every composite, its boundary, its fields, the fixpoint — is 1 ms in either load.
+# The rest is reads of the provider relation, made with `kb.provides_index` at `None`, where `sort_provides` and
+# the conditions lookup each fall back to a scan of the whole relation.
+# The later load is the DEARER of the two, deriving nothing: the relation it scans now holds the rows the
+# stdlib's load derived, and the 60 candidates are the stdlib's composites that load found underivable — asked
+# again, field by field, at every load, and found underivable again (77 candidates - 17 derived = 60).
+
+== 2. the probe: the same pass on the later load, the provider index built first ==
+# `build_provides_index(kb)` at the top of `classify` when the KB has recorded equality signatures (a later load),
+# dropped again at the end of `derive_conditional_eq`. Valid only because this later load asserts nothing in the
+# pass; a load that does must keep the index current, which the probe does not.
+                                                                 as it is           index built first
+the whole later load                                              110.0 ms            62.9 ms
+eq_derive::classify + derive_total_eq + derive_conditional_eq      43.0 ms             2.1 ms
+      build_provides_index                                                             0.27
+      classify                                                      1.0                0.7
+      total_composites                                              6.43               0.27
+      the candidates filter                                        12.81               0.10
+      the two fixpoints                                            20.87               0.43
+# Every count is the same in both columns: 127 composites, 3 boundaries, 6 partial, 76 spoken for, 55 seeded and
+# 0 total, 60 candidates and 0 derivable.
+#
+# the bench's own rows, the two runs back to back        as it is     index built first
+#   incr                                                  161.8 ms     127.5 ms
+#   sealed incr                                            98.9 ms      62.6 ms
+#   clone+incr                                            171.6 ms     137.3 ms
+#   sealed clone+incr                                     116.9 ms      70.1 ms      (a test's load on the shared base)
+#   full (the probe does not reach it)                    283.2 ms     264.2 ms      (noise: the same code)
+#
+# What is left of a later load at 62.9 ms: check_provider_requires 23.8 ms (38 %), register_specialization_witnesses
+# 9.9 (16 %), type_check_sorts 7.2 (11 %), check_override_refinement 3.7 (6 %), eq_derive::run 2.5 (4 %).
+# `check_provider_requires` runs with the index standing, so its cost is not this one.

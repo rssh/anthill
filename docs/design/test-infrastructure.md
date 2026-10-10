@@ -22,6 +22,10 @@ the shared base 179 ms → 107 ms.
 **And the product loads the way the tests do since the same day** (WI-20261009-AN6CQ:
 §8.7): the standard library first, on its own and sealed, the program after it — so the
 gate's default recipe is the order users run.
+**The loads a gate executes were counted again on that tree the same evening** (§2.4):
+the stdlib is loaded 455 times where it was loaded 9 830 times, loading is still 91 % of
+`anthill-core`'s thread-time, equality derivation and `check_provider_requires` are 62 %
+of what a test's load now costs, and the base's one lock is half busy (§5.1).
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -349,6 +353,64 @@ from disk beside the stdlib — and it does now (`LoadOutcome`, `UserFile`), thr
 read of the switch. The two shapes the ticket set aside as decisions were both settled
 by giving the recipe the capability: it returns the KB whatever the verdict, and it
 takes paths. The library's 79 stay as they were.
+
+**Re-taken 2026-10-10 — on the shared base, the library sealed and its bodies typed
+once** (`load-count-2026-10-10.txt`; main at 5273d5a2, the gate's build, 12 threads, two
+runs, 8 164 passed and 0 failed in each). The trace was taken with `--show-output` in
+place of `--nocapture`: libtest then prints a test's captured lines together, so each
+phase line is given to ONE load and each load to one test, which the counts above could
+not do — and the run is no slower for it (`wi_tests` 240 s and 230 s traced, 236 s
+untraced in that day's gate). The report is a script kept beside the raw file (§10).
+Run 1's values; run 2's shares are within a point of them.
+
+| | loads that carry the stdlib | of them the base's own build | later loads into a copy of the base | other later loads | copies of the base | loading, as a share of the binary's thread-time |
+|---|---:|---:|---:|---:|---:|---:|
+| `wi_tests` (6 561 tests) | 242 | 1 | 9 430 | 272 | 9 553 | 94 % |
+| `parse_tests` | 7 | 1 | 43 | 224 | 241 | 81 % |
+| the other nine integration binaries | 99 | 9 | 386 | 37 | 394 | 12–81 % |
+| lib unit tests (their own loader, `kb/test_support.rs`) | 107 | 0 | 0 | 106 | 0 | 81–82 % |
+| **all twelve** | **455** | **11** | **9 859** | **639** | **10 188** | **91 %** |
+
+So **the stdlib is loaded 455 times a gate where it was loaded 9 830 times** two days
+before — once a binary for the base, and for the rest by the tests that are off the base:
+by a hook, by options other than the default, by name, or through the library's own
+unit-test loader — **and the suite is still made of loading: 91 % of its thread-time,
+94 % of `wi_tests`'**. What changed is WHICH load. It is a test's own files into a copy
+of the base, 1.4 of them a test in `wi_tests`, at 234–244 ms each as one of twelve
+threads pays it (96 ms alone on a quiet thread, §9). Of `wi_tests`' thread-time:
+
+| | share |
+|---|---:|
+| later loads (9 430 into a copy of the base, 272 others) | 82 % |
+| loads that carry the stdlib (242) | 6 % |
+| copies of the base (9 553), 12 ms each | 4 % |
+| waiting for the base's one lock | 2 % |
+| everything else a test does — its body, the harness — at most | 6 % |
+
+And what a load on the base is made of is the list §4 A3 left open, now in measured
+order. Each of the first six is a pass over the whole KB, whatever the file adds:
+
+| phase | share of a load on the base |
+|---|---:|
+| equality derivation (`eq_derive::classify + derive_total_eq + derive_conditional_eq`) | 36 % |
+| `check_provider_requires` | 26 % |
+| `register_specialization_witnesses` | 10 % |
+| `type_check_sorts` — what the seal does not hold | 8–9 % |
+| `check_override_refinement` | 4 % |
+| `eq_derive::run` | 3 % |
+| the other 49 phases; loading the file itself is 0.6 % | 13 % |
+
+Taking a pass's time out of every later load and leaving the rest as measured, `wi_tests`
+goes from 240 s to 170 s without equality derivation, to 118 s without
+`check_provider_requires` as well, to 69 s without the next four; 43 s is what the
+copies, the stdlib-carrying loads and the bodies cost with no later-load time at all.
+That is arithmetic on one binary's thread-time and not a measurement — and its second
+step runs into the base's lock (§5.1).
+
+The loads that still carry the stdlib are 9 % of the suite's thread-time, and will be a
+larger share of a faster suite: 107 in the library's unit tests, 82 in `guardians_test`
+(its host functions are mounted before the load), and 242 in `wi_tests`, 143 of them in
+four files. The raw file lists them by test file.
 
 ### 2.5 The optimized-build numbers
 
@@ -712,6 +774,23 @@ equation whose guard a later load's facts make provable.
 Not this pass, and next by the table in §9: equality derivation, `check_provider_requires`,
 the tail.
 
+**Equality derivation, measured 2026-10-10 — and it is not a frontier's to fix**
+(`eq-derive-later-load-2026-10-10.txt`; one quiet thread, the gate's build, temporary
+marks). On a later load the pass is 43 ms of 110, and classifying all 127 composites is
+1 ms of it. The rest is reads of the provider relation made with `kb.provides_index` at
+`None`, each a scan of the whole relation: `sort_provides` per composite in two filters,
+and per field in the conditional fixpoint — which asks again, at every load, about the 60
+stdlib composites the stdlib's own load found underivable. The later load is the DEARER
+of the two (the pass is 25 ms of a 283 ms full load) because the relation it scans holds
+the derived rows by then. Probed with the index built first, on a load that asserts
+nothing in the pass: 43 ms → 2.1 ms with every count unchanged, the load 110 → 63 ms, a
+test's load on the shared base 117 → 70 ms. So this pass wants its reads indexed and
+stays a pass over every composite — no rule about what a later load may do is needed for
+it. **Filed the same day as WI-20261010-ANK4X** (user): the index takes a row where one
+is asserted, so it is true through the pass's own asserts and no producer can leave it
+stale — the other way, a rebuild after each batch of rows, was weighed and not taken.
+The pool of bases (§5.1) rides with it.
+
 Neither is a hypothetical for the tests alone: `KB.loaded` (`eval/builtins.rs`,
 `kb_loaded`) calls `load_all` on the live KB, which is the second call of a two-step load.
 Until the fix above it accepted `fact box(n: "seven")` over a base `box(n: Int64)`, and
@@ -792,6 +871,20 @@ breakdown, which was taken with timers in and ran a fifth slower than the copy a
 And twelve threads copying under one mutex is no longer "far below one load" once A3
 lands: at ~15 ms a test, twelve threads ask for ~800 copies a second and one lock gives
 ~135. The pool of bases is then a requirement, not a fallback — WI-059's to size.
+
+**Measured 2026-10-10, on the landed tree** (`load-count-2026-10-10.txt`; §2.4), with a
+timer around the lock and the copy in `shared_base_instance` — temporary, not kept.
+`wi_tests` takes 9 553 copies in 230–240 s: **40–42 a second asked**. A copy made beside
+eleven other threads takes 12.2–12.5 ms, not the 7 ms it takes alone, so **one lock
+gives 80–82 a second** — it is half busy today. A copy waits 6–7 ms for it on average,
+under a millisecond at the median and over 18–20 ms one time in ten, which is 2 % of
+the binary's thread-time. So the lock costs little now and is the next floor: 9 553
+copies one at a time are 116–119 s (65 s at the quiet 7 ms), and with one base `wi_tests`
+cannot finish in less whatever a load costs. Equality derivation and
+`check_provider_requires` out of the later loads would put it at 112–118 s by §2.4's
+arithmetic — so the pool is owed by the second of those passes, and the wait will have
+grown well before the floor is reached. **It is filed with the first** (user, same day:
+WI-20261010-ANK4X), the timer kept as a trace line.
 
 ### 5.2 What has to be true of `KnowledgeBase`
 
@@ -1012,7 +1105,7 @@ plan from. The load average that the first write-up of these runs called unexpla
 a five-second sample of `wi_tests` on the base shows its threads hashing, comparing and
 allocating, and waiting on the base's lock nowhere near the top of any stack. §2.4's
 count of loads by route was not re-taken, and the table wants re-taking on a quiet
-machine.
+machine. (**Re-taken 2026-10-10**, after the seal and the typer's pass: §2.4.)
 
 ### 5.4 The subprocess suites
 
@@ -1148,6 +1241,10 @@ informed; it does not recommend changing the rule until A and B have been measur
    first by measurement — 99 ms of a 267 ms second call, the typer 119 ms in all, then
    equality derivation 69 ms and `check_provider_requires` 33 ms; the ticket has the
    table. The other passes are not filed. **Delivered the same day** (§4 A3).
+   **A3's second pass filed 2026-10-10** (user) as WI-20261010-ANK4X: equality
+   derivation, which measured as scans of the provider relation and not as a frontier —
+   the provider index takes a row where one is asserted — with the pool of bases in the
+   same ticket (§4 A3, §5.1). `check_provider_requires` and the rest are not filed.
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
@@ -1226,9 +1323,9 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
 | 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
-| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, **done 2026-10-10**), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases. **The typer's pass**: a later load after a sealed stdlib 159 ms → 96 ms, a test's load on the shared base 179 ms → 107 ms, `full / (clone + incr)` 1.5 → 2.5; `wi_tests` 248 s in the gate where the shared base alone gave 412–491 s (`sealed-bodies-2026-10-10.txt`) |
+| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, **done 2026-10-10**), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases. **The typer's pass**: a later load after a sealed stdlib 159 ms → 96 ms, a test's load on the shared base 179 ms → 107 ms, `full / (clone + incr)` 1.5 → 2.5; `wi_tests` 248 s in the gate where the shared base alone gave 412–491 s (`sealed-bodies-2026-10-10.txt`). **What is left, counted over a whole run the same evening** (§2.4): later loads are 82 % of `wi_tests`' thread-time, and of one of them equality derivation is 36 %, `check_provider_requires` 26 %, `register_specialization_witnesses` 10 %, the typer's remainder 8–9 %, `check_override_refinement` 4 %, `eq_derive::run` 3 % — that order, one ticket a pass; `wi_tests` 240 s → 170 s → 118 s → 69 s by arithmetic as they go |
 | 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
-| 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) |
+| 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) — **owed by step 4's second pass**: one lock gives 80 copies a second and `wi_tests` asks for 40 today (measured 2026-10-10) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
 | 7 | A4 hot spots as a level-2 profile ranks them; A5 allocator | the bench, one full run | single-digit % each. C3 thread count is measured and is not a lever (§6) |
 
@@ -1283,6 +1380,19 @@ grep -c 'load_with_visited x' load-trace.log
 # observed (`load recipe OBSERVED`).
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core
 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+
+# the same, with every load given to its test and classified (§2.4's table of 2026-10-10).
+# `--show-output` keeps libtest capturing and prints a test's lines together, where
+# `--nocapture` interleaves twelve threads'; it also costs the run nothing. The report
+# counts the copies of the shared base from the recipe's own line; what a copy COSTS, and
+# how long it waited for the base's lock, needs a `base_copy` line in
+# `shared_base_instance` that is not in the tree — the script's header has its spelling.
+ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+  --config 'profile.dev.package.anthill-core.opt-level=2' \
+  --config 'profile.dev.package.tree-sitter.opt-level=3' \
+  --config 'profile.dev.package.tree-sitter-anthill.opt-level=3' \
+  -- --show-output > load-trace.log 2>&1
+python3 ../docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
 
 # how many of the stdlib loads the switch does NOT reach (§2.4): the trace above with the
 # switch on. A `load_with_visited x N` with N ABOVE the stdlib's file count (87 today) is
