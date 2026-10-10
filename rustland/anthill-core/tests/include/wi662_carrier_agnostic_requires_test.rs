@@ -18,6 +18,7 @@ use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term};
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::typing::{requires_chain, requires_tree};
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
@@ -228,12 +229,10 @@ end
         _ => None,
     }
     .expect("Foo spec carries an X binding");
-    let x_head = match x_binding {
-        Value::Term { id, .. } => match kb.get_term(*id) {
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            Term::Fn { functor, .. } => Some(*functor),
-            _ => None,
-        },
+    // Read through the view: the binding is `Int64` on whichever carrier it rides.
+    let x_head = match x_binding.head(&kb) {
+        ViewHead::Functor { functor, .. } => functor,
+        ViewHead::Ident(s) => Some(s),
         _ => None,
     };
     assert_eq!(

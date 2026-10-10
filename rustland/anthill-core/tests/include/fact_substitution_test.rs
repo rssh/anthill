@@ -5,8 +5,11 @@
 //! - SortRequiresInfo spec (SortView) completed with all bindings
 //! - resolve_sort_instantiation_param builtin extracts bindings
 //! - auto-bind works for same-named operations
+use anthill_core::eval::Value;
+use anthill_core::intern::Symbol;
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 
 use smallvec::SmallVec;
@@ -56,51 +59,75 @@ fn make_goal(kb: &mut KnowledgeBase, name: &str, pos_args: &[TermId]) -> TermId 
     })
 }
 
-/// Find a named arg key symbol by short name.
-fn find_named_arg_sym_by_short(
-    kb: &KnowledgeBase,
-    named_args: &[(anthill_core::intern::Symbol, TermId)],
-    short: &str,
-) -> Option<anthill_core::intern::Symbol> {
-    named_args
-        .iter()
-        .find(|(sym, _)| {
-            let name = kb.local_name_of(*sym);
-            let s = name.rsplit('.').next().unwrap_or(name);
-            s == short
-        })
-        .map(|(sym, _)| *sym)
+/// The last segment of a name.
+fn short_of(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
 }
 
-/// Find a named arg by its short name (last segment of qualified name).
-fn find_named_arg_by_short(
-    kb: &KnowledgeBase,
-    named_args: &[(anthill_core::intern::Symbol, TermId)],
-    short: &str,
-) -> Option<TermId> {
-    named_args
-        .iter()
-        .find(|(sym, _)| {
-            let name = kb.local_name_of(*sym);
-            let s = name.rsplit('.').next().unwrap_or(name);
-            s == short
-        })
-        .map(|(_, tid)| *tid)
+/// The spec of the `requires` clause written on `sort_qn`, as the resolver answers it —
+/// on whichever carrier it rides. Every reader below takes it through the view.
+fn required_spec(kb: &mut KnowledgeBase, sort_qn: &str) -> Value {
+    let sort_term = kb.resolve_qualified_name_term(sort_qn);
+    let var_inst = make_var(kb, "inst");
+    let goal = make_requires_query(kb, sort_term, var_inst);
+    let solutions = kb.resolve(&[goal], &default_config());
+    assert!(!solutions.is_empty(), "should find Requires for {sort_qn}");
+    kb.reify(var_inst, &solutions[0].subst)
 }
 
-/// Extract the short name from a term (works for both Fn and Ref).
-fn extract_short_name(kb: &KnowledgeBase, tid: TermId) -> String {
-    match kb.get_term(tid) {
-        Term::Ref(sym) => {
-            let name = kb.local_name_of(*sym);
-            name.rsplit('.').next().unwrap_or(name).to_owned()
+/// A spec's binding by its short name (the key may be scoped, `Monoid.T`): the key and
+/// the value.
+fn binding_by_short(kb: &KnowledgeBase, spec: &Value, short: &str) -> Option<(Symbol, Value)> {
+    let key = spec
+        .named_keys(kb)
+        .into_iter()
+        .find(|key| short_of(kb.local_name_of(*key)) == short)?;
+    Some((key, spec.named_arg(kb, key)?.to_value()))
+}
+
+/// The short name a type or an operation reference is headed by.
+fn head_short_name<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(name),
+            ..
         }
-        Term::Fn { functor, .. } => {
-            let name = kb.local_name_of(*functor);
-            name.rsplit('.').next().unwrap_or(name).to_owned()
-        }
-        _ => format!("{:?}", kb.get_term(tid)),
+        | ViewHead::Ident(name) => short_of(kb.local_name_of(name)).to_owned(),
+        other => format!("{other:?}"),
     }
+}
+
+/// The short name `short` is bound to in `spec`.
+fn bound_short_name(kb: &KnowledgeBase, spec: &Value, short: &str) -> String {
+    let (_, value) = binding_by_short(kb, spec, short)
+        .unwrap_or_else(|| panic!("spec should have a `{short}` binding"));
+    head_short_name(kb, &value)
+}
+
+/// What `resolve_sort_instantiation_param` answers for the binding `short` of the
+/// requirement written on `sort_qn`, asked in ONE query with the requirement itself — so
+/// the spec reaches the builtin as the resolver bound it.
+fn resolved_binding_short_name(kb: &mut KnowledgeBase, sort_qn: &str, short: &str) -> String {
+    let spec = required_spec(kb, sort_qn);
+    let (key, _) = binding_by_short(kb, &spec, short)
+        .unwrap_or_else(|| panic!("spec should have a `{short}` binding"));
+    let sort_term = kb.resolve_qualified_name_term(sort_qn);
+    let var_inst = make_var(kb, "inst");
+    let req_goal = make_requires_query(kb, sort_term, var_inst);
+    let key_ref = kb.alloc(Term::Ref(key));
+    let var_val = make_var(kb, "val");
+    let param_goal = make_goal(
+        kb,
+        "anthill.reflect.resolve_sort_instantiation_param",
+        &[var_inst, key_ref, var_val],
+    );
+    let solutions = kb.resolve(&[req_goal, param_goal], &default_config());
+    assert!(
+        !solutions.is_empty(),
+        "resolve_sort_instantiation_param should succeed for {short}"
+    );
+    let value = kb.reify(var_val, &solutions[0].subst);
+    head_short_name(kb, &value)
 }
 
 // ── base_subst tests ──────────────────────────────────────────
@@ -158,108 +185,26 @@ fn base_subst_computed_for_monoid() {
 #[test]
 fn requires_spec_inst_completed_for_int_add() {
     let mut kb = load_monoid_kb();
-
-    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
-    let var_inst = make_var(&mut kb, "inst");
-    let goal = make_requires_query(&mut kb, int_add_term, var_inst);
-
-    let config = default_config();
-    let solutions = kb.resolve(&[goal], &config);
-    assert!(!solutions.is_empty(), "should find Requires for IntAdd");
-
-    let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst).expect_term();
-
     // spec should be SortView(Monoid(), T=Int64(), combine=Ref(add), identity=Ref(zero))
-    match kb.get_term(inst_tid).clone() {
-        Term::Fn {
-            ref functor,
-            ref named_args,
-            ..
-        } => {
-            let functor_name = kb.local_name_of(*functor);
-            assert!(
-                functor_name == "SortView" || functor_name.ends_with(".SortView"),
-                "spec should be SortView, got: {functor_name}"
-            );
-            // Should have all 3 bindings
-            assert_eq!(
-                named_args.len(),
-                3,
-                "spec should have 3 named args (T, combine, identity), got {}",
-                named_args.len()
-            );
-
-            // Check T binding -> Int64
-            let t_tid = find_named_arg_by_short(&kb, &named_args, "T");
-            assert!(t_tid.is_some(), "should have T binding");
-            let t_short = extract_short_name(&kb, t_tid.unwrap());
-            assert_eq!(
-                t_short, "Int64",
-                "T should be bound to Int64, got: {t_short}"
-            );
-
-            // Check combine binding -> add
-            let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
-            assert!(c_tid.is_some(), "should have combine binding");
-            let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(
-                c_short, "add",
-                "combine should be bound to add, got: {c_short}"
-            );
-
-            // Check identity binding -> zero
-            let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
-            assert!(i_tid.is_some(), "should have identity binding");
-            let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(
-                i_short, "zero",
-                "identity should be bound to zero, got: {i_short}"
-            );
-        }
-        _ => panic!("spec should be Fn term"),
-    }
+    let spec = required_spec(&mut kb, "test.monoid.IntAdd");
+    assert_eq!(head_short_name(&kb, &spec), "SortView", "spec should be SortView");
+    assert_eq!(
+        spec.named_keys(&kb).len(),
+        3,
+        "spec should have 3 named args (T, combine, identity)"
+    );
+    assert_eq!(bound_short_name(&kb, &spec, "T"), "Int64");
+    assert_eq!(bound_short_name(&kb, &spec, "combine"), "add");
+    assert_eq!(bound_short_name(&kb, &spec, "identity"), "zero");
 }
 
 #[test]
 fn requires_spec_inst_completed_for_int_mul() {
     let mut kb = load_monoid_kb();
-
-    let int_mul_term = kb.resolve_qualified_name_term("test.monoid.IntMul");
-    let var_inst = make_var(&mut kb, "inst");
-    let goal = make_requires_query(&mut kb, int_mul_term, var_inst);
-
-    let config = default_config();
-    let solutions = kb.resolve(&[goal], &config);
-    assert!(!solutions.is_empty(), "should find Requires for IntMul");
-
-    let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst).expect_term();
-
-    match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref named_args, .. } => {
-            assert_eq!(named_args.len(), 3, "spec should have 3 named args");
-
-            // Check combine -> multiply
-            let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
-            assert!(c_tid.is_some(), "should have combine binding");
-            let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(
-                c_short, "multiply",
-                "combine should be bound to multiply, got: {c_short}"
-            );
-
-            // Check identity -> one
-            let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
-            assert!(i_tid.is_some(), "should have identity binding");
-            let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(
-                i_short, "one",
-                "identity should be bound to one, got: {i_short}"
-            );
-        }
-        _ => panic!("spec should be Fn term"),
-    }
+    let spec = required_spec(&mut kb, "test.monoid.IntMul");
+    assert_eq!(spec.named_keys(&kb).len(), 3, "spec should have 3 named args");
+    assert_eq!(bound_short_name(&kb, &spec, "combine"), "multiply");
+    assert_eq!(bound_short_name(&kb, &spec, "identity"), "one");
 }
 
 // ── resolve_sort_instantiation_param tests ──────────────────────
@@ -267,94 +212,21 @@ fn requires_spec_inst_completed_for_int_mul() {
 #[test]
 fn resolve_sort_inst_param_extracts_type_binding() {
     let mut kb = load_monoid_kb();
-
-    // First get the spec for IntAdd
-    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
-    let var_inst = make_var(&mut kb, "inst");
-    let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
-
-    let config = default_config();
-    let solutions = kb.resolve(&[req_goal], &config);
-    assert!(!solutions.is_empty());
-    let inst_tid = kb.reify(var_inst, &solutions[0].subst).expect_term();
-
-    // Extract the T named arg key from the spec (it might be scoped as Monoid.T)
-    let t_key_sym = match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref named_args, .. } => {
-            find_named_arg_sym_by_short(&kb, named_args, "T").expect("spec should have T")
-        }
-        _ => panic!("spec should be Fn"),
-    };
-    let t_ref = kb.alloc(Term::Ref(t_key_sym));
-    let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(
-        &mut kb,
-        "anthill.reflect.resolve_sort_instantiation_param",
-        &[inst_tid, t_ref, var_val],
-    );
-
-    let solutions2 = kb.resolve(&[param_goal], &config);
-    assert!(
-        !solutions2.is_empty(),
-        "resolve_sort_instantiation_param should succeed for T"
-    );
-
-    let val_tid = kb.reify(var_val, &solutions2[0].subst).expect_term();
-    // WI-391: a concrete bare-sort binding value is the canonical `Ref(Int64)` (the
-    // extractable bare-sort shape), not the former nullary `Fn{Int64}`. This substitution
-    // test cares about the bound VALUE (Int64), not its carrier shape, so accept either the
-    // canonical `Ref(S)` or a (legacy) nullary `Fn{S}` — both name the sort.
-    let name = match kb.get_term(val_tid) {
-        Term::Ref(s) => kb.local_name_of(*s).to_owned(),
-        Term::Fn { functor, .. } => kb.local_name_of(*functor).to_owned(),
-        other => panic!(
-            "T value should be Int64 (Ref(Int64) or Int64()), got: {:?}",
-            other
-        ),
-    };
-    assert!(
-        name == "Int64" || name.ends_with(".Int64"),
-        "T should resolve to Int64, got: {name}"
+    assert_eq!(
+        resolved_binding_short_name(&mut kb, "test.monoid.IntAdd", "T"),
+        "Int64",
+        "T should resolve to Int64"
     );
 }
 
 #[test]
 fn resolve_sort_inst_param_extracts_operation_binding() {
     let mut kb = load_monoid_kb();
-
-    // Get the spec for IntAdd
-    let int_add_term = kb.resolve_qualified_name_term("test.monoid.IntAdd");
-    let var_inst = make_var(&mut kb, "inst");
-    let req_goal = make_requires_query(&mut kb, int_add_term, var_inst);
-
-    let config = default_config();
-    let solutions = kb.resolve(&[req_goal], &config);
-    assert!(!solutions.is_empty());
-    let inst_tid = kb.reify(var_inst, &solutions[0].subst).expect_term();
-
-    // Extract the combine named arg key from spec
-    let combine_key_sym = match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref named_args, .. } => find_named_arg_sym_by_short(&kb, named_args, "combine")
-            .expect("spec should have combine"),
-        _ => panic!("spec should be Fn"),
-    };
-    let combine_ref = kb.alloc(Term::Ref(combine_key_sym));
-    let var_val = make_var(&mut kb, "val");
-    let param_goal = make_goal(
-        &mut kb,
-        "anthill.reflect.resolve_sort_instantiation_param",
-        &[inst_tid, combine_ref, var_val],
+    assert_eq!(
+        resolved_binding_short_name(&mut kb, "test.monoid.IntAdd", "combine"),
+        "add",
+        "combine should resolve to add"
     );
-
-    let solutions2 = kb.resolve(&[param_goal], &config);
-    assert!(
-        !solutions2.is_empty(),
-        "resolve_sort_instantiation_param should succeed for combine"
-    );
-
-    let val_tid = kb.reify(var_val, &solutions2[0].subst).expect_term();
-    let short = extract_short_name(&kb, val_tid);
-    assert_eq!(short, "add", "combine should resolve to add, got: {short}");
 }
 
 // ── auto-bind test ──────────────────────────────────────────
@@ -365,47 +237,20 @@ fn auto_bind_same_named_operations() {
 
     // AutoBindTest has `requires Monoid[T = Int64]` with no explicit combine/identity.
     // Since AutoBindTest has same-named ops (combine, identity), they should auto-bind.
-    let auto_term = kb.resolve_qualified_name_term("test.monoid.AutoBindTest");
-    let var_inst = make_var(&mut kb, "inst");
-    let goal = make_requires_query(&mut kb, auto_term, var_inst);
-
-    let config = default_config();
-    let solutions = kb.resolve(&[goal], &config);
-    assert!(
-        !solutions.is_empty(),
-        "should find Requires for AutoBindTest"
+    let spec = required_spec(&mut kb, "test.monoid.AutoBindTest");
+    assert_eq!(
+        spec.named_keys(&kb).len(),
+        3,
+        "spec should have 3 named args after auto-bind"
     );
-
-    let sol = &solutions[0];
-    let inst_tid = kb.reify(var_inst, &sol.subst).expect_term();
-
-    match kb.get_term(inst_tid).clone() {
-        Term::Fn { ref named_args, .. } => {
-            // Should have all 3 bindings: T, combine, identity
-            assert_eq!(
-                named_args.len(),
-                3,
-                "spec should have 3 named args after auto-bind"
-            );
-
-            // Check combine was auto-bound
-            let c_tid = find_named_arg_by_short(&kb, &named_args, "combine");
-            assert!(c_tid.is_some(), "combine should be auto-bound");
-            let c_short = extract_short_name(&kb, c_tid.unwrap());
-            assert_eq!(
-                c_short, "combine",
-                "auto-bound combine should point to AutoBindTest's combine, got: {c_short}"
-            );
-
-            // Check identity was auto-bound
-            let i_tid = find_named_arg_by_short(&kb, &named_args, "identity");
-            assert!(i_tid.is_some(), "identity should be auto-bound");
-            let i_short = extract_short_name(&kb, i_tid.unwrap());
-            assert_eq!(
-                i_short, "identity",
-                "auto-bound identity should point to AutoBindTest's identity, got: {i_short}"
-            );
-        }
-        _ => panic!("spec should be Fn term"),
-    }
+    assert_eq!(
+        bound_short_name(&kb, &spec, "combine"),
+        "combine",
+        "auto-bound combine should point to AutoBindTest's combine"
+    );
+    assert_eq!(
+        bound_short_name(&kb, &spec, "identity"),
+        "identity",
+        "auto-bound identity should point to AutoBindTest's identity"
+    );
 }

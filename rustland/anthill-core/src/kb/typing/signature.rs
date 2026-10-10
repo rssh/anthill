@@ -4149,7 +4149,7 @@ pub(crate) fn check_written_row_bindings(
         if !judging {
             continue;
         }
-        let Some((spec_base, named)) = unwrap_spec_view(kb, clause.spec_view) else {
+        let Some((spec_base, named)) = unwrap_spec_view_value(kb, &clause.spec_view) else {
             continue;
         };
         let row_params = row_params_of(kb, spec_base, &mut row_params_by_spec);
@@ -4485,7 +4485,8 @@ struct SpecClauseView {
     pub(super) kind: SpecClauseKind,
     /// The sort the clause is written on.
     pub(super) owner: Symbol,
-    pub(super) spec_view: TermId,
+    /// The spec as the fact holds it, on whichever carrier it rides.
+    pub(super) spec_view: Value,
     /// The fact this clause IS, so the caller can claim it once per KB — see
     /// [`KnowledgeBase::claim_row_binding_clause`].
     pub(super) rid: RuleId,
@@ -4521,10 +4522,8 @@ fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
         let Some(sym) = kb.try_resolve_symbol(qn) else {
             continue;
         };
-        // TERM-ONLY for all three, the condition relation included: a value-headed
-        // condition fact is invisible here, where [`decoded_condition_row`] reads it.
         for rid in kb.rules_by_functor(sym) {
-            let Some((owner, spec_view)) = sort_clause_fields(kb, rid, spec_field) else {
+            let Some((owner, spec_view)) = sort_clause_field_values(kb, rid, spec_field) else {
                 continue;
             };
             out.push(SpecClauseView {

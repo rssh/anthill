@@ -58,7 +58,8 @@
 //!   (`sort_binding_to_value`'s `Simple` arm not asking `clause_alias_type`) — FAIL:
 //!     a_requirement_written_at_an_alias_is_asked_at_its_type
 //!     a_provision_written_at_an_alias_is_a_provision_at_its_type
-//!   — and in an operation's `requires` (`bare_contract_spec` under the bracket) — FAIL:
+//!   — and in an operation's `requires` (the goal's own read of its bracket, in
+//!   `convert_term`'s application arm) — FAIL:
 //!     a_requirement_written_at_an_alias_is_asked_at_its_type
 //!   a bare link recorded read through (`record_alias_target` without its `Simple` arm)
 //!   — FAIL:
@@ -618,9 +619,13 @@ fn a_requirement_written_at_an_alias_is_asked_at_its_type() {
         );
         assert_eq!(run(&ns, &body), "7", "{ns}");
     }
-    // A requirement nothing provides is refused through the alias as it is written out,
-    // and names the sort.
-    for (spelling, at) in [("alias", "NA"), ("written", "NoShow")] {
+    // A requirement nothing provides is refused through the alias as it is written out:
+    // it names the sort, led by the alias where the clause wrote one, and the provision
+    // it advises is at the sort in both.
+    for (spelling, at, named) in [
+        ("alias", "NA", "test.NS.NA (test.NS.NoShow)"),
+        ("written", "NoShow", "test.NS.NoShow"),
+    ] {
         let ns = format!("zy11jreqnone{spelling}");
         let body = format!(
             "{SHOWN}  sort NoShow\n    entity noshow\n  end\n  sort NA = NoShow\n  \
@@ -628,8 +633,13 @@ fn a_requirement_written_at_an_alias_is_asked_at_its_type() {
              operation go() -> Int64 = via(noshow)"
         );
         let rendered = refusal(&ns, &body);
+        let named = named.replace("NS", &ns);
         assert!(
-            rendered.contains(&format!("requirement `test.{ns}.Show[T = test.{ns}.NoShow]` cannot be supplied")),
+            rendered.contains(&format!("requirement `test.{ns}.Show[T = {named}]` cannot be supplied")),
+            "{ns}: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("declare `provides test.{ns}.Show[T = test.{ns}.NoShow]`")),
             "{ns}: {rendered}"
         );
     }

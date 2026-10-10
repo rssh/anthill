@@ -144,12 +144,12 @@ end
     );
 }
 
-/// `requires Foo[Int64, 3]` — the SortView spec carries the denoted `3`, so the
-/// `SortRequiresInfo` fact rides as a value fact. Loading runs
-/// `resolve_requires_bindings` (and `direct_requires` during typing) over the
-/// value head, which must not panic.
+/// `requires Foo[Int64, 3]` — the requirement's spec holds the `3`. Loading runs
+/// `resolve_requires_bindings` (and `direct_requires` during typing) over it, which must
+/// not panic, and the requirement that is stored still holds the value: read through the
+/// view, on whichever carrier the fact rides.
 #[test]
-fn requires_value_in_type_rides_as_term() {
+fn a_requirement_holding_a_value_keeps_it() {
     let src = format!(
         r#"
 namespace test.wi366.req
@@ -163,17 +163,16 @@ end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
-    // WI-390 ACCEPTANCE: `Foo[Int64, 3]` is faithfully term-representable (the `3`
-    // rides as a `denoted` term), so the SortRequiresInfo head is a hash-consed
-    // `Term` — `direct_requires` reads it (no silent skip) and `resolve_cache` keys
-    // on it. (WI-390 reverses the WI-366 `Value::Node` direction here.)
+    let spec = carrier_requires_spec(&kb, "test.wi366.req.Carrier")
+        .expect("the requirement is stored, and read through the view");
     assert!(
-        !any_node_carrying_fact(&kb, "anthill.reflect.SortRequiresInfo"),
-        "WI-390: `requires Foo[Int64, 3]` must ride as a hash-consed Term fact, not a Value::Node",
-    );
-    assert!(
-        denoted_term_fact_head(&kb, "anthill.reflect.SortRequiresInfo").is_some(),
+        anthill_core::kb::typing::type_holds_a_value(&kb, &spec),
         "the SortRequiresInfo spec must faithfully carry the denoted `3` (not dropped)",
+    );
+    assert_eq!(
+        load::flatten_spec(&kb, &spec).as_deref(),
+        Some("Foo_den_i3_Int64"),
+        "both bindings are read off the stored spec, in the order of their names",
     );
     assert!(
         !errs.iter().any(|e| e.contains("not yet resolved")),
@@ -561,41 +560,21 @@ end
 
 // ── WI-390: faithful `Value → Term` bridge (deeper coverage) ─────────────────
 
-/// The `spec` named-arg term of the SortRequiresInfo fact whose `sort_ref` is the
-/// sort `carrier_qn` — i.e. the lowered `requires` spec, as a hash-consed `TermId`.
-fn carrier_requires_spec(
-    kb: &KnowledgeBase,
-    carrier_qn: &str,
-) -> Option<anthill_core::kb::term::TermId> {
-    use anthill_core::kb::term::Term;
-    let carrier = kb.try_resolve_symbol(carrier_qn)?;
+/// The spec of the `requires` clause written on `carrier_qn`, as its fact holds it: read
+/// through the view, so the answer does not depend on the carrier the fact rides.
+fn carrier_requires_spec(kb: &KnowledgeBase, carrier_qn: &str) -> Option<Value> {
+    use anthill_core::kb::op_info::{head_field_term, head_field_value};
     let req = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo")?;
     kb.rules_by_functor(req)
         .into_iter()
         .filter(|r| kb.is_fact(*r))
         .find_map(|rid| {
-            let Value::Term { id: t, .. } = kb.rule_head_value(rid) else {
-                return None;
-            };
-            let Term::Fn { named_args, .. } = kb.get_term(*t) else {
-                return None;
-            };
-            let sr = named_args
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "sort_ref")?
-                .1;
-            let sr_functor = match kb.get_term(sr) {
-                Term::Fn { functor, .. } => *functor,
-                Term::Ref(s) => *s,
-                _ => return None,
-            };
-            if sr_functor != carrier {
+            let head = kb.rule_head_value(rid);
+            let sort_ref = head_field_term(kb, head, "sort_ref")?;
+            if load::qn_of_sort_ref(kb, sort_ref)? != carrier_qn {
                 return None;
             }
-            named_args
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "spec")
-                .map(|(_, t)| *t)
+            head_field_value(kb, head, "spec")
         })
 }
 
@@ -645,9 +624,9 @@ fn value_to_term_denoted_round_trips_to_ground_twin() {
     );
 }
 
-/// WI-390 (acceptance): `requires Foo[Int64, 3]` vs `Foo[Int64, 4]` lower to DISTINCT
-/// spec `TermId`s (so the `TermId`-keyed `resolve_cache` distinguishes them), while
-/// two `Foo[Int64, 3]` dedup to one `TermId`.
+/// WI-390 (acceptance): `requires Foo[Int64, 3]` and `Foo[Int64, 4]` are DISTINCT specs,
+/// and two `Foo[Int64, 3]` are one — compared through the view, as the readers that
+/// dedup a requirement compare them.
 #[test]
 fn requires_specs_distinguish_by_denoted_literal() {
     let src = format!(
@@ -674,20 +653,21 @@ end
     let s3 = carrier_requires_spec(&kb, "test.wi390.cache.CarrierA").expect("A requires spec");
     let s4 = carrier_requires_spec(&kb, "test.wi390.cache.CarrierB").expect("B requires spec");
     let s3c = carrier_requires_spec(&kb, "test.wi390.cache.CarrierC").expect("C requires spec");
-    assert_ne!(
-        s3, s4,
-        "`Foo[Int64, 3]` and `Foo[Int64, 4]` must lower to distinct spec TermIds (distinct cache keys)",
+    use anthill_core::kb::term_view::views_structurally_equal;
+    assert!(
+        !views_structurally_equal(&kb, &s3, &s4),
+        "`Foo[Int64, 3]` and `Foo[Int64, 4]` are two specs",
     );
-    assert_eq!(
-        s3, s3c,
-        "two `Foo[Int64, 3]` must dedup to one spec TermId (hash-consing)",
+    assert!(
+        views_structurally_equal(&kb, &s3, &s3c),
+        "two `Foo[Int64, 3]` are one spec",
     );
     // WI-390 R3: the scope-axiom signature (`requires.<flatten_spec>`) must ALSO
     // distinguish the literals — `flatten_spec` must not collapse the denoted to a
     // non-distinguishing token, else two requires differing only in the literal
     // collide on one scope-axiom QN and one is dropped.
-    let f3 = anthill_core::kb::load::flatten_spec(&kb, s3);
-    let f4 = anthill_core::kb::load::flatten_spec(&kb, s4);
+    let f3 = anthill_core::kb::load::flatten_spec(&kb, &s3);
+    let f4 = anthill_core::kb::load::flatten_spec(&kb, &s4);
     assert_ne!(
         f3, f4,
         "flatten_spec must distinguish Foo[Int64,3] from Foo[Int64,4] in the scope-axiom name; got {f3:?} vs {f4:?}",

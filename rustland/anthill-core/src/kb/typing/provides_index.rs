@@ -321,7 +321,9 @@ impl ProvidesRow {
 /// field.
 ///
 /// TERM-ONLY, and that is a skip rather than a decode: a value head has no `TermId`.
-/// [`decoded_condition_row`] is the carrier-agnostic reader of the condition relation.
+/// [`decoded_condition_row`] is the carrier-agnostic reader of the condition relation, and
+/// [`sort_clause_field_values`] reads the field of any of the three on whichever carrier it
+/// rides.
 pub(super) fn sort_clause_fields(
     kb: &KnowledgeBase,
     rid: crate::kb::RuleId,
@@ -334,6 +336,24 @@ pub(super) fn sort_clause_fields(
     let sort_ref = get_named_arg(kb, &named, "sort_ref")?;
     let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
     let value = get_named_arg(kb, &named, field)?;
+    Some((owner, value))
+}
+
+/// [`sort_clause_fields`] read through the view: the owner, and the field on the carrier
+/// it rides — a spec with a binding written through a type alias, or one that holds a
+/// value, is an occurrence. `None` for a rule or a missing field.
+pub(super) fn sort_clause_field_values(
+    kb: &KnowledgeBase,
+    rid: crate::kb::RuleId,
+    field: &str,
+) -> Option<(Symbol, Value)> {
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let head = kb.rule_head_value(rid);
+    let sort_ref = crate::kb::op_info::head_field_term(kb, head, "sort_ref")?;
+    let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
+    let value = crate::kb::op_info::head_field_value(kb, head, field)?;
     Some((owner, value))
 }
 

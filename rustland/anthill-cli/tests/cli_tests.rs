@@ -34,6 +34,9 @@ mod prove_body_derived_test;
 #[path = "include/prove_cache_test.rs"]
 mod prove_cache_test;
 
+#[path = "include/check_scope_axiom_requires_test.rs"]
+mod check_scope_axiom_requires_test;
+
 #[path = "include/check_stale_sidecar_test.rs"]
 mod check_stale_sidecar_test;
 

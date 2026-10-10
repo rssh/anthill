@@ -1918,6 +1918,18 @@ pub(super) fn format_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> 
 
 /// Human-readable goal text for diagnostics ("Eq[T = Int]").
 pub(super) fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
+    format_goal_spelled(kb, goal, false)
+}
+
+/// [`format_goal`] of a requirement as its clause wrote it: a binding written through a
+/// type alias is led by the alias's name, `Show[T = Money (Int64)]`, as a declared type
+/// is in a mismatch ([`declared_type_display`]). For naming the requirement; a clause
+/// offered for the author to write is [`format_goal`]'s, the type alone.
+pub(super) fn format_goal_as_written(kb: &KnowledgeBase, goal: &SortGoal) -> String {
+    format_goal_spelled(kb, goal, true)
+}
+
+fn format_goal_spelled(kb: &KnowledgeBase, goal: &SortGoal, as_written: bool) -> String {
     let mut out = kb.qualified_name_of(goal.spec_sort).to_string();
     if !goal.bindings.is_empty() {
         out.push('[');
@@ -1929,7 +1941,7 @@ pub(super) fn format_goal(kb: &KnowledgeBase, goal: &SortGoal) -> String {
             first = false;
             out.push_str(kb.local_name_of(*k));
             out.push_str(" = ");
-            out.push_str(&format_value_for_goal(kb, v));
+            out.push_str(&format_binding_for_goal(kb, v, as_written));
         }
         out.push(']');
     }
@@ -1946,6 +1958,25 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
 /// view, so a goal that names a type holding a value is printed as its term twin would be
 /// (`FiniteCollection[C = MappedStream[…, TransformEffects = {Modify[T = k]}]]`).
 pub(super) fn format_value_for_goal(kb: &KnowledgeBase, v: &Value) -> String {
+    format_binding_for_goal(kb, v, false)
+}
+
+/// [`format_value_for_goal`], and where `as_written` asks for it, each type written
+/// through an alias led by the alias's name: `Money (Int64)`, `List[T = Money (Int64)]`.
+fn format_binding_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool) -> String {
+    let rendered = format_binding_type_for_goal(kb, v, as_written);
+    let written = match v {
+        Value::Node(occ) if as_written => crate::kb::node_occurrence::written_alias(kb, occ),
+        _ => None,
+    };
+    match written {
+        Some(alias) => format!("{} ({rendered})", kb.qualified_name_of(alias)),
+        None => rendered,
+    }
+}
+
+/// The type a binding IS, as [`format_binding_for_goal`] renders it under any name.
+fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool) -> String {
     if let Some(sym) = extract_sort_ref_sym(kb, v) {
         return kb.qualified_name_of(sym).to_string();
     }
@@ -1993,7 +2024,7 @@ pub(super) fn format_value_for_goal(kb: &KnowledgeBase, v: &Value) -> String {
                     first = false;
                     s.push_str(kb.local_name_of(k));
                     s.push_str(" = ");
-                    s.push_str(&format_value_for_goal(kb, &child));
+                    s.push_str(&format_binding_for_goal(kb, &child, as_written));
                 }
                 s.push(']');
                 s

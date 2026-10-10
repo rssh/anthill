@@ -2241,6 +2241,20 @@ pub(super) fn collect_sort_requires(
             continue;
         };
 
+        // ONE REQUIREMENT, ONE SLOT, however each clause spelled it. Two clauses of one
+        // spec at the same bindings are one fact where both are terms — the store holds a
+        // term once — but a clause with a binding written through a type alias rides
+        // another carrier, and is a second fact of the requirement its written-out twin
+        // states. Compared through the view, so the first clause written keeps the slot
+        // whichever spelling it has. MEASURED: `requires Show[T = Money]` beside `requires
+        // Show[T = Int64]` gave the sort two slots, where either spelling twice gives one.
+        if out.iter().any(|e| {
+            e.required_sort == base_functor
+                && crate::kb::term_view::views_structurally_equal(kb, &e.spec, &spec_value)
+        }) {
+            continue;
+        }
+
         out.push(RequiresEntry {
             required_sort: base_functor,
             spec: spec_value,

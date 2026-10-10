@@ -16650,7 +16650,13 @@ fn collect_ref_list(kb: &mut KnowledgeBase, list_tid: TermId, out: &mut Vec<(Sym
 
 /// For each SortRequiresInfo fact with a SortView spec, complete the
 /// instantiation by merging explicit bindings with auto-bound operations.
+///
+/// The fact is read through the view and rebuilt on the carrier its bindings need
+/// ([`KnowledgeBase::assert_fact_carrier`]): a binding that rides an occurrence — one
+/// written through a type alias, one that holds a value — is completed like any other and
+/// stays the occurrence it is.
 fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
+    use crate::eval::value::Value;
     let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
         Some(sym) => sym,
         None => return,
@@ -16660,18 +16666,20 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         None => return,
     };
 
-    let sort_ref_field = kb.intern("sort_ref");
     let spec_field = kb.intern("spec");
 
     let rule_ids = kb.rules_by_functor(requires_sym);
 
-    // Collect facts to update: (rule_id, sort_ref_term, spec_sort_sym, explicit_named_args)
-    let mut updates: Vec<(
-        super::RuleId,
-        TermId,
-        Symbol,
-        SmallVec<[(Symbol, TermId); 2]>,
-    )> = Vec::new();
+    /// One fact to complete: the sort it is written on, the spec's sort, the view's
+    /// positional children (the base first) and the bindings it was written with.
+    struct Written {
+        rid: super::RuleId,
+        sort_ref: TermId,
+        spec_sort: Symbol,
+        pos: Vec<Value>,
+        bindings: Vec<(Symbol, Value)>,
+    }
+    let mut updates: Vec<Written> = Vec::new();
 
     for rid in &rule_ids {
         if kb.is_requires_resolved(*rid) {
@@ -16680,92 +16688,94 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         if !kb.is_fact(*rid) {
             continue;
         }
-        // Term-only binding completion (auto-bind ops, fill defaults). A
-        // value-fact SortRequiresInfo (denoted-bearing spec — e.g. a `Modify[c]`
-        // effect-row binding) carries its bindings explicitly and faithfully on
-        // the occurrence; occurrence-based completion is the gated effect-
-        // expressions-as-types work, so leave the fact as-is rather than hit the
-        // term-only `rule_head` panic.
-        let Some(named_args) = kb.fact_head_named_args(*rid) else {
+        let head = kb.rule_head_value(*rid);
+        let (Some(sort_ref), Some(spec)) = (
+            crate::kb::op_info::head_field_term(kb, head, "sort_ref"),
+            crate::kb::op_info::head_field_value(kb, head, "spec"),
+        ) else {
             continue;
         };
-        let sort_ref_tid = named_args
-            .iter()
-            .find(|(s, _)| *s == sort_ref_field)
-            .map(|(_, t)| *t);
-        let spec_tid = named_args
-            .iter()
-            .find(|(s, _)| *s == spec_field)
-            .map(|(_, t)| *t);
-
-        if let (Some(sr_tid), Some(si_tid)) = (sort_ref_tid, spec_tid) {
-            let si_term = kb.get_term(si_tid).clone();
-            if let Term::Fn {
-                functor,
-                pos_args,
-                named_args: inst_named,
-                ..
-            } = si_term
-            {
-                if functor == param_type_sym && !pos_args.is_empty() {
-                    // Extract spec sort symbol from first pos_arg
-                    let spec_sym = match kb.get_term(pos_args[0]) {
-                        Term::Fn { functor: f, .. } => Some(*f),
-                        Term::Ref(s) => Some(*s),
-                        _ => None,
-                    };
-
-                    if let Some(ss) = spec_sym {
-                        // WI-359: capture positional bindings too — each positional
-                        // after the base binds the spec's next param NO NAMED binding
-                        // took (`KnowledgeBase::positional_param_slots`), so it reaches
-                        // the slot-fill loop below as a named binding; otherwise the slot
-                        // falls back to the self-ref default and the cross-param link is
-                        // lost.
-                        //
-                        // WI-20260923-N3W68 (#9): this paired by RAW INDEX and DROPPED a
-                        // positional whose index a name had claimed. Unreached today, and
-                        // the WI-359 shape it was written for (`requires Ring[F]` stored as
-                        // `pos_args = [Ring-base, <F>]`) is gone: `sort_inst_to_value` now
-                        // names every positional that has a parameter, and refuses one
-                        // that has none. What can still arrive here is a fact nobody's
-                        // lowering produced — which is why it keeps the rule rather than
-                        // being deleted.
-                        let mut bindings = inst_named.clone();
-                        if pos_args.len() > 1 {
-                            let params = kb.type_params_of_sort(ss);
-                            let slots = KnowledgeBase::positional_param_slots(
-                                &params,
-                                |d| {
-                                    bindings.iter().any(|(k, _)| {
-                                        crate::kb::typing::short_name_of(kb.local_name_of(*k)) == d
-                                    })
-                                },
-                                pos_args.len() - 1,
-                            );
-                            for (pv, slot) in pos_args.iter().skip(1).zip(slots) {
-                                if let Some(i) = slot {
-                                    let key = kb.intern(&params[i]);
-                                    bindings.push((key, *pv));
-                                }
-                            }
-                        }
-                        updates.push((*rid, sr_tid, ss, bindings));
-                    }
+        let ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } = spec.head(kb)
+        else {
+            continue;
+        };
+        if functor != param_type_sym || pos_arity == 0 {
+            continue;
+        }
+        let pos: Vec<Value> = (0..pos_arity)
+            .map(|i| {
+                spec.pos_arg(kb, i)
+                    .expect("a view answers for a position within its arity")
+                    .to_value()
+            })
+            .collect();
+        // The spec's sort and its written bindings, by the one reading of a spec view.
+        let Some((spec_sort, named)) = super::typing::unwrap_spec_view_value(kb, &spec) else {
+            continue;
+        };
+        // WI-359: capture positional bindings too — each positional
+        // after the base binds the spec's next param NO NAMED binding
+        // took (`KnowledgeBase::positional_param_slots`), so it reaches
+        // the slot-fill loop below as a named binding; otherwise the slot
+        // falls back to the self-ref default and the cross-param link is
+        // lost.
+        //
+        // WI-20260923-N3W68 (#9): this paired by RAW INDEX and DROPPED a
+        // positional whose index a name had claimed. Unreached today, and
+        // the WI-359 shape it was written for (`requires Ring[F]` stored as
+        // `pos_args = [Ring-base, <F>]`) is gone: `sort_inst_to_value` now
+        // names every positional that has a parameter, and refuses one
+        // that has none. What can still arrive here is a fact nobody's
+        // lowering produced — which is why it keeps the rule rather than
+        // being deleted.
+        let mut bindings: Vec<(Symbol, Value)> = named.into_iter().collect();
+        if pos.len() > 1 {
+            let params = kb.type_params_of_sort(spec_sort);
+            let slots = KnowledgeBase::positional_param_slots(
+                &params,
+                |d| {
+                    bindings.iter().any(|(k, _)| {
+                        crate::kb::typing::short_name_of(kb.local_name_of(*k)) == d
+                    })
+                },
+                pos.len() - 1,
+            );
+            for (pv, slot) in pos.iter().skip(1).zip(slots) {
+                if let Some(i) = slot {
+                    let key = kb.intern(&params[i]);
+                    bindings.push((key, pv.clone()));
                 }
             }
         }
+        updates.push(Written {
+            rid: *rid,
+            sort_ref,
+            spec_sort,
+            pos,
+            bindings,
+        });
     }
 
     // Now process each update
-    for (rid, sort_ref_tid, spec_sort_sym, explicit_bindings) in updates {
+    for Written {
+        rid,
+        sort_ref: sort_ref_tid,
+        spec_sort: spec_sort_sym,
+        pos,
+        bindings: explicit_bindings,
+    } in updates
+    {
         let base_subst = match kb.sort_base_subst(spec_sort_sym) {
             Some(bs) => bs.to_vec(),
             None => continue,
         };
 
         // Build complete bindings: start from base, override with explicit
-        let mut complete: Vec<(Symbol, TermId)> = Vec::new();
+        let mut complete: Vec<(Symbol, Value)> = Vec::new();
 
         // Collect operation short names from the spec's SortInfo for auto-binding
         let op_syms = collect_sort_operations(kb, spec_sort_sym);
@@ -16780,12 +16790,12 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         // Build a short-name lookup for explicit bindings.
         // Explicit bindings may use plain symbols (e.g., "T") while base_subst
         // uses scope-qualified symbols (e.g., "Monoid.T"). Match by short name.
-        let explicit_by_short: Vec<(String, TermId)> = explicit_bindings
-            .iter()
-            .map(|(s, t)| {
-                let name = kb.local_name_of(*s);
+        let explicit_by_short: Vec<(String, Value)> = explicit_bindings
+            .into_iter()
+            .map(|(s, v)| {
+                let name = kb.local_name_of(s);
                 let short = name.rsplit('.').next().unwrap_or(name).to_owned();
-                (short, *t)
+                (short, v)
             })
             .collect();
 
@@ -16797,7 +16807,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
             let explicit_val = explicit_by_short
                 .iter()
                 .find(|(name, _)| *name == slot_short)
-                .map(|(_, t)| *t);
+                .map(|(_, v)| v.clone());
 
             if let Some(val) = explicit_val {
                 complete.push((*slot_sym, val));
@@ -16807,73 +16817,54 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                 match auto_bound {
                     Some(bound_sym) => {
                         let ref_term = kb.alloc(Term::Ref(bound_sym));
-                        complete.push((*slot_sym, ref_term));
+                        complete.push((*slot_sym, Value::term(ref_term)));
                     }
                     None => {
-                        complete.push((*slot_sym, *default_tid));
+                        complete.push((*slot_sym, Value::term(*default_tid)));
                     }
                 }
             } else {
-                complete.push((*slot_sym, *default_tid));
+                complete.push((*slot_sym, Value::term(*default_tid)));
             }
         }
 
-        // Now build a new SortView term with complete bindings
-        let old_head = kb.rule_head(rid);
-        let old_head_term = kb.get_term(old_head).clone();
-        if let Term::Fn { ref named_args, .. } = old_head_term {
-            let old_spec_tid = named_args
-                .iter()
-                .find(|(s, _)| *s == spec_field)
-                .map(|(_, t)| *t)
-                .unwrap();
+        // Now build a new SortView with complete bindings, and the fact with it in the
+        // old one's place — every other field as it was.
+        let new_inst = kb.fn_value(param_type_sym, pos, complete);
+        let old_head = kb.rule_head_value(rid).clone();
+        let new_named: Vec<(Symbol, Value)> = old_head
+            .named_keys(kb)
+            .into_iter()
+            .map(|key| {
+                if key == spec_field {
+                    return (key, new_inst.clone());
+                }
+                let field = old_head
+                    .named_arg(kb, key)
+                    .expect("a view answers for a named key it lists")
+                    .to_value();
+                (key, field)
+            })
+            .collect();
 
-            let old_inst = kb.get_term(old_spec_tid).clone();
-            if let Term::Fn { pos_args, .. } = old_inst {
-                let new_named: SmallVec<[(Symbol, TermId); 2]> = complete.into_iter().collect();
-                let new_inst = kb.alloc(Term::Fn {
-                    functor: param_type_sym,
-                    pos_args: pos_args.clone(),
-                    named_args: new_named,
-                });
-
-                // Build new SortRequiresInfo fact with updated spec
-                let new_named_args: SmallVec<[(Symbol, TermId); 2]> = named_args
-                    .iter()
-                    .map(|(s, t)| {
-                        if *s == spec_field {
-                            (*s, new_inst)
-                        } else {
-                            (*s, *t)
-                        }
-                    })
-                    .collect();
-                let new_head = kb.alloc(Term::Fn {
-                    functor: requires_sym,
-                    pos_args: SmallVec::new(),
-                    named_args: new_named_args,
-                });
-
-                // Retract old, assert new
-                let sort = kb.rule_clause_kind(rid);
-                let domain = kb.rule_domain(rid);
-                let meta = kb.rule_meta(rid);
-                kb.retract(rid);
-                let new_rid = kb.assert_fact(new_head, sort, domain, meta);
-                kb.mark_requires_resolved(new_rid);
-                // WI-20260901-EA6KS — and THIS is where the clause this batch presented
-                // ends up. `rid` was minted by `Loader::load_requires_decl` moments ago
-                // (only an UNRESOLVED fact reaches here, and every fact this pass sees is
-                // marked), so the presentation is real; but the completed head is
-                // structurally identical to the one an EARLIER batch of the same file
-                // left live, so `assert_fact` dedups and `new_rid` is that earlier id —
-                // already carrying the earlier batch's judged-once mark. Dropping it here
-                // is the same "the fact's identity moved, carry its marks" step as the
-                // `mark_requires_resolved` above, and without it a re-presented
-                // `requires Spec[E = {…}]` loses its refusal.
-                kb.note_metadata_fact_presented(new_rid);
-            }
-        }
+        // Retract old, assert new
+        let sort = kb.rule_clause_kind(rid);
+        let domain = kb.rule_domain(rid);
+        let meta = kb.rule_meta(rid);
+        kb.retract(rid);
+        let new_rid = kb.assert_fact_carrier(requires_sym, Vec::new(), new_named, sort, domain, meta);
+        kb.mark_requires_resolved(new_rid);
+        // WI-20260901-EA6KS — and THIS is where the clause this batch presented
+        // ends up. `rid` was minted by `Loader::load_requires_decl` moments ago
+        // (only an UNRESOLVED fact reaches here, and every fact this pass sees is
+        // marked), so the presentation is real; but the completed head is
+        // structurally identical to the one an EARLIER batch of the same file
+        // left live, so the assert dedups and `new_rid` is that earlier id —
+        // already carrying the earlier batch's judged-once mark. Dropping it here
+        // is the same "the fact's identity moved, carry its marks" step as the
+        // `mark_requires_resolved` above, and without it a re-presented
+        // `requires Spec[E = {…}]` loses its refusal.
+        kb.note_metadata_fact_presented(new_rid);
     }
 }
 
@@ -16929,8 +16920,6 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
         None => return,
     };
 
-    let sort_ref_field = kb.intern("sort_ref");
-    let spec_field = kb.intern("spec");
     let rule_arg = kb.intern("rule");
     let strategy_arg = kb.intern("strategy");
     let body_arg = kb.intern("body");
@@ -16952,36 +16941,23 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
         if !kb.is_fact(rid) {
             continue;
         }
-        // Term-only scope-axiom generation. A value-fact SortRequiresInfo
-        // (denoted-bearing spec) is carried faithfully; occurrence-based axiom
-        // generation is gated effect-expressions-as-types work, so skip rather
-        // than hit the term-only `rule_head` panic.
-        let Some(named) = kb.fact_head_named_args(rid) else {
+        // Read through the view: a spec with a binding that rides an occurrence — one
+        // written through a type alias, one that holds a value — is a requirement like
+        // any other, and names its record by the type the binding is.
+        let head = kb.rule_head_value(rid);
+        let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref")
+        else {
             continue;
         };
-
-        let sort_ref_tid = match named
-            .iter()
-            .find(|(s, _)| *s == sort_ref_field)
-            .map(|(_, t)| *t)
-        {
-            Some(t) => t,
-            None => continue,
-        };
-        let spec_tid = match named
-            .iter()
-            .find(|(s, _)| *s == spec_field)
-            .map(|(_, t)| *t)
-        {
-            Some(t) => t,
-            None => continue,
+        let Some(spec) = crate::kb::op_info::head_field_value(kb, head, "spec") else {
+            continue;
         };
 
         let scope_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
             Some(q) => q,
             None => continue,
         };
-        let se_flat = match flatten_spec(kb, spec_tid) {
+        let se_flat = match flatten_spec(kb, &spec) {
             Some(s) => s,
             None => continue,
         };
@@ -20363,73 +20339,78 @@ pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
 /// ref `c`), NOT the constant functor name `"Denoted"`. Two `requires` differing
 /// only in the denoted literal must yield distinct `requires.<SE>` signatures, else
 /// their scope axioms collide on one QN and one is silently dropped (load.rs:2592).
-fn denoted_value_short(kb: &KnowledgeBase, denoted_tid: TermId) -> String {
-    let Term::Fn { named_args, .. } = kb.get_term(denoted_tid) else {
-        return "den".to_string();
-    };
-    let inner = named_args
-        .iter()
-        .find(|(k, _)| kb.local_name_of(*k).rsplit('.').next() == Some("value"))
-        .map(|(_, t)| *t);
+fn denoted_value_short<V: TermView>(kb: &KnowledgeBase, denoted: &V) -> String {
+    let inner = denoted
+        .named_keys(kb)
+        .into_iter()
+        .find(|k| kb.local_name_of(*k).rsplit('.').next() == Some("value"))
+        .and_then(|k| denoted.named_arg(kb, k));
     let Some(inner) = inner else {
         return "den".to_string();
     };
-    match kb.get_term(inner) {
-        Term::Const(Literal::Int(n)) => format!("den_i{n}"),
-        Term::Const(Literal::BigInt(n)) => format!("den_i{n}"),
-        Term::Const(Literal::Bool(b)) => format!("den_b{b}"),
-        Term::Const(Literal::String(s)) => format!("den_str_{s}"),
-        Term::Const(Literal::Float(f)) => format!("den_f{}", f.0),
-        Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-            let n = kb.local_name_of(*functor);
+    match inner.head(kb) {
+        ViewHead::Const(Literal::Int(n)) => format!("den_i{n}"),
+        ViewHead::Const(Literal::BigInt(n)) => format!("den_i{n}"),
+        ViewHead::Const(Literal::Bool(b)) => format!("den_b{b}"),
+        ViewHead::Const(Literal::String(s)) => format!("den_str_{s}"),
+        ViewHead::Const(Literal::Float(f)) => format!("den_f{}", f.0),
+        ViewHead::Functor {
+            functor: Some(functor),
+            ..
+        }
+        | ViewHead::Ident(functor) => {
+            let n = kb.local_name_of(functor);
             format!("den_{}", n.rsplit('.').next().unwrap_or(n))
         }
         _ => "den".to_string(),
     }
 }
 
-/// Flatten a `SortRequiresInfo.spec` term to the deterministic
+/// Flatten a `SortRequiresInfo.spec` to the deterministic
 /// short-name signature used in `requires.<SE-flat>` rule QNs. For
 /// `SortView(Eq, T = X)` the result is `Eq_<short(X)>`. For a plain
-/// nullary sort term `Foo`, the result is `Foo`. Bindings are sorted
+/// nullary sort `Foo`, the result is `Foo`. Bindings are sorted
 /// by their binding key short name to keep the encoding stable
 /// across reorderings. Operation auto-bindings (binding values that
 /// resolve to operation symbols) are filtered out — they are
 /// derived from `resolve_requires_bindings` and not user-written, so
 /// they should not pollute the SE-flat. Type-parameter and
 /// concrete-sort bindings remain.
-pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+///
+/// Read through the view, so the answer is the same on whichever carrier the spec
+/// rides: a binding written through a type alias flattens as the type it stands for.
+pub fn flatten_spec<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
     use crate::intern::SymbolKind;
-    let term_ref = kb.get_term(term);
-    let (functor, pos_args, named_args) = match term_ref {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => (*functor, pos_args.clone(), named_args.clone()),
-        _ => return None,
+    let short = |sym: Symbol| {
+        let n = kb.local_name_of(sym);
+        n.rsplit('.').next().unwrap_or(n).to_owned()
+    };
+    // The name a child is headed by: an application's functor, or a bare name's.
+    let head_name = |head: ViewHead| match head {
+        ViewHead::Functor { functor, .. } => functor,
+        ViewHead::Ident(name) => Some(name),
+        _ => None,
+    };
+    let ViewHead::Functor {
+        functor: Some(functor),
+        ..
+    } = spec.head(kb)
+    else {
+        return None;
     };
     if !super::typing::is_sort_view_functor(kb, functor) {
-        let functor_name = kb.local_name_of(functor);
-        let functor_short = functor_name.rsplit('.').next().unwrap_or(functor_name);
-        return Some(functor_short.to_owned());
+        return Some(short(functor));
     }
-    let base_short = match pos_args.first().map(|t| kb.get_term(*t)) {
-        Some(Term::Fn { functor, .. }) | Some(Term::Ref(functor)) | Some(Term::Ident(functor)) => {
-            let n = kb.local_name_of(*functor);
-            n.rsplit('.').next().unwrap_or(n).to_owned()
-        }
-        _ => return None,
-    };
-    let mut bindings: Vec<(String, String)> = named_args
-        .iter()
-        .filter_map(|(k_sym, v_tid)| {
-            let value_sym = match kb.get_term(*v_tid) {
-                Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                    Some(*functor)
-                }
-                _ => None,
-            };
+    let base_short = short(head_name(spec.pos_arg(kb, 0)?.head(kb))?);
+    let mut bindings: Vec<(String, String)> = spec
+        .named_keys(kb)
+        .into_iter()
+        .filter_map(|k_sym| {
+            let value = spec
+                .named_arg(kb, k_sym)
+                .expect("a view answers for a named key it lists");
+            let value_head = value.head(kb);
+            let value_sym = head_name(value_head.clone());
             // Skip operation auto-bindings — they aren't part of the
             // user-written Sort-Expr.
             if let Some(vs) = value_sym {
@@ -20437,24 +20418,19 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
                     return None;
                 }
             }
-            let k_name = kb.local_name_of(*k_sym);
-            let k_short = k_name.rsplit('.').next().unwrap_or(k_name).to_owned();
             let v_short = match value_sym {
                 // WI-390: a `denoted` value-in-type renders by its inner value so two
                 // requires differing only in the literal get distinct signatures.
                 Some(s) if kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor.Denoted" => {
-                    denoted_value_short(kb, *v_tid)
+                    denoted_value_short(kb, &value)
                 }
-                Some(s) => {
-                    let n = kb.local_name_of(s);
-                    n.rsplit('.').next().unwrap_or(n).to_owned()
-                }
-                None => match kb.get_term(*v_tid) {
-                    Term::Const(Literal::String(s)) => format!("str_{s}"),
+                Some(s) => short(s),
+                None => match value_head {
+                    ViewHead::Const(Literal::String(s)) => format!("str_{s}"),
                     _ => "_".to_string(),
                 },
             };
-            Some((k_short, v_short))
+            Some((short(k_sym), v_short))
         })
         .collect();
     bindings.sort_by(|a, b| a.0.cmp(&b.0));
@@ -22756,6 +22732,24 @@ enum TypeSite {
     OwnRowElement,
 }
 
+/// The form a type parameter of the declaring sort takes where a type alias is read
+/// ([`Loader::term_read_through_aliases`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AliasCanon {
+    /// A type position: the parameter is its canonical variable
+    /// ([`Loader::bare_alias_type`]).
+    Type,
+    /// A clause binding: the parameter is its `Ref` ([`Loader::clause_alias_type`]).
+    Clause,
+}
+
+/// A direct child of a clause's goal: where a binding stands in it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClauseSlot {
+    Pos(usize),
+    Named(Symbol),
+}
+
 /// WI-20261001-KDMQS — where a walk stands with respect to a CLAUSE, which decides whether
 /// a `const` written there is folded to its value (`kb::const_value`).
 ///
@@ -23040,6 +23034,11 @@ struct Loader<'a> {
     // The flag scopes the rung to the contract clauses rather than widening the whole
     // term walk, where a dotted name is an ordinary reference and must stay one.
     in_op_contract_clause: bool,
+    /// The bindings of an operation's `requires` goal that were written through a type
+    /// alias, each on the occurrence that holds the name
+    /// ([`Self::clause_binding_as_written`]), keyed by the goal's parse term. Left by the
+    /// goal's conversion for [`Self::contract_goal_as_written`], which takes it.
+    contract_goal_aliases: HashMap<u32, Vec<(ClauseSlot, Rc<NodeOccurrence>)>>,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
     // WI-20260914-DV7DP — declarations with no block, whose empty `DeclarationMeta` row
@@ -23443,6 +23442,7 @@ impl<'a> Loader<'a> {
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
+            contract_goal_aliases: HashMap::new(),
             expr_syms,
             expr_work: Vec::with_capacity(64),
             expr_results: Vec::with_capacity(64),
@@ -24218,15 +24218,43 @@ impl<'a> Loader<'a> {
         t: TermId,
         span: SourceSpan,
     ) -> (TermId, Option<Rc<NodeOccurrence>>) {
+        self.term_read_through_aliases(t, span, AliasCanon::Type)
+    }
+
+    /// A type written as a TERM, with each type alias in it read as the type it stands
+    /// for, in the form `canon` holds a type parameter in: the type's term, and the type
+    /// as written on an occurrence where an alias was read in it.
+    fn term_read_through_aliases(
+        &mut self,
+        t: TermId,
+        span: SourceSpan,
+        canon: AliasCanon,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         use node_occurrence::TypeChild;
         let owner = self.current_owner;
         match self.kb.get_term(t).clone() {
-            // A bare name: read by the one reader of a bare alias, as a written type's is.
-            Term::Ref(_) => {
-                let saved = std::mem::replace(&mut self.alias_nodes, true);
-                let read =
-                    self.bare_alias_read(TypeChild::Interned(t), TypeSite::Type, span, owner);
-                self.alias_nodes = saved;
+            // A bare name: read by the one reader of a bare alias its position has.
+            Term::Ref(written) => {
+                let read = match canon {
+                    AliasCanon::Type => {
+                        let saved = std::mem::replace(&mut self.alias_nodes, true);
+                        let read = self.bare_alias_read(
+                            TypeChild::Interned(t),
+                            TypeSite::Type,
+                            span,
+                            owner,
+                        );
+                        self.alias_nodes = saved;
+                        read
+                    }
+                    AliasCanon::Clause => {
+                        let stands_for = self.clause_alias_type(written);
+                        match self.clause_binding_as_written(written, stands_for, span) {
+                            Value::Node(occ) => TypeChild::Node(occ),
+                            on_a_term => TypeChild::Interned(on_a_term.expect_term()),
+                        }
+                    }
+                };
                 match read {
                     TypeChild::Interned(ty) => (ty, None),
                     TypeChild::Node(written) => {
@@ -24236,8 +24264,6 @@ impl<'a> Loader<'a> {
                     }
                 }
             }
-            // A sort applied to named arguments. Any other application is read for its
-            // aliases and kept on its term.
             Term::Fn {
                 functor,
                 pos_args,
@@ -24247,14 +24273,14 @@ impl<'a> Loader<'a> {
                 let mut any_written = false;
                 let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
                 for &child in pos_args.iter() {
-                    let (read, _) = self.rule_bound_read_through_aliases(child, span);
+                    let (read, _) = self.term_read_through_aliases(child, span, canon);
                     changed |= read != child;
                     pos.push(read);
                 }
                 let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 let mut bindings: Vec<(Symbol, TypeChild)> = Vec::with_capacity(named_args.len());
                 for &(key, child) in named_args.iter() {
-                    let (read, as_written) = self.rule_bound_read_through_aliases(child, span);
+                    let (read, as_written) = self.term_read_through_aliases(child, span, canon);
                     changed |= read != child || as_written.is_some();
                     any_written |= as_written.is_some();
                     named.push((key, read));
@@ -24271,7 +24297,12 @@ impl<'a> Loader<'a> {
                     pos_args: pos,
                     named_args: named,
                 });
-                let written = (any_written && pos_args.is_empty()).then(|| {
+                // The occurrence of a sort applied to named arguments. Any other
+                // application — a row's constructor, a data term — has no such occurrence
+                // and stays on its term, its aliases read.
+                let is_a_type_application =
+                    pos_args.is_empty() && self.kb.has_kind(functor, SymbolKind::Sort);
+                let written = (any_written && is_a_type_application).then(|| {
                     let base = TypeChild::Interned(self.kb.make_sort_ref(functor));
                     self.kb.make_parameterized_occ(base, bindings, span, owner)
                 });
@@ -27223,6 +27254,32 @@ impl<'a> Loader<'a> {
                 // it; a future entry in that table with a field schema breaks it.
                 if self.kb.written_entity_field_names(new_functor).is_some() {
                     self.entity_slot_origin.insert(parse_id.raw(), slot_origin);
+                }
+
+                // A GOAL OF AN OPERATION'S `requires`. A type alias written in it — a
+                // binding's value, at any depth — is the type it stands for, as in a sort's
+                // clause ([`Self::clause_alias_type`]): `Show` is asked at the type a value
+                // typed by the alias is at. Left as the alias's name, the requirement was
+                // about a sort nothing is a value of. The bindings written through one are
+                // left for the clause's value to hold by name.
+                if self.term_depth == 1 && self.in_op_contract_clause {
+                    let span = self.source_span_of(parse_id);
+                    let mut written: Vec<(ClauseSlot, Rc<NodeOccurrence>)> = Vec::new();
+                    for (i, child) in new_pos.iter_mut().enumerate() {
+                        let (read, as_written) =
+                            self.term_read_through_aliases(*child, span, AliasCanon::Clause);
+                        *child = read;
+                        written.extend(as_written.map(|occ| (ClauseSlot::Pos(i), occ)));
+                    }
+                    for (key, child) in new_named.iter_mut() {
+                        let (read, as_written) =
+                            self.term_read_through_aliases(*child, span, AliasCanon::Clause);
+                        *child = read;
+                        written.extend(as_written.map(|occ| (ClauseSlot::Named(*key), occ)));
+                    }
+                    if !written.is_empty() {
+                        self.contract_goal_aliases.insert(parse_id.raw(), written);
+                    }
                 }
 
                 // WI-710: a NESTED sort-headed term is a parameterized TYPE — the
@@ -34350,10 +34407,9 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
-                match self.clause_alias_type(sort_sym) {
-                    Some(stands_for) => Value::term(stands_for),
-                    None => Value::term(self.kb.make_sort_ref(sort_sym)),
-                }
+                let stands_for = self.clause_alias_type(sort_sym);
+                let span = self.type_expr_span(ty);
+                self.clause_binding_as_written(sort_sym, stands_for, span)
             }
             // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
             // = V]`) is lowered to the PLAIN parameterized application `Pair[A = K, B =
@@ -34592,6 +34648,55 @@ impl<'a> Loader<'a> {
             }
             _ => self.type_expr_to_value(ty),
         }
+    }
+
+    /// A clause binding written as the bare name `written`, on the carrier that holds the
+    /// name: `stands_for` is the type an alias there stands for
+    /// ([`Self::clause_alias_type`]), `None` for a name that is no alias.
+    ///
+    /// An alias rides an occurrence that holds its name beside the type
+    /// ([`node_occurrence::TypeNode::Aliased`]), as in a type position
+    /// ([`Self::bare_alias_read`]): every reader of the binding reads the type, and a
+    /// message can say the name. An alias of the sort's own parameter, and one that is an
+    /// open slot, is the parameter or the variable itself, as there.
+    fn clause_binding_as_written(
+        &mut self,
+        written: Symbol,
+        stands_for: Option<TermId>,
+        span: SourceSpan,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let stands_for = match stands_for {
+            Some(ty) => {
+                let is_a_parameter_or_an_open_slot = match self.kb.get_term(ty) {
+                    Term::Var(_) => true,
+                    Term::Ref(named) => super::typing::is_sort_param_symbol(self.kb, *named),
+                    _ => false,
+                };
+                if is_a_parameter_or_an_open_slot {
+                    return Value::term(ty);
+                }
+                ty
+            }
+            // The node-carrier control: a sort that is no alias rides the node too,
+            // standing for itself. A binding may also name an operation (`combine = add`)
+            // or a type parameter, and those are left alone.
+            None if node_carrier_control()
+                && self.kb.has_kind(written, SymbolKind::Sort)
+                && !super::typing::is_sort_param_symbol(self.kb, written) =>
+            {
+                self.kb.make_sort_ref(written)
+            }
+            None => return Value::term(self.kb.make_sort_ref(written)),
+        };
+        Value::Node(NodeOccurrence::new_type(
+            node_occurrence::TypeNode::Aliased {
+                alias: written,
+                stands_for: node_occurrence::TypeChild::Interned(stands_for),
+            },
+            span,
+            self.current_owner,
+        ))
     }
 
     /// Assemble a `SortView` carrier from its positional slot (the base sort's name
@@ -35461,9 +35566,10 @@ impl<'a> Loader<'a> {
                     // own lowering reads it (WI-20260924-F8PYZ) — the two copies of one
                     // requirement name one spec. A refused alias keeps its written name;
                     // the lowering reports it.
-                    let req_term = match self.sort_inst_to_value(&r.type_expr) {
-                        crate::eval::value::Value::Term { id: t, .. } => t,
-                        _ => match &r.type_expr {
+                    let spec = self.sort_inst_to_value(&r.type_expr);
+                    let req_term = match self.plain_spec_term(&spec) {
+                        Some(t) => t,
+                        None => match &r.type_expr {
                             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
                                 match self.spec_name_symbol(name) {
                                     Some(base) => self.kb.make_name_term_from_sym(base),
@@ -38135,7 +38241,7 @@ impl<'a> Loader<'a> {
         // restore rather than set/clear: an operation declared inside another
         // declaration's conversion must not inherit or erase the outer flag.
         let prev_contract = std::mem::replace(&mut self.in_op_contract_clause, true);
-        let requires_list = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
+        let requires_clauses = self.convert_clause_list_with_extra(&o.requires, &extra_requires);
         // `ensures` IS NOT COVERED, and the asymmetry is the point. A `requires` clause
         // that names a SPEC carries a type bracket (`Desc[T = x.E]`); an `ensures` clause
         // is a predicate over VALUES (`ensures eq(?result, Variant1)`), whose dotted
@@ -38144,7 +38250,7 @@ impl<'a> Loader<'a> {
         // does not merely classify, it MINTS terms and pushes visibility / ambiguity
         // errors of its own. Found by `/code-review`; the flag was set across both.
         self.in_op_contract_clause = prev_contract;
-        let ensures_list = self.convert_clause_list(&o.ensures);
+        let ensures_clauses = self.convert_clause_list(&o.ensures);
 
         // WI-840 (058 §4.2 / §4.7): the operation's type parameters against the OTHER
         // things one bracket key can name, and the NAMED requirement slots the
@@ -38248,10 +38354,17 @@ impl<'a> Loader<'a> {
         // Every other field is always a ground `Value::Term`.
         use crate::eval::value::Value;
         let (effects_field, effects_all_ground) = value_or_ground_list(self.kb, effect_values);
-        // WI-341: the head is a value fact when ANY of params / return / effects
-        // carries a `Value::Node` (denoted-bearing); else a hash-consed `Term::Fn`.
-        let all_ground =
-            params_all_ground && effects_all_ground && matches!(return_value, Value::Term { .. });
+        let (requires_field, requires_all_ground) =
+            value_or_ground_list(self.kb, requires_clauses);
+        let (ensures_field, ensures_all_ground) = value_or_ground_list(self.kb, ensures_clauses);
+        // WI-341: the head is a value fact when ANY of params / return / effects / a
+        // contract clause carries a `Value::Node` (denoted-bearing, or a type written
+        // through an alias); else a hash-consed `Term::Fn`.
+        let all_ground = params_all_ground
+            && effects_all_ground
+            && requires_all_ground
+            && ensures_all_ground
+            && matches!(return_value, Value::Term { .. });
         // Single source of truth for the field set / order. Readers resolve by
         // key (functor + `NamedKey(sym)`), so order is not load-bearing.
         let named: Vec<(Symbol, Value)> = vec![
@@ -38259,8 +38372,8 @@ impl<'a> Loader<'a> {
             (params_sym, params_field),
             (return_type_sym, return_value),
             (effects_sym, effects_field),
-            (requires_sym, Value::term(requires_list)),
-            (ensures_sym, Value::term(ensures_list)),
+            (requires_sym, requires_field),
+            (ensures_sym, ensures_field),
             (type_params_sym, Value::term(type_params_list)),
             // WI-087: operation attributes — always a ground `meta(...)` term, so
             // it never forces the value-fact path (does not enter `all_ground`).
@@ -38862,6 +38975,37 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// A clause's spec as the plain term it is, for a reader that keeps a term and
+    /// nothing else: `None` for a spec that holds a value (`Foo[Int64, 3]`), which such a
+    /// reader has no place for. A binding written through a type alias is the type it
+    /// stands for.
+    fn plain_spec_term(&mut self, spec: &crate::eval::value::Value) -> Option<TermId> {
+        if super::typing::type_holds_a_value(self.kb, spec) {
+            return None;
+        }
+        node_occurrence::value_to_term(&mut self.kb, spec).ok()
+    }
+
+    /// A sort's `requires` spec as its fact holds it: the term
+    /// [`Self::lower_value_or_gate`] lowers it to, or — where a binding was written
+    /// through a type alias — the value itself, which holds the alias's name
+    /// ([`Self::clause_binding_as_written`]). A requirement's readers take the bindings
+    /// through the view, so they read the same type from either.
+    fn requirement_spec_to_store(
+        &mut self,
+        spec: crate::eval::value::Value,
+        ty: &TypeExpr,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        if !node_occurrence::value_holds_alias_node(&spec) {
+            return self.lower_value_or_gate(spec, "requires", ty);
+        }
+        match self.lower_value_or_gate(spec.clone(), "requires", ty) {
+            Value::Term { .. } => spec,
+            unlowered => unlowered,
+        }
+    }
+
     /// `slot_index` (WI-840, 058 §4.7) is this declaration's POSITION among the
     /// enclosing scope's `requires` items. Passed in rather than counted here because
     /// the caller — [`Self::load_items`], the one walk that sees the items in order —
@@ -38879,13 +39023,14 @@ impl<'a> Loader<'a> {
         let spec_sym = self.kb.intern("spec");
         self.kb
             .register_entity_fields(requires_sym, vec![sort_ref_sym, spec_sym]);
-        // WI-390: a denoted-bearing spec is now faithfully term-representable, so
-        // lower it to a `TermId` — the SortRequiresInfo head stays a hash-consed
-        // `Term::Fn`, which `direct_requires` reads (no silent skip) and the
-        // `resolve_cache` keys on. A ground spec passes through unchanged; only the
-        // opaque residue stays a `Value::Node` fact + the gated diagnostic.
+        // The spec on the carrier its fact holds it on
+        // ([`Self::requirement_spec_to_store`]): a term where it is one, a spec that holds
+        // a value included (WI-390) — and the value itself where a binding was written
+        // through a type alias, or where it has no term at all, which is also reported.
+        // So a `SortRequiresInfo` head is a term or a value, and its readers take it
+        // through the view.
         use crate::eval::value::Value;
-        let spec_value = self.lower_value_or_gate(spec_value, "requires", &r.type_expr);
+        let spec_value = self.requirement_spec_to_store(spec_value, &r.type_expr);
         // The `sort_ref` FIELD carries the requiring sort as a term (it is read as
         // a type by `direct_requires`); the DOMAIN beside it is the same name as a
         // symbol. Same name, two positions — data vs. index key.
@@ -39832,12 +39977,9 @@ impl<'a> Loader<'a> {
             return Term::Ref(sym);
         }
         if self.term_depth != 1 {
-            // Inside the spec's bracket: a binding's value, where an alias is its type
-            // as it is in a sort's clause ([`Self::clause_alias_type`]).
-            return match self.clause_alias_type(sym) {
-                Some(stands_for) => self.kb.get_term(stands_for).clone(),
-                None => Term::Ref(sym),
-            };
+            // Inside the goal's bracket: a binding's value. An alias there is read by the
+            // goal itself, which keeps its name (`convert_term`'s application arm).
+            return Term::Ref(sym);
         }
         match self.read_spec_alias(sym, span) {
             Ok((base, fixed)) if base != sym => match fixed.is_empty() {
@@ -40188,9 +40330,10 @@ impl<'a> Loader<'a> {
         // fact, not a scope identity. (Replaces `sort_inst_to_term`, whose
         // `as_term().expect(...)` would panic on a value spec — reachable from the
         // valid syntax `provides Foo[Int64, 3] language … end`.)
-        let spec_term = match self.sort_inst_to_value(&pb.spec) {
-            crate::eval::value::Value::Term { id: t, .. } => t,
-            _ => {
+        let spec_value = self.sort_inst_to_value(&pb.spec);
+        let spec_term = match self.plain_spec_term(&spec_value) {
+            Some(t) => t,
+            None => {
                 self.diagnose_gated_value_in_type("provides", &pb.spec);
                 match &pb.spec {
                     TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
@@ -40729,7 +40872,7 @@ impl<'a> Loader<'a> {
         wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym, expr_carried_sym)
     }
 
-    fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> TermId {
+    fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> Vec<crate::eval::value::Value> {
         self.convert_clause_list_with_extra(clauses, &[])
     }
 
@@ -40738,38 +40881,86 @@ impl<'a> Loader<'a> {
     /// already-built kb TermIds (one term per clause, no conjunction wrap),
     /// used by WI-320's auto-requires inference to append synthesized
     /// `EffectsRuntime[Effects = E_i]` clauses to a user's requires list.
+    ///
+    /// Each clause on the carrier it needs: a goal with a binding written through a type
+    /// alias holds that binding's occurrence ([`Self::contract_goal_as_written`]), and any
+    /// other is the term it always was.
     fn convert_clause_list_with_extra(
         &mut self,
         clauses: &[Vec<TermId>],
         extra_terms: &[TermId],
-    ) -> TermId {
-        let mut clause_terms: Vec<TermId> = clauses
+    ) -> Vec<crate::eval::value::Value> {
+        use crate::eval::value::Value;
+        let mut clause_values: Vec<Value> = clauses
             .iter()
             .map(|clause| {
                 // WI-552: canonicalize each goal's param/`result` refs to var_ref
                 // at the producer, so the stored clause carries the binder as the
                 // variable it is (the discharge-time normalize pass is retired).
-                let goal_terms: Vec<TermId> = clause
+                let mut goals: Vec<Value> = clause
                     .iter()
                     .map(|&tid| {
                         let t = self.convert_term(tid);
-                        self.var_ref_signature_places(t)
+                        let goal = self.var_ref_signature_places(t);
+                        self.contract_goal_as_written(tid, goal)
                     })
                     .collect();
-                if goal_terms.len() == 1 {
-                    goal_terms[0]
+                if goals.len() == 1 {
+                    goals.remove(0)
                 } else {
                     let conj_sym = self.kb.intern("conjunction");
-                    self.kb.alloc(Term::Fn {
-                        functor: conj_sym,
-                        pos_args: SmallVec::from_vec(goal_terms),
-                        named_args: SmallVec::new(),
-                    })
+                    self.kb.fn_value(conj_sym, goals, Vec::new())
                 }
             })
             .collect();
-        clause_terms.extend_from_slice(extra_terms);
-        self.kb.build_list(&clause_terms)
+        clause_values.extend(extra_terms.iter().map(|t| Value::term(*t)));
+        clause_values
+    }
+
+    /// One goal of an operation's `requires`, converted to `goal` from the parse term
+    /// `written_at`: with each binding that was written through a type alias on the
+    /// occurrence that holds the name ([`Self::contract_goal_aliases`]), and the goal's
+    /// term where none was.
+    ///
+    /// A binding's occurrence is kept where it lowers to the very term the goal holds
+    /// there, so the value and the term are one clause to every reader of its structure.
+    fn contract_goal_as_written(
+        &mut self,
+        written_at: TermId,
+        goal: TermId,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let Some(written) = self.contract_goal_aliases.remove(&written_at.raw()) else {
+            return Value::term(goal);
+        };
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.kb.get_term(goal).clone()
+        else {
+            return Value::term(goal);
+        };
+        let child = |loader: &mut Self, slot: ClauseSlot, held: TermId| {
+            written
+                .iter()
+                .find(|(at, _)| *at == slot)
+                .map(|(_, occ)| Value::Node(Rc::clone(occ)))
+                .filter(|as_written| {
+                    node_occurrence::value_to_term(loader.kb, as_written).ok() == Some(held)
+                })
+                .unwrap_or_else(|| Value::term(held))
+        };
+        let pos: Vec<Value> = pos_args
+            .iter()
+            .enumerate()
+            .map(|(i, held)| child(self, ClauseSlot::Pos(i), *held))
+            .collect();
+        let named: Vec<(Symbol, Value)> = named_args
+            .iter()
+            .map(|(key, held)| (*key, child(self, ClauseSlot::Named(*key), *held)))
+            .collect();
+        self.kb.fn_value(functor, pos, named)
     }
 
     /// WI-320 / proposal 045 §6 Phase 0 — auto-requires inference for an

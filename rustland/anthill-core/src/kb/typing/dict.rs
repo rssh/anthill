@@ -249,7 +249,7 @@ pub struct RequirementRefusal {
 /// owner its own doc forbids. The impossible half already has a home that runs late
 /// enough: WI-644's `check_use_site_requires_eq`, which refuses a `NonEq` carrier bound
 /// into a `requires Eq` position. Left as-is rather than half-answered.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct UnprovidedProvision {
     /// The sort the call pinned into the spec's carrier parameter.
     pub(super) carrier: Symbol,
@@ -259,11 +259,12 @@ pub struct UnprovidedProvision {
     /// ([`carrier_has_provision_row`])? `true` ⇒ the row exists and its CONDITION failed
     /// at these bindings, so the advice must point at the bindings and not at this sort.
     has_a_row: bool,
-    /// Does the requirement as rendered write every element of the spec, so that
-    /// `provides <requirement>` is a clause the author can paste? Not where the refusal is
-    /// raised over a requirement with elements still open — the carrier having no provision
-    /// to say them is the very reason they are.
-    written_in_full: bool,
+    /// The provision as a clause the author can paste — `Spec[T = Int64]`, each binding the
+    /// type it is and never the alias a `requires` wrote it through, which need not be in
+    /// scope where the provision goes. `None` where the requirement does not write every
+    /// element of the spec: a refusal raised over a requirement with elements still open —
+    /// the carrier having no provision to say them is the very reason they are.
+    provision_in_full: Option<String>,
 }
 
 /// WI-1102 — does any provision of `spec` dispatch at `carrier`?
@@ -442,8 +443,8 @@ impl RequirementRefusal {
             // The repair line carries the WHOLE requirement, not just its carrier
             // binding: a multi-parameter spec written with one binding omitted fills the
             // rest from its own parameters, which §5.2 legislates as its own load error
-            // — advice that trades one refusal for another. `dep_text` is the goal as
-            // rendered, so `provides <dep_text>` is complete by construction.
+            // — advice that trades one refusal for another. `provision_in_full` is the goal
+            // as rendered, so `provides <it>` is complete by construction.
             // WI-1102 — this arm says ONLY what the lookup established: a row exists for
             // this sort, and none of its rows answers at these bindings. It used to name
             // the mechanism ("its provision is conditional and the condition fails on a
@@ -476,10 +477,11 @@ impl RequirementRefusal {
                 // pasted inside `namespace a` opens `a.a.b.S`, the clause is refused as
                 // carrier-less and this refusal still stands. The qualified address printed
                 // here is a repair only where it is absolute.
-                let clause = if u.written_in_full {
-                    format!("`provides {}`", self.dep_text)
-                } else {
-                    format!("a `provides {spec}[…]` for it, each element of `{spec}` written")
+                let clause = match &u.provision_in_full {
+                    Some(provision) => format!("`provides {provision}`"),
+                    None => {
+                        format!("a `provides {spec}[…]` for it, each element of `{spec}` written")
+                    }
                 };
                 format!(
                     "; `{carrier}` provides no `{spec}` — declare {clause}: on \
@@ -550,10 +552,12 @@ impl RequirementRefusal {
 
 /// Render a `RequiresEntry` for a diagnostic (`Desc[T = MT]`) via the same
 /// goal rendering Strategy 3's own diagnostics use; entries that do not form
-/// a goal fall back to the spec sort's name.
+/// a goal fall back to the spec sort's name. The requirement as its clause wrote it: a
+/// binding written through a type alias is led by the alias's name
+/// ([`format_goal_as_written`]).
 pub(super) fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
     match goal_from_requires_entry(kb, entry) {
-        Some(goal) => format_goal(kb, &goal),
+        Some(goal) => format_goal_as_written(kb, &goal),
         None => kb.qualified_name_of(entry.required_sort).to_string(),
     }
 }
@@ -1158,7 +1162,7 @@ fn build_dispatching_dict_from_chain(
                                 carrier,
                                 spec: dep.required_sort,
                                 has_a_row: false,
-                                written_in_full: false,
+                                provision_in_full: None,
                             }
                         })
                     };
@@ -2451,7 +2455,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
                 carrier,
                 spec,
                 has_a_row: carrier_has_provision_row(kb, carrier, spec),
-                written_in_full: false,
+                provision_in_full: None,
             }),
             untied: None,
         }),
@@ -2959,7 +2963,7 @@ fn unprovided_provision(
         carrier,
         spec: dep.required_sort,
         has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
-        written_in_full: true,
+        provision_in_full: Some(format_goal(kb, &goal)),
     })
 }
 
@@ -3208,7 +3212,7 @@ fn pinned_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
 
 /// Condition 1 of [`unprovided_provision`]: the spec declares type parameters and the goal
 /// binds each of them to a fully concrete type. Such a goal, rendered, is a `provides`
-/// clause as it would be written ([`UnprovidedProvision::written_in_full`]).
+/// clause as it would be written ([`UnprovidedProvision::provision_in_full`]).
 fn goal_pins_every_param(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
     let tparams = kb.type_params_of_sort(goal.spec_sort);
     !tparams.is_empty()
@@ -3302,7 +3306,7 @@ pub(super) fn unprovided_spec_at_carrier(
             account_names_every_repair: false,
             no_scope_route: false,
             construction_carries_repair: false,
-            dep_text: format_goal(kb, goal),
+            dep_text: format_goal_as_written(kb, goal),
             unconstrained: Vec::new(),
             refused_covers: Vec::new(),
             construction: String::new(),
@@ -3311,7 +3315,7 @@ pub(super) fn unprovided_spec_at_carrier(
                 carrier,
                 spec: goal.spec_sort,
                 has_a_row: false,
-                written_in_full: goal_pins_every_param(kb, goal),
+                provision_in_full: goal_pins_every_param(kb, goal).then(|| format_goal(kb, goal)),
             }),
             untied: None,
         }),

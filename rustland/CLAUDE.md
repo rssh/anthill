@@ -86,8 +86,10 @@ instead — a `Value::Term` gate, a `_ => false` for "a carrier this cannot read
 for a term and not for the same type on an occurrence. `ANTHILL_TEST_NODE_CARRIER=1` makes
 the loader put every sort named in an operation's parameter or result type, in an
 entity's field type, in a const's type, in the type arguments a call writes, in an
-annotation or in a rule head's bound on the occurrence a type alias written there rides
-(`TypeNode::Aliased`), standing for itself:
+annotation, in a rule head's bound or in a binding of a `requires` clause — a sort's or an
+operation's — on the occurrence a type alias written there rides (`TypeNode::Aliased`),
+standing for itself. A `provides` clause's binding takes the node too and is lowered where
+the provision is stored:
 
 ```bash
 ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh          # the whole workspace, every load

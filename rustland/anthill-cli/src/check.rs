@@ -18,6 +18,7 @@ use std::process::Command;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::BodiedRulePolicy;
+use anthill_core::kb::op_info::{head_field_term, head_field_value};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
 use anthill_core::kb::KnowledgeBase;
@@ -713,28 +714,10 @@ fn check_scope_axiom_witness(
         };
         let mut scope_seen = false;
         for row in requires {
-            // This proof checker currently decodes `sort_ref` / `spec` with
-            // term-only helpers. A carrier it cannot inspect is unsupported,
-            // not evidence that the cited declaration disappeared.
-            let Value::Term { id: head, .. } = row else {
-                return CheckStatus::Failed(
-                    "ScopeAxiom(requires): non-term SortRequiresInfo row is unsupported; \
-                     decode it through TermView"
-                        .into(),
-                );
-            };
-            let Term::Fn {
-                named_args: head_named,
-                ..
-            } = kb.get_term(head)
-            else {
-                return CheckStatus::Failed(
-                    "ScopeAxiom(requires): SortRequiresInfo row is not function-shaped".into(),
-                );
-            };
-            let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
-                Some(t) => t,
-                None => continue,
+            // Read through the view, so a spec whose binding rides an occurrence — one
+            // written through a type alias, one that holds a value — is the clause it is.
+            let Some(sort_ref_tid) = head_field_term(kb, &row, "sort_ref") else {
+                continue;
             };
             let actual_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
                 Some(q) => q,
@@ -744,11 +727,10 @@ fn check_scope_axiom_witness(
                 continue;
             }
             scope_seen = true;
-            let spec_tid = match get_named_arg(kb, &head_named, "spec") {
-                Some(t) => t,
-                None => continue,
+            let Some(spec) = head_field_value(kb, &row, "spec") else {
+                continue;
             };
-            if let Some(actual_se) = flatten_spec(kb, spec_tid) {
+            if let Some(actual_se) = flatten_spec(kb, &spec) {
                 if actual_se == expected_se_flat {
                     return CheckStatus::Pass;
                 }
