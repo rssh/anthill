@@ -401,7 +401,12 @@ struct RuleEntry {
     /// only on the (structurally identical) head, so the bound rides HERE, off
     /// the structural index (carrier-neutral, M1). Read at fire by
     /// `apply_eq_rules`'s post-match conforms check.
-    type_bounds: Vec<(u32, TermId)>,
+    ///
+    /// The bound is a type on whichever carrier it rides: a term, or an occurrence where
+    /// it was written through a type alias, which keeps the name beside the type it
+    /// stands for ([`node_occurrence::TypeNode::Aliased`]). Every reader reads it through
+    /// the view, and closes and opens it with the type walks that take any carrier.
+    type_bounds: Vec<(u32, crate::eval::value::Value)>,
     /// Provider obligations on carrier-type frame slots, closed against the same
     /// frame as type_bounds. These are spec instances, never value types.
     provider_requirements: Vec<RuleProviderRequirement>,
@@ -9028,10 +9033,16 @@ impl KnowledgeBase {
     /// `pub(crate)`, not `pub` (WI-903): the loader's refusal is what keeps a bound
     /// off a rule no site enforces it on, so the installer must not be reachable
     /// around it from outside the crate.
-    pub(crate) fn install_rule_type_bounds(&mut self, id: RuleId, var_bounds: &[(VarId, TermId)]) {
+    pub(crate) fn install_rule_type_bounds(
+        &mut self,
+        id: RuleId,
+        var_bounds: &[(VarId, crate::eval::value::Value)],
+    ) {
         let globals = self.rules[id.index()].globals.clone();
-        let mut bounds: Vec<(u32, TermId)> = Vec::with_capacity(var_bounds.len());
-        for &(vid, bound) in var_bounds {
+        let mut bounds: Vec<(u32, crate::eval::value::Value)> =
+            Vec::with_capacity(var_bounds.len());
+        for (vid, bound) in var_bounds {
+            let vid = *vid;
             // WI-20260911-5G28A — CLOSE THE BOUND TERM TOO, against the same frame the
             // head and the body closed against. A bound's own type variables
             // (`List[T = ?t]`) are frame slots since this ticket
@@ -9044,9 +9055,9 @@ impl KnowledgeBase {
             // `typing::relation_clause_columns` per CITATION.
             //
             // A bound with no variables in it (every bound in the corpus before this
-            // ticket) closes to itself — `term_to_debruijn` rebuilds nothing when no
+            // ticket) closes to itself — the closing walk rebuilds nothing when no
             // child moved — so this is a no-op for them.
-            let bound = self.term_to_debruijn(bound, &globals);
+            let (bound, _) = node_occurrence::close_value_type(self, bound, &globals);
             match globals.iter().position(|&g| g == vid) {
                 // The DeBruijn index is `len - 1 - position` (innermost-is-0), the
                 // SAME reversal `term_to_debruijn` / `node_to_debruijn` apply when
@@ -9086,7 +9097,7 @@ impl KnowledgeBase {
 
     /// WI-582 — the typed rule-pattern bounds for `id`: `(debruijn_index,
     /// bound_type)` pairs the firing check reads. Empty for untyped rules.
-    pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, TermId)] {
+    pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, crate::eval::value::Value)] {
         &self.rules[id.index()].type_bounds
     }
 
@@ -9156,21 +9167,21 @@ impl KnowledgeBase {
         }
     }
 
-    pub(crate) fn rule_bound_has_provider_requirement(&self, id: RuleId, bound: TermId) -> bool {
-        match self.get_term(bound) {
-            Term::Var(Var::DeBruijn(i)) => self
+    pub(crate) fn rule_bound_has_provider_requirement<V: term_view::TermView>(
+        &self,
+        id: RuleId,
+        bound: &V,
+    ) -> bool {
+        match bound.head(self) {
+            term_view::ViewHead::Var(Var::DeBruijn(i)) => self
                 .rule_provider_requirements(id)
                 .iter()
-                .any(|r| r.carrier == *i),
-            Term::Fn {
-                pos_args,
-                named_args,
-                ..
-            } => pos_args
-                .iter()
-                .copied()
-                .chain(named_args.iter().map(|(_, t)| *t))
-                .any(|t| self.rule_bound_has_provider_requirement(id, t)),
+                .any(|r| r.carrier == i),
+            term_view::ViewHead::Functor { pos_arity, .. } => {
+                typing::view_any_child(self, bound, pos_arity, |c| {
+                    self.rule_bound_has_provider_requirement(id, c)
+                })
+            }
             _ => false,
         }
     }
@@ -9231,10 +9242,16 @@ impl KnowledgeBase {
             .iter()
             .map(|r| (r.carrier, r.instance))
             .collect();
+        // An obligation is a spec instance, which is a term: each bound is projected as
+        // the term of the type it is.
         self.rule_type_bounds(id)
             .to_vec()
             .into_iter()
-            .map(|(i, t)| (i, project(self, t, &requirements)))
+            .map(|(i, bound)| {
+                let t = node_occurrence::value_to_term(self, &bound)
+                    .expect("a rule head's bound is a type, which has a term");
+                (i, project(self, t, &requirements))
+            })
             .collect()
     }
 
@@ -9260,7 +9277,7 @@ impl KnowledgeBase {
         &mut self,
         id: RuleId,
         extra: &[VarId],
-        bounds: Vec<(u32, TermId)>,
+        bounds: Vec<(u32, crate::eval::value::Value)>,
     ) {
         let entry = &mut self.rules[id.index()];
         let mut globals = Vec::with_capacity(extra.len() + entry.globals.len());
@@ -9497,20 +9514,9 @@ impl KnowledgeBase {
     }
 
     /// Convert a single term: replace Global(vid) with DeBruijn(index).
-    /// Index is `var_order.len() - 1 - position_in_var_order`.
-    /// WI-20260911-5G28A — [`Self::term_to_debruijn`] for the one caller outside this
-    /// module: `load::expand_rule_head_bound_type_params`, which closes a bound it just
-    /// rewrote against the frame it just grew. Same walk, and it leaves an already-closed
-    /// `Var::DeBruijn` alone — which is what lets a bound be re-closed after the frame was
+    /// Index is `var_order.len() - 1 - position_in_var_order`. It leaves an already-closed
+    /// `Var::DeBruijn` alone, which is what lets a bound be re-closed after the frame was
     /// PREPENDED to, since prepending preserves every existing index.
-    pub(crate) fn term_to_debruijn_for_frame(
-        &mut self,
-        term: TermId,
-        var_order: &[VarId],
-    ) -> TermId {
-        self.term_to_debruijn(term, var_order)
-    }
-
     fn term_to_debruijn(&mut self, term: TermId, var_order: &[VarId]) -> TermId {
         match self.terms.get(term).clone() {
             Term::Var(Var::Global(vid)) => {

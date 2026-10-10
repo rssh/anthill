@@ -335,7 +335,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                 anchor.owner,
             );
             let at: Vec<_> = kb.rule_type_bounds(rid).iter().filter_map(|(v,t)|
-                matches!(kb.get_term(*t), Term::Var(Var::DeBruijn(i)) if *i == requirement.carrier)
+                matches!(t.head(kb), ViewHead::Var(Var::DeBruijn(i)) if i == requirement.carrier)
                     .then(|| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(*v)), anchor.span, anchor.owner))).collect();
             for call in collect_covered_calls(kb, &body, kb.canonical_sort_sym(spec), &at) {
                 let Some(Expr::Apply {

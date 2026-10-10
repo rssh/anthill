@@ -491,7 +491,9 @@ fn a_head_introduced_type_variable_resolves_inside_the_bracket() {
     // A is the clause's actual carrier type variable. The authored bracket
     // retains that very slot, rather than storing the spec as the value's type.
     let rid = kb.rule_id_by_qn("test.w51w18.tv.anchored").unwrap();
-    let Term::Var(anthill_core::kb::term::Var::DeBruijn(carrier)) = kb.get_term(kb.rule_type_bounds(rid)[0].1) else {
+    let anthill_core::kb::term_view::ViewHead::Var(anthill_core::kb::term::Var::DeBruijn(carrier)) =
+        anthill_core::kb::term_view::TermView::head(&kb.rule_type_bounds(rid)[0].1, &kb)
+    else {
         panic!("the introduced type is a carrier variable");
     };
     assert_eq!(stored_bindings(&kb,"test.w51w18.tv.anchored"),

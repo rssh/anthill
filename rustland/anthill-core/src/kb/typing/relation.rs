@@ -769,8 +769,8 @@ fn citation_requirement_routes(
                 .find(|(n, _)| n == name)
                 .or_else(|| column_types.iter().find(|(n, _)| n == name));
             if let Some((_, ty)) = actual {
-                let bound = kb.term_from_debruijn(bound, &fresh);
-                if !pin_type_vars(kb, &mut carrier_subst, ty, &Value::term(bound)) {
+                let (bound, _) = crate::kb::node_occurrence::open_value_type(kb, &bound, &fresh);
+                if !pin_type_vars(kb, &mut carrier_subst, ty, &bound) {
                     carrier_subst.contradiction = true;
                 }
             }
@@ -2470,7 +2470,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
     // Each fresh variable keeps its SLOT's OWN NAME, so a diagnostic rendering a column
     // type says `?x` / `?res` rather than one borrowed placeholder for every slot.
     let stored_bounds = kb.rule_type_bounds(rid).to_vec();
-    let type_bounds: Vec<(u32, TermId)> = if stored_bounds.is_empty() {
+    let type_bounds: Vec<(u32, Value)> = if stored_bounds.is_empty() {
         Vec::new()
     } else {
         // INDEXED BY DE BRUIJN NUMBER, which is what `term_from_debruijn` reads: slot `k`
@@ -2496,7 +2496,9 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
         kb.open_rule_provider_requirements(rid, &fresh_frame);
         stored_bounds
             .into_iter()
-            .map(|(i, t)| (i, kb.term_from_debruijn(t, &fresh_frame)))
+            .map(|(i, t)| {
+                (i, crate::kb::node_occurrence::open_value_type(kb, &t, &fresh_frame).0)
+            })
             .collect()
     };
     let slots = rule_head_var_slots(kb, rid);
@@ -2506,7 +2508,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
         // before the `&mut kb` arms below.
         let inferred = var_types.get(&d).cloned();
         let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
-            Value::term(*t)
+            t.clone()
         } else if let Some(t) = inferred {
             t
         } else {

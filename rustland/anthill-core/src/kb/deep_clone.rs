@@ -900,7 +900,7 @@ impl Copier {
             globals: plain(globals),
             shared_arity: plain(shared_arity),
             label: plain(label),
-            type_bounds: plain(type_bounds),
+            type_bounds: self.keyed_values(type_bounds),
             provider_requirements: plain(provider_requirements),
             head_vars: plain(head_vars),
             head_span: plain(head_span),

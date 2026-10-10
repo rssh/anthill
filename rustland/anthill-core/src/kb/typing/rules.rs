@@ -711,11 +711,15 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                 continue;
             }
         };
-        let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
+        let bounds: Vec<(u32, Value)> = kb.rule_type_bounds(rid).to_vec();
         let owner = anchor.owner;
         let mut prepended: Vec<Rc<NodeOccurrence>> = Vec::new();
         let mut appended: Vec<Rc<NodeOccurrence>> = Vec::new();
-        for (db_index, bound_tid) in bounds {
+        for (db_index, bound) in bounds {
+            // The goals added here are the rule's own, and a rule reads the type a bound
+            // stands for: its term, with no name it was written by.
+            let bound_tid = crate::kb::node_occurrence::value_to_term(kb, &bound)
+                .expect("a rule head's bound is a type, which has a term");
             // A bound written with an ALIAS has its target's domain (`dealias_type`).
             let bound_tid = dealias_type(kb, bound_tid);
             // `?x` rides as the SAME DeBruijn index the bound is keyed by
@@ -746,7 +750,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // WRITTEN domain's own clause (it IS the generator), a type with no domain, or a
             // KB that never declared `SortDomain` — the check then still guards the bound.
             let fill: Option<Vec<Rc<NodeOccurrence>>> = if written_domain
-                || kb.rule_bound_has_provider_requirement(rid, bound_tid)
+                || kb.rule_bound_has_provider_requirement(rid, &TermIdView(bound_tid))
                 || !bound_is_fillable(kb, bound_tid)
             {
                 None

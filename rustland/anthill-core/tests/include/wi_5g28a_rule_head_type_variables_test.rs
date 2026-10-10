@@ -262,7 +262,7 @@ fn bound_of(kb: &KnowledgeBase, qn: &str) -> String {
         .unwrap_or_else(|| panic!("no rule {qn}"));
     let bounds = kb.rule_type_bounds(rid);
     assert_eq!(bounds.len(), 1, "{qn} has exactly one bound");
-    TermPrinter::new(kb).print_term(bounds[0].1)
+    crate::common::print_type(kb, &bounds[0].1)
 }
 
 #[test]
@@ -402,15 +402,19 @@ fn the_shipped_corpus_has_no_unwritten_parameter_in_a_rule_head_bound() {
     //
     // It is also the tripwire for the other direction: a future stdlib rule written
     // `?x: List` starts generating a member goal, and this row is where that is noticed.
-    let kb = crate::common::load_kb_with(
+    let mut kb = crate::common::load_kb_with(
         "namespace zz5g28acensus\n  import anthill.prelude.{List}\nend\n",
     );
+    let bounds: Vec<anthill_core::eval::Value> = kb
+        .live_rule_ids()
+        .into_iter()
+        .flat_map(|rid| kb.rule_type_bounds(rid).iter().map(|(_, b)| b.clone()).collect::<Vec<_>>())
+        .collect();
     let mut unwritten: Vec<String> = Vec::new();
-    for rid in kb.live_rule_ids() {
-        for (_, bound) in kb.rule_type_bounds(rid) {
-            if term_mentions_bare_parameterised_sort(&kb, *bound) {
-                unwritten.push(TermPrinter::new(&kb).print_term(*bound));
-            }
+    for bound in bounds {
+        let bound = crate::common::type_as_term(&mut kb, &bound);
+        if term_mentions_bare_parameterised_sort(&kb, bound) {
+            unwritten.push(TermPrinter::new(&kb).print_term(bound));
         }
     }
     assert!(

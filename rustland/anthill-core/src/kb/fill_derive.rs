@@ -344,7 +344,7 @@ fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
             .unwrap_or(sort);
         let rid =
             kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, domain, None);
-        kb.install_rule_type_bounds(rid, &[(x_var, self_type)]);
+        kb.install_rule_type_bounds(rid, &[(x_var, crate::eval::value::Value::term(self_type))]);
         kb.record_sort_domain(
             sort,
             SortDomainEntry {
@@ -653,7 +653,7 @@ fn emit_fill_clause(kb: &mut KnowledgeBase, syms: &ClauseSyms, c: &Candidate) {
     let rid =
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, c.job.domain, None);
     // The column type a citation of `<Sort>.domain` reads, and where the clause reports.
-    kb.install_rule_type_bounds(rid, &[(x_var, c.self_type)]);
+    kb.install_rule_type_bounds(rid, &[(x_var, crate::eval::value::Value::term(c.self_type))]);
     kb.set_rule_head_span(rid, c.job.span);
 }
 

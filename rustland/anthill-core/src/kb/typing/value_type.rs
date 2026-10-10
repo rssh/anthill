@@ -2348,7 +2348,7 @@ pub(crate) fn typed_pattern_bounds_hold(
     }
     kb.open_rule_provider_requirements(rid, fresh);
     let mut check = msubst.clone();
-    for (db_index, bound_tid) in bounds {
+    for (db_index, stored) in bounds {
         let Some(&gvid) = fresh.get(db_index as usize) else {
             return None; // no opened global for the bound slot → cannot decide
         };
@@ -2361,11 +2361,11 @@ pub(crate) fn typed_pattern_bounds_hold(
         // `types_compatible` about a `DeBruijn(k)` — a variable, hence a permanent
         // `Suspend`, hence a rewrite that never fires. A var-free bound (every bound the
         // rewrite route carries in the corpus) opens to itself.
-        let bound_tid = kb.term_from_debruijn(bound_tid, fresh);
+        let (opened, _) = crate::kb::node_occurrence::open_value_type(kb, &stored, fresh);
         // COLLAPSE, deliberately: a rewrite has two outcomes, so `Suspend` and
         // `Refuted` are both "don't fire" here. The goal reader (WI-742) keeps
         // them apart — that is the whole reason the decision is factored out.
-        let bound = walk_type_deep_value(kb, &check, &Value::term(bound_tid));
+        let bound = walk_type_deep_value(kb, &check, &opened);
         match pin_bound_from_value(kb, &check, &matched, &bound) {
             TypeBoundPin::Pinned { pin, .. } => {
                 for (&v, value) in pin.iter() {
