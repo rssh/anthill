@@ -1074,6 +1074,11 @@ informed; it does not recommend changing the rule until A and B have been measur
    §5.4 a, the §7 fresh-clone trap. **`Clone + Send` filed 2026-10-09** (user) as
    WI-20261009-D0SD4, a deep copy and a wrapper rather than what the name says (§5.2);
    WI-059 depends on it.
+   **A3's first pass filed 2026-10-10** (user) as WI-20261010-9BKZ4: the typer's
+   free-operation sweep, which types every library body again in a later load. It is
+   first by measurement — 99 ms of a 267 ms second call, the typer 119 ms in all, then
+   equality derivation 69 ms and `check_provider_requires` 33 ms; the ticket has the
+   table. The other passes are not filed.
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
@@ -1124,7 +1129,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
 | 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
-| 4 | A3 frontier-driven `type_check_sorts`, `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) |
+| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, filed), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases |
 | 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
 | 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
