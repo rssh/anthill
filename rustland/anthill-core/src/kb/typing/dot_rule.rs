@@ -158,7 +158,7 @@ pub(super) fn find_spec_op_for_provided_sort(
         // dot-call synthesises a `combine(tag, t)` Apply that then value-directs to
         // the witness impl at eval (param-agnostic, like the non-dot call form).
         let witness_match = !carrier_match
-            && provision_carrier_sort(kb, spec_sym, &Value::term(row.spec_view))
+            && provision_carrier_sort(kb, spec_sym, &row.spec_view)
                 .map(|c| kb.canonical_sort_sym(c) == recv_canon)
                 .unwrap_or(false);
         if carrier_match || witness_match {

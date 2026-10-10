@@ -2027,6 +2027,8 @@ mod const_initializer_type_test;
 mod rule_head_bound_test;
 #[path = "include/requirement_written_through_alias_test.rs"]
 mod requirement_written_through_alias_test;
+#[path = "include/provision_written_through_alias_test.rs"]
+mod provision_written_through_alias_test;
 
 #[path = "include/wi_4zrtg_sealed_library_test.rs"]
 mod wi_4zrtg_sealed_library_test;

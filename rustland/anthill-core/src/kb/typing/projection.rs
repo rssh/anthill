@@ -2390,7 +2390,7 @@ pub(super) fn witnesses_covering(
     let mut out = Vec::new();
     for row in rows {
         let Some((view, base)) =
-            witness_dispatch_carrier_view(kb, spec, row.provider, row.spec_view)
+            witness_dispatch_carrier_value(kb, spec, row.provider, &row.spec_view)
         else {
             continue;
         };
@@ -2398,7 +2398,7 @@ pub(super) fn witnesses_covering(
             continue;
         }
         let mut at = Substitution::new();
-        if unify_types(kb, &mut at, &Value::term(view), recv_ty) {
+        if unify_types(kb, &mut at, &view, recv_ty) {
             out.push((row, at));
         }
     }

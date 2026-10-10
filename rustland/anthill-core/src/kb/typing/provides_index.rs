@@ -266,9 +266,9 @@ pub(super) fn provides_rids_by_carrier_canon(
 /// in the spec bucket), and [`spec_has_any_providers`]' fallback scan, which answers what that
 /// bucket answers. Both are keyed on one field; a row is all of them.
 ///
-/// A row exists only when every field decodes. A VALUE-headed fact (a denoted-bearing spec)
-/// has no term head and is not a row, as it was no row to any reader before: occurrence-
-/// based provides lookup is gated effect-expressions-as-types work.
+/// A row exists only when every field decodes, on whichever carrier the fact holds it: a
+/// provision whose binding was written through a type alias holds its spec as a value, and
+/// is a row like any other. Every reader takes the spec and its bindings through the view.
 ///
 /// ONE DECODE PER FIELD. Until WI-20260923-32XFQ two fields had a second one kept apart,
 /// and both second spellings were wrong answers, found by program: the SPEC BASE (the
@@ -286,63 +286,38 @@ pub(super) struct ProvidesRow {
     /// witness names its carrier in the spec's bindings ([`witness_dispatch_carrier`]),
     /// though the index calls this key `carrier` ([`provides_rids_by_carrier_canon`]).
     pub(super) provider: Symbol,
-    /// The `spec` field: the full `SortView` term, or a bare spec reference.
-    pub(super) spec_view: TermId,
+    /// The `spec` field as the fact holds it: the full `SortView`, or a bare spec
+    /// reference — a term, or a value where a binding rides an occurrence.
+    pub(super) spec_view: Value,
     /// The spec's base sort, RAW.
     pub(super) spec_base: Symbol,
 }
 
 impl ProvidesRow {
-    /// The view's NAMED bindings, as [`unwrap_spec_view`] reads them — so a bare application
-    /// (`Spec[T = X]` with no `SortView` wrapper) contributes none, and the view's
-    /// POSITIONAL bindings are not here either. A reader that needs either reads
+    /// The view's NAMED bindings, as [`unwrap_spec_view_value`] reads them — so a bare
+    /// application (`Spec[T = X]` with no `SortView` wrapper) contributes none, and the
+    /// view's POSITIONAL bindings are not here either. A reader that needs either reads
     /// [`Self::spec_view`] itself. Values, as every reader of a provision's bindings takes
-    /// them: the stored view is a term, so each is the term it stores.
+    /// them: each on the carrier the stored view holds it on.
     ///
     /// DECODED WHEN ASKED, not with the row. A stdlib load decodes 155 000 rows (MEASURED,
     /// WI-20260829-2NMXA) and most are read for their provider and base alone — the
     /// provision walks filter on those — so a row that carried its bindings paid for a list
     /// nearly every reader dropped: 4–5 % of the load once a binding was a value.
     pub(super) fn bindings(&self, kb: &KnowledgeBase) -> SmallVec<[(Symbol, Value); 2]> {
-        spec_view_bindings(kb, self.spec_view)
-    }
-
-    /// [`Self::bindings`] where the row stores them, nothing built: for a reader that asks a
-    /// yes/no of a row and then, most often, drops it.
-    pub(super) fn stored_bindings<'k>(&self, kb: &'k KnowledgeBase) -> &'k [(Symbol, TermId)] {
-        stored_spec_view_bindings(kb, self.spec_view)
+        spec_view_bindings_value(kb, &self.spec_view)
     }
 }
 
 /// WI-20260923-32XFQ — the fields every sort-clause reflect fact shares. `SortProvidesInfo`,
-/// `SortRequiresInfo` and `ProvidesConditionInfo` are each a TERM-headed fact with a
-/// `sort_ref` (the sort the clause is written on) and one more named field: `(owner through
-/// `sort_ref_functor`, the field)`, or `None` for a rule, a value-headed fact, or a missing
-/// field.
+/// `SortRequiresInfo` and `ProvidesConditionInfo` are each a fact with a `sort_ref` (the
+/// sort the clause is written on) and one more named field: `(owner through
+/// `sort_ref_functor`, the field)`, or `None` for a rule or a missing field.
 ///
-/// TERM-ONLY, and that is a skip rather than a decode: a value head has no `TermId`.
-/// [`decoded_condition_row`] is the carrier-agnostic reader of the condition relation, and
-/// [`sort_clause_field_values`] reads the field of any of the three on whichever carrier it
-/// rides.
+/// Read through the view: the field comes back on the carrier the fact holds it on — a
+/// spec with a binding written through a type alias, or one that holds a value, is an
+/// occurrence.
 pub(super) fn sort_clause_fields(
-    kb: &KnowledgeBase,
-    rid: crate::kb::RuleId,
-    field: &str,
-) -> Option<(Symbol, TermId)> {
-    if !kb.is_fact(rid) {
-        return None;
-    }
-    let named = kb.fact_head_named_args(rid)?;
-    let sort_ref = get_named_arg(kb, &named, "sort_ref")?;
-    let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
-    let value = get_named_arg(kb, &named, field)?;
-    Some((owner, value))
-}
-
-/// [`sort_clause_fields`] read through the view: the owner, and the field on the carrier
-/// it rides — a spec with a binding written through a type alias, or one that holds a
-/// value, is an occurrence. `None` for a rule or a missing field.
-pub(super) fn sort_clause_field_values(
     kb: &KnowledgeBase,
     rid: crate::kb::RuleId,
     field: &str,
@@ -355,6 +330,14 @@ pub(super) fn sort_clause_field_values(
     let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
     let value = crate::kb::op_info::head_field_value(kb, head, field)?;
     Some((owner, value))
+}
+
+/// The `spec` of one fact of the provision relation, on the carrier the fact holds it on.
+/// `None` for a head with no such field; the caller has asked `is_fact`. For a reader that
+/// walks a bucket's facts itself and must tell "not readable" from "not a row" — every
+/// other reader takes a [`ProvidesRow`].
+pub(super) fn provision_fact_spec(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<Value> {
+    crate::kb::op_info::head_field_value(kb, kb.rule_head_value(rid), "spec")
 }
 
 /// [`ProvidesRow`]'s decoder: `None` for anything that is not a row, and for a row whose
@@ -370,11 +353,17 @@ fn decode_provides_row(
     rid: crate::kb::RuleId,
     keep: impl Fn(Symbol) -> bool,
 ) -> Option<ProvidesRow> {
-    let (provider, spec_view) = sort_clause_fields(kb, rid, "spec")?;
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let head = kb.rule_head_value(rid);
+    let sort_ref = crate::kb::op_info::head_field_term(kb, head, "sort_ref")?;
+    let provider = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
     if !keep(provider) {
         return None;
     }
-    let spec_base = crate::kb::load::provides_spec_base_sym(kb, spec_view)?;
+    let spec_view = crate::kb::op_info::head_field_value(kb, head, "spec")?;
+    let spec_base = crate::kb::load::provides_spec_base_sym_view(kb, &spec_view)?;
     Some(ProvidesRow {
         rid,
         provider,
@@ -541,15 +530,16 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        if let Some(spec_tid) = get_named_arg(kb, &named, "spec") {
-            if let Some((base, _)) = unwrap_spec_view(kb, spec_tid) {
+        // Each field through the view, as the row decoder reads it: a provision whose
+        // binding was written through a type alias holds its spec on another carrier
+        // than a term, and a fact in no bucket is a provider nothing finds.
+        let head = kb.rule_head_value(rid);
+        if let Some(spec) = crate::kb::op_info::head_field_value(kb, head, "spec") {
+            if let Some(base) = crate::kb::load::provides_spec_base_sym_view(kb, &spec) {
                 by_spec_base.insert(kb.canonical_sort_sym(base), rid);
             }
         }
-        if let Some(sr_tid) = get_named_arg(kb, &named, "sort_ref") {
+        if let Some(sr_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") {
             if let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr_tid) {
                 // WI-672: the carrier keys by canonical symbol. Two RESOLVED sort symbols
                 // canonicalize equal iff they share a qualified name, so canonical keying
@@ -818,17 +808,12 @@ pub(super) fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> b
         if !kb.is_fact(rid) {
             continue;
         }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped here;
-        // occurrence-based provider lookup is gated effect-expressions-as-types
-        // work (avoid the term-only `rule_head` panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
+        // Through the view, as the spec bucket this stands in for is filed.
+        let Some(spec_view) = provision_fact_spec(kb, rid) else {
             continue;
         };
-        let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
-            Some(t) => t,
-            None => continue,
-        };
-        if let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) {
+        if let Some(view_base_sym) = crate::kb::load::provides_spec_base_sym_view(kb, &spec_view)
+        {
             if kb.canonical_sort_sym(view_base_sym) == spec_canon {
                 return true;
             }

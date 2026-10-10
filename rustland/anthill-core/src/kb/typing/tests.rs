@@ -2506,6 +2506,72 @@ mod wi617_canonical_provider_match_tests {
             "a sort with no provider fact must not count as having providers",
         );
     }
+
+    /// The scan that stands in for the spec bucket while the index is not built reads a
+    /// provision on whichever carrier its fact holds the spec: one with a binding written
+    /// through a type alias is a value, and is a provider like any other.
+    ///
+    /// Injected, as the row above is: the window in which the scan answers is between
+    /// passes of a load, and no source-level row was found that asks it there about a
+    /// spec whose only provision is held this way. FAILS with the scan reading a term
+    /// alone (the `spec` field taken only where it is a `Value::Term`).
+    #[test]
+    fn the_scan_counts_a_provision_whose_spec_is_held_as_a_value() {
+        use crate::eval::value::Value;
+        use crate::kb::node_occurrence::{empty_span, NodeOccurrence, TypeChild, TypeNode};
+        let mut kb = KnowledgeBase::new();
+        let root_scope = kb.global_scope();
+        let provides_sym = kb.define_symbol(
+            "SortProvidesInfo",
+            "anthill.reflect.SortProvidesInfo",
+            SymbolKind::Entity,
+            root_scope,
+        );
+        let sort_view = kb.define_symbol(
+            "SortView",
+            "anthill.reflect.SortView",
+            SymbolKind::Entity,
+            root_scope,
+        );
+        let spec = kb.define_symbol("Show", "test.scan.Show", SymbolKind::Sort, root_scope);
+        let int = kb.define_symbol("Int", "test.scan.Int", SymbolKind::Sort, root_scope);
+        let money = kb.define_symbol("Money", "test.scan.Money", SymbolKind::Sort, root_scope);
+
+        // `Show[T = Money]` over `sort Money = Int`, as the loader stores it: a view
+        // whose binding is the alias's occurrence.
+        let int_ref = kb.alloc(Term::Ref(int));
+        let binding = Value::Node(NodeOccurrence::new_type(
+            TypeNode::Aliased {
+                alias: money,
+                stands_for: TypeChild::Interned(int_ref),
+            },
+            empty_span(),
+            None,
+        ));
+        let spec_ref = kb.alloc(Term::Ref(spec));
+        let t_key = kb.intern("T");
+        let view = Value::Entity {
+            functor: sort_view,
+            pos: std::rc::Rc::from(vec![Value::term(spec_ref)]),
+            named: std::rc::Rc::from(vec![(t_key, binding)]),
+        };
+        let spec_key = kb.intern("spec");
+        let domain = kb.intern("test");
+        kb.assert_fact_carrier(
+            provides_sym,
+            Vec::new(),
+            vec![(spec_key, view)],
+            ClauseKind::Fact,
+            domain,
+            None,
+        );
+        assert!(kb.provides_index.is_none(), "premise: the scan answers, not the index");
+        assert!(
+            spec_has_any_providers(&kb, spec),
+            "a provision held as a value is a provider of its spec",
+        );
+        assert!(!spec_has_any_providers(&kb, int), "and of no other sort");
+    }
 }
 
 #[cfg(test)]

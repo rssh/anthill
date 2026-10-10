@@ -5148,8 +5148,8 @@ fn narrowed_to_named_witness(
     let (row, at) = covering_witnesses_named(kb, &recv, carrier, spec, selections)
         .into_iter()
         .next()?;
-    let (view, _) = witness_dispatch_carrier_view(kb, spec, row.provider, row.spec_view)?;
-    let instance = resolve_type_deep_value(kb, &at, &Value::term(view));
+    let (view, _) = witness_dispatch_carrier_value(kb, spec, row.provider, &row.spec_view)?;
+    let instance = resolve_type_deep_value(kb, &at, &view);
     let mut narrowed = subst.clone();
     narrowed.bindings.remove(&carrier_vid);
     narrowed.bind_value(kb, carrier_vid, instance);

@@ -1769,11 +1769,12 @@ fn ground_rigid_projection_if_concrete(
         let Some(bindings) = provider_spec_view_bindings(kb, s, e.required_sort) else {
             continue;
         };
-        // A term walk answers a term, and the binding a provision stores is one.
+        // A term walk answers a term: the binding's, on whichever carrier the provision
+        // holds it — one written through a type alias is an occurrence.
         let Some(bound) = bindings
             .iter()
             .find(|(n, _)| kb.local_name_of(*n) == member_str)
-            .map(|(_, b)| b.expect_term())
+            .and_then(|(_, b)| crate::kb::node_occurrence::value_to_term(kb, b).ok())
         else {
             continue;
         };

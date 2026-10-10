@@ -1553,20 +1553,66 @@ pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Every fact of the relation `functor_qn`, each rendered through the term its head
+/// lowers to, in relation order — so a fact held on another carrier than a term (a
+/// provision or a requirement with a binding on an occurrence) reads as the fact it is.
+/// A head with no term panics: nothing a test renders this way holds one.
+#[allow(dead_code)]
+pub fn rendered_facts(kb: &mut KnowledgeBase, functor_qn: &str) -> Vec<String> {
+    use anthill_core::kb::node_occurrence::value_to_term;
+    use anthill_core::persistence::print::TermPrinter;
+    let Some(sym) = kb.try_resolve_symbol(functor_qn) else {
+        return Vec::new();
+    };
+    let heads: Vec<eval::Value> = kb
+        .rules_by_functor(sym)
+        .into_iter()
+        .map(|rid| kb.rule_head_value(rid).clone())
+        .collect();
+    let terms: Vec<_> = heads
+        .iter()
+        .map(|head| value_to_term(kb, head).expect("a rendered fact's head has a term"))
+        .collect();
+    let printer = TermPrinter::new(kb);
+    terms.into_iter().map(|t| printer.print_term(t)).collect()
+}
+
+/// The `spec` of the provision whose provider is `provider_qn`, on the carrier its fact
+/// holds it on: the first such fact, in relation order. Read through the view.
+#[allow(dead_code)]
+pub fn provision_spec_of(kb: &KnowledgeBase, provider_qn: &str) -> Option<eval::Value> {
+    use anthill_core::kb::load::qn_of_sort_ref;
+    use anthill_core::kb::op_info::{head_field_term, head_field_value};
+    let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
+    kb.rules_by_functor(sym)
+        .into_iter()
+        .filter(|rid| kb.is_fact(*rid))
+        .find_map(|rid| {
+            let head = kb.rule_head_value(rid);
+            let sort_ref = head_field_term(kb, head, "sort_ref")?;
+            (qn_of_sort_ref(kb, sort_ref)? == provider_qn)
+                .then(|| head_field_value(kb, head, "spec"))?
+        })
+}
+
 /// [`sort_provisions`] WITHOUT the universal-`TypeValue` filter — every provision row the
 /// KB holds. For a suite whose subject IS the derived `TypeValue` rows.
 #[allow(dead_code)]
 pub fn sort_provisions_all(kb: &KnowledgeBase) -> Vec<(String, String)> {
-    use anthill_core::kb::term::{Term, TermId};
+    use anthill_core::kb::op_info::head_field_value;
+    use anthill_core::kb::term_view::{TermView, ViewHead};
     let Some(sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return Vec::new();
     };
-    fn name_of(kb: &KnowledgeBase, t: TermId, field: &str) -> String {
-        match kb.get_term(t) {
-            Term::Fn { functor: s, .. } | Term::Ref(s) | Term::Ident(s) => {
-                kb.qualified_name_of(*s).to_string()
+    // Read through the view, so a provision is a row on whichever carrier its fact holds
+    // the spec — one with a binding written through a type alias is no term.
+    fn name_of<V: TermView>(kb: &KnowledgeBase, v: &V, field: &str) -> String {
+        match v.head(kb) {
+            ViewHead::Functor {
+                functor: Some(s), ..
             }
-            other => panic!("SortProvidesInfo.{field} is not a name-like term: {other:?}"),
+            | ViewHead::Ident(s) => kb.qualified_name_of(s).to_string(),
+            other => panic!("SortProvidesInfo.{field} is not name-like: {other:?}"),
         }
     }
     let mut out = Vec::new();
@@ -1574,25 +1620,23 @@ pub fn sort_provisions_all(kb: &KnowledgeBase) -> Vec<(String, String)> {
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let get = |f: &str| {
-            named
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == f)
-                .map(|(_, v)| *v)
-        };
-        let (Some(sr), Some(spec_view)) = (get("sort_ref"), get("spec")) else {
+        let head = kb.rule_head_value(rid);
+        let (Some(sr), Some(spec_view)) = (
+            head_field_value(kb, head, "sort_ref"),
+            head_field_value(kb, head, "spec"),
+        ) else {
             continue;
         };
         // `SortView(Spec, …)` carries the spec as its first positional; a bare
         // reference is already the spec.
-        let spec_term = match kb.get_term(spec_view) {
-            Term::Fn { pos_args, .. } if !pos_args.is_empty() => pos_args[0],
-            _ => spec_view,
+        let spec = match spec_view.head(kb) {
+            ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => {
+                let base = spec_view.pos_arg(kb, 0).expect("a position within the arity");
+                name_of(kb, &base, "spec")
+            }
+            _ => name_of(kb, &spec_view, "spec"),
         };
-        out.push((name_of(kb, sr, "sort_ref"), name_of(kb, spec_term, "spec")));
+        out.push((name_of(kb, &sr, "sort_ref"), spec));
     }
     out
 }

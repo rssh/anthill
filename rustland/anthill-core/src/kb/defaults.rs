@@ -457,17 +457,25 @@ pub fn build_default_provider_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // The carrier VIEW of a carrier-keyed provision is the provider's own name and has
     // to be MINTED, which is the `&mut` this loop spends; minting is idempotent on the
     // hash-consed store, so it adds no term the walk would not have added.
+    //
+    // A row of this index is KEYED on its carrier's term ([`push_row`]), so each
+    // provision's view is lowered here, where the store is in hand: a binding written
+    // through a type alias is the carrier its type is. A view with no term is a provision
+    // the loader has refused where it is written (`ValueInTypeNotResolved`), and is no
+    // row.
     let provisions: Vec<Provision> = typing::all_provisions(kb)
         .into_iter()
-        .map(|p| {
+        .filter_map(|p| {
+            let spec_view =
+                crate::kb::node_occurrence::value_to_term(kb, &p.spec_view).ok()?;
             let provider = kb.canonical_sort_sym(p.provider);
-            Provision {
+            Some(Provision {
                 provider,
                 provider_name: kb.make_name_term_from_sym(provider),
                 spec: kb.canonical_sort_sym(p.spec),
                 spec_decl: p.spec,
-                spec_view: p.spec_view,
-            }
+                spec_view,
+            })
         })
         .collect();
     let (declared, mut errors) = declared_default_rows(kb);

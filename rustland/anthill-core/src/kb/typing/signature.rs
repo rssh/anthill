@@ -225,9 +225,11 @@ pub(super) fn check_member_signature(
         } else {
             let mut ps: Vec<String> = Vec::new();
             for &i in &bad {
+                // Each side led by the name it was written by, where that is an alias: the
+                // spec's at this provision's bindings, which hold the binding as written.
                 let sub = sigma_subst_type(kb, &spec_info.params[i].1, sigma);
-                let want = type_display_name_value(kb, &sub);
-                let got = type_display_name_value(kb, &impl_info.params[i].1);
+                let want = declared_type_display(kb, &sub);
+                let got = declared_type_display(kb, &impl_info.params[i].1);
                 ps.push(format!(
                     "parameter {} is `{got}` where the spec's is `{want}`",
                     i + 1
@@ -2644,9 +2646,13 @@ fn permutations_any(idx: &mut Vec<usize>, k: usize, f: &mut dyn FnMut(&[usize]) 
 
 /// A type as the member rule's refusals print it: an arrow with its effect row (`… @ {EP}`),
 /// which the plain rendering leaves out and a callback's difference can lie in.
+///
+/// Led by the name the type was written by, where that is an alias — a declared type's, or
+/// the provision's binding the spec's type was read at — as a mismatch leads its sides
+/// ([`declared_type_display`]).
 fn member_type_display(kb: &KnowledgeBase, v: &Value) -> String {
     let plain = type_display_name_value(kb, v);
-    match extract_type(kb, v) {
+    let as_type = match extract_type(kb, v) {
         TypeExtractor::Arrow { effects, .. } => {
             let row = type_display_name_value(kb, &effects);
             if row == "{}" {
@@ -2656,6 +2662,10 @@ fn member_type_display(kb: &KnowledgeBase, v: &Value) -> String {
             }
         }
         _ => plain,
+    };
+    match type_display_as_written(kb, v) {
+        Some(written) => format!("{written} ({as_type})"),
+        None => as_type,
     }
 }
 
@@ -2673,13 +2683,13 @@ fn render_op_signature(
     for (name, ty) in &info.params {
         let sub = sigma_subst_type(kb, ty, sigma);
         let n = kb.local_name_of(*name).to_string();
-        parts.push(format!("{n}: {}", type_display_name_value(kb, &sub)));
+        parts.push(format!("{n}: {}", declared_type_display(kb, &sub)));
     }
     let ret = sigma_subst_type(kb, &info.return_type, sigma);
     format!(
         "{short}({}) -> {}",
         parts.join(", "),
-        type_display_name_value(kb, &ret)
+        declared_type_display(kb, &ret)
     )
 }
 
@@ -2730,12 +2740,12 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
     let provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
             // The view's RAW named arguments, not `row.bindings` — see [`spec_param_sigma`].
-            let named = view_named_children(kb, &TermIdView(row.spec_view));
+            let named = view_named_children(kb, &row.spec_view);
             Prov {
                 carrier: row.provider,
                 spec: row.spec_base,
                 sigma: spec_param_sigma(kb, row.spec_base, &named),
-                witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, row.spec_view),
+                witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, &row.spec_view),
             }
         })
         .collect();
@@ -4523,7 +4533,7 @@ fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
             continue;
         };
         for rid in kb.rules_by_functor(sym) {
-            let Some((owner, spec_view)) = sort_clause_field_values(kb, rid, spec_field) else {
+            let Some((owner, spec_view)) = sort_clause_fields(kb, rid, spec_field) else {
                 continue;
             };
             out.push(SpecClauseView {
@@ -4700,7 +4710,7 @@ fn registered_effect_kinds(
         if kb.canonical_sort_sym(row.spec) != kb.canonical_sort_sym(effect_sym) {
             continue;
         }
-        let Some((_, bindings)) = unwrap_spec_view(kb, row.spec_view) else {
+        let Some((_, bindings)) = unwrap_spec_view_value(kb, &row.spec_view) else {
             continue;
         };
         let Some(binding) = binding_for_param(kb, &bindings, param, BindingKeyMatch::Label) else {

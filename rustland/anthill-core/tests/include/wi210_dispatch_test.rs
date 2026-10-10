@@ -26,13 +26,9 @@ use crate::common::load_outcome as load_capturing_errors;
 
 /// Render every `SortProvidesInfo` head the KB knows about, sorted.
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
-    let sym = kb
-        .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+    kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .expect("SortProvidesInfo registered");
-    let rids: Vec<_> = kb.rules_by_functor(sym).into_iter().collect();
-    let heads: Vec<_> = rids.iter().map(|&r| kb.rule_head(r)).collect();
-    let printer = TermPrinter::new(kb);
-    let mut out: Vec<String> = heads.into_iter().map(|h| printer.print_term(h)).collect();
+    let mut out = crate::common::rendered_facts(kb, "anthill.reflect.SortProvidesInfo");
     out.sort();
     out
 }

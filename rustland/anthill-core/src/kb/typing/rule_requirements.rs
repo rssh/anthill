@@ -1962,7 +1962,7 @@ pub(super) fn carrier_provided_by_witness(
 /// `witness_carriers`, which memoizes it.
 fn witness_carriers_of(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     provides_rows_of_spec(kb, spec_sort)
-        .filter_map(|row| witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view))
+        .filter_map(|row| witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view))
         .collect()
 }
 

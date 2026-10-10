@@ -16,51 +16,36 @@
 //! Acceptance (ticket): after the decision, extract() over every stored type-position value
 //! in the loaded stdlib yields a non-Error variant.
 
+use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::term::{Term, TermId};
-use anthill_core::kb::typing::{extract_type, get_named_arg, TypeExtractor};
+use anthill_core::kb::op_info::head_field_value;
+use anthill_core::kb::term_view::{views_structurally_equal, TermView, ViewHead};
+use anthill_core::kb::typing::{extract_type, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
 
-/// The (param, value) binding pairs of a spec `SortView` term — its named args.
-fn spec_binding_values(kb: &KnowledgeBase, spec: TermId) -> Vec<(Symbol, TermId)> {
-    match kb.get_term(spec) {
-        Term::Fn { named_args, .. } => named_args.iter().copied().collect(),
-        _ => Vec::new(),
-    }
+/// The named bindings of a spec — or of a binding's own type — each on the carrier it
+/// rides: read through the view, so the answer does not depend on how the fact holds it.
+fn spec_binding_values<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(Symbol, Value)> {
+    spec.named_keys(kb)
+        .into_iter()
+        .map(|key| {
+            let value = spec.named_arg(kb, key).expect("a view answers for a key it lists");
+            (key, value.to_value())
+        })
+        .collect()
 }
 
 /// The binding value a spec carries for the (short-named) member `short`.
-fn binding_named(kb: &KnowledgeBase, spec: TermId, short: &str) -> Option<TermId> {
+fn binding_named<V: TermView>(kb: &KnowledgeBase, spec: &V, short: &str) -> Option<Value> {
     spec_binding_values(kb, spec)
         .into_iter()
         .find(|(p, _)| kb.local_name_of(*p) == short)
         .map(|(_, v)| v)
 }
 
-/// The `spec` term of the `SortProvidesInfo` fact whose `sort_ref` is `carrier_qn`.
-fn provides_spec_for(kb: &KnowledgeBase, carrier_qn: &str) -> Option<TermId> {
-    let info = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
-    let carrier = kb.try_resolve_symbol(carrier_qn)?;
-    for rid in kb.rules_by_functor(info) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let matches_carrier = match kb.get_term(sr) {
-            Term::Ref(s) => *s == carrier,
-            Term::Fn { functor, .. } => *functor == carrier,
-            _ => false,
-        };
-        if matches_carrier {
-            return get_named_arg(kb, &named, "spec");
-        }
-    }
-    None
+/// The `spec` of the `SortProvidesInfo` fact whose `sort_ref` is `carrier_qn`.
+fn provides_spec_for(kb: &KnowledgeBase, carrier_qn: &str) -> Option<Value> {
+    crate::common::provision_spec_of(kb, carrier_qn)
 }
 
 const FIXTURE: &str = r#"
@@ -90,26 +75,23 @@ fn concrete_binding_extracts_as_sortref_and_fact_provides_unify() {
 
     let fact_spec = provides_spec_for(&kb, "test.wi391.FactCarrier").expect("FactCarrier spec");
     let prov_spec = provides_spec_for(&kb, "test.wi391.ProvCarrier").expect("ProvCarrier spec");
-    let fact_t = binding_named(&kb, fact_spec, "T").expect("fact T binding");
-    let prov_t = binding_named(&kb, prov_spec, "T").expect("provides T binding");
+    let fact_t = binding_named(&kb, &fact_spec, "T").expect("fact T binding");
+    let prov_t = binding_named(&kb, &prov_spec, "T").expect("provides T binding");
 
-    for (label, t) in [("fact", fact_t), ("provides", prov_t)] {
-        match extract_type(&kb, &t) {
+    for (label, t) in [("fact", &fact_t), ("provides", &prov_t)] {
+        match extract_type(&kb, t) {
             TypeExtractor::SortRef(s) => assert_eq!(
                 s, int64,
                 "{label} `T = Int64` binding must extract as SortRef(Int64)"
             ),
             other => panic!(
-                "{label} `T = Int64` binding must be the extractable SortRef shape, got {other:?} \
-                 (backing term {:?})",
-                kb.get_term(t)
+                "{label} `T = Int64` binding must be the extractable SortRef shape, got {other:?}"
             ),
         }
     }
-    assert_eq!(
-        fact_t, prov_t,
-        "WI-391: the `fact` and `provides` concrete bindings must be the SAME canonical \
-         hash-consed `Ref(Int64)` term (byte-identical SortProvidesInfo)"
+    assert!(
+        views_structurally_equal(&kb, &fact_t, &prov_t),
+        "WI-391: the two concrete bindings must be the SAME canonical `Int64`"
     );
 }
 
@@ -140,13 +122,10 @@ fn stdlib_spec_bindings_all_extract_non_error() {
             if !kb.is_fact(rid) {
                 continue;
             }
-            let Some(named) = kb.fact_head_named_args(rid) else {
+            let Some(spec) = head_field_value(&kb, kb.rule_head_value(rid), "spec") else {
                 continue;
             };
-            let Some(spec) = get_named_arg(&kb, &named, "spec") else {
-                continue;
-            };
-            for (param, val) in spec_binding_values(&kb, spec) {
+            for (param, val) in spec_binding_values(&kb, &spec) {
                 // WI-1079 NARROWED WHAT THIS CATCHES, and the loss is recorded rather than
                 // absorbed. A raw `Term::Var(Var::Global)` stored in a binding position used
                 // to trip this assertion; it now classifies as `TypeExtractor::FlexVar` and
@@ -158,11 +137,10 @@ fn stdlib_spec_bindings_all_extract_non_error() {
                 // rather than widening this one back.
                 assert!(
                     !matches!(extract_type(&kb, &val), TypeExtractor::Error),
-                    "{info} binding `{}` = {:?} extracts as TypeExtractor::Error — every stored \
+                    "{info} binding `{}` = {val:?} extracts as TypeExtractor::Error — every stored \
                      type-position value must classify into a structural TypeExtractor variant \
                      (WI-391 / WI-449 / §5.3 extractability criterion)",
                     kb.local_name_of(param),
-                    kb.get_term(val),
                 );
                 checked += 1;
             }
@@ -214,24 +192,20 @@ end
 /// `SortView(base-name, …)`'s `pos[0]` (the wrapped form `sort_inst_to_value` /
 /// `sort_inst_to_value` builds for a parameterized binding), or a bare
 /// `Ref` / `Fn` functor. Mirrors the loader's `unwrap_spec_view` reader.
-fn binding_base_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
-    match kb.get_term(tid) {
-        Term::Fn {
-            functor, pos_args, ..
-        } => {
-            if kb.qualified_name_of(*functor).ends_with("SortView") {
-                pos_args.first().and_then(|p| match kb.get_term(*p) {
-                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
-                        Some(*functor)
-                    }
-                    _ => None,
-                })
-            } else {
-                Some(*functor)
-            }
-        }
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
+fn binding_base_sym<V: TermView>(kb: &KnowledgeBase, binding: &V) -> Option<Symbol> {
+    let name_of = |head: ViewHead| match head {
+        ViewHead::Functor { functor, .. } => functor,
+        ViewHead::Ident(s) => Some(s),
         _ => None,
+    };
+    match binding.head(kb) {
+        ViewHead::Functor {
+            functor: Some(functor),
+            ..
+        } if kb.qualified_name_of(functor).ends_with("SortView") => {
+            name_of(binding.pos_arg(kb, 0)?.head(kb))
+        }
+        head => name_of(head),
     }
 }
 
@@ -247,17 +221,15 @@ fn positional_parameterized_binding_value_extracts_non_error() {
         .expect("Modify sort");
 
     let spec = provides_spec_for(&kb, "test.wi449.W449EffCarrier").expect("W449EffCarrier spec");
-    let t = binding_named(&kb, spec, "T").expect("T binding");
+    let t = binding_named(&kb, &spec, "T").expect("T binding");
     assert!(
         !matches!(extract_type(&kb, &t), TypeExtractor::Error),
-        "`T = Modify[?]` must canonicalize to an extractable shape, got Error (backing term {:?})",
-        kb.get_term(t)
+        "`T = Modify[?]` must canonicalize to an extractable shape, got Error ({t:?})"
     );
     assert_eq!(
-        binding_base_sym(&kb, t),
+        binding_base_sym(&kb, &t),
         Some(modify),
-        "`T = Modify[?]` must name Modify (backing term {:?})",
-        kb.get_term(t)
+        "`T = Modify[?]` must name Modify ({t:?})"
     );
 }
 
@@ -278,27 +250,25 @@ fn a_positional_nested_binding_matches_the_named_one() {
     let fact_spec =
         provides_spec_for(&kb, "test.wi449.W449FactCarrier").expect("positional spec");
     let prov_spec = provides_spec_for(&kb, "test.wi449.W449ProvCarrier").expect("provides spec");
-    let fact_c = binding_named(&kb, fact_spec, "C").expect("positional C binding");
-    let prov_c = binding_named(&kb, prov_spec, "C").expect("provides C binding");
+    let fact_c = binding_named(&kb, &fact_spec, "C").expect("positional C binding");
+    let prov_c = binding_named(&kb, &prov_spec, "C").expect("provides C binding");
 
     // The positional binding names W449Inner and PRESERVES its inner `E = Int64` arg
     // (it is no longer flattened to a bare `Ref(W449Inner)` that drops the argument).
     assert_eq!(
-        binding_base_sym(&kb, fact_c),
+        binding_base_sym(&kb, &fact_c),
         Some(inner),
-        "fact `C` must name W449Inner (backing term {:?})",
-        kb.get_term(fact_c)
+        "the positional `C` must name W449Inner, got {fact_c:?}"
     );
-    let e = binding_named(&kb, fact_c, "E").expect("inner E binding preserved, not dropped");
+    let e = binding_named(&kb, &fact_c, "E").expect("inner E binding preserved, not dropped");
     assert!(
         matches!(extract_type(&kb, &e), TypeExtractor::SortRef(s) if s == int64),
-        "the nested `Int64` arg must survive, got {:?}",
-        kb.get_term(e)
+        "the nested `Int64` arg must survive, got {e:?}"
     );
 
-    assert_eq!(
-        fact_c, prov_c,
-        "WI-449: the `fact` and `provides` nested-parameterized bindings must be the SAME \
-         canonical hash-consed term (byte-identical SortProvidesInfo)"
+    assert!(
+        views_structurally_equal(&kb, &fact_c, &prov_c),
+        "WI-449: the positional and the named nested-parameterized bindings must be the \
+         SAME canonical type"
     );
 }

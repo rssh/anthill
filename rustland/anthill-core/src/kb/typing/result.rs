@@ -467,15 +467,20 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
             Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
         }
         // A rigid type-receiver projection (`P.Key`, WI-428): its three slots are ground, and
-        // it is rebuilt as the term it always is.
+        // it is rebuilt as the term it always is. Its subject is a type, on whichever
+        // carrier it rides — a provision's binding written through an alias is an
+        // occurrence — and the projection holds that type's term.
         TypeExtractor::RigidTypeProjection {
             sort,
             subject,
             member,
-        } => match type_child_value(kb, subject)? {
-            Value::Term { id, .. } => Ok(Value::term(kb.make_rigid_projection(sort, id, member))),
-            _ => Err("a rigid projection whose subject is no ground term".to_string()),
-        },
+        } => {
+            let subject = type_child_value(kb, subject)?;
+            match crate::kb::node_occurrence::value_to_term(kb, &subject) {
+                Ok(id) => Ok(Value::term(kb.make_rigid_projection(sort, id, member))),
+                Err(_) => Err("a rigid projection whose subject has no term".to_string()),
+            }
+        }
         TypeExtractor::PolyType { body, .. } => {
             let b = child(kb, body)?;
             let binders = required(kb, "binders")?;

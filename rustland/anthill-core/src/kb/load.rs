@@ -17277,7 +17277,7 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     // Snapshot all (X-qn, spec-tid) pairs first so we don't borrow-
     // conflict with kb mutations during ProofRecord construction.
     let provides_rids = kb.rules_by_functor(provides_info_sym);
-    let mut targets: Vec<(String, TermId)> = Vec::new();
+    let mut targets: Vec<(String, crate::eval::value::Value)> = Vec::new();
     for rid in provides_rids {
         if !kb.is_fact(rid) {
             continue;
@@ -17293,32 +17293,28 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
         if kb.derived_provision_origin_of(rid).is_some() || kb.is_unbacked_derived_provision(rid) {
             continue;
         }
-        // Term-only specialization-proof emission. A value-fact SortProvidesInfo
-        // (denoted-bearing spec) is carried faithfully; occurrence-based proof
-        // emission is gated effect-expressions-as-types work, so skip rather than
-        // hit the term-only `rule_head` panic on a value head.
-        let Some(named) = kb.fact_head_named_args(rid) else {
+        // Read through the view: a provision whose binding rides an occurrence — one
+        // written through a type alias — is specialized like any other, by the type the
+        // binding is.
+        let head = kb.rule_head_value(rid);
+        let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref")
+        else {
             continue;
         };
-        let sort_ref_tid = match super::typing::get_named_arg(kb, &named, "sort_ref") {
-            Some(t) => t,
-            None => continue,
-        };
-        let spec_tid = match super::typing::get_named_arg(kb, &named, "spec") {
-            Some(t) => t,
-            None => continue,
+        let Some(spec) = crate::kb::op_info::head_field_value(kb, head, "spec") else {
+            continue;
         };
         let x_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
             Some(q) => q,
             None => continue,
         };
-        targets.push((x_qn, spec_tid));
+        targets.push((x_qn, spec));
     }
 
     let mut new_records: Vec<TermId> = Vec::new();
 
-    for (x_qn, spec_tid) in targets {
-        let (a_short, a_qn, substitution) = match resolve_provides_spec(kb, spec_tid) {
+    for (x_qn, spec) in targets {
+        let (a_short, a_qn, substitution) = match resolve_provides_spec(kb, &spec) {
             Some(t) => t,
             None => continue,
         };
@@ -17477,43 +17473,14 @@ pub fn build_sort_ops_table(kb: &mut KnowledgeBase) {
     }
 
     // ── Pass 2: inherited spec ops for `fact Spec[bindings]` impls. ─
-    let provides_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
-        Some(s) => s,
-        None => return,
-    };
     // Snapshot (impl_kind, spec_sort) pairs first — populating the
     // table interns short names (mutating `kb`), which can't overlap
-    // the `rules_by_functor` borrow walk.
-    let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is carried
-        // faithfully; occurrence-based op-table inheritance is gated effect-
-        // expressions-as-types work, so skip rather than hit the term-only
-        // `rule_head` panic on a value head.
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let sort_ref_tid = match super::typing::get_named_arg(kb, &named, "sort_ref") {
-            Some(t) => t,
-            None => continue,
-        };
-        let spec_tid = match super::typing::get_named_arg(kb, &named, "spec") {
-            Some(t) => t,
-            None => continue,
-        };
-        let impl_sym = match sort_ref_functor(kb, sort_ref_tid) {
-            Some(s) => s,
-            None => continue,
-        };
-        let spec_sym = match provides_spec_base_sym(kb, spec_tid) {
-            Some(s) => s,
-            None => continue,
-        };
-        pairs.push((impl_sym, spec_sym));
-    }
+    // the relation's borrow walk. Through the relation's one row decoder, so a
+    // provision on any carrier hands its spec's operations on.
+    let pairs: Vec<(Symbol, Symbol)> = super::typing::all_provisions(kb)
+        .into_iter()
+        .map(|row| (row.provider, row.spec))
+        .collect();
 
     for (impl_sym, spec_sym) in pairs {
         let Some(spec_ops) = sort_ops.get(&spec_sym) else {
@@ -20122,31 +20089,33 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
     }
 }
 
-/// Resolve a SortProvidesInfo.spec term into:
+/// Resolve a SortProvidesInfo.spec into:
 /// - the spec's short name (used as `<A-flat>` in the rule QN)
 /// - the spec's qualified name (used to find α.6's requires records)
 /// - the substitution as `Vec<(abstract_param, concrete_sort_short)>`
-fn resolve_provides_spec(
+///
+/// Read through the view, so the answer is the same on whichever carrier the spec rides.
+fn resolve_provides_spec<V: TermView>(
     kb: &KnowledgeBase,
-    spec: TermId,
+    spec: &V,
 ) -> Option<(String, String, Vec<(String, String)>)> {
     // Peel `SortView(Spec, …)` (or a bare spec ref) down to the base
     // spec symbol — same logic as `provides_spec_base_sym`.
-    let base_sym = provides_spec_base_sym(kb, spec)?;
+    let base_sym = provides_spec_base_sym_view(kb, spec)?;
     let qn = kb.qualified_name_of(base_sym).to_owned();
     let short = last_segment(&qn).to_owned();
     // The type-parameter substitution lives in the outer `SortView`'s
     // named args; a plain `provides Foo` (non-SortView Fn or bare ref)
     // carries none.
-    let sub = match kb.get_term(spec) {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } if super::typing::is_sort_view_functor(kb, *functor) => {
-            sort_view_substitution(kb, named_args)
-        }
-        _ => Vec::new(),
+    let is_view = matches!(
+        spec.head(kb),
+        ViewHead::Functor { functor: Some(functor), .. }
+            if super::typing::is_sort_view_functor(kb, functor)
+    );
+    let sub = if is_view {
+        sort_view_substitution(kb, spec)
+    } else {
+        Vec::new()
     };
     Some((short, qn, sub))
 }
@@ -20154,27 +20123,28 @@ fn resolve_provides_spec(
 /// Parse a `SortView`'s named args into the type-parameter substitution
 /// `Vec<(abstract_param_short, concrete_sort_short)>`, sorted by param.
 /// Operation-valued args are skipped (they bind ops, not type params).
-fn sort_view_substitution(
-    kb: &KnowledgeBase,
-    named_args: &[(Symbol, TermId)],
-) -> Vec<(String, String)> {
+fn sort_view_substitution<V: TermView>(kb: &KnowledgeBase, view: &V) -> Vec<(String, String)> {
     use crate::intern::SymbolKind;
-    let mut sub: Vec<(String, String)> = named_args
-        .iter()
-        .filter_map(|(k_sym, v_tid)| {
+    let mut sub: Vec<(String, String)> = view
+        .named_keys(kb)
+        .into_iter()
+        .filter_map(|k_sym| {
+            let value = view
+                .named_arg(kb, k_sym)
+                .expect("a view answers for a named key it lists");
             // The base sort the binding names. A parameterized binding value is the
             // plain application (`C = List[T]` → `List[T = T]`, WI-600; a value-in-type
             // one too, WI-20260924-F3FYJ; an over-applied one too, WI-20260929-AAQT5 —
             // no binding rides a `SortView(base, …)` wrapper any more), whose head
             // `provides_spec_base_sym` reads. A bare op-valued binding stays its own
             // functor, so the operation skip below is unaffected.
-            let value_sym = provides_spec_base_sym(kb, *v_tid);
+            let value_sym = provides_spec_base_sym_view(kb, &value);
             if let Some(vs) = value_sym {
                 if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
                     return None;
                 }
             }
-            let k_short = last_segment(kb.local_name_of(*k_sym)).to_owned();
+            let k_short = last_segment(kb.local_name_of(k_sym)).to_owned();
             let v_short = match value_sym {
                 Some(s) => last_segment(kb.local_name_of(s)).to_owned(),
                 None => "_".to_string(),
@@ -33563,8 +33533,16 @@ impl<'a> Loader<'a> {
                 self.prelowered_provision_specs.insert(key, spec);
                 continue;
             };
-            self.prelowered_provision_specs
-                .insert(key, Value::term(spec_term));
+            // …and a spec with a binding written through a type alias is left as the
+            // value that holds the name, which that clause stores
+            // ([`Self::clause_spec_to_store`]). What narrows below is read off its term.
+            self.prelowered_provision_specs.insert(
+                key,
+                match node_occurrence::value_holds_alias_node(&spec) {
+                    true => spec,
+                    false => Value::term(spec_term),
+                },
+            );
             // A named spec lowers to a `SortView` over its base, or to the bare base, and
             // either decodes.
             let Some((spec_sym, bindings)) = super::typing::unwrap_spec_view(&self.kb, spec_term)
@@ -38986,21 +38964,22 @@ impl<'a> Loader<'a> {
         node_occurrence::value_to_term(&mut self.kb, spec).ok()
     }
 
-    /// A sort's `requires` spec as its fact holds it: the term
-    /// [`Self::lower_value_or_gate`] lowers it to, or — where a binding was written
+    /// The spec of a sort's `requires` or `provides` clause as its fact holds it: the
+    /// term [`Self::lower_value_or_gate`] lowers it to, or — where a binding was written
     /// through a type alias — the value itself, which holds the alias's name
-    /// ([`Self::clause_binding_as_written`]). A requirement's readers take the bindings
-    /// through the view, so they read the same type from either.
-    fn requirement_spec_to_store(
+    /// ([`Self::clause_binding_as_written`]). The readers of both relations take a spec
+    /// and its bindings through the view, so they read the same type from either.
+    fn clause_spec_to_store(
         &mut self,
         spec: crate::eval::value::Value,
+        position: &'static str,
         ty: &TypeExpr,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         if !node_occurrence::value_holds_alias_node(&spec) {
-            return self.lower_value_or_gate(spec, "requires", ty);
+            return self.lower_value_or_gate(spec, position, ty);
         }
-        match self.lower_value_or_gate(spec.clone(), "requires", ty) {
+        match self.lower_value_or_gate(spec.clone(), position, ty) {
             Value::Term { .. } => spec,
             unlowered => unlowered,
         }
@@ -39024,13 +39003,13 @@ impl<'a> Loader<'a> {
         self.kb
             .register_entity_fields(requires_sym, vec![sort_ref_sym, spec_sym]);
         // The spec on the carrier its fact holds it on
-        // ([`Self::requirement_spec_to_store`]): a term where it is one, a spec that holds
+        // ([`Self::clause_spec_to_store`]): a term where it is one, a spec that holds
         // a value included (WI-390) — and the value itself where a binding was written
         // through a type alias, or where it has no term at all, which is also reported.
         // So a `SortRequiresInfo` head is a term or a value, and its readers take it
         // through the view.
         use crate::eval::value::Value;
-        let spec_value = self.requirement_spec_to_store(spec_value, &r.type_expr);
+        let spec_value = self.clause_spec_to_store(spec_value, "requires", &r.type_expr);
         // The `sort_ref` FIELD carries the requiring sort as a term (it is read as
         // a type by `direct_requires`); the DOMAIN beside it is the same name as a
         // symbol. Same name, two positions — data vs. index key.
@@ -39827,12 +39806,11 @@ impl<'a> Loader<'a> {
         let spec_sym = self.kb.intern("spec");
         self.kb
             .register_entity_fields(provides_sym, vec![sort_ref_sym, spec_sym]);
-        // WI-390: lower a denoted-bearing spec to a `TermId` (mirrors
-        // load_requires_decl) so the SortProvidesInfo head stays a hash-consed
-        // `Term::Fn` — keeping requires/provides symmetric for
-        // `check_provider_requires`.
+        // The spec on the carrier its fact holds it on, as a requirement's is
+        // ([`Self::clause_spec_to_store`]): a term where it is one, and the value itself
+        // where a binding was written through a type alias.
         use crate::eval::value::Value;
-        let spec_value = self.lower_value_or_gate(spec_value, "provides", &pc.spec);
+        let spec_value = self.clause_spec_to_store(spec_value, "provides", &pc.spec);
         // `sort_ref` is the providing sort as a term; the domain is its name.
         let domain_term = self.kb.make_name_term_from_sym(domain);
         // WI-869 (058 §3.8) / WI-1033 — the `:- goals` tail, emitted BEFORE the

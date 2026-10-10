@@ -321,7 +321,7 @@ pub(super) fn carrier_is_its_own_sole_provider(
     let mut saw_self = false;
     for row in provides_rows_of_spec(kb, spec) {
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .and_then(|p| provision_binding_at_param(kb, p, &row.spec_view))
             .map_or(row.provider, |(_, base)| base);
         if !same_sort_canonical(kb, dispatch_carrier, carrier) {
             continue;
@@ -343,7 +343,7 @@ pub(super) fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spe
         // provider (a self-provision, an instance fact, or a row that names no other
         // sort) — the same default `witness_dispatch_carrier`'s `None` stands for.
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .and_then(|p| provision_binding_at_param(kb, p, &row.spec_view))
             .map_or(row.provider, |(_, base)| base);
         same_sort_canonical(kb, dispatch_carrier, carrier)
     })
@@ -3003,9 +3003,9 @@ fn no_provision_agrees_with_pins(kb: &mut KnowledgeBase, dep: &RequiresEntry) ->
         if !kb.is_fact(rid) {
             return None;
         }
-        let head_named = kb.fact_head_named_args(rid)?;
-        let spec_view_tid = get_named_arg(kb, &head_named, "spec")?;
-        let (base, row_bindings) = unwrap_spec_view(kb, spec_view_tid)?;
+        let spec_view = provision_fact_spec(kb, rid)?;
+        let provider = crate::kb::op_info::head_field_term(kb, kb.rule_head_value(rid), "sort_ref");
+        let (base, row_bindings) = unwrap_spec_view_value(kb, &spec_view)?;
         if kb.canonical_sort_sym(base) != spec_canon {
             continue;
         }
@@ -3018,7 +3018,7 @@ fn no_provision_agrees_with_pins(kb: &mut KnowledgeBase, dep: &RequiresEntry) ->
         if !excluded {
             return None;
         }
-        let provider = get_named_arg(kb, &head_named, "sort_ref")
+        let provider = provider
             .and_then(|t| ref_or_nullary_name(kb.get_term(t)))
             .map(|p| kb.qualified_name_of(p).to_string())?;
         let row = SortGoal {
@@ -3026,7 +3026,10 @@ fn no_provision_agrees_with_pins(kb: &mut KnowledgeBase, dep: &RequiresEntry) ->
             bindings: row_bindings,
             ..goal.clone()
         };
-        rows.push(format!("`{provider}` provides `{}`", format_goal(kb, &row)));
+        rows.push(format!(
+            "`{provider}` provides `{}`",
+            format_goal_as_written(kb, &row)
+        ));
     }
     let spec = kb.qualified_name_of(goal.spec_sort);
     Some(if rows.is_empty() {
@@ -3147,10 +3150,8 @@ fn some_row_could_answer(
         if !kb.is_fact(rid) {
             return true;
         }
-        let Some((base, row_bindings)) = kb
-            .fact_head_named_args(rid)
-            .and_then(|head| get_named_arg(kb, &head, "spec"))
-            .and_then(|view| unwrap_spec_view(kb, view))
+        let Some((base, row_bindings)) =
+            provision_fact_spec(kb, rid).and_then(|view| unwrap_spec_view_value(kb, &view))
         else {
             return true;
         };

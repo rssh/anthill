@@ -180,10 +180,11 @@ end
     );
 }
 
-/// `provides Foo[Int64, 3]` — symmetric to `requires`: the `SortProvidesInfo` fact
-/// rides as a value fact, and the provides/dispatch readers tolerate it.
+/// `provides Foo[Int64, 3]` — symmetric to `requires`: the provision that is stored still
+/// holds the value, read through the view on whichever carrier the fact rides, and the
+/// provides/dispatch readers tolerate it.
 #[test]
-fn provides_value_in_type_rides_as_term() {
+fn a_provision_holding_a_value_keeps_it() {
     let src = format!(
         r#"
 namespace test.wi366.prov
@@ -197,15 +198,10 @@ end
 "#
     );
     let (kb, errs) = load_kb(&[&src]);
-    // WI-390: symmetric to `requires` — the SortProvidesInfo head is a hash-consed
-    // `Term` (keeping requires/provides symmetric for `check_provider_requires`),
-    // its spec faithfully carrying the denoted `3`.
+    let spec = crate::common::provision_spec_of(&kb, "test.wi366.prov.Carrier")
+        .expect("the provision is stored, and read through the view");
     assert!(
-        !any_node_carrying_fact(&kb, "anthill.reflect.SortProvidesInfo"),
-        "WI-390: `provides Foo[Int64, 3]` must ride as a hash-consed Term fact, not a Value::Node",
-    );
-    assert!(
-        denoted_term_fact_head(&kb, "anthill.reflect.SortProvidesInfo").is_some(),
+        anthill_core::kb::typing::type_holds_a_value(&kb, &spec),
         "the SortProvidesInfo spec must faithfully carry the denoted `3` (not dropped)",
     );
     assert!(
@@ -248,44 +244,15 @@ end
 //    the `provides` clause ───────────────────────────────────────────────────
 
 /// The `spec` field's `E` binding of the (sort-body) `SortProvidesInfo` whose
-/// `sort_ref` is `<ns>.MyList`. Term carrier only (a `{}` row is ground).
-fn provides_e_binding(kb: &KnowledgeBase, ns: &str) -> Option<anthill_core::kb::term::TermId> {
-    use anthill_core::kb::term::Term;
-    let sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
-    let myl = kb.try_resolve_symbol(&format!("{ns}.MyList"))?;
-    for rid in kb
-        .rules_by_functor(sym)
+/// `sort_ref` is `<ns>.MyList`, on the carrier the fact holds it on.
+fn provides_e_binding(kb: &KnowledgeBase, ns: &str) -> Option<Value> {
+    use anthill_core::kb::term_view::TermView;
+    let spec = crate::common::provision_spec_of(kb, &format!("{ns}.MyList"))?;
+    let key = spec
+        .named_keys(kb)
         .into_iter()
-        .filter(|r| kb.is_fact(*r))
-    {
-        let Value::Term { id: t, .. } = kb.rule_head_value(rid) else {
-            continue;
-        };
-        let Term::Fn { named_args, .. } = kb.get_term(*t) else {
-            continue;
-        };
-        let matches_ns = named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == "sort_ref")
-            .is_some_and(|(_, v)| {
-                matches!(kb.get_term(*v),
-                Term::Fn { functor, .. } if *functor == myl)
-            });
-        if !matches_ns {
-            continue;
-        }
-        let spec = named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == "spec")?
-            .1;
-        if let Term::Fn { named_args: sv, .. } = kb.get_term(spec) {
-            return sv
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "E")
-                .map(|(_, t)| *t);
-        }
-    }
-    None
+        .find(|key| kb.local_name_of(*key) == "E")?;
+    Some(spec.named_arg(kb, key)?.to_value())
 }
 
 /// `fact Spec[E = {}]` and `provides Spec[E = {}]` must emit a BYTE-IDENTICAL
@@ -323,12 +290,11 @@ end
         "`fact Stream[E = {{}}]` must not drop the written row to an unresolved \
          name; got: {errs:?}",
     );
-    let fe = provides_e_binding(&kb, "test.wi366.factrow.f");
-    let pe = provides_e_binding(&kb, "test.wi366.factrow.p");
+    let fe = provides_e_binding(&kb, "test.wi366.factrow.f").expect("the first row binds E");
+    let pe = provides_e_binding(&kb, "test.wi366.factrow.p").expect("the second row binds E");
     assert!(
-        fe.is_some() && fe == pe,
-        "the `fact`-head and `provides`-clause SortProvidesInfo must carry a \
-         byte-identical effect-row `E` binding; got fact={fe:?} provides={pe:?}",
+        anthill_core::kb::term_view::views_structurally_equal(&kb, &fe, &pe),
+        "the two provisions must carry the same effect-row `E` binding; got {fe:?} and {pe:?}",
     );
 }
 

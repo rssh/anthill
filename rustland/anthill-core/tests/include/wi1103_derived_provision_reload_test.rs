@@ -39,7 +39,6 @@ use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
-use anthill_core::persistence::print::TermPrinter;
 
 /// The phase-2 file. It USES a carrier whose `NonEq` was derived in PHASE 1
 /// (`anthill.geometry.Vec3`) — so the classification under test is not vacuous — and
@@ -99,15 +98,10 @@ fn call_bool(i: &mut Interpreter, op: &str) -> bool {
 
 /// Every `SortProvidesInfo` fact, rendered. `TermPrinter` prints SHORT names, so a
 /// row reads `SortProvidesInfo(sort_ref: Vec3, spec: SortView(NonEq, T: Vec3))`.
-fn provides_rows(kb: &KnowledgeBase) -> Vec<String> {
-    let sym = kb
-        .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+fn provides_rows(kb: &mut KnowledgeBase) -> Vec<String> {
+    kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .expect("SortProvidesInfo");
-    let printer = TermPrinter::new(kb);
-    kb.rules_by_functor(sym)
-        .iter()
-        .map(|rid| printer.print_term(kb.rule_head(*rid)))
-        .collect()
+    crate::common::rendered_facts(kb, "anthill.reflect.SortProvidesInfo")
 }
 
 /// The rendered `NonEq` row for one carrier — a whole-string match, so a substring
@@ -186,7 +180,7 @@ fn two_phase_load_drives_a_derived_noneq_carrier() {
 fn derived_noneq_rows_survive_the_next_phase_unchanged() {
     let mut kb = phase_one_full_closure();
 
-    let noneq_rows = |kb: &KnowledgeBase| -> Vec<String> {
+    let noneq_rows = |kb: &mut KnowledgeBase| -> Vec<String> {
         let mut v: Vec<String> = provides_rows(kb)
             .into_iter()
             .filter(|s| s.contains("SortView(NonEq,"))
@@ -195,7 +189,7 @@ fn derived_noneq_rows_survive_the_next_phase_unchanged() {
         v
     };
 
-    let after_one = noneq_rows(&kb);
+    let after_one = noneq_rows(&mut kb);
     assert_eq!(
         after_one.iter().filter(|s| *s == VEC3_NONEQ).count(),
         1,
@@ -204,7 +198,7 @@ fn derived_noneq_rows_survive_the_next_phase_unchanged() {
 
     load_phase_two(&mut kb, USER).expect("phase 2 must load into an already-loaded KB");
 
-    let after_two = noneq_rows(&kb);
+    let after_two = noneq_rows(&mut kb);
 
     // Nothing phase 1 classified may vanish or double.
     for row in &after_one {

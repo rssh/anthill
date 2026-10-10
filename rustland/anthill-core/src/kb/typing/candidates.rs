@@ -145,10 +145,11 @@ pub fn dispatch_candidate_impl_sorts(kb: &mut KnowledgeBase, goal: &SortGoal) ->
 /// agree about which rows are instances — the guard read a conversion as a provision with only
 /// variables in it and admitted every carrier pair the search then found nothing for.
 ///
-/// The row's bindings are read where they are stored ([`ProvidesRow::stored_bindings`]):
-/// this is asked of every row of a spec on each search, and most rows are then dropped.
+/// Asked of every row of a spec on each search, and most rows are then dropped: the row's
+/// bindings are decoded for the question ([`ProvidesRow::bindings`]), each on the carrier
+/// the row holds it on.
 pub(super) fn is_conversion_row(kb: &KnowledgeBase, row: &ProvidesRow) -> bool {
-    is_conversion_edge_at(kb, row.provider, row.spec_base, row.stored_bindings(kb))
+    is_conversion_edge_at(kb, row.provider, row.spec_base, &row.bindings(kb))
         || kb
             .derived_provision_origin_of(row.rid)
             .is_some_and(|origin| chain_has_conversion(kb, row.provider, origin))
@@ -813,6 +814,27 @@ pub(super) fn stored_spec_view_bindings(
     }
 }
 
+/// The NAMED bindings of a spec view on any carrier — [`spec_view_bindings`] for a term,
+/// and the view's named children for a view that holds a value; none for a bare spec or a
+/// bare application. The bindings half of [`unwrap_spec_view_value`].
+pub(super) fn spec_view_bindings_value(
+    kb: &KnowledgeBase,
+    spec: &Value,
+) -> SmallVec<[(Symbol, Value); 2]> {
+    if let Value::Term { id, .. } = spec {
+        return spec_view_bindings(kb, *id);
+    }
+    let is_view = matches!(
+        spec.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
+    );
+    if is_view {
+        view_named_children(kb, spec)
+    } else {
+        SmallVec::new()
+    }
+}
+
 /// The base and the named bindings of a spec, EACH BINDING ON THE CARRIER IT RIDES — the one
 /// reading of a spec view, for a `RequiresEntry.spec` and a stored provision alike. The base
 /// is [`crate::kb::load::provides_spec_base_sym_view`]'s; a ground `Value::Term` takes
@@ -832,16 +854,7 @@ pub(crate) fn unwrap_spec_view_value(
         return unwrap_spec_view(kb, *id);
     }
     let base = crate::kb::load::provides_spec_base_sym_view(kb, spec)?;
-    let is_view = matches!(
-        spec.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
-    );
-    let bindings = if is_view {
-        view_named_children(kb, spec)
-    } else {
-        SmallVec::new()
-    };
-    Some((base, bindings))
+    Some((base, spec_view_bindings_value(kb, spec)))
 }
 
 /// Look up `goal.bindings[short]` (the per-call value for the spec's

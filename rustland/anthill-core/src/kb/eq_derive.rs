@@ -1213,40 +1213,20 @@ fn is_eq_boundary(
 /// [`super::typing::provision_is_conditional`] is the shared reading, so the seed here
 /// and `check_eq_noneq_exclusive` cannot disagree about which carriers are leaves.
 fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Symbol> {
-    let (Some(provides_sym), Some(noneq)) = (
-        kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo"),
-        noneq_sym,
-    ) else {
+    let Some(noneq) = noneq_sym else {
         return Vec::new();
     };
     let noneq_canon = kb.canonical_sort_sym(noneq);
-    let mut out: Vec<Symbol> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = super::typing::get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = super::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = super::typing::get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some(spec_base) = super::load::provides_spec_base_sym(kb, spec_view) else {
-            continue;
-        };
-        if kb.canonical_sort_sym(spec_base) == noneq_canon
-            && !super::typing::provision_is_conditional(kb, carrier, noneq)
-        {
-            out.push(carrier);
-        }
-    }
-    out
+    // The provision relation through its one row decoder, so a provision on any carrier
+    // is a row here as it is to the typer.
+    super::typing::all_provisions(kb)
+        .into_iter()
+        .filter(|row| {
+            kb.canonical_sort_sym(row.spec) == noneq_canon
+                && !super::typing::provision_is_conditional(kb, row.provider, noneq)
+        })
+        .map(|row| row.provider)
+        .collect()
 }
 
 /// The sorts of every field of `sort`'s constructors — the fixpoint's out-edges.

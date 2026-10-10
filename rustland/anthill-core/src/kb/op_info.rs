@@ -739,6 +739,17 @@ fn meta_term_nonempty(kb: &KnowledgeBase, meta_tid: TermId) -> bool {
 /// Find a named field of a carrier-agnostic head, by short name. Both `Term`
 /// and `Value` carriers expose their named args through `TermView`.
 fn head_field<'a>(kb: &'a KnowledgeBase, head: &'a Value, key: &str) -> Option<ViewItem<'a>> {
+    // A hash-consed head is read where it is stored, nothing built: the provision
+    // relation alone is decoded 155 000 times in a stdlib load, a field at a time.
+    if let Value::Term { id, .. } = head {
+        let Term::Fn { named_args, .. } = kb.get_term(*id) else {
+            return None;
+        };
+        return named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == key)
+            .map(|(_, t)| ViewItem::Term(*t));
+    }
     head.named_keys(kb)
         .into_iter()
         .find(|s| kb.local_name_of(*s) == key)

@@ -515,9 +515,15 @@ end
 
 fn nested_answers(ns: &str, state: &str, key: &str) -> Vec<String> {
     let mut kb = crate::common::load_kb_with(&sld_program(ns, state, key));
+    // Each answer through the term it lowers to: a binding rides whichever carrier its
+    // provision does, and an occurrence and its term print through two printers.
     definite_unary(&mut kb, &format!("{ns}.nested"))
         .iter()
-        .map(|v| crate::common::show_value(&kb, v))
+        .map(|v| {
+            let term = anthill_core::kb::node_occurrence::value_to_term(&mut kb, v)
+                .expect("an answered binding has a term");
+            crate::common::show_value(&kb, &anthill_core::eval::Value::term(term))
+        })
         .collect()
 }
 
@@ -526,9 +532,10 @@ fn nested_answers(ns: &str, state: &str, key: &str) -> Vec<String> {
 #[test]
 fn a_rule_reads_into_a_nested_value_binding() {
     let got = nested_answers("wif3fyj.sld_value", VALUED, "N");
+    // The value-in-type binding, as its term prints: the value it holds.
     assert_eq!(
         got,
-        vec!["Denoted(value: 3)"],
+        vec!["3"],
         "one answer, the bound VALUE — not the outer `Buf[…]` binding"
     );
 }

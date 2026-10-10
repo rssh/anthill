@@ -2580,7 +2580,7 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // `Foo`, handed `Foo` a self-supplied slot it never declared (WI-660/WI-672).
     for row in provides_rows_of_provider(kb, sort_sym) {
         let base = row.spec_base;
-        if !provision_is_conversion(kb, sort_sym, base, row.stored_bindings(kb)) {
+        if !provision_is_conversion(kb, sort_sym, base, &row.bindings(kb)) {
             continue;
         }
         // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
@@ -2608,7 +2608,7 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
         }
         out.push(RequiresEntry {
             required_sort: base,
-            spec: Value::term(row.spec_view),
+            spec: row.spec_view.clone(),
             supply: SupplySource::SelfSupplied,
         });
     }

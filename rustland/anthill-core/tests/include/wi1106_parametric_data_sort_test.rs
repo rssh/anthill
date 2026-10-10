@@ -84,7 +84,6 @@
 //! alone is not a state the tree is meant to hold.
 
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::persistence::print::TermPrinter;
 use crate::common::try_load_kb_with;
 
 fn errors(src: &str) -> Vec<String> {
@@ -95,14 +94,7 @@ fn errors(src: &str) -> Vec<String> {
 /// `wi210_dispatch_test::provides_info_heads` — the direct reader, so a test can say
 /// "no edge was filed" rather than inferring it from a downstream symptom.
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
-    let sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let rids: Vec<_> = kb.rules_by_functor(sym).into_iter().collect();
-    let heads: Vec<_> = rids.iter().map(|&r| kb.rule_head(r)).collect();
-    let printer = TermPrinter::new(kb);
-    heads.into_iter().map(|h| printer.print_term(h)).collect()
+    crate::common::rendered_facts(kb, "anthill.reflect.SortProvidesInfo")
 }
 
 /// DEFECT 2, at the emission. `fact Wi1106Box(value: Wi1106Other)` constructs a value;

@@ -425,7 +425,7 @@ pub(super) fn provision_binds_param_to_carrier(
     // first bound no matching param and a second did.
     provides_rows_of_spec(kb, spec_sort)
         .filter(|row| {
-            witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+            witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
                 == Some(carrier_canon)
         })
         .map(|row| row.bindings(kb))
@@ -452,11 +452,11 @@ fn witness_provider_for(
     provides_rows_of_spec(kb, spec_sort)
         .filter(|row| {
             kb.canonical_sort_sym(row.provider) != carrier_canon
-                && witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+                && witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
                     == Some(carrier_canon)
         })
         .find(|row| {
-            view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, row.stored_bindings(kb))
+            view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, &row.bindings(kb))
         })
         .map(|row| row.provider)
 }

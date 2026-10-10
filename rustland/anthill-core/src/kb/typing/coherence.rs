@@ -458,7 +458,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, Value); 2]> = SmallVec::new();
         // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
-        let view = TermIdView(row.spec_view);
+        let view = &row.spec_view;
         if let ViewHead::Functor {
             functor: Some(functor),
             pos_arity,
@@ -466,7 +466,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         } = view.head(kb)
         {
             // Named bindings (`F = Float`, `C = List[T]`).
-            for (k, v) in view_named_children(kb, &view) {
+            for (k, v) in view_named_children(kb, view) {
                 if is_type_param_binding(kb, k, &spec_qn) {
                     sigma.push((kb.local_name_of(k).to_string(), v));
                 }
@@ -731,7 +731,7 @@ fn requirement_failure_of(
     let unwritten = spec_params_named_in(kb, goal, spec);
     if !unwritten.is_empty() {
         return RequirementFailure::Unwritten {
-            goal: format_goal(kb, goal),
+            goal: format_goal_as_written(kb, goal),
             params: unwritten,
         };
     }
@@ -758,8 +758,10 @@ fn requirement_failure_of(
             goal: goal_text.clone(),
             detail: describe_resolution_failure(kb, failure),
         },
+        // The requirement named as the provision's own bindings wrote it: one written
+        // through a type alias is led by the alias.
         (ResolutionResult::NoMatch { .. }, None) => RequirementFailure::NoProvider {
-            goal: format_goal(kb, goal),
+            goal: format_goal_as_written(kb, goal),
             about_carrier: goal_is_about(kb, goal, carrier),
         },
         (ResolutionResult::Ambiguous { goal_text, tie, .. }, None) => {
@@ -1323,7 +1325,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // carrier owning it or the spec defaulting it. A type-only provision
             // (`provides Stream[T = X]`) has no op-valued binding, so this never
             // matches and pre-WI-431 coverage is unchanged.
-            if op_bound_in_instance_fact(kb, p.spec_view, &op_short) {
+            if op_bound_in_instance_fact(kb, &p.spec_view, &op_short) {
                 continue;
             }
             errors.push(LoadError::UnbackedProviderOperation {
@@ -1588,7 +1590,7 @@ fn provider_coherence_groups_with(
     };
     for p in provisions {
         let spec_canon = kb.canonical_sort_sym(p.spec);
-        let binds_op = provision_binds_any_op(kb, p.spec_view);
+        let binds_op = provision_binds_any_op(kb, &p.spec_view);
         // KIND 1 — INSTANCE FACT: the provision itself BINDS an op, and that
         // op-valued binding IS the dictionary entry. A type-only provision
         // (`provides Stream[T = X]`) supplies no dictionary and never participates
@@ -1601,7 +1603,10 @@ fn provider_coherence_groups_with(
             record(
                 spec_canon,
                 kb.canonical_sort_sym(p.carrier),
-                Provider::Fact(p.spec_view),
+                Provider::Fact(match kb.value_fact_dedup_key(&p.spec_view) {
+                    Some(application) => InstanceIdentity::Application(application),
+                    None => InstanceIdentity::OwnFact(p.rid),
+                }),
             );
         }
         // The OP-LESS SPEC exemption, shared by kinds 2 and 3: a spec that declares
@@ -1625,7 +1630,7 @@ fn provider_coherence_groups_with(
         // the two kinds cannot both claim one provision, nor both miss it: missing it
         // is exactly what WI-859 fixes, and claiming it twice would make ONE
         // provision a group of two.
-        match witness_dispatch_carrier(kb, p.spec, p.carrier, p.spec_view) {
+        match witness_dispatch_carrier(kb, p.spec, p.carrier, &p.spec_view) {
             // KIND 2 — WITNESS SORT, under an exemption that is POLICY, not
             // classification, and so is applied here rather than hidden inside the
             // classifier: a CONCRETE provider (with constructors) is a backend whose
@@ -1778,7 +1783,7 @@ pub(super) fn check_provision_binding_agreement(
         SmallVec<[SmallVec<[(Symbol, Value); 2]>; 2]>,
     )> = Vec::new();
     for p in provisions {
-        let Some((base, bindings)) = unwrap_spec_view(kb, p.spec_view) else {
+        let Some((base, bindings)) = unwrap_spec_view_value(kb, &p.spec_view) else {
             continue;
         };
         let key = (
@@ -1854,9 +1859,10 @@ pub(super) fn check_provision_binding_agreement(
                         carrier: kb.qualified_name_of(*carrier).to_string(),
                         spec: kb.qualified_name_of(*spec).to_string(),
                         param: param.to_string(),
+                        // Each as its clause wrote it, an alias leading the type.
                         values: vals
                             .iter()
-                            .map(|v| type_display_name_value(kb, v))
+                            .map(|v| declared_type_display(kb, v))
                             .collect(),
                     });
                 }
@@ -1917,13 +1923,13 @@ pub(crate) fn provision_bindings_agree<A: TermView, B: TermView>(
 /// mutating `kb` — it can't overlap the `rules_by_functor` borrow). `carrier` is
 /// the provision's `sort_ref`: the PROVIDER sort for a `provides` block, and the
 /// DERIVED carrier for a namespace-level instance fact. `spec_view` is the full
-/// `SortView` term, kept so the op-coverage check can read an INSTANCE FACT's
-/// op-valued bindings (`pure = optionPure`) — the dictionary entries that back a
-/// spec op without the carrier owning it (WI-431).
+/// `SortView` as the fact holds it, on whichever carrier, kept so the op-coverage check
+/// can read an INSTANCE FACT's op-valued bindings (`pure = optionPure`) — the dictionary
+/// entries that back a spec op without the carrier owning it (WI-431).
 pub(super) struct Provision {
     pub(super) carrier: Symbol,
     pub(super) spec: Symbol,
-    pub(super) spec_view: TermId,
+    pub(super) spec_view: Value,
     /// WI-1103 — the row's own fact, so the op-backing walk can ask whether it was
     /// DERIVED (`KnowledgeBase::is_unbacked_derived_provision`). Only that walk asks:
     /// coherence and binding agreement are about what the relation SAYS, and a
@@ -1931,16 +1937,29 @@ pub(super) struct Provision {
     pub(super) rid: RuleId,
 }
 
+/// What tells one instance of a spec from another in a coherence group.
+#[derive(Clone, PartialEq, Debug)]
+pub(super) enum InstanceIdentity {
+    /// The application the instance is, read through the view: two provisions of one
+    /// application share it whichever carrier each is held on — one written through a
+    /// type alias and one written out are one instance — and only genuinely-differing
+    /// ones collide.
+    Application(crate::kb::term_view::GoalKey),
+    /// The instance's own fact, for a view the fingerprint is no identity of
+    /// ([`KnowledgeBase::value_fact_dedup_key`] says which): never another's, so two
+    /// such instances are two candidates and are refused rather than taken for one.
+    OwnFact(RuleId),
+}
+
 /// WI-838 / WI-859 — what supplies the dictionary for one `(spec, carrier)`. The
 /// three kinds are compared by DIFFERENT identities, which is why the coherence
 /// grouping holds this enum rather than a bare symbol.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub(super) enum Provider {
     /// WI-431 INSTANCE FACT — `fact Spec[T = Carrier, op = boundOp]`. It has NO
     /// NAME, so its identity is the full canonical application (the WI-419 / §5.4
-    /// rule): spec views hash-cons, so identical facts share one `spec_view` and
-    /// collapse, and only genuinely-differing facts collide.
-    Fact(TermId),
+    /// rule): see [`InstanceIdentity`].
+    Fact(InstanceIdentity),
     /// WI-450 WITNESS SORT — `sort W provides Spec[T = Carrier]`, whose impls are
     /// W's own members. Two witnesses for one application share ONE hash-consed
     /// `spec_view` (the ops are not in the view), so identity is the provider SORT.
@@ -2018,9 +2037,9 @@ pub(super) fn witness_dispatch_carrier(
     kb: &KnowledgeBase,
     spec: Symbol,
     provider: Symbol,
-    spec_view: TermId,
+    spec_view: &Value,
 ) -> Option<Symbol> {
-    witness_dispatch_carrier_view(kb, spec, provider, spec_view).map(|(_, base)| base)
+    witness_dispatch_carrier_value(kb, spec, provider, spec_view).map(|(_, base)| base)
 }
 
 /// WI-860 — [`witness_dispatch_carrier`] with the carrier's WRITTEN VIEW kept beside
@@ -2109,8 +2128,8 @@ pub(crate) struct ProvisionRow {
     pub provider: Symbol,
     /// The spec's base sort.
     pub spec: Symbol,
-    /// The full `SortView` term the provision carries.
-    pub spec_view: TermId,
+    /// The full `SortView` the provision carries, on whichever carrier its fact holds it.
+    pub spec_view: Value,
 }
 
 /// WI-860 (058 §3.6) — do two carrier views describe any carrier IN COMMON? The

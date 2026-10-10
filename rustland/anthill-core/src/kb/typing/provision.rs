@@ -242,7 +242,7 @@ pub(super) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Sy
     }
     spec_carrier_param(kb, canon).or_else(|| {
         provides_rows_of_spec(kb, canon).find_map(|row| {
-            row.stored_bindings(kb).iter().find_map(|(key, bound)| {
+            row.bindings(kb).iter().find_map(|(key, bound)| {
                 composed_self_reference(kb, row.provider, bound)
                     .then(|| kb.type_param_sym_of(canon, kb.local_name_of(*key)))
                     .flatten()
@@ -825,8 +825,8 @@ pub(crate) fn binding_op_symbol<V: TermView>(kb: &KnowledgeBase, value: &V) -> O
 /// participate in dictionary coherence: a type-only provision contributes no
 /// dispatch target, so it can never be the ambiguous one (and an existing
 /// `provides` / type-only `fact` is never over-rejected).
-pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: TermId) -> bool {
-    match unwrap_spec_view(kb, spec_view) {
+pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: &Value) -> bool {
+    match unwrap_spec_view_value(kb, spec_view) {
         Some((_, bindings)) => bindings
             .iter()
             .any(|(_, value)| binding_op_symbol(kb, value).is_some()),
@@ -838,10 +838,10 @@ pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: TermId) -> b
 /// to an operation — the instance-fact backing for that spec op.
 pub(super) fn op_bound_in_instance_fact(
     kb: &KnowledgeBase,
-    spec_view: TermId,
+    spec_view: &Value,
     op_short: &str,
 ) -> bool {
-    match unwrap_spec_view(kb, spec_view) {
+    match unwrap_spec_view_value(kb, spec_view) {
         Some((_, bindings)) => instance_fact_op_in_bindings(kb, &bindings, op_short).is_some(),
         None => false,
     }
@@ -898,7 +898,7 @@ pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) 
             // `None` = the provision's carrier IS the provider (a self-provision, an
             // instance fact, or a bare one naming no other sort) — that function's own
             // documented contract.
-            witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+            witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
                 .unwrap_or(row.provider)
         })
         .map(|c| kb.canonical_sort_sym(c))
@@ -931,7 +931,7 @@ pub(crate) fn provisions_about(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Pro
     let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
     provides_rows_of_spec(kb, spec_sort)
         .map(|row| {
-            let view = Value::term(row.spec_view);
+            let view = row.spec_view.clone();
             let about = carrier_param
                 .filter(|_| view_is_sort_view(kb, &view))
                 .and_then(|param| provision_binding_at_param(kb, param, &view))
@@ -1090,7 +1090,7 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
             spec_op,
             op_short_sym,
             row.provider,
-            row.spec_view,
+            &row.spec_view,
             &row.bindings(kb),
         ) else {
             continue;
@@ -1114,7 +1114,7 @@ pub(super) fn provision_supplier(
     spec_op: Symbol,
     op_short_sym: Symbol,
     provider: Symbol,
-    spec_t: TermId,
+    spec_t: &Value,
     bindings: &[(Symbol, Value)],
 ) -> Option<(Symbol, SpecOpSupplier)> {
     let op_short = kb.local_name_of(op_short_sym);
@@ -1230,7 +1230,7 @@ pub(crate) fn spec_op_suppliers_for_carrier(
             spec_op,
             op_short_sym,
             row.provider,
-            row.spec_view,
+            &row.spec_view,
             &row.bindings(kb),
         ) else {
             continue;

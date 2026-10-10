@@ -1191,13 +1191,10 @@ pub(super) fn unique_provider_completion(
         if !kb.is_fact(rid) {
             continue;
         }
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
+        let Some(spec_view) = provision_fact_spec(kb, rid) else {
             continue;
         };
-        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else {
-            continue;
-        };
-        let Some((view_base_sym, view_bindings)) = unwrap_spec_view(kb, spec_view_tid) else {
+        let Some((view_base_sym, view_bindings)) = unwrap_spec_view_value(kb, &spec_view) else {
             continue;
         };
         if view_base_sym != goal.spec_sort {

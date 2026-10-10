@@ -56,7 +56,7 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
         return out; // no Modifiable claims loaded — nothing admits a region
     };
     for head in modifiable_claim_heads(kb, modifiable) {
-        collect_sort_refs(kb, head, modifiable, &mut out);
+        collect_sort_refs(kb, &head, modifiable, &mut out);
     }
     out
 }
@@ -99,7 +99,7 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// SORT, so it ran 204 times on a stdlib load — `sorts × provisions` — while reading as
 /// though it ran once. It is now hoisted to that loop's caller and threaded in; see the
 /// `debug_assert` at the old site, which pins the loop-invariance the hoist rests on.
-fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<TermId> {
+fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<Value> {
     let canonical = kb.canonical_sort_sym(modifiable);
     super::typing::all_provisions(kb)
         .into_iter()
@@ -130,7 +130,7 @@ pub(crate) fn is_modifiable_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
     modifiable_claim_heads(kb, modifiable)
         .into_iter()
         .any(|head| {
-            extract_type_param(kb, &super::term_view::TermIdView(head), "T")
+            extract_type_param(kb, &head, "T")
                 .and_then(|bound| type_head_sort(kb, &bound))
                 == Some(sort)
         })
@@ -141,7 +141,7 @@ pub(crate) fn is_modifiable_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
 /// variable, an arrow, a value-in-type). Carrier-agnostic via `extract_type`, so
 /// either fact-head encoding (term-backed `Fn{S, named}` or deep
 /// `parameterized(base, bindings)`) reads the same.
-fn type_head_sort(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
+fn type_head_sort<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
     match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => Some(s),
         TypeExtractor::Parameterized { base, .. } => Some(base),
@@ -153,11 +153,16 @@ fn type_head_sort(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
 /// (the `Modifiable` head itself). Robust to either fact-head shape —
 /// `Modifiable[T = Cell]` stored as `Fn{functor: Modifiable, T: Cell}` or
 /// as `parameterized(sort_ref(Modifiable), bindings: [T = Cell])`.
-fn collect_sort_refs(kb: &KnowledgeBase, term: TermId, skip: Symbol, out: &mut HashSet<Symbol>) {
+fn collect_sort_refs<V: TermView>(
+    kb: &KnowledgeBase,
+    claim: &V,
+    skip: Symbol,
+    out: &mut HashSet<Symbol>,
+) {
     // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
     // bare `Ref(Cell)` a `Modifiable[T = Cell]` type-arg takes (WI-361), so one
     // check covers both fact-head shapes.
-    if let Some(s) = extract_sort_ref_sym(kb, &super::term_view::TermIdView(term)) {
+    if let Some(s) = extract_sort_ref_sym(kb, claim) {
         // WI-20261001-80ZV8: …BUT NOT A TYPE PARAMETER, which names no sort. `Cell[V =
         // V]` binds the slot to the sort's own parameter, and the set stays what the
         // claim gave it while it was written `Modifiable[T = Cell]`. NOT DRIVEN by a row
@@ -177,13 +182,25 @@ fn collect_sort_refs(kb: &KnowledgeBase, term: TermId, skip: Symbol, out: &mut H
     // (`wi314 escaping_let_bound_cell_requires_declaration` and `wi353
     // fold_accumulator_mixed_provenance_keeps_seed_and_result` fail without this arm).
     // The module's own doc gives `Modifiable[T = Cell[V = Int64]]` as a shape it reads.
-    if let Some(base) = type_head_sort(kb, &Value::term(term)) {
+    if let Some(base) = type_head_sort(kb, claim) {
         if base != skip {
             out.insert(base);
         }
     }
-    for child in kb.get_term(term).subterms() {
-        collect_sort_refs(kb, child, skip, out);
+    // Every child, read through the view: the claim is held on whichever carrier its
+    // provision is.
+    let ViewHead::Functor { pos_arity, .. } = claim.head(kb) else {
+        return;
+    };
+    for i in 0..pos_arity {
+        if let Some(child) = claim.pos_arg(kb, i) {
+            collect_sort_refs(kb, &child, skip, out);
+        }
+    }
+    for key in claim.named_keys(kb) {
+        if let Some(child) = claim.named_arg(kb, key) {
+            collect_sort_refs(kb, &child, skip, out);
+        }
     }
 }
 
