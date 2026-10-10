@@ -296,6 +296,8 @@ fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, 
 pub(super) fn type_rule_bodies(
     kb: &mut KnowledgeBase,
     reportable: &std::collections::HashSet<crate::kb::RuleId>,
+    // WI-20261010-9BKZ4: the rules a seal does not hold, or (the oracle) those it does.
+    which: RuleBodies,
     // WI-745 / WI-1026: parallel to `errors`, tagging each error with the
     // `source_id` of the rule-body atom (or rule head) it came from, so it renders
     // `path:line:col` instead of a bare byte offset. On entry `sources` is parallel
@@ -313,6 +315,10 @@ pub(super) fn type_rule_bodies(
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
+        }
+        // WI-20261010-9BKZ4 — a sealed load's rule bodies were typed by that load.
+        if rule_body_is_typed_once(kb, rid) != (which == RuleBodies::SealedOnly) {
+            continue;
         }
         // A value-carrier (denoted) head has no hash-consed term to read
         // constraints from; such heads are facts in practice, but guard rather
@@ -337,6 +343,7 @@ pub(super) fn type_rule_bodies(
         let rule_sym = kb.head_functor(head);
         // The one collection per rule: head + body var types + whether they unify.
         // Shared by the contradiction report, the dot env, and the stamp.
+        count_body_typed(BodyKind::Rule);
         let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
         if contradiction {
             // On a contradiction the receiver sorts are unreliable — skip dispatch

@@ -1446,6 +1446,11 @@ pub(super) struct Candidate {
     /// candidate whose head still carries impl-params. Used by
     /// `pick_most_specific`.
     pub(super) head_specificity: u32,
+    /// The provision row this candidate was matched from — which LOAD wrote it is a
+    /// question of its slot (WI-20261010-9BKZ4, `sealed::provisions_that_change_a_
+    /// sealed_dispatch`). Where two provisions that say the same thing are one
+    /// candidate (WI-1032) it is the first one's.
+    pub(super) row: RuleId,
 }
 
 /// Walk `SortProvidesInfo` facts, return those whose head pattern

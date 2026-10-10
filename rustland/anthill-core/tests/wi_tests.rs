@@ -2026,3 +2026,5 @@ mod const_initializer_type_test;
 
 #[path = "include/wi_4zrtg_sealed_library_test.rs"]
 mod wi_4zrtg_sealed_library_test;
+#[path = "include/wi_9bkz4_sealed_bodies_test.rs"]
+mod wi_9bkz4_sealed_bodies_test;

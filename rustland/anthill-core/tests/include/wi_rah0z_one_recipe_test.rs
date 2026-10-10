@@ -249,6 +249,19 @@ const PINNED: &[(&str, usize, &str)] = &[
         "what a file loaded AFTER a sealed library may declare: each fixture under both \
          recipes by name, and the unsealed and re-presented loads made by hand",
     ),
+    (
+        "include/wi_ee0ep_param_dictionary_test.rs",
+        1,
+        "one row's fixture provides the stdlib's `WeakOrd` at the stdlib's own types, more \
+         specifically than the stdlib does, so it belongs in the stdlib's load \
+         (WI-20261010-9BKZ4)",
+    ),
+    (
+        "include/wi_9bkz4_sealed_bodies_test.rs",
+        8,
+        "what a later load may do to a sealed load's bodies: each fixture in one call and \
+         as a later load, by name — the difference between the two is the subject",
+    ),
 ];
 
 /// This file, skipped because it carries the recognised spellings as STRING LITERALS.

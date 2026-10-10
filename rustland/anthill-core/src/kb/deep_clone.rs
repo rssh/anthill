@@ -1058,6 +1058,7 @@ impl KnowledgeBase {
             op_decl_sites: plain(&self.op_decl_sites),
             decl_sites: plain(&self.decl_sites),
             scan_type_decls: plain(&self.scan_type_decls),
+            last_load: plain(&self.last_load),
             sealed: plain(&self.sealed),
             scope_text_files: plain(&self.scope_text_files),
             op_capture_params: plain(&self.op_capture_params),

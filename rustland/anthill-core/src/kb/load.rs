@@ -990,6 +990,17 @@ pub enum LoadError {
         carrier: String,
         changes: Vec<String>,
     },
+    /// WI-20261010-9BKZ4 — the load would change what code of a SEALED load means.
+    /// A sealed load's operation and rule bodies are typed once, by that load
+    /// ([`SealedDeclarations`]); a later load that one call over both would let reach
+    /// into them — a `@[simp]` rule that rewrites one, a provision that an unselected
+    /// dispatch written in one would select — is refused instead of being followed.
+    /// [`super::typing::sealed_code_refusals`] has the two shapes and the measurements.
+    /// `span` is the later load's declaration.
+    ChangesSealedCode {
+        message: String,
+        span: Option<Span>,
+    },
     /// WI-1125 — a carrier supplies its own **`neq`**. Refused, because `neq` is not
     /// an override point at all: `neq(a, b) <=> not(eq(a, b))` (§8.3,
     /// `stdlib/anthill/prelude/eq.anthill`) makes `neq` DERIVED, and every evaluator
@@ -2769,6 +2780,7 @@ impl LoadError {
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
             | LoadError::WrittenEffectRowLabel { span, .. }
             | LoadError::UnselectedInstance { span, .. }
+            | LoadError::ChangesSealedCode { span, .. }
             | LoadError::AmbiguousSpecOpDispatch { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
             | LoadError::NonDefiningConnectiveHead { span, .. }
@@ -3227,6 +3239,10 @@ impl LoadError {
             LoadError::EqualityOfEarlierSort { carrier, changes } => {
                 equality_of_earlier_sort_message(carrier, changes)
             }
+            LoadError::ChangesSealedCode { message, span } => match span {
+                Some(sp) => format!("{}: {}", loc.format_start(*sp), message),
+                None => message.clone(),
+            },
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 format!("ambiguous semantic equality: {} distinct `eq` implementations are supplied for carrier '{}' ({}) — semantic `eq`/`neq` dispatch fires from UNIFICATION, so there is no call site at which to select one; keep exactly one `eq` per carrier",
                     providers.len(), carrier, providers.join("; "))
@@ -4704,6 +4720,10 @@ impl std::fmt::Display for LoadError {
                 "{}",
                 equality_of_earlier_sort_message(carrier, changes)
             ),
+            LoadError::ChangesSealedCode { message, span } => match span {
+                Some(sp) => write!(f, "{} at {}..{}", message, sp.start, sp.end),
+                None => write!(f, "{}", message),
+            },
             LoadError::AmbiguousEqDispatch { carrier, providers } => {
                 write!(f, "ambiguous semantic equality: {} distinct `eq` implementations for carrier '{}' ({}) — `eq` dispatches from unification, with no call site to select at (keep exactly one)",
                     providers.len(), carrier, providers.join("; "))
@@ -8387,6 +8407,10 @@ struct TypeDecl {
     /// (no `SourceId`), and sources are not registered until the LOAD phase
     /// (`Loader::new`), which runs after every pass here.
     file_idx: usize,
+    /// WI-20261010-9BKZ4 — the symbol this declares, once the scan has it. What a seal
+    /// keeps to answer "is this type a sealed load's"
+    /// ([`SealedDeclarations::holds_sort`]).
+    symbol: Option<Symbol>,
 }
 
 /// WI-999 (proposal 059 R4 clause 3) — WHICH DECLARATION CATEGORY A NAME WAS
@@ -8480,9 +8504,23 @@ pub enum CapturedOrigin {
     RuleClause(String),
 }
 
+/// WI-20261010-9BKZ4 — what a seal reads of the load it seals that no ledger holds
+/// ([`KnowledgeBase::last_load`], set as a load starts).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LastLoad {
+    /// It ran its typer (`LoadOptions::run_typer`), so the bodies it brought have been
+    /// typed — and a seal may tell the typer's sweeps to skip them. A sealed load's
+    /// bodies are typed ONCE, which is not never.
+    pub(crate) ran_typer: bool,
+    /// The id of its first source ([`KnowledgeBase::source_count`] before it registered
+    /// any). Every source from there on is that load's, whether or not it declares a
+    /// type or an operation — a file of provisions and rules alone is in no ledger.
+    pub(crate) first_source: usize,
+}
+
 /// WI-20261009-4ZRTG — one scan's type declarations: R1's key, the keyword written, and
 /// where. See [`KnowledgeBase::scan_type_decls`].
-pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan)>;
+pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan, Option<Symbol>)>;
 
 /// WI-20261009-4ZRTG — WHAT THE SEALED LOADS DECLARED ([`seal_declarations`]).
 ///
@@ -8509,10 +8547,81 @@ pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan
 /// library presented twice leaves 4 689 facts and 439 rules where once leaves 4 326
 /// and 254). A KB holding two `OperationInfo` rows for one operation is what "declared
 /// once" exists to exclude, so behind a seal there is no presenting again.
+///
+/// AND A SEALED LOAD'S BODIES ARE TYPED ONCE, BY THAT LOAD (WI-20261010-9BKZ4). The
+/// typer's two sweeps — every operation body no sort of the load owns, every rule
+/// body — ran over the whole KB at each later load: 99 ms and 11 ms of a 267 ms load
+/// of a four-line file after the standard library, typing the library again. Behind a
+/// seal they skip what the seal holds ([`Self::holds_typed_operation`],
+/// [`Self::holds_typed_source`]),
+/// and what a later load could have changed in a sealed body is refused instead
+/// ([`super::typing::sealed_code_refusals`]). Nothing sealed, nothing skipped: a plain
+/// sequence of loads types every body at every load, as it did.
 #[derive(Clone, Debug, Default)]
 pub struct SealedDeclarations {
     types: HashMap<(ScopeId, String), Vec<(&'static str, SourceSpan)>>,
     ops: HashMap<Symbol, Vec<SourceSpan>>,
+    /// The sealed types BY SYMBOL, canonical — sorts, and entities, a free-standing one
+    /// being a type of its own. `types` is keyed as R1 keys it, which answers "is this
+    /// declaration a second one" and not "is this type a sealed load's", the question a
+    /// provision's head is asked.
+    sorts: HashSet<Symbol>,
+    /// How many rule slots the KB held when a seal was last taken. A clause below it —
+    /// a `@[simp]` rule, a provision row, written or derived — is of the KB the sealed
+    /// bodies were typed against; one at or above it came later and is what the typer
+    /// holds to that KB (`typing::sealed`). A slot count and not a set of sources: a
+    /// provision row carries no site of its own, and a refused load's rows, which stay,
+    /// are above it for every load that follows.
+    rule_slots: usize,
+    /// The sealed operations whose load RAN ITS TYPER ([`LastLoad::ran_typer`]), and
+    /// every source of such a load, declaring or not ([`LastLoad::first_source`]): the
+    /// operation bodies and the written rule bodies the typer's sweeps skip. The
+    /// declarations of an untyped load are sealed like any other; its bodies have not
+    /// been typed once.
+    typed_ops: HashSet<Symbol>,
+    typed_sources: HashSet<SourceId>,
+}
+
+impl SealedDeclarations {
+    /// Nothing is sealed — the universal case outside the test recipes, and what every
+    /// reader checks first.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.ops.is_empty()
+    }
+
+    /// `op` was declared by a sealed load.
+    pub(crate) fn holds_operation(&self, op: Symbol) -> bool {
+        self.ops.contains_key(&op)
+    }
+
+    /// `op`'s body is a sealed load's AND that load's typer typed it: the one the
+    /// sweeps skip. A load can be sealed that never ran its typer
+    /// (`LoadOptions::run_typer`), and its bodies are then nobody's yet — the next typer
+    /// run, made by hand, is the one that types them.
+    pub(crate) fn holds_typed_operation(&self, op: Symbol) -> bool {
+        self.typed_ops.contains(&op)
+    }
+
+    /// The clause at `head` was written in a sealed source whose load ran its typer.
+    pub(crate) fn holds_typed_source(&self, head: SourceSpan) -> bool {
+        self.typed_sources.contains(&head.source)
+    }
+
+    /// `sort` (canonical) was declared by a sealed load.
+    pub(crate) fn holds_sort(&self, sort: Symbol) -> bool {
+        self.sorts.contains(&sort)
+    }
+
+    /// The clause in `slot` was in the KB when a seal was last taken.
+    pub(crate) fn holds_rule_slot(&self, slot: usize) -> bool {
+        slot < self.rule_slots
+    }
+
+    /// How many operations, types and typed sources the seal holds — for a test that
+    /// the seal reached what it was meant to.
+    pub fn census(&self) -> (usize, usize, usize) {
+        (self.ops.len(), self.sorts.len(), self.typed_sources.len())
+    }
 }
 
 /// WI-20261009-4ZRTG — SEAL WHAT THE LAST LOAD DECLARED: from here on a load that
@@ -8535,24 +8644,50 @@ pub fn seal_declarations(kb: &mut KnowledgeBase) {
 /// which only the library is to be sealed.
 pub fn seal_declarations_of(kb: &mut KnowledgeBase, first_source: usize, library_files: usize) {
     let library = first_source..first_source + library_files;
-    seal_declarations_where(kb, |site| library.contains(&site.source.index()));
+    seal_declarations_where(kb, |source| library.contains(&source.index()));
 }
 
-fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(SourceSpan) -> bool) {
+fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(SourceId) -> bool) {
+    // WI-20261010-9BKZ4 — the sealed SORTS by symbol, read off the same ledger before
+    // the record is borrowed.
+    let sorts: Vec<Symbol> = kb
+        .scan_type_decls
+        .iter()
+        .filter(|(_, _, site, _)| of_the_library(site.source))
+        .filter_map(|(_, _, _, sort)| sort.map(|s| kb.canonical_sort_sym(s)))
+        .collect();
     // `make_mut`: the record is shared by every copy of a sealed KB
     // (`KnowledgeBase::deep_clone`) and only ever grows here.
+    let typed = kb.last_load.ran_typer;
+    // The last load's sources, all of them: a file of rules and provisions alone
+    // declares nothing a ledger holds, and is the sealed load's all the same.
+    let sources: Vec<SourceId> = (kb.last_load.first_source..kb.source_count())
+        .map(|index| SourceId::from_raw(index as u32))
+        .filter(|source| of_the_library(*source))
+        .collect();
+    let rule_slots = kb.rules.len();
     let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
-    for (key, keyword, site) in &kb.scan_type_decls {
+    sealed.sorts.extend(sorts);
+    sealed.rule_slots = rule_slots;
+    if typed {
+        sealed.typed_sources.extend(sources);
+    }
+    for (key, keyword, site, _) in &kb.scan_type_decls {
         let sites = sealed.types.entry(key.clone()).or_default();
-        if of_the_library(*site) && !sites.iter().any(|(_, s)| s == site) {
+        if of_the_library(site.source) && !sites.iter().any(|(_, s)| s == site) {
             sites.push((*keyword, *site));
         }
     }
     for (op, here) in &kb.op_decl_sites {
         let sites = sealed.ops.entry(*op).or_default();
         for site in here {
-            if of_the_library(*site) && !sites.contains(site) {
-                sites.push(*site);
+            if of_the_library(site.source) {
+                if !sites.contains(site) {
+                    sites.push(*site);
+                }
+                if typed {
+                    sealed.typed_ops.insert(*op);
+                }
             }
         }
     }
@@ -8571,7 +8706,7 @@ fn sealed_type_redeclarations(kb: &KnowledgeBase) -> Vec<LoadError> {
     }
     let mut errors = Vec::new();
     let mut reported: HashSet<&(ScopeId, String)> = HashSet::new();
-    for (key, _, _) in &kb.scan_type_decls {
+    for (key, _, _, _) in &kb.scan_type_decls {
         let Some(sealed) = kb.sealed.types.get(key) else {
             continue;
         };
@@ -8581,8 +8716,8 @@ fn sealed_type_redeclarations(kb: &KnowledgeBase) -> Vec<LoadError> {
         let here = kb
             .scan_type_decls
             .iter()
-            .filter(|(k, _, _)| k == key)
-            .map(|(_, keyword, site)| (*keyword, *site));
+            .filter(|(k, _, _, _)| k == key)
+            .map(|(_, keyword, site, _)| (*keyword, *site));
         errors.push(LoadError::DuplicateTypeDeclaration {
             name: key.1.clone(),
             scope_name: kb.scope_display_name(key.0).to_owned(),
@@ -8658,7 +8793,22 @@ impl DeclLedger {
                 keyword,
                 span,
                 file_idx,
+                symbol: None,
             });
+    }
+
+    /// WI-20261010-9BKZ4 — the symbol of the type the LAST [`Self::record_type`] under
+    /// this key declared: a sort's, or an entity's (a free-standing one is its own
+    /// single-constructor sort, §6.3, and is written where a type is). Its own call,
+    /// after it: the record is made before the scan knows whether the name is new, on
+    /// purpose (see the call sites).
+    fn note_type_symbol(&mut self, scope: ScopeId, local: &str, symbol: Symbol) {
+        let decl = self
+            .types
+            .get_mut(&(scope, local.to_string()))
+            .and_then(|decls| decls.last_mut())
+            .expect("a type's symbol is noted for the declaration just recorded");
+        decl.symbol = Some(symbol);
     }
 
     /// WI-20261009-4ZRTG — every declaration in the ledger with its SOURCE, in an order
@@ -8671,11 +8821,11 @@ impl DeclLedger {
             .flat_map(|(key, decls)| {
                 decls.iter().map(move |d| {
                     let site = SourceSpan::from_span(source_ids[d.file_idx], d.span);
-                    (key.clone(), d.keyword, site)
+                    (key.clone(), d.keyword, site, d.symbol)
                 })
             })
             .collect();
-        rows.sort_by(|((sa, la), _, a), ((sb, lb), _, b)| {
+        rows.sort_by(|((sa, la), _, a, _), ((sb, lb), _, b, _)| {
             (sa.owner().index(), la, a.source.index(), a.span.start)
                 .cmp(&(sb.owner().index(), lb, b.source.index(), b.span.start))
         });
@@ -9090,6 +9240,9 @@ impl ScopePass for DefinePass<'_> {
                             true,
                         )
                     };
+                if !s.is_type_param {
+                    ledger.note_type_symbol(actual_scope, &short, sym);
+                }
                 // WI-999 / 059 R4 clause 3 — the same declaration, in the capture
                 // ledger. A MARKED binder (`sort [F] { … }`) is a type PARAMETER of
                 // the enclosing sort (WI-452), so it is recorded as one: a binder
@@ -9354,6 +9507,7 @@ impl ScopePass for DefinePass<'_> {
                     kb.symbols
                         .define(&short, &qualified, SymbolKind::Entity, actual_scope)
                 };
+                ledger.note_type_symbol(actual_scope, &short, entity_sym);
                 // §6.3 — record every role this ONE written name plays, so the two
                 // spellings of one declaration carry the same SET of categories.
                 //
@@ -14909,6 +15063,11 @@ fn load_phase_inner(
     // WI-20260901-Q68AK — captured ONLY on the partial path, where a check will not run
     // to consume them; the clone is not free and the full pipeline has no use for it.
     let check_marks = (!options.run_typer).then(|| kb.load_check_marks());
+    // WI-20261010-9BKZ4 — what a seal taken after this load reads of it.
+    kb.last_load = LastLoad {
+        ran_typer: options.run_typer,
+        first_source: kb.source_count(),
+    };
     kb.sort_alias_index = None;
     // WI-1049 — same reset, and it is what makes the duplicate-operation refusal
     // mean anything: the log takes one entry per `Item::Operation` THIS phase
@@ -15393,14 +15552,12 @@ fn load_phase_inner(
             Err(dedup_rendered_load_errors(all_errors))
         };
     }
-    all_errors.extend(super::typing::type_check_sorts(
-        kb,
-        super::typing::Loaded {
-            sorts: &all_sorts,
-            refused_sorts: &refused_sorts,
-            rules: loaded_rules.clone(),
-        },
-    ));
+    let loaded = super::typing::Loaded {
+        sorts: &all_sorts,
+        refused_sorts: &refused_sorts,
+        rules: loaded_rules.clone(),
+    };
+    all_errors.extend(super::typing::type_check_sorts(kb, loaded));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
     // with a `CallClass`; run the requirement-insertion pass to emit

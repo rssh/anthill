@@ -631,6 +631,15 @@ pub enum TypeError {
         /// `(spec parameter, carrier sort)` for each known carrier, in parameter order.
         bindings: Vec<(Symbol, Symbol)>,
     },
+    /// WI-20261010-9BKZ4 — the KB holds something that changes what a SEALED load's
+    /// code means, and a sealed load's bodies are typed once (`typing::sealed`, where
+    /// the shapes are and the message is built). A typer error so that EVERY typer run
+    /// raises it, the pipeline's and one made by hand alike; it becomes
+    /// [`crate::kb::load::LoadError::ChangesSealedCode`].
+    ChangesSealedCode {
+        span: Option<Span>,
+        message: String,
+    },
     /// WI-20260919-N31XX (proposal 065, "The rule") — a RIGID TYPE IS READ AS A VALUE
     /// AND NOTHING IN SCOPE SAYS IT MAY BE.
     ///
@@ -1251,6 +1260,7 @@ impl TypeError {
 
     pub fn format(&self, kb: &KnowledgeBase) -> String {
         match self {
+            TypeError::ChangesSealedCode { message, .. } => message.clone(),
             TypeError::TypeMismatch {
                 expected,
                 actual,
@@ -1872,6 +1882,7 @@ impl TypeError {
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
             | TypeError::UnfillableOperationRequirement { span, .. }
             | TypeError::NoProvisionAtCarriers { span, .. }
+            | TypeError::ChangesSealedCode { span, .. }
             | TypeError::TypeValueReadUnbacked { span, .. }
             | TypeError::SortParamWithoutCarrier { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
@@ -1930,6 +1941,10 @@ impl TypeError {
     pub fn to_load_error(&self, kb: &KnowledgeBase) -> crate::kb::load::LoadError {
         use crate::kb::load::{LoadError, TypeMismatchOrigin};
         match self {
+            TypeError::ChangesSealedCode { span, message } => LoadError::ChangesSealedCode {
+                message: message.clone(),
+                span: *span,
+            },
             TypeError::TypeMismatch {
                 context,
                 expected,

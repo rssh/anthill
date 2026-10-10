@@ -65,7 +65,9 @@ for `ANTHILL_TEST_FRESH_LOAD=1` FIRST when a test fails in a way that looks like
 load's — it is what the CLI does. A test that differs is an assertion on the recipe, a
 loader finding, or a fixture that by the language's own rule belongs in the stdlib's
 load: under the shared base and under two steps a test's files are a LATER load than the
-stdlib's, and a later load may not add to the equality of a stdlib sort
+stdlib's, and a later load may not add to the equality of a stdlib sort, declare one of
+its names again, or reach into its bodies — a `@[simp]` rule that rewrites one, a
+provision of a stdlib spec at stdlib types that changes who answers a dispatch
 (`kernel-language.md` §8.3). That last kind is pinned to one load BY NAME, with the
 reason at its site (WI-20261006-SZKV7; the list of every test outside the switch is
 `PINNED` in `wi_rah0z_one_recipe_test`, and `docs/design/test-infrastructure.md` §5.3 has
@@ -79,6 +81,26 @@ closure that does nothing still counts, the recipe cannot see inside one), load 
 other than the default (the `*_untyped` helpers), or a recipe named at the call. The
 tests pinned by name, the library's unit tests and every other crate run one-shot
 whatever the switches say.
+
+**A sealed load's bodies are typed once** (WI-20261010-9BKZ4). Every recipe SEALS the
+stdlib's load (`load::seal_declarations*`, WI-20261009-4ZRTG), and the typer's two
+whole-KB sweeps — the free-operation sweep, the rule-body sweep — skip what a seal holds;
+what a later load could have changed in a sealed body is a load error instead
+(`kb/typing/sealed.rs`, `LoadError::ChangesSealedCode`) — raised by the TYPER, so a run
+made by hand (`type_check_sorts(&mut kb, result.loaded())`) raises it as the pipeline's
+does, and read off the KB, so a load made after a refused one is refused again. Nothing sealed, nothing skipped:
+a plain sequence of `load_all` calls, and `KB.loaded` over one, types every body at every
+load as before. A new whole-KB sweep in the typer owes the same question — is this body a
+sealed load's — and a new way for a later load to change how an earlier body is READ owes
+a refusal there. The control that nothing was skipped that should have been typed:
+
+```bash
+ANTHILL_TYPER_ORACLE=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core   # types sealed bodies too, and fails a load that changes one
+```
+
+It is slow (about twice the run) and is for a change to the typer's sweeps or to what a
+seal holds, not for the gate. `typing::bodies_typed_by_this_thread` counts what a load
+typed, for a test that a body was NOT.
 
 **A third control: which carrier a declared type rides.** A type is read through the
 carrier-neutral view (`TermView`, `extract_type`), and a reader that matches the carrier
