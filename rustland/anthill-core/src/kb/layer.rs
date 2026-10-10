@@ -161,6 +161,9 @@ kb_scoped_fields!(
     // the second only ever comes back as it was; both roll back with the ledgers above.
     scan_type_decls,
     sealed,
+    // WI-20261010-9BKZ4 — a layer's load sets it and a discarded layer's load did not
+    // happen: back with the rest.
+    last_load,
     scope_text_files,
     named_requirement_slots,
     type_param_canonical_var,
@@ -408,6 +411,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         op_capture_params: _,
         decl_sites: _,
         scan_type_decls: _,
+        last_load: _,
         sealed: _,
         scope_text_files: _,
         named_requirement_slots: _,

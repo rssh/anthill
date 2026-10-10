@@ -720,9 +720,34 @@ fn specificity_does_not_choose_a_type_carried_slot() {
          operation probe(n: Int64) -> Pair[A = String, B = String] = pair(\"a\", \"b\")\n  \
          end\nend\n"
     );
+    // PINNED TO ONE LOAD, BY NAME (WI-20261010-9BKZ4). `PairNe` provides the stdlib's
+    // `WeakOrd` at the stdlib's `Pair[A = String, B = String]`, strictly more specific
+    // than `Pair`'s own — so it changes who answers an unselected dispatch there, for
+    // the stdlib's bodies as for these. Every element being the stdlib's, the stdlib's
+    // load is the one this fixture has to be in; loaded after it sealed, it is a load
+    // error (`ChangesSealedCode`). That most specific rival is the fixture's point.
+    let one_load = || {
+        let (kb, _) = crate::common::expect_loaded(crate::common::recipe_load(
+            &[&src],
+            None,
+            anthill_core::kb::load::LoadOptions::default(),
+            crate::common::LoadRecipe::OneShot,
+            |_| {},
+        ));
+        let mut interp = Interpreter::new(kb);
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+            .expect("register standard eval builtins");
+        interp
+    };
     // The typed route reads `Flat` out of the argument's type — the answer to agree with.
-    assert!(eval_bool(&src, "ee0ep.hostpair.Driver.typed"), "Flat calls every pair equal");
-    let mut interp = crate::common::interp_for(&src);
+    assert!(
+        matches!(
+            one_load().call("ee0ep.hostpair.Driver.typed", &[Value::Int(0)]),
+            Ok(Value::Bool(true))
+        ),
+        "Flat calls every pair equal"
+    );
+    let mut interp = one_load();
     let set = interp
         .call("ee0ep.hostpair.Driver.mk", &[Value::Int(0)])
         .expect("the Flat set");

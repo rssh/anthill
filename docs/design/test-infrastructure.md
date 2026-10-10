@@ -643,6 +643,68 @@ pass this section proposes to change:
   far as who decides equality goes, which is the premise the rest of this section
   assumed.
 
+**The typer's two sweeps — DONE 2026-10-10 (WI-20261010-9BKZ4), and not as a
+frontier.** What was built is narrower than "the bodies this call added": a SEALED load's
+bodies are typed once, and the two sweeps skip what a seal holds (the seal of
+WI-20261009-4ZRTG). The frontier of a call is then everything that is not sealed, with no
+ledger of what the call added to keep and nothing to get wrong when an unsealed load
+replaces a body; and a plain sequence of loads, which seals nothing, types every body at
+every load as before. The design question the section opens with — which earlier item can
+this call have changed the verdict of — was answered by PROBING three ways in, a library
+file sealed with the stdlib and then a program, against one call over both:
+
+| the later load adds | one call | after the seal, before the change | decided (user) |
+|---|---|---|---|
+| a `@[simp]` rule matching a call in a library body | rewrites that body | rewrote it too — the sweep typed it again | **refused** |
+| an operation in a library scope under a name a library body reads | refused (059 R4) | refused | nothing to add |
+| a provision of a library spec at library types, more specific than the library's | answers every call | answered NEITHER the library's call nor the program's own, only a call through a generic body | **refused**: all its elements in one sealed layer, and the unselected answer changes |
+| a provider, an override, a more specific provision at a type of its OWN | reaches a generic library body through its caller's dictionary | the same | must work, and does |
+
+Three things the control found that the design had not:
+
+- **The oracle** (`ANTHILL_TYPER_ORACLE=1`) types the sealed bodies as well and compares
+  each call's classification. Its first run reported one stdlib body in every later load:
+  a classification carries the TERMS of the run that made it, and two runs mint different
+  ones for one type. Compared without them, the whole `anthill-core` suite has no
+  finding but the shapes refused.
+- **The typer's dispatch memo was never dropped between loads** (`resolve_cache`, whose
+  own comment says a producer of provisions owes the call; a later load is one, and
+  nothing made it). So the oracle's first clean run was partly blind — typing a sealed
+  body again asked the memo and got the earlier answer — and, independently, an UNSEALED
+  base and then a more specific provision answered the later file's own call with the
+  base's choice, while a COPY of that base, whose memos start empty, answered with the
+  new one: the two test recipes disagreed. A typer run now starts from no memoized
+  dispatch.
+- **Half the stdlib's rules have no source**: 132 of its 254 rules with a body are
+  derived (the induction axioms among them) and are known by no site, so a seal cannot
+  hold them and they are typed at every load. That is a few milliseconds left on the
+  table, not a wrong answer.
+
+And what /code-review of the first cut found, each fixed with a row that fails without
+it (`wi_9bkz4_sealed_bodies_test`'s table):
+
+- the two checks were the load pipeline's, so a typer run made by hand skipped the sealed
+  bodies and refused nothing, and what typing a sealed body queued was left for the next
+  load. They are the TYPER's now, inside the run;
+- they read what one load added, so the load after a refused one found the offending
+  clause "earlier" and loaded clean. They read the KB: every clause asserted since the
+  seal was taken (a rule-slot count kept by the seal) is judged at every run;
+- a load sealed WITHOUT having run its typer had bodies no run would ever type. The seal
+  keeps which of its operations and sources were typed, and only those are skipped;
+- a spec dispatched by its receiver (`Stream`) has its carrier in no binding, so a
+  program's second implementation of one read as a provision of sealed elements and was
+  refused for tying with the library's;
+- a rule whose rewrite leaves a sealed body ill-typed was not seen (the typer does not
+  write such a body back); a dot rule could not be seen by any typing (a stored body
+  holds no dot call) and is refused on its domain; a provision written into a sealed
+  sort from outside merged with the sealed one and passed.
+
+Left open, and said in the spec's *Not covered*: a sealed load's own guarded `@[simp]`
+equation whose guard a later load's facts make provable.
+
+Not this pass, and next by the table in §9: equality derivation, `check_provider_requires`,
+the tail.
+
 Neither is a hypothetical for the tests alone: `KB.loaded` (`eval/builtins.rs`,
 `kb_loaded`) calls `load_all` on the live KB, which is the second call of a two-step load.
 Until the fix above it accepted `fact box(n: "seven")` over a base `box(n: Int64)`, and
@@ -1078,7 +1140,7 @@ informed; it does not recommend changing the rule until A and B have been measur
    free-operation sweep, which types every library body again in a later load. It is
    first by measurement — 99 ms of a 267 ms second call, the typer 119 ms in all, then
    equality derivation 69 ms and `check_provider_requires` 33 ms; the ticket has the
-   table. The other passes are not filed.
+   table. The other passes are not filed. **Delivered the same day** (§4 A3).
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
@@ -1129,7 +1191,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
 | 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
-| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, filed), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases |
+| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, **done 2026-10-10**), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases. **The typer's pass**: a later load after a sealed stdlib 159 ms → 96 ms, a test's load on the shared base 179 ms → 107 ms, `full / (clone + incr)` 1.5 → 2.5; `wi_tests` 248 s in the gate where the shared base alone gave 412–491 s (`sealed-bodies-2026-10-10.txt`) |
 | 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
 | 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |

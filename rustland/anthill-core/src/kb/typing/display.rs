@@ -308,30 +308,42 @@ fn arrow_rows_that_differ(
 /// `takeL(f: List[T = a.Foo])` given a `List[T = b.Foo]`, which before this printed
 /// `expected List[T = Foo], got List[T = Foo]` with the "please report it" note.
 fn mentioned_sort_syms<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Symbol>) {
+    for_each_head_symbol(kb, ty, &mut |f| {
+        // A TYPE PARAMETER IS NOT A SORT HERE, though `sort_kind` says it is:
+        // `load_abstract_sort` registers a `sort T = ?` alias with
+        // `register_sort(.., SortKind::Sort)`, and after a stdlib load 37 `SortAlias`
+        // sources are named `T`. Collecting them would let a `T`/`T` pair be found
+        // FIRST and short-circuit a real sort collision deeper in the same type, and
+        // would make the note's repair ("qualify it, or rename one sort") advice the
+        // reader cannot take about a foreign sort's own parameter.
+        // Canonical too: `sort_info` is keyed by the resolved copy, and a type term
+        // may carry another interning of the same name.
+        // Skipping the SYMBOL, not the subtree: a parameterized head still has its
+        // bindings walked, so a collision under `T[A = a.Foo]` is not lost.
+        if !is_sort_param_symbol(kb, f)
+            && (kb.sort_kind(f).is_some() || kb.sort_kind(kb.canonical_sort_sym(f)).is_some())
+        {
+            out.push(f);
+        }
+    });
+}
+
+/// Every symbol at a head in `ty`, at any depth — the walk of [`mentioned_sort_syms`],
+/// with what to keep left to the caller (WI-20261010-9BKZ4: `sealed::type_heads` keeps
+/// more than a sort). Shape-agnostic like it: no `sort_ref` / `parameterized` / tuple /
+/// arrow layout is decoded.
+pub(super) fn for_each_head_symbol<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    visit: &mut dyn FnMut(Symbol),
+) {
     let head = ty.head(kb);
-    match head {
-        ViewHead::Functor {
-            functor: Some(f), ..
-        }
-        | ViewHead::Ident(f) => {
-            // A TYPE PARAMETER IS NOT A SORT HERE, though `sort_kind` says it is:
-            // `load_abstract_sort` registers a `sort T = ?` alias with
-            // `register_sort(.., SortKind::Sort)`, and after a stdlib load 37 `SortAlias`
-            // sources are named `T`. Collecting them would let a `T`/`T` pair be found
-            // FIRST and short-circuit a real sort collision deeper in the same type, and
-            // would make the note's repair ("qualify it, or rename one sort") advice the
-            // reader cannot take about a foreign sort's own parameter.
-            // Canonical too: `sort_info` is keyed by the resolved copy, and a type term
-            // may carry another interning of the same name.
-            // Skipping the SYMBOL, not the subtree: a parameterized head still has its
-            // bindings walked below, so a collision under `T[A = a.Foo]` is not lost.
-            if !is_sort_param_symbol(kb, f)
-                && (kb.sort_kind(f).is_some() || kb.sort_kind(kb.canonical_sort_sym(f)).is_some())
-            {
-                out.push(f);
-            }
-        }
-        _ => {}
+    if let ViewHead::Functor {
+        functor: Some(f), ..
+    }
+    | ViewHead::Ident(f) = head
+    {
+        visit(f);
     }
     if let ViewHead::Functor {
         pos_arity,
@@ -341,13 +353,13 @@ fn mentioned_sort_syms<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Sy
     {
         for i in 0..pos_arity {
             if let Some(child) = ty.pos_arg(kb, i) {
-                mentioned_sort_syms(kb, &child, out);
+                for_each_head_symbol(kb, &child, visit);
             }
         }
         if named_arity > 0 {
             for k in ty.named_keys(kb) {
                 if let Some(child) = ty.named_arg(kb, k) {
-                    mentioned_sort_syms(kb, &child, out);
+                    for_each_head_symbol(kb, &child, visit);
                 }
             }
         }

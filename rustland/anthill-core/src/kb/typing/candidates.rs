@@ -420,6 +420,7 @@ pub(super) fn collect_provides_candidates(
             resolved_head_bindings,
             impl_subst,
             head_specificity,
+            row: row.rid,
         };
         // WI-1032 — TWO PROVISIONS THAT SAY THE SAME THING ARE ONE CANDIDATE. The rule
         // was already written down, one layer over, at [`Provider::SelfProvider`]: "Two

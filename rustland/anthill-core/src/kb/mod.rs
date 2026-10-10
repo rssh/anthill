@@ -1252,6 +1252,9 @@ pub struct KnowledgeBase {
     /// two such declarations is accepted — and a seal read off `decl_sites` would
     /// refuse across loads what one call lets through.
     pub(crate) scan_type_decls: load::ScanTypeDecls,
+    /// WI-20261010-9BKZ4 — what a seal taken now needs to know about the load it seals
+    /// and no ledger says ([`load::LastLoad`]).
+    pub(crate) last_load: load::LastLoad,
     /// WI-20261009-4ZRTG — WHAT THE SEALED LOADS DECLARED: the operations and types of
     /// every load [`load::seal_declarations`] was called after — the standard
     /// library's under the test recipes, and in the product once it loads the library
@@ -2667,6 +2670,7 @@ impl KnowledgeBase {
             op_decl_sites: HashMap::new(),
             decl_sites: Vec::new(),
             scan_type_decls: Vec::new(),
+            last_load: load::LastLoad::default(),
             sealed: std::sync::Arc::new(load::SealedDeclarations::default()),
             scope_text_files: HashMap::new(),
             op_capture_params: HashMap::new(),
@@ -3331,6 +3335,12 @@ impl KnowledgeBase {
         self.op_decl_sites
             .iter()
             .filter_map(|(s, sites)| sites.first().map(|site| (*s, *site)))
+    }
+
+    /// WI-20261010-9BKZ4 — how many operations, sorts and sources the seal holds
+    /// ([`load::SealedDeclarations::census`]); `(0, 0, 0)` when nothing is sealed.
+    pub fn sealed_census(&self) -> (usize, usize, usize) {
+        self.sealed.census()
     }
 
     /// WI-1049 — operations THIS load phase wrote more than one declaration for,

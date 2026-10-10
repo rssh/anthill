@@ -115,6 +115,19 @@ pub(super) fn type_check_sorts_collect(
     loaded: Loaded<'_>,
 ) -> (Vec<TypeError>, Vec<Option<crate::span::SourceId>>) {
     let sort_names = loaded.sorts;
+    // WI-20261010-9BKZ4 — A TYPER RUN STARTS FROM NO MEMOIZED DISPATCH. `resolve_cache`
+    // keeps who answered a spec-op goal, and its own rule is that whoever asserts a
+    // provision after it filled must drop it; a later LOAD is such a producer and nothing
+    // did. MEASURED, an unsealed base and then a file with a strictly more specific
+    // provision: the file's own call was answered with the base's memoized choice (12
+    // where one load of both answers 2), and a COPY of the same base, whose memos start
+    // empty, answered 2 — so the two test recipes disagreed. Every answer this run
+    // memoizes is read off the provisions as they now stand.
+    kb.invalidate_resolve_cache();
+    let oracle = oracle_on();
+    if oracle {
+        oracle_reset();
+    }
     let mut errors: Vec<TypeError> = Vec::new();
     // Parallel to `errors`: the file each error belongs to, where known.
     let mut sources: Vec<Option<crate::span::SourceId>> = Vec::new();
@@ -284,16 +297,31 @@ pub(super) fn type_check_sorts_collect(
     // — typing mutates `op_bodies` via the simp write-back; `check_operation_
     // bodies` skips body-less / OperationInfo-less symbols and derives each
     // op's enclosing sort from its QN parent (a namespace ⇒ no requires).
+    //
+    // WI-20261010-9BKZ4 — AND NOT A SEALED LOAD'S. "No sort of this load owns it" is
+    // every operation the KB holds once an earlier load's are counted: a four-line file
+    // loaded after the standard library typed every library body again, 99 ms of that
+    // 267 ms load. A sealed load's bodies were typed by that load, and what a later one
+    // could have changed in them is refused (`sealed::sealed_code_refusals`); the
+    // oracle types them all the same and says if that changed anything.
     if TYPECHECK_FREE_OPS {
-        let free_ops: Vec<Symbol> = kb
+        let (free_ops, sealed_ops): (Vec<Symbol>, Vec<Symbol>) = kb
             .op_bodies_iter()
             .map(|(s, _)| s)
             .filter(|s| !sort_owned_ops.contains(s))
-            .collect();
+            .partition(|s| !kb.sealed.holds_typed_operation(*s));
         if !free_ops.is_empty() {
             check_operation_bodies(kb, &free_ops, &mut errors, &mut sources, &region_sorts);
         }
+        if oracle && !sealed_ops.is_empty() {
+            oracle_type_sealed_operations(kb, &sealed_ops, &region_sorts);
+        }
     }
+    // …and what a `@[simp]` rule that is not a sealed load's would have done to one.
+    // HERE: it types the sealed bodies the rule could reach, and what typing a body
+    // queues is drained below, by this run.
+    sources.resize(errors.len(), None);
+    simp_rules_that_reach_a_sealed_body(kb, &region_sorts, &mut errors, &mut sources);
 
     // HK87X: check constant defining occurrences as well as operation bodies.
     // This reaches construction checks even when no operation ever reads the constant.
@@ -340,7 +368,16 @@ pub(super) fn type_check_sorts_collect(
     // parallel on ENTRY. Repairing it inside the callee gave this one pass a second
     // convention.
     sources.resize(errors.len(), None);
-    type_rule_bodies(kb, &rule_typing_reportable, &mut errors, &mut sources);
+    type_rule_bodies(
+        kb,
+        &rule_typing_reportable,
+        RuleBodies::NotSealed,
+        &mut errors,
+        &mut sources,
+    );
+    if oracle {
+        oracle_type_sealed_rules(kb, &rule_typing_reportable);
+    }
 
     // WI-702 (proposal 054 §"Consumers"): reject a `@[simp]`/`@[unfold]` rewrite whose
     // sides mention an effectful operation — firing it would duplicate/reorder/drop
@@ -424,6 +461,17 @@ pub(super) fn type_check_sorts_collect(
     // checks) push untagged errors — pad `sources` with `None` so it stays
     // parallel to `errors`.
     sources.resize(errors.len(), None);
+    // WI-20261010-9BKZ4 — the other thing a later load could have changed in a sealed
+    // body: who answers its dispatches. LAST, and inside the run, so that every typer
+    // run raises it and the provision index it asks is this run's.
+    provisions_that_change_a_sealed_dispatch(kb, &mut errors, &mut sources);
+    if oracle {
+        oracle_verdict(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::ChangesSealedCode { .. })),
+        );
+    }
     (errors, sources)
 }
 

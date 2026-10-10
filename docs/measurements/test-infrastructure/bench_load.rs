@@ -9,6 +9,11 @@
 //!   incr       — load_all(one small user file) INTO an already-loaded stdlib KB  [what a cached-KB design pays]
 //!   clone      — KnowledgeBase::deep_clone of the loaded stdlib                     [WI-20261009-D0SD4]
 //!   clone+incr — the copy, then the user file loaded into it                        [what WI-059 would pay per test]
+//!   sealed incr / sealed clone+incr — the same two with the stdlib's load SEALED before
+//!                the user file (`load::seal_declarations`), as the test recipes and the
+//!                shared base do: a sealed load's bodies are not typed again
+//!                (WI-20261010-9BKZ4). `incr` and `clone+incr` seal nothing and are what
+//!                a plain sequence of loads pays.
 //!
 //! ITERS=<n> picks the iteration count (default 5). LOOP=1 runs `full` forever for a sampler.
 //! THREADS=<n> runs `full` on n threads at once, ITERS loads each, and reports the
@@ -71,7 +76,7 @@ fn stats(name: &str, xs: &[Duration]) {
     let mut v: Vec<f64> = xs.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med = v[v.len() / 2];
-    println!("{name:10} n={:2}  min={:8.1}ms  median={:8.1}ms  max={:8.1}ms", v.len(), v[0], med, v[v.len() - 1]);
+    println!("{name:17} n={:2}  min={:8.1}ms  median={:8.1}ms  max={:8.1}ms", v.len(), v[0], med, v[v.len() - 1]);
 }
 
 fn main() {
@@ -142,6 +147,19 @@ fn main() {
     }
     stats("incr", &t);
 
+    // sealed incr: the same, the stdlib's load sealed first (WI-20261010-9BKZ4)
+    let mut t = vec![];
+    for _ in 0..iters {
+        let refs: Vec<&parse::ir::ParsedFile> = parsed.iter().collect();
+        let mut kb = KnowledgeBase::new();
+        load::load_all(&mut kb, &refs, &NullResolver).map_err(|e| e.len()).unwrap();
+        load::seal_declarations(&mut kb);
+        let s = Instant::now();
+        load::load_all(&mut kb, &[&user], &NullResolver).map_err(|e| e.len()).unwrap();
+        t.push(s.elapsed());
+    }
+    stats("sealed incr", &t);
+
     // clone: a deep copy of the loaded stdlib (WI-20261009-D0SD4) — what a test pays
     // INSTEAD of the stdlib's load once the base is shared (WI-059).
     // clone+incr: the copy, then the user file loaded into it — the whole of what a
@@ -159,4 +177,15 @@ fn main() {
     }
     stats("clone", &copy_only);
     stats("clone+incr", &copy_and_load);
+
+    // The same over a SEALED base — what a test on the shared base pays.
+    load::seal_declarations(&mut base);
+    let mut copy_and_load = vec![];
+    for _ in 0..iters {
+        let s = Instant::now();
+        let mut kb = base.deep_clone().expect("a sealed stdlib copies");
+        load::load_all(&mut kb, &[&user], &NullResolver).map_err(|e| e.len()).unwrap();
+        copy_and_load.push(s.elapsed());
+    }
+    stats("sealed clone+incr", &copy_and_load);
 }

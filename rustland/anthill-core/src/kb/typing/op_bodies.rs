@@ -293,6 +293,7 @@ pub(super) fn check_operation_bodies(
     // (and the final flush), which is robust to the loop's early `continue`s.
     let mut cur_src: Option<crate::span::SourceId> = None;
     for op in &ops_to_check {
+        count_body_typed(BodyKind::Operation);
         while sources.len() < errors.len() {
             sources.push(cur_src);
         }

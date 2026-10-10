@@ -341,14 +341,16 @@ pub(super) fn provision_fact_spec(kb: &KnowledgeBase, rid: crate::kb::RuleId) ->
 }
 
 /// [`ProvidesRow`]'s decoder: `None` for anything that is not a row, and for a row whose
-/// provider `keep` refuses. Private, so a reader cannot pair it with a bucket and forget the
-/// bucket's re-filter — the iterators below are the only doors.
+/// provider `keep` refuses. For this module's iterators, so that a reader cannot pair it
+/// with a bucket and forget the bucket's re-filter — and for ONE reader outside it,
+/// `sealed::provisions_that_change_a_sealed_dispatch`, which picks rows by their slot
+/// and wants no bucket at all (WI-20261010-9BKZ4).
 ///
 /// `keep` is asked BEFORE the spec is unwrapped, because the provider-keyed reader's no-index
 /// fallback hands it EVERY provision fact and a reader like `self_supplied_entries` runs once
 /// per sort: unwrapping (and cloning the bindings of) every other carrier's row first would put
 /// back a slice of the O(sorts × provisions) cost the carrier bucket exists to remove.
-fn decode_provides_row(
+pub(super) fn decode_provides_row(
     kb: &KnowledgeBase,
     rid: crate::kb::RuleId,
     keep: impl Fn(Symbol) -> bool,

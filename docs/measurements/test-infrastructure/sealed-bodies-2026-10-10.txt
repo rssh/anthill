@@ -1,0 +1,74 @@
+# A later load after a SEALED stdlib (WI-20261010-9BKZ4), 2026-10-10.
+#   cp docs/measurements/test-infrastructure/bench_load.rs rustland/anthill-core/examples/
+#   cd rustland && ITERS=15 cargo run -q --example bench_load -p anthill-core --config <the three opt lines>
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. The gate's build
+#          (anthill-core at opt-level 2). One thread. `top` before and after each block is
+#          given with it: a JVM was running for part of the day, and compare within a block.
+
+== BEFORE, f68982b5, 09:05-09:10: where a second call's time goes ==
+# A copy of the loaded stdlib (87 files), then one 4-line user file loaded into it, 15
+# runs, medians. `ANTHILL_LOAD_TIMING=1` and temporary marks inside
+# `type_check_sorts_collect` (not kept). top: java 30-40 % of a core throughout; the
+# machine ran about 1.4x slower than on 2026-10-09 (parse 108 ms against 77 ms), so the
+# shares are what to read.
+the second call, 267 ms                                          ms    share
+type_check_sorts                                                119     45 %
+    the free-operation sweep (check_operation_bodies)            99     37 %   16 ms in the stdlib's own load
+    type_rule_bodies                                             11      4 %
+    its fourteen other steps, none over 1.5 ms                    9      3 %
+eq_derive::classify + derive_total_eq + derive_conditional_eq    69     26 %   44 ms in the stdlib's own load
+check_provider_requires                                          33     12 %
+register_specialization_witnesses                                14      5 %
+check_override_refinement                                         6      2 %
+eq_derive::run                                                    4      2 %
+everything else, about forty phases                              22      8 %   loading the file itself is 1.6 ms
+
+== AFTER, 15:41-15:42, the change as landed: the bench, two runs ==
+# top before: java 15 %, no cargo; load average 14 and falling (this session's own suite
+# runs had ended). top after: nothing over 16 %. The machine was FASTER than in the
+# morning's block (parse 69 ms against 108 ms), so compare within this block: `incr` is
+# what the same load costs with nothing sealed, taken in the same run.
+# `incr` and `clone+incr` seal nothing — a plain sequence of loads, which types every body
+# at every load as before. The `sealed` rows seal the stdlib's load first, as every test
+# recipe does.
+parse             n=15  min=    68.1ms  median=    69.3ms  max=    92.2ms
+full              n=15  min=   256.6ms  median=   267.9ms  max=   337.6ms
+pre_typer         n=15  min=   133.2ms  median=   136.7ms  max=   141.7ms
+incr              n=15  min=   155.5ms  median=   158.4ms  max=   180.1ms
+sealed incr       n=15  min=    91.0ms  median=    97.0ms  max=   113.2ms
+clone             n=15  min=     5.6ms  median=     6.8ms  max=     7.3ms
+clone+incr        n=15  min=   165.6ms  median=   179.8ms  max=   194.4ms
+sealed clone+incr n=15  min=   100.5ms  median=   107.3ms  max=   110.2ms
+--
+parse             n=15  min=    68.2ms  median=    69.9ms  max=    78.8ms
+full              n=15  min=   255.5ms  median=   267.4ms  max=   294.6ms
+pre_typer         n=15  min=   132.8ms  median=   134.6ms  max=   139.6ms
+incr              n=15  min=   155.1ms  median=   160.2ms  max=   175.1ms
+sealed incr       n=15  min=    89.2ms  median=    94.5ms  max=   107.6ms
+clone             n=15  min=     6.1ms  median=     6.5ms  max=     8.4ms
+clone+incr        n=15  min=   163.8ms  median=   178.4ms  max=   204.9ms
+sealed clone+incr n=15  min=    99.4ms  median=   105.9ms  max=   119.5ms
+# sealed incr / incr              = 0.61 and 0.59: the later load is 40 % shorter (159 -> 96 ms).
+# full / (sealed clone+incr)      = 2.5 — what a test on the shared base saves on a load; it
+#                                   was 1.5 with the library's bodies typed again (179 ms).
+# A first cut of the change, taken at 13:14 on a slower machine, read 200 -> 110 ms (0.55):
+# the checks then read only what one load added, and read the whole KB's later clauses now.
+# What is left of a sealed later load, by the table above: equality derivation, then
+# check_provider_requires, then the tail. The sealed load's DERIVED rules (132 of the
+# stdlib's 254 rules with a body) are still typed: they have no source to be known by.
+
+== THE GATE, the change as landed, 14:05-15:40 ==
+# scripts/test.sh, everything, shared base:           8 982 passed, 0 failed, 14 ignored; wi_tests 248 s
+#   (2026-10-09, the shared base without this change: wi_tests 412-491 s over three runs)
+# -p anthill-core, ANTHILL_TEST_FRESH_LOAD=1:         8 099 / 0 / 6; wi_tests 652 s
+# -p anthill-core, ANTHILL_TEST_TWO_STEP_LOAD=1:      8 099 / 0 / 6; wi_tests 863 s
+# -p anthill-core, ANTHILL_TYPER_ORACLE=1:            8 099 / 0 / 6; wi_tests 404 s
+# The four ran back to back with nothing else from this session beside them; the wi_tests
+# seconds are one run each and are for the order of magnitude.
+
+== THE ORACLE, the whole anthill-core suite, ANTHILL_TYPER_ORACLE=1, shared base ==
+# Every later load of 8 100 tests types the sealed bodies as well and compares. Its first
+# run reported ONE stdlib body in every later load: a classification carries the terms of
+# the run that made it. Compared without them — and with the typer's dispatch memo
+# dropped at each run, without which typing a body again asks the memo and is told the
+# earlier answer — the suite has NO finding but the shapes the change refuses.

@@ -68,6 +68,9 @@
 //!     the scan that stands in for the spec bucket (`spec_has_any_providers`) — FAIL: the
 //!     unit row `typing::tests::…::the_scan_counts_a_provision_whose_spec_is_held_as_a_value`,
 //!     and no row here or under the node-carrier control.
+//!     the place of a sealed load's refusal (`sealed::written_view_site` answering for a
+//!     term alone) — FAIL: `wi_9bkz4_sealed_bodies_test::
+//!     the_refusal_of_a_provision_written_through_an_alias_points_at_its_binding`
 //!   each message naming the type alone, on its own:
 //!     the parameter's line (`declared_type_display` there), and the member's own side of
 //!     it alone — FAIL, each:
