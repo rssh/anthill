@@ -22703,6 +22703,32 @@ impl ClauseHead {
     }
 }
 
+/// `t` with each `Var::Global` named in `renames` replaced by the term beside it.
+fn rename_global_vars(kb: &mut KnowledgeBase, t: TermId, renames: &[(VarId, TermId)]) -> TermId {
+    match kb.get_term(t).clone() {
+        Term::Var(Var::Global(vid)) => renames
+            .iter()
+            .find(|(old, _)| *old == vid)
+            .map_or(t, |(_, new)| *new),
+        Term::Fn { .. } => kb.map_fn_children(t, |kb, child| rename_global_vars(kb, child, renames)),
+        _ => t,
+    }
+}
+
+/// `t`, a type as a type position holds it, in the canon a clause binding holds it in: a
+/// type parameter is its NAME there (`Ref(S)`), where a type position has its variable.
+/// Any other variable — a slot left open — is the variable it is in both.
+fn type_in_clause_canon(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    match kb.get_term(t).clone() {
+        Term::Var(Var::Global(vid)) => match kb.type_param_of_canonical_var(vid) {
+            Some(param) => kb.make_sort_ref(param),
+            None => t,
+        },
+        Term::Fn { .. } => kb.map_fn_children(t, type_in_clause_canon),
+        _ => t,
+    }
+}
+
 /// THE NODE-CARRIER CONTROL — `ANTHILL_TEST_NODE_CARRIER=1`. Every sort named where a type
 /// alias written bare rides its node ([`Loader::bare_alias_read`]) rides one too, standing
 /// for itself. The node changes no meaning, so a suite must give every test the same
@@ -32545,12 +32571,24 @@ impl<'a> Loader<'a> {
     /// reading resolves (`alias_expansion`), each fixed binding in the TYPE canon (a type
     /// parameter as its variable, where the clause canon holds `Ref(param)`); `(written,
     /// [])` for any other name.
+    ///
+    /// A slot the alias's definition leaves open with `?` is open anew at this
+    /// application, as at a bare use ([`Self::open_slots_anew`]): `a: HalfPair[R = Int64],
+    /// b: HalfPair[R = Int64]` over `sort HalfPair = Pair[L = ?]` are two pairs.
     fn type_alias_application(
         &mut self,
         written: Symbol,
     ) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
-        super::typing::alias_type_application(self.kb, written)
-            .unwrap_or((written, SmallVec::new()))
+        let Some((base, mut fixed)) = super::typing::alias_type_application(self.kb, written)
+        else {
+            return (written, SmallVec::new());
+        };
+        let mut values: SmallVec<[TermId; 2]> = fixed.iter().map(|(_, t)| *t).collect();
+        self.open_slots_anew(&mut values);
+        for ((_, slot), value) in fixed.iter_mut().zip(values) {
+            *slot = value;
+        }
+        (base, fixed)
     }
 
     /// What a written NAME lowered to, read through where it named a type alias in a type
@@ -32562,7 +32600,7 @@ impl<'a> Loader<'a> {
     /// as written beside the type it stands for ([`node_occurrence::TypeNode::Aliased`]).
     /// Every reader of the type's structure reads the type; a message can say the name.
     fn bare_alias_read(
-        &self,
+        &mut self,
         child: node_occurrence::TypeChild,
         site: TypeSite,
         span: SourceSpan,
@@ -32637,10 +32675,61 @@ impl<'a> Loader<'a> {
     /// through there, `f(x: Outer.OS) -> Int64 = x` took `x` for any type at all, and
     /// `f("s")` answered the string. It stays the alias's own name there, which nothing
     /// conforms to.
-    fn bare_alias_type(&self, written: Symbol) -> Option<TermId> {
+    ///
+    /// A PARAMETER IS KNOWN BY ITS OWN VARIABLE, not by the type holding a variable at all.
+    /// A slot the alias's definition leaves open with `?` — `sort Some = Box[V = ?]` — is
+    /// no parameter's, and such an alias is its type wherever it is written. Asked "is the
+    /// type ground", it was read inside its own namespace only: from another one `x: Some`
+    /// was refused, "expected Box, got Some" (MEASURED).
+    ///
+    /// …AND THAT SLOT IS OPEN ANEW AT EACH USE, as each written `?` is
+    /// ([`Self::open_slots_anew`]).
+    fn bare_alias_type(&mut self, written: Symbol) -> Option<TermId> {
         let stands_for = *self.kb.alias_types.get(&written)?;
-        let names_no_parameter = super::typing::type_value_is_ground(self.kb, stands_for);
-        (names_no_parameter || self.within_declaring_scope_of(written)).then_some(stands_for)
+        let names_a_parameter = self
+            .kb
+            .collect_vars(&TermIdView(stands_for))
+            .into_iter()
+            .any(|v| self.kb.is_canonical_type_param_var(v));
+        if names_a_parameter && !self.within_declaring_scope_of(written) {
+            return None;
+        }
+        let mut at_this_use = [stands_for];
+        self.open_slots_anew(&mut at_this_use);
+        Some(at_this_use[0])
+    }
+
+    /// The types ONE use of an alias has, from the ones its declaration recorded: each
+    /// slot the definition leaves open with `?` is an unknown of this use alone, the same
+    /// one wherever it occurs in `types`. The recorded types hold one variable per slot,
+    /// and handed out as they are, every use shared it — `two(a: Some, b: Some)` over
+    /// `sort Some = Box[V = ?]` refused `two(mk(1), mk("s"))`, "expected Some (Box[V =
+    /// Int64]), got Box[V = String]", where the signature with `Box[V = ?]` written twice
+    /// takes both (MEASURED).
+    ///
+    /// A type parameter's own variable is not such a slot and stays the parameter's.
+    fn open_slots_anew(&mut self, types: &mut [TermId]) {
+        let mut open: Vec<VarId> = Vec::new();
+        for &t in types.iter() {
+            for v in self.kb.collect_vars(&TermIdView(t)) {
+                if !self.kb.is_canonical_type_param_var(v) && !open.contains(&v) {
+                    open.push(v);
+                }
+            }
+        }
+        if open.is_empty() {
+            return;
+        }
+        let anew: Vec<(VarId, TermId)> = open
+            .into_iter()
+            .map(|v| {
+                let fresh = self.kb.fresh_var(v.name());
+                (v, self.kb.alloc(Term::Var(Var::Global(fresh))))
+            })
+            .collect();
+        for t in types.iter_mut() {
+            *t = rename_global_vars(self.kb, *t, &anew);
+        }
     }
 
     /// Is the scope being lowered in the scope `sym` is declared in, or inside it?
@@ -39719,12 +39808,15 @@ impl<'a> Loader<'a> {
     /// be supplied where the same clause with the type written out could, and of two
     /// provisions of one type, one written through the alias, a call ran one in silence.
     ///
-    /// Of an alias with a ground type only, which is one term in the clause canon and in
-    /// a type position. An alias that names a type parameter stays as written: the clause
-    /// canon spells a parameter its own way.
-    fn clause_alias_type(&self, sym: Symbol) -> Option<TermId> {
-        self.bare_alias_type(sym)
-            .filter(|stands_for| super::typing::type_value_is_ground(self.kb, *stands_for))
+    /// In the clause's own canon ([`type_in_clause_canon`]): an alias that names a
+    /// type parameter of its sort (`sort OS = S`, `sort Pairs = Pair[A = S]`) is about that
+    /// parameter, as the clause with `S` written out is. Left as the alias's name the two
+    /// were judged by different rules: `provides Show[T = OS]` over a member taking an
+    /// `Int64` was a mismatch against "`OS`", where `provides Show[T = S]` is told the
+    /// member takes less than every `S` the provision covers (MEASURED).
+    fn clause_alias_type(&mut self, sym: Symbol) -> Option<TermId> {
+        let stands_for = self.bare_alias_type(sym)?;
+        Some(type_in_clause_canon(self.kb, stands_for))
     }
 
     /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as

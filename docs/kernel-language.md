@@ -1681,12 +1681,17 @@ had been resolved in the writing scope, found nothing, and let the clause throug
   as the written name leaves them. It holds for a parameter, a result, a field, an
   annotation, a type argument and a row written inside one (an arrow's `@ {E}`), and for
   an alias reached by a path (`Host.IntBox`). An alias that names a type parameter of the
-  sort declaring it is read this way only inside that sort. Among the elements of an
+  sort declaring it is read this way only inside that sort. A slot the alias's own
+  definition leaves open with `?` (`sort Some = Box[V = ?]`) names no parameter: such an
+  alias is read this way everywhere, and the slot is open anew at each place the alias is
+  written, as a written `?` is. Among the elements of an
   operation's own `effects` clause the alias is kept as written: the effect rules follow
   it (§5.5) and name the element as the author wrote it;
 - a clause binding's value: `requires Show[T = IntBox]` and `provides Tag[T = IntBox]` are
   about `Box[V = Int64]`, in a sort's clause and in an operation's. An alias that names a
-  type parameter of the sort declaring it stays as written there.
+  type parameter of the sort declaring it is about that parameter there: inside `sort
+  Outer[S]` with `sort OB = Box[V = S]`, `provides Tag[T = OB]` is `provides Tag[T = Box[V =
+  S]]`.
 
 It does not matter where the alias is declared: every alias of every file is recorded
 before any other declaration reads one, an alias after the aliases its definition names —

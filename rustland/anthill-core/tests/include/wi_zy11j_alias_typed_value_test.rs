@@ -9,7 +9,8 @@
 //! where the effect rules follow an alias themselves and name it as written
 //! (`TypeSite`). A clause binding's value is such a place too: `requires Show[T = SI]`
 //! and `provides Tag[T = CA]` are about the type, in a sort's clause and in an
-//! operation's (`Loader::clause_alias_type`, for an alias whose type names no parameter).
+//! operation's (`Loader::clause_alias_type`); a parameter of the declaring sort that the
+//! alias names is that parameter, in the form a clause holds one.
 //!
 //! BEFORE. The alias applied to further arguments was read through (`IntPair[R =
 //! String]`), and the alias written bare was left as its own name, which is no sort:
@@ -82,10 +83,18 @@
 //!   `an_alias_in_an_arrows_row_is_the_label_it_stands_for` is what it costs. The rules
 //!   that follow an alias read an operation's own row only (kernel-language.md §5.5).
 //!
-//!   NOT READ THROUGH, and it stays as written: an alias that names a type parameter, as
-//!   a clause binding's value (`requires Show[T = OS]` over `sort OS = Sx[A = S]` inside
-//!   `sort Outer[S]`). The clause canon spells a parameter its own way; the same clause
-//!   with the type written out loads.
+//!   an alias whose type holds a variable left as written in a clause binding
+//!   (`clause_alias_type` reading a ground type alone) — FAIL:
+//!     a_clause_binding_naming_its_sorts_parameter_through_an_alias_is_about_that_parameter
+//!     a_clause_binding_at_an_alias_with_an_open_slot_is_asked_at_its_type
+//!   an alias taken to name a parameter whenever its type holds a variable
+//!   (`bare_alias_type` asking whether the type is ground) — FAIL:
+//!     an_alias_with_an_open_slot_is_its_type_in_another_namespace
+//!   an alias's recorded types handed to every use as they are (`open_slots_anew` doing
+//!   nothing) — FAIL:
+//!     an_open_slot_of_an_alias_is_open_anew_at_each_use
+//!   — and at an application of the alias alone (`type_alias_application` not calling
+//!   it) — FAIL: the same row, at its applied half.
 
 use anthill_core::eval::Value;
 
@@ -655,6 +664,139 @@ fn a_provision_written_at_an_alias_is_a_provision_at_its_type() {
             );
             assert_eq!(run(&ns, &body), answer, "{ns}");
         }
+    }
+}
+
+/// A clause binding written through an alias that names a parameter of its sort is about
+/// that parameter, as the clause with the type written out is: an operation's
+/// requirement, the sort's, and a provision. Before, each alias row was refused where its
+/// written twin loaded — the operation's as "expected `requires Show[…]` covering abstract
+/// type parameter", the provision's as a member that "takes less than the spec's".
+#[test]
+fn a_clause_binding_naming_its_sorts_parameter_through_an_alias_is_about_that_parameter() {
+    for (spelling, at) in [("alias", "OS"), ("written", "Sx[A = S]")] {
+        let outer = |members: &str| {
+            format!(
+                "{SHOWN}  sort Outer[S]\n    sort OS = Sx[A = S]\n    entity outer(o: S)\n{members}  end\n"
+            )
+        };
+        let ns = format!("zy11jparamreqop{spelling}");
+        let body = format!(
+            "{}  operation go() -> Int64 = Outer.tell(Sx.sx(5))",
+            outer(&format!(
+                "    operation tell(x: Sx[A = S]) -> Int64 requires Show[T = {at}] = Show.show(x)\n"
+            ))
+        );
+        assert_eq!(run(&ns, &body), "7", "{ns}");
+
+        let ns = format!("zy11jparamreqsort{spelling}");
+        let body = format!(
+            "{}  operation go() -> Int64 = Outer.f(Sx.sx(5))",
+            outer(&format!(
+                "    requires Show[T = {at}]\n    operation f(x: Sx[A = S]) -> Int64 = Show.show(x)\n"
+            ))
+        );
+        assert_eq!(run(&ns, &body), "7", "{ns}");
+    }
+    for (spelling, at) in [("alias", "OB"), ("written", "Box[V = S]")] {
+        let ns = format!("zy11jparamprov{spelling}");
+        let body = format!(
+            "  sort Tag[T]\n    operation tag(x: T) -> Int64\n  end\n  \
+             sort Wrap[S]\n    sort OB = Box[V = S]\n    entity wrap(w: S)\n    \
+             provides Tag[T = {at}]\n    operation tag(x: Box[V = S]) -> Int64 = 9\n  end\n  \
+             operation go() -> Int64 = Tag.tag(Box.mk(\"s\"))"
+        );
+        assert_eq!(run(&ns, &body), "9", "{ns}");
+    }
+    // …and a member that does not fit is told the same thing in both spellings: the
+    // spec's parameter is the sort's own, which the member's `Int64` is narrower than.
+    for (spelling, at) in [("alias", "OP"), ("written", "S")] {
+        let ns = format!("zy11jparamnofit{spelling}");
+        let body = format!(
+            "  sort Tag[T]\n    operation tag(x: T) -> Int64\n  end\n  \
+             sort Wrap[S]\n    sort OP = S\n    entity wrap(w: S)\n    \
+             provides Tag[T = {at}]\n    operation tag(x: Int64) -> Int64 = 9\n  end\n  \
+             operation go() -> Int64 = 1"
+        );
+        let rendered = refusal(&ns, &body);
+        assert!(
+            rendered.contains("takes less than the spec's") && rendered.contains("every `S`"),
+            "{ns}: {rendered}"
+        );
+    }
+}
+
+// ── an alias whose type leaves a slot open ──────────────────────────────────
+
+/// An alias whose definition leaves a slot open with `?` — `sort Some = Box[V = ?]` — names
+/// no type parameter, and is its type wherever it is written: in another namespace too.
+/// Before, the use from another namespace was refused, "expected Box, got Some".
+#[test]
+fn an_alias_with_an_open_slot_is_its_type_in_another_namespace() {
+    for (spelling, ty) in [("alias", "Some"), ("written", "Bag[V = ?]")] {
+        let ns = format!("zy11jopenfar{spelling}");
+        let src = format!(
+            "namespace test.{ns}lib\n  import anthill.prelude.{{Int64}}\n  \
+             sort Bag[V]\n    entity bag(v: V)\n    operation count(b: Bag) -> Int64 = 1\n  end\n  \
+             sort Some = Bag[V = ?]\nend\n\
+             namespace test.{ns}\n  import anthill.prelude.{{Int64}}\n  \
+             import test.{ns}lib.{{Bag, Some}}\n  import test.{ns}lib.Bag.{{bag}}\n  \
+             operation via(x: {ty}) -> Int64 = Bag.count(x)\n  \
+             operation go() -> Int64 = via(bag(v: 5))\nend\n"
+        );
+        let mut interp = interp_for(&src);
+        let value = interp
+            .call(&format!("test.{ns}.go"), &[])
+            .unwrap_or_else(|e| panic!("{ns}: {e:?}"));
+        assert_eq!(shown(value), "1", "{ns}");
+    }
+}
+
+/// The slot is open anew at each place the alias is written, as each written `?` is: two
+/// parameters typed by the alias take two boxes. Before, the second was held to the
+/// first's: "expected Some (Box[V = Int64]), got Box[V = String]". It is still a box.
+#[test]
+fn an_open_slot_of_an_alias_is_open_anew_at_each_use() {
+    for (spelling, ty) in [("alias", "Some"), ("written", "Box[V = ?]")] {
+        let ns = format!("zy11jopentwo{spelling}");
+        let body = format!(
+            "  sort Some = Box[V = ?]\n  operation two(a: {ty}, b: {ty}) -> Int64 = 1\n  \
+             operation go() -> Int64 = two(Box.mk(1), Box.mk(\"s\"))"
+        );
+        assert_eq!(run(&ns, &body), "1", "{ns}");
+
+        let ns = format!("zy11jopentwobad{spelling}");
+        let body = format!(
+            "  sort Some = Box[V = ?]\n  operation two(a: {ty}, b: {ty}) -> Int64 = 1\n  \
+             operation go() -> Int64 = two(Box.mk(1), \"s\")"
+        );
+        let rendered = refusal(&ns, &body);
+        assert!(
+            rendered.contains("two.b (op-arg)") && rendered.contains("got String"),
+            "{ns}: {rendered}"
+        );
+    }
+    // The same where the alias is applied to the parameter it leaves unwritten.
+    for (spelling, ty) in [("alias", "HP[R = Int64]"), ("written", "Pair[L = ?, R = Int64]")] {
+        let ns = format!("zy11jopenapplied{spelling}");
+        let body = format!(
+            "  sort HP = Pair[L = ?]\n  operation two(a: {ty}, b: {ty}) -> Int64 = 1\n  \
+             operation go() -> Int64 = two(Pair.pair(l: 1, r: 2), Pair.pair(l: \"s\", r: 3))"
+        );
+        assert_eq!(run(&ns, &body), "1", "{ns}");
+    }
+}
+
+/// A clause binding written through such an alias is the clause with the type written
+/// out. Before, the alias row was refused: "requirement `Show[T = SomeSx]` cannot be
+/// supplied".
+#[test]
+fn a_clause_binding_at_an_alias_with_an_open_slot_is_asked_at_its_type() {
+    for (spelling, at) in [("alias", "SomeSx"), ("written", "Sx[A = ?]")] {
+        let ns = format!("zy11jopenreq{spelling}");
+        let decl = format!("via(x: Sx[A = Int64]) -> Int64 requires Show[T = {at}] = Show.show(x)");
+        let body = format!("{SHOWN}  sort SomeSx = Sx[A = ?]\n{}", through(&decl, "Sx.sx(5)"));
+        assert_eq!(run(&ns, &body), "7", "{ns}");
     }
 }
 
