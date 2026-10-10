@@ -5539,6 +5539,25 @@ pub fn scan_definitions_with_sources(
     // every other pass here accumulates: one bad declaration must not hide the
     // rest of the file's diagnostics.
     let mut errors = ledger.duplicate_type_errors(kb, files);
+    // WI-20261009-4ZRTG — the ledger is kept past the scan for a later seal, and judged
+    // here against what is sealed ALREADY: a type a sealed load declared and this one
+    // declares again is a second declaration, reported with the ones above for the
+    // same reason they are reported here.
+    kb.scan_type_decls = ledger.scan_type_decls(source_ids);
+    let across_the_seal = sealed_type_redeclarations(kb);
+    // ONE refusal a type. A sealed type this scan declares TWICE is in the ledger's
+    // list above already, with this scan's two sites; the refusal across the seal
+    // names those and the sealed one, so it stands for both.
+    errors.retain(|within| {
+        !across_the_seal.iter().any(|across| match (within, across) {
+            (
+                LoadError::DuplicateTypeDeclaration { name: a, scope_name: sa, .. },
+                LoadError::DuplicateTypeDeclaration { name: b, scope_name: sb, .. },
+            ) => a == b && sa == sb,
+            _ => false,
+        })
+    });
+    errors.extend(across_the_seal);
     errors.extend(reserved_self_name_errors(kb, files, source_ids));
 
     // Sub-pass 1b (WI-1000 / 059 R3) — classify the direct content of every
@@ -8461,6 +8480,123 @@ pub enum CapturedOrigin {
     RuleClause(String),
 }
 
+/// WI-20261009-4ZRTG — one scan's type declarations: R1's key, the keyword written, and
+/// where. See [`KnowledgeBase::scan_type_decls`].
+pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan)>;
+
+/// WI-20261009-4ZRTG — WHAT THE SEALED LOADS DECLARED ([`seal_declarations`]).
+///
+/// The loader's declared-once ledgers are PER LOAD, on purpose: `op_decl_sites` is
+/// cleared at each load (WI-1049) and the type ledger is a local of one scan (WI-997),
+/// so that a source an earlier load accepted may be presented again. The price is that
+/// a LATER load's declaration of a name an earlier load declared is not seen as a
+/// second one — measured: with the standard library loaded first, a program that
+/// declared `anthill.prelude.Option.isEmpty` loaded clean and its body replaced the
+/// library's, and one that declared `enum Trust` again added a variant to it. One call
+/// over both refuses each.
+///
+/// So a load can be SEALED, and this is what a seal keeps: the two ledgers as that load
+/// left them. Keyed exactly as the one-call rules key them — a type by R1's
+/// `(scope, local name)`, an operation by its symbol — so the later refusal is the
+/// one-call refusal with the earlier load's site in it.
+///
+/// EVERY later declaration of a sealed name is a second one — the sealed source
+/// presented again included (user, 2026-10-10). The first cut let the same text at the
+/// same position through as "the same declaration", and it was not that: the loader
+/// does not skip such a declaration, it LOADS it again — an identical ground fact
+/// merges with the first, a record that mentions a type parameter is stored a second
+/// time under fresh variables, every rule is stored again (measured: the standard
+/// library presented twice leaves 4 689 facts and 439 rules where once leaves 4 326
+/// and 254). A KB holding two `OperationInfo` rows for one operation is what "declared
+/// once" exists to exclude, so behind a seal there is no presenting again.
+#[derive(Clone, Debug, Default)]
+pub struct SealedDeclarations {
+    types: HashMap<(ScopeId, String), Vec<(&'static str, SourceSpan)>>,
+    ops: HashMap<Symbol, Vec<SourceSpan>>,
+}
+
+/// WI-20261009-4ZRTG — SEAL WHAT THE LAST LOAD DECLARED: from here on a load that
+/// declares one of its operations or types again is refused, as one call over both
+/// loads would refuse it.
+///
+/// Call it after the load to be sealed — it reads that load's own ledgers, which the
+/// NEXT scan and load replace. Sealing the same load twice seals it once. The test
+/// recipes seal the standard library's load; the product will when it loads the
+/// library on its own (WI-20261009-AN6CQ). A plain sequence of `load_all` calls seals
+/// nothing and behaves as it did — a source may be presented again to a KB nothing
+/// sealed — and so does `KB.loaded` over one.
+pub fn seal_declarations(kb: &mut KnowledgeBase) {
+    seal_declarations_where(kb, |_| true);
+}
+
+/// [`seal_declarations`] for the FIRST `library_files` files of the last load, which
+/// registered its sources from `first_source` ([`KnowledgeBase::source_count`] read
+/// before it) — for a load that was handed a library and other files in one call, of
+/// which only the library is to be sealed.
+pub fn seal_declarations_of(kb: &mut KnowledgeBase, first_source: usize, library_files: usize) {
+    let library = first_source..first_source + library_files;
+    seal_declarations_where(kb, |site| library.contains(&site.source.index()));
+}
+
+fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(SourceSpan) -> bool) {
+    // `make_mut`: the record is shared by every copy of a sealed KB
+    // (`KnowledgeBase::deep_clone`) and only ever grows here.
+    let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
+    for (key, keyword, site) in &kb.scan_type_decls {
+        let sites = sealed.types.entry(key.clone()).or_default();
+        if of_the_library(*site) && !sites.iter().any(|(_, s)| s == site) {
+            sites.push((*keyword, *site));
+        }
+    }
+    for (op, here) in &kb.op_decl_sites {
+        let sites = sealed.ops.entry(*op).or_default();
+        for site in here {
+            if of_the_library(*site) && !sites.contains(site) {
+                sites.push(*site);
+            }
+        }
+    }
+    // A name the filter left no site for was not sealed at all.
+    sealed.types.retain(|_, sites| !sites.is_empty());
+    sealed.ops.retain(|_, sites| !sites.is_empty());
+}
+
+/// WI-20261009-4ZRTG — a type this scan declares that a SEALED load declared: R1's
+/// refusal, across the two loads, naming the sealed sites and then every one of this
+/// scan's. Reads [`KnowledgeBase::scan_type_decls`], so it runs after the scan's own
+/// ledger was stored there.
+fn sealed_type_redeclarations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    if kb.sealed.types.is_empty() {
+        return Vec::new(); // the universal case: nothing sealed, nothing read
+    }
+    let mut errors = Vec::new();
+    let mut reported: HashSet<&(ScopeId, String)> = HashSet::new();
+    for (key, _, _) in &kb.scan_type_decls {
+        let Some(sealed) = kb.sealed.types.get(key) else {
+            continue;
+        };
+        if !reported.insert(key) {
+            continue;
+        }
+        let here = kb
+            .scan_type_decls
+            .iter()
+            .filter(|(k, _, _)| k == key)
+            .map(|(_, keyword, site)| (*keyword, *site));
+        errors.push(LoadError::DuplicateTypeDeclaration {
+            name: key.1.clone(),
+            scope_name: kb.scope_display_name(key.0).to_owned(),
+            sites: sealed
+                .iter()
+                .copied()
+                .chain(here)
+                .map(|(keyword, site)| (keyword, render_decl_site(kb, site)))
+                .collect(),
+        });
+    }
+    errors
+}
+
 /// WI-997 / proposal 059 R1 + R4 — THE PASS-1 DECLARATION LEDGER.
 ///
 /// WHY A LEDGER AND NOT A SYMBOL WALK. `SymbolTable::define` MERGES two
@@ -8523,6 +8659,27 @@ impl DeclLedger {
                 span,
                 file_idx,
             });
+    }
+
+    /// WI-20261009-4ZRTG — every declaration in the ledger with its SOURCE, in an order
+    /// that is the ledger's content and not a `HashMap`'s: by the scope owner's symbol,
+    /// the local name, then where it is written.
+    fn scan_type_decls(&self, source_ids: &[SourceId]) -> ScanTypeDecls {
+        let mut rows: ScanTypeDecls = self
+            .types
+            .iter()
+            .flat_map(|(key, decls)| {
+                decls.iter().map(move |d| {
+                    let site = SourceSpan::from_span(source_ids[d.file_idx], d.span);
+                    (key.clone(), d.keyword, site)
+                })
+            })
+            .collect();
+        rows.sort_by(|((sa, la), _, a), ((sb, lb), _, b)| {
+            (sa.owner().index(), la, a.source.index(), a.span.start)
+                .cmp(&(sb.owner().index(), lb, b.source.index(), b.span.start))
+        });
+        rows
     }
 
     /// R1's refusals. Rendered HERE, where the `&ParsedFile`s are still in scope,
@@ -17062,6 +17219,17 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
         if !kb.is_fact(rid) {
             continue;
         }
+        // WI-20261009-4ZRTG — a provision a DERIVATION asserted is not a target, in any
+        // load. In the load that derives it, it is not one already: this pass runs
+        // before the derivations, so their rows are not there to see. But the sweep is
+        // over the whole KB, and a LATER load found the rows an earlier one derived —
+        // measured: a file loaded after the standard library registered 15 pending
+        // records for the library's derived provisions, and none for its own. The row
+        // says which it is (WI-1103's mark and WI-1109's), so the answer does not
+        // depend on where in the rule table it sits, or on how many loads there were.
+        if kb.derived_provision_origin_of(rid).is_some() || kb.is_unbacked_derived_provision(rid) {
+            continue;
+        }
         // Term-only specialization-proof emission. A value-fact SortProvidesInfo
         // (denoted-bearing spec) is carried faithfully; occurrence-based proof
         // emission is gated effect-expressions-as-types work, so skip rather than
@@ -17707,7 +17875,19 @@ pub fn derive_sort_domains(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // built from this batch's jobs — a user file loaded into a KB that already holds the
     // stdlib must still repair a `List` field.
     let mut pending: Vec<(DomainJob, Option<Symbol>)> = Vec::with_capacity(jobs.len());
+    // WI-20261009-4ZRTG — ONE job a sort in a batch. A type declared twice (R1 refuses it,
+    // and loading goes on to collect the other diagnostics) queues a job for each
+    // declaration, and the guard below — "it has a domain already" — does not stop the
+    // second, the first's being recorded only further down. The record then paired the
+    // LAST declaration's parameters with conditions drawn over BOTH, and six readers
+    // index one by the other: measured, `sort Option` declared again beside the
+    // standard library's took the loader down at `fill_derive`, index 0 of an empty
+    // list, where it was to be refused. The first declaration is the sort's.
+    let mut queued: HashSet<Symbol> = HashSet::new();
     for job in jobs {
+        if !queued.insert(kb.canonical_sort_sym(job.sort)) {
+            continue;
+        }
         if kb.has_sort_domain(job.sort) {
             // Already defined — a re-load of the same file, or an earlier batch. A
             // second derivation would be a second set of answers, not a replacement.
@@ -19145,7 +19325,22 @@ fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> {
     // By symbol index: `HashMap` iteration order is not an order, and two runs over
     // one corpus must report identically.
-    let mut dups: Vec<(Symbol, &[SourceSpan])> = kb.repeated_op_decl_sites().collect();
+    let mut dups: Vec<(Symbol, Vec<SourceSpan>)> = kb
+        .repeated_op_decl_sites()
+        .map(|(op, sites)| (op, sites.to_vec()))
+        .collect();
+    // WI-20261009-4ZRTG — and an operation a SEALED load declared, declared again by
+    // this one: the same refusal, with the sealed load's sites first.
+    for (op, here) in &kb.op_decl_sites {
+        let Some(sealed) = kb.sealed.ops.get(op) else {
+            continue;
+        };
+        let all: Vec<SourceSpan> = sealed.iter().chain(here).copied().collect();
+        match dups.iter_mut().find(|(o, _)| o == op) {
+            Some((_, sites)) => *sites = all,
+            None => dups.push((*op, all)),
+        }
+    }
     if dups.is_empty() {
         return Vec::new(); // the universal case: no fact walk at all
     }

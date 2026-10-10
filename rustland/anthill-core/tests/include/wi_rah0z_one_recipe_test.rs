@@ -82,6 +82,8 @@ const WAYS_OUT: &[&str] = &[
     "LoadRecipe::OneShot",
     "LoadRecipe::TwoStep",
     "present_all_again(",
+    // WI-20261009-4ZRTG: a KB that is NOT sealed, for a test that presents its files again.
+    "load_unsealed(",
     "load_stdlib_kb_with_source(",
     "load_stdlib_kb_untyped(",
     // WI-059: a hook before the load is a FRESH load, off the shared base — and the
@@ -99,18 +101,18 @@ const WAYS_OUT: &[&str] = &[
 const PINNED: &[(&str, usize, &str)] = &[
     (
         "include/induction_axiom_witness_test.rs",
-        1,
-        "presents every loaded file to the KB again: a registration is not made twice",
+        2,
+        "presents every loaded file to the KB again: a registration is not made twice — on a KB nothing sealed, built by name",
     ),
     (
         "include/scope_axiom_witness_test.rs",
-        1,
-        "presents every loaded file to the KB again: a registration is not made twice",
+        2,
+        "presents every loaded file to the KB again: a registration is not made twice — on a KB nothing sealed, built by name",
     ),
     (
         "include/specialization_witness_test.rs",
-        1,
-        "presents every loaded file to the KB again: a record is not emitted twice",
+        2,
+        "presents every loaded file to the KB again: a record is not emitted twice — on a KB nothing sealed, built by name",
     ),
     (
         "include/incremental_load_test.rs",
@@ -124,8 +126,8 @@ const PINNED: &[(&str, usize, &str)] = &[
     ),
     (
         "include/wi1049_duplicate_operation_declaration_test.rs",
-        1,
-        "presents every loaded file to the KB again: a re-load is not a redeclaration",
+        2,
+        "presents every loaded file to the KB again: a re-load is not a redeclaration — on a KB nothing sealed, built by name",
     ),
     (
         "include/wi1114_item_per_file_store_test.rs",
@@ -240,6 +242,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         "include/wi_2858g_reentrant_host_call_test.rs",
         1,
         "registers a host function before the load",
+    ),
+    (
+        "include/wi_4zrtg_sealed_library_test.rs",
+        18,
+        "what a file loaded AFTER a sealed library may declare: each fixture under both \
+         recipes by name, and the unsealed and re-presented loads made by hand",
     ),
 ];
 

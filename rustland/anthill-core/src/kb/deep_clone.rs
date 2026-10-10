@@ -1053,6 +1053,8 @@ impl KnowledgeBase {
             op_records: self.op_records.iter().map(|(op, record)| (plain(op), c.operation_record(record))).collect(),
             op_decl_sites: plain(&self.op_decl_sites),
             decl_sites: plain(&self.decl_sites),
+            scan_type_decls: plain(&self.scan_type_decls),
+            sealed: plain(&self.sealed),
             scope_text_files: plain(&self.scope_text_files),
             op_capture_params: plain(&self.op_capture_params),
             rule_head_captures: plain(&self.rule_head_captures),

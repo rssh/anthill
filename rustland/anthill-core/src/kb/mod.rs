@@ -1235,6 +1235,29 @@ pub struct KnowledgeBase {
     /// query scan, starts from empty rather than re-checking declarations an earlier
     /// phase already ruled on.
     pub(crate) decl_sites: Vec<load::DeclSite>,
+    /// WI-20261009-4ZRTG — the TYPE declarations the last scan made, as its R1 ledger
+    /// held them (`load::DeclLedger`): one row per written `sort` / `enum` / `entity`,
+    /// keyed as R1 keys them. PER SCAN, replaced by each
+    /// `load::scan_definitions_with_sources`. It outlives the scan for one reader:
+    /// [`load::seal_declarations`], which is called after the load it seals.
+    ///
+    /// NOT [`Self::decl_sites`] filtered to its type categories, though that log is
+    /// beside it and holds the same sites: it holds MORE. A `sort Alias = T` is a
+    /// `Type` there (it can capture a name) and is not in R1's ledger, so one load of
+    /// two such declarations is accepted — and a seal read off `decl_sites` would
+    /// refuse across loads what one call lets through.
+    pub(crate) scan_type_decls: load::ScanTypeDecls,
+    /// WI-20261009-4ZRTG — WHAT THE SEALED LOADS DECLARED: the operations and types of
+    /// every load [`load::seal_declarations`] was called after — the standard
+    /// library's under the test recipes, and in the product once it loads the library
+    /// on its own (WI-20261009-AN6CQ). Empty in a KB nothing sealed, and then no load
+    /// reads it. A later load that declares one of them is refused as a second
+    /// declaration, unless it is the same source presented again
+    /// (`docs/kernel-language.md` §8.3).
+    ///
+    /// An `Arc`: written once, at the seal, and from then on the same for the sealed KB
+    /// and every copy and layer of it.
+    pub(crate) sealed: std::sync::Arc<load::SealedDeclarations>,
 
     /// WI-999 — WHICH FILES HAVE TEXT AT EACH ADDRESS: one entry per
     /// `sort`/`enum`/`namespace` body the defining pass descends into, keyed by the
@@ -2638,6 +2661,8 @@ impl KnowledgeBase {
             op_records: HashMap::new(),
             op_decl_sites: HashMap::new(),
             decl_sites: Vec::new(),
+            scan_type_decls: Vec::new(),
+            sealed: std::sync::Arc::new(load::SealedDeclarations::default()),
             scope_text_files: HashMap::new(),
             op_capture_params: HashMap::new(),
             rule_head_captures: HashMap::new(),
@@ -3305,6 +3330,13 @@ impl KnowledgeBase {
 
     /// WI-1049 — operations THIS load phase wrote more than one declaration for,
     /// with their sites in load order. The duplicate refusal's whole input.
+    /// WI-20261009-4ZRTG — how many sources are registered. A load registers one for
+    /// each file it is handed, in order, so this read BEFORE a load is the id of that
+    /// load's first file ([`load::seal_declarations_of`]).
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
     pub(crate) fn repeated_op_decl_sites(
         &self,
     ) -> impl Iterator<Item = (Symbol, &[crate::span::SourceSpan])> + '_ {

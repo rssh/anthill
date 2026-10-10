@@ -337,7 +337,7 @@ fn two_identical_files_are_two_declarations() {
 #[test]
 fn re_presenting_the_same_files_is_not_a_duplicate() {
     let src = "namespace wi1049dup.reload\n  sort Z\n    entity z\n  end\nend\n";
-    let mut kb = crate::common::load_kb_with(src);
+    let mut kb = crate::common::load_unsealed(&[src]);
     let errs = match crate::common::present_all_again(&mut kb, &[src]) {
         Ok(_) => Vec::new(),
         Err(e) => e.iter().map(|e| e.to_string()).collect::<Vec<_>>(),

@@ -292,6 +292,26 @@ impl SendableKb {
     }
 }
 
+/// The stdlib and `sources` in ONE `load_all` into a fresh KB that is NOT SEALED — the
+/// first half of a test that then presents the same files to it again
+/// ([`present_all_again`]). NOT THE RECIPE, BY NAME: every KB a recipe hands out has
+/// its library sealed (WI-20261009-4ZRTG), and behind a seal a source presented again
+/// is a second declaration and is refused. What these tests ask — that a load of files
+/// a KB already holds registers nothing twice — is a question about a KB nothing
+/// sealed.
+#[allow(dead_code)]
+pub fn load_unsealed(sources: &[&str]) -> KnowledgeBase {
+    let user: Vec<_> = sources
+        .iter()
+        .map(|s| parse::parse(s).expect("parse user source"))
+        .collect();
+    let mut refs = stdlib_parsed();
+    refs.extend(user.iter());
+    let mut kb = KnowledgeBase::new();
+    expect_loaded(load::load_all(&mut kb, &refs, &NullResolver));
+    kb
+}
+
 /// The stdlib AND `sources` presented to `kb` in one `load_all` — for a test whose
 /// subject is that loading files a KB already holds changes nothing (an auto-registered
 /// record is not registered twice, a declaration is not a redeclaration). That call is
@@ -635,6 +655,8 @@ static SHARED_BASE: std::sync::LazyLock<Result<std::sync::Mutex<SendableKb>, Str
                     rendered_load_errors(errors).join("\n")
                 ));
             }
+            // The base is SEALED — by `run_recipe`, which seals the library's part of
+            // every load it makes (WI-20261009-4ZRTG).
             SendableKb::copy_of(&run.kb)
                 .map(std::sync::Mutex::new)
                 .map_err(|why| format!("the loaded stdlib cannot be copied: {why}"))
@@ -743,14 +765,30 @@ fn run_recipe(
         prepare(&mut kb);
     }
     STDLIB_LOADS.with(|n| n.set(n.get() + 1));
+    // WI-20261009-4ZRTG — THE LIBRARY IS SEALED under every recipe, and ONLY the
+    // library: a later load into the KB handed back (`load_in_a_later_call`) may not
+    // declare one of the stdlib's operations or types again, and may declare the test's
+    // own. The same under all three, or a test with a later load of its own would get
+    // one verdict from the gate and another from a control run.
     let result = match recipe {
         LoadRecipe::OneShot => {
+            let stdlib_files = stdlib_refs.len();
+            let first_source = kb.source_count();
             let all = [stdlib_refs, user_refs].concat();
-            load::load_all_with(&mut kb, &all, &NullResolver, options)
+            let result = load::load_all_with(&mut kb, &all, &NullResolver, options);
+            if result.is_ok() {
+                // One call holds both, so the seal is told which sources are the
+                // library's: the first `stdlib_files` this load registered.
+                load::seal_declarations_of(&mut kb, first_source, stdlib_files);
+            }
+            result
         }
         LoadRecipe::TwoStep => {
             match load::load_all_with(&mut kb, &stdlib_refs, &NullResolver, options) {
-                Ok(_) => load::load_all_with(&mut kb, &user_refs, &NullResolver, options),
+                Ok(_) => {
+                    load::seal_declarations(&mut kb);
+                    load::load_all_with(&mut kb, &user_refs, &NullResolver, options)
+                }
                 Err(errors) => Err(errors),
             }
         }
@@ -1181,7 +1219,8 @@ pub fn load_stdlib_kb() -> KnowledgeBase {
             trace_recipe_load("SharedBase", 0);
             shared_base_instance()
         }
-        // With no file of the user's there is one call to make under either.
+        // With no file of the user's there is one call to make under either. Sealed,
+        // as the shared base is: `run_recipe` seals the library's part of every load.
         Selected::Fresh(_) => load_stdlib_kb_prepared(|_| {}).0,
     }
 }

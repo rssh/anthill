@@ -64,7 +64,7 @@ fn auto_registration_is_idempotent_across_loads() {
           end
         end
     "#;
-    let mut kb = load_with(src);
+    let mut kb = crate::common::load_unsealed(&[src]);
     let count1 = proof_records(&mut kb)
         .iter()
         .filter(|r| r.contains("test.scope_axiom_idem.A.requires."))

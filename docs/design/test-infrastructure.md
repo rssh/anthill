@@ -1087,7 +1087,7 @@ informed; it does not recommend changing the rule until A and B have been measur
    every test but the ones pinned to a recipe by name.
 
 7. **Should a gate also run the fresh recipe?** (2026-10-09, /code-review of WI-059; NOT
-   decided.) With the shared base the default, the ~9 000 helper loads of `anthill-core`
+   decided — but see the end of this item for what the same day made of it.) With the shared base the default, the ~9 000 helper loads of `anthill-core`
    no longer hand the loader the stdlib and a user file in ONE call — the shape the CLI
    uses. What still does: the library's own unit tests (their loader), the tests pinned
    to one shot by name, every load with a hook, and every other crate, the two CLI
@@ -1098,6 +1098,22 @@ informed; it does not recommend changing the rule until A and B have been measur
    later one (§4 A3). The options: leave it to whoever runs
    `ANTHILL_TEST_FRESH_LOAD=1` (the ticket's design); run `anthill-core` under it as a
    second tier of the gate (13–18 min more); or on a schedule rather than per commit.
+
+   **What the same day made of it.** The user chose a fourth way: make the PRODUCT load
+   as the tests do — the standard library first, on its own (WI-20261009-AN6CQ) — so
+   that there is one order and nothing to run twice. Its /code-review then found that
+   the two orders differ in MORE than the one program this item names, and in silence:
+   loaded after the library, a file could declare a library operation again and have
+   its body replace the library's, and could reopen a library type; one call refuses
+   both. No test said so, because no fixture redeclares a library name — "no test
+   differs" (§5.3) was a statement about what the suites assert, as §5.3 warned. So
+   AN6CQ is parked on a branch behind WI-20261009-4ZRTG, which SEALS the library: the
+   loader's declared-once ledgers are per load on purpose, and a seal is what carries
+   them to a later one (kernel-language.md §8.3). The test recipes seal the stdlib's
+   load, so the gate's default order now refuses what one call refuses in the three
+   shapes measured; the same ticket made a later load register the proof records one
+   call registers, and turned a one-call loader panic into the refusal it was meant
+   to be. The question above stays open until AN6CQ lands.
 
 ## 9. Recommended sequence, with the measurement at each step
 
