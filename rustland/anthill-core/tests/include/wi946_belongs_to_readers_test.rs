@@ -670,6 +670,7 @@ fn synthesizes_at(source: &str, op_qn: &str, ctor_qn: &str, field: &str) -> bool
             named_args: vec![(fsym, five)],
             from_projection: false,
             recv_type: None,
+            type_args: Vec::new(),
         },
         sp,
         None,

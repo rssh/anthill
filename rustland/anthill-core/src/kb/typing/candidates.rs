@@ -945,6 +945,26 @@ pub(super) fn match_candidate_against_goal(
         parametric_view_parts(kb, candidate_value)
     };
     if let Some((c_base, c_bindings)) = candidate_parts {
+        // A PARAMETRIC VARIANT ON THE GOAL'S SIDE IS ITS SORT AT THE SAME ARGUMENTS
+        // ([`variant_at_its_sort`]): a carrier typed `Wrap.wrap[V = Int64]` is a
+        // `Wrap[V = Int64]`, and it is `Wrap`'s provision — its own, or one reached through
+        // a spec `Wrap` provides — that answers for it. Compared as the constructor, its
+        // base differed from every provision's and `Desc.describe(x)` over such an `x` was
+        // refused, "`Wrap.wrap` provides no `Desc`" (MEASURED). A bare variant reaches arm
+        // (3), which asks the subtype relation and always took it.
+        //
+        // NOT WHERE THE PROVISION IS WRITTEN AT THAT VARIANT ITSELF (`provides Desc[T =
+        // Wrap.wrap[V = Int64]]`): the two sides then have one base, and are matched as
+        // they stand.
+        let per_call_at_sort = match extract_type(kb, per_call_value) {
+            TypeExtractor::Parameterized { base, bindings }
+                if !same_sort_canonical(kb, base, c_base) =>
+            {
+                variant_at_its_sort(kb, base, &bindings)
+            }
+            _ => None,
+        };
+        let per_call_value = per_call_at_sort.as_ref().unwrap_or(per_call_value);
         // (2a) WI-20261001-80ZV8 — THE GOAL'S VALUE IS A CARRIER OF THE CANDIDATE'S SORT.
         // `sort Strm … provides Iter[C = Strm[T = T, E = E], …]` — the form `C = Self`
         // lowers to — against the goal `Iter[C = One[T = Int64], …]`, where `One provides

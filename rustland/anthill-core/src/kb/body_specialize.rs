@@ -491,6 +491,7 @@ fn reduce(
             named_args,
             from_projection,
             recv_type,
+            type_args,
         } => {
             let pos = reduce_vec(kb, pos_args, env, pass)?;
             let named = reduce_named(kb, named_args, env, pass)?;
@@ -502,6 +503,7 @@ fn reduce(
                     named_args: named,
                     from_projection: *from_projection,
                     recv_type: recv_type.clone(),
+                    type_args: type_args.clone(),
                 },
                 pass,
             ))
@@ -984,6 +986,7 @@ fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccur
                 named_args: named2,
                 from_projection: false,
                 recv_type: None,
+                type_args: Vec::new(),
             },
             arg.span,
             arg.owner,

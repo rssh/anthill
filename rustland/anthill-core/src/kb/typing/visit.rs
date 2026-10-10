@@ -621,6 +621,9 @@ pub(super) fn visit_type(
                 }
                 _ => (HashMap::new(), Vec::new()),
             };
+            let site = op_info
+                .as_ref()
+                .and_then(|op| call_site_bindings_for_hint(kb, &env, op, &occ_clone, functor));
             let op_params = op_info.map(|op| op.params);
             if staged.is_empty() {
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
@@ -634,6 +637,7 @@ pub(super) fn visit_type(
                     named_args,
                     &known_param_arg_types,
                     env.receiver_aliases(),
+                    site.as_ref(),
                 );
                 work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
                     occ: occ_clone,
@@ -719,6 +723,7 @@ pub(super) fn visit_type(
                     op_params: op_params.clone().unwrap_or_default(),
                     sort_app_hint,
                     known: known_param_arg_types,
+                    site,
                     pos,
                 }));
                 // Reverse, so they pop in ASCENDING unified order — the order
@@ -884,6 +889,11 @@ pub(super) fn visit_type(
                 };
                 kind.and_then(|k| declared_element_type(kb, k, expected.as_ref()))
             };
+            // The instance the fields are hinted at: what the construction's own bracket
+            // and receiver bind, then what the expectation says of the rest
+            // ([`constructor_instance_for_hint`]).
+            let site_instance = constructor_instance_for_hint(kb, &env, &occ, name, &expected);
+            let instance = if site_instance.is_some() { &site_instance } else { &expected };
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
@@ -903,7 +913,7 @@ pub(super) fn visit_type(
                     if is_tuple_lit(kb, arg) {
                         if let Some((fs, _)) = &field {
                             if let Some(h) =
-                                tuple_field_expected_from_ctor(kb, name, *fs, &expected)
+                                tuple_field_expected_from_ctor(kb, name, *fs, instance)
                             {
                                 return Some(h);
                             }
@@ -919,7 +929,7 @@ pub(super) fn visit_type(
                         .or_else(|| arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
-                            arrow_field_expected_from_ctor(kb, name, fs, &expected, arg)
+                            arrow_field_expected_from_ctor(kb, name, fs, instance, arg)
                         })
                         .or_else(|| {
                             let (_, ft) = field.as_ref()?;
@@ -928,7 +938,7 @@ pub(super) fn visit_type(
                         })
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
-                            variant_field_expected_from_ctor(kb, name, fs, &expected, arg)
+                            variant_field_expected_from_ctor(kb, name, fs, instance, arg)
                         })
                 })
                 .collect();
@@ -942,7 +952,7 @@ pub(super) fn visit_type(
                         }
                     }
                     if is_tuple_lit(kb, arg) {
-                        if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, &expected)
+                        if let Some(h) = tuple_field_expected_from_ctor(kb, name, *fname, instance)
                         {
                             return Some(h);
                         }
@@ -958,7 +968,7 @@ pub(super) fn visit_type(
                         .or_else(|| seq_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
-                            arrow_field_expected_from_ctor(kb, name, *fname, &expected, arg)
+                            arrow_field_expected_from_ctor(kb, name, *fname, instance, arg)
                         })
                         .or_else(|| {
                             let ft = ft.as_ref()?;
@@ -966,7 +976,7 @@ pub(super) fn visit_type(
                                 .then(|| ft.clone())
                         })
                         .or_else(|| {
-                            variant_field_expected_from_ctor(kb, name, *fname, &expected, arg)
+                            variant_field_expected_from_ctor(kb, name, *fname, instance, arg)
                         })
                 })
                 .collect();

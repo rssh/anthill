@@ -1148,13 +1148,20 @@ fn fold_capture_redex(
             named_args,
             from_projection,
             recv_type,
-        } => (
-            *name,
-            pos_args,
-            named_args,
-            Some(*from_projection),
-            recv_type.clone(),
-        ),
+            type_args,
+        } => {
+            // Declined with a bracket, as the application above is.
+            if !type_args.is_empty() {
+                return None;
+            }
+            (
+                *name,
+                pos_args,
+                named_args,
+                Some(*from_projection),
+                recv_type.clone(),
+            )
+        }
         _ => return None,
     };
     if occ_pos.len() != declared_pos {
@@ -1205,6 +1212,7 @@ fn fold_capture_redex(
             // carry, and a capture record is not a distributive projection.
             from_projection: false,
             recv_type: None,
+            type_args: Vec::new(),
         },
         Rc::clone(occ),
         pass,
@@ -1221,6 +1229,7 @@ fn fold_capture_redex(
             // argument list is not a statement about where the node came from.
             from_projection,
             recv_type: occ_recv_type,
+            type_args: Vec::new(),
         }
     } else {
         Expr::Apply {
@@ -2194,6 +2203,7 @@ pub(super) fn reassemble(
             named_args,
             from_projection,
             recv_type,
+            type_args,
         } => Expr::Constructor {
             name: *name,
             pos_args: cur.take_vec(pos_args),
@@ -2202,6 +2212,7 @@ pub(super) fn reassemble(
             // projection desugared into — the receiver moved, the form did not.
             from_projection: *from_projection,
             recv_type: recv_type.clone(),
+            type_args: type_args.clone(),
         },
         Expr::Instantiation {
             name,

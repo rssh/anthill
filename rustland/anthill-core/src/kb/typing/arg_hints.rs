@@ -812,6 +812,8 @@ pub(super) fn bind_spec_params_for_hint(
 ///
 /// `aliases`: the caller's `let` aliases ([`TypingEnv::receiver_aliases`]) — an argument path
 /// is read through them as the call reads it ([`call_arg_paths`]).
+///
+/// `site`: what the call's own bracket and receiver bind — see `inst` below.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_arg_hints(
     kb: &mut KnowledgeBase,
@@ -822,6 +824,7 @@ pub(super) fn apply_arg_hints(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     known: &HashMap<Symbol, Value>,
     aliases: &HashMap<Symbol, Vec<Symbol>>,
+    site: Option<&Substitution>,
 ) -> (Vec<Option<Value>>, Vec<Option<Value>>) {
     // WI-821: pin callee type params from the known sibling argument types once,
     // so every HOF hint below carries the instantiation (`Function[A = X]` hints
@@ -835,14 +838,23 @@ pub(super) fn apply_arg_hints(
     //
     // Nothing is known of a call none of whose arguments has been typed yet — every call
     // without a higher-order argument — and then nothing below reads either map.
-    let inst = op_params.filter(|_| !known.is_empty()).and_then(|ps| {
-        let mut s = Substitution::new();
-        join_sort_params_for_hint(kb, &mut s, functor, ps, known);
-        bind_self_receiver_params_for_hint(kb, &mut s, functor, ps, known);
-        bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
-        hint_instantiation_into(kb, &mut s, functor, ps, known);
-        (!s.is_empty()).then_some(s)
-    });
+    //
+    // `site` — WHAT THE CALL'S OWN BRACKET AND RECEIVER BIND
+    // ([`call_site_bindings_for_hint`]) — is in σ before any of it, as the call binds them
+    // before it reads an argument: a parameter they pin to an arrow hints a bare operation
+    // name with it, whatever else is known.
+    let inst = op_params
+        .filter(|_| !known.is_empty() || site.is_some())
+        .and_then(|ps| {
+            let mut s = site.cloned().unwrap_or_default();
+            if !known.is_empty() {
+                join_sort_params_for_hint(kb, &mut s, functor, ps, known);
+                bind_self_receiver_params_for_hint(kb, &mut s, functor, ps, known);
+                bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
+                hint_instantiation_into(kb, &mut s, functor, ps, known);
+            }
+            (!s.is_empty()).then_some(s)
+        });
     // What a callback parameter's PROJECTION reads ([`projection_receivers`]): the sibling
     // argument's type, or the option its parameter receives for one the call will wrap in
     // `some(…)` — `app(5, lambda (x) -> x + 1)` behind `f: (x: k.T) -> Int64` hints `x` as the

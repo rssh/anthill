@@ -198,6 +198,9 @@ pub(super) enum TypeBuildFrame {
         /// What the no-typing readers already answered, to be completed with the staged
         /// results rather than recomputed.
         known: HashMap<Symbol, Value>,
+        /// What the call's own bracket and receiver bind
+        /// ([`call_site_bindings_for_hint`]), read once where the call was visited.
+        site: Option<Substitution>,
         /// WI-1104: carried through to the [`TypeBuildFrame::Apply`] this frame pushes —
         /// staging changes WHEN the arguments are typed, never where the call sits.
         pos: NodePos,

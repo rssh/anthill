@@ -21,6 +21,12 @@ mod wi009_phase3_builtins_test;
 mod wi_papx0_dot_receiver_split_test;
 #[path = "include/wi_hzvqa_alias_receiver_test.rs"]
 mod wi_hzvqa_alias_receiver_test;
+#[path = "include/wi_b6qya_constructor_bracket_test.rs"]
+mod wi_b6qya_constructor_bracket_test;
+#[path = "include/wi_b6qya_variant_at_its_sort_test.rs"]
+mod wi_b6qya_variant_at_its_sort_test;
+#[path = "include/wi_b6qya_bracket_hints_test.rs"]
+mod wi_b6qya_bracket_hints_test;
 #[path = "include/wi_zy11j_alias_typed_value_test.rs"]
 mod wi_zy11j_alias_typed_value_test;
 #[path = "include/wi_zy11j_provision_at_receiver_test.rs"]

@@ -15620,6 +15620,7 @@ mod wi518_occurrence_guard_resolution_tests {
                 named_args: Vec::new(),
                 from_projection: false,
                 recv_type: None,
+                type_args: Vec::new(),
             },
             span(),
             None,

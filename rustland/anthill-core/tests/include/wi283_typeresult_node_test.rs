@@ -81,6 +81,7 @@ fn node_identity_for_constructor() {
         named_args: vec![],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     let ocons = occ(Expr::Constructor {
         name: cons,
@@ -88,6 +89,7 @@ fn node_identity_for_constructor() {
         named_args: vec![(head, Rc::clone(&o1)), (tail, Rc::clone(&onil))],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     assert_node_identity(&mut kb, &ocons);
     // Children are typed and carry their own node-type too.

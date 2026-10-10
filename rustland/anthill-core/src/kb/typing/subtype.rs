@@ -553,7 +553,14 @@ pub(super) enum Variance {
 /// it matches by canonical identity ([`same_sort_canonical`]); the `param` is written
 /// bare in the fact (`param: T`) and resolved against the sort's param by short name
 /// ([`same_label`]), a scoped label lookup within the already-sort-matched fact.
+///
+/// A CONSTRUCTOR'S PARAMETERS ARE ITS SORT'S ([`KnowledgeBase::type_arg_owner`]), and so is
+/// their variance: asked of `some`, the answer is `Option`'s. Asked of the constructor
+/// itself no fact answered, and two branches typed `some[T = cat]` and `some[T = dog]` had
+/// no join where `Option[T = cat]` and `Option[T = dog]` join at `Option[T = Animal]`
+/// (MEASURED).
 pub(super) fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Variance {
+    let sort = kb.type_arg_owner(sort).unwrap_or(sort);
     let cov = matches_variance_fact(kb, "anthill.reflect.typing.Covariant", sort, param);
     let con = matches_variance_fact(kb, "anthill.reflect.typing.Contravariant", sort, param);
     match (cov, con) {
@@ -704,6 +711,33 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
+    // A PARAMETRIC VARIANT IS ITS SORT AT THE SAME ARGUMENTS wherever another type than the
+    // variant itself is asked for. A constructor's type arguments are its sort's
+    // ([`KnowledgeBase::type_arg_owner`]), so `some[T = Int64]` is an `Option[T = Int64]`,
+    // as the bare variant `Colour.red` is a `Colour`.
+    //
+    // Compared base by base it was refused: the bases conform, and the expected `T` was
+    // then looked for in a provision of the constructor's — which has none — with the
+    // variant's own arguments unread. MEASURED: `operation f(x: Option.some[T = Int64]) ->
+    // Int64 = takes(x)` over `takes(o: Option[T = Int64])` was refused, `expected
+    // Option[T = Int64], got some[T = Int64]`.
+    //
+    // THE SAME VARIANT ON BOTH SIDES is compared as its sort is, argument by argument:
+    // what this relation reads of a parameter — its variance, whether it is an effect
+    // row, whether a slot may be left out — is declared on the sort and keyed by it.
+    // Read off the constructor, `some[T = cat]` was no `some[T = Animal]` where
+    // `Option[T = cat]` is an `Option[T = Animal]` (MEASURED).
+    if let Some(actual_at_sort) = variant_at_its_sort(kb, actual_base, &actual_bindings) {
+        if actual_base != expected_base {
+            return types_compatible(kb, subst, &actual_at_sort, expected);
+        }
+        if let Some(expected_at_sort) =
+            variant_at_its_sort(kb, expected_base, &expected_bindings)
+        {
+            return types_compatible(kb, subst, &actual_at_sort, &expected_at_sort);
+        }
+    }
+
     let actual_base_ty = kb.alloc(Term::Ref(actual_base));
     let expected_base_ty = kb.alloc(Term::Ref(expected_base));
     if !types_compatible(
@@ -1241,10 +1275,53 @@ pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
 /// Read through the view, on whichever carrier the reference rides. Asked of a term
 /// alone, two variants named by an occurrence had no parent, and `if c then mk(cat) else
 /// mk(dog)` was refused, "expected Pair[A = cat, …], got Pair[A = dog, …]" (MEASURED).
+///
+/// A PARAMETRIC VARIANT climbs too, to its sort at the same arguments
+/// ([`variant_at_its_sort`]): `some[T = Int64]` beside `none[T = Int64]` joins at
+/// `Option[T = Int64]`. Left to the arm above alone it was "an application", which has no
+/// parent, and `takes(if c then x else y)` over two such parameters was refused,
+/// "expected some[T = Int64], got none[T = Int64]" (MEASURED).
 fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
+    if let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, v) {
+        return variant_at_its_sort(kb, base, &bindings);
+    }
     let sym = extract_sort_ref_sym(kb, v)?;
     let parent = kb.strict_parent_sort(sym)?;
     Some(Value::term(kb.make_sort_ref(parent)))
+}
+
+/// [`variant_at_its_sort`] of a type as it is held: `Some` for a parametric variant, read
+/// as its sort; `None` for every other type, which is read as it stands.
+pub(super) fn variant_type_at_its_sort(kb: &mut KnowledgeBase, ty: &Value) -> Option<Value> {
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            variant_at_its_sort(kb, base, &bindings)
+        }
+        _ => None,
+    }
+}
+
+/// A parametric variant `base[bindings]` read as its sort at the same arguments —
+/// `some[T = Int64]` as `Option[T = Int64]` — or `None` when `base` is no constructor of
+/// another sort (a sort, an eponymous or free-standing entity, anything else).
+///
+/// A constructor's type arguments are its sort's, so the bindings are the sort's own and
+/// are carried as written. The sort is read off [`KnowledgeBase::type_arg_owner`], the
+/// reader the type lowering binds those arguments by.
+pub(super) fn variant_at_its_sort(
+    kb: &mut KnowledgeBase,
+    base: Symbol,
+    bindings: &[(Symbol, Value)],
+) -> Option<Value> {
+    let sort = kb.type_arg_owner(base).filter(|sort| *sort != base)?;
+    let sort_ref = kb.make_sort_ref(sort);
+    Some(parameterized_value(
+        kb,
+        sort_ref,
+        bindings,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    ))
 }
 
 /// WI-287: a common supertype (an upper bound) of two branch types in the

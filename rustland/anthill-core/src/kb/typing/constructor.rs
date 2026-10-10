@@ -1187,6 +1187,20 @@ pub(super) fn check_constructor_iter(
     // Surface any sub-expression failure before continuing.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
+    // A LITERAL'S CONSTRUCTOR NAMED DIRECTLY — `ListLiteral[…](1, 2)` — belongs to no sort
+    // that declares a parameter, so a bracket written on it binds nothing: every entry is
+    // refused, by the reader every constructor's bracket goes through, before the three
+    // routes below build the literal's type without it.
+    let literal = {
+        let name = kb.qualified_name_of(ctor_sym);
+        [dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL]
+            .iter()
+            .any(|l| name == dt::qualified(l))
+    };
+    if literal {
+        seed_constructor_type_args(kb, &mut Substitution::new(), env, occ, None, ctor_sym, span)?;
+    }
+
     // `()` and `(a, b, …)` parse as a `TupleLiteral` entity and the loader
     // wraps them as `constructor(name: Ref(TupleLiteral), args: …)`. They
     // land here even though they are not user-declared constructors, and
@@ -1265,10 +1279,12 @@ pub(super) fn check_constructor_iter(
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
 
-    // A RECEIVER BINDS THE SORT'S PARAMETERS BEFORE THE FIELDS ARE READ, as it does for an
-    // operation call and through the same reader: `Box[V = Int64].mk("s")`, and `CA.mk("s")`
-    // over `sort CA = Box[V = Int64]`, are refused at the field, and `Box[V = Int64].mk(5)`
-    // is a `Box[V = Int64]`. A construction with no receiver has none to read.
+    // WHAT THE CALL SITE WRITES BINDS THE SORT'S PARAMETERS BEFORE THE FIELDS ARE READ, as
+    // it does for an operation call and through the same readers — the constructor's own
+    // bracket, then the receiver: `Box.mk[V = Int64]("s")`, `Box[V = Int64].mk("s")`, and
+    // `CA.mk("s")` over `sort CA = Box[V = Int64]`, are refused at the field, and each
+    // with a `5` is a `Box[V = Int64]`. A construction that writes neither has none to read.
+    seed_constructor_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
     seed_receiver_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
 
     // WI-384: fields unify FIRST so each argument pins its param, THEN the caller

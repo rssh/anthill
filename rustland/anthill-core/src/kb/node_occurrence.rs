@@ -1459,6 +1459,12 @@ pub enum Expr {
         /// A field of the `Expr` for the reason `from_projection` is one: every rebuild
         /// site decides whether it carries it.
         recv_type: Option<Value>,
+        /// The bracket written on the constructor itself — `Box.mk[V = Int64](5)` — as
+        /// [`Expr::Apply`]'s `type_args` carries an operation call's. A constructor
+        /// declares no type parameters, so each entry binds a parameter of its sort.
+        /// Empty for a construction that writes none, and set in an operation body only,
+        /// as `recv_type` is.
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     /// `match` expression with branches.
     Match {
@@ -2601,16 +2607,19 @@ pub fn open_debruijn_node(
             named_args,
             from_projection,
             recv_type,
+            type_args,
         } => {
             let (pos, c1) = open_vec(kb, pos_args, fresh);
             let (named, c2) = open_named(kb, named_args, fresh);
             let (rt, c3) = walk_recv_type(recv_type, |v| open_value_type(kb, v, fresh));
-            (c1 || c2 || c3).then(|| Expr::Constructor {
+            let (ta, c4) = open_type_args(kb, type_args, fresh);
+            (c1 || c2 || c3 || c4).then(|| Expr::Constructor {
                 name: *name,
                 pos_args: pos,
                 named_args: named,
                 from_projection: *from_projection,
                 recv_type: rt,
+                type_args: ta,
             })
         }
         Expr::Instantiation {
@@ -2771,16 +2780,19 @@ pub fn node_to_debruijn(
             named_args,
             from_projection,
             recv_type,
+            type_args,
         } => {
             let (pos, c1) = close_vec(kb, pos_args, var_order);
             let (named, c2) = close_named(kb, named_args, var_order);
             let (rt, c3) = walk_recv_type(recv_type, |v| close_value_type(kb, v, var_order));
-            (c1 || c2 || c3).then(|| Expr::Constructor {
+            let (ta, c4) = close_type_args(kb, type_args, var_order);
+            (c1 || c2 || c3 || c4).then(|| Expr::Constructor {
                 name: *name,
                 pos_args: pos,
                 named_args: named,
                 from_projection: *from_projection,
                 recv_type: rt,
+                type_args: ta,
             })
         }
         Expr::Instantiation {
@@ -4639,6 +4651,7 @@ pub fn build_occurrence_cons_list(
                 named_args: named,
                 from_projection: false,
                 recv_type: None,
+                type_args: Vec::new(),
             },
             span,
             None,
@@ -6151,17 +6164,20 @@ pub fn substitute_occurrence(
             named_args,
             from_projection,
             recv_type,
+            type_args,
         } => {
             let (pos, c1) = subst_vec(kb, pos_args, subst);
             let (named, c2) = subst_named(kb, named_args, subst);
             let (rt, c3) = walk_recv_type(recv_type, |v| subst_value_type(kb, v, subst));
-            (c1 || c2 || c3).then(|| {
+            let (ta, c4) = subst_type_args(kb, type_args, subst);
+            (c1 || c2 || c3 || c4).then(|| {
                 occ.rebuilt_expr(Expr::Constructor {
                     name: *name,
                     pos_args: pos,
                     named_args: named,
                     from_projection: *from_projection,
                     recv_type: rt,
+                    type_args: ta,
                 })
             })
         }
@@ -7186,6 +7202,9 @@ pub(crate) enum BuildFrame {
         /// The receiver the construction is called at — see [`Expr::Constructor`]'s
         /// field of the name.
         recv_type: Option<Value>,
+        /// The bracket written on the constructor — see [`Expr::Constructor`]'s field of
+        /// the name.
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     /// Proposal 055 — an APPLIED nominal type value (`Cell[V = Int64]`) in value
     /// position. Only the loader builds it, because only the loader can read the
@@ -7535,6 +7554,7 @@ fn visit_fn(
                         named_keys,
                         from_projection: false,
                         recv_type: None,
+                        type_args: Vec::new(),
                     }
                 },
                 span,
@@ -8025,6 +8045,7 @@ pub(crate) fn build_frame(
             named_keys,
             from_projection,
             recv_type,
+            type_args,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Constructor {
@@ -8033,6 +8054,7 @@ pub(crate) fn build_frame(
                 named_args,
                 from_projection,
                 recv_type,
+                type_args,
             };
             results.push(NodeOccurrence::new_expr(expr, span, None));
         }

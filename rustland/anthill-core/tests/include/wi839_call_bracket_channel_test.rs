@@ -14,7 +14,8 @@
 //!      `continue` in the same loop;
 //!   4. an op-body call on a callee that is NOT AN OPERATION — a FUNCTION VALUE or an
 //!      APPLIED RULE citation (WI-714) — which `seed_op_type_args` never reaches;
-//!   5. an op-body ENTITY-CONSTRUCTOR call — `Expr::Constructor` has no type-args slot;
+//!   5. an op-body ENTITY-CONSTRUCTOR call — `Expr::Constructor` had no type-args slot
+//!      (it has one since WI-20261009-B6QYA, and the bracket binds its sort's parameters);
 //!   6. a rule-body goal, a `fact` head, a `constraint`, and an operation's `requires` /
 //!      `ensures` contract expression — lowerings that read the channel nowhere.
 //!
@@ -338,12 +339,16 @@ end
     );
 }
 
-/// Case 5 — an ENTITY-CONSTRUCTOR call in an op body. `Expr::Constructor` has no
-/// type-args slot, so the loader read the channel and threw the result away. This is the
+/// Case 5 — an ENTITY-CONSTRUCTOR call in an op body. The loader once read the channel
+/// and threw the result away, the constructor node having no slot for it; this is the
 /// producer NOT named in the ticket's "all three" — found by measuring, which is why the
 /// loader half sweeps consumption instead of enumerating droppers.
+///
+/// The bracket is READ there now: it binds the parameters of the constructor's sort
+/// (`wi_b6qya_constructor_bracket_test`). So a key the sort does not declare is refused
+/// as it is on an operation, and by the same check.
 #[test]
-fn a_bracket_on_an_entity_constructor_call_is_loud() {
+fn a_bracket_on_an_entity_constructor_call_is_read() {
     assert_refused_with(
         r#"
 namespace test.wi839.ctor
@@ -356,8 +361,8 @@ namespace test.wi839.ctor
   end
 end
 "#,
-        "call-site type arguments `boxed[…](…)` are not supported here",
-        "an entity constructor has no type-args slot, so the bracket vanished",
+        "unknown type-param 'Bogus'",
+        "the sort of `boxed` declares no parameter of that name",
     );
 }
 

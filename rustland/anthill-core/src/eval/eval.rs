@@ -4731,11 +4731,16 @@ impl Interpreter {
         // checked") because not every occurrence reaches the typer: a RULE BODY is not
         // type-checked, so eval is where its type arguments are heard — loud, not a
         // silently-built term carrying a parameter the sort never declared.
-        let declared = self.kb.type_params_of_sort(sort_sym);
+        //
+        // A CONSTRUCTOR HEAD'S ARGUMENTS BIND ITS SORT'S PARAMETERS
+        // ([`KnowledgeBase::type_arg_owner`]): `Pair.left[R = String]` is checked against,
+        // and its positionals bound to, `Pair`'s.
+        let owner = self.kb.type_arg_owner(sort_sym).unwrap_or(sort_sym);
+        let declared = self.kb.type_params_of_sort(owner);
         let named_keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
         if let Err(problem) =
             self.kb
-                .check_sort_type_args(sort_sym, &declared, &named_keys, pos.len())
+                .check_sort_type_args(owner, &declared, &named_keys, pos.len())
         {
             return Err(EvalError::TypeMismatch {
                 expected: "type arguments matching the sort's declared type parameters",

@@ -166,6 +166,8 @@ pub(super) fn denoted_sort_dot(
                 named_args: named_args.to_vec(),
                 from_projection: false,
                 recv_type,
+                // A dot carries no bracket.
+                type_args: Vec::new(),
             },
             Rc::clone(occ),
             pass,

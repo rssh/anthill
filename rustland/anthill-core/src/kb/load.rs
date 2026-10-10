@@ -2209,10 +2209,11 @@ pub enum LoadError {
     /// WI-839: a CALL-SITE type-argument bracket (`f[T = X](…)`, proposal 042's
     /// `type_args` channel) written where no lowering honours it. Parsed since
     /// WI-271, it is threaded onward from exactly two places — an OPERATION BODY's
-    /// call (`build_call_type_args` → `Expr..Apply.type_args` → the typer's
-    /// `seed_op_type_args`) and a rule HEAD's `[T]` type-variable INTRODUCER
+    /// call or construction (`build_call_type_args` → `Expr..Apply.type_args` /
+    /// `Expr..Constructor.type_args` → the typer's `seed_op_type_args` /
+    /// `seed_constructor_type_args`) and a rule HEAD's `[T]` type-variable INTRODUCER
     /// (`collect_rule_tvar_names`, WI-582). Everywhere else — a rule-body atom, a
-    /// `fact` head, a constraint, an entity-constructor call — it was parsed and then
+    /// `fact` head, a constraint — it was parsed and then
     /// DROPPED, so the program meant something other than what was written and said
     /// so nowhere. Load-blocking, and deliberately a REFUSAL rather than a new
     /// meaning: selection inside a rule body is DEFERRED (proposal 058 §4.2 — a rule
@@ -2377,8 +2378,8 @@ pub enum CallTypeArgsPosition {
     /// The head channel exists but admits only the bare WI-582 introducer form.
     RuleHead,
     /// Anywhere the bracket has no reader at all: a rule-body goal, a `fact` head, a
-    /// `constraint`, an operation's `requires` / `ensures` contract expression, an
-    /// entity-constructor call.
+    /// `constraint`, an operation's `requires` / `ensures` contract expression. A
+    /// constructor in one of them is a term the clause matches, and is among them.
     NoChannel,
     /// WI-20260829-BAD3V — a DOT call, reached through the spelling whose callee is a
     /// bare NAME (`xs.map[Dst = Int64](f)`). Its peer `?xs.map[…](f)` is refused a phase
@@ -2397,6 +2398,10 @@ pub enum CallTypeArgsPosition {
     /// is why the fix was the doc and not the gate — but a later reader relying on
     /// "a local, in an operation body" would be relying on something false.
     DotCall,
+    /// A constructor written with a bracket and no argument list in a value position
+    /// (`Opt.non[T = Int64]`): the surface is a type application's, and its entries reach
+    /// the loader as values. The applied spelling carries the bracket.
+    ConstructorWithoutArguments,
 }
 
 /// WI-839: the one wording of [`LoadError::CallTypeArgsNotSupportedHere`], shared by
@@ -2422,10 +2427,9 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              binding is parsed and would then be silently dropped. The bracket is read \
              only on an APPLICATIVE call in an OPERATION BODY (and, as a bare \
              introducer, on a rule head); a rule-body goal, a `fact` head, a \
-             `constraint`, a `requires` / `ensures` contract expression, an \
-             entity-constructor call and a DOT call (WI-20260829-BAD3V) have no channel \
-             for it. Where a rule body needs a chosen provider, call an operation whose \
-             body carries the bracket"
+             `constraint`, a `requires` / `ensures` contract expression and a DOT call \
+             (WI-20260829-BAD3V) have no channel for it. Where a rule body needs a chosen \
+             provider, call an operation whose body carries the bracket"
         ),
         // Deliberately the SAME sentence the converter gives the `?x.m[…](…)` spelling
         // (`push_fn_term`'s dot refusal), because it is the same refusal about the same
@@ -2440,6 +2444,13 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              no channel for them, so the binding would be parsed and then silently \
              dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
              can carry one"
+        ),
+        CallTypeArgsPosition::ConstructorWithoutArguments => format!(
+            "the bracket on the constructor `{callee}[…]` is written with no argument \
+             list — a constructor's bracket binds the type parameters of its sort on a \
+             construction that has one, and without it the entries would be read as the \
+             constructor's fields. Write `{callee}[…]()`, or `{callee}[…](…)` with the \
+             fields"
         ),
     }
 }
@@ -23438,6 +23449,12 @@ struct Loader<'a> {
     // so the sweep can give that shape its own advice; the refusal itself is the
     // ordinary unconsumed one.
     rule_head_bracket_bindings: HashSet<TermId>,
+    /// The parse nodes written as an ENTRY of a bracket in a value definition — the
+    /// children of a bracketed application the expression walk has visited. An entry of a
+    /// bracket is a type argument: a bracketed constructor standing there
+    /// (`Box[V = Opt.som[T = Int64]]`) is the constructor's type, not a construction
+    /// written without its argument list ([`Self::refuse_bracketed_constructor`]).
+    bracket_entries: HashSet<TermId>,
 }
 
 /// WI-201: per-operation accumulator for the carrier-direct bare-spec-member sugar.
@@ -23718,6 +23735,7 @@ impl<'a> Loader<'a> {
             consumed_call_type_args: HashSet::new(),
             consumed_recv_types: HashSet::new(),
             rule_head_bracket_bindings: HashSet::new(),
+            bracket_entries: HashSet::new(),
         }
     }
 
@@ -28393,6 +28411,13 @@ impl<'a> Loader<'a> {
                             pos_count,
                             named_keys,
                         }));
+                        // The children of a bracketed application are its bracket's
+                        // entries — see [`Self::bracket_entries`].
+                        if self.parsed.terms.is_type_application(parse_id) {
+                            self.bracket_entries
+                                .extend(visible_named.iter().map(|&(_, tid)| tid));
+                            self.bracket_entries.extend(pos_args.iter().copied());
+                        }
                         for &(_, tid) in visible_named.iter().rev() {
                             work.push(LoadWorkOp::Visit(tid));
                         }
@@ -29101,7 +29126,15 @@ impl<'a> Loader<'a> {
                 }
                 _ => None,
             };
-            let occ = match head.filter(|s| self.bare_name_denotes_type(*s)) {
+            // A BARE CONSTRUCTOR STANDING AS AN ENTRY OF A BRACKET is the constructor's
+            // type as well — `Pair.left` in `Box[V = Pair.left]` — for the reason its
+            // bracketed twin is (`build_load`'s `is_type_value`): an entry of a bracket is
+            // a type argument. Left a reference to the constructor, it was a node eval had
+            // no reading for.
+            let entry = self.bracket_entries.contains(&parse_id) && !self.lowering_rule_compound_expr;
+            let occ = match head.filter(|s| {
+                self.bare_name_denotes_type(*s) || (entry && self.kb.is_constructor_symbol(*s))
+            }) {
                 Some(head) => node_occurrence::NodeOccurrence::new_expr(
                     Expr::TypeValue {
                         head,
@@ -29504,9 +29537,10 @@ impl<'a> Loader<'a> {
                 // its type arguments as fields. Parse recorded the surface precisely
                 // because the two lower to the same `Term::Fn`; this is the occurrence
                 // peer of the `is_type_app` gate in `convert_term`.
-                let is_entity = !self.parsed.terms.is_type_application(outer_parse_id)
-                    && (self.kb.symbols.get(kb_functor).has_kind(SymbolKind::Entity)
-                        || self.kb.is_entity_constructor(kb_functor));
+                let bracketed = self.parsed.terms.is_type_application(outer_parse_id);
+                let names_constructor = self.kb.symbols.get(kb_functor).has_kind(SymbolKind::Entity)
+                    || self.kb.is_entity_constructor(kb_functor);
+                let is_entity = !bracketed && names_constructor;
                 // Proposal 055 §2 / design §1 — CLASSIFY ONCE, HERE. WI-927 already
                 // asked this exact question one line up, to keep a bracketed
                 // application from being read as a construction, and then discarded the
@@ -29529,9 +29563,42 @@ impl<'a> Loader<'a> {
                 // `namespace Box … end sort Box … end` would classify the bare `Box` and
                 // not `Box[V = Int64]`, and the pair that WAHB6 requires to key alike
                 // would key alike only in one declaration order.
+                //
+                // A BRACKETED CONSTRUCTOR STANDING AS AN ENTRY OF ANOTHER BRACKET is a type
+                // value too — the constructor's type, `Pair.left[R = String]` in
+                // `Box[V = Pair.left[R = String]]` ([`Self::bracket_entries`]). An entry of a
+                // bracket is a type argument, so nothing else it could be is left; built as
+                // the application of the constructor it was a node eval had no reading for.
+                // Not in a rule's compound expression, as the refusal below is not.
                 let is_type_value = !is_entity
-                    && self.parsed.terms.is_type_application(outer_parse_id)
-                    && self.kb.has_kind(kb_functor, SymbolKind::Sort);
+                    && bracketed
+                    && (self.kb.has_kind(kb_functor, SymbolKind::Sort)
+                        || (names_constructor
+                            && !self.lowering_rule_compound_expr
+                            && self.bracket_entries.contains(&outer_parse_id)));
+
+                // A CONSTRUCTOR WRITTEN WITH A BRACKET AND NO ARGUMENT LIST —
+                // `Opt.non[T = Int64]` — is refused in a value position: see
+                // [`Self::refuse_bracketed_constructor`].
+                //
+                // Not as an entry of an enclosing bracket, where it is the constructor's
+                // type and was classified so above, and not in a rule's compound
+                // expression, where a constructor is a term the clause matches and the
+                // node keeps the reading it has.
+                if bracketed
+                    && names_constructor
+                    && !is_type_value
+                    && !self.lowering_rule_compound_expr
+                {
+                    self.refuse_bracketed_constructor(
+                        outer_parse_id,
+                        parse_functor,
+                        kb_functor,
+                        total,
+                        results,
+                    );
+                    return;
+                }
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
                 // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
@@ -29564,57 +29631,51 @@ impl<'a> Loader<'a> {
                 let args_list = self.kb.build_list(&arg_terms);
                 let name_ref = self.kb.alloc(Term::Ref(kb_functor));
 
-                // WI-342: the occurrence type-args (carrier-agnostic `Value`s) are
-                // the source of truth; the term-side `type_args` handle is the
-                // ground-only vestige (materialize + print).
-                // WI-839: read ONLY on the non-entity arm. An ENTITY-headed call
-                // (`boxed[Bogus = Int64](n: 1)`) builds an `Expr::Constructor`, which
-                // has no type-args slot — reading the channel here and then dropping
-                // the Vec on that arm is exactly the silent drop this ticket closes
-                // (measured: it loaded clean). Left unread, the bracket stays
-                // unconsumed and the end-of-file sweep reports it.
-                let type_args = if is_entity || is_type_value {
-                    Vec::new()
-                } else {
-                    self.build_call_type_args(outer_parse_id)
-                };
-                let type_args_tid = self.type_args_term_handle(&type_args);
-
-                // WI-20260829-W6JH0 — proposal 035 form (3). A type-value callee builds a
-                // shape with nowhere to put a receiver, and reading the channel there would
-                // be the silent drop WI-839 exists to prevent; the grammar cannot produce
-                // one on it, so that gate never fires and keeps the two channels' rules one
-                // rule.
-                //
-                // A CONSTRUCTOR IS A CALL, and its receiver — a written `Box[V = Int64].mk(5)`
-                // or an alias, `CA.mk(5)` — binds the sort's parameters for it as an
-                // operation's does. The constructor node has the receiver's slot, as the
-                // application has.
+                // A CONSTRUCTOR IS A CALL, and what a call site writes about the instance
+                // binds the sort's parameters for it as for an operation: its receiver — a
+                // written `Box[V = Int64].mk(5)` or an alias, `CA.mk(5)` — and the bracket
+                // on the constructor itself, `Box.mk[V = Int64](5)`. The constructor node
+                // has a slot for each, as the application has.
                 //
                 // NOT IN A RULE'S COMPOUND EXPRESSION, which is a rule body: a constructor
                 // there is a term the clause matches, typed with the clause and not as a
-                // call, and no reader there takes a receiver. It keeps the rule body's
-                // reading ([`Self::entity_ctor_expr`]) — a written bracket is left unread
-                // for the end-of-file sweep to refuse — so one rule body gives the spelling
-                // one verdict, whether or not an `if` stands above it.
-                let recv_type = if is_type_value || (is_entity && self.lowering_rule_compound_expr)
-                {
+                // call, and no reader there takes either. It keeps the rule body's reading
+                // ([`Self::entity_ctor_expr`]) — a written bracket is left unread for the
+                // end-of-file sweep to refuse — so one rule body gives the spelling one
+                // verdict, whether or not an `if` stands above it.
+                //
+                // A type-value callee builds a shape with nowhere to put either, and
+                // reading a channel there would be the silent drop WI-839 exists to
+                // prevent; the grammar cannot produce one on it.
+                let reads_call_site =
+                    !(is_type_value || (is_entity && self.lowering_rule_compound_expr));
+
+                // WI-342: the occurrence type-args (carrier-agnostic `Value`s) are
+                // the source of truth; the term-side `type_args` handle is the
+                // ground-only vestige (materialize + print), and an application's alone —
+                // a constructor's term has no slot for one.
+                let type_args = if reads_call_site {
+                    self.build_call_type_args(outer_parse_id)
+                } else {
+                    Vec::new()
+                };
+                let type_args_tid = if is_entity {
                     None
                 } else {
-                    self.build_recv_type(outer_parse_id, kb_functor)
+                    self.type_args_term_handle(&type_args)
                 };
 
-                let s = &self.expr_syms;
-                let kb_id = if is_entity {
-                    self.kb.alloc(Term::Fn {
-                        functor: s.constructor,
-                        pos_args: SmallVec::new(),
-                        named_args: SmallVec::from_slice(&[
-                            (s.k_name, name_ref),
-                            (s.k_args, args_list),
-                        ]),
-                    })
+                // WI-20260829-W6JH0 — proposal 035 form (3).
+                let recv_type = if reads_call_site {
+                    self.build_recv_type(outer_parse_id, kb_functor)
                 } else {
+                    None
+                };
+
+                let kb_id = if is_entity {
+                    self.constructor_expr_term(name_ref, args_list)
+                } else {
+                    let s = &self.expr_syms;
                     let mut named: SmallVec<[(Symbol, TermId); 2]> =
                         SmallVec::from_slice(&[(s.k_fn, name_ref), (s.k_args, args_list)]);
                     if let Some(tid) = type_args_tid {
@@ -29665,6 +29726,7 @@ impl<'a> Loader<'a> {
                             // the desugared term is identical to the hand-written tuple.
                             from_projection: self.parsed.terms.is_projection(outer_parse_id),
                             recv_type,
+                            type_args,
                         }
                     } else {
                         // WI-342: the occurrence carries the carrier-agnostic
@@ -29752,6 +29814,69 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+    }
+
+    /// The reflect term of a construction: `constructor(name: …, args: […])`.
+    fn constructor_expr_term(&mut self, name_ref: TermId, args_list: TermId) -> TermId {
+        let s = &self.expr_syms;
+        self.kb.alloc(Term::Fn {
+            functor: s.constructor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(s.k_name, name_ref), (s.k_args, args_list)]),
+        })
+    }
+
+    /// REFUSE a constructor written with a bracket and no argument list in a value
+    /// position — `Opt.non[T = Int64]` — and build the bare construction in its place.
+    ///
+    /// THE SURFACE IS A TYPE APPLICATION'S, so the bracket's entries were lowered as the
+    /// node's children — as VALUES, which is not how a bracket's entries are read: a type
+    /// parameter of the enclosing operation written there is a name and not the
+    /// parameter, an alias is not what it stands for. The applied spelling,
+    /// `Opt.non[T = Int64]()`, carries the same bracket as written types, and is what the
+    /// refusal advises.
+    ///
+    /// BEFORE THIS the node was an application of the constructor to those entries, which
+    /// the typer read as a construction with the entries for fields: `Box.mk[Int64]` was a
+    /// box holding the type `Int64`, and a keyed entry — `Box.mk[V = Int64]`, or a key the
+    /// sort does not declare — named no field and was dropped.
+    fn refuse_bracketed_constructor(
+        &mut self,
+        parse_id: TermId,
+        written: Symbol,
+        constructor: Symbol,
+        entries: usize,
+        results: &mut Vec<TermId>,
+    ) {
+        self.errors.push(LoadError::CallTypeArgsNotSupportedHere {
+            callee: self.parsed.symbols.local_name(written).to_string(),
+            position: CallTypeArgsPosition::ConstructorWithoutArguments,
+            span: self.parsed.terms.span(parse_id),
+        });
+        results.truncate(results.len() - entries);
+        let name_ref = self.kb.alloc(Term::Ref(constructor));
+        let args_list = self.kb.build_list(&[]);
+        let kb_id = self.constructor_expr_term(name_ref, args_list);
+        self.create_occurrence(parse_id, kb_id);
+        results.push(kb_id);
+        if self.occ_suppress != 0 {
+            return;
+        }
+        let kept = self.expr_occ_results.len() - entries;
+        self.expr_occ_results.truncate(kept);
+        node_occurrence::build_frame(
+            self.kb,
+            node_occurrence::BuildFrame::Constructor {
+                span: self.source_span_of(parse_id),
+                name: constructor,
+                pos_count: 0,
+                named_keys: Vec::new(),
+                from_projection: false,
+                recv_type: None,
+                type_args: Vec::new(),
+            },
+            &mut self.expr_occ_results,
+        );
     }
 
     /// WI-271 / WI-342: lower the parse-side `[A = Int64, B = String]` call

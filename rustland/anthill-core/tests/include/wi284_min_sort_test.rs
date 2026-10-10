@@ -94,6 +94,7 @@ fn min_sort_of_list_constructor_is_list() {
         named_args: vec![],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     let nil_sort = typed_min_sort(&mut kb, &onil).expect("min_sort(nil()) Some");
     assert_sort_named(&kb, nil_sort, "List");
@@ -106,6 +107,7 @@ fn min_sort_of_list_constructor_is_list() {
         named_args: vec![],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     let ocons = occ(Expr::Constructor {
         name: cons,
@@ -113,6 +115,7 @@ fn min_sort_of_list_constructor_is_list() {
         named_args: vec![(head, Rc::clone(&o1)), (tail, Rc::clone(&onil2))],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     let cons_sort = typed_min_sort(&mut kb, &ocons).expect("min_sort(cons(..)) Some");
     assert_sort_named(&kb, cons_sort, "List");
@@ -142,6 +145,7 @@ fn min_sort_of_entity_value_is_its_sort() {
         named_args: vec![],
         from_projection: false,
         recv_type: None,
+        type_args: Vec::new(),
     });
     let ms = typed_min_sort(&mut kb, &ored).expect("min_sort(red) should be Some");
     assert_sort_named(&kb, ms, "Color");

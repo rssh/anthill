@@ -89,10 +89,15 @@ pub(super) fn build_type(
             // are rejected here rather than building a type term carrying a parameter the
             // sort never declared. Eval's `finish_sort_type` keeps its own guard as the
             // backstop for occurrences that never reach the typer (a rule body).
+            //
+            // A CONSTRUCTOR HEAD'S ARGUMENTS BIND ITS SORT'S PARAMETERS
+            // ([`KnowledgeBase::type_arg_owner`]) — `Pair.left[R = String]`, the type value
+            // a bracket's entry is — and are held to those.
             let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-            let declared = kb.type_params_of_sort(head);
+            let owner = kb.type_arg_owner(head).unwrap_or(head);
+            let declared = kb.type_params_of_sort(owner);
             if let Err(problem) =
-                kb.check_sort_type_args(head, &declared, &named_keys, pos_args.len())
+                kb.check_sort_type_args(owner, &declared, &named_keys, pos_args.len())
             {
                 results.push(Err(TypeError::InvalidTypeArgument {
                     span: Some(occ.span.span),
@@ -124,6 +129,7 @@ pub(super) fn build_type(
             op_params,
             sort_app_hint,
             mut known,
+            site,
             pos,
         } => {
             // Staging is keyed off the callee's declared params, so reaching here with
@@ -171,6 +177,7 @@ pub(super) fn build_type(
                 &named_args,
                 &known,
                 env.receiver_aliases(),
+                site.as_ref(),
             );
             let staged_pairs: Vec<(usize, Result<TypeResult, TypeError>)> =
                 staged.iter().copied().zip(staged_results).collect();

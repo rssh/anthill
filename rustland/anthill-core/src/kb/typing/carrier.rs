@@ -270,6 +270,11 @@ pub(super) fn concrete_receiver_carrier(
     recv_ty: &Value,
 ) -> Option<Symbol> {
     let base = carrier_sort_of_value(kb, recv_ty)?;
+    // A VARIANT'S CARRIER IS ITS SORT: a receiver typed `Box.mk[V = Int64]` is a `Box`, and
+    // a call of `Box`'s own operation on it is a call at `Box` — not at a carrier `mk` that
+    // would have to provide `Box`. Read as the constructor, `Box.unbox(x)` over
+    // `unbox(b: Self)` was refused, "Box.unbox.dispatch: … no impl provides Box" (MEASURED).
+    let base = kb.type_arg_owner(base).unwrap_or(base);
     (kb.canonical_sort_sym(base) != kb.canonical_sort_sym(spec_sort)
         && !carrier_is_abstract_spec(kb, base))
     .then(|| kb.canonical_sort_sym(base))
@@ -2401,6 +2406,9 @@ fn bind_clause_params_at_carrier(
     let Some(recv_ty) = recv_ty(kb, carrier_tp) else {
         return;
     };
+    // A carrier typed by a parametric variant is its sort, and the sort's provision is
+    // what says the spec's other elements ([`variant_type_at_its_sort`]).
+    let recv_ty = variant_type_at_its_sort(kb, &recv_ty).unwrap_or(recv_ty);
     let instance = match spec_instance_at_receiver(kb, spec, carrier_pvid, &recv_ty) {
         Some(at) => at,
         None => {

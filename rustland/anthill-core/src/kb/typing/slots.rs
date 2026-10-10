@@ -104,19 +104,8 @@ pub(super) fn lookup_operation_info_full(
 /// the dispatch and dict-build paths. A named slot's binding does BOTH — it unifies
 /// the parameter (so the witness is part of the type, §4.7) and selects the provider.
 ///
-/// LIMIT, stated because the doc above would otherwise overclaim: `unify_types`'
-/// verdict is discarded here, as it is at every seeding site (WI-367 / WI-379 depend
-/// on a failed unify against an already-pinned slot being a no-op). What
-/// [`resolve_call_type_arg_targets`] guarantees is that each written binding reaches a
-/// DISTINCT declared parameter — so no binding is contradicted by a SIBLING binding.
-/// A binding contradicted by an ARGUMENT or by the expected type is caught downstream,
-/// by the WI-385/WI-836 conformance checks, not here.
-///
-/// WI-20260911-7TN1Q — ONE EXCEPTION, and it is narrow by construction: a value that
-/// MENTIONS the parameter it binds. The occurs check refuses that binding, and a
-/// discarded `false` made the refusal silent, so the leg below reads the verdict for
-/// that one fault and reports it. The already-pinned case WI-367 / WI-379 rely on is
-/// untouched — it is gated out by the `prior` read. See the comment at the site.
+/// The binding itself — its discarded unify verdict, and the one fault that is read —
+/// is [`seed_bracket_bindings`]', shared with a constructor's bracket.
 pub(super) fn seed_op_type_args(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -133,12 +122,175 @@ pub(super) fn seed_op_type_args(
     // segment. See `resolve_call_type_arg_targets`.
     let (declared, positional_limit) = call_bracket_scopes_split(kb, op, fn_sym);
     let slots = callee_requirement_slots(kb, fn_sym);
+    let scope = BracketScope {
+        declared: &declared,
+        positional_limit,
+        slots: &slots,
+    };
+    seed_bracket_bindings(kb, subst, env, type_args, &scope, fn_sym, span)
+}
+
+/// WHAT A CALL SITE'S OWN BRACKET AND RECEIVER BIND, for the hints its arguments are typed
+/// from: `keep[V = (x: Int64) -> Int64](inc)` and `Hold[V = (x: Int64) -> Int64].keep(inc)`
+/// over `keep(f: V)` say that `f` is an arrow, and a bare operation name there is lifted
+/// against it. The call binds these before it reads any argument ([`check_apply_iter`]), so
+/// the hint reads them first too.
+///
+/// `None` where the call writes neither, where they bind nothing, and where the call
+/// refuses one of them — which its own check reports; a hint is not the place.
+pub(super) fn call_site_bindings_for_hint(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    op: &OperationInfoFull,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+) -> Option<Substitution> {
+    if call_type_args_of(occ).is_none() && call_recv_type_of(occ).is_none() {
+        return None;
+    }
+    let mut subst = Substitution::new();
+    seed_op_type_args(kb, &mut subst, env, op, occ, fn_sym, None).ok()?;
+    let parent = impl_parent_sort_of_op(kb, fn_sym);
+    seed_receiver_type_args(kb, &mut subst, env, occ, parent, fn_sym, None).ok()?;
+    (!subst.is_empty()).then_some(subst)
+}
+
+/// The instance a CONSTRUCTION names for its fields' hints: its sort at what the node's own
+/// bracket and receiver bind, then at what `expected` says of the rest. `None` where the
+/// node writes neither — its fields are then hinted from the expectation alone, as before
+/// — and where the checker refuses what it writes, which hints nothing more than that.
+///
+/// `Hold.holdf[V = (x: Int64) -> Int64](inc)` over `entity holdf(f: V)` reads `f` as that
+/// arrow, and `Box[V = Colour.red].mk(red(v: 1))` reads `v` as the variant.
+pub(super) fn constructor_instance_for_hint(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    ctor_sym: Symbol,
+    expected: &Option<Value>,
+) -> Option<Value> {
+    if call_type_args_of(occ).is_none() && call_recv_type_of(occ).is_none() {
+        return None;
+    }
+    let sort = kb.sort_of_constructor(ctor_sym)?;
+    let mut subst = Substitution::new();
+    seed_constructor_type_args(kb, &mut subst, env, occ, Some(sort), ctor_sym, None).ok()?;
+    seed_receiver_type_args(kb, &mut subst, env, occ, Some(sort), ctor_sym, None).ok()?;
+    let own = own_application(kb, sort);
+    if let Some(exp) = expected {
+        let mut probe = subst.clone();
+        if unify_types(kb, &mut probe, &TermIdView(own), exp) {
+            subst = probe;
+        }
+    }
+    Some(walk_type_deep_value(kb, &subst, &Value::term(own)))
+}
+
+/// What the bracket written on a callee may bind: the parameters a key names or a
+/// positional counts, and the requirement slots a key selects.
+struct BracketScope<'a> {
+    /// The declared type parameters, by bare name, in the order a positional counts.
+    declared: &'a [(Symbol, Var)],
+    /// How many of `declared`, from the front, a positional reaches.
+    positional_limit: usize,
+    /// The requirement slots a key may select by spec short name.
+    slots: &'a [CalleeSlot],
+}
+
+/// A CONSTRUCTOR'S BRACKET BINDS ITS SORT'S PARAMETERS, as an operation's bracket binds
+/// the operation's and its sort's: `Box.mk[V = Int64](5)` is the construction
+/// `Box[V = Int64].mk(5)` is, the field checked at the binding and the value a
+/// `Box[V = Int64]`. A constructor declares no type parameters, so the sort's are the
+/// whole list, and a key naming none of them is refused as it is on an operation.
+///
+/// NO REQUIREMENT SLOT BY SPEC SHORT NAME. An anonymous requirement of the sort is no
+/// parameter of the type and the built value carries no dictionary, so a selection made
+/// at the construction would be held by nothing; such a key is refused with the rest. A
+/// slot the sort NAMES is a parameter, and binding it here selects as it does in a type.
+///
+/// BEFORE THE RECEIVER'S ([`seed_receiver_type_args`]), as on an operation call, so a
+/// parameter both write differently is reported as the two written sources.
+pub(super) fn seed_constructor_type_args(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    parent: Option<Symbol>,
+    ctor_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let Some(type_args) = call_type_args_of(occ) else {
+        return Ok(());
+    };
+    let declared = match parent {
+        Some(sort) => sort_bracket_params(kb, sort),
+        None => Vec::new(),
+    };
+    let scope = BracketScope {
+        declared: &declared,
+        positional_limit: declared.len(),
+        slots: &[],
+    };
+    // A named slot's selection is read back out of σ where the requirement is asked
+    // ([`selections_from_slot_bindings`]), as a receiver's binding of it is.
+    seed_bracket_bindings(kb, subst, env, type_args, &scope, ctor_sym, span)?;
+    Ok(())
+}
+
+/// The type parameters `sort` declares, by bare name, with the variable each is
+/// published under — what a bracket's key names and its positional counts.
+fn sort_bracket_params(kb: &mut KnowledgeBase, sort: Symbol) -> Vec<(Symbol, Var)> {
+    // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
+    // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
+    let pairs: Vec<(String, Var)> = sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(qualified, target)| match kb.get_term(*target) {
+            Term::Var(v) => Some((
+                short_name_of(kb.qualified_name_of(*qualified)).to_string(),
+                *v,
+            )),
+            _ => None,
+        })
+        .collect();
+    pairs
+        .into_iter()
+        .map(|(short, var)| (kb.intern(&short), var))
+        .collect()
+}
+
+/// The shared body of [`seed_op_type_args`] and [`seed_constructor_type_args`]: resolve
+/// each written binding to its target in `scope`, bind the parameters, and return the
+/// selections the bindings make.
+///
+/// LIMIT, stated because the docs of the two callers would otherwise overclaim:
+/// `unify_types`' verdict is discarded here, as it is at every seeding site (WI-367 /
+/// WI-379 depend on a failed unify against an already-pinned slot being a no-op). What
+/// [`resolve_call_type_arg_targets`] guarantees is that each written binding reaches a
+/// DISTINCT declared parameter — so no binding is contradicted by a SIBLING binding.
+/// A binding contradicted by an ARGUMENT or by the expected type is caught downstream,
+/// by the WI-385/WI-836 conformance checks, not here.
+///
+/// WI-20260911-7TN1Q — ONE EXCEPTION, and it is narrow by construction: a value that
+/// MENTIONS the parameter it binds. The occurs check refuses that binding, and a
+/// discarded `false` made the refusal silent, so the leg below reads the verdict for
+/// that one fault and reports it. The already-pinned case WI-367 / WI-379 rely on is
+/// untouched — it is gated out by the `prior` read. See the comment at the site.
+fn seed_bracket_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    env: &TypingEnv,
+    type_args: &[(Option<Symbol>, Value)],
+    scope: &BracketScope,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<Vec<InstanceSelection>, TypeError> {
+    let declared = scope.declared;
     let targets = resolve_call_type_arg_targets(
         kb,
         type_args,
-        &declared,
-        positional_limit,
-        &slots,
+        declared,
+        scope.positional_limit,
+        scope.slots,
         fn_sym,
         span,
     )?;
@@ -2778,22 +2930,7 @@ fn call_bracket_scopes_split(
     let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else {
         return (declared, own);
     };
-    // Read out of the memo first: `kb.intern` below needs `&mut kb`, and the pairs are
-    // an owned `Rc` snapshot, so nothing borrows `kb` across the loop.
-    let pairs: Vec<(String, Var)> = sort_type_params_as_pairs(kb, parent)
-        .iter()
-        .filter_map(|(qualified, target)| match kb.get_term(*target) {
-            Term::Var(v) => Some((
-                short_name_of(kb.qualified_name_of(*qualified)).to_string(),
-                *v,
-            )),
-            _ => None,
-        })
-        .collect();
-    for (short, var) in pairs {
-        let name_sym = kb.intern(&short);
-        declared.push((name_sym, var));
-    }
+    declared.extend(sort_bracket_params(kb, parent));
     (declared, own)
 }
 
@@ -3121,14 +3258,15 @@ fn check_witness_provides_spec(
     })
 }
 
-/// WI-839: the call-site bracket bindings this application wrote, or `None` when it
-/// wrote none (and for a non-`Apply` occurrence, which carries no such channel).
+/// WI-839: the call-site bracket bindings this application or construction wrote
+/// (`f[T = Int64](x)`, `Box.mk[V = Int64](5)`), or `None` when it wrote none (and for
+/// any other occurrence, which carries no such channel).
 pub(super) fn call_type_args_of(
     occ: &Rc<NodeOccurrence>,
 ) -> Option<&[(Option<Symbol>, crate::eval::value::Value)]> {
     match &occ.kind {
         NodeKind::Expr {
-            expr: Expr::Apply { type_args, .. },
+            expr: Expr::Apply { type_args, .. } | Expr::Constructor { type_args, .. },
             ..
         } if !type_args.is_empty() => Some(type_args),
         _ => None,
@@ -3229,6 +3367,24 @@ impl CallTypeArgTarget {
 /// enclosing sort's) are separate, and the sort-level one is the FACT order at every
 /// typer-side reader — so a positional selection would be a coordinate nobody can
 /// read off the source. Selection is written by NAME or not at all.
+/// The target a bracket entry has when it lands on the declared parameter `param` — by
+/// its name or by position.
+///
+/// A parameter that IS a named slot's binder selects as well as pins. Read off the slot
+/// record by BINDER, so the two facts about the name — that it is a parameter and which
+/// requirement it names — come from the two places that own them. A positional that
+/// reaches such a parameter writes a witness as the key does, and is held to the same
+/// checks: `SortedSet.tip[String, W]()` is `SortedSet.tip[T = String, O = W]()`.
+fn declared_param_target(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    (name, var): (Symbol, Var),
+) -> CallTypeArgTarget {
+    named_slot_spec(kb, fn_sym, name).map_or(CallTypeArgTarget::Param(var), |spec| {
+        CallTypeArgTarget::NamedSlot(var, spec)
+    })
+}
+
 fn resolve_call_type_arg_targets(
     kb: &KnowledgeBase,
     type_args: &[(Option<Symbol>, crate::eval::value::Value)],
@@ -3253,15 +3409,7 @@ fn resolve_call_type_arg_targets(
                     name: *name_sym,
                 });
             }
-            let var = declared[idx].1;
-            // A parameter that IS a named slot's binder selects as well as pins. Read
-            // off the slot record by BINDER, so the two facts about the name — that it
-            // is a parameter and which requirement it names — come from the two places
-            // that own them.
-            let target = named_slot_spec(kb, fn_sym, *name_sym)
-                .map_or(CallTypeArgTarget::Param(var), |spec| {
-                    CallTypeArgTarget::NamedSlot(var, spec)
-                });
+            let target = declared_param_target(kb, fn_sym, declared[idx]);
             named_targets.push((*name_sym, target));
             continue;
         }
@@ -3331,9 +3479,9 @@ fn resolve_call_type_arg_targets(
                     .get(next_free)
                     .filter(|_| next_free < positional_limit)
                 {
-                    Some((_, v)) => {
+                    Some(param) => {
                         taken[next_free] = true;
-                        CallTypeArgTarget::Param(*v)
+                        declared_param_target(kb, fn_sym, *param)
                     }
                     None => {
                         return Err(TypeError::ExcessCallTypeArgs {
