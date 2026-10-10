@@ -3,9 +3,9 @@
 - id: WI-20261004-2HJW8-a-type-alias-that-names-itself
 - created: 2026-10-04T21:51:50Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-04T21:51:50Z
+- status_at: 2026-10-09T14:49:25Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -38,4 +38,8 @@ ACCEPTANCE (for (a)). Each of these is a load error AT THE DECLARATION, naming t
 ### 2026-10-04T22:08:36Z — feedback — claude
 
 DECIDED by the user, 2026-10-04: option (a) — REJECT. In their words: "difference that in F-bound polymorphism we have <:, while in self-naming: = . Agree, should be rejected." That is the whole distinction: an F-bound is a SUBTYPE constraint on a type (`T <: Ord[T]` — in anthill a carrier providing, or a parameter requiring, a spec at itself), which has many solutions and is supported; a self-naming alias is an EQUATION (`Loop = List[T = Loop]`), whose only solution is an infinite type. So: a type alias whose definition reaches its own name — directly, through a chain of aliases, or inside an applied link — is a load error at the declaration, naming the chain. Option (b) (equi-recursive aliases) is not pursued.
+
+### 2026-10-09T14:49:23Z — feedback — user
+
+DELIVERED 2026-10-09, on rustland and scaland. A type alias whose definition reaches its own name is a load error where it is declared, naming the chain: `sort S = S` (S -> S); `sort A = B` with `sort B = A` (A -> B -> A at A, B -> A -> B at B); `sort Loop = List[T = Loop]` (Loop -> Loop); and a cycle through two applied links (`sort A = List[T = B]`, `sort B = Option[T = A]`). An alias that only names one on a chain (`sort D = List[T = A]`) is not refused itself. Rustland: `declare_type_aliases` gains a round that notes which pending aliases each pending alias names, and the last round refuses each alias on a chain (`AliasDeclarePass::refuse_alias_reaching_itself`, `chain_back_to`); an alias that names itself is now never ready, where before it was recorded in the first round. Scaland: `reportRecursiveAliases` after pass 2 of `scanDefinitions`. CONTROLS that load and run: a chain that ends, an alias naming one declared below it, recursion through a constructor (`Tree` / `Kids`), `Car provides Ord2[T = Self]`, an alias sharing its short name with the sort it stands for. The spec clause's own refusal of a cycle KEEPS its message beside the declarations': `provides CA` over `sort CA = CB`, `sort CB = CA` reports three refusals (wi_f8pyz's reports-once rows count them). kernel-language.md §5.2 states the rule. Back-outs are at the head of wi_2hjw8_recursive_alias_test.rs; scaland rows in RecursiveAliasTest.scala.
 

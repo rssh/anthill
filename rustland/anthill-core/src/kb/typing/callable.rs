@@ -76,14 +76,30 @@ pub(super) fn type_head_is_callable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> 
 /// head test is not a cheaper approximation of this one; it is the wrong question here.
 ///
 /// Runs on the DEEP-WALKED value, so it also catches a callable σ INTRODUCES that the
-/// shallow reading never showed (`List[T = X]` with `X := (Int64) -> Bool`). Conservative
-/// on a carrier it cannot read: a non-`Term`/`Node` value answers `true` (withhold), since
-/// "might contain a callable" must not license the widening.
+/// shallow reading never showed (`List[T = X]` with `X := (Int64) -> Bool`).
+///
+/// ONE ANSWER PER TYPE, whichever carrier it rides. An application with a child on another
+/// carrier is an entity (`KnowledgeBase::fn_value`), and is read as its term twin is: its
+/// head, else any child's, each child on its own carrier. It answered `true` — "a carrier
+/// this cannot read" — and that withheld the argument check from a type applied to one that
+/// holds a value: `Bag.merge(a, b)` over a `Bag[T = Foo[T = Int64, N = 3]]` and a `Bag[T =
+/// Foo[T = String, N = 3]]` loaded (MEASURED). A leaf — a variable, a name, a literal — is
+/// no callable on any spelling, as its term is not.
 pub(super) fn type_contains_callable(kb: &KnowledgeBase, v: &Value) -> bool {
     match v {
         Value::Term { id: t, .. } => term_contains_callable(kb, *t),
         Value::Node(occ) => node_contains_callable(kb, occ),
-        _ => true,
+        other => {
+            type_head_is_callable(kb, other)
+                || match other.head(kb) {
+                    ViewHead::Functor { pos_arity, .. } => {
+                        view_any_child(kb, other, pos_arity, |c| {
+                            type_contains_callable(kb, &c.to_value())
+                        })
+                    }
+                    _ => false,
+                }
+        }
     }
 }
 
@@ -112,6 +128,7 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
             // one, the check runs again on the substituted type.
             TypeNode::Var(_) => false,
             // A denoted carries a VALUE, not a type spine — no callable type inside it.
+            TypeNode::Aliased { stands_for, .. } => child(stands_for),
             TypeNode::Denoted { .. } => false,
             TypeNode::Parameterized { base, bindings } => {
                 child(base) || bindings.iter().any(|(_, c)| child(c))
@@ -963,8 +980,21 @@ pub(super) fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView)
                 Value::term(kb.build_canonical_effects_rows(&[t]))
             }
         }
-        // A `Value::Node` effects row is always the canonical occurrence form.
-        BindValue::Value(v) => v,
+        // The same readings on another carrier, asked of the type: a row as it stands, a
+        // bare row expression wrapped, a LABEL the row holding it. Taken as "always the
+        // canonical occurrence form", a label that rode an occurrence was handed on as
+        // the row, and read as a row it holds nothing: applying `f: Function[A = Int64, B
+        // = Int64, E = Error[String]]` charged nothing, and the slot admitted no callback
+        // that raises (MEASURED, over `E = Error[Oops]` with `sort Oops = String`).
+        BindValue::Value(v) => {
+            if matches!(type_head(kb, &v), TypeHead::EffectsRows) {
+                v
+            } else if value_is_bare_effect_expr(kb, &v) {
+                wrap_bare_effect_expr_as_row(kb, &v)
+            } else {
+                row_holding_label(kb, &v).unwrap_or(v)
+            }
+        }
         // An effects row is never carried as a deferred query path; the empty
         // row is a safe (unreachable) fallback.
         BindValue::Path(_) => Value::term(kb.build_canonical_effects_rows(&[])),
@@ -1025,21 +1055,18 @@ pub(super) fn callable_effect_present_values(
     row: &Value,
     param_rigids: &[(VarId, TermId)],
 ) -> Vec<Value> {
-    let BindValue::Term(t) = row.as_bind_value() else {
-        return effect_row_present_values(kb, row);
-    };
-    let unwritten = match kb.get_term(t) {
-        Term::Var(Var::Global(_)) => true,
-        Term::Var(Var::Rigid(_)) => !param_rigids.iter().any(|(_, r)| *r == t),
-        _ => matches!(
-            extract_type(kb, &TermIdView(t)),
-            TypeExtractor::ExprCarried { .. }
-        ),
+    // Asked of the binding through the view, so a slot reads the same on every carrier.
+    let unwritten = match row.head(kb) {
+        ViewHead::Var(Var::Global(_)) => true,
+        ViewHead::Var(rigid @ Var::Rigid(_)) => !param_rigids
+            .iter()
+            .any(|(_, r)| matches!(kb.get_term(*r), Term::Var(v) if *v == rigid)),
+        _ => matches!(extract_type(kb, row), TypeExtractor::ExprCarried { .. }),
     };
     if unwritten {
         return Vec::new();
     }
-    let canonical = canonical_effects_row(kb, &TermIdView(t));
+    let canonical = canonical_effects_row(kb, row);
     effect_row_present_values(kb, &canonical)
 }
 

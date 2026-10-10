@@ -190,19 +190,12 @@ pub(super) fn param_sym_for_arg_index(
 /// params? The gate on the carrier-param staging trigger, and the exact question
 /// [`op_tp_pinning_params`] asks for WI-821's — asked over a carrier that one cannot read.
 ///
-/// WHY IT IS NOT [`type_mentions_op_tp`]. That reader answers `false` for a
-/// `Value::Node`-carried type, and says so in its own doc ("no staging extension — sound,
-/// just not extended"). MEASURED on `Iterable.find`: `c: C` is `Value::Term` and answers
-/// `true`, while `pred: (x: Element) -> Bool @ {EffP, -Modify[x]}` is `Value::Node` — the
-/// dependent-absence arrow puts it on the occurrence carrier — and answers `false`. So
-/// gating this trigger on that reader would decline exactly the shape the trigger exists
-/// for. This walks the carrier-agnostic [`extract_type`] view instead, and hands a
-/// `Value::Term` subtree straight to `type_term_mentions_op_tp` so the two agree wherever
-/// both can see.
-///
-/// DELIBERATELY LOCAL, and not a widening of `type_mentions_op_tp`: that reader is shared
-/// with WI-821's `tp_pinning`, and making it see through the Node carrier would change
-/// which arguments THAT trigger stages — a different question, with its own corpus.
+/// BESIDE [`type_mentions_op_tp`], which asks the same of the callee's OWN type parameters
+/// and reads every carrier as this does. This one reads the occurrence carrier because the
+/// shape it exists for rides it: `Iterable.find`'s `pred: (x: Element) -> Bool @ {EffP,
+/// -Modify[x]}`, where the dependent-absence arrow puts the type. It walks the
+/// carrier-agnostic [`extract_type`] view, and hands a `Value::Term` subtree straight to
+/// `type_term_mentions_op_tp` so the two agree wherever both can see.
 ///
 /// Leaves are compared by SYMBOL as well as by canonical `VarId`, since a sort param is
 /// spelled `Ref`/`Ident`/nullary-`Fn` through its alias and `extract_type` renders those as
@@ -322,10 +315,12 @@ pub(super) fn known_arg_types_and_staged(
     // (`Iterable.find(c: C, …)`). A callback param that names one of the spec's OWN params
     // (`pred: (x: Element) -> Bool`) is grounded from that receiver's PROVISION, not from
     // the signature, so `bind_spec_params_for_hint` needs its type before the lambda is
-    // hinted — and neither trigger above reaches it. `projected` sees only path
-    // projections, and `tp_pinning`'s mention-walk answers `false` for a `Value::Node`
-    // param type by its own doc, which is exactly what `find`'s dependent-absence arrow
-    // (`@ {EffP, -Modify[x]}`) is. MEASURED: with a var-ref receiver the WI-485 env reader
+    // hinted — and neither trigger above reached it when this one was added. `projected`
+    // sees only path projections, and `tp_pinning`'s mention-walk then answered `false` for
+    // a `Value::Node` param type, which is exactly what `find`'s dependent-absence arrow
+    // (`@ {EffP, -Modify[x]}`) is. That walk reads every carrier now; whether `tp_pinning`
+    // alone would stage this receiver has not been measured, and this trigger stays its
+    // own. MEASURED: with a var-ref receiver the WI-485 env reader
     // already supplies the type and this changes nothing; with a COMPUTED receiver
     // (`find(rows(), λ)`) nothing was staged, the binder typed as the bare sort ref
     // `Iterable.Element`, and `r.flag` reached eval as an un-desugared `DotApply`.
@@ -507,11 +502,29 @@ fn op_tp_pinning_params(
 /// "element term → canonical var" primitive — so an op-tp's direct
 /// `Var::Global` and a sort param's `Ref`/`Ident`/nullary-`Fn` alias spelling
 /// answer uniformly (a `Var::Rigid` can never be in `tp_vars`, so its arm is
-/// inert here). A `Value::Node`-carried type answers `false` (no staging
-/// extension — sound, just not extended).
+/// inert here).
+///
+/// ON EVERY CARRIER: a term by its subterms, any other through the view, leaf by leaf the
+/// same question. It answered `false` off the term carrier, so a callback parameter whose
+/// type rode an occurrence staged no sibling: over `each(s: Self, f: (q: T) -> Foo[T =
+/// Int64, N = 3])`, `Sp.each(Car.car(1), lambda q -> mk(q.n))` typed `q` before its
+/// receiver and was refused, "Sp.T.n: … no such member" (MEASURED).
 fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> bool {
     match ty {
         Value::Term { id, .. } => type_term_mentions_op_tp(kb, *id, tp_vars),
+        other => type_view_mentions_op_tp(kb, other, tp_vars),
+    }
+}
+
+/// [`type_mentions_op_tp`] read through the view.
+fn type_view_mentions_op_tp<V: TermView>(kb: &KnowledgeBase, ty: &V, tp_vars: &[VarId]) -> bool {
+    if elem_var_step(kb, ty).is_some_and(|(v, _)| tp_vars.contains(&v)) {
+        return true;
+    }
+    match ty.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => {
+            view_any_child(kb, ty, pos_arity, |c| type_view_mentions_op_tp(kb, c, tp_vars))
+        }
         _ => false,
     }
 }

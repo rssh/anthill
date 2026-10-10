@@ -1232,26 +1232,19 @@ pub fn is_subtype(kb: &mut KnowledgeBase, sub: TermId, sup: TermId) -> bool {
     types_compatible(kb, &mut subst, &TermIdView(sub), &TermIdView(sup))
 }
 
-/// WI-287: one step up the entity→enclosing-sort chain. `Some(parent
-/// sort as a type)` when `t` is a `sort_ref` to an entity nested in a
-/// sort; `None` for a top-level sort (no enclosing parent) or a
-/// non-`sort_ref` type. Lets [`join_types`] find a common supertype of
-/// two distinct entity-typed branches even when leaves weren't already
-/// widened to their sort.
-fn widen_to_parent_sort(kb: &mut KnowledgeBase, t: TermId) -> Option<TermId> {
-    let sym = extract_sort_ref_sym(kb, &TermIdView(t))?;
-    let parent = kb.strict_parent_sort(sym)?;
-    Some(kb.make_sort_ref(parent))
-}
-
-/// WI-342: carrier-agnostic widen for [`join_types`]. Only a nominal sort widens
-/// up the entity→sort lattice; a `Value::Node` (an arrow / denoted-bearing type)
-/// has no parent sort, so two incomparable Node arrows correctly fail to join.
+/// One step up the entity → sort lattice: the parent sort of `v` when `v` is a reference
+/// to an entity nested in a sort; `None` for a top-level sort (no enclosing parent) and
+/// for any type that is no bare sort reference — an arrow, an application, a type that
+/// holds a value. Lets [`join_types`] find a common supertype of two distinct
+/// entity-typed branches even when leaves weren't already widened to their sort.
+///
+/// Read through the view, on whichever carrier the reference rides. Asked of a term
+/// alone, two variants named by an occurrence had no parent, and `if c then mk(cat) else
+/// mk(dog)` was refused, "expected Pair[A = cat, …], got Pair[A = dog, …]" (MEASURED).
 fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
-    match v {
-        Value::Term { id: t, .. } => widen_to_parent_sort(kb, *t).map(Value::term),
-        _ => None,
-    }
+    let sym = extract_sort_ref_sym(kb, v)?;
+    let parent = kb.strict_parent_sort(sym)?;
+    Some(Value::term(kb.make_sort_ref(parent)))
 }
 
 /// WI-287: a common supertype (an upper bound) of two branch types in the

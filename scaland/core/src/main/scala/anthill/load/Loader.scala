@@ -125,6 +125,15 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
 
+    // A type alias whose definition reaches its own name is refused where it is declared
+    // ([[reportRecursiveAliases]]). After pass 2, because a definition names what its
+    // scope sees, imports included.
+    val aliasSites = ArrayBuffer.empty[AliasSite[kb.ScopeId]]
+    for ((file, fid), fileIdx) <- files.zip(fileIds).zipWithIndex do
+      kb.symbols.setAskingFile(Some(fid))
+      walkScopes(AliasCollectPass(kb, file.symbols, fileIdx, aliasSites, errors), file.items)
+    reportRecursiveAliases(kb, aliasSites.toIndexedSeq, files, fileIds, errors)
+
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898), in
     // THREE phases — collect, freeze, mint. WI-20260821-SBZ2A ports WI-980 / 059 R6 and
     // WI-20260822-845G7 from rustland; `docs/kernel-language.md` §"A rule head functor
@@ -927,6 +936,114 @@ object Loader:
       errors += LoadError.Other(
         s"operation '$opQualified': a variadic capture parameter (`...`) must be the LAST parameter",
         captures.head.span)
+
+  // ── Recursive type aliases ───────────────────────────────────
+
+  /** One type alias — `sort X = T`, `T` no variable — where it is written. */
+  private case class AliasSite[S](
+    sym: TermSymbol, scope: S, fileIdx: Int, definition: TypeExpr, span: Span
+  )
+
+  /** Reads every type alias of a file and where it is written. Takes no decision. */
+  private final class AliasCollectPass(
+    val kb: KnowledgeBase,
+    val fileSym: SymbolTable,
+    fileIdx: Int,
+    sites: ArrayBuffer[AliasSite[kb.ScopeId]],
+    errors: ArrayBuffer[LoadError]
+  ) extends ScopePass:
+
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
+    ): Option[kb.ScopeId] =
+      lookupScope(kb, qualName, decl.name.span, errors)
+
+    def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
+      item match
+        case Item.AbstractSortItem(sort) if !sort.definition.isInstanceOf[TypeExpr.Variable] =>
+          val (_, qualName, _) = declSite(kb, fileSym, sort.name.segments, prefix, scope)
+          for sym <- kb.symbols.byQualifiedName.get(qualName) do
+            sites += AliasSite(sym, scope, fileIdx, sort.definition, sort.span)
+        case _ => ()
+
+  /** Every leading part of every name written in `ty` — `WisStore` and `WisStore.State`
+    * of `WisStore.State` — so a name that reaches an alias by a qualified path is seen as
+    * naming it. Mirrors rustland's `collect_type_expr_heads`. */
+  private def typeExprHeads(fileSym: SymbolTable, ty: TypeExpr): IndexedSeq[String] =
+    def prefixes(name: Name): IndexedSeq[String] =
+      (1 to name.segments.length).map(n => joinSegments(fileSym, name.segments.take(n)))
+    ty match
+      case TypeExpr.Simple(name) => prefixes(name)
+      case TypeExpr.Parameterized(name, bindings) =>
+        prefixes(name) ++ bindings.flatMap(b => typeExprHeads(fileSym, b.bound))
+      case TypeExpr.TupleType(fields) => fields.flatMap((_, t) => typeExprHeads(fileSym, t))
+      case TypeExpr.Arrow(params, returnType, effects) =>
+        (params :+ returnType).flatMap(typeExprHeads(fileSym, _)) ++
+          effects.flatMap(typeExprHeads(fileSym, _))
+      case TypeExpr.EffectRow(effects) => effects.flatMap(typeExprHeads(fileSym, _))
+      case TypeExpr.EffectGuarded(label, _) => typeExprHeads(fileSym, label)
+      case TypeExpr.Variable(_, _) | TypeExpr.Denoted(_) => IndexedSeq.empty
+
+  /** WI-20261004-2HJW8 — a type alias whose definition reaches its own name is refused
+    * where it is declared, naming the chain: `sort S = S`, `sort A = B` with `sort B = A`,
+    * `sort Loop = List[T = Loop]`. An alias is the type it is defined as, so such a one
+    * would be an infinite type; a recursive type is written through a sort with a
+    * constructor. An alias that only NAMES one on a chain is on none, and is not refused.
+    *
+    * Scaland reads no alias through — it has no typer — so nothing here went wrong with
+    * such a declaration; the refusal is the declaration's, the same on both
+    * implementations (rustland's `AliasDeclarePass::refuse_alias_reaching_itself`). */
+  private def reportRecursiveAliases(
+    kb: KnowledgeBase,
+    sites: IndexedSeq[AliasSite[kb.ScopeId]],
+    files: IndexedSeq[ParsedFile],
+    fileIds: IndexedSeq[FileId],
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val aliases = sites.map(_.sym).toSet
+    val names: Map[TermSymbol, IndexedSeq[TermSymbol]] = sites.map { site =>
+      kb.symbols.setAskingFile(Some(fileIds(site.fileIdx)))
+      val named = typeExprHeads(files(site.fileIdx).symbols, site.definition).flatMap { head =>
+        lookupWritten(kb, head, site.scope) match
+          case ResolveResult.Found(sym) if aliases(sym) => Some(sym)
+          case _ => None
+      }.distinct
+      site.sym -> named
+    }.toMap
+    def shortName(sym: TermSymbol): String = kb.qualifiedNameOf(sym).split('.').last
+    for site <- sites do
+      for chain <- chainBackTo(site.sym, names) do
+        errors += LoadError.Other(
+          s"type alias `${kb.qualifiedNameOf(site.sym)}` reaches its own name through its " +
+          s"definition (${chain.map(shortName).mkString(" -> ")}), so it stands for no type. " +
+          "An alias is the type it is defined as; write a recursive type as a sort with a " +
+          "constructor (`sort Loop  entity loop(items: List[T = Self])  end`)",
+          site.span)
+
+  /** The chain from `alias` back to itself through the aliases each definition names —
+    * `A, B, A` for `sort A = B`, `sort B = A` — or `None` when `alias` is on none.
+    * Breadth-first, so the chain named is a shortest one. */
+  private def chainBackTo(
+    alias: TermSymbol, names: Map[TermSymbol, IndexedSeq[TermSymbol]]
+  ): Option[IndexedSeq[TermSymbol]] =
+    val reached = HashMap.empty[TermSymbol, TermSymbol]
+    val queue = scala.collection.mutable.Queue(alias)
+    var found: Option[IndexedSeq[TermSymbol]] = None
+    while found.isEmpty && queue.nonEmpty do
+      val at = queue.dequeue()
+      val named = names.getOrElse(at, IndexedSeq.empty)
+      if named.contains(alias) then
+        var chain = List(at, alias)
+        var back = at
+        while back != alias do
+          back = reached(back)
+          chain = back :: chain
+        found = Some(chain.toIndexedSeq)
+      else
+        for next <- named if !reached.contains(next) do
+          reached(next) = at
+          queue.enqueue(next)
+    found
 
   // ── Pass 3: rule-introduced functors ─────────────────────────
 

@@ -1118,15 +1118,19 @@ pub(super) fn lambda_written_arity(lambda_occ: &Rc<NodeOccurrence>) -> usize {
 
 // ── Operation info lookup ──────────────────────────────────────
 
-pub(super) fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<TermId> {
+/// The operation's declared result type, on whichever carrier it rides: a type that holds
+/// a value, or one written through an alias, is an occurrence and no term. Read as a term
+/// alone it answered `None` for such an operation, and a bare reference to a NULLARY one —
+/// `pi`, `minValue`, where the result type decides the zero-arg-call reading — was then
+/// "expected resolved name, got unresolved" (MEASURED).
+pub(super) fn lookup_operation_return_type(kb: &KnowledgeBase, functor: Symbol) -> Option<Value> {
     lookup_operation_field(kb, functor, "return_type")
 }
 
-fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> Option<TermId> {
+fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> Option<Value> {
     // WI-348: carrier-agnostic — the OperationInfo head may be a value fact
     // (Node-carrying) for ops with a `denoted` effect. Read fields through the
-    // shared `op_info` helpers, which view either carrier. This path serves
-    // `lookup_operation_return_type`, whose `field` is always ground.
+    // shared `op_info` helpers, which view either carrier.
     //
     // WI-20260912-1QVWA — the third keyed reader of these facts, and it had the same
     // miss shape as the two in `op_info`: asked about a functor that is not an
@@ -1135,7 +1139,7 @@ fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> O
     for rid in crate::kb::op_info::op_info_fact_rids(kb, functor) {
         let head = kb.rule_head_value(rid);
         if crate::kb::op_info::head_name_ref(kb, head) == Some(functor) {
-            return crate::kb::op_info::head_field_term(kb, head, field);
+            return crate::kb::op_info::head_field_value(kb, head, field);
         }
     }
     None

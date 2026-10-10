@@ -219,7 +219,7 @@ end
             "wi80zv8b.fixed",
             "Pair.il(pair(l: 1, r: 2), pair(l: \"x\", r: 1))",
         )),
-        &["il.o (op-arg): expected Pair[L = Int64], got Pair[L = String"],
+        &["il.o (op-arg): expected IntPair (Pair[L = Int64]), got Pair[L = String"],
         "an argument against the slot the alias fixes",
     );
 }

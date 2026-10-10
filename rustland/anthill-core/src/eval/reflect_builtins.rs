@@ -341,16 +341,17 @@ pub(super) fn kb_operations(interp: &mut Interpreter, args: &[Value]) -> Result<
     let kb = interp.kb_mut();
 
     // The shared reader walks the `OperationInfo` facts through the `op_info`
-    // funnel (WI-348/548): `name` / `return_type` / `params` / `meta` are ground
-    // `TermId`s, while `effects` / `requires` / `ensures` ride as carrier-faithful
-    // `Value`s (a `Modify[c]` label or denoted precondition stays a `Value::Node`).
+    // funnel (WI-348/548): `name` / `meta` are ground `TermId`s, while every type —
+    // `return_type`, a parameter's, an effect label — and the `requires` / `ensures`
+    // clauses ride as carrier-faithful `Value`s (a `Modify[c]` label, a denoted
+    // precondition or a type written through an alias stays a `Value::Node`).
     // The interpreter is dynamically typed, so the spec's `List[NodeOccurrence]`
     // contract fields just hold those clause `Value`s directly. `requires` carries
     // the loader's synthetic `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
     // is user clauses only.
     let mut entries: Vec<Value> = Vec::new();
     for rec in reader::read_operations(kb, sort_sym).map_err(EvalError::KbReadFailed)? {
-        let params_v = build_list_value(syms, rec.params.into_iter().map(Value::term).collect());
+        let params_v = build_list_value(syms, rec.params);
         let effects_v = build_list_value(syms, rec.effects);
         let requires_v = build_list_value(syms, rec.requires);
         let ensures_v = build_list_value(syms, rec.ensures);
@@ -367,7 +368,7 @@ pub(super) fn kb_operations(interp: &mut Interpreter, args: &[Value]) -> Result<
         let fields = vec![
             (syms.f_name, Value::term(rec.name)),
             (syms.f_params, params_v),
-            (syms.f_return_type, Value::term(rec.return_type)),
+            (syms.f_return_type, rec.return_type),
             (syms.f_effects, effects_v),
             (syms.f_requires, requires_v),
             (syms.f_ensures, ensures_v),
@@ -2681,6 +2682,51 @@ end
                 .map(|(_, v)| v.clone()),
             _ => None,
         }
+    }
+
+    /// An operation's parameters and result are surfaced on whichever carrier their types
+    /// ride: one written through an alias is an occurrence, not a term.
+    ///
+    /// BACKED OUT (`read_operations` taking `return_type` and `params` as terms): this
+    /// test FAILS — each operation is surfaced with no parameter, and one whose result
+    /// type rides an occurrence is not surfaced at all.
+    #[test]
+    fn kb_operations_keeps_a_parameter_and_a_result_typed_by_an_alias() {
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.ops_alias
+  import anthill.prelude.Int64
+
+  sort Money = Int64
+  sort Acct
+    entity acct(n: Int64)
+    operation pay(a: Acct, m: Money) -> Money = m
+    operation fee(a: Acct, m: Money) -> Int64 = m
+  end
+end
+"#,
+        );
+        let acct = {
+            let kb = interp.kb_mut();
+            Value::term(kb.resolve_qualified_name_term("test.ops_alias.Acct"))
+        };
+        let result = interp
+            .call("anthill.reflect.KB.operations", &[Value::Unit, acct])
+            .expect("operations call");
+        let ops = list_values(&interp, result);
+        let params_of = |interp: &Interpreter, short: &str| -> usize {
+            let op = ops
+                .iter()
+                .find(|op| {
+                    entity_field(interp, op, "name")
+                        .and_then(|n| interp.kb().value_symbol(&n))
+                        .is_some_and(|s| interp.kb().local_name_of(s) == short)
+                })
+                .unwrap_or_else(|| panic!("`{short}` is one of `Acct`'s operations"));
+            list_values(interp, entity_field(interp, op, "params").expect("params")).len()
+        };
+        assert_eq!(params_of(&interp, "pay"), 2);
+        assert_eq!(params_of(&interp, "fee"), 2);
     }
 
     #[test]

@@ -4817,8 +4817,7 @@ pub(super) fn check_apply_iter(
     // WI-1078 runs on is absent. `fn_sym` is passed anyway so the site cannot silently drift
     // out of the set if the Path-1 gate is ever widened.
     lookup_operation_return_type(kb, fn_sym)
-        .map(|ty| {
-            let ret = Value::term(ty);
+        .map(|ret| {
             let ret = open_existential_return(
                 kb,
                 fn_sym,

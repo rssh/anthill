@@ -34,9 +34,10 @@ use smallvec::SmallVec;
 
 use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
+use super::term_view::{TermView, ViewHead};
 use super::typing::{
     external_effects, extract_effect_resource_sym, extract_sort_ref_sym, extract_type,
-    extract_type_param, substitute_ref_syms, TypeExtractor, TypingEnv,
+    extract_type_param, substitute_ref_syms, view_any_child, TypeExtractor, TypingEnv,
 };
 use super::KnowledgeBase;
 use crate::eval::value::Value;
@@ -214,31 +215,33 @@ pub(crate) fn is_result_region_sym(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// needs type-param-aware reachability over sort definitions, deferred to
 /// proposal 046. Unreachable in the current stdlib: no op returns a
 /// fresh-cell-bearing named sort.
-pub(crate) fn result_type_admits_region(
+pub(crate) fn result_type_admits_region<V: TermView>(
     kb: &KnowledgeBase,
-    ty: TermId,
+    ty: &V,
     regions: &HashSet<Symbol>,
 ) -> bool {
     // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
     // bare `Ref(S)` a type-arg takes (WI-361).
-    if let Some(s) = extract_sort_ref_sym(kb, &super::term_view::TermIdView(ty)) {
+    if let Some(s) = extract_sort_ref_sym(kb, ty) {
         if regions.contains(&s) {
             return true;
         }
     }
-    // WI-361: a term-backed parameterized region (`-> Cell[V]` = `Fn{Cell, named}`)
-    // carries its base sort as the FUNCTOR, which `subterms()` excludes — check it
-    // directly so the region is still admitted (the deep `parameterized(base:
-    // sort_ref(Cell), …)` form keeps the base reachable via the subterm recursion).
-    if let Term::Fn { functor, .. } = kb.get_term(ty) {
-        if regions.contains(functor) {
-            return true;
-        }
+    let ViewHead::Functor {
+        functor, pos_arity, ..
+    } = ty.head(kb)
+    else {
+        return false;
+    };
+    // WI-361: a parameterized region (`-> Cell[V]`) carries its base sort as the
+    // FUNCTOR, which the children exclude — check it directly so the region is still
+    // admitted.
+    if functor.is_some_and(|f| regions.contains(&f)) {
+        return true;
     }
-    kb.get_term(ty)
-        .subterms()
-        .iter()
-        .any(|&child| result_type_admits_region(kb, child, regions))
+    view_any_child(kb, ty, pos_arity, |child| {
+        result_type_admits_region(kb, child, regions)
+    })
 }
 
 /// Re-key an effect's resource symbol `from` → `to` (a callee's
@@ -336,15 +339,14 @@ pub(crate) fn op_boundary_effects(
     let mut op_result_sym_memo: Option<Option<Symbol>> = None;
     // 1. Existing local-resource drop (let/match-bound names).
     let after_local = external_effects(kb, env, effects);
-    // 2. Result-region masking, keyed on whether the result can carry one.
-    // WI-341: the return type is carrier-agnostic. A `Value::Node` return type is
-    // denoted-bearing — an op returning a `Modify`-carrying callback; a function
-    // value carries no escaping DATA region, so it does not admit one (and such
-    // an op never has a `Modify[result]` in its row to mask anyway).
-    let admits = match return_type {
-        Value::Term { id: t, .. } => result_type_admits_region(kb, *t, regions),
-        _ => false,
-    };
+    // 2. Result-region masking, keyed on whether the result can carry one — asked of
+    // the type's structure through the view, whichever carrier it rides. A result
+    // type that was no term answered "no" outright, as a function value's; so an
+    // operation returning a fresh cell through a type that holds a value, or one
+    // written through an alias, had its `Modify[result]` masked and owed no
+    // declaration (MEASURED: `dup(n: Int64) -> Cell` loaded with the `Cell` on an
+    // occurrence).
+    let admits = result_type_admits_region(kb, return_type, regions);
     // WI-353: candidate `into` places for a callback-parameter `Modify` — the
     // op's own DATA argument places plus its `result`. Built lazily (only the
     // rare `CallbackParam` arm reads it; the common op carries no such effect).

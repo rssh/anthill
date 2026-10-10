@@ -63,3 +63,34 @@ fn missing_entity_returns_error() {
     let result = emit_entity_struct(&mut kb, "DoesNotExist");
     assert!(result.is_err(), "expected error for missing entity");
 }
+
+/// A field whose type holds a value has no C++ spelling, and is refused by name. It
+/// was dropped from the struct in silence: the entity below emitted `struct Slot {
+/// int64_t id; };`.
+///
+/// BACKED OUT (the field filtered out where its type is no term): this test FAILS,
+/// the struct is emitted without `data`.
+#[test]
+fn a_field_whose_type_holds_a_value_is_refused_by_name() {
+    let source = r#"
+        namespace test.slot
+          import anthill.prelude.{Int64}
+          sort Buf
+            sort T = ?
+            sort N = ?
+            entity buf(v: T)
+          end
+          entity Slot(id: Int64, data: Buf[T = Int64, N = 3])
+        end
+    "#;
+
+    let mut kb = load_kb_with(source);
+    let err = emit_entity_struct(&mut kb, "test.slot.Slot")
+        .expect_err("a field whose type holds a value has no C++ struct member");
+    assert!(
+        err.message.contains("entity 'test.slot.Slot' field 'data'")
+            && err.message.contains("holds a value"),
+        "{}",
+        err.message
+    );
+}

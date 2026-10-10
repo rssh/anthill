@@ -15748,9 +15748,9 @@ fn declare_file_field_types(
 /// finds its canonical variable.
 ///
 /// In rounds: each walks every file and records the aliases whose named aliases are all
-/// recorded. A chain that comes back to itself never becomes ready; the last round records
-/// what is left in source order, and the readers refuse such an alias by name
-/// (`alias_expansion`'s `Cycle`). Both emitters dedup, so the declaration and load passes
+/// recorded. A chain that comes back to itself never becomes ready: the last round refuses
+/// each alias on one where it is declared ([`AliasRound::Rest`]) and records what is left
+/// in source order. Both emitters dedup, so the declaration and load passes
 /// re-encountering an alias no-op.
 fn declare_type_aliases(
     kb: &mut KnowledgeBase,
@@ -15762,6 +15762,7 @@ fn declare_type_aliases(
     let global = kb.global_scope();
     let mut errors = Vec::new();
     let mut pending: HashSet<Symbol> = HashSet::new();
+    let mut names: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
     let mut round = AliasRound::Collect;
     loop {
         let mut progress = false;
@@ -15772,6 +15773,7 @@ fn declare_type_aliases(
             let mut pass = AliasDeclarePass {
                 loader: &mut loader,
                 pending: &mut pending,
+                names: &mut names,
                 round,
                 progress: &mut progress,
             };
@@ -15784,7 +15786,8 @@ fn declare_type_aliases(
             AliasRound::Collect => AliasRound::Ready,
             AliasRound::Ready if pending.is_empty() => break,
             AliasRound::Ready if progress => AliasRound::Ready,
-            AliasRound::Ready => AliasRound::Rest,
+            AliasRound::Ready => AliasRound::Names,
+            AliasRound::Names => AliasRound::Rest,
             AliasRound::Rest => break,
         };
     }
@@ -15798,13 +15801,23 @@ enum AliasRound {
     Collect,
     /// Record each pending alias whose definition names no pending alias.
     Ready,
-    /// Record what is left — a cycle — in source order.
+    /// Of each alias still pending, note the pending aliases its definition names: the
+    /// graph the last round reads a chain off.
+    Names,
+    /// What is left never became ready: an alias whose definition reaches its own name,
+    /// and the aliases that name one. The first is refused where it is declared, naming
+    /// the chain; each is recorded, in source order and as written, so a name that cites
+    /// it still resolves. A use of a refused alias is judged like any other and may be
+    /// reported beside the refusal: `f(5)` over `f(x: A)` is "expected B, got Int64".
     Rest,
 }
 
 struct AliasDeclarePass<'l, 'a> {
     loader: &'l mut Loader<'a>,
     pending: &'l mut HashSet<Symbol>,
+    /// The pending aliases each still-pending alias's definition names
+    /// ([`AliasRound::Names`]).
+    names: &'l mut HashMap<Symbol, Vec<Symbol>>,
     round: AliasRound,
     progress: &'l mut bool,
 }
@@ -15835,9 +15848,19 @@ impl AliasDeclarePass<'_, '_> {
                     if !self.pending.contains(&sym) {
                         continue;
                     }
-                    if round == AliasRound::Ready && self.names_pending_alias(&abs.definition, sym)
-                    {
-                        continue;
+                    match round {
+                        AliasRound::Collect => unreachable!("`Collect` is the arms above"),
+                        AliasRound::Ready => {
+                            if !self.pending_aliases_named(&abs.definition).is_empty() {
+                                continue;
+                            }
+                        }
+                        AliasRound::Names => {
+                            let named = self.pending_aliases_named(&abs.definition);
+                            self.names.insert(sym, named);
+                            continue;
+                        }
+                        AliasRound::Rest => self.refuse_alias_reaching_itself(sym, abs),
                     }
                     self.loader.load_abstract_sort(abs, domain);
                     self.pending.remove(&sym);
@@ -15847,18 +15870,82 @@ impl AliasDeclarePass<'_, '_> {
         }
     }
 
-    /// Does `ty` name — by any leading part of any name in it — an alias still waiting to
-    /// be recorded, other than `this`?
-    fn names_pending_alias(&self, ty: &TypeExpr, this: Symbol) -> bool {
+    /// The aliases still waiting to be recorded that `ty` names — by any leading part of
+    /// any name in it — the alias being declared among them: an alias that names itself
+    /// is never ready.
+    fn pending_aliases_named(&self, ty: &TypeExpr) -> Vec<Symbol> {
         let mut heads: Vec<String> = Vec::new();
         collect_type_expr_heads(&self.loader.parsed.symbols, ty, &mut heads);
-        heads.iter().any(|h| {
-            matches!(
-                resolve_name_in_kb(self.loader.kb, h, self.loader.current_scope),
-                ResolveResult::Found(s) if s != this && self.pending.contains(&s)
-            )
-        })
+        let mut named: Vec<Symbol> = Vec::new();
+        for head in &heads {
+            if let ResolveResult::Found(s) =
+                resolve_name_in_kb(self.loader.kb, head, self.loader.current_scope)
+            {
+                if self.pending.contains(&s) && !named.contains(&s) {
+                    named.push(s);
+                }
+            }
+        }
+        named
     }
+
+    /// A type alias whose definition reaches its own name — `sort S = S`, `sort A = B`
+    /// with `sort B = A`, `sort Loop = List[T = Loop]` — is refused where it is declared,
+    /// naming the chain. An alias is its definition, so such a one would be an infinite
+    /// type; a recursive type is written through a sort with a constructor, which gives
+    /// the recursion a value to stand on.
+    ///
+    /// It loaded, and was a name nothing conforms to: `f(x: A)` refused every argument,
+    /// and a type naming `Loop` twice read it at two depths.
+    fn refuse_alias_reaching_itself(&mut self, alias: Symbol, decl: &AbstractSort) {
+        let Some(chain) = chain_back_to(alias, self.names) else {
+            // It names an alias that reaches itself, and is not on the chain: that one is
+            // refused at its own declaration.
+            return;
+        };
+        let kb = &*self.loader.kb;
+        let chain: Vec<&str> = chain.iter().map(|s| kb.local_name_of(*s)).collect();
+        let site = SourceSpan::from_span(self.loader.source_id, decl.span);
+        self.loader.errors.push(LoadError::Other {
+            message: format!(
+                "{}: type alias `{}` reaches its own name through its definition ({}), so it \
+                 stands for no type. An alias is the type it is defined as; write a \
+                 recursive type as a sort with a constructor (`sort Loop  entity \
+                 loop(items: List[T = Self])  end`)",
+                render_decl_site(kb, site),
+                kb.qualified_name_of(alias),
+                chain.join(" -> "),
+            ),
+        });
+    }
+}
+
+/// The chain from `alias` back to itself through the aliases each definition names —
+/// `[A, B, A]` for `sort A = B`, `sort B = A` — or `None` when `alias` is not on one.
+/// Breadth-first, so the chain named is a shortest one.
+fn chain_back_to(alias: Symbol, names: &HashMap<Symbol, Vec<Symbol>>) -> Option<Vec<Symbol>> {
+    let mut reached: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut queue: std::collections::VecDeque<Symbol> = std::collections::VecDeque::new();
+    queue.push_back(alias);
+    while let Some(at) = queue.pop_front() {
+        for &next in names.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+            if next == alias {
+                let mut chain = vec![alias, at];
+                let mut back = at;
+                while back != alias {
+                    back = reached[&back];
+                    chain.push(back);
+                }
+                chain.reverse();
+                return Some(chain);
+            }
+            if !reached.contains_key(&next) {
+                reached.insert(next, at);
+                queue.push_back(next);
+            }
+        }
+    }
+    None
 }
 
 /// Every leading part of every name written in `ty` — `WisStore` and `WisStore.State` of
@@ -20665,8 +20752,8 @@ fn list_literal_lowering(
     functor: Symbol,
     has_named_args: bool,
     from_bracket_surface: bool,
-    expected: Option<TermId>,
-) -> Option<Option<TermId>> {
+    expected: Option<&Value>,
+) -> Option<Option<Value>> {
     if !from_bracket_surface
         || has_named_args
         || kb.qualified_name_of(functor) != dt::qualified(dt::LIST_LITERAL)
@@ -20674,26 +20761,21 @@ fn list_literal_lowering(
         return None;
     }
     match expected {
-        Some(e) if super::typing::is_type_variable(kb, &TermIdView(e)) => Some(None),
+        Some(e) if super::typing::is_type_variable(kb, e) => Some(None),
         Some(e) => Loader::find_list_element_type(kb, e),
         None => Some(None),
     }
 }
 
-/// WI-1096 — the declared type of `functor`'s `field` argument, narrowed to a ground
-/// `TermId`, or `None` when the functor declares no such field. The query converter's
-/// read of the same registry [`Loader::convert_term_with_expected`] uses, so both feed
-/// [`list_literal_lowering`] the same hint. WI-342: a `denoted`-bearing field type
-/// rides as `Value::Node` and is no literal-typing hint — narrowed out here exactly as
-/// the loader narrows it.
-fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Option<TermId> {
+/// WI-1096 — the declared type of `functor`'s `field` argument, on whichever carrier it
+/// rides, or `None` when the functor declares no such field. The query converter's read
+/// of the same registry [`Loader::convert_term_with_expected`] uses, so both feed
+/// [`list_literal_lowering`] the same hint.
+fn declared_field_type(kb: &KnowledgeBase, functor: Symbol, field: Symbol) -> Option<Value> {
     kb.entity_field_types(functor)?
         .iter()
         .find(|(s, _)| *s == field)
-        .and_then(|(_, t)| match t {
-            Value::Term { id, .. } => Some(*id),
-            _ => None,
-        })
+        .map(|(_, t)| t.clone())
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -20881,9 +20963,9 @@ fn query_child_fold(
     kb: &KnowledgeBase,
     fold: ConstFold,
     slot: Option<&super::GoalSlot>,
-    expected: Option<TermId>,
+    expected: Option<&Value>,
 ) -> ConstFold {
-    if expected.is_some_and(|e| super::typing::is_reflect_term_type(kb, &TermIdView(e))) {
+    if expected.is_some_and(|e| super::typing::is_reflect_term_type(kb, e)) {
         return ConstFold::Off;
     }
     fold.child(slot)
@@ -20899,7 +20981,7 @@ fn convert_query_term_expecting(
     parse_id: TermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
-    expected: Option<TermId>,
+    expected: Option<Value>,
     // WI-20261001-KDMQS — this node's const-fold state (`ConstFold`): the pattern itself is
     // a goal, its arguments data slots, where a const is its value — so a pattern and the
     // fact it searches for fold alike.
@@ -20974,7 +21056,7 @@ fn convert_query_term_expecting(
                 kb_functor,
                 !named_args.is_empty(),
                 parse_terms.is_collection_literal(parse_id),
-                expected,
+                expected.as_ref(),
             ) {
                 let items: Vec<Rc<NodeOccurrence>> = pos_args
                     .iter()
@@ -20986,7 +21068,7 @@ fn convert_query_term_expecting(
                             id,
                             scope,
                             var_map,
-                            elem_expected,
+                            elem_expected.clone(),
                             fold.child(None),
                         )
                     })
@@ -21042,8 +21124,12 @@ fn convert_query_term_expecting(
                 .enumerate()
                 .map(|(i, &id)| {
                     let exp = pos_field_type(kb, i);
-                    let child =
-                        query_child_fold(kb, fold, goal_slots.iter().find(|s| s.index == i), exp);
+                    let child = query_child_fold(
+                        kb,
+                        fold,
+                        goal_slots.iter().find(|s| s.index == i),
+                        exp.as_ref(),
+                    );
                     convert_query_term_expecting(
                         kb,
                         parse_terms,
@@ -21062,7 +21148,7 @@ fn convert_query_term_expecting(
                     let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
                     let exp = declared_field_type(kb, kb_functor, kb_sym);
-                    let child = query_child_fold(kb, fold, None, exp);
+                    let child = query_child_fold(kb, fold, None, exp.as_ref());
                     (
                         kb_sym,
                         convert_query_term_expecting(
@@ -22608,6 +22694,17 @@ impl ClauseHead {
     }
 }
 
+/// THE NODE-CARRIER CONTROL — `ANTHILL_TEST_NODE_CARRIER=1`. Every sort named where a type
+/// alias written bare rides its node ([`Loader::bare_alias_read`]) rides one too, standing
+/// for itself. The node changes no meaning, so a suite must give every test the same
+/// verdict with the switch as without it; a test that differs names a reader that does
+/// not read a type through the carrier-neutral view. Read once per process.
+/// `rustland/CLAUDE.md` has the run.
+fn node_carrier_control() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ANTHILL_TEST_NODE_CARRIER").is_ok_and(|v| v == "1"))
+}
+
 /// Where a written type stands ([`Loader::type_expr_to_child`]), which decides whether a
 /// type alias written bare is read through ([`Loader::bare_alias_type`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22764,6 +22861,16 @@ struct Loader<'a> {
     // `s.Member` spelling must never load as an opaque nominal sort literally
     // named "Sort.Member".
     in_type_position: bool,
+    /// While set, a type alias written bare is lowered to a
+    /// [`node_occurrence::TypeNode::Aliased`] occurrence, which keeps the name beside the
+    /// type it stands for, instead of to that type's shared term. Set around a type whose
+    /// written name is kept ([`Self::written_type_to_value`]).
+    alias_nodes: bool,
+    /// The annotations of the typed binders (`(x: T)`) of the expression being converted
+    /// whose type was written through a type alias, each under its binder's own symbol,
+    /// until the frame that builds the binder's pattern occurrence places it
+    /// ([`Self::pattern_src`]). The pattern's term cannot hold the name.
+    written_binder_anns: HashMap<Symbol, Rc<NodeOccurrence>>,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
     // a value expression in an op body means the dispatched Bool VALUE op
@@ -23279,6 +23386,8 @@ impl<'a> Loader<'a> {
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
             in_type_position: false,
+            alias_nodes: false,
+            written_binder_anns: HashMap::new(),
             in_op_body_value: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
@@ -24527,10 +24636,9 @@ impl<'a> Loader<'a> {
         n == "anthill.prelude.List" || n == "anthill.prelude.List.List"
     }
 
-    /// True iff `ty` is the `List` sort. WI-361 dual-form: the term-backed bare
-    /// sort `Ref(List)` or the deep `sort_ref(name: Ref(List))`.
-    fn is_list_sort_ref(kb: &KnowledgeBase, ty: TermId) -> bool {
-        extract_sort_ref_sym(kb, &TermIdView(ty)).is_some_and(|s| Self::is_list_sort_sym(kb, s))
+    /// True iff `ty` is the `List` sort, written bare.
+    fn is_list_sort_ref(kb: &KnowledgeBase, ty: &Value) -> bool {
+        extract_sort_ref_sym(kb, ty).is_some_and(|s| Self::is_list_sort_sym(kb, s))
     }
 
     /// `Some(element_hint)` if `ty` is List-shaped, else `None` — outer
@@ -24550,15 +24658,13 @@ impl<'a> Loader<'a> {
     /// place it does. Found by review of the WI-1096 default change: the behaviour
     /// predates it, but that change makes "a declared non-`List` collection keeps its
     /// literal as written" normative (spec §4.6), which this was quietly violating.
-    fn find_list_element_type(kb: &KnowledgeBase, ty: TermId) -> Option<Option<TermId>> {
+    fn find_list_element_type(kb: &KnowledgeBase, ty: &Value) -> Option<Option<Value>> {
         if Self::is_list_sort_ref(kb, ty) {
             return Some(None);
         }
-        // WI-361: a parameterized `List[T=X]` is deep `parameterized(base: List,
-        // bindings)` or term-backed `Fn{List, named}` — read base + bindings
-        // form-agnostically via `extract_type`.
-        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &TermIdView(ty))
-        else {
+        // WI-361: a parameterized `List[T=X]` — read base + bindings on whichever carrier
+        // the type rides, via `extract_type`.
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, ty) else {
             return None;
         };
         if Self::is_list_sort_sym(kb, base) {
@@ -24567,26 +24673,18 @@ impl<'a> Loader<'a> {
             let hint = bindings
                 .iter()
                 .find(|(p, _)| kb.local_name_of(*p) == "T")
-                .and_then(|(_, v)| match v {
-                    Value::Term { id: t, .. } => Some(*t),
-                    _ => None,
-                });
+                .map(|(_, v)| v.clone());
             return Some(hint);
         }
 
         // The payload descent, gated on the wrapper the loader also coerces INTO —
         // see the WI-1096 note above for why the two must agree.
-        if !super::typing::is_option_type(kb, &TermIdView(ty)) {
+        if !super::typing::is_option_type(kb, ty) {
             return None;
         }
-        for (_param, value) in &bindings {
-            if let Value::Term { id: v, .. } = value {
-                if let Some(inner) = Self::find_list_element_type(kb, *v) {
-                    return Some(inner);
-                }
-            }
-        }
-        None
+        bindings
+            .iter()
+            .find_map(|(_param, value)| Self::find_list_element_type(kb, value))
     }
 
     /// WI-408 (loader leg of the some-insertion pass): a bare value supplied
@@ -24600,9 +24698,9 @@ impl<'a> Loader<'a> {
     /// headed by `Option.some`/`Option.none`. A constructor PATTERN in an
     /// Option slot (`depends_on: cons(…)` in a rule body) wraps like a value
     /// — the pattern then matches the wrapped facts, preserving rule meaning.
-    fn wrap_bare_option_value(&mut self, term: TermId, expected: Option<TermId>) -> TermId {
+    fn wrap_bare_option_value(&mut self, term: TermId, expected: Option<&Value>) -> TermId {
         let Some(exp) = expected else { return term };
-        if !super::typing::is_option_type(self.kb, &TermIdView(exp)) {
+        if !super::typing::is_option_type(self.kb, exp) {
             return term;
         }
         let head_functor = match self.kb.get_term(term) {
@@ -25930,9 +26028,10 @@ impl<'a> Loader<'a> {
     /// would silently match only `E`s whose optional field is `none()`. Clear
     /// `in_value_position` for that field's subtree; every other field converts under
     /// the ambient context.
-    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
-        let quoted =
-            expected.is_some_and(|e| super::typing::is_reflect_term_type(self.kb, &TermIdView(e)));
+    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
+        let quoted = expected
+            .as_ref()
+            .is_some_and(|e| super::typing::is_reflect_term_type(self.kb, e));
         // WI-20260904-B8ESG — AND THE NAMES INSIDE IT DENOTE NOTHING BY DESIGN, which is
         // why this flag is separate from the `in_value_position` clear below rather than
         // folded into it: that one is conditional on already being in a value position,
@@ -25986,7 +26085,7 @@ impl<'a> Loader<'a> {
     /// WI-20261001-KDMQS: and `const_fold` the same way. A node sets its children's state
     /// before converting each one, so the CALLER's state must come back when the node is
     /// done.
-    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
         self.term_depth = saved + 1;
@@ -25996,7 +26095,7 @@ impl<'a> Loader<'a> {
         converted
     }
 
-    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
+    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
             if let Some(name) = self.parse_arg_type_name(parse_id) {
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
@@ -26457,17 +26556,15 @@ impl<'a> Loader<'a> {
                 // when they did, a query could not match the fact it had just printed.
                 // Its doc carries the rule and the measurement.
                 //
-                // WI-342: a `denoted`-bearing (value-in-type) field type never reaches
-                // here — the `exp` reads below narrow to a ground `TermId` — so it
-                // arrives as `None` and takes the default. No such collection sort
-                // exists today; a future one would need a carrier-agnostic read at the
-                // hint, not a wider default here.
+                // The hint is the declared type on whichever carrier it rides: a
+                // collection of a type that holds a value names its collection as any
+                // other does.
                 let lower_as_list = list_literal_lowering(
                     self.kb,
                     new_functor,
                     !named_args.is_empty(),
                     self.parsed.terms.is_collection_literal(parse_id),
-                    expected,
+                    expected.as_ref(),
                 );
                 if let Some(elem_expected) = lower_as_list {
                     let items: Vec<TermId> = pos_args
@@ -26475,7 +26572,7 @@ impl<'a> Loader<'a> {
                         // WI-716: route through `convert_arg_value` so a `List[Term]`
                         // element (a quoted pattern) clears the value flag like a bare
                         // `Term` field — its omitted optionals stay vars, not `none()`.
-                        .map(|&id| self.convert_arg_value(id, elem_expected))
+                        .map(|&id| self.convert_arg_value(id, elem_expected.clone()))
                         .collect();
                     let kb_id = self.kb.build_list(&items);
                     self.term_map.insert(parse_id.raw(), kb_id);
@@ -26495,18 +26592,11 @@ impl<'a> Loader<'a> {
                 // would lose the `List[String]` hint and never desugar.
                 let is_some_ctor =
                     self.kb.qualified_name_of(new_functor) == "anthill.prelude.Option.some";
-                let some_payload_hint: Option<TermId> = if is_some_ctor {
+                let some_payload_hint: Option<Value> = if is_some_ctor {
                     expected
-                        .filter(|e| super::typing::is_option_type(self.kb, &TermIdView(*e)))
-                        .and_then(|e| {
-                            super::typing::extract_type_param(self.kb, &TermIdView(e), "T")
-                        })
-                        // A denoted/occurrence (`Value::Node`) payload type is no
-                        // literal-typing hint — narrow to the ground `TermId` only.
-                        .and_then(|v| match v {
-                            Value::Term { id: t, .. } => Some(t),
-                            _ => None,
-                        })
+                        .as_ref()
+                        .filter(|e| super::typing::is_option_type(self.kb, *e))
+                        .and_then(|e| super::typing::extract_type_param(self.kb, e, "T"))
                 } else {
                     None
                 };
@@ -26635,21 +26725,15 @@ impl<'a> Loader<'a> {
                                 }
                             };
                         }
-                        // WI-342: field types are carrier-agnostic; the
-                        // conversion hint only wants a ground `TermId` (a
-                        // denoted-bearing field is no literal-typing hint → None).
-                        let exp = some_payload_hint.or_else(|| {
+                        // The conversion hint is the declared field type, on
+                        // whichever carrier it rides.
+                        let exp = some_payload_hint.clone().or_else(|| {
                             self.kb
                                 .written_entity_field_types(new_functor)
-                                .and_then(|ft| {
-                                    ft.get(i).and_then(|(_, t)| match t {
-                                        Value::Term { id: t, .. } => Some(*t),
-                                        _ => None,
-                                    })
-                                })
+                                .and_then(|ft| ft.get(i).map(|(_, t)| t.clone()))
                         });
-                        let converted = self.convert_arg_value(id, exp);
-                        self.wrap_bare_option_value(converted, exp)
+                        let converted = self.convert_arg_value(id, exp.clone());
+                        self.wrap_bare_option_value(converted, exp.as_ref())
                     })
                     .collect();
                 // WI-271: skip parse-only ParseAux children (let_expr's
@@ -26694,20 +26778,17 @@ impl<'a> Loader<'a> {
                         let new_sym = self.reintern(sym);
                         // WI-408: `some(value: x)` payload takes the peeled hint
                         // (see `some_payload_hint` above the positional loop).
-                        let exp = some_payload_hint.or_else(|| {
+                        let exp = some_payload_hint.clone().or_else(|| {
                             self.kb
                                 .written_entity_field_types(new_functor)
                                 .and_then(|ft| {
-                                    ft.iter().find(|(s, _)| *s == new_sym).and_then(
-                                        |(_, t)| match t {
-                                            Value::Term { id: t, .. } => Some(*t),
-                                            _ => None,
-                                        },
-                                    )
+                                    ft.iter()
+                                        .find(|(s, _)| *s == new_sym)
+                                        .map(|(_, t)| t.clone())
                                 })
                         });
-                        let converted = self.convert_arg_value(id, exp);
-                        (new_sym, self.wrap_bare_option_value(converted, exp))
+                        let converted = self.convert_arg_value(id, exp.clone());
+                        (new_sym, self.wrap_bare_option_value(converted, exp.as_ref()))
                     })
                     .collect();
 
@@ -27244,6 +27325,7 @@ impl<'a> Loader<'a> {
         // root is popped below. `convert_expr_term` is never re-entrant.
         self.expr_occ_results.clear();
         self.expr_match_metas.clear();
+        self.written_binder_anns.clear();
         debug_assert_eq!(
             self.occ_suppress, 0,
             "convert_expr_term: stale occ_suppress on entry"
@@ -28641,8 +28723,9 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let pattern = self.pattern_src(pattern, span, None);
                     self.expr_match_metas.push(node_occurrence::BranchMeta {
-                        pattern: node_occurrence::Src::Term(pattern),
+                        pattern,
                         has_guard,
                         span,
                     });
@@ -28695,7 +28778,7 @@ impl<'a> Loader<'a> {
                 // `GoalKey`. Riding the pattern child fixes that with no new slot
                 // on `let_expr` and no new mechanism — the pattern's `type_ann` is
                 // the one the WI-517 binder channel already used.
-                let pattern = self.annotate_let_pattern(outer_parse_id, pattern);
+                let (pattern, written_ann) = self.annotate_let_pattern(outer_parse_id, pattern);
                 let named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
                     (self.expr_syms.k_pattern, pattern),
                     (self.expr_syms.k_value, value),
@@ -28713,12 +28796,10 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let pattern = self.pattern_src(pattern, span, written_ann);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let {
-                            span,
-                            pattern: node_occurrence::Src::Term(pattern),
-                        },
+                        node_occurrence::BuildFrame::Let { span, pattern },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -28741,12 +28822,10 @@ impl<'a> Loader<'a> {
                         self.source_id,
                         self.parsed.terms.span(outer_parse_id),
                     );
+                    let param = self.pattern_src(param, span, None);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Lambda {
-                            span,
-                            param: node_occurrence::Src::Term(param),
-                        },
+                        node_occurrence::BuildFrame::Lambda { span, param },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -29265,7 +29344,7 @@ impl<'a> Loader<'a> {
                     };
                     self.kb.intern(&raw)
                 });
-                let value = self.type_expr_to_value(&b.bound);
+                let value = self.written_type_to_value(&b.bound);
                 (name, value)
             })
             .collect()
@@ -29563,6 +29642,12 @@ impl<'a> Loader<'a> {
     /// annotation back out of it into the pattern occurrence, so the two carriers
     /// hold one value by construction rather than by two writes that must agree.
     ///
+    /// Returned beside it: the annotation as an occurrence, where the type was written
+    /// through a type alias. The term holds the type that stands for and has no place
+    /// for the name, so the frame puts this on the pattern occurrence instead
+    /// ([`Self::pattern_src`]). Both come from one lowering
+    /// ([`Self::lower_written_annotation`]).
+    ///
     /// The lowering is `type_expr_to_value` + `value_to_term` — the SAME pair
     /// `load_pattern_var` has used for a WI-517 typed binder (`(x: T)`) all
     /// along, which is why the "a denoted-bearing type cannot ride a term"
@@ -29576,9 +29661,13 @@ impl<'a> Loader<'a> {
     /// Loud error rather than silently keeping one: before WI-819 the outer one
     /// won and the inner was dropped without a word, which is precisely the kind
     /// of shape-dependent, invisible choice this ticket removes.
-    fn annotate_let_pattern(&mut self, let_parse_id: TermId, pattern: TermId) -> TermId {
+    fn annotate_let_pattern(
+        &mut self,
+        let_parse_id: TermId,
+        pattern: TermId,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         let Some(ty_expr) = self.read_parse_type_annotation(let_parse_id) else {
-            return pattern;
+            return (pattern, None);
         };
         let type_ann_key = self.kb.intern("type_ann");
         // Normalize both spellings of a pattern term up front so the annotation
@@ -29596,22 +29685,22 @@ impl<'a> Loader<'a> {
                 let span = self.parsed.terms.span(let_parse_id);
                 self.errors
                     .push(LoadError::LetAnnotationOnNonPattern { span });
-                return pattern;
+                return (pattern, None);
             }
         };
         if named_args.iter().any(|(k, _)| *k == type_ann_key) {
             let span = self.parsed.terms.span(let_parse_id);
             self.errors.push(LoadError::PatternAnnotatedTwice { span });
-            return pattern;
+            return (pattern, None);
         }
-        let value = self.type_expr_to_value(&ty_expr);
-        let ann = self.lower_pattern_annotation(&value);
+        let (ann, written) = self.lower_written_annotation(&ty_expr, let_parse_id);
         named_args.push((type_ann_key, ann));
-        self.kb.alloc(Term::Fn {
+        let annotated = self.kb.alloc(Term::Fn {
             functor,
             pos_args,
             named_args,
-        })
+        });
+        (annotated, written)
     }
 
     /// WI-819: lower a type `Value` to the `TermId` a pattern's `type_ann` slot
@@ -29629,6 +29718,50 @@ impl<'a> Loader<'a> {
             );
             self.kb.alloc(Term::Bottom)
         })
+    }
+
+    /// A written annotation lowered both ways: the TERM a pattern's `type_ann` slot holds,
+    /// and — where the type was written through a type alias — the occurrence that keeps
+    /// the name for the binder ([`node_occurrence::written_pattern_annotation`]). One
+    /// lowering, so the two say one type.
+    fn lower_written_annotation(
+        &mut self,
+        ty_expr: &TypeExpr,
+        at: TermId,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
+        let value = self.written_type_to_value(ty_expr);
+        let ann = self.lower_pattern_annotation(&value);
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(at));
+        let written = node_occurrence::written_pattern_annotation(self.kb, &value, span);
+        (ann, written)
+    }
+
+    /// The pattern a frame hands the occurrence builder: its term, or — where an
+    /// annotation in it was written through a type alias — the occurrence, built here
+    /// with that annotation on the binder that carries it (`root`: the pattern's own,
+    /// `let p: T`).
+    fn pattern_src(
+        &mut self,
+        pattern: TermId,
+        span: SourceSpan,
+        root: Option<Rc<NodeOccurrence>>,
+    ) -> node_occurrence::Src {
+        if root.is_none() && self.written_binder_anns.is_empty() {
+            return node_occurrence::Src::Term(pattern);
+        }
+        let own = root.is_some();
+        let waiting = self.written_binder_anns.len();
+        let built = node_occurrence::term_to_param_occurrence(self.kb, pattern, span);
+        let placed = node_occurrence::with_written_annotations(
+            &built,
+            root,
+            &mut self.written_binder_anns,
+        );
+        // A pattern that took none of them is still its term's.
+        if !own && self.written_binder_anns.len() == waiting {
+            return node_occurrence::Src::Term(pattern);
+        }
+        node_occurrence::Src::Node(placed)
     }
 
     /// WI-271: the `let pat : T = …` annotation child of a let_expr.
@@ -29707,7 +29840,7 @@ impl<'a> Loader<'a> {
             return self.alias_recv_type(parse_id, callee);
         };
         self.consumed_recv_types.insert(parse_id);
-        Some(self.type_expr_to_value(&te))
+        Some(self.written_type_to_value(&te))
     }
 
     /// The receiver of a call to `callee`, named through a type alias, bare: the sort the
@@ -30499,11 +30632,8 @@ impl<'a> Loader<'a> {
         let Some(ft) = self.kb.written_entity_field_types(functor) else {
             return false;
         };
-        ft.iter().any(|(s, t)| {
-            *s == field
-                && matches!(t, Value::Term { id, .. }
-                    if super::typing::is_reflect_term_type(self.kb, &TermIdView(*id)))
-        })
+        ft.iter()
+            .any(|(s, t)| *s == field && super::typing::is_reflect_term_type(self.kb, t))
     }
 
     fn entity_ctor_children(
@@ -31411,6 +31541,7 @@ impl<'a> Loader<'a> {
     /// no `type` arg, so `type_ann` stays `none()`.
     fn load_pattern_var(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
         let name_term = self.parsed.terms.get(pos_args[0]).clone();
+        let mut binder: Option<Symbol> = None;
         let name_ref = if let Term::Ident(sym) = name_term {
             // WI-550: the binder's identity is the per-site fresh Symbol minted
             // (keyed by this `pattern_var` node) when its scope frame was built —
@@ -31419,6 +31550,7 @@ impl<'a> Loader<'a> {
             // un-framed pattern (none reach here) still gets a unique identity.
             let name = self.parsed.symbols.local_name(sym).to_owned();
             let kb_sym = self.binder_sym(&name, parse_id);
+            binder = Some(kb_sym);
             self.kb.alloc(Term::Ref(kb_sym))
         } else {
             self.convert_term(pos_args[0])
@@ -31427,16 +31559,20 @@ impl<'a> Loader<'a> {
         // an absent key and a `none()` payload carry the same information, and
         // conditional presence is the rule shared by all five pattern entities
         // (it is what keeps `wildcard` NULLARY). Lowered through the same
-        // `lower_pattern_annotation` the `let p: T` spelling uses.
-        let type_ann = self
-            .read_parse_aux(parse_id, "type", |aux| match aux {
-                crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
-                _ => None,
-            })
-            .map(|ty_expr| {
-                let value = self.type_expr_to_value(&ty_expr);
-                self.lower_pattern_annotation(&value)
-            });
+        // `lower_written_annotation` the `let p: T` spelling uses; the written form,
+        // where there is one, waits under the binder's symbol for the frame that
+        // builds this pattern's occurrence.
+        let written_type = self.read_parse_aux(parse_id, "type", |aux| match aux {
+            crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
+            _ => None,
+        });
+        let type_ann = written_type.map(|ty_expr| {
+            let (ann, written) = self.lower_written_annotation(&ty_expr, parse_id);
+            if let (Some(binder), Some(written)) = (binder, written) {
+                self.written_binder_anns.insert(binder, written);
+            }
+            ann
+        });
         let var_pattern_sym = self
             .kb
             .resolve_symbol("anthill.reflect.Pattern.var_pattern");
@@ -31615,6 +31751,17 @@ impl<'a> Loader<'a> {
     /// over [`Self::type_expr_to_child`].
     fn type_expr_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         self.type_expr_to_value_at(ty, TypeSite::Type)
+    }
+
+    /// [`Self::type_expr_to_value`] of a type whose written name is kept: one a
+    /// declaration writes — an operation's parameter, its result, an entity's field, a
+    /// const — and one a call writes, in its bracket or on its receiver. A type alias
+    /// written bare there rides its node ([`Self::alias_nodes`], [`Self::bare_alias_read`]).
+    fn written_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        let saved = std::mem::replace(&mut self.alias_nodes, true);
+        let value = self.type_expr_to_value(ty);
+        self.alias_nodes = saved;
+        value
     }
 
     /// [`Self::type_expr_to_value`] for an element of an operation's own `effects` clause
@@ -32282,24 +32429,61 @@ impl<'a> Loader<'a> {
     /// position ([`Self::bare_alias_type`]). Asked of the child and not of the name, so
     /// every way a name reaches its symbol is covered by one reading: a bare name, a
     /// qualified one, a child of a sort (`Host.HA`), a child reached by a provision.
+    ///
+    /// Where [`Self::alias_nodes`] is set the alias is an OCCURRENCE that holds the name
+    /// as written beside the type it stands for ([`node_occurrence::TypeNode::Aliased`]).
+    /// Every reader of the type's structure reads the type; a message can say the name.
     fn bare_alias_read(
         &self,
         child: node_occurrence::TypeChild,
         site: TypeSite,
+        span: SourceSpan,
+        owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
-        let node_occurrence::TypeChild::Interned(named) = &child else {
+        use node_occurrence::TypeChild;
+        let TypeChild::Interned(named) = &child else {
             return child;
         };
         if site != TypeSite::Type {
             return child;
         }
-        let Term::Ref(alias) = self.kb.get_term(*named) else {
+        let Term::Ref(written) = self.kb.get_term(*named) else {
             return child;
         };
-        match self.bare_alias_type(*alias) {
-            Some(stands_for) => node_occurrence::TypeChild::Interned(stands_for),
-            None => child,
+        let written = *written;
+        let stands_for = match self.bare_alias_type(written) {
+            // An alias of a type parameter (`sort OS = S` inside `sort Outer[S]`) is that
+            // parameter's variable, and stays it: a variable has its own spellings, and
+            // the readers that ask "is this type a variable" match them by carrier
+            // (`typing::resolved_var`, `leaf_held_as_term`, the σ chain end). Wrapped in
+            // a node it was a variable none of them saw — MEASURED: `own(x: OS) -> S = x`
+            // refused, "expected ?S, got ?S".
+            Some(ty) if matches!(self.kb.get_term(ty), Term::Var(_)) => {
+                return TypeChild::Interned(ty)
+            }
+            Some(ty) => TypeChild::Interned(ty),
+            // The node-carrier control: a sort that is no alias rides the node too,
+            // standing for itself. A type PARAMETER's own name is left alone, as an alias
+            // of one is above.
+            None if self.alias_nodes
+                && node_carrier_control()
+                && !super::typing::is_sort_param_symbol(self.kb, written) =>
+            {
+                child
+            }
+            None => return child,
+        };
+        if !self.alias_nodes {
+            return stands_for;
         }
+        TypeChild::Node(NodeOccurrence::new_type(
+            node_occurrence::TypeNode::Aliased {
+                alias: written,
+                stands_for,
+            },
+            span,
+            owner,
+        ))
     }
 
     /// The type a type ALIAS written bare in a type position stands for — `Box[V = Int64]`
@@ -32318,8 +32502,25 @@ impl<'a> Loader<'a> {
     /// written — a chain that comes back to itself — stays so. An alias that also owns
     /// members (`namespace X` beside `sort X = …`) has two readings as a NAME and one as a
     /// type, and is read through here like any other.
+    ///
+    /// AN ALIAS THAT NAMES A TYPE PARAMETER of the sort declaring it — `sort OS = S`,
+    /// `sort OB = Box[V = S]` inside `sort Outer[S]` — is that type INSIDE the sort,
+    /// where the parameter is the sort's. Outside it the parameter is nobody's: read
+    /// through there, `f(x: Outer.OS) -> Int64 = x` took `x` for any type at all, and
+    /// `f("s")` answered the string. It stays the alias's own name there, which nothing
+    /// conforms to.
     fn bare_alias_type(&self, written: Symbol) -> Option<TermId> {
-        self.kb.alias_types.get(&written).copied()
+        let stands_for = *self.kb.alias_types.get(&written)?;
+        let names_no_parameter = super::typing::type_value_is_ground(self.kb, stands_for);
+        (names_no_parameter || self.within_declaring_scope_of(written)).then_some(stands_for)
+    }
+
+    /// Is the scope being lowered in the scope `sym` is declared in, or inside it?
+    fn within_declaring_scope_of(&self, sym: Symbol) -> bool {
+        self.kb.symbols.declaring_scope(sym).is_some_and(|declared_in| {
+            declared_in == self.current_scope
+                || self.kb.symbols.encloses(declared_in, self.current_scope)
+        })
     }
 
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias
@@ -33480,7 +33681,7 @@ impl<'a> Loader<'a> {
                 if name.segments.len() >= 2 {
                     if let Some(child) = self.try_expr_carried_projection(name, span, owner) {
                         // A dotted path to a child of a sort (`Host.HA`) names it here.
-                        return self.bare_alias_read(child, site);
+                        return self.bare_alias_read(child, site, span, owner);
                     }
                     // WI-302 (proposal 027.1): a value FIELD-access path (`result.a`,
                     // `c.contents`, lowercase last segment off a value head) is a
@@ -33494,7 +33695,7 @@ impl<'a> Loader<'a> {
                 }
                 let sort_sym = self.remap_name(name);
                 let child = self.type_name_child(sort_sym, span, owner);
-                self.bare_alias_read(child, site)
+                self.bare_alias_read(child, site, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let written_sym = self.remap_name(name);
@@ -34319,7 +34520,7 @@ impl<'a> Loader<'a> {
             .fields
             .iter()
             .map(|f| {
-                let ty = self.type_expr_to_value(&f.ty);
+                let ty = self.written_type_to_value(&f.ty);
                 (self.reintern(f.name), ty)
             })
             .collect();
@@ -35178,7 +35379,7 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-743 — the type TERM behind a lowered field type, or `None` when the field's
-    /// type has no term spelling (a `Value::Node` carrier).
+    /// type has no term spelling: one that holds a value, or is a projection off one.
     fn domain_field_type_term(&mut self, v: &crate::eval::value::Value) -> Option<TermId> {
         use crate::eval::value::Value;
         match v.carried() {
@@ -35186,6 +35387,11 @@ impl<'a> Loader<'a> {
             // A type PARAMETER in value-position spelling (WI-20260904-02ERR) — the
             // same variable, one carrier out.
             Value::Var(v) => Some(self.kb.alloc(Term::Var(*v))),
+            // A type that rides an occurrence and holds no value — one written through
+            // an alias, at any depth — is named by the term of the type it is.
+            other if !super::typing::type_holds_a_value(self.kb, other) => {
+                node_occurrence::value_to_term(self.kb, other).ok()
+            }
             _ => None,
         }
     }
@@ -37352,7 +37558,7 @@ impl<'a> Loader<'a> {
         self.record_declaration_block(const_sym, MemberKind::Const, c.meta.as_ref(), domain);
 
         // Declared type — always present (grammar-mandatory); store it for the typer.
-        let declared_type = self.type_expr_to_value(&c.ty);
+        let declared_type = self.written_type_to_value(&c.ty);
         self.kb.set_const_type(const_sym, declared_type);
 
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).
@@ -37521,7 +37727,7 @@ impl<'a> Loader<'a> {
                     domain,
                 )
             }
-            None => self.type_expr_to_value(&o.return_type),
+            None => self.written_type_to_value(&o.return_type),
         };
 
         // WI-489: record the `result` binder's static type so a `Modify[result.a]`
@@ -37581,7 +37787,7 @@ impl<'a> Loader<'a> {
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
                 // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
-                let type_value = self.type_expr_to_value(&p.ty);
+                let type_value = self.written_type_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in

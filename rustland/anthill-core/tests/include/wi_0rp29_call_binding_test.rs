@@ -2170,7 +2170,8 @@ end
 /// … AND THEIR CONTROL: `orElse(m, m)` passes the option where `d: k.T` is `Int64`. Read as
 /// wrapped (`k.T` = `MaybeInt`) it loaded and added an entity to an `Int64` at run time
 /// (MEASURED). FAILS under ledger part 31. The refusal names the option the alias stands
-/// for: `m: MaybeInt` is `m: Option[T = Int64]` (WI-20261009-ZY11J).
+/// for, after the name `m` was annotated by: `m: MaybeInt` is `m: Option[T = Int64]`
+/// (WI-20261009-ZY11J).
 #[test]
 fn an_option_alias_is_not_wrapped_control() {
     let src = r#"
@@ -2190,7 +2191,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["type mismatch in orElse.d (op-arg): expected Int64, got Option[T = Int64]"],
+        &["type mismatch in orElse.d (op-arg): expected Int64, got MaybeInt (Option[T = Int64])"],
         "an option passed where the projected payload is expected",
     );
 }

@@ -123,7 +123,6 @@ fn multi_param_arrow_param_not_double_wrapped() {
 /// blob. The ticket's driver case (an operation signature round-tripping).
 #[test]
 fn loaded_arrow_signature_prints_surface() {
-    use anthill_core::eval::Value;
     let src = r#"
 namespace wi173.rt
   import anthill.prelude.{Int64, Bool}
@@ -142,10 +141,7 @@ end
         .iter()
         .find(|(s, _)| *s == g_sym)
         .expect("param g present");
-    let printed = match g_ty {
-        Value::Term { id: t, .. } => TermPrinter::new(&kb).print_term(*t),
-        other => panic!("expected a ground arrow type for g, got {other:?}"),
-    };
+    let printed = crate::common::print_type(&kb, g_ty);
     assert_eq!(
         printed, "(Int64) -> Bool",
         "a loaded callback param's arrow type must print as surface syntax, not the \

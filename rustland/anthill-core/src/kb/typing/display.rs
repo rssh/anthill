@@ -16,10 +16,33 @@ use super::*;
 /// [`crate::kb::KnowledgeBase::effect_row_blocking_equations`] so the defining-equation
 /// request sites render a declined op's row identically.
 pub fn type_display_name_value(kb: &KnowledgeBase, v: &Value) -> String {
+    value_display(kb, v, Spelling::Meaning)
+}
+
+/// Which name a type written through an alias is shown by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Spelling {
+    /// The type it stands for — what every reader of the type sees, and what a message
+    /// shows unless it asks otherwise.
+    Meaning,
+    /// The alias, as the author wrote it ([`written_alias`]).
+    Written,
+}
+
+/// The type `v` AS ITS AUTHOR WROTE IT, where that differs from the type it is: with each
+/// alias it was written through shown by name — `IntBox` for a parameter typed `x:
+/// IntBox`, `List[T = IntBox]` for one typed by a list of them. `None` when no alias was
+/// written in it, which is every type a declaration did not spell through one.
+pub(super) fn type_display_as_written(kb: &KnowledgeBase, v: &Value) -> Option<String> {
+    let written = value_display(kb, v, Spelling::Written);
+    (written != type_display_name_value(kb, v)).then_some(written)
+}
+
+fn value_display(kb: &KnowledgeBase, v: &Value, spelling: Spelling) -> String {
     match v {
         // The one occurrence-only shape lives there; see [`type_display_name_occ`].
-        Value::Node(occ) => type_display_name_occ(kb, occ),
-        other => type_display_name_view(kb, other),
+        Value::Node(occ) => type_display_name_occ(kb, occ, spelling),
+        other => type_display_name_view(kb, other, spelling),
     }
 }
 
@@ -62,12 +85,21 @@ fn literal_display(lit: &Literal) -> String {
 /// The view then heads `Opaque` and the shared walk could only say `?`, dropping the base
 /// AND the bindings. No term twin of this shape exists, so nothing disagrees with it;
 /// what it must not do is regress.
-fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
+fn type_display_name_occ(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    spelling: Spelling,
+) -> String {
+    if spelling == Spelling::Written {
+        if let Some(alias) = crate::kb::node_occurrence::written_alias(kb, occ) {
+            return kb.local_name_of(alias).to_string();
+        }
+    }
     if let NodeKind::Type(TypeNode::Parameterized { base, bindings }) = &occ.kind {
         if !matches!(occ.head(kb), ViewHead::Opaque) {
-            return type_display_name_view(kb, occ);
+            return type_display_name_view(kb, occ, spelling);
         }
-        let base_name = type_child_display_name(kb, base);
+        let base_name = type_child_display_name(kb, base, spelling);
         if bindings.is_empty() {
             return base_name;
         }
@@ -77,21 +109,21 @@ fn type_display_name_occ(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String
                 format!(
                     "{} = {}",
                     kb.local_name_of(*p),
-                    type_child_display_name(kb, c)
+                    type_child_display_name(kb, c, spelling)
                 )
             })
             .collect();
         return format!("{}[{}]", base_name, params.join(", "));
     }
-    type_display_name_view(kb, occ)
+    type_display_name_view(kb, occ, spelling)
 }
 
 /// Display name of a [`TypeChild`]: ground via [`type_display_name`], poisoned
 /// via [`type_display_name_occ`].
-fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild) -> String {
+fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild, spelling: Spelling) -> String {
     match child {
         TypeChild::Interned(t) => type_display_name(kb, *t),
-        TypeChild::Node(n) => type_display_name_occ(kb, n),
+        TypeChild::Node(n) => type_display_name_occ(kb, n, spelling),
     }
 }
 
@@ -149,6 +181,36 @@ fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: b
 /// differing in a param TYPE: the qualification is gated on both arities being
 /// present and UNEQUAL, which no param-type difference satisfies.
 pub(super) fn render_mismatch_pair(
+    kb: &KnowledgeBase,
+    expected: &Value,
+    actual: &Value,
+) -> (String, String) {
+    let (e, a) = render_mismatch_pair_as_types(kb, expected, actual);
+    (
+        named_as_written(kb, expected, e),
+        named_as_written(kb, actual, a),
+    )
+}
+
+/// One side of a mismatch, led by the type as its author wrote it where that is another
+/// spelling: `IntBox (Box[V = Int64])` for a parameter typed `x: IntBox`. The type it IS
+/// stays in the message, since that is what the other side is compared with.
+fn named_as_written(kb: &KnowledgeBase, ty: &Value, rendered: String) -> String {
+    match type_display_as_written(kb, ty) {
+        Some(written) => format!("{written} ({rendered})"),
+        None => rendered,
+    }
+}
+
+/// A declared type as one side of a mismatch whose other side is no type value — a
+/// literal's sort, a constructor's — led by the name it was written by, as
+/// [`render_mismatch_pair`] leads its sides.
+pub(super) fn declared_type_display(kb: &KnowledgeBase, ty: &Value) -> String {
+    named_as_written(kb, ty, type_display_name_value(kb, ty))
+}
+
+/// [`render_mismatch_pair`]'s two sides as the types they are.
+fn render_mismatch_pair_as_types(
     kb: &KnowledgeBase,
     expected: &Value,
     actual: &Value,
@@ -231,7 +293,7 @@ fn arrow_rows_that_differ(
 ) -> Option<(String, String)> {
     let row = |ty: &Value| {
         matches!(type_head(kb, ty), TypeHead::Arrow)
-            .then(|| named_child_display(kb, ty, "effects"))
+            .then(|| named_child_display(kb, ty, "effects", Spelling::Meaning))
     };
     let (e, a) = (row(expected)?, row(actual)?);
     (e != a).then_some((e, a))
@@ -545,7 +607,7 @@ fn arrow_param_list_is_own(kb: &KnowledgeBase, ty: &Value, arity: usize) -> bool
 /// The name a diagnostic shows for a hash-consed type — the `TermId` face of the ONE
 /// walk every carrier goes through. See [`type_display_name_view`].
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
-    type_display_name_view(kb, &TermIdView(ty))
+    type_display_name_view(kb, &TermIdView(ty), Spelling::Meaning)
 }
 
 /// WI-20260904-B1KFS — ONE DISPLAY WALK, SO ONE TYPE HAS ONE NAME ON WHATEVER CARRIER IT
@@ -578,7 +640,7 @@ pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
 /// their order to the INPUT order and `{A, -A}` and `{-A, A}` canonicalize to two
 /// different terms that then fail to unify. That reader takes
 /// [`effect_atom_order_key`] instead, which is this walk's generic arm and nothing else.
-fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
+fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spelling) -> String {
     match v.head(kb) {
         // WI-307 code-review #7: render variables by their NAME, not a `{:?}` that
         // embeds allocation-order indices and would break the
@@ -620,15 +682,15 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
             // render `"?"` (it has no `label` child) instead of its children — a silent
             // drop, in the walk that exists to remove them. `is_list_cons_cell` already
             // keys this way.
-            if let Some(rendered) = qualified_form_display(kb, v, f) {
+            if let Some(rendered) = qualified_form_display(kb, v, f, spelling) {
                 return rendered;
             }
             match kb.local_name_of(f) {
                 // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
                 // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
                 "Arrow" => {
-                    let p = named_child_display(kb, v, "param");
-                    let r = named_child_display(kb, v, "result");
+                    let p = named_child_display(kb, v, "param", spelling);
+                    let r = named_child_display(kb, v, "result", spelling);
                     // WI-791: an arity-1 tuple param is ONE parameter, not a list.
                     let arity = named_child(kb, v, "arity")
                         .and_then(|c| c.literal_int64(kb))
@@ -657,8 +719,8 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
                         .map(|f| {
                             format!(
                                 "{}: {}",
-                                named_child_display(kb, &f, "name"),
-                                named_child_display(kb, &f, "type")
+                                named_child_display(kb, &f, "name", spelling),
+                                named_child_display(kb, &f, "type", spelling)
                             )
                         })
                         .collect();
@@ -672,26 +734,26 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
                 // `ExprCarried[value = …]`, so a neutral-projection type error reads legibly.
                 "ExprCarried" => format!(
                     "{}.{}",
-                    named_child_display(kb, v, "value"),
-                    named_child_display(kb, v, "member")
+                    named_child_display(kb, v, "value", spelling),
+                    named_child_display(kb, v, "member", spelling)
                 ),
                 // WI-428: a rigid type-receiver projection — `P.Key` / `MemStore.Key`.
                 "RigidTypeProjection" => format!(
                     "{}.{}",
-                    named_child_display(kb, v, "var"),
-                    named_child_display(kb, v, "member")
+                    named_child_display(kb, v, "var", spelling),
+                    named_child_display(kb, v, "member", spelling)
                 ),
                 // WI-302: value-in-type — render the carried value directly (`Modify[c]`
                 // shows `c`, not `denoted[value = c]`).
-                "Denoted" => named_child_display(kb, v, "value"),
+                "Denoted" => named_child_display(kb, v, "value", spelling),
                 // WI-320: EffectExpression-in-Type — row braces around the wrapped
                 // expression, whose atoms are the arms just below.
-                "EffectsRows" => format!("{{{}}}", named_child_display(kb, v, "effects_expr")),
+                "EffectsRows" => format!("{{{}}}", named_child_display(kb, v, "effects_expr", spelling)),
                 // A plain application: a parameterized type `S[p = v, …]` (WI-860: the same
                 // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
                 // or an `Expr::Apply` read off a matched fact's carrier binding), and the
                 // raw-term fallback for everything that is not one of the forms above.
-                _ => type_application_display(kb, v, f, pos_arity, NamedOrder::Declared),
+                _ => type_application_display(kb, v, f, pos_arity, NamedOrder::Declared, spelling),
             }
         }
     }
@@ -704,7 +766,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
 /// **A ROW IS RENDERED AS A ROW, not as its fold.** `build_canonical_effects_rows` folds
 /// a row into `merge(a₁, merge(a₂, …, empty_row))`, so a naive `merge => "{l}, {r}"` plus
 /// an empty `empty_row` prints `{External, }` — a trailing separator on every row in the
-/// system, empty rows included. [`join_row_parts`] drops the empty terminator instead.
+/// system, empty rows included. [`row_display`] drops the empty terminator instead.
 ///
 /// **AND AN `absent` KEEPS ITS `-`.** Rendering it as its bare LABEL — which is what the
 /// occurrence renderer did, and what the first draft of this merge adopted — makes
@@ -722,6 +784,7 @@ fn qualified_form_display<V: TermView>(
     kb: &KnowledgeBase,
     v: &V,
     functor: Symbol,
+    spelling: Spelling,
 ) -> Option<String> {
     let qualified = kb.qualified_name_of(functor);
     // WI-302 field path `c.contents` inside a `denoted`, and the `s.provider.K` receiver
@@ -739,25 +802,22 @@ fn qualified_form_display<V: TermView>(
         }
         return Some(format!(
             "{}.{}",
-            named_child_display(kb, v, "receiver"),
-            named_child_display(kb, v, "name")
+            named_child_display(kb, v, "receiver", spelling),
+            named_child_display(kb, v, "name", spelling)
         ));
     }
     let short = qualified.strip_prefix("anthill.prelude.EffectExpression.")?;
     match short {
-        "present" => Some(named_child_display(kb, v, "label")),
-        "absent" => Some(format!("-{}", named_child_display(kb, v, "label"))),
-        "guarded" => Some(named_child_display(kb, v, "label")),
-        "open" => Some(named_child_display(kb, v, "tail")),
+        "present" => Some(named_child_display(kb, v, "label", spelling)),
+        "absent" => Some(format!("-{}", named_child_display(kb, v, "label", spelling))),
+        "guarded" => Some(named_child_display(kb, v, "label", spelling)),
+        "open" => Some(named_child_display(kb, v, "tail", spelling)),
         // The closed empty row. `{}` is how the language spells it; the term renderer had
         // no arm and leaked the CONSTRUCTOR name, so `Stream[E = {}]` read
         // `Stream[E = {empty_row}]` on that carrier. Five refusal assertions pinned that
         // text and now pin `E = {}` (WI-1059 ×2, WI-1061 ×2, WI-1063).
         "empty_row" => Some(String::new()),
-        "merge" => Some(join_row_parts(
-            named_child_display(kb, v, "left"),
-            named_child_display(kb, v, "right"),
-        )),
+        "merge" => Some(row_display(kb, v, spelling)),
         // A constructor under this prefix that is none of the above: not a form this
         // renders, so it takes the generic application arm and shows its children rather
         // than being guessed at.
@@ -765,13 +825,57 @@ fn qualified_form_display<V: TermView>(
     }
 }
 
-/// Join two rendered halves of a `merge` spine, dropping an EMPTY one — which is what the
-/// `empty_row` terminator renders to. Without this every row carries a trailing `", "`.
-fn join_row_parts(left: String, right: String) -> String {
-    match (left.is_empty(), right.is_empty()) {
-        (true, _) => right,
-        (_, true) => left,
-        _ => format!("{left}, {right}"),
+/// The elements of a `merge` spine in the order a row is canonically held in — its labels
+/// by [`effect_atom_order_key`], then what is left of it (a tail) — and an EMPTY part
+/// dropped, which is what the `empty_row` terminator renders to.
+///
+/// A row is a set, and its printed order is not the carrier's to choose. A term's row is
+/// stored in this order; an occurrence's is stored as written, and printed as stored it
+/// read `{Error[T = Foo], -?R}` where its term twin reads `{-?R, Error[T = Foo]}`.
+fn row_display<V: TermView>(kb: &KnowledgeBase, row: &V, spelling: Spelling) -> String {
+    let mut labels: Vec<(String, String)> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    collect_row_parts(kb, row, spelling, &mut labels, &mut rest);
+    labels.sort_by(|a, b| a.0.cmp(&b.0));
+    labels
+        .into_iter()
+        .map(|(_, rendered)| rendered)
+        .chain(rest)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`row_display`]'s walk: each label of the spine under `part` with its order key, and
+/// every other part as rendered.
+fn collect_row_parts<V: TermView>(
+    kb: &KnowledgeBase,
+    part: &V,
+    spelling: Spelling,
+    labels: &mut Vec<(String, String)>,
+    rest: &mut Vec<String>,
+) {
+    let form = match part.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => kb
+            .qualified_name_of(f)
+            .strip_prefix("anthill.prelude.EffectExpression."),
+        _ => None,
+    };
+    match form {
+        Some("merge") => {
+            for side in ["left", "right"] {
+                if let Some(child) = named_child(kb, part, side) {
+                    collect_row_parts(kb, &child, spelling, labels, rest);
+                }
+            }
+        }
+        Some("present" | "absent" | "guarded") => labels.push((
+            effect_atom_order_key_of(kb, part),
+            type_display_name_view(kb, part, spelling),
+        )),
+        _ => rest.push(type_display_name_view(kb, part, spelling)),
     }
 }
 
@@ -827,12 +931,13 @@ fn type_application_display<V: TermView>(
     functor: Symbol,
     pos_arity: usize,
     order: NamedOrder,
+    spelling: Spelling,
 ) -> String {
     let mut out = kb.local_name_of(functor).to_string();
     if pos_arity > 0 {
         let ps: Vec<String> = (0..pos_arity)
             .map(|i| match v.pos_arg(kb, i) {
-                Some(c) => type_display_name_item(kb, &c),
+                Some(c) => type_display_name_item(kb, &c, spelling),
                 None => "?".to_string(),
             })
             .collect();
@@ -850,7 +955,7 @@ fn type_application_display<V: TermView>(
                     "{} = {}",
                     kb.local_name_of(*k),
                     match v.named_arg(kb, *k) {
-                        Some(c) => type_display_name_item(kb, &c),
+                        Some(c) => type_display_name_item(kb, &c, spelling),
                         None => "?".to_string(),
                     }
                 )
@@ -886,16 +991,20 @@ fn type_application_display<V: TermView>(
 /// representative it had last release — rows are rebuilt from source at load, and both
 /// sides of any comparison go through this one key.
 pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
-    let v = TermIdView(t);
+    effect_atom_order_key_of(kb, &TermIdView(t))
+}
+
+/// [`effect_atom_order_key`] of an atom on whichever carrier it rides.
+fn effect_atom_order_key_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
             functor: Some(f),
             pos_arity,
             ..
-        } => type_application_display(kb, &v, f, pos_arity, NamedOrder::Stored),
+        } => type_application_display(kb, v, f, pos_arity, NamedOrder::Stored, Spelling::Meaning),
         // Not an application (a bare row-tail var, a literal) — nothing to disambiguate,
         // so the display IS the key.
-        _ => type_display_name_view(kb, &v),
+        _ => type_display_name_view(kb, v, Spelling::Meaning),
     }
 }
 
@@ -980,21 +1089,26 @@ fn named_child<'a, V: TermView>(
 
 /// One named child of `v`, rendered — `?` when absent, which is what every hand-written
 /// arm this walk replaced answered for a missing field.
-fn named_child_display<V: TermView>(kb: &KnowledgeBase, v: &V, key: &str) -> String {
+fn named_child_display<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    key: &str,
+    spelling: Spelling,
+) -> String {
     match named_child(kb, v, key) {
-        Some(c) => type_display_name_item(kb, &c),
+        Some(c) => type_display_name_item(kb, &c, spelling),
         None => "?".to_string(),
     }
 }
 
 /// A child, rendered through the entry point its carrier owns — so a `Value::Node` child
 /// still reaches [`type_display_name_occ`]'s one occurrence-only shape.
-fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>) -> String {
+fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>, spelling: Spelling) -> String {
     match item {
         ViewItem::Term(t) => type_display_name(kb, *t),
-        ViewItem::Node(occ) => type_display_name_occ(kb, occ),
-        ViewItem::Value(v) => type_display_name_value(kb, v),
-        ViewItem::Owned(v) => type_display_name_value(kb, v),
+        ViewItem::Node(occ) => type_display_name_occ(kb, occ, spelling),
+        ViewItem::Value(v) => value_display(kb, v, spelling),
+        ViewItem::Owned(v) => value_display(kb, v, spelling),
     }
 }
 

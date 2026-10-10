@@ -80,6 +80,30 @@ other than the default (the `*_untyped` helpers), or a recipe named at the call.
 tests pinned by name, the library's unit tests and every other crate run one-shot
 whatever the switches say.
 
+**A third control: which carrier a declared type rides.** A type is read through the
+carrier-neutral view (`TermView`, `extract_type`), and a reader that matches the carrier
+instead — a `Value::Term` gate, a `_ => false` for "a carrier this cannot read" — answers
+for a term and not for the same type on an occurrence. `ANTHILL_TEST_NODE_CARRIER=1` makes
+the loader put every sort named in an operation's parameter or result type, in an
+entity's field type, in a const's type, in the type arguments a call writes or in an
+annotation on the occurrence a type alias written there rides (`TypeNode::Aliased`),
+standing for itself:
+
+```bash
+ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh          # the whole workspace, every load
+```
+
+The node changes no meaning, so every test must have the verdict it has without the
+switch; one that differs names a reader that bypasses the view. Run it when a change
+touches how a type is carried or read. The loader reads the switch
+(`node_carrier_control`), so it reaches every load of every crate, the spawned binaries
+too. The log carries what was asked for (`carrier:`) and what
+`alias_written_name_test` observed (`node carrier OBSERVED`). To find the reader behind a
+difference, print each `unify_types` / `types_compatible` pair in both modes and diff:
+reading the code does not find it. The fix is then proved without the switch — a type that
+holds a value (`Foo[T = Int64, N = 3]`) rides an occurrence on its own
+(`value_holding_type_readers_test`).
+
 The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
 optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
 `kb/resolve.rs` before changing anything on that path.

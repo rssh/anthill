@@ -130,7 +130,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// THAT IS THE ONLY DIFFERENCE ([`DenotedReading`]): the two gates are one walk, so what
 /// either says of a ∀, of a guarded atom's guard or of a projection's receiver is what the
 /// other says.
-pub(super) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
+pub(crate) fn type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     value_type_is_ground_g(kb, v, false, DenotedReading::AsWritten)
 }
 
@@ -194,7 +194,7 @@ pub(crate) fn term_any_subterm(
 ///
 /// A child the view names and cannot hand out counts as NO hit here and as a FAILURE in
 /// [`view_all_children`], which is what each walker's `is_some_and` answered.
-pub(super) fn view_any_child<V: TermView>(
+pub(crate) fn view_any_child<V: TermView>(
     kb: &KnowledgeBase,
     v: &V,
     pos_arity: usize,
@@ -204,6 +204,26 @@ pub(super) fn view_any_child<V: TermView>(
         || v.named_keys(kb)
             .into_iter()
             .any(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
+}
+
+/// Does this type hold a VALUE anywhere — `Buf[N = 3]`, `Modify[c]`, a callback whose row
+/// names one — or project off one (`x.E`)? Such a type has no spelling as a plain type
+/// term, and none in a host language. Asked of the type through the view, so the answer
+/// does not depend on the carrier it rides: a type written through an alias rides an
+/// occurrence too, and holds none.
+pub fn type_holds_a_value<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    if matches!(
+        extract_type(kb, ty),
+        TypeExtractor::Denoted(_) | TypeExtractor::ExprCarried { .. }
+    ) {
+        return true;
+    }
+    match ty.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => {
+            view_any_child(kb, ty, pos_arity, |c| type_holds_a_value(kb, c))
+        }
+        _ => false,
+    }
 }
 
 /// [`view_any_child`]'s universal twin: does EVERY child of `v` satisfy `f`?
@@ -317,6 +337,7 @@ fn node_type_is_ground_g(
             // is the ticket for exactly this class of two-carriers-two-answers bug).
             TypeNode::Var(Var::Rigid(_)) => rigid_ok,
             TypeNode::Var(_) => false,
+            TypeNode::Aliased { stands_for, .. } => child_ground(stands_for),
             // WI-470 / WI-41YYE: logical variables defer to inference. Value
             // places defer to binder alignment only within a callable; outside
             // that boundary they are determined identities and MUST be checked.

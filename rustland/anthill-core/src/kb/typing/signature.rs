@@ -5090,24 +5090,20 @@ pub(crate) fn requires_shadow_is_confusable(
         .map(|(s, l)| (s.clone(), l.clone()))
         .collect();
     for (spec_ty, local_ty) in pairs {
-        // What the comparison below decides is decided on terms: a type on another carrier
-        // — the spec's as written, or after σ put a binding that holds a value into it —
-        // is undecidable here, and falls open to "confusable".
-        let Value::Term { id: local_t, .. } = &local_ty else {
-            continue;
-        };
-        let Value::Term { id: spec_sub, .. } = sigma_subst_type(kb, &spec_ty, &sigma)
-        else {
-            continue;
-        };
-        if types_definitely_differ(kb, spec_sub, *local_t) {
+        // Read on whichever carrier each type rides. Decided on terms alone, a parameter
+        // whose type holds a value was "undecidable" and fell open to the warning: `tag:
+        // Foo[T = Int64, N = 3]` beside `tag: Foo[T = String, N = 3]` was reported as
+        // confusable (MEASURED).
+        let spec_sub = sigma_subst_type(kb, &spec_ty, &sigma);
+        if types_definitely_differ(kb, &spec_sub, &local_ty) {
             return false; // a confidently different type — distinct operations
         }
     }
     true
 }
 
-/// WI-1048 — can these two type terms NEVER denote the same type? The
+/// WI-1048 — can these two types, on whichever carrier each rides, NEVER denote the same
+/// type? The
 /// one-directional half of a comparison: `true` is a proof of difference,
 /// `false` means "same, or not provably different". Never the other way round,
 /// because [`requires_shadow_is_confusable`] warns on everything it cannot
@@ -5145,16 +5141,29 @@ pub(crate) fn requires_shadow_is_confusable(
 /// different — the fail-open direction the contract above requires. Hash-cons
 /// identity would be exact for two ground literals but wrong for every mixed
 /// pair, and this predicate is not the place to enumerate which is which.
-fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
-    if a == b {
-        return false;
+fn types_definitely_differ(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
+    // Two hash-consed terms that are one term are one type.
+    if let (Value::Term { id: x, .. }, Value::Term { id: y, .. }) = (a, b) {
+        if x == y {
+            return false;
+        }
     }
-    // `is_type_param_value` tests the HEAD, which is what a wildcard needs: a
+    // `is_type_param_view` tests the HEAD, which is what a wildcard needs: a
     // parameter NESTED inside a concrete constructor (`List[T = C]`) leaves the
     // constructor itself decidable, and the nested position is reached by the
     // recursion below and wildcarded there.
-    if is_type_param_value(kb, a) || is_type_param_value(kb, b) {
+    if is_type_param_view(kb, a) || is_type_param_view(kb, b) {
         return false;
+    }
+    let (head_a, head_b) = (type_head(kb, a), type_head(kb, b));
+    // A VALUE in a type proves nothing here: a literal is no constructor, and a reference
+    // names a place of ONE of the two operations — each operation's own `c` in `Modify[c]`
+    // — so two signatures that agree would read as different.
+    if matches!(head_a, TypeHead::Denoted) || matches!(head_b, TypeHead::Denoted) {
+        return false;
+    }
+    if matches!(head_a, TypeHead::EffectsRows) || matches!(head_b, TypeHead::EffectsRows) {
+        return rows_definitely_differ(kb, a, b);
     }
     let (Some((fa, pa, na)), Some((fb, pb, nb))) = (type_ctor_view(kb, a), type_ctor_view(kb, b))
     else {
@@ -5164,21 +5173,56 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
         return true; // a different constructor, which no instantiation reconciles
     }
     // Shared positions only. A position one side elides is unstated, not other.
-    if pa
-        .iter()
-        .zip(pb.iter())
-        .any(|(x, y)| types_definitely_differ(kb, *x, *y))
-    {
-        return true;
+    for (x, y) in pa.iter().zip(pb.iter()) {
+        if types_definitely_differ(kb, x, y) {
+            return true;
+        }
     }
-    na.iter().any(|(k, x)| {
-        nb.iter()
-            .find(|(k2, _)| k2 == k)
-            .is_some_and(|(_, y)| types_definitely_differ(kb, *x, *y))
-    })
+    for (k, x) in &na {
+        if let Some((_, y)) = nb.iter().find(|(k2, _)| k2 == k) {
+            if types_definitely_differ(kb, x, y) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-/// A type term read as `(constructor, positional args, named args)`. A bare name
+/// [`types_definitely_differ`] of two effect rows, read as the SETS they are: a label of
+/// one that definitely differs from every label of the other, present against present and
+/// absent against absent. Compared child by child, `{Modify[c], Boom}` and `{Boom,
+/// Modify[c]}` read as a difference wherever a row keeps its labels as written, which it
+/// does on the occurrence carrier (MEASURED: the swapped row silenced the warning).
+///
+/// A row with a TAIL is undecided: the tail may yet be bound to the label the other row
+/// shows. So is one that is no row on either side.
+fn rows_definitely_differ(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
+    let read_alone = Substitution::new();
+    let (Some((present_a, tails_a, absent_a)), Some((present_b, tails_b, absent_b))) = (
+        decompose_effect_row_raw(kb, &read_alone, a),
+        decompose_effect_row_raw(kb, &read_alone, b),
+    ) else {
+        return false;
+    };
+    if !tails_a.is_empty() || !tails_b.is_empty() {
+        return false;
+    }
+    let mut meets_none = |xs: &[Value], ys: &[Value]| {
+        xs.iter().any(|x| {
+            let mut none = true;
+            for y in ys {
+                none &= types_definitely_differ(kb, x, y);
+            }
+            none
+        })
+    };
+    meets_none(&present_a, &present_b)
+        || meets_none(&present_b, &present_a)
+        || meets_none(&absent_a, &absent_b)
+        || meets_none(&absent_b, &absent_a)
+}
+
+/// A type read through the view as `(constructor, positional args, named args)`. A bare name
 /// reference is its own constructor applied to nothing — `Ref(List)` and
 /// `Fn{List, [], [T = Int64]}` are the same constructor, one stating an argument
 /// the other elides. `None` for a term that names no constructor at all (a
@@ -5208,37 +5252,41 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
 /// replaced the term, and UNDECIDED is the safe answer there — as it is when the
 /// chain exceeds [`ALIAS_EXPANSION_LIMIT`], which is a bound on user input rather
 /// than a claim that no alias chain is longer.
-pub(super) fn type_ctor_view(
+fn type_ctor_view(
     kb: &KnowledgeBase,
-    t: TermId,
-) -> Option<(
-    Symbol,
-    SmallVec<[TermId; 4]>,
-    SmallVec<[(Symbol, TermId); 2]>,
-)> {
-    let mut t = t;
+    ty: &Value,
+) -> Option<(Symbol, Vec<Value>, Vec<(Symbol, Value)>)> {
+    let mut ty = ty.clone();
     for _ in 0..ALIAS_EXPANSION_LIMIT {
-        let (sym, view) = match kb.get_term(t) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => (*functor, (*functor, pos_args.clone(), named_args.clone())),
-            Term::Ref(s) | Term::Ident(s) => (*s, (*s, SmallVec::new(), SmallVec::new())),
-            _ => return None, // not constructor-headed — undecided
-        };
         // Bare name only: an application states arguments the expansion does not.
-        if view.1.is_empty() && view.2.is_empty() {
+        if let Some(sym) = view_ref_symbol(kb, &ty) {
             if let Some(expanded) = resolve_sort_alias(kb, sym) {
-                // `!=` catches a one-step self-alias; the loop bound catches longer
-                // cycles, so neither can spin here.
-                if expanded != t {
-                    t = expanded;
+                // The comparison catches a one-step self-alias; the loop bound catches
+                // longer cycles, so neither can spin here.
+                if !matches!(&ty, Value::Term { id, .. } if *id == expanded) {
+                    ty = Value::term(expanded);
                     continue;
                 }
             }
+            return Some((sym, Vec::new(), Vec::new()));
         }
-        return Some(view);
+        let ViewHead::Functor {
+            functor: Some(functor),
+            pos_arity,
+            ..
+        } = ty.head(kb)
+        else {
+            return None; // not constructor-headed — undecided
+        };
+        let pos = (0..pos_arity)
+            .filter_map(|i| ty.pos_arg(kb, i).map(|c| c.to_value()))
+            .collect();
+        let named = ty
+            .named_keys(kb)
+            .into_iter()
+            .filter_map(|k| ty.named_arg(kb, k).map(|c| (k, c.to_value())))
+            .collect();
+        return Some((functor, pos, named));
     }
     None
 }

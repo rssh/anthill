@@ -154,6 +154,7 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match tn {
         // WI-20260904-02ERR: a leaf owns no `Rc`, so there is nothing to drain.
         TypeNode::Var(_) => {}
+        TypeNode::Aliased { stands_for, .. } => drain_type_child(stands_for, stack),
         TypeNode::Denoted { value } => {
             let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
             stack.push(std::mem::replace(value, placeholder));
@@ -1930,6 +1931,33 @@ pub enum TypeNode {
     /// the projected type member as `TypeChild::Interned(Ref(sym))` — mirroring the
     /// term form so `TermView` reads both carriers identically.
     ExprCarried { value: TypeChild, member: TypeChild },
+    /// A type written through a type ALIAS: `alias` is the name as written (`IntBox`), and
+    /// `stands_for` the type it stands for (`Box[V = Int64]`), read off the alias's
+    /// declaration where the name was lowered.
+    ///
+    /// It is here under the membership rule's second clause — it needs an identity of its
+    /// own: the name written at this place, which the shared term of the type it stands
+    /// for cannot say.
+    ///
+    /// NO `Type` ENTITY VARIANT IS BEHIND IT. Every structural read — [`TermView`]'s head,
+    /// keys and children, the index, unification — is the read of `stands_for`, so an
+    /// alias is invisible to whatever asks what the type is. The name is read by
+    /// [`written_alias`] alone, for a message.
+    Aliased { alias: Symbol, stands_for: TypeChild },
+}
+
+/// The alias a type was written through, when `occ` is one ([`TypeNode::Aliased`]) —
+/// `IntBox` of a type written `IntBox`. `None` for any other occurrence, and for a sort
+/// that stands for itself (the node-carrier control's wrapper), which is no alias.
+pub fn written_alias(kb: &KnowledgeBase, occ: &NodeOccurrence) -> Option<Symbol> {
+    let NodeKind::Type(TypeNode::Aliased { alias, stands_for }) = &occ.kind else {
+        return None;
+    };
+    let stands_for_itself = matches!(
+        stands_for,
+        TypeChild::Interned(t) if matches!(kb.get_term(*t), Term::Ref(s) if s == alias)
+    );
+    (!stands_for_itself).then_some(*alias)
 }
 
 /// Structural `EffectExpression`-sort IR (WI-342). Mirrors the row algebra
@@ -3102,6 +3130,17 @@ fn map_type_node<R: TypeChildRewrite>(
         // `Interned`. A BARE type variable in VALUE position never reaches here either: it
         // rides `Value::Var`, which σ already substitutes (`subst_var_leaf`).
         TypeNode::Var(v) => (TypeNode::Var(*v), false),
+        // The name stays; the type it stands for is rewritten as any child is.
+        TypeNode::Aliased { alias, stands_for } => {
+            let (ns, ch) = map_type_child(r, kb, stands_for);
+            (
+                TypeNode::Aliased {
+                    alias: *alias,
+                    stands_for: ns,
+                },
+                ch,
+            )
+        }
         TypeNode::Denoted { value } => {
             let nv = r.node(kb, value);
             let ch = !Rc::ptr_eq(&nv, value);
@@ -4111,6 +4150,7 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::Var(_) => {}
+        TypeNode::Aliased { stands_for, .. } => collect_type_child(kb, stands_for, vars, seen),
         TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
         TypeNode::Parameterized { base, bindings } => {
             collect_type_child(kb, base, vars, seen);
@@ -4775,6 +4815,8 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         // WI-20260904-02ERR: this function's whole job is "give me the hash-consed twin",
         // so interning here is the CALLER's request, not the leak the ticket removes.
         TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
+        // The hash-consed twin is the type's: a term has no place for the written name.
+        TypeNode::Aliased { stands_for, .. } => type_child_to_term(kb, stands_for),
         TypeNode::Denoted { value } => {
             let v = occurrence_to_term(kb, value);
             kb.make_denoted(v)
@@ -5139,7 +5181,105 @@ pub fn reassemble_pattern_subpatterns(
 /// `Expr::Let.type_annotation` (already a `Value`) and the binder channel's
 /// `occurrence_to_term` re-grounding.
 pub fn pattern_annotation_value(kb: &mut KnowledgeBase, ann: &Rc<NodeOccurrence>) -> Value {
+    // A type its author wrote through a type alias is carried whole, name and all
+    // ([`written_pattern_annotation`]).
+    if let Some(Expr::Spliced(written @ Value::Node(ty))) = ann.as_expr() {
+        if ty.as_type().is_some() {
+            return written.clone();
+        }
+    }
     Value::term(occurrence_to_term(kb, ann))
+}
+
+/// The annotation occurrence of a binder whose type was written through a type alias: the
+/// type VALUE itself, carried whole, so the binder keeps the name beside the type it
+/// stands for ([`TypeNode::Aliased`]). The pattern's TERM holds the type alone
+/// ([`value_to_term`] of the same value), so the two say one type by construction.
+///
+/// `None` for a type that holds no alias node — the term says all of it — and for one
+/// that holds a variable: the walks that open and close a stored body read a carried
+/// value as a leaf, which a closed type is.
+///
+/// `Expr`-kind, as [`value_to_pattern_annotation`] requires of this slot.
+pub fn written_pattern_annotation(
+    kb: &KnowledgeBase,
+    v: &Value,
+    span: SourceSpan,
+) -> Option<Rc<NodeOccurrence>> {
+    (value_holds_alias_node(v) && super::typing::type_is_ground(kb, v))
+        .then(|| NodeOccurrence::new_expr(Expr::Spliced(v.clone()), span, None))
+}
+
+/// Does this type value hold a [`TypeNode::Aliased`] node anywhere? Every kind of type and
+/// effect node answers for itself, so a new one has to.
+fn value_holds_alias_node(v: &Value) -> bool {
+    fn child(c: &TypeChild) -> bool {
+        matches!(c, TypeChild::Node(n) if occ(n))
+    }
+    fn occ(n: &NodeOccurrence) -> bool {
+        match &n.kind {
+            NodeKind::Type(ty) => match ty {
+                TypeNode::Aliased { .. } => true,
+                // A variable, and a value: neither is written through a type alias.
+                TypeNode::Var(_) | TypeNode::Denoted { .. } => false,
+                TypeNode::Parameterized { base, bindings } => {
+                    child(base) || bindings.iter().any(|(_, c)| child(c))
+                }
+                TypeNode::Arrow {
+                    param,
+                    result,
+                    effects,
+                    arity: _,
+                } => child(param) || child(result) || child(effects),
+                TypeNode::EffectsRows { effects_expr } => child(effects_expr),
+                TypeNode::NamedTuple { fields } => value_holds_alias_node(fields),
+                TypeNode::PolyType {
+                    binders: _,
+                    context,
+                    body,
+                } => child(body) || value_holds_alias_node(context),
+                TypeNode::ExprCarried { value, member } => child(value) || child(member),
+            },
+            NodeKind::EffectExpr(effect) => match effect {
+                EffectExprNode::Merge { left, right } => child(left) || child(right),
+                EffectExprNode::Present { label }
+                | EffectExprNode::Absent { label }
+                | EffectExprNode::Guarded { label, guard: _ } => child(label),
+                EffectExprNode::Open { tail } => child(tail),
+                EffectExprNode::EmptyRow => false,
+            },
+            // An expression or a pattern is no type.
+            _ => false,
+        }
+    }
+    match v {
+        Value::Node(n) => occ(n),
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            pos.iter().any(value_holds_alias_node)
+                || named.iter().any(|(_, c)| value_holds_alias_node(c))
+        }
+        _ => false,
+    }
+}
+
+/// A pattern occurrence with the annotations its author wrote through a type alias put on
+/// the binders that carry them: `root` on the pattern itself (`let p: T`), and each of
+/// `binders` on the typed binder it is keyed by (`(x: T)`), removed as it is placed.
+pub(crate) fn with_written_annotations(
+    occ: &Rc<NodeOccurrence>,
+    root: Option<Rc<NodeOccurrence>>,
+    binders: &mut std::collections::HashMap<Symbol, Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    let NodeKind::Pattern { pattern, type_ann } = &occ.kind else {
+        return Rc::clone(occ);
+    };
+    let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_subpattern(pattern, |c| subs.push(with_written_annotations(c, None, binders)));
+    let own = match pattern {
+        Pattern::Var { name } => binders.remove(name),
+        _ => None,
+    };
+    rebuild_pattern_with(occ, &subs, root.or(own).or_else(|| type_ann.clone()))
 }
 
 /// WI-390 — the faithful, total `Value → Term` boundary. `Ok(term)` for the
@@ -6129,6 +6269,10 @@ pub(crate) fn substitute_ref_syms_occ(
             let rebuilt = match tn {
                 // WI-20260904-02ERR: a variable carries no `Ref` to re-key.
                 TypeNode::Var(v) => TypeNode::Var(*v),
+                TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
+                    alias: *alias,
+                    stands_for: rewrite_ref_child(stands_for, map),
+                },
                 TypeNode::Denoted { value } => TypeNode::Denoted {
                     value: rewrite_ref_expr(value, map),
                 },
@@ -6986,6 +7130,12 @@ pub(crate) enum BuildFrame {
     /// built, and `term_to_param_occurrence` reads it from there into the pattern
     /// occurrence's one annotation slot — so the term is the single source and
     /// the two carriers cannot disagree by construction.
+    ///
+    /// An annotation written through a type alias is the one case the term cannot
+    /// say in full: it has no place for the name. The loader then hands `pattern`
+    /// over as the occurrence, its annotation slot holding the type as written
+    /// ([`written_pattern_annotation`]) — the same slot, filled from the same
+    /// lowering as the term.
     Let {
         span: SourceSpan,
         pattern: Src,

@@ -10,9 +10,11 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
+use crate::eval::value::Value;
 use crate::intern::{positional_label, Contested, ResolveResult, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::ClauseKind;
+use crate::kb::term_view::{TermView, ViewHead};
 use crate::kb::{KnowledgeBase, RuleId};
 
 // Qualified names of the prelude `Option`/`List` constructors. The (de)serializer
@@ -478,28 +480,20 @@ fn load_entry(
     Ok(kb.make_entity_term(functor, SmallVec::new(), named_args))
 }
 
-/// An entity's declared field types as `(field, ground-type-term)` pairs,
-/// dropping any non-ground (`Value::Node`, dependent) field type. Empty when the
-/// functor has no registered schema (a schema-less functor keeps the untyped
-/// reconstruction path, preserving prior behavior).
-fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, TermId)> {
+/// An entity's declared field types as `(field, type)` pairs, each on the carrier it
+/// rides. Empty when the functor has no registered schema (a schema-less functor keeps
+/// the untyped reconstruction path, preserving prior behavior).
+fn entity_field_type_map(kb: &KnowledgeBase, functor: Symbol) -> Vec<(Symbol, Value)> {
     kb.entity_field_types(functor)
-        .map(|fts| {
-            fts.iter()
-                .filter_map(|(s, v)| match v {
-                    crate::eval::value::Value::Term { id: t, .. } => Some((*s, *t)),
-                    _ => None,
-                })
-                .collect()
-        })
+        .map(<[_]>::to_vec)
         .unwrap_or_default()
 }
 
-fn field_type_of(field_types: &[(Symbol, TermId)], field: Symbol) -> Option<TermId> {
+fn field_type_of(field_types: &[(Symbol, Value)], field: Symbol) -> Option<&Value> {
     field_types
         .iter()
         .find(|(s, _)| *s == field)
-        .map(|(_, t)| *t)
+        .map(|(_, t)| t)
 }
 
 /// Backfill declared fields that are ABSENT from the persisted data: an Option
@@ -509,7 +503,7 @@ fn field_type_of(field_types: &[(Symbol, TermId)], field: Symbol) -> Option<Term
 fn backfill_absent_fields(
     kb: &mut KnowledgeBase,
     fields: &[Symbol],
-    field_types: &[(Symbol, TermId)],
+    field_types: &[(Symbol, Value)],
     named_args: &mut SmallVec<[(Symbol, TermId); 2]>,
     entity_name: &str,
 ) -> Result<(), SerError> {
@@ -551,7 +545,7 @@ fn backfill_absent_fields(
 fn value_to_term_typed(
     kb: &mut KnowledgeBase,
     value: &serde_json::Value,
-    ty: Option<TermId>,
+    ty: Option<&Value>,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
     if let Some(t) = ty {
@@ -560,7 +554,7 @@ fn value_to_term_typed(
             if value.is_null() {
                 return Ok(option_none_ref(kb));
             }
-            let inner_term = value_to_term_typed(kb, value, inner, var_map)?;
+            let inner_term = value_to_term_typed(kb, value, inner.as_ref(), var_map)?;
             return Ok(some_wrap(kb, inner_term));
         }
     }
@@ -602,7 +596,7 @@ fn value_to_term_typed(
             });
             let mut items = Vec::with_capacity(arr.len());
             for it in arr {
-                items.push(value_to_term_typed(kb, it, elem_ty, var_map)?);
+                items.push(value_to_term_typed(kb, it, elem_ty.as_ref(), var_map)?);
             }
             Ok(build_cons_list(kb, &items))
         }
@@ -636,7 +630,7 @@ fn build_cons_list(kb: &mut KnowledgeBase, items: &[TermId]) -> TermId {
 fn string_to_term_typed(
     kb: &mut KnowledgeBase,
     s: &str,
-    ty: Option<TermId>,
+    ty: Option<&Value>,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
     if let Some(var_name) = s.strip_prefix('?') {
@@ -681,17 +675,22 @@ fn string_to_term_typed(
     Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))))
 }
 
-/// Head sort symbol + first type-argument of a ground type term: for
-/// `Option[T = U]` / `List[T = U]` returns `(Option/List, Some(U))`; for a bare
-/// `Ref(S)` returns `(S, None)`.
-fn type_head_and_inner(kb: &KnowledgeBase, ty: TermId) -> (Option<Symbol>, Option<TermId>) {
-    match kb.get_term(ty) {
-        Term::Fn {
-            functor,
-            named_args,
+/// Head sort symbol + first type-argument of a declared type, read through the view on
+/// whichever carrier it rides: for `Option[T = U]` / `List[T = U]` returns
+/// `(Option/List, Some(U))`; for a bare `S` returns `(S, None)`.
+fn type_head_and_inner(kb: &KnowledgeBase, ty: &Value) -> (Option<Symbol>, Option<Value>) {
+    match ty.head(kb) {
+        ViewHead::Functor {
+            functor: Some(head),
             ..
-        } => (Some(*functor), named_args.first().map(|(_, v)| *v)),
-        Term::Ref(sym) => (Some(*sym), None),
+        } => {
+            let inner = ty
+                .named_keys(kb)
+                .first()
+                .and_then(|key| ty.named_arg(kb, *key))
+                .map(|arg| arg.to_value());
+            (Some(head), inner)
+        }
         _ => (None, None),
     }
 }
@@ -728,7 +727,7 @@ fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
 fn object_to_term_typed(
     kb: &mut KnowledgeBase,
     map: &serde_json::Map<String, serde_json::Value>,
-    ty: Option<TermId>,
+    ty: Option<&Value>,
     var_map: &mut HashMap<String, VarId>,
 ) -> Result<TermId, SerError> {
     if map.len() == 1 {
@@ -760,7 +759,7 @@ fn object_to_term_typed(
 fn resolve_variant_sym(
     kb: &KnowledgeBase,
     key: &str,
-    ty: Option<TermId>,
+    ty: Option<&Value>,
 ) -> Result<Symbol, SerError> {
     if let Some(sort) = ty.and_then(|t| type_head_and_inner(kb, t).0) {
         return constructor_of_sort_named(kb, sort, key).ok_or_else(|| {

@@ -1152,7 +1152,8 @@ sort Store {
 
     // Check each OperationInfo has effects stored as cons-list
     for &fid in &ops {
-        let term = kb.get_term(kb.fact_term(fid));
+        let fact = crate::common::fact_as_term(&mut kb, fid);
+        let term = kb.get_term(fact);
         match term {
             Term::Fn {
                 functor,
@@ -1218,7 +1219,8 @@ fn load_operation_with_abstract_effect() {
     assert_eq!(ops.len(), 1, "should have 1 operation");
 
     // Abstract effect E should still be stored in effects list
-    let term = kb.get_term(kb.fact_term(ops[0]));
+    let fact = crate::common::fact_as_term(&mut kb, ops[0]);
+    let term = kb.get_term(fact);
     match term {
         Term::Fn {
             functor,
@@ -1336,7 +1338,7 @@ end
     let member_facts: Vec<_> = account_facts
         .iter()
         .filter(|&&fid| {
-            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+            anthill_core::eval::value_functor(&kb, kb.rule_head_value(fid)) == Some(member_info)
         })
         .copied()
         .collect();
@@ -1367,7 +1369,7 @@ fn member_facts_for_namespace() {
     let member_facts: Vec<_> = ns_facts
         .iter()
         .filter(|&&fid| {
-            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+            anthill_core::eval::value_functor(&kb, kb.rule_head_value(fid)) == Some(member_info)
         })
         .copied()
         .collect();
@@ -1400,7 +1402,7 @@ fn member_facts_queryable_by_domain() {
     let member_count = domain_facts
         .iter()
         .filter(|&&fid| {
-            matches!(kb.get_term(kb.fact_term(fid)), Term::Fn { functor, .. } if *functor == member_info)
+            anthill_core::eval::value_functor(&kb, kb.rule_head_value(fid)) == Some(member_info)
         })
         .count();
 
@@ -1741,7 +1743,7 @@ end
     // area operation is in Geometry namespace but references Measure
     let mut area_refs_measure = false;
     for &fid in &geometry_facts {
-        let term = kb.fact_term(fid);
+        let term = crate::common::fact_as_term(&mut kb, fid);
         check_term_contains(&kb, term, measure_ref, &mut area_refs_measure);
     }
     assert!(
@@ -1752,7 +1754,7 @@ end
     // convert operation is in Units namespace but references Shape
     let mut convert_refs_shape = false;
     for &fid in &units_facts {
-        let term = kb.fact_term(fid);
+        let term = crate::common::fact_as_term(&mut kb, fid);
         check_term_contains(&kb, term, shape_ref, &mut convert_refs_shape);
     }
     assert!(convert_refs_shape, "Units' convert should reference Shape");
@@ -3904,12 +3906,10 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
         load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load");
         let sym = kb.try_resolve_symbol("foo").expect("op foo");
         let rec = anthill_core::kb::op_info::lookup_operation_info(&kb, sym).expect("opinfo");
-        // The single param `f`, a (ground) arrow type — WI-341 Stage A: param
-        // types are carrier-agnostic `Value`; a no-effect arrow is a `Value::Term`.
-        let arrow = match &rec.params[0].1 {
-            anthill_core::eval::Value::Term { id: t, .. } => *t,
-            other => panic!("expected a ground arrow param type, got {other:?}"),
-        };
+        // The single param `f`, an arrow type, read as its term on whichever carrier
+        // it rides.
+        let f_type = rec.params[0].1.clone();
+        let arrow = crate::common::type_as_term(&mut kb, &f_type);
         let mut out = Vec::new();
         typefield_names(&kb, arrow, &mut out);
         out
@@ -5204,12 +5204,7 @@ fn find_op_info(kb: &mut KnowledgeBase, qualified_substr: &str) -> TermId {
     let op_sort = ClauseKind::Operation;
     let ops = kb.clauses_of_kind(op_sort);
     for &fid in &ops {
-        // WI-348: an OperationInfo for an op with a `denoted` effect is a value
-        // fact (Node-carrying head); this term-only helper skips those.
-        let tid = match kb.rule_head_value(fid) {
-            anthill_core::eval::Value::Term { id: t, .. } => *t,
-            _ => continue,
-        };
+        let tid = crate::common::fact_as_term(kb, fid);
         if let Some(name_tid) = get_named_arg(kb, tid, "name") {
             if let Term::Ref(sym) = kb.get_term(name_tid) {
                 let qname = kb.qualified_name_of(*sym);
@@ -5963,16 +5958,20 @@ fn parse_sort_companion_call_no_op_type_args() {
 /// given short name. Returns the OperationInfo's term id.
 fn find_operation_info(kb: &mut KnowledgeBase, short_name: &str) -> TermId {
     let op_sort = ClauseKind::Operation;
-    let fid = kb.clauses_of_kind(op_sort).into_iter().find(|&fid| {
-        match kb.get_term(kb.fact_term(fid)) {
+    for fid in kb.clauses_of_kind(op_sort) {
+        let fact = crate::common::fact_as_term(kb, fid);
+        let named = match kb.get_term(fact) {
             Term::Fn { named_args, .. } => named_args.iter().any(|(s, t)| {
                 kb.local_name_of(*s) == "name"
                     && matches!(kb.get_term(*t), Term::Ref(sym) if kb.local_name_of(*sym) == short_name)
             }),
             _ => false,
+        };
+        if named {
+            return fact;
         }
-    }).unwrap_or_else(|| panic!("no OperationInfo for `{}`", short_name));
-    kb.fact_term(fid)
+    }
+    panic!("no OperationInfo for `{}`", short_name)
 }
 
 fn named_arg(kb: &KnowledgeBase, term: TermId, key: &str) -> TermId {

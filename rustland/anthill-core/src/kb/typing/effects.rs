@@ -1264,26 +1264,45 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
 /// does not declare is refused `undeclared effect: …`, against `declared_canon` walked
 /// through the same `op.rigidify`. `requires` and `effects` now agree.
 ///
-/// A CARRIER THIS CANNOT FULLY READ WITHHOLDS, and that asymmetry is the whole
-/// reason the entry is carrier-typed rather than generic over [`TermView`]. The View
-/// surfaces an occurrence's children only for the `Expr` shapes `occ_pos_child` /
-/// `occ_named_child` enumerate; a `NodeKind::Type` spine (an arrow's param / result /
-/// effects, which `rewrite_type_occ_deep` walks on its own) is NOT among them, so for
-/// a `Value::Node` "no children found" is not evidence of "no variable". The two
-/// errors are not symmetric: a wrong TRUE floats an obligation (conservative), a
-/// wrong FALSE hands a free-variable goal to the resolver and re-admits the exact
-/// vacuity this gate exists to stop. So the Node arm answers `true` outright — the
-/// same shape of argument [`type_contains_callable`] makes for its own unreadable
-/// carrier. (Reachability: a post-σ_type clause is `Value::Term` or `Value::Node` and
-/// nothing else — `op.requires` carries only those two, and `walk_type_deep_value`
-/// preserves the carrier — so the wildcard is the Node case plus an impossible one.)
+/// EACH PART ON THE CARRIER IT RIDES. A goal is a term until σ_type binds one of its
+/// variables to a type that is none — one that holds a value, or was written through an
+/// alias — and the walk then rebuilds the goal as an entity around that occurrence. Its
+/// arguments are read one by one: a term through the view, an entity through its
+/// children, a type occurrence by whether it is determined ([`type_is_determined`], the
+/// same DETERMINED reading as above, asked of what the type IS).
+///
+/// NOT [`resolved_type_is_determined`], which also withholds a callable whose effect
+/// names a place — a question about comparing two such types, and none about a variable.
+/// Asked that way, `allowed((x: Int64) -> Unit @ Modify[c])` floated for the place `c`,
+/// and the obligation was skipped (MEASURED: the call loaded with no such fact).
+///
+/// It answered `true` for everything that is no term, on the reasoning that such a clause
+/// was an occurrence the view cannot read in full. An entity is not that, and floating it
+/// SKIPPED THE OBLIGATION: `send(fetch())` over `send(body: Text[L = ?l]) requires
+/// flows_to(?l, Public)` loaded with no `flows_to` fact for the label, once the label
+/// rode an occurrence (MEASURED).
+///
+/// AN EXPRESSION OCCURRENCE STILL WITHHOLDS. The View surfaces an occurrence's children
+/// only for the `Expr` shapes `occ_pos_child` / `occ_named_child` enumerate, so "no
+/// children found" is not evidence of "no variable" there. The two errors are not
+/// symmetric: a wrong TRUE floats an obligation (conservative), a wrong FALSE hands a
+/// free-variable goal to the resolver and re-admits the exact vacuity this gate exists
+/// to stop.
 ///
 /// NOT [`view_references_any`]'s twin despite the shape: that one only DROPS an
 /// assumed fact, so its under-collection is safe in the direction this one's is not.
 pub(super) fn value_carries_undecided_var(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause {
-        Value::Term { .. } => view_carries_undecided_var(kb, clause),
-        _ => true,
+        Value::Entity { pos, named, .. } | Value::Tuple { pos, named } => {
+            pos.iter().any(|c| value_carries_undecided_var(kb, c))
+                || named.iter().any(|(_, c)| value_carries_undecided_var(kb, c))
+        }
+        Value::Node(occ) if occ.as_type().is_some() || occ.as_effect_expr().is_some() => {
+            !type_is_determined(kb, clause)
+        }
+        Value::Node(_) => true,
+        // A term, or a leaf: a variable by its kind, a scalar or a name no variable.
+        other => view_carries_undecided_var(kb, other),
     }
 }
 
@@ -1320,17 +1339,16 @@ fn view_carries_undecided_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool
 /// parameter half and still could not name the witness, so the declarable answer would
 /// prescribe a line that does not fix it.
 ///
-/// An unreadable carrier answers `None` — the call-site message rather than a wrong
-/// verdict — and a `Value::Node` never reaches it, since the gate above floats that
-/// carrier whole.
+/// Read on whichever carrier each part of the clause rides. Asked of a term alone, a
+/// clause one of whose arguments is a type that holds a value answered `None`, and a
+/// wrapper that owes the declaration was told the fact was missing at the call (MEASURED:
+/// `pair_ok(?m, Tag[N = 3])` in `relay(t: Text[L = ?m])`). An expression occurrence does
+/// not reach this: the gate above floats it.
 pub(super) fn clause_rigid_kind(
     kb: &KnowledgeBase,
     env: &TypingEnv,
     clause: &Value,
 ) -> Option<ClauseRigids> {
-    let Value::Term { .. } = clause else {
-        return None;
-    };
     let mut found = None;
     view_scan_rigids(kb, env, clause, &mut found);
     found
@@ -2258,18 +2276,32 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    // WI-342 P4-B: a denoted-bearing extra label (`Value::Node`) would require
-    // synthesizing a *Value-carried* row occurrence (`make_present_occ` …) and
-    // binding the tail via `bind_value`. That path (open rows carrying a
-    // denoted-bearing label, e.g. `{Modify[c] | ρ}`) is deferred — refuse
-    // rather than mis-bind (sound). The ground extras below cover the closed-row
-    // cross-carrier target this slice validates. In B1 `decompose_effect_row`
-    // walks a `TermId` row, so every extra is already `Value::Term` here.
+    // A label on the term carrier joins a term row. One that rides another carrier and
+    // holds no value — written through an alias, or rebuilt around one — makes the row an
+    // occurrence, built as [`make_arrow_value`] builds an inferred row and bound by
+    // `bind_value`: refused, the callee's row variable stayed unbound — "expected a type
+    // for 'Rho', got unconstrained" — on a callback whose row names `Error[Oth]` over
+    // `sort Oth = Other` (MEASURED).
+    //
+    // WI-342 P4-B: one that HOLDS A VALUE (`{Modify[c] | ρ}`) is still refused rather than
+    // mis-bound, as before. That refusal is what rejects a modifying callback against an
+    // open lacks-row today (`wi440_callback_lacks_test`, `wi441_iterable_arrow_pred_test`):
+    // bound, those callbacks were admitted (MEASURED). Binding it wants the lacks check to
+    // read a value-carried label first.
     let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
+    let mut all_terms = true;
     for l in extra_labels {
         match l {
             Value::Term { id: t, .. } => ground_extras.push(*t),
-            _ => return false,
+            other => {
+                let holds_value = type_any_part(kb, other, &|te| {
+                    matches!(te, TypeExtractor::Denoted(_)).then_some(true)
+                });
+                if holds_value {
+                    return false;
+                }
+                all_terms = false;
+            }
         }
     }
 
@@ -2296,22 +2328,41 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    // Build the inner tail: open(fresh) if shared, empty_row if closed.
-    let inner = match final_tail {
-        Some(ft) => kb.make_effect_expression_open(ft),
-        None => kb.make_effect_expression_empty_row(),
-    };
-    // Right-fold extras into the inner tail.
-    let mut acc = inner;
-    for &l in ground_extras.iter().rev() {
-        let p = kb.make_effect_expression_present(l);
-        acc = kb.make_effect_expression_merge(p, acc);
-    }
+    if all_terms {
+        // Build the inner tail: open(fresh) if shared, empty_row if closed.
+        let inner = match final_tail {
+            Some(ft) => kb.make_effect_expression_open(ft),
+            None => kb.make_effect_expression_empty_row(),
+        };
+        // Right-fold extras into the inner tail.
+        let mut acc = inner;
+        for &l in ground_extras.iter().rev() {
+            let p = kb.make_effect_expression_present(l);
+            acc = kb.make_effect_expression_merge(p, acc);
+        }
 
-    if occurs_in(kb, vid, acc) {
-        return false;
+        if occurs_in(kb, vid, acc) {
+            return false;
+        }
+        subst.bind(kb, vid, acc);
+    } else {
+        // The same right fold on the occurrence carrier.
+        let span = crate::kb::node_occurrence::empty_span();
+        let mut row = match final_tail {
+            Some(ft) => kb.make_open_occ(TypeChild::Interned(ft), span, None),
+            None => kb.make_empty_row_occ(span, None),
+        };
+        for label in extra_labels.iter().rev() {
+            let label_child = value_to_type_child_at(kb, label, span, None);
+            let atom = kb.make_present_occ(label_child, span, None);
+            row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, None);
+        }
+        let row = Value::Node(row);
+        if occurs_in_view(kb, vid, &row) {
+            return false;
+        }
+        subst.bind_value(kb, vid, row);
     }
-    subst.bind(kb, vid, acc);
     if subst.is_contradiction() {
         return false;
     }

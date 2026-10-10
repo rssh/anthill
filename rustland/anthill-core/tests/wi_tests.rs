@@ -27,6 +27,8 @@ mod wi_zy11j_alias_typed_value_test;
 mod wi_zy11j_provision_at_receiver_test;
 #[path = "include/wi_zy11j_type_display_order_test.rs"]
 mod wi_zy11j_type_display_order_test;
+#[path = "include/wi_2hjw8_recursive_alias_test.rs"]
+mod wi_2hjw8_recursive_alias_test;
 
 #[path = "include/wi206_is_modifiable_test.rs"]
 mod wi206_is_modifiable_test;
@@ -2013,6 +2015,14 @@ mod wi_rah0z_one_recipe_test;
 
 #[path = "include/wi_d0sd4_deep_clone_test.rs"]
 mod wi_d0sd4_deep_clone_test;
+#[path = "include/value_holding_type_readers_test.rs"]
+mod value_holding_type_readers_test;
+#[path = "include/alias_written_name_test.rs"]
+mod alias_written_name_test;
+#[path = "include/declared_field_type_readers_test.rs"]
+mod declared_field_type_readers_test;
+#[path = "include/const_initializer_type_test.rs"]
+mod const_initializer_type_test;
 
 #[path = "include/wi_4zrtg_sealed_library_test.rs"]
 mod wi_4zrtg_sealed_library_test;

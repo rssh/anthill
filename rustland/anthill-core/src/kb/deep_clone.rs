@@ -680,6 +680,10 @@ impl Copier {
     fn type_node(&mut self, tn: &TypeNode) -> TypeNode {
         match tn {
             TypeNode::Var(var) => TypeNode::Var(plain(var)),
+            TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
+                alias: plain(alias),
+                stands_for: self.type_child(stands_for),
+            },
             TypeNode::Denoted { value } => TypeNode::Denoted {
                 value: self.node(value),
             },

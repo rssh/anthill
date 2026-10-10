@@ -15,7 +15,6 @@
 //! allowed side and DRIVE the member by calling it.
 
 use anthill_core::eval::{self, Interpreter, Value};
-use anthill_core::kb::term::Term;
 
 fn errors_of(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src)
@@ -193,31 +192,9 @@ fn dotted_entity_inside_sort_matches_explicit_namespace_ownership() {
             kb.by_domain(domain)
                 .iter()
                 .filter(|&&fid| {
-                    let Term::Fn {
-                        functor,
-                        named_args,
-                        ..
-                    } = kb.get_term(kb.fact_term(fid))
-                    else {
-                        return false;
-                    };
-                    if *functor != member_info {
-                        return false;
-                    }
-                    named_args.iter().any(|(field, value)| {
-                        if kb.local_name_of(*field) != "name" {
-                            return false;
-                        }
-                        match kb.get_term(*value) {
-                            Term::Ref(sym) => *sym == b,
-                            Term::Fn {
-                                functor,
-                                pos_args,
-                                named_args,
-                            } => *functor == b && pos_args.is_empty() && named_args.is_empty(),
-                            _ => false,
-                        }
-                    })
+                    let head = kb.rule_head_value(fid);
+                    eval::value_functor(&kb, head) == Some(member_info)
+                        && anthill_core::kb::op_info::head_name_ref(&kb, head) == Some(b)
                 })
                 .count()
         };

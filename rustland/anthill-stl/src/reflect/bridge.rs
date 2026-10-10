@@ -187,34 +187,24 @@ impl KbBridge {
         reader::reify_walk(&mut self.kb.borrow_mut(), view, &mut TermReprBuilder)
     }
 
-    /// Extract named args from a Fn term as (name_str, TermId) pairs. Kept for
-    /// decoding an operation's `FieldInfo` parameter terms ([`field_info_of`]),
-    /// the one place the bridge still reads a `Fn`'s named args directly.
-    fn term_named_args(&self, id: TermId) -> Vec<(String, TermId)> {
-        let kb = self.kb.borrow();
-        match kb.get_term(id) {
-            CoreTerm::Fn { named_args, .. } => named_args
-                .iter()
-                .map(|&(sym, tid)| (kb.local_name_of(sym).to_string(), tid))
-                .collect(),
-            _ => vec![],
-        }
-    }
-
-    /// Decode an operation parameter's `FieldInfo` term into the reflect struct.
-    /// `name` defaults to `_` when absent; `type_name` falls back to the FieldInfo
-    /// term itself (mirrors the prior inline `operations` params decode).
-    fn field_info_of(&self, fi_tid: TermId) -> FieldInfo {
-        let fi_named = self.term_named_args(fi_tid);
-        let fi_field = |key: &str| fi_named.iter().find(|(n, _)| n == key).map(|(_, tid)| *tid);
-        let name = match fi_field("name") {
-            Some(t) => self.sym_of(t),
-            None => ReflectSymbol::new(self.kb.borrow_mut().intern("_")),
+    /// Decode an operation parameter's `FieldInfo` record into the reflect struct, read
+    /// through the view on whichever carrier it rides — a record whose type is an
+    /// occurrence is no term. `name` defaults to `_` when absent; `type_name` falls back
+    /// to the record itself (mirrors the prior inline `operations` params decode).
+    fn field_info_of(&self, record: &Value) -> FieldInfo {
+        let field = |key: &str| {
+            let kb = self.kb.borrow();
+            let sym = kb.lookup_symbol(key)?;
+            record.named_arg(&kb, sym).map(|c| c.to_value())
         };
-        let type_name = fi_field("type_name").unwrap_or(fi_tid);
+        let named = field("name").and_then(|v| self.kb.borrow().value_symbol(&v));
+        let name = ReflectSymbol::new(match named {
+            Some(sym) => sym,
+            None => self.kb.borrow_mut().intern("_"),
+        });
         FieldInfo {
             name,
-            type_name: term(type_name),
+            type_name: rterm(field("type_name").unwrap_or_else(|| record.clone())),
         }
     }
 
@@ -258,13 +248,14 @@ impl KbBridge {
             )
             .unwrap_or_else(|e| panic!("KB.fields: {e}"));
         for row in rows {
-            let head = match row {
-                anthill_core::eval::Value::Term { id: t, .. } => t,
-                _ => continue,
-            };
-            match kb.get_term(head) {
-                CoreTerm::Fn { named_args, .. } => {
-                    return Some(named_args.iter().map(|&(s, _)| s).collect())
+            // The fact's fields, read through the view on whichever carrier it rides.
+            // Read off a term alone, a relation whose facts all held an occurrence had
+            // no schema here, and its query fell to the arity-1 goal below, which
+            // matches none of them (MEASURED: `OperationInfo` with every parameter
+            // type an occurrence answered zero rows).
+            match row.head(&kb) {
+                anthill_core::kb::term_view::ViewHead::Functor { .. } => {
+                    return Some(row.named_keys(&kb))
                 }
                 // WI-20260902-CZJ2N — a NULLARY fact head is stored bare, and its
                 // schema is the EMPTY field list. Without this arm the scan answered
@@ -273,7 +264,7 @@ impl KbBridge {
                 // `KB.query` over an undeclared 0-ary fact functor returned zero rows
                 // where the `Fn` arm used to answer `Some(vec![])` and build a correct
                 // 0-ary goal.
-                CoreTerm::Ref(_) | CoreTerm::Ident(_) => return Some(Vec::new()),
+                anthill_core::kb::term_view::ViewHead::Ident(_) => return Some(Vec::new()),
                 _ => {}
             }
         }
@@ -957,9 +948,9 @@ impl KB for KbBridge {
                 params: rec
                     .params
                     .into_iter()
-                    .map(|fi_tid| self.field_info_of(fi_tid))
+                    .map(|record| self.field_info_of(&record))
                     .collect(),
-                return_type: term(rec.return_type),
+                return_type: rterm(rec.return_type),
                 effects: rec.effects.into_iter().map(rterm).collect(),
                 requires: rec
                     .requires
@@ -1391,6 +1382,35 @@ sort Store {
                 .all(|s| matches!(s, Solution::Definite { .. })),
             "sort-query solutions should be definite"
         );
+    }
+
+    /// A relation with no declared schema is found through its facts on whichever
+    /// carrier they ride. Both operations take a parameter whose type holds a value,
+    /// so every `OperationInfo` fact of this KB holds an occurrence.
+    ///
+    /// BACKED OUT (`find_entity_schema` reading a fact's fields off a term alone):
+    /// this test FAILS, zero rows.
+    #[test]
+    fn execute_sort_query_finds_operations_whose_types_hold_a_value() {
+        let bridge = load_source_bridge(
+            r#"
+sort Buf {
+  sort T = ?
+  sort N = ?
+  entity buf(v: T)
+}
+sort Store {
+  entity store
+  operation persist(s: Store, b: Buf[T = Int64, N = 3]) -> Int64
+  operation retract(s: Store, b: Buf[T = Int64, N = 4]) -> Int64
+}
+"#,
+        );
+        let query = LogicalQuery::SortQuery {
+            sort: sort_ref(&bridge, "anthill.reflect.OperationInfo"),
+        };
+        let results = drain(bridge.execute(query).expect("execute failed"));
+        assert_eq!(results.len(), 2, "one row per operation");
     }
 
     #[test]
@@ -2190,6 +2210,41 @@ sort Tank {
             Value::Term { .. } => {}
             other => panic!("ensures clause should be a Value::Term goal, got {other:?}"),
         }
+    }
+
+    /// An operation's parameters are surfaced by name on whichever carrier their types
+    /// ride. The second parameter's type holds a value, so its `FieldInfo` record is no
+    /// term, and neither is the list that holds it.
+    ///
+    /// BACKED OUT (`read_operations` taking `params` as a term): this test FAILS, `fill`
+    /// is surfaced with no parameter.
+    #[test]
+    fn operations_keep_a_parameter_whose_type_holds_a_value() {
+        let bridge = load_source_bridge(
+            r#"
+sort Buf {
+  sort T = ?
+  sort N = ?
+  entity buf(v: T)
+}
+sort Tank {
+  entity tank(fuel: Int64)
+  operation fill(t: Tank, b: Buf[T = Int64, N = 3]) -> Tank
+}
+"#,
+        );
+        let ops = bridge.operations(type_ref(&bridge, "Tank"));
+        let short = |sym: anthill_core::intern::Symbol| {
+            let kb = bridge.kb.borrow();
+            let n = kb.local_name_of(sym).to_string();
+            n.rsplit('.').next().unwrap_or(&n).to_string()
+        };
+        let fill = ops
+            .iter()
+            .find(|o| short(o.name.symbol()) == "fill")
+            .expect("fill op");
+        let params: Vec<String> = fill.params.iter().map(|p| short(p.name.symbol())).collect();
+        assert_eq!(params, ["t", "b"]);
     }
 
     #[test]

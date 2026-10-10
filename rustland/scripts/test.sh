@@ -90,6 +90,23 @@
 # that go through those helpers and nothing else — the library's unit tests, a
 # test file with its own copy of the load and every other crate run one shot —
 # so the log also carries what anthill-core's control test OBSERVED.
+#
+# ── Which carrier a declared type rides: a term, or a node ───────────────────
+#
+#   ANTHILL_TEST_NODE_CARRIER=1    every sort named where a type alias written bare
+#                                  rides its occurrence node rides one too, standing
+#                                  for itself
+#
+# The node changes no meaning, so every test must have the same verdict with the
+# switch as without it: one that differs names a reader that does not read a type
+# through the carrier-neutral view. The LOADER reads it (`node_carrier_control` in
+# anthill-core/src/kb/load.rs), so unlike the load recipe it reaches every load of
+# every crate, the spawned binaries included. Not a second gate — a control, run
+# when a change touches how a type is carried or read:
+#
+#   ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh
+#
+# The log carries what was asked for and what anthill-core's control test OBSERVED.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -172,6 +189,15 @@ case "${ANTHILL_TEST_FRESH_LOAD}${ANTHILL_TEST_TWO_STEP_LOAD}" in
   *) echo "test.sh: ANTHILL_TEST_FRESH_LOAD=${ANTHILL_TEST_FRESH_LOAD} ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD}: expected 0 or 1 for each" >&2; exit 2 ;;
 esac
 export ANTHILL_TEST_TWO_STEP_LOAD ANTHILL_TEST_FRESH_LOAD
+
+# ── Which carrier a declared type rides (see the header) ─────────────────────
+: "${ANTHILL_TEST_NODE_CARRIER:=0}"
+case "${ANTHILL_TEST_NODE_CARRIER}" in
+  0) carrier_note="terms, a node where a type alias is written" ;;
+  1) carrier_note="A NODE for every sort named where an alias would ride one" ;;
+  *) echo "test.sh: ANTHILL_TEST_NODE_CARRIER=${ANTHILL_TEST_NODE_CARRIER}: expected 0 or 1" >&2; exit 2 ;;
+esac
+export ANTHILL_TEST_NODE_CARRIER
 
 # ── anthill-core must be ONE build, whatever is selected ─────────────────────
 #
@@ -257,10 +283,11 @@ echo "log:  rustland/${log}  (-> rustland/target/test-run-latest.log)"
 echo "tail: tail -f rustland/target/test-run-latest.log"
 echo "threads: ${ANTHILL_TEST_THREADS} (compute) / ${ANTHILL_CLI_TEST_THREADS} (spawning) on ${cpus} CPUs"
 # What was MEASURED goes into the log too: the lines above say where to look, these
-# two say what a reader of the log is looking at.
+# three say what a reader of the log is looking at.
 {
   echo "build:   ${opt_note} (ANTHILL_TEST_OPT=${ANTHILL_TEST_OPT})"
   echo "load:    ${load_note} (ANTHILL_TEST_FRESH_LOAD=${ANTHILL_TEST_FRESH_LOAD} ANTHILL_TEST_TWO_STEP_LOAD=${ANTHILL_TEST_TWO_STEP_LOAD})"
+  echo "carrier: ${carrier_note} (ANTHILL_TEST_NODE_CARRIER=${ANTHILL_TEST_NODE_CARRIER})"
 } | tee -a "${log}"
 echo "---"
 

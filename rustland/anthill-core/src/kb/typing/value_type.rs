@@ -129,16 +129,23 @@ pub(super) fn type_head_names_an_entity<V: TermView>(kb: &KnowledgeBase, ty: &V)
 /// `List[T = Colour.red]` slot carries its variant one level down, so a head test would
 /// withhold the hint from exactly the shape it exists for.
 ///
-/// Conservative on a carrier it cannot walk — a `Value::Node` (an arrow, a denoted) answers
-/// by its head alone. Withholding a hint there costs nothing: a hint is an inference aid,
-/// and a slot the walk cannot read is not a variant slot.
+/// On every carrier: a term through its subterms, any other through the one walk over a
+/// type's parts ([`type_any_part`]). It answered by the head alone off the term carrier,
+/// which withheld the hint from a tuple slot with a component that holds a value — `p: (a:
+/// Colour.red, b: Foo[T = Int64, N = 3])` given `(a: red(v: 7), b: mk(2))` was refused,
+/// "expected (a: red, …), got (a: Colour, …)" (MEASURED).
 pub(super) fn type_mentions_an_entity(kb: &KnowledgeBase, v: &Value) -> bool {
     if type_head_names_an_entity(kb, v) {
         return true;
     }
     match v {
         Value::Term { id, .. } => term_mentions_an_entity(kb, *id),
-        _ => false,
+        other => type_any_part(kb, other, &|te| match te {
+            TypeExtractor::SortRef(s) | TypeExtractor::Parameterized { base: s, .. } => {
+                kb.strict_parent_sort(*s).is_some().then_some(true)
+            }
+            _ => None,
+        }),
     }
 }
 
