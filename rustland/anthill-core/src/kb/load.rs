@@ -18119,12 +18119,21 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
         if bounds.is_empty() {
             continue;
         }
-        let mut expanded: Vec<(u32, TermId)> = Vec::with_capacity(bounds.len());
+        // The expansion completes a type's unwritten parameters, and is defined on the
+        // type's term. A bound it leaves alone stays as it is, on its carrier; one it
+        // completes is the completed type, which nobody wrote.
+        let mut expanded: Vec<(u32, Value)> = Vec::with_capacity(bounds.len());
         let mut changed = false;
         for (db, bound) in bounds {
-            let e = expand_unwritten_type_params(kb, bound);
-            changed |= e != bound;
-            expanded.push((db, e));
+            let as_term = node_occurrence::value_to_term(kb, &bound)
+                .expect("a rule head's bound is a type, which has a term");
+            let e = expand_unwritten_type_params(kb, as_term);
+            if e == as_term {
+                expanded.push((db, bound));
+            } else {
+                changed = true;
+                expanded.push((db, Value::term(e)));
+            }
         }
         if !changed {
             continue;
@@ -18171,8 +18180,8 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
             _ => false,
         };
         let mut minted: Vec<VarId> = Vec::new();
-        for &(_, e) in &expanded {
-            for v in kb.collect_vars(&e) {
+        for (_, e) in &expanded {
+            for v in kb.collect_vars(e) {
                 // `load_rule`'s rule, asked the same way: [`bound_var_joins_frame`].
                 if bound_var_joins_frame(kb, v, equational) && !minted.contains(&v) {
                     minted.push(v);
@@ -18181,9 +18190,9 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
         }
         let mut globals = minted.clone();
         globals.extend_from_slice(kb.rule_globals(rid));
-        let closed: Vec<(u32, TermId)> = expanded
+        let closed: Vec<(u32, Value)> = expanded
             .into_iter()
-            .map(|(db, e)| (db, kb.term_to_debruijn_for_frame(e, &globals)))
+            .map(|(db, e)| (db, node_occurrence::close_value_type(kb, &e, &globals).0))
             .collect();
         kb.extend_rule_frame_with_bounds(rid, &minted, closed);
     }
@@ -22955,7 +22964,7 @@ struct Loader<'a> {
     // collected while converting a typed rule head; drained by `load_rule` after
     // each head, mapped to DeBruijn indices, and installed on the RuleEntry as
     // per-variable `Type` bounds (the typed-rule-pattern firing guard).
-    rule_head_type_bounds: Vec<(VarId, TermId)>,
+    rule_head_type_bounds: Vec<(VarId, Value)>,
     // WI-742 (proposal 060 §2.1) — the SIGIL-FREE typed clause variables this rule's
     // head introduces: `rule adult(p: Person, age: Int) :- person(p), …`. Name → the
     // KB variable it denotes, for the clause's lifetime.
@@ -24152,6 +24161,108 @@ impl<'a> Loader<'a> {
         self.materialize_rule_carrier_bound(bound, &mut anchors)
     }
 
+    /// The bound a head variable is stored with: `written`, the type as its author wrote
+    /// it, where that holds a type alias and the bound is that type — or the bound's term.
+    ///
+    /// `lowered` is the term of `written`, and `bound` what [`Self::note_rule_head_bound_sorts`]
+    /// made of it. A bound that pass rewrote, to the variable of the sort a spec is
+    /// required of, is no longer what was written and is the term it built.
+    fn rule_bound_as_written(bound: TermId, lowered: TermId, written: Value) -> Value {
+        if bound == lowered && node_occurrence::value_holds_alias_node(&written) {
+            written
+        } else {
+            Value::term(bound)
+        }
+    }
+
+    /// A rule-head bound written as a TERM — the parameter spelling, `x: T` — read as a
+    /// written type is: each type alias in it is the type it stands for
+    /// ([`Self::bare_alias_type`], the reading [`Self::bare_alias_read`] gives the `?x: T`
+    /// spelling), on the node that keeps its name.
+    ///
+    /// Left as the alias's own name the bound named no sort: over `rule boxes(x: IntBox)`,
+    /// `Box.peek(boxes.head.x)` was refused, "no impl matches", where the `?x: IntBox`
+    /// spelling typed (MEASURED).
+    ///
+    /// Answers the type's term, and the type as written on an occurrence where an alias
+    /// was read in it. An alias of a type parameter is that parameter's variable, and has
+    /// no node, as in a written type.
+    fn rule_bound_read_through_aliases(
+        &mut self,
+        t: TermId,
+        span: SourceSpan,
+    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
+        use node_occurrence::TypeChild;
+        let owner = self.current_owner;
+        match self.kb.get_term(t).clone() {
+            // A bare name: read by the one reader of a bare alias, as a written type's is.
+            Term::Ref(_) => {
+                let saved = std::mem::replace(&mut self.alias_nodes, true);
+                let read =
+                    self.bare_alias_read(TypeChild::Interned(t), TypeSite::Type, span, owner);
+                self.alias_nodes = saved;
+                match read {
+                    TypeChild::Interned(ty) => (ty, None),
+                    TypeChild::Node(written) => {
+                        let ty = node_occurrence::value_to_term(self.kb, &Value::Node(Rc::clone(&written)))
+                            .expect("a type alias stands for a type, which has a term");
+                        (ty, Some(written))
+                    }
+                }
+            }
+            // A sort applied to named arguments. Any other application is read for its
+            // aliases and kept on its term.
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                let mut changed = false;
+                let mut any_written = false;
+                let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
+                for &child in pos_args.iter() {
+                    let (read, _) = self.rule_bound_read_through_aliases(child, span);
+                    changed |= read != child;
+                    pos.push(read);
+                }
+                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut bindings: Vec<(Symbol, TypeChild)> = Vec::with_capacity(named_args.len());
+                for &(key, child) in named_args.iter() {
+                    let (read, as_written) = self.rule_bound_read_through_aliases(child, span);
+                    changed |= read != child || as_written.is_some();
+                    any_written |= as_written.is_some();
+                    named.push((key, read));
+                    bindings.push((
+                        key,
+                        as_written.map_or(TypeChild::Interned(read), TypeChild::Node),
+                    ));
+                }
+                if !changed {
+                    return (t, None);
+                }
+                let read = self.kb.alloc(Term::Fn {
+                    functor,
+                    pos_args: pos,
+                    named_args: named,
+                });
+                let written = (any_written && pos_args.is_empty()).then(|| {
+                    let base = TypeChild::Interned(self.kb.make_sort_ref(functor));
+                    self.kb.make_parameterized_occ(base, bindings, span, owner)
+                });
+                // Kept where it lowers to the very term read here. An application the
+                // loader assembled with its bindings in another order than a written type
+                // has them (a head type variable applied, `A[C = Red]`, takes its guard's)
+                // is that term and no other, and stays on it.
+                let written = written.filter(|occ| {
+                    node_occurrence::value_to_term(self.kb, &Value::Node(Rc::clone(occ))).ok()
+                        == Some(read)
+                });
+                (read, written)
+            }
+            _ => (t, None),
+        }
+    }
+
     /// Separate the annotation's carrier type from its provider obligation.
     /// Introducer occurrences share a carrier variable; member sugar introduces
     /// an anonymous one. The requirement retains its complete instance.
@@ -24999,7 +25110,7 @@ impl<'a> Loader<'a> {
         // re-collect it, because `convert_term_inner` returns on the `term_map` memo
         // before reaching the `typed_var` strip. Staging only what this loop's PARAMETER
         // branch produces leaves every other writer alone.
-        let mut staged_bounds: SmallVec<[(VarId, TermId); 2]> = SmallVec::new();
+        let mut staged_bounds: Vec<(VarId, Value)> = Vec::new();
         let mut params_minted: SmallVec<[String; 2]> = SmallVec::new();
         for &(key, value) in named_args.iter() {
             if !params.iter().any(|&(k, v)| k == key && v == value) {
@@ -25071,6 +25182,8 @@ impl<'a> Loader<'a> {
                 .parse_arg_type_name(value)
                 .filter(|_| !self.parse_arg_type_is_applied(value))
                 .and_then(|name| self.rule_head_spec_member(&name));
+            // The type as written, on an occurrence, where a type alias was read in it.
+            let mut written: Option<Rc<NodeOccurrence>> = None;
             let bound = if let Some((spec, member)) = spec_member {
                 // WI-20261005-KSSA4: `x: Summable.T` — the spec required of the
                 // parameter's sort, as in the sigil form.
@@ -25083,6 +25196,8 @@ impl<'a> Loader<'a> {
                 self.const_fold = ConstFold::Off;
                 let bound = self.convert_term(value);
                 self.const_fold = data_fold;
+                let (bound, as_written) = self.rule_bound_read_through_aliases(bound, bound_span);
+                written = as_written;
                 bound
             } else if self.parse_arg_is_self_type(value) {
                 // Proposal 070 §1.2: the enclosing sort at its own parameters — the
@@ -25108,12 +25223,20 @@ impl<'a> Loader<'a> {
                     });
                     requirement.instance
                 } else {
-                    self.kb.make_sort_ref(bound_sym)
+                    let named = self.kb.make_sort_ref(bound_sym);
+                    let (bound, as_written) =
+                        self.rule_bound_read_through_aliases(named, bound_span);
+                    written = as_written;
+                    bound
                 }
             };
             self.in_rule_head_bound = saved_bound_ctx;
-            let bound = self.note_rule_head_bound_sorts(bound, bound_span);
-            staged_bounds.push((vid, bound));
+            let noted = self.note_rule_head_bound_sorts(bound, bound_span);
+            let stored = match written {
+                Some(occ) => Self::rule_bound_as_written(noted, bound, Value::Node(occ)),
+                None => Value::term(noted),
+            };
+            staged_bounds.push((vid, stored));
             param_cols.push((key, self.kb.alloc(Term::Var(Var::Global(vid)))));
         }
         let new_pos = match self.rule_head_written_columns(parse_id, &converted_pos, &param_cols) {
@@ -26263,12 +26386,13 @@ impl<'a> Loader<'a> {
                         Some(ty_expr) => {
                             let saved = std::mem::replace(&mut self.in_rule_head_bound, true);
                             self.rule_head_bound_anchors.clear();
-                            let value = self.type_expr_to_value(&ty_expr);
+                            let value = self.written_type_to_value(&ty_expr);
                             self.in_rule_head_bound = saved;
                             match node_occurrence::value_to_term(&mut self.kb, &value) {
                                 Ok(t) => {
                                     let span = self.source_span_of(parse_id);
-                                    self.note_rule_head_bound_sorts(t, span)
+                                    let bound = self.note_rule_head_bound_sorts(t, span);
+                                    Self::rule_bound_as_written(bound, t, value)
                                 }
                                 Err(e) => {
                                     // Loud over silent (consistent with the `None`
@@ -26281,7 +26405,7 @@ impl<'a> Loader<'a> {
                                              term-representable: {e:?}"
                                         ),
                                     });
-                                    self.kb.alloc(Term::Bottom)
+                                    Value::term(self.kb.alloc(Term::Bottom))
                                 }
                             }
                         }
@@ -26290,7 +26414,7 @@ impl<'a> Loader<'a> {
                                 message: "WI-582: typed rule pattern `?x: T` is missing its type"
                                     .to_string(),
                             });
-                            self.kb.alloc(Term::Bottom)
+                            Value::term(self.kb.alloc(Term::Bottom))
                         }
                     };
                     // VarId is Copy — read it out so the immutable `kb` borrow is
@@ -26308,10 +26432,14 @@ impl<'a> Loader<'a> {
                     } else if let Some(vid) = vid_opt {
                         // WI-582: a variable's type bound is declared ONCE. A
                         // conflicting re-annotation (`?x: A` … `?x: B`) is a loud
-                        // load error (ticket acceptance); an identical re-annotation
-                        // is idempotent (bounds are hash-consed → same TermId).
+                        // load error (ticket acceptance); a re-annotation at the same
+                        // type is idempotent, whatever name each was written by.
                         match self.rule_head_type_bounds.iter().find(|(v, _)| *v == vid) {
-                            Some((_, prev)) if *prev != bound => {
+                            Some((_, prev))
+                                if !super::term_view::views_structurally_equal(
+                                    self.kb, prev, &bound,
+                                ) =>
+                            {
                                 self.errors.push(LoadError::Other {
                                     message: "WI-582: a rule variable has conflicting type \
                                               annotations; a variable's type bound must be \
@@ -36865,7 +36993,7 @@ impl<'a> Loader<'a> {
         // `positive_heads`. `convert_term`'s `typed_var` strip records them into
         // `self.rule_head_type_bounds` while `in_rule_head` is set; drained here
         // and installed on each head's RuleEntry below.
-        let mut head_type_bounds: Vec<Vec<(VarId, TermId)>> = Vec::with_capacity(r.heads.len());
+        let mut head_type_bounds: Vec<Vec<(VarId, Value)>> = Vec::with_capacity(r.heads.len());
         // WI-458: each positive head's source span, parallel to `positive_heads`,
         // so the head-error paths can key on the head OCCURRENCE (its RuleId)
         // rather than the hash-consed head TermId.
@@ -37134,8 +37262,8 @@ impl<'a> Loader<'a> {
                 .get(head_idx)
                 .map(|bounds| {
                     let mut vars: Vec<VarId> = Vec::new();
-                    for &(_, bound) in bounds {
-                        for v in self.kb.collect_vars(&bound) {
+                    for (_, bound) in bounds {
+                        for v in self.kb.collect_vars(bound) {
                             if bound_var_joins_frame(self.kb, v, equational) && !vars.contains(&v) {
                                 vars.push(v);
                             }

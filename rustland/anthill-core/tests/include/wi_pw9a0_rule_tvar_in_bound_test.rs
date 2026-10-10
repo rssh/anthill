@@ -376,7 +376,7 @@ fn an_introducer_may_not_shadow_a_name_in_scope() {
 /// (`docs/kernel-language.md` §5.3, and the project's loud-over-silent rule).
 #[test]
 fn a_guard_whose_functor_is_a_type_parameter_lowers_as_that_parameter() {
-    use anthill_core::kb::term::{Term, Var};
+    use anthill_core::kb::term::Var;
 
     let kb = crate::common::load_kb_with(
         r#"
@@ -397,11 +397,11 @@ end
         .expect("keep_id loaded");
     let bounds = kb.rule_type_bounds(rid);
     assert_eq!(bounds.len(), 1, "one folded bound; got {bounds:?}");
+    let head = anthill_core::kb::term_view::TermView::head(&bounds[0].1, &kb);
     assert!(
-        matches!(kb.get_term(bounds[0].1), Term::Var(Var::Global(_))),
+        matches!(head, anthill_core::kb::term_view::ViewHead::Var(Var::Global(_))),
         "the bound must be the type PARAMETER's own variable, not a sort ref to its \
-         symbol (which is what the pre-ticket special case produced); got {:?}",
-        kb.get_term(bounds[0].1)
+         symbol (which is what the pre-ticket special case produced); got {head:?}"
     );
 }
 

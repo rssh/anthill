@@ -2950,7 +2950,11 @@ fn close_type_args(
 /// a thin delegate to the shared [`map_value_type`] (a `Value::Node` now descends
 /// the Type/EffectExpr spine; a `NamedTuple.fields` `Entity`/`Tuple` cons-list
 /// recurses into its element field types). Twin of `open_value_type`.
-fn close_value_type(kb: &mut KnowledgeBase, v: &Value, var_order: &[VarId]) -> (Value, bool) {
+pub(crate) fn close_value_type(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    var_order: &[VarId],
+) -> (Value, bool) {
     map_value_type(&CloseTypeRewrite { var_order }, kb, v)
 }
 
@@ -3025,7 +3029,11 @@ fn walk_recv_type(
 /// `Apply`/`ApplyWithin.type_args` (`open_type_args`) — the sole remaining type
 /// FIELD, since WI-819 moved a `let`'s annotation onto the pattern occurrence,
 /// where it opens as an ordinary child.
-fn open_value_type(kb: &mut KnowledgeBase, v: &Value, fresh: &[VarId]) -> (Value, bool) {
+pub(crate) fn open_value_type(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    fresh: &[VarId],
+) -> (Value, bool) {
     map_value_type(&OpenTypeRewrite { fresh }, kb, v)
 }
 
@@ -5212,7 +5220,7 @@ pub fn written_pattern_annotation(
 
 /// Does this type value hold a [`TypeNode::Aliased`] node anywhere? Every kind of type and
 /// effect node answers for itself, so a new one has to.
-fn value_holds_alias_node(v: &Value) -> bool {
+pub(crate) fn value_holds_alias_node(v: &Value) -> bool {
     fn child(c: &TypeChild) -> bool {
         matches!(c, TypeChild::Node(n) if occ(n))
     }

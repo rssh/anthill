@@ -87,8 +87,8 @@ fn typed_pattern_bound_installed_on_rule() {
     );
     assert!(
         matches!(
-            kb.get_term(bounds[0].1),
-            Term::Var(anthill_core::kb::term::Var::DeBruijn(_))
+            anthill_core::kb::term_view::TermView::head(&bounds[0].1, &kb),
+            anthill_core::kb::term_view::ViewHead::Var(anthill_core::kb::term::Var::DeBruijn(_))
         ),
         "the bound names a real carrier type slot, not the spec instance"
     );
