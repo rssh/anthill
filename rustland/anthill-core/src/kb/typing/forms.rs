@@ -142,7 +142,7 @@ pub(super) fn synthesize_field_access(
 /// This doc used to end "with no enclosing sort (a free op / top-level), there is no
 /// lexical scope to test against, so enforcement is skipped (permissive)", and that
 /// was a measured hole rather than a design: a projection written at a file's top
-/// level, or in ANY rule body, was never checked. [`hidden_field_owner`] now resolves
+/// level, or in ANY rule body, was never checked. [`written_scope`] now resolves
 /// every context to a real scope — the operation's, the rule's `domain`, or the
 /// global scope — so the question is always asked. See [`TypingEnv::referencing_scope`].
 ///
@@ -165,7 +165,7 @@ pub(super) fn internal_field_hidden_from(
     // WI-977: takes the scope ALREADY RESOLVED, so the "no enclosing sort" case
     // cannot be answered here by skipping the check. It used to arrive as an
     // `Option` whose `None` arm returned `false` — permissive, and a measured hole
-    // for top-level code. [`hidden_field_owner`] resolves it to the global scope.
+    // for top-level code. [`written_scope`] resolves it to the global scope.
     !kb.symbols.internal_visible_from(ctor, from)
 }
 

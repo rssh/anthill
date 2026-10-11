@@ -404,12 +404,15 @@ impl Copier {
                     expr: self.expr(expr),
                     origin: match origin {
                         OccurrenceOrigin::Source => OccurrenceOrigin::Source,
-                        OccurrenceOrigin::Synthesized { from, by } => {
-                            OccurrenceOrigin::Synthesized {
-                                from: self.node(from),
-                                by: plain(by),
-                            }
-                        }
+                        OccurrenceOrigin::Synthesized {
+                            from,
+                            by,
+                            written_in,
+                        } => OccurrenceOrigin::Synthesized {
+                            from: self.node(from),
+                            by: plain(by),
+                            written_in: plain(written_in),
+                        },
                     },
                     dot_chain: plain(dot_chain),
                     classification: RefCell::new(

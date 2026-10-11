@@ -5537,6 +5537,25 @@ forbidden-internal access as naming that constructor directly. An `internal`
 name declared *at* the top level is unaffected, the global scope being its own
 declaring scope.
 
+A member reached by a dot on a value is hidden as its written name is. `b.peek()` is the
+call of the operation the dot resolves to, and an `internal` operation is reached that way
+only from where its name is visible: outside `Box`, `b.peek()` is refused as `Box.peek(b)`
+is. The operation asked about is the one the dot settles on, whichever way it was found —
+the receiver's own member, a spec's operation reached through `provides`, through
+`requires` or through a clause on a type parameter, the parent sort's. A hidden member is
+not passed over for another of its name: where `Box` declares an `internal operation v`
+beside a public field `v`, `b.v` outside `Box` is refused, and where `Leaf`'s own `label`
+is `internal` and backs the public `Desc.label`, `l.label()` outside `Leaf` is refused and
+the caller writes `Desc.label(l)` — on a receiver typed at a spec that carries the member
+as on one typed at a concrete sort.
+
+The text of a rewrite is asked from the scope its rule is written in, wherever the rule
+fires. A `@[simp]` rule written in `Box` reaches `Box`'s `internal` operations and fields
+with a dot from every call it rewrites, as it reaches them by name. The same rule written
+in another scope is refused at a call it rewrites in an operation or a rule body — the
+dot is resolved there, once its receiver has a type — and the refusal names the rule's
+scope. The arguments of the rewritten call are the caller's text.
+
 `<global>` serves a namespace's **references** — body goals, types, calls — through the
 enclosing chain like any other enclosing scope. It does not serve a **rule head** written
 inside a namespace: such a head never binds to a name whose only home is `<global>` (§5.3,

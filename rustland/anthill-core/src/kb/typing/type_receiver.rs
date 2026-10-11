@@ -87,15 +87,9 @@ pub(super) fn denoted_sort_dot(
     };
 
     // An `internal` member is hidden from this dot where its written name would be.
-    let from_scope = visibility_scope(kb, env.referencing_scope());
+    let from_scope = written_scope(kb, env, occ);
     let hidden = |kb: &KnowledgeBase, found: Symbol| {
-        (!kb.symbols.internal_visible_from(found, from_scope)).then(|| {
-            DenotedDot::Refused(TypeError::ForbiddenInternalMember {
-                span,
-                member: found,
-                from_scope,
-            })
-        })
+        hidden_dot_member(kb, found, from_scope, span).map(DenotedDot::Refused)
     };
 
     // The receiver the call is made at: the bracket rides it as the written companion

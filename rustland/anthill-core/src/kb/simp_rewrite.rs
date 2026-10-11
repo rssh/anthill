@@ -72,7 +72,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
-use crate::intern::Symbol;
+use crate::intern::{ScopeId, Symbol};
 use crate::parse::desugar_target as dt;
 
 use super::load::meta_has_flag;
@@ -1398,7 +1398,9 @@ fn build_rhs_template(
     match kb.rule_equation_rhs_node(rid) {
         Some(node) => {
             let opened = node_occurrence::open_debruijn_node(kb, &node, fresh);
-            let spliced = reparent_spliced(&opened, from, pass);
+            // The rule's own scope rides its text into the redex.
+            let written_in = kb.symbols.scope_id(kb.rule_domain(rid));
+            let spliced = reparent_spliced(&opened, from, pass, written_in);
             let applied = node_occurrence::substitute_occurrence(kb, &spliced, subst);
             bottom_out_unbound(&applied, fresh)
         }
@@ -1414,7 +1416,9 @@ fn build_rhs_template(
 /// and takes the redex's span — correctly, for a node a pass decided to build); this one
 /// walks the OCCURRENCE and mints nothing. Every node keeps its span and its `dot_chain`
 /// ([`NodeOccurrence::reparented_from`]) and changes exactly two things — its provenance
-/// and its `owner`.
+/// and its `owner`. The provenance says whose text it is as well as where it went:
+/// `written_in` is the rule's scope, which is where an `internal` name is visible to
+/// the rule's text from ([`NodeOccurrence::text_scope`]).
 ///
 /// WHAT THE SPAN AND THE BIT REPAIR, measured — `rule trig(?x) <=> sink(ns.inner.rel)
 /// @[simp]` with a consumer that fires it: THREE "expected resolved name, got unresolved"
@@ -1448,6 +1452,7 @@ fn reparent_spliced(
     rhs_node: &Rc<NodeOccurrence>,
     from: &Rc<NodeOccurrence>,
     pass: PassId,
+    written_in: ScopeId,
 ) -> Rc<NodeOccurrence> {
     let mut work: Vec<SpliceOp> = vec![SpliceOp::Visit(Rc::clone(rhs_node))];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -1478,6 +1483,7 @@ fn reparent_spliced(
                         Rc::clone(from),
                         pass,
                         from.owner,
+                        Some(written_in),
                     )
                 } else if node.as_pattern().is_some() {
                     // WI-20260903-FC2X4 — …AND ITS OWNER MOVES WITH ITS SIBLINGS'. The
@@ -1778,7 +1784,7 @@ fn try_expand_macro(
                     // WI-20260903-FCZ3N: the OWNER is the macro result's own — a macro
                     // built this node knowing the declaration it belongs to, and
                     // re-parenting only says what it is an expansion OF.
-                    result.reparented_from(Rc::clone(template), macro_pass, result.owner)
+                    result.reparented_from(Rc::clone(template), macro_pass, result.owner, None)
                 }
                 _ => result,
             }))
@@ -2954,7 +2960,8 @@ mod tests {
         );
 
         let pass = simp_pass(&mut kb);
-        let spliced = reparent_spliced(&rhs, &from, pass);
+        let rule_scope = kb.symbols.scope_id(f);
+        let spliced = reparent_spliced(&rhs, &from, pass, rule_scope);
         assert_eq!(
             spliced.owner,
             Some(owner),

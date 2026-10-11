@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::intern::Symbol;
+use crate::intern::{ScopeId, Symbol};
 use crate::parse::desugar_target as dt;
 use crate::span::SourceSpan;
 
@@ -34,6 +34,10 @@ pub enum OccurrenceOrigin {
     Synthesized {
         from: Rc<NodeOccurrence>,
         by: PassId,
+        /// The scope this node's text was written in, when the node is the text of a
+        /// rewrite spliced at `from`: its rule's. `None` for a node a pass built, which
+        /// has no text of its own. Read through [`NodeOccurrence::text_scope`].
+        written_in: Option<ScopeId>,
     },
 }
 
@@ -554,7 +558,12 @@ impl NodeOccurrence {
     pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
         let rebuilt = match &self.kind {
             NodeKind::Expr {
-                origin: OccurrenceOrigin::Synthesized { from, by },
+                origin:
+                    OccurrenceOrigin::Synthesized {
+                        from,
+                        by,
+                        written_in,
+                    },
                 ..
             } => Rc::new(NodeOccurrence {
                 kind: NodeKind::Expr {
@@ -562,6 +571,7 @@ impl NodeOccurrence {
                     origin: OccurrenceOrigin::Synthesized {
                         from: Rc::clone(from),
                         by: *by,
+                        written_in: *written_in,
                     },
                     // WI-20260902-4NEKZ: CARRIED, like the origin beside it. A rebuild
                     // (De Bruijn open/close, substitution, `@[simp]` reassembly) is the
@@ -623,7 +633,7 @@ impl NodeOccurrence {
         // `self`'s own link is read first, then the walk steps through owned `Rc`s.
         let mut node: Option<Rc<NodeOccurrence>> = match &self.kind {
             NodeKind::Expr {
-                origin: OccurrenceOrigin::Synthesized { from, by },
+                origin: OccurrenceOrigin::Synthesized { from, by, .. },
                 ..
             } => {
                 crossed_macro |= *by == macro_pass;
@@ -637,7 +647,7 @@ impl NodeOccurrence {
         while let Some(n) = node {
             match &n.kind {
                 NodeKind::Expr {
-                    origin: OccurrenceOrigin::Synthesized { from, by },
+                    origin: OccurrenceOrigin::Synthesized { from, by, .. },
                     ..
                 } => {
                     crossed_macro |= *by == macro_pass;
@@ -694,11 +704,15 @@ impl NodeOccurrence {
     /// The caller gates on `self` being an `Expr` (only that kind carries an origin);
     /// a non-`Expr` result has neither a provenance to fix nor a surface name to recover,
     /// so it is left alone THERE rather than absorbed here.
+    ///
+    /// `written_in` is the scope of the rule whose text this node is, for a rewrite's
+    /// right-hand side spliced at `from`; `None` for a result a macro built.
     pub fn reparented_from(
         &self,
         from: Rc<NodeOccurrence>,
         by: PassId,
         owner: Option<Symbol>,
+        written_in: Option<ScopeId>,
     ) -> Rc<Self> {
         let NodeKind::Expr { expr, .. } = &self.kind else {
             unreachable!("reparented_from: caller must gate on NodeKind::Expr")
@@ -714,7 +728,11 @@ impl NodeOccurrence {
         let rebuilt = Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
                 expr: expr.clone(),
-                origin: OccurrenceOrigin::Synthesized { from, by },
+                origin: OccurrenceOrigin::Synthesized {
+                    from,
+                    by,
+                    written_in,
+                },
                 // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
                 dot_chain: self.is_dot_chain(),
                 classification: RefCell::new(None),
@@ -855,7 +873,11 @@ impl NodeOccurrence {
         Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
                 expr,
-                origin: OccurrenceOrigin::Synthesized { from, by },
+                origin: OccurrenceOrigin::Synthesized {
+                    from,
+                    by,
+                    written_in: None,
+                },
                 // WI-20260902-4NEKZ: NOT carried from `from`, and that is the difference
                 // between this constructor and `rebuilt_expr`. A rebuild is the same node
                 // with new children; a SYNTHESIS is a new node a pass decided to build —
@@ -901,6 +923,35 @@ impl NodeOccurrence {
                 ..
             } => Some(from),
             _ => None,
+        }
+    }
+
+    /// The scope this occurrence's text was written in, when that is not where the
+    /// occurrence now sits: it is the text of a rewrite spliced into another body, or a
+    /// node a pass built from such text (the call a dot in it lowers to). `None` for
+    /// text written where it stands.
+    ///
+    /// An `internal` name is visible to a rule's text from the rule's scope wherever the
+    /// rule fires, as a name the rule wrote is — that one is resolved when the rule
+    /// loads, and a dot is resolved only once its receiver has a type, at the redex.
+    /// The arguments of the redex are spliced in as the occurrences they were, so the
+    /// caller's text under a rewrite is still the caller's.
+    pub fn text_scope(&self) -> Option<ScopeId> {
+        let mut node = self;
+        loop {
+            match &node.kind {
+                NodeKind::Expr {
+                    origin:
+                        OccurrenceOrigin::Synthesized {
+                            from, written_in, ..
+                        },
+                    ..
+                } => match written_in {
+                    Some(scope) => return Some(*scope),
+                    None => node = from,
+                },
+                _ => return None,
+            }
         }
     }
 
@@ -9860,7 +9911,7 @@ mod tests {
         // A node located at the ANCHOR but an expansion OF the template — the shape
         // `try_expand_macro` produces.
         let spliced = NodeOccurrence::new_expr(Expr::Const(Literal::Int(1)), anchor_span, None)
-            .reparented_from(Rc::clone(&template), pass, None);
+            .reparented_from(Rc::clone(&template), pass, None, None);
         assert_eq!(
             spliced.span, anchor_span,
             "re-parenting must not move the node's location",
@@ -9902,7 +9953,7 @@ mod tests {
         assert_eq!(synth.span, source_span);
         match &synth.kind {
             NodeKind::Expr {
-                origin: OccurrenceOrigin::Synthesized { from, by },
+                origin: OccurrenceOrigin::Synthesized { from, by, .. },
                 ..
             } => {
                 assert!(Rc::ptr_eq(from, &source));
