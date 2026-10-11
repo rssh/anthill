@@ -533,9 +533,16 @@ fn a_provision_written_through_an_alias_has_its_specialization_records() {
                 .filter(|record| record.contains(&format!("test.{ns}.W.provides.")))
                 .map(|record| record.replace(&ns, "NS"))
                 .collect();
+        // Named by the TYPE under both spellings: the alias `Money` is `Int64` in the name
+        // and in the witness's substitution.
+        let wanted = "rule: \"test.NS.W.provides.test.NS.FEq[T = anthill.prelude.Int64]\
+                      .test.NS.Show[T = test.NS.FEq.T]\"";
         assert!(
-            records.iter().any(|record| record.contains("test.NS.W.provides.FEq.")),
-            "{ns}: a record for the law `FEq` requires: {records:#?}"
+            records.iter().any(|record| {
+                record.contains(wanted)
+                    && record.contains("concrete_sort: \"anthill.prelude.Int64\"")
+            }),
+            "{ns}: a record for the law `FEq` requires, wants {wanted}: {records:#?}"
         );
     }
 }

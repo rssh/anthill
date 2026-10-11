@@ -413,7 +413,9 @@ fn a_requirement_written_through_an_alias_has_its_scope_axiom() {
     for (spelling, at) in [("alias", "Money"), ("written", "Int64")] {
         let ns = format!("rwaaxiom{spelling}");
         let kb = load_kb_with(&source(&ns, &MONOID_USE.replace("AT", at)));
-        let wanted = format!("rule: \"test.{ns}.Use.requires.Monoid_Int64\"");
+        let wanted = format!(
+            "rule: \"test.{ns}.Use.requires.test.{ns}.Monoid[T = anthill.prelude.Int64]\""
+        );
         let records = scope_axiom_records(&kb, &ns);
         assert!(
             records.iter().any(|record| record.contains(&wanted)),
@@ -426,7 +428,9 @@ fn a_requirement_written_through_an_alias_has_its_scope_axiom() {
              sort Holds\n    entity holds\n    requires Tagged[T = {at}, N = 3]\n  end"
         );
         let kb = load_kb_with(&source(&ns, &body));
-        let wanted = format!("rule: \"test.{ns}.Holds.requires.Tagged_den_i3_Int64\"");
+        let wanted = format!(
+            "rule: \"test.{ns}.Holds.requires.test.{ns}.Tagged[N = 3, T = anthill.prelude.Int64]\""
+        );
         let records = scope_axiom_records(&kb, &ns);
         assert!(
             records.iter().any(|record| record.contains(&wanted)),

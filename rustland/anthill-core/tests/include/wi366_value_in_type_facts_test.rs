@@ -170,8 +170,8 @@ end
         "the SortRequiresInfo spec must faithfully carry the denoted `3` (not dropped)",
     );
     assert_eq!(
-        load::flatten_spec(&kb, &spec).as_deref(),
-        Some("Foo_den_i3_Int64"),
+        load::qualified_spec_text(&kb, &spec).as_deref(),
+        Some("test.wi366.req.Foo[N = 3, T = anthill.prelude.Int64]"),
         "both bindings are read off the stored spec, in the order of their names",
     );
     assert!(
@@ -628,15 +628,22 @@ end
         views_structurally_equal(&kb, &s3, &s3c),
         "two `Foo[Int64, 3]` are one spec",
     );
-    // WI-390 R3: the scope-axiom signature (`requires.<flatten_spec>`) must ALSO
-    // distinguish the literals — `flatten_spec` must not collapse the denoted to a
-    // non-distinguishing token, else two requires differing only in the literal
-    // collide on one scope-axiom QN and one is dropped.
-    let f3 = anthill_core::kb::load::flatten_spec(&kb, &s3);
-    let f4 = anthill_core::kb::load::flatten_spec(&kb, &s4);
+    // WI-390 R3: the scope-axiom signature (`requires.<qualified_spec_text>`) must ALSO
+    // distinguish the literals — the value a type holds is written as the value it is,
+    // else two requires differing only in the literal collide on one scope-axiom QN and
+    // one is dropped.
+    let f3 = anthill_core::kb::load::qualified_spec_text(&kb, &s3);
+    let f4 = anthill_core::kb::load::qualified_spec_text(&kb, &s4);
     assert_ne!(
         f3, f4,
-        "flatten_spec must distinguish Foo[Int64,3] from Foo[Int64,4] in the scope-axiom name; got {f3:?} vs {f4:?}",
+        "the spec's text must distinguish Foo[Int64,3] from Foo[Int64,4] in the scope-axiom name; got {f3:?} vs {f4:?}",
+    );
+    assert_eq!(
+        (f3.as_deref(), f4.as_deref()),
+        (
+            Some("test.wi390.cache.Foo[N = 3, T = anthill.prelude.Int64]"),
+            Some("test.wi390.cache.Foo[N = 4, T = anthill.prelude.Int64]"),
+        ),
     );
 }
 

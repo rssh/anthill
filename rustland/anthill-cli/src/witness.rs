@@ -56,7 +56,7 @@ pub enum ProofWitness {
     ScopeAxiom {
         scope_kind: String, // "sort" | "operation"
         scope_qn: String,
-        aspect: String, // "requires.<SE-flat>" | "induction" | …
+        aspect: String, // "requires.<SE>" | "induction" | …
     },
 
     /// Use-site specialization — combine a parametric ProofRecord

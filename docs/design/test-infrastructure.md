@@ -1047,7 +1047,10 @@ What it took, beyond the range:
   the same laws emits the same records — so the control for the TIME is a count:
   `load::witness_law_names_tested_by_this_thread`, and a row that a later load tests at
   most as many names for a prefix as the KB has provisions and records together, where
-  the scan tested their product.
+  the scan tested their product. (WI-20261011-S8CYD: the laws are an index read off the
+  records' witnesses now, not a range of names, and the counter is
+  `witness_law_records_read_by_this_thread` — the records the walk and the lookups read;
+  the row is the same row.)
 - **The back-out that fails in silence was found by writing it.** The range taken from
   the spec's NAME instead of from its `requires.` prefix stops at the first name under
   the spec that is not a law — so a spec with a record of its own sorting before its

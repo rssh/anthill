@@ -790,7 +790,7 @@ fn written_spec_binds_param(
 /// the dictionary entry that backs the spec op — read at the fact-coverage check
 /// (loader) and at spec-op dispatch (eval) through this one accessor. The bound
 /// value's base symbol is read via `provides_spec_base_sym` (the same
-/// op-discriminator [`sort_view_substitution`](crate::kb::load) uses); a type-valued binding
+/// op-discriminator `load::spec_binding_texts` uses); a type-valued binding
 /// (`F = Option`, a `Sort`) yields `None`, so a plain type-only provision
 /// (`provides Stream[T = X]`) never matches.
 fn instance_fact_op_in_bindings(

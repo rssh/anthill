@@ -1767,11 +1767,20 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
         return Vec::new();
     }
 
-    // Snapshot all ProofRecord QNs once so the inner loop is cheap.
+    // Snapshot once, so the inner loop is cheap: every record that is the scope axiom of
+    // a `requires` clause, as the scope it is of and its name.
+    //
+    // READ OFF THE WITNESS, not cut out of the name (WI-20261011-S8CYD). This took the
+    // names under `<scope>.requires.` whose remainder held no `.`, which was the rule for
+    // "a clause of this scope and not of one nested in it" while the remainder was a
+    // flattening of short names; it is the spec's qualified text now, with a `.` in every
+    // one. The witness says the scope outright (`ScopeAxiom.scope_qn`) and what the
+    // record is of it (`aspect`), so a name is never taken apart — and a scope whose own
+    // name has a `requires` segment in it is told from a clause.
     // WI-806: read through the accessor — a bodied ProofRecord rule is surfaced
     // loudly (empty snapshot) rather than silently head-matched, and a value-fact
     // head is a loud skip, not the old `rule_head` value-head panic.
-    let mut all_record_qns: Vec<String> = Vec::new();
+    let mut requires_axioms: Vec<(String, String)> = Vec::new();
     let records = match kb.read_facts(record_sym, &[], BodiedRulePolicy::Refuse) {
         Ok(r) => r,
         Err(e) => {
@@ -1788,10 +1797,35 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
             Term::Fn { named_args, .. } => named_args,
             _ => continue,
         };
-        if let Some(tid) = get_named_arg(kb, named, "rule") {
-            if let Term::Const(Literal::String(s)) = kb.get_term(tid) {
-                all_record_qns.push(s.clone());
-            }
+        let Some(witness) = get_named_arg(kb, named, "witness") else {
+            continue;
+        };
+        let Term::Fn {
+            functor,
+            named_args: witness_named,
+            ..
+        } = kb.get_term(witness)
+        else {
+            continue;
+        };
+        if kb.qualified_name_of(*functor) != "anthill.realization.witness.ProofWitness.ScopeAxiom" {
+            continue;
+        }
+        let (Some(rule), Some(scope_qn), Some(aspect)) = (
+            lookup_string(kb, named, "rule"),
+            lookup_string(kb, witness_named, "scope_qn"),
+            lookup_string(kb, witness_named, "aspect"),
+        ) else {
+            // Said, not dropped: a scope axiom this cannot read would otherwise leave a
+            // proof's cites without a word. `anthill check` refuses the record itself.
+            eprintln!(
+                "warning: skipping a ScopeAxiom ProofRecord whose `rule`, `scope_qn` or \
+                 `aspect` is not a string — it is no implicit citation of `{rule_qn}`"
+            );
+            continue;
+        };
+        if aspect.starts_with("requires.") {
+            requires_axioms.push((scope_qn, rule));
         }
     }
 
@@ -1801,17 +1835,12 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
     // of "closest scope wins" if there's any duplication.
     for end in 1..parts.len() {
         let scope_qn = parts[..end].join(".");
-        let prefix = format!("{scope_qn}.requires.");
-        for qn in &all_record_qns {
-            // Match exact-prefix-and-no-deeper-segment so we don't
-            // pick up `a.b.requires.X.requires.Y` style records as
-            // implicit cites for scope `a.b`.
-            if let Some(rest) = qn.strip_prefix(&prefix) {
-                if !rest.contains('.') {
-                    out.push(qn.clone());
-                }
-            }
-        }
+        out.extend(
+            requires_axioms
+                .iter()
+                .filter(|(scope, _)| *scope == scope_qn)
+                .map(|(_, rule)| rule.clone()),
+        );
     }
     out
 }
@@ -2588,6 +2617,93 @@ fn indent(s: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+// WI-20261011-S8CYD — the laws a proof may cite without naming them are the scope
+// axioms of the `requires` clauses of its enclosing scopes, found by each record's
+// WITNESS. They were found by cutting a record's name at `<scope>.requires.` and leaving
+// out a remainder with a `.` in it; a name's remainder is a spec's qualified text now.
+//
+// THE ROW HOLDS THE READER AND NOT THE CITATION. What `implicit_cites_for` returns is
+// lowered by lifting the RULE of each name (`render_cited_lemmas`), and a requirement's
+// record is no rule: a `by z3` proof in a scope that has a `requires` is refused, "cite
+// … could not be lowered under its translation policy: rule '…' not found" — before
+// this change and after it (docs/measurements/test-infrastructure/
+// proof-record-names-2026-10-11.txt §8 (a)). So the row says WHICH records a proof is
+// handed, by name, and nothing says a proof goes through with them; when the lowering
+// of a requirement is built (WI-20261011-BVG8M), the row for that drives a proof.
+/// Load the embedded stdlib plus a single user source written to a temp file
+/// (`load_kb_with_stdlib` requires ≥1 user path) — for the unit rows of this file.
+#[cfg(test)]
+fn load_with_source(tag: &str, src: &str) -> KnowledgeBase {
+    let dir = std::env::temp_dir().join(format!("anthill-prove-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("src.anthill");
+    std::fs::write(&path, src).unwrap();
+    crate::load_kb_with_stdlib(&[path], false, crate::Library::Stdlib)
+        .unwrap_or_else(|c| panic!("load failed with code {c}"))
+}
+
+#[cfg(test)]
+mod s8cyd_implicit_cite_tests {
+    use super::*;
+
+    /// `Outer` has two requirements and a nested `Inner` with one of its own; and a
+    /// namespace whose name has a `requires` SEGMENT holds a sort with a requirement.
+    const SRC: &str = r#"
+        namespace t.s8cyd
+          import anthill.prelude.{Int64}
+
+          sort Outer
+            sort T = ?
+            sort U = ?
+            requires anthill.prelude.Eq[T = T]
+            requires anthill.prelude.PartialEq[T = U]
+
+            sort Inner
+              sort V = ?
+              requires anthill.prelude.Eq[T = V]
+            end
+          end
+        end
+
+        namespace t.s8cyd.Outer.requires
+          sort Held
+            sort W = ?
+            requires anthill.prelude.Eq[T = W]
+          end
+        end
+    "#;
+
+    /// BACKED OUT (the names cut at `.requires.`, a remainder with a `.` left out): FAILS
+    /// — no cite at all, every remainder being a qualified name. And with the names cut
+    /// and the remainder NOT tested, the rule under `Outer` FAILS on the clause of
+    /// `t.s8cyd.Outer.requires.Held`, which is no clause of `Outer`.
+    #[test]
+    fn a_rule_cites_the_requirements_of_its_enclosing_scopes_and_no_others() {
+        let kb = load_with_source("implicit", SRC);
+        let eq_t = "t.s8cyd.Outer.requires.anthill.prelude.Eq[T = t.s8cyd.Outer.T]";
+        let partial_eq_u = "t.s8cyd.Outer.requires.anthill.prelude.PartialEq[T = t.s8cyd.Outer.U]";
+        let inner = "t.s8cyd.Outer.Inner.requires.anthill.prelude.Eq[T = t.s8cyd.Outer.Inner.V]";
+        let held = "t.s8cyd.Outer.requires.Held.requires.anthill.prelude.Eq[T = \
+                    t.s8cyd.Outer.requires.Held.W]";
+
+        // A rule of `Outer`: `Outer`'s two clauses, and neither the nested sort's nor
+        // the clause of the sort that merely sits under a `requires` segment.
+        assert_eq!(implicit_cites_for("t.s8cyd.Outer.some_rule", &kb), vec![eq_t, partial_eq_u]);
+        // A rule of `Inner`: outer to inner.
+        assert_eq!(
+            implicit_cites_for("t.s8cyd.Outer.Inner.some_rule", &kb),
+            vec![eq_t, partial_eq_u, inner]
+        );
+        // A rule of `Held`: `Outer` is an enclosing scope by name, and `Held` its own.
+        assert_eq!(
+            implicit_cites_for("t.s8cyd.Outer.requires.Held.some_rule", &kb),
+            vec![eq_t, partial_eq_u, held]
+        );
+        // A rule beside `Outer`: nothing.
+        assert_eq!(implicit_cites_for("t.s8cyd.some_rule", &kb), Vec::<String>::new());
+    }
+}
+
 // ── WI-558: prove write-back unit tests ──────────────────────────────
 //
 // `anthill-cli` is a binary crate (no lib target), so these in-process tests
@@ -2600,17 +2716,6 @@ fn indent(s: &str, prefix: &str) -> String {
 mod wi558_tests {
     use super::*;
     use crate::witness::{ProofWitness, SmtVerdict};
-
-    /// Load the embedded stdlib plus a single user source written to a temp
-    /// file (`load_kb_with_stdlib` requires ≥1 user path).
-    fn load_with_source(tag: &str, src: &str) -> KnowledgeBase {
-        let dir = std::env::temp_dir().join(format!("anthill-wi558-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("src.anthill");
-        std::fs::write(&path, src).unwrap();
-        crate::load_kb_with_stdlib(&[path], false, crate::Library::Stdlib)
-            .unwrap_or_else(|c| panic!("load failed with code {c}"))
-    }
 
     const SRC: &str = r#"
         namespace t.w558

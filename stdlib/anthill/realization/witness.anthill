@@ -54,8 +54,10 @@ namespace anthill.realization.witness
     --
     -- `aspect` discriminates which structural feature the witness
     -- rests on:
-    --   - "requires.<SE-flat>" — the lemma is one of the scope's
-    --     `requires` clauses, identified by the flattened Sort-Expr.
+    --   - "requires.<SE>" — the lemma is one of the scope's
+    --     `requires` clauses, identified by the Sort-Expr's qualified
+    --     text: the spec's qualified name and its bindings in
+    --     brackets, `anthill.prelude.Eq[T = anthill.algebra.A.T]`.
     --   - "induction" — the lemma is the auto-generated induction
     --     principle for an inductive sort.
     --   - (future aspects extend the dispatch table without schema
@@ -67,7 +69,7 @@ namespace anthill.realization.witness
     entity ScopeAxiom(
       scope_kind : String,                            -- "sort" | "operation"
       scope_qn   : String,                            -- the cited declaration's QN
-      aspect     : String                             -- "requires.<SE-flat>" | "induction" | ...
+      aspect     : String                             -- "requires.<SE>" | "induction" | ...
     )
 
     -- Use-site specialization — combine a parametric ProofRecord
@@ -116,10 +118,15 @@ namespace anthill.realization.witness
   -- Substitutions are lists of these. For polymorphic sorts like
   -- `List[T]`, a use at T = Int64 produces a Specialization whose
   -- substitution is `[SortBinding(abstract_param: "T", concrete_sort: "anthill.prelude.Int64")]`.
+  --
+  -- `concrete_sort` is the QUALIFIED TEXT of the type the parameter is
+  -- bound to, written in full — `anthill.prelude.List[T = test.sg.P]`
+  -- for a binding at a list — which is also how the record's name
+  -- writes the binding (proposal 030, "Record names").
 
   entity SortBinding(
     abstract_param : String,                          -- e.g. "T"
-    concrete_sort  : String                           -- qualified name of the concrete sort
+    concrete_sort  : String                           -- qualified text of the concrete type
   )
 
   -- ================================================================

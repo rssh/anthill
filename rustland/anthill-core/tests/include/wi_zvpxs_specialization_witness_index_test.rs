@@ -12,7 +12,24 @@
 //! can get wrong in silence: a record NOT emitted is no load error, a record emitted
 //! under a neighbour's law is none either, and the scan put back emits the same records.
 //!
-//! WHAT FAILS WHEN THE CHANGE IS BACKED OUT — measured, each by making the change and
+//! SINCE WI-20261011-S8CYD A SPEC'S LAWS ARE READ OFF THE RECORDS' WITNESSES, an index by
+//! scope built by one walk of the registry a pass (`load::requires_laws_by_scope`), and
+//! not a range of the sorted names: a name under `<spec>.requires.` need not be a
+//! requirement of the spec (`wi_s8cyd_record_names_test::a_specs_laws_are_its_own_requirements`).
+//! The rows are the same seven — the counter was renamed with what it counts — and what
+//! fails for the index, measured on that tree (2026-10-11, the dev profile):
+//!
+//! * the registry walked again for every provision — the scan back:
+//!   `a_later_load_tests_rows_plus_names_and_not_rows_times_names` FAILS, and it alone;
+//! * a scope's laws in the order of the relation and not of their names:
+//!   `the_records_of_one_provision_are_emitted_in_name_order` FAILS, and it alone;
+//! * the scope not compared — every requirement a law of every spec: 6 of the 7 FAIL
+//!   (not the order row), and the 8 rows of the S8CYD file.
+//!
+//! The list below is of the RANGE, as this ticket delivered it, and is kept for what it
+//! measured; the three unit rows it names went with the function they were of.
+//!
+//! WHAT FAILED WHEN THE CHANGE WAS BACKED OUT — measured, each by making the change and
 //! running this file's 7 rows and the 3 unit rows beside the code
 //! (`load::wi_zvpxs_law_range_tests`), 2026-10-11, the dev profile, on the tree as
 //! delivered:
@@ -62,30 +79,16 @@
 //! made into the standard library as the suite's recipe gives it (`load_stdlib_kb`: a
 //! copy of the shared base by default), by `load_in_a_later_call`.
 
-use anthill_core::kb::load::{witness_law_names_tested_by_this_thread, LoadOptions};
+use anthill_core::kb::load::witness_law_records_read_by_this_thread;
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::print::TermPrinter;
 
 use crate::common::{
-    load_in_a_later_call, load_stdlib_kb, named_field_term, proof_record_heads, recipe_load,
-    rendered_load_errors, LoadRecipe,
+    load_stdlib_kb, named_field_term, proof_record_heads, proof_record_rows as records,
+    proof_records_brought_by_a_later_load as brought_by_a_later_load, proof_records_of_one_call,
+    ProofRecordRow as Record,
 };
-
-/// One `ProofRecord` as a row reads it: the `rule` it is named by, and its witness as
-/// source text.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Record {
-    rule: String,
-    witness: String,
-}
-
-fn record(rule: &str, witness: &str) -> Record {
-    Record {
-        rule: rule.to_owned(),
-        witness: witness.to_owned(),
-    }
-}
 
 /// The field `key` of a record's head, or of its witness — read by the field's NAME.
 fn field(kb: &KnowledgeBase, term: TermId, key: &str) -> TermId {
@@ -102,19 +105,6 @@ fn text_field(kb: &KnowledgeBase, term: TermId, key: &str) -> String {
     }
 }
 
-/// Every `ProofRecord` of the KB, in the order of the relation — the order they were
-/// asserted in.
-fn records(kb: &KnowledgeBase) -> Vec<Record> {
-    let printer = TermPrinter::new(kb);
-    proof_record_heads(kb)
-        .into_iter()
-        .map(|head| Record {
-            rule: text_field(kb, head, "rule"),
-            witness: printer.print_term(field(kb, head, "witness")),
-        })
-        .collect()
-}
-
 /// How many provision rows the KB holds.
 fn provisions(kb: &KnowledgeBase) -> usize {
     let relation = kb
@@ -128,37 +118,10 @@ fn sorted(mut records: Vec<Record>) -> Vec<Record> {
     records
 }
 
-/// `program` loaded into `kb` in a call of its own: the records that load ADDED, in the
-/// order it asserted them. The records that were there are asserted to be there still,
-/// each in its place.
-fn brought_by_a_later_load(kb: &mut KnowledgeBase, program: &str) -> Vec<Record> {
-    let before = records(kb);
-    if let Err(errors) = load_in_a_later_call(kb, program, LoadOptions::default()) {
-        panic!("the program loads: {:?}", rendered_load_errors(errors));
-    }
-    let mut after = records(kb);
-    let brought = after.split_off(before.len());
-    assert_eq!(after, before, "a later load leaves the earlier records as they were");
-    brought
-}
-
-/// The standard library and `program` in ONE call: every record of that KB.
-fn records_of_one_call(program: &str) -> Vec<Record> {
-    let kb = recipe_load(&[program], None, LoadOptions::default(), LoadRecipe::OneShot, |_| {})
-        .unwrap_or_else(|e| panic!("the program loads: {:?}", rendered_load_errors(e)))
-        .0;
-    records(&kb)
-}
-
-fn specialization(parametric: &str, param: &str, concrete: &str) -> String {
-    format!(
-        "Specialization(parametric: \"{parametric}\", substitution: \
-         [SortBinding(abstract_param: \"{param}\", concrete_sort: \"{concrete}\")], instances: nil)"
-    )
-}
-
-fn scope_axiom(scope: &str, aspect: &str) -> String {
-    format!("ScopeAxiom(scope_kind: \"sort\", scope_qn: \"{scope}\", aspect: \"{aspect}\")")
+/// The law `requires <spec>[T = T]` of the sort `of`, as a record's name writes it
+/// (WI-20261011-S8CYD: the required spec's qualified text at its bindings).
+fn law_at_own_t(spec: &str, of: &str) -> String {
+    format!("{spec}[T = {of}.T]")
 }
 
 // ── A later load emits for the provisions it brought ─────────────────
@@ -200,27 +163,34 @@ end
 /// `Specialization` for each law of each spec a provision of its own is of — by NAME,
 /// with the parametric record it specializes and the provision's bindings.
 fn the_programs_records() -> Vec<Record> {
+    let lawful_eq = law_at_own_t("anthill.prelude.Eq", "test.zvpxs.Lawful");
+    let at_half = ("T", "test.zvpxs.Half");
     vec![
-        record(
-            "test.zvpxs.Lawful.requires.Eq_T",
-            &scope_axiom("test.zvpxs.Lawful", "requires.Eq_T"),
+        Record::requirement("test.zvpxs.Lawful", &lawful_eq),
+        Record::induction("test.zvpxs.Half"),
+        Record::specialization(
+            "test.zvpxs.Thing",
+            "test.zvpxs.Lawful",
+            ("T", "test.zvpxs.Thing"),
+            &lawful_eq,
         ),
-        record("test.zvpxs.Half.induction", &scope_axiom("test.zvpxs.Half", "induction")),
-        record(
-            "test.zvpxs.Thing.provides.Lawful.Eq_T",
-            &specialization("test.zvpxs.Lawful.requires.Eq_T", "T", "Thing"),
+        Record::specialization(
+            "test.zvpxs.ByValue",
+            "anthill.prelude.PartialOrd",
+            at_half,
+            &law_at_own_t("anthill.prelude.PartialEq", "anthill.prelude.PartialOrd"),
         ),
-        record(
-            "test.zvpxs.ByValue.provides.PartialOrd.PartialEq_T",
-            &specialization("anthill.prelude.PartialOrd.requires.PartialEq_T", "T", "Half"),
+        Record::specialization(
+            "test.zvpxs.ByValue",
+            "anthill.prelude.WeakOrd",
+            at_half,
+            &law_at_own_t("anthill.prelude.Eq", "anthill.prelude.WeakOrd"),
         ),
-        record(
-            "test.zvpxs.ByValue.provides.WeakOrd.Eq_T",
-            &specialization("anthill.prelude.WeakOrd.requires.Eq_T", "T", "Half"),
-        ),
-        record(
-            "test.zvpxs.ByValue.provides.WeakOrd.PartialOrd_T",
-            &specialization("anthill.prelude.WeakOrd.requires.PartialOrd_T", "T", "Half"),
+        Record::specialization(
+            "test.zvpxs.ByValue",
+            "anthill.prelude.WeakOrd",
+            at_half,
+            &law_at_own_t("anthill.prelude.PartialOrd", "anthill.prelude.WeakOrd"),
         ),
     ]
 }
@@ -247,7 +217,7 @@ fn a_later_load_emits_the_records_of_its_own_provisions() {
 /// set — the standard library's own records are what they are after its own load.
 #[test]
 fn one_call_emits_the_records_a_later_load_does() {
-    let one_call = records_of_one_call(A_PROGRAM_WITH_LAWS);
+    let one_call = proof_records_of_one_call(&[A_PROGRAM_WITH_LAWS]);
     let the_programs: Vec<Record> = one_call
         .iter()
         .filter(|r| r.rule.starts_with("test.zvpxs."))
@@ -287,22 +257,22 @@ fn a_later_load_emits_nothing_for_the_provisions_that_were_there() {
 
 /// THE PASS LOOKS A SPEC'S LAWS UP AND DOES NOT SCAN FOR THEM — what the change is, and
 /// what no record can show: the scan emitted the same ones. A later load that brings
-/// nothing tests, for a spec's `requires.` prefix, at most as many record names as the
-/// KB has provisions and records TOGETHER — a range a spec, each a law's name or the one
-/// name that ends it. The scan tested their PRODUCT: every name for every provision,
-/// 49 784 after the standard library's own load.
+/// nothing reads, to find its provisions' laws, at most as many records as the KB has
+/// provisions and records TOGETHER — every record once, by the walk that files the laws
+/// by scope, and each law once for a provision of its spec. The scan read their
+/// PRODUCT: every name for every provision, 49 784 after the standard library's own load.
 #[test]
 fn a_later_load_tests_rows_plus_names_and_not_rows_times_names() {
     let mut kb = load_stdlib_kb();
     let (rows, names) = (provisions(&kb), records(&kb).len());
     assert!(rows > 400 && names > 100, "the standard library is loaded: {rows} provisions, {names} records");
-    let before = witness_law_names_tested_by_this_thread();
+    let before = witness_law_records_read_by_this_thread();
     assert_eq!(brought_by_a_later_load(&mut kb, A_PROGRAM_WITH_NO_PROVISION), vec![]);
-    let tested = witness_law_names_tested_by_this_thread() - before;
+    let tested = witness_law_records_read_by_this_thread() - before;
     assert!(tested > 0, "the pass ran, and asked for the laws of the specs provided");
     assert!(
         tested <= rows + names,
-        "{tested} names tested for a prefix, in a KB of {rows} provisions and {names} records"
+        "{tested} records read for laws, in a KB of {rows} provisions and {names} records"
     );
 }
 
@@ -324,11 +294,9 @@ fn a_record_whose_verdict_was_written_is_not_emitted_again() {
         .try_resolve_symbol("anthill.realization.ProofRecord")
         .expect("the standard library declares ProofRecord");
     // One of each pass's: a scope axiom, an induction principle, a specialization.
-    for name in [
-        "test.zvpxs.Lawful.requires.Eq_T",
-        "test.zvpxs.Half.induction",
-        "test.zvpxs.ByValue.provides.WeakOrd.Eq_T",
-    ] {
+    let owed = the_programs_records();
+    for record in [&owed[0], &owed[1], &owed[4]] {
+        let name = record.rule.as_str();
         let rid = kb
             .rules_by_functor(relation)
             .into_iter()
@@ -346,9 +314,9 @@ fn a_record_whose_verdict_was_written_is_not_emitted_again() {
 
 /// `Spec` has ONE law. Three record names sort next to `test.zvpxs_near.Spec.requires.`
 /// without being under it, each one a law record or made from one:
-///   `…Spec.provides.SpecX.PartialEq_T`   `Spec`'s own provision — BELOW the range
-///   `…Spec.zed.requires.PartialEq_U`     a member's law — the first name past its end
-///   `…SpecX.requires.PartialEq_T`        a longer name's law — past that
+///   `…Spec.provides.…SpecX[T = …Spec.T].…`   `Spec`'s own provision — BELOW the range
+///   `…Spec.zed.requires.…PartialEq[T = …U]`  a member's law — the first name past its end
+///   `…SpecX.requires.…PartialEq[T = …T]`     a longer name's law — past that
 const SPECS_WITH_NEIGHBOURS: &str = r#"
 namespace test.zvpxs_near
   import anthill.prelude.{Bool, PartialEq, Eq}
@@ -402,36 +370,38 @@ end
 #[test]
 fn a_provision_takes_its_own_specs_laws_and_no_neighbours() {
     let mut kb = load_stdlib_kb();
+    let spec_x_law = law_at_own_t("anthill.prelude.PartialEq", "test.zvpxs_near.SpecX");
+    let spec_law = law_at_own_t("anthill.prelude.Eq", "test.zvpxs_near.Spec");
     assert_eq!(
         brought_by_a_later_load(&mut kb, SPECS_WITH_NEIGHBOURS),
         vec![
-            record(
-                "test.zvpxs_near.SpecX.requires.PartialEq_T",
-                &scope_axiom("test.zvpxs_near.SpecX", "requires.PartialEq_T"),
+            Record::requirement("test.zvpxs_near.SpecX", &spec_x_law),
+            Record::requirement("test.zvpxs_near.Spec", &spec_law),
+            Record::requirement(
+                "test.zvpxs_near.Spec.zed",
+                "anthill.prelude.PartialEq[T = test.zvpxs_near.Spec.zed.U]",
             ),
-            record(
-                "test.zvpxs_near.Spec.requires.Eq_T",
-                &scope_axiom("test.zvpxs_near.Spec", "requires.Eq_T"),
+            Record::specialization(
+                "test.zvpxs_near.Spec",
+                "test.zvpxs_near.SpecX",
+                ("T", "test.zvpxs_near.Spec.T"),
+                &spec_x_law,
             ),
-            record(
-                "test.zvpxs_near.Spec.zed.requires.PartialEq_U",
-                &scope_axiom("test.zvpxs_near.Spec.zed", "requires.PartialEq_U"),
-            ),
-            record(
-                "test.zvpxs_near.Spec.provides.SpecX.PartialEq_T",
-                &specialization("test.zvpxs_near.SpecX.requires.PartialEq_T", "T", "T"),
-            ),
-            record(
-                "test.zvpxs_near.Thing.provides.Spec.Eq_T",
-                &specialization("test.zvpxs_near.Spec.requires.Eq_T", "T", "Thing"),
+            Record::specialization(
+                "test.zvpxs_near.Thing",
+                "test.zvpxs_near.Spec",
+                ("T", "test.zvpxs_near.Thing"),
+                &spec_law,
             ),
         ]
     );
     assert_eq!(
         brought_by_a_later_load(&mut kb, ANOTHER_PROVIDER_OF_THE_SPEC),
-        vec![record(
-            "test.zvpxs_far.Other.provides.Spec.Eq_T",
-            &specialization("test.zvpxs_near.Spec.requires.Eq_T", "T", "Other"),
+        vec![Record::specialization(
+            "test.zvpxs_far.Other",
+            "test.zvpxs_near.Spec",
+            ("T", "test.zvpxs_far.Other"),
+            &spec_law,
         )]
     );
 }
@@ -449,10 +419,9 @@ fn the_records_of_one_provision_are_emitted_in_name_order() {
     let kb = load_stdlib_kb();
     let printer = TermPrinter::new(&kb);
     // The specialization records by the PROVISION they are of: who provides, which spec,
-    // at which bindings. A record is named `<X>.provides.<A-short>.<SE>` and specializes
-    // `<A>.requires.<SE>`, so the two names share their `<SE>` — which may itself hold a
-    // `.`, and two specs may share a short name: the key is read off both, not off the
-    // last segment of one.
+    // at which bindings. A record is named `<X>.provides.<PE>.<SE>` and specializes
+    // `<A>.requires.<SE>`, so the two names share their `<SE>` — a spec's qualified
+    // text, with a `.` in it: the key is read off both, not off the last segment of one.
     let mut by_provision: Vec<((String, String, String), Vec<String>)> = Vec::new();
     for head in proof_record_heads(&kb) {
         let witness = field(&kb, head, "witness");

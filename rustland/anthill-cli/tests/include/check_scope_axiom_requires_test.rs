@@ -49,7 +49,10 @@ end
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     for sort in ["Aliased", "Written"] {
-        let line = format!("✓ test.chk.{sort}.requires.Show_Int64");
+        // Named by the TYPE under both spellings (the required spec's qualified text,
+        // WI-20261011-S8CYD): the alias `Money` is `Int64` in the name.
+        let line =
+            format!("✓ test.chk.{sort}.requires.test.chk.Show[T = anthill.prelude.Int64]");
         assert!(stdout.contains(&line), "wants {line}:\n{stdout}");
     }
 }

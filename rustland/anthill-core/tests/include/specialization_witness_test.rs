@@ -15,10 +15,11 @@ fn provides_clause_emits_specialization_proof_record() {
     // meant to describe.
     //
     // Sort A has a requires clause; sort B claims `provides A[T = B]`.
-    // The α.6 pass auto-registers <A-qn>.requires.Eq_T for A's
-    // requires; the α.8 pass walks the SortProvidesInfo fact for B
-    // and emits B.provides.A.Eq_T whose witness is a Specialization
-    // referencing A.requires.Eq_T plus the [T = B] substitution.
+    // The α.6 pass auto-registers <A-qn>.requires.<SE> for A's requires — `<SE>` the
+    // required spec's qualified text, `anthill.prelude.Eq[T = <A-qn>.T]`; the α.8 pass
+    // walks the SortProvidesInfo fact for B and emits <B-qn>.provides.<A-qn>[T = <B-qn>].<SE>
+    // whose witness is a Specialization referencing <A-qn>.requires.<SE> plus the
+    // [T = <B-qn>] substitution (WI-20261011-S8CYD).
     let src = r#"
         namespace test.provides_alpha8
           import anthill.prelude.{Bool, PartialEq, Eq}
@@ -39,7 +40,12 @@ fn provides_clause_emits_specialization_proof_record() {
     let records = proof_records(&kb);
     let r = records
         .iter()
-        .find(|r| r.contains("test.provides_alpha8.B.provides.A.") && r.contains("Specialization"))
+        .find(|r| {
+            r.contains(
+                "rule: \"test.provides_alpha8.B.provides.test.provides_alpha8.A[T = \
+                 test.provides_alpha8.B].anthill.prelude.Eq[T = test.provides_alpha8.A.T]\"",
+            ) && r.contains("Specialization")
+        })
         .unwrap_or_else(|| {
             panic!("expected a Specialization-witnessed ProofRecord; saw:\n{records:#?}")
         });
@@ -48,12 +54,18 @@ fn provides_clause_emits_specialization_proof_record() {
         "witness must be Specialization; got {r}"
     );
     assert!(
-        r.contains("parametric:"),
-        "witness must reference a parametric ProofRecord; got {r}"
+        r.contains(
+            "parametric: \"test.provides_alpha8.A.requires.anthill.prelude.Eq[T = \
+             test.provides_alpha8.A.T]\""
+        ),
+        "witness must reference the parametric ProofRecord of A's law; got {r}"
     );
     assert!(
-        r.contains("substitution:"),
-        "witness must include a substitution list; got {r}"
+        r.contains(
+            "substitution: [SortBinding(abstract_param: \"T\", concrete_sort: \
+             \"test.provides_alpha8.B\")]"
+        ),
+        "witness must say the provision's binding, by the sort's qualified name; got {r}"
     );
     assert!(
         r.contains(r#"state_hash: "specialization""#),

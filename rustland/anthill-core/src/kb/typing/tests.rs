@@ -7942,3 +7942,137 @@ mod projection_error_origin_test {
         );
     }
 }
+
+/// WI-20261011-S8CYD — THE QUALIFIED TEXT OF A TYPE LEAVES NO CHILD OUT.
+#[cfg(test)]
+mod s8cyd_qualified_text_test {
+    //! A proof record is named by [`super::super::type_qualified_text`], the diagnostic's
+    //! walk in a third spelling. A diagnostic may leave a child of a type out — the two
+    //! types it shows side by side are told apart some other way, or a note says they
+    //! are not — and a NAME may not: two types that differ in that child would be one
+    //! record. Three forms of the walk leave one out, and the name's spelling writes each
+    //! in full (/code-review found the first; the other two were read off the walk):
+    //!
+    //! * an ARROW's effect row (`param -> result`);
+    //! * a GUARDED effect atom's guard (its label alone);
+    //! * a RIGID PROJECTION's `sort` (`var.member`).
+    //!
+    //! EACH ROW ASSERTS ITS CONTROL: the diagnostic's text of the two types is ONE text —
+    //! that is the walk leaving the child out — and the qualified text is two.
+    //!
+    //! BACKED OUT, measured 2026-10-11, each on the tree as delivered
+    //! (`docs/measurements/test-infrastructure/proof-record-names-2026-10-11.txt` §5):
+    //! the arrow written without its row — the arrow row FAILS; the guarded atom written
+    //! by its label — the atom row FAILS; the rigid projection written `var.member` —
+    //! the projection row FAILS. Each fails alone.
+    //!
+    //! The terms are built by hand, because the last two shapes are the typer's and no
+    //! stored spec has been seen to hold one: a provision cannot be written at them.
+    use super::super::{type_display_name, type_qualified_text};
+    use crate::kb::term::{Term, TermId};
+    use crate::kb::term_view::ViewItem;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+    use smallvec::SmallVec;
+
+    fn application(kb: &mut KnowledgeBase, functor: &str, named: &[(&str, TermId)]) -> TermId {
+        let functor = kb
+            .try_resolve_symbol(functor)
+            .unwrap_or_else(|| panic!("`{functor}` is declared"));
+        let named_args = named.iter().map(|(key, value)| (kb.intern(key), *value)).collect();
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        })
+    }
+
+    fn sort(kb: &mut KnowledgeBase, name: &str) -> TermId {
+        let symbol = kb
+            .try_resolve_symbol(name)
+            .unwrap_or_else(|| panic!("`{name}` is declared"));
+        kb.make_sort_ref(symbol)
+    }
+
+    /// The two texts of each of `a` and `b`: a reader's must be ONE, a name's two.
+    fn one_text_for_a_reader_and_two_for_a_name(kb: &KnowledgeBase, a: TermId, b: TermId) {
+        assert_ne!(a, b, "the fixture: two types");
+        assert_eq!(
+            type_display_name(kb, a),
+            type_display_name(kb, b),
+            "the control: a diagnostic's text leaves out the child the two differ in"
+        );
+        let (name_a, name_b) = (
+            type_qualified_text(kb, &ViewItem::Term(a)),
+            type_qualified_text(kb, &ViewItem::Term(b)),
+        );
+        assert_ne!(name_a, name_b, "a name's text tells the two apart");
+    }
+
+    #[test]
+    fn an_arrow_is_named_with_its_row() {
+        let mut kb = load_stdlib(None);
+        let int = sort(&mut kb, "anthill.prelude.Int64");
+        let error = sort(&mut kb, "anthill.prelude.Error");
+        let arity = kb.alloc(Term::Const(crate::kb::term::Literal::Int(1)));
+        let arrow = |kb: &mut KnowledgeBase, row: TermId| {
+            let effects = application(
+                kb,
+                "anthill.prelude.TypeExtractor.EffectsRows",
+                &[("effects_expr", row)],
+            );
+            application(
+                kb,
+                "anthill.prelude.TypeExtractor.Arrow",
+                &[("param", int), ("result", int), ("effects", effects), ("arity", arity)],
+            )
+        };
+        let pure_row = application(&mut kb, "anthill.prelude.EffectExpression.empty_row", &[]);
+        let raising_row =
+            application(&mut kb, "anthill.prelude.EffectExpression.present", &[("label", error)]);
+        let (pure, raising) = (arrow(&mut kb, pure_row), arrow(&mut kb, raising_row));
+        one_text_for_a_reader_and_two_for_a_name(&kb, pure, raising);
+        assert_eq!(
+            type_qualified_text(&kb, &ViewItem::Term(raising)),
+            "anthill.prelude.Int64 -> anthill.prelude.Int64 @ {anthill.prelude.Error}"
+        );
+    }
+
+    #[test]
+    fn a_guarded_effect_atom_is_named_with_its_guard() {
+        let mut kb = load_stdlib(None);
+        let error = sort(&mut kb, "anthill.prelude.Error");
+        let int = sort(&mut kb, "anthill.prelude.Int64");
+        let no_guard = kb.build_list(&[]);
+        let a_guard = kb.build_list(&[int]);
+        let guarded = |kb: &mut KnowledgeBase, guard: TermId| {
+            application(
+                kb,
+                "anthill.prelude.EffectExpression.guarded",
+                &[("label", error), ("guard", guard)],
+            )
+        };
+        let (unguarded, held_by_a_guard) = (guarded(&mut kb, no_guard), guarded(&mut kb, a_guard));
+        one_text_for_a_reader_and_two_for_a_name(&kb, unguarded, held_by_a_guard);
+    }
+
+    #[test]
+    fn a_rigid_projection_is_named_with_its_sort() {
+        let mut kb = load_stdlib(None);
+        let var = sort(&mut kb, "anthill.prelude.Int64");
+        let member = sort(&mut kb, "anthill.prelude.Bool");
+        let projection = |kb: &mut KnowledgeBase, of: &str| {
+            let of = sort(kb, of);
+            application(
+                kb,
+                "anthill.prelude.TypeExtractor.RigidTypeProjection",
+                &[("sort", of), ("var", var), ("member", member)],
+            )
+        };
+        let (of_eq, of_partial_eq) = (
+            projection(&mut kb, "anthill.prelude.Eq"),
+            projection(&mut kb, "anthill.prelude.PartialEq"),
+        );
+        one_text_for_a_reader_and_two_for_a_name(&kb, of_eq, of_partial_eq);
+    }
+}

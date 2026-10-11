@@ -17369,11 +17369,15 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
 /// The witness is `ScopeAxiom(scope_kind, scope_qn, aspect)` —
 /// definitionally checkable by re-reading the source declaration.
 ///
-/// Naming: `<scope-qn>.requires.<SE-flat>` where `<SE-flat>` is the
-/// spec's base sort short-name plus binding-value short-names sorted
-/// by binding key. So `requires Eq[T]` inside `algebra.A` becomes
-/// `algebra.A.requires.Eq_T`; `requires Monoid[T = Int64]` becomes
-/// `<scope>.requires.Monoid_Int`.
+/// Naming: `<scope-qn>.requires.<SE>`, `<SE>` the QUALIFIED TEXT of the spec at its
+/// bindings ([`qualified_spec_text`], WI-20261011-S8CYD). So `requires Eq[T]` inside
+/// `algebra.A` is `algebra.A.requires.anthill.prelude.Eq[T = algebra.A.T]`, and
+/// `requires Monoid[T = Int64]` is
+/// `<scope>.requires.<Monoid-qn>[T = anthill.prelude.Int64]`. Two clauses of one scope
+/// are one record exactly when they are one spec at one set of bindings: the name was a
+/// flattening of SHORT names, under which `requires a.Conv[T = T]` and
+/// `requires b.Conv[T = T]` were one record, and `Eq[T = List[T = P]]` and
+/// `Eq[T = List[T = Q]]` another.
 ///
 /// Records land with `result = Pending` for now — phase β's witness
 /// checker transitions them to `Discharged` once the structural
@@ -17453,11 +17457,11 @@ fn register_requires_axiom_witnesses(kb: &mut KnowledgeBase) {
             Some(q) => q,
             None => continue,
         };
-        let se_flat = match flatten_spec(kb, &spec) {
+        let se = match qualified_spec_text(kb, &spec) {
             Some(s) => s,
             None => continue,
         };
-        let aspect_text = format!("requires.{se_flat}");
+        let aspect_text = format!("requires.{se}");
         let rule_qn_text = format!("{scope_qn}.{aspect_text}");
         if existing_rule_qns.contains(&rule_qn_text) {
             continue;
@@ -17697,8 +17701,9 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
 ///      spec view's named bindings (filtering operation auto-bindings).
 ///   2. For each of A's auto-registered `<A-qn>.requires.<SE>`
 ///      ProofRecords (α.6), emit a `Specialization` ProofRecord
-///      named `<X-qn>.provides.<A-flat>.<SE>` whose witness is
-///      `Specialization { parametric: <A-qn>.requires.<SE>,
+///      named `<X-qn>.provides.<PE>.<SE>` — `<PE>` the provision's spec
+///      at its bindings, as [`qualified_spec_text`] writes it — whose
+///      witness is `Specialization { parametric: <A-qn>.requires.<SE>,
 ///      substitution: σ, instances: [] }`. The instances list is
 ///      empty in v0 — phase β.5's structural check verifies
 ///      coverage by walking the existing registry rather than
@@ -17714,19 +17719,29 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
 /// the KB at every load and emits the records that are not there, so a later load
 /// derives each earlier record's name again to find it.
 ///
-/// WI-20261011-ZVPXS — A ROW ASKS FOR THE LAWS OF ITS OWN SPEC, and a spec is asked
-/// once. The pass used to find them by filtering every record name of the KB for
-/// `<A-qn>.requires.`, per row, the prefix built by a `format!` inside the filter: rows
-/// times names, 392 x 127 on a load after the standard library's and 94 % of the pass
-/// there — 9.0–9.9 ms of 9.5–10.5, where the library's own load paid 1.5 ms for
-/// 102 x 75 (`docs/measurements/test-infrastructure/specialization-witnesses-2026-10-11.txt`).
-/// The names are SORTED now ([`collect_existing_proof_record_qns`]), so the laws of a
-/// spec are one range of them ([`requires_law_records`]), taken once per spec and kept
-/// for the length of the pass — the set does not change under it: what the pass emits
-/// is asserted after its last read. A row is read past its spec's name only when that
-/// spec has a law, and its bindings are decoded only when one of its records is not
-/// there. [`witness_law_names_tested_by_this_thread`] counts the names the lookups
-/// test, for a row that the scan has not come back.
+/// WI-20261011-ZVPXS — A ROW ASKS FOR THE LAWS OF ITS OWN SPEC. The pass used to find
+/// them by filtering every record name of the KB for `<A-qn>.requires.`, per row, the
+/// prefix built by a `format!` inside the filter: rows times names, 392 x 127 on a load
+/// after the standard library's and 94 % of the pass there — 9.0–9.9 ms of 9.5–10.5,
+/// where the library's own load paid 1.5 ms for 102 x 75
+/// (`docs/measurements/test-infrastructure/specialization-witnesses-2026-10-11.txt`).
+/// The laws are an index by spec now ([`requires_laws_by_scope`]), built by ONE walk of
+/// the registry a pass and asked once a row — it does not change under the pass: what
+/// the pass emits is asserted after its last read. A row is read past its spec's name
+/// only when that spec has a law. [`witness_law_records_read_by_this_thread`] counts
+/// the records the walk and the lookups read, for a row that the scan has not come back.
+///
+/// WI-20261011-S8CYD — A RECORD'S NAME SAYS WHICH PROVISION IT IS OF: who provides, the
+/// spec by its qualified name, and the bindings it is provided at. It was
+/// `<X-qn>.provides.<A-short>.<SE>` — the spec's last segment and no binding — so two
+/// provisions by one sort of two specs of one short name, or of one spec at two
+/// bindings, made ONE name: both records were emitted when one pass saw both rows, and
+/// the second was taken for the first when a later load brought it, so one call and two
+/// loads left different registries. The bindings a name is made of are decoded for
+/// every row whose spec has a law now (38 of the standard library's, at every load) —
+/// they were decoded only for a row owed a record — and the witness's `substitution` is
+/// built from the same decode ([`spec_binding_texts`]), so a name fixes its record:
+/// two rows that make one name are one provision, and their records one fact.
 ///
 /// It is still a walk of every row, on purpose (user, 2026-10-11): a frontier behind a
 /// seal was probed and would take at most half a millisecond more, and would owe an
@@ -17795,15 +17810,15 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let concrete_sort_arg = kb.intern("concrete_sort");
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
+    // Each spec's `(<A-qn>.requires.<SE>, <SE>)` records, by the spec's qualified name.
+    // A lookup table only: nothing walks it, so its order reaches no record.
+    let laws_by_scope = requires_laws_by_scope(kb, record_sym);
 
-    // Snapshot first — each provision that is owed a record, as its spec and the
-    // `(<A-qn>.requires.<SE>, <X-qn>.provides.<A-flat>.<SE>)` of each record it is owed
+    // Snapshot first — each provision that is owed a record, as its bindings and the
+    // `(<A-qn>.requires.<SE>, <X-qn>.provides.<PE>.<SE>)` of each record it is owed
     // — so we don't borrow-conflict with kb mutations during ProofRecord construction.
     let provides_rids = kb.rules_by_functor(provides_info_sym);
-    let mut targets: Vec<(crate::eval::value::Value, Vec<(&str, String)>)> = Vec::new();
-    // Each spec's `(<A-qn>.requires.<SE>, <SE>)` records, by the spec's symbol. A lookup
-    // table only: nothing walks it, so its order reaches no record.
-    let mut laws_of_spec: HashMap<Symbol, Vec<(&str, &str)>> = HashMap::new();
+    let mut targets: Vec<(Vec<(String, String)>, Vec<(&str, String)>)> = Vec::new();
     for rid in provides_rids {
         if !kb.is_fact(rid) {
             continue;
@@ -17837,38 +17852,37 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
         // Find every auto-registered <A-qn>.requires.<SE> record so we can emit one
         // Specialization per requires-law — and a provision of a spec with no law is
         // done here, before anything else of the row is read.
-        let laws = laws_of_spec.entry(spec_sym).or_insert_with(|| {
-            requires_law_records(&existing_rule_qns, kb.qualified_name_of(spec_sym))
-        });
-        if laws.is_empty() {
+        let Some(laws) = laws_by_scope.get(kb.qualified_name_of(spec_sym)) else {
             continue;
-        }
+        };
+        LAW_RECORDS_READ.with(|n| n.set(n.get() + laws.len()));
         let x_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
             Some(q) => q,
             None => continue,
         };
-        // The name each of the provision's records goes by; the ones the registry does
-        // not hold are what the pass owes it. On a load that brings no provision of a
-        // spec with a law that is none, of any row, and nothing below is reached.
-        let a_short = last_segment(kb.qualified_name_of(spec_sym));
+        // The name each of the provision's records goes by — the provision as
+        // `qualified_spec_text` writes it, between who provides and the law; the ones
+        // the registry does not hold are what the pass owes it. On a load that brings no
+        // provision of a spec with a law that is none, of any row, and nothing below is
+        // reached.
+        let substitution = spec_binding_texts(kb, &spec);
+        let provided = spec_text_at(kb.qualified_name_of(spec_sym), &substitution);
         let missing: Vec<(&str, String)> = laws
             .iter()
-            .map(|&(parametric_qn, se_part)| {
-                (parametric_qn, format!("{x_qn}.provides.{a_short}.{se_part}"))
+            .map(|(parametric_qn, se_part)| {
+                (parametric_qn.as_str(), format!("{x_qn}.provides.{provided}.{se_part}"))
             })
             .filter(|(_, rule_qn)| !existing_rule_qns.contains(rule_qn))
             .collect();
         if missing.is_empty() {
             continue;
         }
-        targets.push((spec, missing));
+        targets.push((substitution, missing));
     }
 
     let mut new_records: Vec<TermId> = Vec::new();
 
-    for (spec, missing) in targets {
-        let substitution = provides_spec_substitution(kb, &spec);
-
+    for (substitution, missing) in targets {
         for (parametric_qn, rule_qn_text) in missing {
             let parametric_term = kb.alloc(Term::Const(Literal::String(parametric_qn.to_owned())));
             // Build the substitution cons-list of SortBinding entities.
@@ -20664,38 +20678,31 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
     }
 }
 
-/// The substitution of a SortProvidesInfo.spec, as `Vec<(abstract_param,
-/// concrete_sort_short)>` — what a `Specialization` witness records of the provision.
-/// (The spec's names — the qualified one that finds α.6's requires records, the short one
-/// a record's name carries — are asked of its base symbol, [`provides_spec_base_sym_view`].)
+/// WI-20261011-S8CYD — THE BINDINGS OF A SPEC AS A PROOF RECORD SAYS THEM: each
+/// binding's parameter by its short name, and its value as the QUALIFIED TEXT of the type
+/// it is (`typing::type_qualified_text`), in the order of the parameters' names.
 ///
-/// Read through the view, so the answer is the same on whichever carrier the spec rides.
-fn provides_spec_substitution<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String, String)> {
-    // The type-parameter substitution lives in the outer `SortView`'s
-    // named args; a plain `provides Foo` (non-SortView Fn or bare ref)
-    // carries none.
-    let is_view = matches!(
-        spec.head(kb),
-        ViewHead::Functor { functor: Some(functor), .. }
-            if super::typing::is_sort_view_functor(kb, functor)
-    );
-    if is_view {
-        sort_view_substitution(kb, spec)
-    } else {
-        Vec::new()
-    }
-}
-
-/// Parse a `SortView`'s named args into the type-parameter substitution
-/// `Vec<(abstract_param_short, concrete_sort_short)>`, sorted by param.
-/// Operation-valued args are skipped (they bind ops, not type params).
-fn sort_view_substitution<V: TermView>(kb: &KnowledgeBase, view: &V) -> Vec<(String, String)> {
+/// ONE DECODE for the two things a record says of a spec at its bindings — the text its
+/// NAME carries ([`qualified_spec_text`]) and the `substitution` of a `Specialization`
+/// witness — so the two cannot disagree: what a record is named fixes what it says.
+///
+/// THE VALUE IS WRITTEN IN FULL. It was the short name of its head — `P` for
+/// `test.sg.P`, `List` for `List[T = P]`, `EffectsRows` for every row — so two bindings
+/// that differ in the namespace of a sort, or anywhere below the head, were one.
+///
+/// A binding whose value is an OPERATION is left out: those are the auto-bindings
+/// `resolve_requires_bindings` completes a clause with, not the author's, and a name
+/// that carried them would be another name before that pass than after it.
+///
+/// Read through the view, so the answer is the same on whichever carrier the spec rides:
+/// a binding written through a type alias is the type it stands for.
+fn spec_binding_texts<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String, String)> {
     use crate::intern::SymbolKind;
-    let mut sub: Vec<(String, String)> = view
+    let mut bindings: Vec<(String, String)> = spec
         .named_keys(kb)
         .into_iter()
         .filter_map(|k_sym| {
-            let value = view
+            let value = spec
                 .named_arg(kb, k_sym)
                 .expect("a view answers for a named key it lists");
             // The base sort the binding names. A parameterized binding value is the
@@ -20703,23 +20710,63 @@ fn sort_view_substitution<V: TermView>(kb: &KnowledgeBase, view: &V) -> Vec<(Str
             // one too, WI-20260924-F3FYJ; an over-applied one too, WI-20260929-AAQT5 —
             // no binding rides a `SortView(base, …)` wrapper any more), whose head
             // `provides_spec_base_sym` reads. A bare op-valued binding stays its own
-            // functor, so the operation skip below is unaffected.
-            let value_sym = provides_spec_base_sym_view(kb, &value);
-            if let Some(vs) = value_sym {
+            // functor, which is what the skip tests.
+            if let Some(vs) = provides_spec_base_sym_view(kb, &value) {
                 if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
                     return None;
                 }
             }
-            let k_short = last_segment(kb.local_name_of(k_sym)).to_owned();
-            let v_short = match value_sym {
-                Some(s) => last_segment(kb.local_name_of(s)).to_owned(),
-                None => "_".to_string(),
-            };
-            Some((k_short, v_short))
+            Some((
+                last_segment(kb.local_name_of(k_sym)).to_owned(),
+                super::typing::type_qualified_text(kb, &value),
+            ))
         })
         .collect();
-    sub.sort_by(|a, b| a.0.cmp(&b.0));
-    sub
+    bindings.sort_by(|a, b| a.0.cmp(&b.0));
+    bindings
+}
+
+/// The spec named `base_qn` at `bindings` ([`spec_binding_texts`]), as a record's name
+/// writes it: `anthill.prelude.Eq[T = test.sg.P]`, and the name alone for a spec that
+/// binds nothing.
+fn spec_text_at(base_qn: &str, bindings: &[(String, String)]) -> String {
+    if bindings.is_empty() {
+        return base_qn.to_owned();
+    }
+    let parts: Vec<String> = bindings.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+    format!("{base_qn}[{}]", parts.join(", "))
+}
+
+/// WI-20261011-S8CYD — THE QUALIFIED TEXT OF A SPEC AT ITS BINDINGS: the spec's base
+/// sort by its qualified name, and in brackets its bindings as [`spec_binding_texts`]
+/// says them — `anthill.prelude.Eq[T = test.sg.P]`. `None` for a spec that names no sort.
+///
+/// IT IS WHAT A PROOF RECORD'S NAME SAYS OF A SPEC, in both places a name says one
+/// (proposal 030, "Record names"):
+///
+///   `<scope-qn>.requires.<SE>`     the scope axiom of a `requires <SE>` clause — and
+///                                  `requires.<SE>` is its witness's `aspect`;
+///   `<X-qn>.provides.<PE>.<SE>`    the specialization, at `X provides <PE>`, of the law
+///                                  `<A-qn>.requires.<SE>` of the spec `<PE>` is of.
+///
+/// So two clauses share a name exactly when they are one spec at one set of bindings.
+/// The flattening this replaces (`Eq_T`: the SHORT names of the spec and of each
+/// binding's head, joined by `_`) gave one name to `a.Conv` and `b.Conv`, to
+/// `Tag[T = a.P]` and `Tag[T = b.P]`, to `Tag[T = List[T = P]]` and
+/// `Tag[T = List[T = Q]]`; and a specialization was named by its spec's short name with
+/// the provision's bindings left out, so a sort providing one spec at two bindings had
+/// two records of ONE name — and with the second provision in a later load, one record,
+/// where one call over the same files left two
+/// (`docs/measurements/test-infrastructure/proof-record-names-2026-10-11.txt`).
+///
+/// THE NAME IS NOT FOR CUTTING APART. `provides` and `requires` are namespace segments
+/// too, and every qualified name in it has dots: a reader that wants a record's scope,
+/// its law or its bindings reads the witness's FIELDS (`anthill prove`'s
+/// `implicit_cites_for` does, and [`requires_laws_by_scope`] for a spec's laws), and one
+/// that wants a record asks for the whole name.
+pub fn qualified_spec_text<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
+    let base = provides_spec_base_sym_view(kb, spec)?;
+    Some(spec_text_at(kb.qualified_name_of(base), &spec_binding_texts(kb, spec)))
 }
 
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
@@ -20758,11 +20805,11 @@ pub fn sort_info_qn(kb: &KnowledgeBase, named: &SmallVec<[(Symbol, TermId); 2]>)
 /// auto-registration in `register_requires_axiom_witnesses` can skip
 /// duplicates.
 ///
-/// SORTED (WI-20261011-ZVPXS): a record is named by what it is about —
-/// `<scope-qn>.requires.<SE>`, `<sort-qn>.induction`, `<X-qn>.provides.<A>.<SE>` — so
-/// the names under a prefix are one range of the set, and
-/// `register_specialization_witnesses` takes a spec's laws as that range
-/// ([`requires_law_records`]) where it used to filter every name per provision.
+/// A pass asks it one thing: is a record of this name there. It is a SORTED set
+/// (WI-20261011-ZVPXS took a spec's laws as the range of names under
+/// `<spec-qn>.requires.`); nothing takes a range of it since WI-20261011-S8CYD — the
+/// laws are read off the records' witnesses ([`requires_laws_by_scope`]) — and it stays
+/// sorted so that whatever comes to walk it does so in one order, in every process.
 ///
 /// EACH OF THE THREE WITNESS PASSES READS IT FOR ITSELF, on purpose. One set handed down
 /// the three would save two walks of the relation (0.07 ms of a later load, measured)
@@ -20793,54 +20840,104 @@ fn collect_existing_proof_record_qns(
     out
 }
 
-/// WI-20261011-ZVPXS — the α.6 records of the spec named `spec_qn`: every name of
-/// `existing` of the form `<spec_qn>.requires.<SE>`, with its `<SE>`, in name order.
+/// WI-20261011-S8CYD — THE LAWS OF EVERY SPEC: the α.6 records — the scope axioms of
+/// `requires` clauses — by the scope each is of, as `(the record's name, <SE>)`, each
+/// scope's in the order of their names.
 ///
-/// ONE RANGE of the sorted set, and exactly the names the prefix test accepts. `str`
-/// orders by bytes, so a name that starts with the prefix is not below it, and no name
-/// that does not start with it lies between two that do: the walk starts at the first
-/// name not below the prefix and ends at the first that does not start with it. What
-/// that end leaves out is what sorts next to a spec's laws without being one — a longer
-/// name's (`<spec_qn>X.requires.…`), a member's (`<spec_qn>.zed.requires.…`), the
-/// spec's own provisions (`<spec_qn>.provides.…`, which sort BELOW the prefix).
+/// READ OFF EACH RECORD'S WITNESS: `ScopeAxiom.scope_qn` is the spec, and an `aspect` of
+/// `requires.<SE>` says the record is a clause's, and which. A spec's laws were the
+/// names under `<spec-qn>.requires.` — a filter of every name per provision first, one
+/// range of the sorted names since WI-20261011-ZVPXS — and a name says less than that
+/// reads: `requires` is a namespace segment too. So the records of a sort declared
+/// under `<spec-qn>.requires` were laws of the spec — its own scope axiom, its induction
+/// principle, and the records of its provisions once an earlier load had left them,
+/// which a load that brought nothing then specialized every provider of the spec at —
+/// and so was a record a program WROTE under such a name, whatever its witness
+/// (/code-review, reproduced on the tree before: a provider of `t.o.Outer` got
+/// `t.o.X.provides.Outer.Held.requires.Eq_W`, for the law of `t.o.Outer.requires.Held`).
+/// The witness says the scope outright, and a name is not cut apart to find one
+/// ([`qualified_spec_text`]).
 ///
-/// EVERY name under the prefix, a `<SE>` with a `.` in it too (a requirement bound at a
-/// string or a float flattens to one): the rule this pass has always had. The CLI's
-/// `implicit_cites_for` asks a narrower question of the same names — the laws a proof
-/// in a scope may cite without naming them — and leaves such a name out; the two are not
-/// one rule, and this is not where they are made one.
-fn requires_law_records<'a>(
-    existing: &'a std::collections::BTreeSet<String>,
-    spec_qn: &str,
-) -> Vec<(&'a str, &'a str)> {
-    use std::ops::Bound;
-    let prefix = format!("{spec_qn}.requires.");
-    let mut tested = 0;
-    let laws = existing
-        .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
-        .map_while(|qn| {
-            tested += 1;
-            qn.strip_prefix(prefix.as_str()).map(|se| (qn.as_str(), se))
-        })
-        .collect();
-    LAW_NAMES_TESTED.with(|n| n.set(n.get() + tested));
+/// A record whose witness is a `ScopeAxiom` this cannot read — a field that is not a
+/// string — is no law here; `anthill check` is where it is refused, by name.
+///
+/// ONE WALK of the registry a pass, and a provision's laws one lookup: rows plus
+/// records, as the range was. [`witness_law_records_read_by_this_thread`] counts both.
+fn requires_laws_by_scope(
+    kb: &KnowledgeBase,
+    record_sym: Symbol,
+) -> HashMap<String, Vec<(String, String)>> {
+    let text = |named: &SmallVec<[(Symbol, TermId); 2]>, key: &str| {
+        match kb.get_term(super::typing::get_named_arg(kb, named, key)?) {
+            Term::Const(Literal::String(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    };
+    let mut laws: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut read = 0;
+    for rid in kb.rules_by_functor(record_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let Some(head) = kb.fact_head_term(rid) else {
+            continue;
+        };
+        read += 1;
+        let Term::Fn { named_args, .. } = kb.get_term(head) else {
+            continue;
+        };
+        let Some(witness) = super::typing::get_named_arg(kb, named_args, "witness") else {
+            continue;
+        };
+        let Term::Fn {
+            functor,
+            named_args: witness_args,
+            ..
+        } = kb.get_term(witness)
+        else {
+            continue;
+        };
+        if kb.qualified_name_of(*functor) != "anthill.realization.witness.ProofWitness.ScopeAxiom" {
+            continue;
+        }
+        let (Some(rule), Some(scope_qn), Some(aspect)) = (
+            text(named_args, "rule"),
+            text(witness_args, "scope_qn"),
+            text(witness_args, "aspect"),
+        ) else {
+            continue;
+        };
+        if let Some(se) = aspect.strip_prefix("requires.") {
+            laws.entry(scope_qn.to_owned())
+                .or_default()
+                .push((rule.to_owned(), se.to_owned()));
+        }
+    }
+    // The order a provision's records are emitted in is the order of its spec's laws
+    // here: their names', not the relation's and not a hash's.
+    for of_one_scope in laws.values_mut() {
+        of_one_scope.sort();
+    }
+    LAW_RECORDS_READ.with(|n| n.set(n.get() + read));
     laws
 }
 
 thread_local! {
-    /// Record names [`requires_law_records`] has tested for a spec's prefix on this thread.
-    static LAW_NAMES_TESTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Records `register_specialization_witnesses` has read for its provisions' laws on
+    /// this thread: each one [`requires_laws_by_scope`] walked, and each law a row took.
+    static LAW_RECORDS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// WI-20261011-ZVPXS — how many `ProofRecord` names `register_specialization_witnesses`
-/// has tested for a spec's `requires.` prefix ON THIS THREAD, ever. The instrument for
-/// what the records a load leaves cannot show: that the pass looked a spec's laws up and
-/// did not scan for them. A test reads it before and after a load and asserts on the
-/// difference — a later load tests at most as many names as the KB has provisions and
-/// records together, where the scan tested their product (49 784 after the standard
-/// library's own load, for 413 and 127).
-pub fn witness_law_names_tested_by_this_thread() -> usize {
-    LAW_NAMES_TESTED.with(std::cell::Cell::get)
+/// WI-20261011-ZVPXS — how many `ProofRecord`s `register_specialization_witnesses` has
+/// read to find its provisions' laws ON THIS THREAD, ever: every record the one walk of
+/// a pass reads, and every law a provision is handed. The instrument for what the
+/// records a load leaves cannot show: that the pass looked a spec's laws up and did not
+/// scan for them. A test reads it before and after a load and asserts on the difference
+/// — a later load reads at most as many as the KB has provisions and records together,
+/// where the scan read their product (49 784 after the standard library's own load, for
+/// 413 and 127).
+pub fn witness_law_records_read_by_this_thread() -> usize {
+    LAW_RECORDS_READ.with(std::cell::Cell::get)
 }
 
 /// Detect an equational rule head (WI-139): the head term is an
@@ -20933,114 +21030,6 @@ pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
         Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor).to_owned()),
         Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_owned()),
         _ => None,
-    }
-}
-
-/// WI-390: render a `denoted(value: <inner>)` value-in-type binding to a stable
-/// short token for [`flatten_spec`] — by its INNER value (the literal `3` / the
-/// ref `c`), NOT the constant functor name `"Denoted"`. Two `requires` differing
-/// only in the denoted literal must yield distinct `requires.<SE>` signatures, else
-/// their scope axioms collide on one QN and one is silently dropped (load.rs:2592).
-fn denoted_value_short<V: TermView>(kb: &KnowledgeBase, denoted: &V) -> String {
-    let inner = denoted
-        .named_keys(kb)
-        .into_iter()
-        .find(|k| kb.local_name_of(*k).rsplit('.').next() == Some("value"))
-        .and_then(|k| denoted.named_arg(kb, k));
-    let Some(inner) = inner else {
-        return "den".to_string();
-    };
-    match inner.head(kb) {
-        ViewHead::Const(Literal::Int(n)) => format!("den_i{n}"),
-        ViewHead::Const(Literal::BigInt(n)) => format!("den_i{n}"),
-        ViewHead::Const(Literal::Bool(b)) => format!("den_b{b}"),
-        ViewHead::Const(Literal::String(s)) => format!("den_str_{s}"),
-        ViewHead::Const(Literal::Float(f)) => format!("den_f{}", f.0),
-        ViewHead::Functor {
-            functor: Some(functor),
-            ..
-        }
-        | ViewHead::Ident(functor) => {
-            let n = kb.local_name_of(functor);
-            format!("den_{}", n.rsplit('.').next().unwrap_or(n))
-        }
-        _ => "den".to_string(),
-    }
-}
-
-/// Flatten a `SortRequiresInfo.spec` to the deterministic
-/// short-name signature used in `requires.<SE-flat>` rule QNs. For
-/// `SortView(Eq, T = X)` the result is `Eq_<short(X)>`. For a plain
-/// nullary sort `Foo`, the result is `Foo`. Bindings are sorted
-/// by their binding key short name to keep the encoding stable
-/// across reorderings. Operation auto-bindings (binding values that
-/// resolve to operation symbols) are filtered out — they are
-/// derived from `resolve_requires_bindings` and not user-written, so
-/// they should not pollute the SE-flat. Type-parameter and
-/// concrete-sort bindings remain.
-///
-/// Read through the view, so the answer is the same on whichever carrier the spec
-/// rides: a binding written through a type alias flattens as the type it stands for.
-pub fn flatten_spec<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
-    use crate::intern::SymbolKind;
-    let short = |sym: Symbol| {
-        let n = kb.local_name_of(sym);
-        n.rsplit('.').next().unwrap_or(n).to_owned()
-    };
-    // The name a child is headed by: an application's functor, or a bare name's.
-    let head_name = |head: ViewHead| match head {
-        ViewHead::Functor { functor, .. } => functor,
-        ViewHead::Ident(name) => Some(name),
-        _ => None,
-    };
-    let ViewHead::Functor {
-        functor: Some(functor),
-        ..
-    } = spec.head(kb)
-    else {
-        return None;
-    };
-    if !super::typing::is_sort_view_functor(kb, functor) {
-        return Some(short(functor));
-    }
-    let base_short = short(head_name(spec.pos_arg(kb, 0)?.head(kb))?);
-    let mut bindings: Vec<(String, String)> = spec
-        .named_keys(kb)
-        .into_iter()
-        .filter_map(|k_sym| {
-            let value = spec
-                .named_arg(kb, k_sym)
-                .expect("a view answers for a named key it lists");
-            let value_head = value.head(kb);
-            let value_sym = head_name(value_head.clone());
-            // Skip operation auto-bindings — they aren't part of the
-            // user-written Sort-Expr.
-            if let Some(vs) = value_sym {
-                if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
-                    return None;
-                }
-            }
-            let v_short = match value_sym {
-                // WI-390: a `denoted` value-in-type renders by its inner value so two
-                // requires differing only in the literal get distinct signatures.
-                Some(s) if kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor.Denoted" => {
-                    denoted_value_short(kb, &value)
-                }
-                Some(s) => short(s),
-                None => match value_head {
-                    ViewHead::Const(Literal::String(s)) => format!("str_{s}"),
-                    _ => "_".to_string(),
-                },
-            };
-            Some((short(k_sym), v_short))
-        })
-        .collect();
-    bindings.sort_by(|a, b| a.0.cmp(&b.0));
-    if bindings.is_empty() {
-        Some(base_short)
-    } else {
-        let parts: Vec<String> = bindings.into_iter().map(|(_, v)| v).collect();
-        Some(format!("{base_short}_{}", parts.join("_")))
     }
 }
 
@@ -43354,74 +43343,5 @@ mod wi819_diagnostic_tests {
                 "{label} renders with a collapsed-continuation run: {rendered:?}",
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod wi_zvpxs_law_range_tests {
-    //! WI-20261011-ZVPXS — A SPEC'S LAWS ARE ONE RANGE OF THE SORTED RECORD NAMES, and
-    //! exactly the names under `<spec-qn>.requires.` ([`requires_law_records`]).
-    //!
-    //! The rows of `tests/include/wi_zvpxs_specialization_witness_index_test.rs` drive
-    //! the pass; these give the range the names a load is unlikely to line up, and that
-    //! file's header says what fails when each part of the function is backed out.
-    use super::requires_law_records;
-    use std::collections::BTreeSet;
-
-    fn names(names: &[&str]) -> BTreeSet<String> {
-        names.iter().map(|n| (*n).to_owned()).collect()
-    }
-
-    /// Every name that sorts next to `a.S.requires.` without being under it is left
-    /// out, at both ends: the spec's name and its other members below, a name the
-    /// prefix is a proper prefix of only up to its last character, a member's law and a
-    /// longer name's law above.
-    #[test]
-    fn a_specs_laws_are_the_names_under_its_requires_prefix() {
-        let existing = names(&[
-            "a.R.requires.Eq_T",
-            "a.S",
-            "a.S.induction",
-            "a.S.provides.Q.Eq_T",
-            "a.S.requires",
-            "a.S.requires.Eq_T",
-            "a.S.requires.Ord_T",
-            "a.S.requires.str_x.requires.y",
-            "a.S.requiresX.Eq_T",
-            "a.S.zed.requires.Eq_U",
-            "a.SX.requires.Eq_T",
-            "b.S.requires.Eq_T",
-        ]);
-        assert_eq!(
-            requires_law_records(&existing, "a.S"),
-            vec![
-                ("a.S.requires.Eq_T", "Eq_T"),
-                ("a.S.requires.Ord_T", "Ord_T"),
-                ("a.S.requires.str_x.requires.y", "str_x.requires.y"),
-            ]
-        );
-    }
-
-    /// The law of a spec whose laws are the LAST names of the set, and of the first: the
-    /// range has no name after it to stop at, or none before it to start past.
-    #[test]
-    fn a_range_at_either_end_of_the_names() {
-        let existing = names(&["a.S.requires.Eq_T", "m.M.induction", "z.S.requires.Eq_T", "z.S.requires.Ord_T"]);
-        assert_eq!(requires_law_records(&existing, "a.S"), vec![("a.S.requires.Eq_T", "Eq_T")]);
-        assert_eq!(
-            requires_law_records(&existing, "z.S"),
-            vec![("z.S.requires.Eq_T", "Eq_T"), ("z.S.requires.Ord_T", "Ord_T")]
-        );
-    }
-
-    /// A spec with no law has none: between two names, below the first, past the last,
-    /// and in a registry with no record at all.
-    #[test]
-    fn a_spec_with_no_law_has_no_record() {
-        let existing = names(&["b.S.requires.Eq_T", "d.S.requires.Eq_T"]);
-        for spec in ["a.S", "c.S", "e.S", "b", "b.S.requires", "b.S.requires.Eq_T"] {
-            assert_eq!(requires_law_records(&existing, spec), vec![], "`{spec}`");
-        }
-        assert_eq!(requires_law_records(&BTreeSet::new(), "b.S"), vec![]);
     }
 }

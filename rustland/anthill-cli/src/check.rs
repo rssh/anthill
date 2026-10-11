@@ -498,7 +498,10 @@ fn read_witness_list(kb: &KnowledgeBase, mut tid: TermId) -> Vec<TermId> {
 ///   (a) parametric ProofRecord exists in the registry — without it
 ///       there's nothing to specialize.
 ///   (b) substitution is well-formed — no duplicate abstract_param
-///       keys; concrete sorts are valid identifiers.
+///       keys. A `concrete_sort` is the QUALIFIED TEXT of a type
+///       (`anthill.prelude.List[T = test.sg.P]`, a row, a value held
+///       in a type — proposal 030, "Record names"), not an
+///       identifier, and nothing here reads it yet.
 ///   (c) v0: instances list is empty (per α.8 v0); pass when (a) and
 ///       (b) hold. Future refinement: when α.8 starts populating the
 ///       instances list, β.5 verifies each instance ProofRecord
@@ -628,10 +631,10 @@ fn read_substitution(
 /// Phase β.4: re-read the named scope's declaration in the current
 /// KB and verify the cited structural feature is still present.
 /// Aspect-based dispatch:
-///   - `requires.<SE-flat>`: walk SortRequiresInfo facts whose
-///     sort_ref qn matches `scope_qn`; pass if any matches the
-///     SE-flat encoding (using the same `flatten_spec` logic α.6
-///     uses to register the witness).
+///   - `requires.<SE>`: walk SortRequiresInfo facts whose
+///     sort_ref qn matches `scope_qn`; pass if any is the spec `<SE>`
+///     says — its qualified text at its bindings, by the same
+///     `qualified_spec_text` α.6 names the witness with.
 ///   - `induction`: walk SortInfo facts; pass if any matches
 ///     `scope_qn` and is inductive (`sort_info_is_inductive`).
 ///   - other: skip (forward-compat).
@@ -644,7 +647,7 @@ fn check_scope_axiom_witness(
     named: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
 ) -> CheckStatus {
     use anthill_core::kb::load::{
-        flatten_spec, qn_of_sort_ref, sort_info_is_inductive, sort_info_qn,
+        qn_of_sort_ref, qualified_spec_text, sort_info_is_inductive, sort_info_qn,
     };
 
     let scope_qn = match read_string_field(kb, named, "scope_qn") {
@@ -699,7 +702,7 @@ fn check_scope_axiom_witness(
         ));
     }
 
-    if let Some(expected_se_flat) = aspect.strip_prefix("requires.") {
+    if let Some(expected_se) = aspect.strip_prefix("requires.") {
         let requires_sym = match kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
             Some(s) => s,
             None => {
@@ -730,8 +733,8 @@ fn check_scope_axiom_witness(
             let Some(spec) = head_field_value(kb, &row, "spec") else {
                 continue;
             };
-            if let Some(actual_se) = flatten_spec(kb, &spec) {
-                if actual_se == expected_se_flat {
+            if let Some(actual_se) = qualified_spec_text(kb, &spec) {
+                if actual_se == expected_se {
                     return CheckStatus::Pass;
                 }
             }
@@ -739,7 +742,7 @@ fn check_scope_axiom_witness(
         return CheckStatus::Failed(if scope_seen {
             format!(
                 "ScopeAxiom(requires): scope `{scope_qn}` no longer has \
-                 a requires clause matching `{expected_se_flat}`"
+                 a requires clause matching `{expected_se}`"
             )
         } else {
             format!(

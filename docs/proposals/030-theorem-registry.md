@@ -113,8 +113,8 @@ namespace anthill.realization.witness
     -- are true by virtue of a scope's declared structure. The
     -- `aspect` discriminates which structural feature the witness
     -- rests on:
-    --   - "requires.<SE-flat>" — the lemma is one of the scope's
-    --     `requires` clauses, identified by the flattened Sort-Expr.
+    --   - "requires.<SE>" — the lemma is one of the scope's
+    --     `requires` clauses, identified by the Sort-Expr's qualified text.
     --   - "induction" — the lemma is the auto-generated induction
     --     principle for an inductive sort.
     --   - (future aspects can extend this without schema changes.)
@@ -245,7 +245,7 @@ The schemas live as KB facts — `MetaTacticContract(name, ...)` — so they can
 The witness names a scope (sort or operation) and asserts the lemma is true by virtue of that scope's declaration containing a particular `requires` clause. The kernel checks by re-reading the declaration in the current KB and verifying:
 
 - The named scope exists.
-- The scope's `requires` clauses include the Sort-Expr matching the lemma's identity (the `<S-qn>.requires.<SE-flat>` form).
+- The scope's `requires` clauses include the Sort-Expr matching the lemma's identity (the `<S-qn>.requires.<SE>` form).
 - The Sort-Expr's defining sort/spec is loaded and its laws are accessible.
 
 The proof is *constituted by* the source declaration. If the user removes the `requires` clause or edits the Sort-Expr, the witness fails to check on next access and the ProofRecord invalidates. This is not a trust escape hatch — the kernel verifies the structural fact that the declaration says what it says. (Compare `define-fun` in SMT-LIB: the function's meaning is constituted by its body; nothing else needs to be proved.)
@@ -333,18 +333,45 @@ Anthill already has `requires <Sort-Expr>` as a clause inside `sort` declaration
 
 For each `requires <SE>` clause inside scope `S` (where `S` is a sort or operation), the kernel registers a ProofRecord at load time with:
 
-- **Name**: `<S-qn>.requires.<SE-flat>` — sort-expr-keyed flattening of the Sort-Expr, e.g. `anthill.algebra.A.requires.Eq_T` for `requires Eq[T]` inside sort `A`. Stable under reordering of `requires` clauses; unstable only when the user edits the Sort-Expr itself (and that's a substantive change that should invalidate the lemma).
+- **Name**: `<S-qn>.requires.<SE>` — `<SE>` the QUALIFIED TEXT of the Sort-Expr (see *Record names* below), e.g. `anthill.algebra.A.requires.anthill.prelude.Eq[T = anthill.algebra.A.T]` for `requires Eq[T]` inside sort `A`. Stable under reordering of `requires` clauses; unstable only when the user edits the Sort-Expr itself (and that's a substantive change that should invalidate the lemma).
 - **Statement**: the conjunction of `SE`'s laws (pulled from `SE`'s defining sort/spec) instantiated at the clause's binding. For `requires Eq[T]` inside A with abstract param T, the statement is `∀ (a: T) (b: T). (eq a b) = (eq b a) ∧ (eq a a) ∧ ...` — Eq's laws under the abstract T.
-- **Witness (parametric case)**: `ScopeAxiom(scope_kind: "sort" | "operation", scope_qn: <S-qn>, aspect: "requires.<SE-flat>")`. The kernel checks this witness by re-reading `S`'s declaration in the current KB and verifying the clause is present with the same Sort-Expr. The proof is *by definition*: the lemma holds because the source declaration says it does. Not in the trust base — `S`'s source IS the proof, mechanically checkable.
-- **Witness (specialized case)**: `Specialization` composing the parametric ProofRecord with the concrete provides-discharge ProofRecords. Auto-generated when `provides A[T = X]` discharges and Int64's spec laws have their own ProofRecords.
+- **Witness (parametric case)**: `ScopeAxiom(scope_kind: "sort" | "operation", scope_qn: <S-qn>, aspect: "requires.<SE>")`. The kernel checks this witness by re-reading `S`'s declaration in the current KB and verifying the clause is present with the same Sort-Expr. The proof is *by definition*: the lemma holds because the source declaration says it does. Not in the trust base — `S`'s source IS the proof, mechanically checkable.
+- **Witness (specialized case)**: `Specialization` composing the parametric ProofRecord with the concrete provides-discharge ProofRecords. Auto-generated when `provides A[T = X]` discharges and Int64's spec laws have their own ProofRecords. Its record is named `<X-qn>.provides.<PE>.<SE>` (*Record names*).
 
 A sort with three `requires` clauses produces three ProofRecords. There is no aggregate `Requires[A]` lemma — the conjunction is on demand at translation time, not stored.
 
+#### Record names
+
+*(WI-20261011-S8CYD, decided 2026-10-11. This replaces the `<SE-flat>` flattening the proposal was first written with.)*
+
+A record is found, skipped and cited by its `rule` — its name — so a name has to tell apart everything the registry holds apart. The three kinds the kernel registers:
+
+| record | name | witness |
+|---|---|---|
+| a `requires <SE>` clause of scope `S` | `<S-qn>.requires.<SE>` | `ScopeAxiom(scope_qn: <S-qn>, aspect: "requires.<SE>")` |
+| the induction principle of sort `T` | `<T-qn>.induction` | `ScopeAxiom(scope_qn: <T-qn>, aspect: "induction")` |
+| at `X provides <PE>`, the law `requires <SE>` of the spec `A` that `<PE>` is of | `<X-qn>.provides.<PE>.<SE>` | `Specialization(parametric: "<A-qn>.requires.<SE>", substitution: <PE>'s bindings, …)` |
+
+`<SE>` and `<PE>` are a spec at its bindings as its **qualified text**: the spec's qualified name, then in brackets each binding as `<parameter> = <value>`, the bindings in the order of their parameters' names — `anthill.prelude.Eq[T = test.sg.P]`; a spec that binds nothing is its qualified name alone. A value is the type it is, written in full with every sort by its qualified name (`anthill.prelude.List[T = test.sg.P]`, a row `{…}`, a value held in a type as the value: `N = 3`), a nested application's bindings again in the order of their names. A binding written through a type alias is the type the alias stands for. A binding whose value is an operation — the auto-bindings a clause is completed with — is not part of the text. A `SortBinding`'s `concrete_sort` is the same text of the same value, so what a record is named fixes what its witness says.
+
+So:
+
+```
+anthill.prelude.WeakOrd.requires.anthill.prelude.Eq[T = anthill.prelude.WeakOrd.T]
+test.sg.Half.induction
+test.sg.W.provides.test.sg.Tag[T = test.sg.P].anthill.prelude.Eq[T = test.sg.Tag.T]
+test.sg.W.provides.test.sg.Tag[T = test.sg.Q].anthill.prelude.Eq[T = test.sg.Tag.T]
+```
+
+Two clauses share a name exactly when they are one spec at one set of bindings. Under the flattening (`Eq_T`: the SHORT names of the spec and of each binding's head, joined by `_`, and for a specialization the provided spec's short name with NO binding) they also shared one when they were two specs of one short name, one spec at two bindings, or bindings that differ in a sort's namespace or below a type's head — and then one pass emitted two records under one `rule`, a later load took the second provision for the first and emitted nothing, and two `requires` of one scope were one record (measured: `docs/measurements/test-infrastructure/proof-record-names-2026-10-11.txt`).
+
+**A name is not for cutting apart.** `requires` and `provides` are namespace segments too, and every qualified name in a name has dots. A reader that wants a record's scope, its law or its bindings reads the witness's fields; one that wants a record asks for the whole name. And a name is not an identifier of the language: `using` cites a rule by NAME, and a requirement's record has no such spelling — it never had one that resolved (`using a.S.requires.Eq_T` was an unresolved name at load). A scope's requirements reach a proof by the implicit citation below, or not at all.
+
 #### Implicit citation from enclosing scope
 
-Inside scope `S` (sort or operation), every rule's effective `using` set automatically includes all of `S`'s `requires`-clause ProofRecords, plus those of any enclosing scopes (transitively up the chain). The user does not write `using anthill.algebra.A.requires.Eq_T` for inside-A proofs — it's added by the kernel at cite-resolution time.
+Inside scope `S` (sort or operation), every rule's effective `using` set automatically includes all of `S`'s `requires`-clause ProofRecords, plus those of any enclosing scopes (transitively up the chain). The user does not cite `A`'s requirement records for inside-A proofs — they are added by the kernel at cite-resolution time, found by each record's witness (`ScopeAxiom.scope_qn` is the scope, `aspect` says it is a `requires` clause).
 
-Explicit citation from outside `S` uses the standard `using <name>` syntax with the auto-registered QN: `using anthill.algebra.A.requires.Eq_T`.
+*Not built:* explicit citation of a requirement's record from OUTSIDE `S`. The proposal had it as `using anthill.algebra.A.requires.Eq_T`; `using` resolves its names as rules, and a record's name was never one (measured 2026-10-11, before the names changed: "unresolved name … in scope"). It needs a spelling of its own — a reference to the clause, not the record's name as text — and is an open question.
 
 #### Translation-time bundling
 
@@ -404,14 +431,14 @@ The cite resolves to the registered principle; the proof block discharges in a c
 
 #### Specialization for polymorphic sorts
 
-`List.induction` is parametric over `T`. A use at `T = Int64` produces a `Specialization(parametric: "List.induction", substitution: [{abstract_param: "T", concrete_sort: "Int64"}], instances: [...])` ProofRecord. The instance-proofs list covers any `requires` `T` had in `List`'s declaration; for `List[T]` with no T-requires, the instances list is empty and `Specialization` is purely a substitution operation.
+`List.induction` is parametric over `T`. A use at `T = Int64` produces a `Specialization(parametric: "List.induction", substitution: [{abstract_param: "T", concrete_sort: "anthill.prelude.Int64"}], instances: [...])` ProofRecord. The instance-proofs list covers any `requires` `T` had in `List`'s declaration; for `List[T]` with no T-requires, the instances list is empty and `Specialization` is purely a substitution operation.
 
 #### Composition with `requires` (open question)
 
 For polymorphic inductive sorts with parametric `requires` — e.g. `sort List[T] requires Eq[T]` — the inductive step's proof may need `Eq[T]`'s laws to discharge. Two cite mechanisms compose:
 
 - `List.induction` provides the structural inductive shape.
-- `List.requires.Eq_T` provides the abstract law content.
+- `<List-qn>.requires.<Eq-qn>[T = <List-qn>.T]` provides the abstract law content.
 
 Both are implicitly cited inside `List`'s scope. At a use site for `T = Int64`, both specialize together via `Specialization`. The composition is mechanical but worth a careful check on first implementation; flagged in open questions.
 
@@ -610,7 +637,7 @@ This phase delivers: `prove` writes augmented ProofRecords. No new user-visible 
 - β.1 ✓ — `check_smt_discharge_payload` re-runs the cached SMT-LIB document, re-hashes the loaded blob (catches tamper), compares verdict to the witness.
 - β.2 ✗ deferred — needs resolver instrumentation to capture a real derivation tree; current witness uses a placeholder `tree_hash`. Picks up when a project actually relies on derivation discharges.
 - β.3 ✓ — `check_meta_compose_witness` (KB-side) and the matching sidecar path recurse on each sub-witness. Per-meta-tactic shape contracts (`induction` expects base + step, `ranking` expects boundedness + decrease) deferred — needs the `MetaTacticContract` schema, which is still pending.
-- β.4 ✓ — `check_scope_axiom_witness` re-reads `SortInfo` / `SortRequiresInfo` facts and dispatches on `aspect`. Encoding parity with α.6's `flatten_spec` is enforced by direct reuse of the same helper.
+- β.4 ✓ — `check_scope_axiom_witness` re-reads `SortInfo` / `SortRequiresInfo` facts and dispatches on `aspect`. Encoding parity with α.6 is enforced by direct reuse of the helper that names the witness (`qualified_spec_text`; it was `flatten_spec` until WI-20261011-S8CYD).
 - β.5 ✓ — `check_specialization_witness` validates substitution well-formedness + parametric ProofRecord existence. v0 instance-list always empty (per α.8 v0), so coverage is structural; full per-law coverage check pending α.8 instance-list population.
 - β.6 ✓ — `aggregate_meta_outcomes` combines sub-witness statuses with priority Failed > Skipped > Trusted > Pass. Trust reasons aggregate across the full subtree.
 - β.8 ✓ (2026-09-24) — Staleness. Before replaying a sidecar, `check` recomputes its state hash over the current KB; on a mismatch the record is reported `STALE` and not replayed — replay re-proves the *recorded* document, which stays unsat however the source changed since, so it used to print `✓` for a proof the edit had made false. Stale is reported, not counted as failed: the discharge pass `check` chains (WI-564) decides whether the current obligation holds. `--report-stale` lists these (it matched nothing before).
@@ -623,7 +650,7 @@ This phase delivers: `prove` writes augmented ProofRecords. No new user-visible 
 - γ.1 ✓ — `lift_rule_to_implication_clause` retained as the lift primitive; the caller-side `cite_status` gate enforces the Discharged precondition. Pending / Failed / NotFound surface as hard `EmitError` on the consumer's discharge.
 - γ.2 ✓ — `cite_status(kb, cited_qn, cli, discharged_this_run)` consults: (1) in-memory discharged-this-run set; (2) KB ProofRecord witness shape (ScopeAxiom + Specialization → discharged-by-construction; non-placeholder TrustedAxiom → Trusted); (3) on-disk witness sidecar — only while its state hash matches the current KB (β.8); a stale one refuses the cite. The "re-discharge first" of §`using` semantics is not automated: the error names the cited rule to re-prove. Each cite either resolves or surfaces a per-rule error message.
 - γ.3 ✓ — Kahn's topological sort over the `using` graph in `topo_sort_by_using`. Cycles emit a stderr warning and append the cyclic members to the order's tail; per-rule cite-resolution then surfaces the ambiguity.
-- γ.4 ✓ — `implicit_cites_for(rule_qn, kb)` walks parent QN segments outer-to-inner and collects every `<scope>.requires.<flat>` ProofRecord as an implicit citation. `dispatch_z3` builds `effective = explicit + implicit` and passes it to `render_cited_lemmas`.
+- γ.4 ◐ — the READER is built, the citation is not. `implicit_cites_for(rule_qn, kb)` walks parent QN segments outer-to-inner and collects every `requires` scope axiom of that scope as an implicit citation — by the record's witness (`ScopeAxiom.scope_qn`, `aspect`), not by cutting its name (WI-20261011-S8CYD). `dispatch_z3` builds `effective = explicit + implicit` and passes it to `render_cited_lemmas`. **Measured 2026-10-11, before that change and after it: such a cite cannot be lowered.** `render_cited_lemmas` lifts the RULE of each cited name, and a requirement's record is no rule, so a `by z3` proof in a scope that has a `requires` is refused — "cite … could not be lowered under its translation policy: rule '…' not found" (`docs/measurements/test-infrastructure/proof-record-names-2026-10-11.txt` §8 (a)). Lowering a requirement — the spec's laws at the clause's bindings — is what is left of γ.4 (WI-20261011-BVG8M); no example and no test has a proof under a `requires`.
 
 After γ, the silent axiomatic content of the current `using` is gone. Every cite resolves to a checked theorem or fails loudly.
 

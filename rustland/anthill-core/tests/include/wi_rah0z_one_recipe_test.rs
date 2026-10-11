@@ -82,6 +82,10 @@ const WAYS_OUT: &[&str] = &[
     "LoadRecipe::OneShot",
     "LoadRecipe::TwoStep",
     "present_all_again(",
+    // WI-20261011-S8CYD: the proof records of ONE call over the library and the test's
+    // files — `LoadRecipe::OneShot`, named in `common/` for the caller, which this scan
+    // does not read.
+    "proof_records_of_one_call(",
     // WI-20261009-4ZRTG: a KB that is NOT sealed, for a test that presents its files again.
     "load_unsealed(",
     "load_stdlib_kb_with_source(",
@@ -284,6 +288,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         1,
         "the proof records a LATER load emits for its provisions against the ones one call \
          over everything does: the one call by name",
+    ),
+    (
+        "include/wi_s8cyd_record_names_test.rs",
+        7,
+        "what a proof record is NAMED, by a later load and in one call over the same files — \
+         two loads and one call must leave one registry: the one call by name",
     ),
 ];
 

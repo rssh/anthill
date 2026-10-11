@@ -1718,6 +1718,107 @@ pub fn named_field_term(
     }
 }
 
+/// One `ProofRecord` as a test of the registry reads it: the `rule` it is named by, and
+/// its witness as source text.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProofRecordRow {
+    pub rule: String,
+    pub witness: String,
+}
+
+#[allow(dead_code)]
+impl ProofRecordRow {
+    /// The scope axiom of the clause `requires <se>` of `scope` (proposal 030, "Record
+    /// names"): named `<scope>.requires.<se>`, its witness's aspect `requires.<se>`.
+    pub fn requirement(scope: &str, se: &str) -> ProofRecordRow {
+        ProofRecordRow {
+            rule: format!("{scope}.requires.{se}"),
+            witness: format!(
+                "ScopeAxiom(scope_kind: \"sort\", scope_qn: \"{scope}\", aspect: \"requires.{se}\")"
+            ),
+        }
+    }
+
+    /// The induction principle of the enum `sort`.
+    pub fn induction(sort: &str) -> ProofRecordRow {
+        ProofRecordRow {
+            rule: format!("{sort}.induction"),
+            witness: format!(
+                "ScopeAxiom(scope_kind: \"sort\", scope_qn: \"{sort}\", aspect: \"induction\")"
+            ),
+        }
+    }
+
+    /// The specialization, at `provider provides spec[param = concrete]`, of the law
+    /// `requires <se>` of `spec`: named `<provider>.provides.<spec>[<param> = <concrete>].<se>`,
+    /// its witness the law's own record and the provision's one binding.
+    pub fn specialization(
+        provider: &str,
+        spec: &str,
+        (param, concrete): (&str, &str),
+        se: &str,
+    ) -> ProofRecordRow {
+        ProofRecordRow {
+            rule: format!("{provider}.provides.{spec}[{param} = {concrete}].{se}"),
+            witness: format!(
+                "Specialization(parametric: \"{spec}.requires.{se}\", substitution: \
+                 [SortBinding(abstract_param: \"{param}\", concrete_sort: \"{concrete}\")], \
+                 instances: nil)"
+            ),
+        }
+    }
+}
+
+/// Every `ProofRecord` of the KB, in the order of the relation — the order they were
+/// asserted in.
+#[allow(dead_code)]
+pub fn proof_record_rows(kb: &KnowledgeBase) -> Vec<ProofRecordRow> {
+    use anthill_core::kb::term::{Literal, Term};
+    let printer = anthill_core::persistence::print::TermPrinter::new(kb);
+    let field = |term, key: &str| {
+        named_field_term(kb, term, key)
+            .unwrap_or_else(|| panic!("`{}` has a `{key}`", printer.print_term(term)))
+    };
+    proof_record_heads(kb)
+        .into_iter()
+        .map(|head| ProofRecordRow {
+            rule: match kb.get_term(field(head, "rule")) {
+                Term::Const(Literal::String(text)) => text.clone(),
+                other => panic!("a record's `rule` is a string; got {other:?}"),
+            },
+            witness: printer.print_term(field(head, "witness")),
+        })
+        .collect()
+}
+
+/// `program` loaded into `kb` in a call of its own: the records that load ADDED, in the
+/// order it asserted them. The records that were there are asserted to be there still,
+/// each in its place.
+#[allow(dead_code)]
+pub fn proof_records_brought_by_a_later_load(
+    kb: &mut KnowledgeBase,
+    program: &str,
+) -> Vec<ProofRecordRow> {
+    let before = proof_record_rows(kb);
+    if let Err(errors) = load_in_a_later_call(kb, program, load::LoadOptions::default()) {
+        panic!("the program loads: {:?}", rendered_load_errors(errors));
+    }
+    let mut after = proof_record_rows(kb);
+    let brought = after.split_off(before.len());
+    assert_eq!(after, before, "a later load leaves the earlier records as they were");
+    brought
+}
+
+/// The standard library and `programs` in ONE call: every record of that KB.
+#[allow(dead_code)]
+pub fn proof_records_of_one_call(programs: &[&str]) -> Vec<ProofRecordRow> {
+    let kb = recipe_load(programs, None, load::LoadOptions::default(), LoadRecipe::OneShot, |_| {})
+        .unwrap_or_else(|e| panic!("the programs load: {:?}", rendered_load_errors(e)))
+        .0;
+    proof_record_rows(&kb)
+}
+
 /// The `spec` of the provision whose provider is `provider_qn`, on the carrier its fact
 /// holds it on: the first such fact, in relation order. Read through the view.
 #[allow(dead_code)]

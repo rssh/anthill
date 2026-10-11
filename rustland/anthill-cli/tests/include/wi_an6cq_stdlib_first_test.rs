@@ -264,9 +264,13 @@ fn check_lists_no_record_for_a_provision_the_librarys_load_derived() {
     let path = write_temp("an6cq_small.anthill", A_SMALL_PROGRAM);
     let out = anthill(&["check", path.to_str().unwrap()]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);
+    // A record of `<sort> provides NonEq[T = …]`, whatever the binding is written as
+    // (`Float`, `Option[T = …]`): its name is who provides, the spec by its qualified
+    // name, the bindings, and the law (WI-20261011-S8CYD).
     let listed = |sort: &str| {
-        let record = format!("anthill.prelude.{sort}.provides.NonEq.PartialEq_T");
-        out.stdout.lines().any(|l| l.ends_with(&record))
+        let provision = format!("✓ anthill.prelude.{sort}.provides.anthill.prelude.NonEq[");
+        let law = "].anthill.prelude.PartialEq[T = anthill.prelude.NonEq.T]";
+        out.stdout.lines().any(|l| l.starts_with(&provision) && l.ends_with(law))
     };
     assert!(
         listed("Float"),

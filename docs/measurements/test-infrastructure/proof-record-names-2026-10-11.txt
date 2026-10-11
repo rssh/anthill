@@ -1,0 +1,364 @@
+# What a proof record is named (WI-20261011-S8CYD) — the count the decision was made on, the decision, what the
+# old names did, and what was built. 2026-10-11, 19:30 – 23:25.
+# Sections 1–2 are the count and the decision, taken before anything was built; section 3 is the old sources under
+# the new rows; sections 4–7 are the tree as delivered; section 8 is what was found on the way and is not this
+# ticket's; section 9 is what /code-review changed, with its own controls; section 10 the gate and the recipes.
+# THE FIRST CUT (20:22 – 22:00) named the records and moved the readers; /code-review then found a child of a type
+# the name's text left out, and a reader of names still cutting them (section 9). Sections 4, 6 and 7 were taken on
+# the first cut and taken again on the tree as delivered; each says which numbers are which.
+#
+# Tree:    main at 7844ac9b, and this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. `CPU_Speed_Limit` 100 at both ends of each of
+#          section 7's runs; its columns are compared within one run.
+
+== 1. the count: who writes a record's name as text, and who takes one apart (before anything was decided) ==
+# A NAME WRITTEN AS TEXT, by tree (`grep` for `.provides.` and for `.requires.<Capital>`):
+#                                       `<X>.provides.<A>.<SE>`        `<scope>.requires.<SE>`
+#   stdlib/, examples/                  0                              0
+#   a `using` clause, anywhere          0                              0
+#   scaland/                            0                              1 line: a ProofRecord fact a test WRITES, with a
+#                                                                      TrustedAxiom witness — no pass made it
+#   rustland tests                      4 files, 18 lines              4 files, about 20 lines
+#       wi_zvpxs_specialization_witness_index_test (both), specialization_witness_test (both),
+#       provision_written_through_alias_test, anthill-cli's wi_an6cq_stdlib_first_test;
+#       requirement_written_through_alias_test, anthill-cli's check_scope_axiom_requires_test;
+#       and wi366_value_in_type_facts_test, which calls the flattening and asserts its text
+#   docs                                none says the form             proposal 030 (the form and three examples),
+#                                                                      stdlib/anthill/realization/witness.anthill
+#                                                                      (comments); kernel-language.md: nothing
+# Scaland has no witness pass: nothing there builds or reads a record's name.
+#
+# WHO BUILDS A NAME OR CUTS ONE (everything else compares the whole string):
+#   load::register_requires_axiom_witnesses          builds `<scope-qn>.requires.<SE>`, and the witness's `aspect`
+#   load::register_induction_axiom_witnesses         builds `<sort-qn>.induction`
+#   load::register_specialization_witnesses          builds `<X-qn>.provides.<A-short>.<SE>`; cuts `<SE>` off each
+#                                                    law's name (`requires_law_records`: every name under
+#                                                    `<spec-qn>.requires.`)
+#   anthill check: check_scope_axiom_witness         cuts `requires.` off the `aspect` and compares the rest with
+#                                                    the flattening of each clause of the scope — the same function
+#   anthill prove: implicit_cites_for                takes the names under `<scope>.requires.` for each enclosing
+#                                                    scope of a proof, and LEAVES OUT a remainder with a `.` in it
+# WHOLE-STRING readers: `proof_record_exists` (a specialization's `parametric`), `cite_status`, each pass's test that
+# a record is there, `anthill check --filter` (a glob), the sidecar's file name (`witness_path`: the name with every
+# character outside `[A-Za-z0-9._]` made `_` — written for the records `prove` discharges, which are a user's proofs).
+#
+# TWO THINGS THE TICKET DID NOT HAVE, found while counting:
+#   * THE FLATTENING AND THE WITNESS'S `substitution` KEEP THE HEAD OF A BINDING'S VALUE ALONE: `P` for `a.P` and
+#     for `b.P`, `List` for `List[T = P]` and for `List[T = Q]`, `EffectsRows` for every row. So qualifying the
+#     spec's name leaves two provisions of one spec at such bindings under one name.
+#   * `provides` AND `requires` ARE NAMESPACE SEGMENTS (`c666a.provides.Spec` in a test): no name is cut apart
+#     safely as text. The witness has the parts as fields — the scope, the aspect, the law, the bindings.
+#   And `witness.anthill` already says of `SortBinding.concrete_sort`: "qualified name of the concrete sort", with
+#   `"anthill.prelude.Int64"` for its example. The loader wrote `"Int64"`.
+
+== 2. the decision (user, 2026-10-11) ==
+#   * THE BINDINGS GO INTO THE NAME, bracketed: `<X-qn>.provides.<PE>.<SE>`, `<PE>` the provided spec by its
+#     qualified name with its bindings — `test.sg.W.provides.test.sg.Tag[T = test.sg.P].<SE>`. Not a flattening
+#     (shorter, and `a.P` / `b.P` still one name), and not "a record is its name and its substitution" (two
+#     records under one `rule`, and every whole-string reader given a second key).
+#   * `<SE>` AND THE WITNESS'S `substitution` TAKE THE SAME TEXT, in the same change: `<scope-qn>.requires.<SE>`
+#     with `<SE>` written as `<PE>` is, the `aspect` with it, and `concrete_sort` the binding's value as the name
+#     has it.
+# The text of a spec at its bindings (`load::qualified_spec_text`): the spec's qualified name; in brackets each
+# binding as `<parameter> = <value>`, in the order of the parameters' names; a value the type it is, in full, every
+# sort by its qualified name, a nested application's bindings in the order of their names; a binding whose value is
+# an operation left out. The value is written by the walk a diagnostic's type is written by
+# (`typing::display`), in a third spelling of it — a second renderer would be a second answer to how an arrow, a
+# row or a value held in a type is written.
+# Recorded in proposal 030, "Record names".
+
+== 3. the old sources under the new rows — what the old names did (21:14 – 21:19; the dev profile) ==
+# The sources as they were (`git stash` of the five files of `src/`, and of wi366's test, whose callers of the
+# flattening go back with it), the test files as delivered: `wi_s8cyd_record_names_test` (then 6 rows) and
+# `wi_zvpxs_specialization_witness_index_test` (7).
+#   11 FAIL, 2 pass. All 6 of the first; 5 of the second, on the names; its count row and its order row name no
+#   record, and pass.
+# WHAT THE OLD SOURCES LEFT, read off the failures:
+#   (1) two specs `Conv` in two namespaces, each `requires Eq[T = T]`, one sort providing both, a later load:
+#         test.s8a.Conv.requires.Eq_T                     ScopeAxiom(… aspect: "requires.Eq_T")
+#         test.s8b.Conv.requires.Eq_T                     ScopeAxiom(… aspect: "requires.Eq_T")
+#         test.s8c.A.provides.Conv.Eq_T                   Specialization(parametric: "test.s8a.Conv.requires.Eq_T", … "A")
+#         test.s8c.A.provides.Conv.Eq_T                   Specialization(parametric: "test.s8b.Conv.requires.Eq_T", … "A")
+#       TWO RECORDS, ONE `rule`.
+#   (2) one sort providing `Holds` at six bindings (`x.P`, `y.P`, `List[T = x.P]`, `List[T = y.P]`,
+#       `Two[Z = x.P, A = y.P]`, `x.Nothing`), a later load: FOUR records where six are owed, every one named
+#       `test.s8n.W.provides.Holds.Eq_Key`, saying `concrete_sort: "P"`, `"List"`, `"Two"`, `"Nothing"`. The pass built
+#       six; `x.P`'s and `y.P`'s were one fact, and the two lists' another.
+#   (3) the second provision of (1) brought by a load of its own (a temporary probe, the row failing earlier, on the
+#       first load's names):
+#         the first load brought      3 records: the two scope axioms and `test.s8c.A.provides.Conv.Eq_T` (of `s8a`)
+#         the second load brought     0
+#         one call over the two files 4 records, two of them named `test.s8c.A.provides.Conv.Eq_T`
+#       ONE CALL AND TWO LOADS DISAGREE.
+#   (4) READ IN THE TICKET, NOT REPRODUCED THERE — one pass up. A sort `Both` requiring `test.s8a.Conv[T = T]` and
+#       `test.s8b.Conv[T = T]`, and a sort providing `Both`, a later load:
+#         test.s8r.Both.requires.Conv_T                   ONE scope axiom for the two clauses
+#         test.s8c.A.provides.Both.Conv_T                 ONE specialization for the two laws
+#       Quieter than (1): the two records have one name AND one witness, so they are one fact, and nothing shows a
+#       clause has no record.
+#   The three programs of (1), (2), (4), each a later load: 11 records where 15 are owed.
+
+== 4. the listing of every record, BEFORE and AFTER — every name moves by the rule and nothing else does ==
+# A temporary test (not kept) prints every `ProofRecord` as source text, in the order of the relation, for three
+# loads: the standard library's own (a copy of the shared base); that with `bench_user_laws.anthill` loaded after
+# it; the two in ONE call. Run on the tree before anything was changed (20:11) and on the tree with the change
+# (20:55), and compared line by line, position by position, by a script that derives the old line from the new one
+# (the old name is the flattening of the new text: last segments, heads, `_`):
+#                                      the stdlib's own load   after a later load   the two in ONE call
+#   records                BEFORE            127                     131                  131
+#                          AFTER             127                     131                  131
+#     induction principles                    33                      34                   34
+#     scope axioms of a `requires`            42                      43                   43
+#     specializations                         52                      54                   54
+#   lines that moved                          94                      97                   97      = the last two kinds
+#   induction records that moved               0                       0                    0
+#   a field beside `rule` and `witness`        0                       0                    0      moved
+#   the order of the relation                 the same                the same             the same
+#   distinct names        BEFORE -> AFTER   127 -> 127              131 -> 131           131 -> 131
+#   bytes of the names    BEFORE -> AFTER   6 837 -> 19 500         6 971 -> 19 826      6 971 -> 19 826
+#   every moved line BY THE RULE              yes                     yes                  yes
+# The rule, as the script holds a pair of lines to it: a scope axiom's `scope_qn` is what it was, its `aspect` is
+# `requires.<SE>` and its name `<scope_qn>.requires.<SE>`, and the old ones are that with `<SE>` flattened; a
+# specialization's name is `<X>.provides.<A>[<the witness's substitution>].<SE>` with `<A>.requires.<SE>` its
+# `parametric`, the old name `<X>.provides.<A's last segment>.<SE flattened>`, and each old `concrete_sort` the
+# short head of the new one.
+# AFTER, the later load's records are the one call's as a set; in order they differ, as they did BEFORE (one call
+# interleaves the program's records with the library's, pass by pass).
+# TAKEN AGAIN on the tree as delivered (22:29): the three listings are the first cut's, byte for byte — what
+# /code-review changed moved no record of the library or of that user file.
+#
+# WHAT THE LIBRARY'S NAMES LOOK LIKE NOW (three of the 94):
+#   anthill.prelude.WeakOrd.requires.anthill.prelude.Eq[T = anthill.prelude.WeakOrd.T]
+#   anthill.prelude.Float.provides.anthill.prelude.NonEq[T = anthill.prelude.Float].anthill.prelude.PartialEq[T = anthill.prelude.NonEq.T]
+#   anthill.prelude.List.provides.anthill.prelude.PersistentCollection[C = anthill.prelude.List[T = anthill.prelude.List.T], Element = anthill.prelude.List.T]
+#       .anthill.prelude.EffectsRuntime[Effects = anthill.prelude.PersistentCollection.Effect]          (one name, broken here)
+
+== 5. the controls: what fails when a piece of the FIRST CUT is backed out (the dev profile; 21:26 – 22:00) ==
+# The rows: `wi_s8cyd_record_names_test` (7), `wi_zvpxs_specialization_witness_index_test` (7), and the 33 rows of
+# `wi_tests` that load a provision or a requirement written through an alias or holding a value
+# (`wi366_value_in_type_facts_test` 14, `provision_written_through_alias_test` 7,
+# `requirement_written_through_alias_test` 6, `alias_written_name_test` 3, `wi_9bkz4_sealed_bodies_test` 2,
+# `rule_head_bound_test` 1) — 47, selected by name; each back-out is one edit, the rows run, the edit taken out.
+# The pieces /code-review added have their table in section 9; the code these lines are of is as it was there,
+# but for the type forms (keyed since on `typing::type_head`: section 9 has that line again).
+#
+#                                                                            FAIL of 47   of the 7    which
+#   THE WHOLE CHANGE — the sources as they were (section 3; 6 + 7 rows)      11 of 13     6 of 6      all but ZVPXS's count
+#                                                                                                     row and order row
+#   in a specialization's name:
+#     the provided spec by its LAST SEGMENT, its bindings kept               12           6           not `no_two_records_share_a_name`:
+#                                                                                                     a law of these fixtures names its
+#                                                                                                     own spec's parameter, so the two
+#                                                                                                     `Conv`s still differ in `<SE>`
+#     the provision's bindings left OUT                                      13           7
+#   in `<SE>`: the required spec by its last segment                         16           7
+#   in a binding's value:
+#     a sort by its LOCAL name                                               16           7
+#     a hash-consed child written in the diagnostic's spelling               16           7           the same 16
+#     the value by its HEAD alone                                             2           2           `one_spec_at_several_bindings_…`,
+#                                                                                                     `no_two_records_share_a_name`
+#     a binding's own bindings in DECLARED order                              1           1           `one_spec_at_several_…` (`Two`)
+#     the prelude's type forms keyed on the LOCAL name                        1           1           the same row (`x.Nothing`)
+#   the witness:
+#     its `substitution` by short heads, the names as they are               11           6           not `no_two_records_…`, which
+#                                                                                                     reads names
+#     made to say which ROW it came from, the names as they are              12           7           `a_provision_written_twice_is_one_record`
+#                                                                                                     fails on two records, one name
+#   BY DESIGN none of the 7 — other files hold these:
+#     a spec's bindings in the carrier's order                                3           0           wi366 twice, the requirement
+#                                                                                                     written through an alias
+#     operation auto-bindings written into the text                           6           0           4 of ZVPXS's, the two
+#                                                                                                     `…_written_through_alias` rows
+#   NOTHING FAILS, here or anywhere measured:
+#     the interned child of the occurrence-only shape in the diagnostic's     0           0           no stored spec has been seen to hold
+#       spelling (`display::type_display_name_occ`)                                                   a parameterized type whose base is
+#                                                                                                     an occurrence; threaded, unmeasured
+#
+# `anthill prove`'s reader, `implicit_cites_for`, and its row (`prove::s8cyd_implicit_cite_tests`, 21:40):
+#     the names cut at `<scope>.requires.`, a remainder with a `.` left out   the row FAILS: no cite at all
+#       (the rule as it was)
+#     the names cut, the remainder not tested                                 the row FAILS: a rule of `Outer` cites the clause of
+#                                                                             `t.s8cyd.Outer.requires.Held`, a sort under a
+#                                                                             namespace segment named `requires`
+#
+# Run twice: 21:26 – 21:39 over the 46 rows there were, and 21:48 – 22:00 over the 47, after
+# `a_provision_written_twice_is_one_record` was added; the table's counts are the second run's. The first run's
+# are one less on every line where that row fails, and the same on the six where it passes (head alone, declared
+# order, the type forms, the occurrence-only shape, and the two "by design"). The witness-by-row line was run with
+# the 47 only.
+
+== 6. `anthill prove` and `anthill check` over the examples, BEFORE (20:09) and AFTER (21:05, and 22:30) ==
+# The dev-profile binary of each tree, a cache directory of its own for each (`ANTHILL_CACHE_DIR`), `prove` first
+# so that `check` replays what it wrote. Compared line by line; a record's line is its verdict mark and its name.
+#                                              exit    stdout lines   summary                                          BEFORE vs AFTER
+#   prove -v examples/webots-modelling/lf1      0         34         14 proved, 0 failed, 0 skipped, 14 total         identical, stderr too
+#   check    examples/webots-modelling/lf1      0        160         140 pass, 0 failed, 0 stale, 0 skipped, 3 trusted  the same verdicts; 94 names moved
+#   check --shallow  …/lf1                      0        160         141 pass, …, 2 trusted, 143 total                the same verdicts; 94 names moved
+#   check    examples/github-todo               0        136         133 pass, 0 failed, …, 133 total                 the same verdicts; 94 names moved
+#   check    examples/classic-mini              0        134         131 pass, 0 failed, …, 131 total                 the same verdicts; 98 names moved
+#   check    examples/sql-store                 0        131         128 pass, 0 failed, …, 128 total                 the same verdicts; 94 names moved
+#   check    examples/guardians                 1          0         (a refused load: the directory holds the          the same 26 errors
+#                                                                     fixtures the example REJECTS)
+# 94 is the library's 42 + 52; `classic-mini` has four records of its own of the two kinds. `lf1`'s fourteen proofs
+# cite rules and none of them a record, so `prove`'s output has no name in it to move.
+# `guardians`' errors came out in ANOTHER ORDER — and do so run to run on one binary: section 8 (b).
+# TAKEN AGAIN on the tree as delivered (22:30): every stdout is the first cut's, byte for byte, and `guardians`'
+# errors the same set.
+
+== 7. what the names cost a load (22:32 – 22:35; anthill-core at opt-level 2, the gate's build; ITERS=15) ==
+# `bench_load.rs` built from the tree BEFORE and from the tree AS DELIVERED, run one after the other, two rounds,
+# each with the bench's own user file (no provision) and with `bench_user_laws.anthill`; ANTHILL_LOAD_TIMING=1, the
+# marks of each load split at `scan_definitions`, medians. `CPU_Speed_Limit` 100 at 22:32 and at 22:35. ms.
+#                                              a load that carries the library (n=46)        a later load (n=60)
+#                                              BEFORE           AFTER                        BEFORE           AFTER
+#   register_requires_axiom_witnesses          0.64 – 0.67      0.67 – 0.73                  0.17 – 0.21      0.20 – 0.25
+#   register_induction_axiom_witnesses         0.49 – 0.53      0.49 – 0.59                  0.12 – 0.14      0.12 – 0.16
+#   register_specialization_witnesses          1.24 – 1.29      1.40 – 1.57                  0.20 – 0.26      0.36 – 0.42
+#     the bench's own user file                1.25, 1.29       1.40, 1.42                   0.20, 0.20       0.37, 0.36
+#     the user file that brings its own        1.24, 1.29       1.57, 1.44                   0.25, 0.26       0.42, 0.42
+#   the whole load (the sum of its marks)      271 – 284        272 – 290                    81 – 101         86 – 92
+#   the bench's rows, medians of 15:
+#     sealed incr                                                                            27.7, 28.8       30.8, 28.4
+#       with the user file that brings its own                                               30.3, 32.4       31.3, 31.6
+#     sealed clone+incr                                                                      39.1, 39.9       43.7, 40.6
+#       with the user file that brings its own                                               40.3, 46.1       42.8, 43.1
+# A LATER LOAD PAYS 0.16 ms MORE in the specialization pass and 0.03 – 0.04 in the requires pass: the text of the
+# bindings is written for every provision whose spec has a law (38 rows of the library's, at every load) and for
+# every `requires` row (42), where the specialization pass decoded bindings only for a row owed a record and the
+# requires pass joined short names; the registry is walked once more a pass, for the laws by scope; and the set of
+# names holds 19.5 kB where it held 6.8.
+# 0.2 ms of a later load of 28 – 32 ms: the bench's rows cross, and do not tell the two trees apart.
+# Not taken back by a memo of a row's name: it would be state the KB carries from load to load for 0.6 % of one.
+# THE FIRST CUT, measured the same way at 21:19 – 21:24 in slower minutes (a library load 370 – 430 ms): the same
+# difference — a later load's specialization pass 0.25 – 0.33 BEFORE and 0.42 – 0.50 AFTER, its requires pass
+# 0.21 – 0.28 and 0.26 – 0.31. The walk for the laws by scope, which the first cut did not have, is inside the
+# noise of the two.
+
+== 8. found on the way, and not this ticket's ==
+# (a) A PROOF IN A SCOPE THAT HAS A `requires` DOES NOT GO THROUGH, before and after. `implicit_cites_for` hands
+#     `prove` the scope's requirement records as cites, and a cite is lowered by lifting the RULE of that name
+#     (`anthill_smt_gen::lift_rule_to_implication_clause`); a requirement's record is no rule:
+#         sort Scope  sort T = ?  requires anthill.prelude.Eq[T = T]  …  rule r(?m) :- …  proof r by z3(logic: "LIA") end
+#       BEFORE  error: test.imp.Scope.r: cite `test.imp.Scope.requires.Eq_T` … could not be lowered under its
+#               translation policy: rule 'test.imp.Scope.requires.Eq_T' not found          0 proved, 1 failed
+#       AFTER   the same refusal, of `test.imp.Scope.requires.anthill.prelude.Eq[T = test.imp.Scope.T]`
+#     THE CONTROL (23:30): the same file with the `requires` line taken out — `✓ test.impc.Scope.r: proved (z3:
+#     unsat)`. The proof needs no law; it is refused for standing where a requirement is in scope.
+#     FILED 2026-10-11 as WI-20261011-BVG8M (user).
+#     So proposal 030's γ.4 finds its records and cannot use one. The reader was moved with the names (it reads each
+#     record's witness for its scope; a row beside it, `prove::s8cyd_implicit_cite_tests`), and what it feeds is as
+#     it was. No example and no test has a proof under a `requires`.
+#     And an EXPLICIT cite of such a record, which proposal 030 gave as `using anthill.algebra.A.requires.Eq_T`, was a
+#     load error on the tree BEFORE (21:18): "unresolved name 'test.imp2.Scope.requires.Eq_T' in scope 'test.imp3'"
+#     — `using` resolves its names as rules. The proposal says "not built" there now.
+# (b) THE ERRORS OF A REFUSED LOAD COME OUT IN ANOTHER ORDER RUN TO RUN: `anthill check examples/guardians`, one
+#     binary, four runs — two of its 26 lines (`relabel.anthill:37:35: type mismatch in text.apply` and
+#     `forged_llm.anthill:27:17: type mismatch in fake_llm.apply`) in either order, and at lines 22–24. The same
+#     lines every time. The kind of finding WI-20261011-6GMCN and section 7 of
+#     specialization-witnesses-2026-10-11.txt are, at another site.
+# (c) A ROW OF ROW-TYPED PARAMETERS IS HELD AS ANONYMOUS VARIABLES. `MappedStream provides Stream[T = T,
+#     E = {SourceEffects, TransformEffects}]` is stored `SortView(Stream, T: T, E: {?_, ?_})`, and so are
+#     `FilteredStream`'s and the two `…Finite`'s: four provisions, six records whose names and `substitution` say
+#     `E = {?_, ?_}`. A name says what the stored spec says; two provisions by one sort that differ in WHICH
+#     parameters such a row holds would be one record. None does.
+#     The same holds of whatever else the walk can only write `?` for — a De Bruijn index, a carrier with no
+#     structure to read, a child that is not there: a name is the text of what the stored spec says, and where the
+#     spec holds something unnameable the name says `?`. No record of the library has one (`grep` of section 4's
+#     listing: `?_` in the six, and no other `?`).
+
+== 9. what /code-review changed (22:03 – 22:36), each with what measures it ==
+# The review was given the first cut and ran while section 5's back-outs were editing the tree; its findings were
+# checked against the delivered sources, and it says which it ran. Ten findings.
+# CHANGED:
+# (a) A CHILD OF A TYPE THE NAME'S TEXT LEFT OUT. A name is the diagnostic walk's text in a third spelling, and that
+#     walk writes an ARROW as `param -> result` and never its effect row. So
+#         sort W  provides Holds[T = (Int64) -> Int64]  provides Holds[T = (Int64) -> Int64 @ Error]
+#     — two rows of the provision relation — were one name and one record: the defect the ticket is of, one level
+#     down. An arrow is written with its row in a name now (`… -> … @ {anthill.prelude.Error}`, `@ {}` when pure).
+#     The walk was then read for every other form that leaves a child out, and there are two: a GUARDED effect atom
+#     (its label, not its guard) and a RIGID PROJECTION (`var.member`, not its `sort`). In a name each is the
+#     application it is, every child shown. Rows: two arrow bindings in `one_spec_at_several_bindings_…`, and three
+#     unit rows on hand-built terms (`typing::tests::s8cyd_qualified_text_test`), each asserting its control — the
+#     diagnostic's text of the two types is ONE text, the name's is two. The last two shapes are the typer's; no
+#     provision can be written at them.
+# (b) A READER OF NAMES STILL CUT THEM. `requires_law_records` took a spec's laws as every name under
+#     `<spec-qn>.requires.` — and `requires` is a namespace segment, so the records of a sort declared under
+#     `<spec-qn>.requires` were laws of the spec, and so was a record a program wrote there. Reproduced by the
+#     review on the tree BEFORE: a provider of `t.o.Outer` got `t.o.X.provides.Outer.Held.requires.Eq_W`. And such
+#     a sort's PROVISION records come under the prefix only once a load has left them, so the next load, bringing
+#     nothing, emitted more: one call and two loads apart again. The laws are an index by scope read off each
+#     record's witness now (`load::requires_laws_by_scope`: `ScopeAxiom.scope_qn`, an `aspect` of `requires.<SE>`),
+#     one walk of the registry a pass. The range of sorted names WI-20261011-ZVPXS built is gone, and its three unit
+#     rows with it; its counter is `witness_law_records_read_by_this_thread` and its seven rows are the same rows.
+#     Row: `a_specs_laws_are_its_own_requirements` — a hand-written record under the spec's `requires.`, a sort in
+#     a namespace segment named `requires` with a law and a provision of the spec — in a later load, a load after it
+#     that brings nothing, and one call.
+# (c) THE ONE-RECIPE GUARD. Moving the record helpers into `tests/common` moved ZVPXS's `LoadRecipe::OneShot` line
+#     there, where `wi_rah0z_one_recipe_test` does not look: its `PINNED` entry was stale (the guard FAILED, which
+#     no selected run had shown — it is in no selection by a record's name), and with the entry deleted two files
+#     would have been pinned to a recipe unlisted. `proof_records_of_one_call(` is a way out by name now, and both
+#     files are listed (1 line and 7).
+# (d) `implicit_cites_for` passed over a scope axiom it could not read without a word; it says so. Its string
+#     reader was a second `lookup_string`, and its test's loader a second `load_with_source`: one of each.
+# (e) The type forms were keyed, for a name, on a prefix of the qualified name written out beside the walk;
+#     `typing::type_head` is the classifier every reader of a type goes by, and the name's spelling asks it.
+# (f) Two comments said what the change had removed (`sort_view_substitution`; "concrete sorts are valid
+#     identifiers"), and proposal 030 marked γ.4 done: it says what is built and what is not (section 8 (a)).
+#
+# THE CONTROLS of (a), (b) and (e) — each backed out on the tree as delivered, over 48 rows of `wi_tests` (the 8 of
+# `wi_s8cyd_record_names_test`, ZVPXS's 7, the 33 of section 5) and the 3 unit rows; 22:17 – 22:28:
+#                                                                            `wi_tests`     unit rows   which
+#   a spec's laws BY NAME — the scope cut out of a record's name at           1 FAIL        —           `a_specs_laws_are_its_own_requirements`:
+#     `.requires.`, whatever its witness                                                                `X` and `Held` each specialized at
+#                                                                                                       THREE laws — `Outer`'s, `Held`'s own
+#                                                                                                       requirement, the hand-written record
+#   a scope's laws in the order of the relation, not of their names           1 FAIL        —           ZVPXS's order row
+#   the scope not compared: every requirement a law of every spec            14 FAIL        —           all 8, and 6 of ZVPXS's 7
+#   the registry walked again for every provision (the scan back)             1 FAIL        —           ZVPXS's count row
+#   an arrow written without its row                                          2 FAIL        1 FAILS     `one_spec_at_several_bindings_…`,
+#                                                                                                       `no_two_records_share_a_name`; the
+#                                                                                                       arrow's unit row
+#   a guarded effect atom written by its label                                0             1 FAILS     its unit row
+#   a rigid projection written `var.member`                                   0             1 FAILS     its unit row
+#   the type forms keyed on the LOCAL name, as a diagnostic keys them         1 FAIL        1 FAILS     `one_spec_at_several_…` (`x.Nothing`);
+#                                                                                                       the projection's unit row
+#   BY DESIGN nothing fails:
+#   the aspect not tested — any scope axiom of a spec its law                 0             —           the one other aspect is an enum's
+#                                                                                                       `induction`, and an enum is refused
+#                                                                                                       as a provided spec ("`provides
+#                                                                                                       test.s8e.Mode` cannot hold", probed)
+#
+# NOT CHANGED, and why:
+#   * A PROOF UNDER A `requires` IS REFUSED (section 8 (a)); the review notes that the reader's row pins a list the
+#     consumer rejects. It does, and says so at its site: the row is for WHICH records a proof is handed. Lowering a
+#     requirement is a piece of proposal 030 that was never built, and not a piece of naming.
+#   * A VARIABLE IS WRITTEN BY ITS NAME, and what the walk cannot read as `?` (section 8 (c)).
+#   * THE DIAGNOSTIC'S OWN LOOSENESS — a user sort named `Nothing` or `Arrow` is still printed as the prelude's form
+#     in a type error. The review would key every spelling on `type_head`; that changes what messages say, which is
+#     another change than what records are named.
+
+== 10. the gate and the recipes, on the tree as delivered (22:37 – 23:22, one after another, nothing else building) ==
+#   scripts/test.sh                                                         the whole workspace, the shared base
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                            exit   result lines   passed   failed   ignored   the run        `wi_tests`    OBSERVED by the controls
+#   the gate (shared base)   0      36, all ok     9 295    0        14        12 min 19 s    115.56 s      SHARED BASE; oracle off
+#   anthill-core, one shot   0      13, all ok     8 392    0         6        16 min 51 s    717.76 s      one shot;    oracle off
+#   anthill-core, two steps  0      13, all ok     8 392    0         6        15 min 11 s    824.82 s      TWO-STEP;    oracle off
+#
+# `wi_tests`: 6 778 passed, 4 ignored, in each of the three. `CPU_Speed_Limit` 100 when the gate began and when it
+# ended, 64 at the end of the one-shot run and 62 at the end of the two-step one: the last two walls are of a
+# machine at two thirds, as in every file of this directory.
+# This ticket adds 8 rows to `wi_tests`, 3 unit rows to anthill-core's lib and 1 to the CLI's binary, and takes
+# out the 3 unit rows of the range.
+#
+# THE CARRIER CONTROL, on the rows that spell a record's name (22:01, the first cut; the dev profile):
+#   ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh -p anthill-core --test wi_tests -- witness proof alias wi366 s8cyd zvpxs specialization scope_axiom an6cq 4zrtg
+#   551 passed, 0 failed; "node carrier OBSERVED by wi_tests::alias_written_name_test: A NODE for every sort".
+#   A binding that rides an occurrence is named as the one that rides a term is. Not taken again after section 9's
+#   changes, and not the whole workspace under the switch.
+#
+# SCALAND (21:43 – 21:44, `sbt shutdown` first, then `sbt -batch testFull`): exit 0; 634 + 35 + 1 tests, all passed.
+# Nothing of scaland's was changed and it has no witness pass; what it reads of this change is the comments of
+# `stdlib/anthill/realization/witness.anthill`, which were as delivered when it ran.

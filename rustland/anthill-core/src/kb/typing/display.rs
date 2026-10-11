@@ -27,6 +27,46 @@ enum Spelling {
     Meaning,
     /// The alias, as the author wrote it ([`written_alias`]).
     Written,
+    /// The type it stands for, with every sort it names called by its QUALIFIED name and
+    /// every application's bindings in the order of their keys' names — the text a proof
+    /// record's name is made of ([`type_qualified_text`]).
+    Qualified,
+}
+
+impl Spelling {
+    /// The name a sort — or whatever else a type names by symbol — is written by.
+    fn name_of(self, kb: &KnowledgeBase, sym: Symbol) -> &str {
+        match self {
+            Spelling::Meaning | Spelling::Written => kb.local_name_of(sym),
+            Spelling::Qualified => kb.qualified_name_of(sym),
+        }
+    }
+
+    /// The order an application's own named arguments are written in.
+    fn named_order(self) -> NamedOrder {
+        match self {
+            Spelling::Meaning | Spelling::Written => NamedOrder::Declared,
+            Spelling::Qualified => NamedOrder::ByName,
+        }
+    }
+}
+
+/// WI-20261011-S8CYD — THE QUALIFIED TEXT OF A TYPE: what [`type_display_name_view`]
+/// writes for it, with each sort called by its qualified name —
+/// `anthill.prelude.List[T = test.sg.P]` where a diagnostic shows `List[T = P]`.
+///
+/// It is what a proof record's NAME is made of (`load::qualified_spec_text`), so it has to
+/// tell apart what a name tells apart, and a diagnostic's text does not: `P` is two sorts
+/// in two namespaces. And it has to be ONE text for one type in every load, so the
+/// bindings of an application are written in the order of their keys' NAMES — the
+/// declared order a diagnostic uses falls back, for a key no parameter claims, on the
+/// order the carrier holds them in, which follows the order the names were interned in
+/// and is another one when the same source is loaded in one call ([`declared_order`]).
+///
+/// The walk is the diagnostic's own, on purpose: a second renderer would be a second
+/// answer to how an arrow, a row or a value held in a type is written.
+pub(crate) fn type_qualified_text(kb: &KnowledgeBase, item: &ViewItem<'_>) -> String {
+    type_display_name_item(kb, item, Spelling::Qualified)
 }
 
 /// The type `v` AS ITS AUTHOR WROTE IT, where that differs from the type it is: with each
@@ -103,16 +143,14 @@ fn type_display_name_occ(
         if bindings.is_empty() {
             return base_name;
         }
-        let params: Vec<String> = bindings
+        let mut params: Vec<(&str, String)> = bindings
             .iter()
-            .map(|(p, c)| {
-                format!(
-                    "{} = {}",
-                    kb.local_name_of(*p),
-                    type_child_display_name(kb, c, spelling)
-                )
-            })
+            .map(|(p, c)| (kb.local_name_of(*p), type_child_display_name(kb, c, spelling)))
             .collect();
+        if spelling.named_order() == NamedOrder::ByName {
+            params.sort_by(|a, b| a.0.cmp(b.0));
+        }
+        let params: Vec<String> = params.iter().map(|(p, c)| format!("{p} = {c}")).collect();
         return format!("{}[{}]", base_name, params.join(", "));
     }
     type_display_name_view(kb, occ, spelling)
@@ -122,7 +160,7 @@ fn type_display_name_occ(
 /// via [`type_display_name_occ`].
 fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild, spelling: Spelling) -> String {
     match child {
-        TypeChild::Interned(t) => type_display_name(kb, *t),
+        TypeChild::Interned(t) => type_display_name_view(kb, &TermIdView(*t), spelling),
         TypeChild::Node(n) => type_display_name_occ(kb, n, spelling),
     }
 }
@@ -671,7 +709,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
         // `⊥` reaches a type position when σ binds a type-position variable to a carrier
         // denoting no type, and it is GROUND, hence CHECKED and named in a diagnostic.
         ViewHead::Bottom => "bottom".to_string(),
-        ViewHead::Ident(s) => kb.local_name_of(s).to_string(),
+        ViewHead::Ident(s) => spelling.name_of(kb, s).to_string(),
         // A carrier with no structure to read — a closure, a stream. Not a type and not
         // nameable as one; `?` is what the occurrence renderer already answered.
         ViewHead::Opaque => "?".to_string(),
@@ -697,7 +735,31 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
             if let Some(rendered) = qualified_form_display(kb, v, f, spelling) {
                 return rendered;
             }
-            match kb.local_name_of(f) {
+            // A record's name does not take the looseness of the note above: there a user
+            // sort named `Nothing` is its own sort, by its own qualified name, and a form
+            // is what [`type_head`] says is one — the classifier every reader of a type
+            // goes by, keyed on the qualified name.
+            //
+            // AND IT TAKES NO FORM THAT LEAVES A CHILD OUT, because two types that differ
+            // in that child would be one name: a rigid projection is written `var.member`
+            // for a reader and without its `sort`, so there it is the application it is,
+            // every child shown ([`type_application_display`]); an arrow is written with
+            // its row, below; a guarded effect atom with its guard
+            // ([`qualified_form_display`]).
+            let form = match spelling {
+                Spelling::Meaning | Spelling::Written => kb.local_name_of(f),
+                Spelling::Qualified => match type_head(kb, v) {
+                    TypeHead::Arrow => "Arrow",
+                    TypeHead::TypeVar(_) => "TypeVar",
+                    TypeHead::NamedTuple => "NamedTuple",
+                    TypeHead::Nothing => "Nothing",
+                    TypeHead::Denoted => "Denoted",
+                    TypeHead::ExprCarried => "ExprCarried",
+                    TypeHead::EffectsRows => "EffectsRows",
+                    _ => "",
+                },
+            };
+            match form {
                 // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
                 // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
                 "Arrow" => {
@@ -709,7 +771,16 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                         .and_then(|n| usize::try_from(n).ok());
                     let param_is_tuple = named_child(kb, v, "param")
                         .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
-                    format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r)
+                    let arrow = format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r);
+                    // A reader's arrow is `param -> result`, and its row is shown only
+                    // where two arrows differ in nothing else ([`arrow_rows_that_differ`]).
+                    // A name has no pair to compare: the row is part of it, always.
+                    match spelling {
+                        Spelling::Meaning | Spelling::Written => arrow,
+                        Spelling::Qualified => {
+                            format!("{arrow} @ {}", named_child_display(kb, v, "effects", spelling))
+                        }
+                    }
                 }
                 "TypeVar" => named_child(kb, v, "name")
                     .and_then(|c| view_ref_symbol(kb, &c))
@@ -765,7 +836,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                 // string whether it arrived as `Fn{S, named}`, a `TypeNode::Parameterized`,
                 // or an `Expr::Apply` read off a matched fact's carrier binding), and the
                 // raw-term fallback for everything that is not one of the forms above.
-                _ => type_application_display(kb, v, f, pos_arity, NamedOrder::Declared, spelling),
+                _ => type_application_display(kb, v, f, pos_arity, spelling.named_order(), spelling),
             }
         }
     }
@@ -822,6 +893,9 @@ fn qualified_form_display<V: TermView>(
     match short {
         "present" => Some(named_child_display(kb, v, "label", spelling)),
         "absent" => Some(format!("-{}", named_child_display(kb, v, "label", spelling))),
+        // The guard is what a name must not leave out: there the atom is the application
+        // it is, guard and label both ([`type_application_display`]).
+        "guarded" if spelling == Spelling::Qualified => None,
         "guarded" => Some(named_child_display(kb, v, "label", spelling)),
         "open" => Some(named_child_display(kb, v, "tail", spelling)),
         // The closed empty row. `{}` is how the language spells it; the term renderer had
@@ -901,6 +975,9 @@ enum NamedOrder {
     Stored,
     /// As the sort declares its parameters ([`declared_order`]): what a diagnostic shows.
     Declared,
+    /// By the keys' names: one order for one type whatever was loaded before it, which
+    /// the text a record is named by needs ([`type_qualified_text`]).
+    ByName,
 }
 
 /// `keys` — an application's named-argument keys — in the order `functor` declares its
@@ -945,7 +1022,7 @@ fn type_application_display<V: TermView>(
     order: NamedOrder,
     spelling: Spelling,
 ) -> String {
-    let mut out = kb.local_name_of(functor).to_string();
+    let mut out = spelling.name_of(kb, functor).to_string();
     if pos_arity > 0 {
         let ps: Vec<String> = (0..pos_arity)
             .map(|i| match v.pos_arg(kb, i) {
@@ -956,8 +1033,10 @@ fn type_application_display<V: TermView>(
         out.push_str(&format!("({})", ps.join(", ")));
     }
     let mut keys = v.named_keys(kb);
-    if order == NamedOrder::Declared {
-        declared_order(kb, functor, &mut keys);
+    match order {
+        NamedOrder::Stored => {}
+        NamedOrder::Declared => declared_order(kb, functor, &mut keys),
+        NamedOrder::ByName => keys.sort_by(|a, b| kb.local_name_of(*a).cmp(kb.local_name_of(*b))),
     }
     if !keys.is_empty() {
         let ps: Vec<String> = keys
@@ -1117,7 +1196,7 @@ fn named_child_display<V: TermView>(
 /// still reaches [`type_display_name_occ`]'s one occurrence-only shape.
 fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>, spelling: Spelling) -> String {
     match item {
-        ViewItem::Term(t) => type_display_name(kb, *t),
+        ViewItem::Term(t) => type_display_name_view(kb, &TermIdView(*t), spelling),
         ViewItem::Node(occ) => type_display_name_occ(kb, occ, spelling),
         ViewItem::Value(v) => value_display(kb, v, spelling),
         ViewItem::Owned(v) => value_display(kb, v, spelling),
