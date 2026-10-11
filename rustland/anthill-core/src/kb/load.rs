@@ -8545,6 +8545,26 @@ pub(crate) struct LastLoad {
     /// any). Every source from there on is that load's, whether or not it declares a
     /// type or an operation — a file of provisions and rules alone is in no ledger.
     pub(crate) first_source: usize,
+    /// WI-20261011-A3NND — where its provision check ENDED, if it read every provision
+    /// no seal held as checked and each one holds whatever a later load provides
+    /// (`typing::ProvisionCheck::held`). `None` as a load starts, and for one that stops
+    /// before the typer: its provisions have not been checked once. The KB as the check
+    /// left it and not a flag: what is asserted between there and a seal — a pass placed
+    /// below the check, a harness — is above this, and a later load reads it.
+    pub(crate) provisions_checked: Option<CheckedProvisions>,
+}
+
+/// WI-20261011-A3NND — the KB as a load's provision check left it: every provision in a
+/// rule slot below `rule_slots` was checked, and held; a symbol at or above `symbols`
+/// was interned since — it names something a later load brought; and the type
+/// parameters registered since there were `type_params` of them are later ones
+/// (`SymbolTable::type_param_owners_since`). What a seal of that load WHOLE holds, and
+/// `typing::checked_provisions` reads.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CheckedProvisions {
+    pub(crate) rule_slots: usize,
+    pub(crate) symbols: u32,
+    pub(crate) type_params: usize,
 }
 
 /// WI-20261009-4ZRTG — one scan's type declarations: R1's key, the keyword written, and
@@ -8609,6 +8629,13 @@ pub struct SealedDeclarations {
     /// been typed once.
     typed_ops: HashSet<Symbol>,
     typed_sources: HashSet<SourceId>,
+    /// WI-20261011-A3NND — the provisions later loads do not check again
+    /// ([`CheckedProvisions`]), as of the last seal of a WHOLE load whose check held
+    /// ([`LastLoad::provisions_checked`]). `None`: no such seal, every load checks every
+    /// provision. A seal of SOME of a load's files ([`seal_declarations_of`] given fewer
+    /// than the load had) leaves it as it was: the rows of the files it does not seal
+    /// are below its slot count too, and their goals name types no seal holds.
+    checked: Option<CheckedProvisions>,
 }
 
 impl SealedDeclarations {
@@ -8644,6 +8671,11 @@ impl SealedDeclarations {
     /// The clause in `slot` was in the KB when a seal was last taken.
     pub(crate) fn holds_rule_slot(&self, slot: usize) -> bool {
         slot < self.rule_slots
+    }
+
+    /// The provisions a later load's check does not read again, if a seal holds any.
+    pub(crate) fn checked_provisions(&self) -> Option<CheckedProvisions> {
+        self.checked
     }
 
     /// How many operations, types and typed sources the seal holds — for a test that
@@ -8695,9 +8727,17 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
         .filter(|source| of_the_library(*source))
         .collect();
     let rule_slots = kb.rules.len();
+    // WI-20261011-A3NND — and the load's provisions are checked once, if the seal is of
+    // ALL of it and its check held. Whichever door asked: the test suites' shared base
+    // is the standard library loaded alone and sealed as "the first files of the load".
+    let whole_load = sources.len() == kb.source_count() - kb.last_load.first_source;
+    let checked = kb.last_load.provisions_checked.filter(|_| whole_load);
     let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
     sealed.sorts.extend(sorts);
     sealed.rule_slots = rule_slots;
+    if checked.is_some() {
+        sealed.checked = checked;
+    }
     if typed {
         sealed.typed_sources.extend(sources);
     }
@@ -15210,6 +15250,7 @@ fn load_phase_inner(
     kb.last_load = LastLoad {
         ran_typer: options.run_typer,
         first_source: kb.source_count(),
+        provisions_checked: None,
     };
     kb.sort_alias_index = None;
     // WI-1049 — same reset, and it is what makes the duplicate-operation refusal
@@ -15723,7 +15764,23 @@ fn load_phase_inner(
     // WI-343: provider-side requires coverage. For each `fact Spec[X]`,
     // every spec-level `requires` of Spec (at the provision's bindings)
     // must itself be satisfied — else the satisfaction fact is unsound.
-    all_errors.extend(super::typing::check_provider_requires(kb));
+    // WI-20261011-A3NND — the provisions no seal holds as checked, or every one
+    // (`typing::checked_provisions`). What a pass below this line asserts is checked
+    // where that pass ends.
+    let provisions = super::typing::check_provider_requires(kb);
+    let provisions_checked_to = kb.rules.len();
+    if timing {
+        eprintln!(
+            "[provider_requires] read {} rows from slot {} of {}, {} open goal(s): {}",
+            provisions.rows_read,
+            provisions.first_slot,
+            provisions_checked_to,
+            provisions.open_goals,
+            provisions.why.said(kb),
+        );
+    }
+    let provisions_held = provisions.held;
+    all_errors.extend(provisions.errors);
     mark!("check_provider_requires");
     // WI-363: provider-side operation coverage — the op-level twin of the
     // above. For each `fact Spec[X]`, every operation Spec declares must be
@@ -15818,7 +15875,9 @@ fn load_phase_inner(
     // invalidates it: `direct_requires` now READS provisions (`self_supplied_entries`),
     // so every pass that asserts a `SortProvidesInfo` fact owes this call, and this is
     // the last one that does. The chain is already populated by the time we get here —
-    // `check_provider_requires` builds it for every provider — so a stale entry would be
+    // `check_provider_requires` builds it for every provider it reads, which is every
+    // one in a full load and the ones asserted since the seal behind one
+    // (WI-20261011-A3NND), and the typer for the rest it met — so a stale entry would be
     // served to `check_use_site_requires_eq`, `check_override_refinement`, codegen and
     // eval. The rows eq_derive adds are concrete-carrier ones and so are never
     // conversions, i.e. no entry can actually change; invalidated anyway, because "this
@@ -15833,6 +15892,23 @@ fn load_phase_inner(
     // own.
     super::typing::build_requires_index(kb);
     mark!("eq_derive::run");
+    // WI-20261011-A3NND — THE PROVISIONS `eq_derive::run` JUST DERIVED, which stand
+    // below the check above: the derived `NonEq` of a composite that reaches a `Float`.
+    // Until this call the load that derived one never asked whether it holds — the
+    // next load did, for every such row in the KB, and no load did when none came. Here
+    // and not by moving the pass: its place below the provider-coverage checks and
+    // above `check_eq_noneq_exclusive` is the one its comment argues for. After the
+    // chain memos are dropped and the requires index is back, which the check reads.
+    // And what a seal of this load may tell later ones: every provision it read holds.
+    let derived = super::typing::check_provider_requires_since(kb, provisions_checked_to);
+    kb.last_load.provisions_checked =
+        (provisions_held && derived.held).then(|| CheckedProvisions {
+            rule_slots: kb.rules.len(),
+            symbols: kb.symbols.symbol_count(),
+            type_params: kb.symbols.type_param_registrations(),
+        });
+    all_errors.extend(derived.errors);
+    mark!("check_provider_requires (derived below it)");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
     // Eq and the witnessed non-reflexive NonEq is contradictory. Opt-in: does
     // nothing for a carrier that declares neither. Load-blocking.

@@ -1,0 +1,399 @@
+# `check_provider_requires` on a later load (WI-20261011-A3NND) — where its time goes, step by step, what two
+# probes say each way of fixing it would buy, and what was built. 2026-10-11. For lever A3's third pass
+# (docs/design/test-infrastructure.md §4).
+# Sections 1–8 (09:00 – 09:25) are THE MEASUREMENT, taken before anything was built; the shape was then decided
+# with the user: a frontier behind a seal, the check reading every row where a later fact can reach a held verdict.
+# Sections 9–13 (09:40 – 11:30) are the tree as built; section 14 is what /code-review changed in it, and the
+# gate of the tree as delivered.
+#
+# Tree:    main at 5c47f3ef (anthill-core's sources as WI-20261010-ANK4X left them, 8d9ffe06).
+#          The MARKED binary is that tree with temporary marks inside the pass and under it (not kept): a clock and
+#          a count for each step of `typing::check_provider_requires`, clocks and counts in `direct_requires`,
+#          `requires_tree`, `direct_requires_chain_rc`, `transitive_required_sorts`, `collect_provides_candidates`,
+#          `sort_provides`, a count in `resolve_inner`. All of them off unless ANTHILL_LOAD_TIMING=1.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build); debug assertions on.
+# Bench:   docs/measurements/test-infrastructure/bench_load.rs, ITERS=15, one thread; medians of 15.
+#          Its loads: `full` — the stdlib's 87 files and one small user file in ONE call, a fresh KB; "later" — that
+#          user file alone into a loaded stdlib: plain (`incr`), after a seal (`sealed incr`), into a copy
+#          (`clone+incr`), into a copy of a sealed base (`sealed clone+incr`: what a test on the shared base pays).
+#          The user file is one operation; it writes no provision and defines no sort.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. `CPU_Speed_Limit` 100 before and after every run
+#          here. `top` around them: Chrome helpers at 13–30 % of a core each, a bloop JVM at 17–22 %, WindowServer
+#          at 30–40 % — a desk in use, not a quiet machine. So every row is 5–8 % above the same row of
+#          provider-index-2026-10-10.txt §2 (the pass 26.9 ms here, 26.0 there; a later load 64–65 ms, 62 there),
+#          and columns are compared within one run.
+
+== 1. the pass in a load, the tree as it stands (the UNMARKED binary, ANTHILL_LOAD_TIMING=1, two rounds; ms) ==
+#                                          full     later, plain   later, sealed   later, copy   later, sealed copy
+# round 1
+# the whole load (the sum of its marks)   272.78      140.31          64.35          139.95          65.44
+# check_provider_requires                  24.89       26.47          26.97           26.32          27.02
+# register_specialization_witnesses         2.92       10.19          10.10           10.38          10.43
+# type_check_sorts                        108.67       84.83           7.73           82.56           7.41
+# check_override_refinement                 4.13        4.10           4.13            4.06           4.09
+# check_provider_operations                 1.30        1.47           1.53            1.28           1.63
+# round 2
+# the whole load                          285.01      140.35          64.71          143.35          65.72
+# check_provider_requires                  25.38       26.50          26.89           26.94          27.06
+#
+# The pass is 41–42 % of a later load behind a seal (27.0 of 64.4–65.7 ms) and 9 % of a full one. It costs the same
+# 25–27 ms in every load of the bench: it is a function of the KB's provisions and of nothing the load brought.
+
+== 2. the pass step by step (the MARKED binary; the same two rounds, interleaved with section 1's; ms and counts) ==
+# Round 1; round 2 is within 3 % on every row but the last column, which another process disturbed (36 ms).
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# the pass                                24.87       25.95          27.99          27.88           27.25          28.16
+#   decoding the rows (and their σ)        0.30        0.32           0.32           0.31            0.31           0.31
+#   `is_conversion_edge_named`             0.12        0.13           0.13           0.13            0.13           0.13
+#   `provider_requires_subgoals`           0.47        0.50           0.53           0.56            0.51           0.55
+#   `carrier_at_own_params`                0.27        0.28           0.29           0.42            0.29           0.42
+#   `ProvisionScope::of`                   0.26        0.27           0.33           0.32            0.32           0.32
+#   `goal_at_own_params`                   0.03        0.03           0.04           0.03            0.03           0.03
+#   `resolve_within_provider`             23.25       24.16          26.20          25.98           25.50          26.12
+#       as a share of the pass             93.5 %      93.1 %         93.6 %         93.2 %          93.6 %         92.8 %
+# rows decoded                              405         405            413            413             413            413
+#   conversions, skipped                      9           9              9              9               9              9
+#   rows with a goal at all                 115         115            123            123             123            123
+#   goals                                   141         141            149            149             149            149
+#   carriers built                           75          75             79             79              79             79
+#   provision scopes built                  102         102            110            110             110            110
+#   resolutions (goal x clause)             118         118            127            127             127            127
+#   that failed                               0           0              0              0               0              0
+#
+# What the marks cost: the pass is 28.4 ms in the marked binary where it is 26.9 ms in the other (section 1), the
+# clocks around `sort_provides` — eight thousand calls a pass — being most of it. The SHARES are the measurement.
+#
+# So: 1.5–1.8 ms of the pass is everything but the resolutions — decoding 413 rows 0.3 ms, the chains and scopes
+# under 1.3 ms — and 26 ms is 127 calls of the resolver, 0.2 ms each.
+
+== 3. inside a resolution: the candidate search (the same runs; and a sampling profile of the pass alone) ==
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# `resolve_inner` frames                    191         191            206            206             206            206
+# `collect_provides_candidates` calls       158         158            167            167             167            167
+#   provision rows they visited           8 303       8 303          8 987          8 987           8 987          8 987
+#   candidates they returned                158         158            167            167             167            167
+#   their time, ms                        22.24       23.08          25.07          24.80           24.40          24.90
+# `sort_provides` calls                   7 543       7 543          8 173          8 173           8 173          8 173
+#   their time, ms (clocks included)       7.66        8.01           8.68           8.58            8.43           8.59
+#
+# A search visits 54 rows — every provision of the goal's spec (`provides_rows_of_spec`) — to return ONE, and is
+# 89 % of the pass: 2.8 us a row visited. `sort_provides` is asked 8 173 times in the pass, against 8 820 rows
+# rejected: on the way to rejecting a row the match asks whether the goal's type provides the row's head as a
+# spec (`bare_sort_compatible`), a walk of the provides edges. (The two counts are of the pass, not paired row by
+# row; the profile below is what ties the calls to the match.)
+#
+# The profile: the pass run 3 000 times in a row inside one `full` load (a temporary loop), `sample <pid> 30`;
+# 23 067 samples on the thread. Inclusive, a recursive function counted once a stack:
+#     93.7 %  resolve_inner
+#     89.7 %    collect_provides_candidates
+#     61.2 %      match_candidate_against_goal
+#     49.8 %        carrier::dispatch_values_match
+#     45.3 %          subtype::types_compatible
+#     36.4 %            subtype::bare_sort_compatible
+#     29.9 %              sorts::sort_provides        (26.1 % sort_provides_reach, 11.9 % carrier_edge_targets)
+#      9.1 %      candidates::impl_param_symbols      (a `format!` and a name lookup, per row visited)
+#      9.0 %      candidates::is_conversion_row       (3.4 % self_supplied_entries)
+#     34.2 %  HashMap::get, wherever it is called     (15.8 % hash_one, 11.3 % SipHash's own `write`)
+# Self time: HashMap::get 12.9 %, SipHash 11.3 %, hash_one 6.0 %, memcmp 5.2 %, malloc and free 8.4 %.
+
+== 4. the ticket's lead — the chain memos a load clears and a copy starts without — REFUTED ==
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# `requires_tree_cache` entries, entering    58          57             57             11              57             11
+#                               leaving     131         130            134            119             134            119
+# `requires_tree` misses in the pass         73          73             77            108              77            108
+#   their time, ms                         0.31        0.32           0.33           0.51            0.33           0.49
+# `direct_requires` calls                   149         149            167            224             167            224
+#   their time, ms                         0.26        0.27           0.29           0.39            0.28           0.38
+#     of it `self_supplied_entries`        0.19        0.20           0.21           0.29            0.21           0.28
+# `transitive_required_sorts`, cold path      0           0              0              0               0              0
+#
+# Behind a seal the typer skips the library's bodies, so the pass does enter with 11 trees memoized where a plain
+# load enters with 57, and builds 108 where that builds 77. All 108 cost half a millisecond.
+# And the pass run a SECOND and a THIRD time straight after the first, every memo it reads warm (a temporary loop;
+# ITERS=3, so single readings): 25.5 / 24.6 / 25.0 ms, 24.1 / 22.8 / 23.1, 26.9 / 25.1 / 24.1. The steps that fill
+# memos fall — `provider_requires_subgoals` 0.51 -> 0.31 ms, `carrier_at_own_params` 0.29 -> 0.13 — and the pass
+# is a millisecond cheaper of twenty-five. So WHEN the chain caches are cleared and whether a copy carries them
+# (WI-20261011-W3VWC's subject) is worth at most 0.5–1 ms of this pass's 27.
+
+== 5. why the later load is the dearer: eight rows the load that asserted them never checked ==
+# 405 rows when the stdlib's own load runs the pass, 413 at every load after it. The eight, listed by a temporary
+# line (the row's carrier and spec), are the `NonEq` provisions `eq_derive::run` derives for the composites that
+# reach a Float:
+#     anthill.prelude.List, .Option, .Result; anthill.reflect.Expr, .LiteralRepr, .TermRepr;
+#     anthill.geometry.Vec3, .EulerAngles                                    — each `provides anthill.prelude.NonEq`
+# `eq_derive::run` stands BELOW `check_provider_requires` in `load_phase_inner`, so the load that derives one of
+# these never asks whether it holds; the next load does, for all eight, and they hold (0 failures).
+# They are 8 more rows with a goal, 9 more resolutions, 15 more frames and 684 more candidate rows visited
+# (8 987 against 8 303, +8.2 %): the pass is 26.9–27.0 ms on a later load where it is 24.9–25.4 on a full one.
+# WHAT THIS MEANS FOR A FRONTIER: "a provision is checked by the load that asserted it" is not what happens today
+# for a row derived below the pass. A pass that skipped every row of an earlier load would never check these.
+
+== 6. two probes: what each shape would buy (the MARKED binary, a temporary switch; ITERS=15, one run each) ==
+# (a) `memo` — the search as it is, three of its per-row reads memoized for the length of the pass: `sort_provides`
+#     by (carrier, spec), `is_conversion_row` by row, `impl_param_symbols` by provider. Valid for a probe because
+#     the pass asserts nothing. Every count of sections 2 and 3 unchanged (the same 8 987 rows visited, the same
+#     167 candidates, 0 failures).
+# (b) `sealed` — the pass skips a row a seal holds (`kb.sealed.holds_rule_slot`), with NOTHING put in its place:
+#     no refusal, no re-check, the eight rows of section 5 skipped with the rest. An upper bound, not a design.
+#                                              full    later, plain   later, sealed   later, copy   later, sealed copy
+# the pass, ms            no probe            26.71       29.69          29.22           28.59          29.66
+#                         (a) memo            20.16       21.76          22.13           22.03          22.91
+#                         (b) sealed          26.65       29.19           0.49           29.90           0.52
+# the whole load, ms      no probe           269.71      144.85          66.99          142.24          68.43
+#                         (a) memo           266.52      137.19          60.50          139.91          63.98
+#                         (b) sealed         270.57      145.81          38.71          153.17          41.39
+# the bench's own rows    no probe           full 270.1    sealed incr 67.1    sealed clone+incr 75.8
+#                         (a) memo                266.7                60.6                      71.1
+#                         (b) sealed              270.9                38.9                      49.1
+# rows the pass decoded   (b) sealed            405         413             0             413             0
+#
+# (a) takes a quarter of the pass, on every load: 29.2 -> 22.1 ms later, 26.7 -> 20.2 full. Of `sort_provides`'
+#     8.7 ms (clocks included) 5.1 ms is left with every answer memoized — eight thousand lookups and their clocks.
+#     What remains is the walk itself: 8 987 rows decoded and matched to keep 167. Taking THAT out is an index of
+#     a spec's provisions by the head of the carrier binding, which has to agree with `types_compatible` on which
+#     rows a goal can match; not probed, and bounded by the 25 ms the search is.
+# (b) takes all of it, behind a seal only: the pass 29.2 -> 0.5 ms (0.05 ms inside it), a later load after a
+#     sealed stdlib 67.0 -> 38.7 ms, a test's load on the shared base 75.8 -> 49.1 ms. A plain sequence of loads,
+#     which seals nothing, and a full load are as they were.
+
+== 7. what a later load can change of an earlier provision's verdict — probed where it could be, read otherwise ==
+# A verdict is: each `requires` of the provided spec, at the provision's bindings, resolves under each clause of
+# the provision, the carrier's own provision first (`resolve_within_provider`). What it reads, and who can write it
+# after the fact:
+#   * THE SPEC'S `requires`, AND THE CARRIER'S (the assumptions). PROBED, the CLI (stdlib sealed, then the file):
+#         namespace anthill.prelude.Eq    requires test.f1.Marker[T = T]  end      79 errors
+#         namespace anthill.prelude.List  requires test.f2.Marker[T = T]  end       1 error
+#     Both are refused where they are written — "`requires` is not allowed in a secondary entry of sort …" — and
+#     the fact is asserted all the same: the first load's other 78 errors are this pass refusing every provider
+#     of `Eq` in the stdlib, and every provision whose contract reaches one ("'anthill.prelude.Pair' provides
+#     'anthill.prelude.WeakOrd', which requires 'anthill.prelude.Eq', and its provider … was chosen, but
+#     `test.f1.Marker[…]` beneath it does not hold"). So the one way to add a `requires` to an earlier sort is a
+#     refused load already; what the pass adds to it is 78 errors about the library. A refused load does not
+#     unwind, so the fact is in the KB for the load after it — which this pass is what refuses, today.
+#   * THE PROVISION'S OWN CLAUSES (`ProvidesConditionInfo` by carrier and spec). A later `provides S[…] :- g` for
+#     a sealed carrier that already provides `S` at an overlapping head is the typer's refusal behind a seal
+#     (`sealed::provisions_that_change_a_sealed_dispatch`, "written for … which a sealed load declared and which
+#     already provides it there"). Read, not probed here.
+#   * WHO ANSWERS A GOAL — the provider relation, which only grows. A goal of an earlier provision names that
+#     load's types and the carrier's own parameters, nothing else. The same refusal holds a later provision whose
+#     spec and head types are all a sealed load's to leaving every such answer where it was (it refuses the more
+#     specific one, the tie no default arbitrates, the overlap); a provision with a type of the later load's own
+#     in its head is not held by it. Read, not probed; and that rule was written for the calls in sealed BODIES —
+#     whether it is complete for the goals of sealed PROVISIONS is what an oracle run would say.
+#   * Nothing sealed (a plain sequence of `load_all`; `KB.loaded` at eval): none of the above is refused, and a
+#     second provider can tie an earlier provision's goal.
+
+== 8. is the search anyone else's cost? two more profiles (`sample`, the unprobed paths of the marked binary) ==
+# A loop of later loads into a copy of the sealed base, 30 s, 19 897 samples under `load_all`:
+#     42.2 %  check_provider_requires         37.2 % collect_provides_candidates, 39.3 % resolve_inner
+#     11.8 %  type_check_sorts                 6.3 % check_override_refinement
+#     13.0 %  alloc::fmt::format_inner, wherever it is called (not attributed to a pass here)
+# `resolve_inner` is 7 823 samples and `resolve_within_provider` 7 830: on a later load behind a seal the resolver
+# runs for this pass and for nothing else.
+# A loop of `full` loads, 20 s, 14 276 samples under `load_all`:
+#     41.0 %  type_check_sorts                 9.4 % check_provider_requires
+#     10.5 %  collect_provides_candidates     10.4 % resolve_inner
+# So in a full load too the candidate search is this pass's, within a percent: the typer's own dispatches are
+# memoized (`resolve_cache`). A cheaper search is worth this pass's 25 ms on each kind of load, and no other pass.
+
+== 9. what was built, and the bench's rows BEFORE and AFTER (ITERS=15, one thread; ms: min / median / max) ==
+# BEFORE is the unmarked binary of section 1; AFTER is the tree as delivered. Side by side, two rounds, 11:22 – 11:25:
+# `CPU_Speed_Limit` 100 at both ends; `top` showed a word processor, a shader compiler and a browser at 11–33 % of
+# a core each — and the first round's AFTER `sealed clone+incr` is theirs (max 112 ms where the second's is 47).
+#
+# BUILT (`kb/typing/checked_provisions.rs`): behind a seal of a whole load whose check held, the check reads the
+# provisions asserted since — and every one when a `requires`, a provision's condition or a provision asserted since
+# can change a held verdict. A provision derived BELOW the check (`eq_derive::run`'s `NonEq`) is checked by the
+# load that derives it, in a second call where that pass ends.
+#                        BEFORE, round 1          AFTER, round 1           BEFORE, round 2          AFTER, round 2
+# full                   259.4 / 322.1 / 397.5    266.9 / 282.0 / 326.4    257.4 / 267.8 / 334.8    243.2 / 268.6 / 309.5
+# incr                   119.5 / 138.5 / 183.4    137.8 / 151.9 / 159.3    131.0 / 139.1 / 168.0    133.4 / 138.4 / 169.2
+# sealed incr             59.5 /  62.5 /  77.5     35.4 /  36.4 /  39.1     60.4 /  61.9 /  85.1     34.2 /  34.8 /  44.0
+# clone                    6.9 /   7.6 /  11.1      7.1 /   8.2 /   9.7      6.6 /   7.4 /  10.1      6.6 /   7.4 /   8.2
+# clone+incr             139.3 / 160.8 / 196.3    149.8 / 156.7 / 195.3    141.7 / 144.3 / 180.2    141.5 / 145.9 / 149.0
+# sealed clone+incr       69.2 /  75.3 /  81.2     47.3 /  61.4 / 112.2     68.6 /  74.2 /  90.6     43.4 /  44.3 /  47.2
+#
+#   a later load after a sealed stdlib (`sealed incr`)      62.5 -> 36.4 ms and 61.9 -> 34.8 ms       0.58, 0.56
+#   a test's load on the shared base (`sealed clone+incr`)  74.2 -> 44.3 ms in the quiet round, 0.60; mins 69.2 -> 47.3, 68.6 -> 43.4
+#   `full / (sealed clone + incr)`                          3.6 -> 6.1 (the second round)
+#   a full load, and a plain sequence of loads (`incr`, `clone+incr`): as they were. The probe of section 6 said
+#   38.7 and 49.1 ms for the first two rows, on a machine 5 ms slower on the BEFORE rows than this one.
+
+== 10. the phases of a load, BEFORE and AFTER (ANTHILL_LOAD_TIMING=1 on each binary, two rounds; medians of 15, ms) ==
+#                                                  full load              later load, sealed       later load, a sealed copy
+#                                                  BEFORE     AFTER       BEFORE     AFTER         BEFORE     AFTER
+# round 1  the whole load (the sum of its marks)   296.44     299.10      65.49      41.00         73.09      44.17
+#          check_provider_requires                  25.53      27.40      27.72       0.10         29.79       0.10
+#          … (derived below it), the new mark        —          2.19       —          0.05          —          0.05
+# round 2  the whole load                          276.52     274.03      66.50      37.27         65.61      41.01
+#          check_provider_requires                  25.59      25.74      28.07       0.09         26.80       0.09
+#          … (derived below it)                      —          2.12       —          0.04          —          0.04
+#          register_specialization_witnesses         2.93       2.90      10.45      10.13         10.43      11.09
+#          type_check_sorts                        111.53     109.17       7.77       7.56          7.35       7.88
+#          check_override_refinement                 4.07       3.93       4.33       4.13          4.12       4.31
+#
+# The pass on a later load behind a seal: 27–30 ms -> 0.09–0.10 ms, with its second call 0.14. What it costs a full
+# load: the second call, 2.1–2.2 ms — the eight derived `NonEq` provisions of the standard library, which that load
+# now checks itself (section 5) — of 274–299.
+# What is left of a later load at 37–41 ms: register_specialization_witnesses 10–11 ms (27 %), type_check_sorts
+# 7.6–7.9 ms (20 %), check_override_refinement 4.1–4.3 ms (11 %).
+
+== 11. the controls ==
+# (a) THE ROWS, and what fails when the change is backed out — `wi_a3nnd_checked_provisions_test` (16 rows), each
+#     back-out made and the file run (the dev profile). The test's header has the list; in short:
+#       every row read whatever a seal holds                                    4 FAIL (the rows that count a narrowed read)
+#       the held rows skipped whatever was asserted since                       7 FAIL — five on their counts, and the tie
+#                                                                               and the unmet `requires` on their VERDICTS
+#       the same under ANTHILL_PROVISION_ORACLE=1                               the same 7, the refusing ones by the oracle's
+#                                                                               own report, naming the errors only a full run gives
+#       each clause of the trigger alone                                        1–4 FAIL each: the `requires` clause, "the
+#                                                                               provider was there", the need for a binding of
+#                                                                               the later load's own, `is_inert`'s provider
+#                                                                               clause, the conversion's exemption
+#       the second call reading nothing                                         2 FAIL (nine rows short of 416; eight of 425)
+#       a load marked checked as it starts                                      1 FAILS
+#       a seal holding provisions whatever part of the load it is of            1 FAILS
+#       a seal holding them only by the door named `seal_declarations`          1 FAILS — the first cut, see (c)
+#       the oracle's variable misspelt, the switch set                          1 FAILS (asked for, no run judged)
+#     NOT DRIVEN by a row, each a clause that can only make the check read more: the `ProvidesConditionInfo`
+#     clause, `is_inert`'s alias clause, the canonical half of `is_later`. Said at each site.
+# (b) THE ORACLE — every narrowed run checked in full as well, a difference panics. anthill-core's suite:
+#       ANTHILL_PROVISION_ORACLE=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core
+#       ANTHILL_PROVISION_ORACLE=1 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#                                exit   result lines   passed   failed   ignored   the run        `wi_tests`   OBSERVED
+#     on the shared base         0      13, all ok     8 215    0        6         6 min 30 s     191.79 s     SHARED BASE; oracle ON
+#     two steps                  0      13, all ok     8 214    0        6         15 min 17 s    831.04 s     TWO-STEP;    oracle ON
+#     The two-step run is of the tree one change earlier (the seal's second door, (c)), which the two-step recipe
+#     does not go through: it seals by `seal_declarations` in both, and its loads were narrowed in that run.
+#     What the oracle costs: a full run of the check a load, which is what the check was — `wi_tests` 192 s on the
+#     shared base where the gate's is 123 s.
+# (c) WHAT THE FIRST CUT SHIPPED, found by a wall time: the seal held provisions only when taken by
+#     `seal_declarations`, and the suites' shared base is the standard library sealed as "the first files of its
+#     load" (`seal_declarations_of`, every file of it). So no load on the shared base was narrowed — and 15 rows,
+#     the whole suite, and an oracle run on the shared base were all green over it, the oracle having nothing to
+#     compare. `wi_tests` at 163 s where 118 was expected is what said so. The seal now asks whether it is of all of
+#     the load, whichever door; `a_seal_of_all_of_a_loads_files_holds_its_provisions` is the row, and the oracle run
+#     of (b) on the shared base is of the tree with it.
+
+== 12. one traced run of anthill-core's suites on the tree as delivered — how many loads read every row, and why ==
+#   ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core --config <the three opt lines> \
+#       -- --show-output > load-trace.log 2>&1
+#   python3 docs/measurements/test-infrastructure/provider_requires_report.py load-trace.log
+#   python3 docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
+# 11:18:15 – 11:20:57; 8 215 passed, 0 failed, 6 ignored. `CPU_Speed_Limit` 100 before it and 64 after — it followed
+# three suite runs, and was not sampled through. The COUNTS and the SHARES do not depend on it.
+#
+# runs of the check: 10 939
+#    9 727   88.9 %   NARROWED — nothing asserted since the seal reaches a held provision; 4.4 rows read a run
+#                     (median 3, 90th percentile 10, most 74)
+#      663    6.1 %   every row — no sealed load's provisions are held: a load that carries the stdlib, a plain sequence
+#      449    4.1 %   every row — a provision of a spec that was there before the seal, at no binding headed by a type
+#                     only a later load can name (`test.wi274_ok.EqList provides anthill.prelude.Eq`: a witness of a
+#                     library spec for a library type)
+#       90    0.8 %   every row — a provision by a provider that was there (`anthill.prelude.Int64 provides Ring`)
+#        7            every row — a provision's condition for a sort that was there (`List`, `Error`, the fixture's)
+#        2            every row — a `requires` for a sort that was there (the fixture)
+#        1            every row — a provision asserted since that is no fact
+# Of the 10 276 loads made after a seal that holds provisions, 9 727 are narrowed, 94.7 %; 549 read every row.
+# 9 goals with a binding left open reached the candidate search, one in each of 9 loads — 6 of them narrowed loads
+# of a program, 3 a program in one call with the stdlib. The standard library's own load puts none (its line in the
+# bench's trace: `read 405 rows from slot 0 of 4592, 0 open goal(s)`), which is what lets its seal hold its rows.
+#
+# Against provider-index-2026-10-10.txt §8 (the tree before this change, the same twelve binaries):
+#                                                   before                     this run
+#   `wi_tests`, traced                              157.9 s                    127.6 s
+#   loading, as a share of its thread-time          90.7 %                     86.9 %
+#   a load on the base, as one of twelve pays it    149.4 ms                   102.3 ms
+#       check_provider_requires, of that load       42.5 %  (63.5 ms)          5.3 %   (5.5 ms: the 5 % that read every row)
+#       register_specialization_witnesses           15.8 %                     24.9 %  (25.5 ms)
+#       type_check_sorts                            13.1 %                     22.3 %  (22.8 ms)
+#       check_override_refinement                   6.2 %                      10.3 %  (10.5 ms)
+#   copies of the base in `wi_tests`, a second      60.5                       75.2
+#       a copy                                      12.9 ms                    14.2 ms
+#       the wait for a base, a copy: mean           0.08 ms                    0.09 ms
+#   loads that carry the stdlib, all binaries       464                        480
+#   later loads into a copy of the base             9 862                      9 895
+# Of `wi_tests`' thread-time now (1 531 thread-seconds): later loads 66 %, loads that carry the stdlib 12 %, copies
+# of the base 8.9 %, everything else a test does at most 13 %.
+
+== 13. the gate and the recipes, on the tree as delivered (10:35 – 11:18, one after another, nothing else building) ==
+#   scripts/test.sh                                                         the whole workspace, the shared base
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                            exit   result lines   passed   failed   ignored   the run        `wi_tests`    OBSERVED by the controls
+#   the gate (shared base)   0      36, all ok     9 113    0        14        14 min 06 s    122.83 s      SHARED BASE; oracle off
+#   anthill-core, one shot   0      13, all ok     8 215    0         6        13 min 10 s    704.28 s      one shot;    oracle off
+#   anthill-core, two steps  0      13, all ok     8 215    0         6        15 min 07 s    812.78 s      TWO-STEP;    oracle off
+#
+# `wi_tests` in the gate: 6 606 passed, 4 ignored, in 122.83 s, where it was 164.94 s in the gate of
+# provider-index-2026-10-10.txt §7 and the arithmetic of the design doc's §2.4 said 118.
+# `CPU_Speed_Limit`: 100 before and after the gate; 53 at the end of the one-shot run and 73 at the end of the
+# two-step one — those two walls are of a throttled machine, and their verdicts are what they are here for.
+# The one-shot recipe has no later load: what this change does to it is the second call, the rows derived below the
+# check now read by the load that derives them, and its verdicts did not move.
+
+== 14. what /code-review changed (2026-10-11, afternoon), and the tree as delivered ==
+# Sections 9–13 are of the tree the review was given. It probed some twenty later-load shapes against the full check
+# and found one that differs, with three weaknesses in the controls; each is changed, with a row that fails without it.
+#
+# (a) A FOURTH WAY IN, in none of the three relations the trigger scanned — REPRODUCED by the review:
+#         sealed:   sort Boom { entity boom }    sort Narrow { requires Boom … provides Low[T = Narrow] }
+#                   sort HighN provides High[T = Narrow]                         (High requires Low[T])
+#         later:    namespace lib.Boom   sort U = ?   end
+#     `requires Boom` is a refinement while `Boom` has no type parameter, and a demand for a dictionary once it has one.
+#     The binder is refused where it is written and registered all the same. With nothing sealed, that load and the
+#     next one are refused by this check (`HighN`'s contract no longer holds); behind the seal the next load read 0
+#     rows and loaded clean, and the oracle panicked naming the error — once a fixture wrote the shape, which the
+#     suite had not. The symbol table logs the owner of each type parameter registered, and one registered since the
+#     seal for an owner that was there before it makes the check read every row.
+#     `a_type_parameter_written_into_a_sealed_sort_refuses_the_next_load_too`; FAILS without the clause.
+# (b) THE SEAL TOOK ITS SLOT COUNT WHERE IT WAS TAKEN, and a flag said the check had held: a provision asserted between
+#     a load's check and its seal was held as checked and read by no run. Latent — no producer does that. What a load
+#     records is now the KB as its check LEFT it (slots, symbols, type parameters), and a seal holds that.
+#     A unit row asserts a provision by hand in between and FAILS with the old count.
+# (c) THE ORACLE'S CONTROL COUNTED RUNS THAT READ EVERY ROW, comparing each with itself: it said ON under the one-call
+#     recipe, which has no later load, and would have said ON through section 11(c)'s first cut. It counts narrowed
+#     runs compared with a full one, and its row makes a later load of its own that must be narrowed: with a seal
+#     of a whole load made to hold nothing and the switch set, the row FAILS — asked for, nothing to compare.
+# (d) and smaller: the oracle's report printed "(none)" twice for a difference in multiplicity (a multiset now); a
+#     run's count of open goals read 0 from a count that was gone (it is asserted, and dropped on unwind); four rows
+#     discarded their load's verdict (each pins it: three load, the alias row is the tie it should be); the trigger
+#     reads the three relations through their one decoder; a reason is rendered where it is printed.
+#
+# The back-outs of section 11(a), re-measured on this tree (17 rows and the unit row): the same, with the held rows
+# skipped whatever was asserted since now failing 8 — the type-parameter row with the seven.
+#
+# THE TREE AS DELIVERED (12:55 – 14:12, one run after another, nothing else building):
+#   scripts/test.sh
+#   ANTHILL_PROVISION_ORACLE=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#   ANTHILL_PROVISION_ORACLE=1 ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                               exit   result lines   passed   failed   ignored   the run        `wi_tests`   OBSERVED by the controls
+#   the gate (shared base)      0      36, all ok     9 115    0        14        15 min 00 s    136.55 s     SHARED BASE; oracle off
+#   the oracle, shared base     0      13, all ok     8 217    0         6         9 min 30 s    184.43 s     SHARED BASE; oracle ON, 1 narrowed run compared
+#   anthill-core, one shot      0      13, all ok     8 217    0         6        13 min 39 s    745.14 s     one shot;    oracle off
+#   anthill-core, two steps     0      13, all ok     8 217    0         6        16 min 52 s    928.33 s     TWO-STEP;    oracle off
+#   the oracle, two steps       0      13, all ok     8 217    0         6        17 min 06 s    916.86 s     TWO-STEP;    oracle ON, 1 narrowed run compared
+#
+# `CPU_Speed_Limit` 100 at both ends of the first two, then 66, 57 and 62 at the ends of the others: a desk in use,
+# and a machine that had been running suites for four hours. `wi_tests` is 136.55 s in this gate where it was
+# 122.83 s in section 13's. That is the machine and not the tree — a traced run straight after (14:09 – 14:12,
+# 8 217 passed, 0 failed; the limit 100 before it and 62 after) has every phase of a load on the base a tenth
+# slower than section 12's and in the same shares:
+#                                                   section 12                 the tree as delivered
+#   a load on the base, as one of twelve pays it    102.3 ms                   112.8 ms
+#       check_provider_requires                     5.3 %  (5.5 ms)            5.2 %  (5.9 ms)
+#       register_specialization_witnesses           24.9 % (25.5 ms)           25.5 % (28.7 ms)
+#       type_check_sorts                            22.3 % (22.8 ms)           22.2 % (25.1 ms)
+#       check_override_refinement                   10.3 % (10.5 ms)           10.2 % (11.5 ms)
+#   runs of the check                               10 939                     10 946
+#       narrowed                                    9 727  (4.4 rows a run)    9 729  (4.4 rows a run)
+#       every row, no seal holding provisions       663                        666
+#       every row, something reaches a held verdict 549                        551: 449 no binding of its own, 91 an earlier
+#                                                                              provider, 7 a condition, 2 a `requires`,
+#                                                                              2 a type parameter (the fixture's)
+# The one load of section 12 that read every row for "a provision asserted since that is no fact" is narrowed now:
+# what the relations' decoder does not read, no reader of them does.

@@ -561,6 +561,9 @@ pub struct SymbolTable {
     /// WI-20261010-ANK4X — how many times the canonical image of an EXISTING symbol has
     /// moved: see [`Self::canonical_moves`].
     canonical_moves: u64,
+    /// WI-20261011-A3NND — the owner of each type parameter registered, in the order
+    /// they were ([`Self::add_type_param`]): see [`Self::type_param_owners_since`].
+    type_param_log: Vec<ScopeId>,
     /// All per-scope data, keyed by the scope's owning symbol.
     scopes: HashMap<ScopeId, Scope>,
     /// WI-369: symbols declared `internal` — hidden from cross-scope resolution
@@ -875,6 +878,10 @@ impl SymbolTable {
             // computed at count N and restored with a layer's snapshot is compared with a
             // count that has only grown, so it can be found behind and never ahead.
             canonical_moves: _,
+            // MONOTONE — a LOG of registrations, never taken back: a reader that kept
+            // its length sees, after a layer's discard, an owner that no longer has the
+            // parameter, and reads more for it, never less.
+            type_param_log: _,
             scopes,
             internal_syms,
             import_origin,
@@ -964,6 +971,7 @@ impl SymbolTable {
             intern_map: HashMap::new(),
             by_qualified_name: HashMap::new(),
             canonical_moves: 0,
+            type_param_log: Vec::new(),
             scopes: HashMap::new(),
             internal_syms: HashSet::new(),
             import_origin: HashMap::new(),
@@ -999,6 +1007,7 @@ impl SymbolTable {
             intern_map,
             by_qualified_name,
             canonical_moves,
+            type_param_log,
             scopes,
             internal_syms,
             import_origin,
@@ -1023,6 +1032,7 @@ impl SymbolTable {
             // The copy's names are these, so what was keyed by them in the original is
             // keyed right in the copy: the same count.
             canonical_moves: plain(canonical_moves),
+            type_param_log: plain(type_param_log),
             scopes: plain(scopes),
             internal_syms: plain(internal_syms),
             import_origin: plain(import_origin),
@@ -1309,7 +1319,22 @@ impl SymbolTable {
         let data = self.scopes.entry(scope).or_default();
         if data.type_params.insert(name.to_owned()) {
             data.type_params_ordered.push(sym);
+            self.type_param_log.push(scope);
         }
+    }
+
+    /// WI-20261011-A3NND — how many type parameters have been registered, ever; and the
+    /// owners of those registered since there were `registered` of them. For a reader
+    /// that holds something a sort's parameters decide — whether a `requires` naming it
+    /// asks for a dictionary — and must know which sorts gained one since it looked.
+    /// Asked of the table and not of symbol numbers: a parameter's symbol may have been
+    /// interned long before the declaration that makes it one.
+    pub(crate) fn type_param_registrations(&self) -> usize {
+        self.type_param_log.len()
+    }
+
+    pub(crate) fn type_param_owners_since(&self, registered: usize) -> &[ScopeId] {
+        self.type_param_log.get(registered..).unwrap_or(&[])
     }
 
     /// The symbols of the type parameters `scope` declares, in declaration order.

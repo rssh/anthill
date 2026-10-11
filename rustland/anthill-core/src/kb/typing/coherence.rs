@@ -427,7 +427,59 @@ fn clause_of(kb: &KnowledgeBase, clause: &ClauseScope) -> crate::kb::load::Provi
 /// The `EffectsRuntime` kind-anchor (synthesized from `effects E = ?`) is
 /// skipped: it is satisfied structurally by the effect-row machinery, never
 /// by a carrier `fact`.
-pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
+///
+/// WI-20261011-A3NND — WHICH PROVISIONS: the ones no seal holds as checked, or all of
+/// them — `checked_provisions` (its module doc) decides, and says what holds the
+/// narrowed run to the full one. A row asserted BELOW this call in a load is that
+/// load's [`check_provider_requires_since`].
+pub fn check_provider_requires(kb: &mut KnowledgeBase) -> ProvisionCheck {
+    let rows = rows_a_run_reads(kb);
+    let check = check_provisions_from(kb, rows.first_slot, rows.why);
+    count_rows_checked(check.rows_read);
+    // A run that read every row has nothing to be compared with, and is not counted as
+    // one the oracle judged.
+    if rows.first_slot > 0 && provision_oracle_on() {
+        // After the narrowed run has ended, and aside: it counts no row.
+        let every = check_provisions_from(kb, 0, rows.why);
+        provision_oracle_verdict(kb, &rows, &check.errors, &every.errors);
+    }
+    check
+}
+
+/// [`check_provider_requires`] for the provisions asserted since the KB held
+/// `first_slot` clauses — the rows a pass BELOW that check derived, which no run of it
+/// in this load has read. `eq_derive::run` is such a pass: MEASURED, the eight `NonEq`
+/// provisions it derives for the standard library's composites that reach a `Float`
+/// were first checked by whichever load came NEXT, and by none when no load did.
+pub(crate) fn check_provider_requires_since(kb: &mut KnowledgeBase, first_slot: usize) -> ProvisionCheck {
+    let check = check_provisions_from(kb, first_slot, WhyTheseRows::DerivedBelowTheCheck);
+    count_rows_checked(check.rows_read);
+    check
+}
+
+fn check_provisions_from(
+    kb: &mut KnowledgeBase,
+    first_slot: usize,
+    why: WhyTheseRows,
+) -> ProvisionCheck {
+    let open = OpenGoalCount::begin();
+    let (errors, rows_read) = provision_requirement_errors(kb, first_slot);
+    let open_goals = open.end();
+    ProvisionCheck {
+        held: errors.is_empty() && open_goals == 0,
+        errors,
+        rows_read,
+        open_goals,
+        first_slot,
+        why,
+    }
+}
+
+/// The check proper, over the provision rows in a rule slot at or above `first_slot`.
+fn provision_requirement_errors(
+    kb: &mut KnowledgeBase,
+    first_slot: usize,
+) -> (Vec<crate::kb::load::LoadError>, usize) {
     use crate::kb::load::LoadError;
     let effects_runtime = effects_runtime_sym(kb);
 
@@ -453,7 +505,9 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         rid: crate::kb::RuleId,
     }
     let mut provisions: Vec<Provision> = Vec::new();
-    for row in provides_rows(kb) {
+    let rows: Vec<ProvidesRow> = provides_rows_from(kb, first_slot).collect();
+    let rows_read = rows.len();
+    for row in rows {
         let spec_base = row.spec_base;
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, Value); 2]> = SmallVec::new();
@@ -628,7 +682,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
             }
         }
     }
-    errors
+    (errors, rows_read)
 }
 
 /// WI-1033 — the condition a `ProvisionConditionsTooWeak` names, when the failure is one:

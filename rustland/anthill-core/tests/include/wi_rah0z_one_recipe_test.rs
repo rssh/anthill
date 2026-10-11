@@ -273,6 +273,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         "a derivation pass reads provisions it asserted a pass before: on the shared base \
          and under both recipes by name, which differ in where the passes assert",
     ),
+    (
+        "include/wi_a3nnd_checked_provisions_test.rs",
+        5,
+        "which provisions a LATER load's check reads: after a library sealed whole, after \
+         one nothing sealed, and in one call, each by name — the count differs by which",
+    ),
 ];
 
 /// This file, skipped because it carries the recognised spellings as STRING LITERALS.

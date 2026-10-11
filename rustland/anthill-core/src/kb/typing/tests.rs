@@ -5615,8 +5615,10 @@ end
     /// `direct_requires` reads TWO relations (WI-1110), the memoized `requires_tree` is
     /// keyed per sort, and a load onto a KB whose chains are already warm — which is every
     /// load after a `load_all`, since `check_provider_requires` builds a chain for every
-    /// provider — would otherwise serve the pre-load memo for a sort whose requirements the
-    /// loaded file just changed.
+    /// provider it reads, which in the load that brought them is every one (behind a
+    /// seal a later load's check reads the ones asserted since: WI-20261011-A3NND) — would
+    /// otherwise serve the pre-load memo for a sort whose requirements the loaded file
+    /// just changed.
     ///
     /// The file writes the reflect fact DIRECTLY, which is the shape that lets a second
     /// file change a first file's chain at all (a `requires` clause can only be written
