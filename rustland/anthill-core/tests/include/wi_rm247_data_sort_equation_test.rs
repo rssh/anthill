@@ -49,6 +49,28 @@
 //!     a_law_on_a_spec_that_is_its_own_carrier_still_waits
 //!   The last two are the fence on the other side, measured with the test widened to
 //!   every parametric sort: both FAIL, each loading clean with its law fired.
+//!
+//! A CONSTRUCTOR ON THE RIGHT-HAND SIDE — found while delivering the above, and the plain
+//! sort's as much as the parametric one's. `rule wrap(?v) <=> mk(?v) @[simp]` leaves the
+//! constructor's application where the call stood. A rule's text carries that as an
+//! application node; the typer checks it as the construction it is, and eval had no
+//! reading for it: the program loaded clean and died `unknown operation: …Box.mk`.
+//!
+//!   CONTROLS — measured with eval's constructor arm backed out. FAIL, each loading clean
+//!   and dying `UnknownOperation` on the constructor:
+//!     a_constructor_on_the_right_hand_side_constructs
+//!     a_constructor_written_with_its_field_name_constructs
+//!     a_plain_sorts_constructor_constructs_too
+//!     a_constructor_under_a_constructor_constructs
+//!     a_free_standing_entity_constructs
+//!   PASS either way, by design: a_constructor_with_no_field_is_its_value — a name, not
+//!   an application.
+//!
+//!   NOT COVERED, both measured with the arm in place. A constructor that shares its
+//!   sort's name (`sort E { entity E(n: Int64) }`, `<=> E(n: ?v)`) is refused at load,
+//!   read as `E` applied to type arguments. A tuple written on the right-hand side (`<=>
+//!   (?a, ?a)`) loads clean and dies in eval, `unhandled Expr variant`: it arrives as the
+//!   tuple node of a rule's text, which is another node eval has no reading for.
 
 use anthill_core::eval::Value;
 
@@ -318,6 +340,77 @@ fn a_host_backed_operation_runs() {
         .expect("the operation is declared");
     let answer = interp.call("test.rm247host.go", &[]);
     assert!(matches!(answer, Ok(Value::Int(9))), "{answer:?}");
+}
+
+// ── a constructor on the right-hand side ────────────────────────────────────
+
+/// The equation that builds a value of the sort: its right-hand side is the constructor
+/// applied, and the rewritten call constructs.
+#[test]
+fn a_constructor_on_the_right_hand_side_constructs() {
+    assert_runs(
+        &boxed(
+            "rm247ctor",
+            "    operation wrap(v: V) -> Box[V]\n    rule wrap(?v) <=> mk(?v) @[simp]",
+            "  operation go() -> Int64 = Box.peek(Box.wrap(4))",
+        ),
+        "test.rm247ctor.go",
+        4,
+    );
+}
+
+#[test]
+fn a_constructor_written_with_its_field_name_constructs() {
+    assert_runs(
+        &boxed(
+            "rm247field",
+            "    operation wrap(v: V) -> Box[V]\n    rule wrap(?v) <=> mk(v: ?v) @[simp]",
+            "  operation go() -> Int64 = Box.peek(Box.wrap(4))",
+        ),
+        "test.rm247field.go",
+        4,
+    );
+}
+
+/// No parameter, and the operation and its equation written outside the sort: the same
+/// death before, so it was never the parameter's.
+#[test]
+fn a_plain_sorts_constructor_constructs_too() {
+    assert_runs(
+        "namespace test.rm247plainctor\n  import anthill.prelude.Int64\n  sort Box\n    entity mk(v: Int64)\n    operation peek(b: Box) -> Int64 = b.v\n  end\n  operation wrap(v: Int64) -> Box\n  rule wrap(?v) <=> Box.mk(?v) @[simp]\n  operation go() -> Int64 = Box.peek(wrap(4))\nend\n",
+        "test.rm247plainctor.go",
+        4,
+    );
+}
+
+/// A constructor of the library's, and one under it.
+#[test]
+fn a_constructor_under_a_constructor_constructs() {
+    assert_runs(
+        "namespace test.rm247nested\n  import anthill.prelude.{Int64, Option}\n  import anthill.prelude.Option.{some, none}\n  sort Box\n    sort V = ?\n    entity mk(v: V)\n    operation peek(b: Box[V]) -> V = b.v\n    operation deep(v: V) -> Option[T = Box[V]]\n    rule deep(?v) <=> some(mk(?v)) @[simp]\n  end\n  operation unwrap(o: Option[T = Box[V = Int64]]) -> Int64 =\n    match o\n      case some(b) -> Box.peek(b)\n      case none() -> 0\n  operation go() -> Int64 = unwrap(Box.deep(4))\nend\n",
+        "test.rm247nested.go",
+        4,
+    );
+}
+
+#[test]
+fn a_free_standing_entity_constructs() {
+    assert_runs(
+        "namespace test.rm247free\n  import anthill.prelude.Int64\n  entity Rec(n: Int64)\n  operation mkrec(v: Int64) -> Rec\n  rule mkrec(?v) <=> Rec(n: ?v) @[simp]\n  operation nof(r: Rec) -> Int64 = r.n\n  operation go() -> Int64 = nof(mkrec(4))\nend\n",
+        "test.rm247free.go",
+        4,
+    );
+}
+
+/// A constructor with no field is a name on the right-hand side, not an application, and
+/// was read as the value it is before.
+#[test]
+fn a_constructor_with_no_field_is_its_value() {
+    assert_runs(
+        "namespace test.rm247nullary\n  import anthill.prelude.Int64\n  sort Col\n    entity red\n    entity green\n    operation pick(n: Int64) -> Col\n    rule pick(?n) <=> red @[simp]\n    operation code(c: Col) -> Int64 =\n      match c\n        case red() -> 1\n        case green() -> 2\n  end\n  operation go() -> Int64 = Col.code(Col.pick(4))\nend\n",
+        "test.rm247nullary.go",
+        1,
+    );
 }
 
 // ── a spec is still a spec ──────────────────────────────────────────────────

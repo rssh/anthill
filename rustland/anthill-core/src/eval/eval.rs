@@ -325,6 +325,20 @@ impl Interpreter {
                 if self.kb.cites_a_relation(*functor) {
                     return self.start_relation_apply(occ, *functor, pos_args, named_args);
                 }
+                // An ENTITY-CONSTRUCTOR-headed application is a CONSTRUCTION. A rule's
+                // text keeps a constructor applied to arguments as the structural
+                // `Apply` a clause matches (`materialize_from_handle`), and that is the
+                // node a fired `@[simp]` equation splices into an operation body:
+                // `rule wrap(?v) <=> mk(?v) @[simp]` leaves `mk(4)` where `wrap(4)`
+                // stood. The typer checks it as the construction it is
+                // (`check_apply_iter`'s `is_entity_constructor` arm) and this is that
+                // arm's eval twin, re-derived from the functor as the two arms above
+                // are: a constructor names no operation, so such a node could only ever
+                // have died in dispatch as `UnknownOperation` — and did, the program
+                // having loaded clean.
+                if self.kb.is_entity_constructor(*functor) {
+                    return self.start_constructor(*functor, pos_args, named_args);
+                }
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
                 // impl op; ConcreteApplyWithin similarly redirects (the
