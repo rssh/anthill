@@ -1469,6 +1469,30 @@ pub enum LoadError {
         /// dependent. Never assume 2.
         facts: usize,
     },
+    /// A `const` NAME IS DECLARED AT MOST ONCE PER SCOPE (kernel-language.md §5.9), the
+    /// rule [`Self::DuplicateOperationDeclaration`] is for an operation. Two `const`
+    /// declarations of one name in one scope reach ONE symbol, and a const keeps one
+    /// declared type and one value under it: the declarations merged, each part the
+    /// one written last — the type the second's, the value the last one that wrote
+    /// one — so a reference written against the first read the second. Measured,
+    /// `const K: Int64 = 1` then `const K: Int64 = 2` loaded clean and `K` read 2, and
+    /// a program that declared the standard library's `anthill.cli.help.NAME_COLUMN`
+    /// again loaded clean over the seal and every library body read the program's 99.
+    ///
+    /// The refusal does not undo the merge, as the operation's does not: the load is
+    /// refused, and a pass after this one may report the merged pair as well (`const
+    /// K: Int64 = 2` then `const K: String` — a mismatch between the second's type and
+    /// the first's value).
+    ///
+    /// Not located, and `sites` pre-rendered, for [`Self::DuplicateTypeDeclaration`]'s
+    /// reason: the declarations may sit in different files.
+    DuplicateConstDeclaration {
+        /// The const's QUALIFIED name, which names the scope and the name at once.
+        name: String,
+        /// One rendered location per written declaration — a sealed load's first, then
+        /// this load's in source order. Always at least two.
+        sites: Vec<String>,
+    },
     /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION. An operation is defined EITHER
     /// by a body OR by hand-written clauses, never by both: the two are two
     /// definitions of one name, and a rule's operation name is its label else its
@@ -3782,6 +3806,9 @@ impl LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 duplicate_operation_message(op, sites, *facts)
             }
+            LoadError::DuplicateConstDeclaration { name, sites } => {
+                duplicate_const_message(name, sites)
+            }
             LoadError::OperationBodyAndClauses {
                 op,
                 decl_site,
@@ -4217,6 +4244,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 write!(f, "{}", duplicate_operation_message(op, sites, *facts))
+            }
+            LoadError::DuplicateConstDeclaration { name, sites } => {
+                write!(f, "{}", duplicate_const_message(name, sites))
             }
             LoadError::OperationBodyAndClauses {
                 op,
@@ -8045,6 +8075,25 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
     )
 }
 
+/// The one sentence for a const declared twice, for [`duplicate_type_message`]'s
+/// reason (two render paths, one under test).
+fn duplicate_const_message(name: &str, sites: &[String]) -> String {
+    let rendered = sites
+        .iter()
+        .map(|at| format!("`const` at {at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "const '{name}' is declared more than once in its scope ({} declarations): \
+         {rendered} — a scope maps a name to one symbol, and a const keeps one declared \
+         type and one value under it, so the second `const` did not introduce a second \
+         constant: the declarations merged into one, and the type and the value it \
+         kept are whichever were written last. Rename one, or delete one. Same-named \
+         consts of DIFFERENT sorts are fine — those are distinct symbols.",
+        sites.len(),
+    )
+}
+
 /// WI-939 item 4 — THE ONE-DEFINITION SENTENCE, one owner, for
 /// [`duplicate_type_message`]'s reason (two render paths, only one under test).
 ///
@@ -8630,6 +8679,10 @@ pub struct SealedDeclarations {
     /// been typed once.
     typed_ops: HashSet<Symbol>,
     typed_sources: HashSet<SourceId>,
+    /// The sealed consts, by symbol, each with where it was declared — what a later
+    /// `const` of the same name in the same scope is a second declaration of
+    /// ([`check_duplicate_const_declarations`]).
+    consts: HashMap<Symbol, Vec<SourceSpan>>,
     /// WI-20261011-A3NND — the provisions later loads do not check again
     /// ([`CheckedProvisions`]), as of the last seal of a WHOLE load whose check held
     /// ([`LastLoad::provisions_checked`]). `None`: no such seal, every load checks every
@@ -8643,7 +8696,7 @@ impl SealedDeclarations {
     /// Nothing is sealed — a plain sequence of loads, `KB.loaded` over one, a KB built
     /// with no library — and what every reader checks first.
     pub(crate) fn is_empty(&self) -> bool {
-        self.types.is_empty() && self.ops.is_empty()
+        self.types.is_empty() && self.ops.is_empty() && self.consts.is_empty()
     }
 
     /// `op` was declared by a sealed load.
@@ -8758,6 +8811,15 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
                 if typed {
                     sealed.typed_ops.insert(*op);
                 }
+            }
+        }
+    }
+    // The consts, off the scan's own ledger of what was written.
+    for decl in &kb.decl_sites {
+        if decl.category == DeclCategory::Const && of_the_library(decl.site.source) {
+            let sites = sealed.consts.entry(decl.sym).or_default();
+            if !sites.contains(&decl.site) {
+                sites.push(decl.site);
             }
         }
     }
@@ -15494,6 +15556,8 @@ fn load_phase_inner(
     // written. Load-blocking: the read it corrupts is order-dependent and silent.
     all_errors.extend(check_duplicate_operation_declarations(kb));
     mark!("check_duplicate_operation_declarations");
+    all_errors.extend(check_duplicate_const_declarations(kb));
+    mark!("check_duplicate_const_declarations");
     // WI-20260904-B8ESG — a head ARGUMENT whose functor names nothing. HERE, with the
     // whole-KB checks, because the verdict needs every file loaded: `symbol_declares_nothing`
     // reads `rules_by_functor`, and a predicate defined purely by FACTS has no clauses
@@ -19785,9 +19849,10 @@ fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 ///     `Operation` alone.
 ///   * the same name on a DIFFERENT sort — distinct symbols, chosen by carrier
 ///     (§8.7's ladder, WI-1048). Keyed by symbol, so out of reach by construction.
-///   * `const`+`const`, `operation`+`const`, `entity`+`operation`. Same
-///     silent-merge family, each needing its own record and its own evidence;
-///     `const` has no `ConstInfo` to count. Not this pass's — see the ticket.
+///   * `operation`+`const`, `entity`+`operation`. Same silent-merge family, each
+///     needing its own decision and its own evidence. Not this pass's — see the
+///     ticket. (`const`+`const` is refused beside this, off the scan's ledger, a const
+///     having no `ConstInfo` to count: [`check_duplicate_const_declarations`].)
 ///
 /// Runs immediately after the per-file load loop: `load_operation` is the only
 /// site that logs a declaration (and the only producer of `OperationInfo` facts),
@@ -19822,6 +19887,48 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
             op: kb.qualified_name_of(op).to_string(),
             sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
             facts: fact_counts.get(&op).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
+/// A `const` NAME IS DECLARED AT MOST ONCE PER SCOPE — the const half of
+/// [`check_duplicate_operation_declarations`], and the same two cases: two `const`s of
+/// one name written in one load, and a `const` of a name a SEALED load declared.
+///
+/// THE INSTRUMENT is the scan's ledger of what was WRITTEN
+/// ([`KnowledgeBase::decl_sites`], one row per `const`, keyed by the symbol it landed
+/// on): the finished symbol says which name won and not that it was written twice,
+/// and a const has no per-declaration record to count as an operation has its
+/// `OperationInfo`. The ledger is this load's scan's, so a source presented again to
+/// a KB nothing sealed is one declaration of each const, as it is of each operation.
+///
+/// NOT REFUSED, and said: the same name on a different sort — distinct symbols; a
+/// bodyless const and the `const_map` entry that supplies it — a binding, not a
+/// declaration; and a const beside an `operation`, an `entity` or a `sort` of the same
+/// name in one scope, which load clean (measured) and are their own question.
+fn check_duplicate_const_declarations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // In the order written, the first site of each const deciding where it stands.
+    let mut written: Vec<(Symbol, Vec<SourceSpan>)> = Vec::new();
+    let mut slot_of: HashMap<Symbol, usize> = HashMap::new();
+    for decl in &kb.decl_sites {
+        if decl.category != DeclCategory::Const {
+            continue;
+        }
+        let slot = *slot_of.entry(decl.sym).or_insert_with(|| {
+            written.push((decl.sym, Vec::new()));
+            written.len() - 1
+        });
+        written[slot].1.push(decl.site);
+    }
+    written
+        .into_iter()
+        .filter_map(|(sym, here)| {
+            let sealed = kb.sealed.consts.get(&sym).map(Vec::as_slice).unwrap_or(&[]);
+            let sites: Vec<SourceSpan> = sealed.iter().chain(&here).copied().collect();
+            (sites.len() > 1).then(|| LoadError::DuplicateConstDeclaration {
+                name: kb.qualified_name_of(sym).to_string(),
+                sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+            })
         })
         .collect()
 }
@@ -28525,6 +28632,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_rule_ref(parse_id, &chain, results) {
                                     return;
                                 }
+                                if self.try_qualified_const_ref(parse_id, &chain, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -29055,11 +29165,46 @@ impl<'a> Loader<'a> {
         }
         // Emit the bare-unqualified rule-reference form + its leaf occurrence —
         // mirrors the `Term::Ident` arm of `visit_load` (via `load_var_ref`).
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// A CONST CITED BY A DOTTED NAME with no trailing `(…)` — `Sort.NAME`, `ns.NAME`,
+    /// `Float.infinity` — in an operation body or a const's value. It parses (§6.7) as a
+    /// `field_access` chain, as [`Self::try_qualified_rule_ref`]'s rule does, and when
+    /// the chain's segments spell a name that resolves to a const it is that const: the
+    /// same `var_ref(name: Ref(const))` the one-segment, imported spelling lowers to,
+    /// so the typer's and the evaluator's const arms serve both.
+    ///
+    /// It was left a chain, and the typer walked it: the sort typed as a type value and
+    /// the member as a bare name nothing declares — `infinity.name: expected resolved
+    /// name, got unresolved` — while the imported `infinity` and the same dotted name in
+    /// a clause's data slot ([`Self::data_slot_dotted_const`]) were the value.
+    ///
+    /// AFTER the local pass, so a binder named like the sort is the receiver it is, and
+    /// after the rule citation, whose position the ladder's comment argues. A chain that
+    /// continues past the const (`P.origin.x`) reaches this rung at its inner level, as
+    /// the receiver of the projection.
+    fn try_qualified_const_ref(
+        &mut self,
+        parse_id: TermId,
+        name: &str,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = const_named(self.kb, name, self.current_scope) else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// The reference to `sym` a one-segment name lowers to (`load_var_ref`), with its
+    /// leaf occurrence, standing for the whole node at `parse_id`.
+    fn push_name_ref(&mut self, parse_id: TermId, sym: Symbol, results: &mut Vec<TermId>) {
         let kb_id = self.mk_var_ref(sym);
         self.create_occurrence(parse_id, kb_id);
         results.push(kb_id);
         self.push_leaf_occ(parse_id, kb_id);
-        true
     }
 
     /// The call `functor()` at the receiver `recv_type`, as the op-body walk's

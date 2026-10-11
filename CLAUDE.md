@@ -108,7 +108,7 @@ anthill-todo and a generated bundle hand the loader the stdlib with its host bin
 FIRST, seal that load, and load the program's files in a second `load_all`. What a
 program is held to by it: it may not supply the equality of a composite the stdlib
 defines (`List`, `Option`, …) — it wraps the value in a sort of its own; it may not
-declare a stdlib operation or type again; and it may not reach into a stdlib body, with
+declare a stdlib operation, const or type again; and it may not reach into a stdlib body, with
 a `@[simp]` rule that rewrites one or a provision at stdlib types that changes who
 answers a dispatch there. `load_all` over everything in one call is still how the
 library's own files are loaded — `anthill … --no-stdlib <the library's directories>`.
