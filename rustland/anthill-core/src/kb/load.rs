@@ -1469,6 +1469,30 @@ pub enum LoadError {
         /// dependent. Never assume 2.
         facts: usize,
     },
+    /// A `const` NAME IS DECLARED AT MOST ONCE PER SCOPE (kernel-language.md §5.9), the
+    /// rule [`Self::DuplicateOperationDeclaration`] is for an operation. Two `const`
+    /// declarations of one name in one scope reach ONE symbol, and a const keeps one
+    /// declared type and one value under it: the declarations merged, each part the
+    /// one written last — the type the second's, the value the last one that wrote
+    /// one — so a reference written against the first read the second. Measured,
+    /// `const K: Int64 = 1` then `const K: Int64 = 2` loaded clean and `K` read 2, and
+    /// a program that declared the standard library's `anthill.cli.help.NAME_COLUMN`
+    /// again loaded clean over the seal and every library body read the program's 99.
+    ///
+    /// The refusal does not undo the merge, as the operation's does not: the load is
+    /// refused, and a pass after this one may report the merged pair as well (`const
+    /// K: Int64 = 2` then `const K: String` — a mismatch between the second's type and
+    /// the first's value).
+    ///
+    /// Not located, and `sites` pre-rendered, for [`Self::DuplicateTypeDeclaration`]'s
+    /// reason: the declarations may sit in different files.
+    DuplicateConstDeclaration {
+        /// The const's QUALIFIED name, which names the scope and the name at once.
+        name: String,
+        /// One rendered location per written declaration — a sealed load's first, then
+        /// this load's in source order. Always at least two.
+        sites: Vec<String>,
+    },
     /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION. An operation is defined EITHER
     /// by a body OR by hand-written clauses, never by both: the two are two
     /// definitions of one name, and a rule's operation name is its label else its
@@ -3782,6 +3806,9 @@ impl LoadError {
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 duplicate_operation_message(op, sites, *facts)
             }
+            LoadError::DuplicateConstDeclaration { name, sites } => {
+                duplicate_const_message(name, sites)
+            }
             LoadError::OperationBodyAndClauses {
                 op,
                 decl_site,
@@ -4217,6 +4244,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::DuplicateOperationDeclaration { op, sites, facts } => {
                 write!(f, "{}", duplicate_operation_message(op, sites, *facts))
+            }
+            LoadError::DuplicateConstDeclaration { name, sites } => {
+                write!(f, "{}", duplicate_const_message(name, sites))
             }
             LoadError::OperationBodyAndClauses {
                 op,
@@ -7434,7 +7464,7 @@ fn field_access_dotted_name_of(
 ) -> Option<String> {
     // Segments BORROW from the parse tables (only the join allocates) — this runs on
     // every name-rooted dotted path in every op body, and WI-749 added a second caller
-    // per node (`field_access_names_rule_prefix` on the receiver).
+    // per node (`Loader::name_has_value_prefix` on the receiver).
     let mut segments: Vec<&str> = Vec::new();
     let mut cur = parse_id;
     loop {
@@ -8045,6 +8075,25 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
     )
 }
 
+/// The one sentence for a const declared twice, for [`duplicate_type_message`]'s
+/// reason (two render paths, one under test).
+fn duplicate_const_message(name: &str, sites: &[String]) -> String {
+    let rendered = sites
+        .iter()
+        .map(|at| format!("`const` at {at}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "const '{name}' is declared more than once in its scope ({} declarations): \
+         {rendered} — a scope maps a name to one symbol, and a const keeps one declared \
+         type and one value under it, so the second `const` did not introduce a second \
+         constant: the declarations merged into one, and the type and the value it \
+         kept are whichever were written last. Rename one, or delete one. Same-named \
+         consts of DIFFERENT sorts are fine — those are distinct symbols.",
+        sites.len(),
+    )
+}
+
 /// WI-939 item 4 — THE ONE-DEFINITION SENTENCE, one owner, for
 /// [`duplicate_type_message`]'s reason (two render paths, only one under test).
 ///
@@ -8602,7 +8651,8 @@ pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan
 /// body — ran over the whole KB at each later load: 99 ms and 11 ms of a 267 ms load
 /// of a four-line file after the standard library, typing the library again. Behind a
 /// seal they skip what the seal holds ([`Self::holds_typed_operation`],
-/// [`Self::holds_typed_source`]),
+/// [`Self::holds_typed_source`]) — and so does the sweep over the constants' values, a
+/// const's being read off the source its value was written in —
 /// and what a later load could have changed in a sealed body is refused instead
 /// ([`super::typing::sealed_code_refusals`]). Nothing sealed, nothing skipped: a plain
 /// sequence of loads types every body at every load, as it did.
@@ -8629,6 +8679,10 @@ pub struct SealedDeclarations {
     /// been typed once.
     typed_ops: HashSet<Symbol>,
     typed_sources: HashSet<SourceId>,
+    /// The sealed consts, by symbol, each with where it was declared — what a later
+    /// `const` of the same name in the same scope is a second declaration of
+    /// ([`check_duplicate_const_declarations`]).
+    consts: HashMap<Symbol, Vec<SourceSpan>>,
     /// WI-20261011-A3NND — the provisions later loads do not check again
     /// ([`CheckedProvisions`]), as of the last seal of a WHOLE load whose check held
     /// ([`LastLoad::provisions_checked`]). `None`: no such seal, every load checks every
@@ -8642,7 +8696,7 @@ impl SealedDeclarations {
     /// Nothing is sealed — a plain sequence of loads, `KB.loaded` over one, a KB built
     /// with no library — and what every reader checks first.
     pub(crate) fn is_empty(&self) -> bool {
-        self.types.is_empty() && self.ops.is_empty()
+        self.types.is_empty() && self.ops.is_empty() && self.consts.is_empty()
     }
 
     /// `op` was declared by a sealed load.
@@ -8757,6 +8811,15 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
                 if typed {
                     sealed.typed_ops.insert(*op);
                 }
+            }
+        }
+    }
+    // The consts, off the scan's own ledger of what was written.
+    for decl in &kb.decl_sites {
+        if decl.category == DeclCategory::Const && of_the_library(decl.site.source) {
+            let sites = sealed.consts.entry(decl.sym).or_default();
+            if !sites.contains(&decl.site) {
+                sites.push(decl.site);
             }
         }
     }
@@ -14973,7 +15036,20 @@ fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// operation's `OperationInfo` effect row is present. Bodyless (host-supplied)
 /// consts have no body to check and are trusted. Returns one `LoadError` per
 /// impure const.
-fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
+///
+/// IT JUDGES THE VALUE AS TYPED, which is what is folded (kernel-language.md §5.9):
+/// the typer has stored it (`typing::check_constant_bodies`), so a dot call is the call
+/// it dispatched to and is judged by that operation's effect row, and the text a
+/// `@[simp]` equation put in the place of a call is judged as if it were written
+/// there. A value the typer refused is still as written, and a dot in it is refused
+/// here as the unknown callee it is — unless the load is `already_refused`. The typer
+/// dispatches the dots of a value it accepts, so a dot still standing in a value this
+/// load typed is in a value the typer refused and said why, and "its purity cannot be
+/// verified, use an operation" beside that advises a repair the value does not need;
+/// the load is refused either way. With nothing else told, the dot is refused here: it
+/// stands in a value no typer run of this load refused, and this is the last thing
+/// between it and the evaluator.
+fn check_const_purity(kb: &KnowledgeBase, already_refused: bool) -> Vec<LoadError> {
     // Snapshot (sym, body) so the walk can re-borrow `kb` for effect lookups.
     let consts: Vec<(Symbol, std::rc::Rc<NodeOccurrence>)> = kb
         .const_bodies_iter()
@@ -14981,7 +15057,15 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
         .collect();
     let mut errors = Vec::new();
     for (sym, body) in &consts {
-        if let Err(reason) = const_node_is_pure(kb, body) {
+        if let Err(impurity) = const_node_is_pure(kb, body) {
+            let reason = match impurity {
+                ConstImpurity::StandingDot if already_refused => continue,
+                ConstImpurity::StandingDot => format!(
+                    "uses a form whose purity cannot be statically verified ({})",
+                    STANDING_DOT_FORM,
+                ),
+                ConstImpurity::Because(reason) => reason,
+            };
             errors.push(LoadError::Other {
                 message: format!(
                     "const `{}` has a non-foldable body — it {reason}. A const denotes a single \
@@ -15068,12 +15152,14 @@ fn check_macro_purity(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 
 /// Recursively verify a const body occurrence is pure. CONSERVATIVE by
 /// construction: only forms whose purity is statically provable are accepted;
-/// any unrecognized or dynamically-dispatched form (higher-order / dot calls,
-/// generic instantiation, the post-elaboration `*Within` forms a raw const body
-/// never contains) is REJECTED — so the gate can never silently admit an effect.
-/// Returns `Err(reason)` for the first offending form (reason is a fragment that
-/// reads after "it …", e.g. "calls effectful operation `Cell.new`").
-fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> Result<(), String> {
+/// any unrecognized or dynamically-dispatched form (a higher-order call, a dot
+/// call the typer did not dispatch, generic instantiation, the `*Within` forms no
+/// const's value holds) is REJECTED — so the gate can never silently admit an effect.
+/// Returns `Err` for the first offending form.
+fn const_node_is_pure(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<NodeOccurrence>,
+) -> Result<(), ConstImpurity> {
     // Only Expr-kind occurrences compute; Pattern / Type carry no effects.
     let expr = match &occ.kind {
         node_occurrence::NodeKind::Expr { expr, .. } => expr,
@@ -15081,12 +15167,16 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
     };
     match expr {
         // Pure leaves. (`Bottom`/`Var` won't fold to a value, but neither is an
-        // effect — a non-reducing body fails the fold separately.)
-        Expr::Const(_) | Expr::Var(_) | Expr::Bottom => Ok(()),
+        // effect — a non-reducing body fails the fold separately.) `Spliced` is a
+        // value a compile-time macro put where its call stood, and evaluates to
+        // itself: a typed value holds one where the written one held the call.
+        Expr::Const(_) | Expr::Var(_) | Expr::Bottom | Expr::Spliced(_) => Ok(()),
         // A bare reference: a nullary OPERATION reference is a zero-arg call (so
         // an effectful one is impure); a multi-arg op ref is eta (a pure closure
         // value); a const / constructor / param ref is pure.
-        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => const_ref_is_pure(kb, *s),
+        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => {
+            const_ref_is_pure(kb, *s).map_err(ConstImpurity::Because)
+        }
         // A lambda is a pure VALUE — folding yields a closure; its body's effects
         // (if any) are deferred to application, not performed at fold.
         Expr::Lambda { .. } => Ok(()),
@@ -15154,7 +15244,7 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
             named_args,
             ..
         } => {
-            const_callee_is_pure(kb, *functor)?;
+            const_callee_is_pure(kb, *functor).map_err(ConstImpurity::Because)?;
             for c in pos_args {
                 const_node_is_pure(kb, c)?;
             }
@@ -15172,13 +15262,15 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
             }
             const_node_is_pure(kb, body)
         }
-        // Everything else — higher-order / dot dispatch, generic instantiation,
-        // and the post-elaboration `*Within` / requirement forms (which a raw,
-        // un-elaborated const body never contains) — cannot be proven pure here.
-        other => Err(format!(
+        // A dot the typer left standing: its callee is not known here.
+        Expr::DotApply { .. } => Err(ConstImpurity::StandingDot),
+        // Everything else — a higher-order call, generic instantiation, and the
+        // `*Within` / requirement forms (which no const's value holds) — cannot be
+        // proven pure here.
+        other => Err(ConstImpurity::Because(format!(
             "uses a form whose purity cannot be statically verified ({})",
             const_expr_form_name(other),
-        )),
+        ))),
     }
 }
 
@@ -15214,11 +15306,23 @@ fn const_ref_is_pure(kb: &KnowledgeBase, sym: Symbol) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a const's value is not provably pure.
+enum ConstImpurity {
+    /// A dot call the typer did not dispatch ([`check_const_purity`] says when that is
+    /// told here and when it is the typer's to tell).
+    StandingDot,
+    /// The reason, as a fragment that reads after "it …" — "calls effectful operation
+    /// `Cell.new`".
+    Because(String),
+}
+
+/// How the gate names a standing dot.
+const STANDING_DOT_FORM: &str = "method/dot call";
+
 /// Human-readable name for an `Expr` form rejected by the purity gate.
 fn const_expr_form_name(e: &Expr) -> &'static str {
     match e {
         Expr::HoApply { .. } | Expr::HoApplyWithin { .. } => "higher-order application",
-        Expr::DotApply { .. } => "method/dot call",
         Expr::Instantiation { .. } => "generic instantiation",
         Expr::ApplyWithin { .. } => "apply-within",
         Expr::ConstructorWithin { .. } => "constructor-within",
@@ -15452,6 +15556,8 @@ fn load_phase_inner(
     // written. Load-blocking: the read it corrupts is order-dependent and silent.
     all_errors.extend(check_duplicate_operation_declarations(kb));
     mark!("check_duplicate_operation_declarations");
+    all_errors.extend(check_duplicate_const_declarations(kb));
+    mark!("check_duplicate_const_declarations");
     // WI-20260904-B8ESG — a head ARGUMENT whose functor names nothing. HERE, with the
     // whole-KB checks, because the verdict needs every file loaded: `symbol_declares_nothing`
     // reads `rules_by_functor`, and a predicate defined purely by FACTS has no clauses
@@ -15987,7 +16093,8 @@ fn load_phase_inner(
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so
     // every effect row is queryable.
-    all_errors.extend(check_const_purity(kb));
+    let already_refused = !all_errors.is_empty();
+    all_errors.extend(check_const_purity(kb, already_refused));
     mark!("check_const_purity");
     // WI-722 (043.1 §6): the macro purity gate. An occurrence→occurrence op is
     // evaluated at compile time by the @[simp] engine, so it must have a pure (at
@@ -19778,9 +19885,10 @@ fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 ///     `Operation` alone.
 ///   * the same name on a DIFFERENT sort — distinct symbols, chosen by carrier
 ///     (§8.7's ladder, WI-1048). Keyed by symbol, so out of reach by construction.
-///   * `const`+`const`, `operation`+`const`, `entity`+`operation`. Same
-///     silent-merge family, each needing its own record and its own evidence;
-///     `const` has no `ConstInfo` to count. Not this pass's — see the ticket.
+///   * `operation`+`const`, `entity`+`operation`. Same silent-merge family, each
+///     needing its own decision and its own evidence. Not this pass's — see the
+///     ticket. (`const`+`const` is refused beside this, off the scan's ledger, a const
+///     having no `ConstInfo` to count: [`check_duplicate_const_declarations`].)
 ///
 /// Runs immediately after the per-file load loop: `load_operation` is the only
 /// site that logs a declaration (and the only producer of `OperationInfo` facts),
@@ -19815,6 +19923,48 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
             op: kb.qualified_name_of(op).to_string(),
             sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
             facts: fact_counts.get(&op).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
+/// A `const` NAME IS DECLARED AT MOST ONCE PER SCOPE — the const half of
+/// [`check_duplicate_operation_declarations`], and the same two cases: two `const`s of
+/// one name written in one load, and a `const` of a name a SEALED load declared.
+///
+/// THE INSTRUMENT is the scan's ledger of what was WRITTEN
+/// ([`KnowledgeBase::decl_sites`], one row per `const`, keyed by the symbol it landed
+/// on): the finished symbol says which name won and not that it was written twice,
+/// and a const has no per-declaration record to count as an operation has its
+/// `OperationInfo`. The ledger is this load's scan's, so a source presented again to
+/// a KB nothing sealed is one declaration of each const, as it is of each operation.
+///
+/// NOT REFUSED, and said: the same name on a different sort — distinct symbols; a
+/// bodyless const and the `const_map` entry that supplies it — a binding, not a
+/// declaration; and a const beside an `operation`, an `entity` or a `sort` of the same
+/// name in one scope, which load clean (measured) and are their own question.
+fn check_duplicate_const_declarations(kb: &KnowledgeBase) -> Vec<LoadError> {
+    // In the order written, the first site of each const deciding where it stands.
+    let mut written: Vec<(Symbol, Vec<SourceSpan>)> = Vec::new();
+    let mut slot_of: HashMap<Symbol, usize> = HashMap::new();
+    for decl in &kb.decl_sites {
+        if decl.category != DeclCategory::Const {
+            continue;
+        }
+        let slot = *slot_of.entry(decl.sym).or_insert_with(|| {
+            written.push((decl.sym, Vec::new()));
+            written.len() - 1
+        });
+        written[slot].1.push(decl.site);
+    }
+    written
+        .into_iter()
+        .filter_map(|(sym, here)| {
+            let sealed = kb.sealed.consts.get(&sym).map(Vec::as_slice).unwrap_or(&[]);
+            let sites: Vec<SourceSpan> = sealed.iter().chain(&here).copied().collect();
+            (sites.len() > 1).then(|| LoadError::DuplicateConstDeclaration {
+                name: kb.qualified_name_of(sym).to_string(),
+                sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+            })
         })
         .collect()
 }
@@ -23037,14 +23187,15 @@ enum DotFieldPass<'n> {
     /// local root must beat even a whole-chain rule citation.
     LocalRoot,
     /// WI-749: some PREFIX of the receiver's dotted name resolves to a rule, whose
-    /// reference IS the `Relation[T]` value. Runs LAST, so the more specific
-    /// whole-chain citation gets first refusal.
+    /// reference IS the `Relation[T]` value — or to a const, which is its value
+    /// ([`Loader::value_prefix_split`]). Runs LAST, so the more specific whole-chain
+    /// citation gets first refusal.
     ///
     /// Carries the receiver's dotted NAME rather than re-deriving it: it is a borrowed
     /// slice of the chain name `visit_load` already built for the citation pass (the
     /// receiver is that name minus its last segment), so the prefix scan costs no walk
     /// and no allocation of its own.
-    RulePrefix(&'n str),
+    ValuePrefix(&'n str),
 }
 
 /// WI-582 / WI-20260908-PW9A0 — a type variable a rule head INTRODUCED (`g[A](…)`), as
@@ -24987,7 +25138,7 @@ impl<'a> Loader<'a> {
                 // BEFORE the dot ladders get to decompose it, so refusing at this
                 // position broke the applied rule-reference citation
                 // `..myroot.inner.rel.takeN(1)` — whose prefix `..myroot.inner.rel`
-                // resolves perfectly once `rule_prefix_split` peels the member off.
+                // resolves perfectly once `value_prefix_split` peels the member off.
                 // "Resolves to nothing AS WRITTEN" is not "resolves to nothing"; the
                 // refusal belongs where a bare intern is the FINAL answer, which for
                 // the shapes the marker adds is `scan_rule_goal` (a rule head) and
@@ -28572,7 +28723,13 @@ impl<'a> Loader<'a> {
                             // the same String rather than a second walk of the same
                             // chain re-allocating a strict prefix of it.
                             if let Some(chain) = self.field_access_dotted_name(parse_id) {
-                                if self.try_qualified_rule_ref(parse_id, &chain, results) {
+                                // The whole name, resolved ONCE for the two rungs
+                                // that read it: the rule's, then the const's.
+                                let whole = self.resolve_qualified_readonly(&chain);
+                                if self.try_qualified_rule_ref(parse_id, &chain, whole, results) {
+                                    return;
+                                }
+                                if self.try_qualified_const_ref(parse_id, whole, results) {
                                     return;
                                 }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
@@ -28580,7 +28737,7 @@ impl<'a> Loader<'a> {
                                         parse_id,
                                         &pos_args,
                                         work,
-                                        DotFieldPass::RulePrefix(receiver),
+                                        DotFieldPass::ValuePrefix(receiver),
                                     ) {
                                         return;
                                     }
@@ -28810,6 +28967,10 @@ impl<'a> Loader<'a> {
     /// Within rung 3 prefixes are probed LONGEST-FIRST for the same "most specific
     /// wins" reason: with rules `a` AND `a.b`, the receiver `a.b` is the relation
     /// labelled `a.b`, not member `b` of relation `a`.
+    ///
+    /// A CONST is rung 3's other value ([`Self::value_prefix_split`]): `origin.getX()`
+    /// and `Q.origin.getX()` over `const origin: P` are calls on that value, as
+    /// `origin.x` is a read of it on the field path.
     fn dot_call_receiver_chain<'n>(
         &self,
         receiver_name: &'n str,
@@ -28846,12 +29007,13 @@ impl<'a> Loader<'a> {
         if let Some(local) = self.dot_receiver_binder(root) {
             return Some((local, trailing));
         }
-        // 3. The longest rule PREFIX, the receiver's remaining segments trailing it.
-        self.rule_prefix_split(receiver_name)
+        // 3. The longest VALUE prefix — a rule or a const — the receiver's remaining
+        // segments trailing it.
+        self.value_prefix_split(receiver_name)
     }
 
     /// Does this dotted name resolve to a symbol AS WRITTEN — the read-only, kind-blind
-    /// sibling of [`Self::resolve_qualified_rule_readonly`], reading the same
+    /// sibling of [`Self::resolve_qualified_readonly`], reading the same
     /// `resolve_in_scope`-then-[`resolve_dotted_in_kb`] ladder so the two cannot disagree
     /// about what "resolves" means.
     ///
@@ -28886,22 +29048,32 @@ impl<'a> Loader<'a> {
             .denotes()
     }
 
-    /// The LONGEST prefix of a dotted name that resolves to a RULE, paired with the
-    /// segments trailing it (empty when the whole name is the rule). Longest-first is
-    /// "most specific citation wins" — with rules `a` and `a.b` in scope, `a.b` is the
-    /// relation labelled `a.b`, not member `b` of relation `a`.
+    /// The LONGEST prefix of a dotted name that names a VALUE BY ITSELF, paired with the
+    /// segments trailing it (empty when the whole name is that value): a RULE, whose
+    /// reference is the `Relation[T]`, or a CONST, which is its value (§5.9, "a name that
+    /// is a value at every term position"). Longest-first is "most specific citation
+    /// wins" — with rules `a` and `a.b` in scope, `a.b` is the relation labelled `a.b`,
+    /// not member `b` of relation `a`.
     ///
-    /// [`Self::name_has_rule_prefix`] is this predicate's existence half; both are
+    /// A CONST IS A RECEIVER AS A LOCAL IS. It was not: `origin.x` and `origin.getX()`
+    /// over `const origin: P` were refused in every spelling — the field read walked as
+    /// a name path, `x.name: expected resolved name, got unresolved`, the call flattened
+    /// to the functor `origin.getX`, which nothing declares — while `P.getX(origin)` ran.
+    /// A prefix resolves to ONE symbol, so it is the rule or the const it names and
+    /// never a choice between them — the field ladder reads the whole chain the same
+    /// way ([`Self::try_qualified_rule_ref`], [`Self::try_qualified_const_ref`]).
+    ///
+    /// [`Self::name_has_value_prefix`] is this predicate's existence half; both are
     /// defined here so the field and call ladders cannot answer the same question two
     /// ways. Order does not affect the BOOLEAN, but it decides WHICH prefix a caller
     /// gets — so the shared scan runs longest-first and the boolean simply discards it.
-    fn rule_prefix_split<'n>(&self, name: &'n str) -> Option<(Symbol, &'n str)> {
+    fn value_prefix_split<'n>(&self, name: &'n str) -> Option<(Symbol, &'n str)> {
         let mut end = name.len();
         loop {
-            if let Some(rule) = self.resolve_qualified_rule_readonly(&name[..end]) {
+            if let Some(value) = self.resolve_qualified_value_readonly(&name[..end]) {
                 // `end` is either `name.len()` or the byte index of a `.`, so the split
                 // is always on a char boundary and the tail carries at most that one dot.
-                return Some((rule, name[end..].strip_prefix('.').unwrap_or("")));
+                return Some((value, name[end..].strip_prefix('.').unwrap_or("")));
             }
             match name[..end].rfind('.') {
                 Some(dot) => end = dot,
@@ -28941,7 +29113,7 @@ impl<'a> Loader<'a> {
     /// re-routes level by level (each inner `field_access` revisits this arm).
     ///
     /// `pass` selects WHICH way the receiver may lower to a value — a local root
-    /// (WI-280) or a rule-reference prefix (WI-749). The two are deliberately NOT one
+    /// (WI-280) or a prefix that names a rule or a const (WI-749). The two are deliberately NOT one
     /// widened gate: `visit_load` runs them as separate passes with
     /// [`Self::try_qualified_rule_ref`] interposed, so the bare-qualified citation
     /// outranks the prefix reading. Widening this into a single condition would
@@ -28970,7 +29142,7 @@ impl<'a> Loader<'a> {
         // `try_qualified_rule_ref` can collapse the whole chain to a rule.
         let admitted = match pass {
             DotFieldPass::LocalRoot => self.field_access_root_is_value(pos_args[0]).is_some(),
-            DotFieldPass::RulePrefix(receiver_name) => self.name_has_rule_prefix(receiver_name),
+            DotFieldPass::ValuePrefix(receiver_name) => self.name_has_value_prefix(receiver_name),
         };
         if !admitted {
             return false;
@@ -29033,7 +29205,7 @@ impl<'a> Loader<'a> {
     /// resolving one name through one probe. Visiting rather than synthesizing is also
     /// what preserves local shadowing (see [`Self::try_identifier_dot_field`]); this
     /// probe must not be hoisted into a synthesized receiver, because
-    /// [`Self::resolve_qualified_rule_readonly`] deliberately does NOT consult
+    /// [`Self::resolve_qualified_readonly`] deliberately does NOT consult
     /// `lookup_local_name`, so on its own it would answer for a shadowed binder.
     ///
     /// Prefixes of the RECEIVER only — the whole chain is the bare-qualified CITATION
@@ -29049,14 +29221,14 @@ impl<'a> Loader<'a> {
     /// Takes the receiver's already-built dotted NAME (a slice of the chain name
     /// `visit_load` built for the citation pass), so this neither walks the parse chain
     /// nor allocates.
-    fn name_has_rule_prefix(&self, name: &str) -> bool {
-        // The existence half of [`Self::rule_prefix_split`]. Defined in terms of it so
-        // the field and call ladders cannot answer "does a prefix name a rule?" two
+    fn name_has_value_prefix(&self, name: &str) -> bool {
+        // The existence half of [`Self::value_prefix_split`]. Defined in terms of it so
+        // the field and call ladders cannot answer "does a prefix name a value?" two
         // ways: the ANSWER is order-independent here (this is an existence check, and
         // the receiver is re-decided per level on Visit), but the call path needs WHICH
         // prefix matched, and a second scan written in the opposite order is exactly how
         // the two paths drift apart — the drift that produced WI-729, WI-749, WI-750.
-        self.rule_prefix_split(name).is_some()
+        self.value_prefix_split(name).is_some()
     }
 
     /// WI-714 (proposal 052) — the BARE-QUALIFIED citation position. A rule cited by
@@ -29078,22 +29250,25 @@ impl<'a> Loader<'a> {
     ///
     /// Its position in the ladder is load-bearing in BOTH directions (see `visit_load`):
     /// after the local pass, so a binder shadows a rule; but BEFORE
-    /// [`DotFieldPass::RulePrefix`], so THIS form gets first refusal on the whole chain.
+    /// [`DotFieldPass::ValuePrefix`], so THIS form gets first refusal on the whole chain.
     /// That is what makes `Queen.find` the relation itself rather than member `find` of
     /// a relation `Queen` — and, where a rule LABEL is dotted (`rule a.b: …`, which
     /// `scan_rule` defines as the joined name), what keeps the citation `a.b` pointing
     /// at that rule even when `a` is separately a rule too. So a rule-prefixed chain
     /// DOES reach this function; it is declined here on the whole name and only then
-    /// re-routed. Resolution is read-only ([`Self::resolve_qualified_rule_readonly`]),
+    /// re-routed. Resolution is read-only ([`Self::resolve_qualified_readonly`]),
     /// so a chain that is a genuine projection falls through to the ordinary path
     /// untouched.
     fn try_qualified_rule_ref(
         &mut self,
         parse_id: TermId,
         name: &str,
+        // What `name` resolves to ([`Self::resolve_qualified_readonly`]), which the
+        // ladder asks once for this rung and the const's.
+        whole: Option<Symbol>,
         results: &mut Vec<TermId>,
     ) -> bool {
-        let Some(sym) = self.resolve_qualified_rule_readonly(name) else {
+        let Some(sym) = whole.filter(|sym| self.is_paren_less_citation_target(*sym)) else {
             return false;
         };
         // A rule cited through an alias is cited at the parameters the alias fixes: the
@@ -29105,11 +29280,48 @@ impl<'a> Loader<'a> {
         }
         // Emit the bare-unqualified rule-reference form + its leaf occurrence —
         // mirrors the `Term::Ident` arm of `visit_load` (via `load_var_ref`).
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// A CONST CITED BY A DOTTED NAME with no trailing `(…)` — `Sort.NAME`, `ns.NAME`,
+    /// `Float.infinity` — in an operation body or a const's value. It parses (§6.7) as a
+    /// `field_access` chain, as [`Self::try_qualified_rule_ref`]'s rule does, and when
+    /// the chain's segments spell a name that resolves to a const it is that const: the
+    /// same `var_ref(name: Ref(const))` the one-segment, imported spelling lowers to,
+    /// so the typer's and the evaluator's const arms serve both.
+    ///
+    /// It was left a chain, and the typer walked it: the sort typed as a type value and
+    /// the member as a bare name nothing declares — `infinity.name: expected resolved
+    /// name, got unresolved` — while the imported `infinity` and the same dotted name in
+    /// a clause's data slot ([`Self::data_slot_dotted_const`]) were the value.
+    ///
+    /// AFTER the local pass, so a binder named like the sort is the receiver it is, and
+    /// after the rule citation, whose position the ladder's comment argues. A chain that
+    /// continues past the const (`P.origin.x`) reaches this rung at its inner level, as
+    /// the receiver of the projection.
+    fn try_qualified_const_ref(
+        &mut self,
+        parse_id: TermId,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = whole.filter(|sym| self.kb.kind_of(*sym) == Some(SymbolKind::Const))
+        else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// The reference to `sym` a one-segment name lowers to (`load_var_ref`), with its
+    /// leaf occurrence, standing for the whole node at `parse_id`.
+    fn push_name_ref(&mut self, parse_id: TermId, sym: Symbol, results: &mut Vec<TermId>) {
         let kb_id = self.mk_var_ref(sym);
         self.create_occurrence(parse_id, kb_id);
         results.push(kb_id);
         self.push_leaf_occ(parse_id, kb_id);
-        true
     }
 
     /// The call `functor()` at the receiver `recv_type`, as the op-body walk's
@@ -29156,30 +29368,37 @@ impl<'a> Loader<'a> {
         field_access_dotted_name_of(&self.parsed.symbols, &self.parsed.terms, parse_id)
     }
 
-    /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
-    /// or `Rule` label), else `None`. Resolves the SAME way the applied `Sort.rule`
-    /// form does — [`Self::remap_name_str_inner`]'s `resolve_in_scope`-then-
-    /// [`resolve_dotted_in_kb`] ladder — so the two citation forms cannot drift, but
-    /// WITHOUT its mutation: no unresolved-name interning, no error push, so a non-rule
-    /// name leaves loader state untouched for the ordinary `field_access` projection
-    /// path. The dotted rung runs under `VisibleOnly` (the qualified path bypasses
-    /// `resolve_in_scope`'s `internal` filter, WI-369), so a hidden cross-scope rule does
-    /// NOT silently collapse to a value here — rules are never marked `internal` today,
-    /// so that is defensive, but it keeps parity with the applied form.
+    /// The VALUE a dotted `name` names by itself, else `None`: a rule-ish citation target
+    /// ([`Self::is_paren_less_citation_target`] — a `Goal` head functor, a `Rule` label,
+    /// an `EquationFunctor`) or a const. What a prefix of a dot receiver is asked
+    /// ([`Self::value_prefix_split`]) — one resolution, two kinds.
+    fn resolve_qualified_value_readonly(&self, name: &str) -> Option<Symbol> {
+        self.resolve_qualified_readonly(name).filter(|sym| {
+            self.is_paren_less_citation_target(*sym)
+                || self.kb.kind_of(*sym) == Some(SymbolKind::Const)
+        })
+    }
+
+    /// Read-only resolution of a dotted `name` to the symbol it denotes as written, of
+    /// whatever kind, else `None` — the callers gate the kind: a rule
+    /// ([`Self::try_qualified_rule_ref`]), a const ([`Self::try_qualified_const_ref`]),
+    /// either ([`Self::resolve_qualified_value_readonly`]). Resolves the SAME way the
+    /// applied `Sort.rule` form does — [`Self::remap_name_str_inner`]'s
+    /// `resolve_in_scope`-then-[`resolve_dotted_in_kb`] ladder — so the two citation
+    /// forms cannot drift, but WITHOUT its mutation: no unresolved-name interning, no
+    /// error push, so a name of another kind leaves loader state untouched for the
+    /// ordinary `field_access` projection path. The dotted rung runs under `VisibleOnly`
+    /// (the qualified path bypasses `resolve_in_scope`'s `internal` filter, WI-369), so
+    /// a hidden cross-scope name does NOT silently collapse to a value here — a hidden
+    /// const is not reached, and rules are never marked `internal` today, which keeps
+    /// parity with the applied form. A const is asked through this ladder everywhere
+    /// ([`const_named`] reads it for a data slot), so a name cannot be one thing to the
+    /// rule's reading and another to the const's.
     ///
     /// ONLY `Found` collapses. An `Ambiguous` from either rung — the whole name's, or a
-    /// contested HEAD SEGMENT's (WI-917) — is not a clean rule reference: the applied
-    /// form reports the ambiguity loudly, and taking one reading here would bury it.
-    ///
-    /// WI-898: `EquationFunctor` collapses here TOO, and deliberately — this rung asks
-    /// "is this dotted name a rule-ish CITATION the typer should see?", not "is it a
-    /// relation?" ([`KnowledgeBase::cites_a_relation`] is that question, asked at the
-    /// typer). MEASURED: excluding it sent a bare `Bool.ite` down the `field_access`
-    /// projection path instead, where it drew TWO "expected resolved name, got
-    /// unresolved" errors — the very message this ticket removes, doubled. Collapsed,
-    /// it reaches `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the
-    /// name actually is.
-    fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
+    /// contested HEAD SEGMENT's (WI-917) — is not a clean reference: the applied form
+    /// reports the ambiguity loudly, and taking one reading here would bury it.
+    fn resolve_qualified_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope;
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
         // now come from `resolve_dotted_in_kb` like everywhere else). Without it a
@@ -29192,18 +29411,26 @@ impl<'a> Loader<'a> {
             .symbols
             .resolve_in_scope(name, scope)
             .or_else(|| self.resolve_dotted(name, DottedVisibility::VisibleOnly));
-        let ResolveResult::Found(sym) = resolved else {
-            return None;
-        };
-        self.is_paren_less_citation_target(sym).then_some(sym)
+        match resolved {
+            ResolveResult::Found(sym) => Some(sym),
+            _ => None,
+        }
     }
 
     /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
     /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
-    /// collapses too, for the reason [`Self::resolve_qualified_rule_readonly`] gives. ONE
-    /// predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
+    /// collapses too. ONE predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
     /// ([`Self::refuse_paren_less_non_rule`]), so the two spellings cannot admit
     /// different members.
+    ///
+    /// WI-898: `EquationFunctor` collapses TOO, and deliberately — the rung asks "is this
+    /// dotted name a rule-ish CITATION the typer should see?", not "is it a relation?"
+    /// ([`KnowledgeBase::cites_a_relation`] is that question, asked at the typer).
+    /// MEASURED: excluding it sent a bare `Bool.ite` down the `field_access` projection
+    /// path instead, where it drew TWO "expected resolved name, got unresolved" errors —
+    /// the very message this ticket removes, doubled. Collapsed, it reaches
+    /// `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the name
+    /// actually is.
     fn is_paren_less_citation_target(&self, sym: Symbol) -> bool {
         // Per-role `has_kind` (WI-925), not the declaration's opening keyword: whether
         // a dotted name is a rule-ish citation is a membership question.

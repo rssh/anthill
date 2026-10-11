@@ -407,6 +407,16 @@ impl TypingEnv {
         self.enclosing_op
     }
 
+    /// The text is what the evaluator runs: an operation's body, or a constant's value,
+    /// which is typed and stored as one (kernel-language.md §5.9). A call there that
+    /// names a carrier with no provision to answer it has nothing later to rescue it —
+    /// a rule-body goal has the resolver, which suspends, and its own owner for the
+    /// question (`check_rule_body_requirements`). So the refusals written for "an
+    /// operation body only" ask this, and a constant's value is held to them.
+    pub(super) fn in_evaluated_body(&self) -> bool {
+        self.enclosing_op.is_some() || self.enclosing_const.is_some()
+    }
+
     /// WI-282: install the enclosing rule's De Bruijn var → type map (see the
     /// field doc). `Rc` clone is a refcount bump.
     pub fn set_debruijn_types(&mut self, types: Rc<HashMap<u32, Value>>) {

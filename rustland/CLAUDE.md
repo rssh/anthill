@@ -94,8 +94,9 @@ the library.
 
 **A sealed load's bodies are typed once** (WI-20261010-9BKZ4). Every recipe SEALS the
 stdlib's load (`load::seal_declarations*`, WI-20261009-4ZRTG), as `load::load_program`
-does for the product, and the typer's two
-whole-KB sweeps — the free-operation sweep, the rule-body sweep — skip what a seal holds;
+does for the product, and the typer's
+whole-KB sweeps — the free-operation sweep, the rule-body sweep, the const-value sweep
+(WI-20261011-2QZ3F) — skip what a seal holds;
 what a later load could have changed in a sealed body is a load error instead
 (`kb/typing/sealed.rs`, `LoadError::ChangesSealedCode`) — raised by the TYPER, so a run
 made by hand (`type_check_sorts(&mut kb, result.loaded())`) raises it as the pipeline's

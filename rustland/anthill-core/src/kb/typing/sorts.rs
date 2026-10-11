@@ -315,15 +315,20 @@ pub(super) fn type_check_sorts_collect(
             oracle_type_sealed_operations(kb, &sealed_ops, &region_sorts);
         }
     }
+    // A constant's value is a body too: typed, with the equations applied, and stored as
+    // typed, whether or not an operation ever reads the constant. And a sealed load's is
+    // typed once, as its operation bodies are — the same split, the same oracle, and the
+    // refusal below asks both.
+    let (constants, sealed_constants) = constant_values_by_seal(kb);
+    check_constant_bodies(kb, &constants, &mut errors, &mut sources);
+    if oracle && !sealed_constants.is_empty() {
+        oracle_type_sealed_constants(kb, &sealed_constants);
+    }
     // …and what a `@[simp]` rule that is not a sealed load's would have done to one.
     // HERE: it types the sealed bodies the rule could reach, and what typing a body
     // queues is drained below, by this run.
     sources.resize(errors.len(), None);
     simp_rules_that_reach_a_sealed_body(kb, &region_sorts, &mut errors, &mut sources);
-
-    // HK87X: check constant defining occurrences as well as operation bodies.
-    // This reaches construction checks even when no operation ever reads the constant.
-    check_constant_bodies(kb, &mut errors, &mut sources);
 
     // WI-945: every call site whose parent-bundle dictionary could not be built for an
     // element nothing at the call pins. HERE and not inside either sweep above: the
@@ -473,47 +478,114 @@ pub(super) fn type_check_sorts_collect(
     (errors, sources)
 }
 
-/// HK87X: a folded value has no construction site to refuse. Check the original
-/// initializer through the occurrence typer, with the declared type as its hint.
-/// Host-supplied constants have no initializer and are absent from this iterator.
+/// A constant with a written value, and that value as the KB holds it.
+pub(super) struct ConstantValue {
+    pub(super) symbol: Symbol,
+    pub(super) value: Rc<NodeOccurrence>,
+    /// Where the value was written ([`NodeOccurrence::written_site`]), read once.
+    pub(super) site: crate::span::SourceSpan,
+}
+
+impl ConstantValue {
+    pub(super) fn of(symbol: Symbol, value: Rc<NodeOccurrence>) -> Self {
+        let site = value.written_site();
+        ConstantValue { symbol, value, site }
+    }
+}
+
+/// Every constant with a written value, split by whether a sealed load typed it:
+/// `(the ones this run types, the sealed ones)`. Host-supplied constants have no value
+/// here and are in neither.
 ///
-/// AND THE INITIALIZER IS OF THE DECLARED TYPE: `: Type` is the name's contract (§5.9).
-/// The hint alone directs the forms that read one — a branch, a list element — and a
-/// value that reads none was never compared, so `const LIMIT: Int64 = "s"` and `const
-/// B: String = A` over `const A: Int64` loaded, and failed where they were used
+/// By where the value was WRITTEN ([`NodeOccurrence::written_site`]), and in that order,
+/// so the refusals of one load read the same each run. Not by the stored root's own
+/// span: an equation that rewrote the value at the top left its right-hand side there,
+/// which names the rule's file.
+pub(super) fn constant_values_by_seal(
+    kb: &KnowledgeBase,
+) -> (Vec<ConstantValue>, Vec<ConstantValue>) {
+    let mut constants: Vec<ConstantValue> = kb
+        .const_bodies_iter()
+        .map(|(symbol, value)| ConstantValue::of(symbol, Rc::clone(value)))
+        .collect();
+    constants.sort_by_key(|c| (c.site.source.index(), c.site.span.start));
+    constants
+        .into_iter()
+        .partition(|c| !kb.sealed.holds_typed_source(c.site))
+}
+
+/// A CONSTANT'S VALUE IS TYPED AS AN OPERATION BODY IS, and the typed value is what the
+/// KB keeps (kernel-language.md §5.3, §5.9): a `@[simp]` equation fires on the calls it
+/// matches, a dot call becomes the call it dispatches to, and the evaluator, the purity
+/// gate and a code generator read that text. With `rule dbl(?n) <=> ?n + ?n @[simp]`
+/// over a body-less `dbl`, `const c: Int64 = dbl(4)` is `4 + 4`. It was typed with no
+/// equation applied and the typed text dropped, so the call loaded clean and died
+/// `OperationBodyMissing` where the constant was first read.
+///
+/// A folded value has no construction site to refuse, so the construction rule is held
+/// here, on the text (§5.2): `const bad: Hold[E = Other] = hold(other())` is refused as
+/// the operation body that builds it is.
+///
+/// AND THE VALUE IS OF THE DECLARED TYPE: `: Type` is the name's contract (§5.9). The
+/// hint alone directs the forms that read one — a branch, a list element — and a value
+/// that reads none was never compared, so `const LIMIT: Int64 = "s"` and `const B:
+/// String = A` over `const A: Int64` loaded, and failed where they were used
 /// (MEASURED). Compared as a `let` annotation is with its value, after the two unify: a
 /// slot the declared type leaves out is the declaration's to pick.
-fn check_constant_bodies(
+///
+/// No runtime requirement frame belongs to a constant: it has no parameters, so every
+/// carrier in its value is one the text names, and a spec operation there is dispatched
+/// where it is typed.
+pub(super) fn check_constant_bodies(
     kb: &mut KnowledgeBase,
+    constants: &[ConstantValue],
     errors: &mut Vec<TypeError>,
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
-    let mut constants: Vec<_> = kb
-        .const_bodies_iter()
-        .map(|(symbol, body)| (symbol, Rc::clone(body)))
-        .collect();
-    // In the order they were written, so the refusals of one load read the same each run.
-    constants.sort_by_key(|(_, body)| (body.span.source.index(), body.span.span.start));
+    // Read once: typing a value rewrites it and asserts no equation.
+    let (simp_enabled, simp_rids) = simp_gate(kb);
     sources.resize(errors.len(), None);
-    for (symbol, body) in constants {
+    for ConstantValue { symbol, value, site } in constants {
+        let (symbol, site) = (*symbol, *site);
         let expected = kb
             .const_type(symbol)
-            .expect("a constant initializer has a declared type")
+            .expect("a constant with a value has a declared type")
             .clone();
         let mut env = TypingEnv::empty();
         env.enclosing_const = Some(symbol);
-        // No runtime requirement frame belongs to a constant initializer.
-        // Keep this validation on the stored source, without simp write-back.
-        match type_check_node_gated(kb, &env, &body, Some(expected.clone()), false, &[]) {
+        match type_check_node_gated(
+            kb,
+            &env,
+            value,
+            Some(expected.clone()),
+            simp_enabled,
+            &simp_rids,
+        ) {
             Err(error) => {
                 for error in error.flatten() {
                     errors.push(error);
-                    sources.push(Some(body.span.source));
+                    sources.push(Some(site.source));
                 }
             }
             Ok(result) => {
-                // The slots the declaration leaves open are the initializer's to fill, so
-                // the two unify before they are compared, as an operation's result and its
+                // Only when the typer built another tree: an equation fired, or a dot
+                // call was dispatched.
+                if !Rc::ptr_eq(&result.node, value) {
+                    // Whose const this is — a sealed load's or not — is read off the
+                    // source its value was written in, and the typed tree must still say
+                    // so. The span may move within it: an equation that answers with one
+                    // of the call's own arguments leaves that argument as the value.
+                    debug_assert_eq!(
+                        result.node.written_site().source,
+                        site.source,
+                        "the typed value of const '{}' no longer chains to the source it \
+                         was written in: a pass built its root with no `Synthesized` link",
+                        kb.qualified_name_of(symbol),
+                    );
+                    kb.set_const_body_node(symbol, Rc::clone(&result.node));
+                }
+                // The slots the declaration leaves open are the value's to fill, so the
+                // two unify before they are compared, as an operation's result and its
                 // body do: `const d: Car[V = ?] = car(v: 3)` is a `Car[V = Int64]`.
                 let mut probe = Substitution::new();
                 let mut subst = if unify_types(kb, &mut probe, &result.ty, &expected) {
@@ -528,11 +600,11 @@ fn check_constant_bodies(
                         kb,
                         expected,
                         value_ty,
-                        Some(body.span.span),
+                        Some(site.span),
                         TypeErrorContext::ConstValue { name: symbol },
                         Some(&result.node),
                     ));
-                    sources.push(Some(body.span.source));
+                    sources.push(Some(site.source));
                 }
             }
         }

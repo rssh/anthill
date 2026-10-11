@@ -697,6 +697,173 @@ fn a_simp_rule_over_the_standard_library_is_refused_after_it() {
     );
 }
 
+// ── (1b) a `@[simp]` rule over a sealed constant's value ─────────────
+//
+// WI-20261011-2QZ3F. A const's value is typed with the equations applied and kept as
+// typed, so it is a body a later load's rule could reach, and a sealed one is typed
+// once. WHAT FAILS WHEN (each measured by making the change and running this file):
+//
+// * equations off in the const sweep (`sorts.rs`, `check_constant_bodies`): the two
+//   `…_sealed_consts_value_is_refused` rows FAIL on their one-call halves — the rule
+//   reaches no const, 1 where 2 is expected and a clean load where a mismatch is — and
+//   `a_programs_const_rewritten_by_a_sealed_equation_stays_the_programs` FAILS, the
+//   const's first read dying `OperationBodyMissing`.
+// * the const sweep made to type sealed values again (`constant_values_by_seal` sealing
+//   nothing): `a_simp_rule_that_rewrites_a_sealed_consts_value_is_refused` and
+//   `a_simp_rule_that_breaks_…` FAIL on two calls — the sweep applies the rule first and
+//   the check that follows finds a value nothing rewrites any more, or the mismatch is
+//   reported with no refusal naming the const.
+// * the check made to ask no const: the same two rows FAIL, each loading clean.
+// * the check made to refuse wherever a sealed const's value calls the head, without
+//   typing it: `a_simp_rule_that_reaches_no_sealed_consts_value_loads` FAILS, and
+//   `a_simp_rule_that_breaks_…` on its word, "rewrites" for "breaks". The first passes
+//   with every other change here, by design.
+// * a const's seal read off the stored root's own span, not where the value was written
+//   (`written_site`): `a_programs_const_rewritten_by_a_sealed_equation_stays_the_-
+//   programs` FAILS — the third load is refused, "rewrites the value of const
+//   'test.progk.mine', which a sealed load declared".
+
+const LIB_CONST: &str = r#"
+namespace test.libk
+  import anthill.prelude.{Int64}
+  import anthill.prelude.Additive.{add}
+
+  operation base(x: Int64) -> Int64 = 1
+  const libConst: Int64 = base(5)
+  operation libReads() -> Int64 = libConst
+  const libSum: Int64 = add(base(5), 1)
+
+  sort Kind
+    entity k1
+    entity k2
+  end
+  operation weight(k: Kind) -> Int64 = 1
+  const libWeight: Int64 = weight(k1())
+  operation libWeighs() -> Int64 = libWeight
+
+  operation inner(n: Int64) -> Int64 = n
+  operation outer(n: Int64) -> Int64
+  rule outer(?n) <=> inner(?n) @[simp]
+end
+"#;
+
+const A_RULE_OVER_A_CALL_IN_A_LIBRARY_CONST: &str = r#"
+namespace test.progk
+  import anthill.prelude.{Int64}
+  import test.libk.{base, libReads}
+  rule base(?x) <=> 2 @[simp]
+  operation entry() -> Int64 = libReads()
+end
+"#;
+
+/// In one call the program's rule rewrites the library const's value, and the library
+/// reads 2 by it. Behind the seal that value was typed and is not typed again.
+#[test]
+fn a_simp_rule_that_rewrites_a_sealed_consts_value_is_refused() {
+    let kb = loaded(one_call(LIB_CONST, A_RULE_OVER_A_CALL_IN_A_LIBRARY_CONST), "one call");
+    assert_eq!(values(kb, &["test.progk.entry"]), [2]);
+
+    let errors =
+        refused(two_calls(LIB_CONST, A_RULE_OVER_A_CALL_IN_A_LIBRARY_CONST), "two calls");
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.libk.base'")
+            && e.contains("rewrites the value of const 'test.libk.libConst'")),
+        "the refusal names the rule's head and the sealed const; got {errors:?}"
+    );
+}
+
+const A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_CONST_WRITES: &str = r#"
+namespace test.progk
+  import anthill.prelude.{Int64}
+  import test.libk.{Kind, weight, libWeighs}
+  import test.libk.Kind.{k2}
+  rule weight(k2()) <=> 2 @[simp]
+  operation entry() -> Int64 = weight(k2())
+  operation lib() -> Int64 = libWeighs()
+end
+"#;
+
+/// Exact here too: `libWeight` still holds its call of `weight`, a bodied operation,
+/// and a rule over `weight` for an argument that call does not write rewrites nothing
+/// sealed and loads.
+#[test]
+fn a_simp_rule_that_reaches_no_sealed_consts_value_loads() {
+    for (how, kb) in [
+        ("one call", one_call(LIB_CONST, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_CONST_WRITES)),
+        ("two calls", two_calls(LIB_CONST, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_CONST_WRITES)),
+    ] {
+        assert_eq!(
+            values(loaded(kb, how), &["test.progk.entry", "test.progk.lib"]),
+            [2, 1],
+            "{how}"
+        );
+    }
+}
+
+const A_RULE_THAT_BREAKS_A_LIBRARY_CONST: &str = r#"
+namespace test.progk
+  import anthill.prelude.{Int64}
+  import test.libk.{base}
+  rule base(?x) <=> "two" @[simp]
+end
+"#;
+
+/// A rewrite that leaves a sealed value ILL-TYPED inside — `add("two", 1)` — is not
+/// written back, so only what typing it reports says the rule reached it. One that is
+/// ill-typed against the const's declared type alone is written first and compared
+/// after, as an operation body is with its return type.
+#[test]
+fn a_simp_rule_that_breaks_a_sealed_consts_value_is_refused() {
+    let one = refused(one_call(LIB_CONST, A_RULE_THAT_BREAKS_A_LIBRARY_CONST), "one call");
+    assert!(
+        one.iter().any(|e| e.contains("type mismatch in add.b"))
+            && one.iter().any(|e| e.contains("libConst.value")),
+        "one call reports the two library consts the rule broke; got {one:?}"
+    );
+
+    let two = refused(two_calls(LIB_CONST, A_RULE_THAT_BREAKS_A_LIBRARY_CONST), "two calls");
+    for (how, constant) in [("breaks", "libSum"), ("rewrites", "libConst")] {
+        assert!(
+            two.iter().any(|e| e.contains("`@[simp]` rule over 'test.libk.base'")
+                && e.contains(&format!("{how} the value of const 'test.libk.{constant}'"))),
+            "the rule {how} `{constant}`; got {two:?}"
+        );
+    }
+}
+
+const A_CONST_OVER_A_LIBRARY_EQUATION: &str = r#"
+namespace test.progk
+  import anthill.prelude.{Int64}
+  import test.libk.{outer}
+  const mine: Int64 = outer(4)
+  operation entry() -> Int64 = mine
+end
+"#;
+
+const A_RULE_OVER_WHAT_THAT_EQUATION_WROTE: &str = r#"
+namespace test.progm
+  import anthill.prelude.{Int64}
+  import test.libk.{inner}
+  import test.progk.{entry}
+  rule inner(4) <=> 9 @[simp]
+  operation again() -> Int64 = entry()
+end
+"#;
+
+/// A const of the program's, rewritten at its top by a SEALED equation, holds that
+/// equation's text: `inner(4)`, whose span is in the library's file. The const is still
+/// the program's. A load after it is not held to it as to a sealed value, and types it
+/// again, as it types every body no seal holds.
+#[test]
+fn a_programs_const_rewritten_by_a_sealed_equation_stays_the_programs() {
+    let mut kb = loaded(two_calls(LIB_CONST, A_CONST_OVER_A_LIBRARY_EQUATION), "two calls");
+    load_in_a_later_call(&mut kb, A_RULE_OVER_WHAT_THAT_EQUATION_WROTE, LoadOptions::default())
+        .map(|_| ())
+        .map_err(rendered_load_errors)
+        .unwrap_or_else(|e| panic!("the third load is the program's own; got {e:?}"));
+    assert_eq!(values(kb, &["test.progm.again"]), [9]);
+}
+
 // ── (2) an operation added to a sealed scope ─────────────────────────
 
 const LIB_SCOPE: &str = r#"

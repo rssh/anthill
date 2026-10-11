@@ -281,12 +281,7 @@ pub(super) fn check_operation_bodies(
     // here and thread it into each per-op body walk via `type_check_node_gated` —
     // instead of `type_check_node` recomputing `has_simp_equations` + two
     // `simp_equation_rids` bucket scans per operation.
-    let simp_enabled = crate::kb::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
-    let simp_rids: Vec<RuleId> = if simp_enabled {
-        kb.simp_equation_rids()
-    } else {
-        Vec::new()
-    };
+    let (simp_enabled, simp_rids) = simp_gate(kb);
 
     // WI-745: the file whose occurrences the CURRENT op's errors come from. Tag
     // lazily — errors pushed during op K are stamped at the top of iteration K+1

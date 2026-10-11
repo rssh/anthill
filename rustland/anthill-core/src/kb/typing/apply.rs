@@ -2644,7 +2644,7 @@ pub(super) fn check_apply_iter(
                     // `size(MutableStack.new())` with the element never pinned is
                     // `FiniteCollection[C = MutableStack, E = {}]`, no `Element`, and runs.
                     ResolutionResult::NoMatch { goal_text, hint, .. }
-                        if env.enclosing_op().is_some()
+                        if env.in_evaluated_body()
                             && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
                             && goal.bindings.iter().all(|(_, v)| {
                                 type_is_ground(kb, v) && !type_mentions_type_var(kb, v)
@@ -2732,7 +2732,7 @@ pub(super) fn check_apply_iter(
             // below. An abstract goal pins no carrier and passes untouched to the slot route.
             if carrier.is_none()
                 && matches!(recv_carrier, ReceiverCarrier::NotApplicable)
-                && env.enclosing_op().is_some()
+                && env.in_evaluated_body()
             {
                 let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
                 if let Some(refusal) = unclassified_goal_carrier(kb, &goal).and_then(|c| {
@@ -3410,12 +3410,14 @@ pub(super) fn check_apply_iter(
                     // so is a host-implemented callee (see the helper). An abstract
                     // carrier names nothing and falls through to WI-325.
                     //
-                    // AN OPERATION BODY ONLY. A rule-body spec-op call has its own owner,
+                    // AN OPERATION BODY ONLY — or a constant's value, which the evaluator
+                    // runs as one (`TypingEnv::in_evaluated_body`). A rule-body spec-op
+                    // call has its own owner,
                     // `check_rule_body_requirements`, which reads the clause's declared
                     // `requires(…)` as the rule's own dictionary; answering here too gave
                     // one call two diagnoses, and refused the declared clause
                     // `wi642…::declared_in_body_requires_loads_clean` pins as legal.
-                    if env.enclosing_op().is_some()
+                    if env.in_evaluated_body()
                         && !op_requires_covers_call(kb, env, &subst, spec_sort)
                     {
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
@@ -5065,7 +5067,7 @@ fn defaulted_call_at_non_instance(
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    if env.enclosing_op().is_none()
+    if !env.in_evaluated_body()
         || carrier_is_an_instance(kb, carrier, goal.spec_sort)
         || !spec_has_an_abstract_member(kb, goal.spec_sort)
         || op_requires_covers_call(kb, env, subst, goal.spec_sort)

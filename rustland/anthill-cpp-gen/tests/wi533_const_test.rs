@@ -259,6 +259,130 @@ fn namespace_and_sort_body_consts_do_not_collide() {
 
 /// Write `header` to a scratch dir and compile a driver that includes it and
 /// runs `body`. Skips (with a note) when no C++ compiler is available.
+/// WI-20261011-2QZ3F — a const's value is lowered as it was TYPED: a call an equation
+/// defines is the equation's right-hand side by then. Lowered as written it named a
+/// body-less operation with no C++ realization, and the header was refused (measured
+/// with the const's typed value not stored: "`test.wi2qz3fcpp.dbl` has no body and no
+/// C++ realization").
+#[test]
+fn a_const_over_an_equation_defined_call_lowers_the_typed_value_and_compiles() {
+    let source = r#"
+        namespace test.wi2qz3fcpp
+          import anthill.prelude.{Int64}
+          operation dbl(n: Int64) -> Int64
+          rule dbl(?n) <=> ?n + ?n @[simp]
+          const EIGHT: Int64 = dbl(4)
+          entity Dummy(x: Int64)
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi2qz3fcpp").expect("emit ns header");
+    assert!(
+        header.contains("inline constexpr int64_t EIGHT = (4 + 4);"),
+        "the const lowers the equation's right-hand side:\n{header}"
+    );
+    compile_header(
+        &header,
+        "wi2qz3fcpp",
+        "static_assert(test::wi2qz3fcpp::EIGHT == 8);\n    test::wi2qz3fcpp::Dummy d{1};\n    (void)d;",
+    );
+}
+
+/// A const whose value reads a sort's member const needs that sort's struct declared.
+/// Every namespace const was emitted above the structs, so `D = (S::c + 1)` stood above
+/// `struct S` and the header did not compile.
+///
+/// FAILS with `consts_below_the_structs` answering `false` for every const — this row
+/// on the order it asserts, the entity-typed row below at the compiler. MEASURED.
+#[test]
+fn a_const_that_names_a_sorts_const_stands_below_its_struct() {
+    let source = r#"
+        namespace test.wi2qz3fbelow
+          import anthill.prelude.{Int64}
+          sort S
+            const c: Int64 = 5
+          end
+          const D: Int64 = S.c + 1
+          const FIRST: Int64 = 7
+          entity Dummy(x: Int64)
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi2qz3fbelow").expect("emit ns header");
+    let at = |needle: &str| {
+        header
+            .find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is in the header:\n{header}"))
+    };
+    assert!(
+        at("struct S") < at("inline constexpr int64_t D = (S::c + 1);"),
+        "the const that names `S::c` is below `struct S`:\n{header}"
+    );
+    // A const that names no struct keeps its place above them, where a struct or a
+    // method body that names it sees it declared.
+    assert!(
+        at("inline constexpr int64_t FIRST = 7;") < at("struct Dummy"),
+        "a const that needs no struct stays first:\n{header}"
+    );
+    compile_header(
+        &header,
+        "wi2qz3fbelow",
+        "static_assert(test::wi2qz3fbelow::D == 6);\n    test::wi2qz3fbelow::Dummy d{1};\n    (void)d;",
+    );
+}
+
+/// A const of an entity type needs its struct for its own type, and a const that reads
+/// a field of it follows it.
+#[test]
+fn a_const_of_an_entity_type_stands_below_its_struct() {
+    let source = r#"
+        namespace test.wi2qz3fent
+          import anthill.prelude.{Int64}
+          entity P(x: Int64, y: Int64)
+          const origin: P = P(3, 4)
+          const ox: Int64 = origin.x
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi2qz3fent").expect("emit ns header");
+    compile_header(
+        &header,
+        "wi2qz3fent",
+        "static_assert(test::wi2qz3fent::ox == 3);\n    static_assert(test::wi2qz3fent::origin.y == 4);",
+    );
+}
+
+/// A string that SPELLS a struct's name, or another const's, depends on neither: the
+/// lowered value is scanned for the names it uses in its code, not in its text.
+///
+/// FAILS with the scan reading string text (`code_outside_literals` returning its
+/// argument): the header is refused for `A` and `B`, a "const dependency cycle", as it
+/// was before `consts_below_the_structs` existed. `GREETING`'s half was measured apart,
+/// without those two: it is taken to need `struct S` and emitted below it, where `S`'s
+/// own member cannot see it — "'GREETING' was not declared in this scope".
+#[test]
+fn a_string_that_spells_a_name_is_not_a_reference_to_it() {
+    let source = r#"
+        namespace test.wi2qz3fstr
+          import anthill.prelude.{Int64, String}
+          const GREETING: String = "an S is a sort"
+          const A: String = "see B"
+          const B: String = "see A"
+          sort S
+            const label: String = GREETING
+          end
+          entity Dummy(x: Int64)
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi2qz3fstr").expect("emit ns header");
+    compile_header(
+        &header,
+        "wi2qz3fstr",
+        "static_assert(test::wi2qz3fstr::S::label == test::wi2qz3fstr::GREETING);\n    test::wi2qz3fstr::Dummy d{1};\n    (void)d;",
+    );
+}
+
 fn compile_header(header: &str, tag: &str, body: &str) {
     let cxx = match find_cxx() {
         Some(c) => c,

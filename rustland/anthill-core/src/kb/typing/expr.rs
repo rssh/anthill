@@ -523,16 +523,7 @@ pub(super) fn type_check_node_at(
     // frame reassembles from its children's `TypeResult.node`s unconditionally
     // — `reassemble`'s ptr-eq short-circuit keeps the no-rewrite case
     // allocation-free.
-    let simp_enabled = crate::kb::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
-    // WI-646: gather the eq+unify simp candidate ids ONCE per walk (only when
-    // firing is enabled) and thread them into every per-node `fire_simp`, so the
-    // Apply/Constructor build frames no longer re-scan the functor buckets at each
-    // node. Empty when `simp_enabled` is false — `fire_simp` is then never called.
-    let simp_rids: Vec<RuleId> = if simp_enabled {
-        kb.simp_equation_rids()
-    } else {
-        Vec::new()
-    };
+    let (simp_enabled, simp_rids) = simp_gate(kb);
     type_check_node_gated_at(
         kb,
         env,
@@ -545,6 +536,30 @@ pub(super) fn type_check_node_at(
     )
 }
 
+/// The `@[simp]` gate of a typer walk: whether any rule can fire, and the candidate
+/// rule ids when one can.
+///
+/// WI-283: firing is gated on whether any rule can fire. WI-443: a loaded `dot_apply`
+/// also enables the gate — DotApply nodes are always rewritten (to the dispatched
+/// call). WI-646: the eq+unify candidate ids are gathered ONCE per walk and threaded
+/// into every per-node `fire_simp`, so the Apply/Constructor build frames do not
+/// re-scan the functor buckets at each node; empty when nothing can fire, `fire_simp`
+/// being then never called.
+///
+/// ONE READER, for the three drivers that type a body: a standalone walk
+/// ([`type_check_node_at`]), the operation-body pass and the constant-value pass. The
+/// two passes read it once before their loop — typing rewrites bodies and asserts no
+/// equation — where the standalone entry reads it per call.
+pub(super) fn simp_gate(kb: &mut KnowledgeBase) -> (bool, Vec<RuleId>) {
+    let enabled = crate::kb::simp_rewrite::has_simp_equations(kb) || kb.has_dot_applies;
+    let rids = if enabled {
+        kb.simp_equation_rids()
+    } else {
+        Vec::new()
+    };
+    (enabled, rids)
+}
+
 /// WI-657(9): [`type_check_node`] with the `@[simp]` gate (`simp_enabled` +
 /// `simp_rids`) supplied by the caller instead of recomputed. The eq/unify rule set
 /// is LOOP-INVARIANT across a whole `check_operation_bodies` pass (typing rewrites
@@ -555,8 +570,8 @@ pub(super) fn type_check_node_at(
 /// standalone callers.
 ///
 /// WI-1104: [`NodePos::Value`], for the reason spelled out at [`type_check_node`] — its
-/// two callers are an operation body and a match-arm guard, and a rule-body goal added
-/// here would silently lose the arity + 1 tolerance.
+/// callers are an operation body, a match-arm guard and a constant's value, and a
+/// rule-body goal added here would silently lose the arity + 1 tolerance.
 pub fn type_check_node_gated(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,

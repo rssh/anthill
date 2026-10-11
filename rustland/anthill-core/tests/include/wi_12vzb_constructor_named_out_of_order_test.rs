@@ -56,9 +56,9 @@
 //!   And two sites `the_call_is_read_wherever_an_operation_body_writes_it` does not
 //!   list, where an equation rewrote no call in any spelling. A match arm's GUARD: fixed
 //!   beside this, `wi_12vzb_match_guard_stored_as_typed_test`. A `const`'s VALUE: `const
-//!   c: Int64 = dbl(4)` under `rule dbl(?n) <=> ?n + ?n @[simp]` loads clean and dies
-//!   `OperationBodyMissing` — the value is checked with no equation applied
-//!   (`typing/sorts.rs`, `check_constant_bodies`), and is not this change's.
+//!   c: Int64 = dbl(4)` under `rule dbl(?n) <=> ?n + ?n @[simp]` loaded clean and died
+//!   `OperationBodyMissing` — the value was checked with no equation applied. Not this
+//!   change's: WI-20261011-2QZ3F, `wi_2qz3f_const_value_equation_test`.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
