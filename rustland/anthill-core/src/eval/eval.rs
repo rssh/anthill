@@ -454,6 +454,11 @@ impl Interpreter {
             // `DotApply` is a pre-dispatch form: the `@[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
             // Reaching here means it survived unresolved.
+            //
+            // `ListLit` / `SetLit` / `TupleLit` are the literal nodes of a rule's own
+            // term. In an operation body the typer has read one as the constructor
+            // written there (`typing::literal_as_constructor`), which the `Constructor`
+            // arm above constructs; one reaching here was not typed.
             Expr::HoApply { .. }
             | Expr::HoApplyWithin { .. }
             | Expr::ConstructorWithin { .. }

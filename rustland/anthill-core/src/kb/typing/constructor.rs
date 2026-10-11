@@ -110,6 +110,46 @@ fn check_tuple_literal_constructor(
     })
 }
 
+/// The node an operation body writes for a collection literal: a constructor over the
+/// literal's entity, with the components and the place in the source of `occ`, which is
+/// the node a rule's own term writes for the same text.
+///
+/// A rule's own term keeps a tuple, a set, and a list its position does not lower to a
+/// spine, as the node a clause is matched on. An operation body writes the same text as
+/// a constructor, and that is the node this typer checks against an expected type and
+/// eval constructs. A rule's text reaches an operation body where a `@[simp]` equation
+/// fires — as the equation's right-hand side, and as the value its guard bound a
+/// variable to — so the typer reads the literal as the constructor where it meets one
+/// there, and the typed tree keeps that.
+///
+/// The components stay where they are: a positional one positional, a named one under
+/// its label. A tuple of a rule's own term carries no mark of a distributive
+/// projection, so the constructor is not one.
+///
+/// The entity is resolved outright: `register_prelude` defines the three, and every
+/// load runs it before anything is typed.
+pub(super) fn literal_as_constructor(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    let (literal, pos_args, named_args) = match occ.as_expr() {
+        Some(Expr::ListLit(elements)) => (dt::LIST_LITERAL, elements.clone(), Vec::new()),
+        Some(Expr::SetLit(elements)) => (dt::SET_LITERAL, elements.clone(), Vec::new()),
+        Some(Expr::TupleLit { positional, named }) => {
+            (dt::TUPLE_LITERAL, positional.clone(), named.clone())
+        }
+        other => unreachable!("literal_as_constructor: not a collection literal: {other:?}"),
+    };
+    occ.rebuilt_expr(Expr::Constructor {
+        name: kb.resolve_symbol(dt::qualified(literal)),
+        pos_args,
+        named_args,
+        from_projection: false,
+        recv_type: None,
+        type_args: Vec::new(),
+    })
+}
+
 /// WI-20260826-7JDWY — WHICH COLLECTION-LITERAL SURFACE is being typed.
 ///
 /// The `T` of a `List` and the `T` of a `Set` are the same question, asked of two

@@ -48,7 +48,21 @@ pub(super) fn visit_type(
             return;
         }
     };
+    // The children of a compound expression are written as an operation body is, in a
+    // rule body too.
+    let env = env.under(expr);
     match expr {
+        // A rule's own term keeps a list, a set and a tuple as the node a clause is
+        // matched on; an operation body writes each as a constructor. Where the text is
+        // written as an operation body is, the constructor is what is typed, and what
+        // the typed tree keeps ([`literal_as_constructor`]); in a rule's own term the
+        // three literal arms below type the node.
+        Expr::ListLit(_) | Expr::SetLit(_) | Expr::TupleLit { .. }
+            if env.written_as_an_operation_body() =>
+        {
+            let constructor = literal_as_constructor(kb, &occ);
+            visit_type(kb, constructor, env, expected, fuel, pos, solving, work, results);
+        }
         // ── Iterative cases ─────────────────────────────────────
         Expr::Let {
             pattern,
