@@ -16,6 +16,9 @@
 //!                a plain sequence of loads pays.
 //!
 //! ITERS=<n> picks the iteration count (default 5). LOOP=1 runs `full` forever for a sampler.
+//! BENCH_USER=<file> is the user file in place of the one below, which writes no provision
+//! and defines no sort — `bench_user_laws.anthill`, beside this file, is one that brings a
+//! spec with a law, providers and an enum (WI-20261011-ZVPXS).
 //! THREADS=<n> runs `full` on n threads at once, ITERS loads each, and reports the
 //! per-load time and the throughput — whether loads SCALE, which is what a test
 //! binary's `--test-threads` assumes. Each thread builds its own KB on a default-size
@@ -93,7 +96,13 @@ fn main() {
         t.push(s.elapsed());
     }
     stats("parse", &t);
-    let user = parse::parse(USER_SRC).unwrap();
+    let user_src = match std::env::var("BENCH_USER") {
+        Ok(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("BENCH_USER={path:?}: {e}")),
+        Err(std::env::VarError::NotPresent) => USER_SRC.to_owned(),
+        // Set and unreadable is an error, not the built-in file measured under another's name.
+        Err(e) => panic!("BENCH_USER: {e}"),
+    };
+    let user = parse::parse(&user_src).unwrap_or_else(|e| panic!("the user file parses: {e:?}"));
 
     if let Some(n) = count_var("THREADS") {
         let wall = Instant::now();

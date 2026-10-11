@@ -1672,6 +1672,52 @@ pub fn rendered_facts(kb: &mut KnowledgeBase, functor_qn: &str) -> Vec<String> {
     terms.into_iter().map(|t| printer.print_term(t)).collect()
 }
 
+/// The head of every clause of `anthill.realization.ProofRecord`, in the order of the
+/// relation — the order the records were asserted in. THE ONE WALK of the registry for
+/// the tests that list it: four files each had a copy (WI-20261011-ZVPXS, /code-review).
+#[allow(dead_code)]
+pub fn proof_record_heads(kb: &KnowledgeBase) -> Vec<anthill_core::kb::term::TermId> {
+    // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
+    // `kb.intern(qn)` mints a different one in a disjoint space.
+    let relation = kb
+        .try_resolve_symbol("anthill.realization.ProofRecord")
+        .expect("resolve anthill.realization.ProofRecord");
+    kb.rules_by_functor(relation)
+        .into_iter()
+        .map(|rid| kb.rule_head(rid))
+        .collect()
+}
+
+/// Every `ProofRecord` of the KB as source text, SORTED — for a test that looks for a
+/// record by what it says.
+#[allow(dead_code)]
+pub fn proof_records_rendered(kb: &KnowledgeBase) -> Vec<String> {
+    let printer = anthill_core::persistence::print::TermPrinter::new(kb);
+    let mut out: Vec<String> = proof_record_heads(kb)
+        .into_iter()
+        .map(|head| printer.print_term(head))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The named field `key` of the application `term`, found by the field's local name.
+/// `None` when `term` is no application, and when it has no such field.
+#[allow(dead_code)]
+pub fn named_field_term(
+    kb: &KnowledgeBase,
+    term: anthill_core::kb::term::TermId,
+    key: &str,
+) -> Option<anthill_core::kb::term::TermId> {
+    match kb.get_term(term) {
+        anthill_core::kb::term::Term::Fn { named_args, .. } => named_args
+            .iter()
+            .find(|(s, _)| kb.local_name_of(*s) == key)
+            .map(|(_, v)| *v),
+        _ => None,
+    }
+}
+
 /// The `spec` of the provision whose provider is `provider_qn`, on the carrier its fact
 /// holds it on: the first such fact, in relation order. Read through the view.
 #[allow(dead_code)]

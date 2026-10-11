@@ -279,6 +279,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         "which provisions a LATER load's check reads: after a library sealed whole, after \
          one nothing sealed, and in one call, each by name — the count differs by which",
     ),
+    (
+        "include/wi_zvpxs_specialization_witness_index_test.rs",
+        1,
+        "the proof records a LATER load emits for its provisions against the ones one call \
+         over everything does: the one call by name",
+    ),
 ];
 
 /// This file, skipped because it carries the recognised spellings as STRING LITERALS.

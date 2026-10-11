@@ -16,6 +16,8 @@ use anthill_core::kb::proof_verify::{verify_proofs, ProofReport, ProofVerdict};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 
+use crate::common::named_field_term as named_field;
+
 /// Functor short name of a term, reading both `Fn` and the bare `Ref` a nullary
 /// constructor canonicalizes to (WI-511).
 fn functor_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
@@ -30,16 +32,6 @@ fn functor_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {
             .unwrap_or("")
             .to_string(),
     )
-}
-
-fn named_field(kb: &KnowledgeBase, term: TermId, key: &str) -> Option<TermId> {
-    match kb.get_term(term) {
-        Term::Fn { named_args, .. } => named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == key)
-            .map(|(_, v)| *v),
-        _ => None,
-    }
 }
 
 /// The `ProofRecord` head whose `rule` QN ends with `rule_suffix`.
