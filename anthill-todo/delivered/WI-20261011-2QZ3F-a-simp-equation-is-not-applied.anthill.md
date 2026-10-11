@@ -65,3 +65,19 @@ SEEN ON THE WAY AND NOT CHANGED, each measured the same before and after, put to
 
 RUNS, on 49470831. Full workspace: 36 binaries, 9257 passed, 0 failed. anthill-core under ANTHILL_TEST_TWO_STEP_LOAD=1 and ANTHILL_TEST_FRESH_LOAD=1: 8358 passed, 0 failed, each. /code-review run: seven findings, five fixed, two not changed and said above (the merge a refusal leaves; the kind-by-kind rung).
 
+### 2026-10-11T15:18:06Z — feedback — claude
+
+AFTER THE DELIVERY, SECOND — two of the three the note above listed as seen and not changed, fixed inline on the user's word (2026-10-11, 'Yes'), in one commit (d1149649). The user was asked about the first; the third went with it as the smaller of the two; the second is left to WI-20260902-40KSW.
+
+(a) A CONST IS THE RECEIVER OF A DOT. Over const origin: P, origin.x reads a field of the const's value and origin.getX() calls a member on it — named by one segment or dotted (Q.origin.x, Q.origin.getX()), with members chained after it (Q.line.a.x), with positional and named arguments, with a spec operation dispatched on it, in a const's value, under a lambda and in a match scrutinee; a relation a const holds is drained by a dot on the const (thirty.takeN(100)). Every spelling was refused in an operation body before, 'x.name: expected resolved name, got unresolved' for the read and 'unknown functor' for the call. The loader's two receiver ladders — the field read's (DotFieldPass) and the call's (dot_call_receiver_chain) — share one probe of what a prefix of the receiver names, and it asked for a rule: it asks for a rule or a const now (Loader::value_prefix_split, DotFieldPass::ValuePrefix), each name resolved once for both readings (resolve_qualified_readonly). A local or a parameter of the same name is still the receiver. The probe's second reader, the refusal of a call-site bracket on a dot call, answers for a const as for a local.
+
+(c) THE C++ GENERATOR PUTS A CONST THAT NEEDS A STRUCT BELOW IT. Every namespace const was emitted above the structs; a const that reads a sort's member const (D = S::c) and a const of an entity type (origin = P{3, 4}) stood above the struct they name, and g++ refused the header. Those are emitted after the structs, with the consts that name them; a const that needs no struct keeps its place first, where a struct that names it sees it. FOUND BY THE REVIEW in my first cut: the dependency scan read string text, so const GREETING: String = "an S is a sort" was taken to need struct S and moved below it, breaking a header that compiled. The scan skips string and character literals now (code_outside_literals), which also ends a false 'const dependency cycle' between two string consts that mention each other's names — on the tree before this change.
+
+CONTROLS, by back-out. The probe asking the rule alone: twelve rows of wi_2qz3f_const_receiver_test fail; four pass either way by design. Every const emitted first: the two new rows of wi533_const_test fail, one on the order it asserts and one at the compiler. The scan reading string text: the string row fails on the false cycle.
+
+SPEC. kernel-language.md §5.9 says a const is a receiver as any value is.
+
+NOT COVERED, measured the same before and after: a const's field in a rule body's data slot (?v <=> origin.x) is refused for a const whose value is computed — the data slot's own rule; a precondition that reads one (requires n > origin.x) is not proved at a call site. NOT CHANGED: the C++ generator still reads a const's dependencies off the lowered text (topo_sort_const_likes, and the new placement) and does not record them where the reference is lowered.
+
+RUNS, on d1149649. Full workspace: 36 binaries, 9276 passed, 0 failed. The load-recipe and oracle controls were not run for this change: it is in the operation-body walk's name reading and in the C++ emitter, and touches neither a seal nor a typer sweep. /code-review run: four findings, three fixed, one not changed and said above.
+
