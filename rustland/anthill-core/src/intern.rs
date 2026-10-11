@@ -549,7 +549,18 @@ pub struct SymbolTable {
     /// Dedup map for Unresolved symbols: name → Symbol
     pub(crate) intern_map: HashMap<String, Symbol>,
     /// Qualified name → unique resolved Symbol
+    ///
+    /// READ BY ANYONE; AN ENTRY IS WRITTEN THROUGH [`Self::set_canonical`] AND NOWHERE
+    /// ELSE (WI-20261010-ANK4X): this map IS `canonical_sym`, and a write to it can move
+    /// the canonical image of a symbol that already exists — which
+    /// [`Self::canonical_moves`] counts, for whatever is keyed by a canonical symbol.
+    /// The other writer replaces the map WHOLE: a layer's discard
+    /// ([`Self::restore_scoped`]), which that count says why it leaves alone. The field
+    /// is `pub` for its readers, so the rule is held by `grep`, not by the type.
     pub by_qualified_name: HashMap<String, Symbol>,
+    /// WI-20261010-ANK4X — how many times the canonical image of an EXISTING symbol has
+    /// moved: see [`Self::canonical_moves`].
+    canonical_moves: u64,
     /// All per-scope data, keyed by the scope's owning symbol.
     scopes: HashMap<ScopeId, Scope>,
     /// WI-369: symbols declared `internal` — hidden from cross-scope resolution
@@ -860,6 +871,10 @@ impl SymbolTable {
             // let one name acquire a second symbol.
             intern_map: _,
             by_qualified_name,
+            // MONOTONE — a COUNT of moves, never taken back: a structure whose keys were
+            // computed at count N and restored with a layer's snapshot is compared with a
+            // count that has only grown, so it can be found behind and never ahead.
+            canonical_moves: _,
             scopes,
             internal_syms,
             import_origin,
@@ -908,6 +923,11 @@ impl SymbolTable {
             defs_prefix.len()
         );
         self.defs[..defs_prefix.len()].clone_from_slice(&defs_prefix);
+        // The whole name table is put back, and NOT counted as a move
+        // ([`Self::canonical_moves`]): what is keyed by canonical symbols is SCOPED and
+        // comes back with this table, keyed for it — the provider index is, in
+        // `kb/layer.rs`. A structure keyed that way and left out of a layer's snapshot
+        // would owe a count here.
         self.by_qualified_name = by_qualified_name;
         self.scopes = scopes;
         self.internal_syms = internal_syms;
@@ -943,6 +963,7 @@ impl SymbolTable {
             defs: Vec::new(),
             intern_map: HashMap::new(),
             by_qualified_name: HashMap::new(),
+            canonical_moves: 0,
             scopes: HashMap::new(),
             internal_syms: HashSet::new(),
             import_origin: HashMap::new(),
@@ -977,6 +998,7 @@ impl SymbolTable {
             defs,
             intern_map,
             by_qualified_name,
+            canonical_moves,
             scopes,
             internal_syms,
             import_origin,
@@ -998,6 +1020,9 @@ impl SymbolTable {
             defs: plain(defs),
             intern_map: plain(intern_map),
             by_qualified_name: plain(by_qualified_name),
+            // The copy's names are these, so what was keyed by them in the original is
+            // keyed right in the copy: the same count.
+            canonical_moves: plain(canonical_moves),
             scopes: plain(scopes),
             internal_syms: plain(internal_syms),
             import_origin: plain(import_origin),
@@ -1105,9 +1130,54 @@ impl SymbolTable {
             arg_places: Vec::new(),
         });
         scope_data.locals.insert(local_name.to_owned(), sym);
-        self.by_qualified_name
-            .insert(qualified_name.to_owned(), sym);
+        self.set_canonical(qualified_name, sym);
         sym
+    }
+
+    /// THE ONE WRITE of [`Self::by_qualified_name`]: `sym` is the canonical symbol of
+    /// `qualified_name` from here on. Counts a MOVE ([`Self::canonical_moves`]) when a
+    /// symbol that already exists has just had its canonical image changed by it:
+    ///
+    /// * the name had a canonical symbol and this is another — the earlier one was its
+    ///   own image and is now `sym`'s. [`Self::define`] does this when one qualified name
+    ///   is defined under a second local name: its early return is keyed on the scope's
+    ///   LOCALS, not on this map;
+    /// * the name had none, and was INTERNED — an unresolved symbol carries it, was its
+    ///   own image, and is `sym`'s twin now. A name written before its declaration
+    ///   arrives is exactly this.
+    ///
+    /// NOT counted, and outside what the count is for — two kinds of symbol that carry
+    /// a name and are in neither map, so that nothing here can see them: a binder
+    /// minted by [`Self::intern_unique`] under the same spelling (resolved only through
+    /// the loader's local-name frame; it names no sort), and a symbol a DISCARDED LAYER
+    /// defined (its definition stays, `defs` being append-only; the rows that spelled
+    /// it are tombstones).
+    fn set_canonical(&mut self, qualified_name: &str, sym: Symbol) {
+        let moved = match self.by_qualified_name.insert(qualified_name.to_owned(), sym) {
+            Some(earlier) => earlier != sym,
+            None => self.intern_map.get(qualified_name).is_some_and(|twin| *twin != sym),
+        };
+        if moved {
+            self.canonical_moves += 1;
+        }
+    }
+
+    /// WI-20261010-ANK4X — how many times the canonical image (`canonical_sym`) of a
+    /// symbol that ALREADY EXISTED has moved; [`Self::set_canonical`] says which writes
+    /// those are. A layer's discard is not one of them: it puts back the table a
+    /// scoped structure was keyed for, with the structure. For a structure keyed by canonical
+    /// symbols that are computed when a row is stored and not when it is read — the
+    /// provider index (`kb::typing::ProvidesIndex`) — which keeps the count its keys
+    /// were computed at and computes them again when it has moved. A define of a name
+    /// nothing has spelled yet moves nothing: every other name keeps its image.
+    pub(crate) fn canonical_moves(&self) -> u64 {
+        self.canonical_moves
+    }
+
+    /// `name` resolves, by qualified name, to `sym` as well as to whatever else does:
+    /// the bare spelling of a prelude sort (`Int64` beside `anthill.prelude.Int64`).
+    pub fn alias_qualified_name(&mut self, name: &str, sym: Symbol) {
+        self.set_canonical(name, sym);
     }
 
     /// Define a resolved symbol addressable ONLY by its qualified name — it is
@@ -1143,8 +1213,7 @@ impl SymbolTable {
             scope,
             arg_places: Vec::new(),
         });
-        self.by_qualified_name
-            .insert(qualified_name.to_owned(), sym);
+        self.set_canonical(qualified_name, sym);
         sym
     }
 

@@ -198,9 +198,10 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         }
         // ALREADY-PROVIDING carriers come from the set read ONCE above, not from a
         // `sort_provides` call per sort. That predicate is a TRANSITIVE walk over the
-        // provider relation, and `kb.provides_index` is not built this early in the
-        // pipeline, so each call is a live relation scan — ~200 of them over a relation
-        // this pass is itself growing, which is quadratic in the sort count.
+        // provider relation — and, when this was written, a scan of the whole relation
+        // per call, the provider index not standing this early in the pipeline (it does
+        // since WI-20261010-ANK4X): ~200 of them over a relation this pass is itself
+        // growing, which was quadratic in the sort count.
         //
         // The DIRECT reading is also the right question: what matters is whether this
         // carrier already has its OWN row, not whether it reaches one through a spec it

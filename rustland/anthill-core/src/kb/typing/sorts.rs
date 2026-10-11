@@ -185,11 +185,9 @@ pub(super) fn type_check_sorts_collect(
     // called on many sort-references per node and was the #1 hotspot post-WI-656
     // (a double linear scan of every SortAlias fact per call).
     build_sort_alias_index(kb);
-    // WI-660 — index the SortProvidesInfo (provider/coherence) facts once, keyed by
-    // canonical spec-base and by carrier short-name, so the dispatch/coherence sites
-    // stop scanning every provides fact per call. Sound build-once: `SortProvidesInfo`
-    // is `constant` (053/WI-665) so it cannot mutate at runtime.
-    build_provides_index(kb);
+    // WI-660 — the SortProvidesInfo (provider/coherence) index is NOT built here any
+    // more (WI-20261010-ANK4X): it takes each row where the row is asserted, so it
+    // stands already, as it does for a run of the typer made by hand.
     // WI-671 — index the SortInfo (per-sort reflect metadata) facts once, keyed by the
     // sort's short name, so the four per-query keyed lookups (`find_sort_info` — called
     // once per sort in the loop below — `sort_operation_names`, `operations_of_sort`,
@@ -1955,11 +1953,9 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
 /// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
 /// specs `node` directly provides). Uses the provider index's carrier direction (canonical
 /// bucket + canonical exactness), so the transitive walk queries only the out-edges per hop
-/// instead of re-extracting the whole edge table on every `sort_provides` call. Falls back
-/// to the full scan before the index is built (the same canonical re-filter makes both
-/// paths identical). A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped
-/// here; occurrence-based provides lookup is gated effect-expressions-as-types work (avoid
-/// the term-only `rule_head` panic on a value head).
+/// instead of re-extracting the whole edge table on every `sort_provides` call. (It fell
+/// back to a scan of the whole relation while the index was dropped, until
+/// WI-20261010-ANK4X; the index stands at every read now.)
 ///
 /// WI-864 — CANONICAL IN, CANONICAL OUT, and both halves are a CONTRACT rather than a
 /// convention. `node_canon` must already be `canonical_sort_sym`'d: the memo is keyed that
@@ -1979,7 +1975,7 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
 /// wrong verdict, feeding `sort_provides_admissibly`, the dispatch carrier filter and
 /// requires-coverage, so a conforming program is silently REFUSED. Exactly WI-954's mode.
 /// The corpus cannot catch it today (every provides carrier is already its own canonical
-/// form, which `build_provides_index`' own `debug_assert` asserts), so a second caller
+/// form, which `provides_filing`'s own `debug_assert` asserts), so a second caller
 /// added later is the hazard, and this turns it into a test-time panic instead.
 pub(super) fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> SmallVec<[Symbol; 4]> {
     debug_assert_eq!(
@@ -1989,35 +1985,31 @@ pub(super) fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> Smal
          canonical, so the bucket lookup would miss and answer `provides nothing`",
         kb.qualified_name_of(node_canon),
     );
-    // WI-864 — the decoded bucket when the index is live. Every filter the loop below
-    // applies is already discharged at BUILD time (`is_fact`, a readable `sort_ref` whose
-    // canonical form IS this key, a readable `spec` base) except liveness, which a frozen
-    // bucket cannot answer — so `is_rule_alive` stays here, exactly as
-    // `SymbolKeyedFactIndex::rids_or_scan` keeps it on the rid path.
-    if let Some(ix) = &kb.provides_index {
-        return ix
-            .carrier_edges
-            .get(&node_canon)
-            .map(|edges| {
-                edges
-                    .iter()
-                    .filter(|(rid, _)| kb.is_rule_alive(*rid))
-                    .map(|(_, dst_canon)| *dst_canon)
-                    .collect()
-            })
-            .unwrap_or_default();
-    }
-    // No index (the load-time windows where the relation is being written): decode live.
-    // This is the definition the memo above is built from — a provision ROW ([`ProvidesRow`]),
-    // as `build_provides_index` files the memo from the same decode.
-    let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    for row in provides_rows_of_provider_canon(kb, node_canon) {
-        // CANONICAL out-edges: the sole caller compares them canonically and recurses on
-        // them (where the recursion would canonicalize anyway), so canonicalizing at the
-        // producer is the same relation with the conversion done once.
-        out.push(kb.canonical_sort_sym(row.spec_base));
-    }
-    out
+    // WI-864 — the decoded bucket. Every filter a walk of the carrier's rows would apply
+    // was discharged when the row was FILED (`is_fact`, a readable `sort_ref` whose
+    // canonical form IS this key, a readable `spec` base), and a retracted row has been
+    // taken out (WI-20261010-ANK4X) — so this is the bucket as it stands. The definition
+    // it is held to is [`provides_out_edges_decoded`].
+    carrier_edge_targets(kb, node_canon)
+}
+
+/// [`provides_out_edges`] DECODED, by a walk of the WHOLE relation: the canonical spec
+/// base of each provision ROW ([`ProvidesRow`]) whose provider is `node_canon`, in
+/// relation order — the definition the filed edges are that function computed once of.
+/// It was the arm the walk took while the index was dropped; nothing takes it now but
+/// the tests that hold the memo to it, and it reads no bucket so that they can.
+#[cfg(test)]
+pub(super) fn provides_out_edges_decoded(
+    kb: &KnowledgeBase,
+    node_canon: Symbol,
+) -> SmallVec<[Symbol; 4]> {
+    // CANONICAL out-edges: the sole caller compares them canonically and recurses on
+    // them (where the recursion would canonicalize anyway), so canonicalizing at the
+    // producer is the same relation with the conversion done once.
+    provides_rows(kb)
+        .filter(|row| kb.canonical_sort_sym(row.provider) == node_canon)
+        .map(|row| kb.canonical_sort_sym(row.spec_base))
+        .collect()
 }
 
 /// Transitive-reachability worker for [`sort_provides`]: from `carrier_canon`, follow each

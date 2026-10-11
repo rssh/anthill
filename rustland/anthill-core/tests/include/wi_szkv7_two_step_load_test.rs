@@ -23,7 +23,13 @@
 //!   never to choose the shared base — it FAILS, observing one shot; `load_stdlib_kb`
 //!   made to load for itself — it FAILS on the stdlib-alone reading; the base made
 //!   per-thread (`SHARED_BASE` a `thread_local!`) — it FAILS on the second thread's
-//!   reading, which the first two back-outs pass. Measured under
+//!   reading, which the first two back-outs pass. Measured on the pool of bases
+//!   (WI-20261010-ANK4X, where `SHARED_BASE` became `SHARED_BASES`): the pool made to
+//!   LOAD the stdlib again for each of two bases, where it copies the one loaded KB —
+//!   it FAILS on "the base is built once a process", counting three loads. The two
+//!   other rows of this file pass with it, as a test that only uses its KB does: a
+//!   base that was loaded is as good a base as one that was copied, which is why the
+//!   count is the control. Measured under
 //!   `ANTHILL_TEST_TWO_STEP_LOAD=1` (WI-20261006-SZKV7): `run_switched_recipe` made to
 //!   pass `LoadRecipe::OneShot` — it FAILS; the name in `common`'s constant changed by
 //!   one letter — it FAILS the same way, which is why the row spells the names out
@@ -188,7 +194,12 @@ fn the_switch_selects_the_recipe_the_helpers_run() {
     .expect("the second thread's load");
     if asked == "SHARED BASE" {
         assert_eq!(on_another_thread, (0, false), "a second thread built a base of its own");
-        assert_eq!(crate::common::shared_base_builds(), 1, "the base is built once a process");
+        assert_eq!(
+            crate::common::shared_base_builds(),
+            1,
+            "the base is built once a process: the stdlib is loaded once, however many \
+             copies of it the pool holds"
+        );
     } else {
         assert_eq!(on_another_thread.0, 1, "a fresh recipe loads the stdlib on every thread");
     }

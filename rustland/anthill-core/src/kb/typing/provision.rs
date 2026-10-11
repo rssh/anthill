@@ -905,6 +905,13 @@ pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) 
         .collect()
 }
 
+/// WI-20261010-ANK4X — the PROVIDER of each provision of `spec_sort` (its `sort_ref`),
+/// one per row and in relation order. Not [`provision_carriers_of_spec`], which answers
+/// the sort a row is ABOUT: `eq_derive`'s partial seed asks who wrote a `NonEq`.
+pub(crate) fn providers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
+    provides_rows_of_spec(kb, spec_sort).map(|row| row.provider).collect()
+}
+
 /// WI-20261006-SZKV7 — one provision of `spec`, with the sort it is ABOUT.
 pub(crate) struct ProvisionAbout {
     /// The row, which is the provision's identity: restating it lands on the same row.

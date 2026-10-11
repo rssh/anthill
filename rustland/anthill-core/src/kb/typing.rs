@@ -165,6 +165,7 @@ use op_bodies::*;
 use pattern::*;
 pub(crate) use projection::*;
 pub(crate) use provider_constraint::*;
+pub use provides_index::provider_index_agreement_reads_by_this_thread;
 pub(crate) use provides_index::*;
 pub use provision::positions_typed_at_a_spec_over_a_parameter;
 pub(crate) use provision::*;

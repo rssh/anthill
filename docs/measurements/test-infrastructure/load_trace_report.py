@@ -5,7 +5,12 @@
     cd rustland
     ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \\
         --config <the gate's three opt lines, §10> -- --show-output > load-trace.log 2>&1
-    python3 ../docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
+    python3 ../docs/measurements/test-infrastructure/load_trace_report.py load-trace.log [stdlib-files]
+
+`stdlib-files` is how many files the stdlib is, when the log cannot say: the report takes
+the commonest file count among the big loads, which is the stdlib's over a whole crate's
+run and is NOT over one binary's (in `wi_tests` alone the commonest big load is the
+stdlib and one user file, in one call). The first line printed says what was used.
 
 `--show-output`, NOT `--nocapture`: libtest keeps capturing and prints each passed test's
 output under `---- <test> stdout ----` once the binary's tests are done, so every trace
@@ -15,12 +20,15 @@ and a phase line cannot be given to a load.
 
 A load is classified by the recipe line `tests/common` prints before it
 (`recipe_load <recipe> user_files=<n>`) and by how many files it loaded. The copies of the
-shared base are COUNTED from that line. Their TIME needs a line that is not in the tree:
+shared base are COUNTED from that line, and their TIME is read from the one
+`shared_base_instance` prints for each (in the tree since WI-20261010-ANK4X; a temporary
+timer for `load-count-2026-10-10.txt`):
 
     [load_timing] base_copy wait=<duration> copy=<duration>
 
-printed by `shared_base_instance` (the wait for the base's lock, then the copy made under
-it). Without it the `copy` and `wait` columns are 0 and the report says so.
+`wait` from asking for a base to holding the lock of one of the pool's, `copy` the deep
+copy made under it. A log taken before that line existed has none, and the `copy` and
+`wait` columns are then 0 and the report says so.
 """
 import re
 import sys
@@ -143,10 +151,11 @@ with open(path, encoding='utf-8', errors='replace') as f:
         label = re.sub(r'\(\d+ sorts\)', '(N sorts)', label)
         cur_load.phases.append((label, dur))
 
-# The stdlib's size: the commonest file count among the big loads.
+# The stdlib's size: given, or the commonest file count among the big loads.
 sizes = Counter(l.files for b in binaries for t in b.tests.values() for l in t.loads
                 if l.files is not None and l.files >= 60)
-STDLIB = sizes.most_common(1)[0][0]
+GIVEN = len(sys.argv) > 2
+STDLIB = int(sys.argv[2]) if GIVEN else sizes.most_common(1)[0][0]
 
 # Classify each load from the recipe line that announced it.
 KINDS = ['base-build', 'stdlib-alone', 'one-shot+user', 'on-base', 'two-step-2nd', 'later-other', 'unknown']
@@ -196,7 +205,7 @@ def pct(a, b):
     return f'{100 * a / b:5.1f}%' if b else '    -'
 
 
-print(f'# stdlib size detected: {STDLIB} files; trace lines outside any test block: {lost}')
+print(f'# stdlib size {"given" if GIVEN else "detected"}: {STDLIB} files; trace lines outside any test block: {lost}')
 print()
 print('== 1. loads EXECUTED per binary, by what they are ==')
 print('#   base-build     the shared base\'s own load of the stdlib, once per binary')
@@ -228,7 +237,7 @@ print()
 print('== 2. where the thread-time goes, per binary (thread-seconds; share of wall x 12) ==')
 print('#   full loads   base-build + stdlib-alone + 1shot+user: a call that loads the stdlib')
 print('#   later loads  every other call')
-print('#   copy         inside deep_clone;   wait   blocked on the base\'s one lock before it')
+print('#   copy         inside deep_clone;   wait   from asking for a base to holding the lock of one of the pool\'s')
 print(f'{"binary":<32}{"wall x12":>9}{"full loads":>12}{"later loads":>12}{"copy":>8}{"wait":>8}{"all of it":>11}{"share":>8}{"   the rest":>11}')
 gt = Counter()
 for b in binaries:
@@ -269,7 +278,7 @@ copies = [c for b in binaries for t in b.tests.values() for _, c in t.copies]
 wi = next((b for b in binaries if 'wi_tests' in b.name), None)
 if copies:
     print(f'  copy of the base     {stats(copies)}')
-    print(f'  wait for its lock    {stats(waits)}')
+    print(f'  wait for a base      {stats(waits)}')
 else:
     print('  copy of the base     NOT TRACED: no `base_copy` line in this log (columns `copy` and `wait` above are 0)')
 if wi and wi.wall:
