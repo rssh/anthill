@@ -10,7 +10,8 @@ use super::*;
 ///
 /// WI-444: this is the body-agnostic core. [`lookup_spec_op_dispatch`] layers
 /// the body-less gate on top (a body-less spec op is the call-site dispatch
-/// target via `SortProvidesInfo`); a DEFAULTED spec op (with its own body) is
+/// target via `SortProvidesInfo`), and with it the data-sort one — a sort with
+/// constructors has no provider to dispatch to; a DEFAULTED spec op (with its own body) is
 /// not a body-less dispatch target but is still a spec op whose carrier may
 /// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
 /// do not shadow), so the override paths gate on this instead.
@@ -162,6 +163,11 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// (a runnable default a carrier may override) or [`lookup_spec_op_dispatch`]'s
 /// (body-less, resolved by call-site dispatch). Returns the parent spec sort.
 ///
+/// AND A BODY-LESS OPERATION OF A PARAMETRIC DATA SORT, which is in neither half since
+/// WI-20261011-RM247: it is no dispatch placeholder, and its call in a rule body is still
+/// typed — its arguments checked at the sort's parameters, its `@[simp]` equation fired —
+/// as the call of a bodied operation of the same sort is.
+///
 /// ITS FIRST READER is [`call_dispatch_shape`], and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
 /// or refuses a defaulted call, the WI-210 block dispatches a body-less one and
@@ -180,9 +186,10 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// admitting that population at THIS site costs — 14 tests across 4 suites, the walk
 /// firing `type_check_node` on entity-constructor calls. Both halves' own gates carry
 /// the same leg (`op_has_runnable_body` / `operation_has_no_body` each require an
-/// `OperationInfo`), so asking for one directly is what makes this their union and not
-/// a wider third reading. `wi1043_bodyless_rule_body_test::the_walk_gate_is_exactly_-
-/// the_two_halves` drives that equality over the corpus.
+/// `OperationInfo`), so asking for one directly is what makes this their union — with the
+/// data sort's body-less operations, above — and not a wider reading still.
+/// `wi1043_bodyless_rule_body_test::the_walk_gate_is_the_two_halves_and_a_data_sorts_-
+/// body_less_operations` drives that equality over the corpus.
 ///
 /// THE SAME UNION SPLITS A WOVEN CALL (WI-20260925-P7VP4): a spec op's woven call carries
 /// one DISPATCH dictionary, any other operation's carries SLOTS — the inference declines a
@@ -202,12 +209,27 @@ pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
-/// that has at least one `sort <Param> = ?` declaration AND the
+/// that has at least one `sort <Param> = ?` declaration and no constructor, AND the
 /// operation has no body. Spec operations are subject to call-site
 /// dispatch via `SortProvidesInfo` lookup.
 ///
 /// Returns the *parent sort* symbol (the spec sort) when `op_sym`
 /// qualifies; `None` otherwise.
+///
+/// WI-20261011-RM247 — NOT AN OPERATION OF A DATA SORT. A sort with constructors is a data
+/// sort and nothing provides one (kernel-language.md §5.1), so a body-less operation it
+/// declares has no provider to be dispatched to, with a parameter or without: it is the
+/// sort's own, run by its host mapping, its rules or the `@[simp]` equation that defines
+/// it. Read as a dispatch placeholder, `Box.open` in `sort Box { sort V = ?; entity mk(v:
+/// V); operation open(b: Box[V]) -> V; rule open(?b) <=> peek(?b) @[simp] }` was held to
+/// `Box` providing `Box` by every reader of this answer. The equation's guard never held:
+/// the program loaded clean and the call died `OperationBodyMissing`, where the same sort
+/// without its parameter ran. A caller generic in `V`, and a rule body, were refused for a
+/// `requires Box[…]` or a `provides Box[…]` that no program can write.
+///
+/// The other two gates keep the parametric reading. [`defaulted_spec_op_parent`] is not
+/// asked this, and [`spec_op_call_parent`] is also what has a rule-body call of a
+/// parametric sort's operation typed, data sort or spec.
 pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     // The op must be body-less (declaration only): a DEFAULTED spec op is a
     // normal-bodied op the runtime can run directly, not a call-site dispatch
@@ -217,7 +239,70 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     if !operation_has_no_body(kb, op_sym) {
         return None;
     }
+    // Asked last: the two legs above answer for nearly every operation. `parent_sym` was
+    // read by its qualified name, so it is the canonical symbol `sort_is_data` is keyed by.
+    if sort_is_data(kb, parent_sym) {
+        return None;
+    }
     Some(parent_sym)
+}
+
+/// WI-20261011-CR6GD — the declared operation `op_sym` has ONE definition, its clauses,
+/// and no call of it can run: clauses are indexed under it, nothing executable backs it
+/// (no body, no host mapping, no builtin), no provider can supply it, and it is not the
+/// `eq` a carrier's equality is dispatched to.
+///
+/// CLAUSES ANSWER A GOAL, NOT A CALL (kernel-language.md §5.3). `operation open(b: Box) ->
+/// Int64` beside `rule open(mk(v: ?v), ?v) :- true` is one definition written
+/// relationally: the goal `open(mk(4), ?x)` resolves through the clause, and an expression
+/// call `Box.open(Box.mk(4))` names the operation, which has nothing for eval to enter.
+/// Such a call loaded clean and died `OperationBodyMissing`; [`check_apply_iter`] refuses
+/// it where an operation body writes it.
+///
+/// NO PROVIDER CAN SUPPLY IT is asked of the OWNER, not of [`lookup_spec_op_dispatch`]: a
+/// namespace's operation and a data sort's are their owner's own (§5.1), while a sort with
+/// no constructor may be provided — parametric or not — and a call of its operation is
+/// dispatched to whichever member the provider supplies. That call is left to the
+/// dispatch, which has the carrier in hand.
+///
+/// THE `eq` LEG is eval's `eq_bridge_target` read at load: a carrier's `eq` written as
+/// clauses is the one operation a call does run by proving it, so `TotalFloat.eq(a, b)`
+/// in an operation body stays a call.
+///
+/// ASKED OF A DECLARED OPERATION — its one caller holds the operation's record — and of
+/// the symbol as the call resolved it. The clause index first: it is the leg nearly every
+/// call leaves by, and it is two probes of a map keyed by symbol.
+pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    kb.has_clauses_under(op_sym)
+        && !op_is_executable(kb, op_sym)
+        && impl_parent_sort_of_op(kb, op_sym).is_none_or(|sort| sort_is_data(kb, sort))
+        && !kb.is_eq_dispatch_target(op_sym)
+}
+
+/// How the goal of a clause-defined operation of `arity` parameters is spelled, read off
+/// the clauses written under it: with the result as one more column where a clause's head
+/// has one argument more than the operation declares, at the operation's own arity
+/// otherwise. The column is positional and last (§5.3). The refusal names the spelling
+/// that answers, so it is the written heads that say which — a `Bool` operation may be
+/// given its result as a column too.
+pub(super) fn clause_defined_operation_goal(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    arity: usize,
+) -> String {
+    let short = short_name_of(kb.qualified_name_of(op_sym));
+    let result_column = kb.rules_by_functor_iter(op_sym).any(|rid| {
+        matches!(
+            kb.rule_head_value(rid).head(kb),
+            ViewHead::Functor { pos_arity, .. } if pos_arity == arity + 1
+        )
+    });
+    match (result_column, arity) {
+        (true, 0) => format!("{short}(?result)"),
+        (true, _) => format!("{short}(…, ?result)"),
+        (false, 0) => format!("{short}()"),
+        (false, _) => format!("{short}(…)"),
+    }
 }
 
 /// WI-857 — [`resolve_op_target`] with the `NoProvider` refusal, for every reader

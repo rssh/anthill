@@ -7905,14 +7905,42 @@ impl KnowledgeBase {
             return;
         }
         match self.entity_field_names(functor) {
-            // A linear scan, not a map: an entity has a handful of fields, and a map built
-            // per call is an allocation on every entity construction and query lowering.
-            // Field names are distinct, so the first position is the only one.
-            Some(fields) => {
-                named.sort_by_key(|(s, _)| fields.iter().position(|f| f == s).unwrap_or(usize::MAX))
-            }
+            Some(fields) => named.sort_by_key(|(s, _)| Self::declared_rank(fields, *s)),
             None => named.sort_by_key(|(s, _)| s.index()),
         }
+    }
+
+    /// Where `key` stands in a declared field list — the key
+    /// [`Self::canonicalize_record_named_args`] sorts a record's named args by; a label
+    /// that names no declared field ranks last.
+    ///
+    /// A linear scan, not a map: an entity has a handful of fields, and a map built per
+    /// call is an allocation on every entity construction and query lowering. Field names
+    /// are distinct, so the first position is the only one.
+    fn declared_rank(fields: &[Symbol], key: Symbol) -> usize {
+        fields.iter().position(|f| *f == key).unwrap_or(usize::MAX)
+    }
+
+    /// Are `named` written out of the declaration order of `functor`'s fields — would
+    /// [`Self::canonicalize_record_named_args`] move one of them by its schema?
+    ///
+    /// `false` for a functor with no field schema: every producer of the canonical
+    /// entity form leaves such a one as written (`entity_slots::complete_named_slots`),
+    /// and the interning-order fallback above is a builder's, not a reading of what an
+    /// author wrote.
+    pub(crate) fn named_out_of_declared_order<T>(
+        &self,
+        functor: Symbol,
+        named: &[(Symbol, T)],
+    ) -> bool {
+        if named.len() < 2 {
+            return false;
+        }
+        let Some(fields) = self.entity_field_names(functor) else {
+            return false;
+        };
+        // The stable sort of the canonicalizer moves nothing exactly when this holds.
+        !named.is_sorted_by_key(|(s, _)| Self::declared_rank(fields, *s))
     }
 
     /// Is `functor` an ORDERED PRODUCT — a named tuple

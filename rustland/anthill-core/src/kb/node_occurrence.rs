@@ -4465,13 +4465,31 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
                 return occ_build_fn(kb, *head, pos_args, named_args);
             }
         }
+        // A constructor lowers to the canonical entity form, as the view presents it —
+        // see [`canonical_ctor_args`].
         Some(Expr::Constructor {
             name,
             pos_args,
             named_args,
             ..
-        })
-        | Some(Expr::Instantiation {
+        }) => {
+            return match canonical_ctor_args(kb, *name, pos_args, named_args) {
+                Some(slots) => {
+                    let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> =
+                        smallvec::SmallVec::new();
+                    for (field, child) in slots {
+                        named.push((field, try_occurrence_to_term(kb, child)?));
+                    }
+                    Some(kb.alloc(Term::Fn {
+                        functor: *name,
+                        pos_args: smallvec::SmallVec::new(),
+                        named_args: named,
+                    }))
+                }
+                None => occ_build_fn(kb, *name, pos_args, named_args),
+            };
+        }
+        Some(Expr::Instantiation {
             name,
             pos_args,
             named_args,
@@ -4709,6 +4727,95 @@ pub fn build_occurrence_cons_list(
         );
     }
     list
+}
+
+/// A constructor application in THE CANONICAL ENTITY FORM
+/// (docs/design/entity-term-mapping.md §2): every argument named, in declaration order,
+/// a positional one at the declared field no named argument took —
+/// [`KnowledgeBase::positional_to_named_plan`], the rank rule every other producer of an
+/// entity uses, then [`KnowledgeBase::canonicalize_record_named_args`].
+///
+/// AN OPERATION BODY'S NODE IS STORED AS WRITTEN — its arguments are evaluated in that
+/// order and a code generator emits that spelling — and it is read as a TERM in the
+/// canonical form: by the view ([`crate::kb::term_view`]'s `occ_*` readers) and by the
+/// twin ([`try_occurrence_to_term`]), which present one shape. Read as written, `Box.mk(4)`
+/// was `mk(4)` beside the `mk(v: ?v)` every pattern and every other carrier holds, and
+/// `pair(b: 2, a: 7)` kept its keys in that order beside a `pair(a: ?a, b: ?b)`. The
+/// shape is the identity (the discrimination key, which descends named keys in the order
+/// given; the arity fail-fast of a unify; the hash-consed twin): a `@[simp]` equation
+/// over `open(mk(v: ?v))` did not fire on `Box.open(Box.mk(4))`, and `requires
+/// Pair.big(p)` was not provable at `need(Pair.pair(b: 2, a: 7))`, where the same calls
+/// written named, in order, did and was. The evaluator canonicalizes the VALUE it builds
+/// (`finish_constructor`); this is the same node before it is evaluated.
+///
+/// `None` where the written shape is the shape. With a positional argument: a functor
+/// the plan skips (no declared field, a reflect form whose positional shape is its
+/// encoding), and more positional arguments than unfilled fields, which the load refuses
+/// where it is written. With none: named arguments already in declaration order, fewer
+/// than two of them, and a functor with no field schema
+/// ([`KnowledgeBase::named_out_of_declared_order`]). A named tuple's written order is its
+/// identity, and the canonicalizer leaves it.
+///
+/// DERIVED AT THE READ, NOT KEPT ON THE NODE (WI-20261011-12VZB). A misordered named
+/// list is told from a canonical one only by the field list, so the all-named case is a
+/// lookup where the positional one reads `pos_args` for nothing. Measured before it was
+/// taken, by counting the reads: the only reader the order reaches is the key list
+/// (`occ_named_keys`) and the twin — the head counts and a child is found by name — and
+/// that reader meets a constructor node of two or more named arguments 44 times in a
+/// load of the standard library, 188 times with anthill-todo's sources, and not once
+/// more under a resolution over thirty-element lists, whose cells are not this node (a
+/// rule body's constructor is the loader's canonical application). A fact kept on the
+/// node would be owed by every site that builds one, and wrong in silence at the site
+/// that forgot.
+pub(crate) fn canonical_ctor_args<'a>(
+    kb: &KnowledgeBase,
+    name: Symbol,
+    pos_args: &'a [Rc<NodeOccurrence>],
+    named_args: &'a [(Symbol, Rc<NodeOccurrence>)],
+) -> Option<smallvec::SmallVec<[(Symbol, &'a Rc<NodeOccurrence>); 4]>> {
+    let fields = if pos_args.is_empty() {
+        if !kb.named_out_of_declared_order(name, named_args) {
+            return None;
+        }
+        smallvec::SmallVec::new()
+    } else {
+        positional_ctor_fields(kb, name, pos_args.len(), named_args)?
+    };
+    let mut slots: smallvec::SmallVec<[(Symbol, &'a Rc<NodeOccurrence>); 4]> =
+        named_args.iter().map(|(s, c)| (*s, c)).collect();
+    slots.extend(fields.iter().copied().zip(pos_args.iter()));
+    kb.canonicalize_record_named_args(name, &mut slots);
+    Some(slots)
+}
+
+/// The declared fields a constructor application's `pos_count` positional arguments fill,
+/// in argument order — the positional half of [`canonical_ctor_args`]' gate, and all
+/// that the two readers which supply no child need of it: the head counts them, and the
+/// positional reader answers nothing where there are any. Neither asks about the order
+/// of the named arguments, which changes no count.
+///
+/// EVERY ARM OF THE PLAN IS NAMED. `Skip` is a functor whose written shape is its shape.
+/// `OverArity` is a node the load refuses where it is written (`constructor 'pair' given
+/// 3 positional argument(s) but has 2 unfilled field(s)` — measured, with no reader
+/// here in the way). A reader has no error channel and may meet the node before that
+/// refusal ends the load, so it presents it as written and the refusal is the one thing
+/// said about it. The evaluator and the body unfold, which meet the same arm only on a
+/// broken invariant, raise and assert.
+pub(crate) fn positional_ctor_fields(
+    kb: &KnowledgeBase,
+    name: Symbol,
+    pos_count: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> Option<smallvec::SmallVec<[Symbol; 4]>> {
+    if pos_count == 0 {
+        return None;
+    }
+    let named_syms: smallvec::SmallVec<[Symbol; 2]> = named_args.iter().map(|(s, _)| *s).collect();
+    match kb.positional_to_named_plan(name, &named_syms, pos_count) {
+        crate::kb::resolve::PositionalPlan::Assign(fields) => Some(fields),
+        crate::kb::resolve::PositionalPlan::Skip => None,
+        crate::kb::resolve::PositionalPlan::OverArity { .. } => None,
+    }
 }
 
 /// `None` when any CHILD is a non-goal form — the try contract is RECURSIVE

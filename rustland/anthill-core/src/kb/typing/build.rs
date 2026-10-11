@@ -1298,10 +1298,10 @@ pub(super) fn build_type(
             // the constructor rewrite REMOVED re-pointed at those constructors
             // ([`repoint_arm_binders`]). Both must be carried, and for the same reason
             // twice over: the body is what `push_visit` type-checks below, and the guard
-            // is what `reassemble_match` puts back into the stored tree — a guard checked
-            // in one spelling and stored in another would pass the load and then read an
-            // unbound name at eval. Same `Rc` as the written one on every arm that
-            // rewrote nothing, which is every arm in the corpus today.
+            // is what pass 2 types and `reassemble_match` puts back into the stored tree
+            // — a guard checked in one spelling and stored in another would pass the load
+            // and then read an unbound name at eval. Same `Rc` as the written one on
+            // every arm that rewrote nothing, which is every arm in the corpus today.
             let mut branch_bodies: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(branches.len());
             let mut branch_guards: Vec<Option<Rc<NodeOccurrence>>> =
                 Vec::with_capacity(branches.len());
@@ -1426,7 +1426,7 @@ pub(super) fn build_type(
             // PASS 2 — the per-arm Γ and its guard, both of which need pass 1 finished.
             for ((branch_env, branch_guard), facts) in branch_env_types
                 .into_iter()
-                .zip(branch_guards.iter())
+                .zip(branch_guards.iter_mut())
                 .zip(arm_facts.into_iter())
             {
                 // Arm Γ = the outer Γ + this arm's pattern fact + earlier-arm
@@ -1447,7 +1447,9 @@ pub(super) fn build_type(
                 // didn't type, to keep pattern vars typed as nothing from producing
                 // cascading noise. That case no longer reaches here at all: the frame
                 // returns the scrutinee's own `Err` above.
-                if let Some(g) = branch_guard {
+                // The guard as it is checked; what typing makes of it takes its slot.
+                let checked_guard = branch_guard.clone();
+                if let Some(g) = &checked_guard {
                     if guard_error.is_none() {
                         // WI-657(9): reuse the gate build_type already holds.
                         // WI-K88TN: under `arm_flow`, NOT an empty Γ. The arm's Γ is
@@ -1478,6 +1480,14 @@ pub(super) fn build_type(
                                     "match",
                                     "guard",
                                 );
+                                // THE GUARD IS STORED AS IT WAS TYPED. What typing it
+                                // rewrote — a call a `@[simp]` equation defines, a dot
+                                // resolved to its operation — is the guard the arm runs;
+                                // the written one, put back, ran the call no equation had
+                                // replaced and died `OperationBodyMissing` on a program
+                                // that loaded clean, where the same call in the arm's
+                                // body, or in an `if` condition, ran.
+                                *branch_guard = Some(Rc::clone(&r.node));
                             }
                             Err(e) => guard_error = Some(e),
                         }

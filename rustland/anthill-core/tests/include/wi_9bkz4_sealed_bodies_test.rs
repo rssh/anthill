@@ -32,14 +32,15 @@
 //!   in_one_call` FAILS — 12, 12, 2.
 //!
 //! THE `@[simp]` CHECK
-//! * made to find nothing: the four `a_simp_rule_…_is_refused…` rows, the dot-rule row,
+//! * made to find nothing: the five `a_simp_rule_…_is_refused…` rows, the dot-rule row,
 //!   `a_refused_rule_and_…` and `a_typer_run_made_by_hand_…` FAIL — each file loads,
 //!   and the library's body silently keeps its meaning. With `ANTHILL_TYPER_ORACLE=1`
 //!   beside that back-out they fail the other way, by the oracle's panic: "the body of
 //!   sealed operation 'test.liba.libCallsBase' was REWRITTEN".
 //! * made to refuse wherever a sealed body calls or constructs the head, without
-//!   typing it: `a_simp_rule_that_reaches_no_sealed_body_loads` and `a_simp_rule_over_
-//!   a_construction_means_the_same_…` FAIL.
+//!   typing it: `a_simp_rule_that_reaches_no_sealed_body_loads` FAILS. (`a_simp_rule_
+//!   over_a_construction_…` failed with it while a rule headed by a constructor fired
+//!   on no construction; it is refused either way since the rule fires.)
 //! * made to read only "came back rewritten", not what typing reported:
 //!   `a_simp_rule_that_breaks_a_sealed_body_is_refused` FAILS — `libAdds` loads.
 //! * its dot-rule arm removed: `a_dot_rule_for_a_sealed_sort_is_refused` FAILS.
@@ -359,16 +360,166 @@ namespace test.proga
 end
 "#;
 
-/// A rule headed by a CONSTRUCTOR. Today it rewrites no construction in an operation
-/// body, in one call or in two, so there is nothing to refuse — and the row holds the
-/// two orders to ONE answer, which is what the check is for: the day such a rule fires
-/// where a body is typed, one call answers 2 and this fails unless the check, which
-/// already reads a construction as it reads a call, refuses the later load.
+/// A rule headed by a CONSTRUCTOR rewrites a construction where a body is typed, as a
+/// rule over a call does: in one call the library's operation answers by it, and behind
+/// a seal the later load is refused — the check reads a construction as it reads a call.
+///
+/// THE DAY THIS ROW WAS WRITTEN FOR. It held the two orders to one answer while such a
+/// rule fired on no construction in an operation body: the library writes `tag(1)`, the
+/// rule's head is the `tag(n: 1)` the load makes of it, and an operation body's node was
+/// read as written. It is read in the canonical entity form now
+/// (`canonical_ctor_args`, found with WI-20261011-CR6GD), so one call answers
+/// 2 — and the refusal that was waiting takes the other order.
 #[test]
-fn a_simp_rule_over_a_construction_means_the_same_in_one_call_and_in_two() {
+fn a_simp_rule_over_a_construction_is_refused_behind_a_seal() {
     let one = loaded(one_call(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "one call");
-    let two = loaded(two_calls(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "two calls");
-    assert_eq!(values(one, &["test.proga.entry"]), values(two, &["test.proga.entry"]));
+    assert_eq!(values(one, &["test.proga.entry"]), [2]);
+
+    let errors = refused(two_calls(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "two calls");
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.liba.Tag.tag'")
+            && e.contains("rewrites the body of 'test.liba.libTags'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
+}
+
+const LIB_NAMED: &str = r#"
+namespace test.libn
+  import anthill.prelude.{Int64}
+  sort Span
+    entity span(lo: Int64, hi: Int64)
+  end
+  operation top(s: Span) -> Int64 = s.hi
+  operation libSpans() -> Int64 = top(span(hi: 9, lo: 1))
+end
+"#;
+
+const A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER: &str = r#"
+namespace test.progn
+  import anthill.prelude.{Int64}
+  import test.libn.{Span, libSpans}
+  import test.libn.Span.{span}
+  rule span(lo: 1, hi: 9) <=> span(lo: 1, hi: 3) @[simp]
+  operation entry() -> Int64 = libSpans()
+end
+"#;
+
+/// The same for a construction the library writes with its arguments named out of
+/// declaration order, `span(hi: 9, lo: 1)`: the rule's head is in that order, and the
+/// node is read in it (WI-20261011-12VZB).
+///
+/// With `KnowledgeBase::named_out_of_declared_order` answering `false` this FAILS on its
+/// first assertion: the rule fires on no body, one call answers 9 and two load clean.
+#[test]
+fn a_simp_rule_over_a_construction_written_out_of_order_is_refused_behind_a_seal() {
+    let one = loaded(
+        one_call(LIB_NAMED, A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER),
+        "one call",
+    );
+    assert_eq!(values(one, &["test.progn.entry"]), [3]);
+
+    let errors = refused(
+        two_calls(LIB_NAMED, A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER),
+        "two calls",
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.libn.Span.span'")
+            && e.contains("rewrites the body of 'test.libn.libSpans'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
+}
+
+const LIB_GUARD: &str = r#"
+namespace test.libg
+  import anthill.prelude.{Int64}
+  sort Tag
+    entity tag(n: Int64)
+  end
+  import test.libg.Tag.{tag}
+  operation base(x: Int64) -> Int64 = 1
+  operation libGuards(t: Tag) -> Int64 =
+    match t
+      case tag(n) | base(n) > 1 -> 7
+      case _ -> 0
+  operation libGuard() -> Int64 = libGuards(tag(5))
+end
+"#;
+
+const A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD: &str = r#"
+namespace test.progg
+  import anthill.prelude.{Int64}
+  import test.libg.{base, libGuard}
+  rule base(?x) <=> 2 @[simp]
+  operation entry() -> Int64 = libGuard()
+end
+"#;
+
+/// A match arm's GUARD is part of the body a rule rewrites: in one call the library's
+/// arm is taken by the program's rule, and behind a seal the later load is refused.
+///
+/// With the written guard put back where the body is typed (`typing/build.rs`) this
+/// FAILS on its first assertion: nothing rewrote the guard that runs, one call answers
+/// 0 and two load clean.
+#[test]
+fn a_simp_rule_over_a_call_in_a_sealed_guard_is_refused() {
+    let one = loaded(one_call(LIB_GUARD, A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD), "one call");
+    assert_eq!(values(one, &["test.progg.entry"]), [7]);
+
+    let errors = refused(
+        two_calls(LIB_GUARD, A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD),
+        "two calls",
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.libg.base'")
+            && e.contains("rewrites the body of 'test.libg.libGuards'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
+}
+
+const LIB_GUARD_DOT: &str = r#"
+namespace test.libh
+  import anthill.prelude.{Int64, Bool}
+  sort Tag
+    entity tag(n: Int64)
+    operation small(t: Tag) -> Bool = t.n < 3
+  end
+  import test.libh.Tag.{tag}
+  operation base(x: Int64) -> Int64 = 1
+  operation libGuards(t: Tag) -> Int64 =
+    match t
+      case tag(n) | t.small() -> base(n)
+      case tag(n) | base(n) > 1 -> 7
+      case _ -> 0
+  operation libGuard() -> Int64 = libGuards(tag(5)) * 10 + libGuards(tag(1))
+end
+"#;
+
+const A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES: &str = r#"
+namespace test.progh
+  import anthill.prelude.{Int64}
+  import test.libh.{base, libGuard}
+  rule base(99) <=> 2 @[simp]
+  operation entry() -> Int64 = libGuard()
+end
+"#;
+
+/// …and a rule that matches no call a sealed guard writes loads, in both orders: a
+/// guard the library's own load already resolved a dot in, or left alone, comes back
+/// from a second typing as it is stored, and is not read as rewritten.
+///
+/// With the written guard put back where the body is typed this FAILS with the row
+/// above, as `wi_12vzb_match_guard_stored_as_typed_test::a_dot_call_in_a_guard_loads_-
+/// and_runs` does: the library writes a dot in a guard. What it is here for is the
+/// other direction — a guard whose second typing gave a new node would be refused
+/// behind the seal for a rule that never touched it.
+#[test]
+fn a_simp_rule_that_reaches_no_sealed_guard_loads() {
+    for (how, kb) in [
+        ("one call", one_call(LIB_GUARD_DOT, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES)),
+        ("two calls", two_calls(LIB_GUARD_DOT, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES)),
+    ] {
+        assert_eq!(values(loaded(kb, how), &["test.progh.entry"]), [1], "{how}");
+    }
 }
 
 const A_RULE_THAT_BREAKS_A_LIBRARY_BODY: &str = r#"

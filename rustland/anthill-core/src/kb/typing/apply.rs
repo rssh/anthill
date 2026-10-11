@@ -228,6 +228,29 @@ pub(super) fn check_apply_iter(
 
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(mut op) = lookup_operation_info_full(kb, fn_sym) {
+        // WI-20261011-CR6GD — A CALL OF AN OPERATION DEFINED BY CLAUSES ALONE HAS NOTHING
+        // TO RUN. Clauses answer a goal; this is a call, and eval enters a body, a host
+        // function or a builtin. See [`clause_defined_own_operation`].
+        //
+        // AN OPERATION BODY'S OBLIGATION, as the two below that ask `in_rule_body` are. A
+        // rule body is relational: there the same spelling is a goal the clauses answer
+        // (`Box.open(b, ?x)`), or a term kept as data — matched against a head, handed to
+        // a predicate that calls it (`call1(Box.full(b))`) — and both answer today.
+        // Measured with the gate on the node's position alone: those two programs, and a
+        // lambda in a rule body, stopped loading.
+        //
+        // Above everything else in this path, as the refusals below are above the
+        // classification blocks: nothing here returns a typed call before them, and a
+        // call that cannot run owes no other verdict. After the `@[simp]` fire, which
+        // the build frame tries first — an equation that defines the operation has
+        // already replaced the call, and this never sees it.
+        if !env.in_rule_body() && clause_defined_own_operation(kb, fn_sym) {
+            return Err(TypeError::CallOfClauseDefinedOperation {
+                span,
+                op: fn_sym,
+                arity: op.params.len(),
+            });
+        }
         // WI-374 (§8.1, site-scoped): expand bare/partial parametric sort
         // applications in the callee's signature to per-call fresh-var
         // applications, so two occurrences never alias and the sort's
@@ -2281,7 +2304,7 @@ pub(super) fn check_apply_iter(
         // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
-        // body-less test.
+        // body-less test (and, since WI-20261011-RM247, the data-sort one).
         //
         // THE PRECONDITION THAT MAKES THE SWAP SAFE HERE, because the gate's body test is
         // STRICTER than the one it replaces (see its doc): this whole block is inside

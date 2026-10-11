@@ -387,6 +387,17 @@ pub enum TypeError {
         span: Option<Span>,
         callee: Symbol,
     },
+    /// WI-20261011-CR6GD: a call, in an operation body, of an operation whose one
+    /// definition is clauses ([`clause_defined_own_operation`]). Clauses answer a goal
+    /// and a relation cited by name; a call names the operation, and this one has no
+    /// body, host mapping or builtin for eval to enter. It loaded clean and died
+    /// `OperationBodyMissing` at the call. `arity` is the operation's own, which the
+    /// refusal reads the clauses against to spell the goal that does answer.
+    CallOfClauseDefinedOperation {
+        span: Option<Span>,
+        op: Symbol,
+        arity: usize,
+    },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
     /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
@@ -1392,6 +1403,20 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*callee)),
                 )
             }
+            TypeError::CallOfClauseDefinedOperation { op, arity, .. } => {
+                let qn = kb.qualified_name_of(*op);
+                let short = short_name_of(qn);
+                let goal = clause_defined_operation_goal(kb, *op, *arity);
+                format!(
+                    "a call of `{qn}`, which is defined by clauses alone: clauses answer \
+                     a goal, not a call, and the operation has no body, host mapping or \
+                     builtin to run. In a rule body write the goal `{goal}`. To call it, \
+                     give the operation a body. To read its clauses as a value, write \
+                     them as a rule alone — no `operation` line, a variable for each \
+                     head argument — and cite the rule as a relation \
+                     (`{short}(…).takeN(n)`)"
+                )
+            }
             TypeError::AmbiguousRequirementKey {
                 op, name, slots, ..
             } => {
@@ -1892,6 +1917,7 @@ impl TypeError {
             | TypeError::DuplicateCallTypeArg { span, .. }
             | TypeError::ReceiverBracketConflict { span, .. }
             | TypeError::TypeArgsOnNonOperation { span, .. }
+            | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2174,6 +2200,16 @@ impl TypeError {
                 actual_type: "a callee with no type-parameter list (a function value, \
                               an applied rule, a constructor)"
                     .to_string(),
+                span: self.span(kb),
+            },
+            // One string for both faces, as the selection refusals below have it: the
+            // message carries the whole repair.
+            TypeError::CallOfClauseDefinedOperation { op, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "call".to_string(),
+                expected_type: "an operation a call can run".to_string(),
+                actual_type: self.format(kb),
                 span: self.span(kb),
             },
             // WI-841 — the four selection refusals. Each renders through `format`, so
