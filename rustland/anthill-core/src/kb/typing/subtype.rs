@@ -2564,6 +2564,11 @@ impl WitnessActual<'_> {
 /// construction: the scan returns all 96 facts, so the emptiness check cannot fire and
 /// the mint is noise against 10 µs. The price is recorded so a future pass that moves a
 /// `types_compatible` caller ahead of the index build knows what it would be paying.
+///
+/// WI-20261010-ANK4X — THAT CASE NO LONGER EXISTS. The index is not built and is never
+/// absent: it takes a provision row where the row is asserted, so the bucket this gate
+/// reads is exact in every window of a load, the one this paragraph priced included.
+/// The numbers above are of the tree they were taken on.
 pub(super) fn witness_provides_admissibly(
     kb: &mut KnowledgeBase,
     actual: WitnessActual,

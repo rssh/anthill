@@ -34,8 +34,8 @@
 //!   a row decoded from a term alone (`decode_provides_row` refusing a spec that is no
 //!   term) — FAIL: every row here but the two about a row's label and the specialization
 //!   records, and the three wi_zy11j rows.
-//!   the index filed from a term alone (`build_provides_index` skipping a value-headed
-//!   fact) — FAIL: a_provision_written_through_an_alias_provides_at_its_type,
+//!   the index filed from a term alone (its builder skipping a value-headed fact —
+//!   `provides_filing`, since WI-20261010-ANK4X, is where that read is) — FAIL: a_provision_written_through_an_alias_provides_at_its_type,
 //!   a_provision_at_an_alias_of_a_sort_is_at_that_sort,
 //!   one_provision_in_two_spellings_provides_once,
 //!   provisions_listed_in_a_refusal_are_named_as_written,

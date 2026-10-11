@@ -538,6 +538,10 @@ Written as questions, because none of them was measured.
   the persisted runtime index read a complete one, and invalidate the requires-chain cache
   (WI-1110 — `direct_requires` now reads provisions, so every pass asserting a
   `SortProvidesInfo` owes that call).
+  **One obligation since WI-20261010-ANK4X** (2026-10-11): the provider index takes a row
+  where the row is asserted, so there is nothing to drop and no `build_provides_index` to
+  call — a pass written to the first two would not compile. The requires-chain cache is
+  still owed.
 
   MEASURED 2026-09-12: a `provides` block loads when written inside the provider sort's own
   declaration and is refused at namespace level ("a `provides` clause needs a type at its

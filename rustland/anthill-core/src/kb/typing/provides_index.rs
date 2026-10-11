@@ -51,13 +51,26 @@ impl SymbolKeyedFactIndex {
         self.buckets.entry(key_canon).or_default().push(rid);
     }
 
+    /// Take `rid` out of whichever bucket holds it, and drop a bucket it leaves empty —
+    /// so an index a fact was filed in and then taken out of is the index it was before.
+    /// A sweep, not a keyed removal: the key a fact was filed under is a decode of its
+    /// head against the name table as it stood THEN, and re-deriving it at the retract
+    /// is the assumption `KnowledgeBase::retract` declines to make for its dedup key.
+    /// The provision relations are a few hundred rows and a retract of one is a test's.
+    pub(crate) fn remove(&mut self, rid: crate::kb::RuleId) {
+        self.buckets.retain(|_, rids| {
+            rids.retain(|r| *r != rid);
+            !rids.is_empty()
+        });
+    }
+
     /// The rids for a keyed lookup: the built index's `key_canon` bucket if present, else
     /// a live `rules_by_functor` scan of `functor_qn` (the pre-build / no-index fallback
     /// the load-time consumers hit before their index exists — it returns EVERY fact, so
     /// the caller keeps its own per-fact re-filter). `key_canon` must already be
-    /// canonical. Collapses the identical fast-path/fallback selection every keyed
-    /// consumer shared (`provides_rids_by_spec` / `_by_carrier`, `sort_info_rids_by_sort`,
-    /// `requires_rids_by_sort`).
+    /// canonical. Collapses the identical fast-path/fallback selection the keyed consumers
+    /// share (`sort_info_rids_by_sort`, `requires_rids_by_sort`; the two provision
+    /// relations read their own buckets and have no fallback, WI-20261010-ANK4X).
     ///
     /// WI-1112 — BOTH ARMS DROP RETRACTED RIDS, and the index arm has to say so
     /// explicitly. `rules_by_functor` is documented as "all ACTIVE (non-retracted)" and
@@ -74,7 +87,9 @@ impl SymbolKeyedFactIndex {
     /// release, whole stdlib load), the two distributions overlap completely — 102.8–122.1
     /// ms with the filter against 92.5–111.9 without — i.e. the difference is under this
     /// box's noise floor for one unchanged binary, and an order below what the index itself
-    /// saves. `provides_index` and `sort_info_index` inherit the fix here for free.
+    /// saves. `sort_info_index` inherits the fix here for free. (`provides_index` did
+    /// too, until WI-20261010-ANK4X: it reads its own buckets now, and a retract takes
+    /// its fact out of them.)
     pub(super) fn rids_or_scan(
         kb: &KnowledgeBase,
         index: Option<&SymbolKeyedFactIndex>,
@@ -111,11 +126,49 @@ impl SymbolKeyedFactIndex {
 ///   `load_provides_clause` store `domain`), so canonical identity is exact — and it
 ///   de-conflates a top-level `sort Foo provides Bar` from a qualified `x.y.Foo` that
 ///   the former short-name bucket + `same_symbol` re-filter merged. Identity is by
-///   symbol, never by last segment (spec §8.6). `build_provides_index` `debug_assert`s
+///   symbol, never by last segment (spec §8.6). [`provides_filing`] `debug_assert`s
 ///   that no carrier is an UNRESOLVED bare reference — the one shape canonical keying
 ///   could not bridge to a qualified form.
+///
+/// WI-20261010-ANK4X — IT TAKES A ROW WHERE ONE IS ASSERTED. The index is not built: a
+/// `SortProvidesInfo` or `ProvidesConditionInfo` fact is filed by the one function that
+/// stores a clause (`KnowledgeBase::push_value_head_entry` → [`file_provision_fact`]) and
+/// taken out by the one that retracts one ([`unfile_provision_fact`]), so every producer
+/// of either relation — the loader, the three derivation passes, a test's own assert —
+/// is covered by being a producer, and there is no state in which the relation holds a
+/// row the index does not. It was an `Option`, built once per frozen state and dropped
+/// around each pass that asserted, and a reader fell back to a scan of the whole
+/// relation while it was `None`: that fallback was 39 % of a later load (the ticket has
+/// the table), and "a producer that forgot to rebuild" was a state the type allowed
+/// (WI-954 names the class for the requires chain).
+///
+/// WHAT A KEY IS A FUNCTION OF, since a row is now keyed when it is asserted and not when
+/// the typer starts — two things, and the index follows both:
+///
+/// * the fact's HEAD and its FACT-NESS. Nothing rewrites a stored head (a pass that
+///   changes one retracts and asserts). Fact-ness changes at one place, a body-less
+///   clause given a generated goal, and the clause is unfiled there
+///   (`KnowledgeBase::clause_became_bodied`);
+/// * `canonical_sort_sym` of two symbols in the head, which is the NAME TABLE
+///   (`by_qualified_name`) — and that moves under a row: a name a row spells is declared
+///   after the row was asserted, a qualified name is defined a second time under
+///   another local name, a layer's discard puts an earlier table back. The symbol table
+///   COUNTS those moves (`SymbolTable::canonical_moves`), the index keeps the count its
+///   keys were computed at ([`Self::keyed_at`]), and a read that finds the count moved
+///   computes every key again ([`keyed`]). (A layer's discard is not counted and needs
+///   no re-keying: the index is scoped, and comes back with the table it was keyed for.) The loader's order makes that
+///   rare — every name of a load is defined, scan pass 1, before any fact of it is
+///   asserted — and rare is why it is a count and not a rule: the build this index used
+///   to be re-keyed everything two or three times a load, by the way, and an index that
+///   only ever keyed a row once would have kept a moved name's rows where no reader
+///   looks (found by /code-review; `a_row_filed_before_its_name_moved_…` drives both
+///   moves).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ProvidesIndex {
+    /// `SymbolTable::canonical_moves` when the keys below were computed. Every key is a
+    /// canonical symbol, so the keys are those of the relation exactly while this is the
+    /// table's count.
+    keyed_at: u64,
     /// Providers keyed by canonical spec base (`canonical_sort_sym(spec_base)`).
     by_spec_base: SymbolKeyedFactIndex,
     /// Providers keyed by canonical carrier (`canonical_sort_sym(carrier)`): the carrier
@@ -127,17 +180,15 @@ pub(crate) struct ProvidesIndex {
     /// be redundant; this is not, because the cost it removes is the DECODE
     /// (the [`ProvidesRow`] decode — `fact_head_named_args`, two `get_named_arg`s,
     /// `sort_ref_functor`, the spec view's base — and two `canonical_sym` string hashes per
-    /// fact), not the bucket lookup. Built in the SAME pass, by calling the very decode
-    /// `provides_out_edges` uses, so the memo is that function computed once rather than a
-    /// second spelling of it that could drift.
+    /// fact), not the bucket lookup. Filed with the row, by calling the very decode
+    /// `provides_out_edges` is defined by ([`ProvidesRow`]), so the memo is that function
+    /// computed once rather than a second spelling of it that could drift.
     ///
-    /// The `rid` rides along because a bucket is frozen at build time while retraction is
-    /// not — the reason [`SymbolKeyedFactIndex::rids_or_scan`] filters `is_rule_alive`,
-    /// and the same filter applies here for the same reason.
+    /// The `rid` rides along so a retract can take the edge out ([`unfile_provision_fact`]).
     ///
-    /// LIFECYCLE BY CONSTRUCTION: it lives INSIDE `ProvidesIndex`, so every point that
-    /// drops `kb.provides_index` drops it, and the one builder fills it. There is no new
-    /// invalidation surface to audit — which is the whole reason it is a field here rather
+    /// LIFECYCLE BY CONSTRUCTION: it lives INSIDE `ProvidesIndex`, filed and unfiled by
+    /// the two functions that file and unfile the row's rid. There is no invalidation
+    /// surface of its own to audit — which is the whole reason it is a field here rather
     /// than a cache of its own (cf. WI-1112, where a new index needed its producers
     /// enumerated, and WI-954, where a stale index answered EMPTY).
     pub(super) carrier_edges: HashMap<Symbol, SmallVec<[(crate::kb::RuleId, Symbol); 4]>>,
@@ -158,17 +209,14 @@ pub(crate) struct ProvidesIndex {
     /// way, whose total grew 2.8× for a 1.77× relation before the bucket and 1.4× after.
     ///
     /// A DIFFERENT RELATION IN THE SAME INDEX, and that is the point rather than an
-    /// economy. Its validity window is `provides_index`' window EXACTLY, because the two
-    /// relations have the same producers: every `ProvidesConditionInfo` fact is written
-    /// beside the `SortProvidesInfo` fact it conditions — by the loader
-    /// (`load_provides_conditions`, from a `provides … :- …` clause) or by
-    /// `eq_derive::record_derived_conditions` (reached through `assert_derived_provision`,
-    /// and from `eq_derive::run`'s `NonEq` mirror, which runs inside the same
-    /// drop-and-rebuild bracket). So there is no window in which this bucket could be
-    /// stale while `provides_index` is live, and — by `carrier_edges`' reasoning, which
-    /// this follows deliberately — living INSIDE `ProvidesIndex` means every existing drop
-    /// site drops it and the one builder fills it. A cache of its own would have added a
-    /// fourth set of producers to audit (cf. WI-1112) for no separation that buys anything.
+    /// economy: every `ProvidesConditionInfo` fact is written beside the
+    /// `SortProvidesInfo` fact it conditions — by the loader (`load_provides_conditions`,
+    /// from a `provides … :- …` clause) or by `eq_derive::record_derived_conditions`
+    /// (reached through `assert_derived_provision`, and from `eq_derive::run`'s `NonEq`
+    /// mirror) — and a reader of a provision reads its conditions in the same breath
+    /// (`provision_is_conditional`). WI-20261010-ANK4X: it has no producers to enumerate
+    /// any more, those two or a third — the fact is filed where it is stored
+    /// ([`file_provision_fact`]), whoever asserts it.
     conditions_by_carrier: SymbolKeyedFactIndex,
     /// WI-20260925-YNCY3 — [`carrier_provided_by_witness`]' question per spec, memoized: the
     /// canonical carriers the spec's WITNESS provisions dispatch at (`witness_dispatch_carrier`
@@ -178,9 +226,18 @@ pub(crate) struct ProvidesIndex {
     ///
     /// FILLED LAZILY, per spec a guard asks about, so the population `witness_dispatch_carrier`
     /// is asked about is exactly the scan's — the WI-954 tripwire
-    /// [`witness_provides_admissibly`] records is why that matters. And INSIDE the index, as
-    /// `carrier_edges` is: it is dropped and rebuilt with the rows it memoizes, so it has no
-    /// invalidation surface of its own.
+    /// [`witness_provides_admissibly`] records is why that matters.
+    ///
+    /// THE ONE PART OF THE INDEX THAT IS FORGOTTEN RATHER THAN FILED (WI-20261010-ANK4X),
+    /// because it is the one part that is not a function of the rows alone: an entry is
+    /// `witness_dispatch_carrier` over a spec's rows, and that reads the spec's CARRIER
+    /// PARAMETER (`spec_carrier_param`, itself a memo over the spec's operations). So it
+    /// is forgotten whole ([`forget_witness_carriers`]) where an entry can move: a
+    /// provision row filed or unfiled; the keys computed again ([`keyed`] — the memo is
+    /// of canonical symbols); the carrier-parameter memo cleared
+    /// (`load::merge_secondary_entry_operations`, WI-1076); and a load phase starting —
+    /// where the `Option` this index used to be dropped it with everything else, and a
+    /// load is what declares the operations an entry is read from.
     pub(super) witness_carriers: std::cell::RefCell<HashMap<Symbol, Rc<[Symbol]>>>,
 }
 
@@ -194,6 +251,7 @@ impl ProvidesIndex {
     ) -> ProvidesIndex {
         use crate::kb::deep_clone::plain;
         let ProvidesIndex {
+            keyed_at,
             by_spec_base,
             by_carrier,
             carrier_edges,
@@ -201,6 +259,7 @@ impl ProvidesIndex {
             witness_carriers,
         } = self;
         ProvidesIndex {
+            keyed_at: plain(keyed_at),
             by_spec_base: plain(by_spec_base),
             by_carrier: plain(by_carrier),
             carrier_edges: plain(carrier_edges),
@@ -216,40 +275,625 @@ impl ProvidesIndex {
     }
 }
 
+impl ProvidesIndex {
+    /// Forget the witness-carrier memo — see the field for the events that owe this.
+    fn forget_witness_carriers(&self) {
+        self.witness_carriers.borrow_mut().clear();
+    }
+
+    /// The index a walk of the two relations AS THEY STAND files, keyed by the name
+    /// table as it stands: what this one must equal at every read, built by the very
+    /// functions that file a row when it is asserted ([`provides_filing`],
+    /// [`condition_filing`]). This is the build the index used to BE, once per frozen
+    /// state. It is what the index is computed again by when the name table has moved
+    /// under its keys ([`keyed`]), and the definition the filed one is held to — by the
+    /// load's own check ([`assert_filed_index_is_the_relations`]) and the unit tests.
+    pub(crate) fn from_scan(kb: &KnowledgeBase) -> ProvidesIndex {
+        let mut index = ProvidesIndex {
+            keyed_at: kb.symbols.canonical_moves(),
+            ..ProvidesIndex::default()
+        };
+        for relation in [ProvisionRelation::Provides, ProvisionRelation::Condition] {
+            for rid in relation.rids(kb) {
+                index.file(rid, Filing::of(kb, relation, rid));
+            }
+        }
+        index
+    }
+
+    /// Where the filed index and `scanned` — [`Self::from_scan`] of the same KB — differ,
+    /// one line a bucket, saying what each side has that the other has not; empty when
+    /// they are one index. The witness memo is not compared: it is filled by what was
+    /// asked, and a read of it is held to its own definition.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn differences_from(&self, kb: &KnowledgeBase, scanned: &ProvidesIndex) -> Vec<String> {
+        /// One bucket's difference, or `None` for two equal lists.
+        fn differ<T: PartialEq + std::fmt::Debug>(filed: &[T], scan: &[T]) -> Option<String> {
+            if filed == scan {
+                return None;
+            }
+            let only = |a: &[T], b: &[T]| -> Vec<String> {
+                a.iter().filter(|x| !b.contains(x)).map(|x| format!("{x:?}")).collect()
+            };
+            let (missing, stale) = (only(scan, filed), only(filed, scan));
+            Some(if !missing.is_empty() || !stale.is_empty() {
+                format!(
+                    "not filed [{}], filed and not in the relation [{}]",
+                    missing.join(", "),
+                    stale.join(", ")
+                )
+            } else if filed.len() != scan.len() {
+                // Neither side has a row the other lacks, and they are not one list:
+                // a row is in one of them more than once.
+                format!(
+                    "the same rows, {} entries filed for the relation's {} — a row filed twice",
+                    filed.len(),
+                    scan.len()
+                )
+            } else {
+                "the same rows in another order".to_string()
+            })
+        }
+        fn keys<'a, V>(a: &'a HashMap<Symbol, V>, b: &'a HashMap<Symbol, V>) -> Vec<Symbol> {
+            let mut keys: Vec<Symbol> = a.keys().chain(b.keys()).copied().collect();
+            keys.sort_by_key(|s| s.index());
+            keys.dedup();
+            keys
+        }
+        let mut out = Vec::new();
+        for (what, filed, scan) in [
+            ("providers of spec", &self.by_spec_base, &scanned.by_spec_base),
+            ("provisions of carrier", &self.by_carrier, &scanned.by_carrier),
+            ("conditions of carrier", &self.conditions_by_carrier, &scanned.conditions_by_carrier),
+        ] {
+            for key in keys(&filed.buckets, &scan.buckets) {
+                if let Some(how) = differ(filed.get(key), scan.get(key)) {
+                    out.push(format!("{what} `{}`: {how}", kb.qualified_name_of(key)));
+                }
+            }
+        }
+        for carrier in keys(&self.carrier_edges, &scanned.carrier_edges) {
+            let edges = |index: &'_ ProvidesIndex| -> Vec<(crate::kb::RuleId, Symbol)> {
+                index.carrier_edges.get(&carrier).map(|e| e.to_vec()).unwrap_or_default()
+            };
+            if let Some(how) = differ(&edges(self), &edges(scanned)) {
+                out.push(format!("edges out of carrier `{}`: {how}", kb.qualified_name_of(carrier)));
+            }
+        }
+        out
+    }
+
+    /// File one fact under the keys its head decoded to. A fact that decoded to no key
+    /// is in no bucket, as it is a row to no reader.
+    fn file(&mut self, rid: crate::kb::RuleId, filing: Filing) {
+        match filing {
+            Filing::Provides(ProvidesFiling { spec_base, carrier, edge }) => {
+                if let Some(spec_base) = spec_base {
+                    self.by_spec_base.insert(spec_base, rid);
+                }
+                if let Some(carrier) = carrier {
+                    self.by_carrier.insert(carrier, rid);
+                    if let Some(edge) = edge {
+                        self.carrier_edges.entry(carrier).or_default().push((rid, edge));
+                    }
+                }
+            }
+            Filing::Condition(carrier) => {
+                if let Some(carrier) = carrier {
+                    self.conditions_by_carrier.insert(carrier, rid);
+                }
+            }
+        }
+        self.forget_witness_carriers();
+    }
+
+    /// The rule ids each of the four holds — the spec buckets, the carrier buckets, the
+    /// edges, the conditions — sorted: WHICH rows are filed, whatever keys they are
+    /// under. What a re-keying must leave as it was ([`keyed`]).
+    fn filed_rids(&self) -> [Vec<crate::kb::RuleId>; 4] {
+        let of = |buckets: &SymbolKeyedFactIndex| -> Vec<crate::kb::RuleId> {
+            let mut rids: Vec<_> = buckets.buckets.values().flatten().copied().collect();
+            rids.sort_by_key(|rid| rid.index());
+            rids
+        };
+        let mut edges: Vec<_> =
+            self.carrier_edges.values().flatten().map(|(rid, _)| *rid).collect();
+        edges.sort_by_key(|rid| rid.index());
+        [of(&self.by_spec_base), of(&self.by_carrier), edges, of(&self.conditions_by_carrier)]
+    }
+
+    /// Take one fact of `relation` out of every bucket of that relation it is in.
+    fn unfile(&mut self, relation: ProvisionRelation, rid: crate::kb::RuleId) {
+        match relation {
+            ProvisionRelation::Provides => {
+                self.by_spec_base.remove(rid);
+                self.by_carrier.remove(rid);
+                self.carrier_edges.retain(|_, edges| {
+                    edges.retain(|(r, _)| *r != rid);
+                    !edges.is_empty()
+                });
+            }
+            ProvisionRelation::Condition => self.conditions_by_carrier.remove(rid),
+        }
+        self.forget_witness_carriers();
+    }
+}
+
+/// THE INDEX, KEYED FOR THE NAME TABLE AS IT STANDS — what every read of it takes.
+/// When the canonical image of some existing symbol has moved since the keys were
+/// computed ([`ProvidesIndex`] says how that happens and how seldom), every key is
+/// computed again, by a walk of the two relations, before anything is answered.
+///
+/// Behind a `RefCell` for that one event: a read holds `&KnowledgeBase`. A reader takes
+/// what it wants and lets the borrow go before it calls anything else — the readers
+/// below copy a bucket out — so the write here never meets one.
+///
+/// A RE-KEYING MOVES ROWS BETWEEN BUCKETS AND NEITHER ADDS ONE NOR LOSES ONE — which rows
+/// are filed in each of the four is a matter of their heads, not of the name table — and
+/// that is checked here, in a build with debug assertions and under [`agreement_on`].
+/// Without it the walk that re-keys would also quietly take in a row stored past the
+/// assert path's hooks, or drop one removed past them, and both controls of the index
+/// read through this function: they would compare a walk with a walk (found by review).
+fn keyed(kb: &KnowledgeBase) -> std::cell::Ref<'_, ProvidesIndex> {
+    if kb.provides_index.borrow().keyed_at != kb.symbols.canonical_moves() {
+        let again = ProvidesIndex::from_scan(kb);
+        if cfg!(debug_assertions) || agreement_on() {
+            let (was, is) = (kb.provides_index.borrow().filed_rids(), again.filed_rids());
+            assert!(
+                was == is,
+                "WI-20261010-ANK4X: computing the provider index's keys again changed which \
+                 rows it holds — a row was stored or removed past the assert path's hooks. \
+                 [spec buckets, carrier buckets, edges, conditions] held {was:?}, a walk of \
+                 the relation files {is:?}"
+            );
+        }
+        *kb.provides_index.borrow_mut() = again;
+    }
+    kb.provides_index.borrow()
+}
+
+/// Forget the provider index's witness-carrier memo — [`ProvidesIndex`]'s field says
+/// which events owe this. For the two in `load`.
+pub(crate) fn forget_witness_carriers(kb: &KnowledgeBase) {
+    kb.provides_index.borrow().forget_witness_carriers();
+}
+
+/// WI-20261010-ANK4X — the two relations [`ProvidesIndex`] holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ProvisionRelation {
+    /// `anthill.reflect.SortProvidesInfo`.
+    Provides,
+    /// `anthill.reflect.ProvidesConditionInfo`.
+    Condition,
+}
+
+impl ProvisionRelation {
+    fn qualified_name(self) -> &'static str {
+        match self {
+            ProvisionRelation::Provides => "anthill.reflect.SortProvidesInfo",
+            ProvisionRelation::Condition => "anthill.reflect.ProvidesConditionInfo",
+        }
+    }
+
+    /// The relation `functor` heads, when it is THE symbol a reader of the relation
+    /// resolves the name to. Asked of every clause stored, so the name is compared first
+    /// (a length test for nearly every functor there is) and the table probed only for a
+    /// functor that carries one of the two names: an interned twin of the name is not the
+    /// relation's symbol, `rules_by_functor` of the relation does not hold its facts, and
+    /// the index must not either.
+    pub(crate) fn of_functor(kb: &KnowledgeBase, functor: Symbol) -> Option<ProvisionRelation> {
+        let relation = match kb.qualified_name_of(functor) {
+            "anthill.reflect.SortProvidesInfo" => ProvisionRelation::Provides,
+            "anthill.reflect.ProvidesConditionInfo" => ProvisionRelation::Condition,
+            _ => return None,
+        };
+        (kb.try_resolve_symbol(relation.qualified_name()) == Some(functor)).then_some(relation)
+    }
+
+    /// The relation's live facts and rules, in relation order; none when it is not declared.
+    fn rids(self, kb: &KnowledgeBase) -> Vec<crate::kb::RuleId> {
+        kb.try_resolve_symbol(self.qualified_name())
+            .map(|sym| kb.rules_by_functor(sym))
+            .unwrap_or_default()
+    }
+}
+
+/// WI-20261010-ANK4X — THE ASSERT PATH'S HOOK: a fact of one of the two relations has
+/// been stored as `rid`, and is filed. Called by `KnowledgeBase::push_value_head_entry`,
+/// the one place a clause is stored, and by nothing else.
+pub(crate) fn file_provision_fact(
+    kb: &mut KnowledgeBase,
+    relation: ProvisionRelation,
+    rid: crate::kb::RuleId,
+) {
+    // Filed under the keys its head has NOW, whether or not the name table has moved
+    // under the rows filed before it: if it has, the next read computes every key again
+    // ([`keyed`]), this row's among them, and until a read nothing looks.
+    let filing = Filing::of(kb, relation, rid);
+    kb.provides_index.get_mut().file(rid, filing);
+}
+
+/// The other half: the fact `rid` of `relation` is no longer a row. Called where a
+/// clause stops being one — `KnowledgeBase::retract`, `clause_became_bodied` (a fact
+/// given a generated goal) and `unindex_functor` (a clause taken out of the relation's
+/// enumeration) — and by nothing else. By rule id, whatever keys the fact was filed
+/// under, so it does not ask whether the name table has moved.
+pub(crate) fn unfile_provision_fact(
+    kb: &mut KnowledgeBase,
+    relation: ProvisionRelation,
+    rid: crate::kb::RuleId,
+) {
+    kb.provides_index.get_mut().unfile(relation, rid);
+}
+
+/// THE LOAD'S OWN CHECK of the filed index, in a build with debug assertions: it is the
+/// index a walk of the two relations builds, bucket for bucket — where the index was
+/// last BUILT from the relation, before it took rows as they were asserted. A row
+/// stored or removed past the assert path's hooks differs here, at `at` — or, if the
+/// name table has moved since the index was keyed, at the re-keying [`keyed`] makes
+/// first, which holds the index to the same rows.
+#[cfg(debug_assertions)]
+pub(crate) fn assert_filed_index_is_the_relations(kb: &KnowledgeBase, at: &str) {
+    let scanned = ProvidesIndex::from_scan(kb);
+    let differences = keyed(kb).differences_from(kb, &scanned);
+    assert!(
+        differences.is_empty(),
+        "WI-20261010-ANK4X: at {at}, the provider index, filed row by row, is not the \
+         index a walk of the provision relation builds:\n  {}",
+        differences.join("\n  ")
+    );
+}
+
+/// Where one fact of either relation is filed: the keys its head decodes to, by the ONE
+/// function per relation that the assert path and a walk of the relation both call.
+enum Filing {
+    Provides(ProvidesFiling),
+    /// The `conditions_by_carrier` key ([`condition_filing`]).
+    Condition(Option<Symbol>),
+}
+
+impl Filing {
+    fn of(kb: &KnowledgeBase, relation: ProvisionRelation, rid: crate::kb::RuleId) -> Filing {
+        match relation {
+            ProvisionRelation::Provides => Filing::Provides(provides_filing(kb, rid)),
+            ProvisionRelation::Condition => Filing::Condition(condition_filing(kb, rid)),
+        }
+    }
+}
+
+/// Where one `SortProvidesInfo` fact is filed: each key `None` when the head has no
+/// readable field for it. The fields are read INDEPENDENTLY — a fact with a readable
+/// `spec` and no readable `sort_ref` is still in the spec bucket — which is why this is
+/// not a [`ProvidesRow`]; `edge` is one, the decode [`provides_out_edges`] is defined by.
+/// ONE FUNCTION A KEY, each called by the filing and by [`agreement_on`]'s walk, which
+/// asks a fact for the one key its read is about.
+struct ProvidesFiling {
+    /// [`provides_spec_key`]: the `by_spec_base` key.
+    spec_base: Option<Symbol>,
+    /// [`provides_carrier_key`]: the `by_carrier` key.
+    carrier: Option<Symbol>,
+    /// [`provides_edge`], for a fact that has a carrier key: the `carrier_edges` entry.
+    edge: Option<Symbol>,
+}
+
+/// [`ProvidesFiling`] of one clause of the relation: no key at all for a rule.
+fn provides_filing(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> ProvidesFiling {
+    let carrier = provides_carrier_key(kb, rid);
+    ProvidesFiling {
+        spec_base: provides_spec_key(kb, rid),
+        carrier,
+        edge: carrier.and_then(|_| provides_edge(kb, rid)),
+    }
+}
+
+/// The `by_spec_base` key of one clause of the provision relation: `canonical_sort_sym`
+/// of its spec's base, or `None` for a rule and for a head whose `spec` does not read.
+///
+/// Through the view, as the row decoder reads it: a provision whose binding was written
+/// through a type alias holds its spec on another carrier than a term, and a fact in no
+/// bucket is a provider nothing finds.
+fn provides_spec_key(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<Symbol> {
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let spec = crate::kb::op_info::head_field_value(kb, kb.rule_head_value(rid), "spec")?;
+    let base = crate::kb::load::provides_spec_base_sym_view(kb, &spec)?;
+    Some(kb.canonical_sort_sym(base))
+}
+
+/// The `by_carrier` key of one clause of the provision relation: `canonical_sort_sym` of
+/// its `sort_ref`'s functor, or `None` for a rule and for a head with no readable one.
+fn provides_carrier_key(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<Symbol> {
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let sort_ref = crate::kb::op_info::head_field_term(kb, kb.rule_head_value(rid), "sort_ref")?;
+    let carrier = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
+    // WI-672: the carrier keys by canonical symbol. Two RESOLVED sort symbols
+    // canonicalize equal iff they share a qualified name, so canonical keying
+    // is exact for any resolved carrier — a top-level bare `sort Foo` keys
+    // under itself and is queried under itself; a qualified carrier likewise.
+    // The one shape canonical keying could NOT bridge is an UNRESOLVED bare
+    // reference (`qualified_name_of` = its dotless raw name, no `by_qualified_name`
+    // entry): the former `same_symbol` last-segment match papered over that,
+    // canonical would misbucket it. A full-suite probe found ZERO bare-QN
+    // carriers (resolved or not — every `provides` carrier is a qualified
+    // enclosing sort, cf. WI-449), so this cannot arise today; assert it so a
+    // future producer that regresses is LOUD, not a silent drop (repo rule).
+    debug_assert!(
+        !matches!(
+            kb.symbols.get(carrier),
+            crate::intern::SymbolDef::Unresolved { .. }
+        ),
+        "WI-672: SortProvidesInfo carrier `{}` is unresolved — canonical re-key \
+         would misbucket it; resolve the `provides` carrier at its producer",
+        kb.qualified_name_of(carrier),
+    );
+    Some(kb.canonical_sort_sym(carrier))
+}
+
+/// The `carrier_edges` entry of one fact of the provision relation: the canonical spec
+/// base of the fact read as a ROW.
+///
+/// WI-864: the out-edge, decoded once — and through the ROW decoder
+/// `provides_out_edges` is defined by ([`ProvidesRow`]), because a memo built from the
+/// consumer's own decode is that function computed once, not a lookalike of it that
+/// could drift. (Until WI-20260923-32XFQ the two read the spec base through two decoders
+/// that disagreed about a user sort named `SortView`; there is one now, and this reads
+/// it.)
+fn provides_edge(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<Symbol> {
+    decode_provides_row(kb, rid, |_| true).map(|row| kb.canonical_sort_sym(row.spec_base))
+}
+
+/// Where one `ProvidesConditionInfo` fact is filed — the canonical symbol of its
+/// `sort_ref`'s functor — or `None` for a clause that is no condition row.
+///
+/// `sort_ref_functor` and a CANONICAL key, matching the consumer arm for arm — the rule
+/// [`SymbolKeyedFactIndex`] states: key on whatever identity the consumer compares
+/// with, which here is `same_sort_canonical` over a `sort_ref_functor` read.
+/// (`build_requires_index` matches `Term::Fn` because ITS consumer does; follow the
+/// consumer, not the sibling builder.)
+///
+/// NEITHER CHOICE IS DISTINGUISHED BY THE CORPUS TODAY, and that is recorded rather
+/// than left for someone to assume otherwise: both mutations were MEASURED — bucketing
+/// through a bare `Term::Fn` match, and keying on the raw symbol instead of the
+/// canonical one — and the whole condition-index suite passes with either. Every
+/// condition fact in a stdlib load has a `Term::Fn` `sort_ref` whose functor is already
+/// canonical, because conditions are written on SORTS (a `Ref` comes from the WI-511
+/// canon on a CONSTRUCTOR owner, and no `provides … :- …` has one). So these are
+/// faithfulness choices, not defended positions: a future producer that writes a
+/// constructor-owned or non-canonically-interned carrier would be served correctly by
+/// this spelling and silently dropped by either other one — and a dropped fact here is
+/// a provision read as UNCONDITIONAL, the `ProvisionConditionsTooWeak` over-claim minted
+/// by an index. What IS pinned by a test is the carrier-agnostic head read:
+///
+/// THE CONSUMER'S OWN DECODE ([`decoded_condition_row`]), so the bucket holds exactly
+/// the rids the readers can use — see that function for why all three readers share it.
+/// A row it rejects is in no bucket AND invisible to the readers. The carrier-agnostic
+/// head read is load-bearing and is NOT justified by the shipped derived rows — that
+/// claim was MEASURED AND IS FALSE, recorded here so nobody re-derives it. A term-only
+/// `fact_head_named_args` builder was tried and the whole condition-index suite still
+/// passed: `eq_derive::record_derived_conditions` lowers every field through
+/// `Value::term`, so its rows ARE term-carried. What fails is a head carrying a
+/// denoted-bearing condition (a `Value::Node` inside the view, WI-662's shape on the
+/// requires side) — `fact_head_named_args` is `None` for the whole head, the fact lands
+/// in no bucket, and the provision silently reads UNCONDITIONAL. Driven by
+/// `a_denoted_condition_fact_is_bucketed_not_dropped`, which builds exactly that head
+/// because the loader cannot yet emit one.
+fn condition_filing(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<Symbol> {
+    let (owner, _, _) = decoded_condition_row(kb, rid)?;
+    Some(kb.canonical_sort_sym(owner))
+}
+
+/// `ANTHILL_PROVIDES_INDEX_AGREEMENT=1` — WI-20261010-ANK4X's control. Every read of
+/// the index is made BOTH WAYS: out of the bucket a row was filed in when it was
+/// asserted, and by a walk of the relation as it stands, keeping what the same filing
+/// function sends to that bucket NOW. A difference panics, naming the bucket's key and
+/// both answers. A TEST INSTRUMENT, read once per process: the trap of an index that
+/// takes rows as they come is a read that misses one — asserted earlier in the same
+/// pass, by a door that does not file, or under a key that has since moved — and a
+/// composite then silently not derived for, or derived twice, with the suite green.
+/// `rustland/CLAUDE.md` has the run; it is the cost of the scans this ticket removed,
+/// at every read of the load instead of the derivation's.
+pub(crate) fn agreement_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ANTHILL_PROVIDES_INDEX_AGREEMENT").is_ok_and(|v| v == "1"))
+}
+
+/// One of the index's four keyed reads, for [`agreement_on`]'s second way.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Bucket {
+    SpecBase,
+    Carrier,
+    CarrierEdges,
+    Conditions,
+}
+
+/// What a walk of the relation files in `bucket` under `key`, each entry with the edge
+/// it carries (`None` outside [`Bucket::CarrierEdges`]). Each fact is asked for the ONE
+/// key the bucket is keyed by, through the function the filing computes that key with —
+/// not for all three: a load makes tens of thousands of reads, and a walk that decoded
+/// every key of every fact for each made the control fourteen times the run (measured
+/// on the library's unit tests, 349 s for 674).
+fn scanned_bucket(
+    kb: &KnowledgeBase,
+    bucket: Bucket,
+    key: Symbol,
+) -> Vec<(crate::kb::RuleId, Option<Symbol>)> {
+    let relation = match bucket {
+        Bucket::Conditions => ProvisionRelation::Condition,
+        Bucket::SpecBase | Bucket::Carrier | Bucket::CarrierEdges => ProvisionRelation::Provides,
+    };
+    relation
+        .rids(kb)
+        .into_iter()
+        .filter_map(|rid| match bucket {
+            Bucket::Conditions => (condition_filing(kb, rid) == Some(key)).then_some((rid, None)),
+            Bucket::SpecBase => (provides_spec_key(kb, rid) == Some(key)).then_some((rid, None)),
+            Bucket::Carrier => (provides_carrier_key(kb, rid) == Some(key)).then_some((rid, None)),
+            Bucket::CarrierEdges => {
+                if provides_carrier_key(kb, rid) != Some(key) {
+                    return None;
+                }
+                provides_edge(kb, rid).map(|edge| (rid, Some(edge)))
+            }
+        })
+        .collect()
+}
+
+thread_local! {
+    /// How many reads of the index [`assert_bucket_agrees`] has checked on this thread.
+    static AGREEMENT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many reads of the provider index the agreement control has made BOTH WAYS on the
+/// calling thread — none unless `ANTHILL_PROVIDES_INDEX_AGREEMENT=1`. THE INSTRUMENT'S
+/// OWN CONTROL: a run reported clean under the switch is evidence only if the switch
+/// took, and a test reads this before and after a load to say that it did
+/// (`wi_ank4x_provider_index_takes_rows_test`, which writes what it observed into the
+/// run's log). A libtest thread runs one test.
+pub fn provider_index_agreement_reads_by_this_thread() -> usize {
+    AGREEMENT_READS.with(|n| n.get())
+}
+
+/// What `bucket` holds under `key` as the index is FILED, in the shape
+/// [`assert_bucket_agrees`] takes — for the tests of that check.
+#[cfg(test)]
+pub(super) fn filed_bucket(
+    kb: &KnowledgeBase,
+    bucket: Bucket,
+    key: Symbol,
+) -> Vec<(crate::kb::RuleId, Option<Symbol>)> {
+    let index = keyed(kb);
+    let rids = |buckets: &SymbolKeyedFactIndex| -> Vec<(crate::kb::RuleId, Option<Symbol>)> {
+        buckets.get(key).iter().map(|rid| (*rid, None)).collect()
+    };
+    match bucket {
+        Bucket::SpecBase => rids(&index.by_spec_base),
+        Bucket::Carrier => rids(&index.by_carrier),
+        Bucket::Conditions => rids(&index.conditions_by_carrier),
+        Bucket::CarrierEdges => index
+            .carrier_edges
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .map(|(rid, edge)| (*rid, Some(*edge)))
+            .collect(),
+    }
+}
+
+/// [`agreement_on`]'s check of one read: `filed` is what the bucket answered.
+pub(super) fn assert_bucket_agrees(
+    kb: &KnowledgeBase,
+    bucket: Bucket,
+    key: Symbol,
+    filed: &[(crate::kb::RuleId, Option<Symbol>)],
+) {
+    AGREEMENT_READS.with(|n| n.set(n.get() + 1));
+    let scanned = scanned_bucket(kb, bucket, key);
+    if filed == scanned.as_slice() {
+        return;
+    }
+    let render = |entries: &[(crate::kb::RuleId, Option<Symbol>)]| -> String {
+        let rows: Vec<String> = entries
+            .iter()
+            .map(|(rid, _)| {
+                let head = kb.rule_head_value(*rid);
+                let sort_ref = crate::kb::op_info::head_field_term(kb, head, "sort_ref")
+                    .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
+                    .map_or("?", |s| kb.qualified_name_of(s));
+                let about = ["spec", "provided"]
+                    .into_iter()
+                    .find_map(|field| crate::kb::op_info::head_field_value(kb, head, field))
+                    .and_then(|v| crate::kb::load::provides_spec_base_sym_view(kb, &v))
+                    .map_or("?", |s| kb.qualified_name_of(s));
+                format!("{rid:?} {sort_ref} provides {about}")
+            })
+            .collect();
+        format!("[{}]", rows.join(", "))
+    };
+    panic!(
+        "ANTHILL_PROVIDES_INDEX_AGREEMENT: the provider index and the relation disagree \
+         about {bucket:?} of `{}` — the index was filed {}, a walk of the relation gives {}",
+        kb.qualified_name_of(key),
+        render(filed),
+        render(&scanned),
+    );
+}
+
+/// The rids filed under `key_canon` in one of the index's three rid buckets, copied
+/// out, with [`agreement_on`]'s check of the read.
+fn bucket_rids(
+    kb: &KnowledgeBase,
+    bucket: Bucket,
+    key_canon: Symbol,
+) -> Vec<crate::kb::RuleId> {
+    let rids = {
+        let index = keyed(kb);
+        let buckets = match bucket {
+            Bucket::SpecBase => &index.by_spec_base,
+            Bucket::Carrier => &index.by_carrier,
+            Bucket::Conditions => &index.conditions_by_carrier,
+            Bucket::CarrierEdges => unreachable!("the edges are read by `carrier_edge_targets`"),
+        };
+        buckets.get(key_canon).to_vec()
+    };
+    if agreement_on() {
+        let filed: Vec<_> = rids.iter().map(|rid| (*rid, None)).collect();
+        assert_bucket_agrees(kb, bucket, key_canon, &filed);
+    }
+    rids
+}
+
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
-/// bucket when the index is built, else a live scan of every provides fact (the
-/// pre-build / no-index fallback). Collapses the identical fast-path/fallback selection
-/// the spec-base consumers share. The bucket keys on `canonical_sort_sym(base)`, so the
-/// caller passes a canonical spec symbol; each consumer keeps its own per-fact filter.
+/// bucket. It keys on `canonical_sort_sym(base)`, so the caller passes a canonical spec
+/// symbol. EXACT since WI-20261010-ANK4X — every fact in it has that spec base, and
+/// every live fact with that spec base is in it — where the answer was every provision
+/// fact there is while the index was dropped; a consumer's own per-fact filter is then
+/// a second read of the same key, kept where it also decodes the row.
 pub(super) fn provides_rids_by_spec(
     kb: &KnowledgeBase,
     spec_canon: Symbol,
 ) -> Vec<crate::kb::RuleId> {
-    SymbolKeyedFactIndex::rids_or_scan(
-        kb,
-        kb.provides_index.as_ref().map(|p| &p.by_spec_base),
-        spec_canon,
-        "anthill.reflect.SortProvidesInfo",
-    )
+    bucket_rids(kb, Bucket::SpecBase, spec_canon)
 }
 
 /// WI-660/WI-672 — the provides-fact rids for a CARRIER-keyed lookup: the canonical-carrier
-/// bucket when built, else a live scan. The bucket keys on `canonical_sort_sym(carrier)`, so
-/// the caller passes the CANONICAL carrier — the transitive `provides` walk (WI-864)
-/// canonicalizes once per walk and then carries canonical symbols, and relying on
-/// `canonical_sym`'s idempotence per hop would make the extra call harmless, not free. The
-/// one reader, [`provides_rows_of_provider_canon`], keeps the per-fact re-filter: the no-index
-/// scan fallback returns EVERY provides fact, so the re-filter is load-bearing there.
+/// bucket. It keys on `canonical_sort_sym(carrier)`, so the caller passes the CANONICAL
+/// carrier — the transitive `provides` walk (WI-864) canonicalizes once per walk and then
+/// carries canonical symbols, and relying on `canonical_sym`'s idempotence per hop would
+/// make the extra call harmless, not free. Exact, as [`provides_rids_by_spec`] is.
 pub(super) fn provides_rids_by_carrier_canon(
     kb: &KnowledgeBase,
     carrier_canon: Symbol,
 ) -> Vec<crate::kb::RuleId> {
-    SymbolKeyedFactIndex::rids_or_scan(
-        kb,
-        kb.provides_index.as_ref().map(|p| &p.by_carrier),
-        carrier_canon,
-        "anthill.reflect.SortProvidesInfo",
-    )
+    bucket_rids(kb, Bucket::Carrier, carrier_canon)
+}
+
+/// WI-864 — the decoded edges out of a canonical carrier: the canonical spec bases it
+/// directly provides, in relation order. [`provides_out_edges`]' read.
+pub(super) fn carrier_edge_targets(kb: &KnowledgeBase, carrier_canon: Symbol) -> SmallVec<[Symbol; 4]> {
+    let edges: SmallVec<[(crate::kb::RuleId, Symbol); 4]> =
+        keyed(kb).carrier_edges.get(&carrier_canon).cloned().unwrap_or_default();
+    if agreement_on() {
+        let filed: Vec<_> = edges.iter().map(|(rid, edge)| (*rid, Some(*edge))).collect();
+        assert_bucket_agrees(kb, Bucket::CarrierEdges, carrier_canon, &filed);
+    }
+    edges.into_iter().map(|(_, edge)| edge).collect()
+}
+
+/// The witness carriers remembered for `spec_sort`, if a guard has asked before
+/// ([`ProvidesIndex`]'s `witness_carriers`).
+pub(super) fn remembered_witness_carriers(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+) -> Option<Rc<[Symbol]>> {
+    keyed(kb).witness_carriers.borrow().get(&spec_sort).cloned()
+}
+
+/// Remember `carriers` as `spec_sort`'s witness carriers.
+pub(super) fn remember_witness_carriers(kb: &KnowledgeBase, spec_sort: Symbol, carriers: Rc<[Symbol]>) {
+    keyed(kb).witness_carriers.borrow_mut().insert(spec_sort, carriers);
 }
 
 /// WI-20260923-32XFQ — ONE `anthill.reflect.SortProvidesInfo` fact, decoded: THE row reader
@@ -257,14 +901,16 @@ pub(super) fn provides_rids_by_carrier_canon(
 /// itself — iterate the rids, skip a non-fact, read `sort_ref` → provider and `spec` → view
 /// and base, `continue` on any missing field — and read it through [`provides_rows`],
 /// [`provides_rows_of_provider`] and [`provides_rows_of_spec`] now. The two keyed forms
-/// carry the per-fact canonical RE-FILTER their bucket needs, because the bucket's no-index
-/// fallback returns EVERY provision fact: `self_supplied_entries` records a reader that
-/// once forgot it (WI-660/672) and read another carrier's conversion as its own.
+/// carry a per-fact canonical filter on the bucket's own key. It decided the answer while
+/// the bucket could be a scan of EVERY provision fact (the index dropped, until
+/// WI-20261010-ANK4X) — `self_supplied_entries` records a reader that once forgot it
+/// (WI-660/672) and read another carrier's conversion as its own — and is now the row
+/// decode saying again what the bucket said.
 ///
-/// NOT read through here, deliberately: [`build_provides_index`], which files a rid under
+/// NOT read through here, deliberately: [`provides_filing`], which keys a rid under
 /// each field INDEPENDENTLY (a fact with a readable `spec` and no readable `sort_ref` is still
-/// in the spec bucket), and [`spec_has_any_providers`]' fallback scan, which answers what that
-/// bucket answers. Both are keyed on one field; a row is all of them.
+/// in the spec bucket), and [`spec_has_any_providers`], which asks that bucket. Both are
+/// keyed on one field; a row is all of them.
 ///
 /// A row exists only when every field decodes, on whichever carrier the fact holds it: a
 /// provision whose binding was written through a type alias holds its spec as a value, and
@@ -346,10 +992,7 @@ pub(super) fn provision_fact_spec(kb: &KnowledgeBase, rid: crate::kb::RuleId) ->
 /// `sealed::provisions_that_change_a_sealed_dispatch`, which picks rows by their slot
 /// and wants no bucket at all (WI-20261010-9BKZ4).
 ///
-/// `keep` is asked BEFORE the spec is unwrapped, because the provider-keyed reader's no-index
-/// fallback hands it EVERY provision fact and a reader like `self_supplied_entries` runs once
-/// per sort: unwrapping (and cloning the bindings of) every other carrier's row first would put
-/// back a slice of the O(sorts × provisions) cost the carrier bucket exists to remove.
+/// `keep` is asked BEFORE the spec is unwrapped: a row it refuses costs one field read.
 pub(super) fn decode_provides_row(
     kb: &KnowledgeBase,
     rid: crate::kb::RuleId,
@@ -410,11 +1053,9 @@ pub(super) fn provides_rows_of_provider_canon(
         })
 }
 
-/// The rows providing `spec` — the spec-base bucket ([`provides_rids_by_spec`]) with its
-/// canonical re-filter built in. The re-filter is not for show: the no-index fallback is
-/// what the dispatch readers see today (`build_eq_dispatch_index` runs before
-/// `build_provides_index`, and `eq_derive::run`'s caller nulls the index first), and it
-/// returns EVERY provision fact.
+/// The rows providing `spec` — the spec-base bucket ([`provides_rids_by_spec`]), each fact
+/// of it decoded as a ROW: a fact in the bucket whose `sort_ref` does not read is filed
+/// under its spec and is a row to nobody.
 pub(super) fn provides_rows_of_spec(
     kb: &KnowledgeBase,
     spec: Symbol,
@@ -448,7 +1089,7 @@ pub(super) fn provides_rows_of_spec_in(
 
 /// WI-20260920-E3DC5 — ONE decoder for a `ProvidesConditionInfo` fact, shared by its three
 /// readers: [`provision_conditions`], [`conditioned_provision_pairs`], and the
-/// `conditions_by_carrier` bucket that [`build_provides_index`] fills.
+/// `conditions_by_carrier` bucket that [`condition_filing`] keys.
 ///
 /// EXTRACTED BECAUSE THE THIRD READER ARRIVED. Two of these existed as one function's body;
 /// adding a bucket and a sweep would have made three copies of one criterion kept in step
@@ -485,156 +1126,15 @@ pub(super) fn decoded_condition_row(
 }
 
 /// WI-20260920-E3DC5 — the `ProvidesConditionInfo`-fact rids for a CARRIER-keyed lookup:
-/// the canonical-`sort_ref` bucket when [`ProvidesIndex`] is built, else a live scan of
-/// every condition fact (the pre-build / no-index fallback — which is the state the whole
-/// derive block below `provides_index = None` runs in, by design). The bucket keys on
-/// `canonical_sort_sym(sort_ref-functor)`, so the caller passes any sort symbol; the one
-/// consumer keeps its per-fact `same_sort_canonical` re-filter, which is load-bearing on
-/// the scan fallback because that arm returns EVERY condition fact.
+/// the canonical-`sort_ref` bucket of [`ProvidesIndex`]. It keys on
+/// `canonical_sort_sym(sort_ref-functor)`, so the caller passes any sort symbol. Exact,
+/// as [`provides_rids_by_spec`] is: until WI-20261010-ANK4X this was every condition fact
+/// there is while the index was dropped — the state the whole derive block ran in.
 pub(super) fn condition_rids_by_carrier(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
 ) -> Vec<crate::kb::RuleId> {
-    SymbolKeyedFactIndex::rids_or_scan(
-        kb,
-        kb.provides_index.as_ref().map(|p| &p.conditions_by_carrier),
-        kb.canonical_sort_sym(sort_sym),
-        "anthill.reflect.ProvidesConditionInfo",
-    )
-}
-
-/// WI-660/WI-672 — build the [`ProvidesIndex`] in ONE pass over the SortProvidesInfo facts:
-/// `by_spec_base` keyed by canonical spec base, `by_carrier` by canonical carrier
-/// (WI-672; see the struct doc). WI-20260920-E3DC5 adds a SECOND walk, over the
-/// `ProvidesConditionInfo` facts, filling `conditions_by_carrier` — a different relation
-/// with the same validity window, which is why it is built here and not on its own
-/// schedule (the field's doc carries that argument). Called at TWO points in `load.rs`:
-/// (1) `type_check_sorts` start — every provider that type-check itself needs already
-/// exists (the loader/witness/instantiation passes all ran; `type_check` asserts none),
-/// and type-check is the hot consumer; (2) again right after `eq_derive::run` (the only
-/// LATER pass to assert provides facts — the derived composite `NonEq`/`PartialEq`), so
-/// the second call folds those in for the post-eq_derive checks and the persisted
-/// runtime index. Sound as a build-once-per-state index: after load, `SortProvidesInfo`
-/// is `constant` (053/WI-665) so it never mutates at RUNTIME; the per-load-phase `None`
-/// reset guards incremental loads. Mirrors the scan sites' extraction:
-/// `get_named_arg("spec")` → `unwrap_spec_view` base, `get_named_arg("sort_ref")` →
-/// `sort_ref_functor`.
-pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return;
-    };
-    let mut by_spec_base = SymbolKeyedFactIndex::default();
-    let mut by_carrier = SymbolKeyedFactIndex::default();
-    // WI-864 — the decoded adjacency, filled from this same walk. See `carrier_edges`.
-    let mut carrier_edges: HashMap<Symbol, SmallVec<[(crate::kb::RuleId, Symbol); 4]>> =
-        HashMap::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // Each field through the view, as the row decoder reads it: a provision whose
-        // binding was written through a type alias holds its spec on another carrier
-        // than a term, and a fact in no bucket is a provider nothing finds.
-        let head = kb.rule_head_value(rid);
-        if let Some(spec) = crate::kb::op_info::head_field_value(kb, head, "spec") {
-            if let Some(base) = crate::kb::load::provides_spec_base_sym_view(kb, &spec) {
-                by_spec_base.insert(kb.canonical_sort_sym(base), rid);
-            }
-        }
-        if let Some(sr_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") {
-            if let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr_tid) {
-                // WI-672: the carrier keys by canonical symbol. Two RESOLVED sort symbols
-                // canonicalize equal iff they share a qualified name, so canonical keying
-                // is exact for any resolved carrier — a top-level bare `sort Foo` keys
-                // under itself and is queried under itself; a qualified carrier likewise.
-                // The one shape canonical keying could NOT bridge is an UNRESOLVED bare
-                // reference (`qualified_name_of` = its dotless raw name, no `by_qualified_name`
-                // entry): the former `same_symbol` last-segment match papered over that,
-                // canonical would misbucket it. A full-suite probe found ZERO bare-QN
-                // carriers (resolved or not — every `provides` carrier is a qualified
-                // enclosing sort, cf. WI-449), so this cannot arise today; assert it so a
-                // future producer that regresses is LOUD, not a silent drop (repo rule).
-                debug_assert!(
-                    !matches!(
-                        kb.symbols.get(carrier),
-                        crate::intern::SymbolDef::Unresolved { .. }
-                    ),
-                    "WI-672: SortProvidesInfo carrier `{}` is unresolved — canonical re-key \
-                     would misbucket it; resolve the `provides` carrier at its producer",
-                    kb.qualified_name_of(carrier),
-                );
-                let carrier_canon = kb.canonical_sort_sym(carrier);
-                by_carrier.insert(carrier_canon, rid);
-                // WI-864: the out-edge, decoded once — and through the ROW decoder
-                // `provides_out_edges`' live arm reads ([`ProvidesRow`]), because a memo
-                // built from the consumer's own decode is that function computed once, not a
-                // lookalike of it that could drift. (Until WI-20260923-32XFQ the two read the
-                // spec base through two decoders that disagreed about a user sort named
-                // `SortView`; there is one now, and this reads it.)
-                if let Some(row) = decode_provides_row(kb, rid, |_| true) {
-                    carrier_edges
-                        .entry(carrier_canon)
-                        .or_default()
-                        .push((rid, kb.canonical_sort_sym(row.spec_base)));
-                }
-            }
-        }
-    }
-    // WI-20260920-E3DC5 — the CONDITION bucket, over a second relation. A separate walk
-    // and not a branch inside the one above: the two relations have different functors and
-    // different fields, and the only thing they share is the window in which they are
-    // valid (see `conditions_by_carrier`).
-    //
-    // `sort_ref_functor` and a CANONICAL key, matching the consumer arm for arm — the rule
-    // [`SymbolKeyedFactIndex`] states: key on whatever identity the consumer compares
-    // with, which here is `same_sort_canonical` over a `sort_ref_functor` read.
-    // (`build_requires_index` matches `Term::Fn` because ITS consumer does; follow the
-    // consumer, not the sibling builder.)
-    //
-    // NEITHER CHOICE IS DISTINGUISHED BY THE CORPUS TODAY, and that is recorded rather
-    // than left for someone to assume otherwise: both mutations were MEASURED — bucketing
-    // through a bare `Term::Fn` match, and keying on the raw symbol instead of the
-    // canonical one — and the whole condition-index suite passes with either. Every
-    // condition fact in a stdlib load has a `Term::Fn` `sort_ref` whose functor is already
-    // canonical, because conditions are written on SORTS (a `Ref` comes from the WI-511
-    // canon on a CONSTRUCTOR owner, and no `provides … :- …` has one). So these are
-    // faithfulness choices, not defended positions: a future producer that writes a
-    // constructor-owned or non-canonically-interned carrier would be served correctly by
-    // this spelling and silently dropped by either other one — and a dropped fact here is
-    // a provision read as UNCONDITIONAL, the `ProvisionConditionsTooWeak` over-claim minted
-    // by an index. What IS pinned by a test is the carrier-agnostic head read; see below.
-    let mut conditions_by_carrier = SymbolKeyedFactIndex::default();
-    if let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") {
-        for rid in kb.rules_by_functor(cond_sym) {
-            // THE CONSUMER'S OWN DECODE ([`decoded_condition_row`]), so the bucket holds
-            // exactly the rids the readers can use — see that function for why all three
-            // readers share it. A row it rejects is in no bucket AND invisible to the
-            // readers, so the two arms still agree.
-            //
-            // The carrier-agnostic head read is load-bearing and is NOT justified by the
-            // shipped derived rows — that claim was MEASURED AND IS FALSE, recorded here so
-            // nobody re-derives it. A term-only `fact_head_named_args` builder was tried and
-            // the whole condition-index suite still passed:
-            // `eq_derive::record_derived_conditions` lowers every field through
-            // `Value::term`, so its rows ARE term-carried. What fails is a head carrying a
-            // denoted-bearing condition (a `Value::Node` inside the view, WI-662's shape on
-            // the requires side) — `fact_head_named_args` is `None` for the whole head, the
-            // fact lands in no bucket, and the provision silently reads UNCONDITIONAL.
-            // Driven by `a_denoted_condition_fact_is_bucketed_not_dropped`, which builds
-            // exactly that head because the loader cannot yet emit one.
-            let Some((owner, _, _)) = decoded_condition_row(kb, rid) else {
-                continue;
-            };
-            conditions_by_carrier.insert(kb.canonical_sort_sym(owner), rid);
-        }
-    }
-    kb.provides_index = Some(ProvidesIndex {
-        by_spec_base,
-        by_carrier,
-        carrier_edges,
-        conditions_by_carrier,
-        witness_carriers: Default::default(),
-    });
+    bucket_rids(kb, Bucket::Conditions, kb.canonical_sort_sym(sort_sym))
 }
 
 /// WI-1112 — the SortRequiresInfo-fact rids for a SORT-keyed lookup: the
@@ -680,7 +1180,7 @@ pub(super) fn requires_rids_by_sort(
 /// `is_fact` guard already excludes).
 ///
 /// WHERE IT IS BUILT, AND WHY NOWHERE ELSE. `type_check_sorts` start, beside
-/// `build_provides_index` / `build_sort_info_index`, and once more at the end of
+/// `build_sort_info_index`, and once more at the end of
 /// `load_phase_inner` (after the last `invalidate_requires_chain_cache`) so the RUNTIME
 /// readers inherit a live index. Both producers are done before the first of those:
 /// `Loader::load_requires_decl` during the per-file load, and
@@ -741,9 +1241,8 @@ pub(crate) fn sort_info_rids_by_sort(
 /// of its `name` field. `SortInfo.name` is always a resolved sort functor (`emit_sort_info`
 /// emits `Term::Ref(sort_functor)`), so its canonical symbol IS the sort identity — an
 /// exact key that de-conflates two DISTINCT sorts merely sharing a last segment (spec §8.6;
-/// see `KnowledgeBase::sort_info_index`). Called at `type_check_sorts` start beside
-/// `build_provides_index`, when every SortInfo fact is asserted and the relation is frozen
-/// for the rest of the load. Value-fact heads (no named args) are skipped, as every keyed
+/// see `KnowledgeBase::sort_info_index`). Called at `type_check_sorts` start, when every
+/// SortInfo fact is asserted and the relation is frozen for the rest of the load. Value-fact heads (no named args) are skipped, as every keyed
 /// consumer skips them.
 ///
 /// WI-1008 — `emit_sort_info` is no longer the SOLE producer: `merge_secondary_entry_operations`
@@ -795,33 +1294,15 @@ pub(crate) fn build_sort_info_index(kb: &mut KnowledgeBase) {
 /// abstract-spec-carrier dispatch gates (WI-598/601/608/609/614) would spuriously
 /// skip — regressing a legitimately-abstract spec value to a loud dispatch error.
 pub(super) fn spec_has_any_providers(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    // WI-660: "any provider of this spec?" is a non-empty spec-base bucket of the provider
+    // index — keyed on the `canonical_sort_sym(base)` this asks with, and holding live
+    // facts only (WI-20261010-ANK4X: a retract takes its fact out). Asked of the bucket
+    // where it lies: this is a yes or no, at seven call sites of the typer.
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    // WI-660 fast path: "any provider of this spec?" is a non-empty spec-base bucket
-    // in the provider index (built once at type-check start; the bucket keys on the
-    // SAME `canonical_sort_sym(base)` this scan compares, so non-empty ⟺ a match).
-    if let Some(index) = &kb.provides_index {
-        return !index.by_spec_base.get(spec_canon).is_empty();
+    if agreement_on() {
+        return !provides_rids_by_spec(kb, spec_canon).is_empty();
     }
-    // Fallback: the linear scan, for a call before the index is built.
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return false;
-    };
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // Through the view, as the spec bucket this stands in for is filed.
-        let Some(spec_view) = provision_fact_spec(kb, rid) else {
-            continue;
-        };
-        if let Some(view_base_sym) = crate::kb::load::provides_spec_base_sym_view(kb, &spec_view)
-        {
-            if kb.canonical_sort_sym(view_base_sym) == spec_canon {
-                return true;
-            }
-        }
-    }
-    false
+    !keyed(kb).by_spec_base.get(spec_canon).is_empty()
 }
 
 /// WI-598 — true iff `carrier_sym` is itself an ABSTRACT spec sort: it has no
@@ -1090,10 +1571,11 @@ struct DecodedProvision {
 
 /// WI-1109 — every provision row, decoded ONCE.
 ///
-/// The pass runs with `kb.provides_index` dropped (it asserts into the relation it
-/// reads), so each per-row helper it used to call degraded to a full scan of every
-/// provision fact — and it called three of them per row per round: O(rounds × rows ×
-/// relation). Decoding once and indexing makes it O(rounds × relation).
+/// The pass ran with `kb.provides_index` dropped (it asserts into the relation it
+/// reads, and the index took no row until WI-20261010-ANK4X), so each per-row helper it
+/// used to call degraded to a full scan of every provision fact — and it called three of
+/// them per row per round: O(rounds × rows × relation). Decoding once and indexing makes
+/// it O(rounds × relation), and a round reads the WHOLE relation, which no bucket is.
 ///
 /// MEASURED, not reasoned (`ANTHILL_LOAD_TIMING=1` over the stdlib): the per-row shape
 /// cost **266.8 ms** and this one costs **4.4 ms** — 61×, against a whole-load budget of

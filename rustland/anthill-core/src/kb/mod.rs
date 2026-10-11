@@ -1584,30 +1584,39 @@ pub struct KnowledgeBase {
     pub(crate) scan_alias_decls: HashMap<Symbol, ScanAliasDecl>,
 
     /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
-    /// BOTH by canonical spec-base symbol AND by canonical carrier symbol, built once at
-    /// type-check start by `typing::build_provides_index`. Replaces the per-call
-    /// linear scans of every provides fact at the dispatch/coherence sites (the SAME
-    /// `rules_by_functor` antipattern as `op_records`/`sort_alias_index`). A
+    /// BOTH by canonical spec-base symbol AND by canonical carrier symbol. Replaces the
+    /// per-call linear scans of every provides fact at the dispatch/coherence sites (the
+    /// SAME `rules_by_functor` antipattern as `op_records`/`sort_alias_index`). A
     /// MANY-TO-MANY relation (carrier × spec), so TWO `SymbolKeyedFactIndex` buckets
     /// (WI-661), both keyed by `canonical_sort_sym` (WI-672 re-keyed the carrier
     /// direction from a short-name bucket to the canonical carrier symbol; consumers
     /// compare by `canonical_sort_sym`, not `same_symbol` — see `ProvidesIndex`).
     ///
-    /// SOUND BUILD-ONCE — NO per-mutation invalidation. `SortProvidesInfo` is marked
-    /// `constant` (`fact_monotonicity`, reflect.anthill; proposal 053 / WI-665), so
-    /// the WI-666 eval guard makes a runtime `Store.persist`/`retract` of it a LOUD
-    /// error — the relation cannot change after load, so the index read AT RUNTIME
-    /// (`sort_provides` from the resolver's simp guard, `provider_spec_view_bindings`
-    /// from eval dispatch) can never go stale (this is what closed the WI-607 ABA
-    /// hole that once blocked this WI). During LOAD it tracks the mutating relation
-    /// explicitly — it is `Some` only while the relation is FROZEN and `None` (consumers
-    /// scan live) across every load-time mutation window: reset to `None` at
-    /// `load_phase_inner` start (like `sort_alias_index`) and again just before
-    /// `eq_derive::run` (which reads the relation WHILE asserting derived composite
-    /// `NonEq`/`PartialEq`), and (re)built by `build_provides_index` at `type_check_sorts`
-    /// start (the hot consumer) and again right after `eq_derive::run`. `None` until
-    /// first built; while `None`, every consumer falls back to the live scan.
-    pub(crate) provides_index: Option<crate::kb::typing::ProvidesIndex>,
+    /// WI-20261010-ANK4X — NOT AN `Option`, AND NOT BUILT: it takes a row where one is
+    /// asserted ([`Self::push_value_head_entry`]) and gives one up where it is retracted
+    /// ([`Self::retract`]), so it is true at every read, in a load as after one, and no
+    /// producer of the relation owes it anything. It was built once per frozen state and
+    /// was `None` — its readers scanning the relation — across every window of a load in
+    /// which a pass asserted: from `load_phase_inner`'s start to the typer's, around
+    /// `derive_forwarded_provisions`, around `eq_derive::run`. That scan was 39 % of a
+    /// later load, and the drop a rule each producer had to remember. `ProvidesIndex`
+    /// says what a key is a function of and what holds the filed index to the relation.
+    ///
+    /// AT RUNTIME nothing changes: `SortProvidesInfo` is marked `constant`
+    /// (`fact_monotonicity`, reflect.anthill; proposal 053 / WI-665), so the WI-666 eval
+    /// guard makes a runtime `Store.persist`/`retract` of it a LOUD error (this is what
+    /// closed the WI-607 ABA hole that once blocked WI-660).
+    ///
+    /// A LAYER snapshots it and restores it with the clauses it indexes (`kb/layer.rs`),
+    /// and `deep_clone` copies it: both by the rule for a state that is true of the KB
+    /// it is in.
+    ///
+    /// IN A `RefCell`, for the one thing a READ may have to do: its keys are canonical
+    /// symbols, the name table can move under them, and a read that finds it has
+    /// computes them again (`typing::ProvidesIndex` — the type says when, and that it is
+    /// rare). Every read and every filing is through that module's functions; the two
+    /// copiers (`deep_clone`, a layer's snapshot) take the cell as it is.
+    pub(crate) provides_index: std::cell::RefCell<crate::kb::typing::ProvidesIndex>,
 
     /// WI-671/WI-672 — the SortInfo (per-sort reflect metadata) index: each sort's fact
     /// keyed by the CANONICAL sort symbol (`canonical_sort_sym`) of its `name` field, in
@@ -1629,8 +1638,7 @@ pub struct KnowledgeBase {
     /// (raw `==` within a canonical bucket returns the same exact fact).
     ///
     /// SOUND BUILD-ONCE — no per-mutation invalidation, no `constant` runtime guard.
-    /// `SortInfo` is frozen well before `type_check_sorts` and cannot go stale — no
-    /// eq_derive null-then-rebuild pair (unlike `provides_index`). Reset to `None` at
+    /// `SortInfo` is frozen well before `type_check_sorts` and cannot go stale. Reset to `None` at
     /// `load_phase_inner` start for incremental loads; `None` until first built, and
     /// while `None` every consumer falls back to the live scan.
     ///
@@ -2694,7 +2702,7 @@ impl KnowledgeBase {
             alias_heads: HashMap::new(),
             aliases_applying: HashSet::new(),
             scan_alias_decls: HashMap::new(),
-            provides_index: None,
+            provides_index: std::cell::RefCell::new(crate::kb::typing::ProvidesIndex::default()),
             sort_info_index: None,
             requires_index: None,
             op_info_index: None,
@@ -4399,6 +4407,13 @@ impl KnowledgeBase {
         // WI-812: capture fact-ness before `body_nodes` is moved into the entry,
         // to bump the `has_bodied_rule` gate below (a bodied rule = non-empty body).
         let is_bodied = !body_nodes.is_empty();
+        // WI-20261010-ANK4X — a FACT of the provision relation or of its conditions is
+        // filed in the provider index below, once it is stored: here, the one place a
+        // clause is stored, so that every producer of either relation is covered by
+        // being one. A rule under either functor is a row to no reader, and is not filed.
+        let provision_relation = head_functor
+            .filter(|_| !is_bodied)
+            .and_then(|f| typing::ProvisionRelation::of_functor(self, f));
 
         self.rules.push(RuleEntry {
             head: head.clone(),
@@ -4450,6 +4465,10 @@ impl KnowledgeBase {
         self.with_discrim_detached(move |kb, discrim| {
             discrim.insert_pattern(kb, &head, rule_id);
         });
+
+        if let Some(relation) = provision_relation {
+            typing::file_provision_fact(self, relation, rule_id);
+        }
 
         rule_id
     }
@@ -6678,6 +6697,14 @@ impl KnowledgeBase {
             // `has_directional_rewrite` counts. See
             // `invalidate_simp_gate_if_connective`.
             self.invalidate_simp_gate_if_connective(f);
+            // WI-20261010-ANK4X — and a fact of the provision relation or of its
+            // conditions leaves the provider index, the other half of the assert
+            // path's filing: the index holds live rows and no reader of it asks.
+            if is_fact {
+                if let Some(relation) = typing::ProvisionRelation::of_functor(self, f) {
+                    typing::unfile_provision_fact(self, relation, id);
+                }
+            }
         }
         if let Some(label_sym) = label {
             if let Some(v) = self.rules_by_label.get_mut(&label_sym) {
@@ -7082,6 +7109,16 @@ impl KnowledgeBase {
             // directional head is ever unindexed. See
             // `invalidate_simp_gate_if_connective`.
             self.invalidate_simp_gate_if_connective(functor);
+            // WI-20261010-ANK4X — likewise defensive, and for the same reason: this is a
+            // second way out of `rules_by_functor`, which is the provision relation as
+            // every walk of it reads it. A fact of that relation taken out of the
+            // enumeration here leaves the provider index with it, or the two families
+            // of readers would answer differently about one row.
+            if removed && is_fact {
+                if let Some(relation) = typing::ProvisionRelation::of_functor(self, functor) {
+                    typing::unfile_provision_fact(self, relation, id);
+                }
+            }
         }
     }
 
@@ -7369,12 +7406,13 @@ impl KnowledgeBase {
     /// two methods apart is what stops the existing caller's guarantee from being
     /// weakened by this one's need.
     ///
-    /// ONLY THE GATE NEEDS MAINTAINING, measured rather than assumed: `fact_dedup` /
-    /// `value_fact_dedup` are filled by `assert_fact*`, not by
+    /// ONLY THE GATE NEEDED MAINTAINING when this was written, measured rather than
+    /// assumed: `fact_dedup` / `value_fact_dedup` are filled by `assert_fact*`, not by
     /// `push_value_head_entry`, so a loader-asserted body-less RULE is in neither; and
     /// the resolver's raw-bind fact fast-path is gated on GROUND arity-0, which a
-    /// var-headed clause is not. `bodied_rule_counts` is the one index keyed on
-    /// fact-ness at assert time.
+    /// var-headed clause is not. `bodied_rule_counts` was the one index keyed on
+    /// fact-ness at assert time; the provider index is a second
+    /// ([`Self::clause_became_bodied`]).
     pub(crate) fn prepend_generated_body_goals(
         &mut self,
         id: RuleId,
@@ -7388,11 +7426,24 @@ impl KnowledgeBase {
         body.append(&mut self.rules[id.index()].body_nodes);
         self.rules[id.index()].body_nodes = body;
         if was_fact {
-            // The clause has just become bodied; the gate counts indexed bodied rules
-            // per head functor, so bump it exactly where the assert would have.
-            let head = self.rules[id.index()].head.clone();
-            if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
-                self.inc_bodied_rule_count(f);
+            self.clause_became_bodied(id);
+        }
+    }
+
+    /// A body-less clause has just gained its first goal: what was keyed on its
+    /// fact-ness when it was stored is put right, exactly where the assert would have
+    /// put it had the clause arrived bodied. Two indexes are keyed that way —
+    /// `bodied_rule_counts` (the WI-812 gate, which counts indexed bodied rules per head
+    /// functor) and, since WI-20261010-ANK4X, the provider index, which files a FACT of
+    /// the provision relation or of its conditions and to which a rule under either
+    /// functor is no row. The two generated-goal doors — the prepend above, the append
+    /// below — are the only places a clause's fact-ness changes.
+    fn clause_became_bodied(&mut self, id: RuleId) {
+        let head = self.rules[id.index()].head.clone();
+        if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
+            self.inc_bodied_rule_count(f);
+            if let Some(relation) = typing::ProvisionRelation::of_functor(self, f) {
+                typing::unfile_provision_fact(self, relation, id);
             }
         }
     }
@@ -7422,10 +7473,7 @@ impl KnowledgeBase {
         let was_fact = self.rules[id.index()].body_nodes.is_empty();
         self.rules[id.index()].body_nodes.extend(goals);
         if was_fact {
-            let head = self.rules[id.index()].head.clone();
-            if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
-                self.inc_bodied_rule_count(f);
-            }
+            self.clause_became_bodied(id);
         }
     }
 

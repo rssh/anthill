@@ -1,0 +1,356 @@
+# The provider index takes a row where one is asserted (WI-20261010-ANK4X) — what a load costs before and after,
+# the controls of the change, and the sizing of the pool of bases. 2026-10-10 23:20 – 2026-10-11, one evening.
+# For lever A3's second pass and for §5.1's pool (docs/design/test-infrastructure.md).
+#
+# Trees:   BEFORE is main at 1312cc45 (the code of 5273d5a2; the commit between is the ticket). AFTER is that tree
+#          with this change. Both built in ONE checkout, the change stashed for the first build, and the two
+#          binaries of each kept side by side — so a BEFORE row and an AFTER row are of one machine state.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build); debug assertions on.
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6.
+#          `top` before the bench: a bloop JVM at 27 % of one core, nothing else; after it: no java in the first
+#          four. No cargo beside any run here.
+#          THE MACHINE THROTTLES. `pmset -g therm` read `CPU_Speed_Limit = 53` four runs into the twelve-thread
+#          sequence of section 5, and 60 at its end, 100 a few minutes later. So a WALL TIME of a twelve-thread run
+#          in this file is of the machine as much as of the code, and is quoted with where in a sequence it was
+#          taken; the one-thread bench (sections 1 and 2) is 25 s a run and is not affected.
+
+== 1. the bench's rows, BEFORE and AFTER interleaved, two rounds (ITERS=15, one thread; ms: min / median / max) ==
+#   cp docs/measurements/test-infrastructure/bench_load.rs rustland/anthill-core/examples/
+#   cd rustland && cargo build -p anthill-core --example bench_load --config <the three opt lines>   # for each tree
+#   ITERS=15 ./bench_load.base ; ITERS=15 ./bench_load.new ; and again
+#
+# TAKEN TWICE, and the second take is the tree that ships. The first (23:31) was of the change as it stood before
+# /code-review; the second (01:02) is of it with the review's changes in — the index behind a `RefCell`, a count
+# compared at every read, a second lookup at every `define` (section 6) — beside the same BEFORE binary.
+# The machine was not the same for the two: at 23:31 a JVM at 27 % of a core and nothing else; at 01:02 a JVM at
+# 52 % falling to 29 %, and `CPU_Speed_Limit` 77 at the start (the runs before it), 100 at the end. Both columns
+# of a take are of one machine state, and the take-to-take difference is the machine's: BEFORE moved with AFTER.
+#
+# THE SECOND TAKE — the tree as delivered
+#                        BEFORE, round 1          BEFORE, round 2          AFTER, round 1           AFTER, round 2
+# full                   249.9 / 253.9 / 291.6    247.9 / 266.8 / 294.9    226.9 / 234.6 / 302.7    229.6 / 242.3 / 274.1
+# incr                   149.0 / 157.0 / 208.9    151.1 / 159.0 / 190.2    115.8 / 122.9 / 138.5    118.2 / 126.4 / 137.9
+# sealed incr             86.4 /  92.6 / 106.1     90.1 /  95.6 / 104.4     52.7 /  56.3 /  62.5     52.6 /  58.5 /  62.1
+# clone                    6.2 /   6.7 /   7.4      6.3 /   6.8 /   8.7      6.6 /   7.1 /   8.4      6.4 /   6.8 /   8.0
+# clone+incr             162.0 / 166.1 / 177.1    166.6 / 171.8 / 190.5    127.9 / 143.1 / 149.2    129.7 / 140.9 / 150.8
+# sealed clone+incr       98.9 / 104.2 / 118.8    103.7 / 115.2 / 123.4     65.1 /  67.9 /  70.6     67.0 /  70.9 /  73.9
+#
+# THE FIRST TAKE — before the review's changes, a quieter machine
+# full                   232.8 / 238.1 / 314.8    231.6 / 243.6 / 270.0    208.4 / 219.1 / 244.1    210.5 / 221.0 / 233.1
+# incr                   144.2 / 148.8 / 166.5    142.5 / 147.7 / 162.8    106.8 / 109.1 / 126.3    107.1 / 109.8 / 119.0
+# sealed incr             85.0 /  87.2 /  98.0     84.1 /  92.3 / 101.9     48.9 /  50.0 /  62.4     48.2 /  49.9 /  55.3
+# clone                    5.4 /   6.3 /   7.4      5.3 /   5.8 /   7.1      5.6 /   6.0 /   7.4      5.7 /   6.5 /   7.3
+# clone+incr             149.8 / 161.6 / 180.0    152.5 / 156.1 / 162.5    113.8 / 117.0 / 131.6    115.4 / 118.4 / 134.0
+# sealed clone+incr       91.1 /  96.4 /  97.7     95.2 / 105.2 / 115.8     55.1 /  56.5 /  65.9     55.8 /  63.3 /  67.1
+#
+# `sealed clone+incr` is what a test on the shared base pays: a copy of the sealed base, then its own file.
+# Medians of the two rounds:                  the second take           the first take
+#   a full load                               254–267 -> 235–242 ms     238–244 -> 219–221 ms
+#   a later load after a sealed stdlib         93–96  ->  56–59          87–92  ->  50
+#   a test's load on the shared base          104–115 ->  68–71          96–105 ->  57–63
+#   `full / (sealed clone + incr)`            2.3–2.4 -> 3.4–3.5        2.3–2.5 -> 3.5–3.9
+# AFTER over BEFORE for a test's load, round by round: 0.65, 0.62 in the second take; 0.59, 0.60 in the first.
+# The BEFORE rows are faster than the ticket's of the same code two hours earlier (full 283, sealed clone+incr 117):
+# that table was taken beside a bloop JVM at half a core. Which is why BEFORE was taken again here, beside AFTER.
+
+== 2. the phases of a load, BEFORE and AFTER (ANTHILL_LOAD_TIMING=1 ITERS=15 on each binary; medians of 15, ms) ==
+# The bench's first block is `full` — a fresh KB, the stdlib's 87 files and one small user file in ONE call; its
+# last is `sealed clone+incr` — the user file loaded into a copy of the sealed base. The user file defines no
+# composite, so its load derives nothing. THE SECOND TAKE (the tree as delivered); the first is below it.
+#                                                                   full load              later load, on a sealed copy
+#                                                                   BEFORE     AFTER       BEFORE     AFTER
+# the whole load (the sum of its marks)                             277.1      254.6       105.2      62.2
+# eq_derive::classify + derive_total_eq + derive_conditional_eq      24.73      2.29        40.19      1.21
+#     as a share of the load                                          8.9 %     0.9 %       38.2 %     1.9 %
+# eq_derive::later_equality_refusals                                  0.03      0.03         0.71      0.42
+# derive_forwarded_provisions                                         1.32      1.00         0.73      0.54
+# type_value_derive::run                                              7.27      6.78         0.76      0.62
+# sort_domain_derive::run                                             5.53      5.09         0.25      0.23
+# type_check_sorts                                                  102.22     97.83         7.28      7.00
+# check_provider_requires                                            22.40     21.77        24.90     26.03
+# register_specialization_witnesses                                   2.78      2.69        10.53     10.29
+# check_override_refinement                                           3.70      3.43         3.86      3.70
+# eq_derive::run                                                      2.79      0.95         2.70      0.70
+# eq_derive::record_equality_signatures                               0.41      0.37         0.41      0.39
+#
+# The pass this ticket is about: 40.2 ms -> 1.2 ms on a later load, 24.7 -> 2.3 on a full one. The ticket's probe —
+# the index built first, valid only where the pass asserts nothing — gave 2.1 ms for the later load.
+# `eq_derive::run`'s mark held two rebuilds BEFORE (the provider index, the requires index) and holds, AFTER, the
+# requires index's rebuild and the load's own check of the filed index against a walk of the relation
+# (`load_phase_inner`, debug assertions): 0.7–1.0 ms with the check in it, where it was 2.7–2.8.
+# What is left of a later load at 62 ms: check_provider_requires 26.0 ms (42 %), register_specialization_witnesses
+# 10.3 (17 %), type_check_sorts 7.0 (11 %), check_override_refinement 3.7 (6 %).
+#
+# The first take, the same rows: the whole load 245.4 -> 214.9 and 100.8 -> 59.1; the pass 24.11 -> 2.02 and
+# 40.11 -> 1.17; `eq_derive::run` 2.50 -> 0.80 and 2.46 -> 0.73; check_provider_requires 19.48 / 19.57 and
+# 23.51 / 24.20.
+
+== 3. control (3): the provision rows of the stdlib's own load, BEFORE and AFTER ==
+# A temporary example (not kept) loads the stdlib's 87 files in one call and prints every clause of
+# `anthill.reflect.SortProvidesInfo` and of `anthill.reflect.ProvidesConditionInfo` — its rule id, fact or rule, and
+# the head as source text; then seals that load, loads a user file that derives (a total composite, a composite
+# holding it behind `Option`, a parametric sort, two that reach a Float) and prints both relations again; then
+# prints them for the stdlib and that file loaded in ONE call. 1 557 lines.
+#
+#   the stdlib's own load                      413 provision clauses, 89 condition clauses     BEFORE and AFTER
+#   after a later load that derives            429                    94                       BEFORE and AFTER
+#   the stdlib and the user file in one call   429                    94                       BEFORE and AFTER
+#
+# AFTER is the tree as delivered (taken 2026-10-11 03:56; the evening before, for the change as it stood before
+# /code-review, the same three results). Each binary run SIX times, twelve listings:
+#   the rows, rule ids dropped, clause numbers masked, sorted     ONE listing — all twelve are the same file
+#   the rows, rule ids dropped, sorted                            FOUR listings, the same four from each binary
+#   the listing as printed                                        twelve different files, six and six
+# So: the same rows and the same conditions, BEFORE and AFTER, in all three loads.
+#
+# AND A FINDING THAT IS NOT THIS CHANGE'S: the tree before it does not print the same listing twice.
+#   * The derived rows get their rule ids in another order at every run. `eq_derive::composite_sorts` walks
+#     `entity_field_types`' keys, a `HashMap` with the standard per-process seed, and the derivations assert in that
+#     order.
+#   * `anthill.prelude.Result`'s two derived `NonEq` clauses — `:- NonEq[T]` and `:- NonEq[E]`, each carrying the
+#     `PartialEq` conditions — are numbered 4 and 5 one way round or the other, run to run: in the stdlib's own
+#     load (and so in the later load into it), and separately in the one-call load, which is the four listings.
+#     They are the only rows that differ once rule ids are dropped. The order is that of `Result`'s two
+#     constructors as `KnowledgeBase::constructors_of_sort` lists them, and it walks `entity_parent`, a `HashMap`;
+#     the comment at `derive_conditional_noneq` says the clause indices do not depend on a hash iteration order.
+#   Both are in BEFORE as in AFTER (each of the four set-listings came out of both binaries). Not fixed here;
+#   filed 2026-10-11 as WI-20261011-6GMCN.
+
+== 4. control (2), and the unit controls: what fails when the change is backed out ==
+# Each by making the change and running the tests named (the dev profile), on the tree as delivered, 2026-10-11.
+# (The three of control (2) were first measured the evening before, on the change as it stood before /code-review,
+# with the same verdicts over the 36 tests the selection then held.)
+#
+#     wi_tests -- wi_ank4x wi_ckd4j wi1098 wi664                                         37 tests; as it stands, 37 passed
+# (a) `load::load_phase_inner`: the index copied above `derive_total_eq` (`kb.provides_index.borrow().clone()`) and
+#     put back below it — the index left as it stood before that pass's rows.
+#     0 passed, 37 FAILED. The stdlib's own load panics at the load's check of the index against the relation
+#     ("at the end of `eq_derive::run`"), naming the 94 buckets short of rows — the providers of `Eq` and of
+#     `PartialEq`, and the provisions and the edges of 46 carriers, which are the pass's rows; the shared base is
+#     never built.
+# (b) the same, and that check compiled out at both of the load's exits: 0 passed, 37 FAILED. The stdlib is
+#     REFUSED, an error a carrier, all of one form: "'anthill.reflect.MemberKind' provides 'anthill.prelude.Eq',
+#     which requires 'anthill.prelude.PartialEq', but 'anthill.reflect.MemberKind' does not provide
+#     'anthill.prelude.PartialEq'". (How many: the log holds 42 distinct lines of that form and the first evening's
+#     45 — twelve threads' panics are interleaved in it, and a line cut by another is a line of its own. About one
+#     for each total composite, of which the stdlib has 41.)
+# (c) the index short of those rows through `derive_conditional_eq` ONLY: as (a), and
+#     `ProvidesIndex::from_scan(kb)` put in below `derive_conditional_eq`.
+#     35 passed, 2 FAILED: `wi_ank4x_provider_index_takes_rows_test::a_total_composite_is_derived_once` — under each
+#     of the three recipes `Colour` has ONE recorded clause for `PartialEq` and one for `Eq`, where the total
+#     derivation records none: the conditional pass derived it a second time — and
+#     `wi1098_derive_eq_total_test::a_parametric_sort_derives_a_conditional_row`, on the same count.
+#     `a_holder_of_a_total_composite_answers` PASSES, with the 34 others: the value of the call is right through
+#     the wrong derivation.
+#
+# The unit controls, on the tree as delivered (2026-10-11):
+#     --lib -- wi864_provides_edges_tests e3dc5_condition_index_tests wi617_canonical_provider_match_tests wi1112 \
+#              layer wi_ank4x_agreement_control_tests                                    30 tests; as it stands, 30 passed
+# `KnowledgeBase::retract` without its `unfile_provision_fact`
+#     29 passed, 1 FAILED — `a_retracted_provision_is_dropped_by_the_memo_as_it_is_by_the_decode`.
+# `KnowledgeBase::clause_became_bodied` without its `unfile_provision_fact`
+#     29 passed, 1 FAILED — `a_provision_fact_that_gains_a_body_leaves_the_index`.
+# `SymbolTable::set_canonical` counting nothing
+#     29 passed, 1 FAILED — `a_row_filed_before_its_name_moved_is_found_under_the_names_symbol_now`, at the first
+#     read after the name is declared: of the two rows of the name it finds the one filed after the declaration.
+# `set_canonical` not counting a name that had a canonical symbol and gets another
+#     29 passed, 1 FAILED — the same row, at the first read after the name is defined a second time.
+# `assert_bucket_agrees` returning before it compares
+#     28 passed, 2 FAILED — the two `should_panic` rows of `wi_ank4x_agreement_control_tests`, neither panicking.
+# `provides_index` taken out of the layer's scoped fields (`kb_scoped_fields!`)
+#     29 passed, 1 FAILED — `kb::layer::tests::spgbp_a_discarded_layers_provision_is_no_provider`, at the first
+#     assertion after the discard: the layer's sort is still among `Eq`'s providers.
+# The variable misspelt in `typing::agreement_on` (one letter) and `ANTHILL_PROVIDES_INDEX_AGREEMENT=1` set
+#     wi_tests -- wi_ank4x wi_ckd4j (14 tests): 13 passed, 1 FAILED —
+#     `the_agreement_control_runs_when_it_is_asked_for`: asked for, 0 reads made both ways.
+# The pool made to LOAD the stdlib again for each of two bases, where it copies the one loaded KB
+#     wi_tests -- wi_szkv7_two_step_load_test wi_ank4x (5 tests, 2026-10-10): 4 passed, 1 FAILED —
+#     `the_switch_selects_the_recipe_the_helpers_run`, on "the base is built once a process": 3 loads counted.
+
+== 5. the pool of bases: `wi_tests`, twelve threads, traced, once for each pool size ==
+#   ANTHILL_TEST_BASE_POOL=<n> ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+#       --test wi_tests --config <the three opt lines> -- --show-output > trace.<n>.log
+#   python3 docs/measurements/test-infrastructure/load_trace_report.py trace.<n>.log 87
+# (`ANTHILL_TEST_BASE_POOL` was a temporary override of the constant, for these runs; it is not in the tree.)
+# The five runs back to back, 23:38 – 23:56, in this order; 6 563 passed, 0 failed, 4 ignored in each.
+#
+#   bases   wall     copies   asked     a copy of the base, ms   the wait for a base, ms                 waits,      asked for,
+#                             a second  mean     median  p90     mean    median  p90     p99     max     thread-s    in bases
+#     1     165.8 s  9 554    57.6      12.71    12.31   14.32   9.22    6.48    23.10   47.35   140.61   88.1       0.73
+#     2     191.4    9 554    49.9      14.90    13.33   18.70   2.39    0.00     9.16   26.22    85.51   22.8       0.74
+#     3     204.6    9 554    46.7      16.24    14.46   20.89   0.74    0.00     0.07   14.72    47.46    7.1       0.76
+#     4     268.1    9 554    35.6      20.41    17.62   28.24   0.30    0.00     0.00   10.95    46.50    2.9       0.73
+#     6     259.2    9 554    36.9      19.91    17.49   26.98   0.07    0.00     0.00    0.00    38.91    0.7       0.73
+#
+# THE WALL COLUMN IS NOT A MEASUREMENT OF THE POOL. The machine throttled as the sequence went (the header): a copy
+# of the base is the same work in every run and took 12.7 ms in the first and 20 ms in the last two. What the runs
+# have in common is the last column — the copies asked for a second times the mean copy, i.e. how many bases' worth
+# of copying was asked for — so the wait columns are comparable, and they are the measurement.
+# One base, with the provider index in: a copy waits 9.2 ms on average and the waits are 88 thread-seconds, 4.4 % of
+# the binary's thread-time (they were 6–7 ms and 2 % before this change, `load-count-2026-10-10.txt`: the loads got
+# cheaper and the asking rate went from 40–42 a second to 57.6).
+# SIX: the waits are 0.7 thread-seconds, a copy's 99th percentile is no wait. Three or four take nine tenths of it
+# already; six is for what comes next — with no later-load time at all `wi_tests` asks for 9 555 copies in 43 s
+# (design doc §2.4), 2.8 bases' worth at a 12.7 ms copy, which four bases serve seven tenths busy and six under half.
+#
+# What a base costs a binary — one test, one thread, `/usr/bin/time -l`, the pool sized 1, 2, 6, 12, 24:
+#   peak resident   150 / 158 / 199 / 267 / 394 MB       10.6 MB a base
+#   the run         1.21 / 1.23 / 1.33 / 1.34 / 1.53 s   14 ms a base
+# Six bases: 50 MB and a tenth of a second, for each test binary that takes a base at all.
+#
+# The first row is also this change's `wi_tests` with one base, traced, from a start three minutes of compiling in:
+# 165.8 s, where the two traced runs of `load-count-2026-10-10.txt` were 230 s and 240 s. A load on the base as one
+# of twelve threads pays it: 151 ms (it was 234–244 ms), of which equality derivation is 2.7 ms, 1.8 %
+# (it was 36 %); check_provider_requires 63.9 ms, 42 %; register_specialization_witnesses 23.4 ms, 15.5 %;
+# type_check_sorts 20.2 ms, 13 %; check_override_refinement 9.5 ms, 6 %.
+
+== 6. the name table under the index's keys (found by /code-review, 2026-10-11) ==
+# A bucket key is `canonical_sort_sym` of a symbol in the row's head, computed when the row is asserted. The build
+# this index used to be computed every key again at each rebuild — two or three times a load — so a key that the
+# name table moved under was put right by the way. `SymbolTable::set_canonical`, the one write of
+# `by_qualified_name`, now counts a write that moves the canonical symbol of a symbol that already exists (the name
+# was interned before it was declared; a qualified name is defined a second time under another local name; a
+# layer's discard puts an earlier table back), and the index computes its keys again, by a walk of the relation,
+# at the first read or filing after the count has moved.
+#
+# How often that happens in a load — a temporary line in both re-keying branches (not kept), the bench at ITERS=1,
+# nine loads (a full load, one before the typer, and later loads plain, sealed and into copies):
+#     re-keyings: 0 in all nine.   The count does not move in a stdlib load or in the bench's user load.
+# So a read pays one comparison of two integers for it, and a `define` one more lookup of its name; section 1's
+# second take is with both in.
+# The unit row that drives both moves, and what it fails on, is in section 4.
+
+== 7. the gate and the recipes, on the tree as delivered (2026-10-11, 01:40 – ) ==
+# One after another, nothing else building; `CPU_Speed_Limit` read 100 before and after each of the first three.
+#   scripts/test.sh                                                         the whole workspace, the shared base
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                            exit   result lines   passed   failed   ignored   the run      `wi_tests`    OBSERVED by the controls
+#   the gate (shared base)   0      36, all ok     9 071    0        14        11 min 54 s  164.94 s      SHARED BASE; agreement off
+#   anthill-core, one shot   0      13, all ok     8 173    0         6        14 min 37 s  580.74 s      one shot;    agreement off
+#   anthill-core, two steps  0      13, all ok     8 173    0         6        12 min 46 s  694.51 s      TWO-STEP;    agreement off
+#
+# `wi_tests` in the gate: 6 564 passed, 4 ignored, in 164.94 s with six bases and no trace (it was 236 s untraced in
+# the gate of 2026-10-10 morning, `load-count-2026-10-10.txt`; 165.8 s traced with one base in section 5's first run).
+# A gate of the same tree an hour earlier, before the second review's changes: exit 0, 9 070 passed, 0 failed,
+# 14 ignored, 13 min 58 s, `wi_tests` 168.13 s.
+#
+# THE AGREEMENT CONTROL, the same tree (control (1)): every read of the provider index made both ways.
+#   ANTHILL_PROVIDES_INDEX_AGREEMENT=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core
+#   ANTHILL_PROVIDES_INDEX_AGREEMENT=1 ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                            exit   result lines   passed   failed   ignored   the run          `wi_tests`   OBSERVED by the controls
+#   on the shared base       0      13, all ok     8 173    0         6        1 h 35 min 32 s  5 167.08 s   SHARED BASE; agreement ON
+#   one shot (fresh)         0      13, all ok     8 173    0         6        1 h 59 min 52 s  6 469.00 s   one shot;    agreement ON
+#
+# "agreement ON (59 826 reads of one load made both ways)" is the line `wi_ank4x_provider_index_takes_rows_test`
+# writes on the shared base: ONE later load, of a file with two small composites, reads the index sixty thousand
+# times. Under the fresh recipe the same row says 72 140: the stdlib and that file in one call.
+# What the control costs: `wi_tests` 5 167 s on the shared base where it is 165 s, thirty-one times, and 6 469 s
+# under the fresh recipe where it is 581 s, eleven times; the library's unit tests 114–116 s where they are 8.6 s.
+# `CPU_Speed_Limit` read 100 at both ends of each run and 64–68 in the middle of it — the reading recovers within
+# seconds of a run's end, so the two at the ends say nothing about the run between them.
+# (The first cut of the walk asked each fact for all three of its keys at every read and was three times slower
+# still on the unit tests — 349 s — before it was made to ask for the one key a read is about.)
+
+== 8. one traced run of anthill-core's suites on the tree as delivered — load-count-2026-10-10.txt's counts, re-taken ==
+#   cd rustland
+#   ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+#       --config <the three opt lines> -- --show-output > load-trace.log 2>&1
+#   python3 ../docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
+# 2026-10-11 06:00:05 – 06:03:19, the binaries already built; six bases; 8 173 passed, 0 failed, 6 ignored.
+# Machine: four minutes idle before it. `top` before: a JVM at 26 % of one core; after: 18 %. `CPU_Speed_Limit`
+#          sampled every 15 s through the run: 100, 100, 100, then 68 three times and 66 seven times — the machine
+#          was at two thirds of its speed from the first minute on. So the seconds below are of a throttled
+#          machine, as `load-count-2026-10-10.txt`'s may or may not have been: nobody read the limit that evening.
+#          The COUNTS and the SHARES do not depend on it.
+#
+# stdlib size detected: 87 files; trace lines outside any test block: 0
+
+== 1. loads EXECUTED per binary, by what they are ==
+#   base-build     the shared base's own load of the stdlib, once per binary
+#   stdlib-alone   another call given the stdlib alone (a fresh recipe's first call, load_program's first)
+#   1shot+user     the stdlib and more in ONE call: a fresh load pinned by name, or one taken off the base
+#   on-base        the user's files loaded into a COPY of the base (`recipe_load SharedBase`, n > 0)
+#   later-other    a load of fewer files with no recipe line: load_program's second call, a bare load, one by hand
+#   copies         deep copies of the base taken (on-base loads, and load_stdlib_kb which loads nothing)
+binary                           tests   wall s base-build stdlib-alone 1shot+user  on-base 2step-2nd later-other  copies
+unittests src/lib.rs               679      7.3          0          112          0        0         0         108       0
+tests/algebra_tests.rs              24      0.8          1            0          0       27         0           0      30
+tests/builtin_tests.rs              81      1.5          1            0          0       80         0          12      80
+tests/classic_mini_test.rs           4      0.5          1            0          0        4         0           0       4
+tests/eval_tests.rs                119      2.2          1            0          0      123         0           0     123
+tests/github_todo_test.rs           15      0.8          1            0          0       15         0           0      15
+tests/guardians_test.rs             67      6.1          1            0         82        1         0          20       1
+tests/induction_tests.rs            13      1.1          1            0          6        8         0           0      10
+tests/parse_tests.rs               463      3.2          1            6          0       43         0         224     241
+tests/resolve_tests.rs             133      2.4          1            1          1      120         1           4     123
+tests/sql_store_example_test.rs      7      0.6          1            0          0        8         0           0       8
+tests/wi_tests.rs                 6564    157.9          1           26        219     9433        18         256    9556
+anthill_core                         4      0.6          0            0          0        0         0           0       0
+TOTAL                             8173    184.9         11          145        308     9862        19         624   10191
+# failed: 0, ignored: 6
+
+== 2. where the thread-time goes, per binary (thread-seconds; share of wall x 12) ==
+#   full loads   base-build + stdlib-alone + 1shot+user: a call that loads the stdlib
+#   later loads  every other call
+#   copy         inside deep_clone;   wait   from asking for a base to holding the lock of one of the pool's
+binary                           wall x12  full loads later loads    copy    wait  all of it   share   the rest
+unittests src/lib.rs                   87        53.9        13.5     0.0     0.0       67.4   77.1%         20
+tests/algebra_tests.rs                  9         0.3         3.1     0.4     0.1        3.9   40.7%          6
+tests/builtin_tests.rs                 18         0.3         9.2     1.0     0.1       10.6   59.8%          7
+tests/classic_mini_test.rs              6         0.3         0.3     0.0     0.0        0.6    9.2%          6
+tests/eval_tests.rs                    26         0.2        15.9     1.6     0.1       17.8   68.8%          8
+tests/github_todo_test.rs              10         0.3         2.7     0.3     0.1        3.3   34.0%          6
+tests/guardians_test.rs                73        53.5         4.0     0.0     0.0       57.5   78.6%         16
+tests/induction_tests.rs               13         2.0         0.9     0.2     0.1        3.2   24.9%         10
+tests/parse_tests.rs                   39         3.6        21.6     3.0     0.1       28.2   72.4%         11
+tests/resolve_tests.rs                 28         1.6        15.5     1.6     0.1       18.8   66.4%         10
+tests/sql_store_example_test.rs         8         0.3         0.7     0.1     0.0        1.1   14.7%          7
+tests/wi_tests.rs                    1895       143.7      1451.5   123.3     0.2     1718.6   90.7%        176
+anthill_core                            7         0.0         0.0     0.0     0.0        0.0    0.0%          7
+TOTAL                                2219       259.9      1538.9   131.5     0.8     1931.1   87.0%        288
+
+== 3. one load, and one copy, as a test thread pays them (12 threads at once) ==
+  load, base-build     n=    11  mean=  276.78 ms  median=  253.80  p90=  297.87  p99=  422.09  max=  422.09
+  load, stdlib-alone   n=   145  mean=  501.71 ms  median=  485.02  p90=  596.95  p99=  765.35  max=  848.03
+  load, one-shot+user  n=   308  mean=  597.75 ms  median=  624.40  p90=  750.47  p99=  897.54  max= 1031.72
+  load, on-base        n=  9862  mean=  149.41 ms  median=  141.88  p90=  177.94  p99=  261.95  max=  443.97
+  load, two-step-2nd   n=    19  mean=  149.65 ms  median=  149.41  p90=  190.82  p99=  192.32  max=  192.32
+  load, later-other    n=   624  mean=  100.32 ms  median=  121.97  p90=  196.99  p99=  364.59  max= 1810.62
+  copy of the base     n= 10190  mean=   12.90 ms  median=   12.17  p90=   14.94  p99=   24.20  max=   68.36
+  wait for a base      n= 10190  mean=    0.08 ms  median=    0.00  p90=    0.00  p99=    0.00  max=   18.95
+  wi_tests: 9556 copies in 158 s = 60.5 a second asked; one lock gives 77 a second at the mean copy
+
+== 4a. phases of a load ON THE BASE (the user's files into a copy): 9862 loads, 1473.4 thread-s, 149.4 ms a load ==
+   42.5%      626.4 s    63.52 ms/load  check_provider_requires
+   15.8%      232.2 s    23.54 ms/load  register_specialization_witnesses
+   13.1%      192.4 s    19.51 ms/load  type_check_sorts (N sorts)
+    6.2%       91.9 s     9.32 ms/load  check_override_refinement
+    2.1%       30.5 s     3.09 ms/load  check_provider_operations
+    1.7%       25.7 s     2.60 ms/load  eq_derive::classify + derive_total_eq + derive_conditional_eq
+    1.5%       22.1 s     2.24 ms/load  check_rule_body_goals
+    1.2%       18.0 s     1.83 ms/load  derive_carrier_builtin_tags
+   ...
+#
+# Against load-count-2026-10-10.txt (5273d5a2, one base, the pass scanning):
+#                                                   2026-10-10 (two runs)      this run
+#   `wi_tests`, traced                              240 s, 230 s               157.9 s
+#   loading, as a share of its thread-time          94 %                       90.7 %
+#   a load on the base, as one of twelve pays it    234–244 ms                 149.4 ms
+#       equality derivation, of that load           36 %                       1.7 %   (2.6 ms)
+#       check_provider_requires                     26 %                       42.5 %  (63.5 ms)
+#       register_specialization_witnesses           10 %                       15.8 %
+#       type_check_sorts                            8–9 %                      13.1 %
+#       check_override_refinement                   4 %                        6.2 %
+#   copies of the base in `wi_tests`                9 553                      9 556
+#       asked for, a second                         40–42                      60.5
+#       a copy                                      12.2–12.5 ms               12.9 ms
+#       the wait for a base, a copy: mean           6–7 ms                     0.08 ms  (median 0, p99 0, max 19 ms)
+#       the waits, of the binary's thread-time      2 %                        0.2 thread-s of 1 895
+#   loads that carry the stdlib, all binaries       455                        464
+#   later loads into a copy of the base             9 859                      9 862
+# Of `wi_tests`' thread-time now: later loads 76.6 %, loads that carry the stdlib 7.6 %, copies of the base 6.5 %,
+# the wait for one 0.0 %, everything else a test does at most 9.3 %.
+

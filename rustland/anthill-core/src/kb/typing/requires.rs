@@ -623,21 +623,44 @@ pub(crate) fn provision_conditions(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
 ) -> Vec<ProvisionConditions> {
-    let mut out: Vec<ProvisionConditions> = Vec::new();
-    // WI-20260920-E3DC5: the canonical-`sort_ref` bucket when `provides_index` is built,
-    // else every condition fact — which is why the `same_sort_canonical` re-filter below
-    // stays. This predicate answers about ONE sort and is asked ~877 times per stdlib
-    // load; without a bucket each of those walked the whole relation, so its cost was
+    // WI-20260920-E3DC5: the canonical-`sort_ref` bucket of `provides_index`. This
+    // predicate answers about ONE sort and is asked ~877 times per stdlib load; without
+    // a bucket each of those walked the whole relation, so its cost was
     // `calls × relation` and grew with any pass that adds conditioned provisions.
-    for rid in condition_rids_by_carrier(kb, sort_sym) {
+    provision_conditions_among(kb, sort_sym, condition_rids_by_carrier(kb, sort_sym))
+}
+
+/// [`provision_conditions`] by a walk of EVERY condition fact: the definition the
+/// bucket's answer is held to. It was the arm taken while the index was dropped; nothing
+/// takes it now but the tests that hold the bucket to it.
+#[cfg(test)]
+pub(crate) fn provision_conditions_scanned(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+) -> Vec<ProvisionConditions> {
+    let every = kb
+        .try_resolve_symbol("anthill.reflect.ProvidesConditionInfo")
+        .map(|relation| kb.rules_by_functor(relation))
+        .unwrap_or_default();
+    provision_conditions_among(kb, sort_sym, every)
+}
+
+/// The groups of `sort_sym`'s conditions among `rids`: its bucket, or — for
+/// [`provision_conditions_scanned`] — the whole relation.
+fn provision_conditions_among(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+    rids: Vec<crate::kb::RuleId>,
+) -> Vec<ProvisionConditions> {
+    let mut out: Vec<ProvisionConditions> = Vec::new();
+    for rid in rids {
         // [`decoded_condition_row`] — the shared decode, so this predicate and the bucket
         // it now reads through cannot answer about different sets of facts.
         let Some((owner, provided_base, condition)) = decoded_condition_row(kb, rid) else {
             continue;
         };
-        // The per-fact re-filter the bucket's contract requires: `rids_or_scan`'s no-index
-        // arm returns EVERY condition fact, so this is what scopes the answer to one sort
-        // before the index exists.
+        // The bucket's own key, read again off the decoded row — and what scopes the
+        // answer to one sort where the rids are the whole relation (the scanned form).
         if !same_sort_canonical(kb, owner, sort_sym) {
             continue;
         }
@@ -2572,10 +2595,10 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // THE CARRIER INDEX, not `rules_by_functor` — this runs once per SORT and the
     // provision relation is the largest in the KB, so the raw scan is O(sorts x
     // provisions). MEASURED: the scanning form took a stdlib load from 0.10 s to 0.18 s,
-    // an 80 % regression on the whole load. `rids_or_scan` still falls back to the scan
-    // when `provides_index` is `None`, which is the state during the derivation pass —
-    // and in that window its per-fact carrier RE-FILTER (inside
-    // [`provides_rows_of_provider`]) is what keeps a row belonging to ANOTHER carrier
+    // an 80 % regression on the whole load. Until WI-20261010-ANK4X the read fell back
+    // to that scan whenever `provides_index` was dropped, which was the state during the
+    // derivation pass — and in that window the per-fact carrier filter (inside
+    // [`provides_rows_of_provider`]) was what kept a row belonging to ANOTHER carrier
     // out: without it `Ord provides WeakOrd[T = T]`, read while querying an unrelated
     // `Foo`, handed `Foo` a self-supplied slot it never declared (WI-660/WI-672).
     for row in provides_rows_of_provider(kb, sort_sym) {

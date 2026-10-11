@@ -1944,16 +1944,24 @@ pub(super) fn carrier_provided_by_witness(
     carrier: Symbol,
 ) -> bool {
     let carrier_canon = kb.canonical_sort_sym(carrier);
-    // Before the index is built — a load phase's own window — the rows are walked as asked.
-    let Some(index) = kb.provides_index.as_ref() else {
-        return witness_carriers_of(kb, spec_sort).contains(&carrier_canon);
-    };
-    if let Some(carriers) = index.witness_carriers.borrow().get(&spec_sort) {
+    if let Some(carriers) = remembered_witness_carriers(kb, spec_sort) {
+        // WI-20261010-ANK4X — the memo held to its definition, under the index's control.
+        if agreement_on() {
+            let walked = witness_carriers_of(kb, spec_sort);
+            assert!(
+                carriers.as_ref() == walked.as_slice(),
+                "ANTHILL_PROVIDES_INDEX_AGREEMENT: the witness carriers remembered for \
+                 `{}` are {:?}, and its provision rows give {:?}",
+                kb.qualified_name_of(spec_sort),
+                carriers,
+                walked,
+            );
+        }
         return carriers.contains(&carrier_canon);
     }
     let carriers: Rc<[Symbol]> = witness_carriers_of(kb, spec_sort).into();
     let hit = carriers.contains(&carrier_canon);
-    index.witness_carriers.borrow_mut().insert(spec_sort, carriers);
+    remember_witness_carriers(kb, spec_sort, carriers);
     hit
 }
 

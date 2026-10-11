@@ -629,9 +629,10 @@ pub fn stdlib_loads_by_this_thread() -> usize {
     STDLIB_LOADS.with(|n| n.get())
 }
 
-/// How many times THIS PROCESS has built the shared base: 0 before any load asked for
-/// it, and 1 for ever after. For the same control — a base that was per-thread would
-/// count one a test.
+/// How many times THIS PROCESS has LOADED THE STDLIB to build the shared base: 0 before
+/// any load asked for it, and 1 for ever after, however many copies the pool holds. For
+/// the same control — a base that was per-thread would count one a test, and a pool
+/// that loaded each of its bases would count one a base.
 #[allow(dead_code)]
 pub fn shared_base_builds() -> usize {
     SHARED_BASE_BUILDS.load(std::sync::atomic::Ordering::Relaxed)
@@ -640,30 +641,67 @@ pub fn shared_base_builds() -> usize {
 static SHARED_BASE_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// THE ONE LOADED STDLIB OF THIS TEST BINARY (WI-059), built by the first load that
-/// asks for it: the recipe's own one-shot load of the stdlib alone, then a deep copy
-/// into a [`SendableKb`]. A test takes [`shared_base_instance`].
+/// HOW MANY COPIES of the loaded stdlib a test binary holds, each behind its own lock
+/// (WI-20261010-ANK4X).
+///
+/// SIZED BY MEASUREMENT (2026-10-10; `provider-index-2026-10-10.txt` under
+/// `docs/measurements/test-infrastructure/`): `wi_tests` on twelve threads, the gate's
+/// build, traced, once for each size — 9 554 copies a run:
+///
+/// ```text
+///   bases   wait for a base, a copy: mean   median    p90     p99    the run's waits
+///     1                           9.22 ms    6.48    23.10   47.35    88.1 thread-s
+///     2                           2.39       0.00     9.16   26.22    22.8
+///     3                           0.74       0.00     0.07   14.72     7.1
+///     4                           0.30       0.00     0.00   10.95     2.9
+///     6                           0.07       0.00     0.00    0.00     0.7
+/// ```
+///
+/// The copies are asked for at 0.73–0.76 of one base's capacity in every one of those
+/// runs (57.6 a second against a 12.7 ms copy in the first), so the column is the pool's
+/// doing and not the machine's — which throttled as the runs went, and makes their wall
+/// times no measurement of anything. SIX, and not the three or four that already take
+/// nine tenths of the wait: each pass taken out of a later load raises the asking rate,
+/// and with no later-load time at all `wi_tests` would ask for 2.8 bases' worth
+/// (9 555 copies in 43 s, design doc §2.4), which four bases serve seven tenths busy and
+/// six under half. A base is 10.6 MB and 14 ms to make (a run of one test, pools of 1 to
+/// 24), so six cost a binary 50 MB and a tenth of a second. Sized on TWELVE threads: the
+/// asking rate scales with the thread count, and a machine with many more should have
+/// the `wait` column re-taken ([`shared_base_instance`] prints it).
+const SHARED_BASE_POOL: usize = 6;
+
+/// THE LOADED STDLIB OF THIS TEST BINARY (WI-059), built by the first load that asks for
+/// it: the recipe's own one-shot load of the stdlib alone — ONE load, counted by
+/// [`shared_base_builds`] — and then [`SHARED_BASE_POOL`] deep copies of it, each a
+/// [`SendableKb`] behind its own lock. A test takes [`shared_base_instance`].
+///
+/// A POOL, where there was one base (WI-20261010-ANK4X). A test's copy is made under a
+/// base's lock, and with one base the copies of a whole binary are made one at a time:
+/// measured over a gate before this (`docs/design/test-infrastructure.md` §5.1), a copy
+/// beside eleven busy threads is 12.2–12.5 ms, so one lock gives 80–82 a second, and
+/// `wi_tests` asked for 40–42 — the lock half busy, a copy waiting 6–7 ms for it on
+/// average, and the binary unable to finish in under the 116–119 s its 9 553 copies take
+/// one at a time, whatever a load costs. Every pass taken out of a later load raises the
+/// asking rate toward that floor.
 ///
 /// The initializer NEVER PANICS — a refused load, a refused copy and a panic inside
 /// either are all kept as the `Err` they are. One that panicked would poison the
 /// `LazyLock`: the first test would say why and the thousands after it would fail on
 /// the poison, where before this each test made its own load and reported its own.
-static SHARED_BASE: std::sync::LazyLock<Result<std::sync::Mutex<SendableKb>, String>> =
+static SHARED_BASES: std::sync::LazyLock<Result<Vec<std::sync::Mutex<SendableKb>>, String>> =
     std::sync::LazyLock::new(|| {
-        SHARED_BASE_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let built = std::panic::catch_unwind(|| {
-            let run = run_recipe(&[], load::LoadOptions::default(), LoadRecipe::OneShot, NO_HOOK);
-            if let Err(errors) = run.result {
-                return Err(format!(
-                    "the stdlib does not load:\n{}",
-                    rendered_load_errors(errors).join("\n")
-                ));
-            }
-            // The base is SEALED — by `run_recipe`, which seals the library's part of
-            // every load it makes (WI-20261009-4ZRTG).
-            SendableKb::copy_of(&run.kb)
-                .map(std::sync::Mutex::new)
-                .map_err(|why| format!("the loaded stdlib cannot be copied: {why}"))
+            // COUNTED AS LOADS, off the recipe's own counter, and not as runs of this
+            // initializer: a pool that loaded the stdlib for each of its bases would
+            // pass every test and give back what the shared base is for, and it is the
+            // control's `shared_base_builds() == 1` that says it did not.
+            let loads_before = stdlib_loads_by_this_thread();
+            let bases = build_shared_bases();
+            SHARED_BASE_BUILDS.fetch_add(
+                stdlib_loads_by_this_thread() - loads_before,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            bases
         });
         built.unwrap_or_else(|panic| {
             let said = panic
@@ -675,16 +713,69 @@ static SHARED_BASE: std::sync::LazyLock<Result<std::sync::Mutex<SendableKb>, Str
         })
     });
 
-/// A KB holding the stdlib and nothing else, the caller's own: a deep copy of
-/// [`SHARED_BASE`]. The copy is made under the base's lock — 7 ms beside a 300 ms load
-/// (`docs/design/test-infrastructure.md` §5.1), so one base serves twelve test threads
-/// for as long as a test still pays a second-call load of its own.
+/// The body of [`SHARED_BASES`]: the stdlib loaded ONCE, and the pool copied from that
+/// one loaded KB. Each base is a `deep_clone` of its own, so no two of them share an
+/// `Rc` — which is what lets each stand behind a lock of its own and be read on
+/// different threads at once ([`SendableKb`]'s claim, made of each).
+fn build_shared_bases() -> Result<Vec<std::sync::Mutex<SendableKb>>, String> {
+    let run = run_recipe(&[], load::LoadOptions::default(), LoadRecipe::OneShot, NO_HOOK);
+    if let Err(errors) = run.result {
+        return Err(format!(
+            "the stdlib does not load:\n{}",
+            rendered_load_errors(errors).join("\n")
+        ));
+    }
+    // The base is SEALED — by `run_recipe`, which seals the library's part of every load
+    // it makes (WI-20261009-4ZRTG) — and each copy is sealed as it is.
+    (0..SHARED_BASE_POOL)
+        .map(|_| SendableKb::copy_of(&run.kb).map(std::sync::Mutex::new))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|why| format!("the loaded stdlib cannot be copied: {why}"))
+}
+
+/// Where the next asker starts looking for a free base: each starts one further on, so
+/// the askers of a busy moment spread over the pool instead of all trying the first.
+static NEXT_SHARED_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A KB holding the stdlib and nothing else, the caller's own: a deep copy of one of
+/// [`SHARED_BASES`], made under that base's lock. The first base found FREE, looking
+/// from the asker's turn; with none free, the asker waits for the one at its turn.
+///
+/// Under the loader's trace switch (`ANTHILL_LOAD_TIMING=1`) it says what the copy cost:
+///
+/// ```text
+/// [load_timing] base_copy wait=<duration> copy=<duration>
+/// ```
+///
+/// `wait` from asking to holding a base's lock, `copy` the deep copy made under it. This
+/// is the line the pool was sized by, and what says whether it still fits
+/// (`docs/measurements/test-infrastructure/load_trace_report.py` reads it).
 fn shared_base_instance() -> KnowledgeBase {
-    let base = SHARED_BASE.as_ref().unwrap_or_else(|why| panic!("{why}"));
-    // A test that panicked while it held the lock was only READING the base.
-    base.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .instance()
+    use std::sync::{PoisonError, TryLockError};
+    let bases = SHARED_BASES.as_ref().unwrap_or_else(|why| panic!("{why}"));
+    let traced = std::env::var("ANTHILL_LOAD_TIMING").is_ok_and(|v| v == "1");
+    let asked = std::time::Instant::now();
+    let turn = NEXT_SHARED_BASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % bases.len();
+    // A test that panicked while it held a lock was only READING the base.
+    let free = (0..bases.len()).find_map(|step| match bases[(turn + step) % bases.len()].try_lock() {
+        Ok(base) => Some(base),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    });
+    let base = free.unwrap_or_else(|| bases[turn].lock().unwrap_or_else(PoisonError::into_inner));
+    let held = std::time::Instant::now();
+    let kb = base.instance();
+    let copied = held.elapsed();
+    // The base is given back BEFORE the line is written: a trace that held it through
+    // its own formatting would lengthen the wait it reports.
+    drop(base);
+    if traced {
+        eprintln!(
+            "[load_timing] base_copy wait={:?} copy={copied:?}",
+            held.duration_since(asked),
+        );
+    }
+    kb
 }
 
 /// Under the loader's own trace switch, say that a load is the recipe's and which one —

@@ -1,0 +1,340 @@
+# Loads EXECUTED by anthill-core's suites on the SHARED BASE, the library sealed and its bodies typed once —
+# load-count-2026-10-06.txt and one-recipe-run-2026-10-08.txt's counts re-taken on the landed tree.
+# 2026-10-10, two runs: 22:15-22:19 and 22:21-22:25.
+#   cd rustland
+#   ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core \
+#     --config <the three opt lines> -- --show-output > load-trace.log 2>&1
+#   python3 ../docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
+# Tree:    5273d5a2 (main), plus ONE temporary line, NOT KEPT: `shared_base_instance` (tests/common/mod.rs) printed
+#            [load_timing] base_copy wait=<duration> copy=<duration>
+#          — the wait for the base's one lock, and the deep copy made under it. Without it the copies are still
+#          COUNTED (from `recipe_load SharedBase`, which is in the tree) and the `copy` / `wait` columns are 0.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build), built cold for this run
+#          (`target/debug` had been removed that evening, for disk space). 12 test threads.
+# Machine: Intel i7-9750H (6 cores / 12 threads), 64 GiB, macOS 25.6. No gate and no cargo beside either run.
+#          `top` before run 1: a bloop JVM at 51 % of one core, load average 22 left by the cold build that had just
+#          ended; after it: no java among the top six. Before run 2: Spotlight (`mds_stores`) at 163 % — what it
+#          was indexing was not looked at; after it: 25 %.
+# Result:  8 164 passed, 0 failed, 6 ignored, in each run.
+#          load recipe OBSERVED by wi_tests::wi_szkv7_two_step_load_test: SHARED BASE
+#
+# WHY --show-output AND NOT --nocapture. libtest keeps capturing and prints each passed test's output under its own
+# header once the binary's tests are done, so every trace line belongs to ONE test and the lines of one load are
+# contiguous. Under --nocapture twelve threads' lines interleave: the 2026-10-06 file could count the loads and sum
+# the phases, and could not say which phase line was which load's. It is also free: `wi_tests` took 240 s and 230 s
+# traced, against 236 s untraced in the same day's 18:12 gate (--nocapture: 851 s against 659 s on 2026-10-06).
+#
+# HOW TO READ THE SECONDS. They are thread-seconds as a test thread pays them, twelve at once on six cores: a load
+# on the base is 234-244 ms here and 96 ms alone on a quiet thread (sealed-bodies-2026-10-10.txt), a copy 12 ms
+# here and 6.8 ms there. `wall x 12` takes every thread as busy for the whole of a binary's run, so `the rest` —
+# test bodies, the harness, a thread with nothing left to run — is an upper bound on the bodies. The SHARES are the
+# measurement. The two runs agree to a point on every share; run 1 is given whole and run 2's tables after it.
+
+================================================== run 1, 22:15-22:19 ==================================================
+# stdlib size detected: 87 files; trace lines outside any test block: 0
+
+== 1. loads EXECUTED per binary, by what they are ==
+#   base-build     the shared base's own load of the stdlib, once per binary
+#   stdlib-alone   another call given the stdlib alone (a fresh recipe's first call, load_program's first)
+#   1shot+user     the stdlib and more in ONE call: a fresh load pinned by name, or one taken off the base
+#   on-base        the user's files loaded into a COPY of the base (`recipe_load SharedBase`, n > 0)
+#   later-other    a load of fewer files with no recipe line: load_program's second call, a bare load, one by hand
+#   copies         deep copies of the base taken (on-base loads, and load_stdlib_kb which loads nothing)
+binary                           tests   wall s base-build stdlib-alone 1shot+user  on-base 2step-2nd later-other  copies
+unittests src/lib.rs               673      8.9          0          107          0        0         0         106       0
+tests/algebra_tests.rs              24      1.1          1            0          0       27         0           0      30
+tests/builtin_tests.rs              81      2.2          1            0          0       80         0          12      80
+tests/classic_mini_test.rs           4      0.6          1            0          0        4         0           0       4
+tests/eval_tests.rs                119      3.1          1            0          0      123         0           0     123
+tests/github_todo_test.rs           15      0.9          1            0          0       15         0           0      15
+tests/guardians_test.rs             67      7.5          1            0         82        1         0          20       1
+tests/induction_tests.rs            13      1.2          1            0          6        8         0           0      10
+tests/parse_tests.rs               463      5.3          1            6          0       43         0         224     241
+tests/resolve_tests.rs             133      3.4          1            1          1      120         1           4     123
+tests/sql_store_example_test.rs      7      0.8          1            0          0        8         0           0       8
+tests/wi_tests.rs                 6561    240.2          1           24        217     9430        16         256    9553
+anthill_core                         4      0.4          0            0          0        0         0           0       0
+TOTAL                             8164    275.7         11          138        306     9859        17         622   10188
+# failed: 0, ignored: 6
+
+== 2. where the thread-time goes, per binary (thread-seconds; share of wall x 12) ==
+#   full loads   base-build + stdlib-alone + 1shot+user: a call that loads the stdlib
+#   later loads  every other call
+#   copy         inside deep_clone;   wait   blocked on the base's one lock before it
+binary                           wall x12  full loads later loads    copy    wait  all of it   share   the rest
+unittests src/lib.rs                  107        65.3        22.1     0.0     0.0       87.3   81.5%         20
+tests/algebra_tests.rs                 13         0.3         5.0     0.4     1.0        6.7   50.5%          7
+tests/builtin_tests.rs                 27         0.3        16.1     1.0     0.9       18.3   68.8%          8
+tests/classic_mini_test.rs              7         0.3         0.5     0.0     0.1        0.9   12.3%          6
+tests/eval_tests.rs                    37         0.3        26.2     1.5     1.3       29.2   78.1%          8
+tests/github_todo_test.rs              11         0.3         4.0     0.2     0.7        5.2   45.9%          6
+tests/guardians_test.rs                90        66.0         7.1     0.0     0.0       73.0   80.7%         17
+tests/induction_tests.rs               14         2.4         1.4     0.1     0.5        4.3   31.1%         10
+tests/parse_tests.rs                   63         4.5        39.0     2.9     5.0       51.4   80.9%         12
+tests/resolve_tests.rs                 41         2.0        28.2     1.5     1.4       33.0   80.7%          8
+tests/sql_store_example_test.rs        10         0.3         1.2     0.1     0.2        1.8   19.3%          8
+tests/wi_tests.rs                    2882       163.9      2364.5   119.7    60.1     2708.2   94.0%        174
+anthill_core                            5         0.0         0.0     0.0     0.0        0.0    0.0%          5
+TOTAL                                3308       305.8      2515.1   127.3    71.2     3019.4   91.3%        289
+
+== 3. one load, and one copy, as a test thread pays them (12 threads at once) ==
+  load, base-build     n=    11  mean=  318.89 ms  median=  305.16  p90=  323.87  p99=  445.33  max=  445.33
+  load, stdlib-alone   n=   138  mean=  627.38 ms  median=  621.52  p90=  724.87  p99=  906.34  max=  952.58
+  load, one-shot+user  n=   306  mean=  704.84 ms  median=  703.78  p90=  896.00  p99= 1313.30  max= 1380.92
+  load, on-base        n=  9859  mean=  244.03 ms  median=  232.45  p90=  289.71  p99=  391.49  max=  570.51
+  load, two-step-2nd   n=    17  mean=  259.76 ms  median=  240.78  p90=  291.19  p99=  350.82  max=  350.82
+  load, later-other    n=   622  mean=  168.46 ms  median=  214.12  p90=  294.70  p99=  520.26  max= 2854.55
+  copy of the base     n= 10187  mean=   12.50 ms  median=   12.06  p90=   14.07  p99=   21.48  max=   67.25
+  wait for its lock    n= 10187  mean=    6.99 ms  median=    0.60  p90=   19.89  p99=   52.50  max=  154.11
+  wi_tests: 9553 copies in 240 s = 39.8 a second asked; one lock gives 80 a second at the mean copy
+
+== 4a. phases of a load ON THE BASE (the user's files into a copy): 9859 loads, 2405.9 thread-s, 244.0 ms a load ==
+   35.7%      860.1 s    87.24 ms/load  eq_derive::classify + derive_total_eq + derive_conditional_eq
+   26.4%      634.9 s    64.40 ms/load  check_provider_requires
+    9.5%      228.4 s    23.16 ms/load  register_specialization_witnesses
+    8.6%      206.9 s    20.99 ms/load  type_check_sorts (N sorts)
+    4.1%       97.9 s     9.93 ms/load  check_override_refinement
+    2.7%       64.5 s     6.54 ms/load  eq_derive::run
+    1.3%       32.2 s     3.26 ms/load  check_provider_operations
+    0.9%       22.4 s     2.27 ms/load  check_rule_body_goals
+    0.8%       19.2 s     1.94 ms/load  derive_carrier_builtin_tags
+    0.7%       17.3 s     1.76 ms/load  type_value_derive::run
+    0.7%       17.2 s     1.74 ms/load  derive_forwarded_provisions
+    0.6%       15.6 s     1.58 ms/load  load_with_visited x N
+    0.6%       14.1 s     1.43 ms/load  eq_derive::later_equality_refusals
+    0.6%       13.9 s     1.41 ms/load  build_eq_dispatch_index
+    0.4%       10.5 s     1.07 ms/load  seed_default_provider_index
+    0.4%       10.3 s     1.05 ms/load  build_default_provider_index
+    0.4%       10.3 s     1.04 ms/load  build_sort_ops_table
+    0.4%       10.0 s     1.01 ms/load  build_sort_ops_table (derived-provision delta)
+    0.4%        9.9 s     1.01 ms/load  check_declared_row_contradiction
+    0.4%        9.8 s     0.99 ms/load  eq_derive::record_equality_signatures
+    0.4%        9.2 s     0.93 ms/load  req_insertion::run
+    0.4%        8.8 s     0.89 ms/load  check_requires_shadows
+    3.4%       82.6 s     8.38 ms/load  the other 33 phases
+
+== 4b. phases of a load that carries the stdlib: 455 loads, 305.8 thread-s, 672.0 ms a load ==
+   37.3%      114.1 s   250.85 ms/load  type_check_sorts (N sorts)
+   25.1%       76.9 s   168.98 ms/load  load_with_visited x N
+    9.6%       29.4 s    64.63 ms/load  eq_derive::classify + derive_total_eq + derive_conditional_eq
+    9.0%       27.6 s    60.76 ms/load  check_provider_requires
+    2.7%        8.2 s    18.03 ms/load  type_value_derive::run
+    2.1%        6.3 s    13.91 ms/load  sort_domain_derive::run
+    1.7%        5.3 s    11.58 ms/load  scan_definitions
+    1.3%        4.0 s     8.78 ms/load  check_override_refinement
+    1.2%        3.8 s     8.27 ms/load  declare_field_types
+    1.1%        3.3 s     7.23 ms/load  resolve_instantiations
+    1.0%        3.1 s     6.88 ms/load  derive_sort_domains
+    1.0%        3.1 s     6.87 ms/load  register_specialization_witnesses
+    1.0%        3.0 s     6.51 ms/load  eq_derive::run
+    0.6%        1.8 s     3.87 ms/load  seed_default_provider_index
+    0.5%        1.6 s     3.51 ms/load  check_name_captures
+    0.5%        1.5 s     3.27 ms/load  derive_forwarded_provisions
+    0.4%        1.3 s     2.85 ms/load  check_provider_operations
+    0.4%        1.2 s     2.66 ms/load  build_eq_dispatch_index
+    0.3%        1.0 s     2.23 ms/load  check_rule_body_goals
+    0.3%        0.9 s     1.97 ms/load  derive_carrier_builtin_tags
+    0.3%        0.9 s     1.94 ms/load  check_written_row_bindings
+    0.2%        0.7 s     1.56 ms/load  req_insertion::run
+    2.2%        6.8 s    14.85 ms/load  the other 33 phases
+
+== 4c. phases of the other later loads: 639 loads, 109.2 thread-s, 170.9 ms a load ==
+   36.8%       40.2 s    62.93 ms/load  eq_derive::classify + derive_total_eq + derive_conditional_eq
+   24.6%       26.8 s    42.01 ms/load  check_provider_requires
+   10.2%       11.2 s    17.48 ms/load  type_check_sorts (N sorts)
+    9.7%       10.6 s    16.59 ms/load  register_specialization_witnesses
+    3.7%        4.0 s     6.30 ms/load  check_override_refinement
+    2.3%        2.5 s     3.98 ms/load  eq_derive::run
+    1.2%        1.3 s     2.07 ms/load  check_provider_operations
+    0.9%        1.0 s     1.49 ms/load  check_rule_body_goals
+    0.8%        0.8 s     1.32 ms/load  derive_carrier_builtin_tags
+    0.7%        0.8 s     1.28 ms/load  derive_forwarded_provisions
+    0.7%        0.8 s     1.24 ms/load  load_with_visited x N
+    0.7%        0.8 s     1.24 ms/load  type_value_derive::run
+    0.6%        0.7 s     1.07 ms/load  build_eq_dispatch_index
+    0.6%        0.7 s     1.02 ms/load  eq_derive::later_equality_refusals
+    0.4%        0.5 s     0.76 ms/load  build_sort_ops_table
+    0.4%        0.4 s     0.69 ms/load  seed_default_provider_index
+    0.4%        0.4 s     0.67 ms/load  build_sort_ops_table (derived-provision delta)
+    0.4%        0.4 s     0.66 ms/load  eq_derive::record_equality_signatures
+    0.4%        0.4 s     0.66 ms/load  check_declared_row_contradiction
+    0.4%        0.4 s     0.66 ms/load  build_default_provider_index
+    0.4%        0.4 s     0.60 ms/load  check_requires_shadows
+    0.3%        0.4 s     0.56 ms/load  req_insertion::run
+    3.3%        3.6 s     5.62 ms/load  the other 33 phases
+
+== 5. loads per test (integration binaries; a test with no trace line has none) ==
+  unittests src/lib.rs             tests   673: no load or copy   553; copy only    0; 1 load    30; 2   87; 3    3; 4+    0   loads/test 0.32
+  tests/algebra_tests.rs           tests    24: no load or copy     0; copy only    3; 1 load    15; 2    5; 3    1; 4+    0   loads/test 1.17
+  tests/builtin_tests.rs           tests    81: no load or copy    11; copy only    0; 1 load    61; 2    3; 3    1; 4+    5   loads/test 1.15
+  tests/classic_mini_test.rs       tests     4: no load or copy     0; copy only    0; 1 load     3; 2    1; 3    0; 4+    0   loads/test 1.25
+  tests/eval_tests.rs              tests   119: no load or copy     0; copy only    0; 1 load   115; 2    3; 3    1; 4+    0   loads/test 1.04
+  tests/github_todo_test.rs        tests    15: no load or copy     0; copy only    0; 1 load    14; 2    1; 3    0; 4+    0   loads/test 1.07
+  tests/guardians_test.rs          tests    67: no load or copy     0; copy only    0; 1 load    45; 2   17; 3    0; 4+    5   loads/test 1.55
+  tests/induction_tests.rs         tests    13: no load or copy     0; copy only    1; 1 load     9; 2    3; 3    0; 4+    0   loads/test 1.15
+  tests/parse_tests.rs             tests   463: no load or copy   143; copy only   64; 1 load   244; 2    9; 3    1; 4+    2   loads/test 0.59
+  tests/resolve_tests.rs           tests   133: no load or copy     9; copy only    2; 1 load   117; 2    4; 3    1; 4+    0   loads/test 0.96
+  tests/sql_store_example_test.rs  tests     7: no load or copy     0; copy only    0; 1 load     5; 2    2; 3    0; 4+    0   loads/test 1.29
+  tests/wi_tests.rs                tests  6561: no load or copy   181; copy only   70; 1 load  4584; 2 1080; 3  275; 4+  371   loads/test 1.52
+  anthill_core                     tests     4: no load or copy     4; copy only    0; 1 load     0; 2    0; 3    0; 4+    0   loads/test 0.00
+
+== 6. the loads that still carry the stdlib, by test file (module), most thread-time first ==
+  444 such loads in 36 test files, 302.3 thread-s (the base builds are not among them)
+      65.5 s     82 loads  (0 alone, 82 with a user file)  guardians_test
+      51.5 s     83 loads  (83 alone, 0 with a user file)  unittests src/lib::kb
+      32.1 s     46 loads  (4 alone, 42 with a user file)  wi_tests::wi_9bkz4_sealed_bodies_test
+      24.3 s     34 loads  (0 alone, 34 with a user file)  wi_tests::wi1114_item_per_file_store_test
+      17.4 s     26 loads  (12 alone, 14 with a user file)  wi_tests::wi_4zrtg_sealed_library_test
+      14.9 s     37 loads  (1 alone, 36 with a user file)  wi_tests::wi_kssa4_spec_typed_value_test
+      13.7 s     24 loads  (24 alone, 0 with a user file)  unittests src/lib::eval
+       8.4 s     13 loads  (0 alone, 13 with a user file)  wi_tests::wi_brt4y_host_implemented_test
+       6.7 s      8 loads  (1 alone, 7 with a user file)  wi_tests::wi995_import_file_locality_test
+       5.9 s      8 loads  (0 alone, 8 with a user file)  wi_tests::wi1122_embedder_host_fn_test
+       5.8 s      9 loads  (0 alone, 9 with a user file)  wi_tests::wi_2858g_reentrant_host_call_test
+       5.4 s      5 loads  (0 alone, 5 with a user file)  wi_tests::wi204_sort_param_test
+       5.2 s      4 loads  (0 alone, 4 with a user file)  wi_tests::wi210_dispatch_test
+       5.2 s      6 loads  (0 alone, 6 with a user file)  wi_tests::wi1075_absolute_path_test
+       5.2 s      4 loads  (0 alone, 4 with a user file)  wi_tests::wi236_call_with_requirements_test
+       4.1 s      6 loads  (6 alone, 0 with a user file)  parse_tests::typing_test
+       4.0 s      7 loads  (1 alone, 6 with a user file)  wi_tests::wi_szkv7_later_equality_test
+       3.6 s      6 loads  (0 alone, 6 with a user file)  wi_tests::wi_v25n3_written_row_label_test
+       3.3 s      6 loads  (1 alone, 5 with a user file)  wi_tests::wi_szkv7_clause_frontier_test
+       2.6 s      4 loads  (2 alone, 2 with a user file)  wi_tests::wi_szkv7_two_step_load_test
+       2.2 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi204_let_ctor_env_test
+       2.2 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi204_smoke_test
+       1.8 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi_ee0ep_param_dictionary_test
+       1.7 s      2 loads  (1 alone, 1 with a user file)  resolve_tests::incremental_load_test
+       1.6 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi718_prelude_ctor_preregistration_test
+       1.4 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi1049_duplicate_operation_declaration_test
+       0.9 s      1 loads  (1 alone, 0 with a user file)  wi_tests::wi345_warnings_channel_test
+       0.9 s      1 loads  (1 alone, 0 with a user file)  wi_tests::wi219_modify_transitivity_test
+       0.9 s      1 loads  (0 alone, 1 with a user file)  wi_tests::wi228_tree_threaded_dispatch_test
+       0.8 s      2 loads  (0 alone, 2 with a user file)  wi_tests::wi999_name_capture_test
+       0.7 s      2 loads  (0 alone, 2 with a user file)  induction_tests::specialization_witness_test
+       0.7 s      2 loads  (0 alone, 2 with a user file)  induction_tests::scope_axiom_witness_test
+       0.7 s      2 loads  (0 alone, 2 with a user file)  induction_tests::induction_axiom_witness_test
+       0.4 s      1 loads  (0 alone, 1 with a user file)  wi_tests::wi_n3w68_twin_divergence_test
+       0.3 s      1 loads  (0 alone, 1 with a user file)  wi_tests::wi857_dictionary_layout_test
+       0.2 s      1 loads  (0 alone, 1 with a user file)  wi_tests::wi980_rule_head_order_test
+
+== 7. the 25 tests with the most traced load time ==
+    17.23 s    55 loads (55 on-base)  wi_hzvqa_alias_receiver_test::a_receiver_names_the_instance_and_not_the_result
+    14.60 s    36 loads (35 one-shot+user, 1 stdlib-alone)  wi_kssa4_spec_typed_value_test::the_library_and_the_examples_type_no_position_at_a_spec
+    10.98 s    40 loads (40 on-base)  provision_written_through_alias_test::a_provision_written_through_an_alias_provides_at_its_type
+    10.48 s    33 loads (33 on-base)  wi_hzvqa_alias_receiver_test::a_constructor_called_with_a_receiver_is_at_its_parameters
+     6.66 s    24 loads (24 on-base)  typer_capability_matrix_test::the_remaining_positions_across_their_routes
+     6.09 s    22 loads (22 on-base)  typer_capability_matrix_test::the_row_remainders
+     5.67 s    21 loads (21 on-base)  typer_capability_matrix_test::sweep_fold_left
+     5.66 s    21 loads (21 on-base)  typer_capability_matrix_test::sweep_map
+     5.65 s    21 loads (21 on-base)  typer_capability_matrix_test::sweep_fold_right
+     5.59 s    16 loads (16 later-other)  wi_d0sd4_deep_clone_test::a_copy_of_one_base_is_taken_on_each_of_several_threads
+     5.24 s     6 loads (6 one-shot+user)  wi1075_absolute_path_test::wi1075_rung_two_census_stays_zero
+     4.92 s    18 loads (18 on-base)  typer_capability_matrix_test::sweep_find
+     4.81 s    17 loads (17 on-base)  wi_v25n3_written_row_label_test::every_type_position_a_row_can_be_written_in_is_judged
+     4.74 s    16 loads (16 on-base)  wi_s7yf5_self_receiver_row_test::s7yf5_declared_callers_execute_effects
+     4.74 s    18 loads (18 on-base)  typer_capability_matrix_test::sweep_filter
+     4.50 s     5 loads (5 one-shot+user)  a_projected_row_flattens_at_a_concrete_carrier_and_054_still_bars_branch_times_external
+     4.32 s    15 loads (15 on-base)  wi_b6qya_constructor_bracket_test::a_named_requirement_slot_is_bound_and_selects
+     4.30 s    12 loads (12 on-base)  wi1119_dot_on_constrained_param_test::every_requires_spelling_agrees_between_the_dot_and_the_named_form
+     4.25 s     8 loads (4 one-shot+user, 4 later-other)  an_agent_can_inline_the_body_projection
+     4.19 s     5 loads (4 one-shot+user, 1 stdlib-alone)  wi995_import_file_locality_test::wi995_measure_import_file_locality_cost
+     4.13 s    16 loads (16 on-base)  typer_capability_matrix_test::a_spec_typed_parameter_and_its_carrier
+     4.11 s    13 loads (13 on-base)  wi_kd9sw_minted_operator_address_test::an_operator_needs_no_import
+     4.04 s    11 loads (11 on-base)  wi_ckd4j_conditional_eq_derivation_test::the_five_refused_programs_answer
+     4.00 s    12 loads (12 on-base)  wi590_conditional_finiteness_test::defaulted_members_over_a_finite_source_load
+     3.88 s    14 loads (14 on-base)  wi_zy11j_alias_typed_value_test::a_sorts_own_operations_take_a_value_typed_by_its_alias
+
+================================================== run 2, 22:21-22:25 ==================================================
+# Section 1 is run 1's to the row but for the `wall s` column, which section 2 carries.
+== 2. where the thread-time goes, per binary (thread-seconds; share of wall x 12) ==
+#   full loads   base-build + stdlib-alone + 1shot+user: a call that loads the stdlib
+#   later loads  every other call
+#   copy         inside deep_clone;   wait   blocked on the base's one lock before it
+binary                           wall x12  full loads later loads    copy    wait  all of it   share   the rest
+unittests src/lib.rs                   98        59.4        20.1     0.0     0.0       79.5   81.2%         18
+tests/algebra_tests.rs                 13         0.3         4.7     0.3     1.0        6.3   48.9%          7
+tests/builtin_tests.rs                 28         0.3        16.1     0.9     1.1       18.4   66.8%          9
+tests/classic_mini_test.rs              7         0.3         0.4     0.0     0.1        0.8   11.8%          6
+tests/eval_tests.rs                    36         0.3        24.7     1.5     1.2       27.7   76.8%          8
+tests/github_todo_test.rs              12         0.3         4.2     0.2     0.8        5.5   46.6%          6
+tests/guardians_test.rs                92        66.8         7.5     0.0     0.0       74.3   81.0%         17
+tests/induction_tests.rs               14         2.3         1.4     0.1     0.5        4.3   29.9%         10
+tests/parse_tests.rs                   65         4.8        39.0     2.8     5.4       52.0   80.0%         13
+tests/resolve_tests.rs                 38         1.8        26.1     1.5     0.9       30.2   80.0%          8
+tests/sql_store_example_test.rs         9         0.3         1.4     0.1     0.2        2.0   21.3%          7
+tests/wi_tests.rs                    2760       153.4      2272.9   116.4    53.5     2596.2   94.1%        164
+anthill_core                            4         0.0         0.0     0.0     0.0        0.0    0.0%          4
+TOTAL                                3176       290.4      2418.4   123.9    64.6     2897.4   91.2%        279
+
+== 3. one load, and one copy, as a test thread pays them (12 threads at once) ==
+  load, base-build     n=    11  mean=  323.92 ms  median=  313.23  p90=  334.30  p99=  486.58  max=  486.58
+  load, stdlib-alone   n=   138  mean=  581.98 ms  median=  557.64  p90=  689.50  p99=  871.65  max=  874.06
+  load, one-shot+user  n=   306  mean=  675.04 ms  median=  685.43  p90=  845.00  p99=  958.66  max= 1029.13
+  load, on-base        n=  9859  mean=  234.41 ms  median=  225.19  p90=  277.48  p99=  353.75  max=  641.58
+  load, two-step-2nd   n=    17  mean=  267.91 ms  median=  253.71  p90=  314.11  p99=  340.13  max=  340.13
+  load, later-other    n=   622  mean=  165.27 ms  median=  208.44  p90=  291.52  p99=  498.63  max= 2877.16
+  copy of the base     n= 10187  mean=   12.16 ms  median=   11.80  p90=   13.59  p99=   20.20  max=   55.50
+  wait for its lock    n= 10187  mean=    6.35 ms  median=    0.27  p90=   17.53  p99=   53.21  max=  154.05
+  wi_tests: 9553 copies in 230 s = 41.5 a second asked; one lock gives 82 a second at the mean copy
+
+== 4a. phases of a load ON THE BASE (the user's files into a copy): 9859 loads, 2311.0 thread-s, 234.4 ms a load ==
+   36.5%      844.4 s    85.65 ms/load  eq_derive::classify + derive_total_eq + derive_conditional_eq
+   25.9%      599.4 s    60.79 ms/load  check_provider_requires
+    9.8%      225.8 s    22.90 ms/load  register_specialization_witnesses
+    8.4%      195.1 s    19.78 ms/load  type_check_sorts (N sorts)
+    3.9%       90.3 s     9.16 ms/load  check_override_refinement
+    2.6%       60.5 s     6.14 ms/load  eq_derive::run
+    1.3%       29.1 s     2.95 ms/load  check_provider_operations
+    0.9%       21.6 s     2.19 ms/load  check_rule_body_goals
+    0.8%       18.4 s     1.86 ms/load  derive_carrier_builtin_tags
+    0.7%       16.5 s     1.67 ms/load  derive_forwarded_provisions
+    0.7%       16.4 s     1.67 ms/load  type_value_derive::run
+    0.7%       15.1 s     1.54 ms/load  load_with_visited x N
+    0.6%       13.7 s     1.39 ms/load  eq_derive::later_equality_refusals
+    0.6%       13.4 s     1.36 ms/load  build_eq_dispatch_index
+    0.4%       10.0 s     1.01 ms/load  seed_default_provider_index
+    0.4%        9.8 s     0.99 ms/load  build_sort_ops_table
+    0.4%        9.6 s     0.98 ms/load  build_default_provider_index
+    0.4%        9.6 s     0.98 ms/load  build_sort_ops_table (derived-provision delta)
+    0.4%        9.2 s     0.94 ms/load  eq_derive::record_equality_signatures
+    0.4%        9.1 s     0.93 ms/load  check_declared_row_contradiction
+    0.4%        8.6 s     0.87 ms/load  req_insertion::run
+    0.3%        8.0 s     0.81 ms/load  check_requires_shadows
+    3.3%       77.3 s     7.85 ms/load  the other 33 phases
+
+
+================================================== read off the two runs ==================================================
+# Arithmetic on the tables above, not further measurement.
+#
+# WHAT THE SUITE IS MADE OF. Loading — loads, copies, the wait for the lock — is 91 % of anthill-core's
+# thread-time and 94 % of `wi_tests`'. It was 87 % and 89 % on 2026-10-06, when a gate executed 9 271 stdlib-sized
+# loads; it executes 455 now (11 base builds, 138 of the stdlib alone, 306 with a user file), 4.6 % of the
+# 9 830 of 2026-10-08. `wi_tests`, run 1 / run 2, of 2 882 / 2 760 thread-s:
+#     later loads (9 430 on the base, 272 others)   82.0 % / 82.4 %
+#     loads that carry the stdlib (242)              5.7 % /  5.6 %
+#     copies of the base (9 553)                     4.2 % /  4.2 %
+#     waiting for the base's lock                    2.1 % /  1.9 %
+#     the rest: test bodies and the harness          6.0 % /  5.9 %
+#
+# WHAT A LOAD ON THE BASE IS MADE OF (section 4a; run 1 / run 2). Six phases are 87 % and each is a whole-KB pass:
+#     eq_derive::classify + derive_total_eq + derive_conditional_eq   35.7 % / 36.5 %
+#     check_provider_requires                                         26.4 % / 25.9 %
+#     register_specialization_witnesses                                9.5 % /  9.8 %
+#     type_check_sorts — what the seal does not hold                   8.6 % /  8.4 %
+#     check_override_refinement                                        4.1 % /  3.9 %
+#     eq_derive::run                                                   2.7 % /  2.6 %
+#     the other 49 phases, the file's own load among them (0.6 %)     13.0 % / 12.9 %
+#
+# WHAT `wi_tests` WOULD TAKE with a pass's time gone from every later load, the rest unchanged (wall = thread-s / 12):
+#     as measured                                    240 s / 230 s
+#     without equality derivation                    170 s / 161 s
+#     and without check_provider_requires            118 s / 112 s
+#     and without the next four                       69 s /  65 s
+#     with no later-load time at all                  43 s /  41 s   (the stdlib-carrying loads, the copies, the bodies)
+#
+# THE LOCK IS THE NEXT FLOOR. `wi_tests` takes 9 553 copies of the base, each made under the base's ONE lock:
+# 40-42 a second asked, and 80-82 a second is what the lock can give at the 12.2-12.5 ms a copy takes beside
+# eleven other threads. So the lock is half busy today and a copy waits 6-7 ms on average for it (median under a
+# millisecond, a tenth of them over 18-20 ms) — 2 % of the binary. But 9 553 copies one at a time are 116-119 s,
+# 65 s if a copy took the 6.8 ms it takes alone: with one base `wi_tests` cannot run in less, whatever a load
+# costs, and that is where the second pass of the list above would put it.

@@ -13790,7 +13790,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
                 is_enclosing: true,
             },
         );
-        kb.symbols.by_qualified_name.insert(name.to_string(), sym);
+        kb.symbols.alias_qualified_name(name, sym);
         kb.symbols
             .add_import(global_scope, name, sym, ImportOrigin::Builtin);
     }
@@ -15223,21 +15223,23 @@ fn load_phase_inner(
     // grows, so a fact at or past it is this phase's: the drift check's scope for the
     // `OperationMapping` facts, which carry no declaration site of their own.
     let phase_first_rule = kb.rules.len();
-    // WI-660 — same reset for the SortProvidesInfo (provider) index, same reason:
-    // it is rebuilt at this phase's type-check (`build_provides_index`), and the
-    // dispatch/coherence consumers use it with no fallback-on-miss (a `Some` index
-    // is trusted whole), so a stale index left by a prior phase would silently hide
-    // this phase's freshly-asserted `provides` facts. Clearing it first makes those
-    // load-time lookups scan the live relation until the rebuild. NB this is the
-    // ONLY invalidation the index needs: `SortProvidesInfo` is `constant` (053/WI-665),
-    // so it never mutates at RUNTIME — no per-fact-mutation drop (see `provides_index`).
-    kb.provides_index = None;
+    // WI-660 / WI-20261010-ANK4X — the SortProvidesInfo (provider) index is NOT reset
+    // here, where it was until ANK4X: it was a build of the relation as an earlier phase
+    // left it, and this phase's `provides` facts would have been hidden behind it, so it
+    // was dropped and every reader scanned until the typer rebuilt it. It takes each row
+    // where the row is asserted now, and this phase's are in it as they arrive.
+    //
+    // What IS forgotten is its witness-carrier memo, the one part of it that is not a
+    // function of the rows: an entry reads a spec's carrier parameter and the names a
+    // row uses, and a load is what declares operations and defines names. This is where
+    // the drop used to forget it.
+    super::typing::forget_witness_carriers(kb);
     // WI-671 — same reset for the SortInfo index. Rebuilt at this phase's type-check
     // (`build_sort_info_index`); clearing it first makes this phase's load-time SortInfo
     // lookups fall back to the live scan (seeing THIS phase's freshly-asserted SortInfo
     // facts) instead of a stale index from a prior phase — load-bearing for
-    // a `load_all` into a live KB. SortInfo is untouched by eq_derive, so unlike
-    // `provides_index` this is the only invalidation THIS phase needs. WI-1008: it is no
+    // a `load_all` into a live KB. SortInfo is untouched by eq_derive, so this is the
+    // only invalidation THIS phase needs. WI-1008: it is no
     // longer the only one in the crate — `merge_secondary_entry_operations` re-asserts
     // SortInfo records and drops the index itself. WI-20260901-Q8NH5 — that drop used to
     // be justified as "what covers the `load` entry point, where this line does not run".
@@ -15512,12 +15514,11 @@ fn load_phase_inner(
     // `eq_derive::run` (below `req_insertion`) the rows were asserted correctly and
     // every call site still refused, `SortedSet.empty[O = ByLength]` reporting that
     // ByLength "provides no instance at these bindings" for a `WeakOrd` row it demonstrably
-    // had. The index is dropped first and rebuilt after for eq_derive's reason: the pass
-    // both READS the relation (to skip a carrier that already provides the floor) and
-    // ASSERTS into it, so its reads must hit the live scan — and `build_sort_ops_table`
+    // had. The pass both READS the relation (to skip a carrier that already provides the
+    // floor) and ASSERTS into it; the provider index was dropped around it for that, and
+    // takes each row as it is asserted since WI-20261010-ANK4X. `build_sort_ops_table`
     // below then inherits the forwarded spec's operations onto every carrier that gained
     // a row, which is the read that makes `WeakOrd.compare` dispatch on them.
-    kb.provides_index = None;
     // WI-1110 — the requires chain now READS provisions (`self_supplied_entries`), so
     // a pass that asserts provisions invalidates it.
     //
@@ -15534,7 +15535,6 @@ fn load_phase_inner(
     kb.invalidate_requires_chain_cache();
     super::typing::derive_forwarded_provisions(kb);
     kb.invalidate_requires_chain_cache();
-    super::typing::build_provides_index(kb);
     mark!("derive_forwarded_provisions");
     // A provision is read by the sort-ops table too, and that is not a second place
     // to remember — it is the read that DECIDES the derivation. `build_sort_ops_table`'s
@@ -15673,6 +15673,11 @@ fn load_phase_inner(
             kb.restore_load_check_marks(marks);
         }
         super::typing::claim_written_row_bindings(kb);
+        // WI-20261010-ANK4X — the load's own check of the provider index, at THIS exit
+        // too: the derivations above the fork have asserted their provisions, and a
+        // load that stops before the typer never reaches the check below it.
+        #[cfg(debug_assertions)]
+        super::typing::assert_filed_index_is_the_relations(kb, "a load's exit before the typer");
         // A partial load is still the load: what it produced is "as loaded".
         kb.mark_loaded();
         // WI-20261006-SZKV7 — what the NEXT load is held to; see the full exit.
@@ -15787,25 +15792,28 @@ fn load_phase_inner(
     // still load-bearing for the OTHER half of the sentence above — being before
     // `check_eq_noneq_exclusive` — and so that the deriving phase cannot refuse a row
     // before its mark exists.
-    // WI-660 — `eq_derive::run` both READS the provider relation (`sort_provides`, to
-    // skip an already-provided derivation) AND ASSERTS new `SortProvidesInfo` facts
-    // (derived `NonEq`/`PartialEq` for Float-containing composites) in the SAME loop.
-    // Drop the index to `None` FIRST so those reads hit the live scan and see the facts
-    // eq_derive is asserting as it goes (the pre-WI-660 behaviour). A `Some` index —
-    // built at `type_check_sorts` start, before any of this — would be stale mid-loop
-    // and miss a just-derived edge (e.g. re-deriving a duplicate `NonEq` for two
-    // alias-distinct symbols of one composite sort).
-    kb.provides_index = None;
+    // WI-660 / WI-20261010-ANK4X — `eq_derive::run` both READS the provider relation
+    // (`sort_provides`, to skip an already-provided derivation) AND ASSERTS new
+    // `SortProvidesInfo` facts (derived `NonEq`/`PartialEq` for Float-containing
+    // composites) in the SAME loop, and a read must see the row the loop asserted a
+    // moment before (else: a duplicate `NonEq` for two alias-distinct symbols of one
+    // composite sort). The index was dropped around the pass for that and rebuilt after
+    // it; it takes each row as the row is asserted now, so the reads see them and the
+    // checks below — and the runtime, `sort_provides` from the resolver's simp guard —
+    // read the index the pass leaves. `constant` (WI-665) forbids only EVAL-time
+    // mutation; this LOAD-time derivation is legitimate.
     super::eq_derive::run(kb, &eq_classification);
-    // Rebuild now the relation is frozen again: eq_derive is the LAST load pass to
-    // assert `SortProvidesInfo`, so the post-eq_derive checks below
-    // (`check_eq_noneq_exclusive`, `check_use_site_requires_eq`) and the persisted
-    // runtime index (`sort_provides` from the resolver's simp guard) all read a COMPLETE
-    // index — else a Float-composite key like `Map[K = Pt]` would silently miss its
-    // derived `NonEq` and load clean. `constant` (WI-665) forbids only EVAL-time
-    // mutation; this LOAD-time derivation is legitimate, hence the explicit
-    // null-then-rebuild here rather than the eval guard.
-    super::typing::build_provides_index(kb);
+    // THE REBUILD THAT STOOD HERE, KEPT AS A CHECK. `eq_derive` is the last pass of a
+    // load to assert a provision, and this is where the index was last built from the
+    // relation. In a build with debug assertions — the test gate's — the index every
+    // producer of this load filed row by row is held to that build: a row stored or
+    // removed past the assert path's hooks differs here, and so does a key that moved
+    // by a door the symbol table does not count (a counted move is not a difference:
+    // the index computes its keys again, and is checked for having kept its rows).
+    // MEASURED (2026-10-10, the gate's build, medians of 15): the mark below, this check
+    // in it, is 0.7–0.8 ms of a load, where it was 2.5 ms with the rebuild in it.
+    #[cfg(debug_assertions)]
+    super::typing::assert_filed_index_is_the_relations(kb, "the end of `eq_derive::run`");
     // WI-1110 — AND THE CHAIN CACHE, for the same reason the derivation pass above
     // invalidates it: `direct_requires` now READS provisions (`self_supplied_entries`),
     // so every pass that asserts a `SortProvidesInfo` fact owes this call, and this is
@@ -15822,7 +15830,7 @@ fn load_phase_inner(
     // built from, so from here the index is live for the rest of the load's checks
     // (`check_use_site_requires_eq`, `check_override_refinement`, …) and for the RUNTIME
     // readers — eval's dictionary chain and codegen — which have no build point of their
-    // own. Mirrors the `build_provides_index` call three lines up, for the same reason.
+    // own.
     super::typing::build_requires_index(kb);
     mark!("eq_derive::run");
     // WI-658: Eq ⊥ NonEq — a carrier that provides both the lawful (reflexive)
@@ -15927,7 +15935,7 @@ fn load_phase_inner(
     all_errors.extend(check_contract_clause_goals(kb));
     mark!("check_contract_clause_goals");
     // WI-999 (059 R4 clause 3): a declaration may not capture a name it does not
-    // override. AFTER `eq_derive::run` + `build_provides_index`, because its exclusion
+    // override. AFTER `eq_derive::run`, because its exclusion
     // is a relation between sorts and the provider relation is not complete until
     // then. Load-blocking: the capture repoints an unedited body and nothing fails at
     // run time, which is precisely why there is no later site to be loud at.
@@ -16815,6 +16823,11 @@ fn merge_secondary_entry_operations(kb: &mut KnowledgeBase) {
         // cost is zero where it is zero and a rebuild where it is not.
         kb.spec_carrier_param_cache.borrow_mut().clear();
         kb.spec_self_representing_cache.borrow_mut().clear();
+        // WI-20261010-ANK4X — and the provider index's witness-carrier memo, which is
+        // `witness_dispatch_carrier` remembered per spec and reads the parameter the
+        // first of those two memoizes. It used to go with the index, which a load
+        // dropped before this pass; the index stands through a load now.
+        super::typing::forget_witness_carriers(kb);
     }
 }
 

@@ -267,6 +267,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         "what a later load may do to a sealed load's bodies: each fixture in one call and \
          as a later load, by name — the difference between the two is the subject",
     ),
+    (
+        "include/wi_ank4x_provider_index_takes_rows_test.rs",
+        3,
+        "a derivation pass reads provisions it asserted a pass before: on the shared base \
+         and under both recipes by name, which differ in where the passes assert",
+    ),
 ];
 
 /// This file, skipped because it carries the recognised spellings as STRING LITERALS.

@@ -113,6 +113,45 @@ It is slow (about twice the run) and is for a change to the typer's sweeps or to
 seal holds, not for the gate. `typing::bodies_typed_by_this_thread` counts what a load
 typed, for a test that a body was NOT.
 
+**The provider index is filed where a row is asserted** (WI-20261010-ANK4X). The index
+over `SortProvidesInfo` and `ProvidesConditionInfo` (`kb.provides_index`,
+`kb/typing/provides_index.rs`) is not built and is never dropped: a fact of either
+relation is filed by `KnowledgeBase::push_value_head_entry`, the one place a clause is
+stored, and taken out by `retract` — so a pass that asserts provisions reads its own
+rows through the index, and a new producer of the relation owes THE INDEX nothing. It
+still owes `invalidate_requires_chain_cache`, as before: the requires chain reads
+provisions and is a cache of its own, cleared by hand. What a new READER owes is to go
+through the keyed readers (`provides_rows_of_spec`, `provides_rows_of_provider`,
+`provision_conditions`, `sort_provides`): a scan of the relation per question is what
+this removed, 39 % of a later load. What a new memo INSIDE the index owes is to be
+forgotten where a row is filed (the witness carriers are the one there is). A new way
+to change a stored clause's fact-ness, or its head, or to take a clause out of
+`rules_by_functor`, owes the index the same (`KnowledgeBase::clause_became_bodied`,
+`unindex_functor`). And the keys are canonical symbols, so the index follows the NAME
+TABLE too: `SymbolTable::canonical_moves` counts each time an existing symbol's
+canonical image moves, and the index computes its keys again when the count has — which
+is why an entry of `by_qualified_name` is written through `SymbolTable::set_canonical`
+and nowhere else. Two things hold the filed index to the relation. A load in a build with debug
+assertions compares it with a walk of the relation at both of its exits
+(`load_phase_inner`: after `eq_derive::run`, where the last rebuild stood, and where a
+load stops before the typer); a release build does not. And the control, for a change
+to the assert path, to a key, or to a reader:
+
+```bash
+ANTHILL_PROVIDES_INDEX_AGREEMENT=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core
+```
+
+makes every read of the index both ways — out of the bucket, and by a walk of the
+relation as it stands — and panics on a difference, naming the bucket's key and both
+answers. Run it on the shared base AND under `ANTHILL_TEST_FRESH_LOAD=1`: one call over
+the stdlib is where the passes assert between their reads. The log says whether the
+switch took (`provider index agreement OBSERVED`, written by
+`wi_ank4x_provider_index_takes_rows_test`, which fails if it did not). It is SLOW, and
+not a gate: one later load reads the index sixty thousand times and each read is walked
+again, so `anthill-core` is an hour and a half on the shared base and two hours under
+the fresh recipe, where they are five minutes and fifteen (measured 2026-10-11;
+`provider-index-2026-10-10.txt` §7 has both runs).
+
 **A third control: which carrier a declared type rides.** A type is read through the
 carrier-neutral view (`TermView`, `extract_type`), and a reader that matches the carrier
 instead — a `Value::Term` gate, a `_ => false` for "a carrier this cannot read" — answers

@@ -2046,3 +2046,5 @@ mod wi_4zrtg_sealed_library_test;
 mod wi_9bkz4_sealed_bodies_test;
 #[path = "include/wi_an6cq_load_program_test.rs"]
 mod wi_an6cq_load_program_test;
+#[path = "include/wi_ank4x_provider_index_takes_rows_test.rs"]
+mod wi_ank4x_provider_index_takes_rows_test;

@@ -207,6 +207,13 @@ kb_scoped_fields!(
     alias_heads,
     aliases_applying,
     scan_alias_decls,
+    // WI-20261010-ANK4X — filed where a clause is stored, so while a layer lives it holds
+    // the layer's rows. The discard puts back the index of the base's clauses WITH those
+    // clauses (`rules`) and with the name table its keys were computed for (the symbol
+    // table's own snapshot), which is the one true of them — a base row the layer
+    // retracted is live again and in it again. The tombstones the discard appends are
+    // retracted slots, stored past the assert path, and are in no bucket. SCOPED, and
+    // it has to be: `spgbp_a_discarded_layers_provision_is_no_provider` fails without it.
     provides_index,
     sort_info_index,
     requires_index,
@@ -753,6 +760,74 @@ end
         assert!(
             base_name_resolves(&kb),
             "the discard must not take the BASE's definitions with it"
+        );
+    }
+
+    /// WI-20261010-ANK4X — A DISCARDED LAYER'S PROVISION IS NO PROVIDER.
+    ///
+    /// The provider index takes a row where a clause is stored, so while a layer lives
+    /// it holds the layer's rows — here under a BASE spec's own bucket: the layer
+    /// declares a composite whose fields are all lawful, and the load derives
+    /// `Shade provides Eq`, filed with the providers of the stdlib's `Eq`. The discard
+    /// tombstones the layer's clauses and must put back the index of the base's.
+    ///
+    /// Asked of the provision relation's own readers and with the symbol the layer left
+    /// behind (a discard un-declares a name; the `Symbol` a caller kept still exists),
+    /// and then of the whole index against a walk of the relation.
+    ///
+    /// WHAT FAILS WHEN BACKED OUT, MEASURED (2026-10-11): `provides_index` taken out of
+    /// `kb_scoped_fields!` — the index left as the layer filed it — and this test FAILS
+    /// at the first assertion after the restore: `Shade` is still listed among `Eq`'s
+    /// providers, a tombstoned row decoding as happily as a live one. It is the one
+    /// failure of this module's tests; the assertions before the restore pass either
+    /// way, and exist to say that the layer's row really was in the base spec's bucket.
+    #[test]
+    fn spgbp_a_discarded_layers_provision_is_no_provider() {
+        const SHADE_SRC: &str =
+            "namespace ank4x.layer_demo\n  sort Shade\n    entity dark\n    entity light\n  end\nend\n";
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let eq = kb.try_resolve_symbol("anthill.prelude.Eq").expect("the stdlib declares Eq");
+        let providers_of_eq = |kb: &KnowledgeBase| crate::kb::typing::provision_carriers_of_spec(kb, eq);
+        let base = providers_of_eq(&kb);
+        assert!(
+            base.len() > 10,
+            "premise: the base spec has providers of its own to keep ({} found)",
+            base.len()
+        );
+
+        let snap = kb.snapshot_scoped();
+        let parsed = parse::parse(SHADE_SRC).expect("parse layer fixture");
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!("layer load errors: {:?}", errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        }
+        let shade = kb
+            .try_resolve_symbol("ank4x.layer_demo.Shade")
+            .expect("the layer's sort resolves while the layer is live");
+        assert!(
+            providers_of_eq(&kb).contains(&shade),
+            "premise: the layer's derived provision is filed among the BASE spec's providers"
+        );
+        assert!(
+            crate::kb::typing::sort_provides(&kb, shade, eq),
+            "premise: and the layer's sort provides `Eq` while the layer is live"
+        );
+
+        kb.restore_scoped(snap);
+
+        assert_eq!(
+            providers_of_eq(&kb),
+            base,
+            "after the discard `Eq`'s providers are the base's again, row for row"
+        );
+        assert!(
+            !crate::kb::typing::sort_provides(&kb, shade, eq),
+            "a discarded layer's sort provides nothing, asked with the symbol it left behind"
+        );
+        let scanned = crate::kb::typing::ProvidesIndex::from_scan(&kb);
+        let differences = kb.provides_index.borrow().differences_from(&kb, &scanned);
+        assert!(
+            differences.is_empty(),
+            "after the discard the index is the one a walk of the relation builds: {differences:?}"
         );
     }
 

@@ -217,8 +217,8 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
     // `provides_eq`), and the ALIAS case `run`'s guard exists for — two alias-distinct
     // symbols of ONE composite sort, which would otherwise each assert a row — is
     // removed at the source by `total_composites` returning one symbol per CANONICAL
-    // sort. Re-asking would be a live relation scan per carrier at a point where
-    // `kb.provides_index` is `None`, for an answer the seed computed.
+    // sort. Re-asking would be a walk of the provider relation per carrier for an
+    // answer the seed computed.
     for s in total_composites(kb, c) {
         if let Some(pe) = partialeq_sym {
             assert_provides(kb, s, pe);
@@ -832,15 +832,13 @@ pub(crate) fn later_equality_refusals(
         // too, so this is not the state it leaves.)
         return (Vec::new(), Vec::new());
     }
-    // The provider index, for this read alone. The signature asks each provision for its
-    // provider's conditions, and unindexed that is a scan of the whole conditions
-    // relation per provider — MEASURED on a later load at opt-level 0: 47 ms without the
-    // index, 6 ms with it (and 3–4 ms for the same function at the end of a load, where
-    // the index stands). Dropped again at once: the derivations below run unindexed by
-    // design, the rows they assert not being in it.
-    super::typing::build_provides_index(kb);
+    // Through the provider index: the signature asks each provision for its provider's
+    // conditions, and unindexed that was a scan of the whole conditions relation per
+    // provider — MEASURED on a later load at opt-level 0: 47 ms without the index, 6 ms
+    // with it. The index was built here for this one read and dropped again, the
+    // derivations below having to run without it; since WI-20261010-ANK4X it stands, and
+    // takes the rows they assert.
     let now = equality_signatures(kb);
-    kb.provides_index = None;
     let mut changed: Vec<(Symbol, Vec<String>)> = kb
         .recorded_equality_signatures()
         .iter()
@@ -1050,10 +1048,11 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let Some(eq_sym) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
         return Vec::new();
     };
-    // `sort_provides` is a live relation scan while `kb.provides_index` is `None`
-    // (it is not built until the typer starts, after this pass), and the field walk
+    // `sort_provides` is a transitive walk of the provider index, and the field walk
     // asks the same handful of leaf sorts — `String`, `Int64`, `Symbol` — once per
-    // field across ~130 composites. Memoized per canonical symbol.
+    // field across ~130 composites. Memoized per canonical symbol. (It was a scan of
+    // the whole relation per call until WI-20261010-ANK4X, the index being dropped
+    // through this pass: 6.4 of a later load's 110 ms, the ticket's table.)
     let mut eq_known: std::collections::HashMap<Symbol, bool> = std::collections::HashMap::new();
     let mut provides_eq = |kb: &KnowledgeBase, s: Symbol| -> bool {
         let key = kb.canonical_sort_sym(s);
@@ -1216,16 +1215,13 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
     let Some(noneq) = noneq_sym else {
         return Vec::new();
     };
-    let noneq_canon = kb.canonical_sort_sym(noneq);
-    // The provision relation through its one row decoder, so a provision on any carrier
-    // is a row here as it is to the typer.
-    super::typing::all_provisions(kb)
+    // `NonEq`'s rows through the relation's one row decoder, so a provision on any
+    // carrier is a row here as it is to the typer — and out of the spec's bucket of the
+    // provider index (WI-20261010-ANK4X), where this decoded the whole relation to keep
+    // the handful that name `NonEq`.
+    super::typing::providers_of_spec(kb, noneq)
         .into_iter()
-        .filter(|row| {
-            kb.canonical_sort_sym(row.spec) == noneq_canon
-                && !super::typing::provision_is_conditional(kb, row.provider, noneq)
-        })
-        .map(|row| row.provider)
+        .filter(|&provider| !super::typing::provision_is_conditional(kb, provider, noneq))
         .collect()
 }
 

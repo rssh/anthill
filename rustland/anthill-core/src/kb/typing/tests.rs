@@ -2411,7 +2411,7 @@ mod wi617_canonical_provider_match_tests {
     //! The load pipeline canonicalizes at the producer (WI-581), so this divergent
     //! interning is not reproducible through a source-level load — the test injects
     //! it directly, which is the level at which the gap is observable.
-    use super::super::{carrier_is_abstract_spec, spec_has_any_providers};
+    use super::super::{carrier_is_abstract_spec, provides_rids_by_spec, spec_has_any_providers};
     use crate::intern::SymbolKind;
     use crate::kb::term::Term;
     use crate::kb::ClauseKind;
@@ -2507,16 +2507,128 @@ mod wi617_canonical_provider_match_tests {
         );
     }
 
-    /// The scan that stands in for the spec bucket while the index is not built reads a
-    /// provision on whichever carrier its fact holds the spec: one with a binding written
-    /// through a type alias is a value, and is a provider like any other.
+    /// A ROW FILED BEFORE ITS NAME MOVED IS FOUND WHERE THE NAME IS NOW (WI-20261010-ANK4X).
+    /// The index keys a row when it is asserted, by `canonical_sort_sym` of the symbols
+    /// its head spells — and a name's canonical symbol can move afterwards, both ways the
+    /// symbol table has of moving one (`SymbolTable::set_canonical`):
     ///
-    /// Injected, as the row above is: the window in which the scan answers is between
-    /// passes of a load, and no source-level row was found that asks it there about a
-    /// spec whose only provision is held this way. FAILS with the scan reading a term
-    /// alone (the `spec` field taken only where it is a `Value::Term`).
+    ///  1. the name is SPELLED before it is declared: the row is written with the
+    ///     interned symbol, which is its own canonical image until the declaration
+    ///     arrives and makes it the declared symbol's twin;
+    ///  2. the qualified name is defined a second time, under another local name: the
+    ///     symbol declared first is no longer its own image.
+    ///
+    /// The build this index used to be re-keyed every row at each rebuild, two or three
+    /// times a load, so the question never arose. Now the symbol table counts the moves
+    /// and a read that finds the count moved keys every row again. Found by
+    /// /code-review, as the WI-617 row above with two of its lines the other way round.
+    ///
+    /// Injected, as that row is: a load defines every name it will use before it
+    /// asserts a fact (scan pass 1), so no source reaches either move within one load.
+    ///
+    /// CONTROL, MEASURED (2026-10-11): with `set_canonical` counting nothing, this row
+    /// fails at the first read after the declaration — the first provider is under the
+    /// interned symbol and the read, looking under the declared one, finds the second
+    /// alone. With only the arm for a name that had a canonical symbol and gets another
+    /// out, it passes move 1 and fails at move 2's first read. In both it is the one
+    /// failure of its modules' tests: the two WI-617 rows beside it pass either way,
+    /// filing after every name they use is in the table.
     #[test]
-    fn the_scan_counts_a_provision_whose_spec_is_held_as_a_value() {
+    fn a_row_filed_before_its_name_moved_is_found_under_the_names_symbol_now() {
+        let mut kb = KnowledgeBase::new();
+        let root_scope = kb.global_scope();
+        let provides_sym = kb.define_symbol(
+            "SortProvidesInfo",
+            "anthill.reflect.SortProvidesInfo",
+            SymbolKind::Entity,
+            root_scope,
+        );
+        let unrelated =
+            kb.define_symbol("Unrelated", "test.moved.Unrelated", SymbolKind::Sort, root_scope);
+
+        // The name is spelled, and a provision of it filed, before it is declared.
+        let written = kb.intern("test.moved.Late");
+        let spec_key = kb.intern("spec");
+        let spec_ref = kb.alloc(Term::Ref(written));
+        let head = kb.alloc(Term::Fn {
+            functor: provides_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(spec_key, spec_ref)]),
+        });
+        let domain = kb.intern("test");
+        let first = kb.assert_fact(head, ClauseKind::Fact, domain, None);
+        assert!(
+            spec_has_any_providers(&kb, written),
+            "premise: the row is found under the symbol it was written with",
+        );
+
+        // MOVE 1 — the declaration arrives.
+        let declared =
+            kb.define_symbol("Late", "test.moved.Late", SymbolKind::Sort, root_scope);
+        assert_ne!(written, declared, "premise: two symbols of one name");
+        assert_eq!(
+            kb.canonical_sort_sym(written),
+            declared,
+            "premise: the written symbol's canonical image has moved to the declared one",
+        );
+        // A second provision of the name, FILED WHILE THE FIRST ONE'S KEY IS BEHIND THE
+        // TABLE — nothing has read the index since the declaration. It is filed under the
+        // name's symbol as it is now; the first row is where it was until a read asks.
+        let declared_ref = kb.alloc(Term::Ref(declared));
+        let second_head = kb.alloc(Term::Fn {
+            functor: provides_sym,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(spec_key, declared_ref)]),
+        });
+        let second = kb.assert_fact(second_head, ClauseKind::Fact, domain, None);
+        assert_ne!(first, second, "premise: two rows");
+        assert_eq!(
+            provides_rids_by_spec(&kb, declared),
+            vec![first, second],
+            "a provision filed before its spec was declared and one filed after are both \
+             provisions of the declared spec, in relation order",
+        );
+        assert!(
+            spec_has_any_providers(&kb, declared),
+            "a provision filed before its spec was declared is a provision of the \
+             declared spec",
+        );
+        assert!(
+            spec_has_any_providers(&kb, written),
+            "and still one when asked with the symbol it was written with",
+        );
+
+        // MOVE 2 — the qualified name is defined again, under another local name.
+        let again =
+            kb.define_symbol("LateAgain", "test.moved.Late", SymbolKind::Sort, root_scope);
+        assert_ne!(again, declared, "premise: a second resolved symbol of the name");
+        assert_eq!(
+            kb.canonical_sort_sym(declared),
+            again,
+            "premise: the first declaration's canonical image has moved to the second",
+        );
+        assert!(
+            spec_has_any_providers(&kb, again),
+            "the provision follows the name to the symbol that is canonical for it now",
+        );
+        assert!(spec_has_any_providers(&kb, declared), "asked with the earlier symbol too");
+
+        assert!(
+            !spec_has_any_providers(&kb, unrelated),
+            "NEGATIVE: a sort nothing provides — the index did not come to answer yes",
+        );
+    }
+
+    /// The spec bucket files a provision on whichever carrier its fact holds the spec:
+    /// one with a binding written through a type alias is a value, and is a provider like
+    /// any other. (Written for the scan that stood in for the bucket while the index was
+    /// not built; since WI-20261010-ANK4X the row is filed where it is asserted, by the
+    /// same read of the field.)
+    ///
+    /// Injected, as the row above is. FAILS with the filing reading a term alone (the
+    /// `spec` field taken only where it is a `Value::Term`).
+    #[test]
+    fn a_provision_whose_spec_is_held_as_a_value_is_filed_under_its_spec() {
         use crate::eval::value::Value;
         use crate::kb::node_occurrence::{empty_span, NodeOccurrence, TypeChild, TypeNode};
         let mut kb = KnowledgeBase::new();
@@ -2565,7 +2677,6 @@ mod wi617_canonical_provider_match_tests {
             domain,
             None,
         );
-        assert!(kb.provides_index.is_none(), "premise: the scan answers, not the index");
         assert!(
             spec_has_any_providers(&kb, spec),
             "a provision held as a value is a provider of its spec",
@@ -4638,7 +4749,7 @@ mod wi1084_arrow_function_unify_tests {
 /// rather than argued.
 #[cfg(test)]
 mod wi864_provides_edges_tests {
-    use super::super::{build_provides_index, provides_out_edges, sort_provides};
+    use super::super::{provides_out_edges, provides_out_edges_decoded, sort_provides};
     use crate::kb::term::Term;
     use crate::kb::test_support::load_stdlib;
     use crate::kb::{KnowledgeBase, Symbol};
@@ -4696,15 +4807,18 @@ end
             .unwrap_or_else(|| panic!("{qn} resolves"))
     }
 
-    /// THE MEMO IS THE FUNCTION, over the whole population. With the index live every
-    /// `provides_out_edges` answer comes from `carrier_edges`; with it dropped every one
-    /// is decoded live. The two lists must agree per carrier, ORDER INCLUDED — the walk
-    /// takes the first reaching edge, so a permuted list is a different search.
+    /// THE MEMO IS THE FUNCTION, over the whole population. Every `provides_out_edges`
+    /// answer comes from `carrier_edges`, filed row by row as the load asserted each
+    /// provision (WI-20261010-ANK4X; built once per frozen state before it); and
+    /// `provides_out_edges_decoded` decodes the relation as it stands, reading no bucket.
+    /// The two lists must agree per carrier, ORDER INCLUDED — the walk takes the first
+    /// reaching edge, so a permuted list is a different search.
     ///
-    /// CONTROL, AND TWO OF THE THREE I EXPECTED DO NOT FIRE — measured, not predicted:
+    /// CONTROL, AND TWO OF THE THREE I EXPECTED DO NOT FIRE — measured, not predicted
+    /// (at WI-864, on the builder the filing replaced):
     ///
     ///  * Building `carrier_edges` from the `unwrap_spec_view` base beside it (the OTHER
-    ///    spec decode in `build_provides_index`) instead of `provides_spec_base_sym`:
+    ///    spec decode in the builder, `build_provides_index`) instead of `provides_spec_base_sym`:
     ///    ALL THREE TESTS STILL PASS. The two decodes agree on every provides fact this
     ///    corpus holds, so which one the memo is built from is unobservable today. Using
     ///    the consumer's own decode therefore ships on the rule that a memo should BE its
@@ -4712,7 +4826,7 @@ end
     ///  * Filing the edge under the RAW carrier instead of `canonical_sort_sym(carrier)`:
     ///    the whole workspace stays green (4984 tests). Every provides carrier here is a
     ///    resolved sort functor that is already its own canonical form — which is what
-    ///    `build_provides_index`' own `debug_assert` asserts — so the two keys coincide.
+    ///    the filing's own `debug_assert` asserts — so the two keys coincide.
     ///    Canonical keying ships because the lookup key IS canonical (the walk
     ///    canonicalizes once and carries it) and because the sibling `by_carrier` bucket
     ///    keys that way for WI-672's reason. MEASURED INERT on this corpus; no test covers
@@ -4723,12 +4837,7 @@ end
     /// What these guard is the risk the memo introduces, which is the only new risk.
     #[test]
     fn the_memo_answers_what_the_live_decode_answers_for_every_carrier() {
-        let mut kb = load_stdlib(Some(SRC));
-        assert!(
-            kb.provides_index.is_some(),
-            "premise: a full load leaves the provides index BUILT — without this the test \
-             would compare the decode with itself and measure nothing",
-        );
+        let kb = load_stdlib(Some(SRC));
         let sorts = all_sorts(&kb);
         assert!(
             sorts.len() > 50,
@@ -4740,10 +4849,9 @@ end
             .iter()
             .map(|&s| provides_out_edges(&kb, kb.canonical_sort_sym(s)))
             .collect();
-        kb.provides_index = None;
         let via_decode: Vec<_> = sorts
             .iter()
-            .map(|&s| provides_out_edges(&kb, kb.canonical_sort_sym(s)))
+            .map(|&s| provides_out_edges_decoded(&kb, kb.canonical_sort_sym(s)))
             .collect();
 
         let mut with_edges = 0usize;
@@ -4766,43 +4874,36 @@ end
     }
 
     /// THE CONSUMER, DRIVEN TRANSITIVELY. `Bottom provides Mid provides Top` is two hops:
-    /// the walk must canonicalize, follow, and answer — and answer the same with the memo
-    /// and without it. `Unrelated` is the negative in the same run, so a walk that said
-    /// `true` for everything would fail here rather than pass silently.
+    /// the walk must canonicalize, follow, and answer. `Unrelated` is the negative in the
+    /// same run, so a walk that said `true` for everything would fail here rather than
+    /// pass silently.
+    ///
+    /// ONE ARM since WI-20261010-ANK4X. It ran twice, with the memo and with the index
+    /// dropped, and the second run was the walk over rows decoded live; no state of the
+    /// KB takes that arm any more. That the edges the walk follows are the decode's is
+    /// the test above, carrier by carrier.
     #[test]
-    fn a_two_hop_chain_resolves_identically_with_and_without_the_memo() {
-        let mut kb = load_stdlib(Some(SRC));
+    fn a_two_hop_chain_resolves_through_the_filed_edges() {
+        let kb = load_stdlib(Some(SRC));
         let bottom = sym(&kb, "test.wi864.Bottom");
         let mid = sym(&kb, "test.wi864.Mid");
         let top = sym(&kb, "test.wi864.Top");
         let unrelated = sym(&kb, "test.wi864.Unrelated");
 
-        for (label, index_live) in [("memo", true), ("decode", false)] {
-            if !index_live {
-                kb.provides_index = None;
-            }
-            assert!(
-                kb.provides_index.is_some() == index_live,
-                "the {label} arm runs in the state it names",
-            );
-            assert!(
-                sort_provides(&kb, bottom, mid),
-                "{label}: Bottom provides Mid directly",
-            );
-            assert!(
-                sort_provides(&kb, bottom, top),
-                "{label}: Bottom provides Top TRANSITIVELY (Bottom -> Mid -> Top)",
-            );
-            assert!(
-                !sort_provides(&kb, bottom, unrelated),
-                "{label}: Bottom does not provide Unrelated — the negative that says the \
-                 walk discriminates",
-            );
-            assert!(
-                !sort_provides(&kb, top, bottom),
-                "{label}: the relation is directed — Top does not provide Bottom",
-            );
-        }
+        assert!(sort_provides(&kb, bottom, mid), "Bottom provides Mid directly");
+        assert!(
+            sort_provides(&kb, bottom, top),
+            "Bottom provides Top TRANSITIVELY (Bottom -> Mid -> Top)",
+        );
+        assert!(
+            !sort_provides(&kb, bottom, unrelated),
+            "Bottom does not provide Unrelated — the negative that says the walk \
+             discriminates",
+        );
+        assert!(
+            !sort_provides(&kb, top, bottom),
+            "the relation is directed — Top does not provide Bottom",
+        );
     }
 
     /// THE PRECONDITION IS DRIVABLE, so it is driven rather than merely asserted. A guard
@@ -4841,32 +4942,16 @@ end
         let _ = provides_out_edges(&kb, twin);
     }
 
-    /// A RETRACTED PROVISION IS NOT IN THE RELATION, AND THE MEMO MUST AGREE — the
-    /// provides-side twin of WI-1112's `a_retracted_requires_fact_is_dropped_by_the_index`.
-    /// `carrier_edges` is frozen at build time, so it carries the `RuleId` for exactly this
-    /// question; `rules_by_functor` (the decode arm) filters retracted at query time.
+    /// The one `carrier provides spec` FACT, both ends canonical.
     ///
-    /// THIS SIDE FAILS UPWARD: without the filter the edge OUTLIVES its declaration, and a
-    /// value keeps conforming to a spec nothing says it provides.
-    ///
-    /// CONTROL: drop the `is_rule_alive` filter from `provides_out_edges`' memo arm and the
-    /// first assertion below fails while the decode arm still passes — the disagreement
-    /// stated as a test. NO REBUILD between the retract and the read: `build_provides_index`
-    /// reads `rules_by_functor`, so rebuilding would refresh the bucket and measure nothing.
-    #[test]
-    fn a_retracted_provision_is_dropped_by_the_memo_as_it_is_by_the_decode() {
-        let mut kb = load_stdlib(Some(SRC));
-        let bottom = kb.canonical_sort_sym(sym(&kb, "test.wi864.Bottom"));
-        let mid = kb.canonical_sort_sym(sym(&kb, "test.wi864.Mid"));
-        build_provides_index(&mut kb);
-        assert!(
-            provides_out_edges(&kb, bottom).contains(&mid),
-            "premise: Bottom -> Mid is an edge before the retraction",
-        );
-
+    /// BOTH ENDS, not the carrier alone. Selecting by carrier picks the right fact only
+    /// while the carrier has exactly one provision — and later passes DO emit extra ones
+    /// (`eq_derive` derives `NonEq`/`PartialEq` provisions for other carriers today).
+    /// Unpinned, a test would one day retract an unrelated edge and then fail naming the
+    /// wrong cause.
+    fn the_provision_fact(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> crate::kb::RuleId {
         let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
-        let rid = kb
-            .rules_by_functor(provides_sym)
+        kb.rules_by_functor(provides_sym)
             .into_iter()
             .find(|rid| {
                 if !kb.is_fact(*rid) {
@@ -4875,43 +4960,223 @@ end
                 let Some(named) = kb.fact_head_named_args(*rid) else {
                     return false;
                 };
-                let Some(c) = super::super::get_named_arg(&kb, &named, "sort_ref")
-                    .and_then(|t| crate::kb::load::sort_ref_functor(&kb, t))
+                let Some(c) = super::super::get_named_arg(kb, &named, "sort_ref")
+                    .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
                 else {
                     return false;
                 };
-                // BOTH ENDS, not the carrier alone. Selecting by carrier picks the right
-                // fact only while `Bottom` has exactly one provision — and later passes DO
-                // emit extra ones (`eq_derive` derives `NonEq`/`PartialEq` provisions for
-                // other carriers today). Unpinned, this would one day retract an unrelated
-                // edge and then fail at the assertion below naming the wrong cause.
-                let Some(dst) = super::super::get_named_arg(&kb, &named, "spec")
-                    .and_then(|t| crate::kb::load::provides_spec_base_sym(&kb, t))
+                let Some(dst) = super::super::get_named_arg(kb, &named, "spec")
+                    .and_then(|t| crate::kb::load::provides_spec_base_sym(kb, t))
                 else {
                     return false;
                 };
-                kb.canonical_sort_sym(c) == bottom && kb.canonical_sort_sym(dst) == mid
+                kb.canonical_sort_sym(c) == carrier && kb.canonical_sort_sym(dst) == spec
             })
-            .expect("the `Bottom provides Mid` fact");
+            .expect("the provision fact")
+    }
 
-        // A retractor that does NOT invalidate — the case the filter has to survive.
+    /// The filed index against a walk of the relation, bucket by bucket — every bucket,
+    /// and not the one a reader in the test happened to ask.
+    fn assert_the_index_is_the_relations(kb: &KnowledgeBase, when: &str) {
+        let scanned = super::super::ProvidesIndex::from_scan(kb);
+        let differences = kb.provides_index.borrow().differences_from(kb, &scanned);
+        assert!(
+            differences.is_empty(),
+            "{when}, the filed index is not the relation's: {differences:?}",
+        );
+    }
+
+    /// A PROVISION FACT THAT GAINS A BODY IS A ROW NO LONGER (WI-20261010-ANK4X). The
+    /// index files a clause when it is stored, on its fact-ness then; the two
+    /// generated-goal doors (`prepend_generated_body_goals`, its append peer) are where a
+    /// stored clause's fact-ness changes afterwards, and a rule under the relation's
+    /// functor is a row to no reader — every decode starts at `is_fact`.
+    ///
+    /// DRIVEN DIRECTLY: no load gives a provision fact a generated goal (a typed-head
+    /// rule under a reflect functor is nobody's program), which is exactly why a filed
+    /// row outliving its fact-ness there would be found by nothing.
+    ///
+    /// CONTROL, MEASURED (2026-10-11): with the unfile taken out of
+    /// `KnowledgeBase::clause_became_bodied`, this test fails at the memo's assertion —
+    /// alone of the 30 in the provider index's, the requires index's and the layer's
+    /// modules.
+    #[test]
+    fn a_provision_fact_that_gains_a_body_leaves_the_index() {
+        let mut kb = load_stdlib(Some(SRC));
+        let bottom = kb.canonical_sort_sym(sym(&kb, "test.wi864.Bottom"));
+        let mid = kb.canonical_sort_sym(sym(&kb, "test.wi864.Mid"));
+        assert!(
+            provides_out_edges(&kb, bottom).contains(&mid),
+            "premise: Bottom -> Mid is an edge while the clause is a fact",
+        );
+        assert_the_index_is_the_relations(&kb, "premise: after the load");
+
+        let rid = the_provision_fact(&kb, bottom, mid);
+        // Any goal will do: what matters is that the clause has one.
+        let goal = kb.term_body_to_nodes(&[kb.rule_head(rid)]);
+        kb.prepend_generated_body_goals(rid, goal);
+        assert!(!kb.is_fact(rid), "premise: the clause is a rule now");
+
+        assert!(
+            !provides_out_edges(&kb, bottom).contains(&mid),
+            "through the MEMO filed while the clause was a fact: a rule is not a provision",
+        );
+        assert!(
+            !provides_out_edges_decoded(&kb, bottom).contains(&mid),
+            "through the DECODE, which starts at `is_fact` — the answer the memo has to match",
+        );
+        assert_the_index_is_the_relations(&kb, "after the clause gained a body");
+    }
+
+    /// A RETRACTED PROVISION IS NOT IN THE RELATION, AND THE MEMO MUST AGREE — the
+    /// provides-side twin of WI-1112's `a_retracted_requires_fact_is_dropped_by_the_index`.
+    /// `carrier_edges` carries the `RuleId` for exactly this: the retract takes the edge
+    /// out by it (`unfile_provision_fact`, WI-20261010-ANK4X — a liveness filter at the
+    /// read until then). `rules_by_functor`, which the decode walks, drops a retracted
+    /// clause at query time.
+    ///
+    /// THIS SIDE FAILS UPWARD: an edge left in OUTLIVES its declaration, and a value keeps
+    /// conforming to a spec nothing says it provides.
+    ///
+    /// CONTROL, MEASURED (2026-10-11): with the `unfile_provision_fact` call taken out of
+    /// `KnowledgeBase::retract`, the first assertion on the memo below fails — this test
+    /// alone, of the 30 in the provider index's, the requires index's and the layer's
+    /// modules — where the decode, asked after it, answers without the row: the
+    /// disagreement stated as a test.
+    #[test]
+    fn a_retracted_provision_is_dropped_by_the_memo_as_it_is_by_the_decode() {
+        let mut kb = load_stdlib(Some(SRC));
+        let bottom = kb.canonical_sort_sym(sym(&kb, "test.wi864.Bottom"));
+        let mid = kb.canonical_sort_sym(sym(&kb, "test.wi864.Mid"));
+        assert!(
+            provides_out_edges(&kb, bottom).contains(&mid),
+            "premise: Bottom -> Mid is an edge before the retraction",
+        );
+
+        let rid = the_provision_fact(&kb, bottom, mid);
+
+        // A retractor that says nothing to the index — the retract itself must.
         kb.retract(rid);
         assert!(
-            kb.provides_index.is_some(),
-            "the index built above is still the live one — nothing rebuilt or dropped it",
-        );
-        assert!(
             !provides_out_edges(&kb, bottom).contains(&mid),
-            "through the MEMO built BEFORE the retraction: a retracted provision must not \
+            "through the MEMO filed BEFORE the retraction: a retracted provision must not \
              be served",
         );
-
-        kb.provides_index = None;
         assert!(
-            !provides_out_edges(&kb, bottom).contains(&mid),
+            !sort_provides(&kb, bottom, mid),
+            "and the walk over the memo no longer reaches Mid from Bottom",
+        );
+        assert!(
+            !provides_out_edges_decoded(&kb, bottom).contains(&mid),
             "through the DECODE: `rules_by_functor` already filtered it — the answer the \
              memo has to match",
         );
+        // THE WHOLE INDEX, not the one bucket read above: the row is out of the spec
+        // bucket and the carrier bucket too, which no reader here asked.
+        assert_the_index_is_the_relations(&kb, "after the retract");
+    }
+}
+
+/// WI-20261010-ANK4X — THE AGREEMENT CONTROL, CONTROLLED.
+///
+/// `ANTHILL_PROVIDES_INDEX_AGREEMENT=1` makes every read of the provider index both ways
+/// and panics on a difference, and "the agreement run was clean" is this change's
+/// acceptance. A check that could not fail — the walk made equal to the bucket by
+/// construction, the comparison dropped in an edit — would leave that acceptance green
+/// while checking nothing, so the check itself is driven here: on what the index holds,
+/// where it must pass, and on answers that are wrong in the two ways an index can be
+/// wrong, where it must not. (That the SWITCH takes — the variable read, the reads
+/// counted — is `wi_ank4x_provider_index_takes_rows_test`'s row, which runs in every
+/// gate and writes what it observed into the log.)
+///
+/// CONTROL, MEASURED (2026-10-11): with `assert_bucket_agrees` made to return before it
+/// compares, both `should_panic` rows FAIL — neither panics — and the first row still
+/// passes, which is the point of having the other two.
+#[cfg(test)]
+mod wi_ank4x_agreement_control_tests {
+    use super::super::{
+        assert_bucket_agrees, filed_bucket, provider_index_agreement_reads_by_this_thread, Bucket,
+    };
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::{KnowledgeBase, Symbol};
+
+    const BUCKETS: [Bucket; 4] =
+        [Bucket::SpecBase, Bucket::Carrier, Bucket::CarrierEdges, Bucket::Conditions];
+
+    /// Every key some bucket of the stdlib's index is filed under: the sorts that
+    /// provide, are provided, or carry a condition.
+    fn sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+        let sort_info = kb.try_resolve_symbol("anthill.reflect.SortInfo").expect("SortInfo");
+        kb.rules_by_functor(sort_info)
+            .into_iter()
+            .filter_map(|rid| {
+                let head = kb.rule_head_value(rid);
+                let name = crate::kb::op_info::head_field_term(kb, head, "name")?;
+                crate::kb::load::sort_ref_functor(kb, name).map(|s| kb.canonical_sort_sym(s))
+            })
+            .collect()
+    }
+
+    /// The check PASSES what the index holds, for every sort and every bucket — and is
+    /// counted as made: a population of hundreds of keys, dozens of them with entries.
+    #[test]
+    fn the_check_passes_every_bucket_as_it_is_filed() {
+        let kb = load_stdlib(None);
+        let sorts = sorts(&kb);
+        let before = provider_index_agreement_reads_by_this_thread();
+        let mut with_entries = 0usize;
+        for &sort in &sorts {
+            for bucket in BUCKETS {
+                let filed = filed_bucket(&kb, bucket, sort);
+                with_entries += usize::from(!filed.is_empty());
+                assert_bucket_agrees(&kb, bucket, sort, &filed);
+            }
+        }
+        assert!(sorts.len() > 100, "premise: the population is the stdlib's sorts");
+        assert!(
+            with_entries > 100,
+            "premise: the comparison is not of empty buckets — {with_entries} have entries",
+        );
+        assert_eq!(
+            provider_index_agreement_reads_by_this_thread() - before,
+            sorts.len() * BUCKETS.len(),
+            "every check is counted, which is how a run says the control ran",
+        );
+    }
+
+    /// A carrier with at least two provisions, so that an answer one short is not empty.
+    fn a_carrier_with_provisions(kb: &KnowledgeBase) -> Symbol {
+        sorts(kb)
+            .into_iter()
+            .find(|&s| filed_bucket(kb, Bucket::Carrier, s).len() >= 2)
+            .expect("the stdlib has a carrier with two provisions")
+    }
+
+    /// AN ANSWER SHORT OF A LIVE ROW — the read that misses a row asserted earlier, which
+    /// is what this change must not do — fails the check.
+    #[test]
+    #[should_panic(expected = "the provider index and the relation disagree")]
+    fn an_answer_short_of_a_row_fails_the_check() {
+        let kb = load_stdlib(None);
+        let carrier = a_carrier_with_provisions(&kb);
+        let mut filed = filed_bucket(&kb, Bucket::Carrier, carrier);
+        filed.pop();
+        assert_bucket_agrees(&kb, Bucket::Carrier, carrier, &filed);
+    }
+
+    /// AN ANSWER UNDER ANOTHER KEY — a row filed where its name no longer is — fails it:
+    /// one carrier's rows given as the answer about another.
+    #[test]
+    #[should_panic(expected = "the provider index and the relation disagree")]
+    fn an_answer_filed_under_another_key_fails_the_check() {
+        let kb = load_stdlib(None);
+        let carrier = a_carrier_with_provisions(&kb);
+        let other = sorts(&kb)
+            .into_iter()
+            .find(|&s| s != carrier && filed_bucket(&kb, Bucket::Carrier, s).is_empty())
+            .expect("the stdlib has a sort that provides nothing");
+        let filed = filed_bucket(&kb, Bucket::Carrier, carrier);
+        assert_bucket_agrees(&kb, Bucket::Carrier, other, &filed);
     }
 }
 
@@ -6896,8 +7161,8 @@ end
 #[cfg(test)]
 mod e3dc5_condition_index_tests {
     use super::super::{
-        build_provides_index, conditioned_provision_pairs, impl_sorts_providing_spec,
-        provision_conditions, ProvisionConditions,
+        conditioned_provision_pairs, impl_sorts_providing_spec, provision_conditions,
+        provision_conditions_scanned, ProvisionConditions,
     };
     use crate::eval::value::Value;
     use crate::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -6996,11 +7261,12 @@ end
 
     /// THE BUCKET IS THE SCAN, over the whole population.
     ///
-    /// With the index live every `provision_conditions` call reads
-    /// `conditions_by_carrier`; with it dropped the same call falls back to
-    /// `rules_by_functor` over every condition fact — the pre-E3DC5 path, and still the
-    /// path the derive block below `provides_index = None` runs on. The two must agree
-    /// sort for sort, group for group.
+    /// Every `provision_conditions` call reads `conditions_by_carrier`, filed fact by
+    /// fact as each condition was asserted (WI-20261010-ANK4X); and
+    /// `provision_conditions_scanned` is the same grouping over `rules_by_functor` of
+    /// every condition fact — the pre-E3DC5 path, and until ANK4X the path the derive
+    /// block ran on with the index dropped. The two must agree sort for sort, group for
+    /// group.
     ///
     /// NOT VACUOUS, and asserted so: the run checks that the population is the KB's
     /// hundreds of sorts and that dozens of condition GROUPS are actually found, so a
@@ -7022,12 +7288,7 @@ end
     /// subject, and is not even consulted here.
     #[test]
     fn the_condition_bucket_answers_exactly_what_the_scan_answers() {
-        let mut kb = load_stdlib(Some(SRC));
-        assert!(
-            kb.provides_index.is_some(),
-            "premise: a full load leaves the provides index BUILT — without this both \
-             arms would be the scan and the test would measure nothing",
-        );
+        let kb = load_stdlib(Some(SRC));
         let sorts = all_sorts(&kb);
         assert!(
             sorts.len() > 100,
@@ -7039,10 +7300,9 @@ end
             .iter()
             .map(|&s| shape(&kb, &provision_conditions(&kb, s)))
             .collect();
-        kb.provides_index = None;
         let scanned: Vec<Vec<(String, i64, usize)>> = sorts
             .iter()
-            .map(|&s| shape(&kb, &provision_conditions(&kb, s)))
+            .map(|&s| shape(&kb, &provision_conditions_scanned(&kb, s)))
             .collect();
 
         let groups: usize = scanned.iter().map(|g| g.len()).sum();
@@ -7077,28 +7337,25 @@ end
     /// provisions are counted too, so the sweep is exercised over the whole relation and
     /// not just five fixture sorts.
     ///
-    /// THE POPULATED-RELATION ARM MATTERS: this pass runs with `provides_index` dropped,
-    /// so the sweep reads `rules_by_functor` directly and this test measures that path —
-    /// which is the one the load pipeline actually takes.
+    /// THE SWEEP READS `rules_by_functor` DIRECTLY — the whole relation, which is what a
+    /// round of the derivation wants and no bucket is — so this test measures the path the
+    /// load pipeline takes.
     ///
     /// CONTROL, VERIFIED: keep only the FIRST pair per carrier — the grouping hazard the
     /// per-carrier form carried, since [`provision_conditions`] returns one group per
     /// (clause, spec) and a sweep could collapse them — and this test fails on `CCond`'s
     /// second clause while the other three in this module still pass. It passes either way
     /// if only the `conditions_by_carrier` bucket is reverted: that bucket is the other
-    /// tests' subject and is not consulted here, because this pass runs with
-    /// `provides_index` dropped.
+    /// tests' subject and is not consulted here.
     #[test]
     fn the_condition_sweep_finds_every_conditioned_pair_and_only_those() {
-        let mut kb = load_stdlib(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let low = sym(&kb, "test.e3dc5.CLow");
         let fwd = sym(&kb, "test.e3dc5.CFwd");
         let plain = sym(&kb, "test.e3dc5.CPlain");
         let cond = sym(&kb, "test.e3dc5.CCond");
         let canon = |k: &KnowledgeBase, s: Symbol| k.canonical_sort_sym(s);
 
-        // The state the pass runs in — see the doc above.
-        kb.provides_index = None;
         let pairs = conditioned_provision_pairs(&kb);
 
         assert!(
@@ -7171,10 +7428,13 @@ end
     /// fixture is the only thing in the corpus that distinguishes the two decodes, and
     /// without it the builder's carrier-agnostic read would be untested.
     ///
-    /// CONTROL: this is the ONE test that fails if `build_provides_index` buckets the
-    /// condition relation through `fact_head_named_args` instead of `rule_head_value` +
-    /// `head_field_term`. Verified by making that mutation: this test fails and the other
-    /// four in this module still pass.
+    /// CONTROL: this is the ONE test that fails if the condition relation is bucketed
+    /// through `fact_head_named_args` instead of `rule_head_value` + `head_field_term`.
+    /// Verified by making that mutation on the builder (WI-20260920-E3DC5): this test
+    /// fails and the other four in this module still pass. The decode is
+    /// `decoded_condition_row`, which the filing calls where the builder did; and since
+    /// WI-20261010-ANK4X the fact is filed by the assert below itself, so the test also
+    /// drives the assert path for a fact no load produces.
     #[test]
     fn a_denoted_condition_fact_is_bucketed_not_dropped() {
         let mut kb = load_stdlib(Some(SRC));
@@ -7240,8 +7500,7 @@ end
         );
 
         // The scan is the reference: it is the decode the consumer has always used.
-        kb.provides_index = None;
-        let scanned = provision_conditions(&kb, plain);
+        let scanned = provision_conditions_scanned(&kb, plain);
         assert_eq!(
             scanned.len(),
             before + 1,
@@ -7249,11 +7508,7 @@ end
              match",
         );
 
-        build_provides_index(&mut kb);
-        assert!(
-            kb.provides_index.is_some(),
-            "the index is built, so the read below goes through the bucket",
-        );
+        // No build between the assert and this read: the assert filed the fact.
         let indexed = provision_conditions(&kb, plain);
         assert_eq!(
             shape(&kb, &indexed),

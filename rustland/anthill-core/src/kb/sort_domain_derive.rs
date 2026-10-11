@@ -57,12 +57,10 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     if !super::typing::any_requirement_names_one_of(kb, &asked) {
         return Vec::new();
     }
-    // The provision relation's obligations, `derive_forwarded_provisions`' at its load site:
-    // the index dropped so the reads below hit the live relation, the requires-chain cache
-    // invalidated and the index rebuilt after. HERE, past the gate, and not at the call
-    // site: a closed gate must cost nothing, and an index rebuild on every load is not
-    // nothing.
-    kb.provides_index = None;
+    // The provision relation's obligation, `derive_forwarded_provisions`' at its load site:
+    // the requires-chain cache invalidated after the rows are asserted (below). The
+    // provider index owes this pass nothing since WI-20261010-ANK4X — it takes each row
+    // where the row is asserted — where it used to be dropped here and rebuilt after.
     let spec_canon = kb.canonical_sort_sym(spec);
     // Carriers that already provide it — this pass's own rows from an earlier load phase.
     let already: HashSet<Symbol> = super::typing::provision_carriers_of_spec(kb, spec)
@@ -93,7 +91,6 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         }
     }
     kb.invalidate_requires_chain_cache();
-    super::typing::build_provides_index(kb);
     // ONE LAYOUT (`typing::sort_domain_sub_offset`): the derived `fill` clauses read their
     // conditions at the offset the loader recorded, and a dictionary the typer builds from
     // these rows must hold them there. Checked now that the rows exist, because a drift

@@ -1084,7 +1084,13 @@ impl KnowledgeBase {
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
             scan_alias_decls: plain(&self.scan_alias_decls),
-            provides_index: self.provides_index.as_ref().map(|index| index.deep_clone_with(&mut c)),
+            // WI-20261010-ANK4X — COPIED, not started empty and filed again: it is true of
+            // this KB's clauses, the copy's clauses are these under the same `RuleId`s and
+            // the same symbols, and so it is true of the copy. (Its `Rc` rows are the
+            // witness memo's, and those are copied leaf by leaf.)
+            provides_index: std::cell::RefCell::new(
+                self.provides_index.borrow().deep_clone_with(&mut c),
+            ),
             sort_info_index: plain(&self.sort_info_index),
             requires_index: plain(&self.requires_index),
             op_info_index: plain(&self.op_info_index),
