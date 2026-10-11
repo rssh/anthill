@@ -29,6 +29,8 @@ mod wi_cr6gd_clause_defined_call_test;
 mod wi_12vzb_constructor_named_out_of_order_test;
 #[path = "include/wi_12vzb_match_guard_stored_as_typed_test.rs"]
 mod wi_12vzb_match_guard_stored_as_typed_test;
+#[path = "include/wi_2qz3f_const_value_equation_test.rs"]
+mod wi_2qz3f_const_value_equation_test;
 #[path = "include/wi_hzvqa_alias_receiver_test.rs"]
 mod wi_hzvqa_alias_receiver_test;
 #[path = "include/wi_b6qya_constructor_bracket_test.rs"]

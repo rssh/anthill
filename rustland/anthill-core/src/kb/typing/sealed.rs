@@ -2,8 +2,9 @@
 //! do to them, and the instrument that says the typer skipped nothing it should have
 //! typed.
 //!
-//! The typer's two whole-KB sweeps — every operation body no sort of the load owns
-//! (`sorts::type_check_sorts_collect`), every rule body (`rules::type_rule_bodies`) —
+//! The typer's whole-KB sweeps — every operation body no sort of the load owns
+//! (`sorts::type_check_sorts_collect`), every rule body (`rules::type_rule_bodies`),
+//! and every constant's value (`sorts::check_constant_bodies`, WI-20261011-2QZ3F) —
 //! skip what a seal holds ([`crate::kb::load::SealedDeclarations`]). MEASURED before
 //! this, a copy of the loaded standard library and then a four-line file: 99 ms and
 //! 11 ms of that 267 ms load were the two sweeps typing the library again.
@@ -178,6 +179,112 @@ fn first_difference(was: &str, now: &str) -> String {
     format!("was `…{}`, is `…{}`", side(was), side(now))
 }
 
+/// A body a sealed load typed: an operation's, or a constant's value.
+#[derive(Clone, Copy)]
+enum SealedBody {
+    Operation(Symbol),
+    Constant(Symbol),
+}
+
+impl SealedBody {
+    /// The body as the KB holds it now.
+    fn stored(self, kb: &KnowledgeBase) -> Option<Rc<NodeOccurrence>> {
+        match self {
+            SealedBody::Operation(op) => kb.op_body_node(op).cloned(),
+            SealedBody::Constant(constant) => kb.const_body_node(constant).cloned(),
+        }
+    }
+
+    /// `body` put back, as the sealed load left it.
+    fn restore(self, kb: &mut KnowledgeBase, body: Rc<NodeOccurrence>) {
+        match self {
+            SealedBody::Operation(op) => kb.set_op_body_node(op, body),
+            SealedBody::Constant(constant) => kb.set_const_body_node(constant, body),
+        }
+    }
+
+    /// `body` typed once more, outside the run's own sweep: what that reported, and how
+    /// many requirement refusals it parked.
+    fn type_aside(
+        self,
+        kb: &mut KnowledgeBase,
+        body: &Rc<NodeOccurrence>,
+        region_sorts: &HashSet<Symbol>,
+    ) -> (Vec<TypeError>, usize) {
+        match self {
+            SealedBody::Operation(op) => type_operation_bodies_aside(kb, &[op], region_sorts),
+            SealedBody::Constant(constant) => (
+                type_constant_values_aside(kb, &[ConstantValue::of(constant, Rc::clone(body))]),
+                0,
+            ),
+        }
+    }
+
+    fn symbol(self) -> Symbol {
+        match self {
+            SealedBody::Operation(symbol) | SealedBody::Constant(symbol) => symbol,
+        }
+    }
+
+    /// Operations, then constants, each in the order of their symbols: the maps they
+    /// are read from have none.
+    fn order(self) -> (u8, u32) {
+        match self {
+            SealedBody::Operation(op) => (0, op.index()),
+            SealedBody::Constant(constant) => (1, constant.index()),
+        }
+    }
+
+    /// `the body of sealed operation 'x'`, `the value of sealed constant 'x'`.
+    fn named(self, kb: &KnowledgeBase) -> String {
+        let name = kb.qualified_name_of(self.symbol());
+        match self {
+            SealedBody::Operation(_) => format!("the body of sealed operation '{name}'"),
+            SealedBody::Constant(_) => format!("the value of sealed constant '{name}'"),
+        }
+    }
+}
+
+/// Each of `bodies` as the KB holds it, with its stamps: what [`oracle_compare`] holds
+/// a second typing to.
+fn oracle_snapshot(
+    kb: &KnowledgeBase,
+    bodies: impl Iterator<Item = SealedBody>,
+) -> Vec<(SealedBody, Rc<NodeOccurrence>, String)> {
+    bodies
+        .filter_map(|sealed| {
+            let body = sealed.stored(kb)?;
+            let stamps = stamps_of(&body);
+            Some((sealed, body, stamps))
+        })
+        .collect()
+}
+
+/// Record each body of `before` that a second typing left different.
+fn oracle_compare(kb: &mut KnowledgeBase, before: Vec<(SealedBody, Rc<NodeOccurrence>, String)>) {
+    for (sealed, body, stamps) in before {
+        let what = sealed.named(kb);
+        match sealed.stored(kb) {
+            Some(now) if !Rc::ptr_eq(&now, &body) => {
+                oracle_hit(format!("{what} was REWRITTEN"));
+                // Put back, so that the check that REFUSES this shape, which runs next
+                // and asks the same question, is asked it of the sealed body.
+                sealed.restore(kb, body);
+            }
+            Some(now) => {
+                let after = stamps_of(&now);
+                if after != stamps {
+                    oracle_hit(format!(
+                        "a call in {what} was classified differently: {}",
+                        first_difference(&stamps, &after)
+                    ));
+                }
+            }
+            None => oracle_hit(format!("{what} is gone")),
+        }
+    }
+}
+
 /// The oracle's half of the free-operation sweep: type the SEALED operation bodies the
 /// sweep skipped, and record each one that came out different or reported anything.
 pub(super) fn oracle_type_sealed_operations(
@@ -185,14 +292,7 @@ pub(super) fn oracle_type_sealed_operations(
     sealed_ops: &[Symbol],
     region_sorts: &HashSet<Symbol>,
 ) {
-    let before: Vec<(Symbol, Rc<NodeOccurrence>, String)> = sealed_ops
-        .iter()
-        .filter_map(|&op| {
-            let body = Rc::clone(kb.op_body_node(op)?);
-            let stamps = stamps_of(&body);
-            Some((op, body, stamps))
-        })
-        .collect();
+    let before = oracle_snapshot(kb, sealed_ops.iter().map(|&op| SealedBody::Operation(op)));
     let (errors, parked) = type_operation_bodies_aside(kb, sealed_ops, region_sorts);
     for e in &errors {
         oracle_hit(format!(
@@ -206,28 +306,22 @@ pub(super) fn oracle_type_sealed_operations(
              refusal(s)"
         ));
     }
-    for (op, body, stamps) in before {
-        let name = kb.qualified_name_of(op).to_string();
-        match kb.op_body_node(op) {
-            Some(now) if !Rc::ptr_eq(now, &body) => {
-                oracle_hit(format!("the body of sealed operation '{name}' was REWRITTEN"));
-                // Put back, so that the check that REFUSES this shape, which runs next
-                // and asks the same question, is asked it of the sealed body.
-                kb.set_op_body_node(op, body);
-            }
-            Some(now) => {
-                let after = stamps_of(now);
-                if after != stamps {
-                    oracle_hit(format!(
-                        "a call in the body of sealed operation '{name}' was classified \
-                         differently: {}",
-                        first_difference(&stamps, &after)
-                    ));
-                }
-            }
-            None => oracle_hit(format!("the body of sealed operation '{name}' is gone")),
-        }
+    oracle_compare(kb, before);
+}
+
+/// The oracle's half of the constant sweep, the same way.
+pub(super) fn oracle_type_sealed_constants(kb: &mut KnowledgeBase, sealed: &[ConstantValue]) {
+    let before = oracle_snapshot(
+        kb,
+        sealed.iter().map(|c| SealedBody::Constant(c.symbol)),
+    );
+    for e in &type_constant_values_aside(kb, sealed) {
+        oracle_hit(format!(
+            "typing a sealed constant's value again reported: {}",
+            e.to_load_error(kb)
+        ));
     }
+    oracle_compare(kb, before);
 }
 
 /// Type `ops`' bodies OUTSIDE the run's own sweep: what the pass reports comes back
@@ -247,6 +341,17 @@ fn type_operation_bodies_aside(
     let parked = kb.unsuppliable_requirements.len() - parked_before;
     kb.unsuppliable_requirements.truncate(parked_before);
     (errors, parked)
+}
+
+/// Type `constants`' values outside the run's own sweep, the same way. A constant's
+/// value parks nothing: the park is an operation body's.
+fn type_constant_values_aside(
+    kb: &mut KnowledgeBase,
+    constants: &[ConstantValue],
+) -> Vec<TypeError> {
+    let (mut errors, mut sources) = (Vec::new(), Vec::new());
+    check_constant_bodies(kb, constants, &mut errors, &mut sources);
+    errors
 }
 
 /// The oracle's half of the rule-body sweep, the same way.
@@ -337,7 +442,8 @@ fn refuse(
 /// and the rule would silently not reach them. Refused, by asking the typer itself:
 /// each sealed body that calls or constructs the head of such a rule is typed once
 /// more, and one that comes back REWRITTEN — or that no longer types — is one the rule
-/// reached.
+/// reached. A body here is an operation's or a constant's value: both are typed with
+/// the equations applied and stored as typed ([`SealedBody`]).
 ///
 /// Exact on purpose. "Its head is a sealed operation" would refuse the program that
 /// declares `rule fact_monotonicity(Mine) <=> …` for its own sort, which the library
@@ -403,27 +509,34 @@ pub(super) fn simp_rules_that_reach_a_sealed_body(
     if by_head.is_empty() {
         return;
     }
-    // The sealed bodies that call or construct one of those heads, and which — in the
-    // order of their symbols, the map they are read from having none.
-    let mut callers: Vec<(Symbol, Rc<NodeOccurrence>, Vec<Symbol>)> = kb
+    // The sealed bodies that call or construct one of those heads, and which: every
+    // sealed operation's body, and every sealed constant's value.
+    let (_, sealed_constants) = constant_values_by_seal(kb);
+    let mut callers: Vec<(SealedBody, Rc<NodeOccurrence>, Vec<Symbol>)> = kb
         .op_bodies_iter()
         .filter(|(op, _)| kb.sealed.holds_operation(*op))
-        .filter_map(|(op, body)| {
+        .map(|(op, body)| (SealedBody::Operation(op), body))
+        .chain(
+            sealed_constants
+                .iter()
+                .map(|c| (SealedBody::Constant(c.symbol), &c.value)),
+        )
+        .filter_map(|(sealed, body)| {
             let called = heads_reached(body, &by_head);
-            (!called.is_empty()).then(|| (op, Rc::clone(body), called))
+            (!called.is_empty()).then(|| (sealed, Rc::clone(body), called))
         })
         .collect();
-    callers.sort_by_key(|(op, _, _)| op.index());
-    for (op, body, called) in callers {
+    callers.sort_by_key(|(sealed, _, _)| sealed.order());
+    for (sealed, body, called) in callers {
         // One at a time, so that what typing reports is this body's: a rule that makes
         // the body fail to type leaves it unwritten, and only the report says so.
-        let (reported, parked) = type_operation_bodies_aside(kb, &[op], region_sorts);
-        let rewritten = !kb.op_body_node(op).is_some_and(|now| Rc::ptr_eq(now, &body));
+        let (reported, parked) = sealed.type_aside(kb, &body, region_sorts);
+        let rewritten = !sealed.stored(kb).is_some_and(|now| Rc::ptr_eq(&now, &body));
         if !rewritten && reported.is_empty() && parked == 0 {
             continue;
         }
         // The body goes back as the sealed load left it: the KB is refused.
-        kb.set_op_body_node(op, body);
+        sealed.restore(kb, body);
         let site = called
             .iter()
             .flat_map(|h| by_head[h].iter().copied())
@@ -432,16 +545,19 @@ pub(super) fn simp_rules_that_reach_a_sealed_body(
             .iter()
             .map(|h| format!("'{}'", kb.qualified_name_of(*h)))
             .collect();
+        let name = kb.qualified_name_of(sealed.symbol()).to_string();
+        let (what, it) = match sealed {
+            SealedBody::Operation(_) => (format!("the body of '{name}'"), "that operation's body"),
+            SealedBody::Constant(_) => (format!("the value of const '{name}'"), "that value"),
+        };
         let message = format!(
-            "a `@[simp]` rule over {} {} the body of '{}', which a sealed load declared: \
-             that operation's body was typed by the load that declared it and is not \
-             typed again, so a rule loaded after it cannot be applied to it. Put the \
-             rule in the source that declares '{}', or write it so that it matches only \
-             calls of your own — over a type or a constructor that source cannot name",
+            "a `@[simp]` rule over {} {} {what}, which a sealed load declared: {it} was \
+             typed by the load that declared it and is not typed again, so a rule loaded \
+             after it cannot be applied to it. Put the rule in the source that declares \
+             '{name}', or write it so that it matches only calls of your own — over a \
+             type or a constructor that source cannot name",
             heads.join(", "),
             if rewritten { "rewrites" } else { "breaks" },
-            kb.qualified_name_of(op),
-            kb.qualified_name_of(op),
         );
         refuse(message, site, errors, sources);
     }

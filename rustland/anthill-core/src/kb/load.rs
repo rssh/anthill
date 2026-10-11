@@ -8582,7 +8582,8 @@ pub(crate) type ScanTypeDecls = Vec<((ScopeId, String), &'static str, SourceSpan
 /// body — ran over the whole KB at each later load: 99 ms and 11 ms of a 267 ms load
 /// of a four-line file after the standard library, typing the library again. Behind a
 /// seal they skip what the seal holds ([`Self::holds_typed_operation`],
-/// [`Self::holds_typed_source`]),
+/// [`Self::holds_typed_source`]) — and so does the sweep over the constants' values, a
+/// const's being read off the source its value was written in —
 /// and what a later load could have changed in a sealed body is refused instead
 /// ([`super::typing::sealed_code_refusals`]). Nothing sealed, nothing skipped: a plain
 /// sequence of loads types every body at every load, as it did.
@@ -14933,7 +14934,20 @@ fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// operation's `OperationInfo` effect row is present. Bodyless (host-supplied)
 /// consts have no body to check and are trusted. Returns one `LoadError` per
 /// impure const.
-fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
+///
+/// IT JUDGES THE VALUE AS TYPED, which is what is folded (kernel-language.md §5.9):
+/// the typer has stored it (`typing::check_constant_bodies`), so a dot call is the call
+/// it dispatched to and is judged by that operation's effect row, and the text a
+/// `@[simp]` equation put in the place of a call is judged as if it were written
+/// there. A value the typer refused is still as written, and a dot in it is refused
+/// here as the unknown callee it is — unless the load is `already_refused`. The typer
+/// dispatches the dots of a value it accepts, so a dot still standing in a value this
+/// load typed is in a value the typer refused and said why, and "its purity cannot be
+/// verified, use an operation" beside that advises a repair the value does not need;
+/// the load is refused either way. With nothing else told, the dot is refused here: it
+/// stands in a value no typer run of this load refused, and this is the last thing
+/// between it and the evaluator.
+fn check_const_purity(kb: &KnowledgeBase, already_refused: bool) -> Vec<LoadError> {
     // Snapshot (sym, body) so the walk can re-borrow `kb` for effect lookups.
     let consts: Vec<(Symbol, std::rc::Rc<NodeOccurrence>)> = kb
         .const_bodies_iter()
@@ -14941,7 +14955,15 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
         .collect();
     let mut errors = Vec::new();
     for (sym, body) in &consts {
-        if let Err(reason) = const_node_is_pure(kb, body) {
+        if let Err(impurity) = const_node_is_pure(kb, body) {
+            let reason = match impurity {
+                ConstImpurity::StandingDot if already_refused => continue,
+                ConstImpurity::StandingDot => format!(
+                    "uses a form whose purity cannot be statically verified ({})",
+                    STANDING_DOT_FORM,
+                ),
+                ConstImpurity::Because(reason) => reason,
+            };
             errors.push(LoadError::Other {
                 message: format!(
                     "const `{}` has a non-foldable body — it {reason}. A const denotes a single \
@@ -15028,12 +15050,14 @@ fn check_macro_purity(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 
 /// Recursively verify a const body occurrence is pure. CONSERVATIVE by
 /// construction: only forms whose purity is statically provable are accepted;
-/// any unrecognized or dynamically-dispatched form (higher-order / dot calls,
-/// generic instantiation, the post-elaboration `*Within` forms a raw const body
-/// never contains) is REJECTED — so the gate can never silently admit an effect.
-/// Returns `Err(reason)` for the first offending form (reason is a fragment that
-/// reads after "it …", e.g. "calls effectful operation `Cell.new`").
-fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> Result<(), String> {
+/// any unrecognized or dynamically-dispatched form (a higher-order call, a dot
+/// call the typer did not dispatch, generic instantiation, the `*Within` forms no
+/// const's value holds) is REJECTED — so the gate can never silently admit an effect.
+/// Returns `Err` for the first offending form.
+fn const_node_is_pure(
+    kb: &KnowledgeBase,
+    occ: &std::rc::Rc<NodeOccurrence>,
+) -> Result<(), ConstImpurity> {
     // Only Expr-kind occurrences compute; Pattern / Type carry no effects.
     let expr = match &occ.kind {
         node_occurrence::NodeKind::Expr { expr, .. } => expr,
@@ -15041,12 +15065,16 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
     };
     match expr {
         // Pure leaves. (`Bottom`/`Var` won't fold to a value, but neither is an
-        // effect — a non-reducing body fails the fold separately.)
-        Expr::Const(_) | Expr::Var(_) | Expr::Bottom => Ok(()),
+        // effect — a non-reducing body fails the fold separately.) `Spliced` is a
+        // value a compile-time macro put where its call stood, and evaluates to
+        // itself: a typed value holds one where the written one held the call.
+        Expr::Const(_) | Expr::Var(_) | Expr::Bottom | Expr::Spliced(_) => Ok(()),
         // A bare reference: a nullary OPERATION reference is a zero-arg call (so
         // an effectful one is impure); a multi-arg op ref is eta (a pure closure
         // value); a const / constructor / param ref is pure.
-        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => const_ref_is_pure(kb, *s),
+        Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => {
+            const_ref_is_pure(kb, *s).map_err(ConstImpurity::Because)
+        }
         // A lambda is a pure VALUE — folding yields a closure; its body's effects
         // (if any) are deferred to application, not performed at fold.
         Expr::Lambda { .. } => Ok(()),
@@ -15114,7 +15142,7 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
             named_args,
             ..
         } => {
-            const_callee_is_pure(kb, *functor)?;
+            const_callee_is_pure(kb, *functor).map_err(ConstImpurity::Because)?;
             for c in pos_args {
                 const_node_is_pure(kb, c)?;
             }
@@ -15132,13 +15160,15 @@ fn const_node_is_pure(kb: &KnowledgeBase, occ: &std::rc::Rc<NodeOccurrence>) -> 
             }
             const_node_is_pure(kb, body)
         }
-        // Everything else — higher-order / dot dispatch, generic instantiation,
-        // and the post-elaboration `*Within` / requirement forms (which a raw,
-        // un-elaborated const body never contains) — cannot be proven pure here.
-        other => Err(format!(
+        // A dot the typer left standing: its callee is not known here.
+        Expr::DotApply { .. } => Err(ConstImpurity::StandingDot),
+        // Everything else — a higher-order call, generic instantiation, and the
+        // `*Within` / requirement forms (which no const's value holds) — cannot be
+        // proven pure here.
+        other => Err(ConstImpurity::Because(format!(
             "uses a form whose purity cannot be statically verified ({})",
             const_expr_form_name(other),
-        )),
+        ))),
     }
 }
 
@@ -15174,11 +15204,23 @@ fn const_ref_is_pure(kb: &KnowledgeBase, sym: Symbol) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a const's value is not provably pure.
+enum ConstImpurity {
+    /// A dot call the typer did not dispatch ([`check_const_purity`] says when that is
+    /// told here and when it is the typer's to tell).
+    StandingDot,
+    /// The reason, as a fragment that reads after "it …" — "calls effectful operation
+    /// `Cell.new`".
+    Because(String),
+}
+
+/// How the gate names a standing dot.
+const STANDING_DOT_FORM: &str = "method/dot call";
+
 /// Human-readable name for an `Expr` form rejected by the purity gate.
 fn const_expr_form_name(e: &Expr) -> &'static str {
     match e {
         Expr::HoApply { .. } | Expr::HoApplyWithin { .. } => "higher-order application",
-        Expr::DotApply { .. } => "method/dot call",
         Expr::Instantiation { .. } => "generic instantiation",
         Expr::ApplyWithin { .. } => "apply-within",
         Expr::ConstructorWithin { .. } => "constructor-within",
@@ -15911,7 +15953,8 @@ fn load_phase_inner(
     // body invokes an effectful operation (e.g. an allocator) is load-blocking —
     // memoizing an effectful value is unsound. Runs after all operations load, so
     // every effect row is queryable.
-    all_errors.extend(check_const_purity(kb));
+    let already_refused = !all_errors.is_empty();
+    all_errors.extend(check_const_purity(kb, already_refused));
     mark!("check_const_purity");
     // WI-722 (043.1 §6): the macro purity gate. An occurrence→occurrence op is
     // evaluated at compile time by the @[simp] engine, so it must have a pure (at

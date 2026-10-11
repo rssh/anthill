@@ -926,6 +926,20 @@ impl NodeOccurrence {
         }
     }
 
+    /// Where the text this occurrence stands for was WRITTEN, in the body it sits in: its
+    /// own span for a node the author wrote there, and for a node a pass put in that
+    /// one's place the span at the end of its `Synthesized` chain. A rewrite's right-hand
+    /// side keeps the span it has in its rule ([`Self::reparented_from`]), so the root of
+    /// a body an equation rewrote at the top names the RULE's file, and this the body's.
+    pub fn written_site(&self) -> SourceSpan {
+        let mut node = self;
+        // Finite and short: each link was built from an occurrence that already existed.
+        while let Some(from) = node.synthesized_from() {
+            node = from;
+        }
+        node.span
+    }
+
     /// The scope this occurrence's text was written in, when that is not where the
     /// occurrence now sits: it is the text of a rewrite spliced into another body, or a
     /// node a pass built from such text (the call a dot in it lowers to). `None` for

@@ -259,6 +259,35 @@ fn namespace_and_sort_body_consts_do_not_collide() {
 
 /// Write `header` to a scratch dir and compile a driver that includes it and
 /// runs `body`. Skips (with a note) when no C++ compiler is available.
+/// WI-20261011-2QZ3F — a const's value is lowered as it was TYPED: a call an equation
+/// defines is the equation's right-hand side by then. Lowered as written it named a
+/// body-less operation with no C++ realization, and the header was refused (measured
+/// with the const's typed value not stored: "`test.wi2qz3fcpp.dbl` has no body and no
+/// C++ realization").
+#[test]
+fn a_const_over_an_equation_defined_call_lowers_the_typed_value_and_compiles() {
+    let source = r#"
+        namespace test.wi2qz3fcpp
+          import anthill.prelude.{Int64}
+          operation dbl(n: Int64) -> Int64
+          rule dbl(?n) <=> ?n + ?n @[simp]
+          const EIGHT: Int64 = dbl(4)
+          entity Dummy(x: Int64)
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let header = emit_namespace_header(&mut kb, "test.wi2qz3fcpp").expect("emit ns header");
+    assert!(
+        header.contains("inline constexpr int64_t EIGHT = (4 + 4);"),
+        "the const lowers the equation's right-hand side:\n{header}"
+    );
+    compile_header(
+        &header,
+        "wi2qz3fcpp",
+        "static_assert(test::wi2qz3fcpp::EIGHT == 8);\n    test::wi2qz3fcpp::Dummy d{1};\n    (void)d;",
+    );
+}
+
 fn compile_header(header: &str, tag: &str, body: &str) {
     let cxx = match find_cxx() {
         Some(c) => c,
