@@ -1,8 +1,9 @@
 # What a proof record is named (WI-20261011-S8CYD) — the count the decision was made on, the decision, what the
-# old names did, and what was built. 2026-10-11, 19:30 – 23:25.
+# old names did, and what was built. 2026-10-11, 19:30 – 23:57.
 # Sections 1–2 are the count and the decision, taken before anything was built; section 3 is the old sources under
 # the new rows; sections 4–7 are the tree as delivered; section 8 is what was found on the way and is not this
-# ticket's; section 9 is what /code-review changed, with its own controls; section 10 the gate and the recipes.
+# ticket's; section 9 is what /code-review changed, with its own controls; section 10 the gate and the recipes;
+# section 11 the gate of the tree merged with origin/main, which is the one that was pushed.
 # THE FIRST CUT (20:22 – 22:00) named the records and moved the readers; /code-review then found a child of a type
 # the name's text left out, and a reader of names still cutting them (section 9). Sections 4, 6 and 7 were taken on
 # the first cut and taken again on the tree as delivered; each says which numbers are which.
@@ -365,7 +366,7 @@
 # Nothing of scaland's was changed and it has no witness pass; what it reads of this change is the comments of
 # `stdlib/anthill/realization/witness.anthill`, which were as delivered when it ran.
 
-== 11. after the merge of origin/main (23:31 – ; six commits of another session, WI-20261011-3HN0N's) ==
+== 11. after the merge of origin/main (23:31 – 23:57; six commits of another session, WI-20261011-3HN0N's) ==
 # The merge made itself; no file of this change was touched by the other side.
 #   scripts/test.sh on the merged tree, 23:31:54 – 23:46:50      exit 101: 36 result lines, 35 ok; 9 338 passed, 1 FAILED
 #     the one: anthill-cli's unit row `check::tests::lying_sidecar_verdict_fails` — "lying sidecar must fail
@@ -377,3 +378,6 @@
 # FIXED INLINE: a count of the process's calls in the name (`check::rand_suffix`, which `prove` names its files by
 # too), and a row — 80 000 names from eight threads are 80 000. Backed out, that row FAILS in ten runs of ten:
 # 4 435 to 5 178 distinct names of 80 000 calls.
+#   scripts/test.sh on the merged tree with that fix (99fd6cd2), 23:49:54 – 23:57:14      exit 0: 36 result lines, all ok;
+#     9 340 passed, 0 failed, 14 ignored; SHARED BASE observed. `CPU_Speed_Limit` 100 when it began, 62 when it ended.
+# The other two recipes and scaland were not run again on the merged tree: section 10's are of the tree before it.
