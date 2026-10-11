@@ -45,3 +45,7 @@ SPEC. Not edited. §8's table of constructor arguments shows the positional, nam
 
 RUNS. Full workspace at each commit: 36 binaries, 9178 passed at 5c7657a0 and 9188 at a2ab1619, 0 failed. anthill-core under ANTHILL_TYPER_ORACLE=1, ANTHILL_TEST_TWO_STEP_LOAD=1 and ANTHILL_TEST_FRESH_LOAD=1: 8290 passed, 0 failed, each. /code-review run: nine findings, seven fixed, two needing no change.
 
+### 2026-10-11T12:19:18Z — feedback — claude
+
+AFTER THE DELIVERY, on the user's answer to the two questions the note above left open (2026-10-11, 'yes' to both). (1) The spec has the rule: kernel-language.md's table of constructor arguments gains the all-named spelling in another order, and one paragraph says the order named arguments are written in is not part of the value, with the named tuple set apart (§4.5). (2) The const's value is filed, Open: WI-20261011-2QZ3F — an equation is not applied there, and the ticket asks first whether a const's value is a firing site or the call is refused.
+

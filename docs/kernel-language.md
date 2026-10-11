@@ -4495,8 +4495,15 @@ and §5.4 for operation calls. So for `entity two(a: Int64, b: Int64)`:
 ```
 two(1, 2)        -- a = 1, b = 2      (all positional)
 two(a: 1, b: 2)  -- a = 1, b = 2      (all named)
+two(b: 2, a: 1)  -- a = 1, b = 2      (all named, in another order)
 two(2, a: 1)     -- a = 1, b = 2      (mixed: `a` is named, so 2 takes `b`)
 ```
+
+The order in which named arguments are written is not part of the value. `two(b: 2, a: 1)`
+and `two(a: 1, b: 2)` are one value and one term, in an operation body as in a rule: they
+are equal, and a pattern, the left-hand side of an equation or a precondition that matches
+one matches the other. A named tuple is not this: the order of its components is part of
+its type's identity (§4.5).
 
 **A constructor PATTERN reads the spelling its application writes.** The rule above is
 one rule, not two: `case two(y, a: 1)` binds `y` to field `b`, because that is the field
