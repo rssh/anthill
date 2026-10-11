@@ -43,11 +43,17 @@ use anthill_core::kb::KnowledgeBase;
 /// The WI-444 gate as `check_apply_iter` spelled it before this ticket, kept here as the
 /// ORACLE — an independent construction out of the two named readers, so the assertion
 /// below compares two spellings rather than a function with itself.
+///
+/// ONE POPULATION IS TAKEN OUT BY NAME since WI-20261011-RM247. The old spelling read "has
+/// a body" off the body-less half answering `None`, and that half no longer answers for a
+/// data sort: a body-less operation of a parametric sort with constructors is no dispatch
+/// placeholder — nothing provides a data sort — and has no default either.
 fn wi444_gate_spelling(kb: &KnowledgeBase, op: Symbol) -> Option<Symbol> {
     if lookup_spec_op_dispatch(kb, op).is_some() {
         return None;
     }
     spec_op_parent_sort(kb, op)
+        .filter(|&sort| !(kb.sort_has_constructors(sort) && kb.op_body_node(op).is_none()))
 }
 
 fn corpus_kb() -> KnowledgeBase {

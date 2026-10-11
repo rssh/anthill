@@ -10,7 +10,8 @@ use super::*;
 ///
 /// WI-444: this is the body-agnostic core. [`lookup_spec_op_dispatch`] layers
 /// the body-less gate on top (a body-less spec op is the call-site dispatch
-/// target via `SortProvidesInfo`); a DEFAULTED spec op (with its own body) is
+/// target via `SortProvidesInfo`), and with it the data-sort one — a sort with
+/// constructors has no provider to dispatch to; a DEFAULTED spec op (with its own body) is
 /// not a body-less dispatch target but is still a spec op whose carrier may
 /// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
 /// do not shadow), so the override paths gate on this instead.
@@ -162,6 +163,11 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// (a runnable default a carrier may override) or [`lookup_spec_op_dispatch`]'s
 /// (body-less, resolved by call-site dispatch). Returns the parent spec sort.
 ///
+/// AND A BODY-LESS OPERATION OF A PARAMETRIC DATA SORT, which is in neither half since
+/// WI-20261011-RM247: it is no dispatch placeholder, and its call in a rule body is still
+/// typed — its arguments checked at the sort's parameters, its `@[simp]` equation fired —
+/// as the call of a bodied operation of the same sort is.
+///
 /// ITS FIRST READER is [`call_dispatch_shape`], and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
 /// or refuses a defaulted call, the WI-210 block dispatches a body-less one and
@@ -180,9 +186,10 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// admitting that population at THIS site costs — 14 tests across 4 suites, the walk
 /// firing `type_check_node` on entity-constructor calls. Both halves' own gates carry
 /// the same leg (`op_has_runnable_body` / `operation_has_no_body` each require an
-/// `OperationInfo`), so asking for one directly is what makes this their union and not
-/// a wider third reading. `wi1043_bodyless_rule_body_test::the_walk_gate_is_exactly_-
-/// the_two_halves` drives that equality over the corpus.
+/// `OperationInfo`), so asking for one directly is what makes this their union — with the
+/// data sort's body-less operations, above — and not a wider reading still.
+/// `wi1043_bodyless_rule_body_test::the_walk_gate_is_the_two_halves_and_a_data_sorts_-
+/// body_less_operations` drives that equality over the corpus.
 ///
 /// THE SAME UNION SPLITS A WOVEN CALL (WI-20260925-P7VP4): a spec op's woven call carries
 /// one DISPATCH dictionary, any other operation's carries SLOTS — the inference declines a
@@ -202,12 +209,27 @@ pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
 }
 
 /// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
-/// that has at least one `sort <Param> = ?` declaration AND the
+/// that has at least one `sort <Param> = ?` declaration and no constructor, AND the
 /// operation has no body. Spec operations are subject to call-site
 /// dispatch via `SortProvidesInfo` lookup.
 ///
 /// Returns the *parent sort* symbol (the spec sort) when `op_sym`
 /// qualifies; `None` otherwise.
+///
+/// WI-20261011-RM247 — NOT AN OPERATION OF A DATA SORT. A sort with constructors is a data
+/// sort and nothing provides one (kernel-language.md §5.1), so a body-less operation it
+/// declares has no provider to be dispatched to, with a parameter or without: it is the
+/// sort's own, run by its host mapping, its rules or the `@[simp]` equation that defines
+/// it. Read as a dispatch placeholder, `Box.open` in `sort Box { sort V = ?; entity mk(v:
+/// V); operation open(b: Box[V]) -> V; rule open(?b) <=> peek(?b) @[simp] }` was held to
+/// `Box` providing `Box` by every reader of this answer. The equation's guard never held:
+/// the program loaded clean and the call died `OperationBodyMissing`, where the same sort
+/// without its parameter ran. A caller generic in `V`, and a rule body, were refused for a
+/// `requires Box[…]` or a `provides Box[…]` that no program can write.
+///
+/// The other two gates keep the parametric reading. [`defaulted_spec_op_parent`] is not
+/// asked this, and [`spec_op_call_parent`] is also what has a rule-body call of a
+/// parametric sort's operation typed, data sort or spec.
 pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     // The op must be body-less (declaration only): a DEFAULTED spec op is a
     // normal-bodied op the runtime can run directly, not a call-site dispatch
@@ -215,6 +237,11 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     // [`spec_op_parent_sort`] — WI-444.)
     let parent_sym = spec_op_parent_sort(kb, op_sym)?;
     if !operation_has_no_body(kb, op_sym) {
+        return None;
+    }
+    // Asked last: the two legs above answer for nearly every operation. `parent_sym` was
+    // read by its qualified name, so it is the canonical symbol `sort_is_data` is keyed by.
+    if sort_is_data(kb, parent_sym) {
         return None;
     }
     Some(parent_sym)

@@ -2281,7 +2281,7 @@ pub(super) fn check_apply_iter(
         // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
-        // body-less test.
+        // body-less test (and, since WI-20261011-RM247, the data-sort one).
         //
         // THE PRECONDITION THAT MAKES THE SWAP SAFE HERE, because the gate's body test is
         // STRICTER than the one it replaces (see its doc): this whole block is inside
