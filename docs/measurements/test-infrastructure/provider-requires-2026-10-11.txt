@@ -397,3 +397,27 @@
 #                                                                              2 a type parameter (the fixture's)
 # The one load of section 12 that read every row for "a provision asserted since that is no fact" is narrowed now:
 # what the relations' decoder does not read, no reader of them does.
+#
+# RECHECKED (user, 15:09 – 15:18): is the tree as delivered slower than the one section 13's gate ran, 136.55 s
+# against 122.83 s? Three measurements, and it is not.
+#   * `wi_tests` ALONE on the tree as delivered (commit 5d7e9fd9), twice, each from a machine that had read
+#     `CPU_Speed_Limit` 100 and then idled a minute; the limit sampled every 10 s through the run:
+#         ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core --test wi_tests
+#         125.19 s    6 607 passed, 0 failed    limit: 100 100 93 82 64 66 66 64 64 66 66 64 64
+#         121.54 s    6 607 passed, 0 failed    limit: 100 100 66 68 68 66 66 68 66 64 64 66 66
+#     The same binary that took 136.55 s in the gate. (And what the samples say of every `wi_tests` wall in these
+#     files: the limit is at two thirds within half a minute of the start and stays there, whatever it read before.)
+#   * ONE LOAD, the two trees' bench binaries interleaved, three rounds (ITERS=15, one thread; min / median, ms;
+#     the limit 100 before and after) — the binary of section 9's AFTER column, and the tree as delivered:
+#                            round 1                         round 2                         round 3
+#                            before review   delivered       before review   delivered       before review   delivered
+#     full                   239.3 / 246.6   234.2 / 256.1   232.7 / 247.9   237.7 / 246.2   235.2 / 242.7   240.7 / 255.7
+#     sealed incr             31.3 /  34.3    31.6 /  33.6    31.3 /  33.6    31.8 /  33.1    31.4 /  33.1    31.4 /  34.1
+#     clone                    6.2 /   7.1     6.4 /   7.0     6.2 /   7.0     6.3 /   6.9     6.4 /   6.8     6.0 /   6.9
+#     sealed clone+incr       41.3 /  43.0    40.9 /  42.6    41.5 /  42.8    41.4 /  43.1    41.5 /  42.7    42.1 /  43.3
+#     A later load and a test's load are the same to within half a millisecond; a full load's medians cross.
+#     (A quieter machine than section 9's, whose rows are 2–3 ms above these on both sides.)
+#   * THE STEP NEITHER TREE CHANGED, in the two traced runs: a copy of the base is 14.17 ms in section 12's run and
+#     15.55 ms in the delivered tree's, +9.7 %, where a load on the base is +10.2 % and `wi_tests`' thread-time +10.0 %.
+# So the gate's 136.55 s was that hour's machine. What it was doing between 12:55 and 13:10 beyond the gate nobody
+# read; the limit read 100 at both ends, which the samples above show says nothing of the middle.

@@ -452,7 +452,7 @@ binaries, traced, 8 215 passed and 0 failed.
 
 | | before | after |
 |---|---:|---:|
-| `wi_tests`, in the gate | 164.94 s | 122.83 s (136.55 s in the gate of the tree as delivered, on a warmer machine: the raw file's §14) |
+| `wi_tests`, in the gate | 164.94 s | 122.83 s (136.55 s in the gate of the tree as delivered; that tree alone from a cool machine, 125.2 s and 121.5 s — the raw file's §14) |
 | `wi_tests`, traced | 157.9 s | 127.6 s |
 | loading, as a share of `wi_tests`' thread-time | 90.7 % | 86.9 % |
 | a load on the base, as one of twelve threads pays it | 149.4 ms | 102.3 ms |
@@ -900,7 +900,7 @@ seal, the shape the typer's sweeps took, and the cheaper search is not built.
 | a test's load on the shared base (`sealed clone+incr`) | 74–75 ms | 44 ms (the undisturbed round of two) |
 | a full load; a plain sequence of loads | 268; 139 ms | 269; 138 ms |
 | `full / (sealed clone + incr)` | 3.6 | 6.1 |
-| `wi_tests` in the gate | 164.94 s | 122.83 s; 136.55 s three hours on, the shares of a load unchanged |
+| `wi_tests` in the gate | 164.94 s | 122.83 s; 136.55 s three hours on, and 125.2 s, 121.5 s rechecked alone from a cool machine |
 
 What it took, beyond skipping:
 
