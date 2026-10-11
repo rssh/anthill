@@ -4125,6 +4125,12 @@ A const is named by its one-segment name where that is in scope, or dotted from 
 or namespace — `S.c`, `Float.infinity` — in an operation body and in a const's value as in
 a data slot.
 
+A const is a receiver as any value is. Over `const origin: P`, `origin.x` reads a field of
+its value and `origin.getX()` calls a member on it, in an operation body and in a const's
+value; the const may be named dotted (`Q.origin.x`), and further members and arguments
+follow as they do after a local. A local or a parameter of the same name is the receiver
+in its scope.
+
 **Description blocks are admitted, identically to operations** — §4.1 position 1.
 
 ### 5.10 Proof declarations, in-body proofs, and provides blocks

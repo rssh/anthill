@@ -33,6 +33,8 @@ mod wi_12vzb_match_guard_stored_as_typed_test;
 mod wi_2qz3f_const_declared_once_test;
 #[path = "include/wi_2qz3f_const_dotted_name_test.rs"]
 mod wi_2qz3f_const_dotted_name_test;
+#[path = "include/wi_2qz3f_const_receiver_test.rs"]
+mod wi_2qz3f_const_receiver_test;
 #[path = "include/wi_2qz3f_const_value_equation_test.rs"]
 mod wi_2qz3f_const_value_equation_test;
 #[path = "include/wi_hzvqa_alias_receiver_test.rs"]

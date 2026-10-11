@@ -1553,11 +1553,13 @@ fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> S
 /// a loud error. WI-536.
 fn topo_sort_const_likes(band: Vec<ConstSig>) -> Result<Vec<ConstSig>, CppCodegenError> {
     let n = band.len();
-    // deps[i] = indices j (j != i) whose emitted name appears in band[i]'s value.
+    // deps[i] = indices j (j != i) whose emitted name appears in band[i]'s value — in
+    // its CODE: a string that spells a const's name does not depend on it.
     let deps: Vec<Vec<usize>> = (0..n)
         .map(|i| {
+            let value = code_outside_literals(&band[i].cpp_value);
             (0..n)
-                .filter(|&j| j != i && value_references_token(&band[i].cpp_value, &band[j].name))
+                .filter(|&j| j != i && value_references_token(&value, &band[j].name))
                 .collect()
         })
         .collect();
@@ -1591,6 +1593,77 @@ fn topo_sort_const_likes(band: Vec<ConstSig>) -> Result<Vec<ConstSig>, CppCodege
         .into_iter()
         .map(|i| slots[i].take().expect("each index taken once"))
         .collect())
+}
+
+/// Which consts of a namespace's band must be emitted BELOW its structs: one whose type
+/// or value names a struct this namespace declares — `inline constexpr P origin = P{3,
+/// 4};`, `D = S::c` — and one that names such a const. Parallel to `band`, which is in
+/// dependency order ([`topo_sort_const_likes`]), so a const's dependencies are judged
+/// before it.
+///
+/// Every namespace const was emitted first, on the reading that a const of a primitive
+/// type needs no struct. It does when its value reads a struct's member const, and a
+/// const of an entity type needs its struct for its own type: both stood above the
+/// declaration they name, in a header that could not compile.
+///
+/// A name of ANOTHER namespace is written qualified (`::ns::P`) and is not this
+/// namespace's struct, whatever its last segment. A const kept first is one no struct is
+/// needed for, so a struct or a method body that names it still sees it declared.
+fn consts_below_the_structs(band: &[ConstSig], struct_names: &[String]) -> Vec<bool> {
+    let mut below = vec![false; band.len()];
+    for (i, c) in band.iter().enumerate() {
+        let value = code_outside_literals(&c.cpp_value);
+        below[i] = struct_names.iter().any(|s| {
+            references_unqualified_token(&c.cpp_type, s)
+                || references_unqualified_token(&value, s)
+        }) || (0..i).any(|j| below[j] && value_references_token(&value, &band[j].name));
+    }
+    below
+}
+
+/// `text` with what its string and character literals hold blanked: what is left is
+/// code, where an identifier is a reference. A lowered value is scanned for the names
+/// it depends on, and a string that spells one depends on nothing — `"an S is a sort"`
+/// read as a use of `struct S`, and two string consts that mention each other's names
+/// as a dependency cycle.
+fn code_outside_literals(text: &str) -> String {
+    let mut code = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        code.push(c);
+        if c != '"' && c != '\'' {
+            continue;
+        }
+        while let Some(inside) = chars.next() {
+            if inside == '\\' {
+                // The escaped character, whatever it is, is the literal's.
+                chars.next();
+                code.push_str("  ");
+            } else if inside == c {
+                code.push(c);
+                break;
+            } else {
+                code.push(' ');
+            }
+        }
+    }
+    code
+}
+
+/// [`value_references_token`] for a name of THIS namespace: a whole identifier token
+/// that no `::` precedes.
+fn references_unqualified_token(haystack: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    haystack.match_indices(name).any(|(start, _)| {
+        let end = start + name.len();
+        (start == 0 || !is_ident(bytes[start - 1]))
+            && (end == bytes.len() || !is_ident(bytes[end]))
+            && !haystack[..start].ends_with("::")
+    })
 }
 
 /// True if `name` occurs in `haystack` as a whole C++ identifier token — not as
@@ -2640,6 +2713,9 @@ pub fn emit_namespace_header_in(
             .iter()
             .map(|sym| short_name_of(kb.qualified_name_of(*sym)).to_string()),
     );
+    // The structs this namespace declares, as emitted — read before the consts join the
+    // list, for [`consts_below_the_structs`].
+    let struct_names: Vec<String> = namespace_names.iter().map(|n| cpp_identifier(n)).collect();
     namespace_names.extend(const_band.iter().map(|c| c.source_name.clone()));
     refuse_cpp_identifier_collisions(
         &format!("namespace '{namespace}'"),
@@ -2675,19 +2751,25 @@ pub fn emit_namespace_header_in(
     let mut items = String::new();
     let mut needs = Includes::from_kb(kb)?;
     // Namespace-scope constants (incl. companions) first, so any later struct
-    // or method body that references one sees its declaration (a const of a
-    // primitive type carries no forward dependency on a same-namespace struct).
-    for c in &const_band {
-        let block = format!(
-            "inline constexpr {} {} = {};\n",
-            c.cpp_type, c.name, c.cpp_value
-        );
-        needs.scan(&block);
-        items.push_str(&block);
-    }
-    if !const_band.is_empty() {
-        items.push('\n');
-    }
+    // or method body that references one sees its declaration — except the ones
+    // that need a struct of this namespace declared, which stand below the structs.
+    let below = consts_below_the_structs(&const_band, &struct_names);
+    let emit_consts = |items: &mut String, needs: &mut Includes, late: bool| {
+        let mut any = false;
+        for (c, _) in const_band.iter().zip(&below).filter(|(_, b)| **b == late) {
+            let block = format!(
+                "inline constexpr {} {} = {};\n",
+                c.cpp_type, c.name, c.cpp_value
+            );
+            needs.scan(&block);
+            items.push_str(&block);
+            any = true;
+        }
+        if any {
+            items.push('\n');
+        }
+    };
+    emit_consts(&mut items, &mut needs, false);
     for sym in data_order {
         let item = data_items
             .remove(&sym)
@@ -2706,6 +2788,7 @@ pub fn emit_namespace_header_in(
         items.push_str(&block);
         items.push('\n');
     }
+    emit_consts(&mut items, &mut needs, true);
     // Includes that cpp-gen registered at run-time (e.g.
     // `<tl/expected.hpp>` for Error-effect ops) live on the context;
     // fold them in here.

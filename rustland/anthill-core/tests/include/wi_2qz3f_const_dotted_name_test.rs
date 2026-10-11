@@ -27,11 +27,10 @@
 //!     a_local_named_like_the_sort_is_the_receiver
 //!     a_hidden_const_is_not_reached_by_its_dotted_name
 //!
-//!   NOT COVERED, each measured the same before and after. A const as the RECEIVER of a
-//!   dot does not project or dispatch, in any spelling: `origin.x`, `Q.origin.x` and
-//!   `origin.getX()` are refused where `P.getX(Q.origin)` runs. A nullary operation and
-//!   a constructor written dotted with no `(…)` (`Box.zero`, `Kind.k1`) are refused in
-//!   an operation body (WI-20260902-40KSW's family).
+//!   NOT COVERED, measured the same before and after: a nullary operation and a
+//!   constructor written dotted with no `(…)` (`Box.zero`, `Kind.k1`) are refused in an
+//!   operation body (WI-20260902-40KSW's family). A const as the RECEIVER of a dot is
+//!   `wi_2qz3f_const_receiver_test`.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 

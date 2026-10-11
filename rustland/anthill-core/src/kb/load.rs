@@ -7464,7 +7464,7 @@ fn field_access_dotted_name_of(
 ) -> Option<String> {
     // Segments BORROW from the parse tables (only the join allocates) — this runs on
     // every name-rooted dotted path in every op body, and WI-749 added a second caller
-    // per node (`field_access_names_rule_prefix` on the receiver).
+    // per node (`Loader::name_has_value_prefix` on the receiver).
     let mut segments: Vec<&str> = Vec::new();
     let mut cur = parse_id;
     loop {
@@ -23094,14 +23094,15 @@ enum DotFieldPass<'n> {
     /// local root must beat even a whole-chain rule citation.
     LocalRoot,
     /// WI-749: some PREFIX of the receiver's dotted name resolves to a rule, whose
-    /// reference IS the `Relation[T]` value. Runs LAST, so the more specific
-    /// whole-chain citation gets first refusal.
+    /// reference IS the `Relation[T]` value — or to a const, which is its value
+    /// ([`Loader::value_prefix_split`]). Runs LAST, so the more specific whole-chain
+    /// citation gets first refusal.
     ///
     /// Carries the receiver's dotted NAME rather than re-deriving it: it is a borrowed
     /// slice of the chain name `visit_load` already built for the citation pass (the
     /// receiver is that name minus its last segment), so the prefix scan costs no walk
     /// and no allocation of its own.
-    RulePrefix(&'n str),
+    ValuePrefix(&'n str),
 }
 
 /// WI-582 / WI-20260908-PW9A0 — a type variable a rule head INTRODUCED (`g[A](…)`), as
@@ -25044,7 +25045,7 @@ impl<'a> Loader<'a> {
                 // BEFORE the dot ladders get to decompose it, so refusing at this
                 // position broke the applied rule-reference citation
                 // `..myroot.inner.rel.takeN(1)` — whose prefix `..myroot.inner.rel`
-                // resolves perfectly once `rule_prefix_split` peels the member off.
+                // resolves perfectly once `value_prefix_split` peels the member off.
                 // "Resolves to nothing AS WRITTEN" is not "resolves to nothing"; the
                 // refusal belongs where a bare intern is the FINAL answer, which for
                 // the shapes the marker adds is `scan_rule_goal` (a rule head) and
@@ -28629,10 +28630,13 @@ impl<'a> Loader<'a> {
                             // the same String rather than a second walk of the same
                             // chain re-allocating a strict prefix of it.
                             if let Some(chain) = self.field_access_dotted_name(parse_id) {
-                                if self.try_qualified_rule_ref(parse_id, &chain, results) {
+                                // The whole name, resolved ONCE for the two rungs
+                                // that read it: the rule's, then the const's.
+                                let whole = self.resolve_qualified_readonly(&chain);
+                                if self.try_qualified_rule_ref(parse_id, &chain, whole, results) {
                                     return;
                                 }
-                                if self.try_qualified_const_ref(parse_id, &chain, results) {
+                                if self.try_qualified_const_ref(parse_id, whole, results) {
                                     return;
                                 }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
@@ -28640,7 +28644,7 @@ impl<'a> Loader<'a> {
                                         parse_id,
                                         &pos_args,
                                         work,
-                                        DotFieldPass::RulePrefix(receiver),
+                                        DotFieldPass::ValuePrefix(receiver),
                                     ) {
                                         return;
                                     }
@@ -28870,6 +28874,10 @@ impl<'a> Loader<'a> {
     /// Within rung 3 prefixes are probed LONGEST-FIRST for the same "most specific
     /// wins" reason: with rules `a` AND `a.b`, the receiver `a.b` is the relation
     /// labelled `a.b`, not member `b` of relation `a`.
+    ///
+    /// A CONST is rung 3's other value ([`Self::value_prefix_split`]): `origin.getX()`
+    /// and `Q.origin.getX()` over `const origin: P` are calls on that value, as
+    /// `origin.x` is a read of it on the field path.
     fn dot_call_receiver_chain<'n>(
         &self,
         receiver_name: &'n str,
@@ -28906,12 +28914,13 @@ impl<'a> Loader<'a> {
         if let Some(local) = self.dot_receiver_binder(root) {
             return Some((local, trailing));
         }
-        // 3. The longest rule PREFIX, the receiver's remaining segments trailing it.
-        self.rule_prefix_split(receiver_name)
+        // 3. The longest VALUE prefix — a rule or a const — the receiver's remaining
+        // segments trailing it.
+        self.value_prefix_split(receiver_name)
     }
 
     /// Does this dotted name resolve to a symbol AS WRITTEN — the read-only, kind-blind
-    /// sibling of [`Self::resolve_qualified_rule_readonly`], reading the same
+    /// sibling of [`Self::resolve_qualified_readonly`], reading the same
     /// `resolve_in_scope`-then-[`resolve_dotted_in_kb`] ladder so the two cannot disagree
     /// about what "resolves" means.
     ///
@@ -28946,22 +28955,32 @@ impl<'a> Loader<'a> {
             .denotes()
     }
 
-    /// The LONGEST prefix of a dotted name that resolves to a RULE, paired with the
-    /// segments trailing it (empty when the whole name is the rule). Longest-first is
-    /// "most specific citation wins" — with rules `a` and `a.b` in scope, `a.b` is the
-    /// relation labelled `a.b`, not member `b` of relation `a`.
+    /// The LONGEST prefix of a dotted name that names a VALUE BY ITSELF, paired with the
+    /// segments trailing it (empty when the whole name is that value): a RULE, whose
+    /// reference is the `Relation[T]`, or a CONST, which is its value (§5.9, "a name that
+    /// is a value at every term position"). Longest-first is "most specific citation
+    /// wins" — with rules `a` and `a.b` in scope, `a.b` is the relation labelled `a.b`,
+    /// not member `b` of relation `a`.
     ///
-    /// [`Self::name_has_rule_prefix`] is this predicate's existence half; both are
+    /// A CONST IS A RECEIVER AS A LOCAL IS. It was not: `origin.x` and `origin.getX()`
+    /// over `const origin: P` were refused in every spelling — the field read walked as
+    /// a name path, `x.name: expected resolved name, got unresolved`, the call flattened
+    /// to the functor `origin.getX`, which nothing declares — while `P.getX(origin)` ran.
+    /// A prefix resolves to ONE symbol, so it is the rule or the const it names and
+    /// never a choice between them — the field ladder reads the whole chain the same
+    /// way ([`Self::try_qualified_rule_ref`], [`Self::try_qualified_const_ref`]).
+    ///
+    /// [`Self::name_has_value_prefix`] is this predicate's existence half; both are
     /// defined here so the field and call ladders cannot answer the same question two
     /// ways. Order does not affect the BOOLEAN, but it decides WHICH prefix a caller
     /// gets — so the shared scan runs longest-first and the boolean simply discards it.
-    fn rule_prefix_split<'n>(&self, name: &'n str) -> Option<(Symbol, &'n str)> {
+    fn value_prefix_split<'n>(&self, name: &'n str) -> Option<(Symbol, &'n str)> {
         let mut end = name.len();
         loop {
-            if let Some(rule) = self.resolve_qualified_rule_readonly(&name[..end]) {
+            if let Some(value) = self.resolve_qualified_value_readonly(&name[..end]) {
                 // `end` is either `name.len()` or the byte index of a `.`, so the split
                 // is always on a char boundary and the tail carries at most that one dot.
-                return Some((rule, name[end..].strip_prefix('.').unwrap_or("")));
+                return Some((value, name[end..].strip_prefix('.').unwrap_or("")));
             }
             match name[..end].rfind('.') {
                 Some(dot) => end = dot,
@@ -29001,7 +29020,7 @@ impl<'a> Loader<'a> {
     /// re-routes level by level (each inner `field_access` revisits this arm).
     ///
     /// `pass` selects WHICH way the receiver may lower to a value — a local root
-    /// (WI-280) or a rule-reference prefix (WI-749). The two are deliberately NOT one
+    /// (WI-280) or a prefix that names a rule or a const (WI-749). The two are deliberately NOT one
     /// widened gate: `visit_load` runs them as separate passes with
     /// [`Self::try_qualified_rule_ref`] interposed, so the bare-qualified citation
     /// outranks the prefix reading. Widening this into a single condition would
@@ -29030,7 +29049,7 @@ impl<'a> Loader<'a> {
         // `try_qualified_rule_ref` can collapse the whole chain to a rule.
         let admitted = match pass {
             DotFieldPass::LocalRoot => self.field_access_root_is_value(pos_args[0]).is_some(),
-            DotFieldPass::RulePrefix(receiver_name) => self.name_has_rule_prefix(receiver_name),
+            DotFieldPass::ValuePrefix(receiver_name) => self.name_has_value_prefix(receiver_name),
         };
         if !admitted {
             return false;
@@ -29093,7 +29112,7 @@ impl<'a> Loader<'a> {
     /// resolving one name through one probe. Visiting rather than synthesizing is also
     /// what preserves local shadowing (see [`Self::try_identifier_dot_field`]); this
     /// probe must not be hoisted into a synthesized receiver, because
-    /// [`Self::resolve_qualified_rule_readonly`] deliberately does NOT consult
+    /// [`Self::resolve_qualified_readonly`] deliberately does NOT consult
     /// `lookup_local_name`, so on its own it would answer for a shadowed binder.
     ///
     /// Prefixes of the RECEIVER only — the whole chain is the bare-qualified CITATION
@@ -29109,14 +29128,14 @@ impl<'a> Loader<'a> {
     /// Takes the receiver's already-built dotted NAME (a slice of the chain name
     /// `visit_load` built for the citation pass), so this neither walks the parse chain
     /// nor allocates.
-    fn name_has_rule_prefix(&self, name: &str) -> bool {
-        // The existence half of [`Self::rule_prefix_split`]. Defined in terms of it so
-        // the field and call ladders cannot answer "does a prefix name a rule?" two
+    fn name_has_value_prefix(&self, name: &str) -> bool {
+        // The existence half of [`Self::value_prefix_split`]. Defined in terms of it so
+        // the field and call ladders cannot answer "does a prefix name a value?" two
         // ways: the ANSWER is order-independent here (this is an existence check, and
         // the receiver is re-decided per level on Visit), but the call path needs WHICH
         // prefix matched, and a second scan written in the opposite order is exactly how
         // the two paths drift apart — the drift that produced WI-729, WI-749, WI-750.
-        self.rule_prefix_split(name).is_some()
+        self.value_prefix_split(name).is_some()
     }
 
     /// WI-714 (proposal 052) — the BARE-QUALIFIED citation position. A rule cited by
@@ -29138,22 +29157,25 @@ impl<'a> Loader<'a> {
     ///
     /// Its position in the ladder is load-bearing in BOTH directions (see `visit_load`):
     /// after the local pass, so a binder shadows a rule; but BEFORE
-    /// [`DotFieldPass::RulePrefix`], so THIS form gets first refusal on the whole chain.
+    /// [`DotFieldPass::ValuePrefix`], so THIS form gets first refusal on the whole chain.
     /// That is what makes `Queen.find` the relation itself rather than member `find` of
     /// a relation `Queen` — and, where a rule LABEL is dotted (`rule a.b: …`, which
     /// `scan_rule` defines as the joined name), what keeps the citation `a.b` pointing
     /// at that rule even when `a` is separately a rule too. So a rule-prefixed chain
     /// DOES reach this function; it is declined here on the whole name and only then
-    /// re-routed. Resolution is read-only ([`Self::resolve_qualified_rule_readonly`]),
+    /// re-routed. Resolution is read-only ([`Self::resolve_qualified_readonly`]),
     /// so a chain that is a genuine projection falls through to the ordinary path
     /// untouched.
     fn try_qualified_rule_ref(
         &mut self,
         parse_id: TermId,
         name: &str,
+        // What `name` resolves to ([`Self::resolve_qualified_readonly`]), which the
+        // ladder asks once for this rung and the const's.
+        whole: Option<Symbol>,
         results: &mut Vec<TermId>,
     ) -> bool {
-        let Some(sym) = self.resolve_qualified_rule_readonly(name) else {
+        let Some(sym) = whole.filter(|sym| self.is_paren_less_citation_target(*sym)) else {
             return false;
         };
         // A rule cited through an alias is cited at the parameters the alias fixes: the
@@ -29188,10 +29210,12 @@ impl<'a> Loader<'a> {
     fn try_qualified_const_ref(
         &mut self,
         parse_id: TermId,
-        name: &str,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
         results: &mut Vec<TermId>,
     ) -> bool {
-        let Some(sym) = const_named(self.kb, name, self.current_scope) else {
+        let Some(sym) = whole.filter(|sym| self.kb.kind_of(*sym) == Some(SymbolKind::Const))
+        else {
             return false;
         };
         self.push_name_ref(parse_id, sym, results);
@@ -29251,30 +29275,37 @@ impl<'a> Loader<'a> {
         field_access_dotted_name_of(&self.parsed.symbols, &self.parsed.terms, parse_id)
     }
 
-    /// Read-only resolution of a dotted `name` to a RULE symbol (`Goal` head functor
-    /// or `Rule` label), else `None`. Resolves the SAME way the applied `Sort.rule`
-    /// form does — [`Self::remap_name_str_inner`]'s `resolve_in_scope`-then-
-    /// [`resolve_dotted_in_kb`] ladder — so the two citation forms cannot drift, but
-    /// WITHOUT its mutation: no unresolved-name interning, no error push, so a non-rule
-    /// name leaves loader state untouched for the ordinary `field_access` projection
-    /// path. The dotted rung runs under `VisibleOnly` (the qualified path bypasses
-    /// `resolve_in_scope`'s `internal` filter, WI-369), so a hidden cross-scope rule does
-    /// NOT silently collapse to a value here — rules are never marked `internal` today,
-    /// so that is defensive, but it keeps parity with the applied form.
+    /// The VALUE a dotted `name` names by itself, else `None`: a rule-ish citation target
+    /// ([`Self::is_paren_less_citation_target`] — a `Goal` head functor, a `Rule` label,
+    /// an `EquationFunctor`) or a const. What a prefix of a dot receiver is asked
+    /// ([`Self::value_prefix_split`]) — one resolution, two kinds.
+    fn resolve_qualified_value_readonly(&self, name: &str) -> Option<Symbol> {
+        self.resolve_qualified_readonly(name).filter(|sym| {
+            self.is_paren_less_citation_target(*sym)
+                || self.kb.kind_of(*sym) == Some(SymbolKind::Const)
+        })
+    }
+
+    /// Read-only resolution of a dotted `name` to the symbol it denotes as written, of
+    /// whatever kind, else `None` — the callers gate the kind: a rule
+    /// ([`Self::try_qualified_rule_ref`]), a const ([`Self::try_qualified_const_ref`]),
+    /// either ([`Self::resolve_qualified_value_readonly`]). Resolves the SAME way the
+    /// applied `Sort.rule` form does — [`Self::remap_name_str_inner`]'s
+    /// `resolve_in_scope`-then-[`resolve_dotted_in_kb`] ladder — so the two citation
+    /// forms cannot drift, but WITHOUT its mutation: no unresolved-name interning, no
+    /// error push, so a name of another kind leaves loader state untouched for the
+    /// ordinary `field_access` projection path. The dotted rung runs under `VisibleOnly`
+    /// (the qualified path bypasses `resolve_in_scope`'s `internal` filter, WI-369), so
+    /// a hidden cross-scope name does NOT silently collapse to a value here — a hidden
+    /// const is not reached, and rules are never marked `internal` today, which keeps
+    /// parity with the applied form. A const is asked through this ladder everywhere
+    /// ([`const_named`] reads it for a data slot), so a name cannot be one thing to the
+    /// rule's reading and another to the const's.
     ///
     /// ONLY `Found` collapses. An `Ambiguous` from either rung — the whole name's, or a
-    /// contested HEAD SEGMENT's (WI-917) — is not a clean rule reference: the applied
-    /// form reports the ambiguity loudly, and taking one reading here would bury it.
-    ///
-    /// WI-898: `EquationFunctor` collapses here TOO, and deliberately — this rung asks
-    /// "is this dotted name a rule-ish CITATION the typer should see?", not "is it a
-    /// relation?" ([`KnowledgeBase::cites_a_relation`] is that question, asked at the
-    /// typer). MEASURED: excluding it sent a bare `Bool.ite` down the `field_access`
-    /// projection path instead, where it drew TWO "expected resolved name, got
-    /// unresolved" errors — the very message this ticket removes, doubled. Collapsed,
-    /// it reaches `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the
-    /// name actually is.
-    fn resolve_qualified_rule_readonly(&self, name: &str) -> Option<Symbol> {
+    /// contested HEAD SEGMENT's (WI-917) — is not a clean reference: the applied form
+    /// reports the ambiguity loudly, and taking one reading here would bury it.
+    fn resolve_qualified_readonly(&self, name: &str) -> Option<Symbol> {
         let scope = self.current_scope;
         // WI-752: THE dotted ladder (WI-751 first shared its two rungs by hand here; they
         // now come from `resolve_dotted_in_kb` like everywhere else). Without it a
@@ -29287,18 +29318,26 @@ impl<'a> Loader<'a> {
             .symbols
             .resolve_in_scope(name, scope)
             .or_else(|| self.resolve_dotted(name, DottedVisibility::VisibleOnly));
-        let ResolveResult::Found(sym) = resolved else {
-            return None;
-        };
-        self.is_paren_less_citation_target(sym).then_some(sym)
+        match resolved {
+            ResolveResult::Found(sym) => Some(sym),
+            _ => None,
+        }
     }
 
     /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
     /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
-    /// collapses too, for the reason [`Self::resolve_qualified_rule_readonly`] gives. ONE
-    /// predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
+    /// collapses too. ONE predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
     /// ([`Self::refuse_paren_less_non_rule`]), so the two spellings cannot admit
     /// different members.
+    ///
+    /// WI-898: `EquationFunctor` collapses TOO, and deliberately — the rung asks "is this
+    /// dotted name a rule-ish CITATION the typer should see?", not "is it a relation?"
+    /// ([`KnowledgeBase::cites_a_relation`] is that question, asked at the typer).
+    /// MEASURED: excluding it sent a bare `Bool.ite` down the `field_access` projection
+    /// path instead, where it drew TWO "expected resolved name, got unresolved" errors —
+    /// the very message this ticket removes, doubled. Collapsed, it reaches
+    /// `check_bare_ref`, whose `UnreducedEquationFunctor` arm says what the name
+    /// actually is.
     fn is_paren_less_citation_target(&self, sym: Symbol) -> bool {
         // Per-role `has_kind` (WI-925), not the declaration's opening keyword: whether
         // a dotted name is a rule-ish citation is a membership question.
