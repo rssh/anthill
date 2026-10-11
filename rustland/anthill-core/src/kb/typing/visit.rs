@@ -1298,9 +1298,10 @@ pub(super) fn reassemble_group(
 }
 
 /// WI-283: reassemble a `Match` from its (rewritten) scrutinee + branch
-/// bodies. Match needs its own path because its **guards are not
-/// typed/visited** (so they have no result `node`); they're re-read from
-/// `occ` unchanged and interleaved after each body, reproducing
+/// bodies. Match needs its own path because its **guards are not among the
+/// visited children** (so they have no result in `branch_results`): each is
+/// typed on its own under the arm's Γ, handed in as `branch_guards`, and
+/// interleaved after its body, reproducing
 /// `for_each_child(Match)` order ([scrutinee, pattern, body, guard?, …])
 /// for the shared `reassemble`. WI-318: `pattern` is a Pattern-kind
 /// occurrence child. WI-803: patterns are no longer passed through identical —
@@ -1314,8 +1315,8 @@ pub(super) fn reassemble_match(
     occ: &Rc<NodeOccurrence>,
     scr_node: &Rc<NodeOccurrence>,
     branch_patterns: &[Rc<NodeOccurrence>],
-    // WI-20260827-EJ5F5: the re-pointed guards, in branch order. Handed in rather than
-    // re-read off `occ` for the same reason `branch_patterns` is.
+    // WI-20260827-EJ5F5: the re-pointed guards as typing left them, in branch order.
+    // Handed in rather than re-read off `occ` for the same reason `branch_patterns` is.
     branch_guards: &[Option<Rc<NodeOccurrence>>],
     branch_results: &[Result<TypeResult, TypeError>],
 ) -> Rc<NodeOccurrence> {

@@ -429,6 +429,99 @@ fn a_simp_rule_over_a_construction_written_out_of_order_is_refused_behind_a_seal
     );
 }
 
+const LIB_GUARD: &str = r#"
+namespace test.libg
+  import anthill.prelude.{Int64}
+  sort Tag
+    entity tag(n: Int64)
+  end
+  import test.libg.Tag.{tag}
+  operation base(x: Int64) -> Int64 = 1
+  operation libGuards(t: Tag) -> Int64 =
+    match t
+      case tag(n) | base(n) > 1 -> 7
+      case _ -> 0
+  operation libGuard() -> Int64 = libGuards(tag(5))
+end
+"#;
+
+const A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD: &str = r#"
+namespace test.progg
+  import anthill.prelude.{Int64}
+  import test.libg.{base, libGuard}
+  rule base(?x) <=> 2 @[simp]
+  operation entry() -> Int64 = libGuard()
+end
+"#;
+
+/// A match arm's GUARD is part of the body a rule rewrites: in one call the library's
+/// arm is taken by the program's rule, and behind a seal the later load is refused.
+///
+/// With the written guard put back where the body is typed (`typing/build.rs`) this
+/// FAILS on its first assertion: nothing rewrote the guard that runs, one call answers
+/// 0 and two load clean.
+#[test]
+fn a_simp_rule_over_a_call_in_a_sealed_guard_is_refused() {
+    let one = loaded(one_call(LIB_GUARD, A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD), "one call");
+    assert_eq!(values(one, &["test.progg.entry"]), [7]);
+
+    let errors = refused(
+        two_calls(LIB_GUARD, A_RULE_OVER_A_CALL_IN_A_LIBRARY_GUARD),
+        "two calls",
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.libg.base'")
+            && e.contains("rewrites the body of 'test.libg.libGuards'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
+}
+
+const LIB_GUARD_DOT: &str = r#"
+namespace test.libh
+  import anthill.prelude.{Int64, Bool}
+  sort Tag
+    entity tag(n: Int64)
+    operation small(t: Tag) -> Bool = t.n < 3
+  end
+  import test.libh.Tag.{tag}
+  operation base(x: Int64) -> Int64 = 1
+  operation libGuards(t: Tag) -> Int64 =
+    match t
+      case tag(n) | t.small() -> base(n)
+      case tag(n) | base(n) > 1 -> 7
+      case _ -> 0
+  operation libGuard() -> Int64 = libGuards(tag(5)) * 10 + libGuards(tag(1))
+end
+"#;
+
+const A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES: &str = r#"
+namespace test.progh
+  import anthill.prelude.{Int64}
+  import test.libh.{base, libGuard}
+  rule base(99) <=> 2 @[simp]
+  operation entry() -> Int64 = libGuard()
+end
+"#;
+
+/// …and a rule that matches no call a sealed guard writes loads, in both orders: a
+/// guard the library's own load already resolved a dot in, or left alone, comes back
+/// from a second typing as it is stored, and is not read as rewritten.
+///
+/// With the written guard put back where the body is typed this FAILS with the row
+/// above, as `wi_12vzb_match_guard_stored_as_typed_test::a_dot_call_in_a_guard_loads_-
+/// and_runs` does: the library writes a dot in a guard. What it is here for is the
+/// other direction — a guard whose second typing gave a new node would be refused
+/// behind the seal for a rule that never touched it.
+#[test]
+fn a_simp_rule_that_reaches_no_sealed_guard_loads() {
+    for (how, kb) in [
+        ("one call", one_call(LIB_GUARD_DOT, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES)),
+        ("two calls", two_calls(LIB_GUARD_DOT, A_RULE_FOR_AN_ARGUMENT_NO_LIBRARY_GUARD_WRITES)),
+    ] {
+        assert_eq!(values(loaded(kb, how), &["test.progh.entry"]), [1], "{how}");
+    }
+}
+
 const A_RULE_THAT_BREAKS_A_LIBRARY_BODY: &str = r#"
 namespace test.proga
   import anthill.prelude.{Int64, String}

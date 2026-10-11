@@ -54,11 +54,11 @@
 //!   (`Tri.tri(c: 3, a: 1)`) matches no pattern (WI-20260827-XFB56); an equation does
 //!   not see through a binding (`let p = Pair.pair(b: 2, a: 7)` then `Pair.first(p)`).
 //!   And two sites `the_call_is_read_wherever_an_operation_body_writes_it` does not
-//!   list, where an equation rewrote no call in any spelling. A match arm's GUARD: `case
-//!   mk(v: n) | dbl(n) > 3 -> 1` under `rule dbl(?n) <=> ?n + ?n @[simp]` loads clean and
-//!   dies `OperationBodyMissing`. A `const`'s VALUE: `const c: Int64 = dbl(4)` does the
-//!   same — the value is checked with no equation applied (`typing/sorts.rs`,
-//!   `check_constant_bodies`). Neither is this change's.
+//!   list, where an equation rewrote no call in any spelling. A match arm's GUARD: fixed
+//!   beside this, `wi_12vzb_match_guard_stored_as_typed_test`. A `const`'s VALUE: `const
+//!   c: Int64 = dbl(4)` under `rule dbl(?n) <=> ?n + ?n @[simp]` loads clean and dies
+//!   `OperationBodyMissing` — the value is checked with no equation applied
+//!   (`typing/sorts.rs`, `check_constant_bodies`), and is not this change's.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 

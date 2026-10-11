@@ -328,10 +328,12 @@ pub(super) enum TypeBuildFrame {
         branch_patterns: Vec<Rc<NodeOccurrence>>,
         /// WI-20260827-EJ5F5: each branch's guard with references to the binders the
         /// constructor rewrite REMOVED re-pointed at those constructors, in branch order
-        /// (`None` where the arm has no guard). `reassemble_match` uses these instead of
-        /// re-reading `occ`'s written guards, for the same reason `branch_patterns` above
-        /// exists: the written form is not the one that was type-checked, and storing it
-        /// would leave a name the arm no longer binds to be read at eval.
+        /// (`None` where the arm has no guard) — and, where the guard typed, AS TYPING
+        /// LEFT IT: a call an equation defines replaced, a dot resolved. `reassemble_match`
+        /// uses these instead of re-reading `occ`'s written guards, for the same reason
+        /// `branch_patterns` above exists: the written form is not the one that was
+        /// type-checked, and storing it would leave a name the arm no longer binds, or a
+        /// call nothing runs, to be read at eval.
         branch_guards: Vec<Option<Rc<NodeOccurrence>>>,
         /// WI-287: the match's own expected type (the parent's hint).
         /// `Some` ⇒ checked mode (every branch must conform); `None` ⇒
