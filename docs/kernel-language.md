@@ -2934,6 +2934,22 @@ asked for no provision of it. With `sort Box { sort V = ?; entity mk(v: V) }` de
 parametric sort with no constructor is a spec: its body-less operation is dispatched by the
 carrier, and a law written in it fires only where the carrier is known to provide it.
 
+Clauses written under a body-less operation are its definition, and they answer a goal,
+not a call. With `sort Box { entity mk(v: Int64) }` declaring `operation open(b: Box) ->
+Int64` and `rule open(mk(v: ?v), ?v) :- true`, the goal `Box.open(Box.mk(4), ?x)` answers
+`?x = 4`: the result is one more column, positional and last, and a predicate's goal is
+written at the operation's own arity. A call names the operation, and a call runs a body,
+a host mapping or a builtin. In an operation body `Box.open(Box.mk(4))` has none of them
+to run, and is a load error that names the operation and the goal that answers. This is
+the rule for an operation of a namespace and of a sort with constructors; a call of an
+operation of a sort with no constructor is dispatched to the member a provider supplies.
+A carrier's `eq` written as clauses is the one operation a call runs by proving them
+(§8.7). A rule body is not held to this: there the application is the goal the clauses
+answer, or a term another goal matches or calls. In an operation body the clauses are
+reached as a relation: written as a rule with no `operation` beside it and a variable
+for each head argument, the rule is cited by name, and `open(Box.mk(4))` is the relation
+of its results (§8.3).
+
 **Variadic capture in a rule head (`...?args`, proposal 056 §2.3 / WI-1129).** The last positional argument of a `@[simp]` equation's **left-hand side** may be written `...?name`. It **collects every named argument of the redex that the head does not name** into a single record and binds `?name` to it, so `rule fix(?r, ...?args) <=> fix_of(?r, ?args) @[simp]` fires on `fix(r, x: 1, z: 2)` with `?args ↦ (x: 1, z: 2)`. Everything else about the rule is unchanged: the capture variable is an ordinary positional slot of the stored head, so matching, variable numbering and clause indexing are exactly what they would be without the marker.
 
 This is the **second face** of the same capture the operation declaration has (`...name: R`, §5.4), and the two are not interchangeable — which face a construct wants is the macro-vs-typer-direct choice of proposal 052:
