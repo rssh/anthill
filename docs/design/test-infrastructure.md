@@ -32,6 +32,12 @@ of six bases (§5.1): equality derivation is 1 ms of a later load where it was 4
 test's load on the shared base 104–115 ms → 68–71 ms, the two trees side by side;
 `wi_tests` runs in 158–165 s where it ran in 230–240 (§2.4), and `check_provider_requires`
 is 42 % of what a test's load costs now.
+**A sealed load's provisions are checked once, and a provision asks for the laws of its
+own spec, since the same day** (WI-20261011-A3NND, WI-20261011-ZVPXS: §4 A3), the third
+and fourth passes — the first a frontier behind the seal, the second an index again: a
+test's load on the shared base 68–71 ms → 44 ms → 35 ms, the trees side by side at each
+step, and `wi_tests` runs in 110 s in the gate (§2.4). What is left of a test's load is
+the typer's remainder, 27 %, and `check_override_refinement`, 15 %.
 Nothing else here is decided; §8 lists
 the decisions that are the user's, and §9 the sequence this doc recommends. Numbers rot:
 every one below is dated, says what machine it came from, and has its raw material under
@@ -471,6 +477,33 @@ the stdlib 12 %, the copies of the base 9 %, everything else at most 13 %. The g
 122.8 s stands beside the 118 s the arithmetic said. The traced run's seconds are of a
 machine that read `CPU_Speed_Limit` 100 before it and 64 after; the gate's read 100 at
 both ends.
+
+**Re-taken 2026-10-11, the evening — a provision asks for the laws of its own spec**
+(`specialization-witnesses-2026-10-11.txt` §12, §13; WI-20261011-ZVPXS: §4 A3). The same
+twelve binaries, traced, 8 318 passed and 0 failed.
+
+| | before | after |
+|---|---:|---:|
+| `wi_tests`, in the gate | 122.83 s; 136.55 s | 109.75 s |
+| `wi_tests`, traced | 127.6 s | 106.7 s |
+| loading, as a share of `wi_tests`' thread-time | 86.9 % | 84.0 % |
+| a load on the base, as one of twelve threads pays it | 102.3 ms; 112.8 ms | 74.8 ms |
+| — `register_specialization_witnesses`, of that load | 24.9–25.5 % (25.5–28.7 ms) | 0.5 % (0.38 ms) |
+| — `type_check_sorts`, what the seal does not hold | 22.2–22.3 % (22.8–25.1 ms) | 29.9 % (22.3 ms) |
+| — `check_override_refinement` | 10.2–10.3 % (10.5–11.5 ms) | 13.3 % (10.0 ms) |
+| — `check_provider_requires` | 5.2–5.3 % (5.5–5.9 ms) | 6.4 % (4.8 ms) |
+| copies of the base asked for in `wi_tests`, a second | 75.2 | 91.1 |
+| loads that carry the stdlib, all twelve binaries | 480 | 490 |
+
+A load on the base lost 27.5–38.0 ms where the pass was 25.5–28.7 ms of it, and the
+phases left are each what they were to a millisecond or two. Of `wi_tests`' thread-time
+now: later loads 59 %, the loads that carry the stdlib 14 %, the copies of the base 11 %,
+everything else at most 16 % — a test's own load is no longer two thirds of the suite,
+and the two things a test pays that are not its load, the stdlib-carrying loads and the
+copies, are a quarter of it. The gate's 109.8 s stands beside the 102 s the arithmetic
+said. Both walls are of a machine at two thirds of its speed: the limit was sampled
+through the gate and fell to 64–66 ninety seconds into its build, and read 73 before
+the traced run and 71 after.
 
 ### 2.5 The optimized-build numbers
 
@@ -952,6 +985,86 @@ Next by what is left of a later load at 37–41 ms: `register_specialization_wit
 10–11 ms (27 %), the typer's remainder 7.6–7.9 ms (20 %), `check_override_refinement`
 4.1–4.3 ms (11 %). A profile taken on the way, of a later load as it was before this
 change, has 13 % of it under `format!`, not attributed to a pass (the raw file's §8).
+
+**`register_specialization_witnesses`, measured and done 2026-10-11 — an index's again,
+and not a frontier's** (WI-20261011-ZVPXS; `specialization-witnesses-2026-10-11.txt`).
+Marks inside the pass, one thread, the gate's build: on a later load 9.0–9.9 ms of its
+9.5–10.5 is ONE expression — for each provision row, every `ProofRecord` name of the KB
+tested for the prefix `<spec>.requires.`, the prefix built by a `format!` inside the
+test. 392 rows × 127 names, 49 784 times at 0.19 µs; everything else the pass does is
+0.33 ms, and it asserts nothing (52 names built, 52 found). The later load is the dearer
+on both factors of that product. Rows: the pass stands ABOVE the derivations, so the 311
+provisions the library's load derives are rows for every later pass and for its own
+never — 21 carry a mark the pass reads, and 290, the derived `PartialEq` / `Eq` and the
+`TypeValue` rows, are scanned for and match nothing, their specs having no law. Names:
+the 52 records the library's own pass emits are in every later scan. The lead the
+ticket was filed with holds — the 13 % of a later load a profile had under `format!` is
+this — and a second and a third run of the pass straight after the first cost what the
+first did: nothing in it was a memo. The two passes that stand beside it, which build
+one name a row and ask the set once, are 0.19 ms together.
+
+Three probes priced the shapes: the prefix built once a row, 9.6 → 0.9 ms; the names
+sorted and a row taking the range under its prefix, → 0.6 ms on every kind of load; the
+rows a seal holds skipped with nothing put in their place, → 0.05 ms behind a seal and
+nothing anywhere else. The frontier had half a millisecond left to take, of a 27 ms
+load — and would have owed an answer for each earlier row a later load can owe a record:
+the 290 above are one, rows no load's own pass has ever seen. So (user) it is an index,
+the pass is still a walk of every row, and there is no rule about loads, no oracle and
+nothing to engage. Built: the names in a sorted set, a spec's laws the one range of it
+under `<spec>.requires.`, taken once a spec, and a row decoded past its spec's name only
+when that spec has a law, its bindings only when a record of its own is missing —
+57 names tested for a prefix where there were 49 784, and on a load that brings no
+provision no row decoded where there were 392.
+
+| | before | after |
+|---|---:|---:|
+| the pass, on a later load | 9.4–10.1 ms | 0.17–0.18 ms |
+| the pass, on a later load that brings provisions and laws of its own | 9.8–10.8 ms | 0.21–0.24 ms |
+| the pass, on a full load | 2.7–2.8 ms | 1.1–1.2 ms, 1.0 of it building and asserting 52 records |
+| a later load after a sealed stdlib (`sealed incr`) | 35.3–36.8 ms | 26.3–26.7 ms |
+| a test's load on the shared base (`sealed clone+incr`) | 43.8–45.6 ms | 34.7–34.9 ms |
+| a later load, nothing sealed (`incr`) | 126 ms | 117 ms |
+| a full load | 248–258 ms | 245–261 ms (mins 239–243 → 238–244) |
+| `full / (sealed clone + incr)` | 5.4–5.9 | 7.1–7.5 |
+| `wi_tests` in the gate | 122.8 s; 136.6 s | 109.75 s |
+
+What it took, beyond the range:
+
+- **The records are the same records, and that is the control** — a record not emitted
+  is no load error, and surfaces in `anthill check`'s audit or nowhere. A listing of
+  every `ProofRecord` with its witness, from a binary of each tree, six runs each: 127
+  after the library's own load, 131 after a later load that brings four, 131 for the
+  two in one call, and one listing from all twelve runs once rule ids are dropped and
+  the lines sorted.
+- **The listing itself was not the same run to run.** The laws of a provision were
+  emitted in the order a `HashSet` of the names iterates, another one in every process:
+  six runs of the tree before, six different listings of one record set — the finding
+  of WI-20261011-6GMCN at another site. They are emitted in the order of their names
+  now, the tree after prints one listing six times, and a row asserts it.
+- **No row failed with the scan put back**, which /code-review found: once the names
+  are sorted, the old filter over them emits the same records in the same order, and
+  the suite was green over the 10 ms the change exists to remove. An index that finds
+  the same laws emits the same records — so the control for the TIME is a count:
+  `load::witness_law_names_tested_by_this_thread`, and a row that a later load tests at
+  most as many names for a prefix as the KB has provisions and records together, where
+  the scan tested their product.
+- **The back-out that fails in silence was found by writing it.** The range taken from
+  the spec's NAME instead of from its `requires.` prefix stops at the first name under
+  the spec that is not a law — so a spec with a record of its own sorting before its
+  laws (its induction principle, a provision it makes) has none, and its providers get
+  no record. Every row first written passed over it: the registry a load's own pass
+  reads holds no such record unless an EARLIER load left one. The row for it makes a
+  second later load.
+- **The check that a record is there was driven by nothing**, in this pass or in the
+  two beside it: removed, every row passed, because asserting a record that is there is
+  the fact that is there. It decides something once a verdict has been written on a
+  record (`anthill prove`): the record is then not the `Pending` fact a pass would
+  build, and a second one of its name would stand beside it. A row writes a verdict on
+  a record of each of the three passes.
+
+Next by what is left of a later load at 27–28 ms: the typer's remainder 7.3–7.4 ms
+(26–27 %), `check_override_refinement` 4.0 ms (14–15 %), and then a tail of phases of a
+millisecond each.
 
 The trap named above took a second form here, and the controls are for it: an index
 that takes rows as they come can MISS one — asserted a pass earlier, by a door that does
@@ -1477,6 +1590,13 @@ informed; it does not recommend changing the rule until A and B have been measur
    hand around each pass that asserts a provision, and a copy of the base starts without
    them — which may be where the third pass's time goes) and WI-20261011-6GMCN (derived
    provisions are asserted in a hash order; §4 A3). The rest are not filed.
+   **Delivered the same day** (§4 A3).
+   **A3's fourth pass filed 2026-10-11** (user) as WI-20261011-ZVPXS:
+   `register_specialization_witnesses`, 27 % of a later load by then, which walks every
+   provision of the KB at every load and for each one every proof record — measured
+   step by step first, and an index again: no rule about loads (user).
+   **Delivered the same day** (§4 A3). The typer's remainder and
+   `check_override_refinement` are next by what is left, and are not filed.
 6. **What the two-step run found** (2026-10-07; §4 A3, §5.3, §2.4) — three things.
    (a) The sort loop's frontier — facts, and as review of the fix showed, rules:
    a bug by any reading, and `KB.loaded` had it — fixed inline, 2026-10-08 (user).
@@ -1555,7 +1675,7 @@ informed; it does not recommend changing the rule until A and B have been measur
 | 2 | the two-step load switch in the one recipe (WI-20261006-SZKV7) | the `anthill-core` suite under the switch | **done 2026-10-07** — 2 tests of 7 873 differed, both loader findings (§5.3); both settled 2026-10-08 and the suite is green under the switch (7 923 / 0); the switch reaches only the loads that go through the recipe (§2.4) |
 | 2a | every test's stdlib load through the one recipe (WI-20261008-RAH0Z) | the traced run's one-shot count under the switch (§10) | **done 2026-10-08** — 1 028 → 66 in the integration binaries, each of the 66 a test pinned by name and listed (§2.4); the suite is green under the switch (7 943 / 0), and step 5's base KB reaches the same loads |
 | 3 | A2 hashing + `canonical_sym` cache | a profile RE-TAKEN at level 2 first, then the bench, `full` | unknown until re-profiled: §2.2's 22 % was SipHash as un-inlined calls at opt-level 0 |
-| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, **done 2026-10-10**), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases. **The typer's pass**: a later load after a sealed stdlib 159 ms → 96 ms, a test's load on the shared base 179 ms → 107 ms, `full / (clone + incr)` 1.5 → 2.5; `wi_tests` 248 s in the gate where the shared base alone gave 412–491 s (`sealed-bodies-2026-10-10.txt`). **What is left, counted over a whole run the same evening** (§2.4): later loads are 82 % of `wi_tests`' thread-time, and of one of them equality derivation is 36 %, `check_provider_requires` 26 %, `register_specialization_witnesses` 10 %, the typer's remainder 8–9 %, `check_override_refinement` 4 %, `eq_derive::run` 3 % — that order, one ticket a pass; `wi_tests` 240 s → 170 s → 118 s → 69 s by arithmetic as they go. **Equality derivation** (WI-20261010-ANK4X, **done 2026-10-11**; it was indexed reads and not a frontier — §4 A3): the pass 40 ms → 1.2 ms on a later load, a later load after a sealed stdlib 93–96 ms → 56–59 ms, a test's load on the shared base 104–115 ms → 68–71 ms, `full / (sealed clone + incr)` 2.3–2.4 → 3.4–3.5, the two trees side by side (`provider-index-2026-10-10.txt`); `wi_tests` 166 s traced with one base and 158 s with six, 165 s in the gate, where the arithmetic said 170 — wall times of a machine that throttles, §5.1, §2.4. Next, by what is left of a later load: `check_provider_requires` 42 %, `register_specialization_witnesses` 17 %, the typer's remainder 11 %, `check_override_refinement` 6 %. **`check_provider_requires`** (WI-20261011-A3NND, **done 2026-10-11**; a frontier behind a seal, and every row where a later fact can reach a held verdict — §4 A3): the pass 27 ms → 0.1 ms on a later load, a later load after a sealed stdlib 62 ms → 35 ms, a test's load on the shared base 74 ms → 44 ms, `full / (sealed clone + incr)` 3.6 → 6.1, the two trees side by side (`provider-requires-2026-10-11.txt`); `wi_tests` 122.8 s in the gate where the arithmetic said 118, 127.6 s traced. Next: `register_specialization_witnesses` 27 %, the typer's remainder 20 %, `check_override_refinement` 11 % |
+| 4 | A3 frontier-driven `type_check_sorts` (WI-20261010-9BKZ4, **done 2026-10-10**), `eq_derive`, `check_provider_requires` — one ticket a pass | the bench, `incr`; the full suite under both recipes | `incr` 0.15 s → ~0.01 s (optimized) was the estimate. **Re-measured 2026-10-10**: the three passes are 83 % of a second call, so they leave about a fifth of it, not a fifteenth; the rest is a tail of small whole-KB phases. **The typer's pass**: a later load after a sealed stdlib 159 ms → 96 ms, a test's load on the shared base 179 ms → 107 ms, `full / (clone + incr)` 1.5 → 2.5; `wi_tests` 248 s in the gate where the shared base alone gave 412–491 s (`sealed-bodies-2026-10-10.txt`). **What is left, counted over a whole run the same evening** (§2.4): later loads are 82 % of `wi_tests`' thread-time, and of one of them equality derivation is 36 %, `check_provider_requires` 26 %, `register_specialization_witnesses` 10 %, the typer's remainder 8–9 %, `check_override_refinement` 4 %, `eq_derive::run` 3 % — that order, one ticket a pass; `wi_tests` 240 s → 170 s → 118 s → 69 s by arithmetic as they go. **Equality derivation** (WI-20261010-ANK4X, **done 2026-10-11**; it was indexed reads and not a frontier — §4 A3): the pass 40 ms → 1.2 ms on a later load, a later load after a sealed stdlib 93–96 ms → 56–59 ms, a test's load on the shared base 104–115 ms → 68–71 ms, `full / (sealed clone + incr)` 2.3–2.4 → 3.4–3.5, the two trees side by side (`provider-index-2026-10-10.txt`); `wi_tests` 166 s traced with one base and 158 s with six, 165 s in the gate, where the arithmetic said 170 — wall times of a machine that throttles, §5.1, §2.4. Next, by what is left of a later load: `check_provider_requires` 42 %, `register_specialization_witnesses` 17 %, the typer's remainder 11 %, `check_override_refinement` 6 %. **`check_provider_requires`** (WI-20261011-A3NND, **done 2026-10-11**; a frontier behind a seal, and every row where a later fact can reach a held verdict — §4 A3): the pass 27 ms → 0.1 ms on a later load, a later load after a sealed stdlib 62 ms → 35 ms, a test's load on the shared base 74 ms → 44 ms, `full / (sealed clone + incr)` 3.6 → 6.1, the two trees side by side (`provider-requires-2026-10-11.txt`); `wi_tests` 122.8 s in the gate where the arithmetic said 118, 127.6 s traced. Next: `register_specialization_witnesses` 27 %, the typer's remainder 20 %, `check_override_refinement` 11 %. **`register_specialization_witnesses`** (WI-20261011-ZVPXS, **done 2026-10-11**; an index again and not a frontier — the names of the proof records sorted, a spec's laws one range of them, §4 A3): the pass 9.4–10.1 ms → 0.17 ms on a later load, a later load after a sealed stdlib 35–37 ms → 26–27 ms, a test's load on the shared base 44–46 ms → 35 ms, `full / (sealed clone + incr)` 5.4–5.9 → 7.1–7.5, the two trees side by side (`specialization-witnesses-2026-10-11.txt`); `wi_tests` 109.8 s in the gate where the arithmetic said 102, 106.7 s traced. Next: the typer's remainder 26–27 %, `check_override_refinement` 14–15 % |
 | 5a | a deep copy of a KB, and a `Send` wrapper for the test base (WI-20261009-D0SD4) | the bench's `clone` rows; the copy's own controls | **done 2026-10-09** — 7.3 ms a copy, `full / (clone + incr)` 1.5–1.6× (§5.1); real `Send` is not available (§5.2) |
 | 5 | B: base-in-recipe (WI-059) | one full run; `ANTHILL_TEST_FRESH_LOAD=1` run as control | **done 2026-10-09, before step 4** — green under all three recipes; `wi_tests` 625–763 s → 412–491 s, taken beside another job and to be re-taken quiet (§5.3). With step 4: a fortieth of a load a test, and a pool of bases (§5.1) — **owed by step 4's second pass**: one lock gives 80 copies a second and `wi_tests` asks for 40 today (measured 2026-10-10). **The pool is in since 2026-10-11** (WI-20261010-ANK4X), six bases: a copy's wait 9.2 ms → 0.07 ms on average, the waits of a `wi_tests` run 88 thread-seconds → 0.7 (§5.1) |
 | 6 | §5.4 a in-process `anthill-todo` entry | one full run | unmeasured: each spawn is a parse and a load (~0.4 s) plus the command; weigh against §8.3 |
@@ -1597,6 +1717,10 @@ cargo run -q --example bench_load -p anthill-core \
 
 # the bench also prints `clone` — KnowledgeBase::deep_clone of the loaded stdlib — and
 # `clone+incr`, the copy and then the user file loaded into it (§5.1's table)
+
+# the same rows with another user file in place of the bench's own, which writes no provision:
+# this one brings a spec with a law, providers and an enum (§4 A3; WI-20261011-ZVPXS)
+BENCH_USER=../docs/measurements/test-infrastructure/bench_user_laws.anthill ITERS=15 ./target/debug/examples/bench_load
 
 # do loads scale across threads? N threads, ITERS loads each (§2.5's thread columns)
 THREADS=12 ITERS=3 ./target/debug/examples/bench_load

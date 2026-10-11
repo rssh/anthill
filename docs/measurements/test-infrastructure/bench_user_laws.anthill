@@ -1,0 +1,28 @@
+-- A user file for `bench_load.rs` (BENCH_USER=<this file>) that BRINGS provisions and laws of its
+-- own, where the bench's built-in one writes no provision (WI-20261011-ZVPXS;
+-- specialization-witnesses-2026-10-11.txt §5). A later load of it owes the registry four
+-- proof records: the scope axiom of `A`'s `requires`, the induction principle of `Half`, and a
+-- specialization for each provision of a spec with a law — `B provides A`, and
+-- `Half provides PartialOrd`, the library's, which `requires PartialEq[T]`.
+namespace test.zv_laws
+  import anthill.prelude.{Bool, PartialEq, Eq, PartialOrd, Int64}
+
+  -- the program's own spec with a law, and the program's own provider of it
+  sort A
+    sort T = ?
+    requires anthill.prelude.Eq[T = T]
+  end
+  sort B
+    entity b
+    provides PartialEq[T = B]
+    provides Eq[T = B]
+    provides A[T = B]
+    operation eq(x: B, y: B) -> Bool = true
+  end
+
+  -- the program's provider of a LIBRARY spec that has a requires-law
+  enum Half
+    entity half(v: Int64)
+    provides PartialOrd[T = Half]
+  end
+end

@@ -750,7 +750,7 @@ fn provision_path_subst(
 /// Is `functor` THE reflect view wrapper `anthill.reflect.SortView`? The ONE discriminant
 /// for "this stored spec term is a view, whose positional 0 is the base" (WI-20260923-N3W68
 /// #9) — for the typer and the loader's provision decoders (`provides_spec_base_sym`,
-/// `flatten_spec`, `resolve_provides_spec`) alike.
+/// `flatten_spec`, `provides_spec_substitution`) alike.
 ///
 /// NOT for the reflect builtins that read an instance a PROGRAM builds
 /// (`extract_sort_ref`, `resolve_sort_instantiation_param`): they keep reading the LOCAL

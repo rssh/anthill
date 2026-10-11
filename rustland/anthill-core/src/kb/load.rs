@@ -17603,7 +17603,33 @@ fn register_induction_axiom_witnesses(kb: &mut KnowledgeBase) {
 ///      time, not load time — so missing proofs surface in
 ///      `anthill check`'s integrity audit, not as load failures.
 ///
-/// Idempotent across loads via `existing_rule_qns`.
+/// Idempotent across loads via `existing_rule_qns`: the pass walks EVERY provision of
+/// the KB at every load and emits the records that are not there, so a later load
+/// derives each earlier record's name again to find it.
+///
+/// WI-20261011-ZVPXS — A ROW ASKS FOR THE LAWS OF ITS OWN SPEC, and a spec is asked
+/// once. The pass used to find them by filtering every record name of the KB for
+/// `<A-qn>.requires.`, per row, the prefix built by a `format!` inside the filter: rows
+/// times names, 392 x 127 on a load after the standard library's and 94 % of the pass
+/// there — 9.0–9.9 ms of 9.5–10.5, where the library's own load paid 1.5 ms for
+/// 102 x 75 (`docs/measurements/test-infrastructure/specialization-witnesses-2026-10-11.txt`).
+/// The names are SORTED now ([`collect_existing_proof_record_qns`]), so the laws of a
+/// spec are one range of them ([`requires_law_records`]), taken once per spec and kept
+/// for the length of the pass — the set does not change under it: what the pass emits
+/// is asserted after its last read. A row is read past its spec's name only when that
+/// spec has a law, and its bindings are decoded only when one of its records is not
+/// there. [`witness_law_names_tested_by_this_thread`] counts the names the lookups
+/// test, for a row that the scan has not come back.
+///
+/// It is still a walk of every row, on purpose (user, 2026-10-11): a frontier behind a
+/// seal was probed and would take at most half a millisecond more, and would owe an
+/// answer for each earlier row a later load can owe a record — the rows a load derives
+/// BELOW this pass, which only the next load's pass sees, are one. Nothing is skipped,
+/// so the records are what they were.
+///
+/// THE ORDER OF A ROW'S RECORDS IS THEIR NAMES' now. It was a `HashSet`'s iteration
+/// order, which is another one in every process: six runs of one load printed six
+/// listings of the same record set.
 fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
     let provides_info_sym = match kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") {
         Some(s) => s,
@@ -17663,10 +17689,14 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
 
     let existing_rule_qns = collect_existing_proof_record_qns(kb, record_sym);
 
-    // Snapshot all (X-qn, spec-tid) pairs first so we don't borrow-
-    // conflict with kb mutations during ProofRecord construction.
+    // Snapshot first — each provision that is owed a record, as its spec and the
+    // `(<A-qn>.requires.<SE>, <X-qn>.provides.<A-flat>.<SE>)` of each record it is owed
+    // — so we don't borrow-conflict with kb mutations during ProofRecord construction.
     let provides_rids = kb.rules_by_functor(provides_info_sym);
-    let mut targets: Vec<(String, crate::eval::value::Value)> = Vec::new();
+    let mut targets: Vec<(crate::eval::value::Value, Vec<(&str, String)>)> = Vec::new();
+    // Each spec's `(<A-qn>.requires.<SE>, <SE>)` records, by the spec's symbol. A lookup
+    // table only: nothing walks it, so its order reaches no record.
+    let mut laws_of_spec: HashMap<Symbol, Vec<(&str, &str)>> = HashMap::new();
     for rid in provides_rids {
         if !kb.is_fact(rid) {
             continue;
@@ -17693,41 +17723,47 @@ fn register_specialization_witnesses(kb: &mut KnowledgeBase) {
         let Some(spec) = crate::kb::op_info::head_field_value(kb, head, "spec") else {
             continue;
         };
+        // Peel `SortView(Spec, …)` (or a bare spec ref) down to the base spec symbol.
+        let Some(spec_sym) = provides_spec_base_sym_view(kb, &spec) else {
+            continue;
+        };
+        // Find every auto-registered <A-qn>.requires.<SE> record so we can emit one
+        // Specialization per requires-law — and a provision of a spec with no law is
+        // done here, before anything else of the row is read.
+        let laws = laws_of_spec.entry(spec_sym).or_insert_with(|| {
+            requires_law_records(&existing_rule_qns, kb.qualified_name_of(spec_sym))
+        });
+        if laws.is_empty() {
+            continue;
+        }
         let x_qn = match qn_of_sort_ref(kb, sort_ref_tid) {
             Some(q) => q,
             None => continue,
         };
-        targets.push((x_qn, spec));
+        // The name each of the provision's records goes by; the ones the registry does
+        // not hold are what the pass owes it. On a load that brings no provision of a
+        // spec with a law that is none, of any row, and nothing below is reached.
+        let a_short = last_segment(kb.qualified_name_of(spec_sym));
+        let missing: Vec<(&str, String)> = laws
+            .iter()
+            .map(|&(parametric_qn, se_part)| {
+                (parametric_qn, format!("{x_qn}.provides.{a_short}.{se_part}"))
+            })
+            .filter(|(_, rule_qn)| !existing_rule_qns.contains(rule_qn))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        targets.push((spec, missing));
     }
 
     let mut new_records: Vec<TermId> = Vec::new();
 
-    for (x_qn, spec) in targets {
-        let (a_short, a_qn, substitution) = match resolve_provides_spec(kb, &spec) {
-            Some(t) => t,
-            None => continue,
-        };
-        // Find every auto-registered <a_qn>.requires.<SE> record so
-        // we can emit one Specialization per requires-law.
-        let parametric_records: Vec<String> = existing_rule_qns
-            .iter()
-            .filter(|qn| qn.starts_with(&format!("{a_qn}.requires.")))
-            .cloned()
-            .collect();
-        if parametric_records.is_empty() {
-            continue;
-        }
+    for (spec, missing) in targets {
+        let substitution = provides_spec_substitution(kb, &spec);
 
-        for parametric_qn in parametric_records {
-            let se_part = parametric_qn
-                .strip_prefix(&format!("{a_qn}.requires."))
-                .unwrap_or(&parametric_qn);
-            let rule_qn_text = format!("{x_qn}.provides.{a_short}.{se_part}");
-            if existing_rule_qns.contains(&rule_qn_text) {
-                continue;
-            }
-
-            let parametric_term = kb.alloc(Term::Const(Literal::String(parametric_qn.clone())));
+        for (parametric_qn, rule_qn_text) in missing {
+            let parametric_term = kb.alloc(Term::Const(Literal::String(parametric_qn.to_owned())));
             // Build the substitution cons-list of SortBinding entities.
             let binding_terms: Vec<TermId> = substitution
                 .iter()
@@ -20478,21 +20514,13 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
     }
 }
 
-/// Resolve a SortProvidesInfo.spec into:
-/// - the spec's short name (used as `<A-flat>` in the rule QN)
-/// - the spec's qualified name (used to find α.6's requires records)
-/// - the substitution as `Vec<(abstract_param, concrete_sort_short)>`
+/// The substitution of a SortProvidesInfo.spec, as `Vec<(abstract_param,
+/// concrete_sort_short)>` — what a `Specialization` witness records of the provision.
+/// (The spec's names — the qualified one that finds α.6's requires records, the short one
+/// a record's name carries — are asked of its base symbol, [`provides_spec_base_sym_view`].)
 ///
 /// Read through the view, so the answer is the same on whichever carrier the spec rides.
-fn resolve_provides_spec<V: TermView>(
-    kb: &KnowledgeBase,
-    spec: &V,
-) -> Option<(String, String, Vec<(String, String)>)> {
-    // Peel `SortView(Spec, …)` (or a bare spec ref) down to the base
-    // spec symbol — same logic as `provides_spec_base_sym`.
-    let base_sym = provides_spec_base_sym_view(kb, spec)?;
-    let qn = kb.qualified_name_of(base_sym).to_owned();
-    let short = last_segment(&qn).to_owned();
+fn provides_spec_substitution<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String, String)> {
     // The type-parameter substitution lives in the outer `SortView`'s
     // named args; a plain `provides Foo` (non-SortView Fn or bare ref)
     // carries none.
@@ -20501,12 +20529,11 @@ fn resolve_provides_spec<V: TermView>(
         ViewHead::Functor { functor: Some(functor), .. }
             if super::typing::is_sort_view_functor(kb, functor)
     );
-    let sub = if is_view {
+    if is_view {
         sort_view_substitution(kb, spec)
     } else {
         Vec::new()
-    };
-    Some((short, qn, sub))
+    }
 }
 
 /// Parse a `SortView`'s named args into the type-parameter substitution
@@ -20580,8 +20607,24 @@ pub fn sort_info_qn(kb: &KnowledgeBase, named: &SmallVec<[(Symbol, TermId); 2]>)
 /// Read the `rule` field of every existing `ProofRecord` fact so the
 /// auto-registration in `register_requires_axiom_witnesses` can skip
 /// duplicates.
-fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> HashSet<String> {
-    let mut out = HashSet::new();
+///
+/// SORTED (WI-20261011-ZVPXS): a record is named by what it is about —
+/// `<scope-qn>.requires.<SE>`, `<sort-qn>.induction`, `<X-qn>.provides.<A>.<SE>` — so
+/// the names under a prefix are one range of the set, and
+/// `register_specialization_witnesses` takes a spec's laws as that range
+/// ([`requires_law_records`]) where it used to filter every name per provision.
+///
+/// EACH OF THE THREE WITNESS PASSES READS IT FOR ITSELF, on purpose. One set handed down
+/// the three would save two walks of the relation (0.07 ms of a later load, measured)
+/// and would have to be kept true by hand: the records `register_requires_axiom_witnesses`
+/// emits are the laws the specialization pass looks up in the SAME load, so a pass that
+/// forgot to add what it asserted would leave the next one short in silence. Read off
+/// the registry, the set is what the pass before left there.
+fn collect_existing_proof_record_qns(
+    kb: &KnowledgeBase,
+    record_sym: Symbol,
+) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
     for rid in kb.rules_by_functor(record_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -20598,6 +20641,56 @@ fn collect_existing_proof_record_qns(kb: &KnowledgeBase, record_sym: Symbol) -> 
         }
     }
     out
+}
+
+/// WI-20261011-ZVPXS — the α.6 records of the spec named `spec_qn`: every name of
+/// `existing` of the form `<spec_qn>.requires.<SE>`, with its `<SE>`, in name order.
+///
+/// ONE RANGE of the sorted set, and exactly the names the prefix test accepts. `str`
+/// orders by bytes, so a name that starts with the prefix is not below it, and no name
+/// that does not start with it lies between two that do: the walk starts at the first
+/// name not below the prefix and ends at the first that does not start with it. What
+/// that end leaves out is what sorts next to a spec's laws without being one — a longer
+/// name's (`<spec_qn>X.requires.…`), a member's (`<spec_qn>.zed.requires.…`), the
+/// spec's own provisions (`<spec_qn>.provides.…`, which sort BELOW the prefix).
+///
+/// EVERY name under the prefix, a `<SE>` with a `.` in it too (a requirement bound at a
+/// string or a float flattens to one): the rule this pass has always had. The CLI's
+/// `implicit_cites_for` asks a narrower question of the same names — the laws a proof
+/// in a scope may cite without naming them — and leaves such a name out; the two are not
+/// one rule, and this is not where they are made one.
+fn requires_law_records<'a>(
+    existing: &'a std::collections::BTreeSet<String>,
+    spec_qn: &str,
+) -> Vec<(&'a str, &'a str)> {
+    use std::ops::Bound;
+    let prefix = format!("{spec_qn}.requires.");
+    let mut tested = 0;
+    let laws = existing
+        .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+        .map_while(|qn| {
+            tested += 1;
+            qn.strip_prefix(prefix.as_str()).map(|se| (qn.as_str(), se))
+        })
+        .collect();
+    LAW_NAMES_TESTED.with(|n| n.set(n.get() + tested));
+    laws
+}
+
+thread_local! {
+    /// Record names [`requires_law_records`] has tested for a spec's prefix on this thread.
+    static LAW_NAMES_TESTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// WI-20261011-ZVPXS — how many `ProofRecord` names `register_specialization_witnesses`
+/// has tested for a spec's `requires.` prefix ON THIS THREAD, ever. The instrument for
+/// what the records a load leaves cannot show: that the pass looked a spec's laws up and
+/// did not scan for them. A test reads it before and after a load and asserts on the
+/// difference — a later load tests at most as many names as the KB has provisions and
+/// records together, where the scan tested their product (49 784 after the standard
+/// library's own load, for 413 and 127).
+pub fn witness_law_names_tested_by_this_thread() -> usize {
+    LAW_NAMES_TESTED.with(std::cell::Cell::get)
 }
 
 /// Detect an equational rule head (WI-139): the head term is an
@@ -43034,5 +43127,74 @@ mod wi819_diagnostic_tests {
                 "{label} renders with a collapsed-continuation run: {rendered:?}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod wi_zvpxs_law_range_tests {
+    //! WI-20261011-ZVPXS — A SPEC'S LAWS ARE ONE RANGE OF THE SORTED RECORD NAMES, and
+    //! exactly the names under `<spec-qn>.requires.` ([`requires_law_records`]).
+    //!
+    //! The rows of `tests/include/wi_zvpxs_specialization_witness_index_test.rs` drive
+    //! the pass; these give the range the names a load is unlikely to line up, and that
+    //! file's header says what fails when each part of the function is backed out.
+    use super::requires_law_records;
+    use std::collections::BTreeSet;
+
+    fn names(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    /// Every name that sorts next to `a.S.requires.` without being under it is left
+    /// out, at both ends: the spec's name and its other members below, a name the
+    /// prefix is a proper prefix of only up to its last character, a member's law and a
+    /// longer name's law above.
+    #[test]
+    fn a_specs_laws_are_the_names_under_its_requires_prefix() {
+        let existing = names(&[
+            "a.R.requires.Eq_T",
+            "a.S",
+            "a.S.induction",
+            "a.S.provides.Q.Eq_T",
+            "a.S.requires",
+            "a.S.requires.Eq_T",
+            "a.S.requires.Ord_T",
+            "a.S.requires.str_x.requires.y",
+            "a.S.requiresX.Eq_T",
+            "a.S.zed.requires.Eq_U",
+            "a.SX.requires.Eq_T",
+            "b.S.requires.Eq_T",
+        ]);
+        assert_eq!(
+            requires_law_records(&existing, "a.S"),
+            vec![
+                ("a.S.requires.Eq_T", "Eq_T"),
+                ("a.S.requires.Ord_T", "Ord_T"),
+                ("a.S.requires.str_x.requires.y", "str_x.requires.y"),
+            ]
+        );
+    }
+
+    /// The law of a spec whose laws are the LAST names of the set, and of the first: the
+    /// range has no name after it to stop at, or none before it to start past.
+    #[test]
+    fn a_range_at_either_end_of_the_names() {
+        let existing = names(&["a.S.requires.Eq_T", "m.M.induction", "z.S.requires.Eq_T", "z.S.requires.Ord_T"]);
+        assert_eq!(requires_law_records(&existing, "a.S"), vec![("a.S.requires.Eq_T", "Eq_T")]);
+        assert_eq!(
+            requires_law_records(&existing, "z.S"),
+            vec![("z.S.requires.Eq_T", "Eq_T"), ("z.S.requires.Ord_T", "Ord_T")]
+        );
+    }
+
+    /// A spec with no law has none: between two names, below the first, past the last,
+    /// and in a registry with no record at all.
+    #[test]
+    fn a_spec_with_no_law_has_no_record() {
+        let existing = names(&["b.S.requires.Eq_T", "d.S.requires.Eq_T"]);
+        for spec in ["a.S", "c.S", "e.S", "b", "b.S.requires", "b.S.requires.Eq_T"] {
+            assert_eq!(requires_law_records(&existing, spec), vec![], "`{spec}`");
+        }
+        assert_eq!(requires_law_records(&BTreeSet::new(), "b.S"), vec![]);
     }
 }

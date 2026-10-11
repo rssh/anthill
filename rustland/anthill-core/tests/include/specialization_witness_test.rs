@@ -2,24 +2,8 @@
 //! discharge emits Specialization-witnessed ProofRecords for each
 //! requires-clause of the provided spec.
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::persistence::print::TermPrinter;
-
 use crate::common::load_kb_with as load_with;
-
-fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
-    // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
-    // `kb.intern(qn)` mints a different one in a disjoint space.
-    let sort_sym = kb
-        .try_resolve_symbol("anthill.realization.ProofRecord")
-        .expect("resolve anthill.realization.ProofRecord");
-    let rules = kb.rules_by_functor(sort_sym);
-    let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
-    let printer = TermPrinter::new(kb);
-    let mut out: Vec<String> = heads.into_iter().map(|h| printer.print_term(h)).collect();
-    out.sort();
-    out
-}
+use crate::common::proof_records_rendered as proof_records;
 
 #[test]
 fn provides_clause_emits_specialization_proof_record() {
@@ -51,8 +35,8 @@ fn provides_clause_emits_specialization_proof_record() {
           end
         end
     "#;
-    let mut kb = load_with(src);
-    let records = proof_records(&mut kb);
+    let kb = load_with(src);
+    let records = proof_records(&kb);
     let r = records
         .iter()
         .find(|r| r.contains("test.provides_alpha8.B.provides.A.") && r.contains("Specialization"))
@@ -96,12 +80,12 @@ fn provides_emission_is_idempotent_across_loads() {
         end
     "#;
     let mut kb = crate::common::load_unsealed(&[src]);
-    let count1 = proof_records(&mut kb)
+    let count1 = proof_records(&kb)
         .iter()
         .filter(|r| r.contains("test.provides_alpha8_idem.CC.provides."))
         .count();
     crate::common::expect_loaded(crate::common::present_all_again(&mut kb, &[src]));
-    let count2 = proof_records(&mut kb)
+    let count2 = proof_records(&kb)
         .iter()
         .filter(|r| r.contains("test.provides_alpha8_idem.CC.provides."))
         .count();

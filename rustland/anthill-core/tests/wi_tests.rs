@@ -2056,3 +2056,5 @@ mod wi_an6cq_load_program_test;
 mod wi_ank4x_provider_index_takes_rows_test;
 #[path = "include/wi_a3nnd_checked_provisions_test.rs"]
 mod wi_a3nnd_checked_provisions_test;
+#[path = "include/wi_zvpxs_specialization_witness_index_test.rs"]
+mod wi_zvpxs_specialization_witness_index_test;

@@ -13,6 +13,8 @@ use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 
+use crate::common::named_field_term as named_field;
+
 /// The `result`-field functor short name for the ProofRecord whose `rule`
 /// QN ends with `rule_suffix` — e.g. `"Discharged"` / `"Failed"` / `"Pending"`.
 fn result_variant(kb: &KnowledgeBase, rule_suffix: &str) -> Option<String> {
@@ -45,16 +47,6 @@ fn proof_record_head(kb: &KnowledgeBase, rule_suffix: &str) -> Option<TermId> {
         }
     }
     None
-}
-
-fn named_field(kb: &KnowledgeBase, term: TermId, key: &str) -> Option<TermId> {
-    match kb.get_term(term) {
-        Term::Fn { named_args, .. } => named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == key)
-            .map(|(_, v)| *v),
-        _ => None,
-    }
 }
 
 fn functor_short(kb: &KnowledgeBase, term: TermId) -> Option<String> {

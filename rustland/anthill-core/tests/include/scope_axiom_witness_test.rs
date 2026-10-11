@@ -1,24 +1,8 @@
 //! Proposal 030 phase α.6 — auto-registration of `requires` clauses
 //! as ProofRecord facts with `ScopeAxiom` witnesses.
 
-use anthill_core::kb::KnowledgeBase;
-use anthill_core::persistence::print::TermPrinter;
-
 use crate::common::load_kb_with as load_with;
-
-fn proof_records(kb: &mut KnowledgeBase) -> Vec<String> {
-    // WI-922: found by HEAD FUNCTOR, which is the RESOLVED symbol —
-    // `kb.intern(qn)` mints a different one in a disjoint space.
-    let sort_sym = kb
-        .try_resolve_symbol("anthill.realization.ProofRecord")
-        .expect("resolve anthill.realization.ProofRecord");
-    let rules = kb.rules_by_functor(sort_sym);
-    let heads: Vec<_> = rules.iter().map(|&r| kb.rule_head(r)).collect();
-    let printer = TermPrinter::new(kb);
-    let mut out: Vec<String> = heads.into_iter().map(|h| printer.print_term(h)).collect();
-    out.sort();
-    out
-}
+use crate::common::proof_records_rendered as proof_records;
 
 #[test]
 fn requires_clause_emits_scope_axiom_proof_record() {
@@ -29,8 +13,8 @@ fn requires_clause_emits_scope_axiom_proof_record() {
           end
         end
     "#;
-    let mut kb = load_with(src);
-    let records = proof_records(&mut kb);
+    let kb = load_with(src);
+    let records = proof_records(&kb);
     let r = records
         .iter()
         .find(|r| r.contains("test.scope_axiom.A.requires.") && r.contains("ScopeAxiom"))
@@ -65,14 +49,14 @@ fn auto_registration_is_idempotent_across_loads() {
         end
     "#;
     let mut kb = crate::common::load_unsealed(&[src]);
-    let count1 = proof_records(&mut kb)
+    let count1 = proof_records(&kb)
         .iter()
         .filter(|r| r.contains("test.scope_axiom_idem.A.requires."))
         .count();
     // A second load of the same source on the same KB must not
     // duplicate the auto-registered ProofRecord.
     crate::common::expect_loaded(crate::common::present_all_again(&mut kb, &[src]));
-    let count2 = proof_records(&mut kb)
+    let count2 = proof_records(&kb)
         .iter()
         .filter(|r| r.contains("test.scope_axiom_idem.A.requires."))
         .count();

@@ -1,0 +1,446 @@
+# `register_specialization_witnesses` on a later load (WI-20261011-ZVPXS) — where its time goes, step by step, what
+# three probes say each way of fixing it would buy, and what was built. 2026-10-11. For lever A3's fourth pass
+# (docs/design/test-infrastructure.md §4).
+# Sections 1–7 (15:50 – 16:06) are THE MEASUREMENT, taken before anything was built; the shape was then decided
+# with the user: an index, the pass still a walk of every row, and no rule about loads.
+# Sections 8–10 are the tree as delivered; section 11 is what /code-review changed on the way to it, and an older
+# defect it found; section 12 is one traced run of anthill-core's suites, and section 13 the gate and the recipes.
+#
+# Tree:    main at e1796c00 (anthill-core's sources as WI-20261011-A3NND left them, 5d7e9fd9, and the typer changes
+#          of WI-20261011-12VZB merged since).
+#          The MARKED binary is that tree with temporary marks inside the three witness passes (not kept): a clock and
+#          a count for each step of `load::register_specialization_witnesses`, a clock for the collection of names and
+#          for the walk in `register_requires_axiom_witnesses` and `register_induction_axiom_witnesses`, and a switch
+#          that runs the three passes again straight after the first. All of them off unless ANTHILL_LOAD_TIMING=1.
+#          The PROBE binary is the marked one with a temporary switch for each of section 6's three shapes.
+# Profile: anthill-core at opt-level 2, the two tree-sitter crates at 3 (the gate's build); debug assertions on.
+# Bench:   docs/measurements/test-infrastructure/bench_load.rs, ITERS=15, one thread; medians of 15.
+#          Its loads: `full` — the stdlib's 87 files and one small user file in ONE call, a fresh KB; "later" — that
+#          user file alone into a loaded stdlib: plain (`incr`), after a seal (`sealed incr`), into a copy
+#          (`clone+incr`), into a copy of a sealed base (`sealed clone+incr`: what a test on the shared base pays);
+#          "stdlib alone" — the 87 files and no user file, the load the later ones are made into (31 of them a run).
+#          The user file is one operation; it writes no provision and defines no sort. Section 5's is another one.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. `CPU_Speed_Limit` 100 before and after every run
+#          here. `top` around them: a JVM at 15–18 % of a core, Chrome helpers at 6–15 % each, WindowServer at 3–4 % —
+#          a desk in use. Columns are compared within one run.
+
+== 1. the three witness passes in a load, the tree as it stands (the UNMARKED binary, ANTHILL_LOAD_TIMING=1; ms) ==
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# round 1
+# the whole load (the sum of its marks)   262.40     244.60         126.54          35.87          132.47          37.75
+# register_requires_axiom_witnesses         0.64       0.59           0.15           0.14            0.16           0.15
+# register_induction_axiom_witnesses        0.52       0.45           0.10           0.10            0.11           0.11
+# register_specialization_witnesses         2.81       2.66           9.83           9.88           10.34          10.30
+# type_check_sorts                        102.44      96.11          75.26           7.17           77.98           7.29
+# check_override_refinement                 3.83       3.77           3.88           4.00            3.97           4.00
+# check_provider_requires                  24.33      22.71          24.27           0.09           24.54           0.09
+# round 2
+# the whole load                          244.32     247.98         126.52          37.44          131.83          40.06
+# register_specialization_witnesses         2.61       2.70           9.57          10.30           10.61          10.65
+#
+# The pass is 26–28 % of a later load behind a seal (9.9–10.7 of 35.9–40.1 ms) and 1 % of a full one. It costs
+# three and a half to four times more on the load that adds nothing than on the one that loads the library.
+
+== 2. the pass step by step (the MARKED binary; the same two rounds, interleaved with section 1's; ms and counts) ==
+# Round 1; round 2 is within 4 % on every row of a millisecond or more.
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# the pass                                 2.73       2.66           9.69           9.60           10.02          10.41
+#   resolving its symbols                  0.003      0.003          0.003          0.003           0.003          0.003
+#   collecting the record names            0.019      0.018          0.031          0.030           0.032          0.032
+#   walking the rows                       0.021      0.022          0.070          0.069           0.072          0.075
+#   decoding a row's spec                  0.057      0.057          0.196          0.196           0.187          0.201
+#   THE SCAN of the names, per row         1.503      1.462          9.157          9.129           9.503          9.706
+#       as a share of the pass             55 %       55 %           94.5 %         95.1 %          94.9 %         93.2 %
+#   building a name, asking the set        0.036      0.035          0.035          0.034           0.036          0.037
+#   building the terms of a record         0.228      0.225          0              0               0              0
+#   asserting                              0.823      0.791          0              0               0              0
+# `ProofRecord` facts in the KB               75         75            127            127             127            127
+#   distinct names                            75         75            127            127             127            127
+#   their bytes                            3 642      3 642          6 837          6 837           6 837          6 837
+# provision rows                             102        102            413            413             413            413
+#   marked as derived, passed over             0          0             21             21              21             21
+#   rows decoded                             102        102            392            392             392            392
+# comparisons of the scan (rows x names)   7 650      7 650         49 784         49 784          49 784         49 784
+# rows whose spec has a law                   38         38             38             38              38             38
+#   laws they have between them               52         52             52             52              52             52
+#   names built and asked for                 52         52             52             52              52             52
+#   found there                                0          0             52             52              52             52
+#   records asserted                          52         52              0              0               0              0
+#
+# What the marks cost: the pass's mark reads 9.9–10.7 ms in the marked binary where the pass's own clock reads
+# 9.6–10.4 — the difference is the printing of the line of counts, 0.25–0.3 ms, inside the load's mark and outside
+# the pass's. The steps add up to the pass's own clock within 0.05 ms.
+#
+# SO: on a later load 9.0–9.7 ms of the pass's 9.5–10.4 is the scan — for each of 392 rows, every one of the 127
+# record names tested for the prefix `<spec>.requires.`, the prefix built by a `format!` inside the test, 49 784
+# times, 0.18–0.19 us each — and 0.33 ms is everything else. It asserts nothing: 52 names built, 52 found.
+# The standard library leaves 127 records: 42 requires-axioms, 33 induction principles, 52 specializations.
+#
+# WHY THE LATER LOAD IS THE DEARER, both factors of the product:
+#   * rows, 102 -> 392. The pass stands ABOVE the derivations in `load_phase_inner`, so the load that derives a
+#     provision does not show it to its own pass, and every later load does. Of the 311 rows the library's load
+#     derives, 21 carry a mark the pass reads (`derived_provision_origin_of`, `is_unbacked_derived_provision`: the
+#     forwarded rows and the unbacked `NonEq`); 290 carry none — the derived `PartialEq` / `Eq` and the `TypeValue`
+#     rows — and are decoded and scanned for. None of their specs has a law, so they match nothing (38 rows with
+#     a law on both kinds of load), and that is the only reason the two kinds of load leave the same records.
+#   * names, 75 -> 127: the 52 records the library's own pass asserts are in the set every later pass scans.
+
+== 3. the two passes that stand beside it and read the same names (the same runs; ms) ==
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# register_requires_axiom_witnesses        0.566      0.526          0.113          0.111           0.117          0.119
+#   collecting the record names            0.000      0.000          0.042          0.042           0.041          0.041
+#   walking 42 `SortRequiresInfo` rows     0.188      0.185          0.069          0.069           0.075          0.077
+#   asserting                              0.360      0.340          0              0               0              0
+#   names in the set / found / new        0/0/42     0/0/42       127/42/0       127/42/0        127/42/0       127/42/0
+# register_induction_axiom_witnesses       0.426      0.413          0.075          0.073           0.076          0.078
+#   collecting the record names            0.012      0.012          0.031          0.032           0.032          0.033
+#   walking 206 `SortInfo` rows            0.132      0.127          0.042          0.042           0.044          0.045
+#   asserting                              0.282      0.268          0              0               0              0
+#   names in the set / inductive / new   42/33/33   42/33/33     127/33/0       127/33/0        127/33/0       127/33/0
+# Each builds one name a row and asks the set once: rows plus names. 0.19 ms the two on a later load, of which
+# 0.07 ms is reading the 127 names twice more.
+
+== 4. the ticket's lead — the filter with its `format!`, the set fuller on a later load — HOLDS ==
+# The three passes run a SECOND and a THIRD time straight after the first (a temporary loop, ITERS=15; the mark of the
+# three together, ms — and the specialization pass's own clock and counts in the second run):
+#                          first    second   third      the second run of the specialization pass
+# full                      4.35     3.38     3.43      2.70 ms: scan 2.52, 12 954 comparisons (102 rows x 127 names), 0 asserted
+# stdlib alone              4.30     3.40     3.35      2.68 ms: scan 2.46, 12 954
+# later, plain             10.72    10.34    10.61      9.41 ms: scan 8.81, 49 784 (392 x 127), 0 asserted
+# later, sealed            10.24    10.27     9.84      9.53 ms: scan 9.02, 49 784
+# later, copy              10.84    10.61    10.51      9.92 ms: scan 9.43, 49 784
+# later, sealed copy       11.00    10.70    10.50      9.96 ms: scan 9.45, 49 784
+# A later load's pass costs the same the second time and the third: nothing in it is a memo that was cold. And the
+# scan is 0.19 us a comparison at each of the three sizes measured — 7 650 in 1.46–1.50 ms, 12 954 in 2.46–2.52,
+# 49 784 in 8.8–9.7 — so the pass's cost on any load is rows x names, and a later load's is that product grown.
+# (The profile of provider-requires-2026-10-11.txt §8 that the ticket was filed with had 13 % of a 65 ms later load
+# under `alloc::fmt::format_inner`, 8.5 ms: section 6's first probe takes the `format!` out of the test and the scan
+# falls by 8.6–9.2 ms.)
+
+== 5. a later load that DOES bring provisions and laws of its own (the marked binary, BENCH_USER=<that file>) ==
+# The user file (kept beside this one, bench_user_laws.anthill): a spec with a `requires` and the file's provider of
+# it, an enum providing `PartialOrd` (the library's, which `requires PartialEq[T]`).
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# the whole load                          248.70     249.58         133.31          38.16          142.80          41.27
+# register_requires_axiom_witnesses         0.545      0.539          0.132          0.132           0.159          0.156
+#   new records                               43         42              1              1               1              1
+# register_induction_axiom_witnesses        0.465      0.416          0.091          0.092           0.095          0.097
+#   new records                               34         33              1              1               1              1
+# register_specialization_witnesses         2.783      2.661          9.844         10.482          10.670         10.813
+#   the scan                                1.532      1.466          9.308          9.901          10.068         10.158
+#   building terms + asserting              0.983      0.981          0.053          0.059           0.059          0.057
+#   provision rows / decoded              106/106    102/102        417/396        417/396         417/396        417/396
+#   comparisons                             8 162      7 650         51 084         51 084          51 084         51 084
+#   rows with a law / laws                  40/54      38/52          40/54          40/54           40/54          40/54
+#   found there / asserted                   0/54       0/52           52/2           52/2            52/2           52/2
+#   check_provider_requires, for scale     23.57      22.82          26.77           1.04           28.15           1.06
+# Four rows of its own, two of them of a spec with a law: the pass asserts two records and is the 392-row scan
+# plus theirs. A load that brings provisions pays the same pass as one that brings none, and 0.06 ms to emit.
+
+== 6. three probes: what each shape would buy (the PROBE binary, a temporary switch; ITERS=15, one run each) ==
+# (a) `hoist` — the scan as it is, the prefix built once a row and not once a name.
+# (b) `index` — the names sorted once a pass (a `BTreeSet`); a row takes the range of names under its prefix.
+# (c) `sealed` — the pass skips a row a seal holds (`kb.sealed.holds_rule_slot`), with NOTHING put in its place: no
+#     re-walk, no refusal, the 290 rows of section 2 skipped with the rest. An upper bound, not a design.
+# Every count of section 2 unchanged under (a) and (b): the same 392 rows decoded, the same 52 names found.
+#                                              full    later, plain   later, sealed   later, copy   later, sealed copy
+# the pass, its own clock, ms   no probe       2.76        9.51           9.61           10.27          10.50
+#                               (a) hoist      1.36        0.87           0.88            0.95           0.95
+#                               (b) index      1.25        0.58           0.60            0.60           0.61
+#                               (c) sealed     2.72        9.50           0.04           10.16           0.05
+#   the scan (or the range)     no probe       1.44        9.04           9.11            9.75           9.93
+#                               (a) hoist      0.10        0.41           0.45            0.47           0.48
+#                               (b) index      0.04        0.14           0.14            0.15           0.15
+#                               (c) sealed     1.51        9.03           0               9.62           0
+# the whole load, ms            no probe     247.06      129.70          35.53          136.41          39.04
+#                               (a) hoist    266.94      117.24          26.67          126.99          28.89
+#                               (b) index    255.21      119.90          27.20          120.51          28.84
+#                               (c) sealed   251.34      131.13          25.59          135.07          29.14
+# the bench's own rows          no probe     full 247.3    incr 129.8    sealed incr 35.6    clone+incr 143.4    sealed clone+incr 46.3
+#   (median of 15, ms)          (a) hoist         267.4         117.3                26.8               134.2                 36.5
+#                               (b) index         255.4         120.0                27.3               127.1                 35.8
+#                               (c) sealed        251.5         131.2                25.7               141.8                 36.6
+#   the unmarked binary, the same minutes         245.1         131.3                35.5               141.2                 48.0
+# rows the pass decoded         (c) sealed      102         392              0             392              0
+#
+# And with section 5's user file, the one that brings its own (the pass's own clock; the bench's rows):
+#                               no probe       2.78        9.84          10.48           10.67          10.81      sealed incr 38.3   sealed clone+incr 48.3
+#                               (b) index      1.22        0.64           0.62            0.66           0.68                  28.0                    37.5
+#                               (c) sealed     2.84       10.02           0.19           10.52           0.20                  28.2                    37.1
+#   (c) reads the four rows asserted since the seal — 4 x 129 names with the `format!` still in the test, 0.10 ms.
+#
+# (a) takes 8.6–9.2 ms of the scan's 9.0–9.9 on a later load: the `format!` is what the scan costs, and the 49 784
+#     prefix tests that are left are 0.4–0.5 ms.
+# (b) takes that too: the pass 9.6 -> 0.6 ms on a later load whether or not anything is sealed, 2.8 -> 1.25 on a
+#     full one (where 1.05 ms is building and asserting 52 records). What is left of it on a later load is decoding
+#     392 rows' specs (0.16 ms), a prefix and a range for each (0.14), the walk (0.07), the names read (0.03).
+# (c) takes all of it, behind a seal only, and nothing from a full load or a plain sequence of loads.
+# (b) and (c) differ by 0.56 ms of a later load of 26–27 ms, 2 %, and the bench's rows of the three probes cross:
+#     `sealed incr` 26.8 / 27.3 / 25.7 ms, `sealed clone+incr` 36.5 / 35.8 / 36.6. The first shape leaves the
+#     second half a millisecond to take.
+
+== 7. the listing of the records is not the same listing run to run — the tree BEFORE anything was built ==
+# A temporary example (not kept) loads the stdlib's 87 files in one call and prints every `ProofRecord` — its rule
+# id, fact or rule, and the head as source text (the `rule`, the witness with its `parametric` and `substitution`);
+# then seals that load, loads a user file and prints them again; then prints them for the stdlib and that file in
+# ONE call. Run six times with section 5's user file: SIX different files, and with the rule ids dropped and the
+# lines sorted, ONE.
+# The laws of a row are emitted in the order the filter meets them, which is the iteration order of a
+# `std::collections::HashSet` of the names — another order in every process, and in every set of one process. So a
+# provision of a spec with two laws has its two records in either order (`MappedStreamFinite provides
+# FiniteCollection`: `EffectsRuntime_E` then `Iterable_C_E_Element`, or the other way), and their rule ids with them.
+# The same kind of finding as WI-20261011-6GMCN's (the derived provisions follow a `HashMap`'s order), at another site.
+
+== 8. what was built, and the bench's rows BEFORE and AFTER (ITERS=15, one thread; ms: min / median / max) ==
+# BUILT (`load::register_specialization_witnesses`, `requires_law_records`): the record names are read into a SORTED
+# set, a spec's laws are the one range of it under `<spec>.requires.`, taken once a spec and kept for the length of
+# the pass; a row is read past its spec's name only when that spec has a law, and its bindings are decoded only when
+# a record of its own is not in the registry. The pass still walks every provision of the KB at every load; nothing
+# about a seal or a load is asked. More than probe (b) of section 6, which took a range a row and decoded every row.
+#
+# BEFORE is the tree of sections 1–7 (the UNMARKED binary, rebuilt with the bench's BENCH_USER switch); AFTER is the
+# tree as delivered, /code-review's changes in it (section 11). Side by side, two rounds, 17:18 – 17:21;
+# `CPU_Speed_Limit` 100 at both ends; `top`: a JVM at 37 % of a core when the runs began and 11 % when they ended,
+# Chrome helpers at 7–15 % each, WindowServer 3 %.
+#
+# The bench's own user file (no provision):
+#                        BEFORE, round 1          AFTER, round 1           BEFORE, round 2          AFTER, round 2
+# full                   239.2 / 248.0 / 276.0    238.4 / 245.0 / 347.0    243.1 / 258.4 / 269.4    243.9 / 261.4 / 270.8
+# incr                   118.6 / 125.6 / 139.7    112.7 / 117.6 / 134.1    121.4 / 126.1 / 151.3    113.7 / 116.8 / 131.2
+# sealed incr             33.1 /  35.3 /  43.0     23.8 /  26.7 /  28.5     33.1 /  36.8 /  38.6     23.6 /  26.3 /  28.0
+# clone                    6.4 /   7.1 /   8.6      6.6 /   7.0 /   8.3      6.2 /   6.9 /   8.3      6.1 /   6.5 /   7.5
+# clone+incr             127.7 / 137.6 / 158.8    125.2 / 132.2 / 137.4    131.7 / 134.8 / 142.3    121.5 / 126.4 / 132.0
+# sealed clone+incr       43.8 /  45.6 / 102.6     32.9 /  34.7 /  36.6     42.6 /  43.8 /  56.5     33.5 /  34.9 /  36.4
+#
+# Section 5's user file, the one that brings provisions and laws of its own (BENCH_USER=bench_user_laws.anthill):
+# full                   243.1 / 248.8 / 301.1    240.3 / 247.6 / 268.8    243.3 / 249.9 / 274.0    243.5 / 257.2 / 275.7
+# incr                   125.2 / 132.4 / 218.1    115.3 / 123.7 / 153.0    122.4 / 129.7 / 150.7    115.4 / 127.3 / 140.5
+# sealed incr             34.7 /  37.6 /  39.7     26.0 /  27.3 /  58.8     35.8 /  39.1 /  43.3     25.5 /  27.5 /  29.9
+# clone                    6.2 /   6.9 /   7.9      6.5 /   7.4 /   9.9      6.6 /   7.1 /  22.4      6.5 /   7.1 /   8.5
+# clone+incr             133.9 / 147.1 / 151.9    134.2 / 144.8 / 157.9    138.0 / 151.1 / 174.0    127.3 / 140.4 / 153.5
+# sealed clone+incr       46.9 /  48.8 /  60.6     35.9 /  36.8 /  59.1     45.8 /  46.6 /  48.9     35.7 /  37.7 /  41.0
+#
+#   a later load after a sealed stdlib (`sealed incr`)      35.3 -> 26.7 ms and 36.8 -> 26.3 ms       0.76, 0.71
+#   a test's load on the shared base (`sealed clone+incr`)  45.6 -> 34.7 ms and 43.8 -> 34.9 ms       0.76, 0.80
+#   a later load, nothing sealed (`incr`)                   125.6 -> 117.6 ms and 126.1 -> 116.8 ms
+#   `full / (sealed clone + incr)`                          5.4 -> 7.1 and 5.9 -> 7.5
+#   with the file that brings its own: `sealed incr` 37.6 -> 27.3 and 39.1 -> 27.5; `sealed clone+incr` 48.8 -> 36.8
+#   and 46.6 -> 37.7
+#   a full load: 248.0 -> 245.0 and 258.4 -> 261.4, mins 239–243 -> 238–244. The pass is 1.5–1.7 ms less of it
+#   (section 9), which the bench cannot show beside a spread of 30–100 ms a row.
+# The ticket's arithmetic said 37–41 -> 27–30 ms for the first row and 44 -> 34 ms for the second.
+
+== 9. the phases of a load, BEFORE and AFTER (ANTHILL_LOAD_TIMING=1 on each binary, the runs of section 8; medians of 15, ms) ==
+#                                                  full load            later, sealed        later, a sealed copy   later, plain
+#                                                  BEFORE     AFTER     BEFORE     AFTER     BEFORE     AFTER       BEFORE     AFTER
+# round 1  the whole load (the sum of its marks)   247.68     244.80    35.17      26.57     38.24      27.61       125.52     117.52
+#          register_specialization_witnesses         2.72       1.17     9.47       0.17     10.07       0.18         9.36       0.17
+#          register_requires_axiom_witnesses         0.61       0.60     0.15       0.15      0.16       0.16         0.14       0.15
+#          register_induction_axiom_witnesses        0.47       0.48     0.10       0.11      0.11       0.11         0.10       0.10
+# round 2  the whole load                          258.14     261.23    36.73      26.20     37.11      28.23       126.03     116.73
+#          register_specialization_witnesses         2.79       1.13     9.83       0.18     10.13       0.18         9.56       0.17
+#          type_check_sorts                        102.02     105.87     7.12       7.11      7.09       7.27        75.71      75.69
+#          check_override_refinement                 3.86       3.84     4.01       3.92      4.03       4.03         3.82       3.80
+#          check_provider_requires                  24.37      23.77     0.09       0.09      0.09       0.08        24.90      23.93
+# with the user file that brings its own, round 1 and round 2:
+#          register_specialization_witnesses         2.75       1.20     9.78       0.22     10.83       0.24        10.19       0.22
+#                                                    2.81       1.19    10.10       0.21     10.49       0.24         9.76       0.22
+#
+# The pass on a later load: 9.4–10.8 ms -> 0.17–0.24 ms, sealed or not, bringing provisions or not. On a full load
+# 2.7–2.8 -> 1.1–1.2 ms, and what is left there is building and asserting the 52 records. The two passes beside it
+# read the sorted set where they read a hashed one and cost what they did.
+#
+# WHAT IS LEFT OF THE PASS, step by step (the tree as delivered with temporary marks, not kept; one run a user file,
+# ITERS=15, 17:21 – 17:22, `CPU_Speed_Limit` 100 at both ends):
+#                                          full    stdlib alone   later, plain   later, sealed   later, copy   later, s. copy
+# the pass                                 1.15       1.12           0.15           0.15            0.15           0.15
+#   collecting the record names, sorted    0.016      0.016          0.026          0.025           0.026          0.026
+#   walking the rows: each one's spec,
+#     its laws, its records' names         0.079      0.079          0.115          0.116           0.121          0.122
+#       of it the ranges                   0.017      0.017          0.017          0.018           0.018          0.019
+#   decoding bindings, building terms      0.251      0.246          0              0               0              0
+#   asserting                              0.743      0.776          0              0               0              0
+# rows asked for their spec's laws           102        102            392            392             392            392
+#   distinct specs, a range each              34         34             35             35              35             35
+#   specs with a law                          16         16             16             16              16             16
+#   record names tested for a prefix          56         56             57             57              57             57
+# rows whose spec has a law                   38         38             38             38              38             38
+#   names built and asked for                 52         52             52             52              52             52
+# rows owed a record (bindings decoded)       38         38              0              0               0              0
+# records asserted                            52         52              0              0               0              0
+# With the user file that brings its own, a later load: 396 rows, 36 specs, 17 with a law, 59 names tested, 40 rows
+# with a law, 54 names built, 2 rows owed a record, 2 asserted; 0.19–0.21 ms.
+# 49 784 prefix tests became 57; 392 rows decoded became none.
+#
+# What is left of a later load at 27–28 ms (a sealed copy, both rounds): `type_check_sorts` 7.3–7.4 ms (26–27 %),
+# `check_override_refinement` 4.0 ms (14–15 %), then a tail of phases of 0.6–1.2 ms each — equality derivation's
+# classification 1.2, `check_provider_operations` 1.2, `check_rule_body_goals` 1.0, `load_with_visited` 0.9,
+# `derive_carrier_builtin_tags` 0.9, `eq_derive::run` 0.8, `type_value_derive::run` 0.6.
+
+== 10. the controls ==
+# (a) THE RECORDS ARE THE SAME RECORDS. The listing of section 7 — every `ProofRecord`, its rule id, fact or rule,
+#     its head as source text — from a binary of the tree BEFORE and one of the tree AFTER (the dev profile), each run
+#     SIX times with each of two user files:
+#                                                the stdlib's own load   after a later load   the two in ONE call
+#       the bench's user file (no provision)             127                    127                   127         BEFORE and AFTER
+#       the one that brings its own (section 5)          127                    131                   131         BEFORE and AFTER
+#     all of them facts. Twelve listings a user file:
+#       the lines, rule ids dropped, sorted            ONE listing — all twelve are the same file, for each user file
+#       the lines, rule ids dropped, as printed        BEFORE six different files of six; AFTER one
+#       the listing as printed                         BEFORE six different files of six; AFTER one
+#     And the later load's records are the one call's: the two sections of an AFTER listing, tags and rule ids
+#     dropped and sorted, are the same lines.
+#     So: the same records, BEFORE and AFTER, in the three loads; and AFTER prints one listing where BEFORE never
+#     printed the same one twice (section 7) — the laws of a provision are emitted in the order of their names.
+#     The rule ids agree too in AFTER's six, in these loads: the records are asserted before anything of a load whose
+#     order follows a hash (the derived provisions, WI-20261011-6GMCN).
+#     Taken twice: for the first cut (16:11), and again for the tree as delivered once its gate had run (18:06) —
+#     the same counts and the same one listing both times.
+# (b) THE ROWS, and what fails when the change is backed out — `wi_zvpxs_specialization_witness_index_test` (7 rows)
+#     and three unit rows beside the code (`load::wi_zvpxs_law_range_tests`), each back-out made on the tree as
+#     delivered and both run (the dev profile). The test's header has the list; in short:
+#       THE SCAN PUT BACK — every name tested for every provision                1 FAILS, and it alone: the count row,
+#                                                                               49 784 names tested where 540 are allowed
+#                                                                               (413 provisions + 127 records) and 57 are
+#       every name tested once a spec                                           the same row FAILS: 4 445
+#       the lookups not counted                                                 the same row FAILS: it asserts some were
+#       the laws of a spec in a `HashSet`'s order, three runs                   the order row FAILS three times of three,
+#                                                                               and 1–2 unit rows; once a row that lists a
+#                                                                               program's records in order, on the order
+#       the range taken from the spec's name, not from its prefix               1 FAILS, and 1 unit row — the one that fails
+#                                                                               in SILENCE: a spec with a record of its own
+#                                                                               sorting before its laws has none
+#       the prefix `<spec>.` in place of `<spec>.requires.`                     6 FAIL, and the 3 unit rows
+#       the first law of a spec only                                            4 FAIL, and 2 unit rows
+#       one entry of the pass's memo for every spec                             7 FAIL; the unit rows pass
+#       a record's name not asked of the registry — any ONE of the three
+#         passes' `contains` tests removed                                      1 FAILS, the same one each time
+#     BY DESIGN, all 10 pass — a saving and no verdict, each: a spec with no law not skipped where its laws are looked
+#     up; a provision owed no record kept as a target; the range taken again for every provision (a range a row is
+#     still rows plus names, and the count row is for the scan).
+#     Three of the seven rows were written BECAUSE a back-out passed:
+#       * the range from the spec's name passed every row first written. The registry a load's own pass reads holds no
+#         record sorting between a spec's name and its laws unless an EARLIER load left one, so the row makes a second
+#         later load, when `Spec`'s own provision record is there.
+#       * the `contains` test removed passed all five rows there were: asserting a record that is there is the fact
+#         that is there. It decides something only once a verdict has been written on a record (`anthill prove`), which
+#         is then no longer the `Pending` fact a pass would build — a row writes one on a record of each pass.
+#       * the scan put back passed everything (/code-review, section 11): a count is what sees it.
+#     The fixture for a later load that MUST emit is `a_later_load_emits_the_records_of_its_own_provisions` — a
+#     program's own provider of two LIBRARY specs with laws and of a spec of its own — by name, with each witness's
+#     `parametric` and `substitution`, as a later load and (`one_call_emits_…`) in one call.
+# (c) NOT BUILT, because nothing is skipped: an oracle switch, a count of narrowed runs, a check that the change
+#     engages on the shared base. The pass has one path, and every load takes it.
+
+== 11. what /code-review changed (2026-10-11, 16:40 – 17:15), and what it found that this ticket did not change ==
+# Sections 8–10 are of the tree as delivered. The review was given the first cut (the index; six rows) and found no
+# fault in it — the range accepts exactly the names the prefix test accepted — and thirteen things beside it.
+# CHANGED, each with what measures it:
+# (a) NO ROW FAILED WITH THE SCAN PUT BACK. Once the names are sorted, the old filter over them emits the same
+#     records in the same order, so every row was green over the 10 ms the change exists to remove; the header said
+#     the bench was the measurement. `load::witness_law_names_tested_by_this_thread` counts the record names a lookup
+#     tests for a spec's prefix, and `a_later_load_tests_rows_plus_names_and_not_rows_times_names` asserts a later
+#     load tests at most as many as the KB has provisions and records together: 57 measured, 540 allowed, 49 784
+#     with the scan back (section 10 (b)).
+# (b) A ROW SAID MORE THAN IT DROVE — "a second load of the program with laws emits nothing", and no second load of
+#     it was made. It is made: the same file presented again to the KB that has it brings no record.
+# (c) THE ORDER ROW GROUPED RECORDS BY THE LAST SEGMENT OF THEIR NAME, which is not the provision: a law with a `.`
+#     in its flattened name, or two specs of one short name, and the row fails on a tree that is right. It groups by
+#     who provides, which spec and at which bindings, read off the record's fields.
+# (d) THE PASS: a spec's symbol was handed to the decoder beside the spec it is derivable from, and had to agree with
+#     it — the short name is asked of the symbol where the names are built, and the decoder reads the bindings alone;
+#     and the bindings were decoded for every row whose spec has a law, at every load — they are decoded for a row
+#     owed a record: 38 rows -> 0 on a later load that brings nothing, the pass 0.21 -> 0.17 ms (the first cut's
+#     rows, taken 16:18 – 16:21 the same way as section 8's: `sealed incr` 34.6 -> 25.9 and 35.1 -> 26.5 ms,
+#     `sealed clone+incr` 46.0 -> 35.8 and 44.1 -> 34.7 — the bench does not tell the two cuts apart).
+# (e) THE TESTS' OWN: the registry was walked by a fourth private copy of "every ProofRecord", and its fields read by
+#     cutting the printed record at `, state_hash: ` — one walk in `tests/common` now, for this file and the three
+#     that had the copies, and fields read by name (`named_field_term`, which two more files had copies of).
+# (f) `BENCH_USER` set and not readable as text ran the bench's built-in file under the other's name: an error now.
+# (g) a comment that named the decoder by its old name.
+#
+# NOT CHANGED, and why:
+#   * ONE SET OF NAMES FOR THE THREE PASSES, each adding what it emits, in place of three reads of the registry
+#     (0.07 ms of a later load: section 3). The records the first pass emits are the laws the third looks up in the
+#     SAME load, so a set handed down would be kept true by hand, and a pass that forgot would leave the next one
+#     short in silence. Said at `collect_existing_proof_record_qns`.
+#   * THE CLI'S `implicit_cites_for` IS A SECOND READER OF `<scope>.requires.`, with a narrower rule: it leaves out a
+#     name whose remainder holds a `.`, and scans every name per scope. The loader's rule is every name under the
+#     prefix, as it was; a unit row pins it and the range's comment says the two differ. Making them one changes what
+#     one of them reads.
+#   * THE ROWS THE PASS PASSES OVER WITHOUT A WORD — a provision whose `sort_ref` or spec does not decode — in this
+#     pass and in the two beside it, as before. None in any load measured here (0 of 413 rows, section 2's marks).
+#
+# AN OLDER DEFECT, REPRODUCED AND NOT THIS TICKET'S: a specialization record is named by its spec's SHORT name
+# (`<X>.provides.<A-short>.<SE>`), and a pass does not add what it emits to the names it reads. With two specs both
+# named `Conv` in two namespaces, each `requires Eq[T = T]`, and one sort providing both (the temporary listing of
+# section 7):
+#     one call, or one later load of both provisions      TWO records named `test.sc.A.provides.Conv.Eq_T`, one with
+#                                                         `parametric: "test.sa.Conv.requires.Eq_T"` and one with `test.sb.…`
+#     the second provision written in a LATER load        ONE: the later load finds the name there and emits nothing
+#       (`namespace test.sc.A  provides test.sb.Conv[…]`)   for it, where one call over the same files leaves two
+# So one call and two loads disagree, and in one call two records share a `rule`. The tree BEFORE does the same by
+# construction — the names and the test of them are what they were. A NAMING decision, read by `anthill check` and
+# `anthill prove`, and not fixed here. FILED 2026-10-11 as WI-20261011-S8CYD (user: the spec's fully qualified name
+# in the record's name), with a second form found while writing it up: ONE spec at TWO bindings by one provider —
+# `sort W  provides Tag[T = P]  provides Tag[T = Q]` — leaves two records named `test.sg.W.provides.Tag.Eq_T` that
+# differ in `substitution` alone, which a qualified name does not tell apart.
+
+== 12. one traced run of anthill-core's suites on the tree as delivered ==
+#   ANTHILL_LOAD_TIMING=1 RUST_TEST_THREADS=12 cargo test --no-fail-fast -p anthill-core --config <the three opt lines> \
+#       -- --show-output > load-trace.log 2>&1
+#   python3 docs/measurements/test-infrastructure/load_trace_report.py load-trace.log
+#   python3 docs/measurements/test-infrastructure/provider_requires_report.py load-trace.log
+# 18:02:19 – 18:04:42; 8 318 passed, 0 failed, 6 ignored. `CPU_Speed_Limit` 73 before it and 71 after — it followed
+# the three suite runs of section 13, and the samples taken through it fell from 73–77 to 62 within a minute. The COUNTS and the SHARES do not
+# depend on that; the seconds are of a machine at two thirds of its speed, as section 12 of
+# provider-requires-2026-10-11.txt and its section 14's were.
+#
+# Against provider-requires-2026-10-11.txt §12 and §14 (the tree before this change, the same twelve binaries):
+#                                                   §12 (A3NND as built)   §14 (A3NND as delivered)   this run
+#   `wi_tests`, traced                              127.6 s                —                          106.7 s
+#   loading, as a share of its thread-time          86.9 %                 —                          84.0 %
+#   a load on the base, as one of twelve pays it    102.3 ms               112.8 ms                   74.8 ms
+#       register_specialization_witnesses           24.9 %  (25.5 ms)      25.5 %  (28.7 ms)          0.5 %   (0.38 ms)
+#       type_check_sorts                            22.3 %  (22.8 ms)      22.2 %  (25.1 ms)          29.9 %  (22.3 ms)
+#       check_override_refinement                   10.3 %  (10.5 ms)      10.2 %  (11.5 ms)          13.3 %  (10.0 ms)
+#       check_provider_requires                     5.3 %   (5.5 ms)       5.2 %   (5.9 ms)           6.4 %   (4.8 ms)
+#   copies of the base in `wi_tests`, a second      75.2                   —                          91.1
+#       a copy                                      14.2 ms                15.6 ms                    14.5 ms
+#       the wait for a base, a copy: mean           0.09 ms                —                          0.09 ms
+#   loads that carry the stdlib, all binaries       480                    —                          490
+#   later loads into a copy of the base             9 895                  —                          10 012
+#   runs of the provision check; narrowed           10 939; 9 727          10 946; 9 729              11 085; 9 861
+# The pass's line is of every later load of the run (10 691: the 10 012 on the base and 679 others), read off the
+# trace beside the report, whose table of a load on the base shows the 21 largest phases and the pass is no longer
+# one of them. In a load that carries the stdlib (490 of them) it is 2.7 ms of 632, 0.4 %. The two passes beside it:
+# 0.30 and 0.20 ms a later load.
+# A load on the base lost 27.5–38.0 ms where the pass was 25.5–28.7 ms of it: the three largest phases left are each
+# within a millisecond or two of what they were, in a run a little less throttled than §14's (a copy 14.5 ms).
+# Of `wi_tests`' thread-time now (1 280 thread-seconds): later loads 59 %, loads that carry the stdlib 14 %, copies of
+# the base 11 %, everything else a test does at most 16 %.
+# What a load on the base is made of now, the phases over 2 %: `type_check_sorts` 29.9 %, `check_override_refinement`
+# 13.3 %, `check_provider_requires` 6.4 % (the 5 % of loads that read every row), `check_provider_operations` 4.2 %,
+# equality derivation's classification 3.9 %, `check_rule_body_goals` 3.2 %, `derive_carrier_builtin_tags` 2.7 %,
+# `load_with_visited` 2.5 %, `eq_derive::run` 2.5 %, `type_value_derive::run` 2.4 %; the other 45 phases 29 %.
+
+== 13. the gate and the recipes, on the tree as delivered (17:22 – 18:02, one after another, nothing else building) ==
+#   scripts/test.sh                                                         the whole workspace, the shared base
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core
+#   ANTHILL_TEST_OPT=2 ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core
+#
+#                            exit   result lines   passed   failed   ignored   the run        `wi_tests`    OBSERVED by the controls
+#   the gate (shared base)   0      36, all ok     9 216    0        14        11 min 39 s    109.75 s      SHARED BASE; oracle off
+#   anthill-core, one shot   0      13, all ok     8 318    0         6        15 min 48 s    615.01 s      one shot;    oracle off
+#   anthill-core, two steps  0      13, all ok     8 318    0         6        12 min 30 s    674.97 s      TWO-STEP;    oracle off
+#
+# `wi_tests` in the gate: 6 704 passed, 4 ignored, in 109.75 s, where it was 122.83 s in the gate of
+# provider-requires-2026-10-11.txt §13, 136.55 s in the one of its §14, and 125.2 s and 121.5 s alone from a cool
+# machine; the ticket's arithmetic said 102.
+# `CPU_Speed_Limit`: 100 before the gate and when it ended, and sampled every 10 s through it — it fell to 64–66
+# ninety seconds into the BUILD and read 60–84 while `wi_tests` ran (the gate's build of anthill-core at opt-level 2
+# is five and a half minutes of twelve cores before the first test). 73 at the ends of the other two runs. So the
+# gate's wall is of a machine at two thirds here as in every file of this directory, and the one-thread bench of
+# section 8 is the measurement.
+# The one-shot recipe has no later load: what this change does to it is the pass in a full load, 2.7 -> 1.2 ms, and
+# its verdicts did not move. The two-step recipe makes the later load without the copy.
