@@ -114,18 +114,32 @@ reads it as a term *before* it is evaluated. Two readers do, both in the typer. 
 did not fire on `Box.open(Box.mk(4))`. A call-site precondition reads the node's term
 twin (`try_occurrence_to_term`): `requires Pair.big(p)` was not provable at
 `need(Pair.pair(7, 2))`, a load error on a program whose named spelling loads. The
-view and the twin are one shape by construction (WI-425), so both now present a
-positionally written constructor as the canonical entity
-(`node_occurrence::canonical_positional_ctor_args` — the same plan, the same sort).
-It is ONE place, which is what the rejected reader-side fix was not: every consumer of
-a `Value::Node` reads through those four `occ_*` readers.
+view and the twin are one shape by construction (WI-425), so both present the
+constructor as the canonical entity (`node_occurrence::canonical_ctor_args` — the same
+plan, the same sort). It is ONE place, which is what the rejected reader-side fix was
+not: every consumer of a `Value::Node` reads through those four `occ_*` readers.
 
-It reaches the **positional** spellings only (`mk(4)`, `pair(7, b: 2)`, `pair(2, a:
-7)`). An application written all named and out of declaration order (`pair(b: 2, a:
-7)`) is still read as written, and still matches neither reader: `pos_args` is read
-off the node for nothing, where a misordered named list can only be told from a
-canonical one by the field list — a lookup at every read of every list cell a
-resolver goal holds. WI-20261011-12VZB owns it.
+It reaches **every spelling**: the positional and mixed ones (`mk(4)`, `pair(7, b: 2)`,
+`pair(2, a: 7)`), and an application written all named and out of declaration order
+(`pair(b: 2, a: 7)`, WI-20261011-12VZB). The two are told differently. A positional
+argument is read off the node for nothing. A misordered named list is told from a
+canonical one only by the field list, a lookup at the read — and the order reaches two
+readers only, the key list (`occ_named_keys`) and the twin: the head counts, and a
+child is found by name. Three ways to pay for it were on the ticket, and the choice was
+measured rather than assumed:
+
+| | what | cost |
+|---|---|---|
+| read | the field list is asked where the order is read | counted: the key reader meets a constructor node of two or more named arguments 44 times in a load of the standard library and 188 times with anthill-todo's sources, and not once more under a resolution over thirty-element lists — a rule body's `cons(head:, tail:)` is the loader's canonical application, not this node |
+| a fact on the node | "its named arguments are in declaration order", set where the node is built | nothing at the read; owed by each of the twenty-odd sites that build an `Expr::Constructor`, and wrong in silence at the one that forgets |
+| reorder the node | where the operation body is built | nothing at the read; the evaluator then runs the arguments in declaration order, which no rule of the language gives it leave to |
+
+The first was taken. Nothing is stored that can disagree with the declaration, and the
+node still runs its arguments in the order written
+(`wi_12vzb_constructor_named_out_of_order_test::the_arguments_are_still_evaluated_in_the_order_written`).
+A functor with no field schema is left as written, as the load leaves a rule's text
+(`entity_slots::complete_named_slots`), and so is a named tuple, whose order is its
+identity.
 
 ## 3. Value positions vs pattern positions
 
@@ -262,7 +276,7 @@ absent optional is `none()` at storage, so there is no injected var to strip.
 | 4 nullary `Ref` form | `kb/mod.rs:1063` · `KB::alloc`; printer `persistence/print.rs:706` |
 | 5 Option detection | `kb/typing.rs:14202` · `is_option_type` |
 | 6 build (source → Value) | `eval/eval.rs` · `finish_constructor`; `kb/resolve.rs` · `anf_flatten` |
-| a stored node read as a term | `kb/node_occurrence.rs` · `canonical_positional_ctor_args`; `kb/term_view.rs` · `occ_head` / `occ_pos_child` / `occ_named_child` / `occ_named_keys`; `try_occurrence_to_term` |
+| a stored node read as a term | `kb/node_occurrence.rs` · `canonical_ctor_args`; `kb/resolve.rs` · `named_out_of_declared_order`; `kb/term_view.rs` · `occ_head` / `occ_pos_child` / `occ_named_child` / `occ_named_keys`; `try_occurrence_to_term` |
 
 Lines drift; the code tags `WI-500`, `WI-511`, `WI-436`, `WI-433`, `WI-342`,
 `WI-477`, `WI-391`, `WI-109`, `WI-20260827-T2470` are stable anchors.

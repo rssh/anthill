@@ -4465,15 +4465,15 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
                 return occ_build_fn(kb, *head, pos_args, named_args);
             }
         }
-        // A constructor written positionally lowers to the canonical entity form, as the
-        // view presents it — see [`canonical_positional_ctor_args`].
+        // A constructor lowers to the canonical entity form, as the view presents it —
+        // see [`canonical_ctor_args`].
         Some(Expr::Constructor {
             name,
             pos_args,
             named_args,
             ..
         }) => {
-            return match canonical_positional_ctor_args(kb, *name, pos_args, named_args) {
+            return match canonical_ctor_args(kb, *name, pos_args, named_args) {
                 Some(slots) => {
                     let mut named: smallvec::SmallVec<[(Symbol, TermId); 2]> =
                         smallvec::SmallVec::new();
@@ -4729,9 +4729,9 @@ pub fn build_occurrence_cons_list(
     list
 }
 
-/// A constructor application written with POSITIONAL arguments, in THE CANONICAL ENTITY
-/// FORM (docs/design/entity-term-mapping.md §2): every argument named, in declaration
-/// order, a positional one at the declared field no named argument took —
+/// A constructor application in THE CANONICAL ENTITY FORM
+/// (docs/design/entity-term-mapping.md §2): every argument named, in declaration order,
+/// a positional one at the declared field no named argument took —
 /// [`KnowledgeBase::positional_to_named_plan`], the rank rule every other producer of an
 /// entity uses, then [`KnowledgeBase::canonicalize_record_named_args`].
 ///
@@ -4740,29 +4740,47 @@ pub fn build_occurrence_cons_list(
 /// canonical form: by the view ([`crate::kb::term_view`]'s `occ_*` readers) and by the
 /// twin ([`try_occurrence_to_term`]), which present one shape. Read as written, `Box.mk(4)`
 /// was `mk(4)` beside the `mk(v: ?v)` every pattern and every other carrier holds, and
-/// the shape is the identity (the discrimination key, the arity fail-fast of a unify): a
-/// `@[simp]` equation over `open(mk(v: ?v))` did not fire on `Box.open(Box.mk(4))`, and
-/// `requires Box.full(b)` was not provable at `need(Box.mk(4))`, where the same calls
-/// written `Box.mk(v: 4)` did and was. The evaluator canonicalizes the VALUE it builds
+/// `pair(b: 2, a: 7)` kept its keys in that order beside a `pair(a: ?a, b: ?b)`. The
+/// shape is the identity (the discrimination key, which descends named keys in the order
+/// given; the arity fail-fast of a unify; the hash-consed twin): a `@[simp]` equation
+/// over `open(mk(v: ?v))` did not fire on `Box.open(Box.mk(4))`, and `requires
+/// Pair.big(p)` was not provable at `need(Pair.pair(b: 2, a: 7))`, where the same calls
+/// written named, in order, did and was. The evaluator canonicalizes the VALUE it builds
 /// (`finish_constructor`); this is the same node before it is evaluated.
 ///
-/// `None` where the written shape is the shape: no positional argument; a functor the
-/// plan skips (no declared field, a reflect form whose positional shape is its
-/// encoding); more positional arguments than unfilled fields, which the load refuses
-/// where it is written.
+/// `None` where the written shape is the shape. With a positional argument: a functor
+/// the plan skips (no declared field, a reflect form whose positional shape is its
+/// encoding), and more positional arguments than unfilled fields, which the load refuses
+/// where it is written. With none: named arguments already in declaration order, fewer
+/// than two of them, and a functor with no field schema
+/// ([`KnowledgeBase::named_out_of_declared_order`]). A named tuple's written order is its
+/// identity, and the canonicalizer leaves it.
 ///
-/// POSITIONAL ONLY, and that is a cost line rather than the whole rule: `pos_args` is
-/// read off the node for nothing, where an all-named application written out of
-/// declaration order (`pair(b: 2, a: 7)`) can only be told from a canonical one by its
-/// field list — a lookup at every read of every list cell a resolver goal holds. That
-/// spelling is still read as written (WI-20261011-12VZB).
-pub(crate) fn canonical_positional_ctor_args<'a>(
+/// DERIVED AT THE READ, NOT KEPT ON THE NODE (WI-20261011-12VZB). A misordered named
+/// list is told from a canonical one only by the field list, so the all-named case is a
+/// lookup where the positional one reads `pos_args` for nothing. Measured before it was
+/// taken, by counting the reads: the only reader the order reaches is the key list
+/// (`occ_named_keys`) and the twin — the head counts and a child is found by name — and
+/// that reader meets a constructor node of two or more named arguments 44 times in a
+/// load of the standard library, 188 times with anthill-todo's sources, and not once
+/// more under a resolution over thirty-element lists, whose cells are not this node (a
+/// rule body's constructor is the loader's canonical application). A fact kept on the
+/// node would be owed by every site that builds one, and wrong in silence at the site
+/// that forgot.
+pub(crate) fn canonical_ctor_args<'a>(
     kb: &KnowledgeBase,
     name: Symbol,
     pos_args: &'a [Rc<NodeOccurrence>],
     named_args: &'a [(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<smallvec::SmallVec<[(Symbol, &'a Rc<NodeOccurrence>); 4]>> {
-    let fields = positional_ctor_fields(kb, name, pos_args.len(), named_args)?;
+    let fields = if pos_args.is_empty() {
+        if !kb.named_out_of_declared_order(name, named_args) {
+            return None;
+        }
+        smallvec::SmallVec::new()
+    } else {
+        positional_ctor_fields(kb, name, pos_args.len(), named_args)?
+    };
     let mut slots: smallvec::SmallVec<[(Symbol, &'a Rc<NodeOccurrence>); 4]> =
         named_args.iter().map(|(s, c)| (*s, c)).collect();
     slots.extend(fields.iter().copied().zip(pos_args.iter()));
@@ -4771,9 +4789,10 @@ pub(crate) fn canonical_positional_ctor_args<'a>(
 }
 
 /// The declared fields a constructor application's `pos_count` positional arguments fill,
-/// in argument order — [`canonical_positional_ctor_args`]' gate, and all that the two
-/// readers which supply no child need of it: the head counts them, and the positional
-/// reader answers nothing where there are any.
+/// in argument order — the positional half of [`canonical_ctor_args`]' gate, and all
+/// that the two readers which supply no child need of it: the head counts them, and the
+/// positional reader answers nothing where there are any. Neither asks about the order
+/// of the named arguments, which changes no count.
 ///
 /// EVERY ARM OF THE PLAN IS NAMED. `Skip` is a functor whose written shape is its shape.
 /// `OverArity` is a node the load refuses where it is written (`constructor 'pair' given

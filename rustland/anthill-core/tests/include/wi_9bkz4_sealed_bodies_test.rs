@@ -368,7 +368,7 @@ end
 /// rule fired on no construction in an operation body: the library writes `tag(1)`, the
 /// rule's head is the `tag(n: 1)` the load makes of it, and an operation body's node was
 /// read as written. It is read in the canonical entity form now
-/// (`canonical_positional_ctor_args`, found with WI-20261011-CR6GD), so one call answers
+/// (`canonical_ctor_args`, found with WI-20261011-CR6GD), so one call answers
 /// 2 — and the refusal that was waiting takes the other order.
 #[test]
 fn a_simp_rule_over_a_construction_is_refused_behind_a_seal() {
@@ -379,6 +379,52 @@ fn a_simp_rule_over_a_construction_is_refused_behind_a_seal() {
     assert!(
         errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.liba.Tag.tag'")
             && e.contains("rewrites the body of 'test.liba.libTags'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
+}
+
+const LIB_NAMED: &str = r#"
+namespace test.libn
+  import anthill.prelude.{Int64}
+  sort Span
+    entity span(lo: Int64, hi: Int64)
+  end
+  operation top(s: Span) -> Int64 = s.hi
+  operation libSpans() -> Int64 = top(span(hi: 9, lo: 1))
+end
+"#;
+
+const A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER: &str = r#"
+namespace test.progn
+  import anthill.prelude.{Int64}
+  import test.libn.{Span, libSpans}
+  import test.libn.Span.{span}
+  rule span(lo: 1, hi: 9) <=> span(lo: 1, hi: 3) @[simp]
+  operation entry() -> Int64 = libSpans()
+end
+"#;
+
+/// The same for a construction the library writes with its arguments named out of
+/// declaration order, `span(hi: 9, lo: 1)`: the rule's head is in that order, and the
+/// node is read in it (WI-20261011-12VZB).
+///
+/// With `KnowledgeBase::named_out_of_declared_order` answering `false` this FAILS on its
+/// first assertion: the rule fires on no body, one call answers 9 and two load clean.
+#[test]
+fn a_simp_rule_over_a_construction_written_out_of_order_is_refused_behind_a_seal() {
+    let one = loaded(
+        one_call(LIB_NAMED, A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER),
+        "one call",
+    );
+    assert_eq!(values(one, &["test.progn.entry"]), [3]);
+
+    let errors = refused(
+        two_calls(LIB_NAMED, A_RULE_OVER_A_CONSTRUCTION_WRITTEN_OUT_OF_ORDER),
+        "two calls",
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.libn.Span.span'")
+            && e.contains("rewrites the body of 'test.libn.libSpans'")),
         "the refusal names the rule's head and the sealed operation; got {errors:?}"
     );
 }

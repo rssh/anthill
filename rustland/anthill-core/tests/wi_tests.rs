@@ -25,6 +25,8 @@ mod wi_jmmhq_value_dot_internal_test;
 mod wi_rm247_data_sort_equation_test;
 #[path = "include/wi_cr6gd_clause_defined_call_test.rs"]
 mod wi_cr6gd_clause_defined_call_test;
+#[path = "include/wi_12vzb_constructor_named_out_of_order_test.rs"]
+mod wi_12vzb_constructor_named_out_of_order_test;
 #[path = "include/wi_hzvqa_alias_receiver_test.rs"]
 mod wi_hzvqa_alias_receiver_test;
 #[path = "include/wi_b6qya_constructor_bracket_test.rs"]

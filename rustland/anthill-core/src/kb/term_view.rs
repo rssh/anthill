@@ -22,7 +22,7 @@ use crate::intern::Symbol;
 use crate::parse::desugar_target as dt;
 
 use super::node_occurrence::{
-    canonical_positional_ctor_args, positional_ctor_fields, EffectExprNode, Expr, MatchBranch,
+    canonical_ctor_args, positional_ctor_fields, EffectExprNode, Expr, MatchBranch,
     NodeOccurrence, Pattern, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
@@ -1238,8 +1238,9 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // not collapse to `Opaque`).
         //
         // A constructor written POSITIONALLY heads as the canonical entity it builds:
-        // every argument named ([`canonical_positional_ctor_args`]). The three child
-        // readers below read the same slots, so the head announces what they supply.
+        // every argument named ([`canonical_ctor_args`]). The three child readers below
+        // read the same slots, so the head announces what they supply. The order the
+        // named arguments are written in changes no count.
         Some(Expr::Constructor {
             name,
             pos_args,
@@ -1526,21 +1527,25 @@ fn occ_named_child(
             }
             named_args
         }
-        // The field a positional argument fills is where it is found by name.
+        // The field a positional argument fills is where it is found by name. A node
+        // with no positional argument is read by name as it is written: the order of
+        // its named arguments is the key list's question, not this one's.
         Expr::Constructor {
             name,
             pos_args,
             named_args,
             ..
-        } => match canonical_positional_ctor_args(kb, *name, pos_args, named_args) {
-            Some(slots) => {
-                return slots
-                    .iter()
-                    .find(|(s, _)| *s == sym)
-                    .map(|(_, c)| Rc::clone(c));
+        } => {
+            if !pos_args.is_empty() {
+                if let Some(slots) = canonical_ctor_args(kb, *name, pos_args, named_args) {
+                    return slots
+                        .iter()
+                        .find(|(s, _)| *s == sym)
+                        .map(|(_, c)| Rc::clone(c));
+                }
             }
-            None => named_args,
-        },
+            named_args
+        }
         // WI-520: `Instantiation` reads like `Constructor`.
         Expr::Instantiation { named_args, .. }
         // Proposal 055 — see the positional peer above.
@@ -1600,14 +1605,15 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         // WI-1045 — the ONE key the head counted, same symbol the value's
         // `named_keys` answers.
         Some(Expr::Dictionary { .. }) => vec![dictionary_impl_key(kb)],
-        // The canonical entity form's keys, in declaration order — the order the head
-        // counted and `try_occurrence_to_term` builds.
+        // The canonical entity form's keys, in declaration order whatever order they
+        // are written in — the order `try_occurrence_to_term` builds, and the one a
+        // discrimination walk descends.
         Some(Expr::Constructor {
             name,
             pos_args,
             named_args,
             ..
-        }) => match canonical_positional_ctor_args(kb, *name, pos_args, named_args) {
+        }) => match canonical_ctor_args(kb, *name, pos_args, named_args) {
             Some(slots) => slots.iter().map(|(s, _)| *s).collect(),
             None => named_args.iter().map(|(s, _)| *s).collect(),
         },
@@ -3744,17 +3750,22 @@ mod wi520_tests {
         assert!(!views_structurally_equal(&kb, &av, &Value::Node(c)));
     }
 
-    /// A constructor written with positional arguments reads, as a term, in the canonical
-    /// entity form: one head, one key order and one child per field on every spelling,
-    /// and the node matches the term its own twin builds. The view's four readers and
-    /// `try_occurrence_to_term` are held to each other here, where the integration rows
-    /// (`wi_cr6gd_clause_defined_call_test`) drive each through its own consumer.
+    /// A constructor reads, as a term, in the canonical entity form whatever spelling it
+    /// is written in — positional, mixed, or all named out of declaration order: one
+    /// head, one key order and one child per field, and the node matches the term its
+    /// own twin builds. The view's four readers and `try_occurrence_to_term` are held to
+    /// each other here, where the integration rows (`wi_cr6gd_clause_defined_call_test`,
+    /// `wi_12vzb_constructor_named_out_of_order_test`) drive each through its own
+    /// consumer.
     ///
-    /// CONTROL — with `positional_ctor_fields` answering `None` the three written
-    /// spellings head `pos_arity: 2` / `1` and this fails on its first assertion; the
-    /// last block, a functor with no declared field, passes either way by design.
+    /// CONTROL — with `positional_ctor_fields` answering `None` the three positional
+    /// spellings head `pos_arity: 2` / `1` and this fails on its first assertion. With
+    /// `named_out_of_declared_order` answering `false` the fourth, `pair(b: 2, a: 7)`,
+    /// fails on its key order — its head and its children by name pass, the order of
+    /// the named arguments changing neither. The last block, a functor with no declared
+    /// field, passes either way by design.
     #[test]
-    fn a_positional_constructor_reads_as_its_canonical_entity_and_as_its_twin() {
+    fn a_constructor_reads_as_its_canonical_entity_and_as_its_twin() {
         let mut kb = KnowledgeBase::new();
         let pair = kb.intern("Pair.pair");
         let (a, b) = (kb.intern("a"), kb.intern("b"));
@@ -3786,11 +3797,13 @@ mod wi520_tests {
 
         let canonical = ctor(pair, vec![], vec![(a, lit(7)), (b, lit(2))]);
         let canonical_twin = occurrence_to_term(&mut kb, &canonical);
-        // `pair(7, 2)`, `pair(7, b: 2)`, and `pair(2, a: 7)` — which puts 2 in `b`.
+        // `pair(7, 2)`, `pair(7, b: 2)`, `pair(2, a: 7)` — which puts 2 in `b` — and
+        // `pair(b: 2, a: 7)`.
         let written = [
             ctor(pair, vec![lit(7), lit(2)], vec![]),
             ctor(pair, vec![lit(7)], vec![(b, lit(2))]),
             ctor(pair, vec![lit(2)], vec![(a, lit(7))]),
+            ctor(pair, vec![], vec![(b, lit(2)), (a, lit(7))]),
         ];
         for occ in &written {
             assert!(
@@ -3809,7 +3822,8 @@ mod wi520_tests {
             assert!(kb.match_view(canonical_twin, occ).is_some());
         }
 
-        // A functor that declares no field has nothing to name a position by.
+        // A functor that declares no field has nothing to name a position by, and no
+        // order to put a name in.
         let free = kb.intern("free");
         let loose = ctor(free, vec![lit(1), lit(2)], vec![]);
         assert!(matches!(
@@ -3818,6 +3832,8 @@ mod wi520_tests {
         ));
         assert!(loose.pos_arg(&kb, 1).is_some());
         assert!(loose.named_keys(&kb).is_empty());
+        let labelled = ctor(free, vec![], vec![(b, lit(2)), (a, lit(7))]);
+        assert_eq!(labelled.named_keys(&kb), vec![b, a]);
     }
 
     #[test]

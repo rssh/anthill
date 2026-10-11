@@ -117,10 +117,11 @@
 //!   load's such rule is refused — `wi_9bkz4_sealed_bodies_test::a_simp_rule_over_a_-
 //!   construction_is_refused_behind_a_seal`, the row written to fail on that day.
 //!
-//!   NOT COVERED, each measured with the change in place. An application written all
-//!   NAMED and out of declaration order (`Pair.pair(b: 2, a: 7)`) is still read as
-//!   written and matches neither reader: telling it from a canonical one takes the field
-//!   list at every read (WI-20261011-12VZB). A constructor of no field written bare (`Color.code(red)` under
+//!   NOT COVERED, each measured with the change in place. (An application written all
+//!   NAMED and out of declaration order, `Pair.pair(b: 2, a: 7)`, was the third of these
+//!   and is read in order since WI-20261011-12VZB:
+//!   `wi_12vzb_constructor_named_out_of_order_test`.) A constructor of no field written
+//!   bare (`Color.code(red)` under
 //!   `rule code(red) <=> 1 @[simp]`) is not matched by the equation, though its
 //!   precondition is proved: the node is a `var_ref`, its twin is the name and its view
 //!   is not, a difference kept on purpose at the lowering boundary. An equation with a
