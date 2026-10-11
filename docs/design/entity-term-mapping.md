@@ -104,6 +104,29 @@ consumers above are independent, so teaching each that `f(1)` and `f(x: 1)` deno
 one value is four places to drift, where normalizing at the writer states the
 rank-among-not-named rule once (`positional_to_named_plan`).
 
+**The node an operation body STORES is the one writer that stays as written, and its
+two readers as a term take the canonical form instead** (found with
+WI-20261011-CR6GD). `Expr::Constructor` keeps the author's `pos_args` and argument
+order: the evaluator runs the arguments in that order and a code generator emits that
+spelling, so the node is not a value whose shape is its identity — until something
+reads it as a term *before* it is evaluated. Two readers do, both in the typer. The
+`@[simp]` matcher reads the node's `TermView`: `rule open(mk(v: ?v)) <=> ?v @[simp]`
+did not fire on `Box.open(Box.mk(4))`. A call-site precondition reads the node's term
+twin (`try_occurrence_to_term`): `requires Pair.big(p)` was not provable at
+`need(Pair.pair(7, 2))`, a load error on a program whose named spelling loads. The
+view and the twin are one shape by construction (WI-425), so both now present a
+positionally written constructor as the canonical entity
+(`node_occurrence::canonical_positional_ctor_args` — the same plan, the same sort).
+It is ONE place, which is what the rejected reader-side fix was not: every consumer of
+a `Value::Node` reads through those four `occ_*` readers.
+
+It reaches the **positional** spellings only (`mk(4)`, `pair(7, b: 2)`, `pair(2, a:
+7)`). An application written all named and out of declaration order (`pair(b: 2, a:
+7)`) is still read as written, and still matches neither reader: `pos_args` is read
+off the node for nothing, where a misordered named list can only be told from a
+canonical one by the field list — a lookup at every read of every list cell a
+resolver goal holds. WI-20261011-12VZB owns it.
+
 ## 3. Value positions vs pattern positions
 
 Facts, rules, and queries share one desugaring (Rules 3–4) so a query matches
@@ -191,6 +214,9 @@ so Rule 1 never sees it). Both `Skip` the two exceptions §2 lists. The PATTERN 
 open-coded copy of the rank rule; that copy gets the MIXED spelling wrong and is
 WI-20260827-1F0QP.
 
+The node the body stores is not built canonical — see §2: it is read canonical, by
+the view and the twin.
+
 > **This rule implements Rule 1's desugar and NOT Rule 3's fill, and that is a gap
 > rather than a design.** The loader's canonical form for a declared entity is the
 > positional→named desugar **plus** the absent-field expansion — so a rule body's
@@ -236,6 +262,7 @@ absent optional is `none()` at storage, so there is no injected var to strip.
 | 4 nullary `Ref` form | `kb/mod.rs:1063` · `KB::alloc`; printer `persistence/print.rs:706` |
 | 5 Option detection | `kb/typing.rs:14202` · `is_option_type` |
 | 6 build (source → Value) | `eval/eval.rs` · `finish_constructor`; `kb/resolve.rs` · `anf_flatten` |
+| a stored node read as a term | `kb/node_occurrence.rs` · `canonical_positional_ctor_args`; `kb/term_view.rs` · `occ_head` / `occ_pos_child` / `occ_named_child` / `occ_named_keys`; `try_occurrence_to_term` |
 
 Lines drift; the code tags `WI-500`, `WI-511`, `WI-436`, `WI-433`, `WI-342`,
 `WI-477`, `WI-391`, `WI-109`, `WI-20260827-T2470` are stable anchors.

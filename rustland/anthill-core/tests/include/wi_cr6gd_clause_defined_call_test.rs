@@ -74,13 +74,58 @@
 //!   NOT ADVISED, though `an_equation_beside_the_clauses_defines_the_call` runs: a
 //!   `@[simp]` equation defines the call only where its left-hand side matches the call
 //!   as written. Measured, `rule open(mk(v: ?v)) <=> ?v @[simp]` rewrites
-//!   `Box.open(Box.mk(v: 4))` and neither `Box.open(Box.mk(4))` nor `Box.open(b)` after
-//!   `let b = Box.mk(4)`; both load clean and die `OperationBodyMissing`.
+//!   `Box.open(Box.mk(4))` and not `Box.open(b)` after `let b = Box.mk(4)`, which loads
+//!   clean and dies `OperationBodyMissing`. (It did not rewrite the first either, when
+//!   this refusal was written: see the positional section below.)
 //!
 //!   NOT COVERED. An operation of a sort with no constructor is left to its dispatch: a
 //!   provider may supply it, and the call is judged with the carrier in hand. A bare
 //!   operation name passed as a function value is no application and is not judged here;
 //!   the function-value rule already refuses one that carries no body.
+//!
+//! A CONSTRUCTOR WRITTEN WITH POSITIONAL ARGUMENTS — found while delivering the above, on
+//! the repair it first advised (an equation). An operation body's `Box.mk(4)` was read, as
+//! a term, in the shape it is written: `mk(4)`, beside the `mk(v: ?v)` every pattern and
+//! every other carrier holds (docs/design/entity-term-mapping.md). Two readers take the
+//! node as a term before it is evaluated. The `@[simp]` matcher reads its view: `rule
+//! open(mk(v: ?v)) <=> ?v @[simp]` did not fire on `Box.open(Box.mk(4))`, which loaded
+//! clean and died `OperationBodyMissing`. A call-site precondition reads its term twin:
+//! `requires Pair.big(p)` was not provable at `need(Pair.pair(7, 2))`, a load error on a
+//! program whose named twin loads. View and twin now present the canonical entity form.
+//!
+//!   CONTROLS — measured by having `positional_ctor_fields`, the gate of the canonical
+//!   form, answer `None`.
+//!   FAIL, each dying `OperationBodyMissing`:
+//!     an_equation_fires_on_a_positional_constructor
+//!     an_equation_written_positionally_fires_too
+//!     a_positional_argument_takes_the_field_no_name_took
+//!     a_positional_constructor_under_another_is_read_too
+//!     an_imported_constructor_name_is_read_too
+//!     a_parametric_sorts_constructor_is_read_too
+//!   FAIL, refused at load for an unprovable precondition:
+//!     a_precondition_is_proved_at_a_positional_constructor
+//!   With the VIEW's four readers alone answering as written, the six equation rows
+//!   fail and the precondition row passes; with the TWIN alone, the reverse.
+//!
+//!   PASS either way, by design:
+//!     the_named_spelling_fires_as_it_did
+//!     a_precondition_that_does_not_hold_is_still_refused — refused before for the shape,
+//!       now for the fact; the row says which by naming the clause as judged.
+//!
+//!   WHAT ELSE IT MOVED: a `@[simp]` rule headed by a constructor now rewrites a
+//!   positionally written construction where a body is typed, so behind a seal a later
+//!   load's such rule is refused — `wi_9bkz4_sealed_bodies_test::a_simp_rule_over_a_-
+//!   construction_is_refused_behind_a_seal`, the row written to fail on that day.
+//!
+//!   NOT COVERED, each measured with the change in place. An application written all
+//!   NAMED and out of declaration order (`Pair.pair(b: 2, a: 7)`) is still read as
+//!   written and matches neither reader: telling it from a canonical one takes the field
+//!   list at every read (WI-20261011-12VZB). A constructor of no field written bare (`Color.code(red)` under
+//!   `rule code(red) <=> 1 @[simp]`) is not matched by the equation, though its
+//!   precondition is proved: the node is a `var_ref`, its twin is the name and its view
+//!   is not, a difference kept on purpose at the lowering boundary. An equation with a
+//!   constructor pattern does not see through a binding (`let b = Box.mk(4)` then
+//!   `Box.open(b)`): it rewrites the call as written.
 
 use anthill_core::eval::Value;
 
@@ -545,4 +590,112 @@ fn an_operation_with_nothing_is_told_it_has_no_clause() {
     assert!(msg.contains("operation has no body: test.cr6gdnone.ping"), "{msg}");
     assert!(msg.contains("No clause is indexed under it either"), "{msg}");
     assert!(!msg.contains("defined by the clauses"), "{msg}");
+}
+
+// ── a constructor written with positional arguments ─────────────────────────
+
+/// `lib.<ns>` with a one-field `Box`, a two-field `Pair` and an `Outer` that holds one,
+/// each with an operation defined by an equation over its constructor's NAMED pattern;
+/// `outside` is written in `test.<ns>`.
+fn shaped(ns: &str, outside: &str) -> String {
+    format!(
+        "namespace lib.{ns}\n  import anthill.prelude.{{Int64, Bool}}\n  sort Box\n    entity mk(v: Int64)\n    operation open(b: Box) -> Int64\n    rule open(mk(v: ?v)) <=> ?v @[simp]\n  end\n  sort Pair\n    entity pair(a: Int64, b: Int64)\n    operation first(p: Pair) -> Int64\n    rule first(pair(a: ?a, b: ?b)) <=> ?a @[simp]\n    rule big(pair(a: ?a, b: ?b)) :- ?a > 3\n  end\n  sort Outer\n    entity wrap(p: Pair, n: Int64)\n    operation inner(o: Outer) -> Int64\n    rule inner(wrap(p: pair(a: ?a, b: ?b), n: ?n)) <=> ?b @[simp]\n  end\nend\nnamespace test.{ns}\n  import anthill.prelude.{{Int64, Bool}}\n  import lib.{ns}.{{Box, Pair, Outer}}\n{outside}\nend\n"
+    )
+}
+
+/// The program the equation advice ran into: the constructor written as most are.
+#[test]
+fn an_equation_fires_on_a_positional_constructor() {
+    assert_runs(
+        &shaped("cr6gdpos", "  operation go() -> Int64 = Box.open(Box.mk(4))"),
+        "test.cr6gdpos.go",
+        4,
+    );
+}
+
+/// The left-hand side written positionally is the same pattern: the load names its field.
+#[test]
+fn an_equation_written_positionally_fires_too() {
+    let src = "namespace test.cr6gdposl\n  import anthill.prelude.Int64\n  sort Box\n    entity mk(v: Int64)\n    operation open(b: Box) -> Int64\n    rule open(mk(?v)) <=> ?v @[simp]\n  end\n  operation go() -> Int64 = Box.open(Box.mk(4))\nend\n";
+    assert_runs(src, "test.cr6gdposl.go", 4);
+}
+
+/// The rank rule, on both mixed spellings: a positional argument takes the first
+/// declared field that no named argument took — `pair(2, a: 7)` puts 2 in `b`.
+#[test]
+fn a_positional_argument_takes_the_field_no_name_took() {
+    let src = shaped(
+        "cr6gdmix",
+        "  operation both() -> Int64 = Pair.first(Pair.pair(7, 2))\n  operation tail() -> Int64 = Pair.first(Pair.pair(7, b: 2))\n  operation lead() -> Int64 = Pair.first(Pair.pair(2, a: 7))",
+    );
+    assert_runs(&src, "test.cr6gdmix.both", 7);
+    assert_runs(&src, "test.cr6gdmix.tail", 7);
+    assert_runs(&src, "test.cr6gdmix.lead", 7);
+}
+
+#[test]
+fn a_positional_constructor_under_another_is_read_too() {
+    assert_runs(
+        &shaped(
+            "cr6gdnest",
+            "  operation go() -> Int64 = Outer.inner(Outer.wrap(Pair.pair(7, 2), 9))",
+        ),
+        "test.cr6gdnest.go",
+        2,
+    );
+}
+
+#[test]
+fn an_imported_constructor_name_is_read_too() {
+    assert_runs(
+        &shaped(
+            "cr6gdbare",
+            "  import lib.cr6gdbare.Pair.{pair}\n  operation go() -> Int64 = Pair.first(pair(7, 2))",
+        ),
+        "test.cr6gdbare.go",
+        7,
+    );
+}
+
+/// A sort with a parameter, and the standard library's own: `some(6)` is how nearly
+/// every `Option` in an operation body is written.
+#[test]
+fn a_parametric_sorts_constructor_is_read_too() {
+    let src = "namespace test.cr6gdgen\n  import anthill.prelude.{Int64, Option}\n  import anthill.prelude.Option.{some}\n  sort Gen\n    sort V = ?\n    entity g(v: V)\n    operation un(x: Gen[V]) -> V\n    rule un(g(v: ?v)) <=> ?v @[simp]\n  end\n  operation unopt(o: Option[T = Int64]) -> Int64\n  rule unopt(some(?x)) <=> ?x @[simp]\n  operation own() -> Int64 = Gen.un(Gen.g(5))\n  operation std() -> Int64 = unopt(some(6))\nend\n";
+    assert_runs(src, "test.cr6gdgen.own", 5);
+    assert_runs(src, "test.cr6gdgen.std", 6);
+}
+
+/// The other reader: the argument's term twin, which a call-site precondition is proved
+/// over. The clause's head names the fields; the call does not.
+#[test]
+fn a_precondition_is_proved_at_a_positional_constructor() {
+    let src = shaped(
+        "cr6gdpre",
+        "  operation need(p: Pair) -> Int64\n    requires Pair.big(p)\n  = p.a\n  operation go() -> Int64 = need(Pair.pair(7, 2))\n  operation mixed() -> Int64 = need(Pair.pair(2, a: 7))",
+    );
+    assert_runs(&src, "test.cr6gdpre.go", 7);
+    assert_runs(&src, "test.cr6gdpre.mixed", 7);
+}
+
+/// …and where the fact does not hold the call is still refused, for the fact: the clause
+/// is named as it was judged, in the canonical form.
+#[test]
+fn a_precondition_that_does_not_hold_is_still_refused() {
+    let errs = load_errors_of(&shaped(
+        "cr6gdpren",
+        "  operation need(p: Pair) -> Int64\n    requires Pair.big(p)\n  = p.a\n  operation go() -> Int64 = need(Pair.pair(1, 2))",
+    ));
+    assert_refused_naming(&errs, &["need.requires", "big("], "a precondition that fails");
+}
+
+/// The spelling that always matched.
+#[test]
+fn the_named_spelling_fires_as_it_did() {
+    let src = shaped(
+        "cr6gdnamed",
+        "  operation one() -> Int64 = Box.open(Box.mk(v: 4))\n  operation two() -> Int64 = Pair.first(Pair.pair(a: 7, b: 2))",
+    );
+    assert_runs(&src, "test.cr6gdnamed.one", 4);
+    assert_runs(&src, "test.cr6gdnamed.two", 7);
 }

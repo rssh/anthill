@@ -32,14 +32,15 @@
 //!   in_one_call` FAILS — 12, 12, 2.
 //!
 //! THE `@[simp]` CHECK
-//! * made to find nothing: the four `a_simp_rule_…_is_refused…` rows, the dot-rule row,
+//! * made to find nothing: the five `a_simp_rule_…_is_refused…` rows, the dot-rule row,
 //!   `a_refused_rule_and_…` and `a_typer_run_made_by_hand_…` FAIL — each file loads,
 //!   and the library's body silently keeps its meaning. With `ANTHILL_TYPER_ORACLE=1`
 //!   beside that back-out they fail the other way, by the oracle's panic: "the body of
 //!   sealed operation 'test.liba.libCallsBase' was REWRITTEN".
 //! * made to refuse wherever a sealed body calls or constructs the head, without
-//!   typing it: `a_simp_rule_that_reaches_no_sealed_body_loads` and `a_simp_rule_over_
-//!   a_construction_means_the_same_…` FAIL.
+//!   typing it: `a_simp_rule_that_reaches_no_sealed_body_loads` FAILS. (`a_simp_rule_
+//!   over_a_construction_…` failed with it while a rule headed by a constructor fired
+//!   on no construction; it is refused either way since the rule fires.)
 //! * made to read only "came back rewritten", not what typing reported:
 //!   `a_simp_rule_that_breaks_a_sealed_body_is_refused` FAILS — `libAdds` loads.
 //! * its dot-rule arm removed: `a_dot_rule_for_a_sealed_sort_is_refused` FAILS.
@@ -359,16 +360,27 @@ namespace test.proga
 end
 "#;
 
-/// A rule headed by a CONSTRUCTOR. Today it rewrites no construction in an operation
-/// body, in one call or in two, so there is nothing to refuse — and the row holds the
-/// two orders to ONE answer, which is what the check is for: the day such a rule fires
-/// where a body is typed, one call answers 2 and this fails unless the check, which
-/// already reads a construction as it reads a call, refuses the later load.
+/// A rule headed by a CONSTRUCTOR rewrites a construction where a body is typed, as a
+/// rule over a call does: in one call the library's operation answers by it, and behind
+/// a seal the later load is refused — the check reads a construction as it reads a call.
+///
+/// THE DAY THIS ROW WAS WRITTEN FOR. It held the two orders to one answer while such a
+/// rule fired on no construction in an operation body: the library writes `tag(1)`, the
+/// rule's head is the `tag(n: 1)` the load makes of it, and an operation body's node was
+/// read as written. It is read in the canonical entity form now
+/// (`canonical_positional_ctor_args`, found with WI-20261011-CR6GD), so one call answers
+/// 2 — and the refusal that was waiting takes the other order.
 #[test]
-fn a_simp_rule_over_a_construction_means_the_same_in_one_call_and_in_two() {
+fn a_simp_rule_over_a_construction_is_refused_behind_a_seal() {
     let one = loaded(one_call(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "one call");
-    let two = loaded(two_calls(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "two calls");
-    assert_eq!(values(one, &["test.proga.entry"]), values(two, &["test.proga.entry"]));
+    assert_eq!(values(one, &["test.proga.entry"]), [2]);
+
+    let errors = refused(two_calls(LIB_SIMP, A_RULE_OVER_A_LIBRARY_CONSTRUCTION), "two calls");
+    assert!(
+        errors.iter().any(|e| e.contains("`@[simp]` rule over 'test.liba.Tag.tag'")
+            && e.contains("rewrites the body of 'test.liba.libTags'")),
+        "the refusal names the rule's head and the sealed operation; got {errors:?}"
+    );
 }
 
 const A_RULE_THAT_BREAKS_A_LIBRARY_BODY: &str = r#"
