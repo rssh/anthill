@@ -256,6 +256,8 @@
 #     `forged_llm.anthill:27:17: type mismatch in fake_llm.apply`) in either order, and at lines 22–24. The same
 #     lines every time. The kind of finding WI-20261011-6GMCN and section 7 of
 #     specialization-witnesses-2026-10-11.txt are, at another site.
+#     GONE ON THE MERGED TREE (section 11): six runs, the two lines at 22 and 24 in each. origin/main had, by then,
+#     "type namespace-level operations in the order written" (f0407df1, found with WI-20261011-3HN0N).
 # (c) A ROW OF ROW-TYPED PARAMETERS IS HELD AS ANONYMOUS VARIABLES. `MappedStream provides Stream[T = T,
 #     E = {SourceEffects, TransformEffects}]` is stored `SortView(Stream, T: T, E: {?_, ?_})`, and so are
 #     `FilteredStream`'s and the two `…Finite`'s: four provisions, six records whose names and `substitution` say
@@ -362,3 +364,16 @@
 # SCALAND (21:43 – 21:44, `sbt shutdown` first, then `sbt -batch testFull`): exit 0; 634 + 35 + 1 tests, all passed.
 # Nothing of scaland's was changed and it has no witness pass; what it reads of this change is the comments of
 # `stdlib/anthill/realization/witness.anthill`, which were as delivered when it ran.
+
+== 11. after the merge of origin/main (23:31 – ; six commits of another session, WI-20261011-3HN0N's) ==
+# The merge made itself; no file of this change was touched by the other side.
+#   scripts/test.sh on the merged tree, 23:31:54 – 23:46:50      exit 101: 36 result lines, 35 ok; 9 338 passed, 1 FAILED
+#     the one: anthill-cli's unit row `check::tests::lying_sidecar_verdict_fails` — "lying sidecar must fail
+#     verification": a SAT document replayed as the `Unsat` its sidecar claims, and PASSED.
+# NOT THIS CHANGE'S, AND OLDER THAN IT (2026-04-28): `check::run_solver` writes the document it replays to
+# `anthill_check_<pid>_<the clock's sub-second part>.smt2`, and the unit rows of one process call it at once. Two
+# calls inside one tick of the clock are one file; the row was handed the UNSAT document of `replay_unsat_passes`
+# beside it. Ten runs of those rows alone on a cool machine, afterwards: ten green — it wants the load of a gate.
+# FIXED INLINE: a count of the process's calls in the name (`check::rand_suffix`, which `prove` names its files by
+# too), and a row — 80 000 names from eight threads are 80 000. Backed out, that row FAILS in ten runs of ten:
+# 4 435 to 5 178 distinct names of 80 000 calls.

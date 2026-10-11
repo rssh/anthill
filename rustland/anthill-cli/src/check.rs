@@ -839,14 +839,27 @@ fn read_string_field(
     }
 }
 
+/// A suffix for a temporary file's name that no other call of this process returns.
+///
+/// It was the pid and the clock's sub-second part alone, and the clock does not tick
+/// between two calls made close together (macOS counts microseconds): two threads of one
+/// process got ONE name. `run_solver` writes the document it replays under such a name,
+/// so two replays at once wrote one file and a solver read the other's document — the
+/// unit rows below run in one process, and `lying_sidecar_verdict_fails` passed a SAT
+/// document as `Unsat` once in a gate (2026-10-11, found with WI-20261011-S8CYD), having
+/// been handed the unsat document of the row beside it. The count is what makes a name
+/// this process's alone; the pid and the clock keep it apart from another process's.
 pub(crate) fn rand_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     let pid = std::process::id();
-    format!("{pid}_{nanos}")
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
+    format!("{pid}_{nanos}_{call}")
 }
 
 /// Run the SmtDischarge replay path with explicit hash + verdict
@@ -897,6 +910,21 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    /// Every suffix of one process is another one, from eight threads at once.
+    ///
+    /// BACKED OUT (the count taken out of the name): FAILS, every run of ten — 80 000
+    /// calls and 4 435 to 5 178 names.
+    #[test]
+    fn the_suffixes_of_one_process_are_distinct() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..10_000).map(|_| rand_suffix()).collect::<Vec<_>>()))
+            .collect();
+        let all: Vec<String> =
+            threads.into_iter().flat_map(|t| t.join().expect("a thread of suffixes")).collect();
+        let distinct: std::collections::HashSet<&String> = all.iter().collect();
+        assert_eq!(distinct.len(), all.len(), "of {} suffixes", all.len());
     }
 
     #[test]
