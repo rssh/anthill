@@ -150,6 +150,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "re-types the user file by hand, from that file's own `LoadResult`",
     ),
     (
+        "include/wi_jmmhq_value_dot_internal_test.rs",
+        1,
+        "re-types the user file by hand, from that file's own `LoadResult`",
+    ),
+    (
         "include/wi931_free_standing_provider_backing_test.rs",
         1,
         "loads `stdlib/anthill/` WITHOUT its binding layer, which is refused",

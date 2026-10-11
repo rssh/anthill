@@ -1389,7 +1389,7 @@ pub(super) fn check_apply_iter(
                 span,
                 // WI-977: the OPERATION's scope where there is one — see
                 // `TypingEnv::referencing_scope`. Was `enclosing_sort()`, one scope out.
-                scope: env.referencing_scope(),
+                scope: written_scope(kb, env, occ),
             };
             // A FIXPOINT OVER THE FAMILY, not one pass in array order — WI-20260818-YQB1Y,
             // and the reason it had to change is a REGRESSION the one-pass version caused.

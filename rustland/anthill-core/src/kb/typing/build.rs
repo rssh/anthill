@@ -633,6 +633,12 @@ pub(super) fn build_type(
             // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
             // so the borrowed name can't be held across it.
             let short = short_name_of(kb.local_name_of(member)).to_string();
+            // The dot is the call of the operation it resolves to, and an `internal`
+            // operation is hidden from it where its written name would be
+            // ([`hidden_dot_member`]). Asked of the operation the ladder settles on, and
+            // of the receiver's own member before a dispatch decision can hand the call
+            // on from it.
+            let from_scope = written_scope(kb, &env, &occ);
             // WI-1035: the receiver's OWN member is resolved SEPARATELY from the two
             // spec fallbacks below, because it is not merely a rung of the name ladder
             // — when it backs a spec the receiver provides it is route 1 of a SUPPLIER
@@ -649,6 +655,13 @@ pub(super) fn build_type(
                 // (read above, and by `try_fire_dot_rule`); this is the operation it
                 // resolved to, which is what the callee's own parameter is called.
                 if let Some(own_member) = own_op {
+                    // Before the dispatch decision: on an abstract-spec receiver that
+                    // hands the call to the spec operation the member backs, which a
+                    // hidden member is not passed over for.
+                    if let Some(e) = hidden_dot_member(kb, own_member, from_scope, dot_span) {
+                        results.push(Err(e));
+                        return;
+                    }
                     match dot_member_dispatch_decision(kb, s, own_member, &short, dot_span) {
                         Ok(DotMember::Take) => {}
                         Ok(DotMember::DispatchByValue(spec_op)) => own_op = Some(spec_op),
@@ -760,6 +773,15 @@ pub(super) fn build_type(
                 (other, _) => other,
             };
             if let Some(op_sym) = op_sym {
+                // Asked of the operation the ladder settled on, so every rung above
+                // answers to it without asking for itself: a spec's operation reached
+                // through `provides`, through `requires` or through a clause on a type
+                // parameter, the parent sort's member, and the operation a dispatch
+                // decision handed the call to.
+                if let Some(e) = hidden_dot_member(kb, op_sym, from_scope, dot_span) {
+                    results.push(Err(e));
+                    return;
+                }
                 let mut synth_pos: Vec<Rc<NodeOccurrence>> =
                     Vec::with_capacity(1 + pos_nodes.len());
                 synth_pos.push(receiver_node);
@@ -832,9 +854,7 @@ pub(super) fn build_type(
                         // reduction report it against the rewritten node. (The reduction
                         // checks too, off this same resolution, which is what closes the
                         // hand-written desugared form that never passes through dot dispatch.)
-                        if let Some((ctor, fsym, from_scope)) =
-                            hidden_field_owner(kb, &m, env.referencing_scope())
-                        {
+                        if let Some((ctor, fsym)) = hidden_field_owner(kb, &m, from_scope) {
                             results.push(Err(TypeError::ForbiddenInternalField {
                                 span: dot_span,
                                 entity: ctor,

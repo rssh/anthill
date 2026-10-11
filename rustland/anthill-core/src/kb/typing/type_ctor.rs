@@ -333,17 +333,17 @@ pub(super) struct CtorReduceSite {
     pub(super) sp: crate::span::SourceSpan,
     /// The reducing occurrence's diagnostic span, for a nested resolution that raises.
     pub(super) span: Option<Span>,
-    /// The scope of the code the reduction runs in ([`TypingEnv::referencing_scope`]),
-    /// or `None` at a file's top level, where [`hidden_field_owner`] reads it as the
-    /// global scope (WI-977). The lexical scope an `internal` visibility check tests
-    /// against, and the one its diagnostic NAMES. A structural reduction ignores it.
+    /// The scope the reducing occurrence's text is written in ([`written_scope`]). The
+    /// lexical scope an `internal` visibility check tests against, and the one its
+    /// diagnostic NAMES. A structural reduction ignores it.
     ///
-    /// TWO producers, and the second is easy to miss: an OPERATION body supplies the
-    /// operation's own scope, and a RULE body supplies the rule's `domain` — a
+    /// THREE producers, and the last two are easy to miss: an OPERATION body supplies
+    /// the operation's own scope, a RULE body supplies the rule's `domain` — a
     /// `FieldOf` reduction is reached from the rule-body dot-dispatch sweep as well as
-    /// from an op body, which is why `type_rule_bodies` sets a scope at all. Naming
-    /// only the enclosing sort here is what let a rule body's projection go unchecked.
-    pub(super) scope: Option<Symbol>,
+    /// from an op body, which is why `type_rule_bodies` sets a scope at all — and the
+    /// text of a rewrite supplies its rule's, wherever the rewrite fired. Naming only
+    /// the enclosing sort here is what let a rule body's projection go unchecked.
+    pub(super) scope: ScopeId,
 }
 
 const CONCAT_CTOR: TypeCtor = TypeCtor {
@@ -938,13 +938,43 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
     }
 }
 
-/// The scope a visibility question is asked from: `scope`'s own, or the global scope for
-/// code written at the top level, which no symbol of the frame names.
-pub(super) fn visibility_scope(kb: &KnowledgeBase, scope: Option<Symbol>) -> ScopeId {
-    match scope {
-        Some(s) => kb.symbols.scope_id(s),
-        None => kb.global_scope(),
-    }
+/// The scope `occ`'s text is written in: where an `internal` visibility question about
+/// it is asked from, and the scope its refusal names.
+///
+/// The text of a rewrite is its rule's, wherever the rewrite fired
+/// ([`NodeOccurrence::text_scope`]): a `@[simp]` rule written in `Box` reaches `Box`'s
+/// `internal` members with a dot from every call it rewrites, as it does with a name,
+/// and one written elsewhere does not. Any other text is the code being checked
+/// ([`TypingEnv::referencing_scope`]) — the operation's scope, the rule's, or the global
+/// scope for code written at the top level, which no symbol of the frame names.
+pub(super) fn written_scope(kb: &KnowledgeBase, env: &TypingEnv, occ: &NodeOccurrence) -> ScopeId {
+    occ.text_scope()
+        .unwrap_or_else(|| match env.referencing_scope() {
+            Some(s) => kb.symbols.scope_id(s),
+            None => kb.global_scope(),
+        })
+}
+
+/// The refusal of a dot that found `member`, where `member` is `internal` and hidden
+/// from the scope the dot's text is written in ([`written_scope`]).
+///
+/// A hidden member is refused and is not passed over for a visible one of its name —
+/// the spec operation it backs, a field. The frame's field read answers the same way for
+/// a field an `internal` constructor declares beside a public one
+/// ([`hidden_field_owner`]).
+pub(super) fn hidden_dot_member(
+    kb: &KnowledgeBase,
+    member: Symbol,
+    from_scope: ScopeId,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    (!kb.symbols.internal_visible_from(member, from_scope)).then_some(
+        TypeError::ForbiddenInternalMember {
+            span,
+            member,
+            from_scope,
+        },
+    )
 }
 
 /// WI-759 — the `internal` constructor hiding `m`'s field from `scope`, if any (WI-369).
@@ -955,15 +985,13 @@ pub(super) fn visibility_scope(kb: &KnowledgeBase, scope: Option<Symbol>) -> Sco
 /// constructor gets NAMED when several are, is a diagnostic detail.) Conservative by
 /// construction: a field reachable through an `internal` variant stays encapsulated even
 /// when a public sibling variant declares the same name.
-/// WI-977 — answers the REFERENCING SCOPE alongside the owner, because the caller's
-/// diagnostic has to name it and this is the only place it is known to exist. It used
-/// to answer only the owner, and the caller filled the scope slot with the literal
-/// string `"another scope"` — a fabricated name in a user-visible diagnostic, which
-/// rendered as `cannot be referenced from scope 'another scope'`.
+/// WI-977 — `from` is the scope the caller's diagnostic names: the one the question
+/// was asked against. The caller used to have none in hand and filled the slot with the
+/// literal string `"another scope"` — a fabricated name in a user-visible diagnostic,
+/// which rendered as `cannot be referenced from scope 'another scope'`.
 ///
-/// THE `None` IS RESOLVED HERE, ONCE, AND IT IS THE GLOBAL SCOPE — not "no scope, so
-/// skip the check". `scope` in is [`TypingEnv::referencing_scope`], absent for a
-/// projection written at a file's top level;
+/// THE SCOPE ARRIVES RESOLVED ([`written_scope`]), AND FOR TOP-LEVEL CODE IT IS THE
+/// GLOBAL SCOPE — not "no scope, so skip the check".
 /// [`internal_field_hidden_from`] used to answer `false` for
 /// that and say so ("there is no lexical scope to test against, so enforcement is
 /// skipped (permissive)"). MEASURED against that arm: a top-level
@@ -978,13 +1006,12 @@ pub(super) fn visibility_scope(kb: &KnowledgeBase, scope: Option<Symbol>) -> Sco
 pub(super) fn hidden_field_owner(
     kb: &mut KnowledgeBase,
     m: &ProjectedMember,
-    scope: Option<Symbol>,
-) -> Option<(Symbol, Symbol, ScopeId)> {
-    let from = visibility_scope(kb, scope);
+    from: ScopeId,
+) -> Option<(Symbol, Symbol)> {
     m.owners
         .iter()
         .find(|(ctor, _)| internal_field_hidden_from(kb, from, *ctor))
-        .map(|(ctor, fsym)| (*ctor, *fsym, from))
+        .copied()
 }
 
 /// WI-759 — resolve `recv_ty`'s member named `field_name`: the projection lookup, stated
@@ -1124,11 +1151,11 @@ fn field_of_type(
     // constructor owns the field. A source-level `x.f` is rejected earlier, at the dot's own
     // span with the precise diagnostic; this closes the hand-written desugared form, which
     // never passes through dot dispatch.
-    if let Some((ctor, field, from_scope)) = hidden_field_owner(kb, &member, site.scope) {
+    if let Some((ctor, field)) = hidden_field_owner(kb, &member, site.scope) {
         // WI-977 — names the referencing scope, as the two dot-dispatch renderings of
         // this same refusal do. "outside its declaring scope" restated the rule the
         // author had just hit; the scope they wrote it in is what locates the line.
-        let from = kb.scope_display_name(from_scope).to_string();
+        let from = kb.scope_display_name(site.scope).to_string();
         return Err(format!(
             "field `{}` is declared by the `internal` constructor `{}` and cannot be \
              projected from scope '{}'",

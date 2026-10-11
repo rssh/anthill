@@ -840,10 +840,11 @@ pub enum TypeError {
         /// from the frame names.
         from_scope: ScopeId,
     },
-    /// An `internal` operation or constructor reached through a receiver that denotes
-    /// its sort (`let t = Box; t.secret()`), from a scope that cannot see it. The
-    /// written `Box.secret()` is refused where the name is resolved; this is the same
-    /// refusal for the spelling that reaches the member without writing its name path.
+    /// An `internal` operation or constructor reached by a dot, from a scope that cannot
+    /// see it: through a receiver that denotes its sort (`let t = Box; t.secret()`), or
+    /// through a value (`b.peek()`). The written `Box.secret()` is refused where the name
+    /// is resolved; this is the same refusal for the spelling that reaches the member
+    /// without writing its name path.
     ForbiddenInternalMember {
         span: Option<Span>,
         member: Symbol,

@@ -509,8 +509,11 @@ impl TypingEnv {
     ///
     ///  * an OPERATION body — `enclosing_op`, the operation's own scope;
     ///  * a RULE body — `rule_scope`, the rule's `domain`;
-    ///  * `None` everywhere else, which [`hidden_field_owner`] reads as the GLOBAL
+    ///  * `None` everywhere else, which [`written_scope`] reads as the GLOBAL
     ///    scope — the scope a file's top-level declarations are written in.
+    ///
+    /// Read through [`written_scope`], which answers for the occurrence asked about:
+    /// the text of a rewrite fired in this code is its rule's and not this code's.
     ///
     /// The `enclosing_sort` arm is a THIRD answer that nothing currently selects, and
     /// it is kept deliberately rather than as an oversight: `set_enclosing_sort` has
@@ -532,7 +535,7 @@ impl TypingEnv {
     /// THE RULE-BODY ARM IS NOT COSMETIC, and assuming it was cost a regression:
     /// `set_enclosing_sort` has ONE caller, the operation-body loop, so before
     /// `rule_scope` existed EVERY rule body answered `None` here — not just top-level
-    /// code, as this doc then claimed. With [`hidden_field_owner`] reading `None` as
+    /// code, as this doc then claimed. With [`written_scope`] reading `None` as
     /// the global scope, a rule written INSIDE the declaring sort and projecting its
     /// own `internal` field became a hard load error
     /// (`'x' is internal to '…Point' and cannot be referenced from scope '<global>'`).
