@@ -19,6 +19,12 @@ pub enum EvalError {
     /// channel. Carries a captured backtrace to locate the bad dispatch.
     OperationBodyMissing {
         name: String,
+        /// Clauses are indexed under the operation. They are its definition and they
+        /// answer a goal; a call runs a body, a host function or a builtin, so the
+        /// operation is defined and still has nothing for this call to enter. Carried
+        /// because the two messages differ: one names a definition that is missing, the
+        /// other a definition a call cannot run.
+        defined_by_clauses: bool,
         backtrace: std::backtrace::Backtrace,
     },
     TypeMismatch {
@@ -431,18 +437,44 @@ impl std::fmt::Display for EvalError {
             // unreachable)" this said is no longer true, and saying it misdirects the
             // author who now reaches it: an ordinary program that declares an
             // operation and defines it nowhere lands here, and used to be answered
-            // `false` instead. The four things looked for are named because which one
+            // `false` instead. The three things a call runs are named because which one
             // is missing is the repair, and the equation trap is named because it is
             // the shape that looks like a definition and is not.
-            EvalError::OperationBodyMissing { name, backtrace } => write!(
-                f,
-                "operation has no body: {name} — nothing this runtime can run is \
-                 registered for it: no operation body, no host `operation_map` entry \
-                 for this language, no builtin, and no rule clause indexed under it. \
-                 (An untagged `<=>` equation is indexed under the CONNECTIVE, so its \
-                 subject owns no clause — kernel-language.md §5.3.)\
-                 \nbacktrace:\n{backtrace}"
-            ),
+            //
+            // WI-20261011-CR6GD — CLAUSES ARE NOT A FOURTH. This listed "no rule clause
+            // indexed under it" beside the three, for every operation, and eval looks for
+            // one only where a carrier's `eq` is proved; an operation with clauses and
+            // nothing else was told it had none. What the clauses are is said apart from
+            // what a call runs, and by whether there are any.
+            EvalError::OperationBodyMissing {
+                name,
+                defined_by_clauses,
+                backtrace,
+            } => {
+                write!(
+                    f,
+                    "operation has no body: {name} — nothing this runtime can run is \
+                     registered for it: no operation body, no host `operation_map` entry \
+                     for this language, and no builtin. "
+                )?;
+                if *defined_by_clauses {
+                    write!(
+                        f,
+                        "It is defined by the clauses indexed under it, and clauses answer \
+                         a goal in a rule body, not a call: the one call they run is a \
+                         carrier's `eq` over two ground values of that carrier — \
+                         kernel-language.md §5.3."
+                    )?;
+                } else {
+                    write!(
+                        f,
+                        "No clause is indexed under it either. (An untagged `<=>` \
+                         equation is indexed under the CONNECTIVE, so its subject owns no \
+                         clause — kernel-language.md §5.3.)"
+                    )?;
+                }
+                write!(f, "\nbacktrace:\n{backtrace}")
+            }
             EvalError::TypeMismatch { expected, got } => {
                 write!(f, "type mismatch: expected {expected}, got {got}")
             }

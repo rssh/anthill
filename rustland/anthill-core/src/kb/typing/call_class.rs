@@ -247,6 +247,64 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
     Some(parent_sym)
 }
 
+/// WI-20261011-CR6GD — the declared operation `op_sym` has ONE definition, its clauses,
+/// and no call of it can run: clauses are indexed under it, nothing executable backs it
+/// (no body, no host mapping, no builtin), no provider can supply it, and it is not the
+/// `eq` a carrier's equality is dispatched to.
+///
+/// CLAUSES ANSWER A GOAL, NOT A CALL (kernel-language.md §5.3). `operation open(b: Box) ->
+/// Int64` beside `rule open(mk(v: ?v), ?v) :- true` is one definition written
+/// relationally: the goal `open(mk(4), ?x)` resolves through the clause, and an expression
+/// call `Box.open(Box.mk(4))` names the operation, which has nothing for eval to enter.
+/// Such a call loaded clean and died `OperationBodyMissing`; [`check_apply_iter`] refuses
+/// it where an operation body writes it.
+///
+/// NO PROVIDER CAN SUPPLY IT is asked of the OWNER, not of [`lookup_spec_op_dispatch`]: a
+/// namespace's operation and a data sort's are their owner's own (§5.1), while a sort with
+/// no constructor may be provided — parametric or not — and a call of its operation is
+/// dispatched to whichever member the provider supplies. That call is left to the
+/// dispatch, which has the carrier in hand.
+///
+/// THE `eq` LEG is eval's `eq_bridge_target` read at load: a carrier's `eq` written as
+/// clauses is the one operation a call does run by proving it, so `TotalFloat.eq(a, b)`
+/// in an operation body stays a call.
+///
+/// ASKED OF A DECLARED OPERATION — its one caller holds the operation's record — and of
+/// the symbol as the call resolved it. The clause index first: it is the leg nearly every
+/// call leaves by, and it is two probes of a map keyed by symbol.
+pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    kb.has_clauses_under(op_sym)
+        && !op_is_executable(kb, op_sym)
+        && impl_parent_sort_of_op(kb, op_sym).is_none_or(|sort| sort_is_data(kb, sort))
+        && !kb.is_eq_dispatch_target(op_sym)
+}
+
+/// How the goal of a clause-defined operation of `arity` parameters is spelled, read off
+/// the clauses written under it: with the result as one more column where a clause's head
+/// has one argument more than the operation declares, at the operation's own arity
+/// otherwise. The column is positional and last (§5.3). The refusal names the spelling
+/// that answers, so it is the written heads that say which — a `Bool` operation may be
+/// given its result as a column too.
+pub(super) fn clause_defined_operation_goal(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    arity: usize,
+) -> String {
+    let short = short_name_of(kb.qualified_name_of(op_sym));
+    let result_column = kb.rules_by_functor_iter(op_sym).any(|rid| {
+        matches!(
+            kb.rule_head_value(rid).head(kb),
+            ViewHead::Functor { pos_arity, .. } if pos_arity == arity + 1
+        )
+    });
+    match (result_column, arity) {
+        (true, 0) => format!("{short}(?result)"),
+        (true, _) => format!("{short}(…, ?result)"),
+        (false, 0) => format!("{short}()"),
+        (false, _) => format!("{short}(…)"),
+    }
+}
+
 /// WI-857 — [`resolve_op_target`] with the `NoProvider` refusal, for every reader
 /// that DISPATCHES through a dictionary. `Err` carries the rendered reason.
 ///

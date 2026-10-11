@@ -7612,6 +7612,19 @@ impl KnowledgeBase {
         self.sort_ops.eq_dispatch.get(&functor).copied()
     }
 
+    /// Is `op` the `eq` some carrier's equality is dispatched to? The one operation a
+    /// call runs by its clauses (eval's `eq_bridge_target`), asked where a call to an
+    /// operation with clauses and nothing else is judged. A walk of the index's values:
+    /// its caller has already found the operation to be clause-defined, which almost no
+    /// call's target is.
+    pub(crate) fn is_eq_dispatch_target(&self, op: Symbol) -> bool {
+        let op = self.canonical_sym(op);
+        self.sort_ops
+            .eq_dispatch
+            .values()
+            .any(|target| self.canonical_sym(*target) == op)
+    }
+
     /// WI-860 — install the materialized `default_provider` relation (058 §3.6).
     /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
     /// file. Both openers of a provision ask here; see the field's comment for why the

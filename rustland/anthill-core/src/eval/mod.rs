@@ -1244,6 +1244,7 @@ impl Interpreter {
         if crate::kb::op_info::operation_is_declared(&self.kb, sym) {
             EvalError::OperationBodyMissing {
                 name: self.kb.qualified_name_of(sym).to_string(),
+                defined_by_clauses: self.kb.has_clauses_under(self.kb.canonical_sym(sym)),
                 backtrace: std::backtrace::Backtrace::capture(),
             }
         } else {
