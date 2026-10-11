@@ -303,11 +303,19 @@ pub(super) fn type_check_sorts_collect(
     // could have changed in them is refused (`sealed::sealed_code_refusals`); the
     // oracle types them all the same and says if that changed anything.
     if TYPECHECK_FREE_OPS {
-        let (free_ops, sealed_ops): (Vec<Symbol>, Vec<Symbol>) = kb
+        let (free, sealed): (Vec<_>, Vec<_>) = kb
             .op_bodies_iter()
-            .map(|(s, _)| s)
-            .filter(|s| !sort_owned_ops.contains(s))
-            .partition(|s| !kb.sealed.holds_typed_operation(*s));
+            .filter(|(s, _)| !sort_owned_ops.contains(s))
+            .partition(|(s, _)| !kb.sealed.holds_typed_operation(*s));
+        // In the order the bodies were written, as the constants below are: the
+        // operation table is a hash map, and its order is another each run. The sealed
+        // ones are read by the oracle alone.
+        let in_written_order = |mut ops: Vec<(Symbol, &Rc<NodeOccurrence>)>| -> Vec<Symbol> {
+            ops.sort_by_cached_key(|(s, body)| written_order(body.written_site(), *s));
+            ops.into_iter().map(|(s, _)| s).collect()
+        };
+        let free_ops = in_written_order(free);
+        let sealed_ops = if oracle { in_written_order(sealed) } else { Vec::new() };
         if !free_ops.is_empty() {
             check_operation_bodies(kb, &free_ops, &mut errors, &mut sources, &region_sorts);
         }
@@ -493,6 +501,13 @@ impl ConstantValue {
     }
 }
 
+/// The key two bodies are typed in order of: the file and the place each was written
+/// at, and the symbol's index between two a pass built at one place, so the order is
+/// the same each run.
+fn written_order(site: crate::span::SourceSpan, symbol: Symbol) -> (usize, u32, u32) {
+    (site.source.index(), site.span.start, symbol.index())
+}
+
 /// Every constant with a written value, split by whether a sealed load typed it:
 /// `(the ones this run types, the sealed ones)`. Host-supplied constants have no value
 /// here and are in neither.
@@ -508,7 +523,7 @@ pub(super) fn constant_values_by_seal(
         .const_bodies_iter()
         .map(|(symbol, value)| ConstantValue::of(symbol, Rc::clone(value)))
         .collect();
-    constants.sort_by_key(|c| (c.site.source.index(), c.site.span.start));
+    constants.sort_by_key(|c| written_order(c.site, c.symbol));
     constants
         .into_iter()
         .partition(|c| !kb.sealed.holds_typed_source(c.site))

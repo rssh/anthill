@@ -3414,7 +3414,12 @@ fn lower_node(
                 }
                 let object = lower_node(kb, ctx, combined[0])?;
                 let field = field_name_from_node(kb, combined[1])?;
-                return Ok(format!("{object}.{field}"));
+                // A tuple lowers to `std::tuple`, whose components have no names: a
+                // field of one is read by its place.
+                if let Some(index) = tuple_component_index(kb, combined[0], &field) {
+                    return Ok(format!("std::get<{index}>({object})"));
+                }
+                return Ok(format!("{object}.{}", cpp_identifier(&field)));
             }
             // Error.raise(e) ⇒ tl::make_unexpected(e). The op's return
             // type was wrapped in tl::expected by operations_in_sort,
@@ -3717,7 +3722,28 @@ fn lower_let_chain_node(
     Ok(out)
 }
 
-/// Extract the field name from the 2nd arg of `field_access(object, field)`.
+/// The place of the component `field` names in the tuple `receiver` is, when the typer
+/// stamped `receiver` with a tuple type; `None` for a receiver of any other type, and
+/// for one the typer left unstamped.
+///
+/// `field` is the name [`field_name_from_node`] read, and a label is compared with it as
+/// the source spells both.
+fn tuple_component_index(
+    kb: &KnowledgeBase,
+    receiver: &std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+    field: &str,
+) -> Option<usize> {
+    let TypeExtractor::NamedTuple(components) = extract_type(kb, &receiver.inferred_type()?)
+    else {
+        return None;
+    };
+    components
+        .iter()
+        .position(|(label, _)| short_name_of(kb.qualified_name_of(*label)) == field)
+}
+
+/// Extract the field name from the 2nd arg of `field_access(object, field)`, as the
+/// source spells it: the caller gives it its C++ spelling where it emits a member.
 /// Two producers feed this, with different field-name encodings:
 ///   - the typer's `DotApply` field-fallback (WI-279/WI-490) synthesizes the
 ///     field as a `Const(String("<field>"))` — the form the eval-side
@@ -3736,7 +3762,7 @@ fn field_name_from_node(
             Expr::Const(Literal::String(s)) => return Ok(s.clone()),
             Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name) => {
                 let qn = kb.qualified_name_of(*name);
-                return Ok(cpp_identifier(short_name_of(qn)));
+                return Ok(short_name_of(qn).to_string());
             }
             _ => {}
         }
