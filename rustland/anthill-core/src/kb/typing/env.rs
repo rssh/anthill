@@ -5,6 +5,30 @@ use super::*;
 
 // ── TypingEnv ──────────────────────────────────────────────────
 
+/// Which of a rule body's two texts is being typed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RuleText {
+    /// The rule's own term: a goal and its arguments, matched as they are written.
+    Term,
+    /// What stands under a compound expression. The loader writes it as it writes an
+    /// operation body (`load::is_compound_expression_marker`).
+    Expression,
+}
+
+/// A lambda, an `if`, a `let`, a `match` or an in-body proof: the nodes of the forms the
+/// loader hands to the walk that builds an operation body
+/// (`load::is_compound_expression_marker`), wherever they are written.
+fn is_compound_expression(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Lambda { .. }
+            | Expr::If { .. }
+            | Expr::Let { .. }
+            | Expr::Match { .. }
+            | Expr::Proof { .. }
+    )
+}
+
 #[derive(Clone)]
 pub struct TypingEnv {
     // WI-259: Symbol-keyed (was String-keyed). Symbol is a Copy
@@ -233,14 +257,19 @@ pub struct TypingEnv {
     /// a spec op only on a CONCRETE (or abstract-spec) receiver, never an abstract
     /// type-param, so every rule-body dot that reaches that raise has a concrete
     /// carrier — a DEFINITE failure that must stay loud (WI-622 finding).
-    /// A plain `bool` rides through every `Visit`-push /
+    /// A plain value rides through every `Visit`-push /
     /// let / lambda / match env clone exactly as `debruijn_types` does — the same
     /// path the receiver-var dispatch already depends on. NOT inferred from
     /// `debruijn_types.is_empty()` / `enclosing.is_none()`: a variable-free rule
     /// body has an empty `debruijn_types`, and a namespace-level op body has
     /// `enclosing_sort = None`, so neither is a precise discriminator (explicit over
     /// implicit — see the loud-over-silent principle).
-    pub(super) rule_body_dispatch: bool,
+    ///
+    /// `Some` in a rule body, and it says which of a rule body's two texts is being
+    /// typed ([`RuleText`]): the rule's own term, or what stands under a compound
+    /// expression there. [`Self::in_rule_body`] asks only whether it is a rule body, as
+    /// every reader above does; [`Self::written_as_an_operation_body`] asks which text.
+    pub(super) rule_body_dispatch: Option<RuleText>,
     pub diagnostics: Vec<String>,
     /// WI-20260830-JM7A8 — WHERE A VALUE PRECONDITION'S FAILURE IS RECORDED INSTEAD OF
     /// RAISED, so the SAME call's effects are still attributed and an independent effect
@@ -305,7 +334,7 @@ impl TypingEnv {
             enclosing_op: None,
             enclosing_const: None,
             debruijn_types: Rc::new(HashMap::new()),
-            rule_body_dispatch: false,
+            rule_body_dispatch: None,
             diagnostics: Vec::new(),
             // WI-20260830-JM7A8: OFF by default — see the field doc. Only a caller that
             // drains installs a sink.
@@ -355,14 +384,36 @@ impl TypingEnv {
     /// `rule_body_dispatch` field doc). Called once by `type_rule_bodies`;
     /// the flag rides every env clone from there to `check_apply_iter`.
     pub fn mark_rule_body_dispatch(&mut self) {
-        self.rule_body_dispatch = true;
+        self.rule_body_dispatch = Some(RuleText::Term);
     }
 
     /// WI-557: is this a rule-body dot-dispatch walk? When true, the WI-539
     /// value-precondition `requires`-check is skipped (a rule body is relational,
     /// not an imperative call site over Γ).
     pub(super) fn in_rule_body(&self) -> bool {
-        self.rule_body_dispatch
+        self.rule_body_dispatch.is_some()
+    }
+
+    /// Is the text typed here written as an operation body is — an operation's body, a
+    /// const's value, or what stands under a compound expression of a rule body — and
+    /// not a rule body's own term? The loader builds the three with one walk, and the
+    /// rule's own term with another: a collection literal is a constructor in the
+    /// first, and the node a clause is matched on in the second.
+    pub(super) fn written_as_an_operation_body(&self) -> bool {
+        self.rule_body_dispatch != Some(RuleText::Term)
+    }
+
+    /// The env the children of `expr` are typed in, where it is not this one: `expr` is
+    /// a compound expression in a rule body's own term. Asked at each descent into a
+    /// rule body's node — the typer's visit, and the walk that hands a rule body's
+    /// calls to the typer one at a time.
+    pub(super) fn under(&self, expr: &Expr) -> Option<TypingEnv> {
+        if self.rule_body_dispatch != Some(RuleText::Term) || !is_compound_expression(expr) {
+            return None;
+        }
+        let mut env = self.clone();
+        env.rule_body_dispatch = Some(RuleText::Expression);
+        Some(env)
     }
 
     /// WI-562 / WI-822 LEG 1: install the enclosing OPERATION — its own op-scoped
@@ -954,6 +1005,14 @@ impl Env {
         Env {
             types: Rc::new(types),
             flow: self.flow.clone(),
+        }
+    }
+
+    /// This env for the children of `expr` ([`TypingEnv::under`]).
+    pub(super) fn under(self, expr: &Expr) -> Self {
+        match self.types.under(expr) {
+            Some(types) => self.with_types(types),
+            None => self,
         }
     }
 

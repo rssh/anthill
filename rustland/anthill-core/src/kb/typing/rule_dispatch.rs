@@ -128,6 +128,17 @@ pub(super) fn dispatch_calls_in_occ(
         (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
         (Some(CallDispatch::Checked | CallDispatch::BinderForm), _) | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
+            // The children of a compound expression are written as an operation body
+            // is, and are typed as that text whichever descent reaches them
+            // ([`TypingEnv::under`]). This walk enters an `if` and an in-body proof
+            // itself; a lambda, a `let` and a `match` it hands to the typer whole.
+            //
+            // NO ROW DRIVES THIS LINE. An `if` written in a rule body is bound as it is
+            // written and is not evaluated, so what the typer leaves under one is read
+            // by nothing that tells the two texts apart. It is here so that the text
+            // under an `if` is one text, as under the other four.
+            let entered = env.under(expr);
+            let env = entered.as_ref().unwrap_or(env);
             // Collect child clones first so the immutable borrow on `occ` ends
             // before the mutable-`kb` recursion below.
             let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();

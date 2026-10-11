@@ -79,9 +79,12 @@ fn deeply_nested_else_if_types_without_host_stack_overflow() {
 
 #[test]
 fn collection_literal_frames_assemble_types() {
-    // Behavior preservation for the un-recursed collection arms.
+    // Behavior preservation for the un-recursed collection arms. The frames type a
+    // literal's node where it is a rule body's own term; anywhere else the typer reads
+    // the node as its constructor (WI-20261011-3HN0N — the second half below).
     let mut kb = minimal_kb();
-    let env = TypingEnv::empty();
+    let mut env = TypingEnv::empty();
+    env.mark_rule_body_dispatch();
 
     // [1, 2, 3] : List[T = Int64]; first element carries its own type too.
     let first = occ(Expr::Const(Literal::Int(1)));
@@ -116,4 +119,32 @@ fn collection_literal_frames_assemble_types() {
         "tuple literal should type"
     );
     sort_is(&kb, &tup_int, "Int64"); // positional field stamped
+}
+
+/// The same three nodes where an expression is evaluated: each has the type its frame
+/// gives it, on the node the typer hands back. Passes with the constructor reading
+/// backed out as well — the two readings give a literal one type.
+#[test]
+fn a_collection_literal_has_one_type_where_it_is_evaluated() {
+    let mut kb = minimal_kb();
+    let env = TypingEnv::empty();
+    let int = |n: i64| occ(Expr::Const(Literal::Int(n)));
+
+    let element = int(1);
+    let list = occ(Expr::ListLit(vec![Rc::clone(&element), int(2), int(3)]));
+    let typed = type_check_node(&mut kb, &env, &list, None).expect("list literal should type");
+    sort_is(&kb, &typed.node, "List");
+    sort_is(&kb, &element, "Int64");
+
+    let set = occ(Expr::SetLit(vec![int(1)]));
+    let typed = type_check_node(&mut kb, &env, &set, None).expect("set literal should type");
+    sort_is(&kb, &typed.node, "Set");
+
+    let first = int(1);
+    let tup = occ(Expr::TupleLit {
+        positional: vec![Rc::clone(&first), occ(Expr::Const(Literal::Bool(true)))],
+        named: vec![],
+    });
+    type_check_node(&mut kb, &env, &tup, None).expect("tuple literal should type");
+    sort_is(&kb, &first, "Int64");
 }
