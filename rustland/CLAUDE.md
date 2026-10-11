@@ -153,6 +153,42 @@ again, so `anthill-core` is an hour and a half on the shared base and two hours 
 the fresh recipe, where they are five minutes and fifteen (measured 2026-10-11;
 `provider-index-2026-10-10.txt` §7 has both runs).
 
+**A sealed load's provisions are checked once** (WI-20261011-A3NND).
+`check_provider_requires` resolves each provision's contract — the `requires` of the spec
+it provides, at its bindings — and did so for every provision of the KB at every load:
+27 ms of a 65 ms later load, 93 % of it the resolver's candidate search. Behind a seal
+of a WHOLE load whose check held (`load::seal_declarations`; `SealedDeclarations::
+checked_provisions`) it reads the rows asserted since — a refused load's too: it reads
+the KB, not the load — and EVERY row when something asserted since can change the
+verdict of a held one (`kb/typing/checked_provisions.rs`, whose module doc has the
+argument): a `requires`, a type parameter or a provision's condition for a sort that
+was there before the seal, a provision by a provider that was, a provision of an earlier
+spec with no binding headed by a type only a later load can name. Nothing sealed, nothing skipped; a seal of
+SOME of a load's files (`seal_declarations_of` given fewer than the load had) and a
+seal of a load that stopped before its typer hold no provision. A row derived BELOW the check in a load (`eq_derive::run`'s
+`NonEq`) is checked where that pass ends (`check_provider_requires_since`): a new pass
+that asserts a provision below `check_provider_requires` is covered by standing above
+that second call, and a new way for a later load to change how an EARLIER provision's
+contract resolves owes `later_fact_that_reaches_a_held_verdict` a clause — it need not
+be a fact of the provision relations: a type parameter written into a required sort
+turns a refinement into a demand, and was found by review, not by the suite. What the
+seal holds is the KB as the check LEFT it (`LastLoad::provisions_checked`), so a row
+asserted between a load's check and its seal is read by the next load. The control
+that no row was skipped that should have been checked:
+
+```bash
+ANTHILL_PROVISION_ORACLE=1 ANTHILL_TEST_OPT=2 scripts/test.sh -p anthill-core   # every narrowed run checked in full as well; a difference panics
+```
+
+It costs what the check used to (one full run of it a load), and is for a change to the
+check, to what a seal holds, or to how a goal's candidates are matched — on the shared
+base and under `ANTHILL_TEST_TWO_STEP_LOAD=1`, the two recipes with a later load. The
+log says whether the switch took (`provision oracle OBSERVED`, written by
+`wi_a3nnd_checked_provisions_test`, which fails if it did not — and counts NARROWED
+runs compared with a full one, so it also fails if narrowing has stopped).
+`typing::provisions_checked_by_this_thread` counts the rows a load's check read, for a
+test that a row was NOT.
+
 **A third control: which carrier a declared type rides.** A type is read through the
 carrier-neutral view (`TermView`, `extract_type`), and a reader that matches the carrier
 instead — a `Value::Term` gate, a `_ => false` for "a carrier this cannot read" — answers

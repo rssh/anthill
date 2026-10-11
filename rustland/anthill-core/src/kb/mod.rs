@@ -7663,6 +7663,13 @@ impl KnowledgeBase {
         typing::provision_is_conditional(self, carrier, spec)
     }
 
+    /// Does `carrier` provide `spec` — by a provision of its own, written or derived, or
+    /// through one (`typing::sort_provides`, the transitive relation the typer reads)?
+    /// For a test that a derivation happened; the typer asks the relation directly.
+    pub fn sort_provides(&self, carrier: Symbol, spec: Symbol) -> bool {
+        typing::sort_provides(self, carrier, spec)
+    }
+
     /// Proposal 066 §7.5 — how many written clauses of `carrier` provide `spec`.
     pub fn provides_clause_count(&self, carrier: Symbol, spec: Symbol) -> u32 {
         let key = (

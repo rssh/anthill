@@ -1020,10 +1020,20 @@ pub(super) fn decode_provides_row(
 /// Every provision row, in relation order — a scan of the whole relation, and empty when
 /// `SortProvidesInfo` is not declared at all.
 pub(super) fn provides_rows(kb: &KnowledgeBase) -> impl Iterator<Item = ProvidesRow> + '_ {
+    provides_rows_from(kb, 0)
+}
+
+/// [`provides_rows`] from rule slot `first_slot` on — the rows asserted since the KB held
+/// that many clauses, none below it decoded.
+pub(super) fn provides_rows_from(
+    kb: &KnowledgeBase,
+    first_slot: usize,
+) -> impl Iterator<Item = ProvidesRow> + '_ {
     kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .map(|sym| kb.rules_by_functor(sym))
         .unwrap_or_default()
         .into_iter()
+        .filter(move |rid| rid.index() >= first_slot)
         .filter_map(move |rid| decode_provides_row(kb, rid, |_| true))
 }
 

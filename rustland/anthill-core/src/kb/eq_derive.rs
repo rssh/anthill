@@ -1282,7 +1282,7 @@ fn push_type_sorts<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Symbol
 /// byte-identical; the mark is KB-side, not a field). Deliberately not marked here:
 /// [`derive_total_eq`] asserts through this same function and its rows are held to
 /// provider coverage.
-fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) -> RuleId {
+pub(crate) fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol) -> RuleId {
     let provides_sym = kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
     let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
     let sort_ref_key = kb.intern("sort_ref");

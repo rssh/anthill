@@ -203,6 +203,8 @@ pub(super) fn collect_provides_candidates(
     // concrete) not its surface spelling. `None` keeps the head-only match.
     sigma: Option<&SigmaCtx>,
 ) -> Vec<Candidate> {
+    // WI-20261011-A3NND — a run of the provision check asks what it put here.
+    note_candidate_search(kb, goal, sigma);
     // WI-660: the spec-base bucket (built index) or the full scan, re-filtered BY CANONICAL
     // SORT (WI-20260923-N3W68 #10 — see [`provides_rows_of_spec_in`]). Collected — the loop
     // below borrows `kb` mutably.
