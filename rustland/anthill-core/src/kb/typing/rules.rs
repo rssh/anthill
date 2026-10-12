@@ -632,6 +632,20 @@ pub(crate) fn is_typed_head_domain_pass(
         .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
 }
 
+/// WI-20261012-ZZ7PH — is `goal` one [`install_typed_head_domain_goals`] generated for a
+/// typed head: the type test in front of the body, the fill behind it, the read of the
+/// dictionary the fill runs through?
+///
+/// For a reader of a clause's body that takes the BOUND for what it says —
+/// [`crate::kb::ProgramClause::type_bounds`] — and must not read it twice: the SMT
+/// emitter gives a bounded variable its sort, and a goal that tests or generates the
+/// same type states nothing more of it there. By PROVENANCE, as the pass's own
+/// idempotence test is: an author's own `domain(?x, T)` beside a typed head is not one.
+pub fn is_typed_head_domain_goal(kb: &KnowledgeBase, goal: &NodeOccurrence) -> bool {
+    goal.synthesized_by()
+        .is_some_and(|by| is_typed_head_domain_pass(kb, by))
+}
+
 /// WI-742 / WI-743 / WI-20260925-SHED7 (proposal 060 §2–§2.3) — compile every `?x: B`
 /// annotation on a RELATIONAL rule head into generated goals: the domain's `fill`, APPENDED
 /// after the body, and in front of the body the TYPE TEST:

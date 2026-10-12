@@ -20842,6 +20842,129 @@ pub fn requires_clauses_of(
     Ok(clauses)
 }
 
+/// WI-20261012-ZZ7PH — ONE SPEC A HOLDER OF A `requires` CLAUSE IS OWED THE LAWS OF: the
+/// spec the clause names, or one that spec requires or provides in turn, at its
+/// bindings IN THE TERMS OF THE SCOPE the clause is written in.
+///
+/// `requires Ord[T = T]` in `Scope` is `Ord[T = Scope.T]`, whose `in_turn` is the
+/// `WeakOrd[T = Scope.T]` that `Ord` provides, whose own is `Eq[T = Scope.T]` and
+/// `PartialOrd[T = Scope.T]`, and so on down: a provider of `Ord` at a carrier holds
+/// every one of them there, so a proof under the requirement may assume the laws of
+/// each ([`KnowledgeBase::spec_laws`]). A spec's `provides` is a conversion and stands
+/// in the chain where a `requires` does (`typing::SupplySource`).
+#[derive(Clone, Debug)]
+pub struct RequirementInstance {
+    /// The sort the spec is of.
+    pub spec: Symbol,
+    /// The spec at its bindings, as [`qualified_spec_text`] writes it.
+    pub spec_text: String,
+    /// Each TYPE parameter of `spec` this instance binds, and the type it is bound to.
+    /// A parameter the instance leaves open is absent.
+    pub bindings: Vec<(Symbol, crate::eval::value::Value)>,
+    /// What `spec` requires or provides in turn, each at this instance's bindings.
+    pub in_turn: Vec<RequirementInstance>,
+}
+
+/// WI-20261012-ZZ7PH — THE CHAIN OF ONE `requires` CLAUSE ([`requires_clauses_of`]): the
+/// spec it names and what that requires or provides in turn, the bindings composed down
+/// the chain into the scope's own terms.
+///
+/// READ OFF `typing::requires_tree`, which is where the bindings are composed and where
+/// a cycle is cut (a spec reached again along its own path adds nothing). Proposal 030
+/// had this as "not built — it wants the bindings composed along the chain"
+/// (WI-20261011-BVG8M); they already were, for the dictionary a caller passes.
+///
+/// `Err` when the scope's tree has no node for the clause — the clause was read off the
+/// same relation the tree is built from, so that is a reader that has drifted — or an
+/// entry of the chain cannot be read: a proof is not run as if the requirement had no
+/// chain, or a shorter one.
+pub fn requirement_chain(
+    kb: &mut KnowledgeBase,
+    clause: &RequiresClause,
+) -> Result<RequirementInstance, String> {
+    use super::typing::{requires_tree, RequiresNode, SupplySource};
+
+    fn instance_of(
+        kb: &KnowledgeBase,
+        scope_qn: &str,
+        node: &RequiresNode,
+    ) -> Result<RequirementInstance, String> {
+        let spec = node.entry.required_sort;
+        // A node whose spec cannot be read takes its laws and its whole sub-chain with
+        // it: said, not dropped.
+        let spec_text = qualified_spec_text(kb, &node.entry.spec).ok_or_else(|| {
+            format!(
+                "the requires chain of `{scope_qn}` has an entry for `{}` whose spec cannot be \
+                 read",
+                kb.qualified_name_of(spec)
+            )
+        })?;
+        // A spec written with no binding (`requires Minimal`) is no view, and binds
+        // nothing.
+        let written = super::typing::unwrap_spec_view_value(kb, &node.entry.spec)
+            .map(|(_, bindings)| bindings)
+            .unwrap_or_default();
+        // A clause's keys are re-keyed onto the required spec's own parameter symbols
+        // and a conversion's are not (`direct_requires`), so a parameter is found by
+        // its NAME, as that reader finds it. Read by the spec's TYPE parameters, so a
+        // binding the loader completed the clause with — an operation's, `eq = eq` —
+        // is never asked for.
+        let bindings = kb
+            .type_param_syms_of(spec)
+            .iter()
+            .filter_map(|&param| {
+                let name = last_segment(kb.local_name_of(param));
+                written
+                    .iter()
+                    .find(|(key, _)| last_segment(kb.local_name_of(*key)) == name)
+                    .map(|(_, value)| (param, value.clone()))
+            })
+            .collect();
+        let in_turn = node
+            .sub_requires
+            .iter()
+            .map(|sub| instance_of(kb, scope_qn, sub))
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(RequirementInstance {
+            spec,
+            spec_text,
+            bindings,
+            in_turn,
+        })
+    }
+
+    let scope = kb.try_resolve_symbol(&clause.scope_qn).ok_or_else(|| {
+        format!(
+            "the scope `{}` of a `requires` clause is no symbol",
+            clause.scope_qn
+        )
+    })?;
+    let tree = requires_tree(kb, scope);
+    for node in tree
+        .iter()
+        .filter(|node| node.entry.supply == SupplySource::Required)
+    {
+        // The clause's own spec is read first: a clause is told from its neighbours by
+        // it, and only the one asked for has its chain read.
+        if qualified_spec_text(kb, &node.entry.spec).as_deref() == Some(clause.spec_text.as_str()) {
+            return instance_of(kb, &clause.scope_qn, node);
+        }
+    }
+    Err(format!(
+        "`{}` requires `{}`, and its requires chain has no entry for that clause",
+        clause.scope_qn, clause.spec_text
+    ))
+}
+
+/// The scopes a rule named `rule_qn` is in, outermost first: for `a.b.c.rule` the names
+/// `a`, `a.b`, `a.b.c`. BY NAME — a rule's qualified name is its scopes' — which is how a
+/// proof's implicit citations are read (proposal 030 γ.4) and how the SMT emitter asks
+/// whether a rule stands under an abstract parameter.
+pub fn enclosing_scope_names(rule_qn: &str) -> Vec<String> {
+    let parts: Vec<&str> = rule_qn.split('.').collect();
+    (1..parts.len()).map(|end| parts[..end].join(".")).collect()
+}
+
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
 /// detection criterion for "needs an induction principle". The
 /// loader emits `kind` as `Term::Ident(intern("enum"))` (see

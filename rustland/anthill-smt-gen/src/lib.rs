@@ -18,7 +18,10 @@
 pub mod cache;
 pub mod outcome;
 pub mod policy;
+pub mod sort;
 pub mod tactic_emit;
+
+pub use sort::{lower_spec_law, Declarations, LoweredLaw, SmtSort};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -27,9 +30,12 @@ use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
-use anthill_core::kb::term::{Literal, Term, Var};
+use anthill_core::kb::term::{Literal, Term, Var, VarId};
+use anthill_core::kb::typing::is_typed_head_domain_goal;
 use anthill_core::kb::{KnowledgeBase, ProgramClause};
 use anthill_core::parse::desugar_target as dt;
+
+use sort::{document_logic, smt_tokens};
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -84,6 +90,21 @@ pub struct ProofConfig {
     /// so the parent's body doesn't drag transitive nonlinear /
     /// fact-bound arithmetic into the consumer's preamble.
     pub abstract_body: bool,
+    /// WI-20261012-ZZ7PH — the LAWS of the requirements of the proof's enclosing
+    /// scopes, each a whole `(assert (forall …))` as [`lower_spec_law`] gives it. They
+    /// are hypotheses as `assumptions` are, and are not of the `using` list: a
+    /// requirement is a scope axiom, read off its declaration.
+    pub laws: Vec<String>,
+    /// What `laws` and `assumptions` use and the theory does not have — the sort a
+    /// scope's abstract parameter is, a spec's operations on it. Declared with what the
+    /// proof's own body uses, each once.
+    pub declarations: Declarations,
+    /// WHERE `laws` CAME FROM, as entries of the proof's dependency set
+    /// (`cache::visited_laws_of` a spec, `cache::visited_requires_of` a scope). A law is
+    /// no rule the proof visits, so without these the state a proof's record is hashed
+    /// over did not hold what it was proved from: a law weakened, or the `requires`
+    /// clause removed, left the record current and the lemma citable.
+    pub law_sources: Vec<String>,
 }
 
 /// One obligation to discharge: prove `<rule>(?result) ≤ <bound>`
@@ -118,6 +139,7 @@ pub fn emit_obligation_with(
     config: &ProofConfig,
 ) -> Result<String, SmtGenError> {
     let mut emitter = Emitter::new(kb);
+    emitter.result_required = true;
     emitter.collect_rule(&obligation.rule_qn)?;
     if emitter.result_var.is_empty() {
         // AN OBLIGATION IS `<rule>(?result) <= bound`, so a head that binds no result
@@ -140,6 +162,7 @@ pub fn emit_obligation_with(
         )));
     }
     emitter.collect_facts_for_referenced_entities()?;
+    emitter.declarations.merge(&config.declarations)?;
     Ok(emitter.render_upper_bound_with(obligation, config))
 }
 
@@ -167,6 +190,7 @@ pub fn emit_satisfiability_check_with(
     emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities()?;
+    emitter.declarations.merge(&config.declarations)?;
     Ok(emitter.render_satisfiability_with(rule_qn, config))
 }
 
@@ -182,8 +206,17 @@ pub fn emit_satisfiability_check_with_deps(
     emitter.abstract_mode = config.abstract_body;
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities()?;
+    emitter.declarations.merge(&config.declarations)?;
     let smt = emitter.render_satisfiability_with(rule_qn, config);
-    let deps: Vec<String> = emitter.visited_rules.into_iter().collect();
+    // What the proof was handed that no rule it visits names (`ProofConfig::law_sources`)
+    // is of its dependency set too.
+    let deps: Vec<String> = emitter
+        .visited_rules
+        .into_iter()
+        .chain(config.law_sources.iter().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
     Ok((smt, deps))
 }
 
@@ -224,21 +257,40 @@ pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
 ) -> Result<Vec<String>, SmtGenError> {
+    lift_rule(kb, rule_qn).map(|lifted| lifted.clauses)
+}
+
+/// What a cited lemma gives its consumer's document: the clauses
+/// [`lift_rule_to_implication_clause`] describes, and — WI-20261012-ZZ7PH — what they
+/// use and the theory does not have. A lemma about a scope's abstract parameter
+/// quantifies over the parameter's own sort and names a spec's operations on it, and
+/// the consumer declares both, once, with what its own body uses.
+#[derive(Debug, Clone, Default)]
+pub struct Lifted {
+    pub clauses: Vec<String>,
+    pub declarations: Declarations,
+}
+
+/// [`lift_rule_to_implication_clause`], with the declarations the clauses need.
+pub fn lift_rule(kb: &KnowledgeBase, rule_qn: &str) -> Result<Lifted, SmtGenError> {
     let clauses = kb.program_clauses_by_qn(rule_qn);
     if clauses.is_empty() {
         return Err(SmtGenError::new(format!("rule '{rule_qn}' not found")));
     }
-    clauses
-        .into_iter()
-        .map(|clause| lift_one_clause(kb, rule_qn, clause))
-        .collect()
+    let mut lifted = Lifted::default();
+    for clause in clauses {
+        let (text, declarations) = lift_one_clause(kb, rule_qn, clause)?;
+        lifted.clauses.push(text);
+        lifted.declarations.merge(&declarations)?;
+    }
+    Ok(lifted)
 }
 
 fn lift_one_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
     clause: ProgramClause,
-) -> Result<String, SmtGenError> {
+) -> Result<(String, Declarations), SmtGenError> {
     let mut emitter = Emitter::new(kb);
     // Cited-rule lifts are inherently abstract: chasing the cited
     // rule's body would condition its truth on facts the consumer
@@ -279,30 +331,33 @@ fn lift_one_clause(
 
     if shared_arity == 0 {
         if emitter.free_vars.is_empty() {
-            return Ok(format!("(assert {imp})"));
+            return Ok((format!("(assert {imp})"), emitter.declarations));
         }
-        let decls: Vec<String> = emitter
-            .free_vars
-            .iter()
-            .map(|v| format!("({v} Real)"))
-            .collect();
-        return Ok(format!("(assert (forall ({}) {imp}))", decls.join(" ")));
+        // Each variable at the sort its bound or a signature gave it — a `Real` where
+        // neither did, as every one was.
+        let decls = emitter.quantifier_declarations();
+        return Ok((
+            format!("(assert (forall ({decls}) {imp}))"),
+            emitter.declarations,
+        ));
     }
 
     // shared_arity > 0: emit declare-consts for step-new vars +
     // a ground assert for the implication.
-    let mut step_new: Vec<&String> = emitter
+    let mut step_new: Vec<String> = emitter
         .free_vars
         .iter()
         .filter(|v| parse_synthetic_var_name(v).map_or(false, |idx| idx >= shared_arity))
+        .cloned()
         .collect();
     step_new.sort();
     let mut block = String::new();
     for v in &step_new {
-        block.push_str(&format!("(declare-const {v} Real)\n"));
+        let sort = emitter.declared_var_sort(v);
+        block.push_str(&format!("(declare-const {v} {sort})\n"));
     }
     block.push_str(&format!("(assert {imp})"));
-    Ok(block)
+    Ok((block, emitter.declarations))
 }
 
 // ── Implementation ──────────────────────────────────────────────────
@@ -315,6 +370,12 @@ enum HeadShape {
     /// `?a = ?b`, `LinkParameters(...)`). Head IS the conclusion under
     /// proposal 032; routed through `process_body_goal`.
     Predicate,
+    /// WI-20261012-ZZ7PH — an EQUATION, `lhs <=> rhs`, stored with the head
+    /// `anthill.kernel.unify(lhs, rhs)`. The head is the conclusion `(= lhs rhs)`, each
+    /// side a formula or a value by its own shape. It was `Unsupported` ("rule head
+    /// shape not supported"), so no law of a spec lifted: 21 of the standard library's
+    /// 22 are equations.
+    Equation,
     /// `rule_qn(?result)` — single DeBruijn pos_arg as the result
     /// variable. Used by upper-bound obligations.
     FunctionLike { result_idx: u32 },
@@ -392,6 +453,34 @@ struct Emitter<'kb> {
     /// WHICH SMT FORM, decided by symbol identity — see the table's own doc for
     /// why this is not a name compare.
     builtins: SmtBuiltinTable,
+    /// WI-20261012-ZZ7PH — THE SORT OF EACH VARIABLE OF THE FRAME BEING READ, by its
+    /// name in the document, where a bound or a signature says it (`sort.rs`). One that
+    /// is absent is a `Real`, as every variable was — or refused
+    /// ([`Self::refusal_subject`]).
+    var_sorts: BTreeMap<String, SmtSort>,
+    /// What the document must declare before it uses it: the sorts the theory does not
+    /// have and the functions on them.
+    declarations: Declarations,
+    /// LOWERING A LAW: what the requirement binds each type parameter to, for an
+    /// operand group no operand decides (`Emitter::seed_param_defaults`). Empty for a
+    /// proof's own body and for a cited lemma, which get no such reading.
+    param_defaults: HashMap<Symbol, SmtSort>,
+    /// LOWERING A LAW ([`lower_spec_law`]): the requirement it is lowered at, as its
+    /// text. A law is read as a cited lemma is, with three differences that each hang
+    /// on this: its own bound names the SPEC's parameter, which is what the requirement
+    /// binds it to; a premise that is a rule's predicate is not passed over; and a
+    /// variable nothing gives a sort is refused whatever scope it is in.
+    lowering_law: Option<String>,
+    /// The clause read is a STEP of a structured proof (`ProgramClause::shared_arity`),
+    /// which says what a refusal can advise: a step writes no bound.
+    reading_step: bool,
+    /// The variables of a stored fact's term being lowered (a `constraint` law), which
+    /// are the loader's own and no frame's: each with the name it goes by here.
+    global_names: Vec<(VarId, String)>,
+    /// An OBLIGATION bounds the head's result variable, so the body must bind it. A
+    /// satisfiability check does not: there a head variable the body leaves unbound is
+    /// the rule's parameter, and free in the document like any other.
+    result_required: bool,
 }
 
 impl<'kb> Emitter<'kb> {
@@ -411,6 +500,13 @@ impl<'kb> Emitter<'kb> {
             trig_args: BTreeSet::new(),
             abstract_mode: false,
             builtins: SmtBuiltinTable::resolve(kb),
+            var_sorts: BTreeMap::new(),
+            declarations: Declarations::default(),
+            param_defaults: HashMap::new(),
+            lowering_law: None,
+            reading_step: false,
+            global_names: Vec::new(),
+            result_required: false,
         }
     }
 
@@ -466,6 +562,29 @@ impl<'kb> Emitter<'kb> {
             return Err(SmtGenError::new(msg.clone()));
         }
 
+        // The head is still a hash-consed term (heads stay terms — they are
+        // SEARCHED in the discrimination tree). Materialize it to the
+        // occurrence substrate so it flows through the same occurrence-based
+        // `process_body_goal` as the body goals (WI-246).
+        let head_occ = match head_shape {
+            HeadShape::Predicate | HeadShape::Equation => {
+                Some(materialize_from_handle(self.kb, *head))
+            }
+            _ => None,
+        };
+
+        // WI-20261012-ZZ7PH — the sorts of the clause's variables, before any goal is
+        // translated: what the head's bounds say, and what follows from them through
+        // the signatures of the operations the clause applies (`sort.rs`).
+        self.seed_bounds(clause)?;
+        if clause.shared_arity > 0 {
+            self.reading_step = true;
+            self.seed_parent_bounds(rule_qn)?;
+        }
+        let sorted: Vec<Rc<NodeOccurrence>> =
+            clause.body_nodes.iter().chain(&head_occ).cloned().collect();
+        self.infer_var_sorts(&sorted)?;
+
         // Walk the body. Three clause shapes we accept:
         //   <Entity>(field: ?var, ...) — destructure a fact's fields
         //   ?var = <arith>             — bind ?var to an SMT term
@@ -485,39 +604,46 @@ impl<'kb> Emitter<'kb> {
         // `assertions`. Discharge and lift consume the two buckets
         // differently — see render_satisfiability_with /
         // lift_rule_to_implication_clause.
-        // The head is still a hash-consed term (heads stay terms — they are
-        // SEARCHED in the discrimination tree). Materialize it to the
-        // occurrence substrate so it flows through the same occurrence-based
-        // `process_body_goal` as the body goals (WI-246).
-        let conclusion_goals: Vec<Rc<NodeOccurrence>> = match head_shape {
-            HeadShape::Bottom => Vec::new(),
-            HeadShape::FunctionLike { .. } => Vec::new(),
-            HeadShape::Predicate => vec![materialize_from_handle(self.kb, *head)],
-            HeadShape::Unsupported(_) => unreachable!("returned above"),
-        };
-        if !conclusion_goals.is_empty() {
-            let body_count = self.assertions.len();
-            for goal in &conclusion_goals {
+        match (&head_shape, &head_occ) {
+            (HeadShape::Predicate, Some(goal)) => {
+                let body_count = self.assertions.len();
                 self.process_body_goal(goal, &mut local_bindings)?;
+                self.conclusion_assertions = self.assertions.split_off(body_count);
             }
-            self.conclusion_assertions = self.assertions.split_off(body_count);
+            (HeadShape::Equation, Some(equation)) => {
+                let Some((_, [lhs, rhs], _)) = occ_as_fn(equation) else {
+                    unreachable!("`classify_head` answers `Equation` for two operands");
+                };
+                let lhs = self.translate_term(lhs, &local_bindings)?;
+                let rhs = self.translate_term(rhs, &local_bindings)?;
+                self.conclusion_assertions = vec![format!("(= {lhs} {rhs})")];
+            }
+            _ => {}
         }
 
         // For upper-bound mode the result var must be bound by the
-        // body. For satisfiability mode (no result var) it's fine if
-        // every body var is either bound or free.
+        // body. In satisfiability mode a head variable the body does not bind is
+        // the rule's PARAMETER (`rule irreflexive(?a: T) :- neq(?a, ?a)`), free in
+        // the document like any other variable its goals name (WI-20261012-ZZ7PH:
+        // it was "rule body never bound the result variable" there too).
         if !self.result_var.is_empty() {
-            let result_smt = local_bindings.get(&self.result_var).ok_or_else(|| {
-                SmtGenError::new(format!(
-                    "rule body never bound the result variable '?{}'",
-                    self.result_var
-                ))
-            })?;
-            self.body_smtlib = format!(
-                "(define-fun {} () Real {})",
-                sanitize_smt_id(&self.result_var),
-                result_smt
-            );
+            match local_bindings.get(&self.result_var) {
+                Some(result_smt) => {
+                    let sort = self.declared_var_sort(&self.result_var.clone());
+                    self.body_smtlib = format!(
+                        "(define-fun {} () {sort} {})",
+                        sanitize_smt_id(&self.result_var),
+                        result_smt
+                    );
+                }
+                None if self.result_required => {
+                    return Err(SmtGenError::new(format!(
+                        "rule body never bound the result variable '?{}'",
+                        self.result_var
+                    )))
+                }
+                None => self.result_var.clear(),
+            }
         }
 
         // Compute free vars: any var_<i> referenced by an assertion
@@ -530,18 +656,7 @@ impl<'kb> Emitter<'kb> {
         // string; without this it would emit undeclared and z3 would error. The
         // result var itself is in `local_bindings`, so it is skipped (never
         // double-declared), and `free_vars` are rendered before `body_smtlib`.
-        let scan = self
-            .assertions
-            .iter()
-            .chain(self.conclusion_assertions.iter())
-            .chain(std::iter::once(&self.body_smtlib));
-        for assertion in scan {
-            for tok in assertion.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if parse_synthetic_var_name(tok).is_some() && !local_bindings.contains_key(tok) {
-                    self.free_vars.insert(tok.to_string());
-                }
-            }
-        }
+        self.note_free_vars(&local_bindings)?;
 
         // Soundness guard (WI-681): the uninterpreted-trig relaxation
         // (cos/sin free except cos²+sin²=1) is an OVER-approximation — sound
@@ -563,12 +678,59 @@ impl<'kb> Emitter<'kb> {
         Ok(())
     }
 
+    /// The clause's FREE variables: any `var_<i>` an assertion (body or conclusion) or
+    /// `body_smtlib` names that `bindings` does not bind. See the note at its one
+    /// caller in [`Self::collect_rule_clause`] for why `body_smtlib` is scanned.
+    ///
+    /// WI-20261012-ZZ7PH — and each has a sort, or is refused where one that has none
+    /// is ([`Self::refusal_subject`]). A variable is a whole TOKEN of the fragment
+    /// ([`smt_tokens`]): a document names declared functions by qualified names now, and
+    /// a segment of one spelled `var_1` is no variable.
+    fn note_free_vars(&mut self, bindings: &BTreeMap<String, String>) -> Result<(), SmtGenError> {
+        let scan = self
+            .assertions
+            .iter()
+            .chain(self.conclusion_assertions.iter())
+            .chain(std::iter::once(&self.body_smtlib));
+        for assertion in scan {
+            for tok in smt_tokens(assertion) {
+                if parse_synthetic_var_name(tok).is_some() && !bindings.contains_key(tok) {
+                    self.free_vars.insert(tok.to_string());
+                }
+            }
+        }
+        if let Some(unsorted) = self
+            .free_vars
+            .iter()
+            .find(|v| !self.var_sorts.contains_key(*v))
+        {
+            if let Some(of) = self.refusal_subject() {
+                return Err(sort::no_sort_refusal(&of, unsorted, self.reading_step));
+            }
+        }
+        // What the free variables are of is declared with the document.
+        let free: Vec<String> = self.free_vars.iter().cloned().collect();
+        for v in &free {
+            self.declared_var_sort(v);
+        }
+        Ok(())
+    }
+
     /// Process one rule-body goal.
     fn process_body_goal(
         &mut self,
         goal: &Rc<NodeOccurrence>,
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<(), SmtGenError> {
+        // WI-20261012-ZZ7PH — a goal the loader GENERATED for a typed head (the type
+        // test in front of the body, the fill behind it) says what the variable's
+        // bound says, and the bound is read where the clause is opened
+        // (`seed_bounds`): the variable has that sort. Until this every proof whose
+        // rule wrote a bound was refused here — "unhandled body goal functor
+        // 'anthill.kernel.__domain_guard'", for `?x: Float` as for `?a: T`.
+        if is_typed_head_domain_goal(self.kb, goal) {
+            return Ok(());
+        }
         let Some((functor, pos_args, named_args)) = occ_as_fn(goal) else {
             return Err(SmtGenError::new(format!(
                 "non-Fn body goal: {:?}",
@@ -576,6 +738,21 @@ impl<'kb> Emitter<'kb> {
             )));
         };
         let qn = self.kb.qualified_name_of(functor);
+
+        // An operation at a declared sort is an uninterpreted function, and as a goal
+        // it is asserted. BEFORE the theory's readings below: `eq` at an abstract
+        // carrier is the carrier's relation, not `=` and not a binding.
+        if let Some((applied, sort)) =
+            self.uninterpreted_call(functor, pos_args, named_args, None, bindings)?
+        {
+            if sort != SmtSort::Bool {
+                return Err(SmtGenError::new(format!(
+                    "the goal `{qn}` is of sort {sort}, and a goal is a formula"
+                )));
+            }
+            self.assertions.push(applied);
+            return Ok(());
+        }
 
         // Equation goal: `?var = <expr>` binds the DeBruijn index of
         // ?var to the SMT translation of <expr>. Variable references
@@ -619,7 +796,18 @@ impl<'kb> Emitter<'kb> {
                     }
                 }
                 let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
-                bindings.insert(synthetic_var_name(*i), rhs_smt);
+                let bound = synthetic_var_name(*i);
+                // WI-20261012-ZZ7PH — `?x = <a term that names ?x>` defines nothing: it is
+                // a CONDITION on `?x`. Taken for a definition, `eq(?x, ?x)` bound the
+                // variable to itself, and a bound variable is not declared: the document
+                // named a constant it never declared, and the solver said so ("unknown
+                // constant var_1") where a verdict was expected.
+                let names_itself = smt_tokens(&rhs_smt).contains(&bound.as_str());
+                if names_itself {
+                    self.assertions.push(format!("(= {bound} {rhs_smt})"));
+                    return Ok(());
+                }
+                bindings.insert(bound, rhs_smt);
                 return Ok(());
             }
             let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
@@ -683,6 +871,17 @@ impl<'kb> Emitter<'kb> {
         // vars stay free, and an ambient lift is what re-states it. Everything else falls
         // through to the loud `unhandled body goal functor` below.
         if self.abstract_mode && !self.kb.program_clauses_by_functor(functor).is_empty() {
+            // WI-20261012-ZZ7PH — BUT NOT IN A LAW. A cited lemma's premise is passed
+            // over on the reasoning above; a law is assumed, not proved, and a law
+            // without its premise is a stronger assumption than its spec makes:
+            // `eq(weight(?a), weight(?b)) :- related(?a, ?b)` became "every two weights
+            // are equal", and a claim that needed it proved.
+            if self.lowering_law.is_some() {
+                return Err(SmtGenError::new(format!(
+                    "the law's premise `{qn}` is a rule's predicate, which is not read into \
+                     the law: without it the law would state more than its spec does"
+                )));
+            }
             self.visited_rules.insert(qn.to_string());
             return Ok(());
         }
@@ -734,9 +933,9 @@ impl<'kb> Emitter<'kb> {
             }
         }
 
-        Err(SmtGenError::new(format!(
-            "v0: unhandled body goal functor '{qn}'"
-        )))
+        Err(self
+            .unsorted_operand_refusal(functor, pos_args, named_args)
+            .unwrap_or_else(|| SmtGenError::new(format!("v0: unhandled body goal functor '{qn}'"))))
     }
 
     /// Try to match a multi-pos-arg call against any ground fact
@@ -915,17 +1114,34 @@ impl<'kb> Emitter<'kb> {
         // give the callee its own bindings + entity_bindings so its
         // local DeBruijn indices stay isolated. After processing we
         // restore the caller's entity_bindings.
-        let body_goals = clause.body_nodes;
+        let body_goals = clause.body_nodes.clone();
         let saved_ent = std::mem::take(&mut self.entity_bindings);
         self.entity_bindings = callee_ent;
+        // WI-20261012-ZZ7PH — and its own SORTS: a head variable is of the sort of the
+        // caller's variable it stands for, and of its own bound, which must agree; what
+        // follows from those through the callee's goals is the callee's.
+        let callee_sorts: BTreeMap<String, SmtSort> = head_caller
+            .iter()
+            .filter_map(|(head_idx, caller_synth)| {
+                let sort = self.var_sorts.get(caller_synth)?;
+                Some((synthetic_var_name(*head_idx), sort.clone()))
+            })
+            .collect();
+        let saved_sorts = std::mem::replace(&mut self.var_sorts, callee_sorts);
         let mut local = callee_str;
-        let mut err: Option<SmtGenError> = None;
-        for goal in &body_goals {
-            if let Err(e) = self.process_body_goal(goal, &mut local) {
-                err = Some(e);
-                break;
+        let mut err: Option<SmtGenError> = self
+            .seed_bounds(&clause)
+            .and_then(|()| self.infer_var_sorts(&body_goals))
+            .err();
+        if err.is_none() {
+            for goal in &body_goals {
+                if let Err(e) = self.process_body_goal(goal, &mut local) {
+                    err = Some(e);
+                    break;
+                }
             }
         }
+        self.var_sorts = saved_sorts;
         // Capture the (possibly grown) callee entity_bindings before
         // restoring the caller's view — fact_match calls deeper in
         // the body can bind head DeBruijns to entity terms (e.g.
@@ -1223,10 +1439,20 @@ impl<'kb> Emitter<'kb> {
                 )))
             }
         };
-        let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
-        for goal in &clause.body_nodes {
-            self.process_body_goal(goal, &mut local_bindings)?;
-        }
+        // The callee's frame is its own, and so are its variables' sorts
+        // (WI-20261012-ZZ7PH).
+        let saved_sorts = std::mem::take(&mut self.var_sorts);
+        let walked = (|| {
+            self.seed_bounds(&clause)?;
+            self.infer_var_sorts(&clause.body_nodes)?;
+            let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
+            for goal in &clause.body_nodes {
+                self.process_body_goal(goal, &mut local_bindings)?;
+            }
+            Ok(local_bindings)
+        })();
+        self.var_sorts = saved_sorts;
+        let local_bindings: BTreeMap<String, String> = walked?;
         local_bindings
             .get(&synthetic_var_name(result_idx))
             .cloned()
@@ -1262,10 +1488,20 @@ impl<'kb> Emitter<'kb> {
                 let synth = synthetic_var_name(*i);
                 Ok(bindings.get(&synth).cloned().unwrap_or(synth))
             }
-            Some(Expr::Var(other)) => Err(SmtGenError::new(format!(
-                "v0: expected DeBruijn var in expression, got {other:?}"
-            ))),
+            Some(Expr::Var(other)) => match self.var_name(other) {
+                // A variable of a stored fact's term that the reader of that fact named
+                // (a `constraint` law's, WI-20261012-ZZ7PH).
+                Some(named) => Ok(bindings.get(&named).cloned().unwrap_or(named)),
+                None => Err(SmtGenError::new(format!(
+                    "v0: expected DeBruijn var in expression, got {other:?}"
+                ))),
+            },
             Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => {
+                // A nullary operation of a law's spec, named bare (`zero`), at the
+                // sort the law is lowered at.
+                if let Some(constant) = self.nullary_constant(*s, None)? {
+                    return Ok(constant);
+                }
                 Ok(sanitize_smt_id(self.kb.local_name_of(*s)))
             }
             // Conditional in expression position (WI-680): a bodied op's `if`
@@ -1294,13 +1530,20 @@ impl<'kb> Emitter<'kb> {
                     let resolved = self.resolve_field_access(occ)?;
                     return self.translate_expr(&resolved, bindings);
                 }
-                let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
+                let Some((functor, pos_args, named_args)) = occ_as_fn(occ) else {
                     return Err(SmtGenError::new(format!(
                         "v0: unhandled expression: {:?}",
                         occ.as_expr().map(std::mem::discriminant)
                     )));
                 };
                 let op = self.kb.qualified_name_of(functor);
+                // WI-20261012-ZZ7PH — at a declared sort an operation is an
+                // uninterpreted function, whatever row it has at a theory sort.
+                if let Some((applied, _)) =
+                    self.uninterpreted_call(functor, pos_args, named_args, None, bindings)?
+                {
+                    return Ok(applied);
+                }
                 // `ite(cond, then, else)` functor form (WI-680): the surface
                 // `if` is not expressible in a rule body (parser-gated to op
                 // bodies), so a hand-written defining twin spells the
@@ -1352,9 +1595,11 @@ impl<'kb> Emitter<'kb> {
                 let smt_op = match self.builtins.arith(functor) {
                     Some(o) => o,
                     None => {
-                        return Err(SmtGenError::new(format!(
-                            "v0: unhandled arithmetic op '{op}'"
-                        )))
+                        return Err(self
+                            .unsorted_operand_refusal(functor, pos_args, named_args)
+                            .unwrap_or_else(|| {
+                                SmtGenError::new(format!("v0: unhandled arithmetic op '{op}'"))
+                            }))
                     }
                 };
                 if pos_args.len() != 2 {
@@ -1390,13 +1635,25 @@ impl<'kb> Emitter<'kb> {
                 "false".to_string()
             });
         }
-        let Some((functor, pos_args, _named)) = occ_as_fn(occ) else {
+        let Some((functor, pos_args, named_args)) = occ_as_fn(occ) else {
             return Err(SmtGenError::new(format!(
                 "v0: unhandled condition shape: {:?}",
                 occ.as_expr().map(std::mem::discriminant)
             )));
         };
         let qn = self.kb.qualified_name_of(functor);
+        // WI-20261012-ZZ7PH — a `Bool`-valued operation at a declared sort: the
+        // carrier's own relation, `eq` and the comparisons included.
+        if let Some((applied, sort)) =
+            self.uninterpreted_call(functor, pos_args, named_args, None, bindings)?
+        {
+            if sort != SmtSort::Bool {
+                return Err(SmtGenError::new(format!(
+                    "`{qn}` is of sort {sort} where a condition stands"
+                )));
+            }
+            return Ok(applied);
+        }
         // Relational comparison → SMT-LIB predicate over Real operands.
         if let Some(smt_op) = self.builtins.inequality(functor) {
             if pos_args.len() != 2 {
@@ -1436,10 +1693,14 @@ impl<'kb> Emitter<'kb> {
                 .collect();
             return Ok(format!("({conn} {})", subs?.join(" ")));
         }
-        Err(SmtGenError::new(format!(
-            "v0: unhandled condition functor '{qn}' (expected a relational op, \
-             `=`, or a Bool connective and/or/not)"
-        )))
+        Err(self
+            .unsorted_operand_refusal(functor, pos_args, named_args)
+            .unwrap_or_else(|| {
+                SmtGenError::new(format!(
+                    "v0: unhandled condition functor '{qn}' (expected a relational op, \
+                     `=`, or a Bool connective and/or/not)"
+                ))
+            }))
     }
 
     /// Substitute `env` (this frame's entity bindings: synth var name →
@@ -1751,11 +2012,13 @@ impl<'kb> Emitter<'kb> {
     /// (`rule_qn(?result)`) drive upper-bound mode.
     fn classify_head(&self, head: anthill_core::kb::term::TermId) -> HeadShape {
         let term = self.kb.get_term(head);
-        let (functor, pos_args) = match term {
+        let (functor, pos_args, named_args_empty) = match term {
             Term::Bottom => return HeadShape::Bottom,
             Term::Fn {
-                functor, pos_args, ..
-            } => (*functor, pos_args.clone()),
+                functor,
+                pos_args,
+                named_args,
+            } => (*functor, pos_args.clone(), named_args.is_empty()),
             // WI-20260902-CZJ2N — A NULLARY HEAD IS STORED BARE, so `rule status_ok :-
             // …` arrives as `Term::Ref` and not as an argument-less `Term::Fn`. Without
             // this arm it fell to `Unsupported`, which the caller turns into a HARD
@@ -1763,7 +2026,7 @@ impl<'kb> Emitter<'kb> {
             // nullary head aborted SMT emission entirely, and the 0-arg arm below became
             // dead code. `Term::Ident` is included for the same reason
             // `head_arg_count` includes it: the two spellings are one head.
-            Term::Ref(s) | Term::Ident(s) => (*s, smallvec::SmallVec::new()),
+            Term::Ref(s) | Term::Ident(s) => (*s, smallvec::SmallVec::new(), true),
             other => {
                 return HeadShape::Unsupported(format!(
                     "rule head must be an application or Bottom, got {other:?}"
@@ -1771,6 +2034,12 @@ impl<'kb> Emitter<'kb> {
             }
         };
         let qn = self.kb.qualified_name_of(functor);
+        // The connective's own address, whole: `<=>` names no functor a source can
+        // write (`desugar_target::NO_SURFACE_FUNCTOR`), so a short `unify` is another
+        // symbol and is not asked about here.
+        if qn == "anthill.kernel.unify" && pos_args.len() == 2 {
+            return HeadShape::Equation;
+        }
         if self.is_eq_functor(functor)
             || self.builtins.inequality(functor).is_some()
             || self.is_known_entity(functor)
@@ -1791,6 +2060,19 @@ impl<'kb> Emitter<'kb> {
         if pos_args.is_empty() {
             // 0-arg predicate head (e.g. `rule status_ok :- ...`);
             // body walks for free vars only, no conclusion.
+            return HeadShape::Bottom;
+        }
+        // WI-20261012-ZZ7PH — a head of SEVERAL VARIABLES, `rule p(?a: T, ?b: T) :- …`:
+        // the rule's parameters, and no conclusion. A bound is written on a head variable
+        // and nowhere else, so this is the one way a violation rule gives two variables a
+        // sort; it was "rule head shape not supported". The one-variable head is read
+        // above, as the result an obligation bounds — and in a satisfiability check, where
+        // the body does not bind it, as a parameter too (`collect_rule_clause`).
+        if named_args_empty
+            && pos_args
+                .iter()
+                .all(|arg| matches!(self.kb.get_term(*arg), Term::Var(Var::DeBruijn(_))))
+        {
             return HeadShape::Bottom;
         }
         HeadShape::Unsupported(format!(
@@ -1866,8 +2148,23 @@ impl<'kb> Emitter<'kb> {
         Ok(())
     }
 
+    /// The logic the document is checked under: the one the proof wrote, or `default`,
+    /// and what the document needs beyond it ([`document_logic`]).
+    fn logic_for(&self, config: &ProofConfig, default: &str) -> String {
+        let quantified = config
+            .laws
+            .iter()
+            .chain(&config.assumptions)
+            .any(|hypothesis| hypothesis.contains("(forall "));
+        document_logic(
+            config.logic.as_deref().unwrap_or(default),
+            &self.declarations,
+            quantified,
+        )
+    }
+
     fn render_upper_bound_with(&self, obligation: &Obligation, config: &ProofConfig) -> String {
-        let logic = config.logic.as_deref().unwrap_or("QF_LRA");
+        let logic = self.logic_for(config, "QF_LRA");
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen for obligation {}.\n",
@@ -1881,6 +2178,7 @@ impl<'kb> Emitter<'kb> {
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
         emit_abs_prelude(&mut out, self.uses_abs, config);
+        self.declarations.render(&mut out);
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!(
@@ -1917,7 +2215,7 @@ impl<'kb> Emitter<'kb> {
     fn render_satisfiability_with(&self, rule_qn: &str, config: &ProofConfig) -> String {
         // `LRA` is the default for satisfiability mode (handles `abs`
         // via the standard if-then-else encoding Z3 applies).
-        let logic = config.logic.as_deref().unwrap_or("LRA");
+        let logic = self.logic_for(config, "LRA");
         let mut out = String::new();
         out.push_str(&format!(
             "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"
@@ -1930,6 +2228,7 @@ impl<'kb> Emitter<'kb> {
         out.push_str(&format!("(set-logic {logic})\n\n"));
 
         emit_abs_prelude(&mut out, self.uses_abs, config);
+        self.declarations.render(&mut out);
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!(
@@ -1942,10 +2241,12 @@ impl<'kb> Emitter<'kb> {
         // Free vars (`?d_prev`, `?step`, etc. that appear in
         // assertions but aren't bound by an `=` clause) become
         // existentially-quantified inputs to the satisfiability
-        // check — declared as global Real consts so `(check-sat)`
-        // picks values for them if any exist.
+        // check — declared as global consts so `(check-sat)`
+        // picks values for them if any exist. Each at the sort its bound or a
+        // signature gave it, and a `Real` where neither did (WI-20261012-ZZ7PH).
         for v in &self.free_vars {
-            out.push_str(&format!("(declare-const {v} Real)\n"));
+            let sort = self.var_sorts.get(v).unwrap_or(&SmtSort::Real);
+            out.push_str(&format!("(declare-const {v} {sort})\n"));
         }
         out.push('\n');
 
@@ -2002,8 +2303,9 @@ impl<'kb> Emitter<'kb> {
 fn emit_abs_prelude(out: &mut String, uses_abs: bool, config: &ProofConfig) {
     let needs = uses_abs
         || config
-            .assumptions
+            .laws
             .iter()
+            .chain(&config.assumptions)
             .any(|a| a.contains("anthill_abs "));
     if needs {
         out.push_str("(define-fun anthill_abs ((x Real)) Real (ite (< x 0) (- x) x))\n\n");
@@ -2033,6 +2335,16 @@ fn emit_trig_prelude(out: &mut String, trig_args: &BTreeSet<String>) {
 }
 
 fn emit_assumptions(out: &mut String, config: &ProofConfig) {
+    // WI-20261012-ZZ7PH — the laws of the requirements the proof stands under: each
+    // already a whole `(assert (forall …))`.
+    if !config.laws.is_empty() {
+        out.push_str("; Laws of the specs the enclosing scopes require.\n");
+        for law in &config.laws {
+            out.push_str(law);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
     if config.assumptions.is_empty() {
         return;
     }

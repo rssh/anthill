@@ -2076,3 +2076,5 @@ mod wi_zvpxs_specialization_witness_index_test;
 mod wi_s8cyd_record_names_test;
 #[path = "include/wi_bvg8m_spec_laws_test.rs"]
 mod wi_bvg8m_spec_laws_test;
+#[path = "include/wi_zz7ph_requirement_chain_test.rs"]
+mod wi_zz7ph_requirement_chain_test;

@@ -9,7 +9,10 @@ use smallvec::SmallVec;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::BodiedRulePolicy;
-use anthill_core::kb::load::{requires_clauses_of, RequiresClause};
+use anthill_core::kb::load::{
+    enclosing_scope_names, requirement_chain, requires_clauses_of, RequirementInstance,
+    RequiresClause,
+};
 use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
@@ -19,10 +22,11 @@ use anthill_smt_gen::cache::{
     state_hash, store_blob, store_entry, store_witness, witness_subdir, CacheEntry, KeyInputs,
     Solver, WitnessSidecar,
 };
+use anthill_smt_gen::cache::{visited_laws_of, visited_requires_of};
 use anthill_smt_gen::outcome::parse_z3_output;
 use anthill_smt_gen::policy::{render_cited_lemma_under_policy, SMT_Z3_BACKEND};
 use anthill_smt_gen::tactic_emit::emit_tactic_from_term;
-use anthill_smt_gen::{emit_satisfiability_check_with_deps, ProofConfig};
+use anthill_smt_gen::{emit_satisfiability_check_with_deps, lower_spec_law, Lifted, ProofConfig};
 
 use crate::check::rand_suffix;
 use crate::witness::{ProofWitness, SmtVerdict};
@@ -1377,11 +1381,17 @@ fn dispatch_z3(
     // own body assertions become AND-ed conjuncts.
     // Phase γ.4: what the proof is handed without naming it, from the rule's enclosing
     // scope chain. The REQUIREMENTS of each scope are not rules, so they are not in
-    // the list of cited rules below: each lowers to the laws of the spec it requires,
-    // and which of those a proof is not given is said (`tell_laws_left_out`,
-    // WI-20261011-BVG8M).
-    match implicit_cites_for(rule_qn, kb) {
-        Ok(requirements) => tell_laws_left_out(kb, &requirements, requirements_told),
+    // the list of cited rules below: each lowers to the laws of the spec it requires
+    // and of what that requires or provides in turn (`lower_requirement_laws`,
+    // WI-20261011-BVG8M, WI-20261012-ZZ7PH), and a law that is not lowered is said.
+    match implicit_cites_for(rule_qn, kb)
+        .and_then(|requirements| lower_requirement_laws(kb, &requirements, requirements_told))
+    {
+        Ok(laws) => {
+            config.laws = laws.hypotheses.clauses;
+            config.declarations = laws.hypotheses.declarations;
+            config.law_sources = laws.sources;
+        }
         Err(msg) => return DispatchOutcome::no_witness(Verdict::EmitError(msg)),
     }
     // The cited RULES: the user-stated `using` list first, then the `@[hint]` rules of
@@ -1401,8 +1411,13 @@ fn dispatch_z3(
         cli,
         discharged_this_run,
     ) {
-        Ok(Some(clauses)) => {
-            config.assumptions = clauses;
+        Ok(Some(cited)) => {
+            config.assumptions = cited.clauses;
+            // What the cited lemmas use and the theory does not have, with what the
+            // laws do: one set, declared once.
+            if let Err(e) = config.declarations.merge(&cited.declarations) {
+                return DispatchOutcome::no_witness(Verdict::EmitError(e.message));
+            }
             canon_parts.push(format!("using={}", effective.join(",")));
         }
         // An all-`Inline` cite list renders no hypotheses (WI-781), so it takes
@@ -1485,8 +1500,9 @@ fn dispatch_z3(
 /// path left open.
 ///
 /// Returns:
-///   - `Ok(Some(clauses))` — clauses ready to splice into the
-///     consumer's `(assert …)` preamble.
+///   - `Ok(Some(lifted))` — clauses ready to splice into the
+///     consumer's `(assert …)` preamble, and what they use that the
+///     theory does not have (WI-20261012-ZZ7PH).
 ///   - `Ok(None)` — nothing to splice: an empty cite list, only
 ///     self-citation, or every cite resolved to `Inline` (which
 ///     contributes no hypothesis by policy).
@@ -1501,11 +1517,11 @@ fn render_cited_lemmas(
     consumer_is_abstract: bool,
     cli: &ProveArgs,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
-) -> Result<Option<Vec<String>>, String> {
+) -> Result<Option<Lifted>, String> {
     if using.is_empty() {
         return Ok(None);
     }
-    let mut clauses = Vec::with_capacity(using.len());
+    let mut cited_lemmas = Lifted::default();
     for cited in using {
         if cited == target_rule_qn {
             continue;
@@ -1551,7 +1567,19 @@ fn render_cited_lemmas(
         // every cite defaults to `LiftedAxiom`, so this is the same lift and the
         // emitted document is unchanged; a policy fact is what makes it differ.
         match render_cited_lemma_under_policy(kb, cited, SMT_Z3_BACKEND, consumer_is_abstract) {
-            Ok(lifted) => clauses.extend(lifted),
+            Ok(lifted) => {
+                cited_lemmas.clauses.extend(lifted.clauses);
+                cited_lemmas
+                    .declarations
+                    .merge(&lifted.declarations)
+                    .map_err(|e| {
+                        format!(
+                            "cite `{cited}` (in proof `{target_rule_qn}`) declares what \
+                             another cite declares otherwise: {}",
+                            e.message
+                        )
+                    })?;
+            }
             Err(e) => {
                 return Err(format!(
                     "cite `{cited}` (in proof `{target_rule_qn}`) could not be \
@@ -1561,10 +1589,10 @@ fn render_cited_lemmas(
             }
         }
     }
-    if clauses.is_empty() {
+    if cited_lemmas.clauses.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(clauses))
+        Ok(Some(cited_lemmas))
     }
 }
 
@@ -1809,8 +1837,7 @@ type RequirementsTold = BTreeSet<(String, String)>;
 /// `Err` when the relation cannot be read: a proof is not run as if its scopes
 /// required nothing.
 fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Result<Vec<RequiresClause>, String> {
-    let parts: Vec<&str> = rule_qn.split('.').collect();
-    let scopes: Vec<String> = (1..parts.len()).map(|end| parts[..end].join(".")).collect();
+    let scopes = enclosing_scope_names(rule_qn);
     let scope_names: Vec<&str> = scopes.iter().map(String::as_str).collect();
     let mut clauses = requires_clauses_of(kb, &scope_names).map_err(|e| {
         format!("the requirements of the scopes `{rule_qn}` is in could not be read: {e}")
@@ -1821,62 +1848,130 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Result<Vec<RequiresC
     Ok(clauses)
 }
 
-/// WI-20261011-BVG8M — WHAT A PROOF IS HANDED FOR THE REQUIREMENTS OF ITS ENCLOSING
-/// SCOPES: no hypothesis yet, and a line that names the laws it is not given.
+/// WI-20261011-BVG8M, WI-20261012-ZZ7PH — WHAT A PROOF IS HANDED FOR THE REQUIREMENTS OF
+/// ITS ENCLOSING SCOPES: the LAWS of each required spec, and of what that spec requires
+/// or provides in turn, as hypotheses of its document.
 ///
-/// A requirement's record states the conjunction of the required spec's LAWS at the
+/// A requirement's record states the conjunction of the required spec's laws at the
 /// clause's bindings (proposal 030, "Per-clause registration"), so that is what a
 /// requirement lowers to (`KnowledgeBase::spec_laws` says what a law is). It was
 /// lowered as a cited rule is — by lifting the RULE of the record's name — and a record
 /// is no rule: every `by z3` proof in a scope that has a `requires` was refused, "rule
-/// '…' not found", for standing there, whether its goal needed a law or not. And 31 of
-/// the standard library's 42 requirements are of a spec that HAS no law.
+/// '…' not found". BVG8M ran such a proof and gave it NO hypothesis, naming the laws it
+/// went without; this gives it each law (`anthill_smt_gen::lower_spec_law`) over the
+/// sort the requirement's binding is — the scope's abstract parameter a sort of its
+/// own, the spec's operations on it uninterpreted functions, `eq` included.
 ///
-/// NO LAW IS LOWERED YET (proposal 030 γ.4 has what is decided and not built: a law's
-/// head is an equation, a shape the lift does not read; most laws name an operation
-/// that has no SMT form; and the spec's parameter is abstract, where every operand the
-/// emitter writes is a `Real`). So a law is LEFT OUT AND SAID: the proof runs without
-/// it, and stderr names it. Leaving a hypothesis out is the safe direction — the
-/// assumptions are conjoined with the negated goal and `unsat` means proved, so a
-/// missing one can only lose an `unsat`. A requirement of a spec with no law lowers to
-/// nothing, and says nothing.
+/// THE CHAIN IS FOLLOWED (user, 2026-10-12; `load::requirement_chain`): `requires
+/// Eq[T = T]` gives `eq_refl` and the `neq` law of the `PartialEq[T = T]` that `Eq`
+/// provides — a provider of `Eq` at a carrier holds both there. BVG8M read a spec's own
+/// laws alone, and `neq(?a, ?a)` under `requires Eq[T = T]` is `sat` with either law
+/// and not the other (measured, z3 4.16).
 ///
-/// WHAT THAT DOES NOT SAY: that a verdict under a requirement is about the abstract
-/// carrier. It is about the reals, as every verdict of this emitter is — `eq` is `=`
-/// and `gte` is `>=` whatever a variable ranges over — so `gte(?a, ?a)` proves under
-/// `requires PartialOrd[T = T]`, as it does in a scope that requires nothing
-/// (/code-review, reproduced). The refusal this removes kept such a proof from running
-/// by accident; what answers it is the carrier as a sort of its own, with the law.
+/// A LAW THAT IS NOT LOWERED IS LEFT OUT AND SAID, with why: an operation with no theory
+/// row at a theory sort (a requirement at a concrete carrier, `requires WeakOrd[T =
+/// Int64]`), a carrier with no SMT sort, a shape `lower_spec_law` does not read. Leaving
+/// a hypothesis out is the safe direction — the assumptions are conjoined with the
+/// negated goal and `unsat` means proved, so a missing one can only lose an `unsat`.
+/// A requirement of a spec with no law gives nothing, and nothing is said.
 ///
 /// SAID ONCE A RUN FOR EACH REQUIREMENT, not once a query: a structured proof is a
 /// query for each step and one for its conclusion, and every proof of a scope is under
 /// the scope's requirements.
-fn tell_laws_left_out(
-    kb: &KnowledgeBase,
+///
+/// `Err` when a clause has no chain to read, or two laws declare one function at two
+/// signatures: a proof is not run as if its scopes required nothing.
+fn lower_requirement_laws(
+    kb: &mut KnowledgeBase,
     requirements: &[RequiresClause],
     told: &mut RequirementsTold,
-) {
+) -> Result<RequirementLaws, String> {
+    let mut lowered = Lifted::default();
+    let mut sources: Vec<String> = Vec::new();
+    // A spec at one set of bindings gives its laws once, however many clauses reach it
+    // (`requires Ord[T]` reaches `PartialEq[T]` through `Eq` and through `PartialOrd`).
+    let mut read: BTreeSet<String> = BTreeSet::new();
     for clause in requirements {
-        let laws = kb.spec_laws(clause.spec);
-        if laws.is_empty() {
+        sources.push(visited_requires_of(&clause.scope_qn));
+        let chain = requirement_chain(kb, clause)?;
+        // The spec the clause names first, then what it requires or provides in turn.
+        let mut instances: Vec<&RequirementInstance> = Vec::new();
+        let mut pending = vec![&chain];
+        while let Some(instance) = pending.pop() {
+            instances.push(instance);
+            pending.extend(instance.in_turn.iter().rev());
+        }
+        let mut given = 0usize;
+        let mut left_out: Vec<SpecLaw> = Vec::new();
+        let mut reasons: Vec<String> = Vec::new();
+        for instance in instances {
+            if !read.insert(instance.spec_text.clone()) {
+                continue;
+            }
+            sources.push(visited_laws_of(kb.qualified_name_of(instance.spec)));
+            for law in kb.spec_laws(instance.spec) {
+                given += 1;
+                match lower_spec_law(kb, &law, instance) {
+                    Ok(law) => {
+                        lowered.declarations.merge(&law.declarations).map_err(|e| {
+                            format!(
+                                "the laws `{}` gives `{}` could not be declared together: {}",
+                                clause.spec_text, clause.scope_qn, e.message
+                            )
+                        })?;
+                        if !lowered.clauses.contains(&law.assertion) {
+                            lowered.clauses.push(law.assertion);
+                        }
+                    }
+                    Err(e) => {
+                        let reason = format!("`{}`: {}", instance.spec_text, e.message);
+                        if !reasons.contains(&reason) {
+                            reasons.push(reason);
+                        }
+                        left_out.push(law);
+                    }
+                }
+            }
+        }
+        if left_out.is_empty() {
             continue;
         }
         if !told.insert((clause.scope_qn.clone(), clause.spec_text.clone())) {
             continue;
         }
         eprintln!(
-            "warning: `{}` requires `{}`, and a spec's law is not lowered to SMT yet — a \
-             `by z3` proof under it runs without {}: {}",
+            "warning: `{}` requires `{}`, and {} of the {} it gives a proof {} not lowered to \
+             SMT — a `by z3` proof under it runs without: {} ({})",
             clause.scope_qn,
             clause.spec_text,
-            if laws.len() == 1 {
-                "its law".to_owned()
+            left_out.len(),
+            if given == 1 {
+                "1 law".to_owned()
             } else {
-                format!("its {} laws", laws.len())
+                format!("{given} laws")
             },
-            law_names(kb, &laws)
+            if left_out.len() == 1 { "is" } else { "are" },
+            law_names(kb, &left_out),
+            reasons.join("; ")
         );
     }
+    sources.sort();
+    sources.dedup();
+    Ok(RequirementLaws {
+        hypotheses: lowered,
+        sources,
+    })
+}
+
+/// What [`lower_requirement_laws`] hands a proof: the laws as hypotheses with what they
+/// declare, and WHERE THEY CAME FROM — the scopes whose `requires` were read and the
+/// specs whose laws were, as entries of the proof's dependency set
+/// (`ProofConfig::law_sources`). A law is no rule the proof visits: without these a law
+/// weakened, or the clause removed, left the proof's record current and the lemma
+/// citable (found by /code-review, reproduced).
+struct RequirementLaws {
+    hypotheses: Lifted,
+    sources: Vec<String>,
 }
 
 /// The laws of one spec as the warning lists them, every clause accounted for: one
