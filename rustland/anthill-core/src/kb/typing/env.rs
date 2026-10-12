@@ -18,7 +18,7 @@ pub(super) enum RuleText {
 /// A lambda, an `if`, a `let`, a `match` or an in-body proof: the nodes of the forms the
 /// loader hands to the walk that builds an operation body
 /// (`load::is_compound_expression_marker`), wherever they are written.
-fn is_compound_expression(expr: &Expr) -> bool {
+pub(super) fn is_compound_expression(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::Lambda { .. }
