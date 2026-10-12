@@ -457,3 +457,22 @@
 # requirement's binding and an operation's parameter type are read through the view (`sort_functor_of_view`).
 # NOT RUN: the whole of anthill-core under the two other recipes, the whole workspace under the carrier switch, and
 # scaland — nothing of scaland's was changed, and it has no cite path.
+
+== 9. the tree as committed, and after the merges of origin/main ==
+# Section 8's second gate was of the working tree that was committed: 050f3931 (the change) and 2abec2e6 (the work
+# items — ZZ7PH delivered, BR7P3 and CDHSQ filed). After that gate only this file and the work items had been
+# written. Gated again as merged, twice — the second is the tree that was pushed.
+# origin/main had twelve commits of other sessions by then (TCSGT, RXT6S, MHRN1, TK8X4 and their work items). The
+# merge made itself; both sides wrote `kb/load.rs` and `wi_tests.rs`, in different places, and every file of
+# `tests/include/` is registered once.
+#   scripts/test.sh at b4e7ec29 (the merge), 19:44:15 – 20:01:09 (16 min 54 s)       exit 0: 36 result lines, all ok;
+#     9 476 passed, 0 failed, 14 ignored; `wi_tests` 6 912 passed, 4 ignored, 114.40 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 at both ends. The 73 rows more than section 8's are the other sessions'.
+# origin/main moved once more while that ran: d1a2b275, which adds one work item (WI-20261012-80259) and nothing
+# else. No gated test reads the repository's own `anthill-todo/`; merged and gated all the same.
+#   scripts/test.sh at be5870c2 (the second merge), 20:01:54 – 20:09:02 (7 min 8 s)  exit 0: 36 result lines, all ok;
+#     9 476 passed, 0 failed, 14 ignored; `wi_tests` 6 912 passed, 4 ignored, 112.70 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 at both ends; no source had changed since the build before it. origin/main had not
+#     moved when it ended, and be5870c2 was pushed.
+# The other recipes and the carrier control were not run again on the merged trees: section 8's are of the tree
+# before them.
