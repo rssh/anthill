@@ -219,3 +219,19 @@
 # through the view, as the pass that names the records does.
 # NOT RUN: the whole of anthill-core under the two other recipes, the whole workspace under the carrier switch, and
 # scaland — nothing of scaland's was changed, and it has no cite path.
+
+== 8. the tree as committed, and after the merge of origin/main ==
+# Section 7's gate was of the working tree. What was changed after it and before the commits is no source: this
+# file, proposal 030's mention of the ticket filed, and the work items. Gated again as committed, and again as
+# merged — which is the tree that was pushed.
+#   scripts/test.sh at 43dc0a49 (the two commits), 09:10:58 – 09:17:50      exit 0: 36 result lines, all ok;
+#     9 358 passed, 0 failed, 14 ignored; `wi_tests` 6 822 passed, 4 ignored, 113.33 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 at both ends. 6 min 52 s; no source had changed since section 7's build.
+# origin/main had two commits of another session by then (WI-20261008-A3FY2's: a dot on a written type in a rule
+# body). The merge made itself; both sides wrote `kb/load.rs` and `wi_tests.rs`, in different places, and every
+# file of `tests/include/` is registered once.
+#   scripts/test.sh at ee49124d (the merge), 09:18:24 – 09:30:17            exit 0: 36 result lines, all ok;
+#     9 372 passed, 0 failed, 14 ignored; `wi_tests` 6 836 passed, 4 ignored, 117.87 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 when it began, 88 when it ended. The 14 rows more are A3FY2's.
+# The other recipes and the carrier control were not run again on the merged tree: section 7's are of the tree
+# before it.
