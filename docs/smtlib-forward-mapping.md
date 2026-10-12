@@ -304,6 +304,51 @@ sort Ord {
     (= (neq a b) (not (eq a b)))))
 ```
 
+**As `anthill prove` emits it** (WI-20261012-ZZ7PH; `anthill-smt-gen/src/sort.rs`, and proposal 030 §*What a requirement's record lowers to* for the decisions). A `by z3` proof is handed the laws of every `requires` of its enclosing scopes, and of what each required spec requires or provides in turn. The scope's abstract parameter is a sort of its own, a spec's operation at it an uninterpreted function named by the operation and the carrier, and a variable has that sort by its bound:
+
+```
+sort Scope
+  sort T = ?
+  requires Eq[T = T]
+
+  rule irreflexive(?a: T) :- neq(?a, ?a)
+  proof irreflexive by z3 end
+end
+```
+
+```smt2
+(set-logic UFLRA)
+
+(declare-sort ns.Scope.T 0)
+(declare-fun anthill.prelude.PartialEq.eq@ns.Scope.T (ns.Scope.T ns.Scope.T) Bool)
+(declare-fun anthill.prelude.PartialEq.neq@ns.Scope.T (ns.Scope.T ns.Scope.T) Bool)
+
+(declare-const var_1 ns.Scope.T)
+
+; Laws of the specs the enclosing scopes require.
+(assert (forall ((var_0 ns.Scope.T))
+  (= (anthill.prelude.PartialEq.eq@ns.Scope.T var_0 var_0) true)))
+(assert (forall ((var_0 ns.Scope.T) (var_1 ns.Scope.T))
+  (= (anthill.prelude.PartialEq.neq@ns.Scope.T var_1 var_0)
+     (not (anthill.prelude.PartialEq.eq@ns.Scope.T var_1 var_0)))))
+
+(assert (anthill.prelude.PartialEq.neq@ns.Scope.T var_1 var_1))
+(check-sat)                                  ; unsat
+```
+
+What decides each line:
+
+| | |
+|---|---|
+| a variable's sort | its bound (`?a: T`, written on a head variable only; a step of a structured proof has its parent's), the signature of an operation it is an operand of, or the declared type of the entity field that binds it; where a rule read for the document is under a scope that has an abstract parameter one that none gives a sort is refused, elsewhere it is a `Real` |
+| a spec's operation at a declared sort | an uninterpreted function `<operation>@<carrier>`, `eq` and the comparisons included; its default body is not a hypothesis |
+| an operation at `Int64` / `Float` / `Bool` operands | its theory row (§3.3), or the "unhandled" error — never an uninterpreted function |
+| an equation `lhs <=> rhs` | `(= lhs rhs)`; a guard is the premise |
+| `constraint c: conclusion :- guard` | `(=> guard conclusion)` |
+| a requirement at a concrete carrier (`Eq[T = Int64]`) | no law: a law is asserted only where every variable it quantifies is of a declared sort — `Int64` and `Float` are modelled by the reals, where a law is a theorem already or not known to hold. Left out and said |
+| a law's premise that is a rule's predicate; a law that reads an entity's facts | the law is left out and said |
+| the logic | the one written, with `UF` when a function is declared and without `QF_` when a hypothesis is quantified |
+
 ### 5.2 Fact-Based Spec Satisfaction
 
 When a fact declares that a concrete type satisfies a spec, laws are instantiated:

@@ -2084,5 +2084,7 @@ mod wi_zvpxs_specialization_witness_index_test;
 mod wi_s8cyd_record_names_test;
 #[path = "include/wi_bvg8m_spec_laws_test.rs"]
 mod wi_bvg8m_spec_laws_test;
+#[path = "include/wi_zz7ph_requirement_chain_test.rs"]
+mod wi_zz7ph_requirement_chain_test;
 #[path = "include/wi_80259_pattern_typed_at_position_test.rs"]
 mod wi_80259_pattern_typed_at_position_test;

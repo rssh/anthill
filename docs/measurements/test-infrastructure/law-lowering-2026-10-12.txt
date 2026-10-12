@@ -1,0 +1,478 @@
+# A spec's law lowered to SMT, the scope's abstract parameter as its own sort (WI-20261012-ZZ7PH) — the count
+# the decisions were made on, the decisions, what is emitted, which documents moved, what fails when a part is
+# backed out, what /code-review changed, what was found and is not of this change, and the gate. 2026-10-12.
+# Section 1 is the tree before anything was changed; section 2 is the decisions — one of them turned after the
+# review, section 6; sections 3–5 and 8 are the tree as delivered.
+#
+# Tree:    main at 374dda80, and this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. z3 4.16.0.
+# Every `anthill prove` below is `--no-cache`, the dev build (`target/debug/anthill`).
+
+== 1. the count (before anything was decided) ==
+# WHAT A STORED RULE KEEPS OF A VARIABLE'S BOUND.
+#   A bound can be written on a HEAD variable and nowhere else. In `sort Scope  sort T = ?  requires Eq[T = T]`:
+#     rule irreflexive(?a: T) :- neq(?a, ?a)                loads
+#     rule refl_like: gte(?a: T, ?a) :- gte(?a, ?b)         loads
+#     rule refl_like: gte(?a, ?a) :- gte(?a, ?b: T)         load error: "type mismatch in typed_var.apply: … unknown
+#     rule irr :- neq(?a: T, ?a)                              functor"; "rule-body term `typed_var` names nothing"
+#     rule sym: eq(?b, ?a) :- eq(?a: T, ?b: T)              the same
+#   The rule keeps a bound two ways (`anthill query --mode domain`):
+#     irreflexive(?#1) :- __domain_guard(?#1, ?#0), neq(?#1, ?#1), apply_domain(?#2, ?#1, ?#0),
+#                         find_dictionary(SortDomain, SortDomain, ?#1, out: ?#2)
+#   — `rule_type_bounds` (De Bruijn index → type), and goals the loader generates: the type test in front of the
+#   body, the fill and the read of its dictionary behind it, with one more frame variable. The scope's `T` is a
+#   VARIABLE OF THE RULE'S FRAME (`?#0`), not a name. `ProgramClause`, which is what the emitter reads, carried
+#   neither the bounds nor the rule's id.
+#
+# THE EMITTER REFUSED EVERY PROOF WHOSE RULE HAD A BOUND:
+#     rule pos(?x: Float) :- gte(?x, 5.0), gte(0.0, ?x)     error: … v0: unhandled body goal functor
+#     rule posi(?x: Int64) :- gte(?x, 5), gte(0, ?x)          'anthill.kernel.__domain_guard'
+#     rule irreflexive(?a: T) :- neq(?a, ?a)                the same
+#   So NO DOCUMENT THAT EXISTED HAD A BOUNDED VARIABLE. And past the guard two more refusals stood, which the
+#   ticket did not list: a one-variable head `irreflexive(?a)` is read as a result the body must bind ("rule body
+#   never bound the result variable"), and a head of two variables is "rule head shape not supported
+#   (functor=…, pos_args=2)" — so a violation rule could not have two bounded variables at all.
+#
+# WHAT THE TYPER KNOWS OF A RULE VARIABLE THAT HAS NO BOUND (read of the code by a search agent; the accessors
+# it names were checked to exist, the stamp itself was not dumped). The rule-body sweep infers a type for each
+# variable from the declared types of the operations and fields the body names
+# (`typing::rule_dispatch::collect_rule_var_types`) and stamps it on the body's variable leaves
+# (`NodeOccurrence::inferred_type`); the map is then dropped. For `neq(?a, ?a)` the stamp is a FRESH,
+# UNCONSTRAINED type variable — `PartialEq.T` instantiated per application — and nothing ties it to the scope's
+# `T`. A BODYLESS clause gets no stamp at all, which is most laws (`rule eq_refl: eq(?a, ?a) <=> true`), and a
+# head-only variable none. So the typer does not say more than the signatures do, and for a law says nothing.
+#
+# WHICH VARIABLES OF THE PROOFS RANGE OVER AN ABSTRACT PARAMETER. 35 files of the tree hold a `by z3`; the ones
+# that are driven to a document are lf1's three (16 proofs), the CLI suite's `prove_*` / `check_*` /
+# `wi781` / `wi_bvg8m` files and `prove.rs`'s unit rows, and the emitter crate's suite. A `sort T = ?` stands
+# above a driven proof in BVG8M's fixtures and nowhere else. Of their variables ONE proof's range over the
+# parameter: `refl_like`'s `?a` and `?b` (`gte(?a, ?a) :- gte(?a, ?b)` — no bound, and nothing else pins them),
+# in two rows. Every other variable there is compared with a literal or read off an `Int64` field. lf1 has no
+# abstract parameter.
+#
+# THE LIBRARY'S 42 REQUIREMENT RECORDS (`SortRequiresInfo`, by `anthill query`). The 11 of a spec with a law:
+#     Lattice requires Eq[T]            Map requires Eq[K]              Set requires Eq[T]
+#     WeakOrd requires Eq[T]            Field requires PartialEq[T]     NonEq requires PartialEq[T]
+#     PartialOrd requires PartialEq[T]  Field requires Ring[T]          VectorSpace requires Ring[F]
+#     SortedSet requires WeakOrd[T]     BoundedLattice requires Lattice[T]
+#   ALL ELEVEN bind the spec's parameter to the scope's OWN parameter. None is at a concrete type, and no scope
+#   has two requirements of one lawful spec.
+#
+# z3 ON HAND-WRITTEN TARGET DOCUMENTS (a declared sort `T`, `eq` and `neq` declared `(T T) Bool`, one constant):
+#     (assert (neq var_1 var_1))  with `eq_refl` and the `neq` law          unsat
+#                                 with `eq_refl` alone                      sat
+#                                 with the `neq` law alone                  sat
+#                                 with neither                              sat
+#   — so the ticket's control under `requires Eq[T = T]` ALONE needs `PartialEq`'s law, which is the chain (e).
+#     `gte(a, b)` and `(not (gte a a))`, `gte` declared, no law                sat
+#     `(forall ((a T) (b T)) (= (eq a b) true))`, alone                         sat  (consistent over a declared sort)
+#     any of them under `(set-logic LRA)`     (error "… logic does not support uninterpreted functions"), then `sat`
+#     under `UFLRA`, `UFLIA`, `ALL`, `UF`, and with no `set-logic` at all     as above; `LIA` took the declarations
+#   — so the logic a proof writes cannot be used as it stands once its document declares a function.
+#
+# AND ONE THING THE CORE ALREADY HAD: `typing::requires_tree` — the transitive chain of a sort's `requires`, a
+# spec's `provides` in it as a conversion, the bindings composed into the root's terms. Proposal 030 had the
+# chain as "not built — it wants the bindings composed along the chain".
+
+== 2. the decisions (user, 2026-10-12, on section 1) ==
+#   (a) A VARIABLE THAT NEITHER A BOUND NOR AN OPERATION'S SIGNATURE GIVES A SORT, in a rule under a scope that
+#       has an abstract parameter, is REFUSED. Sorts come from bounds and follow through signatures (`gte(?a: T,
+#       ?a) :- gte(?a, ?b)` gives `?b` the sort of `?a`); in any other scope such a variable stays a `Real`.
+#   (b) A REQUIREMENT AT A CONCRETE CARRIER takes the THEORY'S operations: `Int64` / `Float` a `Real` as in every
+#       proof, `eq` is `=`, the law emitted whether or not it is a theorem; a law naming an operation with no
+#       row, or at a carrier with no SMT sort, is left out and said.
+#       TURNED AFTER THE REVIEW (section 6, finding 4), to the option it was chosen over — "left out and said":
+#       a law true of the integers and false of the reals, asserted over `Real`, is inconsistent, and a proof
+#       under it proved anything. NO LAW IS LOWERED AT A CONCRETE CARRIER: a law is asserted only where every
+#       variable it quantifies is of a declared sort. The question as put to the user said "whether or not it is
+#       a theorem there" and did not say "or false there".
+#   (e) THE CHAIN IS FOLLOWED: a requirement gives the laws of its spec and of what that requires or provides in
+#       turn. BVG8M's "a spec's own laws" is turned.
+#   THE LOGIC IS DERIVED: the one written, `UF` added when the document declares a function, `QF_` dropped when
+#       a hypothesis is quantified; a document that declares nothing keeps it.
+#   Taken as following, and said to the user with the questions:
+#   (c) TWO REQUIREMENTS OF ONE SPEC AT TWO PARAMETERS — an instance is (operation, carrier sort), so `eq` at `T`
+#       and `eq` at `U` are two functions; a variable whose sort nothing gives is (a)'s case.
+#   (d) A CONSTRAINT'S NAME — unchanged: counted by kind, its clause not labelled.
+#   A ROW-LESS OPERATION AT THEORY OPERANDS stays the loud error it is; it is uninterpreted at a declared sort only.
+
+== 3. what is emitted ==
+# The control, `rule irreflexive(?a: T) :- neq(?a, ?a)` under `requires anthill.prelude.Eq[T = T]`, `by z3`:
+#   (set-logic UFLRA)
+#   (declare-sort test.zz.eq.Scope.T 0)
+#   (declare-fun anthill.prelude.PartialEq.eq@test.zz.eq.Scope.T (test.zz.eq.Scope.T test.zz.eq.Scope.T) Bool)
+#   (declare-fun anthill.prelude.PartialEq.neq@test.zz.eq.Scope.T (test.zz.eq.Scope.T test.zz.eq.Scope.T) Bool)
+#   (declare-const var_1 test.zz.eq.Scope.T)
+#   ; Laws of the specs the enclosing scopes require.
+#   (assert (forall ((var_0 test.zz.eq.Scope.T)) (= (anthill.prelude.PartialEq.eq@test.zz.eq.Scope.T var_0 var_0) true)))
+#   (assert (forall ((var_0 test.zz.eq.Scope.T) (var_1 test.zz.eq.Scope.T)) (= (anthill.prelude.PartialEq.neq@… var_1 var_0)
+#           (not (anthill.prelude.PartialEq.eq@… var_1 var_0)))))
+#   (assert (anthill.prelude.PartialEq.neq@test.zz.eq.Scope.T var_1 var_1))
+#   (check-sat)
+#
+#   rule, in `sort Scope  sort T = ?`, under …                              BEFORE (374dda80)            AS DELIVERED
+#   p(?a: T) :- neq(?a, ?a)                  requires Eq[T = T]             error (`__domain_guard`)     proved
+#                                            requires PartialEq[T = T]      error, the same              COUNTEREXAMPLE (sat)
+#                                            requires Ord[T = T]            error, the same              proved (12 laws)
+#   p(?a) :- neq(?a, ?a)                     requires Eq[T = T]             error (unhandled `neq`)      error: nothing gives
+#                                                                                                         `?var_0` a sort
+#   p: gte(?a, ?a) :- gte(?a, ?b)            requires PartialOrd[T = T]     proved, of the reals         error: nothing gives
+#                                                                                                         `?var_0` a sort
+#   p: gte(?a: T, ?a) :- gte(?a, ?b)         requires PartialOrd[T = T]     error (`__domain_guard`)     COUNTEREXAMPLE (sat)
+#   p(?a: T, ?b: T) :- gt(?a, ?b), gt(?b, ?a)  requires WeakOrd[T = T]      error (head shape)           proved
+#   p(?a: T) :- gt(?a, ?a)                   requires WeakOrd[T = T]        error (`__domain_guard`)     proved (11 laws)
+#   p(?a: T) :- neq(lub(?a, ?a), ?a)         requires Lattice[T = T]        error, the same              proved (11 laws)
+#   p(?a: T) :- eq(?a, ?a)                   requires algebra.Ring[T = T]   error, the same              sat (9 laws; no `Eq`)
+#   p(?a: Int64) :- neq(?a, ?a)              requires Eq[T = Int64]         error, the same              error (unhandled `neq`);
+#                                            (no `sort T = ?`)                                            2 of 2 laws said
+#   p: gte(?x, 0.0) :- gte(?x, 5.0)          requires WeakOrd[T = Int64]    proved; 9 laws said          proved; 11 of 11 said
+#   p(?x: Float) :- gte(?x, 5.0), gte(0.0, ?x)   requires nothing           error (`__domain_guard`)     proved
+#   The BEFORE column is the same thirteen files on the tree with the change stashed, a build of it, and the
+#   change put back.
+#
+# THE LAWS A LIBRARY REQUIREMENT GIVES AT AN ABSTRACT PARAMETER, all lowered (the count of section 1, turned):
+#     requires PartialEq[T]  1      requires Eq[T]   2      requires algebra.Ring[T]   9   (2, Additive's 5, Multiplicative's 2)
+#     requires WeakOrd[T]   11      requires Lattice[T]  11     requires Ord[T]  12
+#   `compare` is declared `(T T) Real`; `zero` and `one` are constants of the sort; WeakOrd's
+#   `constraint compare_congruent` is `(=> (eq@T a b) (= (compare@T a b) 0.0))`. `requires BoundedLattice[T]`
+#   gives 17, and 2 are left out and said: `less_bottom` and `less_top` are headed by `less`, a relation of the
+#   spec, which is neither an equation nor a comparison.
+# The warning, for a law that is not lowered:
+#   warning: `test.zz.b_int.Scope` requires `anthill.prelude.Eq[T = anthill.prelude.Int64]`, and 2 of the 2 laws it
+#   gives a proof are not lowered to SMT — a `by z3` proof under it runs without: anthill.prelude.Eq.eq_refl,
+#   1 unlabelled equation (`anthill.prelude.Eq[T = anthill.prelude.Int64]`: a law is asserted of a carrier's own
+#   sort, and this one quantifies over a scalar or names nothing of a carrier: `Int64` and `Float` are modelled by
+#   the theory's reals, where a law is a theorem already or is not known to hold; …)
+# A proof's dependencies, `prove -v`:  `deps: laws of test.rv.stale.Spec, requires of test.rv.stale.Scope,
+#   test.rv.stale.Scope.l` — and with the law weakened, a proof citing `l` is refused: "cite `…l` … is stale".
+
+== 4. which documents moved ==
+# A temporary instrument in `anthill-smt-gen` (taken out before the gate) wrote every document the emitter
+# returned — an obligation, a satisfiability check, a lifted clause — to a file named by the rule and a hash of
+# the text, and the emitter crate's suite and the whole CLI suite were run with it before the change and on the
+# tree as reviewed.
+#   BEFORE: 125 documents (102 satisfiability checks, 17 lifts, 6 obligations).
+#   AFTER:  113 of them are there again under the same name: IDENTICAL TO THE BYTE.
+#           12 are not. All 12 are BVG8M's fixtures — a proof under a requirement, at the scope's own parameter,
+#           whose chain has a law:
+#             test.bvg8m.{eq, nest, two, v, wo, ord, strict}.…r     the document gained its declarations and laws
+#             test.bvg8m.step.Scope.big_lemma, ….big_lemma.h1       the same
+#             t.bvg8m.UnderEq.r, t.bvg8m.UnderEq.Nested.deep        the same (`prove.rs`'s unit rows)
+#             test.bvg8m.reals.Scope.refl_like                      no document: refused
+#   `prove -v --no-cache --dry-run examples/webots-modelling/lf1`: stdout the same file before and after
+#   (sha1 906df605…), stderr the same.
+# So of the `prove_*` rows and lf1's documents, NONE moved, which was the aim. What moved is what the ticket is.
+
+== 5. what fails when a part is backed out (the dev profile; each on the tree as delivered, then restored) ==
+# Over the 4 rows of `wi_tests`' `wi_zz7ph_requirement_chain_test` (C), the 9 of the emitter crate's
+# `wi_zz7ph_law_lowering_test` (E), and of `cli_tests` the 18 of `wi_zz7ph_law_lowering_test` (Z), the 11 of
+# `wi_bvg8m_requirement_cite_test` (B) and the 4 unit rows of `prove::s8cyd_implicit_cite_tests`.
+#   scripts/test.sh -p anthill-core --test wi_tests -- wi_zz7ph            (run where a core source is backed out)
+#   scripts/test.sh -p anthill-smt-gen --test integration -- zz7ph
+#   scripts/test.sh -p anthill-cli -- zz7ph bvg8m s8cyd
+# Each back-out is one edit of one source, applied to a saved copy of the tree and the copy put back; after every
+# batch the sources were compared with the copy, byte for byte.
+#
+#   C: `wi_zz7ph_requirement_chain_test` (4)
+#     C1   the_chain_of_a_clause_is_composed_into_the_scopes_terms
+#     C2   a_binding_is_composed_through_a_rename_and_to_a_concrete_type
+#     C3   a_clause_keeps_the_bounds_of_its_head_variables_and_which_parameter_each_names
+#     C4   the_goals_generated_for_a_typed_head_are_told_from_the_written
+#   E: `wi_zz7ph_law_lowering_test` (9)
+#     E1   every_law_a_lawful_library_requirement_gives_lowers_at_an_abstract_parameter
+#     E2   no_law_is_lowered_at_a_concrete_carrier
+#     E3   a_name_segment_spelled_like_a_variable_is_not_a_variable
+#     E4   the_state_a_proof_is_hashed_over_holds_the_laws_and_the_clause
+#     E5   a_violation_rules_head_variable_is_its_parameter
+#     E6   an_equational_lemma_lifts
+#     E7   a_goal_equating_a_variable_with_a_term_that_names_it_is_a_condition
+#     E8   the_logic_is_the_one_written_and_what_the_document_needs
+#     E9   an_operation_with_no_row_is_not_uninterpreted_at_a_theory_sort
+#   Z: `wi_zz7ph_law_lowering_test` (18)
+#     Z1   a_law_is_an_assertion_over_the_parameters_own_sort
+#     Z2   a_requirement_gives_the_laws_of_what_its_spec_requires_or_provides_in_turn
+#     Z3   a_variable_that_nothing_gives_a_sort_is_refused_under_an_abstract_parameter
+#     Z4   a_scalar_is_a_real_by_its_literal_or_its_bound
+#     Z5   a_law_is_asserted_of_a_carriers_own_sort_and_not_at_a_concrete_carrier
+#     Z6   a_law_whose_premise_is_a_rules_predicate_is_left_out_whole
+#     Z7   a_law_that_bounds_its_own_variable_is_of_the_requirements_carrier
+#     Z8   a_rule_of_a_parametric_scope_inlined_from_outside_it_is_refused_too
+#     Z9   a_sort_goes_down_through_a_nested_call_and_comes_from_an_entitys_field
+#     Z10  a_steps_own_variable_is_refused_with_what_a_step_can_do
+#     Z11  only_a_specs_operation_is_uninterpreted_at_the_carrier
+#     Z12  a_proofs_record_goes_stale_when_a_law_it_was_handed_changes
+#     Z13  one_operation_at_two_carriers_is_two_functions
+#     Z14  a_law_that_is_not_lowered_is_left_out_and_said
+#     Z15  a_cited_lemma_about_the_carrier_quantifies_over_its_sort
+#     Z16  a_nullary_operation_is_a_constant_and_a_relation_headed_law_is_left_out
+#     Z17  a_step_of_a_structured_proof_has_the_sorts_of_its_parents_bounds
+#     Z18  the_verdicts_are_of_the_carrier
+#   B: `wi_bvg8m_requirement_cite_test` (11)
+#     B1   a_proof_under_a_requirement_is_emitted_with_the_laws_it_is_owed
+#     B2   a_requirement_adds_its_laws_and_what_they_declare_and_nothing_else
+#     B3   a_requirement_of_a_spec_with_no_law_says_nothing
+#     B4   two_requirements_of_one_scope_are_each_their_own
+#     B5   the_warning_counts_the_laws_left_out_and_names_them
+#     B6   the_laws_of_what_a_spec_provides_in_turn_are_read
+#     B7   a_proof_nested_under_a_requirement_is_emitted
+#     B8   a_step_of_a_structured_proof_under_a_requirement_is_emitted
+#     B9   a_requirement_is_said_once_a_run
+#     B10  a_claim_about_the_carrier_with_no_bound_is_refused
+#     B11  the_proofs_under_a_requirement_prove
+#
+#   AS DELIVERED: core 4 pass, emitter 9 pass, cli 4 + 29 pass.
+#   (a) the laws not handed to the document
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, Z1, Z2, Z7, Z12, Z13, Z14, Z16, Z18
+#   (b) the chain not followed: the laws of the named spec alone
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, Z1, Z2, Z5, Z13, Z16, Z18
+#   (c) the carrier a Real: a bound that names the parameter, and a binding to it
+#       emitter  fails E1, E3, E8
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, B11, Z1, Z2, Z3, Z6, Z7, Z11, Z12, Z13, Z14, Z15, Z16, Z17, Z18
+#   (d) a variable nothing gives a sort is a Real, under a parameter too
+#       emitter  all pass
+#       cli      fails B10, B11, Z3, Z8, Z10
+#   (e) the logic as written, whatever the document declares
+#       emitter  fails E8
+#       cli      fails B11, Z3, Z12, Z18
+#   (f) an equation head not read (`Unsupported`, as it was)
+#       emitter  fails E1, E2, E6
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, B11, Z1, Z2, Z5, Z12, Z13, Z14, Z16, Z18
+#   (g) the goals generated for a typed head not skipped
+#       emitter  fails E3, E8, E9
+#       cli      fails Z1, Z2, Z3, Z4, Z6, Z7, Z11, Z12, Z13, Z14, Z15, Z16, Z18
+#   (h) a law given no binding for a group no operand decides
+#       emitter  fails E1, E2
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, B11, Z1, Z2, Z5, Z7, Z12, Z13, Z14, Z16, Z18
+#   (i) a one-variable head must be bound by the body, in a satisfiability check too
+#       emitter  fails E3, E5, E7, E8
+#       cli      fails Z1, Z2, Z4, Z7, Z14, Z16, Z18
+#   (j) a head of several variables not read (`Unsupported`, as it was)
+#       emitter  all pass
+#       cli      fails Z6, Z11, Z13, Z18
+#   (k) a clause does not say which frame slot is a declared parameter
+#       core     fails C3
+#       emitter  fails E3, E8
+#       cli      fails Z1, Z2, Z3, Z6, Z7, Z10, Z11, Z12, Z13, Z14, Z15, Z16, Z17, Z18
+#   (l) no sort follows from a signature: the bounds alone
+#       emitter  fails E1, E2
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, B11, Z1, Z2, Z3, Z4, Z5, Z9, Z12, Z13, Z14, Z16, Z18
+#   (m) an instance reached along two paths read twice
+#       cli      fails B5
+#   (n) an operation uninterpreted at a theory sort too
+#       emitter  fails E5, E6, E7, E8, E9
+#       cli      fails B1, B2, B3, B4, B5, B6, B7, B10, B11, Z2, Z3, Z4, Z5, Z7, Z8, Z9, Z10, Z12, Z14, Z18
+#   (o) what a cited lemma declares not declared in the consumer
+#       cli      fails Z15
+#   (p) `?x = <a term that names ?x>` read as a definition
+#       emitter  fails E7
+#       cli      all pass
+#   (q) a step of a structured proof not given its parent's bounds
+#       emitter  all pass
+#       cli      fails Z17, Z18
+#   (s) a law's premise that is a rule's predicate passed over, as a cited lemma's is
+#       emitter  all pass
+#       cli      fails Z6, Z18
+#   (t) a law's own bound taken for the spec's parameter, not what the requirement binds it to
+#       emitter  all pass
+#       cli      fails Z7, Z18
+#   (u) a law asserted whatever its variables range over
+#       emitter  fails E2
+#       cli      fails B5, Z5, Z18
+#   (v) the refusal asked of the document only when no other rule was read for it
+#       emitter  all pass
+#       cli      fails Z8
+#   (w) a known sort not carried down into a nested call
+#       emitter  all pass
+#       cli      fails Z9
+#   (x) an entity's field gives its variable no sort
+#       emitter  all pass
+#       cli      fails Z9
+#   (y) any operation uninterpreted at the carrier, a free one too
+#       emitter  all pass
+#       cli      fails Z11
+#   (z) the sources of the laws not in the proof's dependency set
+#       cli      fails Z12
+#   (aa) a fragment's variables read by splitting at every non-word character
+#       emitter  fails E3
+#       cli      all pass
+#   (ab) a step not known for one, where a refusal advises
+#       emitter  all pass
+#       cli      fails Z10
+#   (r) a bare nullary operation in a head not given the sort of its position
+#       emitter  all pass
+#       cli      fails Z16
+#   (rr) the position of a nested call does not decide its result
+#       emitter  all pass
+#       cli      fails Z16
+#   (ac) a spec's laws not read for its entry of the visited set
+#       emitter  fails E4
+#       cli      fails Z12
+#   (ad) a requirement said at every query, not once a run
+#       cli      fails B9, Z16
+#   (ae) the chain of a clause read without what its spec requires or provides in turn
+#       core     fails C1, C2
+#       emitter  fails E1, E2
+#       cli      fails B1, B2, B4, B5, B6, B7, B8, B11, Z1, Z2, Z5, Z13, Z16, Z18
+#   (af) a goal generated for a typed head not told from a written one
+#       core     fails C4
+#       emitter  fails E3, E8, E9
+#       cli      fails Z1, Z2, Z3, Z4, Z6, Z7, Z11, Z12, Z13, Z14, Z15, Z16, Z18
+#
+# EVERY ROW OF C, E, Z AND B FAILS UNDER AT LEAST ONE BACK-OUT. The four unit rows pass under all of them, by
+# design: they are BVG8M's, of which clauses a proof is handed and how a warning names laws, and none of the above
+# changes either (their own back-outs are requirement-cites-2026-10-12.txt §5).
+# BY DESIGN, where a back-out passes a suite: (d), (j), (q), (s), (t), (v)–(y), (ab), (r), (rr) pass the emitter's rows —
+# those drive `lower_spec_law` and the emitter directly, and the refusal, a several-variable head, a step, a law's
+# premise and bound, a nested call and an operation's owner are each held by a row that drives a PROOF, through
+# the binary. (p) and (aa) pass the binary's rows: `eq(?x, ?x)` at a theory sort and a name segment spelled like
+# a variable are held where the emitter is called directly.
+# WHEN: (a)–(q), (s)–(ab) were run on the tree as reviewed; (r), (rr) and (ac)–(af) after one more edit — the
+# operand of a nested call (section 6, "found here") — and after Z16 gained its second proof. So Z16 is exact
+# for (r), (rr) and (ac)–(af), and for the others is the row as it stood, with one proof.
+# NOT BACKED OUT: an unreadable entry of a requires chain as an `Err` (section 6, 15) — nothing in the tree makes
+# one, so no row can hold it.
+
+== 6. what /code-review changed ==
+# THE FIRST CUT lowered every law it could translate, at whatever its variables ranged over; decided the refusal
+# from the name of the rule proved; gave a sort to a bare variable operand and nothing below it; made every
+# operation at a declared sort uninterpreted; and handed a proof its laws without recording where they came from.
+# Fifteen findings, twelve of them reproduced by the reviewer on the built binary, and three more below the cut.
+# Each was reproduced again here on the first cut (the fixtures are the rows named), and what was done:
+#
+# (1) A LAW'S PREMISE THAT IS A RULE'S PREDICATE WAS DROPPED. A law is read as a cited lemma is — a rule call not
+#     chased into its body — and for a lemma the call is passed over. `rule same_weight: eq(weight(?a),
+#     weight(?b)) :- related(?a, ?b)` became `(forall (a b) (= (weight@T b) (weight@T a)))`, and
+#     `gt(weight(?a), weight(?b))` was "proved" unsatisfiable of every carrier. DONE: a law with such a premise
+#     is not lowered, and said with why (Z6; back-out s).
+# (2) THE LAWS WERE NOT IN THE PROOF'S DEPENDENCY SET. `l` proved from a law; the law weakened; `l` no longer
+#     proves, and `m using l` went on reading `l`'s record as current. DONE: the scope whose `requires` was read
+#     and each spec whose laws were are entries of the visited set (`cache::visited_requires_of`,
+#     `visited_laws_of`), hashed as the clauses and the laws they name; the cite is refused as stale (Z12, E4;
+#     back-outs z, ac). An entry that existed hashes as it did, so `STATE_HASH_FORMAT_VERSION` is not moved.
+# (3) THE REFUSAL WAS DECIDED BY THE NAME OF THE RULE PROVED, so a rule of a parametric scope inlined from a
+#     caller outside it was read over the reals. DONE: asked of every rule read for the document
+#     (`Emitter::refusal_subject`, over the visited set) (Z8; back-out v).
+# (4) A LAW AT `Int64` WAS A UNIVERSAL AXIOM OVER `Real`. `rule discrete: lt(?a, ?b) <=> lte(add(?a, 1), ?b)`
+#     under `requires Discrete[T = Int64]`: `gte(?x, 100) :- gte(?x, 5)` proved. This was decision (b) as made.
+#     DONE: a law is lowered only where every variable it quantifies is of a declared sort and it names something
+#     of a carrier — which is no law at a concrete carrier, and any law with an `Int64` variable of its own at an
+#     abstract one. Decision (b) is turned to "left out and said" (section 2) (Z5, E2, B5; back-out u).
+# (5) AN INLINED RULE'S LOCAL VARIABLES ARE NOT RENAMED APART FROM THE CALLER'S. Not of this change: section 7.
+#     What this change adds to it is said there.
+# (6) A NULLARY OPERATION IN A LAW AT A CONCRETE CARRIER fell to its bare local name, an undeclared symbol
+#     (`(= (+ var_0 zero) var_0)` under `requires Additive[T = Float]`; z3: "unknown constant zero"). GONE WITH
+#     (4): no law is lowered there.
+# (7) A QUANTIFIED LAW UNDER A WRITTEN `QF_` LOGIC, where nothing is declared. GONE WITH (4): a law that is
+#     lowered declares something, and the logic is then derived. The row that pinned the combination is taken out.
+# (8) A LAW'S OWN BOUND `?a: T` WAS THE SPEC'S PARAMETER AS A SORT OF ITS OWN: the law was about a carrier no
+#     proof names, constrained nothing, counted as lowered, and nothing was said. DONE: in a law a bound's
+#     parameter is what the requirement binds it to (`Emitter::parameter_sort`) (Z7; back-out t).
+# (9) A KNOWN SORT WAS NOT CARRIED DOWN INTO A NESTED CALL: `lt(?d + ?step, 3.0)` in a parametric scope was
+#     refused. DONE: a position's sort goes to the result of the call standing there, and so to its operands
+#     (Z9; back-out w).
+# (10) A VARIABLE AN ENTITY'S FIELD BINDS HAD NO SORT, so one compared only with it was refused. DONE: the
+#     field's declared type (Z9; back-out x).
+# (11) A STEP'S OWN VARIABLE WAS TOLD TO "WRITE ITS BOUND ON THE RULE'S HEAD", which a step cannot. DONE: the
+#     refusal says what a step can do (Z10; back-out ab). And before the review, found here: a step did not have
+#     its PARENT'S bounds at all — it has them now, slot for slot (Z17; back-out q).
+# (12) EVERY OPERATION AT A DECLARED SORT WAS CLAIMED AS UNINTERPRETED, before any other reading: a free
+#     operation's body was dropped in silence, and the relational form of a call hit an arity error. DONE: a
+#     SPEC's operation only — whose body is a default a carrier may replace, and so no hypothesis — and only at
+#     the signature's arity (Z11; back-out y). A spec operation's default body stays out, as it is no law.
+# (13) the temporary instrument of section 4 was still in the tree: taken out before the gate.
+# (14) the three test files pointed at a §5 this file did not have yet: it has it.
+# (15) `requirement_chain` DROPPED AN ENTRY IT COULD NOT READ, and its whole sub-chain with it. DONE: an `Err`,
+#     as the miss at the top already was. No row: nothing in the tree makes an unreadable entry.
+# Below the cut: the WITNESS records the logic the proof WROTE and not the one its document ran under — NOT
+# CHANGED: a document that declares nothing would record another string than it does today, and the document's
+# hash is what a replay checks. `Emitter::signature` is read again at every node and a law lowered again at every
+# query — NOT CHANGED: a law is a handful of nodes, and a query spawns a solver. The walk over a rule's enclosing
+# scopes was written three times: it is `load::enclosing_scope_names` for the two that read scopes by name.
+#
+# FOUND HERE, after the review, by running what the proposal said was "not built":
+#   `eq(?x, ?x)` BOUND `?x` TO ITSELF — `?v = <term>` is a definition, and a bound variable is not declared — so
+#     the document named a constant it never declared ("unknown constant var_1"). A term that names the variable
+#     is a condition (E7; back-out p). In lines this change did not write; it is what a law's guard `eq(?a, ?a)`
+#     meets at a theory sort.
+#   A BARE NULLARY OPERATION IN A BODY (`lub(?a, top)`) is stored as an application of no arguments, and was not
+#     the constant its `Ref` is: it is a nested call whose position decides its result (Z16; back-outs r, rr).
+#   THE FREE VARIABLES OF A FRAGMENT WERE READ BY SPLITTING AT EVERY `.`: a document names declared functions by
+#     qualified names now, and a segment spelled `var_7` was a variable nothing gave a sort (E3; back-out aa).
+
+== 7. found, and not of this change ==
+# Two defects of the emitter that the review's reading surfaced. Each was run on the tree with this change
+# STASHED (374dda80) and again as delivered: the same answer both times. Neither is fixed here — each moves
+# documents that exist. FILED 2026-10-12, with the user's word: (i) WI-20261012-BR7P3, (ii) WI-20261012-CDHSQ.
+#
+# (i) AN INLINED RULE'S LOCAL VARIABLES ARE THE CALLER'S OF THE SAME INDEX (`try_inline_rule_call`; its doc says
+#     they are renamed).
+#       rule helper(?x, ?w) :- lt(?x, ?y), lt(?y, ?w)
+#       rule r :- helper(?a, ?b), gte(?a, 5.0)          proof r by z3 end
+#     `✓ test.rv.r5.r: proved (z3: unsat)` — the callee's `?y` and the caller's `?b` are both `var_0`, the
+#     document has `(< var_0 var_0)`, and the body is satisfiable (a = 5, y = 6, b = 7).
+#     WHAT THIS CHANGE ADDS: the callee's inferred sorts are of its own frame and are not carried to a name that
+#     leaks, so at a declared sort the same collision is `(lt@T var_1 var_1)`, or a solver error where the two
+#     variables' sorts differ. No new silent case: where the sorts agree it is the collision above.
+#     The one-argument call form (`translate_called_rule`) has it too, measured as delivered:
+#       rule shifted(?r) :- eq(?r, ?y + 1.0), gte(?y, 0.0)
+#       rule c :- shifted(?v), lt(?z, 0.0), gte(?v, 0.0)      proof c by z3 end
+#     `✓ … c: proved` — `(assert (>= var_0 0.0)) (assert (< var_0 0.0))`, the callee's `?y` and the caller's `?z`.
+# (ii) A CITED LEMMA'S PREMISE THAT IS A RULE'S PREDICATE IS PASSED OVER (`process_body_goal`, the abstract-mode
+#     branch; WI-897's comment argues it constrains nothing).
+#       rule related(?a, ?b) :- gte(?a, ?b)
+#       rule lemma: gte(?a, ?b) :- related(?a, ?b)       proof lemma by trust(reason: "…") end
+#       rule bogus: gte(?c, 5.0) :- gte(0.0, ?c)         proof bogus using lemma by z3 end
+#     `✓ test.rv.lem.bogus: proved (z3: unsat)` — the lift is `(forall (a b) (=> true (>= b a)))`. It is finding
+#     (1) for a lemma instead of a law; this change refuses it for a law and leaves the lemma's as it was.
+#     The same with the lemma PROVED (`proof lemma by z3 end`, as delivered): its own discharge reads `related`'s
+#     body, and its lift does not.
+
+== 8. the gate ==
+#   scripts/test.sh                              the whole workspace, the shared base, anthill-core at opt-level 2
+#
+#   THE TREE AS DELIVERED     17:14:03 – 17:25:52 (11 min 49 s), nothing else building; `CPU_Speed_Limit` 100 when
+#                             it began and when it ended.
+#     exit 0; 36 result lines, all ok; 9 403 passed, 0 failed, 14 ignored.   `wi_tests`: 6 840 passed, 4 ignored,
+#     112.93 s.   OBSERVED by the controls: SHARED BASE; terms, a node where an alias is written.
+#   The tree before its formatting, 16:47:43 – 17:01:09 (13 min 26 s): the same — exit 0, 36 lines all ok, 9 403
+#     passed, 14 ignored, `wi_tests` 6 840 in 113.67 s. Between the two: the back-outs (ac)–(af), which leave the
+#     sources as they were (compared byte for byte), and `rustfmt` on the files this change wrote or that were
+#     rustfmt-clean before it (`anthill-smt-gen/src`, the three new test files, one hunk of `load.rs`, two of
+#     `prove.rs`) — whitespace; the back-outs of section 5 were run before it.
+#   The gate of the tree before the ticket (requirement-cites-2026-10-12.txt §8, the merge) had 9 372: this ticket
+#   adds 31 rows — 4 to `wi_tests`, 9 to the emitter crate's `integration`, 18 to `cli_tests` — and turns 9 of
+#   BVG8M's 11. After the second gate only this file and the work item were written.
+#
+# THE NEW ROWS UNDER THE OTHER RECIPES AND THE CARRIER CONTROL (after the first gate; the dev profile; the rows and the
+# control row that says which recipe ran — not the whole crate):
+#   ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core --test wi_tests -- wi_zz7ph wi_bvg8m wi_szkv7_two_step
+#       11 passed; "load recipe OBSERVED …: one shot"
+#   ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core --test wi_tests -- wi_zz7ph wi_bvg8m wi_szkv7_two_step
+#       11 passed; "load recipe OBSERVED …: TWO-STEP"
+#   ANTHILL_TEST_NODE_CARRIER=1  scripts/test.sh -p anthill-core --test wi_tests -- wi_zz7ph wi_bvg8m alias_written_name
+#       27 passed; "node carrier OBSERVED …: A NODE for every sort"
+#   ANTHILL_TEST_NODE_CARRIER=1  scripts/test.sh -p anthill-smt-gen --test integration -- zz7ph        9 passed
+#   ANTHILL_TEST_NODE_CARRIER=1  scripts/test.sh -p anthill-cli -- zz7ph bvg8m s8cyd                   4 + 29 passed
+# A bound that names the scope's parameter is the clause's own variable under the carrier switch too, and a
+# requirement's binding and an operation's parameter type are read through the view (`sort_functor_of_view`).
+# NOT RUN: the whole of anthill-core under the two other recipes, the whole workspace under the carrier switch, and
+# scaland — nothing of scaland's was changed, and it has no cite path.
+
+== 9. the tree as committed, and after the merges of origin/main ==
+# Section 8's second gate was of the working tree that was committed: 050f3931 (the change) and 2abec2e6 (the work
+# items — ZZ7PH delivered, BR7P3 and CDHSQ filed). After that gate only this file and the work items had been
+# written. Gated again as merged, twice — the second is the tree that was pushed.
+# origin/main had twelve commits of other sessions by then (TCSGT, RXT6S, MHRN1, TK8X4 and their work items). The
+# merge made itself; both sides wrote `kb/load.rs` and `wi_tests.rs`, in different places, and every file of
+# `tests/include/` is registered once.
+#   scripts/test.sh at b4e7ec29 (the merge), 19:44:15 – 20:01:09 (16 min 54 s)       exit 0: 36 result lines, all ok;
+#     9 476 passed, 0 failed, 14 ignored; `wi_tests` 6 912 passed, 4 ignored, 114.40 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 at both ends. The 73 rows more than section 8's are the other sessions'.
+# origin/main moved once more while that ran: d1a2b275, which adds one work item (WI-20261012-80259) and nothing
+# else. No gated test reads the repository's own `anthill-todo/`; merged and gated all the same.
+#   scripts/test.sh at be5870c2 (the second merge), 20:01:54 – 20:09:02 (7 min 8 s)  exit 0: 36 result lines, all ok;
+#     9 476 passed, 0 failed, 14 ignored; `wi_tests` 6 912 passed, 4 ignored, 112.70 s; SHARED BASE observed.
+#     `CPU_Speed_Limit` 100 at both ends; no source had changed since the build before it. origin/main had not
+#     moved when it ended, and be5870c2 was pushed.
+# The other recipes and the carrier control were not run again on the merged trees: section 8's are of the tree
+# before them.

@@ -177,6 +177,7 @@ pub use result::*;
 use rule_constraints::*;
 use rule_dispatch::*;
 pub(crate) use rule_requirements::*;
+pub use rules::is_typed_head_domain_goal;
 pub(crate) use rules::*;
 pub use sealed::*;
 pub use signature::*;

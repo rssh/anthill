@@ -496,6 +496,19 @@ pub struct ProgramClause {
     pub meta: Option<TermId>,
     /// Leading De Bruijn slots borrowed from a parent rule frame.
     pub shared_arity: u32,
+    /// WI-20261012-ZZ7PH — the TYPED HEAD VARIABLES, as the clause holds them
+    /// ([`KnowledgeBase::rule_type_bounds`]): `(De Bruijn index, bound)`, the bound
+    /// closed against the clause's frame. A bound is written on a head variable and
+    /// nowhere else — `?b: T` in a body is a load error — so a variable that is not
+    /// here has none.
+    pub type_bounds: Vec<(u32, crate::eval::value::Value)>,
+    /// WI-20261012-ZZ7PH — WHICH FRAME SLOTS ARE A DECLARED TYPE PARAMETER, by the
+    /// parameter's symbol: `(De Bruijn index, the `T` of an enclosing `sort T = ?`)`.
+    /// A relational clause admits the parameter its bound names to its frame, so the
+    /// bound `?a: T` is stored as a variable of the clause and says nothing of WHICH
+    /// parameter it is; this does. Read where the bounds are, and empty where there
+    /// are none: nothing else of a clause holds a type.
+    pub frame_type_params: Vec<(u32, Symbol)>,
 }
 
 impl ProgramClause {
@@ -7292,6 +7305,22 @@ impl KnowledgeBase {
             domain: rule.domain,
             meta: rule.meta,
             shared_arity: rule.shared_arity,
+            type_bounds: rule.type_bounds.clone(),
+            frame_type_params: if rule.type_bounds.is_empty() {
+                Vec::new()
+            } else {
+                // The same reversal `install_rule_type_bounds` keys a bound by: the
+                // De Bruijn index of the global at `position` is `len - 1 - position`.
+                let len = rule.globals.len();
+                rule.globals
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, vid)| {
+                        self.type_param_of_canonical_var(*vid)
+                            .map(|param| ((len - 1 - position) as u32, param))
+                    })
+                    .collect()
+            },
         }
     }
 

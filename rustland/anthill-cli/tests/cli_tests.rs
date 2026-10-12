@@ -143,3 +143,5 @@ mod wi_vm9q7_literal_rendering_test;
 mod wi_an6cq_stdlib_first_test;
 #[path = "include/wi_bvg8m_requirement_cite_test.rs"]
 mod wi_bvg8m_requirement_cite_test;
+#[path = "include/wi_zz7ph_law_lowering_test.rs"]
+mod wi_zz7ph_law_lowering_test;

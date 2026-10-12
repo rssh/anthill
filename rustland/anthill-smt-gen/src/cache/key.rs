@@ -28,6 +28,30 @@ const FIELD_SEP: u8 = 0x1e; // record separator (between top-level fields)
 const ITEM_SEP: u8 = 0x1f; // unit separator (between items within a list)
 const GROUP_SEP: u8 = 0x1d; // group separator (between dep-set entries)
 
+/// WI-20261012-ZZ7PH — A DEPENDENCY THAT IS NO RULE. A proof under a `requires` is handed
+/// the laws of the specs the requirement reaches, and it is handed them BECAUSE its scope
+/// has the clause; neither is a rule the proof visits, so neither was in the set its
+/// state is hashed over — a law weakened, or the clause removed, left the proof's record
+/// reading as current and the lemma citable. Each is an entry of the visited set that no
+/// qualified name can be (a name has no blank): [`visited_laws_of`] a spec,
+/// [`visited_requires_of`] a scope. [`walk_visited`] hashes the first as the spec's laws
+/// and the second as the scope's clauses, so the hash moves when either does.
+///
+/// Entries that existed hash as they did, so [`STATE_HASH_FORMAT_VERSION`] is not moved:
+/// no record made before this holds one of these.
+const LAWS_OF: &str = "laws of ";
+const REQUIRES_OF: &str = "requires of ";
+
+/// The visited-set entry for the laws of the spec named `spec_qn`.
+pub fn visited_laws_of(spec_qn: &str) -> String {
+    format!("{LAWS_OF}{spec_qn}")
+}
+
+/// The visited-set entry for the `requires` clauses of the scope named `scope_qn`.
+pub fn visited_requires_of(scope_qn: &str) -> String {
+    format!("{REQUIRES_OF}{scope_qn}")
+}
+
 /// Inputs to the cache key. Order of fields matches order of
 /// concatenation; do not reorder without bumping `CACHE_FORMAT_VERSION`.
 pub struct KeyInputs<'a> {
@@ -137,6 +161,43 @@ fn walk_visited(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> (String, BTre
     for qn in visited {
         h.update(qn.as_bytes());
         h.update([ITEM_SEP]);
+        // WI-20261012-ZZ7PH — what a proof under a requirement was handed and no rule
+        // of its own names: the laws of a spec, and the `requires` clauses of a scope.
+        if let Some(spec) = qn.strip_prefix(LAWS_OF) {
+            if let Some(sym) = kb.try_resolve_symbol(spec) {
+                for law in kb.spec_laws(sym) {
+                    match &law.clause.head {
+                        anthill_core::eval::Value::Term { id, .. } => {
+                            h.update(printer.print_term(*id).as_bytes())
+                        }
+                        other => h.update(format!("{other:?}").as_bytes()),
+                    }
+                    h.update([ITEM_SEP]);
+                    for atom in &law.clause.body_nodes {
+                        hash_occurrence(kb, atom, &mut h, &mut referenced);
+                        h.update([ITEM_SEP]);
+                    }
+                    h.update([FIELD_SEP]);
+                }
+            }
+            h.update([GROUP_SEP]);
+            continue;
+        }
+        if let Some(scope) = qn.strip_prefix(REQUIRES_OF) {
+            // A relation that cannot be read is hashed as that: it is not the relation
+            // the proof was discharged against.
+            match anthill_core::kb::load::requires_clauses_of(kb, &[scope]) {
+                Ok(clauses) => {
+                    for clause in clauses {
+                        h.update(clause.spec_text.as_bytes());
+                        h.update([ITEM_SEP]);
+                    }
+                }
+                Err(unread) => h.update(unread.as_bytes()),
+            }
+            h.update([GROUP_SEP]);
+            continue;
+        }
         let Some(sym) = kb.try_resolve_symbol(qn) else {
             h.update([GROUP_SEP]);
             continue;

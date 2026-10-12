@@ -205,7 +205,9 @@ fn citable_kb(ns: &str, decl: &str) -> anthill_core::kb::KnowledgeBase {
 fn lifted_axiom_renders_the_implication_clause() {
     let kb = citable_kb("test.render.lifted", "");
     let qn = "test.render.lifted.bound";
-    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false)
+        .expect("render")
+        .clauses;
     assert_eq!(clauses.len(), 1, "one head ⇒ one clause; got {clauses:?}");
     assert!(
         clauses[0].contains("(assert") && clauses[0].contains("=>"),
@@ -229,7 +231,9 @@ fn inline_renders_no_clause() {
           )"#,
     );
     let qn = "test.render.inline.bound";
-    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false)
+        .expect("render")
+        .clauses;
     assert!(
         clauses.is_empty(),
         "Inline must splice nothing, got: {clauses:?}"
@@ -310,6 +314,7 @@ fn inline_under_abstract_emission_is_refused() {
     assert!(
         render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false)
             .expect("concrete consumer renders")
+            .clauses
             .is_empty(),
         "control: Inline splices nothing when the consumer can inline"
     );
@@ -339,7 +344,9 @@ fn a_policy_for_another_backend_is_not_applied() {
     );
     let qn = "test.render.otherbackend.bound";
     // Would be a loud refusal if the `lean` fact applied.
-    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false).expect("render");
+    let clauses = render_cited_lemma_under_policy(&kb, qn, SMT_Z3_BACKEND, false)
+        .expect("render")
+        .clauses;
     assert_eq!(
         clauses.len(),
         1,

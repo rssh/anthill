@@ -36,7 +36,7 @@ use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
 use anthill_core::kb::KnowledgeBase;
 
-use crate::{lift_rule_to_implication_clause, SmtGenError};
+use crate::{lift_rule, Lifted, SmtGenError};
 
 /// The backend identifier the z3 SMT path presents to policy lookup —
 /// the `backend` field a `TranslationPolicy` fact must carry to apply
@@ -167,12 +167,14 @@ pub fn render_cited_lemma_under_policy(
     cited: &str,
     backend: &str,
     consumer_is_abstract: bool,
-) -> Result<Vec<String>, SmtGenError> {
+) -> Result<Lifted, SmtGenError> {
     // A cite is cited — that IS the default, stated rather than
     // rediscovered from a set membership that could only be true.
     let policy = policy_for_with_default(kb, cited, backend, PredicatePolicy::LiftedAxiom)?;
     match policy {
-        PredicatePolicy::LiftedAxiom => lift_rule_to_implication_clause(kb, cited),
+        // WI-20261012-ZZ7PH: with what the lifted clauses use and the theory does not
+        // have, for the consumer's document to declare.
+        PredicatePolicy::LiftedAxiom => lift_rule(kb, cited),
         PredicatePolicy::Inline if consumer_is_abstract => Err(SmtGenError::new(format!(
             "TranslationPolicy for `{cited}` (backend `{backend}`) selects Inline, \
              but the citing proof is emitted ABSTRACTLY — its body's rule calls are \
@@ -183,7 +185,7 @@ pub fn render_cited_lemma_under_policy(
              default for a cited predicate), or drop the `using` clause if the lemma \
              really is not needed."
         ))),
-        PredicatePolicy::Inline => Ok(Vec::new()),
+        PredicatePolicy::Inline => Ok(Lifted::default()),
         unsupported @ (PredicatePolicy::DefineFun | PredicatePolicy::DeclareFun) => {
             Err(SmtGenError::new(format!(
                 "TranslationPolicy for `{cited}` (backend `{backend}`) selects \
