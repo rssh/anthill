@@ -15,7 +15,7 @@
 //! a test whose subject is "the emitted document changed" must not be able to do
 //! that.
 
-use crate::common::{anthill, write_temp, Output};
+use crate::common::prove_dry_run;
 
 /// The cited lemma is discharged `by trust` on purpose. The cite gate
 /// (`cite_status`) refuses an undischarged cite before any policy is consulted,
@@ -50,11 +50,6 @@ namespace test.wi781.dispatch
 end
 "#
     )
-}
-
-fn prove_dry_run(name: &str, src: &str) -> Output {
-    let path = write_temp(&format!("{name}.anthill"), src);
-    anthill(&["prove", path.to_str().unwrap(), "--dry-run", "--no-cache"])
 }
 
 /// The lifted hypothesis as it appears in the emitted document. Asserted as the

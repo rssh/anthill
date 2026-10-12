@@ -504,6 +504,16 @@ impl ProgramClause {
     }
 }
 
+/// One law of a spec, as [`KnowledgeBase::spec_laws`] reads it.
+#[derive(Clone, Debug)]
+pub struct SpecLaw {
+    /// The name the law is cited by, when it was written with one (`rule eq_refl: …`).
+    pub label: Option<Symbol>,
+    /// Whether its head is an equation — `lhs <=> rhs`, or a guarded `lhs = rhs :- g`.
+    pub is_equation: bool,
+    pub clause: ProgramClause,
+}
+
 /// A structural program-browse match, without exposing the resident rule slot.
 ///
 /// This is deliberately narrower than the resolver's candidate interface: it
@@ -7165,6 +7175,47 @@ impl KnowledgeBase {
         self.by_domain(domain)
             .into_iter()
             .map(|rid| self.program_clause(rid))
+            .collect()
+    }
+
+    /// WI-20261011-BVG8M — THE LAWS OF A SPEC: the clauses of every `rule` and
+    /// `constraint` item WRITTEN in the spec's sort, in the order the source has them —
+    /// one for each head of a rule written with several, under the one label.
+    ///
+    /// It is what the record of a `requires <SE>` clause STATES (proposal 030,
+    /// "Per-clause registration": the conjunction of `SE`'s laws at the clause's
+    /// bindings), so it is what a proof under that clause is owed as hypotheses.
+    ///
+    /// WRITTEN, and so read off the clause's ORIGIN and not off its shape. An
+    /// operation's default body is stored in the same sort, as an equation too
+    /// (`max(a, b) = if …`), and is no law: a carrier may supply its own `max`, so the
+    /// equation does not hold of every provider. The loader derived that clause; the
+    /// source wrote a law. A rule with no body and no equation declares its predicate
+    /// and stores no clause at all (proposal 061).
+    ///
+    /// A `fact` is a law when it is an EQUATION: `fact lhs <=> rhs` is the equation
+    /// `rule lhs <=> rhs` spells, and the loader reads the two as one. Any other fact
+    /// in a spec's sort is a claim about values — an instance, a row — and states
+    /// nothing of every provider.
+    ///
+    /// The spec's OWN laws: not those of a spec it requires or provides in turn.
+    pub fn spec_laws(&self, spec: Symbol) -> Vec<SpecLaw> {
+        self.by_domain(spec)
+            .into_iter()
+            .filter(|&rid| self.clause_origin(rid) == ClauseOrigin::Source)
+            .filter_map(|rid| {
+                let is_equation = self.has_equational_head(rid);
+                let is_law = match self.rule_clause_kind(rid) {
+                    ClauseKind::Rule | ClauseKind::Constraint => true,
+                    ClauseKind::Fact => is_equation,
+                    _ => false,
+                };
+                is_law.then(|| SpecLaw {
+                    label: self.rule_label(rid),
+                    is_equation,
+                    clause: self.program_clause(rid),
+                })
+            })
             .collect()
     }
 
