@@ -298,6 +298,56 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
+    /// A value carried on an occurrence ([`Expr::Spliced`]), as the data it is: a
+    /// hash-consed term by [`Self::write_term`], and the entity or tuple a substitution
+    /// rebuilt over it by its functor and arguments, a scalar as its literal. A carrier
+    /// with no structure to print — a closure, a stream, a dictionary — renders as an
+    /// opaque marker.
+    fn write_carried_value(&self, v: &Value, buf: &mut String) {
+        let write_args = |pos: &[Value], named: &[(Symbol, Value)], buf: &mut String| {
+            let mut first = true;
+            for c in pos {
+                if !std::mem::take(&mut first) {
+                    buf.push_str(", ");
+                }
+                self.write_carried_value(c, buf);
+            }
+            for (key, c) in named {
+                if !std::mem::take(&mut first) {
+                    buf.push_str(", ");
+                }
+                buf.push_str(self.view.sym_name(*key));
+                buf.push_str(": ");
+                self.write_carried_value(c, buf);
+            }
+        };
+        match v {
+            Value::Term { id, .. } => self.write_term(*id, buf),
+            Value::Node(occ) => self.write_occurrence(occ, buf),
+            Value::Var(var) => self.write_var(*var, buf),
+            Value::SymbolRef(sym) => self.write_symbol_ref(*sym, buf),
+            Value::Entity {
+                functor,
+                pos,
+                named,
+            } => {
+                buf.push_str(self.view.sym_name(*functor));
+                buf.push('(');
+                write_args(pos, named, buf);
+                buf.push(')');
+            }
+            Value::Tuple { pos, named } => {
+                buf.push('(');
+                write_args(pos, named, buf);
+                buf.push(')');
+            }
+            scalar => match crate::kb::term_view::TermView::as_literal(scalar, self.view) {
+                Some(lit) => self.write_literal(&lit, buf),
+                None => buf.push_str("<spliced>"),
+            },
+        }
+    }
+
     /// A GOAL carried as a [`Value`] (an element of an effect guard's goal list): a
     /// data term, rendered as one (`eq(b, b)`, not the type spelling `eq[b, b]`).
     fn write_goal_value(&self, v: &Value, buf: &mut String) {
@@ -642,10 +692,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // rebuilding it transiently, and `anthill query --query-file` labels each
             // query with this printer. It read `<spliced>` where the term spelling was
             // available one call away.
-            Expr::Spliced(crate::eval::value::Value::Term { id, .. }) => {
-                self.write_term(*id, buf)
-            }
-            Expr::Spliced(_) => buf.push_str("<spliced>"),
+            //
+            // …AND a carried term whose variables a substitution bound, which is a
+            // transient entity over values where it is not that term: a structural type
+            // written as a bracket's entry holding a clause's variable, read back from an
+            // answer. [`Self::write_carried_value`] prints the structure it has.
+            Expr::Spliced(v) => self.write_carried_value(v, buf),
             Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym } => {
                 buf.push_str(self.view.sym_name(*sym));
             }
@@ -1370,6 +1422,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 use crate::parse::ir::ParseAux;
                 match aux.as_ref() {
                     ParseAux::TypeExpr(te) => buf.push_str(&format!("<type-anno {:?}>", te)),
+                    ParseAux::EntryType(te) => buf.push_str(&format!("<type-entry {:?}>", te)),
                     ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
                     ParseAux::ProofStmt(m) => buf.push_str(&format!("<proof-meta {:?}>", m)),
                 }
@@ -1992,6 +2045,31 @@ mod tests {
     use crate::kb::term::Literal;
     use ordered_float::OrderedFloat;
     use smallvec::SmallVec;
+
+    /// A value carried on an occurrence prints the structure it has: an entity a
+    /// substitution rebuilt, with a term, a variable and a scalar under it. Before, any
+    /// carried value that was no term printed `<spliced>`; with the scalar arm taken out
+    /// of `write_carried_value` the `3` below prints `<spliced>` again.
+    #[test]
+    fn a_carried_entity_prints_its_arguments() {
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        let mut kb = KnowledgeBase::new();
+        let (f, n, k) = (kb.intern("f"), kb.intern("n"), kb.intern("k"));
+        let leaf = kb.alloc(Term::Const(Literal::Int(1)));
+        let var = kb.fresh_var(k);
+        let entity = Value::Entity {
+            functor: f,
+            pos: vec![Value::term(leaf), Value::Var(Var::Global(var))].into(),
+            named: vec![(n, Value::Int(3))].into(),
+        };
+        let occ = NodeOccurrence::new_expr(
+            Expr::Spliced(entity),
+            crate::kb::node_occurrence::empty_span(),
+            None,
+        );
+        let printed = TermPrinter::new(&kb).print_occurrence(&occ);
+        assert_eq!(printed, "f(1, ?k, n: 3)");
+    }
 
     #[test]
     fn print_int_literal() {

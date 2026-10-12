@@ -1227,21 +1227,21 @@ pub(super) struct ArgumentBinding {
 /// those three left alone, a mixed call would be CHECKED against one parameter and BOUND
 /// to another — a silent wrong-type delivery, which is worse than the load error the
 /// rank rule replaced. Review-found, after exactly that shipped in a first draft.
-pub(super) fn positional_param_indices(
+pub(in crate::kb) fn positional_param_indices<P: Labelled, L: Labelled>(
     kb: &KnowledgeBase,
-    params: &[(Symbol, Value)],
+    params: &[P],
     pos_count: usize,
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_args: &[L],
 ) -> SmallVec<[Option<usize>; 4]> {
     if named_args.is_empty() {
         return (0..pos_count)
             .map(|i| (i < params.len()).then_some(i))
             .collect();
     }
-    let decl: SmallVec<[Symbol; 4]> = params.iter().map(|(s, _)| *s).collect();
+    let decl: SmallVec<[Symbol; 4]> = params.iter().map(Labelled::label).collect();
     let assigned = match KnowledgeBase::rank_positional_among_unnamed(
         &decl,
-        |p| named_args.iter().any(|(l, _)| same_label(kb, p, *l)),
+        |p| named_args.iter().any(|l| same_label(kb, p, l.label())),
         pos_count,
     ) {
         PositionalPlan::Assign(f) => f,
@@ -1260,7 +1260,7 @@ pub(super) fn positional_param_indices(
         .map(|i| {
             assigned
                 .get(i)
-                .and_then(|f| params.iter().position(|(s, _)| *s == *f))
+                .and_then(|f| params.iter().position(|p| p.label() == *f))
         })
         .collect()
 }
@@ -1280,26 +1280,85 @@ pub(super) fn positional_param_indices(
 /// `pos_results.get(i)`, the argument at the parameter's INDEX, and a mixed call then
 /// dispatched on one argument while the typer read another. The WI-793 hint staging, which
 /// runs BEFORE the arguments are typed, reads the same ranking ([`param_arg_index`]).
-pub(super) enum BoundArg {
+pub(in crate::kb) enum BoundArg {
     Pos(usize),
     Named(usize),
 }
 
-pub(super) fn bound_arg(
+impl BoundArg {
+    /// The argument this names, out of the call's positional and labelled lists.
+    pub(in crate::kb) fn of<'a, T>(&self, pos: &'a [T], named: &'a [(Symbol, T)]) -> &'a T {
+        match self {
+            BoundArg::Pos(j) => &pos[*j],
+            BoundArg::Named(k) => &named[*k].1,
+        }
+    }
+}
+
+pub(in crate::kb) fn bound_arg<P: Labelled, L: Labelled>(
     kb: &KnowledgeBase,
-    params: &[(Symbol, Value)],
+    params: &[P],
     pos_params: &[Option<usize>],
     i: usize,
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_args: &[L],
 ) -> Option<BoundArg> {
     if let Some(j) = pos_params.iter().position(|p| *p == Some(i)) {
         return Some(BoundArg::Pos(j));
     }
-    let (pname, _) = params.get(i)?;
+    let pname = params.get(i)?.label();
     named_args
         .iter()
-        .position(|(n, _)| same_label(kb, *n, *pname))
+        .position(|n| same_label(kb, n.label(), pname))
         .map(BoundArg::Named)
+}
+
+/// The argument EVERY parameter of a call takes, in declaration order: [`bound_arg`] asked
+/// of each. `None` where the call does not fill its parameter list — a parameter no
+/// argument is bound to, or a labelled call with a positional argument no parameter takes.
+///
+/// A call written WITHOUT labels may carry positional arguments past its parameters, and
+/// they are bound to none: a rule-body goal at arity + 1 is the functional-relation view,
+/// its last column the result (kernel §5.3). A label makes the call not that shape — the
+/// result column belongs to the all-positional spelling alone — so there a positional
+/// argument left over is one the call has no place for, and nothing is aligned.
+///
+/// For a reader that wants the arguments in PARAMETER order and has only the call's
+/// shape to go by: the rule-body readers of a call no typer reordered (the requirement
+/// witness and the inferred conditions, through [`align_call_args_to_params`]), and the
+/// resolver's own reduction of one (`KnowledgeBase::call_args_in_param_order`).
+pub(in crate::kb) fn bound_args<P: Labelled, L: Labelled>(
+    kb: &KnowledgeBase,
+    params: &[P],
+    pos_count: usize,
+    named_args: &[L],
+) -> Option<SmallVec<[BoundArg; 4]>> {
+    let pos_params = positional_param_indices(kb, params, pos_count, named_args);
+    if !named_args.is_empty() && pos_params.iter().any(Option::is_none) {
+        return None;
+    }
+    (0..params.len())
+        .map(|i| bound_arg(kb, params, &pos_params, i, named_args))
+        .collect()
+}
+
+/// What a declared parameter and a written argument are matched by — the NAME each
+/// carries, whatever rides beside it: a parameter's type, an argument's occurrence or its
+/// type, or nothing at all (the resolver holds an operation's arg places as bare symbols).
+/// So [`positional_param_indices`] and [`bound_arg`] answer for a call on any carrier.
+pub(in crate::kb) trait Labelled {
+    fn label(&self) -> Symbol;
+}
+
+impl Labelled for Symbol {
+    fn label(&self) -> Symbol {
+        *self
+    }
+}
+
+impl<T> Labelled for (Symbol, T) {
+    fn label(&self) -> Symbol {
+        self.0
+    }
 }
 
 /// [`bound_arg`]'s TYPED result — the synthesized argument bound to parameter `i`, when it
@@ -1685,18 +1744,46 @@ pub(super) fn call_arity_error(
         return None;
     }
     let plural = |n: usize| if n == 1 { "" } else { "s" };
-    let unfilled_tail = if binding.unfilled.is_empty() {
+    let unfilled_names = || {
+        binding
+            .unfilled
+            .iter()
+            .map(|s| format!("`{}`", short_name_of(kb.local_name_of(*s))))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // A LABELLED call with more positional arguments than the parameters its labels leave
+    // open matches none of them to a parameter ([`positional_param_indices`]), so every
+    // open parameter is unfilled — and "no argument fills it" would send the author to
+    // add one. What is wrong is the count, so the count is what is said. At a rule-body
+    // goal, one over is the spelling of a functional-relation goal with a label in it, and
+    // a label makes the call not that view (kernel §5.3): said too, so the repair is not
+    // guessed.
+    let unfilled_tail = if binding.has_named_args && binding.surplus_positional > 0 {
+        let (given, open) = (binding.surplus_positional, binding.unfilled.len());
+        format!(
+            "; {given} positional argument{} for the {open} parameter{} no label names{}{}",
+            plural(given),
+            plural(open),
+            if open == 0 {
+                String::new()
+            } else {
+                format!(" ({})", unfilled_names())
+            },
+            if pos == NodePos::RuleBodyGoal && given == open + 1 {
+                " — a goal takes the operation's result in one more positional argument \
+                 only where the call writes no label"
+            } else {
+                ""
+            },
+        )
+    } else if binding.unfilled.is_empty() {
         String::new()
     } else {
         format!(
             "; no argument fills parameter{} {}",
             plural(binding.unfilled.len()),
-            binding
-                .unfilled
-                .iter()
-                .map(|s| format!("`{}`", short_name_of(kb.local_name_of(*s))))
-                .collect::<Vec<_>>()
-                .join(", "),
+            unfilled_names(),
         )
     };
     // The DECLARED count in the same currency `supplied` is counted in: what a caller

@@ -61,6 +61,16 @@ The outer head of a call, rule/fact clause, or constructor is never itself a
 value-expression occurrence. Classification recursively begins at its
 arguments.
 
+A name of more than one segment written with no application reaches the loader
+as the `field_access` chain the converter folds it into (`kernel-language.md`
+§6.7), and is classified where that chain is read. In an operation body the
+chain ladder reads it after a local root, a rule and a const, and before a
+prefix that names a value: a whole name that resolves to a sort is the
+reference its one-segment spelling lowers to (`Loader::try_qualified_sort_ref`),
+so one rule classifies both spellings and an eponymous sort or a free-standing
+entity keeps the reading its bare name has. As an entry of a bracket the
+converter lowered it as a type already.
+
 ## 3. Value-expression occurrence audit
 
 The maintainable rule is grammatical rather than a hand-maintained hint list:
@@ -156,6 +166,11 @@ the construction the dot makes is a call. An equation's right-hand side is
 read where it is spliced: typed in an operation body, and left as written
 where the resolver splices it.
 
+A receiver written as a path — `(Outer.Inner).deep()`, `(lib.t.Far).k()` — is
+such a written type in both bodies (`Loader::dotted_sort_name`). Only the
+receiver is read so in a rule body's own term: a path written as an argument
+there stays the chain the clause stores, which §7's last row still asks for.
+
 ## 5. Structural type expressions
 
 The full `_type` grammar is wider than nominal `name` / `application`. Tuple and
@@ -177,6 +192,21 @@ type_value[(Int64) -> String]()
 `type_value[T]()` remains useful for a generic body's own type parameter too.
 It lowers directly to `ResolvedExpr::TypeValue`; it does not evaluate a value
 or dereference a `Type` value back into the typer.
+
+An entry of a nominal type's bracket is not such a value expression: its role
+is `TypeExpr`, and nothing else can stand there. A tuple type, an arrow type and
+an effect row written as an entry (`Box[V = (Int64) -> Int64]`) have no term
+shape, so the converter carries each as a parse payload of its own
+(`ParseAux::EntryType`, apart from the build-site payloads a `let` annotation
+or a receiver rides) and the loader lowers it by `type_expr_to_child` where a
+walk meets the entry. The term walk and the rule-body occurrence walk hold the
+type's term. The operation-body walk carries it as the value it is — an
+`Expr::Spliced` of that term, typed `Type` — under the `Expr::TypeValue` of its
+bracket; it is a closed datum, so one that names a type parameter, a variable
+or a projection off a value is refused where the rigid reads are checked. A
+clause's own term is not built from the resolved type value yet (§7), so a
+`@[simp]` rule that writes or takes out such an entry hands the body it fires
+in a former of the type meta-language.
 
 ## 6. Relationship to proposals 060 and 062
 

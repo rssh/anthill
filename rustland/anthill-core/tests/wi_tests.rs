@@ -21,6 +21,10 @@ mod wi009_phase3_builtins_test;
 mod wi_papx0_dot_receiver_split_test;
 #[path = "include/wi_a3fy2_rule_body_type_receiver_test.rs"]
 mod wi_a3fy2_rule_body_type_receiver_test;
+#[path = "include/wi_rxt6s_dotted_sort_type_value_test.rs"]
+mod wi_rxt6s_dotted_sort_type_value_test;
+#[path = "include/wi_tcsgt_structural_bracket_entry_test.rs"]
+mod wi_tcsgt_structural_bracket_entry_test;
 #[path = "include/wi_jmmhq_value_dot_internal_test.rs"]
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]
@@ -1940,6 +1944,8 @@ mod wi_4zzkz_spec_half_refusal_test;
 mod wi_f3fyj_value_in_type_binding_test;
 #[path = "include/wi_wbhtm_value_in_type_call_test.rs"]
 mod wi_wbhtm_value_in_type_call_test;
+#[path = "include/wi_tk8x4_carrier_grounding_value_in_type_test.rs"]
+mod wi_tk8x4_carrier_grounding_value_in_type_test;
 #[path = "include/wi_020th_two_hop_chain_test.rs"]
 mod wi_020th_two_hop_chain_test;
 #[path = "include/wi_jn09w_holder_gate_test.rs"]
@@ -1952,6 +1958,8 @@ mod wi_aaqt5_type_application_head_test;
 mod wi_0rp29_nested_projection_value_in_type_test;
 #[path = "include/wi_0rp29_call_binding_test.rs"]
 mod wi_0rp29_call_binding_test;
+#[path = "include/wi_mhrn1_mixed_call_readers_test.rs"]
+mod wi_mhrn1_mixed_call_readers_test;
 #[path = "include/wi_0rp29_member_rule_test.rs"]
 mod wi_0rp29_member_rule_test;
 #[path = "include/wi_80zv8_self_test.rs"]

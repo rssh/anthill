@@ -1156,25 +1156,29 @@ pub(super) fn expr_call_parts(
     }
 }
 
-/// Reorder a spec-op call's arguments into the operation's declared parameter
+/// Reorder a rule-body call's arguments into the operation's declared parameter
 /// order, so the resolver reads them at the same indices `simp_guard_holds_core`
-/// consults. `None` if any parameter is unprovided (a partial call — not a usable
-/// witness). Positional args map by index; a named arg maps by parameter name.
+/// consults. `None` if the call does not fill the parameter list ([`bound_args`]: a
+/// partial call, or a labelled one with a positional argument left over — not a usable
+/// witness).
+///
+/// Which argument a parameter takes is [`bound_arg`]'s answer, the one every reader of a
+/// call's arguments by parameter gives: a positional argument ranks among the parameters
+/// the labels left open, so in `isLess(?b, x: ?a)` over `(x, y)` it is `?a` that is `x`.
+/// Paired by index — `x := ?b`, then nothing for `y` — that call aligned to nothing, and
+/// was given no condition where its positional twin `isLess(?a, ?b)` is given one. A goal
+/// written at arity + 1 with no label keeps its result column out of the answer: it is
+/// bound to no parameter.
 pub(super) fn align_call_args_to_params(
     kb: &KnowledgeBase,
     params: &[(Symbol, Value)],
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<Vec<Rc<NodeOccurrence>>> {
-    let mut out: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(params.len());
-    for (i, (pname, _pty)) in params.iter().enumerate() {
-        if let Some(a) = pos_args.get(i) {
-            out.push(a.clone());
-        } else if let Some((_, a)) = named_args.iter().find(|(n, _)| same_label(kb, *n, *pname)) {
-            out.push(a.clone());
-        } else {
-            return None;
-        }
-    }
-    Some(out)
+    Some(
+        bound_args(kb, params, pos_args.len(), named_args)?
+            .into_iter()
+            .map(|arg| Rc::clone(arg.of(pos_args, named_args)))
+            .collect(),
+    )
 }

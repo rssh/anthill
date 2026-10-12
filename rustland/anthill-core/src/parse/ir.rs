@@ -514,6 +514,13 @@ pub struct SortBinding {
 pub enum ParseAux {
     /// A `let pat : T = …` annotation `T`.
     TypeExpr(TypeExpr),
+    /// A type written as an entry of a bracket in a term, where no term shape holds it:
+    /// the arrow in `Box[V = (Int64) -> Int64]`, the tuple in `Box[V = (a: Int64, b:
+    /// String)]`, the row in `Spec[E = {}]`. It is the entry's value — an argument of the
+    /// application it is written in, which every walk of that application lowers in
+    /// place — where the other payloads here are read at the build site of the node that
+    /// carries them and are no argument of it.
+    EntryType(TypeExpr),
     /// A call-site `op[A = Int, B = String](…)` bindings list.
     SortBindings(Vec<SortBinding>),
     /// In-body / control-flow proof metadata (WI-538) — the

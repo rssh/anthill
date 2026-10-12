@@ -6271,16 +6271,36 @@ pub fn scan_definitions_with_sources(
 /// `field_access` pattern heading no clause, which was a silent wrong answer rather than
 /// a crash, and is neither now.
 ///
-/// Keyed on the two reserved keys AND a `ParseAux` value, which is the same pair the
-/// sweeps key on: a user's own `recv_type: 1` argument is not a bracket, and an
-/// effect-row binding value (`Spec[E = {}]`) rides under its parameter's name and is
-/// lowered by that arm.
+/// Keyed on the two reserved keys AND the payload each channel carries, which is the
+/// same pair the sweeps key on: a user's own `recv_type: 1` argument is not a bracket,
+/// and an effect-row binding value (`Spec[E = {}]`) rides under its parameter's name —
+/// whatever that name is — as a payload of its own kind, and is lowered by that arm.
+///
+/// A tuple type or an arrow type written as a bracket's entry (`holds(Box[V = (Int64)
+/// -> Int64])`) is refused here too. A program's walks lower one through the loader's
+/// type lowering, which a query pattern's walk does not have; a variable in its place
+/// (`holds(Box[V = ?v])`) answers with the stored type.
 fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
     let key = |name: &str| file.symbols.lookup(name);
     let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
     let mut errors = Vec::new();
     for i in 0..file.terms.len() {
         let id = TermId::from_raw(i as u32);
+        if let Term::ParseAux(aux) = file.terms.get(id) {
+            if matches!(aux.as_ref(), ParseAux::EntryType(ty) if !matches!(ty, TypeExpr::EffectRow(_))) {
+                errors.push(
+                    LoadError::InvalidTypeArgument {
+                        detail: "a tuple type or an arrow type written as a bracket's entry is \
+                                 not read in a query pattern — nothing lowers it here; write a \
+                                 variable in its place and read the type from the answer"
+                            .to_string(),
+                        span: Some(file.terms.span(id)),
+                    }
+                    .located_in(file),
+                );
+            }
+            continue;
+        }
         let Term::Fn {
             functor,
             named_args,
@@ -6292,16 +6312,18 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
         let callee = file.symbols.local_name(*functor);
         let span = file.terms.span(id);
         for &(k, v) in named_args.iter() {
-            if !matches!(file.terms.get(v), Term::ParseAux(_)) {
+            // Each channel's payload by its kind: a parameter of the pattern's own sort
+            // may carry either name and be bound to a type written as an entry.
+            let Term::ParseAux(aux) = file.terms.get(v) else {
                 continue;
-            }
-            if Some(k) == type_args_key {
+            };
+            if Some(k) == type_args_key && matches!(aux.as_ref(), ParseAux::SortBindings(_)) {
                 errors.push(LoadError::CallTypeArgsNotSupportedHere {
                     callee: callee.to_string(),
                     position: CallTypeArgsPosition::NoChannel,
                     span,
                 });
-            } else if Some(k) == recv_type_key {
+            } else if Some(k) == recv_type_key && matches!(aux.as_ref(), ParseAux::TypeExpr(_)) {
                 errors.push(LoadError::InvalidTypeArgument {
                     detail: format!(
                         "a companion receiver's type bracket is not read in a query pattern \
@@ -22007,7 +22029,7 @@ fn convert_query_term_expecting(
         Term::ParseAux(aux) => {
             // WI-366 B1: a written effect-row binding value in a query pattern
             // (`anthill query --pattern 'Spec[E = {}]'`). A parse `Term` can't
-            // structurally hold a row, so it rides as `ParseAux::TypeExpr(
+            // structurally hold a row, so it rides as `ParseAux::EntryType(
             // EffectRow)`. This converter is a free fn (no `Loader`), so it can't
             // reuse `lower_effect_row`; build the EMPTY (closed-pure) row directly
             // — the same `effects_rows(empty_row)` the loader emits, so the pattern
@@ -22016,8 +22038,11 @@ fn convert_query_term_expecting(
             // machinery → match permissively with a fresh row var, rather than
             // panicking (the pre-WI-366-B1 behavior was a loud `unresolved name`
             // error; a written `{}` query is the realistic pattern).
+            //
+            // A tuple type and an arrow type ride the same payload and need that
+            // machinery whole; [`query_bracket_errors`] refuses them before this walk.
             match aux.as_ref() {
-                ParseAux::TypeExpr(TypeExpr::EffectRow(effects)) if effects.is_empty() => {
+                ParseAux::EntryType(TypeExpr::EffectRow(effects)) if effects.is_empty() => {
                     // THE ONE INTERNED NODE IN A QUERY PATTERN, and it is not a leak:
                     // the canonical empty row is a SHARED, KB-lifetime term the loader
                     // emits for every pure signature, so `build_canonical_effects_rows`
@@ -22028,13 +22053,14 @@ fn convert_query_term_expecting(
                     let row = kb.build_canonical_effects_rows(&[]);
                     Expr::Spliced(Value::term(row))
                 }
-                ParseAux::TypeExpr(TypeExpr::EffectRow(_)) => {
+                ParseAux::EntryType(TypeExpr::EffectRow(_)) => {
                     let n = kb.intern("_E");
                     Expr::Var(Var::Global(kb.fresh_var(n)))
                 }
                 other => unreachable!(
                     "parse-only Term::ParseAux({other:?}) reached convert_query_term — \
-                     only a written effect-row binding value is handled here",
+                     only a written effect-row binding value is handled here; \
+                     `scan_query_definitions` refuses the others",
                 ),
             }
         }
@@ -26323,6 +26349,26 @@ impl<'a> Loader<'a> {
     fn build_require_spec_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
         let raw_span = self.parsed.terms.span(parse_id);
         let span = SourceSpan::from_span(self.source_id, raw_span);
+        // A tuple type, an arrow type or an effect row standing where the spec instance
+        // goes — `require[(A, B)]`, `require[{}]` — names no spec. Said here: lowered as
+        // an entry it is a former of the type meta-language, which the grounding check
+        // then reports as a spec with operations to call.
+        if self.is_entry_type_aux(parse_id) {
+            let written = self
+                .parsed
+                .source
+                .get(raw_span.start as usize..raw_span.end as usize)
+                .unwrap_or("…")
+                .to_owned();
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: format!(
+                    "`require[…]` takes a spec instance, `Spec` or `Spec[…]`; `{written}` is \
+                     a tuple type, an arrow type or an effect row and names no spec"
+                ),
+                span: Some(raw_span),
+            });
+            return NodeOccurrence::new_expr(Expr::Bottom, span, self.current_owner);
+        }
         // NOT AN APPLICATION — a bare `Desc`, or a DOTTED base `ns.Desc`, both of which
         // are NAMES. `parse_arg_type_is_applied` is the established discriminator and it
         // asks `dotted_citation_name` FIRST, which is what keeps a dotted base out of the
@@ -26414,7 +26460,9 @@ impl<'a> Loader<'a> {
             // loop lowers in place (WI-366 B1); `require_spec_binding_occurrence` answers
             // `None` for it, so without this it vanished with no diagnostic — a different
             // carrier, not "a name that denotes no sort", and so outside the drop rule.
-            if let Some(child) = self.lower_effect_row_aux_occ(v) {
+            // The row only: a tuple type and an arrow type ride the same payload and stay
+            // on the drop rule's list ([`Self::report_dropped_spec_binding`]).
+            if let Some(child) = self.lower_effect_row_entry_occ(v) {
                 named.push((key, child));
                 continue;
             }
@@ -26462,7 +26510,7 @@ impl<'a> Loader<'a> {
             // `requires(Walk[Src, {}])` dropped the row while `requires(Walk[C = Src, E =
             // {}])` kept it, and `sort_goal_with_wildcards` skips effect-row params so
             // nothing re-supplied it. The sibling occurrence walk has it on both.
-            let lowered = match self.lower_effect_row_aux_occ(v) {
+            let lowered = match self.lower_effect_row_entry_occ(v) {
                 Some(child) => SpecBindingLowering::Lowered(child),
                 None => self.require_spec_binding_occurrence(v),
             };
@@ -26650,7 +26698,15 @@ impl<'a> Loader<'a> {
         value: TermId,
         span: crate::span::Span,
     ) {
-        let written = parse_arg_type_name_of(&self.parsed.symbols, &self.parsed.terms, value);
+        // A tuple type and an arrow type have no name; each is named by its text.
+        let written = parse_arg_type_name_of(&self.parsed.symbols, &self.parsed.terms, value)
+            .or_else(|| {
+                let at = self.parsed.terms.span(value);
+                self.is_entry_type_aux(value)
+                    .then(|| self.parsed.source.get(at.start as usize..at.end as usize))
+                    .flatten()
+                    .map(str::to_owned)
+            });
         if written
             .as_deref()
             .is_some_and(|n| declared.iter().any(|d| d == n))
@@ -26983,6 +27039,15 @@ impl<'a> Loader<'a> {
         if self.const_fold != ConstFold::Data {
             return None;
         }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        const_named(self.kb, &name, self.current_scope)
+    }
+
+    /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
+    /// clause's own term is read, unless its root is a clause parameter or a local
+    /// binder: such a chain is a projection on that binding and names nothing, however
+    /// its root is spelled.
+    fn dotted_name_rooted_at_no_binding(&self, parse_id: TermId) -> Option<String> {
         let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
         let root = name.split('.').next()?;
         if self.rule_param_vars.contains_key(root)
@@ -26993,7 +27058,7 @@ impl<'a> Loader<'a> {
         {
             return None;
         }
-        const_named(self.kb, &name, self.current_scope)
+        Some(name)
     }
 
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
@@ -28265,19 +28330,19 @@ impl<'a> Loader<'a> {
                 // and lowered DIRECTLY at the LetExpr / ApplyOrConstructor build
                 // sites (which strip the ParseAux first), so those never reach
                 // here. The one ParseAux that DOES route through generic
-                // `convert_term` is a WRITTEN effect-row binding value in a
-                // term-position type-arg slot (`fact Spec[E = {}]`, WI-366 B1):
-                // a parse `Term` can't structurally hold a row, so it rides as
-                // `ParseAux::TypeExpr(EffectRow(..))` and is lowered HERE via the
-                // same `lower_effect_row` the type-aware `provides` path uses, so
-                // the fact-head and `provides` rows are byte-identical.
-                if let Some(kb_id) = self.lower_effect_row_aux(parse_id) {
+                // `convert_term` is a type written as a bracket's entry
+                // (`fact Spec[E = {}]`, WI-366 B1; `fact holds(Box[V = (Int64) ->
+                // Int64])`): a parse `Term` can't structurally hold a row, a tuple
+                // type or an arrow type, so it rides as `ParseAux::EntryType` and is
+                // lowered HERE via the lowering the same text takes in a type
+                // position, so the fact-head and `provides` rows are byte-identical.
+                if let Some(kb_id) = self.lower_entry_type_aux(parse_id) {
                     self.term_map.insert(parse_id.raw(), kb_id);
                     return kb_id;
                 }
                 unreachable!(
                     "Term::ParseAux({aux:?}) reached convert_term_with_expected — \
-                     only a written effect-row binding value routes here; the \
+                     only a type written as a bracket's entry routes here; the \
                      LetExpr/ApplyOrConstructor build site must read and lower \
                      its ParseAux directly before recursing",
                 );
@@ -28735,15 +28800,13 @@ impl<'a> Loader<'a> {
                         // `read_parse_call_type_args` and
                         // `read_parse_type_annotation`; the work-stack
                         // walker must not recurse into them.
-                        // WI-366 B1: but KEEP a written effect-row binding value
-                        // (`operation f() -> Type = Spec[E = {}]`) — the
-                        // `Term::ParseAux` arm below lowers it (it is a real
-                        // binding value, not a build-site payload).
+                        // WI-366 B1: but KEEP a type written as a bracket's entry
+                        // (`operation f() -> Type = Spec[E = {}]`, `Box[V = (Int64)
+                        // -> Int64]`) — the `Term::ParseAux` arm below lowers it (it
+                        // is a real binding value, not a build-site payload).
                         let visible_named: Vec<(Symbol, TermId)> = named_args
                             .iter()
-                            .filter(|&&(_, tid)| {
-                                !self.is_parse_aux(tid) || self.is_effect_row_aux(tid)
-                            })
+                            .filter(|&&(_, tid)| self.named_child_survives_walk(tid))
                             .copied()
                             .collect();
                         let named_keys: SmallVec<[Symbol; 2]> =
@@ -28922,6 +28985,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_const_ref(parse_id, whole, results) {
                                     return;
                                 }
+                                if self.try_qualified_sort_ref(parse_id, whole, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -28975,25 +29041,23 @@ impl<'a> Loader<'a> {
                 self.push_leaf_occ(parse_id, kb_id);
             }
             Term::ParseAux(_) => {
-                // WI-366 B1: a written effect-row binding value in an op-body
-                // type-expression (`operation f() -> Type = Spec[E = {}]`),
-                // reached via the kept aux in the ApplyOrConstructor `_` arm
-                // above. Lower it the same way the fact-head / rule-body paths do;
-                // the occurrence is the MATERIALIZED row, not `push_leaf_occ`
-                // (whose `build_expr_leaf` panics on a non-leaf `effects_rows` Fn).
-                let kb_id = self.lower_effect_row_aux(parse_id).unwrap_or_else(|| {
+                // A type written as a bracket's entry in a value definition
+                // (`operation f() -> Type = Spec[E = {}]`, `nm(Box[V = (Int64) ->
+                // Int64])`), reached via the kept aux in the ApplyOrConstructor `_`
+                // arm above. Lowered as the fact-head / rule-body paths lower it.
+                let kb_id = self.lower_entry_type_aux(parse_id).unwrap_or_else(|| {
                     unreachable!(
-                        "Term::ParseAux in op-body expr position must be a written \
-                         effect-row binding value (the only aux kept by the \
+                        "Term::ParseAux in op-body expr position must be a type written \
+                         as a bracket's entry (the only aux kept by the \
                          ApplyOrConstructor child filter)",
                     )
                 });
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
                 if self.occ_suppress == 0 {
-                    // WI-753: located at the written row, as `lower_effect_row_aux_occ` is.
+                    // WI-753: located at the written entry, as `lower_entry_type_aux_occ` is.
                     let site = self.source_span_of(parse_id);
-                    let occ = node_occurrence::materialize_at(self.kb, kb_id, site);
+                    let occ = self.entry_type_value_occ(kb_id, site);
                     self.expr_occ_results.push(occ);
                 }
             }
@@ -29499,6 +29563,46 @@ impl<'a> Loader<'a> {
     ) -> bool {
         let Some(sym) = whole.filter(|sym| self.kb.kind_of(*sym) == Some(SymbolKind::Const))
         else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// A SORT NAMED BY A DOTTED PATH with no trailing `(…)` — `Outer.Inner`, `lib.t.Far`,
+    /// `..lib.t.Far` — wherever this walk reads one: an operation body, a const's value, a
+    /// rule body's compound expression, and the receiver of a dot a rule body lends it
+    /// ([`Self::written_type_receiver_occurrence`]). It parses (§6.7) as a
+    /// `field_access` chain, as [`Self::try_qualified_const_ref`]'s const does, and when
+    /// the chain's segments spell a name that resolves to a sort it is that sort's name:
+    /// the reference the one-segment, imported spelling lowers to, which
+    /// [`Self::push_leaf_occ`] classifies as it classifies that one — a type value
+    /// (proposal 055 §2), or, for an eponymous sort and a free-standing entity, the
+    /// reading [`Self::bare_name_denotes_type`] leaves their bare names.
+    ///
+    /// It was left a chain, and the typer walked it: each segment a bare name nothing
+    /// declares — `Inner.name: expected resolved name, got unresolved`, and one such
+    /// error a segment for a namespace path — while the imported `Far` and the same
+    /// dotted name as an entry of a bracket (`Bx[V = lib.t.Far]`) were the type.
+    ///
+    /// A whole name resolves to one symbol, so this rung and the two above it read the
+    /// same node for a chain more than one of them could take — a sort beside a rule's
+    /// label of its name — and their order among themselves changes nothing. It stands
+    /// after the local pass, as they do, so a binder named like the path's root is the
+    /// receiver it is, and before the prefix pass, as they do: the whole name gets first
+    /// refusal. Beside `const origin: P` and a namespace `origin`, `origin.X` is the
+    /// namespace's member where it has one — its const, its rule, and now its sort — and
+    /// the field of the const's value where it has none; while no rung read a sort, a
+    /// sort `origin.X` was passed over for the field. A chain that continues past the
+    /// sort (`Outer.Inner.deep`) reaches this rung at its inner level, as the receiver.
+    fn try_qualified_sort_ref(
+        &mut self,
+        parse_id: TermId,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = whole.filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort)) else {
             return false;
         };
         self.push_name_ref(parse_id, sym, results);
@@ -30631,10 +30735,13 @@ impl<'a> Loader<'a> {
             else {
                 continue;
             };
-            if named_args
-                .iter()
-                .any(|&(s, t)| s == key_sym && self.is_parse_aux(t))
-            {
+            // The receiver's payload by its kind: a sort's own parameter may be named
+            // `recv_type` and bound to a type written as an entry.
+            if named_args.iter().any(|&(s, t)| {
+                s == key_sym
+                    && matches!(self.parsed.terms.get(t),
+                        Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::TypeExpr(_)))
+            }) {
                 unconsumed.push((id, *functor));
             }
         }
@@ -30707,9 +30814,10 @@ impl<'a> Loader<'a> {
     ///
     /// A `ParseAux` named arg is a parse-only payload consumed at its own build site
     /// (`let_expr`'s `type_name`, an apply's `type_args`) and dropped here, because
-    /// handing one to `convert_term` reaches its `unreachable!`. A WRITTEN effect row
-    /// (`fact Spec[E = {}]`) is the exception: it is a real term-position binding value
-    /// that `convert_term`'s own `ParseAux` arm lowers in place, so it is KEPT.
+    /// handing one to `convert_term` reaches its `unreachable!`. A type written as a
+    /// bracket's entry (`fact Spec[E = {}]`, `fact holds(Box[V = (Int64) -> Int64])`) is
+    /// the exception: it is a real term-position binding value that `convert_term`'s own
+    /// `ParseAux` arm lowers in place, so it is KEPT.
     ///
     /// WI-20260908-PW9A0 — ONE PREDICATE, and it has TWO readers that must agree:
     /// `convert_term_inner`'s generic `visible_named`, and
@@ -30719,19 +30827,23 @@ impl<'a> Loader<'a> {
     /// reclassifier's own comment claims immunity from, so the claim has to be true
     /// rather than asserted.
     fn named_child_survives_walk(&self, id: TermId) -> bool {
-        !self.is_parse_aux(id) || self.is_effect_row_aux(id)
+        !self.is_parse_aux(id) || self.is_entry_type_aux(id)
     }
 
-    /// WI-366 B1: is the parse term at `id` a WRITTEN effect-row binding value
-    /// (`ParseAux::TypeExpr(EffectRow)`, from `fact Spec[E = {}]`)? Unlike the
-    /// let/apply build-site ParseAux payloads ([`Self::is_parse_aux`]) — which
-    /// are consumed directly at their build sites and filtered out of the generic
-    /// child recursion — this one is a real term-position binding value that
-    /// `convert_term`'s ParseAux arm lowers in place (via `lower_effect_row`), so
-    /// the generic Fn child walk must KEEP it rather than drop it.
-    fn is_effect_row_aux(&self, id: TermId) -> bool {
+    /// Is the parse term at `id` a type written as a bracket's entry
+    /// (`ParseAux::EntryType`): the row in `fact Spec[E = {}]`, the arrow in `Box[V =
+    /// (Int64) -> Int64]`? Unlike the let/apply build-site ParseAux payloads
+    /// ([`Self::is_parse_aux`]) — which are consumed directly at their build sites and
+    /// filtered out of the generic child recursion — this one is a real term-position
+    /// binding value that `convert_term`'s ParseAux arm lowers in place
+    /// ([`Self::lower_entry_type_aux`]), so the generic Fn child walk must KEEP it rather
+    /// than drop it.
+    ///
+    /// Asked of the payload's kind and not of the type's shape: a `let`'s annotation may
+    /// be an arrow or a tuple too, and is no argument of the `let`.
+    fn is_entry_type_aux(&self, id: TermId) -> bool {
         matches!(self.parsed.terms.get(id),
-            Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::TypeExpr(TypeExpr::EffectRow(_))))
+            Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::EntryType(_)))
     }
 
     /// WI-839: is the parse term at `id` a NON-EMPTY call-site bracket payload — the
@@ -30743,48 +30855,90 @@ impl<'a> Loader<'a> {
             Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::SortBindings(b) if !b.is_empty()))
     }
 
-    /// WI-366 B1: lower a WRITTEN effect-row binding value at `pid` — a
-    /// `ParseAux::TypeExpr(EffectRow)` produced for `Spec[E = {}]` in a
-    /// term-position type-arg slot — to its KB `effects_rows(EffectExpression)`
-    /// ground `TermId`, via the SAME [`Self::lower_effect_row`] the type-aware
-    /// `provides` path uses. So a fact head, a rule-body atom, and a `provides`
-    /// clause all carry a byte-identical row. Returns `None` when `pid` is not an
-    /// effect-row aux (the caller then handles it as a normal child / skips it).
+    /// Lower a type written as a bracket's entry at `pid` (`ParseAux::EntryType`) to the
+    /// KB type term it denotes, through [`Self::type_expr_to_child`] — the lowering the
+    /// same text takes in a type position. So a fact head, a rule-body atom, an
+    /// operation body and a `provides` clause all carry one term for one written type:
+    /// the row of `Spec[E = {}]` is the `effects_rows(EffectExpression)` the type-aware
+    /// `provides` path builds (WI-366 B1), the arrow of `Box[V = (Int64) -> Int64]` the
+    /// arrow a parameter's annotation builds. Returns `None` when `pid` is not such an
+    /// entry (the caller then handles it as a normal child / skips it).
     ///
-    /// A denoted-bearing row (`{Modify[c]}`) cannot ride the hash-consed
-    /// term/occurrence path — the carrier would have to be a value fact (WI-366
-    /// B, gated on effect-expressions-as-types) — so it emits the gated diagnostic
-    /// and falls back to the closed-pure row rather than dropping it silently.
-    fn lower_effect_row_aux(&mut self, pid: TermId) -> Option<TermId> {
-        let effects = match self.parsed.terms.get(pid) {
+    /// A type that holds a value (`{Modify[c]}`, `(person: "name")`) cannot ride the
+    /// hash-consed term/occurrence path — the carrier would have to be a value fact
+    /// (WI-366 B, gated on effect-expressions-as-types) — so it emits the gated
+    /// diagnostic, and the term handed back stands in for the refused entry: the closed
+    /// pure row for a row, the bottom type for the others.
+    fn lower_entry_type_aux(&mut self, pid: TermId) -> Option<TermId> {
+        let ty = match self.parsed.terms.get(pid) {
             Term::ParseAux(aux) => match aux.as_ref() {
-                ParseAux::TypeExpr(TypeExpr::EffectRow(effects)) => effects.clone(),
+                ParseAux::EntryType(ty) => ty.clone(),
                 _ => return None,
             },
             _ => return None,
         };
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(pid));
         let owner = self.current_owner;
-        Some(match self.lower_effect_row(&effects, span, owner) {
+        Some(match self.type_expr_to_child(&ty, span, owner) {
             node_occurrence::TypeChild::Interned(t) => t,
             node_occurrence::TypeChild::Node(_) => {
-                self.diagnose_gated_value_in_type("type argument", &TypeExpr::EffectRow(effects));
-                self.kb.build_canonical_effects_rows(&[])
+                self.diagnose_gated_value_in_type("type argument", &ty);
+                match ty {
+                    TypeExpr::EffectRow(_) => self.kb.build_canonical_effects_rows(&[]),
+                    _ => self.kb.alloc(Term::Bottom),
+                }
             }
         })
     }
 
-    /// WI-366 B1: occurrence-form of [`Self::lower_effect_row_aux`] — lower a
-    /// written effect-row binding value at `pid` and materialize it as an
-    /// `Rc<NodeOccurrence>`, the twin the occurrence-building paths
-    /// (`build_body_atom_occurrence`) need where the term path uses the raw
-    /// `TermId`. `None` when `pid` is not an effect-row aux.
-    fn lower_effect_row_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
-        let rows_tid = self.lower_effect_row_aux(pid)?;
-        // WI-753: the row is the canonical interned value, so its occurrence is that
-        // term's — but located at the row the author WROTE, not through `term_spans`.
+    /// Occurrence-form of [`Self::lower_entry_type_aux`] for a term a clause matches —
+    /// a fact, a rule's head, a rule body: lower the type written at `pid` and
+    /// materialize it as an `Rc<NodeOccurrence>`, the twin the occurrence-building
+    /// paths (`build_body_atom_occurrence`) need where the term path uses the raw
+    /// `TermId`. `None` when `pid` is not such an entry.
+    fn lower_entry_type_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
+        let type_tid = self.lower_entry_type_aux(pid)?;
+        // WI-753: the type is the canonical interned value, so its occurrence is that
+        // term's — but located at the entry the author WROTE, not through `term_spans`.
         let site = self.source_span_of(pid);
-        Some(node_occurrence::materialize_at(self.kb, rows_tid, site))
+        Some(node_occurrence::materialize_at(self.kb, type_tid, site))
+    }
+
+    /// [`Self::lower_entry_type_aux_occ`] of an effect row, and `None` for any other
+    /// entry: the one such entry a `require[…]` spec instance takes as a binding.
+    fn lower_effect_row_entry_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
+        match self.parsed.terms.get(pid) {
+            Term::ParseAux(aux)
+                if matches!(aux.as_ref(), ParseAux::EntryType(TypeExpr::EffectRow(_))) =>
+            {
+                self.lower_entry_type_aux_occ(pid)
+            }
+            _ => None,
+        }
+    }
+
+    /// The node of a structural type written as a bracket's entry in an operation
+    /// body: the type value it denotes, `(Int64) -> Int64` in `Box[V = (Int64) ->
+    /// Int64]`. A nominal entry is classified by its head ([`Expr::TypeValue`]) and
+    /// assembled from its own entries when it is evaluated; a tuple type, an arrow type
+    /// and an effect row have no head to classify by and nothing to evaluate, so the
+    /// node carries the lowered type as the value it is, typed `Type`.
+    ///
+    /// Materialized from the term instead, the entry was a construction in the type
+    /// meta-language: it evaluated to an entity where the bracket takes a type, and its
+    /// own leaves were sort names no rule had classified.
+    ///
+    /// Under a rule's compound expression the type may hold the clause's variables;
+    /// they are closed and opened with the clause's
+    /// ([`node_occurrence::node_to_debruijn`], [`node_occurrence::open_debruijn_node`]).
+    fn entry_type_value_occ(&mut self, type_tid: TermId, site: SourceSpan) -> Rc<NodeOccurrence> {
+        let occ = NodeOccurrence::new_expr(Expr::Spliced(Value::term(type_tid)), site, None);
+        // A program that loads without the standard library has no `Type`; the typer
+        // then reports the node as one it has no type for.
+        if let Some(type_ty) = self.kb.try_make_sort_ref_by_name("anthill.prelude.Type") {
+            occ.set_inferred_type(Value::term(type_ty));
+        }
+        occ
     }
 
     /// WI-271: extract a parse-only `ParseAux` payload from a parent
@@ -31260,7 +31414,7 @@ impl<'a> Loader<'a> {
     ///    exact span, exact `dot_chain`, no table involved. That is the majority and the
     ///    point of the ticket.
     fn lowered_child_occurrence(&mut self, pid: TermId, kb_child: TermId) -> Rc<NodeOccurrence> {
-        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+        if let Some(child) = self.lower_entry_type_aux_occ(pid) {
             return child;
         }
         if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
@@ -31457,12 +31611,18 @@ impl<'a> Loader<'a> {
     /// the term the clause matches.
     ///
     /// Which receiver is a written type is the operation body's rule, asked of the head
-    /// the term walk resolved: a bare sort name ([`Self::bare_name_denotes_type`]) or a
-    /// bracket on a sort. The node is built by the walk that classifies an operation
-    /// body's, so the bracket's entries are read by one rule in both bodies. That walk is
-    /// lent whole and not as a rule's compound expression
+    /// the term walk resolved — a bare sort name ([`Self::bare_name_denotes_type`]) or a
+    /// bracket on a sort — and of the sort a dotted path names
+    /// ([`Self::dotted_sort_name`]). The node is built by the walk that classifies an
+    /// operation body's, so a path, and a bracket's entries, are read by one rule in both
+    /// bodies. That walk is lent whole and not as a rule's compound expression
     /// ([`Self::lowering_rule_compound_expr`]): a type is not a term the clause matches.
-    /// `None` for any other receiver, and inside that walk, which is not re-entered.
+    ///
+    /// A path that names an eponymous sort or a free-standing entity is no written type,
+    /// as its bare name is none, and is handed back as the reference that bare name is
+    /// here — left a chain, it was refused as a name nothing declares where the bare name
+    /// is read. `None` for any other receiver, and inside that walk, which is not
+    /// re-entered.
     fn written_type_receiver_occurrence(
         &mut self,
         parse_id: TermId,
@@ -31473,10 +31633,22 @@ impl<'a> Loader<'a> {
         }
         let written_type = match (self.parsed.terms.get(parse_id), self.kb.get_term(kb_receiver)) {
             (Term::Ident(_), Term::Ref(sort)) => self.bare_name_denotes_type(*sort),
-            (Term::Fn { .. }, Term::Fn { functor, .. }) => {
-                self.parsed.terms.is_type_application(parse_id)
-                    && self.kb.has_kind(*functor, SymbolKind::Sort)
+            (Term::Fn { .. }, Term::Fn { functor, .. })
+                if self.parsed.terms.is_type_application(parse_id) =>
+            {
+                self.kb.has_kind(*functor, SymbolKind::Sort)
             }
+            (Term::Fn { .. }, _) => match self.dotted_sort_name(parse_id) {
+                Some(sort) if self.bare_name_denotes_type(sort) => true,
+                // An eponymous sort and a free-standing entity are no written type by
+                // their bare names, and by a path they are the reference those names are
+                // in a clause's own term.
+                Some(sort) => {
+                    let span = self.source_span_of(parse_id);
+                    return Some(NodeOccurrence::new_expr(Expr::Ref(sort), span, None));
+                }
+                None => false,
+            },
             _ => false,
         };
         if !written_type {
@@ -31489,6 +31661,17 @@ impl<'a> Loader<'a> {
              receiver this walk read as a written type"
         );
         Some(occ)
+    }
+
+    /// The sort a dotted path names — `Outer.Inner`, `lib.t.Far` — where a rule body's own
+    /// term is read: the symbol [`Self::try_qualified_sort_ref`] reads the chain as in an
+    /// operation body, asked here before that walk is lent the node. `None` for a chain
+    /// rooted at a clause parameter or a local binder, which is a projection on that
+    /// binding.
+    fn dotted_sort_name(&self, parse_id: TermId) -> Option<Symbol> {
+        self.dotted_name_rooted_at_no_binding(parse_id)
+            .and_then(|name| self.resolve_qualified_readonly(&name))
+            .filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort))
     }
 
     /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.
@@ -32168,10 +32351,19 @@ impl<'a> Loader<'a> {
                 }
             }
             Term::Bottom => Expr::Bottom,
-            Term::ParseAux(_) => unreachable!(
-                "Term::ParseAux reached build_body_atom_occurrence — a body atom \
-                 (or its non-ParseAux child) is never a parse-only payload",
-            ),
+            // A type written as a bracket's entry is the one parse-only payload that is
+            // an argument. A bracket's own loops lower it where they meet it; lowered
+            // here too, so a caller that hands this walk a child it has not looked at
+            // gets the entry.
+            Term::ParseAux(_) => {
+                return self.lower_entry_type_aux_occ(parse_id).unwrap_or_else(|| {
+                    unreachable!(
+                        "Term::ParseAux reached build_body_atom_occurrence — a body atom \
+                         (or its non-ParseAux child) is no parse-only payload but a type \
+                         written as a bracket's entry",
+                    )
+                });
+            }
             Term::Fn {
                 functor,
                 pos_args,
@@ -32430,7 +32622,7 @@ impl<'a> Loader<'a> {
                             pos.push(self.build_require_spec_occurrence(pid));
                             continue;
                         }
-                        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                        if let Some(child) = self.lower_entry_type_aux_occ(pid) {
                             pos.push(child);
                             continue;
                         }
@@ -32450,7 +32642,7 @@ impl<'a> Loader<'a> {
                     let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                     self.const_fold = node_fold.child(None);
                     for &(sym, pid) in named_args.iter() {
-                        if let Some(child) = self.lower_effect_row_aux_occ(pid) {
+                        if let Some(child) = self.lower_entry_type_aux_occ(pid) {
                             named.push((self.reintern(sym), child));
                             continue;
                         }

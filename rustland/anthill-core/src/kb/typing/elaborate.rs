@@ -1844,12 +1844,16 @@ pub(super) fn type_value_backed_params(kb: &mut KnowledgeBase, op_sym: Symbol) -
 /// AN EXPLICIT STACK, not host recursion, for the reason [`surviving_dot_apply`] gives:
 /// a body's nesting depth is the author's, and it must not decide whether the loader
 /// stands up.
+///
+/// THE SAME WALK FINDS THE FIRST OPEN STRUCTURAL ENTRY ([`OpenStructuralEntry`]): it is a
+/// question about the same nodes, and a second traversal of every body would ask it.
 pub(super) fn rigid_value_reads(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     chain: &DictChain,
-) -> Vec<(VarId, Symbol, Option<Span>)> {
+) -> (Vec<(VarId, Symbol, Option<Span>)>, Option<OpenStructuralEntry>) {
     let mut out = Vec::new();
+    let mut open_entry: Option<OpenStructuralEntry> = None;
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
@@ -1859,6 +1863,12 @@ pub(super) fn rigid_value_reads(
             named_args,
         } = expr
         {
+            if open_entry.is_none() {
+                open_entry = pos_args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, a)| a))
+                    .find_map(|entry| open_structural_entry(kb, entry));
+            }
             if pos_args.is_empty() && named_args.is_empty() {
                 // A TYPE PARAMETER and not a sort: `type_param_global_var` answers
                 // `Some` only for a symbol `add_type_param` registered, which is the
@@ -1877,5 +1887,79 @@ pub(super) fn rigid_value_reads(
         crate::kb::node_occurrence::for_each_child(expr, |child| children.push(Rc::clone(child)));
         stack.extend(children.into_iter().rev());
     }
-    out
+    (out, open_entry)
+}
+
+/// A structural type written as a bracket's entry in an operation body that is not one
+/// type when the body is loaded: `(T) -> Int64` in `Box[V = (T) -> Int64]`, with the name
+/// that keeps it open.
+///
+/// A nominal entry reads a type parameter through the `requires TypeValue[…]` slot
+/// ([`lower_rigid_read_to_slot`]): the bracket is assembled from its entries where the
+/// body runs. A tuple type, an arrow type and an effect row are carried as the one type
+/// they were lowered to (`Expr::Spliced`), with nothing assembled, so a type parameter, a
+/// variable or a projection off a value inside one has nothing to be read through and
+/// the value would hold it open. Refused, whether or not a `TypeValue` clause stands in
+/// scope.
+///
+/// Read on the typed body, as the rigid reads are: a receiver written with such an entry
+/// (`(Box[V = (T) -> Int64]).tag()`) has been replaced by its call by then, where the
+/// bracket binds the call's types and is no value.
+pub(super) struct OpenStructuralEntry {
+    /// The entry, to print as written.
+    pub(super) entry: Rc<NodeOccurrence>,
+    /// The type parameter, variable or projection inside it.
+    pub(super) name: String,
+}
+
+/// [`OpenStructuralEntry`] for one entry of a type value's bracket; `None` for a nominal
+/// entry, a constant, and a carried type that names nothing open.
+fn open_structural_entry(kb: &KnowledgeBase, entry: &Rc<NodeOccurrence>) -> Option<OpenStructuralEntry> {
+    let Some(Expr::Spliced(carried)) = entry.as_expr() else {
+        return None;
+    };
+    open_name_in_type(kb, carried).map(|name| OpenStructuralEntry {
+        entry: Rc::clone(entry),
+        name,
+    })
+}
+
+/// The first part of the type `ty` that stands for no one type where an operation body is
+/// loaded, by its written name: a variable, a type parameter — lowered as its variable or
+/// as a reference to its symbol, by the scope that declares it — or a projection off a
+/// value (`s.Elem`). Read through the view, on whichever carrier the type rides.
+fn open_name_in_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<String> {
+    let param_name = |s: Symbol| {
+        type_param_global_var(kb, s).map(|_| short_name_of(kb.local_name_of(s)).to_string())
+    };
+    match ty.head(kb) {
+        ViewHead::Var(Var::Global(v)) => Some(kb.local_name_of(v.name()).to_string()),
+        ViewHead::Ident(s) => param_name(s),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => param_name(s),
+        ViewHead::Functor { pos_arity, .. } => {
+            if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
+                let receiver = match value.head(kb) {
+                    ViewHead::Ident(s) | ViewHead::Functor { functor: Some(s), .. } => {
+                        short_name_of(kb.local_name_of(s)).to_string()
+                    }
+                    _ => "…".to_string(),
+                };
+                return Some(format!("{receiver}.{}", short_name_of(kb.local_name_of(member))));
+            }
+            (0..pos_arity)
+                .filter_map(|i| ty.pos_arg(kb, i))
+                .find_map(|child| open_name_in_type(kb, &child))
+                .or_else(|| {
+                    ty.named_keys(kb)
+                        .into_iter()
+                        .filter_map(|key| ty.named_arg(kb, key))
+                        .find_map(|child| open_name_in_type(kb, &child))
+                })
+        }
+        _ => None,
+    }
 }

@@ -1304,16 +1304,28 @@ pub(super) fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<
 /// (MEASURED: with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where
 /// `Int64.gt(5, 3)` answers 1, while the SAME reference inside an operation body folds
 /// — WI-20260822-NDG34 owns it). See `check_goal_atom_reading`.
+///
+/// A THIRD SHAPE: a goal on a rule-less operation whose ARGUMENT LIST is neither the
+/// operation's parameter list nor that list and one positional result column
+/// ([`operation_goal_arity_error`]). It is the operation's call — there is no clause to
+/// prove it against — and no call has that shape, so it is refused wherever a goal is
+/// proved, a `|` branch and a quantifier's body included.
 pub(super) fn check_rule_body_goal_readings(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
 ) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
     let mut errors: Vec<(TypeError, Option<crate::span::SourceId>)> = Vec::new();
+    let mut held_to_parameters: Vec<Rc<NodeOccurrence>> = Vec::new();
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
         }
         for atom in kb.rule_body_nodes(rid) {
-            check_goal_atom_reading(kb, atom, &mut errors);
+            check_goal_atom_reading(kb, atom, &mut errors, &mut held_to_parameters);
+        }
+    }
+    for goal in held_to_parameters {
+        if let Some(e) = operation_goal_arity_error(kb, &goal) {
+            errors.push((e, Some(goal.span.source)));
         }
     }
     // ONE GOAL IN THE TEXT REPORTS ONCE — WI-1034's rule for `check_rule_body_goals`,
@@ -1432,6 +1444,9 @@ fn check_goal_atom_reading(
     kb: &KnowledgeBase,
     atom: &Rc<NodeOccurrence>,
     errors: &mut Vec<(TypeError, Option<crate::span::SourceId>)>,
+    // The goals [`operation_goal_arity_error`] is asked about once the walk is over: it
+    // interns, and this walk holds the KB shared.
+    held_to_parameters: &mut Vec<Rc<NodeOccurrence>>,
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(atom)];
     while let Some(o) = stack.pop() {
@@ -1517,14 +1532,31 @@ fn check_goal_atom_reading(
             }
             continue;
         };
+        // A goal on a RULE-LESS operation is that operation's call, and its argument list
+        // is held to the parameter list ([`operation_goal_arity_error`]) — unless it is one
+        // of the two spellings with nothing to hold: every parameter positional, alone
+        // (the declared arity, read below) or with one more positional column (the
+        // functional-relation view). A spec operation's goal is typed as a call where it
+        // stands, and its verdict is raised there.
+        if let Some((_, pos, named)) = expr_call_parts(expr) {
+            let declared = sig.params.len();
+            let positional_and_whole =
+                named.is_empty() && (pos.len() == declared || pos.len() == declared + 1);
+            if !positional_and_whole
+                && spec_op_call_parent(kb, f).is_none()
+                && kb.rules_by_functor_iter(f).next().is_none()
+            {
+                held_to_parameters.push(Rc::clone(&o));
+            }
+        }
         // Only the BARE / DIRECT goal form — the op used at its DECLARED arity —
         // is gated as a condition (`f(args)` ≡ `eq(f(args), true)` for a Bool op).
         // The FUNCTIONAL-RELATION form `f(args, result)` (arity + 1, the extra arg
         // is the result column — e.g. stdlib `needs_rebuild`'s
         // `status(?fs, ?p, FileStatus(…))` ≡ `eq(status(?fs, ?p), result)`) is a
-        // pre-existing relational pattern WI-583 does not touch, and an
-        // arity-mismatched call is a different (elsewhere-reported) error — skip
-        // any call whose arity ≠ the op's parameter count.
+        // pre-existing relational pattern WI-583 does not touch, and any other count is
+        // the arity verdict's, taken above — skip any call whose arity ≠ the op's
+        // parameter count.
         if provided != sig.params.len() {
             continue;
         }
@@ -1559,6 +1591,62 @@ fn check_goal_atom_reading(
             Some(o.span.source),
         ));
     }
+}
+
+/// The verdict on a goal that CALLS a rule-less operation: its arguments fill the
+/// operation's parameter list (kernel §5.4) — at the declared arity, a `Bool` operation's
+/// condition, or, with no label, with one positional argument more: the functional-relation
+/// view's result column (§5.3). Judged by the binder and the verdict a spec operation's goal
+/// gets from the typer ([`bind_call_arguments`], [`call_arity_error`]), so the two kinds of
+/// callee cannot come to admit different spellings.
+///
+/// Such a goal reached no check before: the rule-body walk leaves a subgoal no clause
+/// heads to the pass that owns a name defined nowhere, which an operation is not, and
+/// [`check_goal_atom_reading`] read a goal at the declared arity only. So
+/// `Util.sub2(1, ?r, y: 5)` — a label, and a positional argument no parameter takes —
+/// loaded and answered nothing, where the same spelling on a spec operation was refused.
+///
+/// Declined: an operation with a variadic capture, whose labels the typed call path folds
+/// into the capture — a goal on one is read as before.
+fn operation_goal_arity_error(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+) -> Option<TypeError> {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        return None;
+    };
+    if kb.op_capture_param(*functor).is_some() {
+        return None;
+    }
+    let rec = crate::kb::op_info::lookup_operation_info(kb, *functor)?;
+    let span = Some(goal.span.span);
+    let mut binding = bind_call_arguments(
+        kb,
+        &rec.params,
+        pos_args.len(),
+        named_args,
+        *functor,
+        "this operation",
+        span,
+    );
+    let mut found = std::mem::take(&mut binding.label_errors);
+    found.extend(call_arity_error(
+        kb,
+        &rec.params,
+        &binding,
+        pos_args.len() + named_args.len(),
+        None,
+        *functor,
+        NodePos::RuleBodyGoal,
+        span,
+    ));
+    (!found.is_empty()).then(|| aggregate_errors(found))
 }
 
 /// WI-20260922-0DK3H — the spec INSTANCES a rule body declares, whole. The sibling of

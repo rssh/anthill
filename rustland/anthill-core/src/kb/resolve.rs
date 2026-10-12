@@ -10898,22 +10898,18 @@ impl KnowledgeBase {
         }
         // The spec op's arg places, in DECLARATION order — which is the order the
         // carrier classification indexes (`self_receiver_param_index` /
-        // `carrier_param_receiver_for_values` read positionally). Positional arg
-        // first, then the named one, as the fold below does: the loader canonicalizes
-        // a plain op-call's args to named form by field name.
+        // `carrier_param_receiver_for_values` read positionally) — each with the argument
+        // the call binds to it, as the fold below reads them
+        // ([`Self::call_args_in_param_order`]).
         let params: Vec<Symbol> = self.symbols.arg_places(functor).to_vec();
-        let mut args: Vec<Value> = Vec::with_capacity(params.len());
-        for (i, &p) in params.iter().enumerate() {
-            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
-            let Some(a) = self.walk_arg(item, subst) else {
-                return UnstampedDispatch::NotApplicable;
-            };
-            // σ-applied, so a receiver bound during the search classifies. NOT
-            // ground-gated: the carrier is read off the HEAD (`sort_of_constructor`),
-            // which a partially-instantiated entity already names, and an unbound one
-            // answers no carrier and leaves through `NoSupplier` anyway.
-            args.push(self.reify_value(&a, subst));
-        }
+        let Some(walked) = self.call_args_in_param_order(occ, &params, subst) else {
+            return UnstampedDispatch::NotApplicable;
+        };
+        // σ-applied, so a receiver bound during the search classifies. NOT
+        // ground-gated: the carrier is read off the HEAD (`sort_of_constructor`),
+        // which a partially-instantiated entity already names, and an unbound one
+        // answers no carrier and leaves through `NoSupplier` anyway.
+        let args: Vec<Value> = walked.iter().map(|a| self.reify_value(a, subst)).collect();
         match spec_op_dispatch_by_value(self, functor, &args, carrier_override_suppliers) {
             ValueDirectedDispatch::NoSupplier => UnstampedDispatch::NotApplicable,
             // The spec op supplying ITSELF is not a redirect — fold as before rather
@@ -10952,6 +10948,43 @@ impl KnowledgeBase {
             }
             ValueDirectedDispatch::Tie { .. } => UnstampedDispatch::Refused,
         }
+    }
+
+    /// The arguments of the written call `occ`, σ-walked, in the order of `params` — the
+    /// callee's arg places. `None` where the call does not fill them
+    /// ([`super::typing::bound_args`]), and for anything that is not a written application.
+    ///
+    /// WHICH ARGUMENT A PLACE TAKES is the typer's answer for a call, asked of the same
+    /// owner: a positional argument ranks among the places the labels left open, so in
+    /// `sub2(5, x: 1)` over `(x, y)` it is `1` that is `x`. Read as "positional `i`, else
+    /// the label" the positional one took `x` too, `y` was left with nothing and the call
+    /// stayed un-reduced — a conditional residual where `sub2(1, 5)` and
+    /// `sub2(x: 1, y: 5)` both decided.
+    ///
+    /// A WRITTEN label (`lt2(x: 1, y: 5)`) is the bare name, where the arg place is the
+    /// parameter's own symbol (`U2.lt2.x`): matched as a LABEL, as the typer aligns a call
+    /// (`align_call_args_to_params`) and the rewriter binds one.
+    fn call_args_in_param_order(
+        &self,
+        occ: &Rc<NodeOccurrence>,
+        params: &[Symbol],
+        subst: &Substitution,
+    ) -> Option<SmallVec<[Value; 4]>> {
+        let Some(Expr::Apply {
+            pos_args,
+            named_args,
+            ..
+        }) = occ.as_expr()
+        else {
+            return None;
+        };
+        super::typing::bound_args(self, params, pos_args.len(), named_args)?
+            .into_iter()
+            .map(|arg| {
+                let arg = Rc::clone(arg.of(pos_args, named_args));
+                self.walk_arg(Some(ViewItem::Node(arg)), subst)
+            })
+            .collect()
     }
 
     /// WI-20260910-FDPJ8 — the occurrence [`Self::reduce_op_value`] folds when the call
@@ -11473,9 +11506,10 @@ impl KnowledgeBase {
         // σ-walk each call arg to a Value, keyed by param place. WI-279/WI-282
         // method dispatch puts the receiver + positional args positionally, but
         // the loader canonicalizes a plain op-call's args to NAMED form by field
-        // name (`code(?c)` → `code(c: ?c)`) — so read positional `i` first, then
-        // fall back to the named arg `p`. A param with neither leaves the call
-        // un-ground (residualizes), safe per the WI-483 leave-uninterpreted rule.
+        // name (`code(?c)` → `code(c: ?c)`) — so each place is read as the call binds
+        // it ([`Self::call_args_in_param_order`]), by position or by label. A param with
+        // neither leaves the call un-ground (residualizes), safe per the WI-483
+        // leave-uninterpreted rule.
         let mut param_args: HashMap<Symbol, Value> = HashMap::new();
         // WI-880 — REDUCE each argument for a HOST callee, do not merely σ-walk it.
         //
@@ -11504,30 +11538,32 @@ impl KnowledgeBase {
         // interpreter registry, so the recursion below bails on them and returns the
         // argument untouched.
         let reduce_args = self.host_op_reducible_at_a_value(op);
-        for (i, &p) in params.iter().enumerate() {
-            // A WRITTEN label (`lt2(x: 1, y: 5)`) is the bare name, where the arg place is
-            // the parameter's own symbol (`U2.lt2.x`): matched as a LABEL, as the typer aligns
-            // a call (`align_call_args_to_params`) and the rewriter binds one. Read by symbol
-            // alone, every written-label call in a rule body stayed un-reduced — its Bool view
-            // a conditional residual where the positional twin decided.
-            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p)).or_else(|| {
-                let key = occ
-                    .named_keys(self)
-                    .into_iter()
-                    .find(|k| super::typing::same_label(self, *k, p))?;
-                occ.named_arg(self, key)
-            });
-            match self.walk_arg(item, subst) {
-                Some(a) => {
-                    let a = if reduce_args && depth < FOLD_DEPTH_CAP {
-                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less, None, faults)
-                    } else {
-                        a
-                    };
-                    param_args.insert(p, a);
-                }
-                None => return v,
-            }
+        // A LABEL NAMES A PARAMETER OF THE OPERATION THE CALL IS WRITTEN ON. Where `op` is
+        // the member a carrier supplies for it — the typer's pin, or the classification
+        // above — that member may spell its parameters otherwise (`describe(item: Leaf,
+        // n: Int64)` behind `Desc.describe(x: T, k: Int64)`), and takes them one for one.
+        // So a labelled call is aligned to the written operation's places and handed to
+        // the member's in that order. Read against the member's own names, no label of
+        // `Desc.describe(k: 1, x: leaf())` named anything and the call stayed un-reduced.
+        let labelled =
+            matches!(occ.as_expr(), Some(Expr::Apply { named_args, .. }) if !named_args.is_empty());
+        let walked = if labelled && op != functor {
+            let written: Vec<Symbol> = self.symbols.arg_places(functor).to_vec();
+            self.call_args_in_param_order(&occ, &written, subst)
+                .filter(|args| args.len() == params.len())
+        } else {
+            self.call_args_in_param_order(&occ, &params, subst)
+        };
+        let Some(walked) = walked else {
+            return v;
+        };
+        for (&p, a) in params.iter().zip(walked) {
+            let a = if reduce_args && depth < FOLD_DEPTH_CAP {
+                self.reduce_op_value(a, subst, depth + 1, dispatch_body_less, None, faults)
+            } else {
+                a
+            };
+            param_args.insert(p, a);
         }
         // WI-1037 — the typer says this callee reads requirement slots. DECLINE the
         // structural fold and take the bridge, which is the one reduction path that
@@ -13446,6 +13482,10 @@ impl KnowledgeBase {
                 let lit = lit.clone();
                 Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
+            // A term carried on the node — a structural type written as a bracket's
+            // entry, `(Int64) -> Int64` in `Box[V = (Int64) -> Int64]` — is a closed
+            // datum like a constant: no call to hoist, no binder to rename.
+            Expr::Spliced(Value::Term { .. }) => Some(Rc::clone(occ)),
             Expr::Constructor {
                 name,
                 pos_args,
