@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261008-A3FY2-in-a-rule-body-a-parenthesized
+- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261012-RXT6S-a-sort-named-by-a-dotted-path, WI-20261012-TCSGT-a-structural-type-written-as
 
 - tags: proposal-055
 
@@ -500,4 +500,12 @@ WI-20261008-HZVQA (delivered 2026-10-09) moved two sentences of THE RULE AS BUIL
 ### 2026-10-12T06:10:20Z — feedback — claude
 
 WI-20261008-A3FY2 delivered 2026-10-12 (7c82a84b): a rule body reads a parenthesized type receiver as the written companion call, `?x <=> (Box[V = Int64]).tag()` binding 7, with a constructor reached so refused in a rule body's own term (kernel-language §5.4). Of the three parts wired on 2026-10-08, WI-20261008-R653S and WI-20261008-7B15V are open. Two things that ticket measured belong to this one's rule and are in no ticket: a sort named by a dotted path is no type value in either body — `(Outer.Inner).deep()`, `let t = Outer.Inner` and `nm(ns.Box)` are refused with "expected resolved name, got unresolved" where `Outer.Inner.deep()` answers; and a structural type in a parenthesized receiver's bracket, `(Box[V = (Int64) -> Int64]).tag()`, is refused where the written call answers. R653S's rule-member row has a rule-body face now: `(Box).rows(?x)` is refused where the goal `Box.rows(?x)` is a subgoal.
+
+### 2026-10-12T06:16:10Z — feedback — claude
+
+The two gaps of the 2026-10-12 note are filed and are parts of this ticket (user's go, 2026-10-12): WI-20261012-RXT6S (a sort named by a dotted path is no type value) and the ticket filed beside it for a structural type as an entry of a bracket in a term. With WI-20261008-R653S and WI-20261008-7B15V that is four open parts.
+
+### 2026-10-12T06:17:07Z — feedback — claude
+
+The dependency on WI-20261008-A3FY2 is removed: it is delivered (7c82a84b), so nothing waits on it, and with the two parts filed today the `depends_on` line had passed the 255 characters the attributes chapter takes without a diagnostic on every command. Its delivery is in the note of 2026-10-12 above.
 
