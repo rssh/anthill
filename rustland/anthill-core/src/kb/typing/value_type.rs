@@ -409,10 +409,17 @@ pub(super) fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
 /// from the abstract spec sort, which keeps the declared self return — there is no
 /// sharper carrier to name). The refined type is the receiver argument's OWN type:
 /// the result carrier IS the receiver carrier.
+///
+/// The receiver ARGUMENT is the one bound to the receiver parameter ([`bound_arg`]), not
+/// the child at that parameter's index: in `insert(?x, s: ?s)` over `(s, x)` the receiver
+/// is the labelled child, and the positional one fills `x`. Read by index, that term took
+/// the element's type for its carrier and kept the abstract return, so a law written over
+/// the labelled spelling never fired.
 fn self_return_spec_op_result_type(
     kb: &KnowledgeBase,
     op_sym: Symbol,
     pos_child_types: &[Value],
+    named_child_types: &[(Symbol, Value)],
 ) -> Option<Value> {
     let spec_sort = lookup_spec_op_dispatch(kb, op_sym)?;
     let rec = crate::kb::op_info::lookup_operation_info(kb, op_sym)?;
@@ -423,7 +430,10 @@ fn self_return_spec_op_result_type(
     }
     // The self-receiver argument carries the result's carrier.
     let idx = self_receiver_param_index(kb, &rec.params, spec_sort)?;
-    let recv_ty = pos_child_types.get(idx)?;
+    let pos_params =
+        positional_param_indices(kb, &rec.params, pos_child_types.len(), named_child_types);
+    let recv_ty = bound_arg(kb, &rec.params, &pos_params, idx, named_child_types)?
+        .of(pos_child_types, named_child_types);
     let carrier = carrier_sort_of_value(kb, recv_ty)?;
     // Refine only for a CONCRETE provider — an abstract receiver (`carrier` is the
     // spec sort itself) keeps the declared self return, and a non-provider is never
@@ -483,7 +493,9 @@ fn constructor_value_type(
         // never pays the operation-info scan. Otherwise the value's type is its own
         // bare sort.
         None => {
-            if let Some(refined) = self_return_spec_op_result_type(kb, ctor_sym, pos_child_types) {
+            if let Some(refined) =
+                self_return_spec_op_result_type(kb, ctor_sym, pos_child_types, named_child_types)
+            {
                 return refined;
             }
             return Value::term(parent_type);

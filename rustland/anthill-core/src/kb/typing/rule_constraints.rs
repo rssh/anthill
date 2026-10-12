@@ -468,9 +468,14 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
     // [`instantiate_declared_type`].
     let mut inst = ParamInstantiation::new();
     if let Some(op) = lookup_operation_info_full(kb, functor) {
-        for (i, arg) in pos_args.iter().enumerate() {
+        // The parameter a positional argument FILLS, not the one at its index: it ranks
+        // among the parameters the labels left open ([`positional_param_indices`]). By
+        // index, `pick(?l, k: 1)` over `(k: Int64, l: Leaf)` typed `?l` as `Int64`, and a
+        // later `Desc.describe(?l, ?r)` was refused for a carrier the clause never had.
+        let pos_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
+        for (arg, param) in pos_args.iter().zip(pos_params) {
             // WI-341 Stage A: seed inference from the param type carrier-agnostically.
-            if let Some((_, param_type)) = op.params.get(i) {
+            if let Some((_, param_type)) = param.and_then(|p| op.params.get(p)) {
                 let (param_type, instantiated) =
                     instantiate_declared_type(kb, param_type, &mut inst);
                 constrain_arg(

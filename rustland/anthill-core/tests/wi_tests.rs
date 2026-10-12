@@ -1954,6 +1954,8 @@ mod wi_aaqt5_type_application_head_test;
 mod wi_0rp29_nested_projection_value_in_type_test;
 #[path = "include/wi_0rp29_call_binding_test.rs"]
 mod wi_0rp29_call_binding_test;
+#[path = "include/wi_mhrn1_mixed_call_readers_test.rs"]
+mod wi_mhrn1_mixed_call_readers_test;
 #[path = "include/wi_0rp29_member_rule_test.rs"]
 mod wi_0rp29_member_rule_test;
 #[path = "include/wi_80zv8_self_test.rs"]
