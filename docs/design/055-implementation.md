@@ -193,6 +193,21 @@ type_value[(Int64) -> String]()
 It lowers directly to `ResolvedExpr::TypeValue`; it does not evaluate a value
 or dereference a `Type` value back into the typer.
 
+An entry of a nominal type's bracket is not such a value expression: its role
+is `TypeExpr`, and nothing else can stand there. A tuple type, an arrow type and
+an effect row written as an entry (`Box[V = (Int64) -> Int64]`) have no term
+shape, so the converter carries each as a parse payload of its own
+(`ParseAux::EntryType`, apart from the build-site payloads a `let` annotation
+or a receiver rides) and the loader lowers it by `type_expr_to_child` where a
+walk meets the entry. The term walk and the rule-body occurrence walk hold the
+type's term. The operation-body walk carries it as the value it is — an
+`Expr::Spliced` of that term, typed `Type` — under the `Expr::TypeValue` of its
+bracket; it is a closed datum, so one that names a type parameter, a variable
+or a projection off a value is refused where the rigid reads are checked. A
+clause's own term is not built from the resolved type value yet (§7), so a
+`@[simp]` rule that writes or takes out such an entry hands the body it fires
+in a former of the type meta-language.
+
 ## 6. Relationship to proposals 060 and 062
 
 Brackets keep one meaning: they bind declaration-level type/requirement inputs.

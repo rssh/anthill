@@ -33,3 +33,7 @@ DELIVERED 2026-10-12 (930dba3b). A tuple type, an arrow type and an effect row w
 
 FILED AFTER DELIVERY (2026-10-12, on the user's word): the constant written by its parameter's name is WI-20261012-6SAAP; a panic met while probing the nominal twin of the type-parameter rows — a call that is an operation's whole body, to an operation whose TypeValue requirement only the bracket fixes, reached from a rule body — is WI-20261012-EZJXH. The constant entry that loads and does not evaluate, and the bracket on an operation's or a constructor's name with no argument list, have no ticket.
 
+### 2026-10-12T14:29:12Z — feedback — claude
+
+SPEC WRITTEN 2026-10-12, on the user's word: kernel-language §5.4 has the paragraph on a structural type written as a bracket's entry (after the one on a receiver that denotes a sort), §5.3's list of what a require bracket's element may not be names the arrow type beside the tuple type and says an effect row is an element and what stands for the spec instance is not; docs/design/055-implementation.md §5 has the mechanism.
+
