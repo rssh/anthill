@@ -43,15 +43,18 @@
 //! words of its name.
 //!
 //!  * A receiver's arguments kept only where they are terms (`parameterized_vid_bindings`)
-//!    — 13: the unit row `wi470_parameterized_vid_bindings_reads_both_carriers`,
-//!    `n01py…::a_row_that_names_a_cell_is_read_like_a_ground_one`, and eleven here:
+//!    — 12: the unit row `wi470_parameterized_vid_bindings_reads_both_carriers`,
+//!    `n01py…::a_row_that_names_a_cell_is_read_like_a_ground_one`, and ten here:
 //!    `a_members_row…`, `a_bracket_parameter_a_clause_binds…`, `a_defaulted_spec_operation…`,
 //!    `the_row_read_names…`, `the_row_read_is…`, `a_clauses_row…`, `a_defaulted_operation…`,
-//!    `a_self_receiving…`, `a_cell_named…`, `a_stream_mapped_twice…`,
-//!    `a_witness_that_reorders…`.
+//!    `a_cell_named…`, `a_stream_mapped_twice…`, `a_witness_that_reorders…`.
+//!    (MEASURED AGAIN for WI-20260929-TK8X4, over the whole of `anthill-core`: these
+//!    twelve, and the seven rows that ticket's file lists. `a_self_receiving…` was a
+//!    thirteenth when this was first measured: a receiver typed `Self` is bound by
+//!    unification as well, through `provider_view_at_instance`, and the row fails only
+//!    with that reader backed out beside this one.)
 //!  * A witness's binding at the receiver kept only where a term
-//!    (`bind_spec_params_from_carrier_param`) — 11: those thirteen less the unit row and
-//!    `a_self_receiving…`.
+//!    (`bind_spec_params_from_carrier_param`) — 11: those twelve less the unit row.
 //!  * A clause's parameter bound only at a CLOSED type (`bind_clause_params_at_carrier`)
 //!    — 9: the `n01py` row, `a_members_row…`, `a_bracket_parameter_a_clause_binds…`,
 //!    `the_row_read_names…`, `the_row_read_is…`, `a_clauses_row…`, `a_cell_named…`,
@@ -59,7 +62,8 @@
 //!  * A carrier's own binding at the receiver kept only where a term (the same function's
 //!    other arm) — 3: `a_clauses_row…`, `a_defaulted_operation…`, `a_cell_named…`.
 //!  * A self-receiver's binding kept only where a term (`bind_spec_params_from_carrier`)
-//!    — 1: `a_self_receiving…`.
+//!    — none here any more, for the reason above (`a_self_receiving…` was the one); the row
+//!    that fails is `wi_tk8x4…::a_callbacks_parameter_is_the_type_at_the_receiver`.
 //!  * A lent member grounded only at a CLOSED type (`lent_member`) — 1: `a_projected_row…`.
 //!  * A spec view's bindings dropped where no term (`unwrap_spec_view_value`) — 26: seven
 //!    here (`a_members_row…`, both `a_bracket_parameter…` rows, `a_clauses_row…`,

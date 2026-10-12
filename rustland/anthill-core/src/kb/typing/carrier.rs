@@ -1048,10 +1048,13 @@ fn once_per_call(kb: &mut KnowledgeBase, instance: &Value) -> Value {
 ///
 /// Recover the spec params from the carrier's provider fact: `List`
 /// provides `fact Stream[T = T]`, so a `List[Int]` viewed as a `Stream`
-/// has `Stream.T = List.T = Int`. The element value is read by SHORT NAME
-/// from the receiver's own type arguments — robust to whether the
+/// has `Stream.T = List.T = Int`. The element value is read from the
+/// receiver's own type arguments by the carrier parameter's canonical
+/// variable ([`parameterized_vid_bindings`]) — robust to whether the
 /// provider fact stores the carrier param as a `Var` / `Ref` / nullary
-/// `Fn`. Returns true iff at least one spec parameter was bound (the
+/// `Fn` — and each argument on the carrier it rides: one that holds a
+/// value (`T = Buf[T = Int64, N = 3]`) is read as one that is a plain
+/// type is. Returns true iff at least one spec parameter was bound (the
 /// caller then re-walks the return type through the updated subst).
 pub(super) fn bind_spec_params_from_carrier(
     kb: &mut KnowledgeBase,
@@ -1072,7 +1075,7 @@ pub(super) fn bind_spec_params_from_carrier(
     // `.as_term()` — an occurrence-primary `List[T = Int]` is a `Value::Node`, and
     // `.as_term()` would return `None` and drop the carrier (erasing its `T`/`Eff`
     // bindings → a spurious `Eff unconstrained`). The binding is read below through
-    // `parameterized_short_bindings` (carrier-agnostic), so it is preserved. The argument
+    // `parameterized_vid_bindings` (carrier-agnostic), so it is preserved. The argument
     // is the one the call binds to the receiver ([`bound_arg`]).
     let recv_ty: Option<Value> = supplied_arg_type(
         kb,
