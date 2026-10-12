@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261012-RXT6S-a-sort-named-by-a-dotted-path, WI-20261012-TCSGT-a-structural-type-written-as
+- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261012-TCSGT-a-structural-type-written-as
 
 - tags: proposal-055
 

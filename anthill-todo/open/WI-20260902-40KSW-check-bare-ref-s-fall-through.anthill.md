@@ -61,3 +61,9 @@ CONTROLS: a genuinely absent name must keep a diagnosis an author can act on (WI
 and the RULE BODY must move TOGETHER — they agree today at every one of these five rows,
 and a fix applied at one position only would re-open the split 4NEKZ just closed.
 
+## Changes
+
+### 2026-10-12T11:18:08Z — feedback — claude
+
+THE MATRIX MOVED WITH WI-20261012-RXT6S (2026-10-12, 4f282c2a): a chain that names a SORT or a free-standing ENTITY is that name's type value in an OPERATION body now, so `zz4nf.Color = 7` and `zz4nf.acct = 7` there draw one true refusal, 'eq.b (op-arg): expected Type, got Int64', and a CONSTRUCTOR past a sort, `zz4nf.Color.red = 7`, draws one about `red` where it drew three. The RULE body column is unchanged (3, 2, 2), and the NAMESPACE and NOTHING rows are unchanged in both. `wi_4nekz_dotted_equation_operand_test::the_five_other_name_kinds_still_agree_with_the_operation_body` pairs the two bodies for those two rows only. ONE MORE NAME THAT RESOLVES AND IS CALLED UNRESOLVED: an `internal` sort named by a path from another namespace — over `sort Hid { internal sort Sec … }` in `probe`, `nm(probe.Hid.Sec)` in namespace `user` says 'Sec.name: expected resolved name, got unresolved', where `import probe.Hid.Sec`, the parameter type `x: probe.Hid.Sec` and the bracket entry `Bx[V = probe.Hid.Sec]` say ''probe.Hid.Sec' is internal to 'probe.Hid' and cannot be referenced from scope …'. The ladder's rungs read the whole name under visibility (`Loader::resolve_qualified_readonly`), so a hidden const by a path is reported the same way; the companion call `probe.Hid.Sec.sx()` answers.
+
