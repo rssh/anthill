@@ -3001,10 +3001,13 @@ impl<'a> Converter<'a> {
                         // but an `application` keeps its `Fn{base, …}` shape. (The
                         // loader's `canonicalize_fact_binding_value`, which then mapped it
                         // positional→named, went with the `fact` spelling of a provision,
-                        // WI-20260917-S8JYF.) Variable / tuple / arrow shapes keep
-                        // `convert_term`.
+                        // WI-20260917-S8JYF.) A tuple type, an arrow type and an
+                        // effect row go through it too: no term shape holds one, and
+                        // `convert_term` has no reading for the node. A variable and a
+                        // constant keep `convert_term`.
                         let tid = match t.kind() {
-                            "simple_type" | "application" => self.convert_type_value(t),
+                            "simple_type" | "application" | "tuple_type" | "arrow_type"
+                            | "effect_row" => self.convert_type_value(t),
                             _ => self.convert_term(t),
                         };
                         pos_args.push(tid);
@@ -3035,9 +3038,9 @@ impl<'a> Converter<'a> {
     /// as a fact-binding value. Preserves parametric inner shapes
     /// (`List[T = Int]` → `Fn(List, [(T, Int)])`) instead of
     /// flattening to bare `Ref(List)`. Bare names and variables
-    /// still collapse to `Term::Ref` / `Term::Var`; other term
-    /// shapes fall back to flatten-to-name to preserve compatibility
-    /// with existing programs.
+    /// still collapse to `Term::Ref` / `Term::Var`. A tuple type, an
+    /// arrow type and an effect row have no term shape and ride as
+    /// `ParseAux::EntryType`.
     fn convert_type_value(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         match node.kind() {
@@ -3105,14 +3108,21 @@ impl<'a> Converter<'a> {
             // fact-head and `provides` emissions produce a byte-identical
             // `effects_rows(EffectExpression)` Type (the empty `{}` closed-pure
             // row, and any ground row).
-            "effect_row" => {
+            //
+            // A tuple type and an arrow type go the same way and for the same
+            // reason: `Box[V = (Int64) -> Int64]`, `Box[V = (a: Int64, b: String)]`.
+            // A parse `Term` holds neither, an entry of a bracket is a type
+            // argument, and the loader lowers the `TypeExpr` where each of its
+            // walks meets the entry.
+            "effect_row" | "tuple_type" | "arrow_type" => {
                 let te = self.convert_type(node);
                 self.terms
-                    .alloc(Term::ParseAux(Box::new(ParseAux::TypeExpr(te))), span)
+                    .alloc(Term::ParseAux(Box::new(ParseAux::EntryType(te))), span)
             }
-            // Other non-type term shapes (function calls, tuples, arrows)
-            // appearing in binding-value position collapse to `Ref(Name)`
-            // — the SLD resolver doesn't need to introspect them.
+            // What is left keeps its text as a name: a constant written by its
+            // parameter's name or one bracket down (`Vec[T = Int64, N = 3]`), which
+            // the loader then reports as a name nothing declares, and a node the
+            // parser recovered from an error it has reported.
             _ => {
                 let name = self.convert_type_to_name(node);
                 let sym = self.intern_name(&name);

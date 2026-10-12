@@ -612,7 +612,8 @@ pub(super) fn check_operation_bodies(
                 // dot backstop above: the repair is a single clause on the signature, so
                 // reporting every read of the same parameter would be one fix told many
                 // times.
-                let reads = rigid_value_reads(kb, &result.node, result.env.enclosing_frame_chain());
+                let (reads, open_entry) =
+                    rigid_value_reads(kb, &result.node, result.env.enclosing_frame_chain());
                 if !reads.is_empty() {
                     let backed = type_value_backed_params(kb, op.op_sym);
                     if let Some((_, param, span)) =
@@ -624,6 +625,25 @@ pub(super) fn check_operation_bodies(
                             op: op.op_sym,
                         });
                     }
+                }
+                // A structural type written as a bracket's entry is one type, read when
+                // the body is loaded: see [`OpenStructuralEntry`].
+                if let Some(OpenStructuralEntry { entry, name }) = open_entry {
+                    let written =
+                        crate::persistence::print::TermPrinter::new(kb).print_occurrence(&entry);
+                    errors.push(TypeError::Other {
+                        site: TypeError::here(),
+                        span: Some(entry.span.span),
+                        context: TypeErrorContext::OperationTypeParams { op_name: op.op_sym },
+                        expected: "a tuple type, an arrow type or an effect row that names no \
+                                   type parameter, no variable and no value, where it is \
+                                   written as a bracket's entry in a value position"
+                            .to_string(),
+                        actual: format!(
+                            "`{written}`, which names `{name}`: the entry is read as one type \
+                             when the body is loaded, and nothing gives `{name}` a type there"
+                        ),
+                    });
                 }
                 let mut subst = Substitution::new();
                 // WI-341/342: both sides are carrier-agnostic `Value` — the

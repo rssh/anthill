@@ -13482,6 +13482,10 @@ impl KnowledgeBase {
                 let lit = lit.clone();
                 Some(NodeOccurrence::new_expr(Expr::Const(lit), span, None))
             }
+            // A term carried on the node — a structural type written as a bracket's
+            // entry, `(Int64) -> Int64` in `Box[V = (Int64) -> Int64]` — is a closed
+            // datum like a constant: no call to hoist, no binder to rename.
+            Expr::Spliced(Value::Term { .. }) => Some(Rc::clone(occ)),
             Expr::Constructor {
                 name,
                 pos_args,

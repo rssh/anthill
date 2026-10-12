@@ -2813,6 +2813,16 @@ pub fn node_to_debruijn(
             .iter()
             .position(|v| v == vid)
             .map(|pos| Expr::Var(Var::DeBruijn((var_order.len() - 1 - pos) as u32))),
+        // A term carried on the node is a leaf to `for_each_child`, so the generic
+        // recursion below cannot reach a variable inside it: a structural type written
+        // as a bracket's entry under a rule's compound expression — `(?a) -> Int64` in
+        // `let t = Box[V = (?a) -> Int64]` — rides as its lowered type. Closed here as
+        // [`open_debruijn_node`]'s arm for the same node opens it; left a global, the
+        // variable was the one the loader minted in every firing of the rule.
+        Expr::Spliced(v @ crate::eval::value::Value::Term { .. }) => {
+            let (closed, changed) = close_value_type(kb, v, var_order);
+            changed.then(|| Expr::Spliced(closed))
+        }
         Expr::Apply {
             functor,
             pos_args,
@@ -3659,10 +3669,11 @@ pub(crate) fn type_denoted_by(kb: &mut KnowledgeBase, v: &Value) -> Option<TermI
     }
 }
 
-/// [`type_denoted_by`] for the occurrence carrier. Five shapes denote a type — a `Type` /
+/// [`type_denoted_by`] for the occurrence carrier. Six shapes denote a type — a `Type` /
 /// `EffectExpression` spine, proposal 055's classified `TypeValue`, a logical variable, a
-/// §4.5 value-in-type constant, and a TUPLE literal (the structural type, which has no
-/// nominal name to be classified by) — and nothing else an occurrence can be does.
+/// §4.5 value-in-type constant, a carried value that denotes one, and a TUPLE literal (the
+/// structural type, which has no nominal name to be classified by) — and nothing else an
+/// occurrence can be does.
 fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
     // A `Type` / `EffectExpression` occurrence IS a type, and WI-390 lowers its spine
     // faithfully. This is the one place the lowering gives something up: the type layer
@@ -3682,6 +3693,10 @@ fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // §4.5 value-in-type, on the occurrence carrier: `3` in `Vec[N = 3]` rides as
         // `Expr::Const` (WI-404).
         Expr::Const(_) => try_occurrence_to_term(kb, occ),
+        // A value carried on the node denotes what the value denotes: a structural type
+        // written as a bracket's entry in an operation body (`(Int64) -> Int64` in
+        // `Box[V = (Int64) -> Int64]`) rides as its lowered type.
+        Expr::Spliced(v) => type_denoted_by(kb, v),
         // A TUPLE TYPE — `(Int64, Bool)`, `(a: Int64, b: Bool)`, and either nested. A
         // STRUCTURAL type has no nominal name, so it does NOT arrive classified as
         // `Expr::TypeValue`; it arrives as the tuple literal it is spelled as, and this is

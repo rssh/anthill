@@ -324,7 +324,7 @@ fn a_dotted_spec_base_names_the_spec_and_not_field_access() {
 #[test]
 fn a_written_effect_row_survives_the_bracket() {
     // A `ParseAux` carrier, NOT a name — so the drop rule ("a name that denotes no sort")
-    // never covered it, and it vanished with no diagnostic. `lower_effect_row_aux_occ` is
+    // never covered it, and it vanished with no diagnostic. `lower_effect_row_entry_occ` is
     // the same lowering the ordinary named-arg loop applies (WI-366 B1). Asserted by the
     // KEY's presence: the row's own value shape belongs to that lowering, not to this
     // ticket.
@@ -607,29 +607,40 @@ fn a_dropped_argument_is_still_counted_by_the_arity_check() {
 }
 
 #[test]
-fn a_positional_effect_row_does_not_parse_at_all() {
+fn a_positional_effect_row_keeps_its_slot_too() {
     // `/code-review` predicted an asymmetry here: the effect-row arm was on the NAMED
     // loop only, so `Walk[C = Src, E = {}]` would keep the row while `Walk[Src, {}]`
-    // dropped it. MEASURED, the positional spelling never reaches the loop — the GRAMMAR
-    // refuses it (`unexpected term node: effect_row`), so there is no second surface to
-    // disagree with the first.
+    // dropped it. The arm was put on the positional loop too, as a backstop no source
+    // could drive: the converter had no reading for a row written positionally at the top
+    // of a bracket (`unexpected term node: effect_row`), so the spelling never reached
+    // the loop.
     //
-    // The arm was added to the positional loop anyway, for symmetry with the sibling
-    // occurrence walk which has it on both. It is a BACKSTOP and cannot be driven from
-    // source; this row is what says so, and what will start failing if the grammar ever
-    // admits the spelling.
+    // WI-20261012-TCSGT gave the converter that reading, and this row drives the arm: the
+    // positional row binds the parameter the named spelling names.
+    //
+    // FAILS two ways, each measured. With the converter's positional route backed out the
+    // fixture does not parse (`unexpected term node: effect_row`). With the arm taken off
+    // the positional loop the row is reported: "`{}` in it names neither a sort nor one
+    // of `Desc`'s own type parameters".
     let ns = "test.w51w18.erpos";
-    let src = two_param_program(ns, "Desc[Leaf, {}]");
-    let panicked = std::panic::catch_unwind(|| {
-        let _ = crate::common::try_load_kb_with(&src);
-    })
-    .is_err();
-    assert!(
-        panicked,
-        "a positional effect row is expected to be refused by the PARSER; if this now \
-         loads, the backstop arm in the positional loop has become drivable and needs a \
-         real assertion",
+    let kb = crate::common::load_kb_with(&two_param_program(ns, "Desc[Leaf, {}]"));
+    let positional = stored_bindings(&kb, &format!("{ns}.answer")).expect("a stored goal");
+    assert_eq!(
+        positional.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        vec!["T", "U"],
+        "the positional row must keep its slot; got {positional:?}",
     );
+    let ns = "test.w51w18.ernamed";
+    let kb = crate::common::load_kb_with(&two_param_program(ns, "Desc[T = Leaf, U = {}]"));
+    let named = stored_bindings(&kb, &format!("{ns}.answer")).expect("a stored goal");
+    // One row under one parameter: the rendering differs in where each was written.
+    let unlocated = |bindings: &[(String, String)]| -> Vec<(String, String)> {
+        bindings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.chars().filter(|c| !c.is_ascii_digit()).collect()))
+            .collect()
+    };
+    assert_eq!(unlocated(&positional), unlocated(&named), "the two spellings bind one row");
 }
 
 #[test]

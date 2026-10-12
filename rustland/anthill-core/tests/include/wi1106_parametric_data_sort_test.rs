@@ -446,12 +446,15 @@ end
 /// says so at the binding's own column. That is the check WI-672's assert message asked
 /// for ("resolve the `provides` carrier at its producer"), reached by the shorter route.
 ///
-/// The tuple and arrow shapes lower the same way, so all three are driven — they were
-/// three separate reports and one cause.
+/// A tuple type and an arrow type were lowered the same way and reported the same way;
+/// they were three separate reports and one cause. Each is a type, and since
+/// WI-20261012-TCSGT the bracket holds it as one: the clause is the fact its head
+/// writes, and — what this ticket guards — files no provision under a carrier nothing
+/// declares.
 #[test]
 fn a_binding_that_resolved_to_nothing_is_refused_not_filed() {
-    for binding in ["1", "(a: Int64)", "(x: Int64) -> Int64"] {
-        let src = format!(
+    let source = |binding: &str| {
+        format!(
             r#"
 namespace test.wi1106.unres
   import anthill.prelude.{{Int64}}
@@ -464,13 +467,30 @@ namespace test.wi1106.unres
   fact Wi1106URSpec[T = {binding}]
 end
 "#
-        );
-        let errs = errors(&src);
+        )
+    };
+    let errs = errors(&source("1"));
+    assert!(
+        errs.iter().any(|e| e.contains("unresolved name")),
+        "`[T = 1]` names no type, so the bracket must be refused rather than lowered to a \
+         symbol nothing declares; got {errs:?}"
+    );
+    for (binding, printed) in [
+        ("(a: Int64)", "(a: Int64)"),
+        // One parameter's name is not part of an arrow.
+        ("(x: Int64) -> Int64", "(Int64) -> Int64"),
+    ] {
+        let mut kb = try_load_kb_with(&source(binding))
+            .unwrap_or_else(|errs| panic!("`[T = {binding}]` holds a type; got {errs:?}"));
+        let heads = provides_info_heads(&mut kb);
         assert!(
-            errs.iter().any(|e| e.contains("unresolved name")),
-            "`[T = {binding}]` names no type, so the bracket must be refused rather \
-             than lowered to a symbol nothing declares; got {errs:?}"
+            !heads.iter().any(|h| h.contains("spec: SortView(Wi1106URSpec")),
+            "`[T = {binding}]` on a fact files no provision of the spec; saw:\n{heads:#?}"
         );
+        // The clause is stored, holding the type its bracket writes.
+        let stored = crate::common::rendered_facts(&mut kb, "test.wi1106.unres.Wi1106URSpec");
+        assert_eq!(stored.len(), 1, "`[T = {binding}]`: {stored:?}");
+        assert!(stored[0].contains(printed), "`[T = {binding}]`: {stored:?}");
     }
 
     // CONTROL — the same bracket with a real type still provides, so the filter
