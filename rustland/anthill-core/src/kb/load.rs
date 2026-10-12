@@ -26860,6 +26860,15 @@ impl<'a> Loader<'a> {
         if self.const_fold != ConstFold::Data {
             return None;
         }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        const_named(self.kb, &name, self.current_scope)
+    }
+
+    /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
+    /// clause's own term is read, unless its root is a clause parameter or a local
+    /// binder: such a chain is a projection on that binding and names nothing, however
+    /// its root is spelled.
+    fn dotted_name_rooted_at_no_binding(&self, parse_id: TermId) -> Option<String> {
         let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
         let root = name.split('.').next()?;
         if self.rule_param_vars.contains_key(root)
@@ -26870,7 +26879,7 @@ impl<'a> Loader<'a> {
         {
             return None;
         }
-        const_named(self.kb, &name, self.current_scope)
+        Some(name)
     }
 
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
@@ -28799,6 +28808,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_const_ref(parse_id, whole, results) {
                                     return;
                                 }
+                                if self.try_qualified_sort_ref(parse_id, whole, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -29376,6 +29388,46 @@ impl<'a> Loader<'a> {
     ) -> bool {
         let Some(sym) = whole.filter(|sym| self.kb.kind_of(*sym) == Some(SymbolKind::Const))
         else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// A SORT NAMED BY A DOTTED PATH with no trailing `(…)` — `Outer.Inner`, `lib.t.Far`,
+    /// `..lib.t.Far` — wherever this walk reads one: an operation body, a const's value, a
+    /// rule body's compound expression, and the receiver of a dot a rule body lends it
+    /// ([`Self::written_type_receiver_occurrence`]). It parses (§6.7) as a
+    /// `field_access` chain, as [`Self::try_qualified_const_ref`]'s const does, and when
+    /// the chain's segments spell a name that resolves to a sort it is that sort's name:
+    /// the reference the one-segment, imported spelling lowers to, which
+    /// [`Self::push_leaf_occ`] classifies as it classifies that one — a type value
+    /// (proposal 055 §2), or, for an eponymous sort and a free-standing entity, the
+    /// reading [`Self::bare_name_denotes_type`] leaves their bare names.
+    ///
+    /// It was left a chain, and the typer walked it: each segment a bare name nothing
+    /// declares — `Inner.name: expected resolved name, got unresolved`, and one such
+    /// error a segment for a namespace path — while the imported `Far` and the same
+    /// dotted name as an entry of a bracket (`Bx[V = lib.t.Far]`) were the type.
+    ///
+    /// A whole name resolves to one symbol, so this rung and the two above it read the
+    /// same node for a chain more than one of them could take — a sort beside a rule's
+    /// label of its name — and their order among themselves changes nothing. It stands
+    /// after the local pass, as they do, so a binder named like the path's root is the
+    /// receiver it is, and before the prefix pass, as they do: the whole name gets first
+    /// refusal. Beside `const origin: P` and a namespace `origin`, `origin.X` is the
+    /// namespace's member where it has one — its const, its rule, and now its sort — and
+    /// the field of the const's value where it has none; while no rung read a sort, a
+    /// sort `origin.X` was passed over for the field. A chain that continues past the
+    /// sort (`Outer.Inner.deep`) reaches this rung at its inner level, as the receiver.
+    fn try_qualified_sort_ref(
+        &mut self,
+        parse_id: TermId,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = whole.filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort)) else {
             return false;
         };
         self.push_name_ref(parse_id, sym, results);
@@ -31334,12 +31386,18 @@ impl<'a> Loader<'a> {
     /// the term the clause matches.
     ///
     /// Which receiver is a written type is the operation body's rule, asked of the head
-    /// the term walk resolved: a bare sort name ([`Self::bare_name_denotes_type`]) or a
-    /// bracket on a sort. The node is built by the walk that classifies an operation
-    /// body's, so the bracket's entries are read by one rule in both bodies. That walk is
-    /// lent whole and not as a rule's compound expression
+    /// the term walk resolved — a bare sort name ([`Self::bare_name_denotes_type`]) or a
+    /// bracket on a sort — and of the sort a dotted path names
+    /// ([`Self::dotted_sort_name`]). The node is built by the walk that classifies an
+    /// operation body's, so a path, and a bracket's entries, are read by one rule in both
+    /// bodies. That walk is lent whole and not as a rule's compound expression
     /// ([`Self::lowering_rule_compound_expr`]): a type is not a term the clause matches.
-    /// `None` for any other receiver, and inside that walk, which is not re-entered.
+    ///
+    /// A path that names an eponymous sort or a free-standing entity is no written type,
+    /// as its bare name is none, and is handed back as the reference that bare name is
+    /// here — left a chain, it was refused as a name nothing declares where the bare name
+    /// is read. `None` for any other receiver, and inside that walk, which is not
+    /// re-entered.
     fn written_type_receiver_occurrence(
         &mut self,
         parse_id: TermId,
@@ -31350,10 +31408,22 @@ impl<'a> Loader<'a> {
         }
         let written_type = match (self.parsed.terms.get(parse_id), self.kb.get_term(kb_receiver)) {
             (Term::Ident(_), Term::Ref(sort)) => self.bare_name_denotes_type(*sort),
-            (Term::Fn { .. }, Term::Fn { functor, .. }) => {
-                self.parsed.terms.is_type_application(parse_id)
-                    && self.kb.has_kind(*functor, SymbolKind::Sort)
+            (Term::Fn { .. }, Term::Fn { functor, .. })
+                if self.parsed.terms.is_type_application(parse_id) =>
+            {
+                self.kb.has_kind(*functor, SymbolKind::Sort)
             }
+            (Term::Fn { .. }, _) => match self.dotted_sort_name(parse_id) {
+                Some(sort) if self.bare_name_denotes_type(sort) => true,
+                // An eponymous sort and a free-standing entity are no written type by
+                // their bare names, and by a path they are the reference those names are
+                // in a clause's own term.
+                Some(sort) => {
+                    let span = self.source_span_of(parse_id);
+                    return Some(NodeOccurrence::new_expr(Expr::Ref(sort), span, None));
+                }
+                None => false,
+            },
             _ => false,
         };
         if !written_type {
@@ -31366,6 +31436,17 @@ impl<'a> Loader<'a> {
              receiver this walk read as a written type"
         );
         Some(occ)
+    }
+
+    /// The sort a dotted path names — `Outer.Inner`, `lib.t.Far` — where a rule body's own
+    /// term is read: the symbol [`Self::try_qualified_sort_ref`] reads the chain as in an
+    /// operation body, asked here before that walk is lent the node. `None` for a chain
+    /// rooted at a clause parameter or a local binder, which is a projection on that
+    /// binding.
+    fn dotted_sort_name(&self, parse_id: TermId) -> Option<Symbol> {
+        self.dotted_name_rooted_at_no_binding(parse_id)
+            .and_then(|name| self.resolve_qualified_readonly(&name))
+            .filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort))
     }
 
     /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.

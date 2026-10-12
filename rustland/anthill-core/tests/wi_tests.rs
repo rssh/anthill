@@ -21,6 +21,8 @@ mod wi009_phase3_builtins_test;
 mod wi_papx0_dot_receiver_split_test;
 #[path = "include/wi_a3fy2_rule_body_type_receiver_test.rs"]
 mod wi_a3fy2_rule_body_type_receiver_test;
+#[path = "include/wi_rxt6s_dotted_sort_type_value_test.rs"]
+mod wi_rxt6s_dotted_sort_type_value_test;
 #[path = "include/wi_jmmhq_value_dot_internal_test.rs"]
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]

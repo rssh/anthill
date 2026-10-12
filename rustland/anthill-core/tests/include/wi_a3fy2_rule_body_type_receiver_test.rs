@@ -41,7 +41,7 @@
 //!     a_member_the_sort_does_not_declare_is_refused_about_the_sort
 //!     an_internal_member_is_hidden_as_its_written_name_is
 //!     both_spellings_are_one_call_to_every_reader
-//!     a_dotted_sort_name_is_no_written_type_in_either_body (its bracketed rule-body row)
+//!     a_dotted_sort_name_is_a_written_type_in_both_bodies (its rule-body rows)
 //!   the replacement before the rule body is read (`body_with_written_type_calls` handing
 //!   the body back as it came, so the dispatch walk types the dot) — FAIL:
 //!     both_spellings_are_one_call_to_every_reader
@@ -57,9 +57,6 @@
 //!     a_constructor_under_a_compound_expression_is_the_operation_bodys — passes with the
 //!       loader's receiver and with the constructor refusal backed out; it is the fence of
 //!       the last back-out only.
-//!   and the bare-path rows of a_dotted_sort_name_is_no_written_type_in_either_body — the
-//!   boundary: an operation body does not read a dotted sort name as a type value, so a
-//!   rule body does not.
 
 use anthill_core::eval::Value;
 
@@ -467,12 +464,12 @@ fn the_written_spellings_are_unchanged() {
     }
 }
 
-/// The boundary. A sort named by a dotted path is not read as a type value in an
-/// operation body — `(Outer.Inner).deep()` is refused there, where `Outer.Inner.deep()`
-/// answers — and the rule body follows the operation body: both draw the unresolved-name
-/// refusal. A bracket on the same path is a type value in both.
+/// A sort named by a dotted path is a written type as its bare name is, with a bracket
+/// and without, and the rule body follows the operation body. The path's own rows are
+/// `wi_rxt6s_dotted_sort_type_value_test`; until it, both bodies refused the bare path
+/// with the unresolved-name message.
 #[test]
-fn a_dotted_sort_name_is_no_written_type_in_either_body() {
+fn a_dotted_sort_name_is_a_written_type_in_both_bodies() {
     const NESTED: &str = "  sort Outer\n    sort Inner[W]\n      entity inn\n      operation deep() -> Int64 = 21\n    end\n  end\n";
     for (ns, body) in [
         ("a3fy2dottedrule", "  rule r(?x) :- ?x <=> (Outer.Inner).deep()"),
@@ -480,11 +477,6 @@ fn a_dotted_sort_name_is_no_written_type_in_either_body() {
             "a3fy2dottedop",
             "  operation go() -> Int64 = (Outer.Inner).deep()\n  rule r(?x) :- ?x <=> go()",
         ),
-    ] {
-        let rendered = refusal(ns, "", &format!("{NESTED}{body}"));
-        assert!(rendered.contains(UNRESOLVED), "{ns}: {rendered}");
-    }
-    for (ns, body) in [
         ("a3fy2dottedwritten", "  rule r(?x) :- ?x <=> Outer.Inner.deep()"),
         (
             "a3fy2dottedbracket",

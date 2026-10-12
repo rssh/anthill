@@ -61,6 +61,16 @@ The outer head of a call, rule/fact clause, or constructor is never itself a
 value-expression occurrence. Classification recursively begins at its
 arguments.
 
+A name of more than one segment written with no application reaches the loader
+as the `field_access` chain the converter folds it into (`kernel-language.md`
+§6.7), and is classified where that chain is read. In an operation body the
+chain ladder reads it after a local root, a rule and a const, and before a
+prefix that names a value: a whole name that resolves to a sort is the
+reference its one-segment spelling lowers to (`Loader::try_qualified_sort_ref`),
+so one rule classifies both spellings and an eponymous sort or a free-standing
+entity keeps the reading its bare name has. As an entry of a bracket the
+converter lowered it as a type already.
+
 ## 3. Value-expression occurrence audit
 
 The maintainable rule is grammatical rather than a hand-maintained hint list:
@@ -155,6 +165,11 @@ the term the clause matches, which the loader builds from the written name
 the construction the dot makes is a call. An equation's right-hand side is
 read where it is spliced: typed in an operation body, and left as written
 where the resolver splices it.
+
+A receiver written as a path — `(Outer.Inner).deep()`, `(lib.t.Far).k()` — is
+such a written type in both bodies (`Loader::dotted_sort_name`). Only the
+receiver is read so in a rule body's own term: a path written as an argument
+there stays the chain the clause stores, which §7's last row still asks for.
 
 ## 5. Structural type expressions
 
