@@ -164,6 +164,21 @@ pub(super) enum SeqLiteral {
 }
 
 impl SeqLiteral {
+    /// The surface whose marker `ctor` is — `anthill.reflect.ListLiteral` /
+    /// `SetLiteral` — or `None` for any other constructor. The one reader of that
+    /// question, for the expression that writes the marker and the pattern that takes
+    /// its elements apart.
+    pub(super) fn of_constructor(kb: &KnowledgeBase, ctor: Symbol) -> Option<Self> {
+        let qn = kb.qualified_name_of(ctor);
+        if qn == dt::qualified(dt::LIST_LITERAL) {
+            Some(SeqLiteral::List)
+        } else if qn == dt::qualified(dt::SET_LITERAL) {
+            Some(SeqLiteral::Set)
+        } else {
+            None
+        }
+    }
+
     /// The prelude sort a literal of this surface is typed at.
     pub(super) fn base_name(self) -> &'static str {
         match self {

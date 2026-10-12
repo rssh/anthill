@@ -813,7 +813,7 @@ end
         ),
         (
             "wi80zv8n.q3",
-            "match s\n      case SetLiteral(a, _, _) ->\n        let xs: List = a\n        \
+            "match s\n      case anthill.reflect.SetLiteral(a, _, _) ->\n        let xs: List = a\n        \
              match xs\n          case cons(h, _) -> String.length(h)\n          case nil() -> 0",
             "length.s (op-arg): expected String, got xs.T",
         ),

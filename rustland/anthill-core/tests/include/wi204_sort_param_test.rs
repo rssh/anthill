@@ -144,9 +144,14 @@ end
     // follow the impl's own `open` factory and has to be kept in step by hand —
     // which is exactly what this line is, and why it broke loudly rather than
     // silently (a `wis` of the wrong arity matches no case in the impl's bodies).
+    //
+    // THE CONSTRUCTOR ITSELF, resolved — not a symbol interned from its name, which is a
+    // second symbol the impl's `case wis(…)` does not match: a pattern matches the
+    // constructor it names and nothing that merely ends in the same segment.
     let wis_sym = interp
         .kb_mut()
-        .intern("anthill.todo.store.FileBasedWorkitemStore.wis");
+        .try_resolve_symbol("anthill.todo.store.FileBasedWorkitemStore.WIS.wis")
+        .expect("FileBasedWorkitemStore.WIS.wis is loaded");
     let backend_field = interp.kb_mut().intern("backend");
     // A dummy backend value — won't be used unless retrieve actually
     // fires. For this smoke test, we want dispatch to be the only

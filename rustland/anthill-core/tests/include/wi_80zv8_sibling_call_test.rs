@@ -451,7 +451,9 @@ end
 }
 
 /// `Dflt.dflt() -> T` has no receiver, so only a dictionary can say which provider answers;
-/// `Box.fresh()` builds a box of it. `body` is `Box.swap`'s.
+/// `Box.fresh()` builds a box of it. `body` is `Box.swap`'s. `Dflt.rank` reads a default's
+/// number back where its type is the sort's own `T`: a body may not take a `T` apart by a
+/// provider's constructor.
 fn dflt_program(ns: &str, body: &str) -> String {
     format!(
         r#"
@@ -460,16 +462,19 @@ namespace {ns}
   sort Dflt
     sort T = ?
     operation dflt() -> T
+    operation rank(x: T) -> Int64
   end
   sort A
     entity a(k: Int64)
     provides Dflt[T = A]
     operation dflt() -> A = a(k: 1)
+    operation rank(x: A) -> Int64 = match x case a(k) -> k
   end
   sort B
     entity b(k: Int64)
     provides Dflt[T = B]
     operation dflt() -> B = b(k: 2)
+    operation rank(x: B) -> Int64 = match x case b(k) -> k
   end
   sort Box
     sort T = ?
@@ -498,7 +503,7 @@ fn the_expected_type_places_a_receiverless_sibling_call() {
 
     let unplaced = dflt_program(
         "wi80zv8s.g2",
-        "      match fresh()\n        case box(a(k)) -> k\n        case _ -> 0",
+        "      match fresh()\n        case box(v) -> Dflt[T = T].rank(v)",
     );
     assert_eq!(run_src(&unplaced, "wi80zv8s.g2.go"), Ok(1));
 }

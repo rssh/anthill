@@ -448,31 +448,33 @@ fn constructor_sub_values(
     Some(all)
 }
 
-/// Compare a pattern-side constructor functor against a scrutinee functor.
-/// Scope-aware loading normally resolves both to the same qualified symbol,
-/// so symbol equality is the fast path. The short-name comparison remains as
-/// a fallback for values built host-side whose Symbol carries a different
-/// qualified path than the pattern's. Shared with the eval-side MatchDispatch
-/// pre-filter.
+/// Is the scrutinee built by the pattern's constructor? ONE SYMBOL, never two constructors
+/// that end in the same segment: a case is named among the scrutinee's own constructors by
+/// the typer (`typing::position_constructor`), which stores the constructor it found, so
+/// the pattern that reaches here says which one it is.
+///
+/// A comparison of last segments stood here for every pair, and it matched another sort's
+/// constructor: over `sort A { entity leaf(v: Int64) }` and `sort B { entity leaf(s:
+/// String) }`, `case B.leaf(s) -> String.length(s)` took an `A.leaf(v: 7)` and bound `s`
+/// to the `Int64` (MEASURED).
+///
+/// WHAT IS STILL READ BY ITS NAME is a value whose functor the LOADER LEFT UNRESOLVED — an
+/// atom of the data, which is no constructor of anything: `fact item(c: red, n: 1)` written
+/// where `red` is not imported holds the name `red`, and `case red()` over that field
+/// answered through this comparison (MEASURED: 7, and `match_failed` without it). It is the
+/// name as written, whole — a dotted one names nothing here. Holding a fact's field to the
+/// field's type where it is loaded is what would retire this.
+///
+/// Shared with the eval-side MatchDispatch pre-filter.
 pub(crate) fn functor_matches(
     kb: &crate::kb::KnowledgeBase,
     pattern_sym: Symbol,
     scrutinee_sym: Symbol,
 ) -> bool {
-    if pattern_sym == scrutinee_sym {
-        return true;
-    }
-    let pattern_short = kb
-        .local_name_of(pattern_sym)
-        .rsplit('.')
-        .next()
-        .unwrap_or("");
-    let scrut_short = kb
-        .local_name_of(scrutinee_sym)
-        .rsplit('.')
-        .next()
-        .unwrap_or("");
-    !pattern_short.is_empty() && pattern_short == scrut_short
+    pattern_sym == scrutinee_sym
+        || (!kb.symbols.is_resolved(scrutinee_sym)
+            && crate::kb::typing::short_name_of(kb.qualified_name_of(pattern_sym))
+                == kb.qualified_name_of(scrutinee_sym))
 }
 
 /// Does the scrutinee DENOTE the pattern's literal?

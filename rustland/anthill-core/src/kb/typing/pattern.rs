@@ -243,6 +243,22 @@ pub(super) enum PatternRole {
     /// binder however the surrounding scope spells its constructors. Rewriting one would
     /// turn a total binding into a partial match that fails at run time.
     Binder,
+    /// A lambda's PARAMETER as a whole — a [`PatternRole::Binder`] whose tuple, if it is
+    /// one, is the lambda's binder LIST and no tuple pattern: how many parameters a slot
+    /// takes is the arity check's to say, in its own words (`a scalar `A` has no
+    /// components to spread`), so the list is not held to the slot as a tuple pattern is
+    /// ([`tuple_outside_position`]). What stands inside it is a `Binder`.
+    ParameterList,
+}
+
+impl PatternRole {
+    /// The role of a pattern's sub-patterns.
+    fn within(self) -> Self {
+        match self {
+            PatternRole::MatchArm => PatternRole::MatchArm,
+            PatternRole::Binder | PatternRole::ParameterList => PatternRole::Binder,
+        }
+    }
 }
 
 /// WI-20261001-80ZV8 — WHOSE TYPE IS THREADED INTO A BINDER'S SLOT, which decides what a slot
@@ -517,6 +533,8 @@ pub(super) fn bind_and_label_pattern(
     // WI-819: the binder's own annotation hangs on the pattern OCCURRENCE, not
     // on `Pattern::Var` — so it is read the same way for every variant.
     let type_ann = pattern.pattern_type_ann();
+    let whole = role;
+    let role = whole.within();
     match pat {
         Pattern::Var { name } => {
             // WI-20260827-EJ5F5: A BARE NAME THAT NAMES ONE OF THIS POSITION'S OWN
@@ -721,7 +739,26 @@ pub(super) fn bind_and_label_pattern(
             pos_args,
             named_args,
         } => {
-            let ctor_sym = *name;
+            // WI-20261012-80259: the constructor the written name denotes HERE. A case is
+            // named among the position's own constructors, imported or not, and it is that
+            // constructor's fields the sub-patterns are typed from.
+            let ctor_sym =
+                position_constructor(kb, *name, scrutinee_type.as_ref()).unwrap_or(*name);
+            // WI-20261012-80259: a name that denotes no constructor matches nothing, at
+            // any position; one that does is a constructor the position can hold, or the
+            // pattern is refused. The position is asked as its type reached here, before
+            // what it leaves open is closed below: an open slot is not a type to be
+            // outside of.
+            if kb.sort_of_constructor(ctor_sym).is_none() {
+                errors.push(TypeError::NoConstructor {
+                    span: Some(pattern.span.span),
+                    name: ctor_sym,
+                });
+            } else if let Some(position) = scrutinee_type.as_ref() {
+                if let Some(err) = constructor_outside_position(kb, ctor_sym, position, pattern) {
+                    errors.push(err);
+                }
+            }
             // WI-20261001-80ZV8: a scrutinee taken apart is a value read, and what its type
             // leaves open is one unknown for every binder below ([`closed_where_named`]) —
             // left open, a binder over `v: T` took the sort's own declaration variable.
@@ -864,7 +901,30 @@ pub(super) fn bind_and_label_pattern(
             // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
             // is carried across by the reassembler, since binding rewrites
             // sub-patterns and never the annotation.
-            crate::kb::node_occurrence::reassemble_pattern_subpatterns(pattern, &rebuilt)
+            if ctor_sym == *name {
+                crate::kb::node_occurrence::reassemble_pattern_subpatterns(pattern, &rebuilt)
+            } else {
+                // The name was read at the position, and the stored pattern says which
+                // constructor that was: what runs matches the one that was typed.
+                let mut rebuilt = rebuilt.into_iter();
+                let pos_args: Vec<Rc<NodeOccurrence>> =
+                    rebuilt.by_ref().take(pos_args.len()).collect();
+                let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+                    .iter()
+                    .map(|(field, _)| *field)
+                    .zip(rebuilt)
+                    .collect();
+                NodeOccurrence::new_pattern_annotated(
+                    Pattern::Constructor {
+                        name: ctor_sym,
+                        pos_args,
+                        named_args,
+                    },
+                    type_ann.map(Rc::clone),
+                    pattern.span,
+                    pattern.owner,
+                )
+            }
         }
         Pattern::Tuple {
             positional,
@@ -880,6 +940,16 @@ pub(super) fn bind_and_label_pattern(
             // is typed FROM, and recording them on the pattern is what lets the
             // matcher fetch that same component at run time instead of trusting
             // slot `i` of whatever value arrives — the WI-788 disagreement.
+            // WI-20261012-80259: a tuple pattern matches a tuple and nothing else, so it is
+            // held to its position as a literal and a constructor are.
+            if let Some(position) = scrutinee_type
+                .as_ref()
+                .filter(|_| whole != PatternRole::ParameterList)
+            {
+                if let Some(err) = tuple_outside_position(kb, positional.len(), position, pattern) {
+                    errors.push(err);
+                }
+            }
             let fields: Option<Vec<(Symbol, Value)>> = scrutinee_type
                 .as_ref()
                 .and_then(|t| named_tuple_field_pairs(kb, t));
@@ -944,7 +1014,7 @@ pub(super) fn bind_and_label_pattern(
                     )
                 } else {
                     let mut misaligned = Vec::new();
-                    bind_and_label_pattern(
+                    let bound_sub = bind_and_label_pattern(
                         kb,
                         env,
                         sub_pat,
@@ -954,7 +1024,16 @@ pub(super) fn bind_and_label_pattern(
                         repointed,
                         child_unpinned,
                         &mut misaligned,
-                    )
+                    );
+                    // WI-20261012-80259: what is dropped is what was judged against a
+                    // component the binder does not sit at. A name that denotes no
+                    // constructor says nothing of the component, and is kept.
+                    errors.extend(
+                        misaligned
+                            .into_iter()
+                            .filter(|e| matches!(e, TypeError::NoConstructor { .. })),
+                    );
+                    bound_sub
                 });
             }
             // WI-803: the LABELS, recorded only when there is one component per
@@ -1002,9 +1081,271 @@ pub(super) fn bind_and_label_pattern(
                 )
             }
         }
-        // wildcard, literal_pattern — no bindings
-        Pattern::Wildcard | Pattern::Literal { .. } => Rc::clone(pattern),
+        // A literal binds nothing, and is held to its position (WI-20261012-80259).
+        Pattern::Literal { value } => {
+            if let Some(position) = scrutinee_type.as_ref() {
+                let written = literal_sort(kb, value);
+                if let Some(err) = pattern_outside_position(
+                    kb,
+                    WrittenPattern::Literal,
+                    Some(&written),
+                    |_| written.clone(),
+                    position,
+                    pattern,
+                ) {
+                    errors.push(err);
+                }
+            }
+            Rc::clone(pattern)
+        }
+        // wildcard — no bindings, and it matches at every position
+        Pattern::Wildcard => Rc::clone(pattern),
     }
+}
+
+/// WI-20261012-80259 — an applied constructor written where the position holds no value it
+/// builds: [`pattern_outside_position`] for `ctor`.
+///
+/// THE VALUE A CONSTRUCTOR PATTERN MATCHES IS THE ENTITY'S, which the subtype relation
+/// already reads as its sort's (`sort_sym_compatible`'s entity leg) — so a position typed
+/// at the sort, at the entity itself, or at anything the sort provides admits it, and the
+/// refusal names the SORT, which is what the author compares with the position.
+///
+/// `ctor` is the constructor the written name denotes at the position
+/// ([`position_constructor`]).
+fn constructor_outside_position(
+    kb: &mut KnowledgeBase,
+    ctor: Symbol,
+    position: &Value,
+    pattern: &NodeOccurrence,
+) -> Option<TypeError> {
+    let (written, shown) = match constructor_pattern_sort(kb, ctor)? {
+        ConstructedSort::Collection(collection) => (collection.clone(), collection),
+        ConstructedSort::Of(sort) => (
+            Value::term(kb.make_sort_ref(ctor)),
+            Value::term(kb.make_sort_ref(sort)),
+        ),
+    };
+    pattern_outside_position(
+        kb,
+        WrittenPattern::Constructor(ctor),
+        Some(&written),
+        |_| shown,
+        position,
+        pattern,
+    )
+}
+
+/// WI-20261012-80259 — a tuple pattern written where no tuple can stand:
+/// [`pattern_outside_position`] for a pattern of `arity` components. `case (x, y)` over a
+/// `Box` loaded, and the arm never matched.
+///
+/// The empty pattern `()` is `Unit`'s one value. Any other is a tuple of that many
+/// components of types nothing says here, which a tuple-typed position admits whatever
+/// its own count — a count that differs is the match's to refuse, at run time — and no
+/// sort does. Its type is built only to be printed in a refusal.
+fn tuple_outside_position(
+    kb: &mut KnowledgeBase,
+    arity: usize,
+    position: &Value,
+    pattern: &NodeOccurrence,
+) -> Option<TypeError> {
+    if arity == 0 {
+        let unit = Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit"));
+        return pattern_outside_position(
+            kb,
+            WrittenPattern::Tuple,
+            Some(&unit),
+            |_| unit.clone(),
+            position,
+            pattern,
+        );
+    }
+    let shown = |kb: &mut KnowledgeBase| {
+        let unsaid = kb.intern("?_");
+        let fields: Vec<(Symbol, TermId)> = (0..arity)
+            .map(|i| {
+                let label = kb.intern(&crate::intern::positional_label(i));
+                (label, kb.make_type_var(unsaid))
+            })
+            .collect();
+        Value::term(kb.make_named_tuple_type(&fields))
+    };
+    pattern_outside_position(kb, WrittenPattern::Tuple, None, shown, position, pattern)
+}
+
+/// WI-20261012-80259 — the constructor an applied pattern's name denotes at a position,
+/// where the scope resolved the name to NO constructor: the position's own of that name,
+/// or `None`.
+///
+/// A CASE IS NAMED AMONG THE SCRUTINEE'S OWN CONSTRUCTORS, so it needs no import
+/// (kernel-language, "Constructor patterns resolve against the scrutinee"): over `x: X`,
+/// `case e1(v)` is `X.e1`. The loader leaves such a name unresolved, and the arm ran only
+/// because the matcher compared last segments — on sub-patterns typed from no declaration
+/// at all: `case pair(x, y) -> String.length(x)` over a pair of `Int64` loaded (MEASURED).
+/// A position typed at an ENTITY has that entity for its one constructor.
+///
+/// A LOOKUP AMONG ONE SORT'S CONSTRUCTORS, not a comparison of two: a name the scope did
+/// resolve to a constructor is that constructor — `case B.leaf(v)` over an `A` is `B`'s
+/// and is refused — and a name that is no case of the position's sort is not found here.
+/// `SetLiteral` is no case of `Set`: it is written `anthill.reflect.SetLiteral`.
+///
+/// THE NAME AS WRITTEN, whole: an unresolved name with a qualifier names nothing —
+/// `case Bogus.e1(v)` was read as `X.e1` by its last segment (MEASURED, review). A name
+/// the scope resolved to something that is NO constructor — an operation called `e1` in
+/// scope — does not hide the case, and is looked up by the name it has; that one is no
+/// longer known to have been written with a qualifier or without, so `case H.e1(v)` over
+/// an operation `H.e1` is still read as the case (MEASURED, as before this change): a
+/// pattern does not carry how its name was written.
+fn position_constructor(
+    kb: &mut KnowledgeBase,
+    written: Symbol,
+    position: Option<&Value>,
+) -> Option<Symbol> {
+    if kb.sort_of_constructor(written).is_some() {
+        return None;
+    }
+    if !kb.symbols.is_resolved(written) && kb.qualified_name_of(written).contains('.') {
+        return None;
+    }
+    let position = dealiased(kb, position?);
+    let head = sort_functor_of_view(kb, &position)?;
+    let mut own = sort_constructor_syms(kb, head);
+    if own.is_empty() && kb.sort_of_constructor(head).is_some() {
+        own.push(head);
+    }
+    resolve_pattern_ctor(kb, written, &own)
+}
+
+/// What an applied constructor pattern's values are, for [`constructor_pattern_sort`].
+enum ConstructedSort {
+    /// The sort the constructor belongs to — itself, for a free-standing entity.
+    Of(Symbol),
+    /// The collection a `[…]` / `{…}` marker builds, as a type.
+    Collection(Value),
+}
+
+/// The sort of the values an applied constructor pattern matches; `None` for a tuple's
+/// marker, whose values have a tuple type and no sort — what a tuple pattern owes its
+/// position is the tuple arm's.
+///
+/// A `[…]` / `{…}` marker stands for the collection it builds, as the literal does in an
+/// expression: `case anthill.reflect.SetLiteral(a, _, _)` over a `Set` is how a set's
+/// elements are taken apart.
+fn constructor_pattern_sort(kb: &mut KnowledgeBase, ctor: Symbol) -> Option<ConstructedSort> {
+    if kb.qualified_name_of(ctor) == dt::qualified(dt::TUPLE_LITERAL) {
+        return None;
+    }
+    Some(match SeqLiteral::of_constructor(kb, ctor) {
+        Some(kind) => {
+            ConstructedSort::Collection(Value::term(kb.make_sort_ref_by_name(kind.base_name())))
+        }
+        None => ConstructedSort::Of(kb.sort_of_constructor(ctor).unwrap_or(ctor)),
+    })
+}
+
+/// WI-20261012-80259 — THE TYPE A PATTERN STATES BY ITSELF: a literal's sort, the sort of
+/// an applied constructor. `None` for a pattern that states none — a binder, a wildcard,
+/// a tuple — and for a constructor whose sort has parameters.
+///
+/// Read where a lambda's parameter has no annotation and no expected arrow to take its
+/// type from: `lambda circle(r) -> r` is a function of a `Shape`, as `lambda (s: Shape) ->
+/// …` is, so applying it to a `Box` is refused at the call. Given the inference variable
+/// every other unannotated parameter gets, the argument bound it and the program died
+/// `match_failed`.
+///
+/// A PARAMETRIC SORT IS LEFT TO THE VARIABLE. `lambda some(x) -> x` states `Option` and
+/// not its element, and the bare sort here is a DECLARED type ([`BinderOf::Declaration`]):
+/// `x` is then an element nothing can name, where under the variable the argument says
+/// it. MEASURED on the first cut: `let g = lambda some(x) -> x` then `g(o)` over an
+/// `Option[T = Int64]`, returned as an `Int64`, was refused "expected Int64, got ?T".
+/// Stating the sort at inference variables of its own is what would close it; until then
+/// such a lambda applied to another sort's value still fails at the match.
+pub(super) fn pattern_own_type(kb: &mut KnowledgeBase, pattern: &NodeOccurrence) -> Option<Value> {
+    match pattern.as_pattern()? {
+        Pattern::Literal { value } => Some(literal_sort(kb, value)),
+        // A name that is no constructor states nothing, and is refused where it is bound.
+        Pattern::Constructor { name, .. } if kb.sort_of_constructor(*name).is_none() => None,
+        Pattern::Constructor { name, .. } => match constructor_pattern_sort(kb, *name)? {
+            ConstructedSort::Of(sort) if kb.type_param_syms_of(sort).is_empty() => {
+                Some(Value::term(kb.make_sort_ref(sort)))
+            }
+            ConstructedSort::Of(_) | ConstructedSort::Collection(_) => None,
+        },
+        Pattern::Var { .. } | Pattern::Wildcard | Pattern::Tuple { .. } => None,
+    }
+}
+
+/// WI-20261012-80259 — A PATTERN IS TYPED AT ITS POSITION: a literal, an applied
+/// constructor or a tuple written where no value it could match can stand is an error, at any depth
+/// and in every role (`match` arm, `let`, lambda parameter). `Some(error)` when the
+/// position's type decides against it, `None` when it admits the pattern or cannot be
+/// asked.
+///
+/// The arm of such a pattern never matched, and nothing said so: `case 0` over a `Box`
+/// and `case circle(r)` over a `Box` loaded, the second with `r` typed from `circle`'s own
+/// field so that its body checked; in a `let` or a lambda parameter, where a pattern may
+/// not fail, the program loaded and died `match_failed`.
+///
+/// THE QUESTION IS THE ONE AN EXPRESSION IS ASKED: would a value of the pattern's sort be
+/// admitted here. So a position typed at a sort admits its own constructors and those of
+/// every sort it is provided by — `case cons(h, t)` over a `Stream` — and a literal of the
+/// position's type. It is asked of the position's SORT, its arguments left out: what an
+/// argument says is said to the sub-pattern that field is threaded to, by this same check.
+///
+/// WHICH POSITIONS CAN BE ASKED. One whose type has a sort at its head; a tuple type, which
+/// holds tuples and no literal or constructed value; the bottom type and an arrow, which
+/// hold none of the three; and a RIGID — a type parameter of the enclosing operation or
+/// sort, a slot a declared type leaves open, a projection off either — which inside a body
+/// is a type equal to nothing but itself (kernel-language §8.1), so it holds none of the
+/// three either: `f[T](x: T) = match x case 0 -> …` is refused as `if x then …` is.
+///
+/// A position whose type is STILL TO BE INFERRED is not judged — an unannotated binder's
+/// variable, the inert form of a type nothing can name — and neither is any other head:
+/// there the test stays a run-time one.
+fn pattern_outside_position(
+    kb: &mut KnowledgeBase,
+    pattern: WrittenPattern,
+    // The sort the pattern's values have, asked of a position typed at a sort; `None` for
+    // a pattern whose values have none — a tuple of components.
+    written: Option<&Value>,
+    // What the refusal prints for the pattern, built only for one.
+    shown: impl FnOnce(&mut KnowledgeBase) -> Value,
+    position: &Value,
+    at: &NodeOccurrence,
+) -> Option<TypeError> {
+    let position = dealiased(kb, position);
+    let admitted = match type_head(kb, &position) {
+        TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => {
+            written.is_some_and(|written| {
+                let sort = Value::term(kb.make_sort_ref(sort));
+                types_compatible(kb, &mut Substitution::new(), written, &sort)
+            })
+        }
+        TypeHead::NamedTuple => pattern == WrittenPattern::Tuple,
+        TypeHead::Nothing | TypeHead::Arrow => false,
+        // A rigid: a type that is no literal's, no constructor's and no tuple's.
+        TypeHead::Skolem(_) | TypeHead::RigidProjection | TypeHead::ExprCarried => false,
+        TypeHead::TypeVar(_)
+        | TypeHead::FlexVar(_)
+        | TypeHead::PolyType
+        | TypeHead::Denoted
+        | TypeHead::EffectsRows
+        | TypeHead::Error => return None,
+    };
+    if admitted {
+        return None;
+    }
+    let actual = shown(kb);
+    Some(TypeError::TypeMismatch {
+        site: TypeError::here(),
+        span: Some(at.span.span),
+        context: TypeErrorContext::PatternPosition { pattern },
+        expected: position,
+        // Two types: the position's and the sort of what the pattern matches.
+        denoted: None,
+        actual,
+    })
 }
 
 /// WI-794: does a binder's WRITTEN `: Type` annotation contradict the type the context
