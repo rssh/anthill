@@ -9,10 +9,11 @@ use smallvec::SmallVec;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::BodiedRulePolicy;
+use anthill_core::kb::load::{requires_clauses_of, RequiresClause};
 use anthill_core::kb::proof_verify::{set_proof_result, VerdictWrite};
 use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::typing::get_named_arg;
-use anthill_core::kb::{KnowledgeBase, RuleId};
+use anthill_core::kb::{KnowledgeBase, RuleId, SpecLaw};
 use anthill_smt_gen::cache::{
     self, blob_subdir, build_key, hash_content, lookup, proof_subdir, resolve_cache_root,
     state_hash, store_blob, store_entry, store_witness, witness_subdir, CacheEntry, KeyInputs,
@@ -138,6 +139,9 @@ pub(crate) fn discharge_loaded_kb(
     // within-invocation chains work even under --no-cache.
     let mut discharged_this_run: std::collections::HashMap<String, DischargeKind> =
         std::collections::HashMap::new();
+    // WI-20261011-BVG8M: the requirements whose laws this run has said a proof is not
+    // given — each is said once, however many queries are under it.
+    let mut requirements_told = RequirementsTold::new();
     // WI-558: in-KB result write-backs (RuleId-exact), collected here and
     // applied after the dispatch loop so a retract/re-assert can't perturb
     // in-loop cite resolution (which reads other ProofRecord facts).
@@ -150,7 +154,14 @@ pub(crate) fn discharge_loaded_kb(
             }
         }
         total += 1;
-        let outcome = dispatch(kb, rec, args, &mut stats, &mut discharged_this_run);
+        let outcome = dispatch(
+            kb,
+            rec,
+            args,
+            &mut stats,
+            &mut discharged_this_run,
+            &mut requirements_told,
+        );
         let witness = outcome.witness.clone();
         // WI-558: stash the in-KB result flip for this verdict, keyed on the
         // source record's RuleId (applied below). Encode the witness term now,
@@ -645,9 +656,17 @@ fn dispatch(
     args: &ProveArgs,
     stats: &mut CacheStats,
     discharged_this_run: &mut std::collections::HashMap<String, DischargeKind>,
+    requirements_told: &mut RequirementsTold,
 ) -> DispatchOutcome {
     if rec.structured {
-        return dispatch_structured(kb, rec, args, stats, discharged_this_run);
+        return dispatch_structured(
+            kb,
+            rec,
+            args,
+            stats,
+            discharged_this_run,
+            requirements_told,
+        );
     }
     let (tool, tool_args) = match &rec.strategy {
         Strategy::Open => {
@@ -667,6 +686,7 @@ fn dispatch(
             args,
             stats,
             discharged_this_run,
+            requirements_told,
         ),
         "test" => DispatchOutcome::no_witness(Verdict::Skipped("`by test` not yet wired".into())),
         "derivation" => dispatch_derivation(kb, &rec.rule, tool_args),
@@ -1087,6 +1107,7 @@ fn dispatch_structured(
     args: &ProveArgs,
     stats: &mut CacheStats,
     discharged_this_run: &mut std::collections::HashMap<String, DischargeKind>,
+    requirements_told: &mut RequirementsTold,
 ) -> DispatchOutcome {
     let syms = ProofSyms::new(kb);
     // Re-fetch the parent ProofRecord's body term — `rec` doesn't
@@ -1139,7 +1160,14 @@ fn dispatch_structured(
             structured: false,
             abstract_body: false,
         };
-        let outcome = dispatch(kb, &step_rec, args, stats, discharged_this_run);
+        let outcome = dispatch(
+            kb,
+            &step_rec,
+            args,
+            stats,
+            discharged_this_run,
+            requirements_told,
+        );
         visited_rules.extend(outcome.visited_rules);
         match outcome.verdict {
             Verdict::Proved => {
@@ -1194,7 +1222,14 @@ fn dispatch_structured(
         // lifts already constrain the relevant variables.
         abstract_body: true,
     };
-    let final_outcome = dispatch(kb, &parent_rec, args, stats, discharged_this_run);
+    let final_outcome = dispatch(
+        kb,
+        &parent_rec,
+        args,
+        stats,
+        discharged_this_run,
+        requirements_told,
+    );
     visited_rules.extend(final_outcome.visited_rules);
     match final_outcome.verdict {
         Verdict::Proved => {
@@ -1328,6 +1363,7 @@ fn dispatch_z3(
     cli: &ProveArgs,
     stats: &mut CacheStats,
     discharged_this_run: &std::collections::HashMap<String, DischargeKind>,
+    requirements_told: &mut RequirementsTold,
 ) -> DispatchOutcome {
     let mut config = ProofConfig::default();
     config.abstract_body = abstract_body;
@@ -1339,19 +1375,19 @@ fn dispatch_z3(
     // ProofConfig (no tactic, no outcome flags) — we only need the
     // body assertions, not the discharge envelope. The cited rule's
     // own body assertions become AND-ed conjuncts.
-    // Phase γ.4: combine the user-stated `using` list with implicit
-    // citations from the rule's enclosing scope chain. Each parent
-    // scope contributes its auto-registered `<scope>.requires.<SE>`
-    // ProofRecords (α.6). Explicit cites come first; implicit ones
-    // appended in order, deduped against the explicit set.
-    let implicit = implicit_cites_for(rule_qn, kb);
+    // Phase γ.4: what the proof is handed without naming it, from the rule's enclosing
+    // scope chain. The REQUIREMENTS of each scope are not rules, so they are not in
+    // the list of cited rules below: each lowers to the laws of the spec it requires,
+    // and which of those a proof is not given is said (`tell_laws_left_out`,
+    // WI-20261011-BVG8M).
+    match implicit_cites_for(rule_qn, kb) {
+        Ok(requirements) => tell_laws_left_out(kb, &requirements, requirements_told),
+        Err(msg) => return DispatchOutcome::no_witness(Verdict::EmitError(msg)),
+    }
+    // The cited RULES: the user-stated `using` list first, then the `@[hint]` rules of
+    // the enclosing scopes, deduped against it.
     let hints = hint_cites_for(rule_qn, kb);
     let mut effective: Vec<String> = using.iter().cloned().collect();
-    for qn in implicit {
-        if !effective.contains(&qn) {
-            effective.push(qn);
-        }
-    }
     for qn in hints {
         if !effective.contains(&qn) {
             effective.push(qn);
@@ -1684,11 +1720,6 @@ fn witness_tid_named<'a>(
     }
 }
 
-/// Phase γ.4: walk a rule's enclosing-scope chain and collect every
-/// auto-registered `<scope-qn>.requires.<SE>` ProofRecord as an
-/// implicit citation. For rule `a.b.c.rule_name`, the parent scopes
-/// `a.b.c`, `a.b`, `a` are each scanned. Records are returned in
-/// outer-to-inner order (innermost scope's requires last).
 /// WI-139 @[hint] semantics: walk the KB for rules whose meta carries
 /// the `hint` flag and whose head-functor QN sits in `rule_qn`'s
 /// enclosing scope chain. Each such rule is implicitly cited so its
@@ -1757,92 +1788,159 @@ fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
     out
 }
 
-fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
-    let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
+/// Which requirements a run has said its piece about, as `(scope, <SE>)`.
+type RequirementsTold = BTreeSet<(String, String)>;
+
+/// Phase γ.4: the `requires` clauses of a rule's enclosing scopes — what its proof is
+/// handed without naming it. For rule `a.b.c.rule_name` the scopes `a`, `a.b`, `a.b.c`
+/// are read, and the clauses returned outer to inner (the innermost scope's last).
+///
+/// READ OFF THE DECLARATIONS, by the scope each clause is OF
+/// (`load::requires_clauses_of`, WI-20261011-BVG8M). A requirement's record is a scope
+/// axiom: it holds because the declaration has the clause, so the clause is what a
+/// proof is handed — and it says which sort the required spec is of, which a record
+/// carries only as text. Two readers stood here before. The first cut a record's NAME
+/// at `<scope>.requires.` and left out a remainder with a `.` in it, which was every
+/// name once a name held a spec's qualified text. The second read each record's
+/// WITNESS for its scope (WI-20261011-S8CYD) — and then the laws had to be found by
+/// looking for the clause again by the text the witness has, with a record that
+/// matched none as a state to refuse.
+///
+/// `Err` when the relation cannot be read: a proof is not run as if its scopes
+/// required nothing.
+fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Result<Vec<RequiresClause>, String> {
     let parts: Vec<&str> = rule_qn.split('.').collect();
-    if parts.len() < 2 {
-        return Vec::new();
-    }
+    let scopes: Vec<String> = (1..parts.len()).map(|end| parts[..end].join(".")).collect();
+    let scope_names: Vec<&str> = scopes.iter().map(String::as_str).collect();
+    let mut clauses = requires_clauses_of(kb, &scope_names).map_err(|e| {
+        format!("the requirements of the scopes `{rule_qn}` is in could not be read: {e}")
+    })?;
+    // Outer to inner — "closest scope last" — and a scope's own clauses in the order
+    // the relation has them: the sort is stable.
+    clauses.sort_by_key(|clause| scopes.iter().position(|scope| *scope == clause.scope_qn));
+    Ok(clauses)
+}
 
-    // Snapshot once, so the inner loop is cheap: every record that is the scope axiom of
-    // a `requires` clause, as the scope it is of and its name.
-    //
-    // READ OFF THE WITNESS, not cut out of the name (WI-20261011-S8CYD). This took the
-    // names under `<scope>.requires.` whose remainder held no `.`, which was the rule for
-    // "a clause of this scope and not of one nested in it" while the remainder was a
-    // flattening of short names; it is the spec's qualified text now, with a `.` in every
-    // one. The witness says the scope outright (`ScopeAxiom.scope_qn`) and what the
-    // record is of it (`aspect`), so a name is never taken apart — and a scope whose own
-    // name has a `requires` segment in it is told from a clause.
-    // WI-806: read through the accessor — a bodied ProofRecord rule is surfaced
-    // loudly (empty snapshot) rather than silently head-matched, and a value-fact
-    // head is a loud skip, not the old `rule_head` value-head panic.
-    let mut requires_axioms: Vec<(String, String)> = Vec::new();
-    let records = match kb.read_facts(record_sym, &[], BodiedRulePolicy::Refuse) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Vec::new();
-        }
-    };
-    for row in records {
-        let Value::Term { id: head, .. } = row else {
-            eprintln!("warning: skipping a ProofRecord fact with a non-term head");
-            continue;
-        };
-        let named = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
-        let Some(witness) = get_named_arg(kb, named, "witness") else {
-            continue;
-        };
-        let Term::Fn {
-            functor,
-            named_args: witness_named,
-            ..
-        } = kb.get_term(witness)
-        else {
-            continue;
-        };
-        if kb.qualified_name_of(*functor) != "anthill.realization.witness.ProofWitness.ScopeAxiom" {
+/// WI-20261011-BVG8M — WHAT A PROOF IS HANDED FOR THE REQUIREMENTS OF ITS ENCLOSING
+/// SCOPES: no hypothesis yet, and a line that names the laws it is not given.
+///
+/// A requirement's record states the conjunction of the required spec's LAWS at the
+/// clause's bindings (proposal 030, "Per-clause registration"), so that is what a
+/// requirement lowers to (`KnowledgeBase::spec_laws` says what a law is). It was
+/// lowered as a cited rule is — by lifting the RULE of the record's name — and a record
+/// is no rule: every `by z3` proof in a scope that has a `requires` was refused, "rule
+/// '…' not found", for standing there, whether its goal needed a law or not. And 31 of
+/// the standard library's 42 requirements are of a spec that HAS no law.
+///
+/// NO LAW IS LOWERED YET (proposal 030 γ.4 has what is decided and not built: a law's
+/// head is an equation, a shape the lift does not read; most laws name an operation
+/// that has no SMT form; and the spec's parameter is abstract, where every operand the
+/// emitter writes is a `Real`). So a law is LEFT OUT AND SAID: the proof runs without
+/// it, and stderr names it. Leaving a hypothesis out is the safe direction — the
+/// assumptions are conjoined with the negated goal and `unsat` means proved, so a
+/// missing one can only lose an `unsat`. A requirement of a spec with no law lowers to
+/// nothing, and says nothing.
+///
+/// WHAT THAT DOES NOT SAY: that a verdict under a requirement is about the abstract
+/// carrier. It is about the reals, as every verdict of this emitter is — `eq` is `=`
+/// and `gte` is `>=` whatever a variable ranges over — so `gte(?a, ?a)` proves under
+/// `requires PartialOrd[T = T]`, as it does in a scope that requires nothing
+/// (/code-review, reproduced). The refusal this removes kept such a proof from running
+/// by accident; what answers it is the carrier as a sort of its own, with the law.
+///
+/// SAID ONCE A RUN FOR EACH REQUIREMENT, not once a query: a structured proof is a
+/// query for each step and one for its conclusion, and every proof of a scope is under
+/// the scope's requirements.
+fn tell_laws_left_out(
+    kb: &KnowledgeBase,
+    requirements: &[RequiresClause],
+    told: &mut RequirementsTold,
+) {
+    for clause in requirements {
+        let laws = kb.spec_laws(clause.spec);
+        if laws.is_empty() {
             continue;
         }
-        let (Some(rule), Some(scope_qn), Some(aspect)) = (
-            lookup_string(kb, named, "rule"),
-            lookup_string(kb, witness_named, "scope_qn"),
-            lookup_string(kb, witness_named, "aspect"),
-        ) else {
-            // Said, not dropped: a scope axiom this cannot read would otherwise leave a
-            // proof's cites without a word. `anthill check` refuses the record itself.
-            eprintln!(
-                "warning: skipping a ScopeAxiom ProofRecord whose `rule`, `scope_qn` or \
-                 `aspect` is not a string — it is no implicit citation of `{rule_qn}`"
-            );
+        if !told.insert((clause.scope_qn.clone(), clause.spec_text.clone())) {
             continue;
-        };
-        if aspect.starts_with("requires.") {
-            requires_axioms.push((scope_qn, rule));
         }
-    }
-
-    let mut out = Vec::new();
-    // Walk outer-to-inner so the innermost scope's requires come
-    // last in `effective_using` — matches the user's mental model
-    // of "closest scope wins" if there's any duplication.
-    for end in 1..parts.len() {
-        let scope_qn = parts[..end].join(".");
-        out.extend(
-            requires_axioms
-                .iter()
-                .filter(|(scope, _)| *scope == scope_qn)
-                .map(|(_, rule)| rule.clone()),
+        eprintln!(
+            "warning: `{}` requires `{}`, and a spec's law is not lowered to SMT yet — a \
+             `by z3` proof under it runs without {}: {}",
+            clause.scope_qn,
+            clause.spec_text,
+            if laws.len() == 1 {
+                "its law".to_owned()
+            } else {
+                format!("its {} laws", laws.len())
+            },
+            law_names(kb, &laws)
         );
     }
-    out
+}
+
+/// The laws of one spec as the warning lists them, every clause accounted for: one
+/// that can be cited by its name — the label it was written with, or the predicate a
+/// rule with no label is of, as `using` cites either — and the rest by kind and count.
+/// An equation written without a label has no name; neither has a `constraint`, whose
+/// name is a declaration's and is not on the stored clause. A name that several
+/// clauses go by (a rule written with several heads is a clause a head) says how many.
+fn law_names(kb: &KnowledgeBase, laws: &[SpecLaw]) -> String {
+    let head_functor = |law: &SpecLaw| match &law.clause.head {
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => Some(*functor),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut named: Vec<(Symbol, usize)> = Vec::new();
+    let (mut equations, mut constraints, mut others) = (0usize, 0usize, 0usize);
+    for law in laws {
+        let name = match law.label {
+            Some(label) => Some(label),
+            None if law.clause.clause_kind == ClauseKind::Constraint => {
+                constraints += 1;
+                None
+            }
+            None if law.is_equation => {
+                equations += 1;
+                None
+            }
+            None => {
+                let functor = head_functor(law);
+                if functor.is_none() {
+                    others += 1;
+                }
+                functor
+            }
+        };
+        if let Some(name) = name {
+            match named.iter_mut().find(|(seen, _)| *seen == name) {
+                Some((_, clauses)) => *clauses += 1,
+                None => named.push((name, 1)),
+            }
+        }
+    }
+    let counted = |n: usize, one: &str, many: &str| match n {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        n => Some(format!("{n} {many}")),
+    };
+    named
+        .into_iter()
+        .map(|(name, clauses)| {
+            let qn = kb.qualified_name_of(name);
+            if clauses == 1 {
+                qn.to_owned()
+            } else {
+                format!("{qn} ({clauses} clauses)")
+            }
+        })
+        .chain(counted(equations, "unlabelled equation", "unlabelled equations"))
+        .chain(counted(constraints, "constraint", "constraints"))
+        .chain(counted(others, "other clause", "other clauses"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The "discharged elsewhere" check `cite_status` falls back to for
@@ -2617,19 +2715,19 @@ fn indent(s: &str, prefix: &str) -> String {
         .join("\n")
 }
 
-// WI-20261011-S8CYD — the laws a proof may cite without naming them are the scope
-// axioms of the `requires` clauses of its enclosing scopes, found by each record's
-// WITNESS. They were found by cutting a record's name at `<scope>.requires.` and leaving
-// out a remainder with a `.` in it; a name's remainder is a spec's qualified text now.
+// WI-20261011-S8CYD, WI-20261011-BVG8M — what a proof is handed without naming it is
+// the `requires` clauses of its enclosing scopes. They were found by cutting a record's
+// name at `<scope>.requires.` and leaving out a remainder with a `.` in it; then by
+// each record's witness (S8CYD); and are read off the declarations now, by the scope
+// each clause is of (BVG8M). The first row holds WHICH clauses a rule is handed, and
+// names each by the name its record goes by.
 //
-// THE ROW HOLDS THE READER AND NOT THE CITATION. What `implicit_cites_for` returns is
-// lowered by lifting the RULE of each name (`render_cited_lemmas`), and a requirement's
-// record is no rule: a `by z3` proof in a scope that has a `requires` is refused, "cite
-// … could not be lowered under its translation policy: rule '…' not found" — before
-// this change and after it (docs/measurements/test-infrastructure/
-// proof-record-names-2026-10-11.txt §8 (a)). So the row says WHICH records a proof is
-// handed, by name, and nothing says a proof goes through with them; when the lowering
-// of a requirement is built (WI-20261011-BVG8M), the row for that drives a proof.
+// AND A PROOF GOES THROUGH WITH THEM (BVG8M). Until then none did: each was lowered by
+// lifting the RULE of its record's name, a requirement's record is no rule, and a
+// `by z3` proof in a scope that has a `requires` was refused — "cite … could not be
+// lowered under its translation policy: rule '…' not found"
+// (docs/measurements/test-infrastructure/requirement-cites-2026-10-12.txt §1). The
+// second row DRIVES a proof under a requirement, as far as the document it emits.
 /// Load the embedded stdlib plus a single user source written to a temp file
 /// (`load_kb_with_stdlib` requires ≥1 user path) — for the unit rows of this file.
 #[cfg(test)]
@@ -2673,10 +2771,15 @@ mod s8cyd_implicit_cite_tests {
         end
     "#;
 
-    /// BACKED OUT (the names cut at `.requires.`, a remainder with a `.` left out): FAILS
-    /// — no cite at all, every remainder being a qualified name. And with the names cut
-    /// and the remainder NOT tested, the rule under `Outer` FAILS on the clause of
+    /// S8CYD's back-outs, of the reader that read record NAMES: with the names cut at
+    /// `.requires.` and a remainder with a `.` left out, no cite at all; with the
+    /// remainder not tested, the rule under `Outer` was handed the clause of
     /// `t.s8cyd.Outer.requires.Held`, which is no clause of `Outer`.
+    /// BVG8M's, of the reader that reads CLAUSES: with the scope not asked
+    /// (`requires_clauses_of` handing every clause of the KB), FAILS — a rule is handed
+    /// the library's forty-two; with the clauses REVERSED, FAILS; with them left in the
+    /// relation's order, PASSES by design — the relation has `Outer`'s before
+    /// `Inner`'s here, as the source does. The next row is the one that order fails.
     #[test]
     fn a_rule_cites_the_requirements_of_its_enclosing_scopes_and_no_others() {
         let kb = load_with_source("implicit", SRC);
@@ -2686,21 +2789,214 @@ mod s8cyd_implicit_cite_tests {
         let held = "t.s8cyd.Outer.requires.Held.requires.anthill.prelude.Eq[T = \
                     t.s8cyd.Outer.requires.Held.W]";
 
+        // A clause, by the name its record goes by: `<scope>.requires.<SE>`.
+        let names = |rule: &str| -> Vec<String> {
+            implicit_cites_for(rule, &kb)
+                .expect("the requirements are read")
+                .into_iter()
+                .map(|clause| format!("{}.requires.{}", clause.scope_qn, clause.spec_text))
+                .collect()
+        };
+
         // A rule of `Outer`: `Outer`'s two clauses, and neither the nested sort's nor
         // the clause of the sort that merely sits under a `requires` segment.
-        assert_eq!(implicit_cites_for("t.s8cyd.Outer.some_rule", &kb), vec![eq_t, partial_eq_u]);
+        assert_eq!(names("t.s8cyd.Outer.some_rule"), vec![eq_t, partial_eq_u]);
         // A rule of `Inner`: outer to inner.
-        assert_eq!(
-            implicit_cites_for("t.s8cyd.Outer.Inner.some_rule", &kb),
-            vec![eq_t, partial_eq_u, inner]
-        );
+        assert_eq!(names("t.s8cyd.Outer.Inner.some_rule"), vec![eq_t, partial_eq_u, inner]);
         // A rule of `Held`: `Outer` is an enclosing scope by name, and `Held` its own.
         assert_eq!(
-            implicit_cites_for("t.s8cyd.Outer.requires.Held.some_rule", &kb),
+            names("t.s8cyd.Outer.requires.Held.some_rule"),
             vec![eq_t, partial_eq_u, held]
         );
         // A rule beside `Outer`: nothing.
-        assert_eq!(implicit_cites_for("t.s8cyd.some_rule", &kb), Vec::<String>::new());
+        assert_eq!(names("t.s8cyd.some_rule"), Vec::<String>::new());
+
+        // WI-20261011-BVG8M — and a clause says which SORT its spec is of, which is
+        // what its laws are read by.
+        let handed = implicit_cites_for("t.s8cyd.Outer.Inner.some_rule", &kb).unwrap();
+        assert_eq!(
+            handed.last().map(|clause| kb.qualified_name_of(clause.spec)),
+            Some("anthill.prelude.Eq")
+        );
+        assert_eq!(
+            handed.first().map(|clause| kb.qualified_name_of(clause.spec)),
+            Some("anthill.prelude.Eq")
+        );
+        assert_eq!(kb.qualified_name_of(handed[1].spec), "anthill.prelude.PartialEq");
+    }
+
+    /// `Outer`'s own `requires` is written BELOW the nested sort that has one, so the
+    /// relation has the inner scope's clause first.
+    const INNER_WRITTEN_FIRST: &str = r#"
+        namespace t.bvg8m.order
+          sort Outer
+            sort T = ?
+
+            sort Inner
+              sort V = ?
+              requires anthill.prelude.PartialEq[T = V]
+            end
+
+            requires anthill.prelude.Eq[T = T]
+          end
+        end
+    "#;
+
+    /// OUTER TO INNER, whatever order the clauses were written in: the scopes are walked
+    /// from the outermost, and the relation's order is the source's.
+    ///
+    /// BACKED OUT (the clauses left as `requires_clauses_of` returns them): FAILS — the
+    /// inner scope's clause first. The row above passes under that back-out.
+    #[test]
+    fn the_requirements_are_handed_outer_to_inner() {
+        let kb = load_with_source("order", INNER_WRITTEN_FIRST);
+        let outer = "t.bvg8m.order.Outer";
+        let inner = "t.bvg8m.order.Outer.Inner";
+        // THE CONTROL: the relation does have the inner scope's clause first.
+        let as_read: Vec<String> = requires_clauses_of(&kb, &[outer, inner])
+            .expect("the relation is read")
+            .into_iter()
+            .map(|clause| clause.scope_qn)
+            .collect();
+        assert_eq!(as_read, [inner, outer]);
+
+        let handed: Vec<String> = implicit_cites_for("t.bvg8m.order.Outer.Inner.some_rule", &kb)
+            .expect("the requirements are read")
+            .into_iter()
+            .map(|clause| clause.scope_qn)
+            .collect();
+        assert_eq!(handed, [outer, inner]);
+    }
+
+    /// A proof under a requirement, one under a requirement of a spec that has no law,
+    /// and one in a sort nested under a requirement.
+    const DRIVEN: &str = r#"
+        namespace t.bvg8m
+          import anthill.prelude.PartialEq.{eq}
+          import anthill.prelude.PartialOrd.{gt}
+          import anthill.prelude.{Int64}
+
+          entity Cfg(scale: Int64)
+          fact Cfg(scale: 5)
+
+          sort Lawless
+            sort T = ?
+          end
+
+          sort UnderEq
+            sort T = ?
+            requires anthill.prelude.Eq[T = T]
+
+            rule r(?marker) :- Cfg(scale: ?s), gt(?s, 99), eq(?marker, ?s)
+            proof r by z3(logic: "LIA") end
+
+            sort Nested
+              rule deep(?marker) :- Cfg(scale: ?s), gt(?s, 99), eq(?marker, ?s)
+              proof deep by z3(logic: "LIA") end
+            end
+          end
+
+          sort UnderLawless
+            sort T = ?
+            requires Lawless[T = T]
+
+            rule r(?marker) :- Cfg(scale: ?s), gt(?s, 99), eq(?marker, ?s)
+            proof r by z3(logic: "LIA") end
+          end
+        end
+    "#;
+
+    /// WI-20261011-BVG8M — THE ROW THAT DRIVES A PROOF: each of the three is dispatched
+    /// and gets as far as its SMT document. `--dry-run`, so the row asks nothing of a
+    /// solver on the path — it stops where the document is printed, which is past where
+    /// the cites are lowered. (`wi_bvg8m_requirement_cite_test` runs the binary, and z3
+    /// where there is one.) Each is dispatched BY NAME: the row is of these three, and
+    /// not of however many proofs the library comes to have.
+    ///
+    /// BACKED OUT (the clauses handed to `render_cited_lemmas` with the `using` list,
+    /// each by its record's name, as the records were): FAILS — each proof an EmitError,
+    /// "cite … could not be lowered under its translation policy: rule '…' not found".
+    /// The first row passes either way, by design: it reads which clauses a proof is
+    /// handed, not what is done with them.
+    #[test]
+    fn a_proof_under_a_requirement_is_emitted_and_not_refused() {
+        let mut kb = load_with_source("driven", DRIVEN);
+        for (rule, scope) in [
+            ("t.bvg8m.UnderEq.r", "t.bvg8m.UnderEq"),
+            ("t.bvg8m.UnderEq.Nested.deep", "t.bvg8m.UnderEq"),
+            ("t.bvg8m.UnderLawless.r", "t.bvg8m.UnderLawless"),
+        ] {
+            // The proof IS under a requirement — or the row would pass for a reader
+            // that handed a proof nothing.
+            let handed = implicit_cites_for(rule, &kb).expect("the requirements are read");
+            assert_eq!(handed.len(), 1, "`{rule}` is handed one requirement: {handed:?}");
+            assert_eq!(handed[0].scope_qn, scope);
+
+            let args = ProveArgs {
+                paths: Vec::new(),
+                rule: Some(rule.to_owned()),
+                solver: "z3".to_owned(),
+                dry_run: true,
+                verbose: false,
+                no_cache: true,
+                refresh_cache: false,
+                show_cache: false,
+                cache_dir: None,
+                gc_cache: None,
+                stats: false,
+            };
+            let report = discharge_loaded_kb(&mut kb, &args, true);
+            assert_eq!(report.total, 1, "`{rule}` is dispatched");
+            assert_eq!(report.failed, 0, "`{rule}`, under a requirement, is not refused");
+            assert_eq!(
+                report.skipped_other, 1,
+                "`{rule}` got as far as its document, which is where a dry run stops"
+            );
+        }
+    }
+
+    /// A spec with a law of each kind the warning tells apart, and a rule written with
+    /// two heads.
+    const KINDS: &str = r#"
+        namespace t.bvg8m.kinds
+          import anthill.prelude.{Int64}
+          import anthill.prelude.PartialOrd.{gte, gt}
+          import anthill.prelude.PartialEq.{eq}
+
+          sort Measured
+            sort T = ?
+            operation weight(a: T) -> Int64
+
+            rule weight_nonneg: gte(weight(?a), 0) <=> true
+            rule two_heads: gte(weight(?a), 0), gte(weight(?a), -1) :- eq(?a, ?a)
+            rule positive(?x) :- gt(?x, 0)
+            rule weight(?a) <=> weight(?a)
+            fact gte(weight(?a), -5) <=> true
+            constraint weight_sane: gte(weight(?a), 0) :- eq(?a, ?a)
+          end
+        end
+    "#;
+
+    /// WI-20261011-BVG8M — HOW THE WARNING NAMES A SPEC'S LAWS: every clause accounted
+    /// for, a name once. Seven clauses: a labelled equation; a rule of two heads, which
+    /// is two clauses under one label; a rule with no label, named by its predicate as
+    /// `using` cites it; two equations with no label, one of them written `fact`; and a
+    /// constraint, whose own name is not on its clause.
+    ///
+    /// BACKED OUT (a label printed for each clause that has it, the rest counted "with
+    /// no citation label", as the first cut did): FAILS — `two_heads` twice, and four
+    /// of the seven with no word of what they are.
+    #[test]
+    fn the_laws_are_named_once_and_the_rest_counted_by_kind() {
+        let kb = load_with_source("kinds", KINDS);
+        let spec = kb.try_resolve_symbol("t.bvg8m.kinds.Measured").expect("the spec");
+        let laws = kb.spec_laws(spec);
+        assert_eq!(laws.len(), 7);
+        assert_eq!(
+            law_names(&kb, &laws),
+            "t.bvg8m.kinds.Measured.weight_nonneg, t.bvg8m.kinds.Measured.two_heads (2 clauses), \
+             t.bvg8m.kinds.Measured.positive, 2 unlabelled equations, 1 constraint"
+        );
     }
 }
 

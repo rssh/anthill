@@ -20761,12 +20761,85 @@ fn spec_text_at(base_qn: &str, bindings: &[(String, String)]) -> String {
 ///
 /// THE NAME IS NOT FOR CUTTING APART. `provides` and `requires` are namespace segments
 /// too, and every qualified name in it has dots: a reader that wants a record's scope,
-/// its law or its bindings reads the witness's FIELDS (`anthill prove`'s
-/// `implicit_cites_for` does, and [`requires_laws_by_scope`] for a spec's laws), and one
-/// that wants a record asks for the whole name.
+/// its law or its bindings reads the witness's FIELDS ([`requires_laws_by_scope`] does,
+/// for a spec's laws), one that wants a record asks for the whole name, and one that
+/// wants the clause itself reads the declaration ([`requires_clauses_of`], as `anthill
+/// prove` does for what a proof is handed).
 pub fn qualified_spec_text<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
     let base = provides_spec_base_sym_view(kb, spec)?;
     Some(spec_text_at(kb.qualified_name_of(base), &spec_binding_texts(kb, spec)))
+}
+
+/// One `requires <SE>` clause of a scope, as [`requires_clauses_of`] reads it off the
+/// declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequiresClause {
+    /// The scope whose declaration has the clause.
+    pub scope_qn: String,
+    /// The sort the required spec is of.
+    pub spec: Symbol,
+    /// `<SE>`: the spec at the clause's bindings, as [`qualified_spec_text`] writes it.
+    /// The clause's record is named `<scope_qn>.requires.<SE>`.
+    pub spec_text: String,
+}
+
+/// WI-20261011-BVG8M — THE `requires` CLAUSES OF THE SCOPES NAMED, read off the
+/// declarations: each once, in the order the relation has them.
+///
+/// It is what a proof is handed of its enclosing scopes without naming it (proposal
+/// 030 γ.4). A requirement's record is a scope axiom — it holds because the declaration
+/// has the clause — so the CLAUSE is what is read, and with it the sort the required
+/// spec is of, which the record's name and witness carry only as text. Reading the
+/// records and finding each one's clause again by that text was the first cut, and made
+/// a state to check for: a record of no clause (/code-review).
+///
+/// `Err` is a read that could not be made: a BODIED `SortRequiresInfo` rule stands in
+/// the relation (WI-806 — a reader of facts does not evaluate a body). A KB that never
+/// loaded the relation has no clause.
+pub fn requires_clauses_of(
+    kb: &KnowledgeBase,
+    scopes: &[&str],
+) -> Result<Vec<RequiresClause>, String> {
+    use crate::kb::extent::BodiedRulePolicy;
+    use crate::kb::op_info::{head_field_term, head_field_value};
+
+    let Some(requires_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") else {
+        return Ok(Vec::new());
+    };
+    let rows = kb
+        .read_facts(requires_sym, &[], BodiedRulePolicy::Refuse)
+        .map_err(|e| e.to_string())?;
+    let mut clauses: Vec<RequiresClause> = Vec::new();
+    for row in rows {
+        // Read through the view, so a spec whose binding rides an occurrence — one
+        // written through a type alias, one that holds a value — is the clause it is.
+        let Some(scope_qn) =
+            head_field_term(kb, &row, "sort_ref").and_then(|t| sort_ref_qn(kb, t))
+        else {
+            continue;
+        };
+        if !scopes.contains(&scope_qn) {
+            continue;
+        }
+        let Some(spec) = head_field_value(kb, &row, "spec") else {
+            continue;
+        };
+        let (Some(base), Some(spec_text)) =
+            (provides_spec_base_sym_view(kb, &spec), qualified_spec_text(kb, &spec))
+        else {
+            continue;
+        };
+        // One spec at one set of bindings is one clause, however many rows say it.
+        if clauses.iter().any(|c| c.scope_qn == scope_qn && c.spec_text == spec_text) {
+            continue;
+        }
+        clauses.push(RequiresClause {
+            scope_qn: scope_qn.to_owned(),
+            spec: base,
+            spec_text,
+        });
+    }
+    Ok(clauses)
 }
 
 /// True iff a SortInfo fact's `kind` field is `"enum"` — the v0
@@ -21026,9 +21099,14 @@ pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option
 /// `qualified_name` rather than the short display name so the
 /// emitted ProofRecord rule QN is project-unique.
 pub fn qn_of_sort_ref(kb: &KnowledgeBase, term: TermId) -> Option<String> {
+    sort_ref_qn(kb, term).map(str::to_owned)
+}
+
+/// [`qn_of_sort_ref`] borrowed — for a reader that compares the name and keeps none.
+fn sort_ref_qn(kb: &KnowledgeBase, term: TermId) -> Option<&str> {
     match kb.get_term(term) {
-        Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor).to_owned()),
-        Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s).to_owned()),
+        Term::Fn { functor, .. } => Some(kb.qualified_name_of(*functor)),
+        Term::Ref(s) | Term::Ident(s) => Some(kb.qualified_name_of(*s)),
         _ => None,
     }
 }

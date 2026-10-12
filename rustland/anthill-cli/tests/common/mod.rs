@@ -65,6 +65,26 @@ pub fn write_temp(name: &str, contents: &str) -> PathBuf {
     path
 }
 
+/// `anthill prove <src> --dry-run --no-cache`: the emitted SMT documents on stdout, and
+/// no solver asked — a dry run returns where the document is printed. For a row whose
+/// subject is what is EMITTED, which must not pass for want of a z3 on the path.
+pub fn prove_dry_run(name: &str, src: &str) -> Output {
+    let path = write_temp(&format!("{name}.anthill"), src);
+    anthill(&["prove", path.to_str().unwrap(), "--dry-run", "--no-cache"])
+}
+
+/// Is there a `z3` on the path? A row that returns when there is none has asked
+/// nothing: keep what it holds to a verdict, and put the rest under [`prove_dry_run`].
+/// (Twelve `prove_*` / `check_*` files carry their own copy of this, as they do of
+/// `write_temp`; new rows call this one.)
+pub fn z3_available() -> bool {
+    Command::new("z3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Run the built binary with `args`.
 pub fn anthill(args: &[&str]) -> Output {
     let out = Command::new(bin())

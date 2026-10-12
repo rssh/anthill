@@ -141,3 +141,5 @@ mod wi_7fp1m_query_type_names_test;
 mod wi_vm9q7_literal_rendering_test;
 #[path = "include/wi_an6cq_stdlib_first_test.rs"]
 mod wi_an6cq_stdlib_first_test;
+#[path = "include/wi_bvg8m_requirement_cite_test.rs"]
+mod wi_bvg8m_requirement_cite_test;

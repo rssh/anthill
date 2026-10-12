@@ -2072,3 +2072,5 @@ mod wi_a3nnd_checked_provisions_test;
 mod wi_zvpxs_specialization_witness_index_test;
 #[path = "include/wi_s8cyd_record_names_test.rs"]
 mod wi_s8cyd_record_names_test;
+#[path = "include/wi_bvg8m_spec_laws_test.rs"]
+mod wi_bvg8m_spec_laws_test;

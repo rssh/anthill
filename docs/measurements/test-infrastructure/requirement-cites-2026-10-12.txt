@@ -1,0 +1,221 @@
+# What a proof is handed for a `requires` of its scope (WI-20261011-BVG8M) — the refusal, the count the decision
+# was made on, the decision, what /code-review changed, what fails when a part is backed out, and the gate.
+# 2026-10-12.
+# Sections 1–2 are the tree before anything was changed; section 3 is the decision; section 4 is what
+# /code-review found in the first cut and what was done with each; sections 5–7 are the tree as delivered.
+#
+# Tree:    main at a26210f3, and this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. z3 4.16.0.
+# Every `anthill prove` below is `--no-cache`, the dev build (`target/debug/anthill`).
+
+== 1. the refusal, and the cases the ticket left unmeasured ==
+# One violation-shape proof that needs no law — `rule r(?m) :- Cfg(scale: ?s), gt(?s, 99), eq(?m, ?s)` with
+# `fact Cfg(scale: 5)`, `proof r by z3(logic: "LIA") end` — in a sort `Scope`, varying what stands above it:
+#
+#   above the proof                                    BEFORE                                          AS DELIVERED
+#   `requires anthill.prelude.Eq[T = T]`               error … rule '…' not found; 0 proved, 1 failed  proved; 1 warning (eq_refl)
+#   nothing (THE CONTROL)                              proved                                          proved; no warning
+#   `requires Lawless[T = T]`, a spec with no clause   error, the same                                 proved; no warning
+#   `requires anthill.prelude.WeakOrd[T = T]`          error, the same                                 proved; 1 warning (9 laws)
+#   the requirement on an OUTER sort, the proof in     error, of the outer scope's record              proved; 1 warning, of the
+#     a sort nested in it                                                                                outer scope's requirement
+#   a STRUCTURED proof (one step, `using h1`)          error, at the step `….big_lemma.h1`             proved; 1 warning for the run
+#   `proof shines by derivation end`, a Horn rule      proved                                          proved; no warning
+#
+# The error, in full: `error: test.imp.Scope.r: cite `test.imp.Scope.requires.anthill.prelude.Eq[T = test.imp.Scope.T]`
+# (in proof `test.imp.Scope.r`) could not be lowered under its translation policy: rule '…' not found`.
+# `by derivation` takes no cites (`dispatch_derivation`), so a requirement never reached it. A step is dispatched
+# under its own name, `<rule>.<step>`, whose enclosing scopes are the rule's and one more; it was refused before
+# the parent was reached.
+#
+# The warning, as delivered:
+#   warning: `test.imp.Scope` requires `anthill.prelude.Eq[T = test.imp.Scope.T]`, and a spec's law is not lowered
+#   to SMT yet — a `by z3` proof under it runs without its law: anthill.prelude.Eq.eq_refl
+#   warning: `test.wo.Scope` requires `anthill.prelude.WeakOrd[T = test.wo.Scope.T]`, and a spec's law is not
+#   lowered to SMT yet — a `by z3` proof under it runs without its 9 laws: anthill.prelude.WeakOrd.compare_antisym,
+#   anthill.prelude.WeakOrd.compare_refl, 6 unlabelled equations, 1 constraint
+
+== 2. the count: what a spec's sort holds, for the library's 42 requirement records (before anything was decided) ==
+# Read off `anthill query --mode domain <spec>` over the library, and taken again on the first cut through the
+# readers the change adds (a temporary row, not kept): the two agree in every line.
+#
+#   42 requirement records, in 28 scopes.
+#
+#   required spec                             records   laws   cited by a label   what else the sort holds
+#   anthill.prelude.EffectsRuntime            18        0                         a fact
+#   anthill.prelude.Iterable                   5        0                         6 default operation bodies
+#   anthill.prelude.Eq                         4        1      1  (eq_refl)
+#   anthill.prelude.PartialEq                  3        1      0                  (`neq(a, b) <=> not(eq(a, b))`)
+#   anthill.prelude.algebra.Ring               2        2      2
+#   anthill.prelude.PartialOrd                 2        0                         4 default bodies
+#   anthill.prelude.FiniteCollection           2        0                         5 default bodies
+#   anthill.prelude.WeakOrd                    1        9      2                  2 default bodies; 8 equations and
+#                                                                                 1 `constraint` are the 9
+#   anthill.prelude.Lattice                    1        9      9
+#   anthill.prelude.Numeric                    1        0
+#   anthill.prelude.Modifiable                 1        0
+#   anthill.logic.Minimal.Minimal              1        0
+#   anthill.logic.Constructive.Constructive    1        0                         8 body-less declarations
+#
+#   RECORDS OF A SPEC WITH A LAW: 11.   WITH NONE: 31.   The laws: 22 — 21 equations, 1 constraint; none has a `-:`.
+#
+# WHAT THE LIFT DOES WITH A LAW TODAY. An equation is stored with the head `anthill.kernel.unify(lhs, rhs)`.
+# Measured with an equational lemma discharged `by trust` and cited by `using` (so the cite gate passes and the
+# lift is reached): `could not be lowered under its translation policy: v0: rule head shape not supported
+# (functor=anthill.kernel.unify, pos_args=2)`. So NO law of the 22 lifts as the emitter stands.
+# And past the head: 3 of the 21 equations name only operations with an SMT row (`eq_refl`, `mul_comm`,
+# `distrib`) — and with every operand a `Real` they are theorems of the theory, which the solver has; the other 18
+# and the constraint name `neq`, `compare`, `max`, `min`, `lub`, `glb` or `less`, which have none ("unhandled
+# arithmetic op"). The emitter writes every variable as `Real`, and lowers `PartialEq.eq` to `=` and
+# `PartialOrd.gt` to `>` (`SMT_BUILTINS`).
+#
+# Scaland has no cite path (no `ScopeAxiom` outside a parser test): this is rustland's alone.
+
+== 3. the decision (user, 2026-10-12) ==
+#   1. THE CARRIER — the scope's abstract parameter is ITS OWN SMT SORT (`declare-sort`), a spec's operations on it
+#      uninterpreted functions, `eq` included, a variable's sort read off its bound. Not the `Real` every operand
+#      is today: that assumes identity for `eq` and a total order for `gt` that no requirement states, and a law
+#      that bounds the carrier's size is inconsistent over the reals.
+#   2. STAGING — this ticket: a requirement lowers to its spec's laws, a spec with no law to nothing, the
+#      reproduction proves, proposal 030 records the lowering. Lowering a LAW is an emitter rework and its own
+#      ticket; BVG8M's DONE WHEN is narrowed to match.
+#   3. UNTIL A LAW LOWERS it is LEFT OUT AND SAID: the proof runs without it and stderr names each. Not a refusal.
+#   4. THE CHAIN — a spec's OWN laws. Those of what it requires or provides in turn are not followed.
+#   A LAW is a `rule` or a `constraint` item written in the spec's sort: not a default operation body (a carrier
+#   may supply its own), not a fact, not a body-less declaration. `premises -: conclusion` and
+#   `conclusion :- premises` are one stored form, so both are laws.
+#   NOT BUILT, and nothing reaches either: lowering a specialization record; an explicit cite of a requirement.
+#   FILED 2026-10-12, with the user's word, as WI-20261012-ZZ7PH: lowering a law — the head, the operations, the
+#   carrier's sort — and with it section 4's (1), the verdict that is of the reals.
+
+== 4. what /code-review changed, each reproduced on the first cut ==
+# THE FIRST CUT kept S8CYD's reader — the requirement RECORDS of the enclosing scopes, by each record's witness —
+# found each record's clause again by the text the witness has (`load::requires_clause_of`, which `anthill check`
+# was moved onto too), read the laws of the clause's spec, and warned at every query, naming the proof. Fifteen
+# findings; what was done with each:
+#
+# (1) UN-REFUSING THESE PROOFS LETS A CLAIM ABOUT THE ABSTRACT CARRIER BE "PROVED" OF THE REALS. Reproduced:
+#       sort Scope  sort T = ?  requires anthill.prelude.PartialOrd[T = T]
+#         rule refl_like: gte(?a, ?a) :- gte(?a, ?b)     proof refl_like by z3(logic: "LRA") end
+#     `✓ … proved (z3: unsat)`; the document is `(declare-const var_0 Real) (declare-const var_1 Real)
+#     (assert (>= var_1 var_0)) (assert (not (>= var_1 var_1)))`. `PartialOrd` has no law, so nothing is said.
+#     THE SAME RULE IN A SORT THAT REQUIRES NOTHING PROVES TOO, before this change and after it: the model is the
+#     emitter's, not the requirement's. What the change adds is the population — proofs under a `requires` were
+#     kept from running, by accident.
+#     NOT FIXED HERE: it is the carrier's own SMT sort (section 3, 1), which is the other ticket. DONE: the doc at
+#     `tell_laws_left_out` and proposal 030 no longer say a proof that needed a law fails — they say what leaving
+#     a hypothesis out guarantees and what it does not; and a row holds the document as it is,
+#     `a_verdict_under_a_requirement_is_about_the_reals`, which is the row the sort turns.
+# (2) AN EQUATION WRITTEN `fact lhs <=> rhs` WAS NO LAW (it is stored as a fact, and the first cut took rules
+#     and constraints by kind). Reproduced: a spec with four laws and such a fact reported four. A fact that is an
+#     equation is a law now; any other fact is not.
+# (3) THE CHAIN, as decided (section 3, 4), and what it leaves unsaid. Reproduced: `requires Ord[T = T]` names
+#     `Ord.compare_eq` and not the nine laws of the `WeakOrd` that `Ord` provides; `sort Strict  provides
+#     Ord[T = T]` and `requires Strict[T = T]` says nothing at all. NOT CHANGED — the decision stands; a row holds
+#     both (`the_laws_of_what_a_spec_provides_in_turn_are_not_read`) and the proposal says them.
+# (4) A RULE WRITTEN WITH TWO HEADS is two clauses under one label, and was "2 laws" named twice. A name is
+#     printed once now, with how many clauses go by it: `Measured.two_heads (2 clauses)`.
+# (5) A READ THAT FAILED WAS AN EMPTY LIST — a bodied rule in the relation printed `error:` and the proof ran as
+#     if its scope required nothing. It is the proof's EmitError now (`implicit_cites_for` returns a `Result`).
+# (6) "WITH NO CITATION LABEL" said nothing of what the seven were, and one of `WeakOrd`'s seven is a constraint
+#     that HAS a name in the source. A law is named by its label, or by the predicate a rule with no label is of
+#     (as `using` cites it); the rest are counted by kind: `6 unlabelled equations, 1 constraint`. A constraint's
+#     name is a declaration's and is not on the stored clause — to name it the loader would label the clause,
+#     which would also change what `using <that name>` resolves to. Not done.
+# (7) THE WARNING WAS ONCE A QUERY: a structured proof of N steps printed N + 1 lines. Once a run for each
+#     requirement now, and it names the scope and not the proof.
+# (8) THE CLAUSE WAS FOUND BY RE-RENDERING EVERY ROW'S TEXT AND MATCHING IT, which made a state to check for —
+#     a record of no clause — and an error branch to refuse it. The clauses are read off the declarations now, by
+#     the scope each is of (`load::requires_clauses_of`); there is no record to mismatch. `anthill check` is as it
+#     was before this ticket: the first cut's move of it onto the shared lookup is taken back.
+#     A row holds the records and the clauses to each other: the same set, by name.
+# (9) the text assembly written twice (`requires_clause_of` beside `qualified_spec_text`): gone with (8).
+# (10) the relation read once a requirement: once a query now, and a scope's name compared without a copy.
+# (11) `RequirementCite.record`, derivable from its other two fields: gone with (8). `SpecLaw.clause` is read
+#      now — its kind and its head name the law (6).
+# (12) a copy of `prove_dry_run` and one more of `z3_available`: both are in the CLI suite's `common` now, and
+#      `wi781_policy_dispatch_test` uses the first. Twelve older files keep their own `z3_available`; not moved.
+# (13) proposal 030's "`using` semantics" still said the two kinds of cite are joined into one list: corrected.
+# (14) `spec_laws` looks the spec up by the symbol the clause's row has, uncanonicalized. NOT CHANGED: the
+#      review could build no case, and neither could this — a spec forward-referenced, imported, aliased and
+#      written by its qualified name all resolved.
+# (15) the unit row counted every proof of the KB, the library's with them: it dispatches its three by name.
+
+== 5. what fails when a part is backed out (the dev profile; each on the tree as delivered, then restored) ==
+# Over the 4 rows of `wi_tests`' `wi_bvg8m_spec_laws_test`, the 11 of `cli_tests`' `wi_bvg8m_requirement_cite_test`,
+# and the 4 unit rows of `prove::s8cyd_implicit_cite_tests`.
+#   scripts/test.sh -p anthill-core --test wi_tests -- wi_bvg8m
+#   scripts/test.sh -p anthill-cli -- bvg8m s8cyd
+# Core rows, by letter:  L `a_law_is_a_rule_or_a_constraint_written_in_the_spec`
+#                        D `the_librarys_laws_are_not_its_default_bodies`
+#                        C `the_clauses_of_a_scope_are_read_off_its_declaration`
+#                        R `the_requirement_records_are_the_clauses`
+# Unit rows:             W `a_rule_cites_the_requirements_of_its_enclosing_scopes_and_no_others`
+#                        O `the_requirements_are_handed_outer_to_inner`
+#                        E `a_proof_under_a_requirement_is_emitted_and_not_refused`
+#                        N `the_laws_are_named_once_and_the_rest_counted_by_kind`
+#
+#                                                                  core (4)     unit (4)      the binary's rows (11)
+#   AS DELIVERED                                                   4 pass       4 pass        11 pass
+#   (a) THE CHANGE: the clauses handed to `render_cited_lemmas`    not run      E FAILS       all 11 FAIL
+#       with the `using` list, each by its record's name
+#   (b) a law read off its clause's KIND, the origin not asked     L, D FAIL    pass          2 FAIL: `the_warning_counts_…`,
+#                                                                                             `a_verdict_…_is_about_the_reals`
+#   (c) a `constraint` left out of the laws                        L, D FAIL    N FAILS       1 FAILS: `the_warning_counts_…`
+#   (d) an equation written `fact` left out                        L FAILS      N FAILS       pass
+#   (e) a requirement said at every query, not once a run          not run      pass          2 FAIL: `a_requirement_is_said_
+#                                                                                             once_a_run`, `the_proofs_…_prove`
+#   (f) every clause of the KB handed, the scope not asked         C FAILS      W, O, E FAIL  all 11 FAIL
+#       (`requires_clauses_of`)
+#   (g) a name printed for each clause that goes by it             not run      N FAILS       pass
+#   (h) the clauses left in the order the relation has them        not run      O FAILS       pass
+#       (and REVERSED: W FAILS and O passes — reversed is
+#       the right order for O's fixture, and for no other)
+#
+# BY DESIGN: R passes under (b), (c), (d) and (f) — it reads the clauses of every scope that has a record, so a
+# reader that hands back more scopes than it was asked for returns the same set. Under (b) the second binary row
+# fails because `PartialOrd`'s four default bodies are then laws, and its proof is told of them.
+# O WAS WRITTEN FOR (h): with the rows there were, leaving the order to the relation failed nothing — the relation
+# has an outer scope's clause first wherever the source does. O's fixture writes the outer `requires` below the
+# nested sort, and asserts first that the relation then has the inner clause first.
+# `the_proofs_under_a_requirement_prove` is the one row that asks z3, and returns having asked nothing where
+# there is none; it ran here.
+# THE FIRST CUT's back-outs (before section 4; 4 core rows, 8 binary rows, 2 unit rows) were of another design and
+# are not carried: the change backed out failed all 8 and the unit row that drives a proof; a law by kind alone,
+# and a constraint left out, each failed two core rows and one binary row; a clause found by its scope alone
+# failed one core row and — once a row was written for it — one binary row.
+
+== 6. the examples ==
+#   prove -v --no-cache examples/webots-modelling/lf1
+#                                              exit 0, 34 lines of stdout, `14 proved, 0 failed, 0 skipped, 14 total`;
+#                                              no law warning on stderr — none of its proofs is under a `requires`.
+#                                              (Without `--no-cache`, a second run has 16 `cache hit:` lines more.)
+#   check    examples/webots-modelling/lf1     `140 pass, 0 failed, 0 stale, 0 skipped, 3 trusted, 143 total`
+#   check --shallow  …/lf1                     `141 pass, 0 failed, 0 stale, 0 skipped, 2 trusted, 143 total`
+# The three are what proof-record-names-2026-10-11.txt has for the tree before.
+# No example has a proof under a `requires`: lf1 is the one directory of examples/ with a proof at all.
+
+== 7. the gate ==
+#   scripts/test.sh                              the whole workspace, the shared base, anthill-core at opt-level 2
+#   01:22:23 – 01:34:15 (11 min 52 s), nothing else building; `CPU_Speed_Limit` 100 when it began and when it ended.
+#
+#   exit 0; 36 result lines, all ok; 9 358 passed, 0 failed, 14 ignored.   `wi_tests`: 6 822 passed, 4 ignored, 106.47 s.
+#   OBSERVED by the controls: SHARED BASE; terms, a node where an alias is written; provision oracle off; provider
+#   index agreement off.
+#   The gate of the tree before (proof-record-names-2026-10-11.txt §11) had 9 340: this ticket adds 18 rows — 4 to
+#   `wi_tests`, 11 to `cli_tests`, and 3 unit rows to the CLI's binary (its `s8cyd_implicit_cite_tests` had one).
+#
+# THE NEW ROWS UNDER THE OTHER RECIPES AND THE CARRIER CONTROL (01:34 – 01:36; the dev profile; the rows and the
+# control row that says which recipe ran — not the whole crate):
+#   ANTHILL_TEST_FRESH_LOAD=1    scripts/test.sh -p anthill-core --test wi_tests -- wi_bvg8m wi_szkv7_two_step
+#       7 passed; "load recipe OBSERVED …: one shot"
+#   ANTHILL_TEST_TWO_STEP_LOAD=1 scripts/test.sh -p anthill-core --test wi_tests -- wi_bvg8m wi_szkv7_two_step
+#       7 passed; "load recipe OBSERVED …: TWO-STEP"
+#   ANTHILL_TEST_NODE_CARRIER=1  scripts/test.sh -p anthill-core --test wi_tests -- wi_bvg8m alias_written_name
+#       23 passed; "node carrier OBSERVED …: A NODE for every sort"
+#   ANTHILL_TEST_NODE_CARRIER=1  scripts/test.sh -p anthill-cli -- bvg8m s8cyd
+#       4 + 11 passed
+# A `requires` clause's binding that rides an occurrence is read as the one that rides a term is: the reader goes
+# through the view, as the pass that names the records does.
+# NOT RUN: the whole of anthill-core under the two other recipes, the whole workspace under the carrier switch, and
+# scaland — nothing of scaland's was changed, and it has no cite path.
