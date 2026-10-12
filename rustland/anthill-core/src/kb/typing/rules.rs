@@ -344,6 +344,14 @@ pub(super) fn type_rule_bodies(
         // The one collection per rule: head + body var types + whether they unify.
         // Shared by the contradiction report, the dot env, and the stamp.
         count_body_typed(BodyKind::Rule);
+        // A dot on a written type is the call its written spelling makes, and is made
+        // that call here, before any reader below: the collection reads the call's
+        // parameters for its arguments' types, and the dispatch walk reads the written
+        // call's shape. A refused one leaves the rule as written, and untyped.
+        let Some(body_nodes) = body_with_written_type_calls(kb, rid, body_nodes, errors, sources)
+        else {
+            continue;
+        };
         let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
         if contradiction {
             // On a contradiction the receiver sorts are unreliable — skip dispatch
@@ -495,6 +503,41 @@ pub(super) fn type_rule_bodies(
             }
         }
     }
+}
+
+/// The body of rule `rid` with its dots on a written type replaced by the calls their
+/// written spellings make ([`written_type_dots_as_calls`]), stored back where one was
+/// replaced. `None` where one was refused: the refusal is in `errors`, tagged with its
+/// atom's file as [`type_rule_bodies`] tags its own, and the body is left as written.
+fn body_with_written_type_calls(
+    kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
+    body_nodes: Vec<Rc<NodeOccurrence>>,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    if !body_nodes.iter().any(holds_written_type_dot) {
+        return Some(body_nodes);
+    }
+    // The scope the rule was written in, for the `internal` check a member is held to,
+    // and the mark of a rule body's own term, where a constructor is no call.
+    let mut env = TypingEnv::empty();
+    env.set_rule_scope(kb.rule_domain(rid));
+    env.mark_rule_body_dispatch();
+    let reported = errors.len();
+    let rewritten: Vec<Rc<NodeOccurrence>> = body_nodes
+        .iter()
+        .map(|n| {
+            let node = written_type_dots_as_calls(kb, &env, n, errors);
+            sources.resize(errors.len(), Some(n.span.source));
+            node
+        })
+        .collect();
+    if errors.len() > reported {
+        return None;
+    }
+    kb.set_rule_body_nodes(rid, rewritten.clone());
+    Some(rewritten)
 }
 
 /// WI-742 (proposal 060 §2) — the qualified name of the GENERATED typed-head guard,

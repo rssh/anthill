@@ -15,6 +15,13 @@
 //!
 //! A receiver of type `Type` that denotes nothing known at the dot — an operation's
 //! parameter, a call's result — is a value like any other, and its dot is `Type`'s.
+//!
+//! A rule body reads a receiver written as a type the same way. The loader builds it as
+//! the type value (`written_type_receiver_occurrence`), and the dot is replaced by its
+//! written call before anything else reads the rule body
+//! ([`written_type_dots_as_calls`]), so the two spellings are one node there. One
+//! difference: a constructor is refused. In a rule body's own term a constructor is the
+//! term the clause matches, which the loader builds from the written `Sort.ctor(…)`.
 
 use super::*;
 
@@ -34,6 +41,7 @@ pub(super) enum DenotedDot {
 /// with the arguments as written — the receiver is a type, not a value of the sort, so it
 /// fills no parameter — which is the call `Sort.member(args)` makes. A member the sort
 /// does not declare is refused about that sort, whether or not `Type` has one of the name.
+/// A constructor is refused in a rule body's own term, with its written spelling.
 pub(super) fn denoted_sort_dot(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -53,6 +61,21 @@ pub(super) fn denoted_sort_dot(
     let Some(denotation) = denotation_of(kb, env, receiver) else {
         return DenotedDot::NotDenoting;
     };
+    written_sort_dot(kb, env, type_sym, &denotation, member, pos_args, named_args, occ)
+}
+
+/// [`denoted_sort_dot`] for the type value the receiver denotes: the call the written
+/// `Sort[…].member(args)` makes, or its refusal.
+fn written_sort_dot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    type_sym: Symbol,
+    denotation: &Rc<NodeOccurrence>,
+    member: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    occ: &Rc<NodeOccurrence>,
+) -> DenotedDot {
     let Some(Expr::TypeValue {
         head,
         pos_args: type_pos,
@@ -101,11 +124,11 @@ pub(super) fn denoted_sort_dot(
                 .and_then(|alias| alias_receiver_type(kb, alias))
                 .map(Value::term));
         }
-        match type_value_denoted_type(kb, env, &denotation) {
+        match type_value_denoted_type(kb, env, denotation) {
             Some(id) => Ok(Some(Value::term(id))),
             None => {
                 let written =
-                    crate::persistence::print::TermPrinter::new(kb).print_occurrence(&denotation);
+                    crate::persistence::print::TermPrinter::new(kb).print_occurrence(denotation);
                 Err(refused(
                     TypeError::here(),
                     "a receiver whose type arguments are written types".to_string(),
@@ -147,6 +170,24 @@ pub(super) fn denoted_sort_dot(
     if let Some(constructor) = constructor {
         if let Some(refusal) = hidden(kb, constructor) {
             return refusal;
+        }
+        // In a rule body's own term a constructor is the term the clause matches, and
+        // the loader builds that term from the written name: it names the positional
+        // arguments by their fields and leaves an omitted field open. The construction
+        // built below is a call, and stored in a rule body it would match as a different
+        // term.
+        if !env.written_as_an_operation_body() {
+            // Its qualified name, which is written the same from every scope: the
+            // receiver may have been a path, or an alias, that the sort's short name is
+            // not.
+            let written = kb.qualified_name_of(constructor).to_string();
+            return refused(
+                TypeError::here(),
+                format!("the constructor written by its name, `{written}(…)`"),
+                format!(
+                    "`{short}` reached by a dot on a receiver that denotes a sort; in a rule body a constructor is the term the clause matches, which its written name builds and this dot does not"
+                ),
+            );
         }
         let recv_type = match receiver(kb) {
             Ok(recv_type) => recv_type,
@@ -201,6 +242,84 @@ pub(super) fn denoted_sort_dot(
         receiver_sort: Some(head),
         receiver_param: None,
     })
+}
+
+/// Is `expr` a dot whose receiver is a written type?
+fn is_written_type_dot(expr: &Expr) -> bool {
+    matches!(expr, Expr::DotApply { receiver, .. }
+        if matches!(receiver.as_expr(), Some(Expr::TypeValue { .. })))
+}
+
+/// Does a rule body's node hold a dot on a written type in the rule's own term? What
+/// stands under a compound expression is written as an operation body is, and the typer
+/// reads its dots where it types it.
+pub(super) fn holds_written_type_dot(occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        if is_compound_expression(expr) {
+            continue;
+        }
+        if is_written_type_dot(expr) {
+            return true;
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
+}
+
+/// A rule body's node with every dot on a written type in the rule's own term replaced by
+/// the call its written spelling makes: `(Box[V = Int64]).wrap(?y)` by the node of
+/// `Box[V = Int64].wrap(?y)`.
+///
+/// Done before anything else reads the rule body, so that the two spellings are one node
+/// to every reader: the collection of variable types reads the call's parameters, the
+/// dispatch walk gives it the written call's shape, and the resolver evaluates what the
+/// written call stores. Left a dot, it was typed as a dot is — checked and rewritten at
+/// load where the written call in the same place is a data term — and the two spellings
+/// gave one rule two verdicts.
+///
+/// A refusal ([`denoted_sort_dot`]) is reported and leaves the dot in place.
+pub(super) fn written_type_dots_as_calls(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    errors: &mut Vec<TypeError>,
+) -> Rc<NodeOccurrence> {
+    let Some(expr) = occ.as_expr() else {
+        return Rc::clone(occ);
+    };
+    if is_compound_expression(expr) {
+        return Rc::clone(occ);
+    }
+    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+    for_each_child(expr, |c| children.push(Rc::clone(c)));
+    let children: Vec<Rc<NodeOccurrence>> = children
+        .iter()
+        .map(|c| written_type_dots_as_calls(kb, env, c, errors))
+        .collect();
+    let walked = crate::kb::simp_rewrite::reassemble(occ, &children);
+    let Some(Expr::DotApply {
+        receiver,
+        name,
+        pos_args,
+        named_args,
+    }) = walked.as_expr().filter(|e| is_written_type_dot(e))
+    else {
+        return walked;
+    };
+    // A program that loads without the standard library has no `Type`, and no type value.
+    let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else {
+        return walked;
+    };
+    match written_sort_dot(kb, env, type_sym, receiver, *name, pos_args, named_args, &walked) {
+        DenotedDot::Call(call) => call,
+        DenotedDot::Refused(e) => {
+            errors.push(e);
+            Rc::clone(&walked)
+        }
+        DenotedDot::NotDenoting => unreachable!("a written type denotes its sort"),
+    }
 }
 
 /// The written type `receiver` denotes: itself when it is one, else the type a `let` bound

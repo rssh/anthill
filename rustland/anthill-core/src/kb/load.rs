@@ -31297,7 +31297,10 @@ impl<'a> Loader<'a> {
         // ([`Self::descs_emitted_by_convert`]).
         let saved_descs = self.descs_emitted_by_convert;
         self.descs_emitted_by_convert = true;
-        let receiver = self.lowered_child_occurrence(parse_pos[0], kb_receiver);
+        let receiver = match self.written_type_receiver_occurrence(parse_pos[0], kb_receiver) {
+            Some(type_value) => type_value,
+            None => self.lowered_child_occurrence(parse_pos[0], kb_receiver),
+        };
         let mut pos_args = Vec::with_capacity(parse_pos.len() - 2);
         let mut named_args = Vec::with_capacity(parse_named.len());
         for (i, (label, value)) in entries.into_iter().enumerate() {
@@ -31317,6 +31320,52 @@ impl<'a> Loader<'a> {
             pos_args,
             named_args,
         })
+    }
+
+    /// The receiver of a method call written in a rule body, when it is a written type:
+    /// `(Box).tag()`, `(Box[V = Int64]).tag()`. It is the type value it denotes, as in an
+    /// operation body, so the typer reads the dot as the call the written `Box[V =
+    /// Int64].tag()` makes (`typing::written_type_dots_as_calls`). Built as a data term — a
+    /// reference to the sort, an application of it — the receiver was typed as a value
+    /// no sort name is, and the refusal named the sort, or an argument of its bracket, as
+    /// unresolved.
+    ///
+    /// Only the receiver of a dot is read so: a type written in a goal's argument stays
+    /// the term the clause matches.
+    ///
+    /// Which receiver is a written type is the operation body's rule, asked of the head
+    /// the term walk resolved: a bare sort name ([`Self::bare_name_denotes_type`]) or a
+    /// bracket on a sort. The node is built by the walk that classifies an operation
+    /// body's, so the bracket's entries are read by one rule in both bodies. That walk is
+    /// lent whole and not as a rule's compound expression
+    /// ([`Self::lowering_rule_compound_expr`]): a type is not a term the clause matches.
+    /// `None` for any other receiver, and inside that walk, which is not re-entered.
+    fn written_type_receiver_occurrence(
+        &mut self,
+        parse_id: TermId,
+        kb_receiver: TermId,
+    ) -> Option<Rc<NodeOccurrence>> {
+        if self.in_op_body_value {
+            return None;
+        }
+        let written_type = match (self.parsed.terms.get(parse_id), self.kb.get_term(kb_receiver)) {
+            (Term::Ident(_), Term::Ref(sort)) => self.bare_name_denotes_type(*sort),
+            (Term::Fn { .. }, Term::Fn { functor, .. }) => {
+                self.parsed.terms.is_type_application(parse_id)
+                    && self.kb.has_kind(*functor, SymbolKind::Sort)
+            }
+            _ => false,
+        };
+        if !written_type {
+            return None;
+        }
+        let occ = self.convert_expr_term(parse_id);
+        debug_assert!(
+            matches!(occ.as_expr(), Some(Expr::TypeValue { .. })),
+            "written_type_receiver_occurrence: the operation-body walk did not classify a \
+             receiver this walk read as a written type"
+        );
+        Some(occ)
     }
 
     /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.

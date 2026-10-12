@@ -136,6 +136,26 @@ through such a receiver, so no surface names both a companion member and a
 sort known at the dot (a parameter, a call's result) is a value, and its dot
 is `Type`'s. The rule is stated in `kernel-language.md` §5.4.
 
+A rule body reads a receiver written as a type the same way
+(WI-20261008-A3FY2): `?x <=> (Box[V = Int64]).tag()` is `?x <=> Box[V =
+Int64].tag()`. Two steps make it so. The rule-body walk hands that receiver,
+and nothing else of the rule's own terms, to the operation-body walk, so it is
+the classified `TypeValue` §7's last row asks of every rule-body occurrence.
+The typer then replaces the dot by the call its written spelling makes before
+anything else reads the rule body — before the variable types are collected
+and before the dispatch walk — so the two spellings are one node. Left a dot,
+it is read as a dot: its arguments are checked and an equation applied at
+load, where the written call in the same slot is a data term, and its
+parameters type no variable. What stands under a compound expression of a rule
+body is an operation body's text, and its dots are read where it is typed. A
+constructor reached through such a receiver is refused in a rule body's own
+term, with its qualified name as the spelling to write: a constructor there is
+the term the clause matches, which the loader builds from the written name
+(positional arguments named by their fields, an omitted field left open), and
+the construction the dot makes is a call. An equation's right-hand side is
+read where it is spliced: typed in an operation body, and left as written
+where the resolver splices it.
+
 ## 5. Structural type expressions
 
 The full `_type` grammar is wider than nominal `name` / `application`. Tuple and
