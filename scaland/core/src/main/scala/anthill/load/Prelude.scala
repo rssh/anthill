@@ -216,6 +216,8 @@ object Prelude:
       (reflect, "short_name", BuiltinTag.ShortName),
       (reflect, "lookup_symbol", BuiltinTag.LookupSymbol),
       (kernel, "not", BuiltinTag.Not),
+      (kernel, "push_choice", BuiltinTag.PushChoice),
+      (kernel, "push_and", BuiltinTag.PushAnd),
       (typing, "is_entity_of", BuiltinTag.IsEntityOf),
       (typing, "extract_sort_ref", BuiltinTag.ExtractSort),
       (reflect, "resolve_sort_instantiation_param", BuiltinTag.ResolveSortInstParam),

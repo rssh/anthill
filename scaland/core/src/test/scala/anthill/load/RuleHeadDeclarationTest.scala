@@ -316,8 +316,8 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     assertEquals(answers(kb, "jj.nottrue", 1), 1,
       "GAP (WI-20260908-NARC7): logic says 0 — `true` succeeds, so its negation fails")
     assertEquals(answers(kb, "jj.ortrue", 1), 0,
-      "GAP: logic says 1 — `base(9)` fails, `true` succeeds. `or` is the kernel rule " +
-      "over `push_choice`, a resolver primitive scaland lacks (WI-20260902-373AW)")
+      "GAP (WI-20260908-NARC7): push_choice now runs, but a nested `true` still " +
+      "names no clause; logic says 1")
     assertEquals(answers(kb, "jj.pint", 1), 0,
       "GAP: rustland REFUSES `:- 42`, located (J38JE item 4); here the clause is silently dead")
   }

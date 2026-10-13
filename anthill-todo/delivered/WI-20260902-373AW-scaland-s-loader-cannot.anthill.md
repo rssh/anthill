@@ -3,9 +3,9 @@
 - id: WI-20260902-373AW-scaland-s-loader-cannot
 - created: 2026-09-02T06:15:10Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-02T06:15:10Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-13T15:12:05Z
 
 - acceptance: scaland-sbt-test
 
@@ -95,4 +95,8 @@ PARTLY DELIVERED by WI-20261008-T290W, 2026-10-08; this ticket stays Open for `o
 LANDED. The `..` rung (`Loader.lookupWritten`, `anthill.intern.absolutePathTarget`). The written `not` / `!` is NAF: 1 over an empty predicate, 0 over one that holds, the comma control beside it. The loud half: a `..` path naming nothing is `unresolved name`, minted or written, so an operator in a KB without the stdlib is a load error. The census: a clean stdlib load plus all fourteen operators in goal position holds no symbol named `..…`. All in `AbsoluteNameTest`, row `the address an operator is minted with resolves, or is refused`.
 
 REMAINS. `or` / `and` resolve to `anthill.kernel.or` / `.and` and answer nothing; `orFirst`, `barFirst`, `andBoth`, `ampBoth` are pinned at 0 in that row. The kernel defines them over `push_choice` / `push_and`, resolver primitives scaland does not have.
+
+### 2026-10-13T15:12:04Z — feedback — codex
+
+Implemented the remaining Scala resolver primitives: kernel push_choice tries the left and right goals with independent incoming substitutions and the same caller tail; push_and splices both goals before the tail with shared bindings. Registered both builtin tags at their kernel operation symbols. Malformed binary primitive calls raise an explicit IllegalArgumentException instead of silently failing. AbsoluteNameTest now asserts written or/| and and/& answer 1, preserving the NAF, comma, census and loud absolute-name refusal checks. BinaryControlTest drives either/neither/both disjuncts, nested choice, duplicate results, shared tails, incoming and branch-local bindings, conjunction backtracking and delayed NAF. Back-out measurement disabling binary dispatch: choice, conjunction, malformed-call and written-operator rows failed; the standalone comma control passed (4 failed, 15 passed). Final sbt testFull: 700 tests passed (659 core, 40 SMT, 1 Scala generator); git diff --check passed. Direct diff review completed; /code-review skill unavailable and therefore not run. Nested Boolean constant goal behavior remains the existing NARC7 gap. No specification change.
 

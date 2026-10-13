@@ -166,6 +166,10 @@ class SearchStream private (
     kb.getBuiltin(goal) match
       case Some(BuiltinTag.Not) =>
         return stepNaf(kb, goal, depth, delayMode)
+      case Some(BuiltinTag.PushChoice) =>
+        return stepBinaryControl(kb, goal, depth, delayMode, choice = true)
+      case Some(BuiltinTag.PushAnd) =>
+        return stepBinaryControl(kb, goal, depth, delayMode, choice = false)
       case Some(tag) =>
         Builtins.execute(kb, tag, goal, frame.subst) match
           case BuiltinResult.Success =>
@@ -264,6 +268,35 @@ class SearchStream private (
 
       stack += Frame(newGoals, newSubst, frame.depth + 1, FrameState.Init(newDelay))
 
+    Some(StepResult.Continue)
+
+  /** WI-373AW: splice goals before the caller's tail. Choice branches inherit
+    * independent snapshots of the incoming substitution; left-branch bindings must
+    * never leak into the right branch. `BinaryControlTest` drives both continuations
+    * and the shared tail; its comma control passes with this dispatch backed out. */
+  private def stepBinaryControl(
+    kb: KnowledgeBase, goal: TermId, depth: Int, delayMode: DelayMode, choice: Boolean
+  ): Option[StepResult] =
+    val frame = stack.last
+    kb.getTerm(goal) match
+      case fn: Term.Fn if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
+        val tail = frame.goals.drop(1)
+        val nextState = FrameState.Init(delayMode.reset)
+        if choice then
+          // LIFO: retain the right continuation below the left one so DFS exhausts
+          // the left branch (including its tail) before trying the right branch.
+          val leftSubst = frame.subst.snapshot()
+          frame.goals = ArrayBuffer(fn.posArgs(1)) ++= tail
+          frame.depth = depth + 1
+          frame.state = nextState
+          stack += Frame(ArrayBuffer(fn.posArgs(0)) ++= tail,
+            leftSubst, depth + 1, nextState)
+        else
+          frame.goals = ArrayBuffer(fn.posArgs(0), fn.posArgs(1)) ++= tail
+          frame.depth = depth + 1
+          frame.state = nextState
+      case _ =>
+        throw IllegalArgumentException("binary resolver primitive requires exactly two positional goals")
     Some(StepResult.Continue)
 
   private def stepNaf(

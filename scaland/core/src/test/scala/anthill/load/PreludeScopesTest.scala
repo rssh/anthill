@@ -85,13 +85,14 @@ class PreludeScopesTest extends munit.FunSuite:
       ("anthill.reflect", "nonvar"), ("anthill.reflect", "ground"),
       ("anthill.reflect", "qualified_name"), ("anthill.reflect", "short_name"),
       ("anthill.reflect", "lookup_symbol"), ("anthill.kernel", "not"),
+      ("anthill.kernel", "push_choice"), ("anthill.kernel", "push_and"),
       ("anthill.reflect.typing", "is_entity_of"),
       ("anthill.reflect.typing", "extract_sort_ref"),
       ("anthill.reflect", "resolve_sort_instantiation_param"),
       ("anthill.reflect", "scope"), ("anthill.reflect", "kind"),
       ("anthill.reflect", "field_access"))
 
-    // …so a 13th builtin has to be added here too, rather than going silently unchecked.
+    // Every new builtin must be added here too, rather than going silently unchecked.
     assertEquals(builtins.length, BuiltinTag.values.length,
       "every BuiltinTag should be listed here")
 

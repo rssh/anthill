@@ -648,5 +648,5 @@ class KnowledgeBase:
 
 enum BuiltinTag:
   case NonVar, Ground, QualifiedName, ShortName, LookupSymbol
-  case IsEntityOf, ExtractSort, Not
+  case IsEntityOf, ExtractSort, Not, PushChoice, PushAnd
   case ResolveSortInstParam, Scope, Kind, FieldAccess

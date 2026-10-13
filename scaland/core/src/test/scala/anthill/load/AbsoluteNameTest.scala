@@ -407,11 +407,10 @@ class AbsoluteNameTest extends munit.FunSuite:
     val marked = (0 until kb.symbols.size)
       .map(i => kb.symbols.name(TermSymbol.fromRaw(i))).filter(_.startsWith(".."))
     assertEquals(marked, IndexedSeq.empty[String])
-    // GAP, pinned at what scaland gives: `or` / `and` RESOLVE now and still answer
-    // nothing, because they are kernel rules over `push_choice` / `push_and`, resolver
-    // primitives scaland does not have. Logic says 1 for all four; 373AW owns them.
+    // WI-373AW: these four fail with binary-control dispatch backed out; the comma
+    // and NAF controls above pass either way.
     for q <- Seq("orFirst", "barFirst", "andBoth", "ampBoth") do
-      assertEquals(answers(kb, q), 0, s"GAP (WI-20260902-373AW): $q")
+      assertEquals(answers(kb, q), 1, q)
     // AND THE LOUD HALF: in a KB that does not hold the library, the address names
     // nothing and says so, by the operator's own position. It used to load.
     val errs = refusal("rule r(1) :- 1 + 2 = 3")

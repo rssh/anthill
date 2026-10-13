@@ -28,6 +28,8 @@ object Builtins:
       case BuiltinTag.IsEntityOf => executeIsEntityOf(kb, goal, subst)
       case BuiltinTag.ExtractSort => executeExtractSort(kb, goal, subst)
       case BuiltinTag.Not => BuiltinResult.Delay // NAF handled specially
+      case BuiltinTag.PushChoice | BuiltinTag.PushAnd =>
+        throw IllegalStateException("resolver control primitive must be handled by SearchStream")
       case BuiltinTag.ResolveSortInstParam => BuiltinResult.Delay // TODO
       case BuiltinTag.Scope => executeScope(kb, goal, subst)
       case BuiltinTag.Kind => executeKind(kb, goal, subst)
