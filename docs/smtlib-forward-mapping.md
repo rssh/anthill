@@ -288,6 +288,33 @@ The lift function (`anthill_smt_gen::lift_rule_to_implication_clause`) emits `(f
 
 **Citability gate.** Only rules with an explicit `-:` clause are citable. Classical violation-shape rules (no `-:`) describe an *emptiness* claim ("body unsat") rather than an implication, and the lift refuses them with a clear error. Authors who want to cite a violation-shape claim must rewrite it in positive form.
 
+**A premise that is a rule's predicate** (WI-20261012-CDHSQ; proposal 030 γ.1). A lift does not chase a rule call into its body, and it does not pass the call over either: the predicate is an **uninterpreted relation**, named by its qualified name and its arity, over the sorts of the call's arguments, declared once in the citing proof's document. The citing proof states *its own* call of that predicate with the same relation — the call a structured proof's conclusion skips, and the call an ordinary proof reads the body of, beside what it reads — and that is what discharges the premise:
+
+```
+rule related(?a, ?b) :- gte(?a, ?b)
+rule lemma: gte(?a, ?b + 1.0) :- related(?a, ?b)       -- cited
+rule holds: gte(?x, ?y + 1.0) :- related(?x, ?y)
+proof holds using lemma by z3 end
+```
+
+```smt2
+(set-logic UFLRA)
+(declare-fun ns.related/2 (Real Real) Bool)
+(declare-const var_0 Real)
+(declare-const var_1 Real)
+; Cited-lemma assumptions (from `using` clause).
+(assert (forall ((var_0 Real) (var_1 Real))
+  (=> (ns.related/2 var_1 var_0) (>= var_1 (+ var_0 1.0)))))
+(assert (>= var_1 var_0))                       ; the body of `related`, read
+(assert (ns.related/2 var_1 var_0))             ; the call, stated
+(assert (not (>= var_1 (+ var_0 1.0))))
+(check-sat)                                     ; unsat
+```
+
+A premise that is a fact's predicate (`start(?d)` beside `fact start(5.0)`), a one-argument rule's, a predicate of no arguments named bare (`ready`, the relation `ns.ready/0`), or a relational call of a bodied operation (`double(?x, ?r)`) is the same, the proof's call written with the value its own reading gave the argument (`(ns.start/1 5.0)`). A proof that cites no lemma with such a premise states no call and declares nothing: its document is the one it was. Passed over, as the premise was until this, the lift was `(=> true …)` — the lemma's conclusion handed over unconditionally — and `gte(?c, 5.0) :- gte(0.0, ?c)` proved by citing it.
+
+Refused, and not left out. In the lift and in the proof alike: a call written with named arguments; an argument that is a bare name (a constructor, `Leader`; a constant of a carrier, which nothing here gives a sort) or a string; an argument that is no variable and that nothing gives a sort, under a scope that has an abstract parameter; a premise and a call at two signatures (an argument of another sort). In the proof: a call inside the body of an inlined rule that names that rule's own variable, which the document cannot tell from the proof's of the same index (WI-20261012-BR7P3). In the lift: a premise that is a connective over goals (`a | b`, `a & b` — `or` and `and` are rules of the kernel, and were passed over by the same branch), and an entity premise's slot that is no variable (`Mode(kind: 2.0, cap: ?c)` — the slot was passed over, and with it which fact the lemma is of). A *head* that is a rule's predicate is no conclusion in this reading — its variables are the rule's parameters — so such a rule is "not citable", as it was.
+
 ## 5. Spec Satisfaction and Requires
 
 ### 5.1 Requires as Axiom Import
@@ -347,7 +374,8 @@ What decides each line:
 | `constraint c: conclusion :- guard` | `(=> guard conclusion)` |
 | a requirement at a concrete carrier (`Eq[T = Int64]`) | no law: a law is asserted only where every variable it quantifies is of a declared sort — `Int64` and `Float` are modelled by the reals, where a law is a theorem already or not known to hold. Left out and said |
 | a law's premise that is a rule's predicate; a law that reads an entity's facts | the law is left out and said |
-| the logic | the one written, with `UF` when a function is declared and without `QF_` when a hypothesis is quantified |
+| a cited lemma's premise that is a rule's predicate | the uninterpreted relation of the predicate's name (§4.5, *A premise that is a rule's predicate*) — a lemma is proved and is handed to one proof, which states its own call; a law is of every provider, and is left out |
+| the logic | the one written, with `UF` when a function or a relation is declared and without `QF_` when a hypothesis is quantified |
 
 ### 5.2 Fact-Based Spec Satisfaction
 

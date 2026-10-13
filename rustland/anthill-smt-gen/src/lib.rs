@@ -29,7 +29,9 @@ use std::rc::Rc;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
-use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
+use anthill_core::kb::node_occurrence::{
+    for_each_child, materialize_from_handle, Expr, NodeOccurrence,
+};
 use anthill_core::kb::term::{Literal, Term, Var, VarId};
 use anthill_core::kb::typing::is_typed_head_domain_goal;
 use anthill_core::kb::{KnowledgeBase, ProgramClause};
@@ -89,6 +91,8 @@ pub struct ProofConfig {
     /// Set by `dispatch_structured` for the conclude-clause discharge
     /// so the parent's body doesn't drag transitive nonlinear /
     /// fact-bound arithmetic into the consumer's preamble.
+    /// A call that is the premise of a lemma the proof cites is not chased either,
+    /// and is STATED (WI-20261012-CDHSQ, `BodyIs`).
     pub abstract_body: bool,
     /// WI-20261012-ZZ7PH — the LAWS of the requirements of the proof's enclosing
     /// scopes, each a whole `(assert (forall …))` as [`lower_spec_law`] gives it. They
@@ -186,12 +190,7 @@ pub fn emit_satisfiability_check_with(
     rule_qn: &str,
     config: &ProofConfig,
 ) -> Result<String, SmtGenError> {
-    let mut emitter = Emitter::new(kb);
-    emitter.abstract_mode = config.abstract_body;
-    emitter.collect_rule(rule_qn)?;
-    emitter.collect_facts_for_referenced_entities()?;
-    emitter.declarations.merge(&config.declarations)?;
-    Ok(emitter.render_satisfiability_with(rule_qn, config))
+    emit_satisfiability_check_with_deps(kb, rule_qn, config).map(|(smt, _)| smt)
 }
 
 /// Like `emit_satisfiability_check_with` but additionally returns the
@@ -204,6 +203,7 @@ pub fn emit_satisfiability_check_with_deps(
 ) -> Result<(String, Vec<String>), SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.abstract_mode = config.abstract_body;
+    emitter.body_is = BodyIs::hypotheses_of(config);
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities()?;
     emitter.declarations.merge(&config.declarations)?;
@@ -246,6 +246,13 @@ pub fn emit_satisfiability_check_with_deps(
 /// re-emitted here — the consumer's preamble already declares them
 /// since the consumer chases the same facts.
 ///
+/// **A premise that is a rule's predicate** (`conclusion :- related(?a, ?b)` — a
+/// bodied rule's, a fact's, a one-argument rule's alike) is neither chased into its
+/// body nor passed over: it is `(related a b)`, the uninterpreted relation of the
+/// predicate's name, which [`lift_rule`]'s declarations carry to the consumer
+/// (WI-20261012-CDHSQ, `BodyIs`). The consumer discharges it by its own
+/// call of the predicate.
+///
 /// **Caller-side discharge gate (proposal 030 phase γ.1):** this
 /// function only emits the lifted statement; the caller MUST first
 /// confirm the cited rule's ProofRecord is Discharged (or that
@@ -257,14 +264,29 @@ pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
 ) -> Result<Vec<String>, SmtGenError> {
-    lift_rule(kb, rule_qn).map(|lifted| lifted.clauses)
+    let lifted = lift_rule(kb, rule_qn)?;
+    // The clauses alone are a whole hypothesis only where they use nothing a document
+    // must declare. One that names a carrier's sort, a spec's operation at it, or the
+    // relation of a rule's predicate is half of what the consumer needs — the relation
+    // undeclared is a solver error, and a consumer not told of it never states its own
+    // call — so it is not handed out by this door.
+    if !lifted.declarations.is_empty() {
+        return Err(SmtGenError::new(format!(
+            "the lift of '{rule_qn}' uses what its consumer's document must declare — a \
+             carrier's sort, an operation at it, or the relation of a rule's predicate: \
+             take it with its declarations (`lift_rule`)"
+        )));
+    }
+    Ok(lifted.clauses)
 }
 
 /// What a cited lemma gives its consumer's document: the clauses
 /// [`lift_rule_to_implication_clause`] describes, and — WI-20261012-ZZ7PH — what they
 /// use and the theory does not have. A lemma about a scope's abstract parameter
 /// quantifies over the parameter's own sort and names a spec's operations on it, and
-/// the consumer declares both, once, with what its own body uses.
+/// the consumer declares both, once, with what its own body uses. And a lemma with a
+/// premise that is a rule's predicate names that relation (WI-20261012-CDHSQ), which
+/// the consumer declares and writes its own calls with.
 #[derive(Debug, Clone, Default)]
 pub struct Lifted {
     pub clauses: Vec<String>,
@@ -297,6 +319,9 @@ fn lift_one_clause(
     // doesn't quote (unsound for a universal claim) and would also
     // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
+    // WI-20261012-CDHSQ — and nothing of the body is passed over with what is not
+    // chased: a premise that is a rule's predicate is the relation of its name.
+    emitter.body_is = BodyIs::Antecedent;
     emitter.collect_rule_clause(rule_qn, &clause)?;
     emitter.collect_facts_for_referenced_entities()?;
 
@@ -448,6 +473,7 @@ struct Emitter<'kb> {
     /// fact-match/inline) — those vars stay free in the rendered
     /// SMT. Used by `lift_rule_to_implication_clause` (always) and
     /// by structured-proof parent discharges (via ProofConfig).
+    /// Whether a call so skipped is STATED is `body_is`'.
     abstract_mode: bool,
     /// [`SMT_BUILTINS`] resolved against `kb` (WI-897). WHICH OPERATION MEANS
     /// WHICH SMT FORM, decided by symbol identity — see the table's own doc for
@@ -468,8 +494,8 @@ struct Emitter<'kb> {
     /// LOWERING A LAW ([`lower_spec_law`]): the requirement it is lowered at, as its
     /// text. A law is read as a cited lemma is, with three differences that each hang
     /// on this: its own bound names the SPEC's parameter, which is what the requirement
-    /// binds it to; a premise that is a rule's predicate is not passed over; and a
-    /// variable nothing gives a sort is refused whatever scope it is in.
+    /// binds it to; a premise that is a rule's predicate is refused, where a lemma's is
+    /// stated; and a variable nothing gives a sort is refused whatever scope it is in.
     lowering_law: Option<String>,
     /// The clause read is a STEP of a structured proof (`ProgramClause::shared_arity`),
     /// which says what a refusal can advise: a step writes no bound.
@@ -481,6 +507,62 @@ struct Emitter<'kb> {
     /// satisfiability check does not: there a head variable the body leaves unbound is
     /// the rule's parameter, and free in the document like any other.
     result_required: bool,
+    /// WI-20261012-CDHSQ — what the body being read is to the document, which says
+    /// what may be left out of it.
+    body_is: BodyIs,
+    /// The rules whose bodies are being read INLINED into the clause, outermost first.
+    /// Inside one a name is not what it is in the clause's own frame: the rule's head
+    /// variables are written as what the caller passed, and a variable of its own goes
+    /// by the name the caller's variable of the same index has (WI-20261012-BR7P3) —
+    /// which [`Self::state_predicate_call`] refuses to state a relation of.
+    inlining: Vec<String>,
+}
+
+/// WI-20261012-CDHSQ — WHAT A CLAUSE'S BODY IS TO THE DOCUMENT BEING WRITTEN, which
+/// says what may be left out of it.
+///
+/// A cited lemma `conclusion :- related(?a, ?b)` is handed to its consumer as an
+/// implication, and `related(?a, ?b)` is its antecedent. The lift does not read the
+/// predicate's body — that would condition the lemma on facts the consumer does not
+/// quote — and it may not pass the call over either, which hands the consumer the
+/// conclusion unconditionally. So the predicate is a relation the document declares and
+/// nothing interprets ([`Emitter::state_predicate_call`]): the lift's premise is written
+/// with it, and so is the consumer's own call, which is what discharges the premise.
+enum BodyIs {
+    /// THE ANTECEDENT of a cited lemma's lift. A goal left out of it is a premise
+    /// dropped, and the lemma handed on then says more than was proved: every call of a
+    /// rule's predicate is stated, and a goal that cannot be written whole is refused.
+    Antecedent,
+    /// THE HYPOTHESES of the proof being discharged. A conjunct left out of a
+    /// satisfiability check can only lose an `unsat`, so a rule call may go unread
+    /// (`abstract_mode`). What the proof states is its own calls of the relations the
+    /// lemmas it cites declared ([`Declarations::predicates`]) — a call it skips and one
+    /// it reads the body of alike — and no other, so a proof that cites no such lemma
+    /// has the document it had. None for a law, which is refused such a premise before
+    /// this is asked, and for an obligation (`emit_obligation_with`), whose document
+    /// holds none of its body's assertions.
+    Hypotheses { cited: BTreeSet<String> },
+}
+
+impl BodyIs {
+    /// The body of a proof under `config`: it states what its hypotheses declared.
+    fn hypotheses_of(config: &ProofConfig) -> Self {
+        Self::Hypotheses {
+            cited: config
+                .declarations
+                .predicates()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    /// Is a call of `relation` (`ns.related/2`) stated?
+    fn states(&self, relation: &str) -> bool {
+        match self {
+            Self::Antecedent => true,
+            Self::Hypotheses { cited } => cited.contains(relation),
+        }
+    }
 }
 
 impl<'kb> Emitter<'kb> {
@@ -507,6 +589,10 @@ impl<'kb> Emitter<'kb> {
             reading_step: false,
             global_names: Vec::new(),
             result_required: false,
+            body_is: BodyIs::Hypotheses {
+                cited: BTreeSet::new(),
+            },
+            inlining: Vec::new(),
         }
     }
 
@@ -731,7 +817,22 @@ impl<'kb> Emitter<'kb> {
         if is_typed_head_domain_goal(self.kb, goal) {
             return Ok(());
         }
-        let Some((functor, pos_args, named_args)) = occ_as_fn(goal) else {
+        // WI-20261012-CDHSQ (/code-review) — A RULE'S PREDICATE OF NO ARGUMENTS, named
+        // bare, is the call `ready()` is: the two spellings are one term, and a step of a
+        // structured proof stores the bare one. It was "non-Fn body goal" where `ready()`
+        // in a rule's body was read, so one premise had two treatments.
+        let bare_call = match goal.as_expr() {
+            Some(Expr::Ref(name) | Expr::Ident(name))
+                if !self.kb.program_clauses_by_functor(*name).is_empty() =>
+            {
+                Some(*name)
+            }
+            _ => None,
+        };
+        let Some((functor, pos_args, named_args)) = bare_call
+            .map(|name| (name, &[][..], &[][..]))
+            .or_else(|| occ_as_fn(goal))
+        else {
             return Err(SmtGenError::new(format!(
                 "non-Fn body goal: {:?}",
                 goal.as_expr().map(std::mem::discriminant)
@@ -802,9 +903,19 @@ impl<'kb> Emitter<'kb> {
                 // variable to itself, and a bound variable is not declared: the document
                 // named a constant it never declared, and the solver said so ("unknown
                 // constant var_1") where a verdict was expected.
-                let names_itself = smt_tokens(&rhs_smt).contains(&bound.as_str());
+                //
+                // WI-20261012-CDHSQ (/code-review) — ASKED OF THE TERM, NOT OF ITS TEXT. The
+                // text is in the names of the frame the document is written in, and inside
+                // an inlined rule that is the caller's: `rule dbl(?a, ?r) :- ?r = ?a + ?a`
+                // called `dbl(?x, ?r)` has the right side `(+ var_0 var_0)`, which is the
+                // caller's `?x`, and the callee's `?r` is `var_0` by its own index. Read
+                // off the text, the definition was a CONDITION on the caller's `?x` —
+                // `(= var_0 (+ var_0 var_0))`, so x = 0 — and `lt(?x, 0.0)` beside it
+                // proved unsatisfiable. The variable is written as this frame reads it.
+                let names_itself = debruijn_vars_of(&pos_args[1]).contains(i);
                 if names_itself {
-                    self.assertions.push(format!("(= {bound} {rhs_smt})"));
+                    let itself = self.translate_expr(&pos_args[0], bindings)?;
+                    self.assertions.push(format!("(= {itself} {rhs_smt})"));
                     return Ok(());
                 }
                 bindings.insert(bound, rhs_smt);
@@ -838,6 +949,26 @@ impl<'kb> Emitter<'kb> {
         // ?bind_var becomes an SMT const bound to the corresponding
         // field's value from the matching ground fact.
         if self.is_known_entity(functor) {
+            // WI-20261012-CDHSQ (/code-review) — IN A LIFT A SLOT THAT IS NO VARIABLE IS
+            // REFUSED. `Mode(kind: 2.0, cap: ?c)` says which fact it is of, and the loop
+            // below passes that slot over: the lift came back `(=> (>= var_1 cap) …)`,
+            // its `kind` premise gone, and a proof about the `Mode` of another kind
+            // proved by citing it (measured). In a proof's own body the slot left out
+            // is a hypothesis left out, which can only lose an `unsat`.
+            if matches!(self.body_is, BodyIs::Antecedent) {
+                let unread = named_args
+                    .iter()
+                    .find(|(_, slot)| !matches!(slot.as_expr(), Some(Expr::Var(_))));
+                if let Some((field, _)) = unread {
+                    return Err(SmtGenError::new(format!(
+                        "the premise `{qn}` is an entity and its field `{}` is given a value \
+                         that is no variable, which is not read into a lift, and is not \
+                         passed over: a cited lemma's entity premise binds its fields to \
+                         variables",
+                        self.kb.local_name_of(*field)
+                    )));
+                }
+            }
             let entity_qn = qn.to_string();
             self.referenced_entities.insert(entity_qn.clone());
             for (field_sym, val_occ) in named_args {
@@ -870,12 +1001,23 @@ impl<'kb> Emitter<'kb> {
         // call is safe to skip for the opposite reason — it CONSTRAINS nothing here, its
         // vars stay free, and an ambient lift is what re-states it. Everything else falls
         // through to the loud `unhandled body goal functor` below.
+        //
+        // WI-20261012-CDHSQ — AND THAT REASON IS THE PROOF'S OWN BODY'S, NOT A LIFT'S. A
+        // conjunct left out of a satisfiability check can only lose an `unsat`. In a
+        // lift the same call is a PREMISE, and passing it over is the act the paragraph
+        // above made loud for a premise it could not read — only the rule call was left
+        // silent. MEASURED: `rule lemma: gte(?a, ?b) :- related(?a, ?b)` lifted to
+        // `(=> true (>= var_1 var_0))`, and a proof citing it proved `gte(?c, 5.0) :-
+        // gte(0.0, ?c)`. So a lift STATES the call, as the uninterpreted relation of the
+        // predicate's name, and a proof's body states its own call of a predicate a
+        // lemma it cites declared — which is how the premise is discharged
+        // ([`Self::state_predicate_call`], [`BodyIs`]).
         if self.abstract_mode && !self.kb.program_clauses_by_functor(functor).is_empty() {
-            // WI-20261012-ZZ7PH — BUT NOT IN A LAW. A cited lemma's premise is passed
-            // over on the reasoning above; a law is assumed, not proved, and a law
-            // without its premise is a stronger assumption than its spec makes:
-            // `eq(weight(?a), weight(?b)) :- related(?a, ?b)` became "every two weights
-            // are equal", and a claim that needed it proved.
+            // WI-20261012-ZZ7PH — AND NOT IN A LAW AT ALL. A law is assumed, not proved,
+            // and is of every provider; one with a premise that is a rule's predicate is
+            // left out, and said: `eq(weight(?a), weight(?b)) :- related(?a, ?b)` with
+            // the premise passed over became "every two weights are equal", and a claim
+            // that needed it proved.
             if self.lowering_law.is_some() {
                 return Err(SmtGenError::new(format!(
                     "the law's premise `{qn}` is a rule's predicate, which is not read into \
@@ -883,7 +1025,7 @@ impl<'kb> Emitter<'kb> {
                 )));
             }
             self.visited_rules.insert(qn.to_string());
-            return Ok(());
+            return self.state_predicate_call(functor, pos_args, named_args, bindings);
         }
 
         // Rule call: `<rule_qn>(?result_var)` — single-arg shorthand
@@ -908,7 +1050,10 @@ impl<'kb> Emitter<'kb> {
             };
             let inlined = self.translate_called_rule(qn)?;
             bindings.insert(synthetic_var_name(bind_idx), inlined);
-            return Ok(());
+            // WI-20261012-CDHSQ — and the call itself is held, beside what was read of
+            // it: a cited lemma whose premise it is has the relation and not the body.
+            // AFTER the reading, so an argument the reading bound is written as its value.
+            return self.state_predicate_call(functor, pos_args, named_args, bindings);
         }
 
         // Multi-pos-arg rule call: `<rule>(<a1>, ..., <aN>)`.
@@ -925,11 +1070,10 @@ impl<'kb> Emitter<'kb> {
         // a v1 concern.
         if !pos_args.is_empty() && named_args.is_empty() {
             let call_args: Vec<Rc<NodeOccurrence>> = pos_args.to_vec();
-            if self.try_match_fact_call(functor, &call_args, bindings)? {
-                return Ok(());
-            }
-            if self.try_inline_rule_call(qn, &call_args, bindings)? {
-                return Ok(());
+            if self.try_match_fact_call(functor, &call_args, bindings)?
+                || self.try_inline_rule_call(qn, &call_args, bindings)?
+            {
+                return self.state_predicate_call(functor, pos_args, named_args, bindings);
             }
         }
 
@@ -1134,12 +1278,14 @@ impl<'kb> Emitter<'kb> {
             .and_then(|()| self.infer_var_sorts(&body_goals))
             .err();
         if err.is_none() {
+            self.inlining.push(callee_qn.to_string());
             for goal in &body_goals {
                 if let Err(e) = self.process_body_goal(goal, &mut local) {
                     err = Some(e);
                     break;
                 }
             }
+            self.inlining.pop();
         }
         self.var_sorts = saved_sorts;
         // Capture the (possibly grown) callee entity_bindings before
@@ -1442,6 +1588,7 @@ impl<'kb> Emitter<'kb> {
         // The callee's frame is its own, and so are its variables' sorts
         // (WI-20261012-ZZ7PH).
         let saved_sorts = std::mem::take(&mut self.var_sorts);
+        self.inlining.push(callee_qn.to_string());
         let walked = (|| {
             self.seed_bounds(&clause)?;
             self.infer_var_sorts(&clause.body_nodes)?;
@@ -1451,6 +1598,7 @@ impl<'kb> Emitter<'kb> {
             }
             Ok(local_bindings)
         })();
+        self.inlining.pop();
         self.var_sorts = saved_sorts;
         let local_bindings: BTreeMap<String, String> = walked?;
         local_bindings
@@ -2459,6 +2607,22 @@ fn occ_as_fn(
         } => Some((*functor, args, named_args)),
         _ => None,
     }
+}
+
+/// The clause variables an occurrence names, at any depth, by frame index.
+pub(crate) fn debruijn_vars_of(occ: &Rc<NodeOccurrence>) -> BTreeSet<u32> {
+    let mut named = BTreeSet::new();
+    let mut pending = vec![Rc::clone(occ)];
+    while let Some(occ) = pending.pop() {
+        match occ.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(index))) => {
+                named.insert(*index);
+            }
+            Some(expr) => for_each_child(expr, |child| pending.push(Rc::clone(child))),
+            None => {}
+        }
+    }
+    named
 }
 
 /// The functor of a NULLARY constructor occurrence — a bare `Ref`/`Ident`, or an

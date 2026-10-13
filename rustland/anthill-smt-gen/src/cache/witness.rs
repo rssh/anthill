@@ -37,7 +37,16 @@ use super::key::state_hash;
 /// v3: `visited_rules` recorded, so `state_hash` can be recomputed against the
 /// current KB. Starts at 3 because the v2 directories were written under the
 /// shared counter and hold sidecars without it, which could never be checked.
-pub const WITNESS_FORMAT_VERSION: u32 = 3;
+///
+/// v4 (WI-20261012-CDHSQ): the schema is v3's. What moved is what a recorded
+/// witness is evidence OF: until this a cited lemma's premise that was a rule's
+/// predicate was passed over, so a proof that cited one was discharged against a
+/// hypothesis nobody had proved, and its sidecar says `Discharged` all the same —
+/// the state hash is of the rules it visited, and none of them changed. A sidecar
+/// vouches for a cite (`sidecar_cite_status`), so one written by an emitter that
+/// proved too much is moved out of reach, and each proof is recorded again.
+/// Decided with the user, 2026-10-12: a soundness fix of the emitter moves this.
+pub const WITNESS_FORMAT_VERSION: u32 = 4;
 
 /// Per-project witness sidecar directory.
 pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {

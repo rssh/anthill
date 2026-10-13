@@ -1403,6 +1403,17 @@ fn dispatch_z3(
             effective.push(qn);
         }
     }
+    // WI-20261012-CDHSQ (/code-review) — A CITED RULE'S OPERATIONS HAVE THEIR DEFINING
+    // RULES BEFORE IT IS LIFTED. A premise that calls a bodied operation relationally
+    // (`double(?x, ?r)`) is a rule's predicate once the operation's defining rule is
+    // synthesized, and that ran only for a rule being DISCHARGED (`run_smt_subquery`) —
+    // after its cites were lifted, and never for a lemma that is trusted. So whether
+    // such a cite lifted hung on which proof had run before it in the process: with
+    // one, the premise was a rule call (passed over until CDHSQ, the relation of its
+    // name since); with none, "unhandled body goal functor". Idempotent, as there.
+    for cited in &effective {
+        kb.synthesize_body_derived_defrules(cited);
+    }
     match render_cited_lemmas(
         kb,
         &effective,
