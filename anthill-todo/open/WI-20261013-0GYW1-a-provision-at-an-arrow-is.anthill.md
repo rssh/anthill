@@ -1,0 +1,17 @@
+## Attributes
+
+- id: WI-20261013-0GYW1-a-provision-at-an-arrow-is
+- created: 2026-10-13T15:41:15Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-10-13T15:41:15Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A PROVISION AT AN ARROW IS MATCHED BY ITS PARAMETERS' LABELS, SO A PROVIDER AT `(Int64, Int64) -> Int64` DOES NOT ANSWER A CALL AT `(p: Int64, q: Int64) -> Int64`, WHICH THE TYPE RELATION TAKES FOR THE SAME ARROW. `sort Apply { sort F = ?  operation run(f: F) -> Int64 }`, `sort P { provides Apply[F = (Int64, Int64) -> Int64]  operation run(f: (Int64, Int64) -> Int64) -> Int64 = 30 }`, `operation via(f: (p: Int64, q: Int64) -> Int64) -> Int64 = Apply.run(f)`, called `via(lambda (x: Int64, y: Int64) -> x)`: refused, "no provision of `Apply` answers at `(p: Int64, q: Int64) -> Int64`" — the refusal WI-20260929-12NKG added for a call at an arrow no provision answers, and it advises a row some sort already carries. MEASURED on 404b5ecf, each a load error: (1) the program above; (2) the two swapped — `P` provides at `(p: Int64, q: Int64) -> Int64`, `via` takes `(Int64, Int64) -> Int64`; (3) `sort User { requires Apply[F = (p: Int64, q: Int64) -> Int64]  operation via(f: (p: Int64, q: Int64) -> Int64) -> Int64 = Apply.run(f) }` with `P` at the arrow without labels: `User.via(…)` is refused "no impl provides `Apply`", and with the labels on the provider's side instead the same; (4) that requirement with two providers at the arrow without labels and `User.via[Apply = P2](…)`: "the call selected `P2`, which provides no instance". CONTROLS, measured: provider and call both at `(p: Int64, q: Int64) -> Int64` answer 30; `operation takes(f: (p: Int64, q: Int64) -> Int64)` called with `g: (Int64, Int64) -> Int64` loads, and so does the pair swapped — the type relation relates two parameter lists by position, the names lining up or one list written without names (kernel-language §4.4), and a requirement held against a call is compared the same way since 12NKG (`requires Apply[F = (Int64, Int64) -> Int64]` covers a body call at `(p: Int64, q: Int64) -> Int64`, its `labels` row); `takes(f: (x: Int64, y: Int64) -> Int64)` called with `g: (p: Int64, q: Int64) -> Int64` is refused "expected (x: Int64, y: Int64) -> Int64, got (p: Int64, q: Int64) -> Int64", and a provider at the one does not answer a call at the other, which is the same verdict. MECHANISM: `match_candidate_against_goal` arm (2) reads an arrow through `parametric_view_parts` as an application of the `Arrow` extractor and recurses into its `param` child, a named tuple whose `fields` list is matched as data, each field's name included; the type relation (`arrow_params_compatible`) and the cover (`parts_verdict` in dep_projection.rs) pair two parameter lists by `TupleAlign::PARAM_LIST`. TO DECIDE FIRST: whether an arrow written with parameter names and the same arrow written without are one type where a provision is looked up, as they conform to each other where a value is passed; if they are, whether two providers that differ only in that are a tie. FIX, if they are one: the matcher pairs an arrow's parameter lists as PARAM_LIST does, at the top of a binding and inside an applied sort. FOUND by WI-20260929-12NKG's /code-review. ACCEPTANCE: (1)–(4) answer by the provider (30), the two-label-sets control stays refused; full workspace green via rustland/scripts/test.sh.
+
