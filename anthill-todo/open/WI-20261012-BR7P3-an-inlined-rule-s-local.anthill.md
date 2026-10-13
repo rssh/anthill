@@ -33,3 +33,9 @@ THE CONTROL: the two reproductions are COUNTEREXAMPLE (sat), each a row that fai
 
 DONE WHEN: the control rows hold and fail when backed out; the documents that moved are listed with their verdicts before and after; the gate is green.
 
+## Changes
+
+### 2026-10-12T21:17:39Z — feedback — user
+
+FROM WI-20261012-CDHSQ: a call stated as the relation of a cited lemma's premise is REFUSED when it stands in the body of an inlined rule and names that rule's own variable (`Emitter::state_predicate_call`, the `inlining` stack; row `a_call_in_an_inlined_rule_that_names_its_own_variable_is_refused`) — stated, it was the relation of the caller's variable of the same index, and a false claim proved (docs/measurements/test-infrastructure/lemma-premise-2026-10-12.txt §6 (3)). When the names are told apart here, that refusal goes, and the row turns: such a call is stated of a variable of its own. And a second face of the same collision was a regression of ZZ7PH's, fixed there: whether `?x = <term>` names `?x` was asked of the term's text, which in an inlined rule is in the caller's names (§6 (1)).
+
