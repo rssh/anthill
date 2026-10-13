@@ -1063,6 +1063,13 @@ pub enum TypeErrorContext {
     BinderAnnotation {
         binder: Symbol,
     },
+    /// WI-20261012-80259 — a pattern written at a position that holds no value it could
+    /// match: a literal of another type, an applied constructor of another sort
+    /// ([`pattern_outside_position`]), a tuple pattern where no tuple can stand. `expected`
+    /// is the position's type and `actual` the type the pattern's values have.
+    PatternPosition {
+        pattern: WrittenPattern,
+    },
     /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §3, the `conditionals`
     /// and `matching` rows) — a position whose destination is `Bool`: an `if`
     /// CONDITION and a `match` arm GUARD.
@@ -1097,6 +1104,16 @@ pub enum TypeErrorContext {
         /// reader to guess.
         source: ElementTypeSource,
     },
+}
+
+/// WI-20261012-80259 — which pattern [`TypeErrorContext::PatternPosition`] is about. A
+/// literal names itself by its type, which the mismatch already prints; a constructor is
+/// named, since `actual` is the sort it belongs to and a sort may have many.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WrittenPattern {
+    Literal,
+    Constructor(Symbol),
+    Tuple,
 }
 
 /// WI-20260829-WBXGX — where the type a collection literal's element was judged against
@@ -1154,6 +1171,7 @@ impl TypeErrorContext {
             // The binder IS the subject here; there is no enclosing named entity to
             // report (a lambda is anonymous), so the name rides in `field_name` below.
             TypeErrorContext::BinderAnnotation { .. } => "<binder>".to_string(),
+            TypeErrorContext::PatternPosition { .. } => "pattern".to_string(),
             TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
             // (the `source` rides in `kind_tag`)
@@ -1179,6 +1197,7 @@ impl TypeErrorContext {
             TypeErrorContext::OperationTypeParams { .. } => "op-type-params",
             TypeErrorContext::DotProjection { .. } => "dot-projection",
             TypeErrorContext::BinderAnnotation { .. } => "binder-annotation",
+            TypeErrorContext::PatternPosition { .. } => "pattern-position",
             TypeErrorContext::BooleanPosition { .. } => "boolean-position",
             TypeErrorContext::CollectionElement {
                 source: ElementTypeSource::Declared,
@@ -1207,6 +1226,11 @@ impl TypeErrorContext {
             TypeErrorContext::OperationTypeParams { .. } => "type_args".to_string(),
             TypeErrorContext::DotProjection { member } => kb.local_name_of(*member).to_string(),
             TypeErrorContext::BinderAnnotation { binder } => kb.local_name_of(*binder).to_string(),
+            TypeErrorContext::PatternPosition { pattern } => match pattern {
+                WrittenPattern::Literal => "literal".to_string(),
+                WrittenPattern::Constructor(ctor) => kb.local_name_of(*ctor).to_string(),
+                WrittenPattern::Tuple => "tuple".to_string(),
+            },
             TypeErrorContext::BooleanPosition { slot, .. } => (*slot).to_string(),
             // 1-BASED, because it is read by whoever wrote the literal and they counted
             // from one. The 0-based `index` is kept in the variant so the value is the

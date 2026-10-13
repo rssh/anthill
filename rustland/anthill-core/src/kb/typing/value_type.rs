@@ -243,16 +243,7 @@ pub(super) fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> 
         NodeKind::Expr {
             expr: Expr::Constructor { name, .. },
             ..
-        } => {
-            let qn = kb.qualified_name_of(*name);
-            if qn == dt::qualified(dt::LIST_LITERAL) {
-                Some(SeqLiteral::List)
-            } else if qn == dt::qualified(dt::SET_LITERAL) {
-                Some(SeqLiteral::Set)
-            } else {
-                None
-            }
-        }
+        } => SeqLiteral::of_constructor(kb, *name),
         NodeKind::Expr {
             expr: Expr::ListLit(_),
             ..

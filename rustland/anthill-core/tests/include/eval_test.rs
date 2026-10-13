@@ -759,7 +759,7 @@ namespace test.m2_reduce
 
   operation reduce_set3(s: Set[T = Int64], acc: Int64, f: Function[(Int64, Int64), Int64]) -> Int64 =
     match s
-      case SetLiteral(a, b, c) -> f((f((f((acc, a)), b)), c))
+      case anthill.reflect.SetLiteral(a, b, c) -> f((f((f((acc, a)), b)), c))
       case _ -> acc
 
   operation main() -> Int64 =
@@ -1480,8 +1480,8 @@ namespace test.m2_set_dedup
 
   operation count(s: Set[T = Int64]) -> Int64 =
     match s
-      case SetLiteral(_, _, _) -> 3
-      case SetLiteral(_, _, _, _) -> 4
+      case anthill.reflect.SetLiteral(_, _, _) -> 3
+      case anthill.reflect.SetLiteral(_, _, _, _) -> 4
       case _ -> 0
   operation main() -> Int64 = count({10, 20, 20, 30})
 end
@@ -1506,7 +1506,7 @@ namespace test.m2_set
 
   operation first_of_three(s: Set[T = Int64]) -> Int64 =
     match s
-      case SetLiteral(a, _, _) -> a
+      case anthill.reflect.SetLiteral(a, _, _) -> a
       case _ -> 0
   operation main() -> Int64 = first_of_three({10, 20, 30})
 end

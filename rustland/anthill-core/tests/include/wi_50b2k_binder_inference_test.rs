@@ -412,7 +412,7 @@ end
 /// (`scrutinee_type` -> the component's annotation -> a fresh one), and rung 3 there still
 /// mints a `type_var`. Flipping it as the lambda's own rung 3 was flipped FAILED FOUR
 /// ROWS, all one error — "type mismatch in match.rule (rule): expected Int64, got ??pat" —
-/// on the shape `match s case SetLiteral(a, _, _) -> a` over a `Set[T = Int64]`.
+/// on the shape `match s case anthill.reflect.SetLiteral(a, _, _) -> a` over a `Set[T = Int64]`.
 /// `SetLiteral` is a parse-level marker with NO declared field types, so its sub-patterns
 /// arrive with no context type and NOTHING CAN EVER PIN THEM. That site serves both
 /// questions at once: a tuple binder's component is a type to be INFERRED, an undeclared
@@ -565,7 +565,7 @@ end
 ///
 /// `bind_and_label_pattern`'s fallback minted the same inert `type_var` for two different
 /// absences, and the ticket measured what flipping it wholesale costs: FOUR rows, all
-/// `match s case SetLiteral(a, _, _) -> a`, because an undeclared constructor's field can
+/// `match s case anthill.reflect.SetLiteral(a, _, _) -> a`, because an undeclared constructor's field can
 /// never be pinned. It is now SPLIT on [`UnpinnedBinder`] — this row drives the half that
 /// commits, `control_an_undeclared_constructors_field_stays_unnameable` the half that
 /// does not.
@@ -661,7 +661,7 @@ namespace {ns}
 fn control_an_undeclared_constructors_field_stays_unnameable() {
     let src = "namespace zz50b2k.setlit\n  import anthill.prelude.{Int64, Set}\n  \
        operation first_of_three(s: Set[T = Int64]) -> Int64 =\n    \
-         match s\n      case SetLiteral(a, _, _) -> a\n      case _ -> 0\n  \
+         match s\n      case anthill.reflect.SetLiteral(a, _, _) -> a\n      case _ -> 0\n  \
        rule value(?r) :- ?r <=> first_of_three({10, 20, 30})\nend\n";
     let mut kb = crate::common::try_load_kb_with(src)
         .unwrap_or_else(|errs| panic!("must load; got:\n{}", errs.join("\n")));

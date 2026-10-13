@@ -6242,6 +6242,47 @@ comparison. No ambiguity arises within one match: a sort's constructors have
 distinct short names, and the constructors compared for exhaustiveness are the
 resolved scrutinee symbols, compared by identity.
 
+A pattern is typed at the position it is written at. A literal pattern is admitted where
+a value of the literal's type is; an applied constructor pattern where a value that
+constructor builds is — at a position typed at the constructor's sort, at the entity
+itself, or at a sort the constructor's sort provides; a tuple pattern at a tuple type, and
+`()` at `Unit`. Anything else is a load error naming the position's type and the
+pattern's. Over `sort Box { entity box(v: Int64) }` and `sort Shape { entity circle(r:
+Int64) }`, with `b: Box`:
+
+```anthill
+match b case 0 -> 1 case _ -> 2              -- refused: expected Box, got Int64
+match b case circle(r) -> r case box(v) -> v -- refused: expected Box, got Shape
+match b case (x, y) -> 1 case _ -> 2         -- refused: expected Box, got a tuple
+let circle(r) = b                            -- refused, as the arm is
+match b case box(v: "a") -> 1 case _ -> 2    -- refused at the literal: expected Int64, got String
+```
+
+The rule is asked of every sub-pattern at the type threaded to it, and wherever a pattern
+is written: a `match` arm, guarded or not, a `let`, a lambda's parameter. A position typed
+at a sort that others provide admits their constructors — over `s: Stream[T = Int64]`,
+`case cons(h, t)` is admitted, a `List` being a `Stream`. A position typed at a type
+parameter of the enclosing operation or sort, or at a projection off one, admits none of
+the three: inside a body the parameter is rigid (§8.1), so `operation f[T](x: T) -> Int64
+= match x case 0 -> 1 case _ -> 2` is refused as `if x then …` is. A position whose type is
+still to be inferred is not judged, and the pattern is a run-time test there.
+
+The count of a tuple pattern's components is not part of the rule: a tuple-typed position
+admits a tuple pattern of any count, and one whose count differs does not match. A
+lambda's binder list is its parameters and not a tuple pattern; how many a slot takes is
+said where the lambda is passed. A lambda parameter with no annotation and no expected
+type takes the type its pattern states, where that is a literal's or a constructor's of a
+sort without parameters: `lambda circle(r) -> r` is a function of a `Shape`.
+
+An applied constructor's name is read as a bare one's is: a name the scope does not
+resolve is looked up among the position's own constructors, so a case needs no import —
+over `x: X`, `case e1(v)` is `X.e1`. The stored pattern names the constructor that was
+found, and a value matches it only when that constructor built it: two constructors whose
+names end in the same segment are two constructors. A name that denotes no constructor is
+a load error. The marker of a `{…}` or `[…]` literal is no case of `Set` or `List`; a
+pattern over a set's elements writes `anthill.reflect.SetLiteral(a, b, c)`, or imports
+the name.
+
 **Named-argument labels and field selectors resolve by short name, too.** The same
 lookup-not-identity principle governs other *written names matched against a known
 set*. A **named argument** (`op(label: v)`) resolves its `label` against the callee

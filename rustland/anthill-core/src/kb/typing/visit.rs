@@ -256,6 +256,9 @@ pub(super) fn visit_type(
                         .as_ref()
                         .and_then(|exp| extract_function_param_type(kb, exp))
                 })
+                // WI-20261012-80259: a literal or an applied constructor written as the
+                // parameter says what the parameter is.
+                .or_else(|| pattern_own_type(kb, &param))
                 .unwrap_or_else(|| {
                     // WI-20260904-50B2K — SYNTHESIS MINTS THE ENGINE'S OWN VARIABLE, and
                     // the two forms answer different questions. A `type_var` means "no
@@ -307,7 +310,7 @@ pub(super) fn visit_type(
                 // `C`'s constructors is still the binder the author wrote — and nothing
                 // is rewritten, so nothing has to be re-pointed. Asserted rather than
                 // asserted-in-a-comment: an empty sink is what makes discarding it safe.
-                PatternRole::Binder,
+                PatternRole::ParameterList,
                 // WI-20261001-80ZV8: a parameter's type is DECLARED — its annotation, or
                 // the parameter slot of the arrow the lambda is checked against — so a
                 // slot it leaves open is any instance, never the bottom type.
@@ -323,7 +326,7 @@ pub(super) fn visit_type(
             );
             debug_assert!(
                 param_repoints.is_empty(),
-                "WI-20260827-EJ5F5: `PatternRole::Binder` must never rewrite",
+                "WI-20260827-EJ5F5: a parameter binds, and must never rewrite",
             );
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
@@ -892,17 +895,8 @@ pub(super) fn visit_type(
             // UNCONDITIONAL, matching what the `Expr::ListLit` build frame already does
             // for the other carrier — the two spellings of one literal must not differ by
             // which hints their elements get.
-            let seq_element_expected: Option<Value> = {
-                let qn = kb.qualified_name_of(name);
-                let kind = if qn == dt::qualified(dt::LIST_LITERAL) {
-                    Some(SeqLiteral::List)
-                } else if qn == dt::qualified(dt::SET_LITERAL) {
-                    Some(SeqLiteral::Set)
-                } else {
-                    None
-                };
-                kind.and_then(|k| declared_element_type(kb, k, expected.as_ref()))
-            };
+            let seq_element_expected: Option<Value> = SeqLiteral::of_constructor(kb, name)
+                .and_then(|k| declared_element_type(kb, k, expected.as_ref()));
             // The instance the fields are hinted at: what the construction's own bracket
             // and receiver bind, then what the expectation says of the rest
             // ([`constructor_instance_for_hint`]).

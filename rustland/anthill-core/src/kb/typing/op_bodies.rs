@@ -1050,12 +1050,10 @@ pub(super) fn collect_covered_entities(
                 None => *has_wildcard = true,
             }
         }
-        // WI-672: resolve the constructor name to the scrutinee's ctor (by short name)
-        // so `covered` holds resolved symbols the exhaustiveness check compares canonically
-        // — a bare `some` would otherwise read as uncovered under `same_sort_canonical`.
-        Pattern::Constructor { name, .. } => {
-            covered.push(resolve_pattern_ctor(kb, *name, scrutinee_ctors).unwrap_or(*name));
-        }
+        // The pattern says which constructor it is: a case named without an import was
+        // found among the scrutinee's own where the pattern was bound
+        // (`position_constructor`), and the pattern read here is the one that returned.
+        Pattern::Constructor { name, .. } => covered.push(*name),
         // Literals don't cover enum entities.
         Pattern::Literal { .. } => {}
         // A tuple pattern matches a tuple, not an enum constructor — conservative
