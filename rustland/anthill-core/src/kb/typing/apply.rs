@@ -2798,6 +2798,17 @@ pub(super) fn check_apply_iter(
                     &selections,
                     enclosing_requires_clause.is_some(),
                 ) {
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
                     return Ok(TypeResult {
                         ty: resolved_ret,
                         env: env.clone(),
@@ -3078,6 +3089,17 @@ pub(super) fn check_apply_iter(
                             enclosing_op: env.enclosing_op(),
                         },
                     );
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
                     return Ok(TypeResult {
                         ty: resolved_ret.clone(),
                         env: env.clone(),
@@ -3122,6 +3144,17 @@ pub(super) fn check_apply_iter(
                 enclosing_sort,
                 pinned_spec,
             ) {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
                 return Ok(TypeResult {
                     ty: resolved_ret.clone(),
                     env: env.clone(),
@@ -3152,6 +3185,17 @@ pub(super) fn check_apply_iter(
                 let has_witness = spec_has_any_providers(kb, spec_sort)
                     || !spec_warrants_abstract_check(kb, spec_sort);
                 if has_witness {
+                    stamp_spec_op_supply(
+                        kb,
+                        env,
+                        occ,
+                        fn_sym,
+                        &subst,
+                        &selections,
+                        &projection_receivers,
+                        &held_views,
+                        span,
+                    )?;
                     return Ok(TypeResult {
                         ty: resolved_ret.clone(),
                         env: env.clone(),
@@ -3209,6 +3253,17 @@ pub(super) fn check_apply_iter(
             if matches!(&carrier_param_info, Some((.., true, _)))
                 || (carrier_param_sym.is_some() && pinned_carrier.is_none())
             {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
                 return Ok(TypeResult {
                     ty: resolved_ret.clone(),
                     env: env.clone(),
@@ -3972,21 +4027,45 @@ pub(super) fn check_apply_iter(
             // this site existed, nothing to supply either: its `requires
             // TypeValue[T = T1]` loaded clean and measured `reqs=[]` at dispatch.
             //
-            // GATED ON "nothing classified", not run unconditionally, because the
-            // concrete-dispatch arms above reach `classify_pin_or_apply_within`, which
-            // already stamped; running here too would build the same dictionaries a
-            // second time.
+            // NOT WHERE THE CALL WAS HANDED TO A MEMBER, because the concrete-dispatch arms
+            // above reach `classify_pin_or_apply_within`, which already stamped for that
+            // member; running here too would build dictionaries for another operation over
+            // them.
             //
-            // AND THE TWO `DeferToRequirement` ARMS STAMP TOO, as of this ticket: they
-            // call `classify()` directly rather than through
-            // `classify_pin_or_apply_within`, so a deferred call whose callee declares an
-            // op-level `requires` used to get no dictionary at all — the same
-            // silent-absence class this site fixes for the unclassified arm, one dispatch
-            // route over. They key the stamp on the SPEC op, which is what the typer has:
-            // the impl is chosen at run time from the dictionary, and §8.7 forbids an
-            // override from strengthening the clause, so the spec's chain is the one both
-            // ends agree on. So the gate below is exact — every classifying arm stamps.
-            if occ.classification_is_none() && !op_dict_entries(kb, fn_sym).op_entries().is_empty()
+            // IN A BODY THE EVALUATOR RUNS, A CALL WHOSE MEMBER IS CHOSEN LATER STAMPS TOO
+            // ([`stamp_spec_op_supply`]): one deferred to a requirement the caller holds —
+            // on its sort, on the operation, or as a defaulted member's slot — one left to
+            // the receiver's value, one unresolved. The first four return above, before
+            // this line, and each stamps where it returns; they returned with no
+            // dictionary, where the comment here said the deferred arms stamped and the
+            // gate was "nothing classified". The stamp is keyed on the SPEC op, which is
+            // what the typer has: §8.7 forbids an override from strengthening the clause,
+            // so the spec operation's requirements are the ones both ends agree on.
+            //
+            // A RULE-BODY GOAL KEEPS THE GATE IT HAD. Its member is found by the bridge
+            // from the argument values and its requirement is a condition of the clause
+            // (proposal 068 §2.1, §3), so a goal whose argument types nothing determines
+            // is not refused for a dictionary no frame would read. MEASURED with the
+            // stamp taken there too: `held(?c), word(?w), ?r <=> Desc.pair(?c, ?w)`, which
+            // answers, was refused at load.
+            //
+            // THREE WAYS OUT ARE LEFT AS THEY WERE, no program having been built that
+            // reaches them with a spec operation that states a requirement: the two
+            // instance-fact returns, and the no-match licence.
+            if env.in_evaluated_body() {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
+            } else if occ.classification_is_none()
+                && !op_dict_entries(kb, fn_sym).op_entries().is_empty()
             {
                 stamp_op_scoped_dicts(
                     kb,

@@ -2094,3 +2094,7 @@ mod wi_bvg8m_spec_laws_test;
 mod wi_zz7ph_requirement_chain_test;
 #[path = "include/wi_80259_pattern_typed_at_position_test.rs"]
 mod wi_80259_pattern_typed_at_position_test;
+#[path = "include/spec_op_requirement_at_member_test.rs"]
+mod spec_op_requirement_at_member_test;
+#[path = "include/op_fn_value_labelled_arrow_test.rs"]
+mod op_fn_value_labelled_arrow_test;

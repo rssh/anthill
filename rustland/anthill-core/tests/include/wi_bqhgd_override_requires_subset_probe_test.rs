@@ -25,6 +25,12 @@ use crate::common::{interp_for, try_load_kb_with};
 
 /// `SPEC_REQ` / `IMPL_REQ` are the spec's and the override's operation-level clauses;
 /// `BOX_REQ` is a clause on a PARAMETRIC provider sort, over its own parameter.
+///
+/// `CALLER_REQ` is `viaGeneric`'s own clause. Where the OVERRIDE states `requires Eq[T =
+/// B]`, the call in `viaGeneric` hands `Leaf.f` that requirement at `Q`, and `viaGeneric`
+/// holds it by `requires Eq[T = Q]`; without the clause the call is refused, as `Leaf.f(
+/// leaf(), y)` written there is (`spec_op_requirement_at_member_test`). Where only the
+/// spec operation states the clause, the member owes nothing and `viaGeneric` states none.
 const BASE: &str = r#"
 namespace test.bqhgd
   import anthill.prelude.{Int64, Eq}
@@ -52,16 +58,18 @@ namespace test.bqhgd
   end
 
   operation viaLeaf() -> Int64 = Desc.f(leaf(), 5)
-  operation viaGeneric[Q](y: Q) -> Int64 = Desc.f(leaf(), y)
+  operation viaGeneric[Q](y: Q) -> Int64 CALLER_REQ = Desc.f(leaf(), y)
   operation viaGenericCall() -> Int64 = viaGeneric(5)
   operation viaBox() -> Int64 = Desc.f(box(7), 5)
 end
 "#;
 
 fn src(spec: &str, imp: &str, bx: &str) -> String {
+    let caller = if imp.contains("T = B") { "requires Eq[T = Q]" } else { "" };
     BASE.replace("SPEC_REQ", spec)
         .replace("IMPL_REQ", imp)
         .replace("BOX_REQ", bx)
+        .replace("CALLER_REQ", caller)
 }
 
 const STRENGTHENS: &str = "'test.bqhgd.Leaf' overrides 'test.bqhgd.Desc.f' but does not refine it: \

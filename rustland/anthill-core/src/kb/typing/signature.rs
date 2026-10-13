@@ -2693,6 +2693,20 @@ fn render_op_signature(
     )
 }
 
+/// A member's type parameters beside those of the spec operation it implements: the two
+/// at each position, each as the bare name its bracket wrote and as its variable.
+///
+/// None where the two operations declare different numbers of them: pairing by position
+/// across two arities pairs parameters that have nothing to do with each other. A named
+/// requirement's name is a type parameter and is in the lists.
+pub(super) fn paired_type_params<'a>(
+    member: &'a [(Symbol, Var)],
+    spec_op: &'a [(Symbol, Var)],
+) -> impl Iterator<Item = (&'a (Symbol, Var), &'a (Symbol, Var))> {
+    let same_arity = member.len() == spec_op.len();
+    member.iter().zip(spec_op.iter()).filter(move |_| same_arity)
+}
+
 /// WI-347 — operation-override refinement check. A carrier's own operation
 /// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
 /// must REFINE the spec op: effects no wider, precondition no stronger,
@@ -2972,24 +2986,20 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // occurrence rewrite takes, built from the same pairs so they cannot disagree.
             let type_param_pairs: Vec<(Symbol, Symbol)> = {
                 let mut pairs = Vec::new();
-                if impl_info.type_params.len() == spec_info.type_params.len() {
-                    let impl_scope = kb.symbols.scope_id(impl_op);
-                    let spec_scope = kb.symbols.scope_id(spec_op);
-                    for ((ip, _), (sp, _)) in impl_info
-                        .type_params
-                        .iter()
-                        .zip(spec_info.type_params.iter())
-                    {
-                        // `None` is not a skipped case worth reporting: `type_param_sym`
-                        // reads the set `add_type_param` filled, so a parameter it does not
-                        // know is one no clause reference could have resolved to either.
-                        if let (Some(i), Some(s)) = (
-                            kb.symbols.type_param_sym(impl_scope, kb.local_name_of(*ip)),
-                            kb.symbols.type_param_sym(spec_scope, kb.local_name_of(*sp)),
-                        ) {
-                            if i != s {
-                                pairs.push((i, s));
-                            }
+                let impl_scope = kb.symbols.scope_id(impl_op);
+                let spec_scope = kb.symbols.scope_id(spec_op);
+                for ((ip, _), (sp, _)) in
+                    paired_type_params(&impl_info.type_params, &spec_info.type_params)
+                {
+                    // `None` is not a skipped case worth reporting: `type_param_sym`
+                    // reads the set `add_type_param` filled, so a parameter it does not
+                    // know is one no clause reference could have resolved to either.
+                    if let (Some(i), Some(s)) = (
+                        kb.symbols.type_param_sym(impl_scope, kb.local_name_of(*ip)),
+                        kb.symbols.type_param_sym(spec_scope, kb.local_name_of(*sp)),
+                    ) {
+                        if i != s {
+                            pairs.push((i, s));
                         }
                     }
                 }
@@ -3011,15 +3021,11 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // positions, the same arity rule.
             let type_param_var_align: Vec<(Var, TermId)> = {
                 let mut pairs = Vec::new();
-                if impl_info.type_params.len() == spec_info.type_params.len() {
-                    for ((_, iv), (_, sv)) in impl_info
-                        .type_params
-                        .iter()
-                        .zip(spec_info.type_params.iter())
-                    {
-                        if iv != sv {
-                            pairs.push((*iv, kb.alloc(Term::Var(*sv))));
-                        }
+                for ((_, iv), (_, sv)) in
+                    paired_type_params(&impl_info.type_params, &spec_info.type_params)
+                {
+                    if iv != sv {
+                        pairs.push((*iv, kb.alloc(Term::Var(*sv))));
                     }
                 }
                 pairs

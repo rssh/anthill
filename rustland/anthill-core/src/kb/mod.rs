@@ -2249,6 +2249,13 @@ pub struct KnowledgeBase {
     pub(crate) op_dict_chain_cache:
         RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
     pub(crate) op_frame_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
+    /// The frame slots a member reads its own requirements from, each beside the spec
+    /// operation's slot for the same requirement, per `(spec operation, member)`
+    /// (`typing::member_slots_at_spec_op`). Read off the two operations' frame chains at
+    /// every dispatch that lands on a member with a requirement of its own, and forgotten
+    /// with those chains.
+    pub(crate) member_slots_at_spec_op_cache:
+        RefCell<HashMap<(Symbol, Symbol), Rc<Vec<(Symbol, Symbol)>>>>,
 
     /// WI-869 / proposal 066 §7 — memoized DICTIONARY chain per (carrier, provision
     /// layout key): the sort's own `requires` chain followed by that provision's `:-
@@ -2772,6 +2779,7 @@ impl KnowledgeBase {
             synth_op_req_names_cache: RefCell::new(HashMap::new()),
             op_dict_chain_cache: RefCell::new(HashMap::new()),
             op_frame_names_cache: RefCell::new(HashMap::new()),
+            member_slots_at_spec_op_cache: RefCell::new(HashMap::new()),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),
             spec_carrier_param_cache: RefCell::new(HashMap::new()),
             spec_self_representing_cache: RefCell::new(HashMap::new()),
@@ -2824,6 +2832,7 @@ impl KnowledgeBase {
         self.synth_op_req_names_cache.borrow_mut().clear();
         self.op_dict_chain_cache.borrow_mut().clear();
         self.op_frame_names_cache.borrow_mut().clear();
+        self.member_slots_at_spec_op_cache.borrow_mut().clear();
     }
 
     /// Drop the memoized spec-op SLD dispatch results. Called when a

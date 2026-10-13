@@ -2039,14 +2039,24 @@ pub(crate) fn classify_pin_or_apply_within(
     // arm; the stamp is read on every apply route, so a pinned callee with an op-scoped
     // clause now gets its evidence too.
     if let Some(ctx) = op_supply {
+        // The call was written for `fn_sym`, and its substitution and selections are in
+        // that operation's parameters and names. A member it is handed to reads its own
+        // requirements in its own ([`call_at_member`]).
+        let at_member = (impl_op != fn_sym)
+            .then(|| call_at_member(kb, ctx.subst, ctx.selected, fn_sym, impl_op))
+            .flatten();
+        let (subst, selected) = match &at_member {
+            Some((subst, selected)) => (subst, selected.as_slice()),
+            None => (ctx.subst, ctx.selected),
+        };
         stamp_op_scoped_dicts(
             kb,
             occ,
-            ctx.subst,
+            subst,
             impl_op,
             ctx.caller_requires,
             ctx.param_rigids,
-            ctx.selected,
+            selected,
             OpSlotParkSite::for_call(
                 kb,
                 impl_op,
@@ -2217,6 +2227,52 @@ pub(crate) fn classify_pin_or_apply_within(
     };
     classify(kb, occ, class);
     Ok(())
+}
+
+/// A call of a spec operation whose member is chosen when the call RUNS — deferred to a
+/// requirement the caller holds, left to the receiver's value, or unresolved — owes the
+/// operation's own `requires` as any call does, and is stamped for the SPEC operation:
+/// the call's substitution and its selections are that operation's, and no member is
+/// known. The member that answers reads the slots under its own names
+/// ([`member_slots_at_spec_op`]).
+///
+/// A call handed to a member where it is written was stamped for that member
+/// ([`classify_pin_or_apply_within`]) and is left as it is. So is a rule-body goal: this
+/// is the supply of a frame the evaluator pushes, and a goal's member is found by the
+/// bridge from the argument values.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stamp_spec_op_supply(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+    subst: &Substitution,
+    selected: &[InstanceSelection],
+    param_arg_types: &HashMap<Symbol, Value>,
+    held: &[HeldSpecView],
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    use crate::kb::node_occurrence::ApplyDispatch;
+    if !env.in_evaluated_body()
+        || !matches!(occ.apply_dispatch(), ApplyDispatch::Unclassified)
+        || op_dict_entries(kb, fn_sym).op_entries().is_empty()
+    {
+        return Ok(());
+    }
+    stamp_op_scoped_dicts(
+        kb,
+        occ,
+        subst,
+        fn_sym,
+        env.enclosing_frame_chain(),
+        env.param_rigids(),
+        selected,
+        OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
+        param_arg_types,
+        held,
+        span,
+        RequirementUse::Call,
+    )
 }
 
 /// WI-822 LEG 1 — the call-site context [`build_op_scoped_dicts`] needs, bundled so
