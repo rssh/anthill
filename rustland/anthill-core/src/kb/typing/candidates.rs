@@ -1482,7 +1482,20 @@ fn sole_projected_row(kb: &mut KnowledgeBase, value: &Value) -> Value {
 
 /// The impl param a candidate head value NAMES, if it names one: a bare name — any
 /// spelling of it, read through the view (`Ref`, the nullary `Fn`, `Ident`) — whose
-/// symbol is one of `impl_params`. `None` otherwise.
+/// symbol is one of `impl_params`, or the parameter's own VARIABLE. `None` otherwise.
+///
+/// THE VARIABLE IS A THIRD SPELLING OF THE PARAMETER, read by role as the names are. A
+/// provision's binding that is a name or an applied sort is lowered with its leaves as
+/// references to the parameters (`sort_binding_to_value`); an arrow or a tuple there is
+/// lowered as a type position is, where a sort's parameter is the variable its
+/// declaration published ([`KnowledgeBase::canonical_type_param_var`]). So in `sort P {
+/// sort A = ?  provides Apply[F = (A) -> A] }` both `A`s are that variable, and read by
+/// name alone it was no parameter of `P`: arm (3) took it for a wildcard, which matches
+/// anything, binds nothing and counts as a written type. MEASURED — `P` answered a call
+/// at `(Int64) -> String`, one parameter at two types; with `requires Show[T = A]` it
+/// answered no call, its requirement left at `Show[T = P.A]`; and beside a provider at
+/// `(Int64) -> Int64` the call was a tie, where that one's head is strictly the more
+/// specific. The same provision at `Box[T = A]` did none of the three.
 ///
 /// WI-20260829-7QVD5 — CLASSIFIED BY THE SYMBOL'S ROLE, NOT ITS SPELLING. This read the
 /// raw term and accepted only `Ref`/`Ident`, and a test pinned the nullary `Fn{S}` of a
@@ -1506,6 +1519,7 @@ pub(super) fn impl_param_ref<V: TermView>(
             named_arity: 0,
         }
         | ViewHead::Ident(s) => s,
+        ViewHead::Var(Var::Global(vid)) => kb.type_param_of_canonical_var(vid)?,
         _ => return None,
     };
     impl_params.contains(&sym).then_some(sym)

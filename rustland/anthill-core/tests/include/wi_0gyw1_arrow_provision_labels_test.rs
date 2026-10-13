@@ -50,8 +50,8 @@
 //!   row there tells the two spellings apart. The tie is refused there as in an operation
 //!   body.
 //! * A PROVIDER'S OWN PARAMETER STANDING TWICE in its arrow (`provides Apply[F = (A) -> A]`)
-//!   is not held to one type by the lookup, here as before: the rows over such a provider
-//!   bind it once.
+//!   is `provision_own_parameter_in_structural_type_test`'s: the rows here over such a
+//!   provider bind it once.
 
 use crate::common::{assert_refused_naming, interp_for, load_errors_of};
 use anthill_core::eval::Value;

@@ -49,7 +49,14 @@
 //!    [`an_alias_written_above_the_parameter_it_fixes_is_the_parameter`],
 //!    [`a_sort_requirement_through_an_alias_fixing_a_parameter_is_supplied`],
 //!    [`a_conversion_through_an_alias_is_forwarded`],
-//!    [`a_condition_through_an_alias_holds_and_binds`].
+//!    [`a_condition_through_an_alias_holds_and_binds`]. MEASURED AGAIN 2026-10-13, the
+//!    provision lookup now reading a parameter's variable as the parameter
+//!    (`provision_own_parameter_in_structural_type_test`): the last TWO fail. The two
+//!    provision rows pass under this back-out, the lookup binding the variable; with that
+//!    reading backed out as well they fail again, and
+//!    [`an_alias_binding_a_tuple_reads_as_the_tuple_written_directly`] with them. The
+//!    requirement row passes under this back-out with that reading or without. Under 1
+//!    that day, 30 of the file's 46 rows fail, the tuple row among them.
 //! 5. THE PRE-SCAN EXPECTS EVERY NAMED SPEC TO DECODE (its `let … else` an `expect`):
 //!    [`the_reflect_view_named_as_a_spec_is_refused_as_a_data_sort`], as a panic.
 //! 6. A BARE NAME IN AN OPERATION'S `requires` STAYS AS WRITTEN (`bare_contract_spec`):
@@ -355,8 +362,12 @@ fn an_alias_written_above_the_parameter_it_fixes_is_the_parameter() {
 }
 
 /// A tuple binding keeps its parameters as a directly written clause keeps them, so the two
-/// spellings reach one verdict — here the same ambiguity between `Pairy` and `Special`.
-/// Was: the provision was about the alias, `Special` alone provided, and the call ran.
+/// spellings reach one verdict: where both providers answer, `Special`, at the tuple's own
+/// types, is the more specific (200), and at another component `Pairy` answers alone (100).
+/// Was: the provision was about the alias, `Special` alone provided, and the second call
+/// was refused — the first ran either way. (Until a provider's parameter inside a tuple
+/// was read as that parameter — `provision_own_parameter_in_structural_type_test` — the
+/// first call was a tie between the two, in both spellings.)
 #[test]
 fn an_alias_binding_a_tuple_reads_as_the_tuple_written_directly() {
     for spec in ["Store[State = (A, Int64)]", "StoreOfPair"] {
@@ -366,10 +377,15 @@ fn an_alias_binding_a_tuple_reads_as_the_tuple_written_directly() {
              sort Special\n    provides Store[State = (WIS, Int64)]\n    \
              operation peek(s: (WIS, Int64)) -> Int64 = 200\n  end"
         );
-        assert_refused_naming(
-            &load_errors(&program(&extra, "Store.peek((wis(n: 1), 5))")),
-            &["ambiguous dispatch"],
-            &format!("provides {spec}"),
+        assert_eq!(
+            run(&program(&extra, "Store.peek((wis(n: 1), 5))")),
+            200,
+            "provides {spec}: the provider at `(WIS, Int64)` is the more specific"
+        );
+        assert_eq!(
+            run(&program(&extra, "Store.peek((nosp(n: 1), 5))")),
+            100,
+            "provides {spec}: `Pairy` answers at `(NoSp, Int64)`"
         );
     }
 }
