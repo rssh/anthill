@@ -3028,11 +3028,22 @@ fn unplaced_binder(
     label: &Value,
 ) -> Option<Symbol> {
     let place = extract_effect_resource_sym(kb, label)?;
-    if aligned.contains_key(&place) || env.lookup_var(place).is_some() {
+    if aligned.contains_key(&place) {
         return None;
     }
+    binder_out_of_scope(kb, env, place).then_some(place)
+}
+
+/// Is `place` a binder that is no value in scope at the call (`env`)? A lambda's binder is one
+/// outside the lambda, an operation's parameter outside that operation, a callback parameter's
+/// place everywhere but in the row of its own arrow. Not a global identity (an ambient
+/// resource, a nullary constructor), which is in scope wherever it is named.
+fn binder_out_of_scope(kb: &KnowledgeBase, env: &TypingEnv, place: Symbol) -> bool {
+    if env.lookup_var(place).is_some() {
+        return false;
+    }
     // A per-site binder (a lambda's, a `let`'s, a pattern's) has no declaration to resolve to.
-    let binds = match kb.kind_of(place) {
+    match kb.kind_of(place) {
         None => true,
         Some(kind) => matches!(
             kind,
@@ -3040,8 +3051,125 @@ fn unplaced_binder(
                 | crate::intern::SymbolKind::CallbackParam
                 | crate::intern::SymbolKind::LocalLet
         ),
+    }
+}
+
+/// A CALLBACK ARGUMENT AS ITS SLOT READS IT, before the two are unified (WI-20261013-1TJQH) —
+/// two things, both about the callback's own parameters:
+///
+///  * THE ARGUMENT'S ROW IN THE SLOT'S BINDER NAMES. Where the argument's expression says its
+///    parameters by position ([`callback_actual_places`]) and the slot names as many, a label
+///    over the callback's parameter `i` is renamed to the slot's (`Modify[c]` of `setter(c)`
+///    into `f: (x: …) -> … @ {Modify[x], EffP}` is `Modify[x]`), as [`validate_callback_effect_row`]
+///    aligns them — so the slot's own label takes it and the rest of the row is the row
+///    parameter's. Returned: the argument's type so renamed, `None` where nothing was.
+///    Unrenamed, the label met no declared one, went to the tail, and `EffP` was inferred for
+///    a callback PARAMETER alone, whose place unifies by position ([`unify_denoted_view`]):
+///    the same row from a lambda, a `let` or an operation left it unconstrained (MEASURED).
+///
+///  * A ROW VARIABLE OF THE SLOT TAKES NO LABEL OVER A BINDER OUT OF SCOPE AT THE CALL: each
+///    flexible tail of the slot's row is made to lack every label of the argument's row that
+///    still names one — the slot's own binder, a parameter of the callback at no aligned
+///    position, or a place that is no value there ([`binder_out_of_scope`]: the binder of a
+///    lambda taken out of a tuple). So the tail's own lacks check ([`bind_row_tail`]) refuses
+///    that label and binds every other. The variable stands outside the callback's arrow — it
+///    is the called operation's row parameter, read in that operation's own row and result —
+///    and there the binder names nothing. Bound, `run(q, g)` over `g: (k: Cell[V = Int64]) ->
+///    Int64 @ {Modify[k]}` and a slot typed `@ {EffP}` charged the call `Modify[g.k]`, which
+///    the enclosing operation's boundary drops: an operation declaring no effect wrote the
+///    cell it handed on (MEASURED). And a slot denying the write (`@ {EffP, -Modify[x]}`)
+///    admitted it, the label the tail took covering itself before the absence was read —
+///    `wi440_callback_lacks_test` and `wi441_iterable_arrow_pred_test` hold those.
+///
+/// A callback parameter's place is refused by [`bind_row_tail`] on its own, wherever two rows
+/// meet ([`label_over_callback_binder`]); what a call adds is the binders only it can tell from
+/// a value in scope — a lambda's, an operation's parameter.
+///
+/// What decides is the label's place, not its carrier: [`bind_row_tail`] used to decline every
+/// label holding a value unless it rode a term, which refused a callback writing a cell in
+/// scope (`Modify[r]`, a value at the call, which the row parameter takes).
+///
+/// The head of a field path is its place (`Modify[k.contents]` is over `k`), as the effect
+/// re-key reads it ([`place_head_sym`]).
+pub(super) fn callback_at_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &mut Substitution,
+    param_sym: Symbol,
+    declared: &Value,
+    arg_occ: &Rc<NodeOccurrence>,
+    actual: &Value,
+) -> Option<Value> {
+    if !type_head_is_callable(kb, declared) {
+        return None;
+    }
+    let (_, _, act_eff) = arrow_parts(kb, actual)?;
+    // Most rows hold no value: nothing to rename or deny, and no row is decomposed.
+    if !view_bears_denoted(kb, &act_eff?) {
+        return None;
+    }
+    let mut renamed: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut unaligned: SmallVec<[Symbol; 4]> = SmallVec::new();
+    if let Some(places) = callback_actual_places(kb, env, arg_occ) {
+        let declared_places = kb.symbols.arg_places(param_sym);
+        if places.len() == declared_places.len() {
+            renamed.extend(
+                places
+                    .iter()
+                    .zip(declared_places)
+                    .filter_map(|(a, e)| a.filter(|a| a != e).map(|a| (a, *e))),
+            );
+        } else {
+            unaligned.extend(places.iter().flatten().copied());
+        }
+    }
+    let aligned = (!renamed.is_empty()).then(|| substitute_ref_syms_value(kb, actual, &renamed));
+    let at_slot = aligned.as_ref().unwrap_or(actual);
+
+    let tails: SmallVec<[VarId; 2]> = match arrow_parts(kb, declared) {
+        Some((_, _, Some(decl_eff))) => {
+            let decl_row = canonical_effects_row(kb, &decl_eff);
+            decompose_effect_row(kb, subst, &decl_row)
+                .map(|(_, tails, _)| tails)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| match kb.get_term(walk_type(kb, subst, *t)) {
+                    Term::Var(Var::Global(vid)) => Some(*vid),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => SmallVec::new(),
     };
-    binds.then_some(place)
+    if tails.is_empty() {
+        return aligned;
+    }
+    let Some((_, _, Some(eff))) = arrow_parts(kb, at_slot) else {
+        return aligned;
+    };
+    let row = canonical_effects_row(kb, &eff);
+    let Some((present, _, _)) = decompose_effect_row(kb, subst, &row) else {
+        return aligned;
+    };
+    let denied: Vec<Value> = present
+        .into_iter()
+        .filter(|la| {
+            type_any_part(kb, la, &|te| match te {
+                TypeExtractor::Denoted(inner) => {
+                    Some(place_head_sym(kb, inner).is_some_and(|place| {
+                        unaligned.contains(&place) || binder_out_of_scope(kb, env, place)
+                    }))
+                }
+                _ => None,
+            })
+        })
+        .collect();
+    if !denied.is_empty() {
+        for vid in tails {
+            subst.add_lacks(vid, denied.iter().cloned());
+        }
+    }
+    aligned
 }
 
 /// Are `a` and `e` labels of one effect sort (`Modify[k]`, `Modify[x]`)?

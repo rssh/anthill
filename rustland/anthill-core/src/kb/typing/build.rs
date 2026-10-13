@@ -2520,7 +2520,16 @@ pub(super) fn concrete_override_threaded(
             expand_sorts_deep(kb, &passed_ty, SlotVar::Flexible);
         let written_x =
             expand_sorts_deep(kb, &written, SlotVar::Flexible);
-        unify_types(kb, &mut subst, &passed_x, &written_x);
+        // As the qualified call does before it unifies an argument with its slot, and
+        // [`override_at_call`] before this loop, whose substitution this one continues. NOT
+        // DRIVEN here: backed out at this site alone, no test and none of 42 programs written
+        // to reach it changed a verdict or a refusal — it is kept because the act is the one
+        // every other site that meets an argument with a slot is measured at.
+        let at_slot = call.arg(kb, &op.params, i).and_then(|(_, occ)| {
+            let impl_p = impl_info.params[i].0;
+            callback_at_slot(kb, call.env, &mut subst, impl_p, &written_x, occ, &passed_x)
+        });
+        unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&passed_x), &written_x);
         bound.push((i, passed_ty, written));
     }
     if let Some((vid, prior, attempted)) = first_genuine_contradiction_since(kb, &subst, 0) {

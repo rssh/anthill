@@ -4128,7 +4128,7 @@ pub(super) fn override_at_call(
     //    alone, `Sp.op(c, none)` bound `W` to a bare `Option` and `Sp.op(c, [])` to a list of
     //    nothing, and the override's `Error[W]` was undeclared in a caller declaring the right
     //    row (MEASURED).
-    let passed: Vec<(Symbol, Value, Value)> = (0..n)
+    let passed: Vec<(usize, Symbol, Value, Value)> = (0..n)
         .filter_map(|i| {
             let p = call.passed(kb, &spec_op.params, i)?;
             let p = walk_type_deep_value(kb, call_subst, &p);
@@ -4144,10 +4144,11 @@ pub(super) fn override_at_call(
                 p
             };
             let (impl_p, impl_ty) = &impl_op.params[i];
-            Some((*impl_p, impl_ty.clone(), p))
+            Some((i, *impl_p, impl_ty.clone(), p))
         })
         .collect();
-    let refs: Vec<(Symbol, &Value, &Value)> = passed.iter().map(|(p, d, a)| (*p, d, a)).collect();
+    let refs: Vec<(Symbol, &Value, &Value)> =
+        passed.iter().map(|(_, p, d, a)| (*p, d, a)).collect();
     join_repeated_type_params(
         kb,
         &mut sigma,
@@ -4155,9 +4156,14 @@ pub(super) fn override_at_call(
         &refs,
     )
     .map_err(|no_join| no_join.into_call_error(kb, impl_op_sym, span))?;
-    for (_, impl_ty, passed_ty) in &passed {
+    for (i, impl_p, impl_ty, passed_ty) in &passed {
         let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
-        unify_types(kb, &mut sigma, passed_ty, &impl_ty);
+        // A callback as the override's slot reads it, as the qualified call reads it at the
+        // spec's ([`callback_at_slot`]).
+        let at_slot = call.arg(kb, &spec_op.params, *i).and_then(|(_, occ)| {
+            callback_at_slot(kb, call.env, &mut sigma, *impl_p, &impl_ty, occ, passed_ty)
+        });
+        unify_types(kb, &mut sigma, at_slot.as_ref().unwrap_or(passed_ty), &impl_ty);
     }
     //    A parameter the bracket fixed judges the arguments it types, as the qualified call's
     //    bracket does: the join leaves a fixed parameter alone, and the unification above

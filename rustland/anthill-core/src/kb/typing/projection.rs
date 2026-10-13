@@ -589,7 +589,13 @@ fn denoted_place_head_sym<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symb
     let TypeExtractor::Denoted(inner) = extract_type(kb, v) else {
         return None;
     };
-    match &inner {
+    place_head_sym(kb, &inner)
+}
+
+/// The head symbol of the place a `denoted` carries (`inner`), on either carrier. See
+/// [`denoted_place_head_sym`].
+pub(super) fn place_head_sym(kb: &KnowledgeBase, inner: &Value) -> Option<Symbol> {
+    match inner {
         Value::Term { id } => term_place_head_sym(kb, *id),
         Value::Node(occ) => occ_place_head_sym(occ),
         _ => None,

@@ -218,7 +218,7 @@ holds a value (`Foo[T = Int64, N = 3]`) rides an occurrence on its own
 (WI-20261002-E1WN0). A row of `tests/include/` is a program someone thought of; a FAMILY
 (`anthill-core/tests/families/`) is every program one template gives when a few holes are
 filled from short lists — the cross product, enumerated — so the cases of a typer rule
-meet each other. Four so far, 7 688 programs: the declaration rule, a projected member
+meet each other. Four so far, 7 760 programs: the declaration rule, a projected member
 at a call, a callback's effect row, two callbacks typed by each other.
 
 ```bash

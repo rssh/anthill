@@ -742,12 +742,28 @@ pub(super) fn check_apply_iter(
                     // unbound arg-var must never bind to a projection. Defer it to the
                     // post-synthesis elimination pass below; the argument type is still
                     // recorded so a LATER param projecting THIS one can read it.
-                    if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                    let deferred = op_has_projection && value_contains_projection(kb, param_type);
+                    // A callback as its slot reads it: its own parameters in the slot's
+                    // names, and none of them a label the slot's row variable takes.
+                    let at_slot = if deferred {
+                        None
+                    } else {
+                        callback_at_slot(
+                            kb,
+                            env,
+                            &mut subst,
+                            *param_sym,
+                            param_type,
+                            arg_occ,
+                            &arg_result.ty,
+                        )
+                    };
+                    if !deferred {
                         let before = subst.clone();
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
-                            &arg_result.ty,
+                            at_slot.as_ref().unwrap_or(&arg_result.ty),
                             param_type,
                             receiverless_sort,
                         );
@@ -768,7 +784,8 @@ pub(super) fn check_apply_iter(
                     // that declares type params — the population a row tail can live in —
                     // so an ordinary call allocates nothing.
                     if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
-                        callback_pairs.push((param_type.clone(), arg_result.ty.clone()));
+                        callback_pairs
+                            .push((param_type.clone(), at_slot.unwrap_or_else(|| arg_result.ty.clone())));
                     }
                 }
                 merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
@@ -789,12 +806,27 @@ pub(super) fn check_apply_iter(
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some((param_sym, param_type)) = &matched {
                     // WI-398: defer a projection param's unify (see the positional loop).
-                    if !(op_has_projection && value_contains_projection(kb, param_type)) {
+                    let deferred = op_has_projection && value_contains_projection(kb, param_type);
+                    // See the positional loop.
+                    let at_slot = if deferred {
+                        None
+                    } else {
+                        callback_at_slot(
+                            kb,
+                            env,
+                            &mut subst,
+                            *param_sym,
+                            param_type,
+                            arg_occ,
+                            &arg_result.ty,
+                        )
+                    };
+                    if !deferred {
                         let before = subst.clone();
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
-                            &arg_result.ty,
+                            at_slot.as_ref().unwrap_or(&arg_result.ty),
                             param_type,
                             receiverless_sort,
                         );
@@ -812,7 +844,10 @@ pub(super) fn check_apply_iter(
                     }
                     // WI-329 — see the positional loop.
                     if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
-                        callback_pairs.push(((*param_type).clone(), arg_result.ty.clone()));
+                        callback_pairs.push((
+                            (*param_type).clone(),
+                            at_slot.unwrap_or_else(|| arg_result.ty.clone()),
+                        ));
                     }
                 }
                 merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
@@ -898,7 +933,7 @@ pub(super) fn check_apply_iter(
             let denoted_syms = (!eff_rekey_map.is_empty()).then_some(&*eff_rekey_map);
             // Interned ONCE for the whole loop, not per parameter (review).
             let macro_pass = crate::kb::occurrence::macro_expand_pass(kb);
-            for (param_sym, param_type) in &written_params {
+            for (i, (param_sym, param_type)) in written_params.iter().enumerate() {
                 if !value_contains_projection(kb, param_type) {
                     continue;
                 }
@@ -920,7 +955,17 @@ pub(super) fn check_apply_iter(
                 .eliminate(kb, param_type)?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
-                    unify_types(kb, &mut subst, arg_ty, &eff);
+                    // The slot's row as this call reads it, before the argument meets it —
+                    // see the argument loops.
+                    let arg_occ = match bound_arg(kb, &op.params, &pos_call_params, i, named_args) {
+                        Some(BoundArg::Pos(j)) => Some(&pos_args[j]),
+                        Some(BoundArg::Named(k)) => Some(&named_args[k].1),
+                        None => None,
+                    };
+                    let at_slot = arg_occ.and_then(|arg_occ| {
+                        callback_at_slot(kb, env, &mut subst, *param_sym, &eff, arg_occ, arg_ty)
+                    });
+                    unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(arg_ty), &eff);
                 }
                 effective_param_types.insert(*param_sym, eff);
             }
@@ -4573,6 +4618,18 @@ pub(super) fn check_apply_iter(
                         if let (Ok(arg_result), Some((param_sym, slot_type))) =
                             (&pos_results[i], pos_slots[i].and_then(|p| slots.get(p)))
                         {
+                            // A callback as this slot reads it, as Path 1 reads one at a
+                            // parameter's ([`callback_at_slot`]) — before the validation
+                            // below, whose relation binds a row variable too.
+                            let at_slot = callback_at_slot(
+                                kb,
+                                env,
+                                &mut subst,
+                                *param_sym,
+                                slot_type,
+                                &pos_args[i],
+                                &arg_result.ty,
+                            );
                             match validate_arg_against_param(
                                 kb,
                                 &mut subst,
@@ -4616,8 +4673,12 @@ pub(super) fn check_apply_iter(
                                 // depends on how the argument's type was spelled.
                                 ArgValidation::Ok => {
                                     let before = subst.clone();
-                                    let unified =
-                                        unify_types(kb, &mut subst, &arg_result.ty, slot_type);
+                                    let unified = unify_types(
+                                        kb,
+                                        &mut subst,
+                                        at_slot.as_ref().unwrap_or(&arg_result.ty),
+                                        slot_type,
+                                    );
                                     // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO.
                                     // The first slice reported at Path 1's two argument
                                     // loops only, and MEASURED, that is exactly the half
@@ -4725,7 +4786,7 @@ pub(super) fn check_apply_iter(
                 // checks in the other order. Left alone deliberately: the two
                 // errors say different true things about the argument, and
                 // suppressing one here would make the two paths diverge.
-                for (i, (arg_name, _)) in named_args.iter().enumerate() {
+                for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
                     let Ok(arg_result) = &named_results[i] else {
                         continue;
                     };
@@ -4735,6 +4796,16 @@ pub(super) fn check_apply_iter(
                         continue;
                     };
                     let (param_sym, param_type) = (*param_sym, param_type.clone());
+                    // See the positional loop.
+                    let at_slot = callback_at_slot(
+                        kb,
+                        env,
+                        &mut subst,
+                        param_sym,
+                        &param_type,
+                        arg_occ,
+                        &arg_result.ty,
+                    );
                     match validate_arg_against_param(
                         kb,
                         &mut subst,
@@ -4754,7 +4825,12 @@ pub(super) fn check_apply_iter(
                         // before.
                         ArgValidation::Ok => {
                             let before = subst.clone();
-                            let unified = unify_types(kb, &mut subst, &arg_result.ty, &param_type);
+                            let unified = unify_types(
+                                kb,
+                                &mut subst,
+                                at_slot.as_ref().unwrap_or(&arg_result.ty),
+                                &param_type,
+                            );
                             // WI-20260904-50B2K part (c) — the named twin; see the
                             // positional loop's note.
                             report_walk_solutions(

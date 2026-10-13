@@ -2299,32 +2299,33 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    // A label on the term carrier joins a term row. One that rides another carrier and
-    // holds no value — written through an alias, or rebuilt around one — makes the row an
-    // occurrence, built as [`make_arrow_value`] builds an inferred row and bound by
-    // `bind_value`: refused, the callee's row variable stayed unbound — "expected a type
+    // A label on the term carrier joins a term row. One that rides another carrier —
+    // written through an alias, rebuilt around one, or holding a value (`Modify[r]`) — makes
+    // the row an occurrence, built as [`make_arrow_value`] builds an inferred row and bound
+    // by `bind_value`: refused, the callee's row variable stayed unbound — "expected a type
     // for 'Rho', got unconstrained" — on a callback whose row names `Error[Oth]` over
     // `sort Oth = Other` (MEASURED).
     //
-    // WI-342 P4-B: one that HOLDS A VALUE (`{Modify[c] | ρ}`) is still refused rather than
-    // mis-bound, as before. That refusal is what rejects a modifying callback against an
-    // open lacks-row today (`wi440_callback_lacks_test`, `wi441_iterable_arrow_pred_test`):
-    // bound, those callbacks were admitted (MEASURED). Binding it wants the lacks check to
-    // read a value-carried label first.
+    // A LABEL THAT HOLDS A VALUE IS BOUND AS ANY OTHER, WHATEVER IT RIDES (WI-20261013-1TJQH).
+    // It was refused here on every carrier but the term one, so which callback's row a callee's
+    // row parameter was inferred from turned on how the callback was written: `run(q, lambda
+    // (k) -> put(r, 5))` was refused where the same lambda under a written arrow type ran, and
+    // that one was refused again once an alias stood in the annotation (MEASURED). What the
+    // refusal held up was something else — a label over a parameter of the CALLBACK ITSELF,
+    // which a row variable standing outside the callback's arrow cannot take — and is said by
+    // what the label names: a callback parameter's place just below, which is such a binder
+    // wherever it is read, and every other binder out of scope where a call knows what is in
+    // scope ([`callback_at_slot`], which makes the slot's row variable lack it, so the lacks
+    // check above reads it).
+    if extra_labels.iter().any(|l| label_over_callback_binder(kb, l)) {
+        return false;
+    }
     let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
     let mut all_terms = true;
     for l in extra_labels {
         match l {
             Value::Term { id: t, .. } => ground_extras.push(*t),
-            other => {
-                let holds_value = type_any_part(kb, other, &|te| {
-                    matches!(te, TypeExtractor::Denoted(_)).then_some(true)
-                });
-                if holds_value {
-                    return false;
-                }
-                all_terms = false;
-            }
+            _ => all_terms = false,
         }
     }
 
@@ -2406,6 +2407,27 @@ pub(super) fn bind_row_tail(
         }
     }
     true
+}
+
+/// Does `label` hold a value rooted at a CALLBACK PARAMETER's place (`Modify[f.x]`, `Modify[f.x
+/// .contents]`)? Such a place names something in the row of its own arrow only
+/// ([`unify_denoted_view`]'s invariant), so no row variable declared outside that arrow can
+/// stand for a row holding it: [`bind_row_tail`] binds none to one. Read off the label, on any
+/// carrier — two declared signatures meet with no call between them, where a member is fitted
+/// to its spec: `each[EffP](…, f: (k: …) -> … @ {EffP})` is no member of a spec whose slot
+/// reads `@ {Modify[k]}`.
+fn label_over_callback_binder(kb: &KnowledgeBase, label: &Value) -> bool {
+    // Most labels hold no value (`Error[String]`): asked first, on the view, so that an
+    // ordinary row pays no classification here.
+    view_bears_denoted(kb, label)
+        && type_any_part(kb, label, &|te| match te {
+            TypeExtractor::Denoted(inner) => {
+                Some(place_head_sym(kb, inner).is_some_and(|place| {
+                    kb.kind_of(place) == Some(crate::intern::SymbolKind::CallbackParam)
+                }))
+            }
+            _ => None,
+        })
 }
 
 /// WI-328 — does presenting `label` violate any `lacks` constraint in

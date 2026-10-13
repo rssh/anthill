@@ -1,6 +1,7 @@
 //! WI-41YYE: enclosing value places participate in conformance and type joins.
 //! Four enclosing-parameter regressions fail with the predicate fix backed out;
-//! Error twins, the let-local refusal and execution controls pass either way.
+//! Error twins and execution controls pass either way; the let-local row is held by
+//! WI-20261013-1TJQH and says so at its site.
 //! Callback binders keep alignment.
 use crate::common::{assert_refused_naming, interp_for, load_errors_of};
 use anthill_core::eval::Value;
@@ -181,19 +182,48 @@ fn pure_stream_provider_executes_control() {
     assert!(matches!(result, Ok(Value::Int(5))), "{result:?}");
 }
 
+/// A BOX BUILT OVER A LET-LOCAL CELL CARRIES THAT CELL'S WRITE: `box(lambda (x) -> bump(k, x))`
+/// is a `Box[BE = {Modify[k]}]`, refused where a pure box is wanted and run where the write to
+/// `k` is declared — 5 added to 30, and 5 answered: 40.
+///
+/// The construction says the row since WI-20261013-1TJQH (a constructor's row parameter takes a
+/// callback's write to a cell in scope, as a call's does). Before it the unannotated box was a
+/// `Box[BE = b.BE]`, refused at `runPure` and at `runAt` alike, and this row wrote the row as an
+/// annotation instead — `let b: Box[BE = {Modify[k]}] = …` — which names a let-local in a row
+/// type argument, refused where it is written then and now ("unresolved name 'k'"). The row
+/// FAILS with 1TJQH's part 1 backed out, at its first assertion; the annotated spelling, last,
+/// passes either way.
 #[test]
 fn let_local_cell_is_checked() {
-    let src = source(
-        r#"
+    let body = |call: &str| {
+        format!(
+            r#"
+  operation use() -> Int64 =
+    let k: Cell[V = Int64] = Cell.new(30)
+    let b = box(lambda (x: Int64) -> bump(k, x))
+    {call}
+"#
+        )
+    };
+    assert_refused_naming(
+        &load_errors_of(&source(&body("runPure(b, 5)"))),
+        &["runPure.b (op-arg)", "expected Box[BE = {}]", "Modify[T = k]"],
+        "let local place is a determined identity",
+    );
+    let mut interp = interp_for(&source(&body("runAt(k, b, 5) + Cell.get(k)")));
+    let result = interp.call("enclosing.use", &[]);
+    assert!(matches!(result, Ok(Value::Int(40))), "{result:?}");
+    // The annotated spelling names the let-local where a row type argument is written.
+    assert_refused_naming(
+        &load_errors_of(&source(
+            r#"
   operation use() -> Int64 =
     let k: Cell[V = Int64] = Cell.new(0)
     let b: Box[BE = {Modify[k]}] = box(lambda (x: Int64) -> bump(k, x))
     runPure(b, 5)
 "#,
-    );
-    assert_refused_naming(
-        &load_errors_of(&src),
-        &["runPure.b (op-arg)", "Modify[T = k]"],
-        "let local place is a determined identity",
+        )),
+        &["unresolved name 'k' in scope 'enclosing.use'", "Modify[T = k]"],
+        "a let-local named in a written row type argument",
     );
 }

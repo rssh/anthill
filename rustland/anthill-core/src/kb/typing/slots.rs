@@ -4336,9 +4336,9 @@ pub(super) fn infer_discharged_row_tails(
         }
         // The verdict is DISCARDED, and these are the refusals it can carry — `t` is a
         // `Var::Global` by the gate above and `final_tail` is `None`, so the not-bindable
-        // and non-Var arms cannot fire, leaving: a `lacks` violation (WI-328), a
-        // denoted-bearing (`Value::Node`) extra label (deferred at `bind_row_tail` as
-        // WI-342 P4-B), a prelude-less KB, the occurs check, and a σ contradiction. Each
+        // and non-Var arms cannot fire, leaving: a `lacks` violation (WI-328) — a label over
+        // the callback's own parameter is one ([`callback_at_slot`]) — a prelude-less KB,
+        // the occurs check, and a σ contradiction. Each
         // leaves `tail` unbound, and the symptom the user then sees is
         // `first_unconstrained_type_param`' "type parameter 'Rho' is unconstrained" —
         // accurate about the state, silent about the cause. Conservative rather than

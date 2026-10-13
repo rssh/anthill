@@ -1237,8 +1237,6 @@ pub(super) fn check_constructor_iter(
     expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
-    let _ = pos_args; // arg-NodeOccurrence references kept for parity with check_apply_iter
-
     // Surface any sub-expression failure before continuing.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
@@ -1391,17 +1389,27 @@ pub(super) fn check_constructor_iter(
         {
             if let Ok(ref r) = named_results[idx] {
                 let arg_ty = field_arg_type(kb, declared_type, r);
-                unify_types(kb, &mut subst, &arg_ty, declared_type);
+                // A callback as the field's slot reads it, as a call reads one at a
+                // parameter's ([`callback_at_slot`]): the sort's row parameter takes a write
+                // to a cell in scope, and none to the callback's own parameter.
+                let arg_occ = &named_args[idx].1;
+                let at_slot =
+                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, arg_occ, &arg_ty);
+                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
         }
     }
 
     for (i, r_opt) in pos_results.iter().enumerate() {
-        if let Some((_, declared_type)) = field_types.get(i) {
+        if let Some((field_sym, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
                 let arg_ty = field_arg_type(kb, declared_type, r);
-                unify_types(kb, &mut subst, &arg_ty, declared_type);
+                // See the named loop.
+                let at_slot = pos_args.get(i).and_then(|arg_occ| {
+                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, arg_occ, &arg_ty)
+                });
+                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
         }
