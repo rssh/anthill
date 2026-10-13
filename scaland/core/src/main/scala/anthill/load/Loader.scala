@@ -41,6 +41,9 @@ enum LoadError:
     * reflect entity of the same spelling or LEAKED as an undeclared predicate, decided by
     * nothing but whether the two vocabularies happened to agree. See [[ExprMarker]]. */
   case ExpressionInTermPosition(marker: ExprMarker, span: Span)
+  case DuplicateDeclaration(name: String, first: Span, span: Span)
+  case SealedDeclarations(name: String, first: Span, span: Span)
+  case EqualityOfEarlierSort(name: String, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -67,6 +70,12 @@ enum LoadError:
         s"${marker.description} cannot be loaded as a term — scaland loads declarations " +
         s"only and does not translate expressions into the reflect encoding " +
         s"(parse marker '${marker.functorName}')")
+    case DuplicateDeclaration(name, first, span) =>
+      span.render(s"declaration '$name' is made again; first declaration: ${first.render(name)}")
+    case SealedDeclarations(name, first, span) =>
+      span.render(s"sealed declaration '$name' is made again; first declaration: ${first.render(name)}")
+    case EqualityOfEarlierSort(name, span) =>
+      span.render(s"the equality of '$name' is closed by the load that defined it")
     case Other(message, span) =>
       span.render(message)
 
@@ -341,10 +350,175 @@ object Loader:
 
   /** Load multiple files: scan first, then load all. */
   def loadAll(kb: KnowledgeBase, files: IndexedSeq[ParsedFile]): ArrayBuffer[LoadError] =
-    val errors = scanDefinitions(kb, files)
+    val errors = checkDeclarations(kb, files)
+    if errors.nonEmpty then return errors
+    errors ++= scanDefinitions(kb, files)
     for file <- files do
       errors ++= load(kb, file)
+    recordEquality(kb, files, errors)
     errors
+
+  /** An explicit seal: unsealed repeated loads retain their existing behavior. */
+  def sealDeclarations(kb: KnowledgeBase): Unit =
+    kb.loadBoundary.sealedDeclarations ++= kb.loadBoundary.declarations
+
+  /** Product entry point. An empty library is one unsealed program load. */
+  def loadProgram(
+    kb: KnowledgeBase, library: IndexedSeq[ParsedFile], program: IndexedSeq[ParsedFile]
+  ): ArrayBuffer[LoadError] =
+    if library.isEmpty then loadAll(kb, program)
+    else
+      val errors = loadAll(kb, library)
+      if errors.isEmpty then
+        sealDeclarations(kb)
+        if program.nonEmpty then errors ++= loadAll(kb, program)
+      errors
+
+  /** Check before defining names: a refused redeclaration must not overwrite the
+    * earlier symbol's kind or source. Namespaces are secondary entries, not declarations. */
+  private def checkDeclarations(kb: KnowledgeBase, files: IndexedSeq[ParsedFile]): ArrayBuffer[LoadError] =
+    val errors = ArrayBuffer.empty[LoadError]
+    val current = HashMap.empty[String, Span]
+    val parameters = HashMap.empty[String, IndexedSeq[String]]
+    def declare(name: String, span: Span): Unit =
+      kb.loadBoundary.sealedDeclarations.get(name) match
+        case Some(first) => errors += LoadError.SealedDeclarations(name, first, span)
+        case None => current.get(name) match
+          case Some(first) => errors += LoadError.DuplicateDeclaration(name, first, span)
+          case None => current(name) = span
+    for file <- files do
+      def name(n: Name, prefix: String): String = makeQualified(prefix, joinSegments(file.symbols, n.segments))
+      def walk(items: Iterable[Item], prefix: String): Unit = items.foreach {
+        case Item.NamespaceItem(ns) => walk(ns.items, name(ns.name, prefix))
+        case Item.SortWithBodyItem(sort) =>
+          val q = name(sort.name, prefix)
+          declare(q, sort.span)
+          parameters(q) = sort.items.flatMap {
+            case Item.AbstractSortItem(p) if p.definition.isInstanceOf[TypeExpr.Variable] => Some(joinSegments(file.symbols, p.name.segments))
+            case Item.SortWithBodyItem(p) if p.isTypeParam => Some(joinSegments(file.symbols, p.name.segments))
+            case Item.RequiresDeclItem(r) => r.binder.map(b => joinSegments(file.symbols, b.segments))
+            case _ => None
+          }
+          walk(sort.items, q)
+        case Item.AbstractSortItem(sort) => declare(name(sort.name, prefix), sort.span)
+        case Item.EntityItem(entity) => declare(name(entity.name, prefix), entity.span)
+        case Item.OperationItem(op) => declare(name(op.name, prefix), op.span)
+        case Item.OperationBlockItem(block) => block.entries.foreach(op => declare(name(op.name, prefix), op.span))
+        case Item.ConstItem(c) => declare(name(c.name, prefix), c.span)
+        case Item.RequiresDeclItem(r) => r.binder.foreach(b => declare(name(b, prefix), r.span))
+        case _ => () // Only declaration-bearing items; clauses add no declaration.
+      }
+      walk(file.items, "")
+    if errors.isEmpty then
+      kb.loadBoundary.declarations ++= current
+      kb.loadBoundary.parameters ++= parameters
+    errors
+
+  /** S723J: equality is closed at the load defining a composite, even without a
+    * typer. Keep resolved provision bindings/conditions here: the legacy KB metadata
+    * stores only the spec's spelling and cannot distinguish its instantiations.
+    * Failed additions remain in the candidate signature, so retries stay refused. */
+  private def recordEquality(
+    kb: KnowledgeBase, files: IndexedSeq[ParsedFile], errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val state = kb.loadBoundary
+    val old = state.equality.toMap
+    val newComposites = HashSet.empty[String]
+    for file <- files do
+      kb.symbols.setAskingFile(Some(kb.symbols.fileIdOf(file)))
+      val targetKB = kb
+      val pass = new ScopePass:
+        val kb: KnowledgeBase = targetKB
+        val fileSym: SymbolTable = file.symbols
+        var operationParams = Set.empty[String]
+        var operationOwner = ""
+        def resolved(n: Name, scope: kb.ScopeId): String =
+          val written = joinSegments(fileSym, n.segments)
+          if written == "Self" then return kb.scopeDisplayName(scope)
+          if operationParams.contains(written) then return operationOwner + "." + written
+          lookupWritten(kb, written, scope) match
+            case ResolveResult.Found(sym) => kb.qualifiedNameOf(sym)
+            case ResolveResult.NotFound =>
+              errors += LoadError.UnresolvedName(written, n.span, kb.scopeDisplayName(scope))
+              written
+            case ResolveResult.Ambiguous(cs) =>
+              errors += LoadError.AmbiguousSymbol(written, cs.map(kb.qualifiedNameOf).toIndexedSeq, n.span, kb.scopeDisplayName(scope))
+              written
+        def ty(t: TypeExpr, scope: kb.ScopeId): String = t match
+          case TypeExpr.Simple(n) => resolved(n, scope)
+          case TypeExpr.Parameterized(n, bs) =>
+            val head = resolved(n, scope)
+            val params = state.parameters.getOrElse(head, IndexedSeq.empty)
+            var position = 0
+            val bindings = bs.map { b =>
+              val label = b.param match
+                case Some(p) => joinSegments(fileSym, p.segments)
+                case None =>
+                  val label = params.lift(position).getOrElse(s"pos:$position")
+                  position += 1
+                  label
+              label + "=" + ty(b.bound, scope)
+            }
+            head + bindings.sorted.mkString("[", ",", "]")
+          case TypeExpr.Variable(_, _) => "?"
+          case TypeExpr.TupleType(fs) => fs.map((n, t) => fileSym.name(n) + ":" + ty(t, scope)).mkString("(", ",", ")")
+          case TypeExpr.Arrow(ps, r, es) => ps.map(ty(_, scope)).mkString("(", ",", ")") + "->" + ty(r, scope) + es.map(ty(_, scope)).mkString("@", ",", "")
+          case TypeExpr.Denoted(v) => term(v)
+          case TypeExpr.EffectRow(es) => es.map(ty(_, scope)).mkString("{", ",", "}")
+          case TypeExpr.EffectGuarded(t, gs) => ty(t, scope) + gs.map(term).mkString(":-", ",", "")
+        def term(id: TermId): String = file.terms.get(id) match
+          case Term.Fn(f, ps, ns) => fileSym.name(f) + ps.map(term).mkString("(", ",", ")") + ns.map((n, v) => fileSym.name(n) + ":" + term(v)).sorted.mkString("{", ",", "}")
+          case Term.Ref(s) => fileSym.name(s)
+          case Term.Ident(s) => fileSym.name(s)
+          case t => t.toString
+        def add(carrier: String, row: String, span: Span): Unit =
+          state.rows.getOrElseUpdate(carrier, HashMap.empty)(row) = span
+        def base(t: TypeExpr, scope: kb.ScopeId): Option[String] = t match
+          case TypeExpr.Simple(n) => Some(resolved(n, scope))
+          case TypeExpr.Parameterized(n, _) => Some(resolved(n, scope))
+          case _ => None
+        def operation(op: Operation, scope: kb.ScopeId, prefix: String): Unit =
+          val written = joinSegments(fileSym, op.name.segments)
+          if written.split('.').last == "eq" then
+            operationOwner = makeQualified(prefix, written)
+            operationParams = op.typeParams.map(p => fileSym.name(p.name)).toSet
+            val carriers = op.params.flatMap(p => base(p.ty, scope)).distinct
+            if op.params.size == 2 && carriers.size == 1 && op.params.map(p => ty(p.ty, scope)).distinct.size == 1 then
+              val qualified = makeQualified(prefix, written)
+              val owner = qualified.stripSuffix(".eq")
+              state.operations.getOrElseUpdate((carriers.head, owner), HashMap.empty)("eq:" + qualified) = op.span
+            operationParams = Set.empty
+        def enterScope(decl: ScopeDecl, written: String, q: String, prefix: String, enclosing: kb.ScopeId): Option[kb.ScopeId] =
+          decl match
+            case ScopeDecl.SortBody(sort) if sort.items.exists(_.isInstanceOf[Item.EntityItem]) => newComposites += q
+            case _ => ()
+          lookupScope(kb, q, decl.name.span, errors)
+        def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit = item match
+          case Item.EntityItem(e) if !isSortScope(kb, scope) => newComposites += makeQualified(prefix, joinSegments(fileSym, e.name.segments))
+          case Item.OperationItem(op) => operation(op, scope, prefix)
+          case Item.OperationBlockItem(b) => b.entries.foreach(operation(_, scope, prefix))
+          case Item.ProvidesClauseItem(pc) =>
+            pc.spec match
+              case TypeExpr.Parameterized(n, bindings) if Set("anthill.prelude.PartialEq", "anthill.prelude.Eq", "anthill.prelude.NonEq").contains(resolved(n, scope)) =>
+                bindings.find(b => b.param.exists(p => joinSegments(fileSym, p.segments) == "T")).orElse(bindings.headOption).foreach { b =>
+                  base(b.bound, scope).foreach { c =>
+                    state.providers += ((c, prefix))
+                    add(c, prefix + ":" + ty(pc.spec, scope) + pc.conditions.map(ty(_, scope)).sorted.mkString(":-", ",", ""), pc.span)
+                  }
+                }
+              case _ => ()
+          case _ => () // Only equality suppliers/provisions and constructor declarations.
+      walkScopes(pass, file.items)
+    for ((carrier, owner), rows) <- state.operations if owner == carrier || state.providers.contains((carrier, owner)) do
+      state.rows.getOrElseUpdate(carrier, HashMap.empty) ++= rows
+    for (carrier, signature) <- old do
+      val now = state.rows.get(carrier).map(_.keySet.toSet).getOrElse(Set.empty[String])
+      if now != signature then
+        val span = state.rows(carrier).find((row, _) => !signature.contains(row)).map(_._2).getOrElse(Span.empty)
+        errors += LoadError.EqualityOfEarlierSort(carrier, span)
+    // Preserve the last accepted signature for an earlier composite, even on failure.
+    for carrier <- newComposites if !state.equality.contains(carrier) do
+      state.equality(carrier) = state.rows.get(carrier).map(_.keySet.toSet).getOrElse(Set.empty)
 
   // ── The scope spine ──────────────────────────────────────────
 

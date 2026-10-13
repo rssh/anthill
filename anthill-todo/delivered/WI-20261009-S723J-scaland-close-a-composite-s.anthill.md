@@ -3,9 +3,9 @@
 - id: WI-20261009-S723J-scaland-close-a-composite-s
 - created: 2026-10-09T18:53:29Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-09T18:53:29Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-13T14:09:17Z
 
 - acceptance: scaland-sbt-test
 
@@ -40,4 +40,12 @@ CHECK FIRST — measured 2026-10-10 by grep over `scaland/core/src/main`, so abs
 CONTROL, beside the description's: the rows of `wi_4zrtg_sealed_library_test` (an operation, an enum and a sort declared again are refused as a later load and in one; a new name in a library scope loads; an unsealed earlier load is not a library), the refusals of `wi_9bkz4_sealed_bodies_test`, and `wi_an6cq_load_program_test` (sealed between the two loads; an empty library seals nothing; an empty program is no second load).
 
 DONE WHEN, added: scaland refuses those shapes as rustland does, or this ticket says which rule has no counterpart there and why; and §8.3's status line about the Scala implementation is taken out.
+
+### 2026-10-13T14:07:56Z — feedback — codex
+
+Implemented Scala load boundaries: Loader.loadAll checks duplicate declarations before symbol mutation and records resolved equality suppliers/provisions (including bindings and conditions) for composites; later changes raise EqualityOfEarlierSort and remain refused on retry. Explicit sealDeclarations protects operations, consts, sorts/enums and entities with the first declaration site. Loader.loadProgram loads the library first, seals it, then loads the program; empty library is one unsealed load and empty program adds no load. StdlibFixture and SMT fixtures now use loadProgram. Scala has no CLI; this is its public product-loading entry point. Counterpart audit: LoadPass drops operation bodies and const values (no typer/evaluator); OpGen emits abstract signatures only; loadProvidesClause drops bindings and has no DictLayout/dispatch resolution. Consequently simp rewriting of sealed bodies, dot-rule member dispatch, and provisions changing a sealed dispatch have no executable counterparts. There is also no structural equality derivation/host equality dispatch to port; the boundary records the source suppliers/provisions independently of the lossy legacy metadata. Updated only the Scala implementation status in spec section 8.3, as required by this ticket; language rules unchanged. Validation: final sbt testFull passed 694 tests (653 core, 40 SMT, 1 Scala generator). LoadBoundaryTest has 17 tests, including actual SLD resolution after the second load, same-load/abstract/unsealed controls, witness/member equality, conditions and new instantiations, equivalent named/positional bindings, redeclarations and empty-load cases. Back-out measurement disabling the two boundary checks: 12 failed, 5 controls passed; restored implementation passes. Manual review and git diff --check completed. The requested /code-review skill is not installed, so it was not run. No Rust sources changed; no Rust test run. Changes remain uncommitted.
+
+### 2026-10-13T14:09:16Z — feedback — codex
+
+Manual review additionally found named requires binders declare types too: added them to declaration/seal checks and a driving regression for a sealed demo.Point.O. Final sbt testFull after this correction: 695 passed, 0 failed (654 core, 40 SMT, 1 Scala generator); 18 LoadBoundaryTest rows. Back-out measurement above covers the preceding 17-row suite. No further source changes after this gate.
 

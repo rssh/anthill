@@ -35,6 +35,6 @@ object Common:
       case Right(pf) => pf
       case Left(errs) => throw new AssertionError(
         s"parse failed: ${errs.map(_.message).mkString(", ")}")
-    val loadErrs = Loader.loadAll(kb, stdlibParsed :+ userPf)
+    val loadErrs = Loader.loadProgram(kb, stdlibParsed, IndexedSeq(userPf))
     if loadErrs.nonEmpty then throw new AssertionError(s"load errors: $loadErrs")
     kb

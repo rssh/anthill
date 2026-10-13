@@ -63,7 +63,7 @@ object StdlibFixture:
   def kbWith(extra: ParsedFile*): KnowledgeBase =
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val loadErrs = Loader.loadAll(kb, parsed ++ extra)
+    val loadErrs = Loader.loadProgram(kb, parsed, extra.toIndexedSeq)
     assert(loadErrs.isEmpty, s"load errors: $loadErrs")
     kb
 

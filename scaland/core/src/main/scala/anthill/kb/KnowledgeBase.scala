@@ -11,6 +11,8 @@ class KnowledgeBase:
   val terms: TermStore = TermStore()
   val symbols: SymbolTable = SymbolTable()
 
+  private[anthill] val loadBoundary = anthill.load.LoadBoundaryState()
+
   /** THE KB PINS ONE TABLE (WI-1004). A scope identity is a member of the [[SymbolTable]]
     * that issued it, and a KB has exactly one — so `kb.ScopeId` is `kb.symbols.ScopeId`
     * and the two spellings are interchangeable. That settles the question the ticket asked
