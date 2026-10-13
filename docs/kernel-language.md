@@ -2133,6 +2133,21 @@ An optional binder names the requirement slot (`requires O: Ord[T]`, proposal
 therefore addressable in type/selection position; an anonymous slot remains a
 constraint that is solved rather than incorporated into the sort's identity.
 
+A requirement is the sort it names at the bindings written for it, and that is how
+it is told from another.  `requires OK: WeakOrd[T = K]` and `requires OV: WeakOrd[T
+= V]` are two requirements, each with a dictionary of its own, also at an instance
+that puts one type in `K` and in `V`: a call at a value of `K` reads the first, and a
+call at a value of `V` the second.  Two `requires` that name one sort at the same
+bindings state one requirement.  The sort holds one dictionary for it, and a second
+line that names it adds a name and nothing else: `requires Plus: Mon[T]` beside
+`requires Times: Mon[T]` is one requirement of `Mon[T]` under the names `Plus` and
+`Times`, and a body, which asks for a requirement by its sort and bindings, reads
+that dictionary whichever name a caller wrote.  The same holds between a sort's
+requirement and an operation's own `requires` that restates it, and between two
+goals of one operation's `requires`.  Two that differ only in a parameter one of
+them leaves unbound are one requirement as well: a call the one answers, the other
+answers too.
+
 Because a named slot is a type parameter, **omitting it means two different
 things and they are decided per call site** (proposal 058 §3.4, WI-1094).  Where
 nothing anywhere has bound it — a construction such as
@@ -3272,11 +3287,12 @@ from Γ, which is precisely what a type precondition must never be (WI-862).
 
 A **named** op-level slot is a type parameter of the *operation*, not of any sort, so
 §5.2's named-vs-anonymous rule reaches it only halfway: naming it makes it addressable
-in a bracket (`biFold[plus = AddM, times = MulM](xs)`) and distinguishes two slots of
-one spec, but there is no value whose type could carry the choice — an op-scoped
-requirement is evidence about *this call of this operation* and belongs to no instance
-(proposal 058 §3.9). §5.2's inference for an omitted named slot therefore stops at the
-sort level and does not run here.
+in a bracket, and tells two requirements on one sort apart (`cmp2[ok = ByLength, ov =
+Descending](…)` over `requires ok: WeakOrd[T = K], ov: WeakOrd[T = V]`), but there is
+no value whose type could carry the choice — an op-scoped requirement is evidence
+about *this call of this operation* and belongs to no instance (proposal 058 §3.9).
+§5.2's inference for an omitted named slot therefore stops at the sort level and does
+not run here: a named slot of an operation is written at each call.
 
 `requires` is checked before execution and therefore cannot reference
 `result`. `ensures` and `effects` may reference the reserved `result`, which
@@ -3321,7 +3337,9 @@ and never constrain it.
 
 **What a key may name — two rungs, in order** (WI-841, proposal 058 §4.2). (1) A declared **type parameter**: the operation's own, **or its enclosing sort's**. Both scopes, one list — an operation may not declare a parameter whose name collides with its sort's, so no key has two targets, and that collision is refused at the *declaration*. A parameter the member sugar mints for `Spec.Member` is not declared and is not in the list. (2) A requirement's **spec short name**, when it picks out exactly **one** *anonymous* requirement slot of the callee — its own `requires`, its enclosing sort's, or, for a body-less spec op, the spec being dispatched (`Monoid.combine[Monoid = AddM](a, b)` selects the dictionary backing that very call). The value there names a **witness sort**, and the binding *selects* that provider for the slot: explicit selection outranks both the search for a unique provider and a deferral to the enclosing frame's dictionary. A slot the author **named** (`requires m: Monoid[T]` — WI-840; proposal 058 §4.7) is reached by its binder under rung (1) — which both pins the parameter and selects — and is no longer answered by its spec's short name, so one bracket cannot bind one slot twice. A **positional** binding is rung (1) only: a requirement slot has no position a call site could count to.
 
-Three refusals belong to rung (2), all **load errors**: a **qualified** key (`fold[algebra.Monoid = AddM]`) is refused rather than resolved — resolving it would make selection depend on the *caller's* imports, while the supply path consults no scope at all, and every selection a short name cannot express is written by naming the slot; a short name matching **two or more** anonymous slots (the gate that makes matching by short name sound at all); and two keys selecting **different** witnesses for one spec.
+Three refusals belong to rung (2), all **load errors**: a **qualified** key (`fold[algebra.Monoid = AddM]`) is refused rather than resolved — resolving it would make selection depend on the *caller's* imports, while the supply path consults no scope at all, and every selection a short name cannot express is written by naming the slot; a short name matching **two or more** anonymous slots (the gate that makes matching by short name sound at all); and two keys selecting **different** witnesses for one requirement.
+
+A selection is for one requirement of the callee. A callee with two requirements on one sort takes a witness for each: `Entry.cmp[K = String, V = Int64, OK = ByLength, OV = Descending](…)` over `requires OK: WeakOrd[T = K]` and `requires OV: WeakOrd[T = V]` selects `ByLength` for the keys and `Descending` for the values, and each witness is validated against the bindings of its own requirement. The two may equally be carried by the value's type, or one be written in the bracket and the other carried by the type. A selection for one requirement says nothing of another: where one is selected and the other left out, the other is decided as an omitted named slot is at a call that selects nothing (§5.2). Where the callee states one requirement twice (§5.2) — under two names, or on the sort and again on the operation — a selection under either name, or under the sort's short name where one of the two is anonymous, is the selection for that requirement; a name left unwritten takes it; and two different witnesses for it are refused, naming both.
 
 **A selected witness is validated at the call site** (proposal 058 §3.5). The witness is the sort a selection names, as `ByLength` in `[O = ByLength]`. It must provide the spec **at the call's own bindings** — a witness that provides it at other bindings is as loud as one that provides it not at all — and it may not be a **concrete** provider, a sort with constructors. The reason is the case the rule is for: where the call's arguments are that sort's own values, they carry their sort and already direct the dispatch, so an explicit witness could only repeat the value's choice or contradict it. It is refused rather than preferred. The rule is read off the named sort alone, deliberately, so that whether a sort may be named can be seen from its declaration. A sort with constructors is therefore refused even where none of its values takes part in the call — an ordering of `String` that declares an entity of its own is refused although the arguments are strings (WI-20260911-TX0G6 measured that case and kept the rule). To make such an ordering selectable, declare it without constructors. A selection applies to the call's **own** goal and not to the sub-goals a conditional witness resolves: those search, as they always did. To steer one, name the witness's own slot in the key's value position (`fold[Monoid = ListM[O = MyEq]]`), where the selection happens at the witness's boundary as a callee slot again.
 
