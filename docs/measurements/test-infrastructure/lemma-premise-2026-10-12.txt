@@ -1,0 +1,399 @@
+# A cited lemma's premise that is a rule's predicate (WI-20261012-CDHSQ) — the count the decision was made on,
+# the decisions, what is emitted, what fails when a part is backed out, which documents moved, what /code-review
+# changed, what was found and is not of this change, and the gate. 2026-10-12 and -13.
+# Section 1 is the tree before anything was changed; section 2 is the decisions; sections 3–5 are the tree as
+# delivered.
+#
+# Tree:    main at bcad34e8, and this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. z3 4.16.0.
+# Every `anthill prove` below is `--no-cache`, the dev build (`target/debug/anthill`).
+
+== 1. the count (before anything was decided) ==
+# THE DEFECT, as filed and reproduced on bcad34e8:
+#     rule related(?a, ?b) :- gte(?a, ?b)
+#     rule lemma: gte(?a, ?b) :- related(?a, ?b)        proof lemma by z3 end
+#     rule bogus: gte(?c, 5.0) :- gte(0.0, ?c)          proof bogus using lemma by z3 end
+#   `✓ lemma: proved`, `✓ bogus: proved (z3: unsat)`. The lift in `bogus`'s document is
+#   `(assert (forall ((var_0 Real) (var_1 Real)) (=> true (>= var_1 var_0))))`.
+#
+# THE INSTRUMENT. A temporary one in `anthill-smt-gen` and in `prove.rs` (taken out before the back-outs) wrote
+# a line for every lift made — the rule, the calls the abstract-mode branch passed over while reading it, the
+# implication — for every satisfiability check, and for every cite, to a file named by an environment variable.
+# Run under it: `anthill prove -v --no-cache examples/webots-modelling/lf1`, the emitter crate's suite
+# (`scripts/test.sh -p anthill-smt-gen`) and the whole CLI suite (`scripts/test.sh -p anthill-cli`).
+#
+#                              lifts made (distinct)   that pass a rule call over   cites   checks emitted abstractly
+#   lf1                          2  (2)                  0                            2      1, and it skips 2 calls
+#   the emitter crate's suite    8  (7)                  0                            –      –  (its rows call the lift)
+#   the CLI suite               19 (16)                  0                           20      7, of which 1 skips a call
+#
+# SO NO LIFT THAT EXISTS LOSES A PREMISE, and no consumer's verdict is at risk: of the 29 lifts, the 2 of lf1 are
+# the steps of `step_distance_lemma` (`h_geometric`, `h_envelope`), written with no premise at all; the others
+# have a comparison for a premise. The one call anything skips is the CONSUMER's — `step_distance_lemma`'s own
+# body, twice `distance_at_step/2` (the CLI suite's one is the same proof, run by a row) — which is the safe
+# direction the branch's comment argues.
+#
+# WHICH RULES OF lf1 HAVE SUCH A PREMISE AND A CONCLUSION, though no `by z3` proof cites them:
+#     velocity_envelope     real_velocity_at/5        cited by the step `h_envelope`, which is `by trust`: no lift
+#     step_distance_lemma   distance_at_step/2, twice cited by nothing
+#   A probe proof citing each, `gte(?c, 5.0) :- gte(0.0, ?c)`:
+#     using step_distance_lemma   `✓ proved` — the lift is `(=> true (<= (anthill_abs (- var_4 var_3)) var_2))`
+#     using velocity_envelope     the lift is `(=> (>= var_8 0.0) (<= var_8 (+ leader_speed_max follower_speed_max)))`,
+#                                 its first premise gone; the document names two field constants it does not
+#                                 declare, and z3 says so ("unknown constant leader_speed_max").
+#
+# THE SAME BRANCH, MORE SHAPES, each measured as `✓ proved` for a `bogus` of the shape above:
+#     fact start(5.0)                    rule lemma: gte(?d, 0.0) :- start(?d)     lift `(=> true (>= var_0 0.0))`
+#     rule bound(?r) :- ?r = 2.0 + 3.0   rule lemma2: gte(?d, 0.0) :- bound(?d)   lift `(=> true (>= var_0 0.0))`
+#     a STEP of a structured proof, `rule h1: gte(?x, ?y) :- related(?x, ?y)`:    lift `(=> true (>= var_1 var_0))`,
+#       a ground assertion in the parent's frame — handed to a parent whether or not it holds `related(?x, ?y)`.
+#     a CONNECTIVE over goals — `or` and `and` are rules of the kernel (`or(?a, ?b) :- push_choice(?a, ?b)`):
+#       rule lemma: gte(?a, 0.0) :- gte(?a, 1.0) | gte(?a, 2.0)                  lift `(=> true (>= var_0 0.0))`
+#       and the same with `&`. (Found after the decision, by asking what else has program clauses; a premise
+#       `not(…)` does not come this way — `not` is an operation, and is "unhandled body goal functor".)
+#
+# z3 ON HAND-WRITTEN TARGET DOCUMENTS (`related` declared `(Real Real) Bool`):
+#     the lift with `(related var_1 var_0)` for its premise, `bogus`'s body and negated conclusion      sat
+#     the same lift, a consumer that asserts `(related var_1 var_0)`                                    unsat
+#     the same lift, a consumer that asserts the BODY of `related` and not the relation                 sat
+#     the lift with `related`'s body for its premise (the third option), `bogus`                        sat
+#   — so under the second option a proof that reads the body of its call must state the call beside it.
+
+== 2. the decisions (user, 2026-10-12) ==
+#   ON SECTION 1 — what a cited lemma's premise becomes in its lift when it is a rule's predicate, a bodied
+#   rule's, a fact's, a one-argument rule's alike. Offered: (a) the lemma is REFUSED as not citable while it has
+#   one; (b) the predicate is an UNINTERPRETED relation, the lift's premise and the consumer's own call both
+#   written with it; (c) the callee's body is read into the antecedent.
+#   DECIDED: (b). The predicate is a declared `Bool` function; a consumer states its own call of a relation a
+#   cite declared — the call it skips and the call it reads the body of — and only those, so a proof that cites
+#   no such lemma has the document it had; a call that cannot be written is refused. Premises only: a conclusion
+#   that is a rule's predicate stays "not citable".
+#   NOT CHOSEN, and why: (a) leaves a structured proof's step unable to state a premise that is one of its
+#   parent's rule calls, and lf1's two rules citable only `by trust`; (c) is held by no consumer that skips its
+#   call, and drags into the lift the facts and the nonlinearity the lift exists to keep out.
+#   A LAW's such premise is as WI-20261012-ZZ7PH left it: the law is not lowered, and said.
+#   TAKEN AS FOLLOWING, and said to the user with the result: what cannot be written whole is REFUSED and not
+#   left out, beyond the shapes the question named — a premise that is a connective over goals, an entity
+#   premise's slot that is no variable, a call inside an inlined rule that names the rule's own variable
+#   (section 6). A connective written as the relation of its name is `(anthill.kernel.or/2 (>= var_0 1.0) (>=
+#   var_0 2.0))`, uninterpreted — sound, discharged by no consumer, and nothing said (measured on the first cut:
+#   the citing proof was a COUNTEREXAMPLE with no word of why).
+#   AFTER THE REVIEW (section 6, finding 8): RECORDED WITNESSES ARE RECORDED AGAIN — `WITNESS_FORMAT_VERSION`
+#   3 → 4. A proof that cited such a lemma has a sidecar that says `Discharged`, its state hash unmoved, and a
+#   sidecar vouches for a cite. Offered against leaving it, as ZZ7PH did for its own fixes; decided: a soundness
+#   fix of the emitter moves the witness version.
+#   AND WHAT WAS FOUND BESIDE IT IS FILED (section 7), each by the user's word: four tickets.
+
+== 3. what is emitted ==
+#   rule related(?a, ?b) :- gte(?a, ?b)
+#   rule lemma: gte(?a, ?b + 1.0) :- related(?a, ?b)       proof lemma by trust(…) end
+#   rule holds: gte(?x, ?y + 1.0) :- related(?x, ?y)       proof holds using lemma by z3 end
+# `anthill prove --dry-run`, the document of `holds`:
+#   (set-logic UFLRA)
+#   ; Declared: a rule's predicate that a cited lemma's premise names is an
+#   ; uninterpreted relation, stated of each call of it this proof holds.
+#   (declare-fun test.cdhsq.base.related/2 (Real Real) Bool)
+#   (declare-const var_0 Real)
+#   (declare-const var_1 Real)
+#   ; Cited-lemma assumptions (from `using` clause).
+#   (assert (forall ((var_0 Real) (var_1 Real)) (=> (test.cdhsq.base.related/2 var_1 var_0) (>= var_1 (+ var_0 1.0)))))
+#   (assert (>= var_1 var_0))
+#   (assert (test.cdhsq.base.related/2 var_1 var_0))
+#   ; Negated conclusion (from `-:` clause).
+#   (assert (not (>= var_1 (+ var_0 1.0))))
+#   (check-sat)
+#
+# THE VERDICTS, the rows' fixtures (`wi_cdhsq_lemma_premise_test`), each run on the tree with the change stashed
+# (a build of it) and on the tree as delivered. Each proof cites a trusted lemma `conclusion :- <the call>` but
+# where said.
+#   the proof                                                                      BEFORE (bcad34e8)   AS DELIVERED
+#   base.bogus      gte(?c, 5.0) :- gte(0.0, ?c), citing a lemma of `related/2`    proved              COUNTEREXAMPLE
+#   proved.bogus    the same, the lemma PROVED `by z3`                             proved              COUNTEREXAMPLE
+#   shapes.bogus_start / bogus_bound   citing a lemma of a fact's `start/1`, of `bound/1`   proved     COUNTEREXAMPLE
+#   base.holds      gte(?x, ?y + 1.0) :- related(?x, ?y)                           proved              proved
+#   shapes.holds_start / holds_bound   the call stated `(start/1 5.0)`, `(bound/1 (+ 2.0 3.0))`   proved   proved
+#   inl.deep        … :- wrapper(?x, ?y), `related` called in `wrapper`'s body     proved              proved
+#   steps.big       structured, the step's premise held by the parent              proved              proved
+#   steps.small     structured, the step's premise NOT held by the parent          proved              COUNTEREXAMPLE
+#   arity.three     structured, the parent holds `span/3`, the step's premise is `span/2`   proved     COUNTEREXAMPLE
+#   carrier.p       (?x: T, …) :- related(?x, ?y) under `requires PartialOrd[T = T]`   proved          proved
+#   carrier.q       holds the body of `related` (`lte(?y, ?x)`), and not `related`     proved          COUNTEREXAMPLE
+#   nullary.bogus   citing a lemma of `ready` (no arguments, named bare)           error: non-Fn body goal   COUNTEREXAMPLE
+#   nullary.big     structured, its step's premise `ready`, held by the parent     error: non-Fn body goal   proved
+#   defrule.holds   citing a lemma of `double(?x, ?r)`, a bodied operation         error: unhandled body goal functor   proved
+#   slot.uses       citing a lemma of `Mode(kind: ?k, cap: ?c)`, every slot a variable   proved        proved
+#   nocite.user / nocite.skipper   citing a lemma with a comparison for its premise   proved           proved
+#   dbl.viol        viol(?r) :- dbl(?x, ?r), lt(?x, 0.0); dbl(?a, ?r) :- ?r = ?a + ?a   proved         COUNTEREXAMPLE
+#     (no cite: section 6, finding 1 — a regression of ZZ7PH's, in the function this change is in)
+#
+# REFUSED, each an `error:` naming the proof, and no document. BEFORE, every one of them `proved`:
+#   ctor.slow    lte(?v, 10.0) :- speed_of(Leader, ?v)       the PROOF's call: "argument 1 is the bare name `Leader`,
+#                                                            which is not written as an argument — …"
+#   str.slow     the lemma's premise `tagged("1.0", ?v)`     the LIFT: "… argument 1 is the string "1.0", …"
+#   named.p      the lemma's premise `ranked(low: ?a, high: ?b)`   the LIFT: "… written with named arguments, which
+#                                                            the relation has no order for"
+#   top.p        the lemma's premise `related(?a, top)`, under `requires BoundedLattice[T = T]`   the LIFT: "nothing
+#                                                            gives argument 2 a sort, and under a scope that has an
+#                                                            abstract parameter it may be of that carrier or a scalar"
+#   sig.p        the lemma's premise `flag(true, ?v)`, the proof's call `flag(?b, ?v)`   "`…flag/2` is declared at
+#                                                            two signatures in one document: (Real Real) Bool and
+#                                                            (Bool Real) Bool"
+#   own.deep     … :- wrap2(?x, ?x), lte(?y, 100.0); wrap2(?p, ?q) :- related(?p, ?r), gte(?q, 0.0)   the PROOF's
+#                                                            call: "… in the body of `…wrap2`, which is inlined, and
+#                                                            names `?var_0` of that rule's own frame — …
+#                                                            (WI-20261012-BR7P3)"
+#   disj.bogus / conj.bogus   the lemma's premise `gte(?a, 1.0) | gte(?a, 2.0)`, and with `&`   the LIFT: "a premise
+#                                                            that is a connective over goals (`or`,
+#                                                            `anthill.kernel.or`) is not read into a lift, …"
+#   slot.bogus   the lemma's premise `Mode(kind: 2.0, cap: ?c)`   the LIFT: "the premise `…Mode` is an entity and its
+#                                                            field `kind` is given a value that is no variable, …"
+# AS IT WAS: a lemma whose HEAD is a rule's predicate (`rule lemma2: related(?a, ?b) :- gte(?a, ?b + 3.0)`) is
+#   "not citable: no `-:` (then) clause" — such a head is no conclusion in the emitter's reading, its variables
+#   are the rule's parameters; a premise `not(…)` is "unhandled body goal functor 'anthill.kernel.not'"; and a
+#   law's premise that is a rule's predicate (ZZ7PH's row Z6).
+
+== 4. what fails when a part is backed out (the dev profile; each on the tree as delivered, then restored) ==
+# Over the 3 rows of the emitter crate's `wi_cdhsq_lemma_premise_test` (E) and the 18 of `cli_tests`' (P), run with
+# ZZ7PH's and BVG8M's beside them — 12 and 47 rows:
+#   scripts/test.sh -p anthill-smt-gen --test integration -- cdhsq zz7ph
+#   scripts/test.sh -p anthill-cli --test cli_tests -- cdhsq zz7ph bvg8m
+# Each back-out is one edit of one source, applied by a script to the sources as delivered and taken out again;
+# after the run the three sources were compared with a saved copy, byte for byte. Run on the tree as reviewed
+# (section 6), before the witness version moved, which no row reads.
+#
+#   E: `anthill-smt-gen/tests/wi_cdhsq_lemma_premise_test.rs` (3)
+#     E1   a_lift_keeps_the_premise_and_declares_its_relation
+#     E2   the_clauses_alone_are_refused_where_they_need_a_declaration
+#     E3   a_body_states_its_call_under_what_a_cite_declared_and_not_otherwise
+#   P: `anthill-cli/tests/include/wi_cdhsq_lemma_premise_test.rs` (18)
+#     P1   a_lemmas_premise_that_is_a_rules_predicate_is_its_antecedent
+#     P2   a_proof_states_its_own_call_beside_the_body_it_reads
+#     P3   a_facts_predicate_and_a_one_argument_rule_are_premises_too
+#     P4   a_steps_premise_is_kept_and_the_parent_states_the_call_it_skips
+#     P5   a_proof_that_cites_no_such_lemma_states_no_call
+#     P6   a_call_inside_an_inlined_body_is_stated_of_what_the_proof_passed
+#     P7   a_premise_about_the_carrier_is_a_relation_over_its_sort
+#     P8   a_predicate_of_no_arguments_named_bare_is_a_premise
+#     P9   a_premise_that_calls_a_bodied_operation_is_a_rules_predicate_whoever_ran_first
+#     P10  a_call_that_cannot_be_written_is_refused
+#     P11  an_argument_nothing_gives_a_sort_is_refused_under_an_abstract_parameter
+#     P12  a_call_in_an_inlined_rule_that_names_its_own_variable_is_refused
+#     P13  a_premise_that_is_a_connective_over_goals_is_refused
+#     P14  an_entity_premises_slot_that_is_no_variable_is_refused_in_a_lift
+#     P15  predicates_of_one_name_and_two_arities_are_two_relations
+#     P16  a_premise_and_a_call_at_two_signatures_are_refused
+#     P17  a_definition_in_an_inlined_rule_is_not_a_condition_on_the_callers_variable
+#     P18  the_verdicts_follow_the_premise
+#
+#   AS DELIVERED: emitter 12 pass, cli 47 pass.
+#   (a) a lift's body is read as a proof's hypotheses, as it was: a rule call passed over
+#       emitter  fails E1, E2, E3
+#       cli      fails P1, P2, P3, P4, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15, P16, P18
+#   (b) a proof states no call, whatever it cites
+#       emitter  fails E3
+#       cli      fails P2, P3, P4, P6, P7, P8, P9, P10, P12, P16, P18
+#   (c1) a call of a one-argument rule is not stated beside the value read of it
+#       emitter  all pass
+#       cli      fails P3, P18
+#   (c2) a call matched to a fact or read by its body is not stated beside it
+#       emitter  fails E3
+#       cli      fails P2, P3, P6, P7, P9, P10, P12, P16, P18
+#   (d) a proof does not state the call it skips (a structured proof's conclusion)
+#       emitter  fails E3
+#       cli      fails P4, P8, P18
+#   (e) a proof states every call of a rule's predicate, cited or not
+#       emitter  fails E3
+#       cli      fails P5, P6, P15, P17
+#   (f) an argument that is a bare name is not refused
+#       emitter  all pass
+#       cli      fails P10
+#   (g) an argument that is a string is not refused
+#       emitter  all pass
+#       cli      fails P10
+#   (h) named arguments are not refused: the positional ones are the relation's
+#       emitter  all pass
+#       cli      fails P10
+#   (i) a relation is named by its predicate alone, whatever its arity
+#       emitter  fails E1, E3
+#       cli      fails P1, P2, P3, P4, P6, P7, P8, P9, P15, P16, P18
+#   (j) which functions a cited lemma declared for a predicate is not carried to the consumer
+#       emitter  fails E1, E3
+#       cli      fails P2, P3, P4, P6, P7, P8, P9, P10, P12, P16, P18
+#   (k) a call of a one-argument rule is stated before the rule is read
+#       emitter  all pass
+#       cli      fails P3, P18
+#   (k2) a call matched to a fact, or read by its body, is stated before that reading
+#       emitter  all pass
+#       cli      fails P3, P9, P18
+#   (m) a relation is over the reals, whatever its arguments are
+#       emitter  all pass
+#       cli      fails P7, P11, P16, P18
+#   (n) a premise that is a connective over goals is not refused: it is the relation of its name
+#       emitter  all pass
+#       cli      fails P13
+#   (o) an entity premise's slot that is no variable is passed over in a lift, as it was
+#       emitter  all pass
+#       cli      fails P14
+#   (p) a call inside an inlined rule that names the rule's own variable is stated
+#       emitter  all pass
+#       cli      fails P12
+#   (q) whether an equation names its own variable is asked of its text, as ZZ7PH had it
+#       emitter  all pass
+#       cli      fails P9, P17
+#   (r) a rule's predicate named bare is no call: "non-Fn body goal", as it was
+#       emitter  all pass
+#       cli      fails P8, P18
+#   (t) a cited rule's operations have no defining rules when it is lifted
+#       emitter  all pass
+#       cli      fails P9, P18
+#   (u) the clauses alone are handed out whatever they need declared
+#       emitter  fails E2
+#       cli      all pass
+#   (v) an argument no variable and of no known sort is a Real, under an abstract parameter too
+#       emitter  all pass
+#       cli      fails P11
+#   (s) a law's premise that is a rule's predicate is not refused (ZZ7PH's back-out (s), on this tree)
+#       emitter  all pass
+#       cli      fails ZZ7PH's Z6 and Z18 (`a_law_whose_premise_is_a_rules_predicate_is_left_out_whole`,
+#                `the_verdicts_are_of_the_carrier`), and none of P
+#
+# EVERY ROW OF E AND P FAILS UNDER AT LEAST ONE BACK-OUT, and every back-out fails a row.
+# BY DESIGN, where a back-out passes a suite: (c1), (f)–(h), (k), (k2), (m)–(t), (v) pass the emitter's rows — those
+# call the lift and the entry point directly on one fixture, and each of these parts is held by a row that drives a
+# PROOF through the binary. (u) passes the binary's rows: the door that returns the clauses alone is the crate's,
+# and the driver does not take it. ZZ7PH's and BVG8M's 38 rows pass under every back-out but (s), which is ZZ7PH's.
+# (q) is of ZZ7PH's line: P17 is the row it did not have, and P9 fails with it because the defining rule of a bodied
+# operation is inlined the same way.
+# NOT BACKED OUT: the witness version — no row reads which directory a sidecar is in, and the rows that write and
+# read one (`check_*`, `prove_stale_*`) do both under one version, whichever it is.
+
+== 5. which documents moved ==
+# A second temporary instrument (taken out before the gate) wrote EVERY document the emitter returned — a
+# satisfiability check, an obligation, a lift — whole, to a file, under the same three runs, on the tree with the
+# change stashed and on the tree as reviewed. Compared by rule and text:
+#                                before: distinct documents                 there again, to the byte   moved   gone
+#   lf1                           16  (14 checks, 2 lifts)                   16                         0       0
+#   the emitter crate's suite     49  (36 checks, 6 obligations, 7 lifts)    49                         0       0
+#   the CLI suite                124  (108 checks, 16 lifts)                124                         0       0
+#   AFTER: the emitter crate's suite has 6 more and the CLI suite 39, every one of a `test.cdhsq.*` rule.
+#   lf1: `prove -v --no-cache`, stdout and stderr the same files before and after; `prove -v --no-cache --dry-run`
+#     stdout sha1 906df605…, which is the hash ZZ7PH's file has for it.
+# So nothing that existed moved, which the count said it would not: no lift had such a premise, a proof that cites
+# no such lemma states no call (P5 and E3 hold that to a control), and what the review changed beyond the lift —
+# how an equation that names its own variable is told, a bare nullary goal, the defining rules of a cite's
+# operations — reaches no document that was emitted.
+
+== 6. what /code-review changed ==
+# THE FIRST CUT named the relation by the predicate alone; stated a call wherever it stood; passed a connective
+# over as the relation of its name until that was seen and refused; and kept two maps of declarations and two
+# copies of the satisfiability entry point. Fifteen findings, eight of them reproduced by the reviewer on the built
+# binary of the first cut. What was done for each; where a verdict of the tree BEFORE is given it is this file's
+# own run of the row's fixture on bcad34e8 (section 3), and a verdict of the first cut is the reviewer's but where
+# said:
+#
+# (1) A DEFINITION IN AN INLINED RULE WAS READ AS A CONDITION ON THE CALLER'S VARIABLE — in ZZ7PH's line, unchanged
+#     by this change, in the function it is in. `?x = <a term that names ?x>` is a condition (ZZ7PH), asked of the
+#     term's TEXT, which in an inlined rule is in the caller's names: `rule dbl(?a, ?r) :- ?r = ?a + ?a` called
+#     `dbl(?x, ?r)` gave `(assert (= var_0 (+ var_0 var_0)))`, and `viol(?r) :- dbl(?x, ?r), lt(?x, 0.0)` proved —
+#     on bcad34e8 too, run here. DONE: asked of the term (`debruijn_vars_of`) (P17; back-out q). Before ZZ7PH the
+#     check did not exist.
+# (2) AN ENTITY PREMISE'S LITERAL SLOT WAS DROPPED FROM A LIFT — the defect of this ticket in another branch.
+#     `Mode(kind: 2.0, cap: ?c)`: the lift was `(=> (>= var_1 cap) (>= var_1 100.0))`, and a proof about the `Mode`
+#     of kind 1 proved by citing it — on bcad34e8 too, run here. DONE: refused in a lift (P14; back-out o). In a
+#     proof's own body the slot left out is a hypothesis left out, as it was. (A positional slot does not reach
+#     the reader: `Mode(?k, ?c)` is stored by its fields' names — measured.)
+# (3) A CALL STATED FROM INSIDE AN INLINED RULE NAMED THE CALLER'S VARIABLE. `wrap2(?p, ?q) :- related(?p, ?r), …`:
+#     `?r` is `wrap2`'s own, and goes by the name the proof's variable of its index has (BR7P3), so the relation
+#     was stated of the proof's `?y` and `deep` — false at x = 0, y = 50 — proved. (Run here: on bcad34e8 it
+#     proves, by the premise passed over; under back-out (p) it proves, its document `(assert (….related/2 var_1
+#     var_0))`.) DONE: refused, naming the rule and BR7P3 (P12; back-out p). A call whose arguments the inlined
+#     rule's head passes is stated (P6).
+# (4) TWO ROWS OF ONE BINARY WROTE ONE TEMPORARY FILE (`prove_dry_run("inl", …)` here and in ZZ7PH's file). DONE:
+#     this suite's files carry its name.
+# (5) A STEP'S LIFT NAMES A PARENT-FRAME VARIABLE THE PARENT'S DOCUMENT DOES NOT DECLARE — "unknown constant var_0"
+#     where a verdict was expected. Not of this change: section 7 (iv).
+# (6) WHETHER A PREMISE IS A RULE'S PREDICATE HUNG ON WHICH PROOF RAN FIRST: a relational call of a bodied
+#     operation is one once its defining rule is synthesized, which ran for the rule discharged and after its cites
+#     were lifted — run here on the first cut: this file's one cite was "unhandled body goal functor". DONE: a
+#     cited rule's operations have their defining rules before it is lifted (`dispatch_z3`) (P9; back-out t).
+# (7) AN ARGUMENT OF NO KNOWN SORT WAS A `Real` UNDER AN ABSTRACT PARAMETER, and the "constant of a carrier" the
+#     first cut said it accepted could not be reached: `related(?a, top)` was "unhandled arithmetic op '…top'".
+#     DONE: refused as an unsorted variable is there, and a bare name is refused whatever it is (P11, P10;
+#     back-outs v, f).
+# (8) RECORDED WITNESSES STAY `Discharged`. Decided with the user (section 2): `WITNESS_FORMAT_VERSION` 3 → 4.
+# (9) THE RELATION WAS KEYED BY THE PREDICATE'S NAME ALONE, so `span/2` and `span/3` were one relation at two
+#     signatures and the proof refused. DONE: named with its arity (P15; back-out i). Two signatures of one
+#     relation — an argument of another sort — are refused as they were (P16).
+# (10) THE ROWS POINTED AT A SECTION 4 THIS FILE DID NOT HAVE YET: it has it.
+# (11) `lift_rule_to_implication_clause` RETURNED A CLAUSE THAT NEEDS A DECLARATION IT DROPS. DONE: refused there,
+#     with where to take it whole (E2; back-out u).
+# (12) THE PREDICATES A CITE DECLARED WERE HELD TWICE, and `has_predicate` had no caller but a row. The set a proof
+#     is asked by is kept — it is taken once, from the configuration, and says at the call what is stated — and
+#     `has_predicate` is gone.
+# (13) THE TWO SATISFIABILITY ENTRY POINTS REPEATED THEIR SETUP: the one that returns no dependency set calls the
+#     one that does.
+# (14) `declare_predicate` RE-IMPLEMENTED `declare_fun`: a relation is a declared function, and its name is in a
+#     set beside the map.
+# (15) A PREDICATE OF NO ARGUMENTS WAS A PREMISE WRITTEN `ready()` AND "non-Fn body goal" WRITTEN `ready`, which is
+#     how a step stores it — run here on the first cut, for the bare name. DONE: the bare name of a rule's
+#     predicate is the call (P8; back-out r).
+
+== 7. found, and not of this change ==
+# Each was run on the tree with this change STASHED (bcad34e8) and again as delivered: the same answer both times.
+# FILED with the user's word, each: (i) WI-20261012-KF2SD, (ii) WI-20261012-V04MK, (iii) WI-20261012-1P005,
+# (iv) WI-20261012-5613E.
+#
+# (i) A PREDICATE OF SEVERAL CLAUSES IS READ AS ITS FIRST ONE (`try_inline_rule_call` and `translate_called_rule`:
+#     `.find(|clause| !clause.is_fact())`; `try_match_fact_call` returns on the first fact that matches).
+#       rule related(?a, ?b) :- gte(?a, ?b)
+#       rule related(?a, ?b) :- lte(?a, ?b)
+#       rule lemma: gte(?a, ?b) :- related(?a, ?b)       proof lemma by z3 end
+#     `✓ lemma: proved (z3: unsat)` — the second clause is never read, and `related(1, 2)` holds by it. And of
+#     facts: `fact start(5.0)`, `fact start(-1.0)`, `rule lemma: gte(?d, 0.0) :- start(?d)` — `✓ proved`. This is
+#     the lemma's OWN discharge. WHAT THIS CHANGE HAS TO DO WITH IT: a lift now says `(related/2 a b) ⇒ …` of the
+#     predicate whole, so a lemma so proved is handed on as proved of every clause — as it was handed on
+#     unconditionally before.
+# (ii) TWO STRUCTURED PROOFS OF ONE FILE WITH A STEP OF ONE NAME: the second's step is "rule '…small.h1' not
+#     found" (`synthesize_step_rule` defines the step's short name in the global scope). Reproduced with no
+#     rule's predicate anywhere. The rows here name their steps apart.
+# (iii) A VARIABLE A PREMISE NAMES BEFORE THE EQUATION THAT DEFINES IT IS LEFT OUT OF THE LIFT'S QUANTIFIER.
+#       rule lemma: gte(?a, 0.0) :- gte(?kn, 1.0), ?kn = ?a + 1.0
+#     The premise is written `(>= var_0 1.0)` before `?kn` is bound, and a bound variable is not a free one: the
+#     lift is `(forall ((var_1 Real)) (=> (>= var_0 1.0) (>= var_1 0.0)))`, its `var_0` free. Proved `by z3` the
+#     lemma's own document names a constant it does not declare, and the solver says so ("unknown constant
+#     var_0") — loud, and the lemma cannot be cited. TRUSTED, it is lifted so, and the consumer's own `var_0` is
+#     the lift's: `gte(?x, 0.0) :- lte(?x, 100.0), gte(?w, 1.0)` proved, which is false at x = -5. With the
+#     equation written first that proof is a COUNTEREXAMPLE. Of the family of WI-20261012-BR7P3: a name of one
+#     frame taken for another's. A relation written for a premise is one more assertion it reaches, as a
+#     comparison is.
+# (iv) A STEP'S LIFT NAMES A VARIABLE OF ITS PARENT'S FRAME THAT THE PARENT'S DOCUMENT DOES NOT DECLARE. A step is
+#     lifted as a ground assertion in its parent's frame, declaring the variables that are the step's own; a
+#     parent's variable is declared by the parent's document only where the parent's own assertions name it, and a
+#     parent's document does not name what stands only in a call it skips. Run here, the parent
+#     `rule p: gte(?x, 1.0) :- gte(?x, 0.0), other(?x, ?y)`:
+#       its step `rule h: gte(?x, 1.0) :- related(?x, ?y)`   bcad34e8: `✓ p: proved` — the premise passed over,
+#                                                            and p false at x = 0.5 (this ticket's defect);
+#                                                            as delivered: `? p: unknown (… "unknown constant var_0")`
+#       its step `rule hq: gte(?y, 0.0)` (the CONCLUSION names `?y`)   bcad34e8 and as delivered alike:
+#                                                            `? q: unknown (… "unknown constant var_0")`
+#     So the solver's error is older than this change, through a step's conclusion; a step's premise is now
+#     written, and reaches it too (/code-review, finding 5). Loud, where the answer is a COUNTEREXAMPLE.
+
+== 8. the gate ==
+#   scripts/test.sh                              the whole workspace, the shared base, anthill-core at opt-level 2
+#
+#   THE TREE AS DELIVERED     2026-10-13 00:04:10 – 00:14:09 (9 min 59 s), nothing else building;
+#                             `CPU_Speed_Limit` 100 when it began and when it ended.
+#     exit 0; 36 result lines, all ok; 9 497 passed, 0 failed, 14 ignored.   `wi_tests`: 6 912 passed, 4 ignored,
+#     135.74 s.   OBSERVED by the controls: SHARED BASE; terms, a node where an alias is written.
+#   The gate of the tree before (law-lowering-2026-10-12.txt §9, the second merge) had 9 476: this ticket adds 21
+#   rows — 3 to the emitter crate's `integration`, 18 to `cli_tests`.
+#   After the gate: two probes that edit a source and put it back (back-out (p) once more, for the verdict in
+#   section 6 (3); the tree stashed and popped, for section 7 (iv)), the four sources compared with a saved copy
+#   byte for byte after each; then this file and the work items.
+#   scaland: `sbt testFull`, 2026-10-12 — 1 + 35 + 636 passed, 0 failed, exit 0. Nothing of scaland's is changed:
+#   its emitter has the proof's-own-body skip and no lift (`package.scala`: "out of scope for v0: …
+#   lift_rule_to_implication_clause"), so there is no antecedent for it to drop.
+#   NOT RUN: the other two load recipes and the carrier control — no loader or typer source is changed, and the
+#   rows drive the binary and the emitter crate's own harness, which load as the product does whatever the
+#   switches say.

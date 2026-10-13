@@ -7,7 +7,7 @@
 //! (`synthesize_body_derived_defrules`) retries per call-site, building a
 //! CONSTRUCTOR-SHAPED defining rule `pick(some(?0), ?1, ?result) :- ?result =
 //! ite(?0>=0, ?1+?0, ?1)` from the obligation's concrete `some(?x)` argument.
-//! The emitter's `try_inline_rule_call` binds that head STRUCTURALLY against the
+//! The emitter's `inline_rule_call` binds that head STRUCTURALLY against the
 //! call, connecting the caller's `?x` / `?base` to the ite.
 //!
 //! Coverage:

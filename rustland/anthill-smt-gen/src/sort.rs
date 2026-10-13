@@ -56,7 +56,7 @@ use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::typing::{sort_functor_of_view, spec_op_parent_sort, type_param_global_var};
 use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause, SpecLaw};
 
-use crate::{occ_as_fn, synthetic_var_name, Emitter, SmtGenError};
+use crate::{debruijn_vars_of, occ_as_fn, synthetic_var_name, Emitter, SmtGenError};
 
 /// The SMT sort of a term of a document.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -108,11 +108,31 @@ fn smt_symbol(name: &str) -> String {
 pub struct Declarations {
     sorts: BTreeSet<String>,
     funs: BTreeMap<String, (Vec<SmtSort>, SmtSort)>,
+    /// WI-20261012-CDHSQ — which of `funs` are RULE PREDICATES a cited lemma's premise
+    /// names: uninterpreted relations ([`Emitter::state_predicate_call`]). Kept beside
+    /// `funs` because WHICH predicates a cite declared is what a proof's own body is
+    /// asked ([`Self::predicates`]).
+    predicates: BTreeSet<String>,
 }
 
 impl Declarations {
     pub fn is_empty(&self) -> bool {
         self.sorts.is_empty() && self.funs.is_empty()
+    }
+
+    /// The relations this declares for a rule's predicate, each by the name it is
+    /// declared under: the predicate's qualified name and its arity (`ns.related/2`).
+    pub fn predicates(&self) -> impl Iterator<Item = &str> {
+        self.predicates.iter().map(String::as_str)
+    }
+
+    /// A lemma's premise and the call it is discharged by are one relation, declared
+    /// once: at two signatures — an argument the consumer gives another sort — it is
+    /// refused as any function is ([`Self::declare_fun`]).
+    fn declare_predicate(&mut self, name: String, params: Vec<SmtSort>) -> Result<(), SmtGenError> {
+        self.declare_fun(name.clone(), params, SmtSort::Bool)?;
+        self.predicates.insert(name);
+        Ok(())
     }
 
     fn declare_sort(&mut self, sort: &SmtSort) {
@@ -156,6 +176,7 @@ impl Declarations {
         for (name, (params, result)) in &other.funs {
             self.declare_fun(name.clone(), params.clone(), result.clone())?;
         }
+        self.predicates.extend(other.predicates.iter().cloned());
         Ok(())
     }
 
@@ -164,20 +185,36 @@ impl Declarations {
         if self.is_empty() {
             return;
         }
-        out.push_str(
-            "; Declared: a scope's abstract parameter is a sort of its own, and a spec's\n\
-             ; operation at it an uninterpreted function.\n",
-        );
+        let (relations, functions): (Vec<_>, Vec<_>) = self
+            .funs
+            .iter()
+            .partition(|(name, _)| self.predicates.contains(*name));
+        let declare = |out: &mut String, funs: &[(&String, &(Vec<SmtSort>, SmtSort))]| {
+            for (name, (params, result)) in funs {
+                out.push_str(&format!(
+                    "(declare-fun {} ({}) {result})\n",
+                    smt_symbol(name),
+                    sort_list(params)
+                ));
+            }
+        };
+        if !(self.sorts.is_empty() && functions.is_empty()) {
+            out.push_str(
+                "; Declared: a scope's abstract parameter is a sort of its own, and a spec's\n\
+                 ; operation at it an uninterpreted function.\n",
+            );
+        }
         for sort in &self.sorts {
             out.push_str(&format!("(declare-sort {} 0)\n", smt_symbol(sort)));
         }
-        for (name, (params, result)) in &self.funs {
-            out.push_str(&format!(
-                "(declare-fun {} ({}) {result})\n",
-                smt_symbol(name),
-                sort_list(params)
-            ));
+        declare(out, &functions);
+        if !relations.is_empty() {
+            out.push_str(
+                "; Declared: a rule's predicate that a cited lemma's premise names is an\n\
+                 ; uninterpreted relation, stated of each call of it this proof holds.\n",
+            );
         }
+        declare(out, &relations);
         out.push('\n');
     }
 }
@@ -331,9 +368,10 @@ pub struct LoweredLaw {
 ///
 ///   * a law that quantifies over a variable of a theory sort, or names nothing the
 ///     document declares — it is asserted of a carrier's own sort only (the module doc);
-///   * a law one of whose premises is a rule's predicate. A cited lemma's is passed over
-///     (the consumer's own body is where it is read); a law's would be DROPPED, and a
-///     law without its premise states more than its spec does;
+///   * a law one of whose premises is a rule's predicate. A cited lemma's is stated, as
+///     the relation of the predicate's name, and the consumer's own call discharges it
+///     (WI-20261012-CDHSQ); a law is of every provider, and is left out — passed over,
+///     as both once were, the premise was DROPPED and the law stated more than its spec;
 ///   * a law that reads an entity's facts, which are of one KB and not of every provider.
 pub fn lower_spec_law(
     kb: &KnowledgeBase,
@@ -1028,6 +1066,139 @@ impl<'kb> Emitter<'kb> {
         } else {
             (format!("({symbol} {})", args.join(" ")), result)
         }))
+    }
+
+    /// WI-20261012-CDHSQ — A CALL OF A RULE'S PREDICATE, STATED: asserted as an
+    /// application of the uninterpreted relation of the predicate's name and arity
+    /// (`ns.related/2` — `span/2` and `span/3` are two predicates, and two relations).
+    /// Nothing is written where the body read states no call of it ([`BodyIs`]).
+    ///
+    /// It is a PREMISE that is stated, in a lift and in a proof's body. A clause's head
+    /// never comes here: one that is a rule's predicate is no conclusion in this reading
+    /// (`classify_head` — its variables are the rule's parameters, and such a rule is
+    /// "not citable"), and a head that is a conclusion is a comparison, an equation or an
+    /// entity.
+    ///
+    /// The relation is over the sorts of the call's arguments: what a bound, a signature
+    /// or a literal says, and for a variable none of them gives a sort a `Real`, as every
+    /// variable is. The lemma's premise and the consumer's call each write a signature,
+    /// and two that differ are refused where they meet ([`Declarations::declare_fun`]).
+    ///
+    /// REFUSED, and not left out — a premise left out of a lift is what this exists to
+    /// stop, and a call left out of a proof is a cite that reads as honoured and gives
+    /// nothing:
+    ///
+    ///   * a CONNECTIVE over goals, `a | b` and `a & b`: `or` and `and` are rules of the
+    ///     kernel, so the branch that passed a rule call over passed these over too, and
+    ///     stated as relations they would be `(anthill.kernel.or <goal> <goal>)`,
+    ///     uninterpreted — a premise no consumer discharges, and nothing said;
+    ///   * named arguments, which no order is read for;
+    ///   * an argument that is a bare name (a constructor, `Leader`; a constant of a
+    ///     carrier, whose sort nothing here gives) or a string: the expression reader
+    ///     writes either as a bare token, which would be a symbol nothing declares, or a
+    ///     number a string spells;
+    ///   * an argument that is no variable and that nothing gives a sort, under a scope
+    ///     that has an abstract parameter — it may be of the carrier or a scalar, and
+    ///     guessed a `Real` it was "unhandled arithmetic op" for `top`;
+    ///   * a call INSIDE THE BODY OF AN INLINED RULE that names a variable of that rule's
+    ///     own — one its head does not pass and its body does not define. Such a
+    ///     variable goes by the name the proof's variable of the same index has
+    ///     (WI-20261012-BR7P3), so the relation would be stated of a variable of the
+    ///     proof's that the proof never related: measured, `wrap(?p, ?q) :-
+    ///     related(?p, ?r), …` inlined into a proof stated `related` of the proof's own
+    ///     `?y`, and a false claim proved.
+    ///
+    /// An argument of any other shape with no SMT form — a constructor applied, a call
+    /// of another predicate — is the expression reader's own loud error.
+    pub(crate) fn state_predicate_call(
+        &mut self,
+        functor: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<(), SmtGenError> {
+        let predicate = self.kb.qualified_name_of(functor);
+        let relation = format!("{predicate}/{}", pos_args.len() + named_args.len());
+        if !self.body_is.states(&relation) {
+            return Ok(());
+        }
+        if let Some(connective) = self.builtins.bool_connective(functor) {
+            return Err(SmtGenError::new(format!(
+                "a premise that is a connective over goals (`{connective}`, \
+                 `{predicate}`) is not read into a lift, and is not passed over: a cited \
+                 lemma's premises are comparisons, equations, entities and calls of a \
+                 rule's predicate"
+            )));
+        }
+        let not_stated = |why: String| {
+            SmtGenError::new(format!(
+                "a call of the rule's predicate `{predicate}` is the premise of a cited \
+                 lemma, and is stated as an uninterpreted relation over its arguments: {why}"
+            ))
+        };
+        if !named_args.is_empty() {
+            return Err(not_stated(
+                "this one is written with named arguments, which the relation has no order for"
+                    .to_owned(),
+            ));
+        }
+        if let Some(inlined) = self.inlining.last() {
+            let own = pos_args
+                .iter()
+                .flat_map(debruijn_vars_of)
+                .map(synthetic_var_name)
+                .find(|name| !bindings.contains_key(name));
+            if let Some(own) = own {
+                return Err(not_stated(format!(
+                    "this one is in the body of `{inlined}`, which is inlined, and names \
+                     `?{own}` of that rule's own frame — a variable its head does not pass \
+                     and its body does not define, which the document cannot tell from the \
+                     proof's variable of the same index (WI-20261012-BR7P3)"
+                )));
+            }
+        }
+        let unsorted_is_refused = self.refusal_subject().is_some();
+        let mut sorts = Vec::with_capacity(pos_args.len());
+        let mut args = Vec::with_capacity(pos_args.len());
+        for (index, arg) in pos_args.iter().enumerate() {
+            let at = index + 1;
+            let unwritable = match arg.as_expr() {
+                Some(Expr::Const(Literal::String(text))) => Some(format!("the string {text:?}")),
+                Some(Expr::Ref(name) | Expr::Ident(name)) => {
+                    Some(format!("the bare name `{}`", self.kb.local_name_of(*name)))
+                }
+                _ => None,
+            };
+            if let Some(what) = unwritable {
+                return Err(not_stated(format!(
+                    "argument {at} is {what}, which is not written as an argument — a \
+                     constructor and a string have no SMT form, and nothing here gives a \
+                     constant of a carrier its sort. An argument is a variable, a number, \
+                     or a term over them"
+                )));
+            }
+            let sort = match self.sort_of_occ(arg) {
+                Some(sort) => sort,
+                None if unsorted_is_refused && !matches!(arg.as_expr(), Some(Expr::Var(_))) => {
+                    return Err(not_stated(format!(
+                        "nothing gives argument {at} a sort, and under a scope that has an \
+                         abstract parameter it may be of that carrier or a scalar"
+                    )))
+                }
+                None => SmtSort::Real,
+            };
+            args.push(self.translate_operand(arg, &sort, bindings)?);
+            sorts.push(sort);
+        }
+        self.declarations
+            .declare_predicate(relation.clone(), sorts)?;
+        let relation = smt_symbol(&relation);
+        self.assertions.push(if args.is_empty() {
+            relation
+        } else {
+            format!("({relation} {})", args.join(" "))
+        });
+        Ok(())
     }
 
     /// One operand of an uninterpreted function, which is of `sort`.

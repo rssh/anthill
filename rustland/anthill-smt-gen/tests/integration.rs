@@ -21,3 +21,5 @@ mod wi687_match_headed_test;
 mod wi772_bodied_entity_fact_test;
 mod wi897_symbol_identity_test;
 mod wi_zz7ph_law_lowering_test;
+mod wi_cdhsq_lemma_premise_test;
+mod wi_kf2sd_several_clauses_test;

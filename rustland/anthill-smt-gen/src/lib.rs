@@ -29,10 +29,12 @@ use std::rc::Rc;
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
-use anthill_core::kb::node_occurrence::{materialize_from_handle, Expr, NodeOccurrence};
+use anthill_core::kb::node_occurrence::{
+    for_each_child, materialize_from_handle, Expr, NodeOccurrence,
+};
 use anthill_core::kb::term::{Literal, Term, Var, VarId};
 use anthill_core::kb::typing::is_typed_head_domain_goal;
-use anthill_core::kb::{KnowledgeBase, ProgramClause};
+use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause};
 use anthill_core::parse::desugar_target as dt;
 
 use sort::{document_logic, smt_tokens};
@@ -89,6 +91,8 @@ pub struct ProofConfig {
     /// Set by `dispatch_structured` for the conclude-clause discharge
     /// so the parent's body doesn't drag transitive nonlinear /
     /// fact-bound arithmetic into the consumer's preamble.
+    /// A call that is the premise of a lemma the proof cites is not chased either,
+    /// and is STATED (WI-20261012-CDHSQ, `BodyIs`).
     pub abstract_body: bool,
     /// WI-20261012-ZZ7PH — the LAWS of the requirements of the proof's enclosing
     /// scopes, each a whole `(assert (forall …))` as [`lower_spec_law`] gives it. They
@@ -186,12 +190,7 @@ pub fn emit_satisfiability_check_with(
     rule_qn: &str,
     config: &ProofConfig,
 ) -> Result<String, SmtGenError> {
-    let mut emitter = Emitter::new(kb);
-    emitter.abstract_mode = config.abstract_body;
-    emitter.collect_rule(rule_qn)?;
-    emitter.collect_facts_for_referenced_entities()?;
-    emitter.declarations.merge(&config.declarations)?;
-    Ok(emitter.render_satisfiability_with(rule_qn, config))
+    emit_satisfiability_check_with_deps(kb, rule_qn, config).map(|(smt, _)| smt)
 }
 
 /// Like `emit_satisfiability_check_with` but additionally returns the
@@ -204,6 +203,7 @@ pub fn emit_satisfiability_check_with_deps(
 ) -> Result<(String, Vec<String>), SmtGenError> {
     let mut emitter = Emitter::new(kb);
     emitter.abstract_mode = config.abstract_body;
+    emitter.body_is = BodyIs::hypotheses_of(config);
     emitter.collect_rule(rule_qn)?;
     emitter.collect_facts_for_referenced_entities()?;
     emitter.declarations.merge(&config.declarations)?;
@@ -246,6 +246,13 @@ pub fn emit_satisfiability_check_with_deps(
 /// re-emitted here — the consumer's preamble already declares them
 /// since the consumer chases the same facts.
 ///
+/// **A premise that is a rule's predicate** (`conclusion :- related(?a, ?b)` — a
+/// bodied rule's, a fact's, a one-argument rule's alike) is neither chased into its
+/// body nor passed over: it is `(related a b)`, the uninterpreted relation of the
+/// predicate's name, which [`lift_rule`]'s declarations carry to the consumer
+/// (WI-20261012-CDHSQ, `BodyIs`). The consumer discharges it by its own
+/// call of the predicate.
+///
 /// **Caller-side discharge gate (proposal 030 phase γ.1):** this
 /// function only emits the lifted statement; the caller MUST first
 /// confirm the cited rule's ProofRecord is Discharged (or that
@@ -257,23 +264,58 @@ pub fn lift_rule_to_implication_clause(
     kb: &KnowledgeBase,
     rule_qn: &str,
 ) -> Result<Vec<String>, SmtGenError> {
-    lift_rule(kb, rule_qn).map(|lifted| lifted.clauses)
+    let lifted = lift_rule(kb, rule_qn)?;
+    // The clauses alone are a whole hypothesis only where they use nothing a document
+    // must declare. One that names a carrier's sort, a spec's operation at it, or the
+    // relation of a rule's predicate is half of what the consumer needs — the relation
+    // undeclared is a solver error, and a consumer not told of it never states its own
+    // call — so it is not handed out by this door.
+    if !lifted.declarations.is_empty() {
+        return Err(SmtGenError::new(format!(
+            "the lift of '{rule_qn}' uses what its consumer's document must declare — a \
+             carrier's sort, an operation at it, or the relation of a rule's predicate: \
+             take it with its declarations (`lift_rule`)"
+        )));
+    }
+    Ok(lifted.clauses)
 }
 
 /// What a cited lemma gives its consumer's document: the clauses
 /// [`lift_rule_to_implication_clause`] describes, and — WI-20261012-ZZ7PH — what they
 /// use and the theory does not have. A lemma about a scope's abstract parameter
 /// quantifies over the parameter's own sort and names a spec's operations on it, and
-/// the consumer declares both, once, with what its own body uses.
+/// the consumer declares both, once, with what its own body uses. And a lemma with a
+/// premise that is a rule's predicate names that relation (WI-20261012-CDHSQ), which
+/// the consumer declares and writes its own calls with.
 #[derive(Debug, Clone, Default)]
 pub struct Lifted {
     pub clauses: Vec<String>,
     pub declarations: Declarations,
 }
 
+/// THE CLAUSES A NAME STATES — a rule's, a fact's, a constraint's — and not a
+/// declaration that shares the name (WI-20261012-KF2SD). A rule named as the last
+/// segment of its namespace has the namespace's symbol for the functor of its head, so
+/// the namespace's own clause is under the name too, and FIRST: measured, `rule
+/// legacy(?m) :- Cfg(scale: ?s), gt(?s, 99), eq(?m, ?s)` in `namespace
+/// test.outcome.legacy` was proved as that clause — an EMPTY document, which is `sat`,
+/// a COUNTEREXAMPLE — where the same rule under another name proved. Found when a
+/// proof began to count the clauses of its rule, and this one was two.
+fn stated_clauses(kb: &KnowledgeBase, rule_qn: &str) -> Vec<ProgramClause> {
+    kb.program_clauses_by_qn(rule_qn)
+        .into_iter()
+        .filter(|clause| {
+            matches!(
+                clause.clause_kind,
+                ClauseKind::Rule | ClauseKind::Fact | ClauseKind::Constraint
+            )
+        })
+        .collect()
+}
+
 /// [`lift_rule_to_implication_clause`], with the declarations the clauses need.
 pub fn lift_rule(kb: &KnowledgeBase, rule_qn: &str) -> Result<Lifted, SmtGenError> {
-    let clauses = kb.program_clauses_by_qn(rule_qn);
+    let clauses = stated_clauses(kb, rule_qn);
     if clauses.is_empty() {
         return Err(SmtGenError::new(format!("rule '{rule_qn}' not found")));
     }
@@ -297,6 +339,9 @@ fn lift_one_clause(
     // doesn't quote (unsound for a universal claim) and would also
     // drag in transitive nonlinearity that breaks LRA discharges.
     emitter.abstract_mode = true;
+    // WI-20261012-CDHSQ — and nothing of the body is passed over with what is not
+    // chased: a premise that is a rule's predicate is the relation of its name.
+    emitter.body_is = BodyIs::Antecedent;
     emitter.collect_rule_clause(rule_qn, &clause)?;
     emitter.collect_facts_for_referenced_entities()?;
 
@@ -448,6 +493,7 @@ struct Emitter<'kb> {
     /// fact-match/inline) — those vars stay free in the rendered
     /// SMT. Used by `lift_rule_to_implication_clause` (always) and
     /// by structured-proof parent discharges (via ProofConfig).
+    /// Whether a call so skipped is STATED is `body_is`'.
     abstract_mode: bool,
     /// [`SMT_BUILTINS`] resolved against `kb` (WI-897). WHICH OPERATION MEANS
     /// WHICH SMT FORM, decided by symbol identity — see the table's own doc for
@@ -468,8 +514,8 @@ struct Emitter<'kb> {
     /// LOWERING A LAW ([`lower_spec_law`]): the requirement it is lowered at, as its
     /// text. A law is read as a cited lemma is, with three differences that each hang
     /// on this: its own bound names the SPEC's parameter, which is what the requirement
-    /// binds it to; a premise that is a rule's predicate is not passed over; and a
-    /// variable nothing gives a sort is refused whatever scope it is in.
+    /// binds it to; a premise that is a rule's predicate is refused, where a lemma's is
+    /// stated; and a variable nothing gives a sort is refused whatever scope it is in.
     lowering_law: Option<String>,
     /// The clause read is a STEP of a structured proof (`ProgramClause::shared_arity`),
     /// which says what a refusal can advise: a step writes no bound.
@@ -481,6 +527,86 @@ struct Emitter<'kb> {
     /// satisfiability check does not: there a head variable the body leaves unbound is
     /// the rule's parameter, and free in the document like any other.
     result_required: bool,
+    /// WI-20261012-CDHSQ — what the body being read is to the document, which says
+    /// what may be left out of it.
+    body_is: BodyIs,
+    /// The rules whose bodies are being read INLINED into the clause, outermost first.
+    /// Inside one a name is not what it is in the clause's own frame: the rule's head
+    /// variables are written as what the caller passed, and a variable of its own goes
+    /// by the name the caller's variable of the same index has (WI-20261012-BR7P3) —
+    /// which [`Self::state_predicate_call`] refuses to state a relation of.
+    inlining: Vec<String>,
+}
+
+/// WI-20261012-CDHSQ — WHAT A CLAUSE'S BODY IS TO THE DOCUMENT BEING WRITTEN, which
+/// says what may be left out of it.
+///
+/// A cited lemma `conclusion :- related(?a, ?b)` is handed to its consumer as an
+/// implication, and `related(?a, ?b)` is its antecedent. The lift does not read the
+/// predicate's body — that would condition the lemma on facts the consumer does not
+/// quote — and it may not pass the call over either, which hands the consumer the
+/// conclusion unconditionally. So the predicate is a relation the document declares and
+/// nothing interprets ([`Emitter::state_predicate_call`]): the lift's premise is written
+/// with it, and so is the consumer's own call, which is what discharges the premise.
+enum BodyIs {
+    /// THE ANTECEDENT of a cited lemma's lift. A goal left out of it is a premise
+    /// dropped, and the lemma handed on then says more than was proved: every call of a
+    /// rule's predicate is stated, and a goal that cannot be written whole is refused.
+    Antecedent,
+    /// THE HYPOTHESES of the proof being discharged. A conjunct left out of a
+    /// satisfiability check can only lose an `unsat`, so a rule call may go unread
+    /// (`abstract_mode`). What the proof states is its own calls of the relations the
+    /// lemmas it cites declared ([`Declarations::predicates`]) — a call it skips and one
+    /// it reads the body of alike — and no other, so a proof that cites no such lemma
+    /// has the document it had. None for a law, which is refused such a premise before
+    /// this is asked, and for an obligation (`emit_obligation_with`), whose document
+    /// holds none of its body's assertions.
+    Hypotheses { cited: BTreeSet<String> },
+}
+
+impl BodyIs {
+    /// The body of a proof under `config`: it states what its hypotheses declared.
+    fn hypotheses_of(config: &ProofConfig) -> Self {
+        Self::Hypotheses {
+            cited: config
+                .declarations
+                .predicates()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    /// Is a call of `relation` (`ns.related/2`) stated?
+    fn states(&self, relation: &str) -> bool {
+        match self {
+            Self::Antecedent => true,
+            Self::Hypotheses { cited } => cited.contains(relation),
+        }
+    }
+}
+
+/// WI-20261012-KF2SD — the clause a call is read by ([`Emitter::answering_clause`]):
+/// the one of the call's arity that can answer it, its head written by position.
+struct Answer {
+    clause: ProgramClause,
+    /// The head's arguments, as many as the call's.
+    head_args: Vec<Rc<NodeOccurrence>>,
+}
+
+/// What an argument of a call, or of a clause's head, is KNOWN to be — which is what
+/// one may be told apart from another by ([`Emitter::admits`]). A variable, a computed
+/// term (`?k + 1`) and a name that is no constructor are not known. Neither is a
+/// string: the occurrence of one is also how a pre-rendered SMT fragment is carried
+/// across an inline boundary (WI-686), which is a number.
+enum Known<'a> {
+    Number(f64),
+    Truth(bool),
+    /// A construction: a constructor or an entity, applied — to nothing, for `Leader`.
+    Built(
+        Symbol,
+        &'a [Rc<NodeOccurrence>],
+        &'a [(Symbol, Rc<NodeOccurrence>)],
+    ),
 }
 
 impl<'kb> Emitter<'kb> {
@@ -507,22 +633,46 @@ impl<'kb> Emitter<'kb> {
             reading_step: false,
             global_names: Vec::new(),
             result_required: false,
+            body_is: BodyIs::Hypotheses {
+                cited: BTreeSet::new(),
+            },
+            inlining: Vec::new(),
         }
     }
 
     /// Find the rule by qualified name. Walk its body and produce
     /// the SMT-LIB equation that defines the head's result variable.
-    /// Picks the first rule resolved by label / by-functor — for
-    /// labeled multi-head rules (multiple rids per label) the
-    /// per-clause path [`Self::collect_rule_clause`] should be used by
-    /// the caller iterating over `kb.program_clauses_by_qn(rule_qn)`.
+    ///
+    /// ONE CLAUSE, OR REFUSED (WI-20261012-KF2SD, /code-review). A name may resolve to
+    /// several: a rule written with several heads is a clause for each under the one
+    /// label, and so is a predicate written as several rules. The first was read and the
+    /// rest were not — the defect of this ticket at the root of a proof. Measured: `rule
+    /// both: gte(?x, 0.0), gte(?x, 5.0) :- gte(?x, 1.0)` proved, its document the first
+    /// head's; its LIFT is of every head ([`lift_rule`]), so `gte(?y, 5.0) :- gte(?y,
+    /// 1.0)` proved `using both`; and `rule viol(?w) :- gte(?w, 1.0), lte(?w, 0.0)`
+    /// beside `rule viol(?w) :- gte(?w, 0.0)` proved by its first body.
+    ///
+    /// The heads of one rule are conclusions of one body, and their conjunction is what
+    /// is owed — but each clause numbers its variables by its OWN head first (measured:
+    /// `gte(?x, 0.0), gte(?y, 0.0) :- gte(?x, 1.0), gte(?y, 2.0)` is `?x` = `var_1` in
+    /// one clause and `var_0` in the other), so one clause's head is not written in
+    /// another's bindings. Until each is read in a frame of its own the proof is
+    /// refused, and says how many clauses it is of.
     fn collect_rule(&mut self, rule_qn: &str) -> Result<(), SmtGenError> {
-        let clause = self
-            .kb
-            .program_clauses_by_qn(rule_qn)
-            .into_iter()
+        let mut clauses = stated_clauses(self.kb, rule_qn).into_iter();
+        let clause = clauses
             .next()
             .ok_or_else(|| SmtGenError::new(format!("rule '{rule_qn}' not found")))?;
+        let further = clauses.count();
+        if further > 0 {
+            return Err(SmtGenError::new(format!(
+                "the rule '{rule_qn}' is {} clauses — a rule written with several heads is \
+                 one for each, and so is a predicate written as several rules — and a proof \
+                 is ONE document: it would be of the first alone, and the rule is cited as \
+                 all of them. Prove each under a name of its own",
+                further + 1
+            )));
+        }
         self.collect_rule_clause(rule_qn, &clause)
     }
 
@@ -731,7 +881,22 @@ impl<'kb> Emitter<'kb> {
         if is_typed_head_domain_goal(self.kb, goal) {
             return Ok(());
         }
-        let Some((functor, pos_args, named_args)) = occ_as_fn(goal) else {
+        // WI-20261012-CDHSQ (/code-review) — A RULE'S PREDICATE OF NO ARGUMENTS, named
+        // bare, is the call `ready()` is: the two spellings are one term, and a step of a
+        // structured proof stores the bare one. It was "non-Fn body goal" where `ready()`
+        // in a rule's body was read, so one premise had two treatments.
+        let bare_call = match goal.as_expr() {
+            Some(Expr::Ref(name) | Expr::Ident(name))
+                if self.kb.rules_by_functor_iter(*name).next().is_some() =>
+            {
+                Some(*name)
+            }
+            _ => None,
+        };
+        let Some((functor, pos_args, named_args)) = bare_call
+            .map(|name| (name, &[][..], &[][..]))
+            .or_else(|| occ_as_fn(goal))
+        else {
             return Err(SmtGenError::new(format!(
                 "non-Fn body goal: {:?}",
                 goal.as_expr().map(std::mem::discriminant)
@@ -802,9 +967,19 @@ impl<'kb> Emitter<'kb> {
                 // variable to itself, and a bound variable is not declared: the document
                 // named a constant it never declared, and the solver said so ("unknown
                 // constant var_1") where a verdict was expected.
-                let names_itself = smt_tokens(&rhs_smt).contains(&bound.as_str());
+                //
+                // WI-20261012-CDHSQ (/code-review) — ASKED OF THE TERM, NOT OF ITS TEXT. The
+                // text is in the names of the frame the document is written in, and inside
+                // an inlined rule that is the caller's: `rule dbl(?a, ?r) :- ?r = ?a + ?a`
+                // called `dbl(?x, ?r)` has the right side `(+ var_0 var_0)`, which is the
+                // caller's `?x`, and the callee's `?r` is `var_0` by its own index. Read
+                // off the text, the definition was a CONDITION on the caller's `?x` —
+                // `(= var_0 (+ var_0 var_0))`, so x = 0 — and `lt(?x, 0.0)` beside it
+                // proved unsatisfiable. The variable is written as this frame reads it.
+                let names_itself = debruijn_vars_of(&pos_args[1]).contains(i);
                 if names_itself {
-                    self.assertions.push(format!("(= {bound} {rhs_smt})"));
+                    let itself = self.translate_expr(&pos_args[0], bindings)?;
+                    self.assertions.push(format!("(= {itself} {rhs_smt})"));
                     return Ok(());
                 }
                 bindings.insert(bound, rhs_smt);
@@ -838,6 +1013,26 @@ impl<'kb> Emitter<'kb> {
         // ?bind_var becomes an SMT const bound to the corresponding
         // field's value from the matching ground fact.
         if self.is_known_entity(functor) {
+            // WI-20261012-CDHSQ (/code-review) — IN A LIFT A SLOT THAT IS NO VARIABLE IS
+            // REFUSED. `Mode(kind: 2.0, cap: ?c)` says which fact it is of, and the loop
+            // below passes that slot over: the lift came back `(=> (>= var_1 cap) …)`,
+            // its `kind` premise gone, and a proof about the `Mode` of another kind
+            // proved by citing it (measured). In a proof's own body the slot left out
+            // is a hypothesis left out, which can only lose an `unsat`.
+            if matches!(self.body_is, BodyIs::Antecedent) {
+                let unread = named_args
+                    .iter()
+                    .find(|(_, slot)| !matches!(slot.as_expr(), Some(Expr::Var(_))));
+                if let Some((field, _)) = unread {
+                    return Err(SmtGenError::new(format!(
+                        "the premise `{qn}` is an entity and its field `{}` is given a value \
+                         that is no variable, which is not read into a lift, and is not \
+                         passed over: a cited lemma's entity premise binds its fields to \
+                         variables",
+                        self.kb.local_name_of(*field)
+                    )));
+                }
+            }
             let entity_qn = qn.to_string();
             self.referenced_entities.insert(entity_qn.clone());
             for (field_sym, val_occ) in named_args {
@@ -870,12 +1065,23 @@ impl<'kb> Emitter<'kb> {
         // call is safe to skip for the opposite reason — it CONSTRAINS nothing here, its
         // vars stay free, and an ambient lift is what re-states it. Everything else falls
         // through to the loud `unhandled body goal functor` below.
-        if self.abstract_mode && !self.kb.program_clauses_by_functor(functor).is_empty() {
-            // WI-20261012-ZZ7PH — BUT NOT IN A LAW. A cited lemma's premise is passed
-            // over on the reasoning above; a law is assumed, not proved, and a law
-            // without its premise is a stronger assumption than its spec makes:
-            // `eq(weight(?a), weight(?b)) :- related(?a, ?b)` became "every two weights
-            // are equal", and a claim that needed it proved.
+        //
+        // WI-20261012-CDHSQ — AND THAT REASON IS THE PROOF'S OWN BODY'S, NOT A LIFT'S. A
+        // conjunct left out of a satisfiability check can only lose an `unsat`. In a
+        // lift the same call is a PREMISE, and passing it over is the act the paragraph
+        // above made loud for a premise it could not read — only the rule call was left
+        // silent. MEASURED: `rule lemma: gte(?a, ?b) :- related(?a, ?b)` lifted to
+        // `(=> true (>= var_1 var_0))`, and a proof citing it proved `gte(?c, 5.0) :-
+        // gte(0.0, ?c)`. So a lift STATES the call, as the uninterpreted relation of the
+        // predicate's name, and a proof's body states its own call of a predicate a
+        // lemma it cites declared — which is how the premise is discharged
+        // ([`Self::state_predicate_call`], [`BodyIs`]).
+        if self.abstract_mode && self.kb.rules_by_functor_iter(functor).next().is_some() {
+            // WI-20261012-ZZ7PH — AND NOT IN A LAW AT ALL. A law is assumed, not proved,
+            // and is of every provider; one with a premise that is a rule's predicate is
+            // left out, and said: `eq(weight(?a), weight(?b)) :- related(?a, ?b)` with
+            // the premise passed over became "every two weights are equal", and a claim
+            // that needed it proved.
             if self.lowering_law.is_some() {
                 return Err(SmtGenError::new(format!(
                     "the law's premise `{qn}` is a rule's predicate, which is not read into \
@@ -883,53 +1089,49 @@ impl<'kb> Emitter<'kb> {
                 )));
             }
             self.visited_rules.insert(qn.to_string());
-            return Ok(());
+            return self.state_predicate_call(functor, pos_args, named_args, bindings);
         }
 
-        // Rule call: `<rule_qn>(?result_var)` — single-arg shorthand
-        // that yields one inline SMT expression. Used by call sites
-        // like `step_distance_bound(?delta)`.
-        if pos_args.len() == 1
-            && named_args.is_empty()
-            && self
-                .kb
-                .program_clauses_by_functor(functor)
-                .iter()
-                .any(|clause| !clause.is_fact())
-        {
-            let bind_idx = match pos_args[0].as_expr() {
-                Some(Expr::Var(Var::DeBruijn(i))) => *i,
-                other => {
-                    return Err(SmtGenError::new(format!(
-                        "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
-                        other.map(std::mem::discriminant)
-                    )))
-                }
-            };
-            let inlined = self.translate_called_rule(qn)?;
-            bindings.insert(synthetic_var_name(bind_idx), inlined);
-            return Ok(());
-        }
-
-        // Multi-pos-arg rule call: `<rule>(<a1>, ..., <aN>)`.
-        // Two paths:
-        //   (1) Fact match — the rule has at least one ground fact
-        //       (rule with empty body) whose pos_args structurally
-        //       agree with the call. Each call-side DeBruijn var
-        //       gets bound to the matched fact slot (literal → string
-        //       binding, entity occurrence → entity_bindings).
-        //   (2) Inline — the rule has a defining body. Open it with
-        //       caller→callee parameter substitution; process its
-        //       goals as if inlined here.
-        // No named_args path yet — multi-pos-arg with named_args is
-        // a v1 concern.
+        // A rule call READ: `<rule>(<a1>, ..., <aN>)`, by THE ONE CLAUSE THAT CAN ANSWER
+        // IT (WI-20261012-KF2SD, [`Self::answering_clause`]) — three ways, by what that
+        // clause is:
+        //   (1) A fact — a rule with an empty body. Each call-side
+        //       DeBruijn var gets bound to the fact's slot (literal →
+        //       string binding, entity occurrence → entity_bindings).
+        //   (2) A bodied clause of ONE argument — the single-arg shorthand
+        //       `<rule_qn>(?result_var)` that yields one inline SMT
+        //       expression. Used by call sites like `step_distance_bound(?delta)`.
+        //   (3) A bodied clause of several. Open it with caller→callee
+        //       parameter substitution; process its goals as if inlined here.
+        // No named_args path yet — a call with named_args is a v1 concern.
         if !pos_args.is_empty() && named_args.is_empty() {
-            let call_args: Vec<Rc<NodeOccurrence>> = pos_args.to_vec();
-            if self.try_match_fact_call(functor, &call_args, bindings)? {
-                return Ok(());
-            }
-            if self.try_inline_rule_call(qn, &call_args, bindings)? {
-                return Ok(());
+            if let Some(answer) = self.answering_clause(functor, pos_args, bindings)? {
+                // The functor's QN is of the proof's dependency set, so the cache key
+                // observes any change to its defining facts (initial-geometry edits
+                // invalidate downstream proofs) and to its body.
+                self.visited_rules.insert(qn.to_string());
+                if answer.clause.is_fact() {
+                    self.bind_fact_call(qn, &answer, pos_args, bindings)?;
+                } else if pos_args.len() == 1 {
+                    let bind_idx = match pos_args[0].as_expr() {
+                        Some(Expr::Var(Var::DeBruijn(i))) => *i,
+                        other => {
+                            return Err(SmtGenError::new(format!(
+                                "v0: rule call's pos arg must be a DeBruijn var, got {:?}",
+                                other.map(std::mem::discriminant)
+                            )))
+                        }
+                    };
+                    let inlined = self.translate_called_rule(qn, &answer)?;
+                    bindings.insert(synthetic_var_name(bind_idx), inlined);
+                } else {
+                    self.inline_rule_call(qn, &answer, pos_args, bindings)?;
+                }
+                // WI-20261012-CDHSQ — and the call itself is held, beside what was read
+                // of it: a cited lemma whose premise it is has the relation and not the
+                // body. AFTER the reading, so an argument the reading bound is written
+                // as its value.
+                return self.state_predicate_call(functor, pos_args, named_args, bindings);
             }
         }
 
@@ -938,93 +1140,333 @@ impl<'kb> Emitter<'kb> {
             .unwrap_or_else(|| SmtGenError::new(format!("v0: unhandled body goal functor '{qn}'"))))
     }
 
-    /// Try to match a multi-pos-arg call against any ground fact
-    /// (rule with empty body) of the same functor. On match, bind
-    /// each call-side DeBruijn var to the corresponding fact slot —
-    /// literal → string binding, entity-shaped occurrence →
-    /// entity_bindings (consumed by `field_access` lowering).
-    /// Returns Ok(true) if a fact matched (and bindings were applied);
-    /// Ok(false) if no fact matched (caller falls through to inline).
+    /// WI-20261012-KF2SD — THE ONE CLAUSE THAT ANSWERS A CALL, and a refusal where
+    /// more than one can.
     ///
-    /// The fact head is still a hash-consed term (heads stay terms); it is
-    /// materialized to the occurrence substrate so the call args (occurrences)
-    /// and fact slots compare occ-vs-occ (WI-246).
-    fn try_match_fact_call(
-        &mut self,
+    /// A rule call in a proved body is a HYPOTHESIS, and a predicate of several clauses
+    /// holds when ANY of them does. Each reading of a call takes one clause, so read as
+    /// the first of several the hypothesis was stronger than the rule states, and what
+    /// was proved was less than the record says. Measured: `related(?a, ?b) :-
+    /// gte(?a, ?b)` beside `related(?a, ?b) :- lte(?a, ?b)` proved `gte(?a, ?b) :-
+    /// related(?a, ?b)`, which `related(1, 2)` refutes; `fact start(5.0)` beside `fact
+    /// start(-1.0)` proved `gte(?d, 0.0) :- start(?d)`.
+    ///
+    /// WHICH CLAUSES CAN ANSWER: those of the call's arity whose head no argument of
+    /// the call rules out ([`Self::admits`]). So a ground argument selects among facts
+    /// — `initial_pose(Leader, ?l)` has one — and a bodied clause whose head is all
+    /// variables answers every call of its arity: lf1's `real_pose_at` was two base
+    /// facts and such a step, and each of its six calls was read as a base fact.
+    /// A clause of another arity is no candidate, so `span/2` beside `span/3` is two
+    /// predicates here, where the first bodied clause's arity used to refuse the other's
+    /// calls.
+    ///
+    /// EVERY CLAUSE UNDER THE FUNCTOR, a lemma too: a rule written with a label and the
+    /// predicate for its head (`rule safe_weaken: safe(?x, ?n) :- …`) is a clause of the
+    /// predicate, as the resolver has it, and what it adds is not read by reading the
+    /// definition beside it.
+    ///
+    /// SEVERAL: refused. The disjunction of the clauses' readings is what the call
+    /// means; the binding scheme — a variable is one SMT term, an entity one
+    /// occurrence — does not hold it (WI-20261013-1KF32).
+    ///
+    /// `None` where the functor has no clause with arguments at all: the caller's error.
+    fn answering_clause(
+        &self,
         functor: Symbol,
         call_args: &[Rc<NodeOccurrence>],
-        bindings: &mut BTreeMap<String, String>,
-    ) -> Result<bool, SmtGenError> {
-        let candidates = self.kb.program_clauses_by_functor(functor);
-        // Record the functor's QN in visited_rules so the cache key
-        // observes any change to its defining facts (initial-geometry
-        // edits invalidate downstream proofs).
-        let functor_qn = self.kb.qualified_name_of(functor).to_string();
-        for clause in candidates {
-            if !clause.is_fact() {
-                continue;
-            }
-            self.visited_rules.insert(functor_qn.clone());
+        bindings: &BTreeMap<String, String>,
+    ) -> Result<Option<Answer>, SmtGenError> {
+        let qn = self.kb.qualified_name_of(functor);
+        let arity = call_args.len();
+        let mut other_arities: BTreeSet<usize> = BTreeSet::new();
+        let mut of_this_arity = 0usize;
+        // What can answer, and whether its head is written by position.
+        let mut answering: Vec<(Answer, bool)> = Vec::new();
+        for clause in self.kb.program_clauses_by_functor(functor) {
             let Value::Term { id: head, .. } = clause.head else {
                 return Err(SmtGenError::new(format!(
-                    "v0: fact call `{functor_qn}` has a non-term program head"
+                    "v0: rule call `{qn}` has a clause with a non-term program head"
                 )));
             };
+            // The arity off the term, before anything is built for a clause of another.
+            let (head_arity, named) = match self.kb.get_term(head) {
+                Term::Fn {
+                    pos_args,
+                    named_args,
+                    ..
+                } => (pos_args.len() + named_args.len(), named_args.len()),
+                _ => (0, 0),
+            };
+            if head_arity != arity {
+                if head_arity > 0 {
+                    other_arities.insert(head_arity);
+                }
+                continue;
+            }
+            of_this_arity += 1;
+            // Head stays a term (searched in the discrim tree); materialize it to the
+            // occurrence substrate so the call args (occurrences) and the head's
+            // compare occ-vs-occ (WI-246).
             let head_occ = materialize_from_handle(self.kb, head);
-            let Some((_, fpos, fnamed)) = occ_as_fn(&head_occ) else {
+            let head_args: Vec<Rc<NodeOccurrence>> = match occ_as_fn(&head_occ) {
+                Some((_, pos, _)) => pos.to_vec(),
+                None => Vec::new(),
+            };
+            // A head written with named arguments has no order to compare by: it is
+            // not ruled out, and read alone it is refused.
+            let positional = named == 0;
+            let admitted = !positional
+                || call_args
+                    .iter()
+                    .zip(head_args.iter())
+                    .all(|(call, head)| self.admits(head, call, bindings));
+            if admitted {
+                answering.push((Answer { clause, head_args }, positional));
+            }
+        }
+        // Where the call stands, when it is not the proof's own: the proof names a
+        // rule, and the call refused may be three rules down.
+        let site = match self.inlining.last() {
+            Some(rule) => format!(", in the body of `{rule}` (read inlined),"),
+            None => String::new(),
+        };
+        match answering.len() {
+            // Not "the body never holds": a clause may be an operation's body
+            // specialized to ANOTHER call's arguments (WI-687 synthesizes one for a
+            // functor, for whichever proof ran first), and then the operation is
+            // defined at this call and its clause for it is not here.
+            0 if of_this_arity > 0 => Err(SmtGenError::new(format!(
+                "the call of `{qn}/{arity}`{site} can be answered by no clause of the \
+                 predicate: each of its {of_this_arity} has in its head an argument the call's \
+                 rules out. Where those clauses are the predicate, the body never holds; a \
+                 clause that is an operation's body specialized to another call's arguments \
+                 (WI-687) does not apply to this call"
+            ))),
+            0 if other_arities.is_empty() => Ok(None),
+            0 => Err(SmtGenError::new(format!(
+                "rule call arity mismatch for '{qn}': the call has {arity} argument(s), and \
+                 its clauses have {}",
+                other_arities
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ))),
+            1 => match answering.pop() {
+                Some((answer, true)) => Ok(Some(answer)),
+                _ => Err(SmtGenError::new(format!(
+                    "v0: the clause of '{qn}' that answers this call must have only pos args \
+                     in head"
+                ))),
+            },
+            several => {
+                let facts = answering
+                    .iter()
+                    .filter(|(answer, _)| answer.clause.is_fact())
+                    .count();
+                Err(SmtGenError::new(format!(
+                    "the call of `{qn}/{arity}`{site} can be answered by {several} clauses of \
+                     the predicate ({facts} fact(s), {} with a body), and a proof reads a call by \
+                     ONE: the call holds when ANY of them does, which is more than the first \
+                     one says and is not read as their disjunction (WI-20261013-1KF32). Give \
+                     the case this proof is about a predicate of its own, or an argument that \
+                     selects one clause; a rule stated with a label and this predicate for its \
+                     head is one of its clauses",
+                    several - facts
+                )))
+            }
+        }
+    }
+
+    /// Does `head`, an argument of a clause's head, admit `call`, the call's argument
+    /// at that position? NO only where both are KNOWN and differ ([`Known`]): what is
+    /// not known — a variable, a computed term, a name that is no constructor — is
+    /// admitted, so a clause is never ruled out on a guess.
+    fn admits(
+        &self,
+        head: &Rc<NodeOccurrence>,
+        call: &Rc<NodeOccurrence>,
+        bindings: &BTreeMap<String, String>,
+    ) -> bool {
+        match (self.known(head), self.known_argument(call, bindings)) {
+            (Some(head), Some(call)) => self.agree(&head, &call),
+            _ => true,
+        }
+    }
+
+    /// What the call's argument `call` is known to be, in the frame being read
+    /// (`bindings`, `self.entity_bindings`).
+    ///
+    /// THE CALL'S OWN VARIABLE is known where this frame has bound it: to a
+    /// construction (`?state = TFS(…)` before `step(?state, …)`, WI-687) or to a number
+    /// (`?k = 0` before `at(?k, ?x)`). ONLY that one — a variable INSIDE a construction
+    /// is not looked up (/code-review). A construction handed across an inline boundary
+    /// keeps its caller's variables (`bind_head_arg` binds it as it is written), and
+    /// read in this frame they are other variables of the same index
+    /// (WI-20261012-BR7P3): measured, `wrap(?o, ?r) :- ?z = some(1.0), pick(?o, ?r)`
+    /// called `wrap(some(?y), ?r)` took the caller's free `?y` for its own `?z`, ruled
+    /// the `some(none)` clause of `pick` out by it, and a claim false at `?y = none`
+    /// proved.
+    fn known_argument<'a>(
+        &'a self,
+        call: &'a Rc<NodeOccurrence>,
+        bindings: &BTreeMap<String, String>,
+    ) -> Option<Known<'a>> {
+        let Some(Expr::Var(Var::DeBruijn(index))) = call.as_expr() else {
+            return self.known(call);
+        };
+        let name = synthetic_var_name(*index);
+        match self.entity_bindings.get(&name) {
+            Some(bound) => self.known(bound),
+            None => bindings
+                .get(&name)
+                .and_then(|term| numeral(term))
+                .map(Known::Number),
+        }
+    }
+
+    /// Could two known values be one? Another constructor says no; of one constructor,
+    /// a slot BOTH write and know says no — a variable in a slot, on either side, says
+    /// nothing, and is not looked up ([`Self::known_argument`]). One the call does not
+    /// write is not known, and neither is a construction written by position against one
+    /// written by name.
+    fn agree(&self, head: &Known<'_>, call: &Known<'_>) -> bool {
+        let slot = |h: &Rc<NodeOccurrence>, c: &Rc<NodeOccurrence>| {
+            match (self.known(h), self.known(c)) {
+                (Some(h), Some(c)) => self.agree(&h, &c),
+                _ => true,
+            }
+        };
+        match (head, call) {
+            (Known::Number(h), Known::Number(c)) => h == c,
+            (Known::Truth(h), Known::Truth(c)) => h == c,
+            (Known::Built(hf, hpos, hnamed), Known::Built(cf, cpos, cnamed)) => {
+                hf == cf
+                    && (hpos.len() != cpos.len() || hpos.iter().zip(*cpos).all(|(h, c)| slot(h, c)))
+                    && hnamed.iter().all(|(field, h)| {
+                        self.field_of(cnamed, *field).is_none_or(|c| slot(h, c))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// What `occ` is known to be, where it is ([`Known`]).
+    fn known<'a>(&self, occ: &'a Rc<NodeOccurrence>) -> Option<Known<'a>> {
+        match occ.as_expr()? {
+            Expr::Const(Literal::Float(f)) => Some(Known::Number(f.into_inner())),
+            Expr::Const(Literal::Int(i)) => Some(Known::Number(*i as f64)),
+            Expr::Const(Literal::Bool(b)) => Some(Known::Truth(*b)),
+            Expr::Ref(name) | Expr::Ident(name) if self.is_construction(*name) => {
+                Some(Known::Built(*name, &[], &[]))
+            }
+            _ => occ_as_fn(occ)
+                .filter(|(functor, _, _)| self.is_construction(*functor))
+                .map(|(functor, pos, named)| Known::Built(functor, pos, named)),
+        }
+    }
+
+    /// Does `sym` build a value — a constructor of a sort, or an entity?
+    fn is_construction(&self, sym: Symbol) -> bool {
+        self.kb.entity_field_types(sym).is_some() || self.kb.is_constructor_symbol(sym)
+    }
+
+    /// The value `named` gives the field `field`, by the field's SHORT name: a head is
+    /// materialized from a term and a call is an occurrence, and the two may qualify a
+    /// field differently.
+    fn field_of<'a>(
+        &self,
+        named: &'a [(Symbol, Rc<NodeOccurrence>)],
+        field: Symbol,
+    ) -> Option<&'a Rc<NodeOccurrence>> {
+        let short = |sym: Symbol| self.kb.local_name_of(sym).rsplit('.').next();
+        named
+            .iter()
+            .find(|(written, _)| short(*written) == short(field))
+            .map(|(_, value)| value)
+    }
+
+    /// Bind a call to the FACT that answers it: each call-side DeBruijn
+    /// var to the corresponding fact slot — literal → string binding,
+    /// construction → entity_bindings (consumed by `field_access`
+    /// lowering, and by what the variable selects later). A slot of the
+    /// call that is no variable is the fact's, which is what selected the
+    /// fact.
+    fn bind_fact_call(
+        &mut self,
+        functor_qn: &str,
+        fact: &Answer,
+        call_args: &[Rc<NodeOccurrence>],
+        bindings: &mut BTreeMap<String, String>,
+    ) -> Result<(), SmtGenError> {
+        // A VARIABLE in the fact's slot (`fact dflt(?who, 5.0)`) is every value there:
+        // the call's argument is one of them, and nothing is bound. One the fact names
+        // TWICE equates the call's arguments at the two, which is not written.
+        let fact_vars: Vec<&Var> = fact
+            .head_args
+            .iter()
+            .filter_map(|slot| match slot.as_expr() {
+                Some(Expr::Var(var)) => Some(var),
+                _ => None,
+            })
+            .collect();
+        if let Some(twice) = (1..fact_vars.len()).find(|&at| fact_vars[..at].contains(&fact_vars[at])) {
+            return Err(SmtGenError::new(format!(
+                "the call of `{functor_qn}` is answered by a fact that names one variable in \
+                 two slots ({:?}), which equates the call's arguments there: not written",
+                fact_vars[twice]
+            )));
+        }
+        for (at, (call_occ, fact_occ)) in call_args.iter().zip(fact.head_args.iter()).enumerate() {
+            if matches!(fact_occ.as_expr(), Some(Expr::Var(_))) {
+                continue;
+            }
+            let Some(Expr::Var(Var::DeBruijn(idx))) = call_occ.as_expr() else {
+                // ADMITTED IS NOT EQUAL: a term over variables (`?k + 1`, `Vec3(x: ?a, …)`)
+                // against the fact's slot is an equation this does not write, and a
+                // fact so read would be a hypothesis left out. It was passed over as a
+                // fact that did not match.
+                if !self.occs_match(call_occ, fact_occ) {
+                    return Err(SmtGenError::new(format!(
+                        "the call of `{functor_qn}` is answered by a fact, and its argument \
+                         {} is a term the fact's slot is not compared with: an argument \
+                         read against a fact is a variable, or the fact's own value",
+                        at + 1
+                    )));
+                }
                 continue;
             };
-            if !fnamed.is_empty() {
-                continue;
-            }
-            if fpos.len() != call_args.len() {
-                continue;
-            }
-
-            // Probe — does every concrete call slot equal the
-            // corresponding fact slot? Variable slots match anything.
-            let mut bind_pairs: Vec<(u32, Rc<NodeOccurrence>)> = Vec::new();
-            let mut matched = true;
-            for (call_occ, fact_occ) in call_args.iter().zip(fpos.iter()) {
-                if let Some(Expr::Var(Var::DeBruijn(i))) = call_occ.as_expr() {
-                    bind_pairs.push((*i, Rc::clone(fact_occ)));
-                    continue;
+            let synth = synthetic_var_name(*idx);
+            match fact_occ.as_expr() {
+                Some(Expr::Const(Literal::Float(f))) => {
+                    bindings.insert(synth, format_real(f.into_inner()));
                 }
-                if !self.occs_match(call_occ, fact_occ) {
-                    matched = false;
-                    break;
+                Some(Expr::Const(Literal::Int(i))) => {
+                    bindings.insert(synth, format_real(*i as f64));
                 }
-            }
-            if !matched {
-                continue;
-            }
-
-            // Apply bindings.
-            for (idx, fact_occ) in bind_pairs {
-                let synth = synthetic_var_name(idx);
-                match fact_occ.as_expr() {
-                    Some(Expr::Const(Literal::Float(f))) => {
-                        bindings.insert(synth, format_real(f.into_inner()));
-                    }
-                    Some(Expr::Const(Literal::Int(i))) => {
-                        bindings.insert(synth, format_real(*i as f64));
-                    }
-                    _ if occ_as_fn(&fact_occ).is_some() => {
-                        // Entity (Pose, Vec3, …) — defer until
-                        // field_access reads it.
-                        self.entity_bindings.insert(synth, fact_occ);
-                    }
-                    Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
-                        // Nullary symbol like `Leader`. Skip — it
-                        // can't appear in arithmetic expressions
-                        // and there's no field projection over it.
-                    }
-                    _ => { /* skip for v0 */ }
+                // Entity (Pose, Vec3, …) — defer until field_access reads it. And a
+                // NULLARY CONSTRUCTOR (`Leader`): it has no SMT term
+                // (WI-20261013-PR8SP), and the variable IS it — held as a construction
+                // is, so what the variable selects later (a fact by its drone, a clause
+                // by its head) it selects. It was passed over, and the variable left
+                // bound to nothing.
+                _ if self.known(fact_occ).is_some_and(|slot| matches!(slot, Known::Built(..))) => {
+                    self.entity_bindings.insert(synth, Rc::clone(fact_occ));
+                }
+                // What a variable is not bound to: a string, a boolean, a big integer,
+                // a name that is no constructor, a computed term. It was passed over
+                // ("skip for v0"), the variable free in a body that says what it is.
+                _ => {
+                    return Err(SmtGenError::new(format!(
+                        "the call of `{functor_qn}` is answered by a fact, and the fact's slot \
+                         {} is a value the call's variable there is not bound to: a variable \
+                         is bound to a number or to a construction",
+                        at + 1
+                    )))
                 }
             }
-            return Ok(true);
         }
-        Ok(false)
+        Ok(())
     }
 
     /// Inline a rule call's body at the call site. `call_args` are
@@ -1033,50 +1475,14 @@ impl<'kb> Emitter<'kb> {
     /// renamed into a per-call namespace so they don't collide with
     /// the caller's; entity-typed arguments propagate into the
     /// callee's entity_bindings.
-    fn try_inline_rule_call(
+    fn inline_rule_call(
         &mut self,
         callee_qn: &str,
+        callee: &Answer,
         call_args: &[Rc<NodeOccurrence>],
         caller_bindings: &mut BTreeMap<String, String>,
-    ) -> Result<bool, SmtGenError> {
-        let sym = match self.kb.try_resolve_symbol(callee_qn) {
-            Some(s) => s,
-            None => return Ok(false),
-        };
-        let clause = match self
-            .kb
-            .program_clauses_by_functor(sym)
-            .into_iter()
-            .find(|clause| !clause.is_fact())
-        {
-            Some(clause) => clause,
-            None => return Ok(false),
-        };
-        self.visited_rules.insert(callee_qn.to_string());
-
-        // Head stays a term (searched in the discrim tree); materialize it to
-        // the occurrence substrate to read its De Bruijn param vars (WI-246).
-        let Value::Term { id: head, .. } = clause.head else {
-            return Err(SmtGenError::new(format!(
-                "v0: inlined rule '{callee_qn}' has a non-term head"
-            )));
-        };
-        let head_occ = materialize_from_handle(self.kb, head);
-        let head_pos: Vec<Rc<NodeOccurrence>> = match occ_as_fn(&head_occ) {
-            Some((_, pos, named)) if named.is_empty() => pos.to_vec(),
-            _ => {
-                return Err(SmtGenError::new(format!(
-                    "v0: inlined rule '{callee_qn}' must have only pos args in head"
-                )))
-            }
-        };
-        if head_pos.len() != call_args.len() {
-            return Err(SmtGenError::new(format!(
-                "rule call arity mismatch for '{callee_qn}': expected {}, got {}",
-                head_pos.len(),
-                call_args.len()
-            )));
-        }
+    ) -> Result<(), SmtGenError> {
+        let clause = &callee.clause;
 
         // Prepare callee-local bindings: each head ?DeBruijn becomes
         // either the caller's already-translated SMT string (for
@@ -1095,7 +1501,7 @@ impl<'kb> Emitter<'kb> {
         let mut callee_str: BTreeMap<String, String> = BTreeMap::new();
         let mut callee_ent: BTreeMap<String, Rc<NodeOccurrence>> = BTreeMap::new();
         let mut head_caller: Vec<(u32, String)> = Vec::new();
-        for (head_arg, call_arg) in head_pos.iter().zip(call_args.iter()) {
+        for (head_arg, call_arg) in callee.head_args.iter().zip(call_args.iter()) {
             self.bind_head_arg(
                 callee_qn,
                 head_arg,
@@ -1130,16 +1536,18 @@ impl<'kb> Emitter<'kb> {
         let saved_sorts = std::mem::replace(&mut self.var_sorts, callee_sorts);
         let mut local = callee_str;
         let mut err: Option<SmtGenError> = self
-            .seed_bounds(&clause)
+            .seed_bounds(clause)
             .and_then(|()| self.infer_var_sorts(&body_goals))
             .err();
         if err.is_none() {
+            self.inlining.push(callee_qn.to_string());
             for goal in &body_goals {
                 if let Err(e) = self.process_body_goal(goal, &mut local) {
                     err = Some(e);
                     break;
                 }
             }
+            self.inlining.pop();
         }
         self.var_sorts = saved_sorts;
         // Capture the (possibly grown) callee entity_bindings before
@@ -1168,7 +1576,7 @@ impl<'kb> Emitter<'kb> {
                     .insert(caller_synth, Rc::clone(entity_occ));
             }
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Bind one head argument of an inlined rule against its call argument,
@@ -1200,12 +1608,33 @@ impl<'kb> Emitter<'kb> {
         callee_ent: &mut BTreeMap<String, Rc<NodeOccurrence>>,
         head_caller: &mut Vec<(u32, String)>,
     ) -> Result<(), SmtGenError> {
+        // A NUMBER in head position (`rule mode(0, ?r) :- …`, the base clause
+        // `real_pose_at(0, ?drone, ?pose)`) is ground, as a nullary constructor is:
+        // nothing to bind, and it must BE the call's — which is what selected this
+        // clause where the call's is known ([`Self::admits`]). A call's free variable
+        // or a computed term there is an equation this does not write, and says so
+        // (WI-20261012-KF2SD, /code-review: the clause was selected by its number and
+        // then refused as "head arg must be a De Bruijn var or a constructor").
+        if let Some(Known::Number(in_head)) = self.known(head_arg) {
+            return match self.known_argument(call_arg, caller_bindings) {
+                Some(Known::Number(passed)) if passed == in_head => Ok(()),
+                _ => Err(SmtGenError::new(format!(
+                    "'{callee_qn}' has the number {} for an argument of its head, and the \
+                     call's argument there is not known to be it: a variable or a computed \
+                     term against a number in a head is an equation that is not written. \
+                     Pass the number, or a variable defined as it",
+                    format_real(in_head)
+                ))),
+            };
+        }
+
         // A nullary constructor CONSTANT in head position (`none`, spelled as a
         // bare `Ref`/`Ident` or an arg-less `Fn`) is ground — nothing to BIND, but
-        // it must still MATCH the call (WI-687). `try_inline_rule_call` selects one
-        // synth rule per functor regardless of the call's shape, so a `none` head
-        // meeting a `some(…)` call must fail LOUDLY — symmetric with the `some(?0)`
-        // head direction, which already errors at `resolve_call_ctor` / the functor
+        // it must still MATCH the call (WI-687). The clause read is the one no
+        // argument of the call RULES OUT ([`Self::answering_clause`]), and a call's
+        // free variable rules out nothing, so a `none` head may still meet a call
+        // that is not known to be `none` — and must fail LOUDLY, symmetric with the
+        // `some(?0)` head direction, which errors at `resolve_call_ctor` / the functor
         // check below. Verify the call denotes the same nullary constructor.
         if let Some(h_null) = nullary_ctor_sym(head_arg) {
             let call_null = self
@@ -1267,11 +1696,7 @@ impl<'kb> Emitter<'kb> {
                 )?;
             }
             for (hs, hv) in hnamed {
-                let short = self.kb.local_name_of(*hs).rsplit('.').next();
-                let Some((_, cv)) = cnamed
-                    .iter()
-                    .find(|(cs, _)| self.kb.local_name_of(*cs).rsplit('.').next() == short)
-                else {
+                let Some(cv) = self.field_of(cnamed, *hs) else {
                     return Err(SmtGenError::new(format!(
                         "WI-687: constructor-shaped head field '{}' absent in call arg to \
                          '{callee_qn}'",
@@ -1321,10 +1746,7 @@ impl<'kb> Emitter<'kb> {
             Some(Expr::Ref(_)) | Some(Expr::Ident(_)) => {
                 // Nullary symbol — not arithmetic; ignore.
             }
-            _ if occ_as_fn(call_arg).is_some_and(|(f, _, _)| {
-                self.kb.entity_field_types(f).is_some() || self.kb.is_constructor_symbol(f)
-            }) =>
-            {
+            _ if occ_as_fn(call_arg).is_some_and(|(f, _, _)| self.is_construction(f)) => {
                 // Concrete entity / constructor at the call site — expose it for
                 // field_access on the callee side.
                 callee_ent.insert(head_synth, Rc::clone(call_arg));
@@ -1403,47 +1825,33 @@ impl<'kb> Emitter<'kb> {
     /// so subsequent uses of the variable substitute it directly.
     /// Each called rule's body uses its own DeBruijn indices, so
     /// fresh local bindings don't collide with the caller's.
-    fn translate_called_rule(&mut self, callee_qn: &str) -> Result<String, SmtGenError> {
-        self.visited_rules.insert(callee_qn.to_string());
-        let sym = self
-            .kb
-            .try_resolve_symbol(callee_qn)
-            .ok_or_else(|| SmtGenError::new(format!("rule call '{callee_qn}' not found")))?;
-        let clause = self
-            .kb
-            .program_clauses_by_functor(sym)
-            .into_iter()
-            .find(|clause| !clause.is_fact())
-            .ok_or_else(|| {
-                SmtGenError::new(format!("rule call '{callee_qn}' has no defining clauses"))
-            })?;
-
-        let Value::Term { id: head, .. } = clause.head else {
-            return Err(SmtGenError::new(format!(
-                "v0: called rule '{callee_qn}' has a non-term head"
-            )));
-        };
-        let head_occ = materialize_from_handle(self.kb, head);
-        let result_idx = match occ_as_fn(&head_occ) {
-            Some((_, pos_args, _)) if pos_args.len() == 1 => match pos_args[0].as_expr() {
-                Some(Expr::Var(Var::DeBruijn(i))) => *i,
-                _ => {
-                    return Err(SmtGenError::new(format!(
-                        "v0: called rule '{callee_qn}' head must be ?DeBruijn"
-                    )))
-                }
-            },
+    fn translate_called_rule(
+        &mut self,
+        callee_qn: &str,
+        callee: &Answer,
+    ) -> Result<String, SmtGenError> {
+        let clause = &callee.clause;
+        // The head has the call's one argument, and the result is the variable there.
+        let result_idx = match callee.head_args.first().and_then(|arg| arg.as_expr()) {
+            Some(Expr::Var(Var::DeBruijn(i))) => *i,
             _ => {
                 return Err(SmtGenError::new(format!(
-                    "v0: called rule '{callee_qn}' must have exactly one pos arg in head"
+                    "v0: called rule '{callee_qn}' head must be ?DeBruijn"
                 )))
             }
         };
         // The callee's frame is its own, and so are its variables' sorts
-        // (WI-20261012-ZZ7PH).
+        // (WI-20261012-ZZ7PH) — and its ENTITIES (WI-20261012-KF2SD, /code-review). The
+        // caller's stayed installed, so the callee's variable of an index was "bound" to
+        // whatever construction the caller's variable of that index held, which a
+        // clause is now selected by: measured, `bound(?d) :- gain(?o, ?d)` called beside
+        // an unrelated `?s = some(2.0)` read `gain` by its `some` clause for the free
+        // `?o`. The same leak, the other way, handed the callee's entities back.
         let saved_sorts = std::mem::take(&mut self.var_sorts);
+        let saved_entities = std::mem::take(&mut self.entity_bindings);
+        self.inlining.push(callee_qn.to_string());
         let walked = (|| {
-            self.seed_bounds(&clause)?;
+            self.seed_bounds(clause)?;
             self.infer_var_sorts(&clause.body_nodes)?;
             let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
             for goal in &clause.body_nodes {
@@ -1451,7 +1859,9 @@ impl<'kb> Emitter<'kb> {
             }
             Ok(local_bindings)
         })();
+        self.inlining.pop();
         self.var_sorts = saved_sorts;
+        self.entity_bindings = saved_entities;
         let local_bindings: BTreeMap<String, String> = walked?;
         local_bindings
             .get(&synthetic_var_name(result_idx))
@@ -2110,12 +2520,21 @@ impl<'kb> Emitter<'kb> {
                         "referenced entity `{entity_qn}` read failed: {e}"
                     )),
                 })?;
-            // Accept the first fact whose named_args resolve to numeric
+            // Accept the fact whose named_args resolve to numeric
             // literals — that's a ground data fact. (WI-515: only data
             // facts remain; the entity-declaration row with abstract
-            // field types is no longer asserted.) Multi-fact
-            // disambiguation is a v1 concern; for v0 we expect at most
-            // one fact per entity.
+            // field types is no longer asserted.)
+            //
+            // WI-20261012-KF2SD (/code-review) — ONE SUCH FACT, OR REFUSED. "For v0 we
+            // expect at most one fact per entity" was a comment, and the loop broke at
+            // the first: an entity of several facts was read as its first, whichever
+            // the premise's own slots named. Measured: `fact Limit(cap: 5.0)`, `fact
+            // Limit(cap: -1.0)` proved `gte(?c, 0.0) :- Limit(cap: ?c)`; and over
+            // `Mode(kind: 1.0, cap: 5.0)`, `Mode(kind: 2.0, cap: -1.0)` the premise
+            // `Mode(kind: 2.0, cap: ?c)` proved it with the cap of kind 1 — a slot
+            // that is no variable is not read, and a field's constant is one for the
+            // document. It is the call of several facts in an entity's spelling.
+            let mut read = false;
             for row in candidates {
                 let Value::Term { id: head, .. } = row else {
                     return Err(SmtGenError::new(format!(
@@ -2132,6 +2551,15 @@ impl<'kb> Emitter<'kb> {
                 if !any_concrete {
                     continue;
                 }
+                if read {
+                    return Err(SmtGenError::new(format!(
+                        "the entity `{entity_qn}` has several facts, and a premise reads its \
+                         fields off ONE: it would be the first, whichever fact the premise's \
+                         own slots name. A claim of every fact is their disjunction \
+                         (WI-20261013-1KF32); a proof reads an entity of one fact"
+                    )));
+                }
+                read = true;
                 for (field_sym, val_term) in named_args {
                     let field_name = self.kb.local_name_of(*field_sym).to_string();
                     let const_name = sanitize_smt_id(&field_name);
@@ -2142,7 +2570,6 @@ impl<'kb> Emitter<'kb> {
                         self.field_consts.insert(const_name, v);
                     }
                 }
-                break;
             }
         }
         Ok(())
@@ -2461,6 +2888,22 @@ fn occ_as_fn(
     }
 }
 
+/// The clause variables an occurrence names, at any depth, by frame index.
+pub(crate) fn debruijn_vars_of(occ: &Rc<NodeOccurrence>) -> BTreeSet<u32> {
+    let mut named = BTreeSet::new();
+    let mut pending = vec![Rc::clone(occ)];
+    while let Some(occ) = pending.pop() {
+        match occ.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(index))) => {
+                named.insert(*index);
+            }
+            Some(expr) => for_each_child(expr, |child| pending.push(Rc::clone(child))),
+            None => {}
+        }
+    }
+    named
+}
+
 /// The functor of a NULLARY constructor occurrence — a bare `Ref`/`Ident`, or an
 /// arg-less `Fn`/`Constructor` (`none` / `Fn{none, [], []}`) — else `None` (a De
 /// Bruijn var, a literal, or an arity-bearing construction). Used by
@@ -2493,7 +2936,7 @@ fn parse_synthetic_var_name(s: &str) -> Option<u32> {
 /// fragment as a substitute occurrence, so `close_occ` can close a
 /// body-derived constructor whose field is computed from that scalar param
 /// (e.g. `TransponderFollowerState{ upc: ite(…upc…) }`). The fragment is the
-/// value `try_inline_rule_call` threaded into the callee string map: already
+/// value `inline_rule_call` threaded into the callee string map: already
 /// translated and, at the point it is captured, fully resolved into the
 /// caller's frame (a forwarded free var `var_j`, a field const `upc`, a
 /// literal `(- 5.0)`, or a compound `(+ …)`). It is FROZEN verbatim as a
@@ -2843,6 +3286,21 @@ fn format_real(v: f64) -> String {
         format!("{:.1}", v)
     } else {
         format!("{:.}", v)
+    }
+}
+
+/// The number an SMT term IS, where it is one as [`format_real`] writes it: digits and
+/// a point, or `(- <that>)`. Anything else — a variable's name, a field's constant, a
+/// compound — is no number here, whatever a parser of floats would make of its text.
+fn numeral(term: &str) -> Option<f64> {
+    if let Some(negated) = term.strip_prefix("(- ").and_then(|rest| rest.strip_suffix(')')) {
+        return numeral(negated).map(|value| -value);
+    }
+    let written = !term.is_empty() && term.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+    if written {
+        term.parse().ok()
+    } else {
+        None
     }
 }
 

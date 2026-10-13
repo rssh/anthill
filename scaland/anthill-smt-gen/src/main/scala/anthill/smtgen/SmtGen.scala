@@ -481,34 +481,62 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       return Right(())
 
     // Rule call (`<ruleQn>(?result)` — single-arg shorthand).
+    //
+    // WI-20261012-KF2SD — READ BY THE ONE CLAUSE THAT CAN ANSWER IT, as rustland's
+    // `answering_clause` does. The call is a HYPOTHESIS, and a predicate of several
+    // clauses holds when any of them does; `find(hasBody)` read it as the first with a
+    // body, which is a stronger hypothesis than the rule states — measured, `rule
+    // cap(?d) :- ?d = add(2.0, 3.0)` beside `rule cap(?d) :- ?d = add(50.0, 50.0)`
+    // emitted `cap(?c)` as `(+ 2.0 3.0)` (`SeveralClausesTest`), and a claim of both was
+    // a claim of the first. The argument is a variable (asked below), which rules no
+    // clause out, so every clause of ONE argument can answer — a fact too. Several:
+    // refused; their disjunction is WI-20261013-1KF32. A clause of another arity is
+    // another predicate.
+    //
+    // THIS ARM READS A CLAUSE WITH A BODY AND NO FACT (rustland binds the call's variable
+    // to a fact's slot; nothing here does). So a fact that answers ALONE is left to the
+    // tail's refusal, as a predicate of facts only always was — and is not handed to
+    // `translateCalledRule` as if it were a definition (/code-review).
     if posArgs.length == 1 && namedArgs.isEmpty then
       val candidates = kb.byFunctor(functor)
-      val hasBody = candidates.exists(rid => kb.ruleBody(rid).nonEmpty)
-      if hasBody then
-        val bindIdx = kb.getTerm(posArgs(0)) match
-          case Term.Var(vid) => vid.varId.id
-          case other => return Left(SmtGenError(
-            s"v0: rule call's pos arg must be a Var, got $other"))
-        translateCalledRule(qn) match
-          case Left(e)        => return Left(e)
-          case Right(inlined) =>
-            bindings(syntheticVarName(bindIdx)) = inlined
-            return Right(())
+      val answering = candidates.filter { rid =>
+        kb.getTerm(kb.ruleHead(rid)) match
+          case f: Term.Fn => f.posArgs.length + f.namedArgs.length == 1
+          case _          => false
+      }
+      answering.find(rid => kb.ruleBody(rid).nonEmpty) match
+        case Some(rid) =>
+          val bindIdx = kb.getTerm(posArgs(0)) match
+            case Term.Var(vid) => vid.varId.id
+            case other => return Left(SmtGenError(
+              s"v0: rule call's pos arg must be a Var, got $other"))
+          if answering.length > 1 then
+            val facts = answering.count(r => kb.ruleBody(r).isEmpty)
+            return Left(SmtGenError(
+              s"the call of `$qn/1` can be answered by ${answering.length} clauses of the " +
+                s"predicate ($facts fact(s), ${answering.length - facts} with a body), and a " +
+                "proof reads a call by ONE: the call holds when ANY of them does, which is " +
+                "more than the first one says and is not read as their disjunction " +
+                "(WI-20261013-1KF32). Give the case this proof is about a predicate of its " +
+                "own, or an argument that selects one clause"))
+          translateCalledRule(qn, rid) match
+            case Left(e)        => return Left(e)
+            case Right(inlined) =>
+              bindings(syntheticVarName(bindIdx)) = inlined
+              return Right(())
+        // No clause of one argument, and one with a body of another arity: said as it was.
+        case None if answering.isEmpty && candidates.exists(r => kb.ruleBody(r).nonEmpty) =>
+          return Left(SmtGenError(
+            s"v0: called rule '$qn' must have exactly one pos arg in head"))
+        case None => ()
 
     Left(SmtGenError(s"v0: unhandled body goal functor '$qn'"))
 
   /** Recursively translate a *called* rule's body to a single SMT-LIB
     * expression — the rule's result, fully inlined.
     */
-  def translateCalledRule(calleeQn: String): Either[SmtGenError, String] =
+  def translateCalledRule(calleeQn: String, rid: RuleId): Either[SmtGenError, String] =
     visitedRules += calleeQn
-    val sym = kb.tryResolveSymbol(calleeQn) match
-      case Some(s) => s
-      case None    => return Left(SmtGenError(s"rule call '$calleeQn' not found"))
-    val rid = kb.byFunctor(sym).find(r => kb.ruleBody(r).nonEmpty) match
-      case Some(r) => r
-      case None    => return Left(SmtGenError(s"rule call '$calleeQn' has no defining clauses"))
-
     val head = kb.ruleHead(rid)
     val resultIdx = kb.getTerm(head) match
       case f: Term.Fn if f.posArgs.length == 1 => kb.getTerm(f.posArgs(0)) match

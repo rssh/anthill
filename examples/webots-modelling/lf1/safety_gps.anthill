@@ -29,7 +29,8 @@ namespace anthill.examples.lf1.safety.gps
   import anthill.examples.lf1.follower_gps.{FollowerController}
   import anthill.examples.lf1.safety.common.{
     Drone, DistanceBounds, KinematicAssumptions, reachable_real,
-    real_pose_at, observed_pose_at, distance_at_step, position_distance
+    real_pose_at, initial_pose, observed_pose_at, distance_at_step,
+    position_distance
   }
   import anthill.examples.lf1.safety.common.Drone.{Leader, Follower}
 
@@ -143,7 +144,7 @@ namespace anthill.examples.lf1.safety.gps
   -- The follower's step-0 real pose is its FORMATION position: the
   -- leader's pose plus the yaw-rotated body-frame offset. Rather than
   -- hand-plant the resulting leader↔follower separation as a literal
-  -- (the old `real_pose_at(0, Follower, …)` x = −4 in safety_common),
+  -- (the follower's `initial_pose` x = −4 in safety_common),
   -- we read it from the follower_gps controller's OWN body. WI-669
   -- extracts `desired_position`'s defining equation on demand; calling
   -- `FollowerController.desired_position(leader, offset, ?target)`
@@ -161,7 +162,7 @@ namespace anthill.examples.lf1.safety.gps
   fact follower_offset(Vec3(x: -4.0, y: 0.0, z: 0.0))
 
   rule reachable_real_formation(?leader_real, ?follower_real)
-    :- real_pose_at(0, Leader, ?leader_real),
+    :- initial_pose(Leader, ?leader_real),
        follower_offset(?off),
        FollowerController.desired_position(?leader_real, ?off, ?target),
        ?follower_real = Pose(position: ?target,
@@ -174,14 +175,16 @@ namespace anthill.examples.lf1.safety.gps
   -- The two pointwise safety properties. Encoded as **violation
   -- rules** rather than `constraint` blocks: the prove driver
   -- dispatches each rule's body as a Z3 satisfiability check, and
-  -- `unsat` ⇒ no (?leader_real, ?follower_real) reachable from the
-  -- initial geometry under position_distance can violate the bound.
+  -- `unsat` ⇒ the launch pair — the leader's `initial_pose` and the
+  -- follower's formation position derived from it — does not violate
+  -- the bound. A claim of STEP 0, and of no later one: the claim over
+  -- every k is `reachability_band`'s, below.
   --
   -- Discharge logic is `QF_NRA` because position_distance carries a
   -- nonlinear `?d * ?d = ?d_sq` clause; `?w` is the ?d witness
   -- exposed in the rule head so smt-gen has a single result-var to
-  -- bind. SLD/inline expansion of `reachable_real` and
-  -- `position_distance` reaches the concrete `real_pose_at` facts
+  -- bind. Inline expansion of `reachable_real_formation` and
+  -- `position_distance` reaches the concrete `initial_pose` fact
   -- (initial geometry); the resulting nonlinear arithmetic is
   -- exactly what Z3 QF_NRA decides.
 

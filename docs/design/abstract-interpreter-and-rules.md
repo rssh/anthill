@@ -306,7 +306,7 @@ is a **rule-less bodied op** and, for each, synthesizes a transient defining rul
   De Bruijn with the correct arity. Feeding raw `Var::DeBruijn` occurrences (as `op_defining_equations`
   emits) would leave the collector with zero head vars → arity-0 → a malformed rule; the fresh-Global
   round is the load-bearing detail. Head **functor is the op symbol itself** (registered under label
-  `<op_qn>__defeq` for idempotency) so smt-gen's ordinary `rules_by_functor → try_inline_rule_call`
+  `<op_qn>__defeq` for idempotency) so smt-gen's ordinary `rules_by_functor → answering_clause → inline_rule_call`
   path inlines it at the `clamp(?x, ?r)` call unchanged (`anthill-smt-gen/src/lib.rs`).
 
 **Prerequisite: WI-680 (smt-gen conditional lowering).** The refold produces an `Expr::If`; smt-gen's
