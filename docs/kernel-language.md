@@ -2934,15 +2934,33 @@ An **open-world operand** is undetermined in the same sense and declines before 
 
 **`@[simp]` is what makes an equation run (WI-881).** The attribute does not merely pick a *direction* — it is the *enablement*. An **untagged** equational rule is inert: the normalizer never fires it, so a body-less operation whose only definition is an untagged equation dies `OperationBodyMissing` at eval. That verdict is now uniform across the routes to such an operation (WI-1092), which it was not: a carrier's `eq` member reached through the eval→SLD bridge — by a requirement **dictionary**, or from the `eq` builtin's carrier dispatch — used to be handed to the resolver anyway, exhaust an EMPTY candidate set, and come back *refuted*, so the program silently computed with "not equal" wherever that carrier's equality was consulted and raised nothing. An absent definition is not a false one: a **declared** operation with no clause, no body, no host mapping and no builtin is unrunnable and says so, while an *undeclared* predicate symbol with no clauses stays the empty relation and refutes, which is ordinary closed-world SLD. Inside resolution the same target leaves the goal **undecided** — the resolver has no error channel, and an undecided goal is the one answer that is not wrong. Tag the same equation `@[simp]` and the operation runs, because the typer rewrites LHS→RHS in operation bodies before any dispatch. That is **inlining, not dispatch**, and the distinction is load-bearing: the §8.7 backing check does not count a `@[simp]` equation, so one cannot discharge a *spec* operation's obligation (a rule is not backing — WI-818); what it can do is give a sort's **own** operation a meaning — but **not** as a third way beside a body and a host mapping, and WI-885 is deciding whether it is a backing kind at all. `@[simp]` needs two things a *dispatched* call does not have: a syntactic **redex**, and a **statically known carrier** (`set.anthill` states the second — its laws fire "once the redex's carrier is known to provide `Set`"). Dispatch through a requirement **dictionary** has neither: `dispatch_via_sort_ops_table` resolves an operation *symbol* out of the dict and invokes it, and the invocation path is builtin → body → value-directed impl. There is no slot a rewrite rule could occupy, so **no dictionary entry can be built from a `@[simp]` equation** — which is why `carrier_override_op` reading such a member as absent is the correct answer, not a bug. Treat `@[simp]` as proposal 043's directional-rewrite attribute; write a definition as a body (WI-580: the equational, relational and proof views are *derived* from it — WI-669) or as a host mapping. A bare-identifier RHS immediately before the attribute is safe: `<=> none @[simp]` is the name `none` and its block, because `@[` is one token that no instantiation bracket begins with — this was a trap while the attribute was a bare `[simp]`, which read as `none[simp]` (WI-20260915-G9EA9). **A nullary HEAD no longer needs its parentheses** (WI-20260902-CZJ2N): `rule tau <=> …` and `rule tau() <=> …` are one term and one law, because a nullary application is stored bare — see *A PAREN-LESS nullary head is an application of arity 0*, above. That was the second trap here until CZJ2N, and it is deleted rather than narrowed. A `@[simp]` head still matches an **application**, so it rewrites `tau()`; a bare `tau` **call site inside an operation body** is a `var_ref` and is still not a redex, which is §5.4's type-directed reading and a different question from the head's. A nullary operation whose call sites are written both ways therefore still wants a body or a host mapping.
 
-An operation of a sort with constructors is the sort's own, whether or not the sort takes
-type parameters. Nothing provides a data sort (§5.1), so a body-less operation it declares
-is dispatched to no provider, and a `@[simp]` equation written for it is its definition:
-the equation waits for no carrier that provides the sort, and a call of the operation is
-asked for no provision of it. With `sort Box { sort V = ?; entity mk(v: V) }` declaring
-`operation open(b: Box[V]) -> V` and `rule open(?b) <=> peek(?b) @[simp]`,
-`Box.open(Box.mk(4))` is `peek(Box.mk(4))`, as it is where `Box` takes no parameter. A
-parametric sort with no constructor is a spec: its body-less operation is dispatched by the
-carrier, and a law written in it fires only where the carrier is known to provide it.
+Every sort provides itself, by its own operations, and a call of a sort's operation is
+answered by the member of its carrier. The carrier of `S.op(…)` is the sort of the argument
+written where `op` declares a parameter of type `S`; or the type bound to the type
+parameter of `S` that `op` receives on; or `S` itself where `op` names neither. The carrier
+provides `S` — it is `S`, or it declares `provides S` — and a call whose carrier is known
+at load not to is refused there. The carrier's member `op` answers the call, and `S`'s
+own does where the carrier declares none, which is what makes a body on `S.op` a default.
+Whether `S` takes a type parameter plays no part: with `sort Sp { operation size(s: Sp) ->
+Int64 }` and `sort Car { entity car(n: Int64); provides Sp; operation size(c: Car) ->
+Int64 = 42 }`, `Sp.size(car(n: 1))` is 42, and so is `Sp.size(s)` under `s: Sp` where `s`
+is that car. A sort declared by one load may be provided by a later one.
+
+Where the carrier can only be `S`, the operation is `S`'s own: its body, its host mapping
+or the `@[simp]` equation that defines it is what a call runs, and nothing is asked of a
+provider. That is so for a sort with constructors, with type parameters or without: nothing
+provides a data sort (§5.1), and its parameters are its content. With `sort Box { sort V =
+?; entity mk(v: V) }` declaring `operation open(b: Box[V]) -> V` and `rule open(?b) <=>
+peek(?b) @[simp]`, `Box.open(Box.mk(4))` is `peek(Box.mk(4))`, as it is where `Box` takes
+no parameter. It is so for a sort with no type parameter that no sort provides. And it is
+so for an operation that names neither its sort nor one of the sort's type parameters in a
+parameter, its result or its effects, where the sort takes no type parameter or no sort
+provides it: `operation f(x: Int64) -> Int64` declared by `sort Util { sort T = ? }` is
+`Util`'s own while nothing provides `Util`. Where a sort does, a requirement or a selection
+names the provider through `T`, and the provider's member answers. An equation written for
+an operation another carrier may answer is a law of the carriers, and fires only where the
+carrier is known to provide the sort — as the sort itself does: a law written in `Set`
+fires at a `Set`.
 
 Clauses written under a body-less operation are its definition, and they answer a goal,
 not a call. With `sort Box { entity mk(v: Int64) }` declaring `operation open(b: Box) ->
@@ -2951,8 +2969,10 @@ Int64` and `rule open(mk(v: ?v), ?v) :- true`, the goal `Box.open(Box.mk(4), ?x)
 written at the operation's own arity. A call names the operation, and a call runs a body,
 a host mapping or a builtin. In an operation body `Box.open(Box.mk(4))` has none of them
 to run, and is a load error that names the operation and the goal that answers. This is
-the rule for an operation of a namespace and of a sort with constructors; a call of an
-operation of a sort with no constructor is dispatched to the member a provider supplies.
+the rule for an operation of a namespace, of a sort with constructors, and of a sort with
+no type parameter where the operation has no parameter and no result of the sort's type.
+Any other call of a sort's operation is dispatched to the member its carrier supplies, and
+a load may declare the sort that a later load provides.
 A carrier's `eq` written as clauses is the one operation a call runs by proving them
 (§8.7). A rule body is not held to this: there the application is the goal the clauses
 answer, or a term another goal matches or calls. In an operation body the clauses are
@@ -6438,7 +6458,7 @@ Where no route discharges it the refusal is still **parked** rather than raised 
 
 A tie with no single most-refined definer is a genuine ambiguity (resolution falls back to first-match and should be avoided — give one a distinct path or name). To deliberately invoke a non-winning op, qualify the call (`Iterable.map(xs, f)`).
 
-**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `provides S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed. (The clause was spelled `fact S[T]` until WI-20260917-S8JYF; a `fact` is now an ordinary fact and provides nothing — §5.1.)
+**Operation auto-binding.** Operations of a sort another sort provides are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation, whether or not the sort takes a type parameter (§5.3). When a sort satisfies a spec via `provides S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed. (The clause was spelled `fact S[T]` until WI-20260917-S8JYF; a `fact` is now an ordinary fact and provides nothing — §5.1.)
 
 The binding gradient:
 
