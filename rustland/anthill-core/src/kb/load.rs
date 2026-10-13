@@ -214,6 +214,31 @@ pub struct TypeMismatchOrigin {
     pub site: &'static std::panic::Location<'static>,
 }
 
+/// Which leg of the member-signature check refused a member, and where — the class of a
+/// [`LoadError::IncompatibleMemberSignature`], for a reader that tells two refusals of one
+/// member apart without parsing `reason`. Printed `tied@2`, `return`, `arity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberMisfit {
+    /// The whole signature's `"arity"`, `"order"` or `"parameter-types"`; why the member
+    /// takes less than the spec's — `"receiver"`, `"any-provider"`, `"tied"`, `"narrower"`,
+    /// `"circular"`; a type that does not read at the spec's arguments — `"unreadable"`,
+    /// `"spec-unreadable"`, and `"return-unreadable"`, `"spec-return-unreadable"` for the
+    /// return; or `"return"`, a return that is not a subtype of the spec's.
+    pub leg: &'static str,
+    /// The parameter it was found at, counted as the message counts it, from 1. `None` for
+    /// the arity, the order and the return.
+    pub parameter: Option<usize>,
+}
+
+impl std::fmt::Display for MemberMisfit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.parameter {
+            Some(parameter) => write!(f, "{}@{parameter}", self.leg),
+            None => f.write_str(self.leg),
+        }
+    }
+}
+
 /// WI-1109 — the DERIVED-ROW clause both [`LoadError::UnbackedProviderOperation`]
 /// faces append, in one place so a change cannot reach one wording and miss the other
 /// (the `bare_member_call_message` discipline). Empty for a written provision.
@@ -1264,6 +1289,8 @@ pub enum LoadError {
         spec: String,
         op: String,
         reason: String,
+        /// Which leg refused, and at which parameter: what `reason` says in prose.
+        misfit: MemberMisfit,
     },
     /// WI-431 (B): an INSTANCE FACT binds a spec operation to an op whose
     /// SIGNATURE does not match the spec operation's, with the carrier substituted
@@ -3342,6 +3369,7 @@ impl LoadError {
                 spec,
                 op,
                 reason,
+                misfit: _,
             } => {
                 format!(
                     "'{}' provides '{}' but its own member '{}' does not fit '{}.{}': {}",
@@ -4856,6 +4884,7 @@ impl std::fmt::Display for LoadError {
                 spec,
                 op,
                 reason,
+                misfit: _,
             } => {
                 write!(
                     f,

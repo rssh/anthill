@@ -173,3 +173,30 @@ fn every_include_file_is_registered_in_exactly_one_aggregator() {
         problems.join("\n  ")
     );
 }
+
+/// A DIRECTORY OF `tests/` THAT IS A MODULE — `tests/families/mod.rs` — is compiled only
+/// if an aggregator names it, as a file of `include/` is, and the test above does not
+/// look there. `common` is every aggregator's own `mod common;`. CONTROL, measured: with the
+/// `#[path = "families/mod.rs"]` line commented out of `wi_tests.rs` this fails naming it.
+#[test]
+fn every_module_directory_is_named_by_an_aggregator() {
+    let root = workspace_root();
+    for krate in AGGREGATED_CRATES {
+        let tests_dir = root.join(krate).join("tests");
+        let aggregators: String = rs_file_names(&tests_dir)
+            .iter()
+            .map(|a| fs::read_to_string(tests_dir.join(a)).expect("an aggregator") + "\n")
+            .collect();
+        for entry in fs::read_dir(&tests_dir).expect("tests/") {
+            let dir = entry.expect("dir entry").path();
+            let name = dir.file_name().expect("a name").to_string_lossy().into_owned();
+            if name == "common" || !dir.join("mod.rs").is_file() {
+                continue;
+            }
+            assert!(
+                aggregators.lines().any(|l| l.trim() == format!("#[path = \"{name}/mod.rs\"]")),
+                "{krate}/tests/{name}/mod.rs is named by no aggregator: it is never compiled"
+            );
+        }
+    }
+}

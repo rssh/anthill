@@ -2,6 +2,7 @@
 //! modify targets, effect registration and written row bindings.
 
 use super::*;
+use crate::kb::load::MemberMisfit;
 
 /// WI-20260822-1MAGR — DOES THE CARRIER'S OWN MEMBER FIT THE SPEC OPERATION IT
 /// CLAIMS TO IMPLEMENT? Arity, parameter types (and so their ORDER), and the
@@ -141,13 +142,21 @@ pub(super) fn check_member_signature(
     // so nothing above the failure branches allocates — but the member rule below, which
     // builds the spec's arguments on the success path too: only for a GATED pair, and its
     // per-provision half once per provision ([`ProvisionMembers`]).
-    let refuse = |kb: &KnowledgeBase, errors: &mut Vec<LoadError>, reason: String| {
+    let refuse = |kb: &KnowledgeBase,
+                  errors: &mut Vec<LoadError>,
+                  misfit: MemberMisfit,
+                  reason: String| {
         errors.push(LoadError::IncompatibleMemberSignature {
             carrier: kb.qualified_name_of(carrier).to_string(),
             spec: kb.qualified_name_of(spec).to_string(),
             op: op_short.to_string(),
             reason,
+            misfit,
         });
+    };
+    let whole = |leg| MemberMisfit {
+        leg,
+        parameter: None,
     };
 
     // ── arity ───────────────────────────────────────────────────────────────
@@ -163,7 +172,7 @@ pub(super) fn check_member_signature(
             spec_info.params.len(),
             impl_info.params.len()
         );
-        refuse(kb, errors, reason);
+        refuse(kb, errors, whole("arity"), reason);
         return MemberSignature::ArityDiffers;
     }
 
@@ -214,6 +223,14 @@ pub(super) fn check_member_signature(
             && member_params_are_a_permutation(kb, spec_info, impl_info, sigma, &bad);
         let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
         let impl_sig = render_op_signature(kb, op_short, impl_info, &[]);
+        let misfit = if permuted {
+            whole("order")
+        } else {
+            MemberMisfit {
+                leg: "parameter-types",
+                parameter: Some(bad[0] + 1),
+            }
+        };
         let reason = if permuted {
             format!(
                 "the member's parameters are the spec's in a different ORDER — the spec \
@@ -241,7 +258,7 @@ pub(super) fn check_member_signature(
                 ps.join("; ")
             )
         };
-        refuse(kb, errors, reason);
+        refuse(kb, errors, misfit, reason);
         return MemberSignature::Alignable;
     }
 
@@ -301,6 +318,7 @@ pub(super) fn check_member_signature(
         };
         let carrier_short = kb.local_name_of(carrier).to_string();
         let spec_short = kb.local_name_of(spec).to_string();
+        let misfit = n.misfit();
         let reason = match (n.at, n.why) {
             (None, Narrower::Return { unwritten }) => format!(
                 "the member returns `{got}`, which is not a subtype of the spec's `{want}`, each \
@@ -437,7 +455,7 @@ pub(super) fn check_member_signature(
                 }
             ),
         };
-        refuse(kb, errors, reason);
+        refuse(kb, errors, misfit, reason);
         return MemberSignature::Alignable;
     }
 
@@ -472,7 +490,7 @@ pub(super) fn check_member_signature(
              spec declares `{spec_sig}` (at this provision's bindings) and the member is \
              `{impl_sig}`"
         );
-        refuse(kb, errors, reason);
+        refuse(kb, errors, whole("return"), reason);
     }
     MemberSignature::Alignable
 }
@@ -668,6 +686,26 @@ struct Narrowing {
 }
 
 impl Narrowing {
+    /// The refusal's class: which leg, at which parameter as the message counts it.
+    fn misfit(&self) -> MemberMisfit {
+        let leg = match (&self.why, self.at) {
+            (Narrower::Receiver { .. }, _) => "receiver",
+            (Narrower::AnyProvider, _) => "any-provider",
+            (Narrower::Tied { .. }, _) => "tied",
+            (Narrower::Other, _) => "narrower",
+            (Narrower::Circular { .. }, _) => "circular",
+            (Narrower::Unreadable { spec: true, .. }, Some(_)) => "spec-unreadable",
+            (Narrower::Unreadable { spec: false, .. }, Some(_)) => "unreadable",
+            (Narrower::Unreadable { spec: true, .. }, None) => "spec-return-unreadable",
+            (Narrower::Unreadable { spec: false, .. }, None) => "return-unreadable",
+            (Narrower::Return { .. }, _) => "return",
+        };
+        MemberMisfit {
+            leg,
+            parameter: self.at.map(|i| i + 1),
+        }
+    }
+
     fn at(i: usize, why: Narrower) -> Self {
         Narrowing {
             at: Some(i),

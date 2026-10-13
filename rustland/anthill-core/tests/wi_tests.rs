@@ -2,6 +2,12 @@
 
 mod common;
 
+// WI-20261002-E1WN0 — the generated families: a directory of its own, not a file of
+// `include/`. Its run is `#[ignore]`d (`scripts/families.sh`); what the workspace run
+// executes of it loads no program.
+#[path = "families/mod.rs"]
+mod families;
+
 #[path = "include/parameterized_provides_block_test.rs"]
 mod parameterized_provides_block_test;
 
