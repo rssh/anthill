@@ -134,6 +134,11 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
 
+    // G2BXZ: block declarations need the realized sort's imports to be wired first.
+    for (file, fid) <- files.zip(fileIds) do
+      kb.symbols.setAskingFile(Some(fid))
+      walkScopes(DeclarePredicatePass(kb, file.symbols, file.terms, errors, blocksOnly = true), file.items)
+
     // A type alias whose definition reaches its own name is refused where it is declared
     // ([[reportRecursiveAliases]]). After pass 2, because a definition names what its
     // scope sees, imports included.
@@ -825,7 +830,8 @@ object Loader:
     val kb: KnowledgeBase,
     val fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
-    errors: ArrayBuffer[LoadError]
+    errors: ArrayBuffer[LoadError],
+    blocksOnly: Boolean = false
   ) extends ScopePass:
 
     def enterScope(
@@ -835,8 +841,19 @@ object Loader:
 
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
       item match
-        case Item.RuleItem(rule) => declare(rule, scope, prefix)
-        case Item.RuleBlockItem(block) => for rule <- block.entries do declare(rule, scope, prefix)
+        case Item.RuleItem(rule) if !blocksOnly => declare(rule, scope, prefix)
+        case Item.RuleBlockItem(block) if !blocksOnly => for rule <- block.entries do declare(rule, scope, prefix)
+        case Item.ProvidesBlockItem(pb) if blocksOnly =>
+          for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
+            val targetPrefix = kb.scopeDisplayName(target)
+            for inner <- pb.items do inner match
+              case ProvidesItem.RuleI(rule) => declare(rule, target, targetPrefix)
+              case ProvidesItem.RuleBlockI(block) =>
+                for rule <- block.entries do declare(rule, target, targetPrefix)
+              case ProvidesItem.ProvidesClauseI(pc) =>
+                processProvidesConditions(kb, pc, fileSym, target, errors)
+                processProvidesHead(kb, pc, fileSym, target, errors)
+              case _ => ()
         case _ =>
 
     /** [[defineSymbolOnce]], like every other declaration mint in this loader. Its gate
@@ -1240,8 +1257,8 @@ object Loader:
   )
 
   /** Sub-pass 3, PHASE 1 — read the name each clause head introduces and remember WHERE
-    * it is written: a rule's head, a fact's, and those inside a `provides … language
-    * anthill` block. Takes no decision and mints nothing, so nothing it does depends on
+    * it belongs: a rule's head, a fact's, and those inside a host `provides` block.
+    * Takes no decision and mints nothing, so nothing it does depends on
     * the order it runs in; [[scanRuleGoal]] is the mint.
     *
     * WI-894/896/898 is what the mint is FOR. `ite` is the motivating case —
@@ -1275,16 +1292,15 @@ object Loader:
         // while the `rule` spelling gave 1 each, its own. Mirrors rustland's
         // `RuleHeadCollectPass::collect_fact`.
         case Item.FactItem(fact) => collectFact(fact, scope, prefix)
-        // A block's heads are collected exactly when [[loadProvidesBlock]] asserts its
-        // clauses ([[loadsProvidesBlockClauses]] answers for both), and at the scope
-        // that method asserts them in: the one the block is written in.
+        // G2BXZ: every language's clauses belong to the realized sort, as at load.
         case Item.ProvidesBlockItem(pb) =>
-          if loadsProvidesBlockClauses(fileSym, pb) then for inner <- pb.items do
-            inner match
-              case ProvidesItem.RuleI(rule) => collect(rule, scope, prefix)
+          for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
+            val targetPrefix = kb.scopeDisplayName(target)
+            for inner <- pb.items do inner match
+              case ProvidesItem.RuleI(rule) => collect(rule, target, targetPrefix)
               case ProvidesItem.RuleBlockI(block) =>
-                for rule <- block.entries do collect(rule, scope, prefix)
-              case ProvidesItem.FactI(fact) => collectFact(fact, scope, prefix)
+                for rule <- block.entries do collect(rule, target, targetPrefix)
+              case ProvidesItem.FactI(fact) => collectFact(fact, target, targetPrefix)
               // No clause of a predicate: a verdict, a provision, and the realization
               // bindings themselves.
               case ProvidesItem.ProofI(_) | ProvidesItem.ProvidesClauseI(_)
@@ -1871,15 +1887,11 @@ object Loader:
         // for any name the scope can SEE, so a declaration whose name the prelude
         // already provides would pass it and still introduce nothing.
         kb.symbols.scope(scope).flatMap(_.locals.get(name)) match
-          // NOTHING WAS MINTED HERE. One shape reaches this: the interior of a
-          // `provides … language … end` block, which [[walkScopes]] hands to `atItem`
-          // and pass 1b does not descend into — so the declaration would introduce
-          // nothing AND assert nothing.
+          // A declaration must have been minted by the defining pass at this scope.
           case None =>
             errors += LoadError.Other(
               s"`$name` was never brought into existence: the defining pass does not " +
-              "descend into this position (a `provides … language … end` block's " +
-              "interior is the one such place), so the declaration would introduce " +
+              "descend into this position, so the declaration would introduce " +
               "nothing and assert nothing",
               rule.span)
           case Some(sym) =>
@@ -2822,31 +2834,44 @@ object Loader:
     val provSort = kb.makeNameTerm("Requirement")
     kb.assertFact(provTerm, provSort, scope)
 
-  /** DOES scaland load the rules and facts of this `provides … language … end` block?
-    * ONE answer, read by [[loadProvidesBlock]] and by [[RuleHeadCollectPass]]: a head
-    * minted for a clause that is never asserted is a name that resolves and answers
-    * nothing, and a clause asserted with no head minted falls to the bare intern.
-    *
-    * ONLY A `language anthill` BLOCK, which is scaland's own limit and not the rule:
-    * rustland loads a block's clauses for every language, in the scope of the sort the
-    * block realizes. Here the block opens no scope, so both readers use the scope it is
-    * written in. Opening the carrier's scope is the port that remains (see the
-    * `ProvidesClauseI` arm below), and it moves the scope AND the qualified-name prefix
-    * at both readers. */
-  private def loadsProvidesBlockClauses(
-    fileSym: SymbolTable, pb: anthill.parse.ProvidesBlock
-  ): Boolean =
-    fileSym.name(pb.language) == "anthill"
+  /** G2BXZ: declaration, head collection and loading must use ONE scope decision.
+    * The base sort owns clauses in every host language, including parameterized specs.
+    * Resolve before entering that scope, so the name uses the block's written context. */
+  private def providesBlockScope(
+    kb: KnowledgeBase, fileSym: SymbolTable, pb: anthill.parse.ProvidesBlock,
+    writtenScope: kb.ScopeId, errors: ArrayBuffer[LoadError]
+  ): Option[kb.ScopeId] =
+    def resolve(name: Name): Option[kb.ScopeId] =
+      val text = joinSegments(fileSym, name.segments)
+      lookupWritten(kb, text, writtenScope) match
+        case ResolveResult.Found(sym) =>
+          parentScopeOf(kb, sym, Set(SymbolKind.Sort), s"provides $text", name.span, errors)
+        case ResolveResult.Ambiguous(candidates) =>
+          errors += LoadError.AmbiguousSymbol(text, candidates.map(kb.qualifiedNameOf).toIndexedSeq,
+            name.span, kb.scopeDisplayName(writtenScope))
+          None
+        case ResolveResult.NotFound =>
+          errors += LoadError.UnresolvedName(text, name.span, kb.scopeDisplayName(writtenScope))
+          None
+
+    pb.spec match
+      case TypeExpr.Simple(name) => resolve(name)
+      case TypeExpr.Parameterized(name, _) => resolve(name)
+      case _ =>
+        errors += LoadError.Other("a host provides block must name a sort", pb.span)
+        None
 
   private def loadProvidesBlock(
     kb: KnowledgeBase,
     pb: anthill.parse.ProvidesBlock,
     fileTerms: SimpleTermStore,
     fileSym: SymbolTable,
-    scope: kb.ScopeId,
+    writtenScope: kb.ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
-    if !loadsProvidesBlockClauses(fileSym, pb) then return
+    val scope = providesBlockScope(kb, fileSym, pb, writtenScope, errors) match
+      case Some(target) => target
+      case None => return
     val ruleSort = findSortTerm(kb, "anthill.reflect.Rule")
     val factSort = findSortTerm(kb, "anthill.reflect.Fact")
     for item <- pb.items do item match
@@ -2862,19 +2887,9 @@ object Loader:
         kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope, errors)
-      // WI-862 (058 §4): PARSED, and deliberately not filed — the one thing this arm
-      // must not do is call `loadProvidesClause`. That helper files the provision at
-      // `scope`, and `scope` here is the ENCLOSING namespace, not the carrier: a
-      // binding block opens the CARRIER's scope in rustland, and scaland's loader never
-      // opens one. Reusing the helper would therefore assert `provides_clause(sort_ref:
-      // <namespace>, spec: …)` — a provision filed against the wrong owner, silently.
-      // Two other things make the omission cost nothing today: the guard above returns
-      // for every language but `anthill`, and every block in the tree is `language
-      // rust`; and scaland has no reader of provisions at all. Opening the carrier's
-      // scope is the port that remains, and it is the same one `OperationMapI` below
-      // is waiting on.
-      case ProvidesItem.ProvidesClauseI(_)
-         | ProvidesItem.ArtifactI(_)
+      case ProvidesItem.ProvidesClauseI(pc) =>
+        loadProvidesClause(kb, pc, fileSym, scope)
+      case ProvidesItem.ArtifactI(_)
          | ProvidesItem.CarrierI(_)
          | ProvidesItem.NamespaceMapI(_)
          // WI-876: parsed so scaland can READ a binding file that uses the clause;
