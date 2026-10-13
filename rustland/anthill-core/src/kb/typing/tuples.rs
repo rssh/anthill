@@ -387,3 +387,76 @@ pub(super) fn both_named_tuples<A: TermView, B: TermView>(
         (Some("named_tuple"), Some("named_tuple"))
     )
 }
+
+/// The parts of two arrows, paired as two arrows are related: the parameters, then the
+/// result, then the effect row. `None` when either is no arrow, when they take different
+/// numbers of parameters, or when their parameter lists do not align.
+///
+/// The parameters of a LIST are paired by position ([`TupleAlign::PARAM_LIST`]: the names
+/// line up, or one list is written without names). A sole parameter is its type, and the
+/// pair is that type on each side; so is a list one side leaves to a variable, which the
+/// reader's own relation judges.
+///
+/// FOR A READER THAT ASKS ITS QUESTION OF EACH PAIR — the requirement cover
+/// ([`parts_verdict`]) and the provision lookup ([`match_candidate_against_goal`]) — so
+/// that the two do not pair one arrow differently. They did: the lookup read an arrow as
+/// an application and its parameter list as data, each parameter's name a leaf, and a
+/// provider at `(Int64, Int64) -> Int64` did not answer a call at `(p: Int64, q: Int64)
+/// -> Int64`, which the cover and the type relation take for the same arrow.
+/// [`unify_arrow_params`] and [`arrow_params_compatible`] relate the parameter slot under
+/// a substitution they walk first, and are not readers of this.
+///
+/// NOT AN EQUIVALENCE, so not a key: the list without names pairs with `(p, q)` and with
+/// `(x, y)`, which do not pair with each other. [`provision_bindings_agree`] buckets one
+/// carrier's provisions by the binding they are at, and keeps comparing an arrow by
+/// identity for that reason — read through this, three provisions at the three lists
+/// were a conflict or not by the order they were written in (MEASURED).
+pub(super) fn arrow_part_pairs<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> Option<SmallVec<[(Value, Value); 4]>> {
+    let (param_a, result_a, effects_a, arity_a) = arrow_children(kb, a)?;
+    let (param_b, result_b, effects_b, arity_b) = arrow_children(kb, b)?;
+    if arity_a != arity_b {
+        return None;
+    }
+    let mut pairs = SmallVec::new();
+    if arity_a != 1 && both_named_tuples(kb, &param_a, &param_b) {
+        let a_fields = named_tuple_fields(kb, &param_a);
+        let b_fields = named_tuple_fields(kb, &param_b);
+        let slots = align_named_tuple_slots(kb, &a_fields, &b_fields, TupleAlign::PARAM_LIST)?;
+        pairs.extend(
+            aligned_pairs(&slots, &a_fields, &b_fields).map(|(x, y)| (x.clone(), y.clone())),
+        );
+    } else {
+        pairs.push((param_a, param_b));
+    }
+    pairs.push((result_a, result_b));
+    pairs.push((effects_a, effects_b));
+    Some(pairs)
+}
+
+/// An arrow's parameter slot, result, effect row and parameter count; `None` for a type
+/// that is no arrow. A term headed as an arrow that does not read as one — no parameter
+/// count — is malformed, and asserted: taken for "no arrow" it would relate to nothing,
+/// in silence ([`agreed_arrow_arity`] says the same of it).
+fn arrow_children<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<(Value, Value, Value, usize)> {
+    match extract_type(kb, ty) {
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => Some((param, result, effects, arity)),
+        _ => {
+            debug_assert!(
+                !matches!(type_head(kb, ty), TypeHead::Arrow),
+                "an `arrow` must state its parameter-list arity; a term headed as one that \
+                 does not read as one is malformed (build it with `make_arrow_type` / \
+                 `make_arrow_occ`)",
+            );
+            None
+        }
+    }
+}

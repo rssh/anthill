@@ -132,21 +132,15 @@ class DottedParenLessCitationTest extends munit.FunSuite:
       )
   }
 
-  /** THE LOUDEST PRE-FIX ROW — a goal naming a namespace that does not exist. It loaded
-    * clean and ANSWERED; now it loads clean (WI-476's bare intern, the same answer the
-    * APPLIED spelling gets) and answers nothing. The applied spelling is the control:
-    * it behaved this way all along, which is what says the axis is the SPELLING. */
-  test("a dotted paren-less goal naming nothing answers nothing") {
-    for (label, mark) <- Seq(("bare", ""), ("parens", "()")) do
-      val kb = LoadFixture.loaded(
-        s"""fact b719(1)
-           |rule noSuch719$label(1) :- zz719.nope.tgt$mark""".stripMargin,
-        s"nosuch$label.anthill",
-      )
-      assertEquals(
-        answers(kb, s"noSuch719$label"), 0,
-        s"$label: a goal that names nothing proves nothing",
-      )
+  /** JRV1T: both spellings of an unknown dotted body goal are refused, as
+    * measured in rustland. This fails with the loud dotted miss backed out. */
+  test("a dotted paren-less goal naming nothing is refused") {
+    for mark <- Seq("", "()") do
+      val kb = KnowledgeBase()
+      Prelude.register(kb)
+      val errs = Loader.loadAll(kb, IndexedSeq(LoadFixture.parsed(
+        s"fact b719(1)\nrule noSuch719(1) :- zz719.nope.tgt$mark", "nosuch.anthill")))
+      assert(errs.exists(_.render.contains("unresolved name 'zz719.nope.tgt'")), s"$errs")
   }
 
   /** A DATA SLOT KEEPS THE CHAIN, ON BOTH SIDES OF A MATCH — the fact stores it and the

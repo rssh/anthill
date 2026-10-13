@@ -2180,14 +2180,9 @@ pub(super) fn check_apply_iter(
         // WI-557/602 scoped the sibling value-precondition obligation.
         if !env.in_rule_body() {
             if let Some(open) = first_unconstrained_type_param(kb, &subst, &op) {
-                return Err(
-                    unconstrained_for_want_of_a_provision(kb, &subst, fn_sym, open, span)
-                        .unwrap_or(TypeError::UnconstrainedTypeParam {
-                            span,
-                            op: fn_sym,
-                            type_param: open.0,
-                        }),
-                );
+                return Err(unconstrained_type_param_error(
+                    kb, &subst, fn_sym, open, span,
+                ));
             }
         }
 

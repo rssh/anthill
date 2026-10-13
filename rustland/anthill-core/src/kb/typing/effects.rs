@@ -557,6 +557,33 @@ fn row_holds_lacked_variable(
             .any(|t| lacked_vars.contains(&walk_type(kb, subst, *t)))
 }
 
+/// The RIGID tails of a row, as σ leaves them: the enclosing operation's own rows, each unknown
+/// where the check runs. Nothing can be shown to lie inside such a row but the row itself, so in
+/// an EXPECTED row a rigid tail admits itself and nothing else — no label, no other row — where
+/// a flexible one ([`row_is_open`]) takes whatever flows into it.
+pub(super) fn rigid_row_tails(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    tails: &[TermId],
+) -> SmallVec<[TermId; 2]> {
+    let mut rigid: SmallVec<[TermId; 2]> = SmallVec::new();
+    for t in tails {
+        let t = walk_type(kb, subst, *t);
+        if matches!(kb.get_term(t), Term::Var(Var::Rigid(_))) && !rigid.contains(&t) {
+            rigid.push(t);
+        }
+    }
+    rigid
+}
+
+/// Is the row OPEN — one of its tails still a flexible variable, which the call's own inference
+/// may yet extend? A row whose tails are all rigid is not: see [`rigid_row_tails`].
+pub(super) fn row_is_open(kb: &KnowledgeBase, subst: &Substitution, tails: &[TermId]) -> bool {
+    tails
+        .iter()
+        .any(|t| matches!(kb.get_term(walk_type(kb, subst, *t)), Term::Var(Var::Global(_))))
+}
+
 /// WI-20260929-0RP29 (user decisions, 2026-10-01) — the lacked row UNKNOWN where the check runs —
 /// a RIGID row variable (the enclosing operation's own row) or a neutral row projection (its
 /// parameter's unwritten row, [`LackedRows`]) — beside which a row (`labels`, `tails`) cannot be
@@ -579,11 +606,7 @@ pub(super) fn row_unshown_outside_lacked(
         return None;
     }
     let rigid = |kb: &KnowledgeBase, t: TermId| matches!(kb.get_term(t), Term::Var(Var::Rigid(_)));
-    let rigid_tails: SmallVec<[TermId; 2]> = tails
-        .iter()
-        .map(|t| walk_type(kb, subst, *t))
-        .filter(|t| rigid(kb, *t))
-        .collect();
+    let rigid_tails = rigid_row_tails(kb, subst, tails);
     if let Some(r) = lacked
         .vars
         .iter()
@@ -2514,6 +2537,10 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
 /// - Both open: the unify case applies as-is — a fresh shared tail
 ///   accommodates either side's extras; once both rows extend through it,
 ///   the sub relation holds.
+/// - A RIGID tail is no open tail: it is bound by nothing and takes nothing. An actual
+///   the expected labels cover, whose every tail is a rigid tail of the expected row,
+///   is a subset as it stands (`{} <: {R}`, `{R} <: {Error[Foo], R, Q}`) and is answered
+///   before the arms above, which would ask a rigid tail to take the difference.
 ///
 /// The `subst` argument is the caller's THREADED substitution, not a scratch: since
 /// WI-335 [`arrow_compatible_view`] and [`types_compatible`] pass their own, so a row
@@ -2625,22 +2652,26 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
         pair_present_labels(kb, subst, &a_present, &b_present)
     };
 
-    // DIRECTIONAL — A CLOSED ACTUAL THE EXPECTED LABELS COVER IS A SUBSET OF THE EXPECTED ROW,
-    // whatever its tails stand for (`{} <: {R}`): nothing flows into them, so nothing is bound.
-    // The arms below answer by BINDING an expected tail, which a RIGID one — the enclosing
-    // operation's own row — refuses: a PURE callback into a slot whose row is the caller's own
-    // (`Strm.each(s, pure1)` over `f: … @ {s.E}` inside `use[R](s: Strm[E = {R}])`, a
-    // `Function[A, B, E]` slot at a rigid `E`) was refused, printing two identical arrows
-    // (MEASURED; the first ran before this ticket read `s.E`). Said here wherever a tail is
-    // rigid. FLEXIBLE tails keep their arms: a lone one is closed by its own
-    // (WI-20260820-RDNS4 is that arm's question), and a union of them is the multi-tail arm's
-    // to refuse (`subtype_rejects_malformed_multi_tail_row`).
-    if directional && a_tails.is_empty() && only_a.is_empty() {
-        let rigid_tail = b_tails.iter().any(|&t| {
-            let t = walk_type(kb, subst, t);
-            matches!(kb.get_term(t), Term::Var(Var::Rigid(_)))
-        });
-        if rigid_tail {
+    // DIRECTIONAL — AN ACTUAL THE EXPECTED LABELS COVER, WHOSE EVERY TAIL IS A RIGID TAIL OF THE
+    // EXPECTED ROW, IS A SUBSET OF IT, whatever those tails stand for (`{} <: {R}`, `{R} <:
+    // {Error[Foo], R, Q}`): nothing flows into a tail, so nothing is bound. The arms below
+    // answer by BINDING an expected tail, which a RIGID one — the enclosing operation's own row
+    // — refuses: a PURE callback into a slot whose row is the caller's own (`Strm.each(s,
+    // pure1)` over `f: … @ {s.E}` inside `use[R](s: Strm[E = {R}])`, a `Function[A, B, E]` slot
+    // at a rigid `E`) was refused, printing two identical arrows (MEASURED; the first ran
+    // before WI-20260929-0RP29 read `s.E`) — and so was a callback raising `R` itself where the
+    // slot's row holds `R` beside a label or a second row (WI-20261013-450KA, MEASURED: the
+    // shared tail was asked to take the expected row's extra labels, and two tails against one
+    // were no equal sets). Said here wherever a tail is rigid. FLEXIBLE tails keep their arms:
+    // a lone one is closed by its own (WI-20260820-RDNS4 is that arm's question), and a union
+    // of them is the multi-tail arm's to refuse (`subtype_rejects_malformed_multi_tail_row`).
+    if directional && only_a.is_empty() {
+        let b_rigid = rigid_row_tails(kb, subst, &b_tails);
+        if !b_rigid.is_empty()
+            && a_tails
+                .iter()
+                .all(|&t| b_rigid.contains(&walk_type(kb, subst, t)))
+        {
             return true;
         }
     }

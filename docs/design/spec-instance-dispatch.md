@@ -230,6 +230,13 @@ provider quantified over the element (`fact Eq[T]`) still applies, because a var
 is what an unknown type *can* match. The rule is about STRUCTURE on the candidate
 side, not about the goal being abstract.
 
+An **arrow** on the candidate side is structure too, matched part by part against an
+arrow of the same parameter count: the parameters of a list by position — the names
+lining up, or one list written without names, as two arrows relate where a value is
+passed — then the result and the effect row. A provider at `(Int64, Int64) -> Int64`
+answers a goal at `(p: Int64, q: Int64) -> Int64`; one at `(x: Int64, y: Int64) ->
+Int64` does not.
+
 **Precondition: rows 2–3 hold where a call-site substitution (σ) is in hand** — every
 live typer dispatch, since that is where "which type parameter is this, really?" is
 answerable. Four entries resolve without one and keep the older, lenient reading:

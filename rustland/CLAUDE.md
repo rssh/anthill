@@ -214,6 +214,35 @@ reading the code does not find it. The fix is then proved without the switch —
 holds a value (`Foo[T = Int64, N = 3]`) rides an occurrence on its own
 (`value_holding_type_readers_test`).
 
+**Generated families: `scripts/families.sh`, beside the gate and not in it**
+(WI-20261002-E1WN0). A row of `tests/include/` is a program someone thought of; a FAMILY
+(`anthill-core/tests/families/`) is every program one template gives when a few holes are
+filled from short lists — the cross product, enumerated — so the cases of a typer rule
+meet each other. Four so far, 7 688 programs: the declaration rule, a projected member
+at a call, a callback's effect row, two callbacks typed by each other.
+
+```bash
+scripts/families.sh                    # every family: ~25 s on 24 cores, optimized
+scripts/families.sh a,c                # the families whose names start so
+scripts/families.sh bless [a,c]        # write the verdict files from this tree, then judge
+scripts/families.sh print a-declaration-rule 'x=self,y=x.V,…'   # one program, and its refusals
+scripts/families.sh dump <dir>         # every program as a file
+```
+
+Each family is held to four properties, and the run fails naming the PROGRAM that
+breaks one: no crash (the programs are judged in child processes, so a stack overflow
+is a named verdict and the run goes on); no verdict moved from the committed
+`verdicts/<family>.tsv`; a program that loads runs through its entry point; one verdict
+for two spellings of one program. An exception to the last three is listed on the
+family with its ticket, and one that excuses nothing fails the run too. **Run it when a
+change touches the typer**, and commit the verdict lines it moved with the change that
+moved them — that diff is what a reviewer reads. A verdict is the refusal's CLASS, not
+its text: the `LoadError` variant, the typer's context kind, and for a member that does
+not fit its spec the leg and parameter (`LoadError::IncompatibleMemberSignature.misfit`).
+The workspace run compiles the families and runs only the runner's own controls and the
+check that each verdict file names its template's programs, which load nothing. A new
+family is a `Family` value in a file of that directory, added to `families()`.
+
 The native-stack budget of the eval↔SLD crossing differs between the two builds, and the
 optimized gate does not guard the unoptimized one — see `BRIDGE_REENTRY_CAP` in
 `kb/resolve.rs` before changing anything on that path.

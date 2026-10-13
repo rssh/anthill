@@ -2506,18 +2506,20 @@ fn signature_self_contradiction_error(
 ///   * covered by a declared PRESENT label (mod alignment) → ok;
 ///   * matching a declared ABSENT label (mod alignment) → REJECT — the
 ///     lacks-constraint violation (`Modify[c]` against `-Modify[x]`);
-///   * otherwise: declared row OPEN → absorbed; CLOSED → REJECT — an effect
-///     the declared row does not admit, which would escape the WI-352/353
-///     boundary propagation (that derives from the DECLARED callback row,
-///     not from the argument actually passed).
+///   * otherwise: declared row OPEN — a tail of it still flexible — → absorbed; NOT OPEN →
+///     REJECT — an effect the declared row does not admit, which would escape the
+///     WI-352/353 boundary propagation (that derives from the DECLARED callback row,
+///     not from the argument actually passed). A RIGID tail opens nothing: it is the
+///     enclosing operation's own row and admits itself only ([`rigid_row_tails`]).
 ///
 /// An absence over a ROW (`-R`, `-s.E`; user decisions 2026-10-01) is judged before the
 /// labels, for every actual row — open or carrying absences of its own included, since its own
 /// absences are what can state it ([`row_unshown_outside_lacked`]).
 ///
-/// A ROW VARIABLE of the actual row is judged too, under a declared row that is CLOSED once σ is
-/// applied: a rigid one (the enclosing operation's own row) is not admitted. Under a declared
-/// row still open it is unification's.
+/// A ROW VARIABLE of the actual row is judged too, under a declared row that is NOT OPEN once σ
+/// is applied: a rigid one (the enclosing operation's own row) is admitted where the declared
+/// row holds that variable itself, and nowhere else. Under a declared row still open it is
+/// unification's.
 ///
 /// Conservative skips (return `None`, no check): a non-arrow/`Function`
 /// declared or actual type, a missing effects child, a row that fails to decompose.
@@ -2655,13 +2657,9 @@ pub(super) fn validate_callback_effect_row(
         {
             Some(la) => format!("declares `{}`", type_display_name_value(kb, la)),
             None => {
-                let q = a_tails
-                    .iter()
-                    .map(|t| walk_type(kb, subst, *t))
-                    .find(|t| {
-                        !views_structurally_equal(kb, &Value::term(*t), &rv)
-                            && matches!(kb.get_term(*t), Term::Var(Var::Rigid(_)))
-                    })
+                let q = rigid_row_tails(kb, subst, &a_tails)
+                    .into_iter()
+                    .find(|t| !views_structurally_equal(kb, &Value::term(*t), &rv))
                     .map(|t| type_display_name_value(kb, &Value::term(t)))
                     .unwrap_or_default();
                 format!("raises the row `{q}`")
@@ -2693,22 +2691,52 @@ pub(super) fn validate_callback_effect_row(
     if a_present.is_empty() && a_tails.is_empty() {
         return None;
     }
-    // A ROW VARIABLE OF THE ACTUAL UNDER A DECLARED ROW THAT IS CLOSED once σ is applied — by a
-    // bracket, or by an argument that bound its row parameter. A RIGID one is the enclosing
-    // operation's own row, unknown here: it cannot be shown empty, so the closed row does not
-    // admit it. A flexible one closes with the row, and under a declared row still open the
-    // variable is unification's. The label checks below used to be skipped for every actual row
-    // holding a variable or an absence, and a callable's row is read by nothing else: `two(pure1,
-    // g)` over `g: … @ {Q}` — `pure1` closes the shared row — raised out of a `main` typed pure,
-    // where `two(g, pure1)` was refused; so did a callback typed `@ {Error[Foo], -R}`, the very
-    // spelling the `-R` refusal asks for (MEASURED).
-    if e_tails.is_empty() {
-        let rigid = a_tails
+    // A ROW VARIABLE OF THE ACTUAL UNDER A DECLARED ROW THAT IS NOT OPEN once σ is applied — by
+    // a bracket, by an argument that bound its row parameter, or by a projection off a receiver
+    // that says its row. A RIGID one is the enclosing operation's own row, unknown here: it
+    // cannot be shown empty, nor inside another such row, so the declared row admits it only
+    // where it holds that very variable. A flexible one closes with the row, and under a
+    // declared row still open the variable is unification's. The label checks below used to be
+    // skipped for every actual row holding a variable or an absence, and a callable's row is
+    // read by nothing else: `two(pure1, g)` over `g: … @ {Q}` — `pure1` closes the shared row —
+    // raised out of a `main` typed pure, where `two(g, pure1)` was refused; so did a callback
+    // typed `@ {Error[Foo], -R}`, the very spelling the `-R` refusal asks for (MEASURED).
+    //
+    // A DECLARED ROW WHOSE TAILS ARE ALL RIGID IS NOT OPEN (WI-20261013-450KA). It was read as
+    // one — any tail absorbed any label — and this check is the only reader of the row where
+    // the argument's type is not yet determined (a `let`-held lambda of two parameters carries
+    // its parameter list as a variable): `run[EffP = {R}](q, lambda (k) -> Error.raise("boom"))`
+    // inside `use[R](…) effects {R}` loaded, and a `go` typed pure raised; `put(k, 5)` there
+    // wrote the cell (MEASURED). Where the type is determined the whole-type relation runs
+    // after this and refuses what a rigid tail cannot take, so the verdict turned on the
+    // spelling.
+    let e_rigid = rigid_row_tails(kb, subst, &e_tails);
+    let e_open = row_is_open(kb, subst, &e_tails);
+    // What the two refusals of a row that is not open call it — built where one is made, so an
+    // admitted callback allocates nothing.
+    let not_open_row = |kb: &KnowledgeBase| -> (String, &'static str) {
+        if e_rigid.is_empty() {
+            return ("a closed row".to_string(), "the closed row");
+        }
+        let own = e_rigid
             .iter()
-            .map(|t| walk_type(kb, subst, *t))
-            .find(|t| matches!(kb.get_term(*t), Term::Var(Var::Rigid(_))));
+            .map(|t| format!("`{}`", type_display_name_value(kb, &Value::term(*t))))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let admits = if e_rigid.len() == 1 {
+            "the enclosing operation's own row, which admits only itself"
+        } else {
+            "the enclosing operation's own rows, which admit only themselves"
+        };
+        (format!("a row closed but for {own}, {admits}"), "that row")
+    };
+    if !e_open {
+        let rigid = rigid_row_tails(kb, subst, &a_tails)
+            .into_iter()
+            .find(|t| !e_rigid.contains(t));
         if let Some(q) = rigid {
             let row = type_display_name_value(kb, &Value::term(q));
+            let (row_kind, the_row) = not_open_row(kb);
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
@@ -2717,13 +2745,13 @@ pub(super) fn validate_callback_effect_row(
                     param: param_sym,
                 },
                 expected: format!(
-                    "callback effects admitted by parameter `{}` of `{}` (a closed row)",
+                    "callback effects admitted by parameter `{}` of `{}` ({row_kind})",
                     kb.local_name_of(param_sym),
                     kb.qualified_name_of(fn_sym),
                 ),
                 actual: format!(
                     "{} raises the row `{row}`, the enclosing operation's own and unknown here, \
-                     which the closed row does not admit",
+                     which {the_row} does not admit",
                     subject(kb),
                 ),
             });
@@ -2963,7 +2991,8 @@ pub(super) fn validate_callback_effect_row(
                 }
             }
         }
-        if e_tails.is_empty() {
+        if !e_open {
+            let (row_kind, the_row) = not_open_row(kb);
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
@@ -2972,12 +3001,12 @@ pub(super) fn validate_callback_effect_row(
                     param: param_sym,
                 },
                 expected: format!(
-                    "callback effects admitted by parameter `{}` of `{}` (a closed row)",
+                    "callback effects admitted by parameter `{}` of `{}` ({row_kind})",
                     kb.local_name_of(param_sym),
                     kb.qualified_name_of(fn_sym),
                 ),
                 actual: format!(
-                    "{} declares `{}`, which the closed row does not admit",
+                    "{} declares `{}`, which {the_row} does not admit",
                     subject(kb),
                     type_display_name_value(kb, la),
                 ),

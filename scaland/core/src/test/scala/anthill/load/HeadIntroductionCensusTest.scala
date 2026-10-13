@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, LoadFixture}
-import anthill.term.{Term, Var}
+import anthill.term.{Term, Var, Literal}
 import anthill.resolve.SearchStream
 
 /** WI-20260821-RDGQC (rustland's twin: `wi_rdgqc_head_introduction_census_test`) — WHICH
@@ -18,13 +18,10 @@ import anthill.resolve.SearchStream
   * | `rule p :- …` paren-less              | YES     | A, 0 and 1                      |
   * | `rule f(?x) <=> …` equation subject   | YES     | A, two distinct symbols         |
   * | `fact p(1)`, `fact p`                 | YES     | A, 1 and 1, as `rule … :- true` |
-  * | head in `provides … language anthill` | YES     | A, 0 and 1 — see that row       |
+  * | head in a host `provides` block        | YES     | A, 1 and 1 in the realized sorts |
   * | `rule l: p(1), q(9) :- …`             | **no**  | B, 2 and 2 (NE0E4)              |
   * | `rule ns.p …`, `fact ns.p(…)`, `..p`  | n/a     | C, D — REFERENCES, by design    |
   * | `rule ?x.m(?y)`                       | n/a     | C — the desugar's functor       |
-  *
-  * A `provides … language rust` block is not in the table: scaland loads no clause from
-  * one, so there is no head to scope (row A pins that, beside the `anthill` block).
   *
   * ── WHICH ROWS FAIL WHEN WHAT IS BACKED OUT — each applied in `Loader` and run ──
   *
@@ -35,11 +32,8 @@ import anthill.resolve.SearchStream
   *    fact head in a namespace does not join…` — and 2 more over the whole scaland suite
   *    (7 of 613): `LoaderTest`'s WI-1007 control and `RuleHeadDeclarationTest`'s §6.1
   *    row, both of which read a fact head by its name.
-  *  * **THE BLOCK ARM** — the `Item.ProvidesBlockItem` arm collecting nothing.
-  *    **1 ROW FAILS**: `a head in a language-anthill block…`, on its `anthill` half.
-  *  * **THE BLOCK GATE** — that arm collecting without asking
-  *    `loadsProvidesBlockClauses`. **1 ROW FAILS**: the same row, on its `language rust`
-  *    half — heads minted for clauses the load never asserts.
+  *  * **THE BLOCK SCOPE / LANGUAGE** — G2BXZ's host-block row drives sort-owned
+  *    predicates in both languages, including a body-less declaration.
   *  * **THE BARE-NAME ARM** — `case id: Term.Ident => Left(NotAnApplication)` in
   *    `introducedName`. **2 ROWS FAIL**, each on its bare variant only: `a rule head is
   *    scoped where it is written…` and `a fact head is scoped exactly like…`.
@@ -79,6 +73,12 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
     val sym = kb.tryResolveSymbol(qn).getOrElse(fail(s"`$qn` must resolve — fixture drift"))
     val v = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("x")))))
     SearchStream.resolve(kb, kb.alloc(Term.Fn(sym, IArray(v), IArray.empty)))
+      .allSolutions(kb).length
+
+  private def groundAnswers(kb: KnowledgeBase, qn: String, value: Long)(using munit.Location): Int =
+    val sym = kb.tryResolveSymbol(qn).getOrElse(fail(s"`$qn` must resolve"))
+    val arg = kb.alloc(Term.Const(Literal.IntLit(value)))
+    SearchStream.resolve(kb, kb.alloc(Term.Fn(sym, IArray(arg), IArray.empty)))
       .allSolutions(kb).length
 
   /** The names the scope `qn` itself declares. */
@@ -170,52 +170,93 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
     assertEquals(answers(kb, "zzC.one.see"), 2)
   }
 
-  test("a head in a language-anthill block is scoped where the block's clauses land") {
-    // scaland loads a `language anthill` block's rules and facts into the scope the
-    // block is WRITTEN in (it opens no scope of its own), and the heads are minted
-    // there — `Loader.loadsProvidesBlockClauses` gates both. rustland lands them in the
-    // sort the block realizes; that port is not made here.
-    //
-    // BACK-OUT (the block arm): none of the four names resolves — and, measured before
-    // the arm, the FALSE namespace's `see` answered 1, from the other block's clause,
-    // and `fsee` answered 2 in both.
-    def block(ns: String, base: String, guard: String, n: Int) =
-      s"""namespace zzC.$ns
-         |  fact $base(1)
-         |  sort Rec
-         |    entity E(v: Int64)
-         |  end
-         |  provides Rec language anthill
-         |    rule pick(1) :- $guard
-         |    fact fpick($n)
-         |  end
-         |  rule see(1) :- pick(?)
-         |  rule fsee(?x) :- fpick(?x)
-         |end""".stripMargin
-    val kb = loaded(block("bka", "ba", "ba(999)", 1) + "\n" + block("bkb", "bb", "bb(1)", 2))
-    for name <- Seq("zzC.bka.pick", "zzC.bkb.pick", "zzC.bka.fpick", "zzC.bkb.fpick") do
-      assert(kb.hasQualifiedName(name), s"`$name` is citable where its clause landed")
-    assertEquals((answers(kb, "zzC.bka.see"), answers(kb, "zzC.bkb.see")), (0, 1),
-      "a rule head in the block: the FALSE namespace stays false")
-    assertEquals((answers(kb, "zzC.bka.fsee"), answers(kb, "zzC.bkb.fsee")), (1, 1),
-      "a fact head in the block: each namespace reads its own")
+  for language <- Seq("anthill", "rust") do
+    test(s"host block clauses belong to the realized sort: $language") {
+      // G2BXZ back-out: both languages lose sort-owned names; anthill merges
+      // sibling clauses (2, 2), while rust loads none (0, 0). Ordinary rule/fact
+      // rows above are controls and pass with this change backed out.
+      def rec(n: String, value: Int, declaration: String = "") =
+        s"""sort Rec$n
+           |  entity E$n(v: Int64)
+           |  rule see(?x) :- pick(?x)
+           |  rule fsee(?x) :- fpick(?x)
+           |end
+           |provides Rec$n language $language
+           |  artifact "x.rs"
+           |  $declaration
+           |  rule pick($value) :- true
+           |  fact fpick($value)
+           |end""".stripMargin
+      val kb = loaded("namespace zzC.blocks\n" + rec("P", 1) + "\n" + rec("Q", 2) + "\nend")
+      for sort <- Seq("RecP", "RecQ") do
+        for name <- Seq("pick", "fpick") do
+          assert(kb.hasQualifiedName(s"zzC.blocks.$sort.$name"))
+          assert(!kb.hasQualifiedName(s"zzC.blocks.$name"))
+        assertEquals(answers(kb, s"zzC.blocks.$sort.see"), 1, language)
+        assertEquals(answers(kb, s"zzC.blocks.$sort.fsee"), 1, language)
+        val own = if sort == "RecP" then 1L else 2L
+        for name <- Seq("see", "fsee", "pick", "fpick") do
+          assertEquals(groundAnswers(kb, s"zzC.blocks.$sort.$name", own), 1)
+          assertEquals(groundAnswers(kb, s"zzC.blocks.$sort.$name", 3L - own), 0)
+      val declared = loaded("namespace zzC.blocks\n" + rec("D", 7, "rule pick(?x)") + "\nend")
+      assertEquals(answers(declared, "zzC.blocks.RecD.see"), 1,
+        "a body-less block rule declares the predicate its clause drives")
+    }
 
-    // THE OTHER HALF OF THE SAME ANSWER: a block in any other language loads no clause
-    // here, so its heads must mint nothing — a name with no clause behind it would
-    // resolve and silently answer nothing.
-    val host = loaded(
-      """namespace zzC.bkh
-        |  sort Rec
-        |    entity E(v: Int64)
-        |  end
-        |  provides Rec language rust
+  test("an imported parameterized host target opens the base sort scope") {
+    // G2BXZ: back-out leaves the block's names in Side and cannot answer Rec.see.
+    val kb = loaded("""namespace zzC.lib
+      |  sort Rec[T]
+      |    entity E(value: T)
+      |    rule see(?x) :- pick(?x)
+      |  end
+      |end
+      |namespace zzC.Side
+      |  import zzC.lib.{Rec}
+      |  provides Rec[T = Int64] language rust
+      |    artifact "x.rs"
+      |    rule pick(?x)
+      |    rule pick(7) :- true
+      |  end
+      |end""".stripMargin)
+    assert(kb.hasQualifiedName("zzC.lib.Rec.pick"))
+    assert(!kb.hasQualifiedName("zzC.Side.pick"))
+    assertEquals(answers(kb, "zzC.lib.Rec.see"), 1)
+  }
+
+  test("a provision inside a host block links the realized sort before head resolution") {
+    // G2BXZ: back-out ignores this rust block and leaves Rec.see unanswered.
+    val kb = loaded("""namespace zzC.provision
+      |  sort Spec[T]
+      |    rule pick(?x)
+      |  end
+      |  sort Rec[T]
+      |    entity E(v: T)
+      |    rule see(?x) :- pick(?x)
+      |  end
+      |  provides Rec[T = Int64] language rust
+      |    artifact "x.rs"
+      |    provides Spec[T = T]
+      |    rule pick(7) :- true
+      |  end
+      |end""".stripMargin)
+    assert(!kb.hasQualifiedName("zzC.provision.Rec.pick"),
+      "the provision makes pick a clause of Spec.pick")
+    assertEquals(answers(kb, "zzC.provision.Spec.pick"), 1)
+    assertEquals(answers(kb, "zzC.provision.Rec.see"), 1)
+  }
+
+  test("a host block with an unresolved or non-sort target is refused") {
+    // This previously disappeared silently behind the host-language gate.
+    for target <- Seq("Missing", "notASort") do
+      val errors = refusal("census.anthill" -> s"""namespace zzC.badBlock
+        |  operation notASort(x: Int64) -> Int64
+        |  provides $target language rust
         |    artifact "x.rs"
-        |    rule pick(1) :- true
-        |    fact fpick(1)
+        |    fact pick(1)
         |  end
         |end""".stripMargin)
-    for name <- Seq("zzC.bkh.pick", "zzC.bkh.fpick", "zzC.bkh.Rec.pick", "zzC.bkh.Rec.fpick") do
-      assert(!host.hasQualifiedName(name), s"`$name`: no clause was loaded, so no name")
+      assert(errors.exists(_.contains(target)), errors.toString)
   }
 
   // ── PART B — THE SHAPE LEFT OUT: the leak, pinned beside a control ──────────

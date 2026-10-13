@@ -2,6 +2,12 @@
 
 mod common;
 
+// WI-20261002-E1WN0 — the generated families: a directory of its own, not a file of
+// `include/`. Its run is `#[ignore]`d (`scripts/families.sh`); what the workspace run
+// executes of it loads no program.
+#[path = "families/mod.rs"]
+mod families;
+
 #[path = "include/parameterized_provides_block_test.rs"]
 mod parameterized_provides_block_test;
 
@@ -27,6 +33,10 @@ mod wi_rxt6s_dotted_sort_type_value_test;
 mod wi_tcsgt_structural_bracket_entry_test;
 #[path = "include/wi_12nkg_arrow_and_tuple_cover_test.rs"]
 mod wi_12nkg_arrow_and_tuple_cover_test;
+#[path = "include/wi_0gyw1_arrow_provision_labels_test.rs"]
+mod wi_0gyw1_arrow_provision_labels_test;
+#[path = "include/provision_own_parameter_in_structural_type_test.rs"]
+mod provision_own_parameter_in_structural_type_test;
 #[path = "include/wi_jmmhq_value_dot_internal_test.rs"]
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]
@@ -2102,3 +2112,7 @@ mod wi_80259_pattern_typed_at_position_test;
 mod spec_op_requirement_at_member_test;
 #[path = "include/op_fn_value_labelled_arrow_test.rs"]
 mod op_fn_value_labelled_arrow_test;
+#[path = "include/wi_jpsdh_call_site_bracket_test.rs"]
+mod wi_jpsdh_call_site_bracket_test;
+#[path = "include/wi_450ka_own_row_in_a_slot_row_test.rs"]
+mod wi_450ka_own_row_in_a_slot_row_test;

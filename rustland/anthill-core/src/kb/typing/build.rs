@@ -2434,7 +2434,10 @@ pub(super) fn concrete_self_receiver_override(
 /// * WHAT σ CANNOT DECIDE, IT DECLINES (`Ok(None)`): an override type parameter the return
 ///   mentions and nothing binds would thread `?W`, and a projection that does not eliminate
 ///   leaves the call the refusal it had rather than a type naming another operation's
-///   parameter.
+///   parameter. ONE SUCH PARAMETER IS THE CALL'S ERROR INSTEAD: one standing where the spec
+///   writes a type parameter of its own that the call left open too (`Sp.pick2(a, b)` over
+///   `pick2[W]`, WI-20260930-JPSDH) — the spec's parameter is unconstrained, and the call is
+///   refused naming it and the bracket that fixes it.
 /// * A `denoted` naming an override parameter is re-keyed ONCE: by the elimination, which
 ///   re-keys the denoteds of a type holding a projection, or directly for a type holding none
 ///   — [`dispatched_impl_effects`]' rule for the same override at the same call. The RETURN is
@@ -2487,23 +2490,13 @@ pub(super) fn concrete_override_threaded(
     // δ on a DECLARED type (see the doc): a projection's receiver re-keyed to caller variables,
     // a `denoted` through `denoted` in the same pass; `None` when a projection does not
     // eliminate.
+    let reading = OverrideReading {
+        arg_types: &impl_arg_types,
+        receivers: &impl_arg_syms,
+        denoted: &impl_eff_rekey,
+    };
     let discharge = |kb: &mut KnowledgeBase, ty: &Value, denoted: &HashMap<Symbol, Symbol>| {
-        let denoted = (!denoted.is_empty()).then_some(denoted);
-        if value_contains_projection(kb, ty) {
-            let receivers = (!impl_arg_syms.is_empty()).then_some(&impl_arg_syms);
-            Discharge {
-                arg_syms: receivers,
-                denoted_syms: denoted,
-                ..Discharge::new(&impl_arg_types, &ctx, span)
-            }
-            .eliminate(kb, ty)
-            .ok()
-        } else {
-            Some(match denoted {
-                Some(map) => substitute_ref_syms_value(kb, ty, map),
-                None => ty.clone(),
-            })
-        }
+        override_declared_at_call(kb, ty, &reading, denoted, &ctx, span)
     };
     // σ: the override's own type parameters as the call binds them ([`override_at_call`] — the
     // bracket, the arguments' join, the arguments), then every argument against the override's
@@ -2516,7 +2509,8 @@ pub(super) fn concrete_override_threaded(
     // check passed a wrong argument, MEASURED). WI-20260904-60143: `unify_types` binds every
     // component that agreed and answers `false` for the rest — the validation judges that.
     let mut subst =
-        override_at_call(kb, impl_op, &impl_info, op, call, call_subst, span)?.unwrap_or_default();
+        override_at_call(kb, impl_op, &impl_info, op, call, call_subst, &reading, span)?
+            .unwrap_or_default();
     let mut bound: Vec<(usize, Value, Value)> = Vec::with_capacity(passed.len());
     for (i, passed_ty) in passed {
         let Some(written) = discharge(kb, &impl_info.params[i].1, &impl_eff_rekey) else {
@@ -2578,12 +2572,40 @@ pub(super) fn concrete_override_threaded(
     let Some(ret) = discharge(kb, &impl_info.return_type, &impl_arg_syms) else {
         return Ok(None);
     };
-    let unbound_in_return = impl_info.type_params.iter().any(|(_, var)| {
-        matches!(var, Var::Global(vid)
-            if subst.resolve_as_value(*vid).is_none() && occurs_in_view(kb, *vid, &ret))
-    });
-    if unbound_in_return {
-        return Ok(None);
+    let unbound_in_return: SmallVec<[VarId; 2]> = impl_info
+        .type_params
+        .iter()
+        .filter_map(|(_, var)| match var {
+            Var::Global(vid)
+                if subst.resolve_as_value(*vid).is_none() && occurs_in_view(kb, *vid, &ret) =>
+            {
+                Some(*vid)
+            }
+            _ => None,
+        })
+        .collect();
+    if !unbound_in_return.is_empty() {
+        // WI-20260930-JPSDH: one that stands where the spec writes a type parameter of its own
+        // the call left open as well is the call's error — the spec's parameter unconstrained,
+        // as the spec's own path refuses it over a receiver whose projections eliminate, and
+        // as `Car.pick2(a, b)` refuses the override's. Declined, the call kept "Car has no
+        // member E", which names nothing the bracket it lacks would fix (MEASURED). Not in a
+        // rule body, where an open type parameter is no violation (WI-622).
+        if call.env.in_rule_body() {
+            return Ok(None);
+        }
+        let related = DeclarationsRelated::new(kb, op, &impl_info);
+        let open = op.type_params.iter().copied().find(|(_, v)| {
+            matches!(v, Var::Global(u)
+                if unbound_in_return.iter().any(|&w| related.stands_at(kb, w, *u))
+                    && resolved_var(kb, &walk_view(kb, call_subst, &Value::Var(*v))).is_some())
+        });
+        return match open {
+            Some(open) => Err(unconstrained_type_param_error(
+                kb, call_subst, fn_sym, open, span,
+            )),
+            None => Ok(None),
+        };
     }
     let Some(effs) = impl_info
         .effects

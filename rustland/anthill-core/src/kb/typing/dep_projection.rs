@@ -1041,8 +1041,9 @@ fn concrete_pair_verdict<A: TermView, B: TermView>(
 ///   arguments ride along and are compared strictly: a mixed positional+named application
 ///   is not provably canonicalized away before this path.
 /// * Two ARROWS — one parameter count, then the parameters, the result and the effect
-///   row. The parameters of a list are paired as [`arrow_params_compatible`] pairs them,
-///   by position ([`TupleAlign::PARAM_LIST`]); a sole parameter is its type.
+///   row, paired by [`arrow_part_pairs`]: the parameters of a list as
+///   [`arrow_params_compatible`] pairs them, by position ([`TupleAlign::PARAM_LIST`]); a
+///   sole parameter is its type.
 /// * Two TUPLES — the same labels in the same order ([`TupleAlign::EQUALITY`]: the
 ///   question is whether the two are one type, and order and width are a tuple's
 ///   identity), each component pair.
@@ -1084,37 +1085,16 @@ fn parts_verdict<A: TermView, B: TermView>(
     }
     match (type_head(kb, a), type_head(kb, b)) {
         (TypeHead::Arrow, TypeHead::Arrow) => {
-            let (
-                TypeExtractor::Arrow {
-                    param: param_a,
-                    result: result_a,
-                    effects: effects_a,
-                    arity: arity_a,
-                },
-                TypeExtractor::Arrow {
-                    param: param_b,
-                    result: result_b,
-                    effects: effects_b,
-                    arity: arity_b,
-                },
-            ) = (extract_type(kb, a), extract_type(kb, b))
-            else {
-                // An arrow that does not read as one is no arrow's equal.
+            // Two arrows that do not pair — another parameter count, two lists that do
+            // not align — are two types.
+            let Some(pairs) = arrow_part_pairs(kb, a, b) else {
                 return Some(SigmaVerdict::Refutes);
             };
-            if arity_a != arity_b {
-                return Some(SigmaVerdict::Refutes);
+            let mut whole = SigmaVerdict::Precise;
+            for (part_a, part_b) in &pairs {
+                whole = whole.and(|| part_verdict(kb, sigma, part_a, part_b));
             }
-            let params = if arity_a != 1 && both_named_tuples(kb, &param_a, &param_b) {
-                tuple_parts_verdict(kb, sigma, &param_a, &param_b, TupleAlign::PARAM_LIST)
-            } else {
-                part_verdict(kb, sigma, &param_a, &param_b)
-            };
-            Some(
-                params
-                    .and(|| part_verdict(kb, sigma, &result_a, &result_b))
-                    .and(|| part_verdict(kb, sigma, &effects_a, &effects_b)),
-            )
+            Some(whole)
         }
         (TypeHead::NamedTuple, TypeHead::NamedTuple) => {
             Some(tuple_parts_verdict(kb, sigma, a, b, TupleAlign::EQUALITY))
