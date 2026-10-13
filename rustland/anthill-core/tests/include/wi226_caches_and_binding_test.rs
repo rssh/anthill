@@ -179,12 +179,14 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         required_sort: eq_sym,
         spec: caller_spec_int.into(),
         supply: anthill_core::kb::typing::SupplySource::Required,
+        binder: None,
     }];
     let dep_spec_string = make_sort_view(&mut kb, eq_sym, string_sym);
     let dep = RequiresEntry {
         required_sort: eq_sym,
         spec: dep_spec_string.into(),
         supply: anthill_core::kb::typing::SupplySource::Required,
+        binder: None,
     };
 
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires

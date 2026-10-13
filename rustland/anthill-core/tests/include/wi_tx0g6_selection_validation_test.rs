@@ -53,7 +53,7 @@
 //! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
 //! | (F) the callee leg's forward (`binds_a_parameter = false` for every key) | [`an_abstract_slot_binding_forwards_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too`] |
 //! | (W) the channel-neutral wording of `ValueDirectedSelection` | [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
-//! | (F) widened to every KEY (`binds_a_parameter = true`, rung-2 keys included) | [`an_abstract_value_at_a_spec_key_is_still_refused`] |
+//! | (F) widened to every KEY (`binds_a_parameter = true`, rung-2 keys included) | [`a_plain_parameter_at_a_spec_key_is_still_refused`] (measured again on WI-20261013-50ZMN, which gave the row its present value: until then it was written with the enclosing sort's own named slot, `[WeakOrd = OE]`, and that spelling is a selection now — [`a_spec_key_naming_an_enclosing_requirement_hands_it_on`]) |
 //! | (P3) check 3 MOVED onto the σ-read producer, over the whole `wi_tests` binary | [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`], plus three pre-existing tests (the census) |
 //!
 //! **PASS EITHER WAY, BY DESIGN:**
@@ -63,7 +63,7 @@
 //!    control, and they also pin the ORDER of checks at the receiver leg: `NotOrd` HAS a
 //!    constructor, so running check 3 before check 1 there would call it "a CONCRETE
 //!    provider" of a spec it does not provide.
-//!  * [`an_abstract_value_at_a_spec_key_is_still_refused`] is unchanged by this ticket.
+//!  * [`a_plain_parameter_at_a_spec_key_is_still_refused`] is unchanged by this ticket.
 //!    It is the control on the forward's SCOPE, as the table's last row shows.
 //!  * [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`] is the boundary, not a
 //!    change. It fails if check 3 is ever moved onto the σ-read producer. The census
@@ -423,20 +423,57 @@ fn a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too() {
     }
 }
 
-/// THE FORWARD NEEDS A NAMED-SLOT KEY, and this is the row that keeps it scoped. A key
-/// reached by a spec SHORT NAME (rung 2) selects for an ANONYMOUS slot and binds no
-/// parameter. So even a value that names the enclosing sort's own slot, `[WeakOrd = OE]`,
-/// has nothing to forward through. Treating it as a forward would drop the written `OE`
-/// and let `Fwd`'s frame answer the goal with whatever `WeakOrd[E]` it holds, which is
-/// `OE` here only because `Fwd` declares one. So it keeps check 1's refusal.
+/// A SPEC KEY WHOSE VALUE NAMES A REQUIREMENT OF THE ENCLOSING DECLARATION hands that
+/// requirement's dictionary to the callee (WI-20261013-50ZMN, kernel-language §5.4). A key
+/// reached by a spec SHORT NAME (rung 2) selects for an ANONYMOUS requirement and binds no
+/// parameter, so there is nothing for the name to ride in; `[WeakOrd = OE]` under `requires
+/// OE: WeakOrd[T = E]` is therefore a SELECTION — of `Fwd`'s own `OE`, by its name
+/// (`SelectedProvider::Enclosing`).
 ///
-/// PASSES EITHER WAY: unchanged by this ticket. It is the control on the forward's KEY
-/// scope, and it LOADS if `validate_written_selection` is handed
-/// `binds_a_parameter = true` for every target instead of for a named one. The value is
-/// a slot binder on purpose: a plain parameter would be refused by the value-side
-/// narrowing too, and the row would then measure nothing about the key.
+/// DRIVEN BY VALUE, with two rival orders of `String` behind `OE`, so the answer says
+/// whose dictionary `Holder` was handed: `"a"` against `"ccc"` is `-2` by length and `2`
+/// by reverse length.
+///
+/// FAILS WITH THE SELECTION BACKED OUT (`validate_written_selection` no longer asking
+/// `enclosing_requirement_named`): the call is refused, "`Fwd.OE` does not provide
+/// `WeakOrd`", which is what this row asserted until 50ZMN — it was refused as a forward
+/// with nothing to forward through, while a declaration could hold one dictionary a goal
+/// could mean and the frame's own answered the callee by that goal.
 #[test]
-fn an_abstract_value_at_a_spec_key_is_still_refused() {
+fn a_spec_key_naming_an_enclosing_requirement_hands_it_on() {
+    let body = |oe: &str| {
+        format!(
+            "  sort Holder\n    \
+               sort HT = ?\n    \
+               requires WeakOrd[T = HT]\n    \
+               operation probe(a: HT, b: HT) -> Int64 = WeakOrd.compare(a, b)\n  \
+             end\n  \
+             sort Fwd\n    \
+               sort E = ?\n    \
+               requires OE: WeakOrd[T = E]\n    \
+               operation go(a: E, b: E) -> Int64 = Holder.probe[WeakOrd = OE](a, b)\n  \
+             end\n  \
+             operation run(n: Int64) -> Int64 = Fwd.go[E = String, OE = {oe}](\"a\", \"ccc\")\n"
+        )
+    };
+    for (oe, expected) in [("ByLength", -2), ("RevLen", 2)] {
+        let mut interp = crate::common::interp_for(&program(&body(oe)));
+        match interp.call("probe.tx0g6.run", &[Value::Int(0)]) {
+            Ok(Value::Int(n)) => assert_eq!(n, expected, "`OE = {oe}`, handed on as `[WeakOrd = OE]`"),
+            other => panic!("`OE = {oe}`: expected an Int64, got {other:?}"),
+        }
+    }
+}
+
+/// …AND A VALUE THAT NAMES NO REQUIREMENT IS STILL REFUSED AT A SPEC KEY: a plain type
+/// parameter of the enclosing sort names no provider and no dictionary, so check 1's
+/// refusal stands. This is the row that keeps the selection above scoped to a NAME.
+///
+/// PASSES EITHER WAY: unchanged by this ticket and by 50ZMN. It LOADS if
+/// `validate_written_selection` is handed `binds_a_parameter = true` for every target
+/// instead of for a named one.
+#[test]
+fn a_plain_parameter_at_a_spec_key_is_still_refused() {
     let msg = sole_message(
         "  sort Holder\n    \
            sort HT = ?\n    \
@@ -446,13 +483,13 @@ fn an_abstract_value_at_a_spec_key_is_still_refused() {
          sort Fwd\n    \
            sort E = ?\n    \
            requires OE: WeakOrd[T = E]\n    \
-           operation go(a: E, b: E) -> Int64 = Holder.probe[WeakOrd = OE](a, b)\n  \
+           operation go(a: E, b: E) -> Int64 = Holder.probe[WeakOrd = E](a, b)\n  \
          end",
     );
     assert!(
-        msg.contains("probe.tx0g6.Fwd.OE does not provide anthill.prelude.WeakOrd"),
-        "a SPEC key binds no parameter, so even a slot-naming value has nothing to \
-         forward through; got: {msg}"
+        msg.contains("probe.tx0g6.Fwd.E does not provide anthill.prelude.WeakOrd"),
+        "a plain parameter names no requirement, so a spec key bound to it selects \
+         nothing; got: {msg}"
     );
 }
 

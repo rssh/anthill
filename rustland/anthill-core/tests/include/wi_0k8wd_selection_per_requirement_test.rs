@@ -20,22 +20,22 @@
 //!   * A NAME NOBODY WROTE IS INFERRED WITH ITS OWN REQUIREMENT'S SELECTION
 //!     (`infer_named_slot_bindings`), which for a requirement of its own is none.
 //!
-//! A REQUIREMENT IS THE SORT IT REQUIRES AT ITS BINDINGS, and that is where this ends. A
-//! declaration that states one twice — `requires Plus: Mon[T]` beside `requires Times:
-//! Mon[T]` — holds it once: the sort's chain has one entry for both lines and its
-//! dictionary one slot, and the body reads it by the goal `Mon[T]`, which names neither.
-//! So the two names are names of ONE requirement. A selection under either is that
-//! requirement's, and two different providers for it are refused as before, in other words.
-//! Two things make that reading hold where it did not:
+//! A REQUIREMENT IS THE SORT IT REQUIRES AT ITS BINDINGS, UNDER THE NAME IT IS GIVEN. This
+//! ticket ended one step short of that: a declaration that states a sort twice at one type
+//! — `requires Plus: Mon[T]` beside `requires Times: Mon[T]` — held it once, under two
+//! names, and two providers for it were refused. WI-20261013-50ZMN made the two names two
+//! requirements (`wi_50zmn_two_requirements_of_one_sort_test`); what this file still holds
+//! of the older rule is the case that ticket kept: a line with NO name of its own states the
+//! requirement the line beside it names. Two things make that reading hold:
 //!
-//!   * THE SECOND LINE IS RECORDED AT THE FIRST ONE'S ENTRY (`place_of_requirement`). It
+//!   * THE SECOND LINE IS RECORDED AT THE FIRST ONE'S FACT (`place_of_requirement`). It
 //!     was recorded at a position of its own, one past the end of the chain, and every
 //!     requirement stated after the pair one position late.
 //!   * AN OPERATION'S ENTRY TAKES THE KEY OF THE FIRST ENTRY OF ITS FRAME THAT STATES ITS
-//!     REQUIREMENT (`slot_key_at`): an operation's own `requires` may restate its sort's
-//!     or itself, and those are kept apart in the chain. Two entries state one where no
-//!     goal tells them apart (`state_one_requirement`) — a parameter one of them leaves
-//!     open is no difference.
+//!     REQUIREMENT (`slot_key_at`): an operation's own `requires` may restate its sort's,
+//!     and those are kept apart in the chain. Two entries state one where no goal tells
+//!     them apart (`state_one_requirement`) — a parameter one of them leaves open is no
+//!     difference — and they do not each have a name.
 //!
 //! And one that a selection read back by a name needs, where one read back by the sort did
 //! not: THE POSITION A NAMED REQUIREMENT IS RECORDED AT IS THE CHAIN'S
@@ -47,32 +47,32 @@
 //! Each mechanism mutated in place under a switch of its own, and every row of this file
 //! run under every switch with the rows of the older files that select a provider
 //! (wi840, wi841, wi844, wi870, wi1091, wi1094, wi_tx0g6, wi_wn9p8, wi_ee0ep, wi_0rrqp and
-//! the rest of that family, 387 rows; measured 2026-10-13):
+//! the rest of that family). Measured 2026-10-13 on this ticket's commit, and again on
+//! WI-20261013-50ZMN's with the three rows that ticket rewrote
+//! ([`a_requirement_stated_again_with_no_name_is_the_same_one`],
+//! [`an_operation_that_restates_a_requirement_holds_one`],
+//! [`a_requirement_after_a_restated_one_is_found`]) and the one it needed
+//! ([`a_selection_at_a_restated_lines_key_is_what_the_name_is_inferred_with`] — with those
+//! three rewritten, no row failed where the inference was handed no selection); the table
+//! is the second measurement, over 723 rows:
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | the name in the key — a selection read back by its sort alone (`selection_for_slot`) | twelve rows here: `a_call_selects_a_provider_for_each_requirement`, `two_requirements_put_at_one_type_by_a_call_are_still_two`, `the_two_written_in_the_values_type_answer_the_same`, `the_two_are_read_on_every_route_that_reads_one`, `a_provider_is_held_to_its_own_requirements_goal`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `an_operations_own_two_requirements_are_selected_by_name`, `a_named_requirement_beside_an_unnamed_one_are_two`, `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`, `a_requirement_after_a_restated_one_is_found`, `a_named_requirement_written_before_a_parameterless_one_is_found`, `a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs`; and `wi_0rrqp_clause_typed_through_constructor_test::each_clause_reaches_its_own_of_two_requirements_on_one_sort`, `wi_wn9p8_forward_soundness_test::a_forward_reaches_its_own_of_two_slots_on_one_sort` |
-//! | a provider held to every goal on its sort (`selection_goals`) | the same less `two_requirements_put_at_one_type_by_a_call_are_still_two`, `a_provider_is_held_to_its_own_requirements_goal`, `a_named_requirement_written_before_a_parameterless_one_is_found` and the wn9p8 row, whose providers fit both goals or neither |
-//! | the inference of an unwritten name handed any selection on its sort (`infer_named_slot_bindings`) | `one_selected_and_the_other_left_out_is_decided_on_its_own` |
-//! | that inference handed none | `a_requirement_after_a_restated_one_is_found`, and the wn9p8 row |
-//! | a restated line given a place of its own (`place_of_requirement`) | `a_requirement_stated_twice_is_one_requirement`, `a_requirement_after_a_restated_one_is_found`, the wn9p8 row, and `wi844_sorted_set_driver_test::two_witnesses_for_one_spec_are_refused_whoever_wrote_them` |
-//! | an entry keyed by itself and not by the first that states its requirement (`slot_key_at`) | `an_operation_that_restates_a_requirement_holds_one`, `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`, and `wi841_call_site_selection_test::two_witnesses_for_one_spec_in_one_bracket_are_refused` |
-//! | two entries compared as written, a parameter left open counted as a difference (`state_one_requirement`) | `a_requirement_restated_with_a_parameter_left_open_is_the_same_one` |
+//! | the name in the key — a selection read back by its sort alone (`selection_for_slot`) | `a_call_selects_a_provider_for_each_requirement`, `a_named_requirement_beside_an_unnamed_one_are_two`, `a_named_requirement_written_before_a_parameterless_one_is_found`, `a_provider_is_held_to_its_own_requirements_goal`, `a_requirement_after_a_restated_one_is_found`, `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`, `a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs`, `an_operations_own_two_requirements_are_selected_by_name`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `the_two_are_read_on_every_route_that_reads_one`, `the_two_written_in_the_values_type_answer_the_same`, `two_requirements_put_at_one_type_by_a_call_are_still_two`; in `wi_50zmn_two_requirements_of_one_sort_test`: `a_call_through_a_requirements_name_reads_that_requirement`, `a_callees_unnamed_requirement_takes_one_by_its_name`, `a_name_given_at_the_key_of_a_restated_requirement_is_handed_on`, `a_name_is_read_wherever_the_body_is_written`, `a_name_reaches_what_its_requirements_dictionary_holds`, `a_name_reaches_what_its_requirements_dictionary_holds_further_down`, `a_slot_the_arguments_type_binds_to_a_callers_name_is_that_names`, `a_sorts_and_an_operations_under_two_names_are_two`, `a_spec_operation_with_a_body_is_read_through_a_name`, `an_operation_written_above_the_requires_lines_reads_them`, `an_operations_own_two_requirements_are_two`, `each_of_the_two_is_handed_on_under_its_own_name`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `the_call_written_in_full_is_the_same_call`, `the_two_carried_by_a_values_type_answer_the_same`, `two_requirements_at_two_types_need_no_name`; and `spec_op_requirement_at_member_test::two_requirements_at_one_type_are_two_at_the_member`, `spec_op_requirement_at_member_test::two_requirements_reach_a_member_chosen_when_the_call_runs`, `wi_0rrqp_clause_typed_through_constructor_test::each_clause_reaches_its_own_of_two_requirements_on_one_sort`, `wi_12nkg_arrow_and_tuple_cover_test::two_requirements_at_two_arrows_are_each_read_by_their_own_call`, `wi_wn9p8_forward_soundness_test::a_forward_reaches_its_own_of_two_slots_on_one_sort` |
+//! | a provider held to every goal on its sort (`selection_goals`) | `a_call_selects_a_provider_for_each_requirement`, `a_named_requirement_beside_an_unnamed_one_are_two`, `a_requirement_after_a_restated_one_is_found`, `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`, `a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs`, `an_operations_own_two_requirements_are_selected_by_name`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `the_two_are_read_on_every_route_that_reads_one`, `the_two_written_in_the_values_type_answer_the_same`; and `wi_0rrqp_clause_typed_through_constructor_test::each_clause_reaches_its_own_of_two_requirements_on_one_sort`, `wi_12nkg_arrow_and_tuple_cover_test::two_requirements_at_two_arrows_are_each_read_by_their_own_call` |
+//! | the inference of an unwritten name handed any selection on its sort (`infer_named_slot_bindings`) | `one_selected_and_the_other_left_out_is_decided_on_its_own`; in `wi_50zmn_two_requirements_of_one_sort_test`: `one_selected_and_the_other_left_out_is_decided_on_its_own` |
+//! | a restated line given a place of its own (`place_of_requirement`) | `a_requirement_after_a_restated_one_is_found`, `a_requirement_stated_again_with_no_name_is_the_same_one`; in `wi_50zmn_two_requirements_of_one_sort_test`: `a_call_that_names_neither_is_refused`, `a_call_through_a_requirements_name_reads_that_requirement`, `a_callees_unnamed_requirement_takes_one_by_its_name`, `a_goal_met_inside_a_resolution_is_not_read_from_the_first_of_two`, `a_line_with_no_name_beside_two_named_ones_is_refused`, `a_line_with_no_name_states_the_named_one_at_a_binding_that_holds_a_value`, `a_name_given_at_the_key_of_a_restated_requirement_is_handed_on`, `a_name_is_read_wherever_the_body_is_written`, `a_name_reaches_what_its_requirements_dictionary_holds`, `a_name_reaches_what_its_requirements_dictionary_holds_further_down`, `a_name_says_which_requirement_and_not_that_it_fits`, `a_parameter_that_writes_neither_slot_is_refused`, `a_provider_selected_against_the_values_type_is_a_type_error`, `a_spec_operation_with_a_body_is_read_through_a_name`, `a_witness_with_two_requirements_takes_a_provider_for_each`, `an_operation_written_above_the_requires_lines_reads_them`, `each_of_the_two_is_handed_on_under_its_own_name`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `the_call_written_in_full_is_the_same_call`, `the_two_carried_by_a_values_type_answer_the_same`, `which_requirement_a_line_states_does_not_turn_on_how_its_binding_is_written`; and `wi_wn9p8_forward_soundness_test::a_forward_reaches_its_own_of_two_slots_on_one_sort` |
+//! | an entry keyed by itself and not by the first that states its requirement (`slot_key_at`) | `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`, `a_selection_at_a_restated_lines_key_is_what_the_name_is_inferred_with`, `an_operation_that_restates_a_requirement_holds_one`; in `wi_50zmn_two_requirements_of_one_sort_test`: `a_name_given_at_the_key_of_a_restated_requirement_is_handed_on`; and `wi841_call_site_selection_test::two_witnesses_for_one_spec_in_one_bracket_are_refused`, `wi844_sorted_set_driver_test::two_witnesses_for_one_requirement_are_refused_whoever_wrote_them` |
+//! | two entries compared as written, a parameter left open counted as a difference (`state_one_goal`) | `a_requirement_restated_with_a_parameter_left_open_is_the_same_one`; in `wi_50zmn_two_requirements_of_one_sort_test`: `a_line_with_no_name_beside_two_named_ones_is_refused` |
 //! | the dispatch reading any selection on its spec (`pinned_selection_for`) | `a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs` |
-//! | the recorded positions left as the source lines' (`settle_named_requirement_slots`) | `a_named_requirement_written_before_a_parameterless_one_is_found`, and `wi840_named_requires_slot_test::the_sort_level_slot_position_indexes_the_chain` |
+//! | the recorded positions left as the source lines' (`settle_named_requirement_slots`) | `a_named_requirement_written_before_a_parameterless_one_is_found`, `a_requirement_after_a_restated_one_is_found`; in `wi_50zmn_two_requirements_of_one_sort_test`: `a_call_through_a_requirements_name_reads_that_requirement`, `a_callees_unnamed_requirement_takes_one_by_its_name`, `a_name_given_at_the_key_of_a_restated_requirement_is_handed_on`, `a_name_is_read_wherever_the_body_is_written`, `a_name_reaches_what_its_requirements_dictionary_holds`, `a_name_reaches_what_its_requirements_dictionary_holds_further_down`, `a_name_says_which_requirement_and_not_that_it_fits`, `a_spec_operation_with_a_body_is_read_through_a_name`, `a_witness_with_two_requirements_takes_a_provider_for_each`, `an_operation_written_above_the_requires_lines_reads_them`, `each_of_the_two_is_handed_on_under_its_own_name`, `one_selected_and_the_other_left_out_is_decided_on_its_own`, `the_call_written_in_full_is_the_same_call`, `the_two_carried_by_a_values_type_answer_the_same`, `which_requirement_a_line_states_does_not_turn_on_how_its_binding_is_written`; and `wi840_named_requires_slot_test::the_sort_level_slot_position_indexes_the_chain`, `wi_wn9p8_forward_soundness_test::a_forward_reaches_its_own_of_two_slots_on_one_sort` |
+//! | that inference handed none (`infer_named_slot_bindings`) | `a_selection_at_a_restated_lines_key_is_what_the_name_is_inferred_with` |
 //!
 //! PASS EITHER WAY, BY DESIGN — the controls: [`one_requirement_selected_is_as_before`],
 //! [`a_carriers_two_slots_are_read_through_a_spec`],
 //! [`a_short_name_that_picks_out_two_requirements_is_refused`] and
 //! [`a_provider_selected_against_the_arguments_type_is_a_type_error`]. Each says why at its
 //! site.
-//!
-//! ## Not reached
-//!
-//!   * TWO REQUIREMENTS OF ONE SORT AT ONE TYPE cannot be given a provider each. The
-//!     dictionary would have to hold two entries for them and the body a way to say which
-//!     it reads; neither is there. [`a_requirement_stated_twice_is_one_requirement`] holds
-//!     what is.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -539,107 +539,104 @@ fn a_named_requirement_beside_an_unnamed_one_are_two() {
     }
 }
 
-// ── A requirement stated twice ───────────────────────────────────────
+// ── A requirement stated again ───────────────────────────────────────
 
-const SEMI: &str = "
+/// `Semi1` states `Mon[T]` twice, once under the name `Times` and once under none, in the
+/// order `lines` gives; `Via` hands a requirement on under a name.
+fn semi1(ns: &str, lines: &str, call: &str) -> String {
+    program(
+        ns,
+        &format!(
+            "
   sort Via
     sort T = ?
     requires M: Mon[T]
     operation via(a: T, b: T) -> T = Mon.combine(a, b)
   end
-  sort Semi
+  sort Semi1
     sort T = ?
-    requires Plus: Mon[T]
-    requires Times: Mon[T]
+{lines}
     operation mulAdd(a: T, b: T, c: T) -> T = Mon.combine(Mon.combine(a, b), c)
-    operation byNames(a: T, b: T, c: T) -> T =
-      Via.via[T = T, M = Plus](Via.via[T = T, M = Times](a, b), c)
+    operation byName(a: T, b: T, c: T) -> T = Times.combine(Times.combine(a, b), c)
+    operation handedOn(a: T, b: T, c: T) -> T =
+      Via.via[T = T, M = Times](Via.via[T = T, M = Times](a, b), c)
   end
-";
-
-fn semi(ns: &str, call: &str) -> String {
-    program(
-        ns,
-        &format!("{SEMI}  sort Driver\n    operation run() -> Int64 = {call}\n  end\n"),
+  sort Driver
+    operation run() -> Int64 = {call}
+  end
+"
+        ),
     )
 }
 
-/// TWO REQUIREMENTS OF ONE SORT AT ONE TYPE ARE ONE REQUIREMENT UNDER TWO NAMES: `Semi`'s
-/// chain holds one `Mon[T]`, and its body asks for `Mon[T]`.
+/// A `requires` LINE WITH NO NAME STATES THE REQUIREMENT THE LINE BESIDE IT NAMES: `Semi1`
+/// states `Mon[T]` under the name `Times` and again under none, and holds one requirement,
+/// `Times`. Its chain has one entry and its dictionary one slot, whichever line is written
+/// first.
 ///
-/// A selection under either name is that requirement's — `(2 + 3) + 4` with `Sum`, `(2 *
-/// 3) * 4` with `Product`, whichever name wrote it, and through a callee that is handed the
-/// requirement under either name. Two DIFFERENT providers for it are refused naming both,
-/// as they were, since one of them would answer where the other was written. And a call
-/// that selects nothing is refused for the two providers there are.
+/// A selection under the name is that requirement's — `(2 + 3) + 4` with `Sum`, `(2 * 3) *
+/// 4` with `Product` — read by a call that names no requirement, by one written through
+/// the name, and by a callee handed it under the name. The sort's short name is no key of
+/// it: the requirement has a name. And a call that selects nothing is refused for the two
+/// providers there are, under that name.
 ///
-/// The second and the last were refused in other words before this ticket — "names a
-/// requirement slot whose position in that sort's dictionary chain could not be
-/// established" — `Times` having been recorded at a position the chain does not have.
+/// (Two lines that EACH have a name are two requirements —
+/// `wi_50zmn_two_requirements_of_one_sort_test`. Until WI-20261013-50ZMN they were one,
+/// and this row drove `requires Plus: Mon[T]` beside `requires Times: Mon[T]` under one
+/// provider.)
 #[test]
-fn a_requirement_stated_twice_is_one_requirement() {
-    for (ns, bracket, expected) in [
-        ("wi0k8wd.twice.both", "Plus = Sum, Times = Sum", 9),
-        ("wi0k8wd.twice.first", "Plus = Sum", 9),
-        ("wi0k8wd.twice.second", "Times = Sum", 9),
-        ("wi0k8wd.twice.second.product", "Times = Product", 24),
-        ("wi0k8wd.twice.first.product", "Plus = Product", 24),
+fn a_requirement_stated_again_with_no_name_is_the_same_one() {
+    for (order, lines) in [
+        ("named.first", "    requires Times: Mon[T]\n    requires Mon[T]"),
+        ("unnamed.first", "    requires Mon[T]\n    requires Times: Mon[T]"),
     ] {
-        assert_eq!(
-            drive(
-                &semi(ns, &format!("Semi.mulAdd[T = Int64, {bracket}](2, 3, 4)")),
-                &format!("{ns}.Driver.run")
-            ),
-            expected,
-            "`[{bracket}]`",
-        );
-        let ns = format!("{ns}.bynames");
-        assert_eq!(
-            drive(
-                &semi(&ns, &format!("Semi.byNames[T = Int64, {bracket}](2, 3, 4)")),
-                &format!("{ns}.Driver.run")
-            ),
-            expected,
-            "`[{bracket}]`, the body handing the requirement on under each name",
-        );
-    }
-    for (ns, bracket) in [
-        ("wi0k8wd.twice.two", "Plus = Sum, Times = Product"),
-        ("wi0k8wd.twice.two.swapped", "Plus = Product, Times = Sum"),
-    ] {
+        for (provider, expected) in [("Sum", 9), ("Product", 24)] {
+            for member in ["mulAdd", "byName", "handedOn"] {
+                let ns = format!(
+                    "wi0k8wd.again.{order}.{}.{}",
+                    provider.to_lowercase(),
+                    member.to_lowercase()
+                );
+                assert_eq!(
+                    drive(
+                        &semi1(&ns, lines, &format!("Semi1.{member}[T = Int64, Times = {provider}](2, 3, 4)")),
+                        &format!("{ns}.Driver.run")
+                    ),
+                    expected,
+                    "`{member}[Times = {provider}]`, {order}",
+                );
+            }
+        }
+        let ns = format!("wi0k8wd.again.{order}.shortname");
         crate::common::assert_refused_naming(
-            &crate::common::load_errors_of(&semi(ns, &format!("Semi.mulAdd[T = Int64, {bracket}](2, 3, 4)"))),
+            &crate::common::load_errors_of(&semi1(&ns, lines, "Semi1.mulAdd[T = Int64, Mon = Sum](2, 3, 4)")),
+            &["unknown type-param 'Mon'"],
+            "the requirement has a name, and the sort's short name is not a key of it",
+        );
+        let ns = format!("wi0k8wd.again.{order}.none");
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&semi1(&ns, lines, "Semi1.mulAdd[T = Int64](2, 3, 4)")),
             &[
-                "two providers are selected for",
+                "requirement `Times: ",
+                "is ambiguous among providers",
                 &format!("{ns}.Sum"),
                 &format!("{ns}.Product"),
-                "for one requirement",
             ],
-            "two providers for the one requirement",
+            "nothing selected, and two providers",
         );
     }
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&semi("wi0k8wd.twice.none", "Semi.mulAdd[T = Int64](2, 3, 4)")),
-        &["is ambiguous among providers", "wi0k8wd.twice.none.Sum", "wi0k8wd.twice.none.Product"],
-        "nothing selected, and two providers",
-    );
 }
 
-/// AN OPERATION'S OWN LIST THAT STATES ONE REQUIREMENT TWICE, and one that restates its
-/// sort's, are the same case: the frame keeps the two entries apart and the body reads
-/// either by the one goal. Two providers are refused; one is the requirement's — under
-/// either name where the sort names it, and under both where the operation does, an
-/// operation's own name being a parameter a call must write.
+/// AN OPERATION'S OWN LINE THAT RESTATES ITS SORT'S REQUIREMENT WITH NO NAME is the same
+/// case: the frame keeps the two entries apart and the body reads either by the one goal.
+/// One provider is the requirement's, selected under the name the sort gives it or under
+/// the sort's short name, which picks out the operation's line; two are refused.
+///
+/// (An operation's own list that states one requirement under TWO names — `requires plus:
+/// Mon[T], times: Mon[T]` — holds two since WI-20261013-50ZMN, and is that ticket's
+/// row.)
 #[test]
 fn an_operation_that_restates_a_requirement_holds_one() {
-    let twice = "
-  sort Use
-    operation biFold[T](a: T, b: T, c: T) -> T
-      requires plus: Mon[T], times: Mon[T]
-      = Mon.combine(Mon.combine(a, b), c)
-    operation run() -> Int64 = biFold[T = Int64, BRACKET](2, 3, 4)
-  end
-";
     let restates = "
   sort Holder
     sort HT = ?
@@ -650,36 +647,60 @@ fn an_operation_that_restates_a_requirement_holds_one() {
     operation run() -> Int64 = Holder.fold3[HT = Int64, BRACKET](2, 3, 4)
   end
 ";
-    let rows: [(&str, &str, &str, &str, i64); 6] = [
-        ("twice", twice, "sum", "plus = Sum, times = Sum", 9),
-        ("twice", twice, "product", "plus = Product, times = Product", 24),
-        ("restates", restates, "first", "m = Sum", 9),
-        ("restates", restates, "second", "Mon = Sum", 9),
-        ("restates", restates, "second.product", "Mon = Product", 24),
-        ("restates", restates, "both", "m = Product, Mon = Product", 24),
-    ];
-    for (tag, decl, row, bracket, expected) in rows {
-        let ns = format!("wi0k8wd.oprestates.{tag}.{row}");
+    for (row, bracket, expected) in [
+        ("first", "m = Sum", 9),
+        ("second", "Mon = Sum", 9),
+        ("second.product", "Mon = Product", 24),
+        ("both", "m = Product, Mon = Product", 24),
+    ] {
+        let ns = format!("wi0k8wd.oprestates.{row}");
         assert_eq!(
-            drive(&program(&ns, &decl.replace("BRACKET", bracket)), &format!("{ns}.Use.run")),
+            drive(&program(&ns, &restates.replace("BRACKET", bracket)), &format!("{ns}.Use.run")),
             expected,
-            "`[{bracket}]` ({tag})",
+            "`[{bracket}]`",
         );
     }
-    for (tag, decl, bracket) in [
-        ("twice", twice, "plus = Sum, times = Product"),
-        ("restates", restates, "m = Sum, Mon = Product"),
+    let ns = "wi0k8wd.oprestates.two";
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(ns, &restates.replace("BRACKET", "m = Sum, Mon = Product"))),
+        &[
+            "two providers are selected for",
+            &format!("{ns}.Sum"),
+            &format!("{ns}.Product"),
+            "for one requirement",
+        ],
+        "two providers for the one requirement",
+    );
+}
+
+/// A PROVIDER SELECTED AT THE KEY OF A RESTATED LINE IS THE NAME'S, WHERE THE SORT HAS A
+/// DEFAULT TOO. `Sum` is marked `Mon`'s default at `Int64`; `[Mon = Product]`, written at
+/// the operation's line, is the selection for `m`, and `m` — which the call did not write
+/// — is inferred with it: `(2 × 3) × 4`.
+#[test]
+fn a_selection_at_a_restated_lines_key_is_what_the_name_is_inferred_with() {
+    let restates = "
+  import anthill.reflect.typing.DefaultProvider
+  fact DefaultProvider(spec: Mon, provider: Sum)
+  sort Holder
+    sort HT = ?
+    requires m: Mon[T = HT]
+    operation fold3(a: HT, b: HT, c: HT) -> HT requires Mon[T = HT] = Mon.combine(Mon.combine(a, b), c)
+  end
+  sort Use
+    operation run() -> Int64 = Holder.fold3[HT = Int64BRACKET](2, 3, 4)
+  end
+";
+    for (row, bracket, expected) in [
+        ("selected", ", Mon = Product", 24),
+        ("named", ", m = Product", 24),
+        ("silent", "", 9),
     ] {
-        let ns = format!("wi0k8wd.oprestates.{tag}.two");
-        crate::common::assert_refused_naming(
-            &crate::common::load_errors_of(&program(&ns, &decl.replace("BRACKET", bracket))),
-            &[
-                "two providers are selected for",
-                &format!("{ns}.Sum"),
-                &format!("{ns}.Product"),
-                "for one requirement",
-            ],
-            "two providers for the one requirement",
+        let ns = format!("wi0k8wd.oprestates.default.{row}");
+        assert_eq!(
+            drive(&program(&ns, &restates.replace("BRACKET", bracket)), &format!("{ns}.Use.run")),
+            expected,
+            "`[HT = Int64{bracket}]`, `Sum` the default",
         );
     }
 }
@@ -747,41 +768,59 @@ fn a_requirement_restated_with_a_parameter_left_open_is_the_same_one() {
 }
 
 /// A REQUIREMENT STATED AFTER A RESTATED ONE IS FOUND AT ITS OWN ENTRY. `Tri` states
-/// `WeakOrd[T]` twice and `WeakOrd[T = U]` once, so its chain has two entries, and `C` is
-/// the second. Counted by lines it was the third: a call that selected for it was refused,
-/// two providers for one sort, and one that did not, "position … could not be established".
+/// `WeakOrd[T]` under the name `A` and again under none, and `WeakOrd[T = U]` once, so its
+/// chain has two entries, and `C` is the second. Counted by lines it was the third: a call
+/// that selected for it was refused, two providers for one sort, and one that did not,
+/// "position … could not be established".
+///
+/// And after two that EACH have a name (`Tri2`: `A` and `B` at `T`, `C` at `U`) it is the
+/// third of three, each read by its own name — `"bob"` against `"amyy"` is `-1` by length
+/// and `1` by reverse length.
 #[test]
 fn a_requirement_after_a_restated_one_is_found() {
     let tri = "
+  sort RevLength
+    provides Ord[T = String]
+    operation compare(a: String, b: String) -> Int64 = sub(b.length(), a.length())
+  end
   sort Tri
+    sort T = ?
+    sort U = ?
+    requires A: WeakOrd[T]
+    requires WeakOrd[T]
+    requires C: WeakOrd[T = U]
+    operation tcmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
+    operation ucmp(a: U, b: U) -> Int64 = WeakOrd.compare(a, b)
+  end
+  sort Tri2
     sort T = ?
     sort U = ?
     requires A: WeakOrd[T]
     requires B: WeakOrd[T]
     requires C: WeakOrd[T = U]
-    operation tcmp(a: T, b: T) -> Int64 = WeakOrd.compare(a, b)
+    operation acmp(a: T, b: T) -> Int64 = A.compare(a, b)
+    operation bcmp(a: T, b: T) -> Int64 = B.compare(a, b)
     operation ucmp(a: U, b: U) -> Int64 = WeakOrd.compare(a, b)
   end
   sort Driver
     operation run() -> Int64 = CALL
   end
 ";
+    let three = "[T = String, U = Int64, A = ByLength, B = RevLength, C = Descending]";
     for (ns, call, expected) in [
-        ("wi0k8wd.tri.u.a", "Tri.ucmp[T = String, U = Int64, A = ByLength, C = Descending](1, 5)", 4),
-        ("wi0k8wd.tri.u.b", "Tri.ucmp[T = String, U = Int64, B = ByLength, C = Ascending](1, 5)", -4),
+        ("wi0k8wd.tri.u.desc", "Tri.ucmp[T = String, U = Int64, A = ByLength, C = Descending](1, 5)".to_string(), 4),
+        ("wi0k8wd.tri.u.asc", "Tri.ucmp[T = String, U = Int64, A = ByLength, C = Ascending](1, 5)".to_string(), -4),
         (
-            "wi0k8wd.tri.t.a",
-            r#"Tri.tcmp[T = String, U = Int64, A = ByLength, C = Descending]("bob", "amyy")"#,
+            "wi0k8wd.tri.t",
+            r#"Tri.tcmp[T = String, U = Int64, A = ByLength, C = Descending]("bob", "amyy")"#.to_string(),
             -1,
         ),
-        (
-            "wi0k8wd.tri.t.b",
-            r#"Tri.tcmp[T = String, U = Int64, B = ByLength, C = Descending]("bob", "amyy")"#,
-            -1,
-        ),
+        ("wi0k8wd.tri2.u", format!("Tri2.ucmp{three}(1, 5)"), 4),
+        ("wi0k8wd.tri2.a", format!(r#"Tri2.acmp{three}("bob", "amyy")"#), -1),
+        ("wi0k8wd.tri2.b", format!(r#"Tri2.bcmp{three}("bob", "amyy")"#), 1),
     ] {
         assert_eq!(
-            drive(&program(ns, &tri.replace("CALL", call)), &format!("{ns}.Driver.run")),
+            drive(&program(ns, &tri.replace("CALL", &call)), &format!("{ns}.Driver.run")),
             expected,
             "`{call}`",
         );

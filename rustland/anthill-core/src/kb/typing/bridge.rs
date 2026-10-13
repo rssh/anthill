@@ -371,6 +371,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
             required_sort: entry.required_sort,
             spec: concrete_spec,
             supply: entry.supply,
+            binder: entry.binder,
         };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             if op_half {
@@ -973,6 +974,7 @@ pub(crate) fn resolve_param_witnesses(
             required_sort: entry.required_sort,
             spec: ground_entry_spec(kb, op, &entry, &param_arg_types, &subst)?,
             supply: entry.supply,
+            binder: entry.binder,
         };
         let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
             return Err(format!(
@@ -990,7 +992,7 @@ pub(crate) fn resolve_param_witnesses(
         let selected = InstanceSelection {
             spec_sort: entry.required_sort,
             slot: SelectedSlot::Named(binder),
-            witness,
+            provider: SelectedProvider::Witness(witness),
             slots: Vec::new(),
         };
         let scope = ResolutionScope {

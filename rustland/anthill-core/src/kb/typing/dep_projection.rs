@@ -206,6 +206,7 @@ pub fn build_dep_projection(
                         required_sort: sub_chain[k].required_sort,
                         spec: substitute_in_spec(kb, &sub_chain[k].spec, map),
                         supply: sub_chain[k].supply,
+                        binder: sub_chain[k].binder,
                     };
                     entries_cover(kb, &composed, dep, Some(ctx))
                 })
@@ -263,6 +264,169 @@ pub fn build_dep_projection(
             None
         }
     }
+}
+
+/// WI-20261013-50ZMN — what the caller's frame says about `dep` BY NAME, asked before
+/// any strategy of [`build_dep_projection`] runs.
+pub(super) enum NamedForward {
+    /// Nothing: the strategies decide, as they did.
+    Unsaid,
+    /// The call named a requirement of the enclosing declaration for this dep
+    /// ([`SelectedProvider::Enclosing`]), and here is the frame's own dictionary for it.
+    Forward(TermId),
+    /// The account of why the dep is refused, for [`RequirementRefusal`]'s
+    /// `construction`: the requirement the call named does not answer the dep, or the
+    /// call named none and the frame holds two that do.
+    Refused(String),
+}
+
+/// WI-20261013-50ZMN — [`NamedForward`] for one dep of a callee's chain.
+///
+/// TWO THINGS THE STRATEGIES CANNOT SAY. Strategy 1 forwards the first entry of the
+/// caller's frame that covers the dep, and the cover reads the goal: where the frame
+/// holds `requires Plus: Mon[T]` and `requires Times: Mon[T]` both cover, and the first
+/// was handed on whichever the author meant. So a call that names one is answered by
+/// that entry — held to the dep by the cover the forward itself asks
+/// ([`entries_cover`]), since a name says which requirement and not that it fits — and
+/// a call that names none, where two such entries cover, is refused naming both.
+///
+/// Only entries that differ by their NAMES alone make a tie
+/// ([`named_apart_at_one_goal`]): `requires OK: WeakOrd[T = K]` beside `requires OV:
+/// WeakOrd[T = V]` are told apart by the dep's own element, and keep Strategy 1's
+/// reading.
+///
+/// AN ENTRY ANSWERS A DEP IT COVERS, OR THAT ITS DICTIONARY HOLDS A COVER FOR
+/// ([`held_for`]): under `requires A: Ord[T]` and `requires B: Ord[T]` a callee's
+/// `WeakOrd[T]` is in the dictionary of both.
+pub(super) fn forward_by_name(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    caller_requires: &DictChain,
+    syms: &ProjectionSyms,
+    disambig: Option<&SigmaCtx>,
+    pin: Option<&InstanceSelection>,
+) -> NamedForward {
+    let Some(pin) = pin else {
+        let entries = caller_requires.entries();
+        // Nearly every frame leaves here: it names no two requirements that state one.
+        let twins: SmallVec<[(usize, usize); 1]> = if names_two_requirements(entries) {
+            (0..entries.len())
+                .flat_map(|i| (i + 1..entries.len()).map(move |j| (i, j)))
+                .filter(|&(i, j)| named_apart_at_one_goal(kb, &entries[i], &entries[j]))
+                .collect()
+        } else {
+            SmallVec::new()
+        };
+        for (i, j) in twins {
+            if held_for(kb, dep, &caller_requires[i], disambig).is_none()
+                || held_for(kb, dep, &caller_requires[j], disambig).is_none()
+            {
+                continue;
+            }
+            if let (Some(first), Some(second)) =
+                (caller_requires[i].binder, caller_requires[j].binder)
+            {
+                return NamedForward::Refused(requirement_tie_account(kb, dep, first, second));
+            }
+        }
+        return NamedForward::Unsaid;
+    };
+    let Some(binder) = pin.enclosing() else {
+        return NamedForward::Unsaid;
+    };
+    let name = kb.local_name_of(binder).to_string();
+    let not_held = |name: &str| {
+        NamedForward::Refused(format!(
+            "the call names `{name}`, a requirement of the enclosing declaration, and \
+             this route does not hold its dictionary",
+        ))
+    };
+    let Some(i) = enclosing_requirement_index(caller_requires, binder) else {
+        return not_held(&name);
+    };
+    let Some(beneath) = held_for(kb, dep, &caller_requires[i], disambig) else {
+        return NamedForward::Refused(format!(
+            "the call names `{name}` for it, and `{name}` is `requires {}` — which is \
+             not the requirement owed here, and holds none that is",
+            render_requires_entry(kb, &caller_requires[i]),
+        ));
+    };
+    let Some(slot) = caller_requires.name_at(kb, i) else {
+        return not_held(&name);
+    };
+    let mut held = build_req_var_ref(kb, syms, slot);
+    for k in beneath {
+        held = build_req_at_sort(kb, syms, held, k);
+    }
+    NamedForward::Forward(held)
+}
+
+/// WI-20261013-50ZMN — where the dictionary of the caller's `entry` holds `dep`: the
+/// path into it, empty where the entry itself covers the dep, and otherwise the place
+/// of the first requirement beneath it that does — in the chain of the sort the entry
+/// requires, to any depth ([`requires_node`]), each compared composed into the caller's
+/// scope. `None` where it holds none.
+///
+/// The cover is the forward's own ([`entries_cover`]), under the call's σ where there
+/// is one, so a name is held to a dep exactly as an entry forwarded by its goal is.
+/// A read by the goal walks the same tree ([`find_requires_location`]); so a call
+/// handed on through a name and one read through it reach one dictionary.
+pub(super) fn held_for(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    entry: &RequiresEntry,
+    disambig: Option<&SigmaCtx>,
+) -> Option<SmallVec<[usize; 2]>> {
+    if entries_cover(kb, entry, dep, disambig) {
+        return Some(SmallVec::new());
+    }
+    fn first_cover(
+        kb: &mut KnowledgeBase,
+        nodes: &[RequiresNode],
+        dep: &RequiresEntry,
+        disambig: Option<&SigmaCtx>,
+        path: &mut SmallVec<[usize; 2]>,
+    ) -> bool {
+        for (k, node) in nodes.iter().enumerate() {
+            path.push(k);
+            if same_sort_canonical(kb, node.entry.required_sort, dep.required_sort)
+                && entries_cover(kb, &node.entry, dep, disambig)
+            {
+                return true;
+            }
+            if first_cover(kb, &node.sub_requires, dep, disambig, path) {
+                return true;
+            }
+            path.pop();
+        }
+        false
+    }
+    let node = requires_node(kb, entry);
+    let mut path: SmallVec<[usize; 2]> = SmallVec::new();
+    first_cover(kb, &node.sub_requires, dep, disambig, &mut path).then_some(path)
+}
+
+/// WI-20261013-50ZMN — the sentence for a dep of a callee that two requirements of the
+/// caller cover and neither is named for: which two, and what the call writes to name
+/// one. The bracket key is the callee's own for the dep — its name where the callee
+/// names the requirement (`[M = Plus]`, the forward), and the required sort's short
+/// name where it does not (`[Mon = Plus]`).
+pub(super) fn requirement_tie_account(
+    kb: &KnowledgeBase,
+    dep: &RequiresEntry,
+    first: Symbol,
+    second: Symbol,
+) -> String {
+    let key = match dep.binder {
+        Some(binder) => kb.local_name_of(binder).to_string(),
+        None => short_name_of(kb.qualified_name_of(dep.required_sort)).to_string(),
+    };
+    let (first, second) = (kb.local_name_of(first), kb.local_name_of(second));
+    format!(
+        "the enclosing declaration states two requirements that cover it, `{first}` and \
+         `{second}` — one sort at one type under two names — and nothing here says which: \
+         write `[{key} = {first}]` or `[{key} = {second}]` in the call's brackets",
+    )
 }
 
 /// WI-20261005-2KV4Y — [`resolve_with_rung`], reading A SORT WRITTEN WITH SLOTS LEFT OUT AS
@@ -468,6 +632,7 @@ pub(super) fn provider_half_projection(
             required_sort: entries[k].required_sort,
             spec: substitute_in_spec(kb, &entries[k].spec, &map),
             supply: entries[k].supply,
+            binder: entries[k].binder,
         };
         entries_cover(kb, &composed, dep, disambig)
     })?;

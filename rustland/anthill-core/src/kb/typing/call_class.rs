@@ -1246,6 +1246,173 @@ pub(super) fn defer_to_op_scoped_slot(
     true
 }
 
+/// WI-20261013-50ZMN — a body's call of the spec operation `fn_sym`, READ FROM THE
+/// ENCLOSING FRAME BY NAME: `Mon.combine[Mon = Plus](a, b)` — which `Plus.combine(a, b)`
+/// is — where the declaration the call is written in states `requires Plus: Mon[T]`.
+/// `true` iff the call named a requirement and is classified to read it.
+///
+/// THE READ BY THE GOAL CANNOT REACH ONE OF TWO. The locating walks below
+/// ([`find_requires_location`], [`op_scoped_defer_location`]) ask which entry of the
+/// frame covers the call's goal, and a declaration that states `requires Plus: Mon[T]`
+/// and `requires Times: Mon[T]` has two that cover `Mon[T = T]` alike: MEASURED before
+/// the two were two entries, the body `Mon.combine(Mon.combine(a, b), c)` ran every
+/// call through the one dictionary there was. So a call that names its requirement is
+/// classified here, at the entry that carries the name
+/// ([`enclosing_requirement_index`]), and never reaches a walk.
+///
+/// THE NAME SAYS WHICH REQUIREMENT, NOT THAT IT FITS. The entry is held to the call's
+/// bindings by the cover the walks ask ([`entry_matches_subst`], and no σ refusal): a
+/// call at `Int64` under `requires Plus: Mon[T]` is not `Plus`'s, as it is not the
+/// goal-read's (WI-414).
+///
+/// AND A CALL THAT NAMES NONE, where two requirements told apart by their names alone
+/// both answer it, is refused ([`TypeError::RequirementReadTie`]) — the first written is
+/// an answer by the order of two lines. Only such a pair
+/// ([`named_apart_at_one_goal`]): two requirements at two bindings keep the walks'
+/// reading, the σ-precise one first.
+///
+/// A REQUIREMENT ANSWERS A CALL IT COVERS, OR THAT ITS DICTIONARY HOLDS A COVER FOR:
+/// under `requires A: Ord[T]` and `requires B: Ord[T]`, `WeakOrd.compare(x, y)` is in
+/// neither entry and in the chain of both (`Ord` provides `WeakOrd`), and the walks
+/// would descend the first. So the frame is read as the walks read it — each entry over
+/// the chain of the sort it requires ([`frame_tree`], [`collect_requires_matches`]) —
+/// and a name locates the call beneath its own entry. The pair compared is the two
+/// ENTRIES OF THE FRAME, the sort's and the operation's own together; two such
+/// requirements beneath ONE entry — a pair in the chain of a sort the frame requires —
+/// are not looked for here.
+///
+/// A WITNESS the call selected outranks all of it (058 §3.2 tier 1), as it outranks the
+/// walks: `Mon.combine[Mon = Sum](a, b)` reads no requirement at all.
+pub(super) fn read_requirement_by_name(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    selections: &[InstanceSelection],
+    span: Option<Span>,
+) -> Result<bool, TypeError> {
+    // Asked at every call of a spec operation, and nearly every one leaves here: it
+    // names no requirement, and its frame holds no two under two names that state one.
+    let named = enclosing_selection_for(kb, selections, spec_sort);
+    if named.is_none() {
+        let entries = env.enclosing_frame_chain().entries();
+        let may_tie = names_two_requirements(entries)
+            && pinned_witness_for(kb, selections, spec_sort).is_none()
+            && entries.iter().enumerate().any(|(i, a)| {
+                entries[i + 1..]
+                    .iter()
+                    .any(|b| named_apart_at_one_goal(kb, a, b))
+            });
+        if !may_tie {
+            return Ok(false);
+        }
+    }
+    let chain = env.enclosing_frame_chain().clone();
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let sigma_ctx = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
+    };
+    // Where the frame answers the call, as the walks find it: each a path whose head is
+    // the frame's entry, with its σ verdict, a refuted cover left out.
+    let nodes = frame_tree(kb, &chain);
+    let mut found: Vec<(SmallVec<[usize; 2]>, SigmaVerdict)> = Vec::new();
+    collect_requires_matches(
+        kb,
+        subst,
+        Some(&sigma_ctx),
+        spec_sort,
+        &spec_qn,
+        &nodes,
+        &mut SmallVec::new(),
+        &mut found,
+    );
+    found.retain(|(_, verdict)| *verdict != SigmaVerdict::Refutes);
+    let Some(binder) = named else {
+        // What the walks would choose among: the σ-precise answers where there are any.
+        let precise = found.iter().any(|(_, v)| *v == SigmaVerdict::Precise);
+        let pool: SmallVec<[usize; 2]> = found
+            .iter()
+            .filter(|(_, v)| !precise || *v == SigmaVerdict::Precise)
+            .map(|(path, _)| path[0])
+            .collect();
+        for (n, &i) in pool.iter().enumerate() {
+            for &j in &pool[n + 1..] {
+                if let (true, Some(first), Some(second)) = (
+                    i != j && named_apart_at_one_goal(kb, &chain[i], &chain[j]),
+                    chain[i].binder,
+                    chain[j].binder,
+                ) {
+                    // The two require one sort ([`named_apart_at_one_goal`]), so what
+                    // one name reaches the other does.
+                    let member = short_name_of(kb.qualified_name_of(fn_sym)).to_string();
+                    let by_name = crate::kb::load::operation_through_requirement_name(
+                        kb,
+                        chain[i].required_sort,
+                        &member,
+                    ) == Some(fn_sym);
+                    return Err(TypeError::RequirementReadTie {
+                        span,
+                        op: fn_sym,
+                        spec: spec_sort,
+                        first,
+                        second,
+                        by_name,
+                    });
+                }
+            }
+        }
+        return Ok(false);
+    };
+    let slot = enclosing_requirement_index(&chain, binder);
+    let beneath: SmallVec<[usize; 2]> = (0..found.len())
+        .filter(|&m| Some(found[m].0[0]) == slot)
+        .collect();
+    let Some(at) = pick_precise(&beneath, |m| found[m].1 == SigmaVerdict::Precise) else {
+        return Err(TypeError::NamedRequirementNotAtCall {
+            span,
+            op: fn_sym,
+            spec: spec_sort,
+            binder,
+            held: slot.map(|slot| render_requires_entry(kb, &chain[slot])),
+        });
+    };
+    let path = &found[at].0;
+    let op_short_sym = {
+        let op_qn = kb.qualified_name_of(fn_sym).to_string();
+        kb.intern(short_name_of(&op_qn))
+    };
+    classify(
+        kb,
+        occ,
+        CallClass::DeferToRequirement {
+            spec_op_sym: fn_sym,
+            op_short_sym,
+            resolved_spec: chain[path[0]].clone(),
+            slot: path[0],
+            proj_path: path[1..].iter().copied().collect(),
+            enclosing_sort: env.enclosing_sort(),
+            enclosing_op: env.enclosing_op(),
+        },
+    );
+    Ok(true)
+}
+
+/// WI-20261013-50ZMN — a frame's entries, each over the chain of the sort it requires:
+/// the tree [`requires_tree`] gives a sort's own requirements, built for the WHOLE
+/// frame — the sort's half and the operation's own alike ([`op_scoped_defer_location`]
+/// builds the second half so). A path into it is `[frame slot, projection…]`, the
+/// coordinates [`CallClass::DeferToRequirement`] reads a dictionary by.
+fn frame_tree(kb: &mut KnowledgeBase, chain: &DictChain) -> Vec<RequiresNode> {
+    chain
+        .entries()
+        .iter()
+        .map(|entry| requires_node(kb, entry))
+        .collect()
+}
+
 /// WI-20260919-H20YY — ROUTE A DEFAULTED SPEC MEMBER THROUGH THE SAME SLOT A BODY-LESS
 /// ONE TAKES, when the call names no carrier of its own. `true` iff it did.
 ///
@@ -1421,16 +1588,10 @@ pub(super) fn op_scoped_defer_location(
     // The op half AS A TREE: each entry, then the required spec's own chain beneath
     // it — the same `build_requires_tree` descent `requires_tree` does for a sort's
     // direct entries, seeded from the entry's own bindings.
-    let mut nodes: Vec<RequiresNode> = Vec::with_capacity(op_entries.len());
-    for entry in op_entries.to_vec() {
-        let child_subst = build_child_subst_map(kb, &entry);
-        let mut visited: Vec<Symbol> = Vec::new();
-        let sub_requires = build_requires_tree(kb, entry.required_sort, &child_subst, &mut visited);
-        nodes.push(RequiresNode {
-            entry,
-            sub_requires,
-        });
-    }
+    let nodes: Vec<RequiresNode> = op_entries
+        .iter()
+        .map(|entry| requires_node(kb, entry))
+        .collect();
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut path: SmallVec<[usize; 2]> = SmallVec::new();
     let mut matches: Vec<(SmallVec<[usize; 2]>, SigmaVerdict)> = Vec::new();

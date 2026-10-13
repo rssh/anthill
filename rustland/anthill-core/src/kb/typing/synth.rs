@@ -571,6 +571,52 @@ pub fn resolve_with_rung(
 /// another parameter — from one hop to every depth (found by /code-review). The σ-less
 /// paths keep the one hop they had; every path that builds a dictionary a body reads, and
 /// the load check, carries σ.
+/// WI-20261013-50ZMN — the two entries of `scope` that both answer `goal` and are told
+/// apart by their names alone ([`named_apart_at_one_goal`]), by those names. An entry
+/// answers as [`resolve_inner`]'s lookups would take it: it covers the goal, or — for a
+/// goal that is not the call's own — its chain holds one that does
+/// ([`scope_chain_cover`]).
+fn scope_requirement_tie(
+    kb: &mut KnowledgeBase,
+    scope: &ResolutionScope,
+    goal: &SortGoal,
+    at_call_goal: bool,
+) -> Option<(Symbol, Symbol)> {
+    let sub_goal: &[RequiresEntry] = if at_call_goal { &[] } else { scope.sub_goal_requires };
+    let entries: SmallVec<[&RequiresEntry; 4]> =
+        scope.available_requires.iter().chain(sub_goal).collect();
+    if !names_two_requirements(entries.iter().copied()) {
+        return None;
+    }
+    for (n, a) in entries.iter().enumerate() {
+        for b in &entries[n + 1..] {
+            if !named_apart_at_one_goal(kb, a, b) {
+                continue;
+            }
+            let answers = |kb: &mut KnowledgeBase, entry: &RequiresEntry| {
+                (entry.required_sort == goal.spec_sort
+                    && requires_entry_covers_goal(kb, entry, goal, scope.sigma))
+                    || (!at_call_goal
+                        && scope_chain_cover(
+                            kb,
+                            &ResolutionScope {
+                                available_requires: std::slice::from_ref(entry),
+                                sigma: scope.sigma,
+                                pin: None,
+                                sub_goal_requires: &[],
+                            },
+                            goal,
+                        )
+                        .is_some())
+            };
+            if answers(kb, a) && answers(kb, b) {
+                return a.binder.zip(b.binder);
+            }
+        }
+    }
+    None
+}
+
 fn scope_chain_cover(
     kb: &mut KnowledgeBase,
     scope: &ResolutionScope,
@@ -614,6 +660,7 @@ fn scope_chain_cover(
                     required_sort: sub.required_sort,
                     spec: substitute_in_spec(kb, &sub.spec, &map),
                     supply: sub.supply,
+                    binder: sub.binder,
                 };
                 let mut sub_path = path.clone();
                 sub_path.push(k);
@@ -834,7 +881,13 @@ pub(super) fn resolve_inner<'a>(
     } else {
         slot_pin.map(|(s, _)| &s.selection)
     };
-    let pinned = pin.map(|s| s.witness);
+    // A requirement of the enclosing declaration is handed on where the call's
+    // dictionaries are built and never searched for ([`build_dep_projection`]).
+    debug_assert!(
+        pin.is_none_or(|s| s.enclosing().is_none()),
+        "a selection of the enclosing declaration's requirement reached the search",
+    );
+    let pinned = pin.and_then(InstanceSelection::witness);
 
     // Steps 1–4 are untouched — except that a PINNED goal skips the scope lookup:
     // explicit beats forwarded as well as searched (§4.1 tier 1), and returning
@@ -846,6 +899,29 @@ pub(super) fn resolve_inner<'a>(
     } else {
         scope.available_requires
     };
+    // WI-20261013-50ZMN — TWO REQUIREMENTS OF THE SCOPE, TOLD APART BY THEIR NAMES ALONE,
+    // THAT BOTH ANSWER THE GOAL: the lookups below take the first, and which is first is
+    // the order of two `requires` lines. A call's own goal is asked about before it gets
+    // here ([`read_requirement_by_name`], [`forward_by_name`]); a goal met while another
+    // is resolved — a conditional provision's, under `requires Plus: Mon[T]` and
+    // `requires Times: Mon[T]` — has no call to name one at, and is answered by neither.
+    if pinned.is_none() {
+        if let Some((first, second)) = scope_requirement_tie(kb, scope, goal, at_call_goal) {
+            return ResolutionResult::NoMatch {
+                goal_text: format_goal(kb, goal),
+                hint: format!(
+                    "the enclosing declaration states two requirements that answer `{}`, \
+                     `{}` and `{}` — one sort at one type under two names — and nothing \
+                     where it is needed says which",
+                    format_goal(kb, goal),
+                    kb.local_name_of(first),
+                    kb.local_name_of(second),
+                ),
+                spec: goal.spec_sort,
+                forwarded: false,
+            };
+        }
+    }
     for (i, ar) in scope_entries.iter().enumerate() {
         if ar.required_sort != goal.spec_sort {
             continue;
@@ -1241,12 +1317,12 @@ pub(super) fn resolve_inner<'a>(
                          carrier's type",
                         kb.local_name_of(w.binder),
                         kb.qualified_name_of(w.owner),
-                        kb.qualified_name_of(w.selection.witness),
+                        kb.qualified_name_of(w.selection.provider.symbol()),
                         match written_source {
                             SlotPinSource::Bracket => "the call",
                             SlotPinSource::Carrier => "an enclosing type",
                         },
-                        kb.qualified_name_of(c.selection.witness),
+                        kb.qualified_name_of(c.selection.provider.symbol()),
                     );
                     return refuse(kb, stack, report, hint);
                 }

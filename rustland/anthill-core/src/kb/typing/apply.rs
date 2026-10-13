@@ -2320,6 +2320,37 @@ pub(super) fn check_apply_iter(
         // The 51 µs O(|symbols|) figure that made those four matter is WI-954's — that
         // call is an owner-scope read now.
         if let Some(spec_sort) = defaulted_spec_op_parent(kb, fn_sym) {
+            // WI-20261013-50ZMN — A CALL THAT TWO NAMED REQUIREMENTS OF THE ENCLOSING
+            // DECLARATION BOTH ANSWER IS REFUSED HERE, as a body-less operation's is
+            // ([`read_requirement_by_name`]). Left to the routes below it loaded, the
+            // sole-clause gate declining to direct it, and ended
+            // `AmbiguousSpecOpDispatch` where it ran (MEASURED: `Mon.twice(a)` under
+            // `requires Plus: Mon[T]`, `requires Times: Mon[T]`).
+            //
+            //
+            // AND A CALL THAT NAMES ONE IS READ THROUGH IT — `Plus.twice(a)` — by the
+            // deferral a sole requirement gets ([`defer_defaulted_call_to_slot`]): the
+            // member of the dictionary's own provider where it has one, and this body
+            // where it has not, entered with that dictionary either way.
+            if read_requirement_by_name(kb, env, occ, &subst, spec_sort, fn_sym, &selections, span)? {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
+                return Ok(TypeResult {
+                    ty: resolved_ret,
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
             // WI-1027 moved the two-shape rule (and WI-608's abstract-spec exclusion)
             // into [`statically_pinned_carrier`], shared with the body-less guard.
             // A concrete carrier with no SUPPLIER at all yields an empty
@@ -2885,6 +2916,13 @@ pub(super) fn check_apply_iter(
                         })
                 })
                 .flatten();
+            // WI-20261013-50ZMN — NOT FOR A CALL THAT NAMES A REQUIREMENT TO BE READ
+            // THROUGH. This branch answers from the carrier's own provision and returns,
+            // and a name it never looked at would be dropped with nothing said; left to
+            // the read below, the named requirement is held to the call — at a carrier
+            // that is not its own it is refused, as it is at any other type.
+            let hk_carrier =
+                hk_carrier.filter(|_| enclosing_selection_for(kb, &selections, spec_sort).is_none());
             if let Some(c) = hk_carrier {
                 // DISCHARGE the implicit `Spec[F = C]` obligation: confirm `C` provides
                 // the spec (the WI-431 instance fact). No provision ⟹ undischarged: a
@@ -3057,6 +3095,30 @@ pub(super) fn check_apply_iter(
             // never reached: measured, `Monoid.combine[Monoid = AnyM](a, b)` written
             // inside a sort that `requires Monoid[…]` computed the SEARCHED answer.
             // Two gates, because there are two places that decide to defer.
+            //
+            // WI-20261013-50ZMN: and BEFORE either walk, a call that says which
+            // requirement of the enclosing declaration it reads is read from that one,
+            // and one that does not say, where two cover it under two names, is refused
+            // ([`read_requirement_by_name`]).
+            if read_requirement_by_name(kb, env, occ, &subst, spec_sort, fn_sym, &selections, span)? {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
+                return Ok(TypeResult {
+                    ty: resolved_ret.clone(),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
             let pinned_spec = pinned_witness_for(kb, &selections, spec_sort).is_some();
             if !pinned_spec && !enclosing_requires.is_empty() {
                 // WI-613: the σ context lets `find_requires_location` disambiguate

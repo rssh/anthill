@@ -311,11 +311,22 @@ impl ProvisionScope {
                     // A `provides … :- goals` tail is an INBOUND obligation on whoever
                     // wants the provision, not a conversion the spec supplies.
                     supply: SupplySource::Required,
+                    binder: None,
                 };
                 roots.push(entry);
             }
             let mut assumptions = own.sort_level.clone();
             assumptions.extend(closed_under_requires(kb, roots));
+            // WI-20261013-50ZMN — AS WHAT HOLDS, NOT AS WHO HOLDS IT. Two requirements of
+            // the carrier under two names (`requires Plus: Mon[T]`, `requires Times:
+            // Mon[T]`) are two dictionaries, and a search that would hand one of them on
+            // is refused for having no way to say which (`resolve_inner`'s scope lookup).
+            // Here nothing is handed on: an assumption is a fact the clause may use, and
+            // either of the two is that fact. So the names are left out, and the two are
+            // one assumption written twice. The positions are the frame's all the same.
+            for assumed in &mut assumptions {
+                assumed.binder = None;
+            }
             clauses.push(ClauseScope {
                 conditions,
                 assumptions,
@@ -373,6 +384,7 @@ fn clause_of(kb: &KnowledgeBase, clause: &ClauseScope) -> crate::kb::load::Provi
                     required_sort,
                     spec: c.clone(),
                     supply: SupplySource::Required,
+                    binder: None,
                 },
             ),
             // Unreachable here: `ProvisionScope::of` refused such a clause.

@@ -2748,6 +2748,18 @@ pub(super) fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<Req
         // Value::Term` — dropping `Value::Node` clauses for want of a `TermId`).
         push_op_requires_clause(kb, v, &mut out);
     }
+    // WI-20261013-50ZMN — each goal under the name its line gave it. An operation's
+    // named slot is recorded by its goal's place in this list
+    // (`KnowledgeBase::named_requirement_slots`), checked against the sort it names as
+    // every reader of that place checks it.
+    for slot in kb.named_requirement_slots(op_sym) {
+        if let Some(entry) = out.get_mut(slot.slot).filter(|e| {
+            slot.spec_base
+                .is_some_and(|base| same_sort_canonical(kb, base, e.required_sort))
+        }) {
+            entry.binder = Some(slot.binder);
+        }
+    }
     out
 }
 
@@ -2795,6 +2807,7 @@ pub(super) fn push_op_requires_clause(
                 // An OP-scoped `requires` is always inbound: only a SORT can carry
                 // the `provides` clause that self-supplies one.
                 supply: SupplySource::Required,
+                binder: None,
             });
         }
         _ => {}
@@ -2817,6 +2830,7 @@ fn push_op_requires_clause_term(kb: &KnowledgeBase, tid: TermId, out: &mut Vec<R
                 required_sort: *functor,
                 spec: Value::term(tid),
                 supply: SupplySource::Required,
+                binder: None,
             });
         }
         _ => {}

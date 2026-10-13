@@ -2129,6 +2129,7 @@ pub(super) fn alternative_condition_goals(
                 required_sort,
                 spec,
                 supply: SupplySource::Required,
+                binder: None,
             });
         }
         groups.push(instantiate_provider_entries(kb, &entries, impl_subst));

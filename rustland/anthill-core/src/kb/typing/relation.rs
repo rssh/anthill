@@ -861,6 +861,7 @@ fn route_requirement_read(
             required_sort: spec_sort,
             spec: instance.clone(),
             supply: SupplySource::Required,
+            binder: None,
         };
         let sigma = SigmaCtx {
             subst,

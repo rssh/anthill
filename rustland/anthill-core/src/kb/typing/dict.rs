@@ -550,15 +550,51 @@ impl RequirementRefusal {
     }
 }
 
+/// WI-20261013-50ZMN — the refusal of a dep [`forward_by_name`] refuses. Its account is
+/// the whole of it: the generic tails advise a search, and this dep is not searched for.
+pub(super) fn refused_by_name(
+    kb: &KnowledgeBase,
+    dep: &RequiresEntry,
+    account: String,
+) -> RequirementRefusal {
+    RequirementRefusal {
+        account_names_every_repair: true,
+        no_scope_route: false,
+        construction_carries_repair: false,
+        dep_text: render_requires_entry(kb, dep),
+        unconstrained: Vec::new(),
+        refused_covers: Vec::new(),
+        construction: account,
+        pinned: None,
+        unprovided: None,
+        untied: None,
+    }
+}
+
 /// Render a `RequiresEntry` for a diagnostic (`Desc[T = MT]`) via the same
 /// goal rendering Strategy 3's own diagnostics use; entries that do not form
 /// a goal fall back to the spec sort's name. The requirement as its clause wrote it: a
 /// binding written through a type alias is led by the alias's name
 /// ([`format_goal_as_written`]).
-pub(super) fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
-    match goal_from_requires_entry(kb, entry) {
+///
+/// WI-20261013-50ZMN — UNDER ITS NAME where the declaration gives it one (`Times:
+/// Mon[T = Int64]`), as the `requires` line writes it: of two requirements of one sort
+/// at one type the goal is one text, and a refusal that printed it alone did not say
+/// which of the two it was about.
+pub(crate) fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
+    let goal = match goal_from_requires_entry(kb, entry) {
         Some(goal) => format_goal_as_written(kb, &goal),
         None => kb.qualified_name_of(entry.required_sort).to_string(),
+    };
+    under_its_name(kb, entry, goal)
+}
+
+/// `goal`, the rendered requirement of `entry`, under the name its declaration gives it
+/// ([`render_requires_entry`]).
+fn under_its_name(kb: &KnowledgeBase, entry: &RequiresEntry, goal: String) -> String {
+    match entry.binder {
+        Some(binder) => format!("{}: {goal}", kb.local_name_of(binder)),
+        None => goal,
     }
 }
 
@@ -775,6 +811,7 @@ fn explain_dep_refusal(
                 required_sort: sub.required_sort,
                 spec: substitute_in_spec(kb, &sub.spec, map),
                 supply: sub.supply,
+                binder: sub.binder,
             };
             if entries_cover(kb, &composed, dep, None)
                 && !entries_cover(kb, &composed, dep, Some(ctx))
@@ -797,10 +834,14 @@ fn explain_dep_refusal(
         .map(|r| describe_resolution_failure(kb, r))
         .unwrap_or_default();
     let goal = goal_from_requires_entry(kb, dep);
-    let dep_text = match &goal {
-        Some(g) => format_goal(kb, g),
-        None => kb.qualified_name_of(dep.required_sort).to_string(),
-    };
+    let dep_text = under_its_name(
+        kb,
+        dep,
+        match &goal {
+            Some(g) => format_goal(kb, g),
+            None => kb.qualified_name_of(dep.required_sort).to_string(),
+        },
+    );
     let unconstrained = unconstrained_elements(kb, dep, ctx);
     let refused_covers: Vec<String> = refused_entries
         .iter()
@@ -952,7 +993,23 @@ fn build_dispatching_dict_from_chain(
             j,
             dep.required_sort,
         );
-        let pinned_witness = pin.map(|s| s.witness);
+        // WI-20261013-50ZMN — and what the caller's frame says about the dep BY NAME: a
+        // requirement of the enclosing declaration the call named for it, or two that
+        // cover it with the call naming neither ([`forward_by_name`]). Asked where a
+        // call site is in hand, which is where a frame is.
+        if disambig.is_some() {
+            match forward_by_name(kb, dep, caller_requires, syms, disambig, pin) {
+                NamedForward::Forward(t) => {
+                    proj_terms.push(t);
+                    continue;
+                }
+                NamedForward::Refused(account) => {
+                    return Err(Box::new(refused_by_name(kb, dep, account)));
+                }
+                NamedForward::Unsaid => {}
+            }
+        }
+        let pinned_witness = pin.and_then(InstanceSelection::witness);
         let mut s3_failure: Option<ResolutionResult> = None;
         // WI-841: a PINNED dep wants the account too — its refusal is unconditional,
         // and the account is what makes it say more than "it did not work".
@@ -1510,6 +1567,7 @@ pub(super) fn build_concrete_dispatch_dict(
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &entry.spec, subst),
             supply: entry.supply,
+            binder: entry.binder,
         })
         .collect();
     let Some(syms) = ProjectionSyms::resolve(kb) else {
@@ -1924,6 +1982,7 @@ pub(super) fn build_op_scoped_dicts(
                     required_sort: entry.required_sort,
                     spec: projected.clone(),
                     supply: entry.supply,
+                    binder: entry.binder,
                 };
                 return Err(Box::new(RequirementRefusal {
                     account_names_every_repair: false,
@@ -1953,6 +2012,7 @@ pub(super) fn build_op_scoped_dicts(
             required_sort: entry.required_sort,
             spec: substitute_spec_via_subst(kb, &projected, subst),
             supply: entry.supply,
+            binder: entry.binder,
         };
         let dep = dep_completed_at_carrier(kb, &dep).unwrap_or(dep);
         // WI-20260923-WN9P8 — the sort half's forward rule, on the op half: a slot of the
@@ -1960,10 +2020,16 @@ pub(super) fn build_op_scoped_dicts(
         // dictionary or a refusal. MEASURED without it: a set typed `O = P` passed into
         // `add[E, OE](…) requires OE: WeakOrd[E]` got the caller's `OX` and inserted in
         // its order.
-        if let Some(slot) = named_slot_of_chain(kb, callee_op, j) {
+        //
+        // WI-20261013-50ZMN — AND AN ENTRY THAT STATES AGAIN, UNDER NO NAME, A REQUIREMENT
+        // ITS SORT NAMES is that requirement ([`named_slot_of_frame_entry`]): `fold3(…)
+        // requires Mon[T = HT]` under `requires m: Mon[T = HT]`, called `[m = Plus]`.
+        // It was answered by the goal, the first of the caller's entries that covers it
+        // — `Plus` where the call said `[m = Times]`, once a caller could hold both.
+        if let Some((owner, slot)) = named_slot_of_frame_entry(kb, callee_op, chain.sort_len() + j) {
             match project_forwarded_slot(
                 kb,
-                callee_op,
+                owner,
                 &slot,
                 &dep,
                 caller_requires,
@@ -2080,12 +2146,34 @@ pub(super) fn build_op_scoped_dicts(
                         pinned_by_arg = Some(InstanceSelection {
                             spec_sort: dep.required_sort,
                             slot: SelectedSlot::Named(binder),
-                            witness,
+                            provider: SelectedProvider::Witness(witness),
                             slots,
                         });
                         pinned_by_arg.as_ref()
                     }
-                    None => None,
+                    // WI-20261013-50ZMN — THE ARGUMENT'S OWN TYPE BINDS THE SLOT TO A
+                    // PARAMETER OF THE CALLER'S (`s: Via[T = E, M = A]` handed to a
+                    // parameter that leaves `M` unwritten): a forward, answered by the
+                    // frame's dictionary FOR that parameter as a callee's named slot
+                    // bound to it is ([`project_param_forward`]). By the goal, as it was
+                    // read, a caller holding `A` and `B` on one sort at one type handed
+                    // on whichever was written first.
+                    None => {
+                        if let Some(t) = project_param_forward(
+                            kb,
+                            param_arg_types,
+                            param,
+                            binder,
+                            &dep,
+                            caller_requires,
+                            &disambig,
+                            &syms,
+                        ) {
+                            out.push(Some(t));
+                            continue;
+                        }
+                        None
+                    }
                 }
             }
             // WI-20261013-0K8WD: a requirement the operation declares, by its name where
@@ -2099,6 +2187,18 @@ pub(super) fn build_op_scoped_dicts(
                 dep.required_sort,
             ),
         };
+        // WI-20261013-50ZMN — by name first, as the sort half asks ([`forward_by_name`]).
+        match forward_by_name(kb, &dep, caller_requires, &syms, Some(&disambig), pin) {
+            NamedForward::Forward(t) => {
+                out.push(Some(t));
+                continue;
+            }
+            NamedForward::Refused(account) => {
+                kb.unsuppliable_requirements.truncate(parked_mark);
+                return Err(Box::new(refused_by_name(kb, &dep, account)));
+            }
+            NamedForward::Unsaid => {}
+        }
         let projected = build_dep_projection(
             kb,
             &dep,
@@ -2548,6 +2648,7 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
         required_sort: spec,
         spec: kb.fn_value(functor, pos, completed),
         supply: dep.supply,
+        binder: dep.binder,
     })
 }
 
