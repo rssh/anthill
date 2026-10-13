@@ -40,14 +40,17 @@
 //! * A LAMBDA WRITTEN WITHOUT ITS PARAMETER'S TYPE (`Apply.run(lambda x -> x)`) is answered by
 //!   `P` as it was: a part nothing has determined binds nothing.
 //! * THE OTHER READERS OF A CLAUSE read a parameter by its name only, and are not changed
-//!   here. A provider's `requires`, or a provision's `:-` condition, written AT a tuple or an
-//!   arrow of the parameter (`requires Mark[T = (A, Int64)]`) is not read at the call's type:
-//!   the call is refused, "unresolved: `Mark[T = (_1: ?_, _2: Int64)]`", beside a provider of
-//!   `Mark` at that very tuple. And a conversion at one (`sort Hi { sort T = ?  provides Lo[T
-//!   = (T, Int64)] }`) loads and dies when the call runs, "operation has no body: `Lo.lo`".
-//!   Both measured before this change and after it. A requirement at an applied sort of the
-//!   parameter (`requires Mark[T = Box[T = A]]`) beside a provision at a tuple of it IS read
-//!   now: its `A` is the reference, which the lookup's binding instantiates.
+//!   here (WI-20261013-34822). A provider's `requires`, or a provision's `:-` condition,
+//!   written AT a tuple or an arrow of the parameter (`requires Mark[T = (A, Int64)]`) is not
+//!   read at the call's type: the call is refused, "unresolved: `Mark[T = (_1: ?_, _2:
+//!   Int64)]`", beside a provider of `Mark` at that very tuple. Measured before this change
+//!   and after it. A requirement at an applied sort of the parameter (`requires Mark[T =
+//!   Box[T = A]]`) beside a provision at a tuple of it IS read now: its `A` is the
+//!   reference, which the lookup's binding instantiates.
+//! * A SORT PROVIDING A SPEC AT A COMPOSITE OF ITS PARAMETER AND SUPPLYING NO MEMBER (`sort Hi
+//!   { sort T = ?  provides Lo[T = (T, Int64)] }`) loads and dies when the call runs,
+//!   "operation has no body: `Lo.lo`" — at a tuple, an arrow and an applied sort alike, so it
+//!   is not this parameter's spelling: WI-20260909-M8QWJ's shape (e).
 //! * A ROW PARAMETER inside an arrow's effect row (`(A) -> A @ {E}`) is a leaf of the match,
 //!   as every row is, and is bound to nothing.
 
