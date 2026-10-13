@@ -2158,6 +2158,15 @@ two requirements: a call at a value of the second type does not read the first, 
 neither does a call at `(Int64, Int64) -> Int64`.  A tuple with a component more is
 another binding than the narrower one, though it conforms to it as a type.
 
+A provision answers at such a binding by the same comparison.  A provider at
+`(Int64, Int64) -> Int64` answers a call at `(p: Int64, q: Int64) -> Int64` and
+supplies a `requires` written at it, the two being one arrow, as a provider at the
+arrow with the names answers at the one without.  A provider at
+`(x: Int64, y: Int64) -> Int64` does not: two lists of unrelated names are two
+arrows.  Two providers whose arrows differ only in the names one of them writes are
+two providers at one binding, and a call that selects neither is refused as a tie is
+(§8.7 "Instance coherence").
+
 Because a named slot is a type parameter, **omitting it means two different
 things and they are decided per call site** (proposal 058 §3.4, WI-1094).  Where
 nothing anywhere has bound it — a construction such as

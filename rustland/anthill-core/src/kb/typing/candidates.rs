@@ -904,7 +904,8 @@ pub(super) fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> Small
 /// Match a candidate-side value (potentially containing impl-param
 /// `Ref`s) against a per-call value. Captures impl-subst bindings on
 /// the way; returns false on shape mismatch. Recursive on parametric
-/// values so `List[T = A]` properly binds `A` to the per-call's `T`.
+/// values so `List[T = A]` properly binds `A` to the per-call's `T`, and
+/// on the parts of an arrow, paired as two arrows are related.
 pub(super) fn match_candidate_against_goal(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
@@ -927,6 +928,40 @@ pub(super) fn match_candidate_against_goal(
     if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
+    // One reading of the candidate's head serves the two arms that turn on it.
+    let candidate_head = type_head(kb, candidate_value);
+    // (1.5) Candidate side is an ARROW — matched part by part, the parts paired as two
+    // arrows are related ([`arrow_part_pairs`]): the parameters of a list by position,
+    // the names lining up or one list written without names. A goal that is no arrow —
+    // a type parameter included, which matching does not bind (WI-824, below) — an arrow
+    // of another parameter count, and one whose list does not align have no pairs.
+    //
+    // An arrow is an application of the `Arrow` extractor, and read as one by arm (2) its
+    // parameter list was a named tuple whose `fields` were matched as data, each field's
+    // NAME a leaf: a provider at `(Int64, Int64) -> Int64` did not answer a call at `(p:
+    // Int64, q: Int64) -> Int64`, nor the pair swapped (MEASURED: the call refused "no
+    // provision of `Apply` answers at `(p: Int64, q: Int64) -> Int64`", a `requires` at
+    // the one beside a provider at the other "no impl provides", and a selected witness
+    // "provides no instance at these bindings").
+    if matches!(candidate_head, TypeHead::Arrow) {
+        let Some(pairs) = arrow_part_pairs(kb, candidate_value, per_call_value) else {
+            return false;
+        };
+        *specificity = specificity.saturating_add(1);
+        return pairs.iter().all(|(c_part, p_part)| {
+            match_candidate_against_goal(
+                kb,
+                impl_sort,
+                false, // a part of the arrow — arms (2a) and (2.5) apply only at top level
+                c_part,
+                p_part,
+                impl_params,
+                impl_subst,
+                specificity,
+                sigma,
+            )
+        });
+    }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
     //
     // A VALUE standing in a type position — the `3` of `provides Store[State = Buf[T =
@@ -941,7 +976,7 @@ pub(super) fn match_candidate_against_goal(
     // typed provider the call silently took the typed one. `value` is a field of the
     // extractor, not a spec parameter — the reason `parametric_view_parts` keeps
     // `effects_rows` out of this arm too.
-    let candidate_parts = if is_denoted_type(kb, candidate_value) {
+    let candidate_parts = if matches!(candidate_head, TypeHead::Denoted) {
         None
     } else {
         parametric_view_parts(kb, candidate_value)
