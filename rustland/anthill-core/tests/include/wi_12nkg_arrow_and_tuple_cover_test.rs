@@ -24,7 +24,7 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! FOUR PARTS, each backed out in place and RUN over this file's 20 rows:
+//! FOUR PARTS, each backed out in place and RUN over this file's 21 rows:
 //!
 //! 1. THE σ VERDICT's two arms (`parts_verdict` answering `None` for two arrows and for two
 //!    tuples where a σ context is passed, so they reach the head again). 9 FAIL:
@@ -44,10 +44,11 @@
 //!    `sigma_pair_verdict`). 1 FAILS: [`a_lambda_without_its_parameters_type_reads_the_requirement`]
 //!    (refused by part 4; with that backed out too, it loads and dies when it runs).
 //! 4. THE REFUSAL of a call at an arrow or a tuple no provision answers
-//!    (`unprovided_spec_at_former` not asked). 5 FAIL, each loading clean:
+//!    (`unprovided_spec_at_former` not asked). 6 FAIL, each loading clean:
 //!    [`a_call_at_an_arrow_or_a_tuple_nothing_provides_is_refused`],
 //!    [`a_call_a_requirement_at_another_arrow_does_not_cover_is_refused_with_no_provider`],
 //!    [`a_lambda_without_its_parameters_type_and_no_requirement_is_refused`],
+//!    [`a_lambda_of_several_binders_is_refused_naming_the_brackets`],
 //!    [`a_call_at_an_arrow_over_a_type_parameter_is_refused_naming_the_requires`] and
 //!    [`a_parameter_received_operation_of_a_self_receiving_spec_is_refused_too`] — the last
 //!    also with the refusal skipping a self-representing spec, as the sort-carrier one does.
@@ -664,6 +665,45 @@ fn a_lambda_without_its_parameters_type_and_no_requirement_is_refused() {
     );
     assert_eq!(
         answers("wi12nkg.unprovided_open_written", &alone("lambda (x: Int64) -> 1"), "use()"),
+        30
+    );
+}
+
+/// A LAMBDA OF SEVERAL BINDERS STATES NO PARAMETER TYPE OF ITS OWN, written or not — the type
+/// around it supplies them — so `Apply.run(lambda (x: Int64, y: Int64) -> x)` is at `(?) ->
+/// Int64` too. The refusal names the repair that reaches it, the type in the call's brackets;
+/// that one and binding the lambda to a name of the type both run.
+#[test]
+fn a_lambda_of_several_binders_is_refused_naming_the_brackets() {
+    const TWO: &str = "(Int64, Int64) -> Int64";
+    let with = |body: &str| {
+        format!(
+            "{}\n  operation use() -> Int64 = {body}\n",
+            provider("AtTwo", TWO, 30)
+        )
+    };
+    assert_refused_naming(
+        &load_errors_of(&program(
+            "wi12nkg.unprovided_binders",
+            &with("Apply.run(lambda (x: Int64, y: Int64) -> x)"),
+        )),
+        &[NO_PROVISION[0], "in the call's brackets (`[F = …]`)"],
+        "`Apply.run` on a lambda of two typed binders, with nothing around it to type them",
+    );
+    assert_eq!(
+        answers(
+            "wi12nkg.unprovided_binders_bracket",
+            &with(&format!("Apply.run[F = {TWO}](lambda (x: Int64, y: Int64) -> x)")),
+            "use()"
+        ),
+        30
+    );
+    assert_eq!(
+        answers(
+            "wi12nkg.unprovided_binders_named",
+            &with(&format!("let f: {TWO} = lambda (x: Int64, y: Int64) -> x  Apply.run(f)")),
+            "use()"
+        ),
         30
     );
 }

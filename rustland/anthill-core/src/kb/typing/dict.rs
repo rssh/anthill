@@ -3405,9 +3405,20 @@ pub(super) fn unprovided_spec_at_former(
              on that declaration"
         )
     } else {
-        "It leaves a part unsaid, and a provision is matched at the type as the call states \
-         it: write the type of the lambda's parameter"
-            .to_string()
+        // THE BRACKET AS WELL AS THE PARAMETER. A lambda of several binders takes their
+        // types from the type around it and states none of its own, written or not:
+        // MEASURED, `Apply.run(lambda (x: Int64, y: Int64) -> x)` is at `(?) -> Int64`
+        // beside a provider at `(Int64, Int64) -> Int64`, and runs once the call says
+        // `[F = (Int64, Int64) -> Int64]` or the lambda is bound to a name of that type.
+        let param = spec_carrier_param_or_sole(kb, goal.spec_sort)
+            .map(|p| short_name_of(kb.local_name_of(p)).to_string())
+            .unwrap_or_default();
+        format!(
+            "It leaves a part unsaid, and a provision is matched at the type as the call \
+             states it: write the type of the lambda's parameter, or the whole type in the \
+             call's brackets (`[{param} = …]`), which is where a lambda of several \
+             parameters states its own"
+        )
     };
     Some(TypeError::UnsatisfiableRequirement {
         span,
