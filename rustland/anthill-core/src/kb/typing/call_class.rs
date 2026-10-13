@@ -3,43 +3,59 @@
 
 use super::*;
 
-/// The parent sort of `op_sym` when it is a SPEC operation — declared in a
-/// parametric sort (one with at least one `sort <Param> = ?` declaration),
-/// REGARDLESS of whether it has a default body. Returns the spec sort symbol,
-/// or `None` when `op_sym` is not a member of a parametric sort.
+/// The sort that declares `op_sym`, where a sort may be provided: a call of `op_sym` is
+/// answered by the member of its CARRIER, REGARDLESS of whether the operation has a
+/// default body. `None` when `op_sym` is not a member of a sort, and for a sort with
+/// constructors ([`sort_may_be_provided`]), whose operations are its own.
+///
+/// EVERY SORT PROVIDES ITSELF, BY ITS OWN OPERATIONS, and no sort is a spec more than
+/// another (kernel-language.md §5.3; WI-20261003-4DYR6). A call `S.op(…)` has a carrier —
+/// the sort of the argument standing at `S`, or the type bound to the parameter of `S`
+/// the operation receives on, or `S` where the operation names neither — and the carrier
+/// provides `S`: it is `S` ([`sort_provides`] answers so), or it declares the provision.
+/// So nothing is read off the declaring sort here but the one thing a load fixes for
+/// good: nothing provides a sort with constructors.
+///
+/// IT WAS "DECLARES A TYPE PARAMETER", and that read a sort's KIND off its declaration.
+/// With `sort Sp { operation size(s: Sp) -> Int64 }` and `sort Car { entity car(n:
+/// Int64); provides Sp; operation size(c: Car) -> Int64 = 42 }`, `Sp.size(car(n: 1))`
+/// loaded clean and died `OperationBodyMissing`: the operation was `Sp`'s own to every
+/// reader, typer and eval alike. With a default body on `Sp.size` it answered the
+/// default, in silence. One unused `sort T = ?` in `Sp` made both run to 42.
+///
+/// AND IT DOES NOT ASK WHETHER A SORT PROVIDES IT YET. A load may declare a sort that a
+/// later load provides, a sealed load too; the answer of a declaration must not move
+/// with what is loaded after it (`wi_4dyr6_every_sort_provides_itself_test`, the rows
+/// about a later load). Where the carrier turns out to be the sort itself the readers
+/// find no other supplier and the sort's own operation answers.
 ///
 /// WI-444: this is the body-agnostic core. [`lookup_spec_op_dispatch`] layers
-/// the body-less gate on top (a body-less spec op is the call-site dispatch
-/// target via `SortProvidesInfo`), and with it the data-sort one — a sort with
-/// constructors has no provider to dispatch to; a DEFAULTED spec op (with its own body) is
-/// not a body-less dispatch target but is still a spec op whose carrier may
+/// the body-less gate on top (a body-less operation is the call-site dispatch
+/// target via `SortProvidesInfo`); a DEFAULTED one (with its own body) is
+/// not a body-less dispatch target but is still an operation whose carrier may
 /// OVERRIDE it (typeclass default-method semantics — defaults fill gaps, they
 /// do not shadow), so the override paths gate on this instead.
 ///
-/// WI-958 — and THE one reader of "the parametric sort that declares this op":
-/// [`self_receiver_spec_sort`] is this plus a self-receiver gate, so the two cannot
-/// disagree about which sorts are spec sorts. The owner AND its kind gate come from
+/// WI-958 — and THE one reader of "the sort that declares this op, where a sort may be
+/// provided": [`self_receiver_spec_sort`] is this plus a self-receiver gate, so the two
+/// cannot disagree about which sorts those are. The owner AND its kind gate come from
 /// [`impl_parent_sort_of_op`] (WI-956, which took that gate's `has_kind` — stated
-/// there — and gave it to this reader's four siblings); only the PARAMETRIC gate is
-/// stated here.
-///
-/// The kind gate is NOT subsumed by the parametric one, though on today's surface
-/// it never fires: `add_type_param`'s two surface sites are gated on
-/// `is_sort_scope`, so a NAMESPACE never accumulates params (MEASURED: 0 of the 30
-/// namespaces in stdlib + anthill-stl report any), and 0 of 373 operations have a
-/// non-`Sort` parent with a non-empty param list. But an OPERATION scope does take
-/// params — `operation outer[U](…)` gives `type_params_of_sort(outer) == ["U"]` —
-/// so the parametric gate alone states "some scope with brackets", which is not the
-/// question either caller asks.
+/// there — and gave it to this reader's four siblings).
 pub fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
-    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
+    sort_may_be_provided(kb, parent_sym).then_some(parent_sym)
 }
 
-/// WI-1042 — "declares at least one `sort <Param> = ?`", the PARAMETRIC leg of
-/// [`spec_op_parent_sort`], named so [`defaulted_spec_op_parent`] can order it after
-/// its own cheaper legs without re-spelling it. One line, and the name is the point:
-/// the two gates must not each carry their own reading of what makes a sort a spec.
+/// Nothing provides a sort with constructors (kernel-language.md §5.1), with a type
+/// parameter or without: its parameters are its content, its operations are its own, and
+/// the loader refuses a provision of it. Every other sort may be provided.
+fn sort_may_be_provided(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
+    !sort_is_data(kb, kb.canonical_sort_sym(sort_sym))
+}
+
+/// WI-1042 — "declares at least one `sort <Param> = ?`": what [`spec_op_call_parent`]
+/// asks beside a provider, and what says a requirement or a selection can name a
+/// provider through a parameter.
 ///
 /// IT WAS THE EXPENSIVE LEG, AND WI-954 MADE IT O(1). `type_params_of_sort` used to
 /// `format!` a prefix, scan ALL of `by_qualified_name` without short-circuiting and
@@ -56,13 +72,19 @@ pub fn spec_op_parent_sort(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
 /// `declaring_scope`. `["Acc", "EffP"]` for a callback parameter was the wrong answer;
 /// `[]` is the right one, and no caller passes such a symbol. Shielding it was the right
 /// call on what WI-1042 could measure, and the shield is no longer what makes it safe.
-fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
+pub(super) fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
     !kb.type_param_syms_of(sort_sym).is_empty()
 }
 
-/// WI-1042 — THE defaulted-spec-op gate: `op_sym` is a member of a PARAMETRIC sort and
-/// HAS a runnable body, i.e. the typeclass DEFAULT a carrier may override. Returns the
-/// parent spec sort.
+/// WI-1042 — THE defaulted-spec-op gate: `op_sym` is a member of a sort that may be
+/// provided ([`sort_may_be_provided`]) and HAS a runnable body, i.e. the DEFAULT a
+/// carrier may override. Returns the declaring sort.
+///
+/// WI-20261003-4DYR6 — the sort was "a parametric one". Over `sort Sp { operation size(s:
+/// Sp) -> Int64 = 7 }` and `sort Car { entity car(n: Int64); provides Sp; operation
+/// size(c: Car) -> Int64 = 42 }`, `Sp.size(car(n: 1))` answered 7: the default ran where
+/// the carrier supplies a member, in silence. And a bodied operation of a parametric DATA
+/// sort was asked for an override nothing can supply.
 ///
 /// ONE OWNER, because three sites asked this and two of them spelled it differently:
 ///
@@ -155,18 +177,29 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
     if !op_has_runnable_body(kb, op_sym) {
         return None;
     }
-    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
+    sort_may_be_provided(kb, parent_sym).then_some(parent_sym)
 }
 
-/// WI-1043 — THE WALK TRIGGER'S gate: `op_sym` is an OPERATION declared by a
-/// PARAMETRIC sort, i.e. a spec op of EITHER half — [`defaulted_spec_op_parent`]'s
-/// (a runnable default a carrier may override) or [`lookup_spec_op_dispatch`]'s
-/// (body-less, resolved by call-site dispatch). Returns the parent spec sort.
+/// WI-1043 — THE WALK TRIGGER'S gate: `op_sym` is an OPERATION of a sort with a type
+/// parameter or a provider. Returns the declaring sort.
 ///
-/// AND A BODY-LESS OPERATION OF A PARAMETRIC DATA SORT, which is in neither half since
-/// WI-20261011-RM247: it is no dispatch placeholder, and its call in a rule body is still
-/// typed — its arguments checked at the sort's parameters, its `@[simp]` equation fired —
-/// as the call of a bodied operation of the same sort is.
+/// A RULE BODY'S QUESTION, AND THE ONE GATE THAT READS THE KNOWLEDGE BASE. An operation
+/// body's call has its carrier in hand, and [`spec_op_parent_sort`] asks nothing of the
+/// sort but that it may be provided. A rule body's call is typed and woven at load with
+/// its arguments unbound: the walk has to say THERE whether it types the call and which
+/// evidence the call carries (below), and a call of a sort with no parameter that nothing
+/// provides has no other carrier to be typed against — the goal the clauses answer, as
+/// proposal 068 leaves it. MEASURED with this gate at "every sort that may be provided":
+/// 35 rows fail, a module-style `sort Util`'s operations woven as dispatched and its
+/// rule-body goals typed as calls.
+///
+/// Within what it admits it is the union of the two halves — [`defaulted_spec_op_parent`]'s
+/// (a runnable default a carrier may override) and [`lookup_spec_op_dispatch`]'s
+/// (body-less, resolved by call-site dispatch) — AND OF AN OPERATION OF A PARAMETRIC DATA
+/// SORT, which is in neither half (WI-20261011-RM247 for the body-less one,
+/// WI-20261003-4DYR6 for the bodied): its sort is the only carrier a call of it can have.
+/// Its call in a rule body is still typed — its arguments checked at the sort's
+/// parameters, its `@[simp]` equation fired.
 ///
 /// ITS FIRST READER is [`call_dispatch_shape`], and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
@@ -180,16 +213,16 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// (WI-1027). Same program, two verdicts, decided by where the call is written.
 ///
 /// THE OPERATION-HOOD LEG IS NOT DECORATION and is the one clause a reader will try to
-/// drop, since [`spec_op_parent_sort`] already spells "member of a parametric sort".
+/// drop, since [`spec_op_parent_sort`] already spells "member of a sort".
 /// That predicate is operation-AGNOSTIC: `anthill.prelude.Option.some`, an entity
 /// constructor declared inside a parametric sort, passes it. WI-1042 measured what
 /// admitting that population at THIS site costs — 14 tests across 4 suites, the walk
 /// firing `type_check_node` on entity-constructor calls. Both halves' own gates carry
 /// the same leg (`op_has_runnable_body` / `operation_has_no_body` each require an
 /// `OperationInfo`), so asking for one directly is what makes this their union — with the
-/// data sort's body-less operations, above — and not a wider reading still.
+/// data sort's operations, above — and not a wider reading still.
 /// `wi1043_bodyless_rule_body_test::the_walk_gate_is_the_two_halves_and_a_data_sorts_-
-/// body_less_operations` drives that equality over the corpus.
+/// operations` drives that equality over the corpus.
 ///
 /// THE SAME UNION SPLITS A WOVEN CALL (WI-20260925-P7VP4): a spec op's woven call carries
 /// one DISPATCH dictionary, any other operation's carries SLOTS — the inference declines a
@@ -199,52 +232,42 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 ///
 /// CLAUSE ORDER as [`defaulted_spec_op_parent`] measured it: the name split first (the
 /// cheap non-operation early-out — every relational atom head leaves here), then the
-/// `OperationInfo` probe, then [`sort_is_parametric`] last. Since WI-954 that last leg
-/// is an O(1) owner-scope read; the order is kept because the `OperationInfo` probe's
-/// fact-scan fallback is still the expensive one to shield.
+/// `OperationInfo` probe, then the sort's own legs last. Since WI-954 the parameter leg
+/// is an O(1) owner-scope read and the provider leg is one probe of an index; the order
+/// is kept because the `OperationInfo` probe's fact-scan fallback is still the expensive
+/// one to shield.
 pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
     crate::kb::op_info::lookup_operation_info(kb, op_sym)?;
-    sort_is_parametric(kb, parent_sym).then_some(parent_sym)
+    (sort_is_parametric(kb, parent_sym) || spec_has_any_providers(kb, parent_sym))
+        .then_some(parent_sym)
 }
 
-/// WI-210 — `op_sym` is a "spec operation" if it is declared in a sort
-/// that has at least one `sort <Param> = ?` declaration and no constructor, AND the
-/// operation has no body. Spec operations are subject to call-site
-/// dispatch via `SortProvidesInfo` lookup.
+/// WI-210 — `op_sym` is a body-less operation of a sort that may be provided
+/// ([`spec_op_parent_sort`]): a call of it is dispatched to the member its carrier
+/// supplies, via `SortProvidesInfo` lookup, and is the sort's own where the carrier is
+/// the sort.
 ///
-/// Returns the *parent sort* symbol (the spec sort) when `op_sym`
-/// qualifies; `None` otherwise.
+/// Returns the declaring sort when `op_sym` qualifies; `None` otherwise.
 ///
-/// WI-20261011-RM247 — NOT AN OPERATION OF A DATA SORT. A sort with constructors is a data
-/// sort and nothing provides one (kernel-language.md §5.1), so a body-less operation it
-/// declares has no provider to be dispatched to, with a parameter or without: it is the
-/// sort's own, run by its host mapping, its rules or the `@[simp]` equation that defines
-/// it. Read as a dispatch placeholder, `Box.open` in `sort Box { sort V = ?; entity mk(v:
-/// V); operation open(b: Box[V]) -> V; rule open(?b) <=> peek(?b) @[simp] }` was held to
-/// `Box` providing `Box` by every reader of this answer. The equation's guard never held:
-/// the program loaded clean and the call died `OperationBodyMissing`, where the same sort
-/// without its parameter ran. A caller generic in `V`, and a rule body, were refused for a
-/// `requires Box[…]` or a `provides Box[…]` that no program can write.
-///
-/// The other two gates keep the parametric reading. [`defaulted_spec_op_parent`] is not
-/// asked this, and [`spec_op_call_parent`] is also what has a rule-body call of a
-/// parametric sort's operation typed, data sort or spec.
+/// NOT AN OPERATION OF A DATA SORT (WI-20261011-RM247), and that is the shared leg's
+/// answer. A sort with constructors is a data sort and nothing provides one
+/// (kernel-language.md §5.1), so a body-less operation it declares has no provider to be
+/// dispatched to, with a parameter or without: it is the sort's own, run by its host
+/// mapping, its rules or the `@[simp]` equation that defines it. Read as a dispatch
+/// placeholder, `Box.open` in `sort Box { sort V = ?; entity mk(v: V); operation open(b:
+/// Box[V]) -> V; rule open(?b) <=> peek(?b) @[simp] }` was held to `Box` providing `Box`
+/// by every reader of this answer. The equation's guard never held: the program loaded
+/// clean and the call died `OperationBodyMissing`, where the same sort without its
+/// parameter ran. A caller generic in `V`, and a rule body, were refused for a `requires
+/// Box[…]` or a `provides Box[…]` that no program can write.
 pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     // The op must be body-less (declaration only): a DEFAULTED spec op is a
     // normal-bodied op the runtime can run directly, not a call-site dispatch
     // placeholder. (Its carrier-override path is the body-agnostic
     // [`spec_op_parent_sort`] — WI-444.)
     let parent_sym = spec_op_parent_sort(kb, op_sym)?;
-    if !operation_has_no_body(kb, op_sym) {
-        return None;
-    }
-    // Asked last: the two legs above answer for nearly every operation. `parent_sym` was
-    // read by its qualified name, so it is the canonical symbol `sort_is_data` is keyed by.
-    if sort_is_data(kb, parent_sym) {
-        return None;
-    }
-    Some(parent_sym)
+    operation_has_no_body(kb, op_sym).then_some(parent_sym)
 }
 
 /// WI-20261011-CR6GD — the declared operation `op_sym` has ONE definition, its clauses,
@@ -259,11 +282,15 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
 /// Such a call loaded clean and died `OperationBodyMissing`; [`check_apply_iter`] refuses
 /// it where an operation body writes it.
 ///
-/// NO PROVIDER CAN SUPPLY IT is asked of the OWNER, not of [`lookup_spec_op_dispatch`]: a
-/// namespace's operation and a data sort's are their owner's own (§5.1), while a sort with
-/// no constructor may be provided — parametric or not — and a call of its operation is
-/// dispatched to whichever member the provider supplies. That call is left to the
-/// dispatch, which has the carrier in hand.
+/// NO PROVIDER CAN SUPPLY IT is asked of the OWNER and of the operation's own signature,
+/// not of [`lookup_spec_op_dispatch`], and not of the knowledge base: a load may declare a
+/// sort that a LATER load provides (WI-20261003-4DYR6), so "nothing provides it yet" says
+/// nothing of a call whose receiver is typed at the sort. What no later load can change:
+/// a namespace's operation is its own; so is a data sort's (§5.1); and so is an operation
+/// of a sort with no type parameter that names no carrier
+/// ([`signature_names_no_carrier`]) — no argument stands at another sort, and a sort with
+/// no parameter has no witness a call could select. Any other call of a sort's operation
+/// is left to the dispatch, which has the carrier in hand.
 ///
 /// THE `eq` LEG is eval's `eq_bridge_target` read at load: a carrier's `eq` written as
 /// clauses is the one operation a call does run by proving it, so `TotalFloat.eq(a, b)`
@@ -275,7 +302,10 @@ pub fn lookup_spec_op_dispatch(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sym
 pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
     kb.has_clauses_under(op_sym)
         && !op_is_executable(kb, op_sym)
-        && impl_parent_sort_of_op(kb, op_sym).is_none_or(|sort| sort_is_data(kb, sort))
+        && impl_parent_sort_of_op(kb, op_sym).is_none_or(|sort| {
+            sort_is_data(kb, sort)
+                || (!sort_is_parametric(kb, sort) && signature_names_no_carrier(kb, op_sym, sort))
+        })
         && !kb.is_eq_dispatch_target(op_sym)
 }
 

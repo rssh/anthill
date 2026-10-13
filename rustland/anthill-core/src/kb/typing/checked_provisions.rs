@@ -27,7 +27,8 @@
 //!     same: this check is what refuses the KB at the load after.)
 //!   * a TYPE PARAMETER declared since for a sort that was there. A `requires` naming a
 //!     sort with no type parameter is a refinement and asks for no dictionary
-//!     (`clause_is_dispatchable`); given one, it is a demand nothing answers. Found by
+//!     (`clause_is_dispatchable`); given one, and no constructor, it is a demand nothing
+//!     answers. Found by
 //!     /code-review, reproduced: `namespace lib.Boom  sort U = ?  end` over a sealed
 //!     `sort Narrow requires Boom` is refused where it is written and the parameter is
 //!     registered all the same.

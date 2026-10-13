@@ -20504,28 +20504,35 @@ fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> boo
 // legal again, and the two are simply different operations. That is the ticket's
 // language decision, stated in kernel-language.md §5.5.
 
-/// The SHORT NAMES every spec operation in `kb` carries.
+/// The SHORT NAMES of the operations of every sort with a type parameter or a provider —
+/// the population a rule body types and weaves as dispatched
+/// ([`crate::kb::typing::spec_op_call_parent`]).
 ///
 /// ITS PRODUCTION READER IS GONE. This was `check_rival_spec_operations`' gate — the
 /// population that pass drew its refusal from — and WI-20260825-KD9SW deleted the pass
 /// (a minted operator names its target outright, so there is no tier entry left to
 /// capture). What remains is a QUERY over the KB that three tests still ask, each about
-/// which names are spec operations rather than about any refusal:
+/// which names are such operations rather than about any refusal:
 /// `wi_vt8cf_division_tower_test`, `wi_1wbzt_syntax_category_test`, and the
 /// stdlib-less row that pins the set is empty without the library files. It is `pub` for
 /// them, and deliberately kept rather than inlined into one of them: the three ask the
 /// same question and a second spelling of it is the drift this file's helpers avoid.
 ///
+/// NOT [`crate::kb::typing::spec_op_parent_sort`], which it read until
+/// WI-20261003-4DYR6: that answers for every sort that may be provided, `Float` among
+/// them, and the question here is which operations ANOTHER sort answers for — `pow` is
+/// `Float`'s own while nothing provides `Float`.
+///
 /// EMPTY IN A KB WITH NO STDLIB SOURCES, which is where the pass's whole "uniformly off"
-/// property comes from: `sort_is_parametric` reads the parent's `sort T = ?`
-/// declarations, and `register_prelude` defines the prelude's symbols without any.
+/// property comes from: the gate reads the parent's `sort T = ?` declarations and its
+/// providers, and `register_prelude` defines the prelude's symbols with neither.
 pub fn spec_operation_short_names(kb: &KnowledgeBase) -> HashSet<&str> {
     kb.symbols
         .by_qualified_name
         .values()
         .filter(|&&sym| {
             kb.has_kind(sym, crate::intern::SymbolKind::Operation)
-                && crate::kb::typing::spec_op_parent_sort(kb, sym).is_some()
+                && crate::kb::typing::spec_op_call_parent(kb, sym).is_some()
         })
         .map(|&sym| kb.local_name_of(sym))
         .collect()
@@ -40438,18 +40445,25 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// WI-840 — is `enclosing` a SPEC sort, i.e. one carrying at least one type
-    /// parameter? That is `spec_op_parent_sort`'s own reading of "a spec", asked
-    /// directly of the scope rather than re-derived from the operation's qualified
-    /// name — and it is what makes §4.2's spec-op clause apply: a call on a spec
-    /// operation selects its dictionary by the SPEC's short name, which a parameter
-    /// of that name would shadow. A namespace declares no type parameters, so it
-    /// answers `false` without a kind test.
+    /// WI-840 — can a call on an operation of `enclosing` select the provider that
+    /// answers it by the sort's own short name (§4.2: `Monoid.combine[Monoid = AddM](a,
+    /// b)`)? Where it can, a type parameter of that name would shadow the key.
+    ///
+    /// A selection names a WITNESS, and a witness is filed at the carrier a type
+    /// parameter of the sort names — so the sort has one, and it is no data sort: nothing
+    /// provides a sort with constructors (kernel-language.md §5.1), with a parameter or
+    /// without. A sort with no parameter is answered by its receiver's own sort whoever
+    /// provides it, and no witness for it can exist. A namespace declares no type
+    /// parameters, so it answers `false` without a kind test.
+    ///
+    /// The constructors are asked of the symbol table, which pass 1 filled for every
+    /// file: the index a loaded sort body fills is not complete while bodies load.
     fn enclosing_is_spec(&self, enclosing: ScopeId) -> bool {
         self.kb
             .symbols
             .scope(enclosing)
             .is_some_and(|s| !s.type_params_ordered.is_empty())
+            && !self.kb.sort_has_constructors(enclosing.owner())
     }
 
     /// WI-840 (058 §4.7) — record the operation's NAMED requirement slots. The binder

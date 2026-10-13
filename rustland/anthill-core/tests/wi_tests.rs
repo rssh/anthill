@@ -29,6 +29,8 @@ mod wi_tcsgt_structural_bracket_entry_test;
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]
 mod wi_rm247_data_sort_equation_test;
+#[path = "include/wi_4dyr6_every_sort_provides_itself_test.rs"]
+mod wi_4dyr6_every_sort_provides_itself_test;
 #[path = "include/wi_3hn0n_tuple_on_rhs_test.rs"]
 mod wi_3hn0n_tuple_on_rhs_test;
 #[path = "include/wi_3hn0n_found_load_error_order_test.rs"]

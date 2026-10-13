@@ -320,12 +320,14 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 ///   `sort C requires Eq[T]`       a SPEC DEMAND — an inbound dictionary slot the
 ///                                 caller fills, read by every dispatch site.
 ///
-/// A SPEC IS A SORT WITH AT LEAST ONE TYPE PARAMETER. That is not a criterion invented
-/// here: it is `enclosing_is_spec`'s (WI-840) and `spec_op_parent_sort`'s own reading,
-/// and it is exactly the right question for THIS one, because a dictionary is selected
-/// BY the carrier its parameters name. A sort with no type parameter has no carrier to
-/// dispatch on, nothing can `provides` it, and no member could be reached through a slot
-/// held for it — so a slot for it can never be filled by anything.
+/// A DEMAND NAMES A CARRIER THROUGH A TYPE PARAMETER, of a sort another sort may provide.
+/// A dictionary is selected BY the carrier the clause's parameters name, so a sort with
+/// no type parameter gives a clause nothing to select one by: whichever sorts provide it
+/// (`NonMonotonicStore provides Store`), a call of its operation is answered by its
+/// receiver's own sort, and a slot held for it could be filled by nothing. And nothing
+/// provides a sort with constructors, with a parameter or without (kernel-language.md
+/// §5.1): `sort Narrow requires Box[V = Int64]` over a data sort `Box` names no provider
+/// either. Both are refinements.
 ///
 /// WHAT THE CONFLATION COST, measured. `sort Narrow requires Boom` put an unfillable
 /// `Boom` slot in `Narrow`'s dictionary chain, so building ANY dictionary whose impl is
@@ -343,6 +345,7 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
 pub(crate) fn clause_is_dispatchable(kb: &KnowledgeBase, required: Symbol) -> bool {
     !kb.type_params_of_sort(required).is_empty()
+        && !sort_is_data(kb, kb.canonical_sort_sym(required))
 }
 
 pub fn direct_requires_chain_rc(

@@ -2755,9 +2755,9 @@ pub(super) fn scope_contract_covers_dep(
 /// a CARRIER provides, as opposed to something that IS a carrier. A bracket over a carrier
 /// (`require[SortedSet[…]]`) declares no provision row to hold a chain.
 ///
-/// Both legs are cheap and the first is a pre-filter for the second: a sort with no type
-/// parameter has no carrier to dispatch on, so nothing could ever provide it
-/// ([`clause_is_dispatchable`], WI-20260921-28TAT).
+/// Both legs are cheap and the first says what a bracket can HOLD: a sort with no type
+/// parameter gives a bracket no carrier to name, whichever sorts provide it, and nothing
+/// provides a sort with constructors ([`clause_is_dispatchable`], WI-20260921-28TAT).
 fn sort_is_a_provided_spec(kb: &KnowledgeBase, s: Symbol) -> bool {
     clause_is_dispatchable(kb, s) && spec_has_any_providers(kb, s)
 }

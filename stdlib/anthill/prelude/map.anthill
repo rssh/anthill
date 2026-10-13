@@ -126,7 +126,12 @@ sort anthill.prelude.Map
   rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
     :- neq(?k, ?k2)   @[simp]
 
-  rule contains(?m, ?k) <=> neq(get(?m, ?k), none) @[simp]
+  -- `contains` is stated as `get` is, by the `put` that made the map: it asks equality
+  -- of the keys, which `Map` requires, and none of the values, which it does not.
+  rule contains(empty, ?) <=> false @[simp]
+  rule contains(put(?m, ?k, ?v), ?k) <=> true @[simp]
+  rule contains(put(?m, ?k2, ?v), ?k) = contains(?m, ?k)
+    :- neq(?k, ?k2)   @[simp]
 
   rule remove(empty, ?) <=> empty() @[simp]
   rule get(remove(?m, ?k), ?k) <=> none() @[simp]

@@ -1240,19 +1240,17 @@ pub(super) fn dot_member_dispatch_decision(
         return Ok(DotMember::Take);
     };
     // WI-1042 — WHAT A MISS MEANS HERE, stated because every other early-out in this
-    // function states its own and this one did not. `find_spec_op_for_provided_sort`
-    // answered `Some`, so the member backs something the carrier `provides` — but a
-    // PROVIDED SORT NEED NOT BE A SPEC. 058's spec sort is one declaring `sort X = ?`;
-    // `sort Leaf provides Plain` where `Plain` declares none loads clean, and
-    // `Plain.describe` then has no parametric parent.
+    // function states its own. `find_spec_op_for_provided_sort` answered `Some`, so the
+    // member backs an operation of a sort the carrier `provides` — and a sort something
+    // provides is one another carrier may answer for, with a type parameter or without
+    // (WI-20261003-4DYR6). What misses is a sort with CONSTRUCTORS, whose provision is a
+    // load error of its own (kernel-language.md §5.1): nothing is dispatched there, and
+    // `Take` adds no second error to that one.
     //
-    // So `Take` is the ANSWER, not a fallback: with no type parameter there is no carrier
-    // to key a supplier set on and no spec-op dispatch to decide, and the tie guard below
-    // is INAPPLICABLE rather than skipped. Filed as a loud error by this ticket's
-    // description and REFUTED by driving — a `panic!` here fired on exactly that program
-    // and on nothing else in the workspace, so raising would refuse a legal one.
-    // `wi1042_defaulted_gate_test::a_non_parametric_provided_sort_takes_the_member` is
-    // that program, kept as the driver.
+    // It read "a provided sort need not be a spec": `sort Leaf provides Plain`, where
+    // `Plain` declares no `sort X = ?`, missed here and took the member with no tie guard
+    // asked. `wi1042_defaulted_gate_test::a_non_parametric_provided_sort_takes_the_member`
+    // is that program. It goes on below now, and its answer is the same.
     let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else {
         return Ok(DotMember::Take);
     };

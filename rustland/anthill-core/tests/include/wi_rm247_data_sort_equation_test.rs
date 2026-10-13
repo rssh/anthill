@@ -40,15 +40,16 @@
 //!     a_goal_in_a_rule_body_reaches_it
 //!     a_clause_backed_operation_is_reached_from_a_rule_body
 //!   and `wi1043_bodyless_rule_body_test::the_walk_gate_is_the_two_halves_and_a_data_-
-//!   sorts_body_less_operations`, on the list of the operations this is about.
+//!   sorts_operations`, on the list of the operations this is about.
 //!
 //!   PASS with the change backed out, by design — what it must not move:
 //!     the_same_sort_without_a_parameter_runs
 //!     a_host_backed_operation_runs — the host function answers before a provider is asked
 //!     a_specs_law_still_waits_for_a_provider
-//!     a_law_on_a_spec_that_is_its_own_carrier_still_waits
-//!   The last two are the fence on the other side, measured with the test widened to
-//!   every parametric sort: both FAIL, each loading clean with its law fired.
+//!   The last is the fence on the other side, measured with the test widened to every
+//!   parametric sort: it FAILS, loading clean with its law fired. Its twin on a sort that
+//!   is its own carrier stood beside it until WI-20261003-4DYR6, which reads a sort as
+//!   providing itself: `a_law_on_a_sort_that_is_its_own_carrier_fires_at_the_sort`.
 //!
 //! A CONSTRUCTOR ON THE RIGHT-HAND SIDE — found while delivering the above, and the plain
 //! sort's as much as the parametric one's. `rule wrap(?v) <=> mk(?v) @[simp]` leaves the
@@ -429,15 +430,17 @@ fn a_specs_law_still_waits_for_a_provider() {
     );
 }
 
-/// `W` receives on itself and has no constructor: a value typed `W` is some provider's,
-/// and a law with a value on its right is not fired on it (WI-725's dual).
+/// `W` receives on itself and has no constructor: a value typed `W` is `W`'s own or some
+/// provider's, and a sort provides itself — so a law written in `W` is that value's, and
+/// fires at it (WI-20261003-4DYR6). `Leaf`'s member answers 9 so that the two can be told
+/// apart: 7 is the law. It was refused for a missing `requires W[T = …]` with nothing
+/// providing `W`, and dispatched to the member with `Leaf` in sight; FAILS with the
+/// guard's own-sort leg backed out, answering 9.
 #[test]
-fn a_law_on_a_spec_that_is_its_own_carrier_still_waits() {
-    assert_refused_naming(
-        &load_errors_of(
-            "namespace lib.rm247self\n  import anthill.prelude.Int64\n  sort W\n    sort T = ?\n    operation flip(w: Self) -> Int64\n    rule flip(?w) <=> 7 @[simp]\n  end\nend\nnamespace test.rm247self\n  import anthill.prelude.Int64\n  import lib.rm247self.W\n  operation at(w: W) -> Int64 = W.flip(w)\nend\n",
-        ),
-        &["missing `requires W[T = …]`"],
-        "a self-carried spec's law at an abstract value",
+fn a_law_on_a_sort_that_is_its_own_carrier_fires_at_the_sort() {
+    assert_runs(
+        "namespace lib.rm247self\n  import anthill.prelude.Int64\n  sort W\n    sort T = ?\n    operation flip(w: Self) -> Int64\n    rule flip(?w) <=> 7 @[simp]\n  end\nend\nnamespace test.rm247self\n  import anthill.prelude.Int64\n  import lib.rm247self.W\n  sort Leaf\n    entity leaf\n    provides W[T = Int64]\n    operation flip(w: Leaf) -> Int64 = 9\n  end\n  operation at(w: W) -> Int64 = W.flip(w)\n  operation go() -> Int64 = at(leaf())\nend\n",
+        "test.rm247self.go",
+        7,
     );
 }

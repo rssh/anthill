@@ -290,6 +290,13 @@ const PINNED: &[(&str, usize, &str)] = &[
          over everything does: the one call by name",
     ),
     (
+        "include/wi_4dyr6_every_sort_provides_itself_test.rs",
+        2,
+        "a sort declared by one load and first provided by a later one, sealed and not, \
+         against one call over both, by name — which load the provider arrives in is the \
+         subject",
+    ),
+    (
         "include/wi_s8cyd_record_names_test.rs",
         7,
         "what a proof record is NAMED, by a later load and in one call over the same files — \

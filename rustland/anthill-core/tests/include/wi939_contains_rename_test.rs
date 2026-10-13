@@ -127,10 +127,16 @@ end
 ///
 /// SINCE WI-20260926-K4JGC (proposal 068 §2.3) that normal form is UNREDUCED calls, not
 /// data: a goal argument is evaluated before its head is matched, `insert(…)` cannot run,
-/// and the goal is UNDECIDED — `yes` and `no` alike are one conditional row, neither
-/// answered nor refuted. The renamed clauses' composition is re-driven when
-/// WI-20260926-QCJ0B gives `Set` a route back. FAILS with K4JGC backed out: `yes` is
-/// definite and `no` empty.
+/// and a goal only the clauses answer is UNDECIDED — one conditional row, neither answered
+/// nor refuted. The renamed clauses' composition is re-driven when WI-20260926-QCJ0B gives
+/// `Set` a route back.
+///
+/// `yes` IS DECIDED AGAIN, BY THE LAW (WI-20261003-4DYR6). `contains(insert(?s, ?x), ?x)
+/// <=> true` is written in `Set` and its redex is a `Set`: a sort provides itself, by its
+/// own operations, so the law fires there. It did not while the guard asked the provider
+/// relation alone, which holds no row for a sort under itself. `no` meets no law — 9 is
+/// under neither `insert` — and stays with the clauses. FAILS with the guard's own-sort
+/// leg backed out: `yes` is one undecided row. FAILED with K4JGC backed out: `no` empty.
 #[test]
 fn set_contains_answers_over_the_symbolic_algebra() {
     let src = r#"
@@ -142,13 +148,16 @@ namespace cr4
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
-    for rel in ["cr4.yes", "cr4.no"] {
-        let rows = crate::common::query_unary(&mut kb, rel);
-        assert!(
-            rows.len() == 1 && !rows[0].1,
-            "{rel}: one UNDECIDED row over the symbolic algebra; got {rows:?}",
-        );
-    }
+    let yes = crate::common::query_unary(&mut kb, "cr4.yes");
+    assert!(
+        yes.len() == 1 && yes[0].1,
+        "cr4.yes: decided, by the law written in `Set`; got {yes:?}",
+    );
+    let no = crate::common::query_unary(&mut kb, "cr4.no");
+    assert!(
+        no.len() == 1 && !no[0].1,
+        "cr4.no: one UNDECIDED row over the symbolic algebra; got {no:?}",
+    );
 }
 
 /// THE CONTROL FOR THE ALGEBRA: `Set.eq` is defined THROUGH `subset`, and `subset`'s

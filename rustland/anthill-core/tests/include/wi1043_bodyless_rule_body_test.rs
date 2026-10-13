@@ -72,7 +72,7 @@
 //! | `one_supplier_answers_the_supplied_impl_in_a_rule_body` | **FAILS** (`[]`) | **FAILS** (`[]`) | ok | ok |
 //! | `a_witness_supplied_carrier_answers_through_both_spellings` | **FAILS** | **FAILS** | **FAILS** | ok |
 //! | `a_carrier_with_no_instance_is_refused_at_load` | **FAILS** (loads clean) | ok | ok | ok |
-//! | `the_walk_gate_is_the_two_halves_and_a_data_sorts_body_less_operations` | ok | ok | ok | ok |
+//! | `the_walk_gate_is_the_two_halves_and_a_data_sorts_operations` | ok | ok | ok | ok |
 //! | `a_tie_nested_in_an_eq_goal_is_reported_once` | **FAILS** (the qualified arm loads clean) | ok | ok | ok |
 //! | `wi282…::rule_body_dot_no_such_member_errors` | ok | ok | ok | **FAILS** |
 //! | `wi557…::rule_body_definite_precondition_violation_is_rejected` | ok | ok | ok | **FAILS** |
@@ -89,7 +89,7 @@
 //! `wi_p7vp4_rule_body_requirements_test::a_witness_carrier_beside_a_second_carrier_loads` —
 //! where firing on the witness carrier walks on to a second carrier that provides nothing.
 //!
-//! `the_walk_gate_is_the_two_halves_and_a_data_sorts_body_less_operations` is ok in every
+//! `the_walk_gate_is_the_two_halves_and_a_data_sorts_operations` is ok in every
 //! column BY DESIGN, and the first version of this table predicted otherwise — it pins the
 //! GATE FUNCTION, not any reader of it, so reverting a reader cannot move it. What does: a
 //! clause added to `spec_op_call_parent` that neither half has. That is the drift it exists
@@ -349,9 +349,10 @@ fn a_carrier_with_no_instance_is_refused_at_load() {
     );
 }
 
-/// THE GATE ITSELF, over a real corpus load: [`spec_op_call_parent`] is the union of the
-/// two halves it was built from and of the body-less operations of a parametric data sort,
-/// with no further reading of its own.
+/// THE GATE ITSELF, over a real corpus load: [`spec_op_call_parent`] answers where the
+/// declaring sort has a type parameter or a provider, and what it answers there is the
+/// union of the two halves it was built from and of the operations of a parametric data
+/// sort, with no further reading of its own.
 ///
 /// The oracle discipline `wi1042_defaulted_gate_test` established: compare the shipped
 /// gate against an INDEPENDENT construction out of the two owners, so the assertion is
@@ -359,48 +360,75 @@ fn a_carrier_with_no_instance_is_refused_at_load() {
 /// EVERY part — a union whose body-less side is empty would pass the agreement while
 /// measuring only WI-1026's population.
 ///
-/// THE THIRD PART (WI-20261011-RM247). A sort with constructors is a data sort, nothing
-/// provides one, and a body-less operation it declares is therefore in NEITHER half: it
-/// has no default to override and no provider to be dispatched to. The walk still types
-/// its call. The parts are disjoint by the order they are counted in, so the third list
-/// is what says the body-less half no longer holds them. Its member is this test's own
-/// `Held.open`, so the list does not empty when the library's two (`Pair.fst`, `Pair.snd`)
-/// are given the bodies their declaration says they are waiting for.
+/// THE THIRD PART (WI-20261011-RM247, WI-20261003-4DYR6). A sort with constructors is a
+/// data sort and nothing provides one, so its own sort is the only carrier a call of its
+/// operation can have: the operation is in NEITHER half, with a body or without — no
+/// provider can override the one and none can be dispatched to for the other. The walk
+/// still types its call, at the sort's parameters. The parts are disjoint by the order
+/// they are counted in, so the third list is what says the halves no longer hold them.
+/// Its members are this test's own `Held.open` and `Held.peek`, so the list does not
+/// empty with what the library declares.
+///
+/// WHAT THE HALVES HOLD THAT THE WALK DOES NOT (WI-20261003-4DYR6). The halves read
+/// nothing off a sort but that it may be provided, so an operation of a sort with no
+/// parameter that nothing provides is in one — `Float.pow`. The walk leaves its
+/// rule-body goal as it is written: there is no other carrier to type it against. An
+/// operation of a sort with no parameter that IS provided is in both —
+/// `anthill.persistence.Store.persist`.
 ///
 /// CONTROL: add any clause to [`spec_op_call_parent`] that neither half has, or drop its
 /// `OperationInfo` probe (which is what keeps an entity constructor declared inside a
 /// parametric sort — `anthill.prelude.Option.some` — out of the walk), and this fails.
-/// Back the data-sort test out of [`lookup_spec_op_dispatch`] and it fails on the third
-/// list, which is then empty.
+/// Read a sort with constructors as one that may be provided and it fails on the third
+/// list, which is then empty. Put a type-parameter test back in the halves and it fails
+/// on `Float.pow`; drop the walk's provider leg and it fails on `Store.persist`.
 #[test]
-fn the_walk_gate_is_the_two_halves_and_a_data_sorts_body_less_operations() {
+fn the_walk_gate_is_the_two_halves_and_a_data_sorts_operations() {
     let kb: KnowledgeBase = crate::common::load_kb_with(
-        "namespace wi1043.probe\n  sort Held\n    sort V = ?\n    entity held(v: V)\n    operation open(h: Held[V]) -> V\n  end\nend\n",
+        "namespace wi1043.probe\n  sort Held\n    sort V = ?\n    entity held(v: V)\n    operation open(h: Held[V]) -> V\n    operation peek(h: Held[V]) -> V = h.v\n  end\nend\n",
     );
-    let data_sorts_own = |op: Symbol| -> Option<Symbol> {
-        spec_op_parent_sort(&kb, op)
-            .filter(|&sort| kb.sort_has_constructors(sort) && kb.op_body_node(op).is_none())
+    // The declaring sort read off the operation's own name, so what is said of it is
+    // built from nothing the gates under test answer.
+    let owner = |op: Symbol| -> Option<Symbol> {
+        let (owner, _) = kb.qualified_name_of(op).rsplit_once('.')?;
+        kb.try_resolve_symbol(owner)
     };
-    let oracle = |op: Symbol| -> Option<Symbol> {
-        defaulted_spec_op_parent(&kb, op)
-            .or_else(|| lookup_spec_op_dispatch(&kb, op))
-            .or_else(|| data_sorts_own(op))
+    let parametric = |sort: Symbol| !kb.type_params_of_sort(sort).is_empty();
+    let data_sorts_own = |op: Symbol| -> Option<Symbol> {
+        owner(op).filter(|&sort| kb.sort_has_constructors(sort) && parametric(sort))
+    };
+    let halves = |op: Symbol| -> Option<Symbol> {
+        defaulted_spec_op_parent(&kb, op).or_else(|| lookup_spec_op_dispatch(&kb, op))
     };
     let (mut defaulted, mut body_less_count) = (0usize, 0usize);
     let mut data_sorts_own_names: Vec<&str> = Vec::new();
+    let mut in_a_half_alone: Vec<&str> = Vec::new();
     for (op, _) in all_operation_params(&kb) {
-        assert_eq!(
-            spec_op_call_parent(&kb, op),
-            oracle(op),
-            "the walk gate and the union of its parts disagree on `{}`",
-            kb.qualified_name_of(op),
-        );
+        let name = kb.qualified_name_of(op);
+        match spec_op_call_parent(&kb, op) {
+            Some(walked) => assert_eq!(
+                Some(walked),
+                halves(op).or_else(|| data_sorts_own(op)),
+                "the walk gate answers for `{name}` and the union of its parts does not",
+            ),
+            None => {
+                assert!(
+                    !owner(op).is_some_and(parametric),
+                    "`{name}` is an operation of a sort with a type parameter, and the \
+                     walk gate does not answer for it",
+                );
+                if halves(op).is_some() {
+                    in_a_half_alone.push(name);
+                }
+                continue;
+            }
+        }
         if defaulted_spec_op_parent(&kb, op).is_some() {
             defaulted += 1;
         } else if lookup_spec_op_dispatch(&kb, op).is_some() {
             body_less_count += 1;
         } else if data_sorts_own(op).is_some() {
-            data_sorts_own_names.push(kb.qualified_name_of(op));
+            data_sorts_own_names.push(name);
         }
     }
     assert!(
@@ -408,10 +436,25 @@ fn the_walk_gate_is_the_two_halves_and_a_data_sorts_body_less_operations() {
         "both halves must be populated for the agreement above to measure anything — \
          defaulted {defaulted}, body-less {body_less_count}",
     );
+    for own in ["wi1043.probe.Held.open", "wi1043.probe.Held.peek"] {
+        assert!(
+            data_sorts_own_names.contains(&own),
+            "`{own}` is an operation of a parametric data sort, so it is in neither \
+             half: {data_sorts_own_names:?}",
+        );
+    }
     assert!(
-        data_sorts_own_names.contains(&"wi1043.probe.Held.open"),
-        "`Held.open` is a body-less operation of a parametric data sort, so it is in \
-         neither half: {data_sorts_own_names:?}",
+        in_a_half_alone.contains(&"anthill.prelude.Float.pow"),
+        "`Float.pow` is in a half — `Float` may be provided — and not in the walk, \
+         nothing providing `Float`: {in_a_half_alone:?}",
+    );
+    let persist = kb
+        .try_resolve_symbol("anthill.persistence.Store.persist")
+        .expect("the stdlib declares Store.persist");
+    assert!(
+        spec_op_call_parent(&kb, persist).is_some_and(|store| !parametric(store)),
+        "`Store` takes no type parameter and `NonMonotonicStore` provides it: the walk \
+         answers for `Store.persist`",
     );
     // The one symbol whose answer the two body tests genuinely disagree about
     // (WI-1042): an entity constructor declared INSIDE a parametric sort. It is not an

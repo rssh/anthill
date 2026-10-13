@@ -200,28 +200,24 @@ fn a_non_operation_functor_is_not_a_defaulted_spec_op() {
     }
 }
 
-/// ITEM (3) — WHAT A `spec_op_parent_sort` MISS MEANS AT THE DOT SITE, driven rather
-/// than argued. `dot_member_dispatch_decision` reaches that miss only after
-/// `find_spec_op_for_provided_sort` answered `Some`, so the member DOES back something
-/// the carrier `provides`; the ticket read the miss as an unexpected shape and asked for
-/// a loud error or a recorded impossibility argument. IT IS NEITHER — the shape is
-/// reachable by a legal program, and this is it:
+/// ITEM (3) — A PROVIDED SORT WITH NO TYPE PARAMETER, at the dot site.
 ///
-/// `Plain` declares no `sort X = ?`, so it is not a SPEC (058: a spec sort is one with a
-/// type parameter). `Leaf provides Plain` loads clean, the dot resolves `describe` to
-/// `Leaf`'s own member, and `Plain.describe` has no parametric parent. There is no
-/// spec-op dispatch to decide and no supplier set keyed on a carrier, so `Take` is the
-/// ANSWER and not a fallback — and a loud error here would refuse this program.
+/// `Plain` declares no `sort X = ?` and `Leaf provides Plain`. The dot resolves `describe`
+/// to `Leaf`'s own member, which backs `Plain.describe`; `Leaf` supplies it and nothing
+/// else does, so the member is taken and the answer is 7.
 ///
-/// CONTROL: turn that early return into an error and this fails. MEASURED, as a `panic!`
-/// there: it fired on this fixture and on nothing else in the workspace's 4321 tests, which
-/// is what says the shape is reachable AND rare — the two halves of "record the argument,
-/// do not raise".
+/// THIS ROW WAS WRITTEN FOR ANOTHER READING, and kept its answer. A sort was dispatched
+/// only where it declared a type parameter, so `spec_op_parent_sort` MISSED on
+/// `Plain.describe` and `dot_member_dispatch_decision` took the member at its early
+/// return, with no supplier set asked for — MEASURED then, as a `panic!` there: it fired
+/// on this fixture and on nothing else in the workspace. Since WI-20261003-4DYR6 a sort
+/// something provides is one another carrier may answer for, with a parameter or without:
+/// the decision goes on to the supplier set, finds `Leaf`'s member alone, and takes it.
 ///
 /// WHAT THIS TEST CANNOT SEE, so it is not read as more than it is: deleting the
 /// `provides Plain` line leaves the answer at 7, because `find_spec_op_for_provided_sort`
 /// then misses one line earlier and returns `Take` for a different reason. The test pins
-/// the ANSWER at a shape that reaches the miss, not which early-out produced it.
+/// the ANSWER, not which path produced it.
 #[test]
 fn a_non_parametric_provided_sort_takes_the_member() {
     let ns = "wi1042.nonparametric";
@@ -229,7 +225,7 @@ fn a_non_parametric_provided_sort_takes_the_member() {
         r#"namespace {ns}
   import anthill.prelude.Int64
 
-  -- NOT a spec: no `sort X = ?`, so `spec_op_parent_sort` misses on its members.
+  -- No `sort X = ?`: provided by `Leaf` all the same.
   sort Plain
     operation describe(x: Int64) -> Int64 = 1
   end
@@ -248,7 +244,7 @@ end
     assert_eq!(
         crate::wi1026_rule_body_spec_op_dispatch_test::answer(ns, &src),
         7,
-        "a member backing a NON-parametric provided sort is taken, not routed through a \
-         dispatch that does not exist",
+        "a member backing a provided sort with no type parameter is the one supplier, and \
+         is taken",
     );
 }

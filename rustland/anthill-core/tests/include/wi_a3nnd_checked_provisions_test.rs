@@ -447,7 +447,7 @@ namespace test.a3ref
   end
 
   sort Boom
-    entity boom
+    operation boom(x: Int64) -> Int64 = x
   end
 
   sort Narrow
@@ -472,7 +472,9 @@ end
 
 /// A TYPE PARAMETER OF A REQUIRED SORT (found by /code-review). A `requires` naming a
 /// sort with no type parameter is a refinement; give the sort one and the same clause is
-/// a demand for a dictionary nothing provides. A binder in a secondary entry is refused
+/// a demand for a dictionary nothing provides. `Boom` declares no constructor: a sort
+/// with one is a refinement whatever it is given, nothing providing a data sort
+/// (WI-20261003-4DYR6). A binder in a secondary entry is refused
 /// where it is written, and the parameter is registered all the same — so, as with the
 /// `requires` above, the load AFTER it is refused by this check and by nothing else. It
 /// writes to none of the three relations: the check finds it in the symbol table.

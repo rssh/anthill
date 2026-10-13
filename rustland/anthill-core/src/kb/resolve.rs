@@ -11457,7 +11457,19 @@ impl KnowledgeBase {
             // body, and gating it would put back exactly the asymmetry this ticket is
             // about, one level in.
             None if self.host_op_reducible_at_a_value(op) => None,
-            None if dispatch_body_less && depth == 0 && self.body_less_dispatchable(op) => None,
+            // An operation this interpreter has a host function for is the arm above's to
+            // decide, and it declined: the operation declares an effect. Taken here as a
+            // body-less operation to dispatch, the bridge ran the host function all the
+            // same and the effect row was inert — for an operation of a sort with a type
+            // parameter until WI-20261003-4DYR6, and for every sort's once no sort is read
+            // by its declaration.
+            None if dispatch_body_less
+                && depth == 0
+                && !self.is_interpreter_mapped_op(op)
+                && self.body_less_dispatchable(op) =>
+            {
+                None
+            }
             // WI-1037 — a `NeedsDict` callee is DISPATCHED, never folded, so a missing
             // body is not a bail for it either: the bridge below is the whole
             // reduction and it needs only the symbol and the args. Reachable for a
@@ -13000,7 +13012,8 @@ impl KnowledgeBase {
     /// therefore costs a reduction attempt, never a wrong answer.
     ///
     /// **THE EXPENSIVE LEG IS LAST, AND THAT ORDERING IS LOAD-BEARING.**
-    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric`, which
+    /// [`super::typing::lookup_spec_op_dispatch`] reads the declaring sort; a parameter
+    /// read there, gone since WI-20261003-4DYR6, is what
     /// its own doc measured at 51 µs/call and O(|symbols|) and told every caller to
     /// place last — WI-954 made it an O(1) owner-scope read, so the ordering now shields
     /// the REST of that lookup (the `OperationInfo` record miss and its fact scan), not
@@ -13044,8 +13057,9 @@ impl KnowledgeBase {
     ///
     /// ONE OWNER for the check AND for the order it must be made in, because both
     /// readers sit on hot paths and the expensive leg is easy to reach by accident.
-    /// [`super::typing::lookup_spec_op_dispatch`] ends in `sort_is_parametric` — 51 µs
-    /// and O(|symbols|) when this was written, an O(1) owner-scope read since WI-954 —
+    /// [`super::typing::lookup_spec_op_dispatch`] read the declaring sort's parameters —
+    /// 51 µs and O(|symbols|) when this was written, an O(1) owner-scope read since WI-954,
+    /// and no read at all since WI-20261003-4DYR6 —
     /// and the expensive part of that lookup is now the `OperationInfo` record miss and
     /// its fact scan. The operation-record probe is what makes the order safe here: an
     /// ENTITY CONSTRUCTOR is body-less too, so without the cheap leg first a caller that

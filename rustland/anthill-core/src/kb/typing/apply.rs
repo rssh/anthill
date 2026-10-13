@@ -2809,7 +2809,7 @@ pub(super) fn check_apply_iter(
         }
 
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
-        // op (declared without body on a parametric sort), look up the
+        // op (declared without body on a sort that may be provided), look up the
         // unique impl op based on the per-call substitution. The proposal-
         // 038 unification of builtin-sort symbols (Int as the same Symbol
         // whether referenced bare or via anthill.prelude.Int64) makes

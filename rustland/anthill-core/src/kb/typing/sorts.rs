@@ -2029,12 +2029,10 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
     // can carry canonical symbols and compare them RAW. Identical verdicts, and the
     // `canonical_sym` call (a `qualified_name_of` plus a `HashMap<String, _>` probe, i.e.
     // a string hash) drops from O(visited) per node to O(1) per walk.
-    sort_provides_reach(
-        kb,
-        kb.canonical_sort_sym(carrier),
-        kb.canonical_sort_sym(spec),
-        &mut visited,
-    )
+    let (carrier_canon, spec_canon) = (kb.canonical_sort_sym(carrier), kb.canonical_sort_sym(spec));
+    // A sort provides itself, by its own operations (kernel-language.md §5.3). The
+    // relation holds no row for it, so the walk below would answer no.
+    carrier_canon == spec_canon || sort_provides_reach(kb, carrier_canon, spec_canon, &mut visited)
 }
 
 /// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the

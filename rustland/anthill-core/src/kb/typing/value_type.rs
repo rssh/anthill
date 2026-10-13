@@ -806,9 +806,9 @@ fn value_type_term_d(
 /// WI-283 — the type-directed firing guard for `@[simp]` rewriting.
 ///
 /// A `@[simp]` rule's guard is its explicit `:- …` *plus* the `requires` of
-/// its enclosing sort (proposal 043 §4.1). When the rule is scoped to a
-/// **parametric (spec) sort** — its redex functor is a *spec op*, e.g.
-/// `Numeric.add` — that law holds only for carriers that *satisfy* the
+/// its enclosing sort (proposal 043 §4.1). When the rule is scoped to a sort **that
+/// may be provided** — its redex functor is dispatched ([`lookup_spec_op_dispatch`]),
+/// e.g. `Numeric.add` — that law holds only for carriers that *satisfy* the
 /// sort. So the rule fires only where the **carrier** arguments' least
 /// sorts (read via [`sort_functor_of_view`] over each occurrence's
 /// `inferred_type`) provide the spec; otherwise firing would rewrite
@@ -851,6 +851,19 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) else {
         return true;
     };
+    // An operation that names neither its sort nor one of the sort's parameters leaves a
+    // call no ARGUMENT for another carrier to stand at. What can still direct it to one is
+    // a requirement or a selection, and both name a witness through a type parameter of a
+    // sort something provides: `operation g[A](x: A) requires Sp[T = A] = Sp.name()` is
+    // answered by `A`'s provider. Without a parameter, or without a provider, the
+    // operation is the sort's own as the one above is, and the equation its definition.
+    // The two cheap legs first: a provided sort with parameters — nearly every functor
+    // that reaches here — leaves before the operation's record is read.
+    if (!sort_is_parametric(kb, spec_sort) || !spec_has_any_providers(kb, spec_sort))
+        && signature_names_no_carrier(kb, functor, spec_sort)
+    {
+        return true;
+    }
     // WI-578: each carrier argument's sort head is read from the typer-pushed
     // `inferred_type` (was `min_sort`, removed) on its occurrence. A carrier
     // supplied by name (no positional slot) reads as `None` → don't fire — the
@@ -868,6 +881,49 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
         }),
         FindDictOutcome::Fire
     )
+}
+
+/// WI-20261003-4DYR6 — does `functor`'s signature leave a call no ARGUMENT, result or
+/// effect for a carrier other than `sort` to stand at: no parameter and no result typed
+/// at `sort`, and none of `sort`'s type parameters named in a parameter, the result or the
+/// effect row?
+///
+/// `sort Util { sort T = ?; operation f(x: Int64) -> Int64 }` gives `f` no such place.
+/// With nothing providing `Util`, `Util.f(41)` is `Util`'s own operation; it was read as
+/// waiting for a carrier that no call could bring, and `rule f(?x) <=> ?x + 1 @[simp]`
+/// never fired — the program loaded clean and died `OperationBodyMissing`, where the same
+/// sort without its unused parameter ran.
+///
+/// NOT BY ITSELF "the sort's own": a requirement or a selection directs such a call to a
+/// provider through a type parameter, so each reader adds what closes that — no parameter
+/// ([`clause_defined_own_operation`]), or no parameter or no provider
+/// ([`simp_fire_guard_holds`]). The sort is read at its HEAD, as every reader of a carrier
+/// position reads it: a sort nested in another type (`xs: List[T = Sp]`) is no position a
+/// call is dispatched on.
+pub(super) fn signature_names_no_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    sort: Symbol,
+) -> bool {
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+        return false;
+    };
+    let params = sort_type_params_as_pairs(kb, sort);
+    let syms: SmallVec<[Symbol; 4]> = params.iter().map(|(s, _)| *s).collect();
+    let vars: SmallVec<[VarId; 4]> = params
+        .iter()
+        .filter_map(|(_, t)| match kb.get_term(*t) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    let names_a_carrier = |ty: &Value| {
+        carrier_sort_of_value(kb, ty).is_some_and(|s| same_sort_canonical(kb, s, sort))
+            || type_mentions_spec_param(kb, ty, &syms, &vars)
+    };
+    !rec.params.iter().any(|(_, ty)| names_a_carrier(ty))
+        && !names_a_carrier(&rec.return_type)
+        && !rec.effects.iter().any(names_a_carrier)
 }
 
 /// WI-596 — is `spec_sort` a *self-representing* container over `params` (some
@@ -1072,6 +1128,8 @@ pub(super) fn simp_guard_decision(
         || type_params.len() <= 1
         || every_carrier_at_carrier_param(kb, spec_sort, &carrier_params)
     {
+        // A carrier that IS the sort provides it ([`sort_provides`]): the value there is
+        // the sort's own or some provider's, and the law is each one's.
         known
             .iter()
             .find(|&&(_, carrier)| !carrier_provides_spec(kb, carrier, spec_sort))
@@ -1216,7 +1274,7 @@ pub(crate) fn simp_requires_guard_holds(
     };
     // Only a (body-less) spec-op redex is decidable here: its carrier arguments'
     // types select the dispatch. Resolve the spec sort FIRST so a non-spec-op (a
-    // defaulted op, or an op in a non-parametric sort) requires-guarded rule stays
+    // defaulted op, or an op of a sort that is its only carrier) requires-guarded rule stays
     // skipped — the resolver's conservative default — rather than firing; the
     // resolved `spec_sort` is then threaded into the shared core (one dispatch,
     // not two).

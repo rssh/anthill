@@ -950,16 +950,16 @@ pub(crate) fn carrier_param_receiver_for_values(
     None
 }
 
-/// WI-365 — the parametric sort a self-receiver op belongs to, whether or not
-/// it has a default body. [`lookup_spec_op_dispatch`] returns the parent only
+/// WI-365 — the sort a self-receiver op belongs to, where the sort may be provided (it
+/// has no constructor), whether or not the op has a default body. [`lookup_spec_op_dispatch`] returns the parent only
 /// for body-LESS spec ops (the dispatch candidates); a default-bodied spec op
 /// (`Stream.collect`) is a normal op for dispatch but still carries the sort's
 /// element / effect parameters, which must be grounded from the carrier when
-/// the op is consumed on a concrete provider. `None` unless the parent is a
-/// parametric sort AND the op has a self-receiver parameter (one typed as the
+/// the op is consumed on a concrete provider. `None` unless the parent is such a
+/// sort AND the op has a self-receiver parameter (one typed as the
 /// sort itself, e.g. `s: Stream`) — the same shape [`receiver_carrier`] keys on.
 ///
-/// WI-958 — "parametric sort that declares `fn_sym`" is [`spec_op_parent_sort`]'s
+/// WI-958 — "the sort that declares `fn_sym`, where a sort may be provided" is [`spec_op_parent_sort`]'s
 /// question, so this asks it rather than re-deriving it; the self-receiver gate is
 /// the ONLY thing this adds, and the callers that consult both readers in one pass
 /// (`check_apply`'s WI-357 and WI-444 blocks) now agree on the spec sort by
