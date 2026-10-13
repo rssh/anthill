@@ -3253,6 +3253,16 @@ fn goal_pins_every_param(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
 /// `Nats` leaves `Element` and `E` open, the fully-pinned test answered `None`, and the
 /// call was refused only by the effect error its open `E` left behind.
 fn goal_carrier_sort(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
+    // The carrier's own sort symbol: `Eq[T = Hold]` names `Hold`, and
+    // `Eq[T = Box[B = Leaf]]` names `Box` — the sort that would carry the provision, so
+    // the parametric case suggests the line on the container, which is where a
+    // conditional provision goes (058 §3.8).
+    sort_functor_of_view(kb, goal_carrier_binding(kb, goal)?)
+}
+
+/// What a goal binds its spec's carrier parameter to — a sort ([`goal_carrier_sort`]), or
+/// a type that names none ([`unprovided_spec_at_former`]).
+fn goal_carrier_binding<'g>(kb: &KnowledgeBase, goal: &'g SortGoal) -> Option<&'g Value> {
     // WHICH parameter the carrier goes in, on the two-rung ladder the established reader
     // cannot answer for the spec this ticket is about: [`spec_carrier_param`] finds the
     // param some declared OPERATION receives on, and `Eq` declares no operation at all
@@ -3265,16 +3275,10 @@ fn goal_carrier_sort(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
     // The param is read for the CARRIER alone; the repair line quotes the whole
     // requirement, so a multi-parameter spec is not narrowed to one binding.
     let param = spec_carrier_param_or_sole(kb, goal.spec_sort)?;
-    let bound = goal
-        .bindings
+    goal.bindings
         .iter()
         .find(|(k, _)| kb.local_name_of(*k) == kb.local_name_of(param))
-        .map(|(_, v)| v)?;
-    // The carrier's own sort symbol: `Eq[T = Hold]` names `Hold`, and
-    // `Eq[T = Box[B = Leaf]]` names `Box` — the sort that would carry the provision, so
-    // the parametric case suggests the line on the container, which is where a
-    // conditional provision goes (058 §3.8).
-    sort_functor_of_view(kb, bound)
+        .map(|(_, v)| v)
 }
 
 /// WI-883 (058 §3.9) — the refusal for calling an operation OF spec `goal.spec_sort` at
@@ -3337,6 +3341,97 @@ pub(super) fn unprovided_spec_at_carrier(
                 has_a_row: false,
                 provision_in_full: goal_pins_every_param(kb, goal).then(|| format_goal(kb, goal)),
             }),
+            untied: None,
+        }),
+    })
+}
+
+/// WI-883's refusal where the carrier the call names is a TUPLE or an ARROW, and no provision
+/// of the spec matched the call (WI-20260929-12NKG).
+///
+/// [`unprovided_spec_at_carrier`] is asked of a carrier SORT, and a tuple or an arrow names
+/// none, so such a call fell through to the pass-through a host-implemented callee takes —
+/// and nothing implements it: a value of such a type has no sort whose member could answer
+/// when the call runs, so a provision matched where the call is typed is the only supplier
+/// there is. MEASURED: `Apply.run(lambda (x: String) -> 1)` beside a provider at `(Int64) ->
+/// Int64` alone loaded and died `OperationBodyMissing`, and so did `Apply.run(lambda x ->
+/// 1)` beside it — a provision is matched at the type as the call states it, and a lambda's
+/// parameter written without its type states none.
+///
+/// It was reached more often once a requirement at ANOTHER arrow stopped covering such a
+/// call: that call used to run the requirement's provider, on a value of a type it does not
+/// provide for.
+///
+/// A FORMER BY ITS HEAD, whatever stands inside it, as [`former_carrier`] reads a declared
+/// requirement's — and with the sort's exemption for a callee the host implements, which
+/// serves every carrier. MEASURED with it backed out: 22 rows refuse, the stdlib's
+/// `Error.reify` over a tuple payload among them (`wi_9wvt7_error_reify_test`).
+///
+/// NOT the sort's other exemption, for a self-representing spec
+/// ([`unclassified_goal_carrier`]). The parameter read here is the one the spec's
+/// operations RECEIVE on ([`spec_carrier_param_or_sole`]), which is no parameter at all
+/// where they all receive on `Self`, so the question is not reached for such a spec. It is
+/// reached for one that receives on `Self` in one operation and on a parameter in another,
+/// and there the exemption only kept `Mixed.at((1, 2))` loading with nothing to run.
+/// MEASURED: with it in place no row of the workspace moved, and no program found that it
+/// protects.
+pub(super) fn unprovided_spec_at_former(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    callee_op: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if host_implements(kb, callee_op) {
+        return None;
+    }
+    let former = goal_carrier_binding(kb, goal).filter(|v| is_structural_former(kb, *v))?;
+    let spec = kb.qualified_name_of(goal.spec_sort);
+    let former_text = format_value_for_goal(kb, former);
+    // THREE REPAIRS, by what the call states. A type stated in full is one a sort could
+    // provide the spec at. One that names a type parameter of the declaration the call is
+    // written in is each caller's to supply for, which is what a `requires` there says.
+    // One with a part nothing has said is no type a row could name, and the part is the
+    // author's to write — a provision is matched at the type as the call states it, so
+    // one that would answer once the part is written is not looked for.
+    let repair = if type_is_ground(kb, former) {
+        format!(
+            "Give some sort the row that names this type — `provides {spec}[… = \
+             {former_text}]` — or pass a value whose type is a sort"
+        )
+    } else if type_is_determined(kb, former) {
+        format!(
+            "It names a type parameter of the declaration the call is written in, so the \
+             provision is each caller's to supply: declare `requires {spec}[…]` at this type \
+             on that declaration"
+        )
+    } else {
+        "It leaves a part unsaid, and a provision is matched at the type as the call states \
+         it: write the type of the lambda's parameter"
+            .to_string()
+    };
+    Some(TypeError::UnsatisfiableRequirement {
+        span,
+        op: callee_op,
+        callee_sort: callee_op,
+        usage: RequirementUse::Call,
+        refusal: Box::new(RequirementRefusal {
+            account_names_every_repair: false,
+            no_scope_route: false,
+            // The account ends in its own repair: there is no `provides` to suggest on a
+            // carrier that is no sort.
+            construction_carries_repair: true,
+            dep_text: format_goal_as_written(kb, goal),
+            unconstrained: Vec::new(),
+            refused_covers: Vec::new(),
+            construction: format!(
+                "its carrier is `{former_text}`, a tuple or an arrow, and no provision of \
+                 `{spec}` answers at it. A tuple or an arrow carries no provision itself (a \
+                 `provides` row is written on a sort) and its value has no sort whose member \
+                 could answer when the call runs, so the call would load and then find no \
+                 operation. {repair}"
+            ),
+            pinned: None,
+            unprovided: None,
             untied: None,
         }),
     })
@@ -3512,9 +3607,15 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry, callee_op: Symbol) ->
         // `lambda / through a provision chain` cell). A sort binding is not this arm's —
         // a provision could name it, and [`unprovided_provision`] says so — nor is a
         // variable, which is one of the open cases the arms beside this one own.
-        matches!(type_head(kb, v), TypeHead::Arrow | TypeHead::NamedTuple).then_some(v)
+        is_structural_former(kb, v).then_some(v)
     })?;
     Some(format_value_for_goal(kb, former))
+}
+
+/// A tuple or an arrow, by its head and whatever stands inside it: a type no `provides`
+/// row can be written ON, so a spec is provided at one only by a sort whose row names it.
+fn is_structural_former(kb: &KnowledgeBase, ty: &Value) -> bool {
+    matches!(type_head(kb, ty), TypeHead::Arrow | TypeHead::NamedTuple)
 }
 
 /// WI-20260920-XSVCS — a dep whose carrier is the CALLER's own type parameter, written

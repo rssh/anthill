@@ -731,99 +731,319 @@ pub(super) fn sigma_same<A: TermView, B: TermView>(
     }
 }
 
-/// WI-613 — the σ-precise verdict for ONE `(a, b)` element pair: the policy
-/// shared by [`binding_pair_covers`]' σ mode (the forwarding paths, where it
-/// GATES — WI-821), [`entry_sigma_verdict`] (entry-vs-subst, the
-/// direct-dispatch path) and [`reached_carrier_matches_call`] (the WI-653
-/// transitive-coverage alignment)
-/// so the attribution paths cannot disagree on what "same element" means. Two
-/// type-params must share a σ-class ([`sigma_same`]); a mixed concrete/wildcard
-/// pair does NOT pin the element (a wildcard covers loosely but is not precise);
-/// two concretes use the same symmetric `dispatch_values_match` as the coarse
-/// cover — EXCEPT a both-COMPOUND pair, which compares σ-structurally
-/// (WI-825, see below). Symmetric in `a`/`b`, so callers may pass either order.
+/// What two types say of each other where a requirement is held against a call, a goal or
+/// another requirement: of one pair of bindings ([`sigma_pair_verdict`]), and, joined over
+/// an entry's constraining bindings, of the entry ([`entry_sigma_verdict`]).
+///
+/// THREE STATES, because "not the same" and "not known to be the same" are different
+/// answers and their consumers differ. A FORWARD hands a dictionary across a call and
+/// takes only [`Precise`](Self::Precise) ([`sigma_pair_precise`], WI-821): a dictionary
+/// for an element nothing determines is a guess. A body call's ATTRIBUTION to a
+/// requirement its frame holds drops what [`Refutes`](Self::Refutes) and keeps the rest,
+/// preferring a precise entry among several (WI-613 / WI-829).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SigmaVerdict {
+    /// Nothing is said either way: no constraining binding at all (a bindingless
+    /// `requires Paintable`), or the only disagreement possible lies in a part nothing has
+    /// determined yet — see [`part_verdict`].
+    Vacuous,
+    /// Every constraining pair is the same type on both sides — the tie-break winner.
+    Precise,
+    /// Some pair is two different types — no cover (WI-829).
+    Refutes,
+}
+
+impl SigmaVerdict {
+    fn of(same: bool) -> Self {
+        if same {
+            SigmaVerdict::Precise
+        } else {
+            SigmaVerdict::Refutes
+        }
+    }
+
+    /// The verdict of a whole from two of its parts': one that refutes refutes the whole,
+    /// two that are precise make it precise, and otherwise nothing more is said than the
+    /// parts said. `next` is not asked once the whole is refuted.
+    pub(super) fn and(self, next: impl FnOnce() -> Self) -> Self {
+        if self == SigmaVerdict::Refutes {
+            return self;
+        }
+        match (self, next()) {
+            (_, SigmaVerdict::Refutes) => SigmaVerdict::Refutes,
+            (SigmaVerdict::Precise, SigmaVerdict::Precise) => SigmaVerdict::Precise,
+            _ => SigmaVerdict::Vacuous,
+        }
+    }
+}
+
+/// WI-613 — the σ verdict for ONE `(a, b)` element pair: the policy shared by
+/// [`binding_pair_covers`]' σ mode (the forwarding paths, where it GATES — WI-821),
+/// [`entry_sigma_verdict`] (entry-vs-subst, the direct-dispatch path) and
+/// [`reached_carrier_matches_call`] (the WI-653 transitive-coverage alignment) so the
+/// attribution paths cannot disagree on what "same element" means. Two type-params must
+/// share a σ-class ([`sigma_same`]); a mixed concrete/wildcard pair does NOT pin the
+/// element (a wildcard covers loosely but is not precise); two concretes are compared by
+/// [`concrete_pair_verdict`] — part by part where they are two types of one structural
+/// shape. Symmetric in `a`/`b`, so callers may pass either order.
+pub(super) fn sigma_pair_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    ctx: &SigmaCtx,
+    a: &A,
+    b: &B,
+) -> SigmaVerdict {
+    match (is_type_param_view(kb, a), is_type_param_view(kb, b)) {
+        (true, true) => SigmaVerdict::of(sigma_same(kb, ctx, a, b)),
+        (true, false) | (false, true) => SigmaVerdict::Refutes,
+        (false, false) => concrete_pair_verdict(kb, Some(ctx), a, b),
+    }
+}
+
+/// [`sigma_pair_verdict`] as the gate a forward needs: the two sides are the same type,
+/// with nothing left unsaid.
 pub(super) fn sigma_pair_precise<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
     a: &A,
     b: &B,
 ) -> bool {
-    match (is_type_param_view(kb, a), is_type_param_view(kb, b)) {
-        (true, true) => sigma_same(kb, ctx, a, b),
-        (true, false) | (false, true) => false,
-        (false, false) => {
-            // WI-825: a pair whose sides are BOTH parameterized applications
-            // (`Wrap[A = CT]` vs `Wrap[A = Wrap[A = CT]]`) compares
-            // σ-STRUCTURALLY — same base sort AND each argument pair
-            // recursively σ-covering (σ-classes at param leaves,
-            // `dispatch_values_match` at ground leaves). The head-symbol
-            // fallback in `dispatch_values_match` ignores the interiors
-            // (`types_compatible` rejects such a pair first, so the fallback was
-            // the accepting leg), which let a caller entry cover a dep
-            // σ-instantiated one constructor DEEPER and forward the shallower
-            // dict. Any pair not both-parameterized keeps that dispatch match.
-            //
-            // The `a == b` short-circuit stays INSIDE this arm, not hoisted
-            // above the `is_type_param_value` match: the `(true, true)` arm
-            // deliberately REFUSES an identical but σ-unclassifiable param
-            // pair (`sigma_same` is false when `sigma_class` is `None`), so a
-            // top-level identity fast path would silently widen the gate.
-            if let (BindValue::Term(x), BindValue::Term(y)) = (a.as_bind_value(), b.as_bind_value())
-            {
-                if x == y {
-                    // Identical terms are the same instantiation on both sides —
-                    // the pre-WI-825 verdict (`types_compatible`'s equality leg) in
-                    // O(1), skipping the structural walk. A pair on another carrier
-                    // has no such identity and takes the walk, which answers the same.
-                    return true;
-                }
-            }
-            match (parameterized_parts(kb, a), parameterized_parts(kb, b)) {
-                (Some((base_a, pos_a, named_a)), Some((base_b, pos_b, named_b))) => {
-                    // `for_bases` IS the same-base decision (`Label` iff the two
-                    // bases are one canonical sort), so it doubles as the base
-                    // gate and the key-match mode — spelled through the shared
-                    // binding-key rule (WI-726/764/768, `binding_for_param`)
-                    // rather than a fifth hand-rolled lookup. Mirrors the
-                    // `match_candidate_against_goal` arm-2 spelling.
-                    let key_match = BindingKeyMatch::for_bases(kb, base_a, base_b);
-                    key_match == BindingKeyMatch::Label
-                        && pos_a.len() == pos_b.len()
-                        && named_a.len() == named_b.len()
-                        && pos_a
-                            .iter()
-                            .zip(pos_b.iter())
-                            .all(|(pa, pb)| sigma_pair_precise(kb, ctx, pa, pb))
-                        && named_a.iter().all(|(k_a, v_a)| {
-                            binding_for_param(kb, &named_b, *k_a, key_match)
-                                .is_some_and(|v_b| sigma_pair_precise(kb, ctx, v_a, v_b))
-                        })
-                }
-                _ => dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a),
-            }
+    sigma_pair_verdict(kb, ctx, a, b) == SigmaVerdict::Precise
+}
+
+/// Two types neither of which is a type parameter, in either mode (`sigma` as in
+/// [`binding_pair_covers`]).
+///
+/// TWO OF ONE STRUCTURAL SHAPE ARE COMPARED PART BY PART ([`parts_verdict`]): two
+/// applications of a sort, two arrows, two tuples. Anything else is a leaf and takes the
+/// symmetric `dispatch_values_match` — a bare sort against a bare sort, a value in a type
+/// position against another, two effect rows, a pair of two different shapes.
+///
+/// THE HEAD OF A COMPOUND SAYS NOTHING ABOUT ITS PARTS, and `dispatch_values_match`'s
+/// coarse fallback compares heads once `types_compatible` has refused. WI-825 took the
+/// applications out of it for the σ mode (`Wrap[A = CT]` against `Wrap[A = Wrap[A =
+/// CT]]`, a dictionary forwarded one constructor too shallow); arrows and tuples stayed,
+/// and every arrow has the one head `Arrow`, every tuple the one head `NamedTuple`.
+/// MEASURED (WI-20260929-12NKG), each on a call the requirement is no cover for:
+///
+/// * `requires Apply[F = (Int64) -> Buf[T = Int64, N = 3]]` over a body call at `(Int64) ->
+///   Buf[T = Int64, N = 4]` ran the provider at `N = 3` (30) where the call without the
+///   requirement reaches the one at `N = 4` (40) — and so did `(Int64) -> Int64` over
+///   `(String) -> Int64`, over a two-parameter arrow, `(Int64, String)` over `(Int64,
+///   Bool)` and over a three-component tuple, and each of these one bracket down
+///   (`Box[T = …]`).
+/// * Two requirements of one spec at two arrows, `Apply.run(f) * 100 + Apply.run(g)`:
+///   both calls read the first requirement's dictionary (3030 for 3040).
+/// * The same pair across a call — a caller holding the requirement at one arrow, the
+///   callee requiring it at another — forwarded the caller's dictionary (30 for 40), and
+///   an operation's own `requires` licensed the call the same way.
+///
+/// IN BOTH MODES. The coarse mode kept the head for applications too, as a deliberate
+/// tolerance; with the parts compared it needs none — a part that is a type parameter is
+/// its wildcard, so `Wrap[A = ?DT]` against `Wrap[A = DT]` still covers, and two different
+/// concrete arguments no longer do.
+///
+/// The identity fast path is HERE and not above the type-parameter match in
+/// [`sigma_pair_verdict`]: its `(true, true)` arm deliberately REFUSES an identical but
+/// σ-unclassifiable param pair (`sigma_same` is false when `sigma_class` is `None`), so a
+/// top-level identity fast path would silently widen the gate.
+fn concrete_pair_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: &A,
+    b: &B,
+) -> SigmaVerdict {
+    if let (BindValue::Term(x), BindValue::Term(y)) = (a.as_bind_value(), b.as_bind_value()) {
+        if x == y {
+            // Identical terms are the same instantiation on both sides, in O(1). A pair on
+            // another carrier has no such identity and takes the walk, which answers the
+            // same.
+            return SigmaVerdict::Precise;
+        }
+    }
+    match parts_verdict(kb, sigma, a, b) {
+        Some(verdict) => verdict,
+        None => {
+            SigmaVerdict::of(dispatch_values_match(kb, a, b) || dispatch_values_match(kb, b, a))
         }
     }
 }
 
-/// WI-825: decompose a σ-mode element into its base sort and argument lists
-/// iff it is a parameterized sort application (`Wrap[A = …]`,
-/// [`TypeHead::Parameterized`] — the term backing `Fn{S, named}`, never the
-/// `TypeExtractor` meta-ctors). Every other form (bare sort, type param,
-/// arrow, tuple, …) returns `None` and keeps its existing pair verdict —
-/// NOTE a both-arrow / both-tuple / both-effects-row pair (whether a
-/// top-level element OR an interior leaf of the recursion in
-/// [`sigma_pair_precise`]) retains `dispatch_values_match`'s head-fallback
-/// acceptance: both heads are the same `TypeExtractor` meta-ctor symbol, so
-/// `types_compatible` rejects and the head fallback accepts with the interiors
-/// IGNORED — the WI-825 residual for non-parameterized structural forms (e.g.
-/// `Wrap[A = (Int)->Int]` vs `Wrap[A = (Int)->String]`, or
-/// `Relation[T = (a, b)]` vs `Relation[T = (c, d)]`), tracked under WI-829.
-/// Positional args ride along and are compared strictly — a mixed
-/// positional+named application is not provably canonicalized away before
-/// this path, and an ignored channel is exactly the bug class WI-825
-/// closes. Deliberately not the candidate-side [`parametric_view_parts`]:
-/// an element here is a written/σ-substituted TYPE (meta-ctors excluded,
-/// no `SortView` unwrap), not a provider view.
+/// The verdict for two types of ONE structural shape, from their parts; `None` for any
+/// other pair, which has no parts to hold against each other.
+///
+/// * Two APPLICATIONS — one base sort ([`BindingKeyMatch::for_bases`], which is also the
+///   key rule the arguments are paired by), as many arguments, each pair. Positional
+///   arguments ride along and are compared strictly: a mixed positional+named application
+///   is not provably canonicalized away before this path.
+/// * Two ARROWS — one parameter count, then the parameters, the result and the effect
+///   row. The parameters of a list are paired as [`arrow_params_compatible`] pairs them,
+///   by position ([`TupleAlign::PARAM_LIST`]); a sole parameter is its type.
+/// * Two TUPLES — the same labels in the same order ([`TupleAlign::EQUALITY`]: the
+///   question is whether the two are one type, and order and width are a tuple's
+///   identity), each component pair.
+///
+/// AN EFFECT ROW IS A LEAF HERE, compared as it was: by subsumption either way, and
+/// failing that by its head — so two rows never refute, an arrow's included.
+fn parts_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: &A,
+    b: &B,
+) -> Option<SigmaVerdict> {
+    if let (Some((base_a, pos_a, named_a)), Some((base_b, pos_b, named_b))) =
+        (parameterized_parts(kb, a), parameterized_parts(kb, b))
+    {
+        let key_match = BindingKeyMatch::for_bases(kb, base_a, base_b);
+        if key_match != BindingKeyMatch::Label
+            || pos_a.len() != pos_b.len()
+            || named_a.len() != named_b.len()
+        {
+            return Some(SigmaVerdict::Refutes);
+        }
+        let mut whole = SigmaVerdict::Precise;
+        for (pa, pb) in pos_a.iter().zip(pos_b.iter()) {
+            whole = whole.and(|| part_verdict(kb, sigma, pa, pb));
+        }
+        for (k_a, v_a) in &named_a {
+            whole = whole.and(|| match binding_for_param(kb, &named_b, *k_a, key_match) {
+                Some(v_b) => part_verdict(kb, sigma, v_a, v_b),
+                None => SigmaVerdict::Refutes,
+            });
+        }
+        return Some(whole);
+    }
+    // An arrow and a tuple are applications of a type extractor, with named children; a
+    // bare sort — the common leaf — is answered before `type_head`'s name ladder runs.
+    if !has_named_children(kb, a) || !has_named_children(kb, b) {
+        return None;
+    }
+    match (type_head(kb, a), type_head(kb, b)) {
+        (TypeHead::Arrow, TypeHead::Arrow) => {
+            let (
+                TypeExtractor::Arrow {
+                    param: param_a,
+                    result: result_a,
+                    effects: effects_a,
+                    arity: arity_a,
+                },
+                TypeExtractor::Arrow {
+                    param: param_b,
+                    result: result_b,
+                    effects: effects_b,
+                    arity: arity_b,
+                },
+            ) = (extract_type(kb, a), extract_type(kb, b))
+            else {
+                // An arrow that does not read as one is no arrow's equal.
+                return Some(SigmaVerdict::Refutes);
+            };
+            if arity_a != arity_b {
+                return Some(SigmaVerdict::Refutes);
+            }
+            let params = if arity_a != 1 && both_named_tuples(kb, &param_a, &param_b) {
+                tuple_parts_verdict(kb, sigma, &param_a, &param_b, TupleAlign::PARAM_LIST)
+            } else {
+                part_verdict(kb, sigma, &param_a, &param_b)
+            };
+            Some(
+                params
+                    .and(|| part_verdict(kb, sigma, &result_a, &result_b))
+                    .and(|| part_verdict(kb, sigma, &effects_a, &effects_b)),
+            )
+        }
+        (TypeHead::NamedTuple, TypeHead::NamedTuple) => {
+            Some(tuple_parts_verdict(kb, sigma, a, b, TupleAlign::EQUALITY))
+        }
+        _ => None,
+    }
+}
+
+fn has_named_children<V: TermView>(kb: &KnowledgeBase, t: &V) -> bool {
+    matches!(t.head(kb), ViewHead::Functor { named_arity, .. } if named_arity > 0)
+}
+
+/// Two tuples' components, aligned by `mode` and each pair compared; two that do not align
+/// are two types.
+fn tuple_parts_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: &A,
+    b: &B,
+    mode: TupleAlign,
+) -> SigmaVerdict {
+    let a_fields = named_tuple_fields(kb, a);
+    let b_fields = named_tuple_fields(kb, b);
+    let Some(slots) = align_named_tuple_slots(kb, &a_fields, &b_fields, mode) else {
+        return SigmaVerdict::Refutes;
+    };
+    let mut whole = SigmaVerdict::Precise;
+    for (a_type, b_type) in aligned_pairs(&slots, &a_fields, &b_fields) {
+        whole = whole.and(|| part_verdict(kb, sigma, a_type, b_type));
+    }
+    whole
+}
+
+/// One pair of PARTS of two structural types ([`parts_verdict`]).
+///
+/// σ mode: [`sigma_pair_verdict`], with one case of its own. A PART NOTHING HAS
+/// DETERMINED SAYS NOTHING — a variable σ leaves unbound that is no parameter of the
+/// enclosing scope ([`sigma_class_terminal`]'s `false`): the parameter of a lambda
+/// written without its type, or a parameter of a required sort the requirement leaves
+/// open. It neither agrees with what stands opposite nor differs from it, so the pair is
+/// [`SigmaVerdict::Vacuous`] unless both sides are that one variable. The ELEMENT as a
+/// whole is read the same way where it is unbound: `entry_type_param_bindings` drops it
+/// as no constraint (the open-`T` defer trigger). A forward does not take such a pair —
+/// it asks for [`SigmaVerdict::Precise`] — and a body call's attribution does:
+/// `Apply.run(lambda x -> x + 1)` under `requires Apply[F = (Int64) -> Int64]` is at
+/// `(?x) -> Int64` and reads the requirement, as it did while the two arrows were
+/// compared by their head. Held to the requirement's `Int64`, the call is one no
+/// requirement covers and no provision matches ([`unprovided_spec_at_former`]): a
+/// program that ran is refused. Whether an open element should defer at all is
+/// WI-20260929-6NMGQ's question, for the whole and the part alike.
+///
+/// Coarse mode: [`coarse_pair_verdict`], which has the same wildcard for every parameter.
+fn part_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: &A,
+    b: &B,
+) -> SigmaVerdict {
+    let Some(ctx) = sigma else {
+        return coarse_pair_verdict(kb, a, b);
+    };
+    let undetermined = |v: Option<(VarId, bool)>| matches!(v, Some((_, false)));
+    if undetermined(sigma_class_terminal(kb, ctx, a))
+        || undetermined(sigma_class_terminal(kb, ctx, b))
+    {
+        return if sigma_same(kb, ctx, a, b) {
+            SigmaVerdict::Precise
+        } else {
+            SigmaVerdict::Vacuous
+        };
+    }
+    sigma_pair_verdict(kb, ctx, a, b)
+}
+
+/// The coarse rule for one pair, at any depth: a type parameter on either side is a
+/// wildcard and says nothing, and two concretes are compared by [`concrete_pair_verdict`].
+fn coarse_pair_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> SigmaVerdict {
+    if is_type_param_view(kb, a) || is_type_param_view(kb, b) {
+        return SigmaVerdict::Vacuous;
+    }
+    concrete_pair_verdict(kb, None, a, b)
+}
+
+/// WI-825: decompose a type into its base sort and argument lists iff it is a
+/// parameterized sort application (`Wrap[A = …]`, [`TypeHead::Parameterized`] — the term
+/// backing `Fn{S, named}`, never the `TypeExtractor` meta-ctors). Every other form (bare
+/// sort, type param, arrow, tuple, …) returns `None`; [`parts_verdict`] reads an arrow's
+/// and a tuple's parts itself. Deliberately not the candidate-side
+/// [`parametric_view_parts`]: an element here is a written/σ-substituted TYPE (meta-ctors
+/// excluded, no `SortView` unwrap), not a provider view.
 pub(super) fn parameterized_parts<V: TermView>(
     kb: &KnowledgeBase,
     t: &V,
@@ -857,21 +1077,17 @@ pub(super) fn parameterized_parts<V: TermView>(
 
 /// WI-821 (code-review): THE one per-pair cover verdict for the forwarding
 /// walks — `None` is the coarse rule (either side a type-param wildcard is
-/// unconstrained; concrete/concrete via symmetric `dispatch_values_match`),
-/// `Some(ctx)` the σ-precise gate ([`sigma_pair_precise`]). Owned once so
-/// [`entries_cover`] (entry-vs-entry) and [`requires_entry_covers_goal`]
-/// (entry-vs-goal) cannot drift — a per-pair rule change lands here or
-/// nowhere. Symmetric in `a`/`b` in both modes.
+/// unconstrained; two concretes by [`concrete_pair_verdict`]), `Some(ctx)` the
+/// σ-precise gate ([`sigma_pair_precise`]). Owned once so [`entries_cover`]
+/// (entry-vs-entry) and [`requires_entry_covers_goal`] (entry-vs-goal) cannot drift — a
+/// per-pair rule change lands here or nowhere. Symmetric in `a`/`b` in both modes.
 ///
-/// The σ mode is COMPOUND-aware (WI-825, see [`sigma_pair_precise`]). The
-/// coarse (`None`) mode deliberately keeps the head tolerance. That tolerance
-/// IS behaviour-bearing, not diagnostic-only: `requires_entry_covers_goal`'s
-/// `None` call decides `DispatchOutcome::Deferred` vs `NoCandidates` in live
-/// op dispatch (`resolve_at_goal`, `resolve_inner` step 1), so a same-head
-/// different-interior compound still coarse-covers and defers there — the
-/// residual head-only cover, tracked under WI-829. Only the forwarding
-/// strategies' `None` caller (`build_dispatching_dict_direct`) is the
-/// req-insertion diagnostic path.
+/// BOTH MODES COMPARE A COMPOUND BY ITS PARTS ([`parts_verdict`]), so the coarse one
+/// differs from the σ one in what a type parameter is — a wildcard, where σ asks which
+/// parameter — and in nothing else. It is behaviour-bearing, not diagnostic-only:
+/// `requires_entry_covers_goal`'s `None` call decides `DispatchOutcome::Deferred` vs
+/// `NoCandidates` in live op dispatch (`resolve_at_goal`, `resolve_inner` step 1), and
+/// [`entry_matches_subst`] is the defer-match's filter where no σ context is passed.
 pub(super) fn binding_pair_covers<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     sigma: Option<&SigmaCtx>,
@@ -880,12 +1096,7 @@ pub(super) fn binding_pair_covers<A: TermView, B: TermView>(
 ) -> bool {
     match sigma {
         Some(ctx) => sigma_pair_precise(kb, ctx, a, b),
-        None => {
-            is_type_param_view(kb, a)
-                || is_type_param_view(kb, b)
-                || dispatch_values_match(kb, a, b)
-                || dispatch_values_match(kb, b, a)
-        }
+        None => coarse_pair_verdict(kb, a, b) != SigmaVerdict::Refutes,
     }
 }
 

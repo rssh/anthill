@@ -431,10 +431,10 @@ impl BindingKeyMatch {
 /// to the `wi_tests` binary: at workspace scope the WI-464 lattice unit tests drive the
 /// matcher directly (4 hits, all bare/bare keys — which is why the miss stayed invisible).
 ///
-/// WI-825 enrolled the σ-cover verdict (`sigma_pair_precise`'s both-compound arm): the
+/// WI-825 enrolled the cover verdict (`parts_verdict`'s arm for two applications): the
 /// recursive per-argument named-binding lookup routes through this rule, its `key_match`
 /// derived once from `for_bases` (which is `Label` under the same-base gate the arm already
-/// applies), so the σ-structural compound comparison cannot drift from the unify/subtype ones.
+/// applies), so the structural compound comparison cannot drift from the unify/subtype ones.
 ///
 /// WI-826 enrolled the requirement-cover KEY ITERATION — `supply_covers_demanded_keys`
 /// (both cover walks: `entries_cover` and `requires_entry_covers_goal`, the latter's

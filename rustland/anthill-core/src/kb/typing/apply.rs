@@ -3482,6 +3482,10 @@ pub(super) fn check_apply_iter(
                         {
                             return Err(refusal);
                         }
+                        // … and a carrier that is no sort at all: a tuple or an arrow.
+                        if let Some(refusal) = unprovided_spec_at_former(kb, &goal, fn_sym, span) {
+                            return Err(refusal);
+                        }
                     }
                     // WI-325: distinguish concrete-binding NoCandidates from
                     // abstract-binding NoCandidates with no covering `requires`

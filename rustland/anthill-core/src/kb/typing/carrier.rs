@@ -4552,6 +4552,13 @@ pub(super) fn resolve_at_goal(
 /// caller that needs that must not read it as such. Tightening the structured arm is a
 /// design change with that census as its blast radius, not a correction of this one.
 ///
+/// THE REQUIREMENT COVERS NO LONGER ASK IT OF A COMPOUND (WI-20260929-12NKG): two
+/// applications of one sort, two arrows and two tuples are compared part by part before
+/// this match is reached ([`concrete_pair_verdict`]), in the σ mode and the coarse one, so
+/// the second half of that census — the deferral cover — arrives here as leaves. Read as
+/// agreement there, the one head every arrow has let a requirement at one arrow cover a
+/// call at any other.
+///
 /// ONE EXCEPTION, and it is not a tightening of the structured arm: a VALUE in a type
 /// position (`denoted(value: 3)`) is related by value alone — `types_compatible` decides it and
 /// the coarse head never does, because every value-in-type shares the one head `Denoted`

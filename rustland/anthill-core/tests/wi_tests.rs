@@ -25,6 +25,8 @@ mod wi_a3fy2_rule_body_type_receiver_test;
 mod wi_rxt6s_dotted_sort_type_value_test;
 #[path = "include/wi_tcsgt_structural_bracket_entry_test.rs"]
 mod wi_tcsgt_structural_bracket_entry_test;
+#[path = "include/wi_12nkg_arrow_and_tuple_cover_test.rs"]
+mod wi_12nkg_arrow_and_tuple_cover_test;
 #[path = "include/wi_jmmhq_value_dot_internal_test.rs"]
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]

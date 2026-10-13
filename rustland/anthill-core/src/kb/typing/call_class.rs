@@ -938,8 +938,8 @@ pub fn find_requires_slot(
 ) -> Option<usize> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     // Each coarse-covering chain entry paired with its σ verdict (`Vacuous` with
-    // no σ context). WI-829: a `Refutes` cover (a shallow-vs-deep compound the
-    // head fallback coarse-accepted) is dropped — NO cover — the flat-chain twin
+    // no σ context). WI-829: a `Refutes` cover (a compound whose parts name another
+    // type parameter than the call's) is dropped — NO cover — the flat-chain twin
     // of [`find_requires_location`] and of the forwarding dual (`entries_cover`,
     // which gates a σ-disagreeing cover at every arity). Among the survivors the
     // WI-613 soft tie-break picks the first σ-precise, else the first: slot
@@ -1079,10 +1079,9 @@ fn entry_matches_subst(
         if !is_type_param_view(kb, per_call_value) && is_type_param_view(kb, entry_value) {
             return false;
         }
-        // Either side may be a wildcard — symmetric match, try both directions.
-        if !dispatch_values_match(kb, per_call_value, entry_value)
-            && !dispatch_values_match(kb, entry_value, per_call_value)
-        {
+        // Either side may be a wildcard, and a compound is compared by its parts — the
+        // coarse rule of the one pair verdict.
+        if !binding_pair_covers(kb, None, per_call_value, entry_value) {
             return false;
         }
     }
@@ -1091,34 +1090,25 @@ fn entry_matches_subst(
 
 /// WI-613 / WI-829 — the σ verdict for a coarse-covering `entry` against the
 /// per-call substitution, computed in ONE pass over its constraining bindings
-/// (each pair judged by [`sigma_pair_precise`], which owns the mixed / concrete /
-/// both-compound rules). The three states drive the two same-spec DIRECT
+/// (each pair judged by [`sigma_pair_verdict`], which owns the mixed / concrete /
+/// compound rules). The three states drive the two same-spec DIRECT
 /// attribution decisions:
 ///   * `Precise` — ≥1 constraining pair, ALL σ-precise: the entry pins the SAME
 ///     element the call has, so among several covers it is the WI-613 tie-break
 ///     winner (the [`find_requires_slot`] / [`find_requires_location`] survivor
 ///     pick, via [`pick_precise`]).
-///   * `Refutes` — ≥1 constraining pair NOT σ-precise: a σ-DISAGREEING cover (the
-///     shallow-vs-deep compound `entry_matches_subst`'s head fallback coarse-
-///     accepted). WI-829 treats it as NO cover, so the caller constructs the
-///     deeper dictionary instead of forwarding the frame's wrong-depth one.
-///   * `Vacuous` — no constraining binding (a bindingless `requires Paintable`,
-///     or all-non-constraining): neither a precise disambiguator NOR a refusal,
-///     so a vacuous sole cover still defers. A structural non-match (`None`
-///     pairs) can't reach a covering entry, but maps here too.
-/// `(Precise, Refutes)` cannot co-occur — precise is "all agree", refutes is
-/// "some disagrees". Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry
-/// forwarding analog) but reads the per-call element from the substitution.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum SigmaVerdict {
-    /// No constraining binding — neither disambiguates nor refuses.
-    Vacuous,
-    /// ≥1 constraining pair, all σ-precise — the tie-break winner.
-    Precise,
-    /// ≥1 constraining pair σ-disagrees — no cover (WI-829).
-    Refutes,
-}
-
+///   * `Refutes` — ≥1 constraining pair is two different types: a shallow-vs-deep
+///     compound, an arrow or a tuple that differs in a part. WI-829 treats it as
+///     NO cover, so the caller constructs the call's own dictionary instead of
+///     reading the frame's.
+///   * `Vacuous` — nothing said either way: no constraining binding (a bindingless
+///     `requires Paintable`, or all-non-constraining), or a pair that differs only
+///     where a part is not determined yet ([`part_verdict`]). Neither a precise
+///     disambiguator NOR a refusal, so a vacuous sole cover still defers. A
+///     structural non-match (`None` pairs) can't reach a covering entry, but maps
+///     here too.
+/// Mirrors [`entries_cover`]'s σ mode (the entry-vs-entry forwarding analog, which
+/// takes `Precise` alone) but reads the per-call element from the substitution.
 pub(super) fn entry_sigma_verdict(
     kb: &mut KnowledgeBase,
     ctx: &SigmaCtx,
@@ -1132,14 +1122,11 @@ pub(super) fn entry_sigma_verdict(
     if pairs.is_empty() {
         return SigmaVerdict::Vacuous;
     }
-    if pairs
-        .iter()
-        .all(|(pc, ev)| sigma_pair_precise(kb, ctx, pc, ev))
-    {
-        SigmaVerdict::Precise
-    } else {
-        SigmaVerdict::Refutes
+    let mut whole = SigmaVerdict::Precise;
+    for (pc, ev) in &pairs {
+        whole = whole.and(|| sigma_pair_verdict(kb, ctx, pc, ev));
     }
+    whole
 }
 
 /// WI-239 — locate the spec a deferred call needs within `sort_sym`'s
@@ -1186,8 +1173,8 @@ pub fn find_requires_location(
         &mut path,
         &mut matches,
     );
-    // WI-829: drop `Refutes` covers (a shallow-vs-deep compound the head fallback
-    // coarse-accepted is NO cover), then pick among the survivors — the same
+    // WI-829: drop `Refutes` covers (a cover the coarse rule admits and σ tells
+    // from the call is NO cover), then pick among the survivors — the same
     // "σ-disagreement is not a cover" rule the forwarding dual (`entries_cover`)
     // applies at every arity, and the flat-chain [`find_requires_slot`] mirrors.
     // A sole survivor is returned; zero survivors refuse (→ construct the deeper
