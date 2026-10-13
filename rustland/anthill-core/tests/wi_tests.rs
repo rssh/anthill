@@ -2112,3 +2112,5 @@ mod spec_op_requirement_at_member_test;
 mod op_fn_value_labelled_arrow_test;
 #[path = "include/wi_jpsdh_call_site_bracket_test.rs"]
 mod wi_jpsdh_call_site_bracket_test;
+#[path = "include/wi_450ka_own_row_in_a_slot_row_test.rs"]
+mod wi_450ka_own_row_in_a_slot_row_test;

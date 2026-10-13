@@ -14,7 +14,7 @@
 //! ONE PROGRAM, TWO SPELLINGS (P4): a row holding one entry, braced and bare; a lambda
 //! written at the call and the same lambda held in a `let`.
 
-use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property};
+use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 
 pub static FAMILY: Family = Family {
     name: "c-callback-row",
@@ -31,6 +31,8 @@ pub static FAMILY: Family = Family {
                 spelt("open-bare", " @ EffP", "open"),
                 opt("open-lacks", " @ {EffP, -Modify[p]}"),
                 opt("projected", " @ {s.E}"),
+                // The one row that says a write to the cell the callback is handed.
+                opt("own", " @ {Modify[k]}"),
                 // The slot's `{EffP}`, with the call's bracket saying it: the caller's own
                 // row, which is rigid there, and two of them.
                 opt("tail", " @ {EffP}"),
@@ -77,23 +79,7 @@ pub static FAMILY: Family = Family {
     exceptions: EXCEPTIONS,
 };
 
-/// WI-20261013-450KA: at a slot whose row is projected off a receiver and holds the
-/// caller's own row, a two-parameter lambda held in a `let` loads where the same lambda
-/// written at the call is refused.
-const EXCEPTIONS: &[Exception] = &[
-    Exception {
-        property: Property::OneVerdict,
-        when: &["slot=projected", "passed=let", "takes=cell-and-int64", "does=raises-callers"],
-        ticket: "WI-20261013-450KA",
-        why: "the `let` runs; the call refuses the caller's own row at a slot row holding it",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["slot=projected", "passed=let", "takes=cell-and-int64", "does=writes-own"],
-        ticket: "WI-20261013-450KA",
-        why: "the `let` runs and writes the cell; the call refuses `Modify` of the callback's own parameter",
-    },
-];
+const EXCEPTIONS: &[Exception] = &[];
 
 /// A callback declared at the top level names nothing of `use`'s.
 fn skips(picks: &Picks<'_>) -> bool {
@@ -124,6 +110,7 @@ fn render(picks: &Picks<'_>) -> Program {
         "label" | "label-bare" => ("", " effects {Error[String]}", ""),
         "open" | "open-bare" | "open-lacks" => ("[EffP]", " effects {EffP}", ""),
         "projected" => ("", " effects {s.E}", ""),
+        "own" => ("", " effects {Modify[p]}", ""),
         "tail" => ("[EffP]", " effects {EffP}", "[EffP = {R}]"),
         "two-tails" => ("[EffP]", " effects {EffP}", "[EffP = {R, Q}]"),
         other => panic!("no slot `{other}`"),
