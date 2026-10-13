@@ -2100,3 +2100,5 @@ mod wi_80259_pattern_typed_at_position_test;
 mod spec_op_requirement_at_member_test;
 #[path = "include/op_fn_value_labelled_arrow_test.rs"]
 mod op_fn_value_labelled_arrow_test;
+#[path = "include/wi_jpsdh_call_site_bracket_test.rs"]
+mod wi_jpsdh_call_site_bracket_test;

@@ -4347,6 +4347,25 @@ pub(super) fn infer_discharged_row_tails(
     }
 }
 
+/// The refusal of a call that leaves `open`, a type parameter of `fn_sym`, unfixed: the
+/// provision its clause wants at the carrier the call names, where that is what is missing
+/// ([`unconstrained_for_want_of_a_provision`]), else the parameter unconstrained.
+pub(super) fn unconstrained_type_param_error(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    open: (Symbol, Var),
+    span: Option<Span>,
+) -> TypeError {
+    unconstrained_for_want_of_a_provision(kb, subst, fn_sym, open, span).unwrap_or(
+        TypeError::UnconstrainedTypeParam {
+            span,
+            op: fn_sym,
+            type_param: open.0,
+        },
+    )
+}
+
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
 /// unification, every declared type-param must resolve to a non-Var
 /// term. An unresolved Var means the caller can't recover the return

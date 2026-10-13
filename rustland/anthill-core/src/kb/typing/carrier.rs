@@ -3610,7 +3610,13 @@ pub(super) fn dispatched_impl_effects_of(
     // WI-20260929-0RP29 — THE OVERRIDE'S OWN TYPE PARAMETERS, as this call binds them. The
     // call's σ binds the SPEC op's; an override's `[W]` is its own, so `effects {EC, Error[W]}`
     // reached the caller as `Error[?W]` (refused where `Car.op(x, "str")` loads, MEASURED).
-    let own_sigma = override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, span)?;
+    let reading = OverrideReading {
+        arg_types: &param_to_arg_type,
+        receivers: &places.vars,
+        denoted: &eff_rekey,
+    };
+    let own_sigma =
+        override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, &reading, span)?;
     let mut out: Vec<Value> = Vec::new();
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
@@ -3925,24 +3931,127 @@ fn open_literal_type_vars(kb: &mut KnowledgeBase, ty: &Value) -> Value {
     .unwrap_or_else(|| ty.clone())
 }
 
+/// WI-20260930-JPSDH — a spec operation's declaration and its override's, related position by
+/// position: each parameter pair and the two returns, each projection of the spec's masked
+/// ([`mask_projections`]: a return holding `s.E` still relates `B = W`). Never by name — an
+/// override may declare parameters the spec does not, and name its own as it likes.
+///
+/// ONE RELATION PER POSITION. Unified into one, a position where the spec writes a type and
+/// the override its own parameter (`k: Int64` behind `k: W`) bound that parameter, and the
+/// position that relates it to the spec's (`B = W` behind `B = W`) then related two types:
+/// the bracket `Sp.pick2[W = String](a, b, 5)` reached nothing, and the call loaded where
+/// `Car.pick2[W = String](a, b, 5)` is refused (MEASURED).
+pub(super) struct DeclarationsRelated {
+    positions: Vec<Substitution>,
+}
+
+impl DeclarationsRelated {
+    pub(super) fn new(
+        kb: &mut KnowledgeBase,
+        spec_op: &OperationInfoFull,
+        impl_op: &OperationInfoFull,
+    ) -> Self {
+        let positions = declared_positions(spec_op, impl_op)
+            .map(|(spec_ty, impl_ty)| {
+                let spec_ty = mask_projections(kb, spec_ty);
+                let spec_ty = expand_sorts_deep(kb, &spec_ty, SlotVar::Flexible);
+                let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
+                let mut rel = Substitution::new();
+                unify_types(kb, &mut rel, &spec_ty, &impl_ty);
+                rel
+            })
+            .collect();
+        Self { positions }
+    }
+
+    /// Does the override's own type parameter `own` stand, at some position, where the spec
+    /// writes its type parameter `spec`?
+    pub(super) fn stands_at(&self, kb: &KnowledgeBase, own: VarId, spec: VarId) -> bool {
+        let rep = |rel: &Substitution, vid: VarId| {
+            resolved_var(kb, &walk_view(kb, rel, &Value::Var(Var::Global(vid))))
+        };
+        self.positions.iter().any(|rel| {
+            let at = rep(rel, own);
+            at.is_some() && at == rep(rel, spec)
+        })
+    }
+}
+
+/// A spec operation's declared types with its override's at the same position: each parameter
+/// pair, then the two returns.
+fn declared_positions<'a>(
+    spec_op: &'a OperationInfoFull,
+    impl_op: &'a OperationInfoFull,
+) -> impl Iterator<Item = (&'a Value, &'a Value)> {
+    spec_op
+        .params
+        .iter()
+        .zip(impl_op.params.iter())
+        .map(|((_, spec_ty), (_, impl_ty))| (spec_ty, impl_ty))
+        .chain(std::iter::once((
+            &spec_op.return_type,
+            &impl_op.return_type,
+        )))
+}
+
+/// How a path that types an override at a call reads the override's DECLARED types there, by
+/// the override's own parameters: the type each receives, the caller's variable a projection's
+/// receiver is re-keyed to, and the one a `denoted` is ([`override_declared_at_call`]).
+pub(super) struct OverrideReading<'a> {
+    pub(super) arg_types: &'a HashMap<Symbol, Value>,
+    pub(super) receivers: &'a HashMap<Symbol, Symbol>,
+    pub(super) denoted: &'a HashMap<Symbol, Symbol>,
+}
+
+/// A type an override declares, as the call reads it: δ over its projections against the
+/// arguments, a projection's receiver re-keyed to the caller's variables and a `denoted`
+/// through `denoted` in the same pass — or, for a type holding no projection, the `denoted`
+/// re-key alone. `None` when a projection does not eliminate.
+pub(super) fn override_declared_at_call(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    reading: &OverrideReading,
+    denoted: &HashMap<Symbol, Symbol>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Option<Value> {
+    let denoted = (!denoted.is_empty()).then_some(denoted);
+    if value_contains_projection(kb, ty) {
+        let receivers = (!reading.receivers.is_empty()).then_some(reading.receivers);
+        Discharge {
+            arg_syms: receivers,
+            denoted_syms: denoted,
+            ..Discharge::new(reading.arg_types, ctx, span)
+        }
+        .eliminate(kb, ty)
+        .ok()
+    } else {
+        Some(match denoted {
+            Some(map) => substitute_ref_syms_value(kb, ty, map),
+            None => ty.clone(),
+        })
+    }
+}
+
 /// WI-20260929-0RP29 — the override's OWN type parameters as this call binds them, the way the
 /// qualified call `Car.op(…)` binds them — `None` when it declares none. One function for both
 /// paths that type an override at a call ([`dispatched_impl_effects`], the WI-606 fallback,
 /// [`concrete_override_threaded`]), so they read one override at one call alike. In order:
 ///
-/// 1. THE BRACKET. The two declarations are related position by position, return included —
-///    never by name, since an override may declare parameters the spec does not — with each
-///    projection masked ([`mask_projections`]: a return holding `s.E` still relates `B = W`);
-///    an override parameter aligned with a spec type parameter the call's bracket wrote takes
-///    it (`Sp.pick2[W = Int64](a, b)`, WI-20260930-JPSDH). A concrete spec type seeds nothing
-///    here: the arguments decide first (`a: Animal` given a `cat` is `W = cat`).
+/// 1. THE BRACKET. The two declarations are related position by position, return included
+///    ([`DeclarationsRelated`]); an override parameter standing where the spec writes a type
+///    parameter the call's bracket wrote takes it (`Sp.pick2[W = Int64](a, b)`,
+///    WI-20260930-JPSDH). A concrete spec type seeds nothing here: the arguments decide first
+///    (`a: Animal` given a `cat` is `W = cat`).
 /// 2. THE ARGUMENTS' JOIN over the parameters still free, as the qualified call's
 ///    WI-20260926-NEKR0 step joins them (`a: W, b: W` given a cat and a dog is `W = Animal`).
 /// 3. THE ARGUMENTS, each met with the override's parameter at its position — its receiver
 ///    included (`c: Car[V = W]` given a `Car[V = Int64]`) — a foreign sort's unwritten slot
 ///    fresh per occurrence on both sides (WI-374: two `nil`s are two lists). What an argument
 ///    leaves OPEN (a `none`'s payload, `[]`'s element, an unannotated lambda's parameter) is
-///    the spec's parameter as the call bound it — the type the call checked it against.
+///    the spec's parameter as the call bound it — the type the call checked it against. A
+///    parameter the bracket fixed JUDGES the arguments it types, as the qualified call's
+///    bracket does (`Sp.op[U = String](x, 5, "s")` over `k: W, u: W` is refused at `k`).
 /// 4. THE CALLER'S EXPECTED TYPE, through the return, for a parameter the arguments left free —
 ///    the qualified call's WI-270 fill (`let r: Option[T = Pair[A = Int64, B = String]] =
 ///    Sp.pick2(a, b)`), so the two calls agree on an annotated result.
@@ -3964,6 +4073,7 @@ pub(super) fn override_at_call(
     spec_op: &OperationInfoFull,
     call: &CallToOverride,
     call_subst: &Substitution,
+    reading: &OverrideReading,
     span: Option<Span>,
 ) -> Result<Option<Substitution>, TypeError> {
     let own: SmallVec<[VarId; 2]> = impl_op
@@ -3980,30 +4090,16 @@ pub(super) fn override_at_call(
     let n = spec_op.params.len().min(impl_op.params.len());
     let var = |vid: VarId| Value::Var(Var::Global(vid));
     // 1. The declarations related, and the bracket.
-    let mut rel = Substitution::new();
-    let declared = (0..n)
-        .map(|i| (&spec_op.params[i].1, &impl_op.params[i].1))
-        .chain(std::iter::once((
-            &spec_op.return_type,
-            &impl_op.return_type,
-        )));
-    for (spec_ty, impl_ty) in declared {
-        let spec_ty = mask_projections(kb, spec_ty);
-        let spec_ty = expand_sorts_deep(kb, &spec_ty, SlotVar::Flexible);
-        let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
-        unify_types(kb, &mut rel, &spec_ty, &impl_ty);
-    }
-    let rep = |kb: &KnowledgeBase, rel: &Substitution, vid: VarId| {
-        resolved_var(kb, &walk_view(kb, rel, &var(vid)))
-    };
     let mut sigma = Substitution::new();
-    for &w in &own {
-        let Some(rw) = rep(kb, &rel, w) else {
-            continue;
-        };
-        if let Some(&u) = call.bracket.iter().find(|&&u| rep(kb, &rel, u) == Some(rw)) {
-            let written = walk_type_deep_value(kb, call_subst, &var(u));
-            sigma.bind_value(kb, w, written);
+    let mut by_bracket: SmallVec<[VarId; 2]> = SmallVec::new();
+    if !call.bracket.is_empty() {
+        let related = DeclarationsRelated::new(kb, spec_op, impl_op);
+        for &w in &own {
+            if let Some(&u) = call.bracket.iter().find(|&&u| related.stands_at(kb, w, u)) {
+                let written = walk_type_deep_value(kb, call_subst, &var(u));
+                sigma.bind_value(kb, w, written);
+                by_bracket.push(w);
+            }
         }
     }
     // The SPEC's parameter and return types as the call bound them: each projection eliminated
@@ -4063,6 +4159,40 @@ pub(super) fn override_at_call(
         let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
         unify_types(kb, &mut sigma, passed_ty, &impl_ty);
     }
+    //    A parameter the bracket fixed judges the arguments it types, as the qualified call's
+    //    bracket does: the join leaves a fixed parameter alone, and the unification above
+    //    answers `false` for an argument of another type and records nothing. Unjudged,
+    //    `Sp.op[U = String](x, 5, "s")` over `Car.op[W](c, k: W, u: W) effects {Error[W]}`
+    //    charged `Error[String]` and raised the `5` (MEASURED). The parameter is read as the
+    //    caller's path reads the override's declarations ([`override_declared_at_call`], the
+    //    call's effect re-key for a `denoted`: read as written, `st: Strm[T = W, E =
+    //    {Modify[hh]}]` refused a stream writing the cell the call passes for `hh`, MEASURED),
+    //    against the argument as the override receives it. One whose projection does not
+    //    eliminate here is left unjudged, as every argument of the effects path is without a
+    //    bracket (WI-20260930-FB53M); the fallback declines at the same parameter.
+    for (impl_p, impl_ty) in impl_op.params.iter().take(n) {
+        if !by_bracket.iter().any(|&w| occurs_in_view(kb, w, impl_ty)) {
+            continue;
+        }
+        let Some(passed_ty) = reading.arg_types.get(impl_p).cloned() else {
+            continue;
+        };
+        let Some(written) =
+            override_declared_at_call(kb, impl_ty, reading, reading.denoted, &ctx, span)
+        else {
+            continue;
+        };
+        let context = TypeErrorContext::OperationArgument {
+            op_name: impl_op_sym,
+            param: *impl_p,
+        };
+        let mut judged = sigma.clone();
+        if let ArgValidation::Fail(err) =
+            validate_arg_against_param(kb, &mut judged, &passed_ty, &written, span, context, None)
+        {
+            return Err(err);
+        }
+    }
     // 4. What is still free after the arguments, from the caller's expected type — as the
     //    qualified call fills it (WI-270: only a parameter the arguments left free, through the
     //    return; a contradicting claim is the use site's to refuse, so this binds nothing it
@@ -4092,13 +4222,7 @@ pub(super) fn override_at_call(
     //    reduces here was masked away (MEASURED: `Error[?W]` undeclared).
     if own.iter().any(|&w| sigma.resolve_as_value(w).is_none()) {
         let mut probe = sigma.clone();
-        let positions = (0..n)
-            .map(|i| (&spec_op.params[i].1, &impl_op.params[i].1))
-            .chain(std::iter::once((
-                &spec_op.return_type,
-                &impl_op.return_type,
-            )));
-        for (spec_ty, impl_ty) in positions {
+        for (spec_ty, impl_ty) in declared_positions(spec_op, impl_op) {
             let at_call = spec_at_call(kb, spec_ty);
             let impl_ty = mask_projections(kb, impl_ty);
             let impl_ty = expand_sorts_deep(kb, &impl_ty, SlotVar::Flexible);
