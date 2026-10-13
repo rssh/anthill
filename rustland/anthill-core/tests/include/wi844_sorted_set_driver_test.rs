@@ -552,26 +552,29 @@ fn an_abstract_ordering_parameter_forwards_the_callers_choice() {
 }
 
 /// TWO witnesses for ONE requirement are REFUSED, not first-matched — and the refusal does
-/// not care WHICH producer wrote each. `Both` states `WeakOrd[T]` twice, under the names
-/// `A` and `B`: its dictionary holds one entry for both lines, so the two names are names
-/// of one requirement and one witness answers `WeakOrd.compare(y, y)` whichever was
-/// written. (WI-20261013-0K8WD: a selection is kept by the requirement, so two
-/// requirements on one sort at two types each take a witness —
-/// `wi_0k8wd_selection_per_requirement_test`; what is refused here is two for one.)
+/// not care WHICH producer wrote each. `Both` states `requires A: WeakOrd[T]`, and its
+/// `cmp` states `requires WeakOrd[T]` again with no name of its own: one requirement,
+/// `A`, which the sort's short name reaches as well (`slot_key_at`), and one witness
+/// answers `WeakOrd.compare(y, y)` whichever key it was written under.
 ///
-/// Three spellings, all refused with one message. The bracket-only one is WI-841's and
-/// already worked. The type-only one is what WI-844's read made reachable: measured,
-/// `Both.mk[T = String, A = ByLength, B = Alphabetical](…)` is refused at the bracket,
-/// while the parameter ANNOTATION carrying the identical bindings LOADS.
+/// (WI-20261013-0K8WD: a selection is kept by the requirement, so two requirements on one
+/// sort at two types each take a witness. WI-20261013-50ZMN: so do two at ONE type that
+/// each have a name — until then this row was `requires A: WeakOrd[T]` beside `requires
+/// B: WeakOrd[T]`, one requirement under two names, and `Both[T = String, A = ByLength,
+/// B = Alphabetical]` was refused; `wi_50zmn_two_requirements_of_one_sort_test` drives
+/// that type now. What is refused here is two for one.)
+///
+/// Two spellings, both refused with one message: both keys in the bracket, and MIXED —
+/// `A` read off the argument's type, the restating line's key written in the bracket.
 ///
 /// THE MIXED ONE IS THE INTERESTING CASE, and a first cut got it wrong. That cut ranked
 /// the producers — a derived witness colliding with a BRACKET-written one was exempted,
-/// on the (true-for-one-slot, false-across-two) reasoning that they read one variable
-/// and so cannot disagree. Measured: adding `[A = ByLength]` to the call DELETED the
-/// refusal, leaving one pin serving both deps. Hence `[case_mixed]` below, and hence
+/// on the (true-for-one-key, false-across-two) reasoning that they read one variable
+/// and so cannot disagree. Measured: adding a bracket key to the call DELETED the
+/// refusal, leaving one pin serving both. Hence the mixed case below, and hence
 /// `push_selection` compares unconditionally.
 #[test]
-fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
+fn two_witnesses_for_one_requirement_are_refused_whoever_wrote_them() {
     let both = |ns: &str, call: &str| {
         program(
             ns,
@@ -579,12 +582,11 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
                 "  sort Both\n    \
                  sort T = ?\n    \
                  requires A: WeakOrd[T]\n    \
-                 requires B: WeakOrd[T]\n    \
                  entity both(x: T)\n    \
-                 operation cmp(s: Both[T = T, A = A, B = B], y: T) -> Int64 = \
+                 operation cmp(s: Both[T = T, A = A], y: T) -> Int64 requires WeakOrd[T] = \
                  WeakOrd.compare(y, y)\n  end\n  \
                  sort Take\n    \
-                 operation take(s: Both[T = String, A = ByLength, B = Alphabetical]) \
+                 operation take(s: Both[T = String, A = ByLength]) \
                  -> Int64 =\n      {call}\n  end"
             ),
         )
@@ -592,14 +594,14 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
     // (namespace, the call, what wrote the two witnesses)
     let cases = [
         (
-            "wi844.twoslot",
-            "Both.cmp(s, \"q\")",
-            "both read off the argument's TYPE",
+            "wi844.twokeys",
+            "Both.cmp[A = ByLength, WeakOrd = Alphabetical](s, \"q\")",
+            "both written in the BRACKET, under the requirement's two keys",
         ),
         (
-            "wi844.twoslotmixed",
-            "Both.cmp[A = ByLength](s, \"q\")",
-            "MIXED: `A` written in the bracket, `B` read off the argument's type",
+            "wi844.twokeysmixed",
+            "Both.cmp[WeakOrd = Alphabetical](s, \"q\")",
+            "MIXED: `A` read off the argument's type, the short name written in the bracket",
         ),
     ];
     for (ns, call, how) in cases {
@@ -612,7 +614,7 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
                     && e.contains(&format!("{ns}.Alphabetical"))
                     && e.contains("for one requirement")
             }),
-            "{how}: two names of one requirement bound to two witnesses must be refused, \
+            "{how}: two keys of one requirement bound to two witnesses must be refused, \
              naming both: {errs:?}"
         );
     }

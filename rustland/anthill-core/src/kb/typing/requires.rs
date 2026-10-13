@@ -21,6 +21,51 @@ pub struct RequiresEntry {
     pub spec: Value,
     /// WI-1110 — where this slot's dictionary COMES FROM. See [`SupplySource`].
     pub supply: SupplySource,
+    /// WI-20261013-50ZMN — the NAME the declaration gives this requirement: `Plus` of
+    /// `requires Plus: Mon[T]`, the bare name a bracket key and
+    /// [`NamedRequirementSlot::binder`](crate::kb::NamedRequirementSlot) both spell.
+    /// `None` for a requirement no line names.
+    ///
+    /// IT IS PART OF WHICH REQUIREMENT THE ENTRY IS. Two entries of one frame that
+    /// require one sort at the same bindings are ONE requirement where at most one of
+    /// them has a name, and TWO where each has a name of its own
+    /// ([`requirements_are_named_apart`]): `requires Plus: Mon[T]` beside `requires
+    /// Times: Mon[T]` is two dictionaries, and neither the spec term nor the goal a
+    /// body forms tells them apart. So the name rides on the entry, into the tree, the
+    /// frame's slot names and the key of the memo ([`RequiresEntry::eq`]).
+    pub binder: Option<Symbol>,
+}
+
+/// WI-20261013-50ZMN — do two entries carry two DIFFERENT names? Where they also
+/// require one sort at bindings no goal tells apart, that is what makes them two
+/// requirements; an entry with no name is the requirement any entry beside it states.
+pub(crate) fn requirements_are_named_apart(a: &RequiresEntry, b: &RequiresEntry) -> bool {
+    matches!((a.binder, b.binder), (Some(x), Some(y)) if x != y)
+}
+
+/// Does a frame hold two entries under two names at all? The question asked before any
+/// pair of them is compared: nearly every frame names no requirement, or one.
+pub(super) fn names_two_requirements<'a>(
+    entries: impl IntoIterator<Item = &'a RequiresEntry>,
+) -> bool {
+    let mut names = entries.into_iter().filter_map(|entry| entry.binder);
+    names
+        .next()
+        .is_some_and(|first| names.any(|other| other != first))
+}
+
+/// One entry of a frame over the chain of the sort it requires — a node of the tree
+/// [`requires_tree`] gives a sort's own requirements, for an entry that is not read off
+/// a sort's facts: an operation's own, or one of a frame taken whole. Its children are
+/// composed into the entry's scope through the entry's bindings, so a path beneath it
+/// is the `requirement_at_sort` projection into its dictionary.
+pub(super) fn requires_node(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> RequiresNode {
+    let child_subst = build_child_subst_map(kb, entry);
+    let mut visited: Vec<Symbol> = Vec::new();
+    RequiresNode {
+        entry: entry.clone(),
+        sub_requires: build_requires_tree(kb, entry.required_sort, &child_subst, &mut visited),
+    }
 }
 
 /// WI-1110 — a chain entry's SUPPLY SOURCE: who fills the slot.
@@ -206,6 +251,7 @@ pub(super) fn value_identity_key(v: &Value) -> ValueIdentity {
 impl PartialEq for RequiresEntry {
     fn eq(&self, other: &Self) -> bool {
         self.required_sort == other.required_sort
+            && self.binder == other.binder
             && value_identity_key(&self.spec) == value_identity_key(&other.spec)
     }
 }
@@ -215,6 +261,7 @@ impl Eq for RequiresEntry {}
 impl std::hash::Hash for RequiresEntry {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.required_sort.hash(state);
+        self.binder.hash(state);
         value_identity_key(&self.spec).hash(state);
     }
 }
@@ -459,6 +506,7 @@ pub(super) fn provider_dict_chain(
                 spec: spec.clone(),
                 // A per-provision condition is inbound, like every `:- goals` tail.
                 supply: SupplySource::Required,
+                binder: None,
             });
         }
     }
@@ -966,6 +1014,7 @@ pub(super) fn chain_at_callers_instance(
             })
             .unwrap_or_else(|| entry.spec.clone()),
             supply: entry.supply,
+            binder: entry.binder,
         })
         .collect();
     DictChain {
@@ -1227,6 +1276,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         required_sort: entry.required_sort,
         spec,
         supply: entry.supply,
+        binder: entry.binder,
     }
 }
 
@@ -1365,6 +1415,9 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
                     param: pname,
                     binder: slot.binder,
                 },
+                // The carrier's name for it, not one this operation gives: the entry is
+                // told from its neighbours by the parameter it is read off.
+                binder: None,
             });
         }
     }
@@ -1482,7 +1535,11 @@ fn req_slot_base(kb: &KnowledgeBase, required_sort: Symbol) -> String {
 /// them — and a base counted more than once is suffixed: `_<marker><hash-cons id>` for a
 /// ground spec, `_<marker>d<idx_offset + position>` for a denoted one (WI-662: no
 /// hash-cons id; the chain position is stable across the typer and eval passes, which
-/// both come through these cached namers).
+/// both come through these cached namers). Two requirements of the run that are one spec
+/// term under two names ([`requirements_are_named_apart`]) share that id, and each adds
+/// `_n<its name>` (WI-20261013-50ZMN): under one slot name the frame held one dictionary
+/// for both — MEASURED, `biFold[plus = Sum, times = Product](2, 3, 4)` answered 24 and
+/// the two swapped 9, both calls through `times`.
 ///
 /// THE STRINGS ARE AN ABI: eval frames read slots BY THESE NAMES, so the three markers
 /// (`""`, `"c"`, `"o"`) and the two formats reproduce exactly what each namer wrote.
@@ -1505,7 +1562,21 @@ fn name_slots(
     for (k, (entry, base)) in entries.iter().zip(bases.iter()).enumerate() {
         let name = if counts[base.as_str()] > 1 {
             match &entry.spec {
-                Value::Term { id, .. } => format!("{base}_{marker}{}", id.raw()),
+                Value::Term { id, .. } => {
+                    let mut name = format!("{base}_{marker}{}", id.raw());
+                    // WI-20261013-50ZMN — two requirements told apart by their NAMES
+                    // alone are one spec term, so the id is one too; each takes its
+                    // name after it.
+                    let twin = entries.iter().any(|other| {
+                        requirements_are_named_apart(entry, other)
+                            && matches!(&other.spec, Value::Term { id: o, .. } if o == id)
+                    });
+                    if let Some(binder) = entry.binder.filter(|_| twin) {
+                        name.push_str("_n");
+                        name.push_str(kb.local_name_of(binder));
+                    }
+                    name
+                }
                 _ => format!("{base}_{marker}d{}", idx_offset + k),
             }
         } else {
@@ -1563,6 +1634,12 @@ fn synth_op_req_names_of(kb: &mut KnowledgeBase, op_sym: Symbol) -> Rc<Vec<Symbo
     // term — another type-param binding, an operation binding — and every such
     // difference is a different `TermId`, which this suffix already separates.
     // Position would separate the names without separating anything real.
+    //
+    // WI-20261013-50ZMN — OR A DIFFERENCE IN THEIR NAMES, which the term does not
+    // hold: `requires plus: Mon[T], times: Mon[T]` is one `TermId` and two
+    // requirements, a provider each. Those two add their names to the id
+    // ([`name_slots`]); an entry stated again under no name is still the case
+    // above.
     //
     // A denoted spec (WI-662) has no hash-cons id, so it takes its op-chain position,
     // `_od` and not `_o`, so a position cannot collide with a `TermId` of the same
@@ -2112,6 +2189,7 @@ pub(super) fn build_requires_tree(
             required_sort: raw.required_sort,
             spec: substituted_spec,
             supply: raw.supply,
+            binder: raw.binder,
         };
         let child_subst = build_child_subst_map(kb, &entry);
         let sub_requires = build_requires_tree(kb, raw.required_sort, &child_subst, visited);
@@ -2199,8 +2277,119 @@ pub(crate) fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Requi
     out
 }
 
-/// The `SortRequiresInfo` half of [`direct_requires`] — every `requires` clause written
-/// on `sort_sym`, in fact order.
+/// WI-20261013-0K8WD — the place a `requires` line about to be asserted for `sort` takes
+/// among the requirements the sort has STATED so far ([`stated_sort_requires`]), as
+/// `(position, of_base)`: its position among all of them, and among those on `base` —
+/// the line's own sort.
+///
+/// A line that states again a requirement already there — the same sort at the same
+/// bindings — asserts the fact that is there, so it takes that one's place. Whether the
+/// two lines are then one requirement or two is decided by their names, where the chain
+/// is read ([`collect_sort_requires`]); the place is which FACT a line states, and
+/// `requires Plus: Mon[T]` followed by `requires Times: Mon[T]` state one.
+///
+/// THE SAME REQUIREMENT AS [`stated_sort_requires`] COUNTS IT: the same sort, and a spec
+/// that reads the same through the view. Compared by identity — a term's id, an
+/// occurrence's address — the line was the fact that is there only where both were
+/// terms. A binding written through a type alias rides an occurrence, each line its own,
+/// and the second of two such lines was placed one past the end while its fact was the
+/// first one's: MEASURED under `ANTHILL_TEST_NODE_CARRIER=1`, `requires A: Mon[T =
+/// Int64]` beside `requires B: Mon[T = Int64]` lost `B` ("a requirement slot whose
+/// position … could not be established"), and beside a third line at other bindings `B`
+/// named that line's requirement.
+///
+/// The caller reads the live relation: it drops `requires_index` first, which a later
+/// load inherits from the load before it.
+pub(crate) fn place_of_requirement(
+    kb: &KnowledgeBase,
+    sort: Symbol,
+    base: Option<Symbol>,
+    spec: &Value,
+) -> (usize, usize) {
+    let stated = stated_sort_requires(kb, sort);
+    let position = stated
+        .iter()
+        .position(|e| {
+            base == Some(e.required_sort)
+                && crate::kb::term_view::views_structurally_equal(kb, &e.spec, spec)
+        })
+        .unwrap_or(stated.len());
+    let of_base = stated[..position]
+        .iter()
+        .filter(|e| base.is_some_and(|b| same_sort_canonical(kb, e.required_sort, b)))
+        .count();
+    (position, of_base)
+}
+
+/// The `SortRequiresInfo` half of [`direct_requires`] — the requirements written on
+/// `sort_sym`, in fact order.
+///
+/// WI-20261013-50ZMN — A REQUIREMENT, NOT A FACT. The facts hold a sort required at
+/// some bindings once, however many lines state it ([`stated_sort_requires`]): the head
+/// is a hash-consed term, and a second line asserts the first one's. What the lines add
+/// is NAMES, recorded beside the facts (`KnowledgeBase::named_requirement_slots`), and
+/// two lines that each give a name of their own are two requirements
+/// ([`requirements_are_named_apart`]): `requires Plus: Mon[T]` beside `requires Times:
+/// Mon[T]` is two entries here, in the order the names were written, each a dictionary
+/// slot of its own. One name, or none, is one entry — a line with no name states the
+/// requirement the line beside it names.
+///
+/// A name is found by the coordinate its line was recorded at (`of_base`,
+/// [`place_of_requirement`]): which of the sort's facts on the required sort the line
+/// states, the one thing `resolve_requires_bindings` leaves alone when it moves them.
+pub(super) fn collect_sort_requires(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+    out: &mut Vec<RequiresEntry>,
+) {
+    let stated = stated_sort_requires(kb, sort_sym);
+    let named = sort_named_requirement_slots(kb, sort_sym);
+    if named.is_empty() {
+        out.extend(stated);
+        return;
+    }
+    for (j, entry) in stated.iter().enumerate() {
+        // The coordinate a named line was recorded at (`place_of_requirement`): which
+        // of the sort's stated requirements on this sort the line states.
+        let of_base = stated[..j]
+            .iter()
+            .filter(|e| same_sort_canonical(kb, e.required_sort, entry.required_sort))
+            .count();
+        let mut names = named.iter().filter(|slot| {
+            slot.of_base == Some(of_base)
+                && slot
+                    .spec_base
+                    .is_some_and(|base| same_sort_canonical(kb, base, entry.required_sort))
+        });
+        match names.next() {
+            None => out.push(entry.clone()),
+            Some(first) => {
+                for slot in std::iter::once(first).chain(names) {
+                    out.push(RequiresEntry {
+                        binder: Some(slot.binder),
+                        ..entry.clone()
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The named requirement slots recorded for the SORT `sort_sym`, under the symbol the
+/// loader recorded them at or its canonical one.
+fn sort_named_requirement_slots(
+    kb: &KnowledgeBase,
+    sort_sym: Symbol,
+) -> &[crate::kb::NamedRequirementSlot] {
+    match kb.named_requirement_slots(sort_sym) {
+        [] => kb.named_requirement_slots(kb.canonical_sort_sym(sort_sym)),
+        named => named,
+    }
+}
+
+/// The `requires` clauses written on `sort_sym` as its FACTS hold them, in fact order:
+/// one entry for each sort required at distinct bindings, whatever names its lines
+/// gave it. [`collect_sort_requires`] makes the sort's requirements of these.
 ///
 /// WI-1112 — THE SORT INDEX, not `rules_by_functor`, for the reason its sibling
 /// `self_supplied_entries` already gives about the provider index: this runs once per
@@ -2214,42 +2403,8 @@ pub(crate) fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Requi
 /// `rids_or_scan` still falls back to the scan when
 /// `requires_index` is `None`, which is the state across every load-time window in which
 /// the relation (or the provision relation the other half reads) can still change.
-/// WI-20261013-0K8WD — the place a `requires` line about to be asserted for `sort` takes
-/// among the requirements the sort has stated SO FAR, as `(position, of_base)`: its
-/// position among all of them, and among those on `base` — the line's own sort.
-///
-/// A line that states again a requirement already there — the same sort at the same
-/// bindings — asserts the fact that is there, so it takes that one's place:
-/// `requires Plus: Mon[T]` followed by `requires Times: Mon[T]` is one entry of the
-/// sort's chain under two names.
-///
-/// The caller reads the live relation: it drops `requires_index` first, which a later
-/// load inherits from the load before it.
-pub(crate) fn place_of_requirement(
-    kb: &KnowledgeBase,
-    sort: Symbol,
-    base: Option<Symbol>,
-    spec: &Value,
-) -> (usize, usize) {
-    let mut stated = Vec::new();
-    collect_sort_requires(kb, sort, &mut stated);
-    let identity = value_identity_key(spec);
-    let position = stated
-        .iter()
-        .position(|e| value_identity_key(&e.spec) == identity)
-        .unwrap_or(stated.len());
-    let of_base = stated[..position]
-        .iter()
-        .filter(|e| base.is_some_and(|b| same_sort_canonical(kb, e.required_sort, b)))
-        .count();
-    (position, of_base)
-}
-
-pub(super) fn collect_sort_requires(
-    kb: &KnowledgeBase,
-    sort_sym: Symbol,
-    out: &mut Vec<RequiresEntry>,
-) {
+pub(super) fn stated_sort_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+    let mut out: Vec<RequiresEntry> = Vec::new();
     for rid in requires_rids_by_sort(kb, sort_sym) {
         if !kb.is_fact(rid) {
             continue;
@@ -2316,8 +2471,10 @@ pub(super) fn collect_sort_requires(
             required_sort: base_functor,
             spec: spec_value,
             supply: SupplySource::Required,
+            binder: None,
         });
     }
+    out
 }
 
 /// WI-1110 — is this `provides` row a CONVERSION (a spec's, [`SupplySource::SelfSupplied`])
@@ -2667,6 +2824,7 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
             required_sort: base,
             spec: row.spec_view.clone(),
             supply: SupplySource::SelfSupplied,
+            binder: None,
         });
     }
     out

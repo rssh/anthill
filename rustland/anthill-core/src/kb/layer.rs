@@ -166,6 +166,8 @@ kb_scoped_fields!(
     last_load,
     scope_text_files,
     named_requirement_slots,
+    // WI-20261013-50ZMN — written by a layer's scan beside the slots its load records.
+    requirement_sorts,
     type_param_canonical_var,
     // WI-20260909-NAR1X (`/code-review`) — the `VarId`-keyed twin rolls back WITH the
     // map it indexes. One writer fills both (`record_type_param_var`); a layer that
@@ -423,6 +425,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         sealed: _,
         scope_text_files: _,
         named_requirement_slots: _,
+        requirement_sorts: _,
         type_param_canonical_var: _,
         type_param_canonical_vids: _,
         type_var_provider_requirements: _,

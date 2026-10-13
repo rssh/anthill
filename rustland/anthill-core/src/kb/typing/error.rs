@@ -502,16 +502,18 @@ pub enum TypeError {
     /// WI-20261013-0K8WD — one REQUIREMENT, where it was one required sort: a selection
     /// is kept by the requirement it is for ([`SelectedSlot`]), so a provider for each of
     /// `requires OK: WeakOrd[T = K]` and `requires OV: WeakOrd[T = V]` is two selections
-    /// and no conflict. What is left is a requirement its declaration states TWICE — the
-    /// same sort at the same bindings, `requires A: WeakOrd[T]` beside `requires B:
-    /// WeakOrd[T]`. The dictionary holds one entry for both lines, so the two names are
-    /// names of one requirement, and two providers for it have no meaning to give:
-    /// whichever were kept, one would answer where the other was written.
+    /// and no conflict.
+    ///
+    /// WI-20261013-50ZMN — and so is a provider for each of `requires A: WeakOrd[T]` and
+    /// `requires B: WeakOrd[T]`: two names are two requirements at one type as at two.
+    /// What is left is a requirement stated again by a line with NO name of its own —
+    /// an operation's `requires Monoid[T = HT]` under its sort's `requires m: Monoid[T =
+    /// HT]`, selected once as `m` and once as `Monoid`. The frame holds two entries for
+    /// it and both are the one requirement, so two providers for it have no meaning to
+    /// give: whichever were kept, one would answer where the other was written.
     ///
     /// WI-844: the same refusal for the OTHER producer of a selection — the ARGUMENT
-    /// TYPES. A named slot is a type parameter, so such a sort can carry two witnesses
-    /// in ONE type: `Both[T = String, A = ByLength, B = Alphabetical]`, in a parameter
-    /// annotation.
+    /// TYPES, where one of the pair is written in a type and the other in a bracket.
     ///
     /// The message names the two witnesses and NOT which producer wrote each, and that
     /// is deliberate: a MIXED pair is reachable (one name bracketed, the other read off
@@ -521,6 +523,54 @@ pub enum TypeError {
         span: Option<Span>,
         op: Symbol,
         spec: Symbol,
+        first: Symbol,
+        second: Symbol,
+    },
+    /// WI-20261013-50ZMN — a call of the spec operation `op`, written in a declaration
+    /// that states two requirements of `spec` at one type under two names (`first`,
+    /// `second`), which names neither: `Mon.combine(a, b)` under `requires Plus:
+    /// Mon[T]`, `requires Times: Mon[T]`. Both cover the call's goal and nothing in it
+    /// tells them apart, so it is read from neither
+    /// ([`read_requirement_by_name`](super::read_requirement_by_name)); read from the
+    /// first written it would be an answer by the order of two lines.
+    ///
+    /// `by_name` is whether `first.member(…)` is a spelling that reads the call
+    /// (`operation_through_requirement_name`): it is where the required sort declares
+    /// the operation or provides the sort that does, and not where the dictionary
+    /// holds it only past a `requires` — `PartialEq.eq` under two requirements on
+    /// `Ord`, which only the call written in full names. The refusal advises the
+    /// spellings that load.
+    RequirementReadTie {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        first: Symbol,
+        second: Symbol,
+        by_name: bool,
+    },
+    /// WI-20261013-50ZMN — a call that names a requirement of the enclosing
+    /// declaration for the spec operation `op` (`[Mon = Plus]`, `Plus.combine(…)`),
+    /// where that requirement is not the call's: it requires `held`, another instance
+    /// of `spec` than the call is at. `held` is `None` where the place the call is
+    /// written holds no dictionary under the name at all.
+    NamedRequirementNotAtCall {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        binder: Symbol,
+        held: Option<String>,
+    },
+    /// WI-20261013-50ZMN — a `requires` line of the operation `owner` with NO name,
+    /// beside two requirements of its frame under two names (`first`, `second`) that it
+    /// could equally state: `requires Mon[T]` on an operation whose sort states
+    /// `requires Plus: Mon[T]` and `requires Times: Mon[T]`. A line with no name states
+    /// the requirement the line beside it names, and here there are two; read as the
+    /// first written, a selection for it would follow the order of two lines. `spec` is
+    /// the line as written.
+    UnnamedRequirementBesideTwo {
+        span: Option<Span>,
+        owner: Symbol,
+        spec: String,
         first: Symbol,
         second: Symbol,
     },
@@ -1500,7 +1550,8 @@ impl TypeError {
                          parameter whose type omits it — which would be supplied from \
                          that argument's own type, except that something else in this \
                          frame already answers `{2}` here (an anonymous `requires` of the \
-                         same spec, or a second parameter of the same carrier){3}. A body \
+                         same spec, a second parameter of the same carrier, or another \
+                         slot of that carrier at the same type){3}. A body \
                          reads a GOAL and not a parameter, so there is no way to say which \
                          of them is meant, and answering from the wrong one is a silent \
                          wrong order. Name the slot and write that name in the parameter's \
@@ -1599,6 +1650,68 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*witness)),
                 )
             }
+            TypeError::RequirementReadTie {
+                op,
+                spec,
+                first,
+                second,
+                by_name,
+                ..
+            } => {
+                let op_qn = kb.qualified_name_of(*op);
+                let member = short_name_of(op_qn);
+                let spec_name = short_name_of(kb.qualified_name_of(*spec));
+                let (first, second) = (kb.local_name_of(*first), kb.local_name_of(*second));
+                let in_full = |name: &str| format!("`{spec_name}.{member}[{spec_name} = {name}](…)`");
+                let advice = if *by_name {
+                    format!(
+                        "write `{first}.{member}(…)` or `{second}.{member}(…)`, which is {} \
+                         in full",
+                        in_full(first),
+                    )
+                } else {
+                    format!("write {} or {}", in_full(first), in_full(second))
+                };
+                format!(
+                    "a call of {op_qn} that two requirements of the enclosing declaration \
+                     cover, `{first}` and `{second}` — one sort at one type under two \
+                     names — and that names neither: {advice}",
+                )
+            }
+            TypeError::UnnamedRequirementBesideTwo {
+                spec,
+                first,
+                second,
+                ..
+            } => unnamed_requirement_line_detail(
+                spec,
+                kb.local_name_of(*first),
+                kb.local_name_of(*second),
+            ),
+            TypeError::NamedRequirementNotAtCall {
+                op,
+                spec,
+                binder,
+                held,
+                ..
+            } => {
+                let name = kb.local_name_of(*binder);
+                match held {
+                    Some(held) => format!(
+                        "`{name}` is `requires {held}`, which is not the instance of {} this \
+                         call of {} is at — a requirement answers a call at the type it is \
+                         stated for",
+                        kb.qualified_name_of(*spec),
+                        kb.qualified_name_of(*op),
+                    ),
+                    None => format!(
+                        "`{name}` names a requirement of the enclosing declaration, and no \
+                         dictionary is held under that name where this call of {} is \
+                         written",
+                        kb.qualified_name_of(*op),
+                    ),
+                }
+            }
             TypeError::ConflictingSelection {
                 op,
                 spec,
@@ -1608,8 +1721,9 @@ impl TypeError {
             } => {
                 format!(
                     "two providers are selected for {} at the call to {}: {} and {} — \
-                     for one requirement: a sort required twice at the same bindings is \
-                     held once, under either name, and takes one provider",
+                     for one requirement: a `requires` line with no name of its own \
+                     states the requirement the line beside it names, and the one takes \
+                     one provider",
                     kb.qualified_name_of(*spec),
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(*first),
@@ -1950,6 +2064,9 @@ impl TypeError {
             | TypeError::WitnessDoesNotProvide { span, .. }
             | TypeError::ValueDirectedSelection { span, .. }
             | TypeError::ConflictingSelection { span, .. }
+            | TypeError::RequirementReadTie { span, .. }
+            | TypeError::NamedRequirementNotAtCall { span, .. }
+            | TypeError::UnnamedRequirementBesideTwo { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::UnconstrainedCitationParam { span, .. }
@@ -2320,6 +2437,37 @@ impl TypeError {
             // WI-844: `selection`, not `type_arg` — a conflicting pair can be written
             // in a bracket, carried in an argument's TYPE, or one of each, so the field
             // names what is wrong rather than where it was written.
+            // WI-20261013-50ZMN: `requirement` — what is wrong is which requirement of
+            // the enclosing declaration the call reads, however the call spelled it.
+            TypeError::RequirementReadTie { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requirement".to_string(),
+                expected_type: format!(
+                    "the requirement of {} this call reads, by its name",
+                    kb.qualified_name_of(*spec)
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
+            TypeError::UnnamedRequirementBesideTwo { owner, .. } => {
+                unnamed_requirement_line_error(
+                    kb.qualified_name_of(*owner),
+                    self.format(kb),
+                    self.span(kb),
+                )
+            }
+            TypeError::NamedRequirementNotAtCall { op, spec, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "requirement".to_string(),
+                expected_type: format!(
+                    "a requirement of {} at this call's type",
+                    kb.qualified_name_of(*spec)
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
             TypeError::ConflictingSelection { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -2865,4 +3013,34 @@ fn carrier_bindings_text(kb: &KnowledgeBase, bindings: &[(Symbol, Symbol)]) -> S
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// WI-20261013-50ZMN — what is wrong with a `requires` line that has no name and stands
+/// beside two requirements of one sort at one type under two names. One wording for the
+/// two places it is found: a sort's own lines, where the loader reads them
+/// (`Loader::load_requires_decl`), and an operation's, where its frame is known
+/// ([`TypeError::UnnamedRequirementBesideTwo`]).
+pub(crate) fn unnamed_requirement_line_detail(spec: &str, first: &str, second: &str) -> String {
+    format!(
+        "`requires {spec}` with no name, beside the requirements `{first}` and `{second}` \
+         — two of that sort at one type, each under a name of its own. A line with no name \
+         states the requirement the line beside it names, and here that is either of two: \
+         give the line a name of its own, which makes it a third, or leave it out"
+    )
+}
+
+/// The load error for [`unnamed_requirement_line_detail`], on the declaration `owner`.
+pub(crate) fn unnamed_requirement_line_error(
+    owner: &str,
+    detail: String,
+    span: Option<Span>,
+) -> LoadError {
+    LoadError::TypeMismatch {
+        origin: None,
+        entity_name: owner.to_string(),
+        field_name: "requires".to_string(),
+        expected_type: "a requirement this line states, or a name of its own".to_string(),
+        actual_type: detail,
+        span,
+    }
 }

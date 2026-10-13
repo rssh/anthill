@@ -865,11 +865,13 @@ impl Copier {
             required_sort,
             spec,
             supply,
+            binder,
         } = entry;
         RequiresEntry {
             required_sort: plain(required_sort),
             spec: self.value(spec),
             supply: plain(supply),
+            binder: plain(binder),
         }
     }
 
@@ -1069,6 +1071,7 @@ impl KnowledgeBase {
             op_capture_params: plain(&self.op_capture_params),
             rule_head_captures: plain(&self.rule_head_captures),
             named_requirement_slots: plain(&self.named_requirement_slots),
+            requirement_sorts: plain(&self.requirement_sorts),
             type_param_canonical_var: plain(&self.type_param_canonical_var),
             type_param_canonical_vids: plain(&self.type_param_canonical_vids),
             member_param_heads: plain(&self.member_param_heads),

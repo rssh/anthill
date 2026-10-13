@@ -357,6 +357,9 @@ pub(super) fn type_check_sorts_collect(
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
     errors.extend(check_sort_parameter_carriers(kb));
+    // WI-20261013-50ZMN: and which requirement each of an operation's unnamed
+    // `requires` lines states, where its frame holds two it could be.
+    errors.extend(check_unnamed_requirement_lines(kb));
 
     // WI-701 (proposal 054 §"Branch and External"): reject a declared effect row that
     // carries BOTH Branch and External — a Branch region may not perform External.

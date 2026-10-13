@@ -11470,6 +11470,13 @@ impl ScopePass for ImportPass<'_> {
                     // MEASURED before gating: of 64,445 `requires` links across the
                     // stdlib, `anthill-stl` and every fixture the suite loads, all
                     // 64,445 name a `Sort` — the refusal costs the corpus nothing.
+                    // WI-20261013-50ZMN — and what a NAMED line requires, for a call
+                    // written through the name (`KnowledgeBase::requirement_sorts`).
+                    if let (Some(binder), ResolveResult::Found(sym)) = (&r.binder, &resolved) {
+                        let name = join_segments(parse_sym, &binder.segments);
+                        let binder = kb.intern(&name);
+                        kb.note_requirement_sort(scope.owner(), binder, *sym);
+                    }
                     // WI-20260924-SNJPR — `requires StoreAlias[…]` brings `Store`'s names
                     // into scope: the parent is the alias target's scope, wired once the
                     // alias's head is resolved.
@@ -13795,12 +13802,13 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             is_enclosing: true,
         },
     );
-    kb.symbols.define(
-        "compare",
-        "anthill.prelude.Ord.compare",
-        SymbolKind::Operation,
-        ord_sort_scope,
-    );
+    // WI-20261013-50ZMN — NO `anthill.prelude.Ord.compare`. It was defined here, an
+    // operation of `Ord`'s scope, from when `Ord` declared `compare`; the declaration
+    // is `WeakOrd`'s (WI-1110) and nothing declared this name any more. A name with no
+    // operation behind it answered `Ord.compare` ahead of the provision that gives the
+    // real one, and a call through a requirement on `Ord` (`O.compare(a, b)`) took it
+    // for `Ord`'s own. `ord_sort_scope` is what the bootstrap still needs of the sort.
+    let _ = ord_sort_scope;
 
     // `anthill.prelude.Numeric` IS NOT PRE-REGISTERED, and its departure is the point.
     // It was here — sort scope plus `add` / `sub` / `mul` — solely so that
@@ -23273,6 +23281,36 @@ fn dotted_by_provision(
     ResolveResult::NotFound
 }
 
+/// WI-20261013-50ZMN — the operation `Name.member` is, where `Name` is a requirement's
+/// name and requires `spec`: the sort's own operation of that name, or one of a sort it
+/// provides ([`dotted_by_provision`]) — the sort's own first, as the qualified name
+/// `Spec.member` reads. Asked of the names the scan defined, so the answer does not turn
+/// on which declaration the load has reached.
+///
+/// `None` where neither declares it. An operation the requirement's dictionary holds
+/// only past a `requires` — `eq` under `requires A: Ord[T]`, which is `PartialEq`'s by
+/// way of `WeakOrd`'s `requires Eq[T]` — is not read through the name, as `Ord.eq` is no
+/// address either; the call written in full reads it (`PartialEq.eq[PartialEq = A](…)`).
+///
+/// ONE READING FOR THE LOADER, which lowers the call
+/// (`Loader::requirement_name_call`), AND FOR THE TYPER, which names this spelling in a
+/// refusal only where it reads (`TypeError::RequirementReadTie`).
+pub(crate) fn operation_through_requirement_name(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    member: &str,
+) -> Option<Symbol> {
+    let is_operation = |op: &Symbol| kb.symbols.get(*op).has_kind(SymbolKind::Operation);
+    let own = format!("{}.{member}", kb.qualified_name_of(spec));
+    if let Some(op) = kb.try_resolve_symbol(&own).filter(is_operation) {
+        return Some(op);
+    }
+    match dotted_by_provision(kb, spec, member, &is_operation) {
+        ResolveResult::Found(op) => Some(op),
+        _ => None,
+    }
+}
+
 /// The symbol whose OWN fully-qualified name is `path` (WI-751) — the ABSOLUTE reading,
 /// which since WI-1075 is what `..path` spells. No scope, no head: this is exactly the
 /// lookup `process_imports` does for an import path.
@@ -23985,6 +24023,9 @@ struct Loader<'a> {
     // sort) instead of minting a fresh existential. Replaced on entering ANY scope and
     // restored on leaving it, so a nested sort or namespace never sees its parent's.
     carrier_block: CarrierBlock,
+    /// WI-20261013-50ZMN — the `requires` lines this file's sorts have written so far
+    /// ([`Self::note_requires_line`]).
+    requires_lines: Vec<RequiresLine>,
     // WI-20260923-ZBWMC: a block's `provides` specs the carrier pre-scan has already
     // lowered, keyed by the clause's span, for `load_provides_clause` to TAKE rather than
     // lower a second time. The lowering is not side-effect free — a described binding
@@ -24060,6 +24101,27 @@ struct BareSpecSugar {
     /// `Spec2[A = WIS, B = ?P]`, not `Spec2[B = ?P]`. Keyed by the minted var, in the
     /// clause canon `alias_expansion` hands them over in; absent for a spec named directly.
     fixed: HashMap<TermId, SmallVec<[(Symbol, TermId); 2]>>,
+}
+
+/// WI-20261013-50ZMN — a call through a requirement's name, as the call it is
+/// ([`Loader::requirement_name_call`]): `Plus.combine(…)` is `Mon.combine[Mon = Plus](…)`.
+struct RequirementNameCall {
+    /// The operation called: the required sort's, of the member's name.
+    spec_op: Symbol,
+    /// The bracket key that selects for the call's own dispatch — the required sort's
+    /// short name, as a call writes it.
+    key: Symbol,
+    /// The name, as the type a bracket entry writes it.
+    name: crate::eval::value::Value,
+}
+
+/// WI-20261013-50ZMN — one `requires` line a sort wrote, as
+/// [`Loader::note_requires_line`] keeps it: the sort, the required spec as its fact
+/// holds it, and the line's name where it has one.
+struct RequiresLine {
+    sort: Symbol,
+    spec: crate::eval::value::Value,
+    binder: Option<Symbol>,
 }
 
 /// WI-201 / WI-20260923-ZBWMC: the carrier block being loaded, as the bare-spec sugar
@@ -24317,6 +24379,7 @@ impl<'a> Loader<'a> {
             bare_spec_sugar: None,
             signature_spec_members: Vec::new(),
             carrier_block: CarrierBlock::default(),
+            requires_lines: Vec::new(),
             prelowered_provision_specs: HashMap::new(),
             signature_place_types: HashMap::new(),
             consumed_call_type_args: HashSet::new(),
@@ -30253,7 +30316,14 @@ impl<'a> Loader<'a> {
                 // re-resolution is where an unresolved/ambiguous/forbidden head
                 // is actually reported. The two must stay paired — see the
                 // no-silent-skip invariant on `resolve_owner_name`.
-                let kb_functor = self.remap_functor(parse_functor, outer_parse_id);
+                //
+                // WI-20261013-50ZMN: a callee written through a requirement's NAME is the
+                // required sort's operation, and resolves to nothing as a qualified name.
+                let requirement_call = self.requirement_name_call(parse_functor, outer_parse_id);
+                let kb_functor = match &requirement_call {
+                    Some(call) => call.spec_op,
+                    None => self.remap_functor(parse_functor, outer_parse_id),
+                };
                 // Construction or call? WI-926 (§6.3): the symbol KIND alone can no
                 // longer answer. An eponymous `sort E { entity E(…) }` is ONE symbol,
                 // and it takes the kind of whichever declaration `define` saw first —
@@ -30395,11 +30465,15 @@ impl<'a> Loader<'a> {
                 // the source of truth; the term-side `type_args` handle is the
                 // ground-only vestige (materialize + print), and an application's alone —
                 // a constructor's term has no slot for one.
-                let type_args = if reads_call_site {
+                let mut type_args = if reads_call_site {
                     self.build_call_type_args(outer_parse_id)
                 } else {
                     Vec::new()
                 };
+                // The name the callee was written through, as the entry it stands for.
+                if let Some(call) = requirement_call {
+                    type_args.push((Some(call.key), call.name));
+                }
                 let type_args_tid = if is_entity {
                     None
                 } else {
@@ -34899,6 +34973,99 @@ impl<'a> Loader<'a> {
         std::mem::replace(&mut self.carrier_block, CarrierBlock { carrier, bindings })
     }
 
+    /// WI-20261013-50ZMN — A CALL THROUGH A REQUIREMENT'S NAME: `Plus.combine(a, b)`
+    /// where the operation being loaded, or its sort, states `requires Plus: Mon[T]`.
+    /// It is the call `Mon.combine[Mon = Plus](a, b)`, and is built as that one: the
+    /// spec's operation for its callee, and the name as the bracket entry that selects
+    /// the requirement (`typing::SelectedProvider::Enclosing`). Nothing after the loader
+    /// sees another spelling.
+    ///
+    /// THE NAME IS A TYPE PARAMETER (058 §3.4), which is what the head of the dotted
+    /// callee is asked for: one in scope here that a `requires` line names. A dotted
+    /// callee whose head is a VALUE never arrives — it was a method call on that value
+    /// before this ([`Self::try_identifier_dot_call`]) — and any other reads as the
+    /// qualified name it was, to be resolved or refused as one.
+    ///
+    /// WHICH SORT THE NAME REQUIRES is known from the scan for a sort's name
+    /// (`KnowledgeBase::requirement_sorts`) — the operation may stand above the
+    /// `requires` line it reads, or in an entry at the sort's address that loads before
+    /// the sort — and from the slot record for an operation's own, which
+    /// [`Self::record_op_named_slots`] writes before the body is read.
+    ///
+    /// THE MEMBER IS THE REQUIRED SORT'S OPERATION, OR ONE OF A SORT IT PROVIDES:
+    /// `O.compare` under `requires O: Ord[T]` is `WeakOrd`'s `compare`, which an `Ord`
+    /// dictionary holds — the reading the qualified name `Ord.compare` has
+    /// ([`operation_through_requirement_name`]).
+    ///
+    /// AND IT IS HELD TO WHAT THE QUALIFIED NAME IS HELD TO: an `internal` operation of
+    /// another scope is refused through the name as it is by its own
+    /// ([`Self::push_forbidden_internal`]).
+    fn requirement_name_call(
+        &mut self,
+        parse_functor: Symbol,
+        parse_id: TermId,
+    ) -> Option<RequirementNameCall> {
+        if !self.in_op_body_value || self.lowering_rule_compound_expr {
+            return None;
+        }
+        let (receiver, member) = {
+            let name = self.parsed.symbols.local_name(parse_functor);
+            let (receiver, member) = name.rsplit_once('.')?;
+            if receiver.contains('.') {
+                return None;
+            }
+            (receiver.to_owned(), member.to_owned())
+        };
+        let ResolveResult::Found(param) =
+            self.kb.symbols.resolve_in_scope(&receiver, self.current_scope)
+        else {
+            return None;
+        };
+        // A type parameter of the scope that declares it: the operation's own, or its
+        // sort's.
+        let declared_in = self.kb.symbols.declaring_scope(param)?;
+        if !self.kb.symbols.is_type_param(declared_in, &receiver) {
+            return None;
+        }
+        let owner = declared_in.owner();
+        let written = self.kb.requirement_sort_named(owner, &receiver).or_else(|| {
+            self.kb
+                .named_requirement_slots(owner)
+                .iter()
+                .find(|slot| self.kb.local_name_of(slot.binder) == receiver)
+                .and_then(|slot| slot.spec_base)
+        })?;
+        let spec = match super::typing::alias_expansion(self.kb, written) {
+            None => written,
+            Some(super::typing::AliasExpansion::Sort { base, .. }) => base,
+            Some(_) => return None,
+        };
+        let spec_op = operation_through_requirement_name(self.kb, spec, &member)?;
+        let span = self.parsed.terms.span(parse_id);
+        if !self
+            .kb
+            .symbols
+            .internal_visible_from(spec_op, self.current_scope)
+        {
+            self.push_forbidden_internal(spec_op, &format!("{receiver}.{member}"), span);
+        }
+        // The key selects for the call's own dispatch, which is on the sort that declares
+        // the operation.
+        let declarer = self.kb.symbols.declaring_scope(spec_op)?.owner();
+        let declarer_name = last_segment(self.kb.qualified_name_of(declarer)).to_owned();
+        let key = self.kb.intern(&declarer_name);
+        let name = self.type_name_child(
+            param,
+            SourceSpan::from_span(self.source_id, span),
+            self.current_owner,
+        );
+        Some(RequirementNameCall {
+            spec_op,
+            key,
+            name: node_occurrence::type_child_as_value(&name),
+        })
+    }
+
     fn type_expr_to_child(
         &mut self,
         ty: &TypeExpr,
@@ -36823,6 +36990,10 @@ impl<'a> Loader<'a> {
                             var,
                         });
                     }
+                }
+                Item::SortWithBody(inner) if inner.is_type_param => {
+                    let sym = self.remap_name(&inner.name);
+                    param_refs.push(self.kb.alloc(Term::Ref(sym)));
                 }
                 Item::RequiresDecl(r) => {
                     // WI-366: `SortInfo.requires` is a reflection convenience (the
@@ -40280,22 +40451,26 @@ impl<'a> Loader<'a> {
     /// its sort has stated so far ([`typing::place_of_requirement`]).
     ///
     /// WI-20261013-0K8WD — THE PLACE IS READ OFF THE SORT'S FACTS, where it was a count of
-    /// the `requires` lines the walk had seen, because A REQUIREMENT STATED AGAIN TAKES
-    /// THE PLACE OF THE FIRST. `requires Plus: Mon[T]` followed by `requires Times:
-    /// Mon[T]` asserts one `SortRequiresInfo` fact, so the sort's chain holds one entry
-    /// and its dictionary one slot: the second line gives that requirement a second name
-    /// and nothing else. Counted as a line of its own, `Times` was recorded at position
-    /// 1 of a chain of length 1 — MEASURED, a call that left it unwritten was refused,
-    /// "names a requirement slot whose position in that sort's dictionary chain could
-    /// not be established", and every requirement stated after the pair was recorded one
-    /// position late.
+    /// the `requires` lines the walk had seen, because A LINE THAT STATES A SORT AGAIN AT
+    /// THE SAME BINDINGS ASSERTS THE FACT THAT IS THERE. `requires Mon[T]` followed by
+    /// `requires Times: Mon[T]` asserts one `SortRequiresInfo` fact. Counted as a line of
+    /// its own, `Times` was recorded at a position the chain does not have — MEASURED, a
+    /// call that left it unwritten was refused, "names a requirement slot whose position
+    /// in that sort's dictionary chain could not be established", and every requirement
+    /// stated after the pair was recorded one position late.
     ///
-    /// THE PLACE IS RECORDED TWICE: among all the sort's requirements, and among those
-    /// on the same sort (`of_base`). Only the second survives
-    /// [`resolve_requires_bindings`], which moves the facts it completes behind the ones
-    /// it leaves — `requires O: Ord[T = E]` written before a parameterless `requires
-    /// Marker` comes back second. [`KnowledgeBase::settle_named_requirement_slots`]
-    /// reads it to put the first right once the facts are final.
+    /// WI-20261013-50ZMN — WHICH FACT, AND NOT YET WHICH REQUIREMENT. Two lines that each
+    /// have a name state one fact and are two requirements, which the chain makes of the
+    /// fact and its names (`typing::collect_sort_requires`); the place recorded here is
+    /// what links a name to its fact.
+    ///
+    /// THE PLACE IS RECORDED TWICE: among all the sort's facts, and among those on the
+    /// same sort (`of_base`). Only the second survives [`resolve_requires_bindings`],
+    /// which moves the facts it completes behind the ones it leaves — `requires O: Ord[T
+    /// = E]` written before a parameterless `requires Marker` comes back second. The
+    /// chain finds a name's fact by it, and
+    /// [`KnowledgeBase::settle_named_requirement_slots`] then puts the first at the
+    /// name's own entry once the facts are final.
     fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol) {
         let requirement_sort = ClauseKind::Requirement;
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
@@ -40336,6 +40511,7 @@ impl<'a> Loader<'a> {
             self.kb.requires_index = None;
             super::typing::place_of_requirement(self.kb, domain, spec_base, &spec_value)
         });
+        self.note_requires_line(r, domain, &spec_value);
         self.kb.assert_metadata_fact_carrier(
             requires_sym,
             Vec::new(),
@@ -40365,6 +40541,85 @@ impl<'a> Loader<'a> {
                 Some(of_base),
             );
         }
+    }
+
+    /// WI-20261013-50ZMN — one `requires` line of the sort `domain`, kept beside the
+    /// sort's others ([`Self::requires_lines`]), and the refusal of a line with NO name
+    /// that two lines of the sort, under two names, state as well.
+    ///
+    /// `requires Plus: Mon[T]` and `requires Times: Mon[T]` are two requirements, told
+    /// apart by their names alone. A third line `requires Mon[T]` asserts the fact both
+    /// of them assert and adds no name: it states the requirement the line beside it
+    /// names, and there are two. Nothing after the loader can see it — the chain is read
+    /// off the facts and the names — so it is refused here, where the lines are, in the
+    /// words an operation's own unnamed line gets
+    /// (`typing::check_unnamed_requirement_lines`).
+    ///
+    /// Reported once for the three lines, whichever of them is written last: at the
+    /// line that completes the set.
+    fn note_requires_line(
+        &mut self,
+        r: &RequiresDecl,
+        domain: Symbol,
+        spec: &crate::eval::value::Value,
+    ) {
+        let binder = r.binder.as_ref().map(|name| {
+            let written = join_segments(&self.parsed.symbols, &name.segments);
+            self.kb.intern(&written)
+        });
+        let same: Vec<Option<Symbol>> = self
+            .requires_lines
+            .iter()
+            .filter(|line| {
+                line.sort == domain
+                    && crate::kb::term_view::views_structurally_equal(self.kb, &line.spec, spec)
+            })
+            .map(|line| line.binder)
+            .collect();
+        self.requires_lines.push(RequiresLine {
+            sort: domain,
+            spec: spec.clone(),
+            binder,
+        });
+        let unnamed_before = same.iter().any(Option::is_none);
+        let mut names: Vec<Symbol> = same.iter().flatten().copied().collect();
+        names.dedup();
+        // The line that completes "no name beside two": an unnamed one after two
+        // names, or a second name after an unnamed line and a first.
+        let completes = match binder {
+            None => !unnamed_before && names.len() >= 2,
+            Some(name) => unnamed_before && names.len() == 1 && names[0] != name,
+        };
+        if !completes {
+            return;
+        }
+        let (first, second) = match binder {
+            None => (names[0], names[1]),
+            Some(name) => (names[0], name),
+        };
+        let written = match super::typing::spec_base_functor(self.kb, spec) {
+            Some(required_sort) => super::typing::render_requires_entry(
+                self.kb,
+                &super::typing::RequiresEntry {
+                    required_sort,
+                    spec: spec.clone(),
+                    supply: super::typing::SupplySource::Required,
+                    binder: None,
+                },
+            ),
+            None => type_expr_base_name(&self.parsed.symbols, &r.type_expr),
+        };
+        let detail = super::typing::unnamed_requirement_line_detail(
+            &written,
+            self.kb.local_name_of(first),
+            self.kb.local_name_of(second),
+        );
+        self.errors
+            .push(super::typing::unnamed_requirement_line_error(
+                self.kb.qualified_name_of(domain),
+                detail,
+                Some(r.span),
+            ));
     }
 
     /// WI-840 (058 §4.2) — the SHADOWING GUARD, refused at the DECLARATION.
