@@ -1056,10 +1056,11 @@ fn a_selection_does_not_reach_sub_resolutions() {
     );
 }
 
-/// One bracket may not select two DIFFERENT witnesses for one spec: a pin is keyed by
-/// the SPEC at `resolve`'s step 0, so two witnesses under one key have no meaning to
-/// give. Refused here rather than first-matched, so 058 phase 3b — which lets two
-/// providers coexist — cannot silently inherit a first-match.
+/// One bracket may not select two DIFFERENT witnesses for one requirement. The sort's
+/// `requires m: Monoid[T = HT]` and the operation's own `requires Monoid[T = HT]` are
+/// the same sort at the same bindings, and the body's `Monoid.combine(a, b)` asks for
+/// that one goal: `m` and the short name `Monoid` are two keys of one requirement
+/// (WI-20261013-0K8WD, `slot_key_at`). Refused here rather than first-matched.
 #[test]
 fn two_witnesses_for_one_spec_in_one_bracket_are_refused() {
     let src = program(
@@ -1078,7 +1079,7 @@ fn two_witnesses_for_one_spec_in_one_bracket_are_refused() {
     refused_with(
         &src,
         "two providers are selected",
-        "the binder and the short name reached the same spec with different witnesses",
+        "the binder and the short name reached one requirement with different witnesses",
     );
 }
 

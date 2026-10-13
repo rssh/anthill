@@ -942,7 +942,17 @@ fn build_dispatching_dict_from_chain(
         // WI-828: have Strategy 3 hand out its terminal failure so a refusal
         // is explained from what the search itself saw, not a re-run.
         // Requested only where the explanation has a consumer.
-        let pinned_witness = pinned_witness_for(kb, selected, dep.required_sort);
+        // WI-20261013-0K8WD: the selection for THIS requirement of the callee, by its
+        // name where it has one — `callee_spec_sort` owns the chain, so `j` says which.
+        let pin = selection_for_chain_entry(
+            kb,
+            selected,
+            callee_spec_sort,
+            callee_provision,
+            j,
+            dep.required_sort,
+        );
+        let pinned_witness = pin.map(|s| s.witness);
         let mut s3_failure: Option<ResolutionResult> = None;
         // WI-841: a PINNED dep wants the account too — its refusal is unconditional,
         // and the account is what makes it say more than "it did not work".
@@ -956,7 +966,7 @@ fn build_dispatching_dict_from_chain(
             syms,
             disambig,
             s3_slot,
-            selected,
+            pin,
             // WI-861 — `callee_spec_sort` OWNS this chain, so it is the sort whose named
             // slots decide whether a default may answer this dep.
             rung_for_dep(kb, callee_spec_sort, dep.required_sort),
@@ -1457,9 +1467,18 @@ pub(super) fn build_concrete_dispatch_dict(
     // WI-869: the DICTIONARY chain, for `build_dispatching_dict_direct`'s reason —
     // this list must have one slot per name `synth_req_names(callee_spec_sort)` gives.
     let abstract_chain = provider_dict_entries(kb, callee_spec_sort, callee_provision);
-    let pins_this_chain = abstract_chain
-        .iter()
-        .any(|e| pinned_witness_for(kb, selected, e.required_sort).is_some());
+    let chain_sorts: Vec<Symbol> = abstract_chain.iter().map(|e| e.required_sort).collect();
+    let pins_this_chain = chain_sorts.iter().enumerate().any(|(j, required)| {
+        selection_for_chain_entry(
+            kb,
+            selected,
+            callee_spec_sort,
+            callee_provision,
+            j,
+            *required,
+        )
+        .is_some()
+    });
     // Proposal 066 §7.4: and only where the caller's frame IS the callee's — its chain,
     // or a chain the callee's is a prefix of. A helper calling a member of a provision
     // it is not in holds none of that provision's conditions, so the member's
@@ -1967,33 +1986,23 @@ pub(super) fn build_op_scoped_dicts(
         // discipline (and the same out-parameter) `build_dispatching_dict_from_chain`
         // uses on the sort half.
         let mut s3_failure: Option<ResolutionResult> = None;
-        // WI-20260921-EE0EP — A PARAM-DERIVED SLOT IS PINNED BY ITS ARGUMENT, and the pin
-        // REPLACES the call's selection list for this dep rather than joining it.
+        // WI-20260921-EE0EP — A PARAM-DERIVED SLOT IS PINNED BY ITS ARGUMENT, and by
+        // nothing the call selected.
         //
         // It is a PIN rather than a separate construction so that everything downstream is
         // the pipeline that already exists: Strategy 3 builds the dictionary, the tie and
         // the refusal diagnostics stay the ones an author already reads, and a slot whose
         // argument names no provider falls through to exactly today's verdict.
         //
-        // AN `InstanceSelection` IS KEYED BY THE SPEC, which is the whole reason: as
-        // [`selections_from_slot_bindings`]' doc puts it, "a sort with two same-spec named
-        // slots carries two witnesses in one type … and first-matching would pin one onto
-        // both deps". `pinned_selection_for` is a `.find`, so a selection already in the
-        // list for this spec BASE wins over anything appended after it — and the two need
-        // not even agree on the element. MEASURED: a callee declaring
-        // `requires O: WeakOrd[String]` (whose `a: MySet[T = String, O = O]` derives
-        // `WeakOrd -> Alphabetical`) beside an unwritten `b: MySet[T = Int64]` answered
-        // `b`'s `WeakOrd[T = Int64]` dep with `Alphabetical` — loud here only by luck,
-        // because `Alphabetical` provides nothing at `Int64`; a witness that provided at
-        // both elements would have answered from the wrong parameter in silence.
-        //
-        // A ONE-ENTRY LIST LOSES NOTHING. Strategies 1 and 2 are skipped for a pinned dep
-        // by construction, and the call's other selections steer OTHER deps and this dep's
-        // sub-goals — which no bracket can reach here, since the callee declares no slot
-        // for it (058 §4.2). So the entries dropped are exactly the ones that must not
-        // answer this dep.
-        let mut pinned_by_arg: Vec<InstanceSelection> = Vec::new();
-        let selected: &[InstanceSelection] = match dep.supply {
+        // NOTHING THE CALL SELECTED IS THIS DEP'S: the callee declares no slot for it
+        // (058 §4.2), so no bracket key names it, and the call's selections are each for
+        // a requirement the callee does declare. MEASURED while a selection was kept by
+        // its required sort alone: a callee declaring `requires O: WeakOrd[String]` (whose
+        // `a: MySet[T = String, O = O]` derives `WeakOrd -> Alphabetical`) beside an
+        // unwritten `b: MySet[T = Int64]` answered `b`'s `WeakOrd[T = Int64]` dep with
+        // `Alphabetical`.
+        let pinned_by_arg: Option<InstanceSelection>;
+        let pin: Option<&InstanceSelection> = match dep.supply {
             SupplySource::FromParam { param, binder } => {
                 // THE CHANNEL NOT BEING POPULATED IS NOT THE SAME AS THE ARGUMENT NOT
                 // NAMING A PROVIDER, and collapsing them is a silent wrong answer
@@ -2068,17 +2077,27 @@ pub(super) fn build_op_scoped_dicts(
                                 untied: None,
                             })
                         })?;
-                        pinned_by_arg.push(InstanceSelection {
+                        pinned_by_arg = Some(InstanceSelection {
                             spec_sort: dep.required_sort,
+                            slot: SelectedSlot::Named(binder),
                             witness,
                             slots,
                         });
-                        pinned_by_arg.as_slice()
+                        pinned_by_arg.as_ref()
                     }
-                    None => selected,
+                    None => None,
                 }
             }
-            SupplySource::Required | SupplySource::SelfSupplied => selected,
+            // WI-20261013-0K8WD: a requirement the operation declares, by its name where
+            // it has one, and by the name of the requirement it restates where it
+            // restates one — `callee_op`'s frame says which ([`selection_for_frame_entry`]).
+            SupplySource::Required | SupplySource::SelfSupplied => selection_for_frame_entry(
+                kb,
+                selected,
+                callee_op,
+                chain.sort_len() + j,
+                dep.required_sort,
+            ),
         };
         let projected = build_dep_projection(
             kb,
@@ -2088,7 +2107,7 @@ pub(super) fn build_op_scoped_dicts(
             &syms,
             Some(&disambig),
             Some(&mut s3_failure),
-            selected,
+            pin,
             // WI-861 — an OP-scoped chain: `callee_op` is the declaration that owns
             // these slots, so it is the one whose named slots decide.
             rung_for_dep(kb, callee_op, dep.required_sort),
@@ -2635,7 +2654,7 @@ fn dep_completes_to_a_unique_provider(
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     let rung = rung_for_dep(kb, owner, dep.required_sort);

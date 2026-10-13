@@ -895,7 +895,7 @@ fn q5_the_conversion_slot_is_one_slot_and_the_value_flows_through_it() {
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     let tree = match resolve(&mut kb, &goal, &scope) {

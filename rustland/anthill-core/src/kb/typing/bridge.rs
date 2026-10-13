@@ -480,7 +480,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
         let scope = ResolutionScope {
             available_requires: &[],
             sigma: None,
-            selected: &[],
+            pin: None,
             sub_goal_requires: &[],
         };
         // WI-861 — the chain's two halves have two OWNERS ([`dict_layout`]): the sort's
@@ -928,11 +928,12 @@ pub(crate) fn resolve_param_witnesses(
         .collect();
     let op_qn = kb.qualified_name_of(op).to_string();
     // Every check that needs no resolution first, so a malformed request costs none.
-    let mut matched: Vec<(Symbol, RequiresEntry, Symbol, String)> =
+    // `(frame name, entry, the slot's binder, witness, spelling)`.
+    let mut matched: Vec<(Symbol, RequiresEntry, Symbol, Symbol, String)> =
         Vec::with_capacity(witnesses.len());
     for w in witnesses {
         let spelled = format!("{}.{}", w.param, w.slot);
-        let Some((name, entry, _, _)) = carried
+        let Some((name, entry, _, binder)) = carried
             .iter()
             .find(|(_, _, p, b)| kb.local_name_of(*p) == w.param && kb.local_name_of(*b) == w.slot)
         else {
@@ -955,7 +956,7 @@ pub(crate) fn resolve_param_witnesses(
         let witness = kb
             .try_resolve_symbol(w.witness)
             .ok_or_else(|| format!("unknown witness `{}` for `{spelled}`", w.witness))?;
-        matched.push((*name, entry.clone(), witness, spelled));
+        matched.push((*name, entry.clone(), *binder, witness, spelled));
     }
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op) else {
         return Err(format!(
@@ -967,7 +968,7 @@ pub(crate) fn resolve_param_witnesses(
         .any(|(_, e, ..)| value_contains_projection(kb, &e.spec));
     let (subst, param_arg_types) = pin_params_from_args(kb, op, &rec.params, args, keep_arg_types);
     let mut out = Vec::with_capacity(matched.len());
-    for (name, entry, witness, spelled) in matched {
+    for (name, entry, binder, witness, spelled) in matched {
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
             spec: ground_entry_spec(kb, op, &entry, &param_arg_types, &subst)?,
@@ -985,15 +986,17 @@ pub(crate) fn resolve_param_witnesses(
                 format_goal(kb, &goal),
             ));
         }
-        let selected = [InstanceSelection {
+        // The slot a host names is the parameter's own (`s.O`), by its binder.
+        let selected = InstanceSelection {
             spec_sort: entry.required_sort,
+            slot: SelectedSlot::Named(binder),
             witness,
             slots: Vec::new(),
-        }];
+        };
         let scope = ResolutionScope {
             available_requires: &[],
             sigma: None,
-            selected: &selected,
+            pin: Some(&selected),
             sub_goal_requires: &[],
         };
         // Unranked for the reason `resolve_bridge_requirements` gives. The rung decides

@@ -421,7 +421,7 @@ fn the_layout_counts_what_resolve_bundles() {
         let scope = ResolutionScope {
             available_requires: &[],
             sigma: None,
-            selected: &[],
+            pin: None,
             sub_goal_requires: &[],
         };
         let tree = match resolve(&mut kb, &goal, &scope) {
@@ -569,7 +569,7 @@ fn an_unprovided_spec_half_fails_the_resolution() {
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     match resolve(&mut kb, &goal, &scope) {

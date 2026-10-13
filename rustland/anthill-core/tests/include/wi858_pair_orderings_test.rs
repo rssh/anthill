@@ -517,8 +517,8 @@ fn union_of_two_parameters_at_one_ordering_merges() {
 /// The ELEMENT orderings are independent of the pair ordering: a HETEROGENEOUS
 /// `Pair[Int64, String]` threads `Ord[Int64]` for `fst` and `Ord[String]` for
 /// `snd` — two DIFFERENT providers of one spec, live in one dictionary at once. Worth
-/// asserting because an `InstanceSelection` is keyed by the SPEC, so a read that
-/// collapsed the two would pin one element ordering onto both components.
+/// asserting because the two are one spec, so a read that collapsed them by the spec
+/// would pin one element ordering onto both components.
 #[test]
 fn a_heterogeneous_pair_orders_through_two_element_orderings() {
     let src = program(

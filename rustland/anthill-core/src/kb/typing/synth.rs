@@ -199,12 +199,19 @@ pub(super) enum ReceiverCarrier {
 pub struct ResolutionScope<'a> {
     pub available_requires: &'a [RequiresEntry],
     pub sigma: Option<&'a SigmaCtx<'a>>,
-    /// WI-841 (058 §4.5) — the providers the CALL SITE explicitly selected, `f[Spec =
-    /// W](…)`. Read by [`resolve`]'s **step 0** and by nothing else: at the TOP goal a
-    /// matching selection restricts the candidate set to `W` and suppresses the scope
-    /// (`FromScope`) lookup, because explicit outranks both searched and forwarded
-    /// (§4.1 tier 1). Empty on every path with no bracket in hand — the compat
-    /// dispatch wrappers, the req-insertion diagnostic build, the eval bridge.
+    /// WI-841 (058 §4.5) — the provider the CALL SITE explicitly selected for the
+    /// requirement this scope's goal is, `f[Spec = W](…)`. Read by [`resolve`]'s **step
+    /// 0** and by nothing else: at the TOP goal it restricts the candidate set to `W`
+    /// and suppresses the scope (`FromScope`) lookup, because explicit outranks both
+    /// searched and forwarded (§4.1 tier 1). `None` on every path with no bracket in
+    /// hand — the compat dispatch wrappers, the req-insertion diagnostic build, the eval
+    /// bridge.
+    ///
+    /// WI-20261013-0K8WD — ONE SELECTION, the goal's own, and not the call's list. A
+    /// goal carries the sort it requires and not which requirement of the callee it is,
+    /// so a list read here by that sort handed one requirement's provider to another on
+    /// the same sort. Whoever builds the scope knows the requirement and picks its
+    /// selection ([`selection_for_chain_entry`], [`pinned_selection_for`]).
     ///
     /// A selection deliberately does NOT reach sub-resolutions: rule (2)'s candidate
     /// set is the CALLEE's slots, and extending it into the tree would make key
@@ -212,7 +219,7 @@ pub struct ResolutionScope<'a> {
     /// exist). Steering a sub-resolution is written instead as a type application of
     /// the witness — `fold[Monoid = ListM[O = MyEq]]` — where the selection happens at
     /// the witness's own boundary, as a callee slot again.
-    pub selected: &'a [InstanceSelection],
+    pub pin: Option<&'a InstanceSelection>,
     /// WI-20260918-CKD4J — the enclosing OPERATION's own `requires` (the op half of its
     /// frame chain, [`DictChain::op_entries`]), consulted for SUB-goals only: a
     /// conditional provision's `:- goals` below the goal the call made. A match is
@@ -747,7 +754,7 @@ pub(super) fn resolve_inner<'a>(
     // WI-870 (058 §3.3) — the binding a bracket VALUE wrote for THIS sub-goal's slot,
     // when this goal is a named slot of the provider one level up and the call named
     // it: `[Ord = ListOrd[OE = LexFst]]`. `None` at the call's own goal (where
-    // `scope.selected` answers instead) and at every slot the value left unwritten.
+    // `scope.pin` answers instead) and at every slot the value left unwritten.
     //
     // The whole `SlotSelection` rather than its witness, because the REFUSAL has to
     // name the slot: "provides no instance at these bindings" is unactionable when the
@@ -806,12 +813,24 @@ pub(super) fn resolve_inner<'a>(
     //
     // WI-870 — and a sub-goal is steered ONLY by a slot binding written on the
     // provider that owns it, which is the same rule seen from the other side: a
-    // spec-keyed bracket entry still reaches exactly one level, and the composition
+    // bracket entry still reaches exactly one level, and the composition
     // is written as a type application of the witness, resolved at the witness's own
     // boundary. So the two sources are exclusive by construction, not by precedence.
     let at_call_goal = stack.is_empty();
     let pin: Option<&InstanceSelection> = if at_call_goal {
-        pinned_selection_for(kb, scope.selected, goal.spec_sort)
+        // The pin is for the requirement this goal is, which whoever built the scope
+        // chose it by. One for another spec would restrict the goal to a provider
+        // nobody selected for it, and nothing after this would say so.
+        if let Some(pin) = scope.pin {
+            assert!(
+                same_sort_canonical(kb, pin.spec_sort, goal.spec_sort),
+                "a scope's pin is for the requirement its goal is: a selection for {} \
+                 handed to a goal of {}",
+                kb.qualified_name_of(pin.spec_sort),
+                kb.qualified_name_of(goal.spec_sort),
+            );
+        }
+        scope.pin
     } else {
         slot_pin.map(|(s, _)| &s.selection)
     };
@@ -1775,7 +1794,7 @@ pub(super) fn requires_entry_covers_goal(
 /// bare `T`, a candidate sub-goal a qualified `Spec.T`), so short-name matching
 /// bridges that divergence just as `goal_binding_value` does. Comparing by
 /// qualified name would miss the bare-vs-qualified pair and drop a real cycle.
-fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
+pub(super) fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> bool {
     if a.spec_sort != b.spec_sort {
         return false;
     }

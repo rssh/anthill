@@ -646,7 +646,7 @@ fn provision_requirement_errors(
                     available_requires: &clause.assumptions,
                     sigma: Some(&sigma),
                     // A DECLARATION is being validated: no call site, so no selection.
-                    selected: &[],
+                    pin: None,
                     // The assumptions are CLOSED ([`closed_under_requires`]): the
                     // resolver's through-a-slot step, which still runs over them for a
                     // sub-goal no entry covers, cannot find what they lack.

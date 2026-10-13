@@ -2151,7 +2151,7 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
     }
 }
 
-pub(super) fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+pub(crate) fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
     // NOT A `return` ON AN UNREGISTERED `SortRequiresInfo`, and the difference is
     // WI-1110's: the conversion half below reads `SortProvidesInfo` and has nothing to do
@@ -2214,6 +2214,37 @@ pub(super) fn direct_requires(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Requi
 /// `rids_or_scan` still falls back to the scan when
 /// `requires_index` is `None`, which is the state across every load-time window in which
 /// the relation (or the provision relation the other half reads) can still change.
+/// WI-20261013-0K8WD — the place a `requires` line about to be asserted for `sort` takes
+/// among the requirements the sort has stated SO FAR, as `(position, of_base)`: its
+/// position among all of them, and among those on `base` — the line's own sort.
+///
+/// A line that states again a requirement already there — the same sort at the same
+/// bindings — asserts the fact that is there, so it takes that one's place:
+/// `requires Plus: Mon[T]` followed by `requires Times: Mon[T]` is one entry of the
+/// sort's chain under two names.
+///
+/// The caller reads the live relation: it drops `requires_index` first, which a later
+/// load inherits from the load before it.
+pub(crate) fn place_of_requirement(
+    kb: &KnowledgeBase,
+    sort: Symbol,
+    base: Option<Symbol>,
+    spec: &Value,
+) -> (usize, usize) {
+    let mut stated = Vec::new();
+    collect_sort_requires(kb, sort, &mut stated);
+    let identity = value_identity_key(spec);
+    let position = stated
+        .iter()
+        .position(|e| value_identity_key(&e.spec) == identity)
+        .unwrap_or(stated.len());
+    let of_base = stated[..position]
+        .iter()
+        .filter(|e| base.is_some_and(|b| same_sort_canonical(kb, e.required_sort, b)))
+        .count();
+    (position, of_base)
+}
+
 pub(super) fn collect_sort_requires(
     kb: &KnowledgeBase,
     sort_sym: Symbol,

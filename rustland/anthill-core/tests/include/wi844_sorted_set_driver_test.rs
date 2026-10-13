@@ -551,10 +551,13 @@ fn an_abstract_ordering_parameter_forwards_the_callers_choice() {
     );
 }
 
-/// TWO witnesses for ONE spec are REFUSED, not first-matched — and the refusal does not
-/// care WHICH producer wrote each. An `InstanceSelection` is keyed by the SPEC, so a
-/// sort with two same-spec named slots would pin one witness onto BOTH requirements if
-/// the read took the first.
+/// TWO witnesses for ONE requirement are REFUSED, not first-matched — and the refusal does
+/// not care WHICH producer wrote each. `Both` states `WeakOrd[T]` twice, under the names
+/// `A` and `B`: its dictionary holds one entry for both lines, so the two names are names
+/// of one requirement and one witness answers `WeakOrd.compare(y, y)` whichever was
+/// written. (WI-20261013-0K8WD: a selection is kept by the requirement, so two
+/// requirements on one sort at two types each take a witness —
+/// `wi_0k8wd_selection_per_requirement_test`; what is refused here is two for one.)
 ///
 /// Three spellings, all refused with one message. The bracket-only one is WI-841's and
 /// already worked. The type-only one is what WI-844's read made reachable: measured,
@@ -607,10 +610,10 @@ fn two_witnesses_for_one_spec_are_refused_whoever_wrote_them() {
                     && e.contains(&format!("{ns}.Both.cmp"))
                     && e.contains(&format!("{ns}.ByLength"))
                     && e.contains(&format!("{ns}.Alphabetical"))
-                    && e.contains("one spec, one witness per call")
+                    && e.contains("for one requirement")
             }),
-            "{how}: two same-spec slots bound to two witnesses must be refused, naming \
-             both: {errs:?}"
+            "{how}: two names of one requirement bound to two witnesses must be refused, \
+             naming both: {errs:?}"
         );
     }
 }

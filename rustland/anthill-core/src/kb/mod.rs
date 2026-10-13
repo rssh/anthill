@@ -855,7 +855,10 @@ pub struct NamedRequirementSlot {
     /// The name the author gave the slot — an ordinary type parameter of the owner
     /// by the time this is recorded, so it is also a call-bracket key (§4.2 rule 1).
     pub binder: Symbol,
-    /// The slot's POSITION among the owner's `requires` items, in source order.
+    /// The slot's POSITION: for a sort, its requirement's place in the sort's chain
+    /// (settled once the requirement facts are final —
+    /// [`KnowledgeBase::settle_named_requirement_slots`]); for an operation, its goal's
+    /// place in the operation's written `requires` list.
     pub slot: usize,
     /// The base sort of the spec the slot demands (`Ord` in `O: Ord[T = E]`).
     /// `None` only when the declaration's spec had no resolvable base — a shape the
@@ -863,6 +866,12 @@ pub struct NamedRequirementSlot {
     /// option rather than a panic so a malformed declaration still loads its
     /// siblings.
     pub spec_base: Option<Symbol>,
+    /// WI-20261013-0K8WD — a SORT's slot: how many of the sort's requirements on
+    /// `spec_base` are stated before this one, a requirement stated twice counted
+    /// once. It is what [`KnowledgeBase::settle_named_requirement_slots`] finds the
+    /// slot's entry by. `None` for an operation's slot, whose `slot` is a place in the
+    /// operation's own `requires` list.
+    pub of_base: Option<usize>,
 }
 
 /// WI-873 — the identity of one classified call site: the operation whose body
@@ -1360,47 +1369,35 @@ pub struct KnowledgeBase {
     /// spec would not discriminate the case that motivates naming at all: the two
     /// slots of `requires plus: Monoid[T], times: Monoid[T]` hash-cons to ONE term.
     ///
-    /// **WHICH list `k` indexes, exactly — it is not the same list at both levels,
-    /// and one obvious candidate is measurably wrong.** In both cases it is the
-    /// SOURCE order of the owner's `requires` items, which is preserved by:
+    /// **WHICH list `k` indexes, exactly — it is not the same list at both levels.**
     ///
-    /// * an OPERATION — the flattened requirement GOALS, i.e. what
+    /// * an OPERATION — the flattened requirement GOALS in SOURCE order, i.e. what
     ///   `op_requires_entries` enumerates (value preconditions included, since they
     ///   occupy positions in the written list too). NOT `OperationInfo.requires`,
     ///   which holds CLAUSES: `convert_clause_list_with_extra` collapses a multi-goal
     ///   clause into one `conjunction(…)`, so the two named slots of the example
     ///   above index a list of length 1 there.
-    /// * a SORT — `SortInfo.requires`, built by `load_sort_with_body`'s walk over the
-    ///   same `s.items` in the same order. **NOT the `SortRequiresInfo` FACT order**:
+    /// * a SORT — its CHAIN, which is the order of its `SortRequiresInfo` facts
+    ///   (`direct_requires`) and so the dictionary's. That is NOT the source order:
     ///   `resolve_requires_bindings` RETRACTS and re-asserts every requirement whose
-    ///   op bindings it completes, moving it to the end of the functor index — so on
-    ///   a sort whose requirements are not all completed the fact order is a
-    ///   permutation of the source order (measured: `requires O: Ord[T = E]` followed
-    ///   by a parameterless `requires Marker` comes back `Marker, Ord`). Anything
-    ///   reading `direct_requires` must map through `SortInfo.requires`, not assume
-    ///   the two agree.
+    ///   op bindings it completes, moving it to the end of the functor index
+    ///   (measured: `requires O: Ord[T = E]` followed by a parameterless `requires
+    ///   Marker` comes back `Marker, Ord`); and a requirement stated twice is one
+    ///   fact. The loader records a slot where its line is loaded and
+    ///   [`Self::settle_named_requirement_slots`] puts it at the chain's position
+    ///   once the facts are final (WI-20261013-0K8WD). Until then the position was
+    ///   the source one and its readers took it for the chain's, each behind a check
+    ///   of the entry it found.
     ///
     /// A side-table rather than a field on those facts, for `op_capture_params`'
     /// reasons: the record is loader-produced and typer-consumed, with no runtime or
     /// persistence surface (the printer renders no declarations). Putting the binder
     /// ON the requirement instead — a third `SortRequiresInfo` field, which the
-    /// retract/re-assert would carry — is the coordinate-free alternative, and the
-    /// one to reach for if phase 2 finds the mapping above load-bearing rather than
-    /// incidental.
+    /// retract/re-assert would carry — is the coordinate-free alternative.
     ///
-    /// **WI-841 found it load-bearing, and took the coordinate-free half of that
-    /// advice without the schema change**: selection needs to know a slot's SPEC (to
-    /// pin a provider for it) and which slots are *anonymous* (rule (2)'s candidate
-    /// set), and deriving either from `slot` would have made the typer re-do the
-    /// position→list mapping above — silently wrong at the sort level, where the
-    /// list a typer has in hand (`direct_requires_chain`) is the FACT order. So
-    /// [`NamedRequirementSlot`] records the spec base BESIDE the position, written
-    /// where both are in hand (the loader). The position stays and is now RECORDED BUT
-    /// UNREAD — no production code consults it (only WI-840's own test, which pins the
-    /// coupling and its divergence from the fact order so the warning above cannot go
-    /// stale). Kept because the projection path is positional (§4.7 wrinkle 3) and
-    /// phases 3-4 are where a name would have to reach it; it is not load-bearing
-    /// today, and this comment says so rather than implying a reader that exists.
+    /// WI-841 records the slot's SPEC base beside the position, written where both are
+    /// in hand (the loader): selection needs to know a slot's spec to pin a provider
+    /// for it, and the readers of the position check the entry they find against it.
     pub(crate) named_requirement_slots: HashMap<Symbol, Vec<NamedRequirementSlot>>,
 
     /// WI-954 — A TYPE PARAMETER'S CANONICAL LOGICAL VARIABLE, PUBLISHED BY THE
@@ -2370,10 +2367,12 @@ pub struct KnowledgeBase {
     // not share a memo entry. Within one regime the result is goal-determined
     // (body-local rigids appear in the goal), so caching stays sound.
     //
-    // WI-841: the trailing `Vec<InstanceSelection>` is what the CALL SITE explicitly
-    // selected (058 §4.5 step 0). Unlike the σ flag beside it, its CONTENT decides the
-    // outcome — a pinned goal resolves to the pinned impl — so the list itself is the
-    // key, not merely whether one was present.
+    // WI-841: the `Option<InstanceSelection>` is what the CALL SITE explicitly selected
+    // for this dispatch (058 §4.5 step 0). Unlike the σ flag beside it, its CONTENT
+    // decides the outcome — a pinned goal resolves to the pinned impl — so the selection
+    // itself is the key, not merely whether one was present. WI-20261013-0K8WD: the
+    // dispatch's own and not the call's whole list, whose other entries are for the
+    // requirements the callee names and do not reach this goal.
     pub(crate) resolve_cache: RefCell<
         HashMap<
             (
@@ -2381,7 +2380,7 @@ pub struct KnowledgeBase {
                 crate::kb::typing::SortGoal,
                 Vec<crate::kb::typing::RequiresEntry>,
                 bool,
-                Vec<crate::kb::typing::InstanceSelection>,
+                Option<crate::kb::typing::InstanceSelection>,
                 // WI-20260918-CKD4J — the enclosing operation's own `requires`, which
                 // answer a conditional provision's SUB-goals and so change the outcome.
                 Vec<crate::kb::typing::RequiresEntry>,
@@ -3124,13 +3123,16 @@ impl KnowledgeBase {
     /// is NAMED `binder` and demands the spec based at `spec_base`. Called by the
     /// loader for both spellings of the named form: a sort's `requires O: Ord[T]` and
     /// an operation's `requires plus: Monoid[T]`. Appended in source order, so
-    /// `named_requirement_slots(owner)` reads back the declaration order.
+    /// `named_requirement_slots(owner)` reads back the declaration order. `of_base` is
+    /// a sort slot's place among the sort's requirements on that spec
+    /// ([`NamedRequirementSlot::of_base`]).
     pub fn record_named_requirement_slot(
         &mut self,
         owner: Symbol,
         binder: Symbol,
         slot: usize,
         spec_base: Option<Symbol>,
+        of_base: Option<usize>,
     ) {
         self.named_requirement_slots
             .entry(owner)
@@ -3139,7 +3141,61 @@ impl KnowledgeBase {
                 binder,
                 slot,
                 spec_base,
+                of_base,
             });
+    }
+
+    /// WI-20261013-0K8WD — put each SORT's named requirement slots at the positions
+    /// their requirements have in the sort's chain, once the requirement facts are
+    /// final.
+    ///
+    /// A slot is recorded where its `requires` line is loaded, by the line's place among
+    /// the sort's requirements. The chain is read off the `SortRequiresInfo` facts, and
+    /// `resolve_requires_bindings` retracts and asserts again every one it completes: a
+    /// requirement with bindings moves behind one without. `requires O: Ord[T = E]`
+    /// written before a parameterless `requires Marker` is second in the chain and was
+    /// recorded first. Every reader of `slot` reads it as the chain's position — the
+    /// forward of a slot, a witness's own slot bound in a bracket value, the selection a
+    /// call makes for it — and each found the wrong entry there, or none.
+    ///
+    /// Found by what the move leaves alone: the order of the requirements ON ONE SORT
+    /// among themselves, which are completed or left together. So the slot is the
+    /// `of_base`-th entry of the chain that requires its sort. A slot whose entry is not
+    /// there keeps the position it was recorded at, and its readers' own check of the
+    /// entry they find refuses it.
+    pub(crate) fn settle_named_requirement_slots(&mut self) {
+        let owners: Vec<Symbol> = self
+            .named_requirement_slots
+            .iter()
+            .filter(|(_, slots)| slots.iter().any(|slot| slot.of_base.is_some()))
+            .map(|(owner, _)| *owner)
+            .collect();
+        for owner in owners {
+            let required: Vec<Symbol> = crate::kb::typing::direct_requires(self, owner)
+                .iter()
+                .map(|entry| entry.required_sort)
+                .collect();
+            let mut slots = self
+                .named_requirement_slots
+                .get(&owner)
+                .cloned()
+                .unwrap_or_default();
+            for slot in slots.iter_mut() {
+                let (Some(base), Some(of_base)) = (slot.spec_base, slot.of_base) else {
+                    continue;
+                };
+                let at = required
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| crate::kb::typing::same_sort_canonical(self, **r, base))
+                    .map(|(j, _)| j)
+                    .nth(of_base);
+                if let Some(j) = at {
+                    slot.slot = j;
+                }
+            }
+            self.named_requirement_slots.insert(owner, slots);
+        }
     }
 
     /// WI-840 — `owner`'s NAMED requirement slots in declaration order; empty for the

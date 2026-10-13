@@ -1898,7 +1898,7 @@ fn fetch_built_dictionary(
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     match resolve_with_rung(kb, &goal, &scope, rung) {

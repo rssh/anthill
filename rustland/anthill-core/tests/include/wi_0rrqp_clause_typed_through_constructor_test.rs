@@ -61,17 +61,21 @@
 //! `a_citation_outside_the_sort_reads_the_slot_its_argument_carries`.
 //!
 //! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
-//! and the four stated limits at the end of the file. Each says why at its site.
+//! and the three stated limits at the end of the file. Each says why at its site.
+//!
+//! ## The second row
+//!
+//! A SORT WITH TWO REQUIREMENTS ON ONE SORT, each clause's condition reaching its own, was
+//! a stated limit here until WI-20261013-0K8WD: a call could not name a provider for each,
+//! so no caller could show which requirement a condition reached.
+//! [`each_clause_reaches_its_own_of_two_requirements_on_one_sort`] drives it. Measured
+//! with that ticket's key backed out (a selection kept by the required sort alone), it
+//! fails by the call's refusal, "two providers are selected".
 //!
 //! ## Stated limits
 //!
-//! Four, each a row at the end of the file that passes either way:
+//! Three, each a row at the end of the file that passes either way:
 //!
-//!   * A SORT WITH TWO REQUIREMENTS ON ONE SORT is the ticket's second row and is not
-//!     driven: a call cannot name a provider for each (`TypeError::ConflictingSelection` —
-//!     selections are kept by the required sort alone), so no caller can show which
-//!     requirement a condition reached. `wi_wn9p8_forward_soundness_test` records the same
-//!     shape.
 //!   * A SLOT THE ARGUMENT'S OWN TYPE SAYS is not read by a citation from an operation
 //!     that holds no requirement.
 //!   * A SLOT AT THE CITING OPERATION'S OWN TYPE PARAMETER is refused for a call and not
@@ -871,15 +875,18 @@ fn a_driver_run_as_a_rules_goal_derives() {
     );
 }
 
-/// STATED LIMIT — passes either way, and why the ticket's second row is not driven. A sort
-/// with two requirements on one sort cannot be given a provider for each, at different
-/// types and by name: the member operation's own call is refused.
+/// THE TICKET'S SECOND ROW. `Pair2` requires `OK: WeakOrd[T = K]` and `OV: WeakOrd[T = V]`,
+/// and each of its two clauses calls `compare` at a variable typed through the constructor:
+/// `keyOrder` at the keys, `valOrder` at the values. Cited from member operations, each
+/// clause's condition is filled from the requirement at its own parameter and not from
+/// either by the order they are declared in — with the two parameters at two types, and
+/// at one, where the two conditions are one text, `WeakOrd[T = Int64]`.
+///
+/// `compare(1, 5)` is `4` under `Descending` and `-4` under `Ascending`; `StrSeven`
+/// answers `7` for any two strings.
 #[test]
-fn two_requirements_on_one_sort_cannot_each_be_given_a_provider() {
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&program(
-            "wi0rrqp.pair",
-            r#"
+fn each_clause_reaches_its_own_of_two_requirements_on_one_sort() {
+    let pair = r#"
   sort StrSeven
     provides Ord[T = String]
     operation compare(a: String, b: String) -> Int64 = 7
@@ -890,16 +897,26 @@ fn two_requirements_on_one_sort_cannot_each_be_given_a_provider() {
     requires OK: WeakOrd[T = K]
     requires OV: WeakOrd[T = V]
     entity entry(k1: K, k2: K, v1: V, v2: V)
-    operation keyDirect(p: Self) -> Int64 = match p case entry(k1, k2, v1, v2) -> WeakOrd.compare(k1, k2)
+    rule keyOrder(?p, ?c) :- ?p <=> entry(k1: ?a, k2: ?b, v1: ?, v2: ?), WeakOrd.compare(?a, ?b, ?c)
+    rule valOrder(?p, ?c) :- ?p <=> entry(k1: ?, k2: ?, v1: ?a, v2: ?b), WeakOrd.compare(?a, ?b, ?c)
+    operation keyOf(p: Self) -> Int64 effects {Error, Error[EmptyStream]} = keyOrder(p).head.c
+    operation valOf(p: Self) -> Int64 effects {Error, Error[EmptyStream]} = valOrder(p).head.c
   end
   sort Driver
     import NS.Pair2.{entry}
-    operation go() -> Int64 =
-      Pair2.keyDirect[K = Int64, V = String, OK = Descending, OV = StrSeven](entry(k1: 1, k2: 5, v1: "a", v2: "b"))
+    operation key() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.keyOf[BRACKET](ENTRY)
+    operation val() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.valOf[BRACKET](ENTRY)
   end
-"#,
-        )),
-        &["two providers are selected for anthill.prelude.WeakOrd"],
-        "a provider for `OK` and another for `OV`",
-    );
+"#;
+    let ints = "entry(k1: 1, k2: 5, v1: 1, v2: 5)";
+    let mixed = r#"entry(k1: 1, k2: 5, v1: "a", v2: "b")"#;
+    for (ns, bracket, entry, key, val) in [
+        ("wi0rrqp.pair.da", "K = Int64, V = Int64, OK = Descending, OV = Ascending", ints, 4, -4),
+        ("wi0rrqp.pair.ad", "K = Int64, V = Int64, OK = Ascending, OV = Descending", ints, -4, 4),
+        ("wi0rrqp.pair.twotypes", "K = Int64, V = String, OK = Descending, OV = StrSeven", mixed, 4, 7),
+    ] {
+        let src = program(ns, &pair.replace("BRACKET", bracket).replace("ENTRY", entry));
+        assert_eq!(drive(&src, &format!("{ns}.Driver.key")), key, "`keyOrder`, under `[{bracket}]`");
+        assert_eq!(drive(&src, &format!("{ns}.Driver.val")), val, "`valOrder`, under `[{bracket}]`");
+    }
 }

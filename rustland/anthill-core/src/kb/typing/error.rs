@@ -497,26 +497,26 @@ pub enum TypeError {
         witness: Symbol,
         spec: Symbol,
     },
-    /// WI-841 (058 §4.2): one bracket selected two DIFFERENT witnesses for one spec
-    /// — two keys (a binder and the spec's short name, or two binders of same-spec
-    /// slots) resolving to the same `spec_sort`. A selection is keyed by the SPEC at
-    /// [`resolve`]'s step 0, so two witnesses under one key have no meaning to give.
-    /// Reachable only through a program with two coexisting providers, which stays a
-    /// LOAD error until 058 phase 3b moves the coherence refusal to the use site;
-    /// refused here so that move does not silently turn it into a first-match.
+    /// WI-841 (058 §4.2): a call selected two DIFFERENT witnesses for ONE requirement.
     ///
-    /// WI-844: and the same refusal for the OTHER producer of a selection — the
-    /// ARGUMENT TYPES. A named slot is a type parameter, so a sort with two same-spec
-    /// named slots can carry two witnesses in ONE type: `Both[T = String, A = ByLength,
-    /// B = Alphabetical]`, which a bracket cannot spell (this very error refuses that
-    /// spelling) but a parameter ANNOTATION can — measured, it loads. Reading such a
-    /// value's slots back would first-match one witness onto both deps, which is
-    /// exactly what this variant exists to prevent.
+    /// WI-20261013-0K8WD — one REQUIREMENT, where it was one required sort: a selection
+    /// is kept by the requirement it is for ([`SelectedSlot`]), so a provider for each of
+    /// `requires OK: WeakOrd[T = K]` and `requires OV: WeakOrd[T = V]` is two selections
+    /// and no conflict. What is left is a requirement its declaration states TWICE — the
+    /// same sort at the same bindings, `requires A: WeakOrd[T]` beside `requires B:
+    /// WeakOrd[T]`. The dictionary holds one entry for both lines, so the two names are
+    /// names of one requirement, and two providers for it have no meaning to give:
+    /// whichever were kept, one would answer where the other was written.
+    ///
+    /// WI-844: the same refusal for the OTHER producer of a selection — the ARGUMENT
+    /// TYPES. A named slot is a type parameter, so such a sort can carry two witnesses
+    /// in ONE type: `Both[T = String, A = ByLength, B = Alphabetical]`, in a parameter
+    /// annotation.
     ///
     /// The message names the two witnesses and NOT which producer wrote each, and that
-    /// is deliberate: a MIXED pair is reachable (one slot bracketed, its same-spec
-    /// sibling read off the argument's type), so any sentence attributing both to one
-    /// producer would be false for it. [`push_selection`] owns the rule for all of them.
+    /// is deliberate: a MIXED pair is reachable (one name bracketed, the other read off
+    /// the argument's type), so any sentence attributing both to one producer would be
+    /// false for it. [`push_selection`] owns the rule for all of them.
     ConflictingSelection {
         span: Option<Span>,
         op: Symbol,
@@ -1608,7 +1608,8 @@ impl TypeError {
             } => {
                 format!(
                     "two providers are selected for {} at the call to {}: {} and {} — \
-                     one spec, one witness per call",
+                     for one requirement: a sort required twice at the same bindings is \
+                     held once, under either name, and takes one provider",
                     kb.qualified_name_of(*spec),
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(*first),
@@ -2323,7 +2324,10 @@ impl TypeError {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "selection".to_string(),
-                expected_type: format!("one witness for {}", kb.qualified_name_of(*spec)),
+                expected_type: format!(
+                    "one provider for a requirement of {}",
+                    kb.qualified_name_of(*spec)
+                ),
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },

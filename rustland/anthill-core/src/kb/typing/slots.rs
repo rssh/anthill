@@ -336,7 +336,7 @@ fn seed_bracket_bindings(
             // (`[T = List]`) erased whatever an argument said about its element. See
             // [`bracket_value_to_bind`]; the receiver spelling reads its value through the
             // same function at [`receiver_bracket_entries`], one rule at both writers.
-            let bound = &bracket_value_to_bind(kb, env, written, target.slot_spec().is_some());
+            let bound = &bracket_value_to_bind(kb, env, written, target.slot().is_some());
             // WI-20260911-7TN1Q — THE ONE FAULT THE DISCARD BELOW MUST NOT SWALLOW. A
             // value that MENTIONS the parameter it binds (`Box.empty[T = Option[T = T]]()`
             // where `Box`'s `T` is named but is not the body's own parameter — see
@@ -405,7 +405,7 @@ fn seed_bracket_bindings(
                 ));
             }
         }
-        let Some(spec_sort) = target.slot_spec() else {
+        let Some((spec_sort, slot)) = target.slot() else {
             continue;
         };
         // WI-20260911-TX0G6: the written binding's checks have ONE owner, shared with the
@@ -427,7 +427,16 @@ fn seed_bracket_bindings(
         };
         // WI-870: and what the value's OWN bracket bound on that witness (§3.3).
         let slots = witness_value_slot_selections(kb, fn_sym, witness, value, span)?;
-        push_selection(kb, &mut selections, spec_sort, witness, slots, fn_sym, span)?;
+        push_selection(
+            kb,
+            &mut selections,
+            spec_sort,
+            slot,
+            witness,
+            slots,
+            fn_sym,
+            span,
+        )?;
     }
     Ok(selections)
 }
@@ -970,6 +979,7 @@ fn slot_selection_of(
         chain_index,
         selection: InstanceSelection {
             spec_sort: spec,
+            slot: SelectedSlot::Named(slot.binder),
             witness: sub_witness,
             slots: nested,
         },
@@ -1980,18 +1990,19 @@ fn named_requirement_slot_of(
 /// WI-870 — where `slot` sits in `owner`'s DICTIONARY chain, which is the coordinate a
 /// sub-goal pin is keyed by.
 ///
-/// The two indexings coincide by construction and the identity is stated once, here,
-/// per WI-857's dual lesson: `NamedRequirementSlot.slot` is the declaration's position
-/// among the scope's `requires` items (`LoadPass`'s per-scope counter), `direct_requires`
-/// reads one `SortRequiresInfo` fact per such item in assertion order, and
-/// [`provider_dict_chain`] PREFIXES that chain with itself before appending any
-/// provision conditions. So the dictionary index IS the declaration index.
+/// The two indexings coincide and the identity is stated once, here, per WI-857's dual
+/// lesson: `NamedRequirementSlot.slot` is the position of the slot's requirement among
+/// the sort's `SortRequiresInfo` facts, settled once those are final
+/// (`KnowledgeBase::settle_named_requirement_slots`, WI-20261013-0K8WD — the facts are
+/// not in source order, and a requirement stated twice is one of them);
+/// `direct_requires` reads the facts in that order, and [`provider_dict_chain`] PREFIXES
+/// that chain with itself before appending any provision conditions. So the dictionary
+/// index IS the recorded one.
 ///
 /// VERIFIED rather than trusted: the entry found there must demand the very spec the
 /// slot was recorded for. A disagreement means the two orders have drifted, and pinning
 /// the wrong slot is silent — it resolves a real goal with a real provider and computes
-/// the wrong answer. So it is an error, not a `debug_assert` and not a skip. Unreachable
-/// on today's surface, which is exactly why nothing else would notice it.
+/// the wrong answer. So it is an error, not a `debug_assert` and not a skip.
 pub(super) fn dict_chain_index_of_named_slot(
     kb: &mut KnowledgeBase,
     owner: Symbol,
@@ -2024,45 +2035,41 @@ pub(super) fn dict_chain_index(
 }
 
 /// WI-841/WI-844 — add one selection, upholding the invariant EVERY producer shares: at
-/// most one [`InstanceSelection`] per spec, and a second, DIFFERENT witness for a spec
-/// already selected is [`TypeError::ConflictingSelection`], never a first match.
+/// most one [`InstanceSelection`] per REQUIREMENT, and a second, DIFFERENT witness for a
+/// requirement already selected is [`TypeError::ConflictingSelection`], never a first
+/// match.
 ///
 /// One owner because the invariant is one statement and there are two producers — the
 /// call BRACKET ([`seed_op_type_args`]) and the argument TYPES
-/// ([`selections_from_slot_bindings`]). A selection is keyed by the SPEC at
-/// [`resolve`]'s step 0, so two witnesses under one key have no meaning to give,
+/// ([`selections_from_slot_bindings`]). A selection is read back by its requirement
+/// ([`selection_for_slot`]), so two witnesses under one key have no meaning to give,
 /// wherever they were written.
 ///
-/// **The producers are NOT ranked, and an earlier cut that ranked them was wrong.** It
-/// exempted a derived witness colliding with a BRACKET-written one, on the reasoning
-/// that they read one variable and so cannot disagree — true of ONE slot, false across
-/// two same-spec slots. MEASURED: on a sort with `requires A: Ord[T]` and
-/// `requires B: Ord[T]`, a value typed `Both[T = String, A = ByLength, B = Alphabetical]`
-/// is correctly refused, and adding `[A = ByLength]` to the call DELETED the refusal —
-/// the `B` read collided with the bracket entry, was exempted, and one spec-keyed pin
-/// served both deps. A `debug_assert` written to document the exemption fired on the
-/// first program that exercised it. So the comparison is unconditional: witnesses agree
-/// or the call is refused, whoever wrote them.
+/// WI-20261013-0K8WD — the key was the required SORT until this ticket, which refused
+/// every call that selected for two requirements on one sort: `Entry.cmp[K = String, V =
+/// Int64, OK = ByLength, OV = Descending](…)` over `requires OK: WeakOrd[T = K]`,
+/// `requires OV: WeakOrd[T = V]`.
+///
+/// **The producers are NOT ranked.** For one requirement the bracket and the argument's
+/// type write one variable, so they agree and the second push is a no-op; where they do
+/// not, the comparison is unconditional — witnesses agree or the call is refused,
+/// whoever wrote them.
 ///
 /// WI-870 — `slots` is what the value bound on the witness's OWN named slots, and BOTH
 /// producers supply it (a named slot is a type parameter, so the σ-read producer sees
-/// the same application the bracket wrote). A second push for an already-selected spec
-/// therefore keeps the FIRST entry's slots, which is sound for the reason the witness
-/// comparison is unconditional: for one slot the two producers read one variable, so
-/// they agree and the second push is a no-op.
+/// the same application the bracket wrote). A second push for an already-selected
+/// requirement therefore keeps the FIRST entry's slots.
 pub(super) fn push_selection(
     kb: &KnowledgeBase,
     selections: &mut Vec<InstanceSelection>,
     spec_sort: Symbol,
+    slot: SelectedSlot,
     witness: Symbol,
     slots: Vec<SlotSelection>,
     fn_sym: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    if let Some(prev) = selections
-        .iter()
-        .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
-    {
+    if let Some(prev) = selection_for_slot(kb, selections, spec_sort, slot) {
         if !same_sort_canonical(kb, prev.witness, witness) {
             return Err(TypeError::ConflictingSelection {
                 span,
@@ -2076,6 +2083,7 @@ pub(super) fn push_selection(
     }
     selections.push(InstanceSelection {
         spec_sort,
+        slot,
         witness,
         slots,
     });
@@ -2244,7 +2252,8 @@ pub(super) fn selections_from_slot_bindings(
         // every call after the construction site, which is the very asymmetry WI-844
         // built this producer to close.
         let slots = witness_value_slot_selections(kb, fn_sym, witness, &Value::term(bound), span)?;
-        push_selection(kb, &mut selected, spec_sort, witness, slots, fn_sym, span)?;
+        let slot = named_slot_key(kb, fn_sym, name, span)?;
+        push_selection(kb, &mut selected, spec_sort, slot, witness, slots, fn_sym, span)?;
     }
     Ok(selected)
 }
@@ -2351,9 +2360,7 @@ fn slot_binder_state<V: TermView>(kb: &KnowledgeBase, bound: &V) -> SlotBinderSt
 ///
 /// BY SLOT INDEX, verified — [`dict_chain_index_of_named_slot`] owns the claim that
 /// `NamedRequirementSlot::slot` IS the dictionary-chain index and refuses when the entry
-/// found there demands another spec. Not by SPEC, which is what [`selection_goals`] does
-/// and what it may do: a selection is spec-keyed, so which of two same-spec slots it
-/// matched is unobservable there. Here it is observable — the two slots are two
+/// found there demands another spec. Not by SPEC: two slots on one spec are two
 /// PARAMETERS with two bindings, and answering one slot's goal into the other's binder
 /// is a wrong dictionary that loads clean.
 fn named_slot_goal(
@@ -2590,6 +2597,17 @@ pub(super) fn infer_named_slot_bindings(
         // direction, and the dictionary build then reports whatever it finds); the
         // `Quantified` arm uses the goal only to NAME a provider in its message.
         let decoded = named_slot_goal(kb, subst, fn_sym, owner, name, span)?;
+        // WI-20261013-0K8WD — what the call selected FOR THIS REQUIREMENT, and nothing it
+        // selected for another on the same sort. A slot nobody wrote has a selection all
+        // the same where its declaration gives the requirement a second name and the
+        // call wrote the other (`requires A: WeakOrd[T]`, `requires B: WeakOrd[T]`,
+        // `[A = ByLength]`): the two are one requirement, and `B` is `ByLength`.
+        let pin = if selected.is_empty() {
+            None
+        } else {
+            let key = named_slot_key(kb, fn_sym, name, span)?;
+            selection_for_slot(kb, selected, spec_sort, key)
+        };
         match state {
             SlotBinderState::Unspoken(vid) => {
                 let Some((_, goal)) = decoded else {
@@ -2607,7 +2625,7 @@ pub(super) fn infer_named_slot_bindings(
                         subst,
                         param_rigids,
                     }),
-                    selected,
+                    pin,
                     sub_goal_requires: &[],
                 };
                 // ASKED AS THE DICTIONARY BUILD ASKS IT ([`resolve_opening_unwritten_slots`]):
@@ -2654,7 +2672,7 @@ pub(super) fn infer_named_slot_bindings(
                             subst,
                             param_rigids,
                         }),
-                        selected,
+                        pin,
                         sub_goal_requires: &[],
                     };
                     match resolve_opening_unwritten_slots(kb, &goal, &scope, DefaultRung::Consult) {
@@ -2726,22 +2744,19 @@ pub(super) fn names_any_requirement_slot(kb: &KnowledgeBase, fn_sym: Symbol) -> 
     owns(fn_sym) || impl_parent_sort_of_op(kb, fn_sym).is_some_and(owns)
 }
 
-/// WI-841 (058 §4.1 tier 1) — the witness the CALL SITE selected for `spec`, if any.
+/// WI-841 (058 §4.1 tier 1) — the witness the CALL SITE selected for its UNNAMED
+/// requirement of `spec`, if any: the callee's one anonymous `requires` of that sort, or
+/// a spec operation's own dispatch. A requirement the callee names is asked for by its
+/// name ([`selection_for_chain_entry`]).
 ///
-/// One owner for the pin criterion, because four sites ask it and each is a place
-/// where explicit selection must outrank a FORWARD: the WI-239 defer pre-check and
+/// One owner for the pin criterion, because the dispatch-level sites ask it and each is a
+/// place where explicit selection must outrank a FORWARD: the WI-239 defer pre-check and
 /// `dispatch_spec_op_cached`'s defer trigger (both "the enclosing frame answers this"),
-/// `resolve_inner`'s `FromScope` step, and `build_dep_projection`'s Strategies 1 & 2.
-/// Those four are one statement said four times — "forwarding" has no single owner in
-/// the typer (the cover predicates `entries_cover` / `requires_entry_covers_goal` /
+/// and the callee's sibling-inherit test. "Forwarding" has no single owner in the typer
+/// (the cover predicates `entries_cover` / `requires_entry_covers_goal` /
 /// `find_requires_slot` / `find_requires_location` are four askers sharing only their
 /// inner pair verdict, WI-826), and folding the pin into them would push a PER-CALL
 /// policy into predicates the req-insertion pass and the eval bridge also call.
-///
-/// `build_dispatching_dict_from_chain`'s use is NOT one of the four: it fires AFTER a
-/// pinned dep already failed to resolve, and upgrades a silent `Ok(None)` degradation
-/// to a refusal. Loudness, not precedence — kept distinct so the tier-1 rule is not
-/// read as covering it.
 pub(super) fn pinned_witness_for(
     kb: &KnowledgeBase,
     selected: &[InstanceSelection],
@@ -2750,18 +2765,71 @@ pub(super) fn pinned_witness_for(
     pinned_selection_for(kb, selected, spec).map(|s| s.witness)
 }
 
-/// WI-870 — the WHOLE selection [`pinned_witness_for`] reads its witness out of, for
-/// the one caller that also needs the witness's own slot bindings ([`resolve_inner`]'s
-/// step 0). Split so the four "is this pinned" askers keep asking a `Symbol` question
-/// and cannot start depending on the composition.
+/// WI-870 — the WHOLE selection [`pinned_witness_for`] reads its witness out of, for a
+/// caller that also needs the witness's own slot bindings ([`resolve_inner`]'s step 0,
+/// through [`ResolutionScope::pin`]).
 pub(super) fn pinned_selection_for<'a>(
     kb: &KnowledgeBase,
     selected: &'a [InstanceSelection],
     spec: Symbol,
 ) -> Option<&'a InstanceSelection> {
+    selection_for_slot(kb, selected, spec, SelectedSlot::Unnamed)
+}
+
+/// WI-20261013-0K8WD — the selection the call made for ONE requirement: `slot` of the
+/// callee, which requires `spec`.
+///
+/// The sort is compared as well as the key. For an unnamed requirement it is the key;
+/// for a named one it holds a selection to the requirement it was validated against,
+/// where a dispatch has redirected the call to a declaration that gives the name to
+/// something else.
+pub(super) fn selection_for_slot<'a>(
+    kb: &KnowledgeBase,
+    selected: &'a [InstanceSelection],
+    spec: Symbol,
+    slot: SelectedSlot,
+) -> Option<&'a InstanceSelection> {
     selected
         .iter()
-        .find(|s| same_sort_canonical(kb, s.spec_sort, spec))
+        .find(|s| s.slot == slot && same_sort_canonical(kb, s.spec_sort, spec))
+}
+
+/// WI-20261013-0K8WD — the selection for the requirement at position `j` of the SORT
+/// `owner`'s dictionary chain under `provision` ([`slot_key_at`]). `spec` is what that
+/// entry requires. The walk that fills a callee's sort half entry by entry asks here;
+/// the one that fills an operation's own entries asks [`selection_for_frame_entry`].
+pub(super) fn selection_for_chain_entry<'a>(
+    kb: &mut KnowledgeBase,
+    selected: &'a [InstanceSelection],
+    owner: Symbol,
+    provision: Option<Symbol>,
+    j: usize,
+    spec: Symbol,
+) -> Option<&'a InstanceSelection> {
+    // Nearly every call selects nothing, and the frame lookup interns.
+    if selected.is_empty() {
+        return None;
+    }
+    let frame = CalleeFrame::of_sort(kb, owner, provision);
+    let slot = slot_key_at(kb, &frame, j);
+    selection_for_slot(kb, selected, spec, slot)
+}
+
+/// WI-20261013-0K8WD — the selection for the requirement at position `i` of `op`'s
+/// frame chain ([`slot_key_at`]). `spec` is what that entry requires.
+pub(super) fn selection_for_frame_entry<'a>(
+    kb: &mut KnowledgeBase,
+    selected: &'a [InstanceSelection],
+    op: Symbol,
+    i: usize,
+    spec: Symbol,
+) -> Option<&'a InstanceSelection> {
+    if selected.is_empty() {
+        return None;
+    }
+    let frame = CalleeFrame::of_op(kb, op);
+    let slot = slot_key_at(kb, &frame, i);
+    selection_for_slot(kb, selected, spec, slot)
 }
 
 /// WI-870 — the slot binding, if any, that `pin` wrote for dictionary sub-goal `i`.
@@ -2805,14 +2873,45 @@ pub(super) enum SlotPinSource {
     Carrier,
 }
 
+/// WI-20261013-0K8WD — WHICH REQUIREMENT of the callee an [`InstanceSelection`] is for.
+///
+/// A requirement its declaration NAMES is told from every other by that name, which is
+/// also the bracket key and the type parameter that carries the choice (058 §3.4). One
+/// with no name is reached by its sort's short name, and only where that picks out one
+/// requirement of the callee ([`resolve_call_type_arg_targets`]' rung 2), so the sort is
+/// its whole key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelectedSlot {
+    /// `requires O: WeakOrd[T]`, by its binder — the bare name the declaration wrote,
+    /// which is how [`NamedRequirementSlot::binder`](crate::kb::NamedRequirementSlot) and
+    /// a bracket key both spell it. Where a declaration gives one requirement two names,
+    /// the first ([`slot_key_at`]).
+    ///
+    /// NO OWNER BESIDE IT. One call's selections are made against one callee, whose own
+    /// parameters and its sort's are disjoint by name (refused at the declaration). A
+    /// member a dispatch hands the call to is read by the names IT gives its
+    /// requirements, so one that names a requirement otherwise than the operation called
+    /// reads no selection for it. No row drives that: a call dispatched by its
+    /// receiver's value hands the member no selection at all.
+    Named(Symbol),
+    /// A requirement with no name — the callee's one unnamed requirement of the sort, or
+    /// a spec operation's own dispatch (`Desc.describe[Desc = W](x)`).
+    Unnamed,
+}
+
 /// WI-841 (058 §4.2) — one explicit provider selection a call site wrote:
-/// `f[Spec = W](…)`. Keyed by the requirement's SPEC, because that is the coordinate
-/// [`resolve`]'s goal carries (`SortGoal::spec_sort`); two slots of ONE spec are
-/// therefore indistinguishable to a pin, which is why two DIFFERENT witnesses for one
-/// spec are refused at the site ([`TypeError::ConflictingSelection`]) rather than
-/// silently first-matched. That corner is unreachable in a loading program until 058
-/// phase 3b lets two providers coexist, and it is 3b's business to give a slot-precise
-/// key if it needs one.
+/// `f[Spec = W](…)`, or `f[O = W](…)` for a requirement the callee names.
+///
+/// WI-20261013-0K8WD — KEYED BY THE REQUIREMENT ([`SelectedSlot`]), not by the sort it
+/// requires. A callee may declare two requirements on one sort (`requires OK: WeakOrd[T =
+/// K]`, `requires OV: WeakOrd[T = V]`) and a call selects a provider for each, so the
+/// required sort alone does not say which requirement a selection is for. Two DIFFERENT
+/// witnesses for ONE requirement are still refused at the site
+/// ([`TypeError::ConflictingSelection`]) rather than first-matched.
+///
+/// `spec_sort` stays beside the key: it is what [`resolve`]'s goal carries
+/// (`SortGoal::spec_sort`), what an unnamed requirement is told by, and what the
+/// diagnostics name.
 ///
 /// `Hash` is load-bearing, not derived out of habit: a selection rides in
 /// `resolve_cache`'s KEY (`dispatch_spec_op_cached`), and WI-870's `slots` decide the
@@ -2822,6 +2921,8 @@ pub(super) enum SlotPinSource {
 pub struct InstanceSelection {
     /// The spec sort of the selected requirement slot.
     pub spec_sort: Symbol,
+    /// Which of the callee's requirements on that sort the selection is for.
+    pub slot: SelectedSlot,
     /// The witness sort the call named.
     pub witness: Symbol,
     /// WI-870 (058 §3.3) — what the witness's OWN named slots were bound to, written
@@ -2945,6 +3046,11 @@ pub(super) struct CalleeSlot {
     /// spec's anonymous population, else `requires plus: Monoid[T]` would answer
     /// `[Monoid = …]` too and one slot would take two contradicting bindings.
     pub(super) named: bool,
+    /// Which requirement the slot is, as a selection keys it ([`slot_key_at`]). Not
+    /// `named` read again: an unnamed `requires Monoid[T = HT]` of an operation whose
+    /// sort states `requires m: Monoid[T = HT]` is that requirement, and is kept under
+    /// `m`.
+    pub(super) key: SelectedSlot,
     /// Where the goal comes from. The two `requires` levels store their spec in
     /// different SHAPES (see [`goal_from_op_requires_entry`]) and the dispatch slot has
     /// no entry at all, so the decoder rides with the slot rather than being re-chosen.
@@ -2983,10 +3089,13 @@ pub(super) fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -
         .into_iter()
         .filter(|e| !is_value_precondition_clause(kb, &e.spec))
         .collect();
+    // The operation's own entries follow its sort's in its frame, in this order.
+    let frame = CalleeFrame::of_op(kb, fn_sym);
     push_slots(
         kb,
         fn_sym,
         op_entries,
+        |kb, j| slot_key_at(kb, &frame, frame.sort_len + j),
         CalleeSlotSource::OpRequires,
         &mut out,
     );
@@ -3009,6 +3118,7 @@ pub(super) fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -
             kb,
             parent,
             sort_entries,
+            |kb, j| slot_key_at(kb, &frame, j),
             CalleeSlotSource::SortRequires,
             &mut out,
         );
@@ -3018,6 +3128,7 @@ pub(super) fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -
             out.push(CalleeSlot {
                 spec: parent,
                 named: false,
+                key: SelectedSlot::Unnamed,
                 source: CalleeSlotSource::Dispatch,
             });
         }
@@ -3025,29 +3136,27 @@ pub(super) fn callee_requirement_slots(kb: &mut KnowledgeBase, fn_sym: Symbol) -
     out
 }
 
-/// WI-841 — tag `entries` (all of ONE owner's) with whether each is NAMED, and append.
+/// WI-841 — tag `entries` (all of ONE owner's own chain, in its order) with whether
+/// each is NAMED and with the requirement it is (`key_at`, by its position), and append.
 ///
-/// Named-ness is decided by MULTISET-matching the owner's recorded slots BY SPEC, not
-/// by the recorded POSITION: the position indexes a list this side does not hold (see
-/// [`KnowledgeBase::named_requirement_slots`] — at sort level the typer's list is the
-/// FACT order, a permutation of source order). WHICH entry of a same-spec pair gets
-/// tagged is therefore arbitrary, and that is sound only because it is UNOBSERVABLE:
-/// an [`InstanceSelection`] is spec-keyed, so nothing downstream can tell the two
-/// apart, and the only thing read off the tag is the COUNT that rung (2)'s ambiguity
-/// gate needs. Said out loud because it is load-bearing and looks like an oversight.
+/// WI-20261013-0K8WD — BY POSITION, through [`named_slot_of_chain`], the reader the
+/// dictionary walks ask which requirement an entry is. It was a multiset match by spec,
+/// under which the entry of a same-spec pair that got the tag was arbitrary; that was
+/// sound while a selection was kept by the spec and only the COUNT was read off the tag.
+/// A selection is kept by the requirement now, and [`selection_goals`] reads the key to
+/// hold a witness to its own requirement's goal and not to its neighbour's.
 fn push_slots(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     owner: Symbol,
     entries: Vec<RequiresEntry>,
+    key_at: impl Fn(&mut KnowledgeBase, usize) -> SelectedSlot,
     wrap: fn(RequiresEntry) -> CalleeSlotSource,
     out: &mut Vec<CalleeSlot>,
 ) {
-    // A recorded slot whose `spec_base` failed to decode would be dropped from this
-    // multiset AND unreachable through `named_slot_spec` — so its binder would bind as
-    // a plain parameter selecting nothing WHILE its spec short name stayed answerable
-    // for the very slot the author named: the double-binding the tag exists to
-    // prevent, silently, twice. The converter already refuses a binder whose type is
-    // no spec, so this is an internal inconsistency rather than a user error.
+    // A recorded slot whose `spec_base` failed to decode would be unreachable through
+    // `named_slot_spec` — so its binder would bind as a plain parameter selecting
+    // nothing. The converter already refuses a binder whose type is no spec, so this is
+    // an internal inconsistency rather than a user error.
     debug_assert!(
         kb.named_requirement_slots(owner)
             .iter()
@@ -3055,28 +3164,13 @@ fn push_slots(
         "WI-841: a named requirement slot of {} has no decoded spec base",
         kb.qualified_name_of(owner),
     );
-    let mut named: Vec<Symbol> = kb
-        .named_requirement_slots(owner)
-        .iter()
-        .filter_map(|s| s.spec_base)
-        .collect();
-    for entry in entries {
-        let spec = entry.required_sort;
-        // `same_sort_canonical`, not raw `==`: the two symbols come from DIFFERENT
-        // decoders (the loader's `spec_base_functor` / `head_functor` vs
-        // `push_op_requires_clause_term`), and a raw compare that missed would tag a
-        // NAMED slot anonymous — after which rung (2) answers for a slot the author
-        // already named, silently, which is what the tag exists to prevent.
-        let is_named = match named.iter().position(|s| same_sort_canonical(kb, *s, spec)) {
-            Some(i) => {
-                named.remove(i);
-                true
-            }
-            None => false,
-        };
+    for (j, entry) in entries.into_iter().enumerate() {
+        let named = named_slot_of_chain(kb, owner, j).is_some();
+        let key = key_at(kb, j);
         out.push(CalleeSlot {
-            spec,
-            named: is_named,
+            spec: entry.required_sort,
+            named,
+            key,
             source: wrap(entry),
         });
     }
@@ -3295,26 +3389,30 @@ enum CallTypeArgTarget {
     /// Rule (1) landed on a parameter that is a NAMED REQUIREMENT SLOT's binder. Its
     /// value is a WITNESS, so the binding does both jobs: it pins the parameter (the
     /// witness becomes part of the type — §4.7's `SortedSet[T = String, O = ByLength]`)
-    /// and it selects the provider for that slot.
-    NamedSlot(Var, Symbol),
+    /// and it selects the provider for that slot. Carries the selection's key
+    /// ([`named_slot_key`]) beside the spec.
+    NamedSlot(Var, SelectedSlot, Symbol),
     /// Rule (2) — a spec SHORT NAME, unambiguous among the callee's anonymous slots.
-    /// A gated shorthand for the same selection; there is no parameter to pin.
-    AnonSlot(Symbol),
+    /// A gated shorthand for the same selection; there is no parameter to pin. Carries
+    /// the selection's key ([`CalleeSlot::key`]) beside the spec.
+    AnonSlot(SelectedSlot, Symbol),
 }
 
 impl CallTypeArgTarget {
     /// The type-parameter variable to unify the written value into, if any.
     pub(super) fn param(self) -> Option<Var> {
         match self {
-            CallTypeArgTarget::Param(v) | CallTypeArgTarget::NamedSlot(v, _) => Some(v),
-            CallTypeArgTarget::AnonSlot(_) => None,
+            CallTypeArgTarget::Param(v) | CallTypeArgTarget::NamedSlot(v, _, _) => Some(v),
+            CallTypeArgTarget::AnonSlot(..) => None,
         }
     }
 
-    /// The SPEC of the requirement slot this binding selects a provider for, if any.
-    fn slot_spec(self) -> Option<Symbol> {
+    /// The requirement slot this binding selects a provider for, if any: the SPEC it
+    /// requires, and which of the callee's requirements on that spec it is.
+    fn slot(self) -> Option<(Symbol, SelectedSlot)> {
         match self {
-            CallTypeArgTarget::NamedSlot(_, s) | CallTypeArgTarget::AnonSlot(s) => Some(s),
+            CallTypeArgTarget::NamedSlot(_, key, s) => Some((s, key)),
+            CallTypeArgTarget::AnonSlot(key, s) => Some((s, key)),
             CallTypeArgTarget::Param(_) => None,
         }
     }
@@ -3376,17 +3474,22 @@ impl CallTypeArgTarget {
 /// reaches such a parameter writes a witness as the key does, and is held to the same
 /// checks: `SortedSet.tip[String, W]()` is `SortedSet.tip[T = String, O = W]()`.
 fn declared_param_target(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     fn_sym: Symbol,
     (name, var): (Symbol, Var),
-) -> CallTypeArgTarget {
-    named_slot_spec(kb, fn_sym, name).map_or(CallTypeArgTarget::Param(var), |spec| {
-        CallTypeArgTarget::NamedSlot(var, spec)
+    span: Option<Span>,
+) -> Result<CallTypeArgTarget, TypeError> {
+    Ok(match named_slot_spec(kb, fn_sym, name) {
+        Some(spec) => {
+            let key = named_slot_key(kb, fn_sym, name, span)?;
+            CallTypeArgTarget::NamedSlot(var, key, spec)
+        }
+        None => CallTypeArgTarget::Param(var),
     })
 }
 
 fn resolve_call_type_arg_targets(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     type_args: &[(Option<Symbol>, crate::eval::value::Value)],
     declared: &[(Symbol, Var)],
     positional_limit: usize,
@@ -3409,20 +3512,20 @@ fn resolve_call_type_arg_targets(
                     name: *name_sym,
                 });
             }
-            let target = declared_param_target(kb, fn_sym, declared[idx]);
+            let target = declared_param_target(kb, fn_sym, declared[idx], span)?;
             named_targets.push((*name_sym, target));
             continue;
         }
         // Rung 2. A QUALIFIED key is not a slot name — it is refused below with the
         // rung-1 message, which is what it already gets today.
         let written = kb.local_name_of(*name_sym);
-        let matched: Vec<Symbol> = if written.contains('.') {
+        let matched: Vec<(SelectedSlot, Symbol)> = if written.contains('.') {
             Vec::new()
         } else {
             slots
                 .iter()
                 .filter(|s| !s.named && same_label(kb, *name_sym, s.spec))
-                .map(|s| s.spec)
+                .map(|s| (s.key, s.spec))
                 .collect()
         };
         match matched.len() {
@@ -3441,7 +3544,8 @@ fn resolve_call_type_arg_targets(
                         name: *name_sym,
                     });
                 }
-                named_targets.push((*name_sym, CallTypeArgTarget::AnonSlot(matched[0])));
+                let (key, spec) = matched[0];
+                named_targets.push((*name_sym, CallTypeArgTarget::AnonSlot(key, spec)));
             }
             _ => {
                 return Err(TypeError::AmbiguousRequirementKey {
@@ -3450,7 +3554,7 @@ fn resolve_call_type_arg_targets(
                     name: *name_sym,
                     slots: matched
                         .iter()
-                        .map(|s| kb.qualified_name_of(*s).to_string())
+                        .map(|(_, s)| kb.qualified_name_of(*s).to_string())
                         .collect(),
                 })
             }
@@ -3481,7 +3585,7 @@ fn resolve_call_type_arg_targets(
                 {
                     Some(param) => {
                         taken[next_free] = true;
-                        declared_param_target(kb, fn_sym, *param)
+                        declared_param_target(kb, fn_sym, *param, span)?
                     }
                     None => {
                         return Err(TypeError::ExcessCallTypeArgs {
@@ -3547,7 +3651,7 @@ pub(super) fn check_selection_bindings(
         return Ok(());
     }
     for sel in selections {
-        for goal in selection_goals(kb, subst, fn_sym, sel.spec_sort) {
+        for goal in selection_goals(kb, subst, fn_sym, sel) {
             let candidates = collect_provides_candidates(kb, &goal, None);
             if candidates.is_empty() {
                 continue;
@@ -3587,8 +3691,10 @@ pub(super) fn check_selection_bindings(
     Ok(())
 }
 
-/// WI-841 — the goals a selection of `spec_sort` at a call to `fn_sym` will be
-/// applied to, at the call's own bindings.
+/// WI-841 — the goals the selection `sel` at a call to `fn_sym` will be applied to, at
+/// the call's own bindings: the goal of the requirement it is for
+/// (WI-20261013-0K8WD — a witness selected for `OK: WeakOrd[T = K]` is not held to
+/// `OV: WeakOrd[T = V]`'s).
 ///
 /// Reads [`callee_requirement_slots`] — the SAME enumeration rung (2)'s candidate set
 /// reads — rather than re-walking the three sources. It was a second walk, and the two
@@ -3598,11 +3704,12 @@ fn selection_goals(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     fn_sym: Symbol,
-    spec_sort: Symbol,
+    sel: &InstanceSelection,
 ) -> Vec<SortGoal> {
+    let spec_sort = sel.spec_sort;
     let slots: Vec<CalleeSlot> = callee_requirement_slots(kb, fn_sym)
         .into_iter()
-        .filter(|s| same_sort_canonical(kb, s.spec, spec_sort))
+        .filter(|s| s.key == sel.slot && same_sort_canonical(kb, s.spec, spec_sort))
         .collect();
     let mut goals: Vec<SortGoal> = Vec::new();
     for slot in slots {
@@ -3724,6 +3831,172 @@ fn named_slot_spec(kb: &KnowledgeBase, fn_sym: Symbol, binder: Symbol) -> Option
     // declaration a binder names.
     let find = |owner: Symbol| named_requirement_slot_of(kb, owner, binder)?.spec_base;
     find(fn_sym).or_else(|| impl_parent_of_op(kb, fn_sym).and_then(find))
+}
+
+/// WI-20261013-0K8WD — the key a selection for the callee's slot named `binder` is kept
+/// under, over [`named_slot_spec`]'s two scopes: the key of the frame entry the name is
+/// recorded at ([`slot_key_at`]). `binder` is one that function answered for.
+///
+/// A slot whose entry cannot be located is an ERROR, as it is for the readers that index
+/// a slot ([`dict_chain_index_of_named_slot`]): kept under its own name it would be a
+/// selection no walk of the frame asks for, and the requirement would be answered by the
+/// search with nothing said.
+fn named_slot_key(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    binder: Symbol,
+    span: Option<Span>,
+) -> Result<SelectedSlot, TypeError> {
+    let unlocatable = |owner: Symbol| TypeError::SlotSelectionUnindexable {
+        span,
+        op: fn_sym,
+        owner,
+        binder,
+    };
+    if let Some(slot) = named_requirement_slot_of(kb, fn_sym, binder) {
+        let frame = CalleeFrame::of_op(kb, fn_sym);
+        let j = op_named_slot_chain_index(kb, fn_sym, &slot).ok_or_else(|| unlocatable(fn_sym))?;
+        return Ok(slot_key_at(kb, &frame, frame.sort_len + j));
+    }
+    let parent = impl_parent_of_op(kb, fn_sym).ok_or_else(|| unlocatable(fn_sym))?;
+    let slot = named_requirement_slot_of(kb, parent, binder).ok_or_else(|| unlocatable(parent))?;
+    let j = dict_chain_index_of_named_slot(kb, parent, &slot, fn_sym, span)?;
+    let provision = op_owner_provision(kb, fn_sym);
+    let frame = CalleeFrame::of_sort(kb, parent, provision);
+    Ok(slot_key_at(kb, &frame, j))
+}
+
+/// WI-20261013-0K8WD — the entries a callee's frame holds, and whose they are: the first
+/// `sort_len` its sort's dictionary chain, the rest the operation's own. What
+/// [`slot_key_at`] keys a position of.
+///
+/// A walk that fills a callee's sort half has the sort and no operation
+/// ([`Self::of_sort`]); it sees the prefix of the frame an operation of that sort has
+/// ([`Self::of_op`]), so a position of the sort half is keyed alike from either.
+struct CalleeFrame {
+    entries: Rc<Vec<RequiresEntry>>,
+    sort: Option<Symbol>,
+    sort_len: usize,
+    op: Option<Symbol>,
+}
+
+impl CalleeFrame {
+    /// `op`'s frame chain ([`op_dict_entries`]).
+    fn of_op(kb: &mut KnowledgeBase, op: Symbol) -> Self {
+        let chain = op_dict_entries(kb, op);
+        CalleeFrame {
+            entries: chain.entries_rc(),
+            sort: chain.owner(),
+            sort_len: chain.sort_len(),
+            op: Some(op),
+        }
+    }
+
+    /// `sort`'s dictionary chain under `provision` ([`provider_dict_entries`]).
+    fn of_sort(kb: &mut KnowledgeBase, sort: Symbol, provision: Option<Symbol>) -> Self {
+        let entries = provider_dict_entries(kb, sort, provision).entries_rc();
+        CalleeFrame {
+            sort_len: entries.len(),
+            entries,
+            sort: Some(sort),
+            op: None,
+        }
+    }
+
+    /// Neither the sort nor the operation names a requirement, so no entry has a name.
+    fn names_no_slot(&self, kb: &KnowledgeBase) -> bool {
+        [self.sort, self.op]
+            .into_iter()
+            .flatten()
+            .all(|owner| kb.named_requirement_slots(owner).is_empty())
+    }
+}
+
+/// WI-20261013-0K8WD — do two entries of one frame state ONE requirement: the same sort,
+/// and no parameter that both write differently?
+///
+/// A REQUIREMENT IS READ BY ITS GOAL. A body asks for `Monoid[T = HT]`, and every entry
+/// of its frame that covers the goal is the same requirement to it. So the test is that
+/// no goal tells the two apart, which is weaker than their being written alike: a sort's
+/// entry carries a default for each parameter its `requires` left unbound
+/// (`resolve_requires_bindings`) and an operation's own does not, and a parameter one of
+/// them leaves open is no difference between them. `WeakOrd[T = K]` and `WeakOrd[T = V]`
+/// both write `T`, differently, and are two.
+///
+/// As GOALS and not as entries: a sort's entry and an operation's own are stored in two
+/// shapes, and a sort's carries the operation bindings its `requires` completed.
+fn state_one_requirement(kb: &KnowledgeBase, a: &RequiresEntry, b: &RequiresEntry) -> bool {
+    if !same_sort_canonical(kb, a.required_sort, b.required_sort) {
+        return false;
+    }
+    let (Some(ga), Some(gb)) = (
+        goal_from_requires_entry(kb, a),
+        goal_from_requires_entry(kb, b),
+    ) else {
+        return false;
+    };
+    // A parameter bound to the spec's own default is one the `requires` left open.
+    let base = kb.sort_base_subst(a.required_sort).unwrap_or(&[]);
+    let left_open = |key: Symbol, value: &Value| {
+        matches!(value, Value::Term { id, .. }
+            if base.iter().any(|(slot, default)| default == id && same_label(kb, *slot, key)))
+    };
+    ga.bindings.iter().all(|(key, av)| {
+        left_open(*key, av)
+            || gb
+                .bindings
+                .iter()
+                .find(|(other, _)| same_label(kb, *other, *key))
+                .is_none_or(|(other, bv)| {
+                    left_open(*other, bv) || values_structurally_equal(kb, av, bv)
+                })
+    })
+}
+
+/// WI-20261013-0K8WD — the key of position `i` of a callee's frame: the key a selection
+/// for the requirement there is kept and read back under.
+///
+/// A REQUIREMENT IS THE SORT IT REQUIRES AT ITS BINDINGS, and a callee that states one
+/// twice holds one requirement under two names ([`state_one_requirement`]). A sort's two
+/// lines are one entry already (`Loader::load_requires_decl`). An operation's own
+/// `requires` may restate the sort's (`requires m: Monoid[T = HT]` on the sort,
+/// `requires Monoid[T = HT]` on the operation) or itself (`requires plus: Mon[T],
+/// times: Mon[T]`), and those are kept apart in the chain. So an entry takes the key of
+/// the FIRST entry of the frame that states its requirement: a selection written under
+/// any of the requirement's names is the one selection for it, a second with a
+/// different provider is refused ([`push_selection`]), and every entry that is the
+/// requirement reads the same one.
+///
+/// Compared as DECLARED, before a call's bindings are put in: `requires OK: WeakOrd[T =
+/// K]` and `requires OV: WeakOrd[T = V]` are two requirements at a call where `K` and
+/// `V` are both `Int64`, and the body tells them apart there as it does anywhere.
+///
+/// The key is the name recorded at that entry — the first, where the declaration gives
+/// the requirement two ([`named_slot_at`]) — and unnamed where none is, or where the
+/// slot recorded there is for another spec than the entry requires.
+fn slot_key_at(kb: &mut KnowledgeBase, frame: &CalleeFrame, i: usize) -> SelectedSlot {
+    if frame.names_no_slot(kb) {
+        return SelectedSlot::Unnamed;
+    }
+    let Some(entry) = frame.entries.get(i) else {
+        return SelectedSlot::Unnamed;
+    };
+    let first = (0..i)
+        .find(|p| state_one_requirement(kb, &frame.entries[*p], entry))
+        .unwrap_or(i);
+    let (owner, j) = match first.checked_sub(frame.sort_len) {
+        Some(j) => (frame.op, j),
+        None => (frame.sort, first),
+    };
+    let required = frame.entries[first].required_sort;
+    owner
+        .and_then(|owner| named_slot_of_chain(kb, owner, j))
+        .filter(|named| {
+            named
+                .spec_base
+                .is_some_and(|base| same_sort_canonical(kb, base, required))
+        })
+        .map_or(SelectedSlot::Unnamed, |named| SelectedSlot::Named(named.binder))
 }
 
 /// WI-841 — the WITNESS SORT a bracket binding's value names, or `None` when the value

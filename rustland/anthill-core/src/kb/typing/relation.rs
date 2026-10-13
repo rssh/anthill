@@ -1059,7 +1059,7 @@ fn resolve_route(
     let scope = ResolutionScope {
         available_requires: chain.entries(),
         sigma: Some(&sigma),
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     let ResolutionResult::Resolved(tree) = resolve(kb, goal, &scope) else {

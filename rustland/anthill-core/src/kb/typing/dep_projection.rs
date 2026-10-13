@@ -49,13 +49,18 @@ pub fn build_dep_projection(
     // and does not resolve; left `None` on success or when an earlier
     // strategy served the dep.
     s3_failure_out: Option<&mut Option<ResolutionResult>>,
-    // WI-841 (058 §4.5): the call site's explicit provider selections. A dep this
-    // bracket PINNED skips Strategies 1 & 2 outright — those FORWARD the caller's own
+    // WI-841 (058 §4.5): the call site's explicit provider selection FOR THIS DEP. A dep
+    // the bracket PINNED skips Strategies 1 & 2 outright — those FORWARD the caller's own
     // dictionary, and explicit selection outranks a forward exactly as it outranks a
     // search (§4.1 tier 1) — and rides into Strategy 3's scope, where step 0 restricts
-    // the candidate set. Empty on the req-insertion diagnostic path, which has no call
+    // the candidate set. `None` on the req-insertion diagnostic path, which has no call
     // site in hand.
-    selected: &[InstanceSelection],
+    //
+    // WI-20261013-0K8WD: the dep's own, picked by the walk that knows which requirement
+    // of the callee the dep is ([`selection_for_chain_entry`]). The call's whole list
+    // read here by `dep.required_sort` gave one requirement's provider to every dep on
+    // that sort.
+    pin: Option<&InstanceSelection>,
     // WI-861 (058 §3.2 rung 2a): may Strategy 3's CONSTRUCTION take a default when its
     // providers tie? [`DefaultRung::Withhold`] where the dep is the callee's NAMED slot —
     // a type parameter whose binding the caller erased, not a silence to fill. Every
@@ -107,7 +112,7 @@ pub fn build_dep_projection(
     // body forwards `__req_self` and the named witness is never consulted: a bracket
     // accepted and silently dropped, which is precisely the silent wrong number WI-841
     // measured and WI-1091 exists to close.
-    if pinned_witness_for(kb, selected, dep.required_sort).is_none() {
+    if pin.is_none() {
         if let (Some(owner), Some(ctx)) = (caller_requires.owner(), disambig) {
             if same_sort_canonical(kb, dep.required_sort, owner)
                 && dep_is_owner_self_instance(kb, ctx, dep, owner)
@@ -144,7 +149,7 @@ pub fn build_dep_projection(
     // WI-841: a dep the CALL SITE pinned takes neither forward. Strategies 1 and 2
     // both answer "the caller's frame already holds a dictionary for this" — true, and
     // beside the point once the call has said which provider it wants.
-    let pinned = pinned_witness_for(kb, selected, dep.required_sort).is_some();
+    let pinned = pin.is_some();
     let chosen = if pinned {
         None
     } else {
@@ -244,7 +249,7 @@ pub fn build_dep_projection(
     let scope = ResolutionScope {
         available_requires: caller_requires,
         sigma: disambig,
-        selected,
+        pin,
         sub_goal_requires: &[],
     };
     match resolve_opening_unwritten_slots(kb, &goal, &scope, rung) {

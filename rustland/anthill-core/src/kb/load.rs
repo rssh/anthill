@@ -16759,6 +16759,8 @@ pub fn resolve_instantiations(kb: &mut KnowledgeBase) {
     merge_secondary_entry_operations(kb);
     build_base_substitutions(kb);
     resolve_requires_bindings(kb);
+    // After the requirement facts are final: `resolve_requires_bindings` reorders them.
+    kb.settle_named_requirement_slots();
 }
 
 /// WI-1008 / proposal 059 R2 — a SECONDARY ENTRY's operations join their sort's
@@ -36255,7 +36257,6 @@ impl<'a> Loader<'a> {
         let mut pass = LoadPass {
             loader: self,
             timing,
-            requires_seen: HashMap::new(),
             carrier_stack: Vec::new(),
         };
         walk_scopes(&mut pass, items, root);
@@ -40246,14 +40247,27 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// `slot_index` (WI-840, 058 §4.7) is this declaration's POSITION among the
-    /// enclosing scope's `requires` items. Passed in rather than counted here because
-    /// the caller — [`Self::load_items`], the one walk that sees the items in order —
-    /// is the only place it is well defined, and it is the SAME enumeration
-    /// `load_sort_with_body` builds `SortInfo.requires` from (both walk one
-    /// declaration's `s.items` in source order). See `named_requirement_slots` for why
-    /// that list, and not the `SortRequiresInfo` FACT order, is the referent.
-    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol, slot_index: usize) {
+    /// A NAMED slot (WI-840, 058 §4.7) records the place its requirement has among those
+    /// its sort has stated so far ([`typing::place_of_requirement`]).
+    ///
+    /// WI-20261013-0K8WD — THE PLACE IS READ OFF THE SORT'S FACTS, where it was a count of
+    /// the `requires` lines the walk had seen, because A REQUIREMENT STATED AGAIN TAKES
+    /// THE PLACE OF THE FIRST. `requires Plus: Mon[T]` followed by `requires Times:
+    /// Mon[T]` asserts one `SortRequiresInfo` fact, so the sort's chain holds one entry
+    /// and its dictionary one slot: the second line gives that requirement a second name
+    /// and nothing else. Counted as a line of its own, `Times` was recorded at position
+    /// 1 of a chain of length 1 — MEASURED, a call that left it unwritten was refused,
+    /// "names a requirement slot whose position in that sort's dictionary chain could
+    /// not be established", and every requirement stated after the pair was recorded one
+    /// position late.
+    ///
+    /// THE PLACE IS RECORDED TWICE: among all the sort's requirements, and among those
+    /// on the same sort (`of_base`). Only the second survives
+    /// [`resolve_requires_bindings`], which moves the facts it completes behind the ones
+    /// it leaves — `requires O: Ord[T = E]` written before a parameterless `requires
+    /// Marker` comes back second. [`KnowledgeBase::settle_named_requirement_slots`]
+    /// reads it to put the first right once the facts are final.
+    fn load_requires_decl(&mut self, r: &RequiresDecl, domain: Symbol) {
         let requirement_sort = ClauseKind::Requirement;
         let requires_sym = self.kb.resolve_symbol("anthill.reflect.SortRequiresInfo");
         let spec_value = self.sort_inst_to_value(&r.type_expr);
@@ -40285,6 +40299,14 @@ impl<'a> Loader<'a> {
             .binder
             .as_ref()
             .and_then(|_| super::typing::spec_base_functor(self.kb, &spec_value));
+        // The slot's place, also before the assert: the facts as they stand are the
+        // requirements stated before this line. The index over them is a load's to
+        // rebuild and may be the one the load before left; dropped, the read is of the
+        // relation itself.
+        let place = r.binder.as_ref().map(|_| {
+            self.kb.requires_index = None;
+            super::typing::place_of_requirement(self.kb, domain, spec_base, &spec_value)
+        });
         self.kb.assert_metadata_fact_carrier(
             requires_sym,
             Vec::new(),
@@ -40296,7 +40318,7 @@ impl<'a> Loader<'a> {
             domain,
             None,
         );
-        if let Some(binder) = &r.binder {
+        if let (Some(binder), Some((position, of_base))) = (&r.binder, place) {
             // The binder is already a type parameter of `domain` by now: the converter
             // splices `sort O = ?` in front of this item and `scan_items_pass1`
             // registers it (`add_type_param`). A binder with no sort to parameterize
@@ -40306,8 +40328,13 @@ impl<'a> Loader<'a> {
             // `generate_rust`, which never loads a KB). So this is a pure record.
             let name = join_segments(&self.parsed.symbols, &binder.segments);
             let binder_sym = self.kb.intern(&name);
-            self.kb
-                .record_named_requirement_slot(domain, binder_sym, slot_index, spec_base);
+            self.kb.record_named_requirement_slot(
+                domain,
+                binder_sym,
+                position,
+                spec_base,
+                Some(of_base),
+            );
         }
     }
 
@@ -40500,8 +40527,10 @@ impl<'a> Loader<'a> {
                 let converted = self.convert_term(*g);
                 self.kb.head_functor(converted)
             });
+            // An operation's slot is a place in its own `requires` list, which nothing
+            // reorders.
             self.kb
-                .record_named_requirement_slot(functor, binder, slot, spec_base);
+                .record_named_requirement_slot(functor, binder, slot, spec_base, None);
         }
     }
 
@@ -42620,10 +42649,6 @@ struct LoadPass<'l, 'a> {
     loader: &'l mut Loader<'a>,
     /// WI-233: the `ANTHILL_ITEM_TIMING` gate, read once for the whole walk.
     timing: bool,
-    /// WI-840: source-order position among a SCOPE's `requires` items, named or
-    /// not, so a named slot's index covers the whole list. Keyed by scope: the
-    /// walk covers many scopes, and each item is offered to exactly one of them.
-    requires_seen: HashMap<ScopeId, usize>,
     /// WI-201: the carrier block each enclosing SCOPE displaced, innermost last. A
     /// stack because scopes nest and each must get its own back — a namespace as much
     /// as a sort (`Loader::enter_carrier_block` says why).
@@ -42718,10 +42743,7 @@ impl ScopePass for LoadPass<'_, '_> {
                 "Const"
             }
             Item::RequiresDecl(r) => {
-                let seen = self.requires_seen.entry(scope).or_insert(0);
-                let index = *seen;
-                *seen += 1;
-                self.loader.load_requires_decl(r, domain, index);
+                self.loader.load_requires_decl(r, domain);
                 "RequiresDecl"
             }
             Item::Entity(e) => {

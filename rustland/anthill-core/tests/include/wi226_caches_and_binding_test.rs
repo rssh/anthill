@@ -203,7 +203,7 @@ fn binding_aware_match_rejects_wrong_binding_at_flat_slot() {
         &syms,
         None,
         None,
-        &[],
+        None,
         // WI-861: these fixtures use ANONYMOUS `requires` slots, which is the
         // population rung 2a serves; a named slot withholds it (`DefaultRung`).
         anthill_core::kb::typing::DefaultRung::Consult,

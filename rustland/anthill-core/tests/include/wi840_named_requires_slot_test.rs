@@ -397,22 +397,21 @@ end
     );
 }
 
-/// THE COUPLING THE RECORDED POSITION DEPENDS ON, made a test rather than a comment.
+/// WHAT THE RECORDED POSITION INDEXES, made a test rather than a comment: the sort's
+/// CHAIN, which is the order of its `SortRequiresInfo` facts.
 ///
-/// The sort-level index is produced by `load_items`' walk and is claimed to index
-/// `SortInfo.requires`, which `load_sort_with_body` builds in a SECOND walk over the
-/// same `s.items`. Nothing in the code makes the two agree — they are two functions
-/// apart — so this asserts it.
+/// That order is a permutation of the source order. `resolve_requires_bindings` retracts
+/// and re-asserts every requirement whose op bindings it completes, moving it to the end
+/// of the functor index — so the program below, whose FIRST requirement is completed and
+/// whose second is not, comes back `Marker, Ord` as facts while `SortInfo.requires` stays
+/// `Ord, Marker`.
 ///
-/// It matters because a nearby candidate is measurably WRONG: the `SortRequiresInfo`
-/// FACT order is a permutation of the source order. `resolve_requires_bindings`
-/// retracts and re-asserts every requirement whose op bindings it completes, moving it
-/// to the end of the functor index — so the program below, whose FIRST requirement is
-/// completed and whose second is not, comes back `Marker, Ord` as facts while
-/// `SortInfo.requires` stays `Ord, Marker`. A reader that took `direct_requires`'
-/// enumeration for the referent would resolve `O` to the wrong requirement.
+/// The position was the source one until WI-20261013-0K8WD, and every reader took it for
+/// the chain's: `O` was read at `Marker`'s entry. It is settled to the chain's once the
+/// facts are final (`KnowledgeBase::settle_named_requirement_slots`), by the slot's place
+/// among the sort's requirements on its spec, which the move leaves alone.
 #[test]
-fn the_sort_level_slot_position_indexes_sort_info_requires() {
+fn the_sort_level_slot_position_indexes_the_chain() {
     let kb = loaded(
         r#"
 namespace test.wi840.coupling
@@ -432,25 +431,28 @@ end
 "#,
         "a completed and an uncompleted requirement must coexist",
     );
-    let slots = slots_of(&kb, "test.wi840.coupling.Box");
-    assert_eq!(slots, vec![("O".to_owned(), 0)], "`O` is written first");
-
     let boxsym = kb.try_resolve_symbol("test.wi840.coupling.Box").unwrap();
     let info = sort_info_requires_bases(&kb, boxsym);
     assert_eq!(
         info.first().map(String::as_str),
         Some("Ord"),
-        "`SortInfo.requires[0]` must be the requirement `O` names — this is the list \
-         the recorded position indexes; got {info:?}",
+        "`O` is written first, and `SortInfo.requires` keeps the source order; got {info:?}",
     );
 
     let facts = sort_requires_fact_bases(&kb, boxsym);
     assert_eq!(
         facts,
         vec!["Marker".to_owned(), "Ord".to_owned()],
-        "the CONTROL that keeps the coupling above meaningful: the FACT order is NOT \
-         source order (retract + re-assert in `resolve_requires_bindings`), so if this \
-         ever starts matching, the `named_requirement_slots` doc's warning is stale",
+        "the FACT order is NOT source order (retract + re-assert in \
+         `resolve_requires_bindings`) — if this ever starts matching, the settling below \
+         measures nothing",
+    );
+
+    let slots = slots_of(&kb, "test.wi840.coupling.Box");
+    assert_eq!(
+        slots,
+        vec![("O".to_owned(), 1)],
+        "`O` is recorded at the position its requirement has among the facts",
     );
 }
 

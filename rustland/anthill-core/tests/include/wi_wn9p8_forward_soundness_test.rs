@@ -71,10 +71,15 @@
 //! columns of [`a_forward_of_an_ord_slot_is_projected_out_of_it`] and
 //! [`an_operations_own_slot_forwards`] under (D) and (S).
 //!
-//! NOT DRIVABLE, and said so: two same-spec named slots (`requires A: WeakOrd[E]`, `requires
-//! B: WeakOrd[E]`) are the other shape a spec-keyed answer gets wrong, but a caller cannot
-//! give them two witnesses — "one spec, one witness per call" refuses it at the caller —
-//! so no ordering can show which of the two answered.
+//! TWO NAMED SLOTS ON ONE SORT are the other shape an answer by the goal gets wrong, and
+//! were not drivable here until WI-20261013-0K8WD: a caller could not give them two
+//! witnesses, so no ordering could show which of the two answered.
+//! [`a_forward_reaches_its_own_of_two_slots_on_one_sort`] drives it — `requires A:
+//! WeakOrd[E]`, `requires B: WeakOrd[F]`, a witness for each, and `String` in both
+//! parameters, so the two goals are one text. Measured with that ticket's key backed out
+//! it fails by the caller's refusal, "two providers are selected". Stated at ONE parameter
+//! (`requires A: WeakOrd[E]`, `requires B: WeakOrd[E]`) the two are one requirement under
+//! two names, and a forward under either reaches it; the same row holds that.
 //!
 //! REFERENCE: `binder_frame_slot`, `project_forwarded_slot`, `carried_slot`,
 //! `validate_written_selection` (typing.rs); `wi_tx0g6_selection_validation_test` (the
@@ -627,4 +632,59 @@ fn an_operations_own_slot_is_out_of_an_etas_reach() {
             && !msg.contains("nothing in the enclosing scope holds a dictionary FOR"),
         "the refusal must name the route's reach, not deny the slot exists; got: {msg}"
     );
+}
+
+// ── Two named slots on one sort ──────────────────────────────────────
+
+/// EACH OF TWO NAMED SLOTS ON ONE SORT IS FORWARDED AS ITS OWN (WI-20261013-0K8WD made it
+/// drivable; see the module doc). `RT` declares `A` at `E` and `B` at `F`; `insA` takes a
+/// set ordered by `A`, `insB` one ordered by `B`. The caller writes `String` for both
+/// parameters, `ByLength` for `A` and `RevLen` for `B` — so both forwards ask for
+/// `WeakOrd[T = String]`, and only the parameter says which dictionary is meant. On every
+/// channel a forward takes.
+///
+/// AND STATED AT ONE PARAMETER, the two names are one requirement: a forward under the
+/// second name reaches the one dictionary, in whichever order the caller selected under
+/// either name. Before 0K8WD that forward was refused, the second name having been
+/// recorded at a position the sort's chain does not have.
+#[test]
+fn a_forward_reaches_its_own_of_two_slots_on_one_sort() {
+    for (channel, spell) in CHANNELS {
+        let sort = format!(
+            "  sort RT\n    sort E = ?\n    sort F = ?\n    \
+             requires A: WeakOrd[E]\n    requires B: WeakOrd[F]\n    \
+             operation insA(s: SortedSet[T = E, O = A], x: E) -> SortedSet[T = E, O = A] =\n      {}\n    \
+             operation insB(s: SortedSet[T = F, O = B], x: F) -> SortedSet[T = F, O = B] =\n      {}\n  end",
+            spell("E", "A"),
+            spell("F", "B"),
+        );
+        let bracket = "[E = String, F = String, A = ByLength, B = RevLen]";
+        assert_runs_both_orders(
+            &driven(
+                &sort,
+                &format!("RT.insA{bracket}"),
+                "ByLength",
+                &format!("RT.insB{bracket}"),
+                "RevLen",
+            ),
+            &format!("two slots at two parameters, {channel}"),
+        );
+
+        let one = format!(
+            "  sort RO\n    sort E = ?\n    \
+             requires A: WeakOrd[E]\n    requires B: WeakOrd[E]\n    \
+             operation insB(s: SortedSet[T = E, O = B], x: E) -> SortedSet[T = E, O = B] =\n      {}\n  end",
+            spell("E", "B"),
+        );
+        assert_runs_both_orders(
+            &driven(
+                &one,
+                "RO.insB[E = String, A = ByLength]",
+                "ByLength",
+                "RO.insB[E = String, B = RevLen]",
+                "RevLen",
+            ),
+            &format!("two names of one requirement, {channel}"),
+        );
+    }
 }

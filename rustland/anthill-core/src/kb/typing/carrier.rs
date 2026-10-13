@@ -4323,7 +4323,11 @@ pub fn dispatch_spec_op_cached(
     // for the same reason (§4.1 tier 1). Without this the pin would be swallowed
     // before any resolution ran, and `f[Spec = W](…)` inside a sort that itself
     // `requires Spec` would mean nothing — the one place selection is most wanted.
-    let pinned_here = pinned_witness_for(kb, selected, spec_sort).is_some();
+    // WI-20261013-0K8WD: the DISPATCH's own selection, out of the call's list — what the
+    // call selected for a requirement the callee names is that requirement's, and is
+    // read where the callee's frame is filled.
+    let pin = pinned_selection_for(kb, selected, spec_sort);
+    let pinned_here = pin.is_some();
     if !pinned_here
         && !enclosing_requires.is_empty()
         && find_requires_slot(kb, subst, spec_sort, enclosing_requires, disambig).is_some()
@@ -4388,7 +4392,7 @@ pub fn dispatch_spec_op_cached(
             goal.clone(),
             enclosing_requires.to_vec(),
             disambig.is_some(),
-            selected.to_vec(),
+            pin.cloned(),
             sub_goal_requires.to_vec(),
         )
     });
@@ -4403,7 +4407,7 @@ pub fn dispatch_spec_op_cached(
         op_short_sym,
         enclosing_requires,
         disambig,
-        selected,
+        pin,
         sub_goal_requires,
     );
     if let Some(key) = key {
@@ -4431,15 +4435,16 @@ pub(super) fn resolve_at_goal(
     op_short_sym: Symbol,
     enclosing_requires: &[RequiresEntry],
     disambig: Option<&SigmaCtx>,
-    // WI-841 (058 §4.5): the call site's explicit selections, for `resolve`'s step 0.
-    selected: &[InstanceSelection],
+    // WI-841 (058 §4.5): the call site's explicit selection for THIS goal, for
+    // `resolve`'s step 0.
+    pin: Option<&InstanceSelection>,
     // WI-20260918-CKD4J — [`ResolutionScope::sub_goal_requires`].
     sub_goal_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     let scope = ResolutionScope {
         available_requires: enclosing_requires,
         sigma: disambig,
-        selected,
+        pin,
         sub_goal_requires,
     };
 

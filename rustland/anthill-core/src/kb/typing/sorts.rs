@@ -1766,7 +1766,7 @@ pub(super) fn spec_resolves_at_bindings(
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))

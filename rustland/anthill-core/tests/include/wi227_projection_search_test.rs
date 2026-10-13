@@ -233,7 +233,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
         &syms,
         None,
         None,
-        &[],
+        None,
         // WI-861: these fixtures use ANONYMOUS `requires` slots, which is the
         // population rung 2a serves; a named slot withholds it (`DefaultRung`).
         anthill_core::kb::typing::DefaultRung::Consult,
@@ -311,7 +311,7 @@ fn ground_dep_emits_the_dictionary_node() {
         &syms,
         None,
         None,
-        &[],
+        None,
         // WI-861: these fixtures use ANONYMOUS `requires` slots, which is the
         // population rung 2a serves; a named slot withholds it (`DefaultRung`).
         anthill_core::kb::typing::DefaultRung::Consult,

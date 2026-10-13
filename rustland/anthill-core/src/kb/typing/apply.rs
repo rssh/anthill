@@ -2602,7 +2602,7 @@ pub(super) fn check_apply_iter(
                 let scope = ResolutionScope {
                     available_requires: env.enclosing_requires(),
                     sigma: Some(&dispatch_sigma),
-                    selected: &selections,
+                    pin: pinned_selection_for(kb, &selections, spec_sort),
                     sub_goal_requires: &[],
                 };
                 // DF0TS: leaf instances need the same self dictionary as conditional
@@ -5081,7 +5081,7 @@ fn defaulted_call_at_non_instance(
     let scope = ResolutionScope {
         available_requires: env.enclosing_requires(),
         sigma: Some(&sigma),
-        selected: selections,
+        pin: pinned_selection_for(kb, selections, goal.spec_sort),
         sub_goal_requires: env.sub_goal_requires(),
     };
     if !matches!(resolve(kb, goal, &scope), ResolutionResult::NoMatch { .. }) {

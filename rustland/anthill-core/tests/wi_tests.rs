@@ -1861,6 +1861,8 @@ mod wi_shed7_fillable_test;
 mod wi_p7vp4_rule_body_requirements_test;
 #[path = "include/wi_0rrqp_clause_typed_through_constructor_test.rs"]
 mod wi_0rrqp_clause_typed_through_constructor_test;
+#[path = "include/wi_0k8wd_selection_per_requirement_test.rs"]
+mod wi_0k8wd_selection_per_requirement_test;
 #[path = "include/wi_prva2_pre_existing_defects_test.rs"]
 mod wi_prva2_pre_existing_defects_test;
 #[path = "include/dotted_nullary_op_call_test.rs"]

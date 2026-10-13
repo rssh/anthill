@@ -436,9 +436,11 @@ fn a_declared_slot_needs_no_bracket() {
 // ── What review found, and what now holds it ─────────────────────────
 
 /// **A RIVAL SELECTION FOR THE SAME SPEC BASE MUST NOT CAPTURE THIS DEP** (review
-/// finding 2). An `InstanceSelection` is keyed by the SPEC, and `pinned_selection_for`
-/// is a `.find` — so a selection the call ALREADY carries for `WeakOrd` wins over one
-/// appended after it, whatever element each is about.
+/// finding 2). An `InstanceSelection` was keyed by the SPEC, and read back by a `.find`
+/// — so a selection the call ALREADY carried for `WeakOrd` won over one appended after
+/// it, whatever element each was about. (WI-20261013-0K8WD: a selection is kept by the
+/// requirement it is for, and a dep the callee declares no slot for is handed its
+/// argument's witness and nothing the call selected.)
 ///
 /// Here `Bulk` declares `requires O: WeakOrd[String]` and `a` writes it, so
 /// `selections_from_slot_bindings` derives `WeakOrd -> Alphabetical`. `b` omits its slot

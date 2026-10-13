@@ -103,7 +103,7 @@ fn empty_scope<'a>(_subst: &'a Substitution) -> ResolutionScope<'a> {
     ResolutionScope {
         available_requires: &[],
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     }
 }
@@ -703,7 +703,7 @@ fn available_requires_match_short_circuits_resolution() {
     let scope = ResolutionScope {
         available_requires: &chain,
         sigma: None,
-        selected: &[],
+        pin: None,
         sub_goal_requires: &[],
     };
     match resolve(&mut kb, &goal, &scope) {
