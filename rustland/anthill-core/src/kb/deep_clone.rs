@@ -1141,6 +1141,7 @@ impl KnowledgeBase {
             synth_op_req_names_cache: RefCell::new(HashMap::new()),
             op_dict_chain_cache: RefCell::new(HashMap::new()),
             op_frame_names_cache: RefCell::new(HashMap::new()),
+            member_slots_at_spec_op_cache: RefCell::new(HashMap::new()),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
             provision_layout_key_cache: plain(&self.provision_layout_key_cache),
             provision_member_cache: plain(&self.provision_member_cache),

@@ -610,12 +610,19 @@ fn eta_op_scoped_dicts(
     // type-parameterized operation (a ∀ is not an arrow), the pin silently does not
     // happen, and the dictionary build is handed an empty σ.
     let fn_body = poly_type_body(kb, fn_ty);
-    let fn_param = match &fn_body {
-        Some(body) => arrow_parts(kb, body).and_then(|(p, _, _)| p),
-        None => arrow_parts(kb, fn_ty).and_then(|(p, _, _)| p),
-    };
-    if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
-        unify_types(kb, &mut subst, &ep, &fp);
+    let fn_arrow = fn_body.as_ref().unwrap_or(fn_ty);
+    let fn_param = arrow_parts(kb, fn_arrow).and_then(|(p, _, _)| p);
+    // AS PARAMETER LISTS, which is how the conformance check that admitted this reference
+    // relates the two ([`arrow_params_compatible`]). An operation of several parameters
+    // lifts to `(_1: A, _2: B) -> R`, and the expected arrow may label its own — `(p: A,
+    // q: B) -> R`. Unified as two data tuples those share no label, nothing is pinned, and
+    // the operation's requirement is refused as unsatisfiable at an arrow that names its
+    // types in full. The arity is the eta arrow's, which is the operation's.
+    let arity_key = kb.intern("arity");
+    if let (Some(ep), Some(fp), Some(arity)) =
+        (exp_param, fn_param, arrow_arity(kb, fn_arrow, arity_key))
+    {
+        unify_arrow_params(kb, &mut subst, &ep, &fp, arity);
     }
     // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
     // BRACKET — there is no call here to write one on.

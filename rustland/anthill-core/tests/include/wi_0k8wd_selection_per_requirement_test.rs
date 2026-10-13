@@ -73,13 +73,6 @@
 //!     dictionary would have to hold two entries for them and the body a way to say which
 //!     it reads; neither is there. [`a_requirement_stated_twice_is_one_requirement`] holds
 //!     what is.
-//!   * A SELECTION FOR A SPEC OPERATION'S OWN REQUIREMENT is not handed to the member the
-//!     call is dispatched to by its receiver's value: the member's requirement is searched
-//!     where the call runs. So before this ticket, and for a requirement on any sort;
-//!     [`a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs`] holds
-//!     the outcome.
-//!   * AN OPERATION THAT TAKES TWO VALUES OF ITS SORT is refused as a function value, with
-//!     one named requirement as with two (`apply2(cmpB, x, y)`); the rows here take one.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -1017,12 +1010,6 @@ end
     )
 }
 
-/// The call's run-time outcome on a fresh interpreter, rendered.
-fn outcome(src: &str, entry: &str) -> String {
-    let mut interp: Interpreter = crate::common::interp_for(src);
-    format!("{:?}", interp.call(entry, &[]))
-}
-
 /// A PROVIDER SELECTED FOR A REQUIREMENT IS NOT THE DISPATCH'S, where the requirement is on
 /// the very spec the call dispatches. `Desc.pair` requires `other: Desc[T = U]` — a second
 /// `Desc`, at its second argument — and `[other = Loud]` selects for that. Read by the
@@ -1030,22 +1017,17 @@ fn outcome(src: &str, entry: &str) -> String {
 /// was refused: "the call selected `Loud` for Desc, which provides no instance at these
 /// bindings", of a provider that was never selected for `Desc[T = Coin]`.
 ///
-/// STATED LIMIT, and why the row asserts an error. A selection written for a spec
-/// operation's own requirement is not handed to the member the call is dispatched to: the
-/// dispatch is made by the receiver's value when the call runs, the member's requirement is
-/// searched there, and two providers tie. That is so for a requirement on ANY sort and was
-/// before this ticket — the second half is the control, on `Tagger`, which passes either
-/// way. What this ticket changes is that the `Desc` twin reaches the same outcome and is
-/// no longer refused for a selection it did not make.
+/// The call is dispatched to `Coin.pair`, which adds 10 to what `Loud` answers for `"s"`,
+/// 3. The second half is the control, the same requirement on `Tagger`: it never was the
+/// dispatch's, and passes with the key read by the sort alone. That the member is handed
+/// the selection at all is `spec_op_requirement_at_member_test`'s.
 #[test]
 fn a_selection_for_a_requirement_on_the_dispatched_spec_is_not_the_dispatchs() {
     for (ns, req) in [("wi0k8wd.ownspec.desc", "Desc"), ("wi0k8wd.ownspec.tagger", "Tagger")] {
-        let run = outcome(&own_spec(ns, req), &format!("{ns}.Driver.loud"));
-        for token in ["AmbiguousRequirement", &format!("{ns}.Coin.pair"), &format!("{ns}.Quiet"), &format!("{ns}.Loud")] {
-            assert!(
-                run.contains(token),
-                "`{req}`: the member's requirement ties where the call runs, naming `{token}`; got {run}",
-            );
-        }
+        assert_eq!(
+            drive(&own_spec(ns, req), &format!("{ns}.Driver.loud")),
+            13,
+            "`Desc.pair[other = Loud]`, `other` a requirement on `{req}`",
+        );
     }
 }

@@ -3999,6 +3999,214 @@ fn slot_key_at(kb: &mut KnowledgeBase, frame: &CalleeFrame, i: usize) -> Selecte
         .map_or(SelectedSlot::Unnamed, |named| SelectedSlot::Named(named.binder))
 }
 
+/// The requirements a MEMBER states on itself, each beside the spec operation's that is
+/// the same requirement. What a call written for the spec operation is read through
+/// where a member answers it: [`call_at_member`] where the member is known as the call
+/// is typed, [`member_slots_at_spec_op`] where it is chosen as the call runs.
+///
+/// The two operations are one signature. A member's type parameters are the spec
+/// operation's by position ([`paired_type_params`]) — the names it gives its requirements
+/// among them, a name being a type parameter — and a requirement it states is one the
+/// spec operation states: `check_override_refinement` holds it to both, and admits a
+/// member's `requires` only as the spec operation wrote it.
+///
+/// AN ENTRY IS PAIRED THROUGH ITS REQUIREMENT, and not by its place in the frame or by
+/// its name, which is the member's own. The requirements are compared as declared
+/// ([`state_one_requirement`]), each over the spec operation's parameter variables, so
+/// two that a call puts at one type stay two.
+struct MemberEntries {
+    member_frame: CalleeFrame,
+    spec_frame: CalleeFrame,
+    /// The member's type-parameter variables, each beside the spec operation's.
+    params: Vec<(VarId, VarId)>,
+    /// For each entry of the member's own, in frame order: where the spec operation's
+    /// frame states the same requirement. `None` for an entry that pairs with none — the
+    /// override check refuses a member that states a requirement the spec operation does
+    /// not, so what is left is a member it cannot compare.
+    at_spec: Vec<Option<usize>>,
+}
+
+impl MemberEntries {
+    /// `None` where the member states no requirement of its own.
+    fn of(kb: &mut KnowledgeBase, spec_op: Symbol, member: Symbol) -> Option<Self> {
+        let member_frame = CalleeFrame::of_op(kb, member);
+        if member_frame.entries.len() == member_frame.sort_len {
+            return None;
+        }
+        // Both were read as operations to get here: the member's frame holds entries of
+        // its own, and the call was typed against the spec operation's signature.
+        let type_params = |kb: &KnowledgeBase, op: Symbol| {
+            lookup_operation_info_full(kb, op)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{}` is dispatched as an operation and has no operation record",
+                        kb.qualified_name_of(op)
+                    )
+                })
+                .type_params
+        };
+        let (member_params, spec_params) = (type_params(kb, member), type_params(kb, spec_op));
+        let global = |v: &Var| match v {
+            Var::Global(vid) => Some(*vid),
+            _ => None,
+        };
+        let params: Vec<(VarId, VarId)> = paired_type_params(&member_params, &spec_params)
+            .filter_map(|((_, m), (_, s))| Some((global(m)?, global(s)?)))
+            .collect();
+        // An entry over the spec operation's parameter variables: the member's parameters
+        // as the ones they are paired with, the spec operation's as themselves, in the one
+        // spelling ([`clause_named_type_param`] reads both). Nothing else in it is touched.
+        let to_spec: Vec<(VarId, VarId)> = params
+            .iter()
+            .copied()
+            .chain(spec_params.iter().filter_map(|(_, s)| global(s)).map(|s| (s, s)))
+            .collect();
+        let over_spec_vars = |kb: &mut KnowledgeBase, entry: &RequiresEntry| {
+            let spec = rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
+                let vid = clause_named_type_param(kb, leaf)?;
+                let (_, at_spec) = to_spec.iter().find(|(of, _)| *of == vid)?;
+                Some(Value::term(type_param_var_term(kb, Var::Global(*at_spec))))
+            });
+            RequiresEntry {
+                required_sort: entry.required_sort,
+                spec: spec.unwrap_or_else(|| entry.spec.clone()),
+                supply: entry.supply,
+            }
+        };
+        let spec_frame = CalleeFrame::of_op(kb, spec_op);
+        let spec_entries: Vec<RequiresEntry> = spec_frame
+            .entries
+            .iter()
+            .map(|e| over_spec_vars(kb, e))
+            .collect();
+        let at_spec = (member_frame.sort_len..member_frame.entries.len())
+            .map(|i| {
+                let entry = over_spec_vars(kb, &member_frame.entries[i]);
+                spec_entries
+                    .iter()
+                    .position(|e| state_one_requirement(kb, e, &entry))
+            })
+            .collect();
+        Some(MemberEntries {
+            member_frame,
+            spec_frame,
+            params,
+            at_spec,
+        })
+    }
+
+    /// The member's own entries: each one's place in its frame, and where the spec
+    /// operation's frame states its requirement.
+    fn own(&self) -> impl Iterator<Item = (usize, Option<usize>)> + '_ {
+        (self.member_frame.sort_len..).zip(self.at_spec.iter().copied())
+    }
+}
+
+/// A call written for a spec operation, as the MEMBER it is dispatched to reads it: the
+/// call's substitution and its selections for the requirements the member states on
+/// itself ([`MemberEntries`]). `None` where the member states none.
+///
+/// The call's substitution binds the spec operation's type parameters, and a selection
+/// is kept under the name the spec operation gives its requirement ([`slot_key_at`]). The
+/// member's own entries are written over ITS parameters and read back under ITS names,
+/// so neither reaches them as it stands: the entry stays unpinned, no dictionary is
+/// built for it at the call, and the member resolves the requirement from its argument
+/// values when it runs — where a provider the call selected is not known, and two
+/// providers the call chose between tie.
+///
+/// So each parameter of the member is bound to what the call bound the spec operation's,
+/// and each entry of the member's own takes the selection the call made for the entry of
+/// the spec operation that states the same requirement, under the member's key. An entry
+/// that pairs with none is read as the call wrote it, under the entry's own key.
+pub(super) fn call_at_member(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    selected: &[InstanceSelection],
+    spec_op: Symbol,
+    member: Symbol,
+) -> Option<(Substitution, Vec<InstanceSelection>)> {
+    let entries = MemberEntries::of(kb, spec_op, member)?;
+    // Each of the member's bound to what the call holds for the spec operation's, where
+    // it holds something. One the call has already bound is the caller's own, and stays.
+    let mut at_member = subst.clone();
+    for (to, from) in &entries.params {
+        if to == from || at_member.resolve_as_value(*to).is_some() {
+            continue;
+        }
+        if let Some(value) = spec_param_binding(kb, subst, *from) {
+            at_member.bind_value(kb, *to, value);
+        }
+    }
+    let mut for_member: Vec<InstanceSelection> = Vec::new();
+    for (i, at_spec) in entries.own() {
+        let ours = slot_key_at(kb, &entries.member_frame, i);
+        let theirs = match at_spec {
+            Some(at_spec) => slot_key_at(kb, &entries.spec_frame, at_spec),
+            None => ours,
+        };
+        let required = entries.member_frame.entries[i].required_sort;
+        if let Some(sel) = selection_for_slot(kb, selected, required, theirs) {
+            let sel = InstanceSelection {
+                slot: ours,
+                ..sel.clone()
+            };
+            if !for_member.contains(&sel) {
+                for_member.push(sel);
+            }
+        }
+    }
+    Some((at_member, for_member))
+}
+
+/// The frame slots a MEMBER reads its own requirements from, each beside the slot a call
+/// of the spec operation fills for the same requirement: `(the member's, the spec
+/// operation's)`. Where the member is chosen as the call runs, the call was stamped for
+/// the spec operation ([`stamp_spec_op_supply`]) and its slots are under that
+/// operation's names; this is the reading of them the member has
+/// ([`MemberEntries`]), the run-time twin of [`call_at_member`].
+///
+/// Only the spec operation's OWN slots are a call's to fill — a requirement the spec
+/// states on its sort arrives in the dictionary the call is dispatched through. A slot of
+/// the member that pairs with none reads the spec operation's slot of its own name, where
+/// there is one: the call as it was written.
+///
+/// Read at every dispatch that lands on a member with a requirement of its own, so it
+/// is kept ([`KnowledgeBase::invalidate_requires_chain_cache`] forgets it with the
+/// chains it is read off).
+pub fn member_slots_at_spec_op(
+    kb: &mut KnowledgeBase,
+    spec_op: Symbol,
+    member: Symbol,
+) -> Rc<Vec<(Symbol, Symbol)>> {
+    if let Some(kept) = kb.member_slots_at_spec_op_cache.borrow().get(&(spec_op, member)) {
+        return kept.clone();
+    }
+    let slots: Vec<(Symbol, Symbol)> = match MemberEntries::of(kb, spec_op, member) {
+        None => Vec::new(),
+        Some(entries) => {
+            let ours = op_dict_entries(kb, member).names(kb);
+            let theirs = op_dict_entries(kb, spec_op).names(kb);
+            let their_own = &theirs[entries.spec_frame.sort_len.min(theirs.len())..];
+            entries
+                .own()
+                .filter_map(|(i, at_spec)| {
+                    let our_name = *ours.get(i)?;
+                    let their_name = match at_spec {
+                        Some(at_spec) => *theirs.get(at_spec).filter(|_| at_spec >= entries.spec_frame.sort_len)?,
+                        None => *their_own.iter().find(|n| **n == our_name)?,
+                    };
+                    Some((our_name, their_name))
+                })
+                .collect()
+        }
+    };
+    let slots = Rc::new(slots);
+    kb.member_slots_at_spec_op_cache
+        .borrow_mut()
+        .insert((spec_op, member), slots.clone());
+    slots
+}
+
 /// WI-841 — the WITNESS SORT a bracket binding's value names, or `None` when the value
 /// is not a sort at all. A witness may be written with type arguments
 /// (`[Monoid = ListM[O = MyEq]]`, §4.5), so the HEAD is what identifies it.

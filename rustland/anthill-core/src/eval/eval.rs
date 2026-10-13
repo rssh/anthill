@@ -378,6 +378,7 @@ impl Interpreter {
                         proj_path,
                         *enclosing_sort,
                         *enclosing_op,
+                        &op_dicts,
                         pos_args,
                         named_args,
                     ),
@@ -2041,6 +2042,18 @@ impl Interpreter {
         }
     }
 
+    /// The frame slot names of `op`'s OWN requirements — the tail of its frame chain,
+    /// after its sort's. Empty for nearly every operation, off the chain's own memo.
+    fn own_slot_names(&mut self, op: Symbol) -> SmallVec<[Symbol; 2]> {
+        if crate::kb::typing::op_requires_chain_rc(&mut self.kb, op).is_empty() {
+            return SmallVec::new();
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, op);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        names[sort_len.min(names.len())..].iter().copied().collect()
+    }
+
     /// WI-822 LEG 1 — a call with NO instance dictionary whose callee may still have
     /// op-scoped slots of its own: the `Holder.probe requires Zeroable[HT]` shape, whose
     /// sort declares nothing. [`Self::start_apply`] installs NO channel at all, so such a
@@ -2095,6 +2108,9 @@ impl Interpreter {
         // sort's dictionary chain FIRST and that operation's own `requires` after it,
         // so a sort alone cannot name a slot past the first half.
         enclosing_op: Option<Symbol>,
+        // The slots the call filled for the SPEC operation's own requirements. The member
+        // is chosen below, so the typer built them for the operation the call names.
+        op_dicts: &[Option<TermId>],
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
@@ -2207,8 +2223,56 @@ impl Interpreter {
             dispatching_dict = self.project_requirement(&dispatching_dict, k, &what)?;
         }
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
-        let requirements = self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
+        let mut requirements =
+            self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
+        // Read in THIS (the caller's) frame, as every op-scoped slot is: a forwarded one
+        // is a `var_ref` into the caller's own channel. Not read at all for a member that
+        // states no requirement.
+        if !op_dicts.is_empty()
+            && (target == spec_op_sym
+                || !crate::kb::typing::member_slots_at_spec_op(&mut self.kb, spec_op_sym, target)
+                    .is_empty())
+        {
+            let mut filled: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
+            self.push_op_scoped_slots(spec_op_sym, spec_op_sym, op_dicts, &mut filled)?;
+            self.hand_spec_op_slots(spec_op_sym, target, &filled, &mut requirements);
+        }
         self.dispatch_apply_with_requirements(target, requirements, pos_args, named_args)
+    }
+
+    /// The slots a call filled for a SPEC operation's own requirements, placed in the
+    /// frame of the operation that answers it, under the names that operation reads
+    /// them by.
+    ///
+    /// Where the member is chosen as the call runs, the call was stamped for the spec
+    /// operation and `filled` is under that operation's slot names. A member states the
+    /// same requirements under names of its own
+    /// ([`crate::kb::typing::member_slots_at_spec_op`]), and reads only those: a slot it
+    /// has no requirement for is not placed. Where the spec operation's own body answers,
+    /// the names are its own already.
+    ///
+    /// A slot placed here is one [`Self::fill_missing_op_scoped_slots`] does not resolve
+    /// from the argument values: what the call said stands.
+    fn hand_spec_op_slots(
+        &mut self,
+        spec_op: Symbol,
+        target: Symbol,
+        filled: &[(Symbol, super::value::Dictionary)],
+        out: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) {
+        if filled.is_empty() {
+            return;
+        }
+        if target == spec_op {
+            out.extend(filled.iter().cloned());
+            return;
+        }
+        let slots = crate::kb::typing::member_slots_at_spec_op(&mut self.kb, spec_op, target);
+        for (ours, theirs) in slots.iter() {
+            if let Some((_, dict)) = filled.iter().rev().find(|(n, _)| n == theirs) {
+                out.push((*ours, dict.clone()));
+            }
+        }
     }
 
     /// Build the callee's `frame.requirements` from a resolved dispatching
@@ -3283,10 +3347,29 @@ impl Interpreter {
                         impl_target,
                     )
                 });
-            if let Some(dict) = covered {
-                return self.expand_dispatching_dict(built_for, impl_target, &dict);
-            }
-            return Ok(incoming);
+            // THE SLOTS THE CALL FILLED FOR `built_for`'S OWN REQUIREMENTS ARE THE
+            // MEMBER'S, under the member's names ([`Self::hand_spec_op_slots`]). They are
+            // in `incoming` under `built_for`'s: the re-expansion below rebuilds the frame
+            // from the dictionary and drops them, and passed on as they are they reach
+            // only a member that happens to call its requirement what the spec operation
+            // does. Either way the member then resolved the requirement from its argument
+            // values, where a provider the call selected is not known.
+            let own = self.own_slot_names(built_for);
+            let filled: SmallVec<[(Symbol, super::value::Dictionary); 2]> = incoming
+                .iter()
+                .filter(|(n, _)| own.contains(n))
+                .cloned()
+                .collect();
+            let mut out = match covered {
+                Some(dict) => self.expand_dispatching_dict(built_for, impl_target, &dict)?,
+                None => {
+                    let mut rest = incoming;
+                    rest.retain(|(n, _)| !own.contains(n));
+                    rest
+                }
+            };
+            self.hand_spec_op_slots(built_for, impl_target, &filled, &mut out);
+            return Ok(out);
         }
         match crate::kb::typing::resolve_bridge_requirements(
             &mut self.kb,
