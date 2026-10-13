@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260926-7D48J-one-typing-of-a-rule-clause
+- depends_on: WI-20261013-RYDNV-068-c1d-one-classification-per
 
 - tags: typing, proposal-068
 

@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20260926-7D48J-one-typing-of-a-rule-clause
+- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20261013-GFS6A-068-d1a-a-woven-call-is, WI-20261013-DEY66-068-d1b-the-per-consumer, WI-20261013-2HX69-068-d1c-the-unfold-threads, WI-20261013-WPVVY-a-labelled-call-of-a-builtin
 
 - tags: proposal-068
 
@@ -49,4 +49,8 @@ FOUND WITH WI-20260930-MHRN1 (2026-10-12), NOT CHANGED THERE: a LABELLED call on
 ### 2026-10-12T12:48:08Z — feedback — claude
 
 ON THE LABELLED BUILTIN CALL ABOVE — where it goes wrong and where a fix sits (read 2026-10-12; left for this ticket by the user, not fixed with MHRN1). A tagged operation's call never reaches the parameter pairing MHRN1 moved to typing::bound_args: its handler reads the goal's positions (operand 0, operand 1, a third positional as the result) and looks up no parameter list. The two entries treat a label differently, which is why one spelling is incomplete and the other wrong: the VALUE entry (resolve/evaluate.rs run_builtin_for_value) declines a call with named_arity != 0, so `?c <=> Int64.sub(1, a: 5)` is left standing, undecided; the GOAL entry (execute_builtin -> builtin_cmp / builtin_arith) has no such check, finds no operand 0 and answers Failure, so `:- Int64.lt(a: 1, b: 5)` fails definitely and `not(Int64.lt(a: 1, b: 5))` answers 1 (MEASURED). A fix has one place: before a tag's handler is dispatched, at both entries, rewrite a labelled goal into positional order through bound_args over the operation's declared parameters — only where every label names a declared parameter, since some tagged names take labels by design (`find_dictionary(…, out: ?d)`).
+
+### 2026-10-13T08:05:34Z — feedback — claude
+
+SPLIT INTO FOUR PARTS (user, 2026-10-13); this ticket stays open over them and is done when they are. D1a WI-20261013-GFS6A-068-d1a-a-woven-call-is — a woven call suspended on its dictionary (item 1); holds, from WI-20261003-4DYR6, the two rule-body programs measured there (a head variable's dictionary never fetched over a sort with a type parameter; a woven defaulted call running the default). It needs nothing of 7D48J and is unblocked. D1b WI-20261013-DEY66-068-d1b-the-per-consumer — the per-consumer reductions retire (item 2); holds the notes of 2026-10-11 (3HN0N, a match on a tuple; A3FY2, a nullary call in a query pattern); after C1d. D1c WI-20261013-2HX69-068-d1c-the-unfold-threads — the unfold threads dictionaries (items 3 and 4); holds XBHX3's rows and the 2026-10-08 note's lit row; after D1b. D1d WI-20261013-WPVVY-a-labelled-call-of-a-builtin — a labelled call of a builtin-tagged operation, the two notes of 2026-10-12; it needs nothing else of the sequence and is unblocked. MOVED TO 7D48J's last part (C1d WI-20261013-RYDNV-068-c1d-one-classification-per): the 2026-09-30 note's retirement of the load-time refusal to weave an unpinned body-less operation in a value slot — it is the inference's decision, which C1d replaces, and it reads D1a's answer.
 

@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires
+- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-GGXCX-068-c1a-design-the-clause, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-R1W5A-068-c1c-a-call-or-a-binder, WI-20261013-RYDNV-068-c1d-one-classification-per
 
 - tags: proposal-068, typing
 
@@ -60,4 +60,8 @@ ROWS FOUND WITH WI-20261012-RXT6S (2026-10-12, measured on 4f282c2a; not caused 
 ### 2026-10-12T12:33:26Z — feedback — claude
 
 FOUND WITH WI-20260930-MHRN1 (2026-10-12), NOT CHANGED THERE: an ORDINARY operation's call in a rule-body VALUE slot is name-checked only, so its argument list is held to nothing at load. MEASURED over `operation sub2(x: Int64, y: Int64) -> Int64 = Int64.sub(x, y)`: `?c <=> Util.sub2(1, 5, 9)` answers -4 (the surplus argument dropped), `?c <=> Util.sub2(1, 5, bogus: 9)` answers -4 (the label dropped), `?c <=> Util.sub2(1)` is a conditional residual, and an argument of the wrong type (`rep(s: String, n: Int64)` called `Util.rep(?n, ?n)`) is a run-time fault with the search marked incomplete. A GOAL on a rule-less operation is held to its parameter list since MHRN1 (operation_goal_arity_error, raised by check_rule_body_goal_readings): the value slot is what section 3's fragment typing would bring the same verdict to. Beside it, and with no load moment to refuse it at: a top-level QUERY goal with a label and a result column (`Desc.describe(1, ?r, x: leaf())`) answers nothing and says nothing.
+
+### 2026-10-13T08:05:28Z — feedback — claude
+
+SPLIT INTO FOUR PARTS (user, 2026-10-13: the scope is too big for one ticket); this ticket stays open over them and is done when they are. C1a WI-20261013-GGXCX-068-c1a-design-the-clause — the design: the clause environment, how far data is typed, the count of new load errors, the lambda case of the 2026-10-11 note (decisions 1, 2 and 4). C1b WI-20261013-WF14Z-068-c1b-a-rule-variable-is — a rule variable typed across its clause; holds 0RRQP's program, row (3) of the 2026-10-08 note, and the notes of 2026-10-11 (A3FY2, a dot on a rule variable) and 2026-10-12 (RXT6S, a field of a typed head parameter). C1c WI-20261013-R1W5A-068-c1c-a-call-or-a-binder — a call or a binder form typed as an operation body, equations off; holds the 2026-10-11 note (3HN0N), the 2026-10-12 note (MHRN1, the argument list in a value slot) and row (1) of the 2026-09-26 note. C1d WI-20261013-RYDNV-068-c1d-one-classification-per — one classification per call (decision 3); holds rows (1), (2) and (4) of the 2026-10-08 note, row (2) of the 2026-09-26 note, and, from WI-20261003-4DYR6, the removal of the rule body's remaining gate with its 35 rows. C1d also waits on D1a (WI-20261013-GFS6A-068-d1a-a-woven-call-is) of WI-20260926-DSEXA, for the retired load-time refusal. WI-20260926-Y6ZCD now waits on C1d alone.
 
