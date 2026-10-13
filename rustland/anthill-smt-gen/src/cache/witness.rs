@@ -46,7 +46,14 @@ use super::key::state_hash;
 /// vouches for a cite (`sidecar_cite_status`), so one written by an emitter that
 /// proved too much is moved out of reach, and each proof is recorded again.
 /// Decided with the user, 2026-10-12: a soundness fix of the emitter moves this.
-pub const WITNESS_FORMAT_VERSION: u32 = 4;
+///
+/// v5 (WI-20261012-KF2SD): the schema is v3's still, and by that decision this moves
+/// again. A call that several clauses of its predicate could answer was read as the
+/// first of them, so was an entity premise over several facts, and a rule of several
+/// clauses was proved by its first: each such proof has a v4 sidecar that says
+/// `Discharged`, of rules none of which has changed. The emitter now refuses all three,
+/// and a sidecar it would not write again is moved out of reach.
+pub const WITNESS_FORMAT_VERSION: u32 = 5;
 
 /// Per-project witness sidecar directory.
 pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {

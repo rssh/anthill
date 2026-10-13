@@ -269,6 +269,30 @@ rule lower_bound_holds(?w)
 
 The conclusion is *negated* and added as the final assertion. Multiple conclusion clauses become `(assert (not (and …)))`. The verdict `unsat` certifies the theorem; `sat` returns a counterexample.
 
+**A rule call in the body being discharged** (WI-20261012-KF2SD). A call of a rule's predicate is a premise like any other, and is *read*: bound to the slots of a fact, or opened as the body of the clause it calls with the call's arguments for the head's. It is read by **the one clause that can answer it** — the clauses of the call's arity whose head no argument of the call rules out. A number against another number and a constructor against another constructor rule a clause out. The call's own variable counts as what the body has bound it to, a number (`?k = 1`) or a construction (`?o = some(2.0)`, or a fact's slot it met earlier, a nullary constructor such as `Leader` among them); a free variable, a variable *inside* a construction, a computed term and a name that is no constructor rule nothing out. So
+
+```
+fact initial_pose(Leader, Pose(…))
+fact initial_pose(Follower, Pose(…))
+rule base_case(?w) :- initial_pose(Leader, ?l), …          -- one fact answers: read
+```
+
+is read by the Leader's fact, and `gain(none, ?r)` by the clause `rule gain(none, ?r) :- …` and not by `rule gain(some(?x), ?r) :- …` beside it. A clause of another arity is no candidate: `span/2` beside `span/3` is two predicates.
+
+**Several clauses that can answer: refused.** A predicate of several clauses holds when *any* of them does, so the call means their disjunction; read as the first one — which is what was done, the first fact whose slots agreed and else the first clause with a body — the premise is stronger than the rule states, and a false claim proved:
+
+```
+rule related(?a, ?b) :- gte(?a, ?b)
+rule related(?a, ?b) :- lte(?a, ?b)
+rule lemma: gte(?a, ?b) :- related(?a, ?b)                 -- proved; related(1, 2) refutes it
+```
+
+The refusal names the predicate, how many of its clauses can answer, and — when the call stands in a rule read inlined — that rule. A clause whose head is all variables answers every call of its arity, so a base fact beside a recursive step (`fact at(0, 1.0)`, `rule at(?k_next, ?x_next) :- at(?k, ?x), …`) is two for `at(0, ?x)`: give the base case a predicate of its own, as `examples/webots-modelling/lf1` does with `initial_pose` under `real_pose_at`. *Every* clause under the predicate counts, a lemma too: a rule stated with a label and the predicate for its head (`rule safe_weaken: safe(?x, ?n) :- …`) is a clause of it, as the resolver has it. The disjunction itself is WI-20261013-1KF32. A call that is **not read** is not refused, whatever its clauses — the conclusion of a structured proof skips its rule calls, and a lift states them (below).
+
+**What is answered and cannot be read is refused too**, each with its own words: a call no clause can answer (where those clauses are the predicate the body never holds — but a clause may be an operation's body specialized to another call's arguments, WI-687, and then it simply does not apply); a fact's slot met by a term over variables (`row(?x + 1.0, ?v)` against `fact row(5.0, 1.0)` is an equation that is not written); a fact's slot that is a string, a boolean or a name that is no constructor, met by a variable, which a variable is not bound to; a fact that names one variable in two slots; a number in the head of a clause with a body, met by a free variable (`rule mode(0, ?r) :- …` called `mode(?k, ?r)` when it is the one clause). A variable in a *fact's* slot (`fact dflt(?who, 5.0)`) is every value there, and binds nothing.
+
+**The same rule in two more places** (the review of that change). *An entity premise* `Limit(cap: ?c)` reads the fields of the entity's fact, as constants of the document; an entity of several facts is refused — it was read as its first, whichever fact the premise's own slots named (`Mode(kind: 2.0, cap: ?c)` took the cap of the row of kind 1). And *the rule being proved* must be one clause: a name that resolves to several — a rule written with several heads is a clause for each, and so is a predicate written as several rules — is refused. It was proved of its first clause alone, while its lift is of every head, so `rule both: gte(?x, 0.0), gte(?x, 5.0) :- gte(?x, 1.0)` proved and was then cited for its second head. (The conjunction of the heads — `(assert (not (and H1 ... Hn)))` — is what proposal 032 §"Z3 backend" specifies; each clause numbers its variables by its own head first, so one clause's head is not written in another's frame, and that reading is not built.)
+
 **Citation** (the rule is referenced from another proof's `using` clause, `proof Y using X by z3(...)`):
 
 ```

@@ -147,3 +147,5 @@ mod wi_bvg8m_requirement_cite_test;
 mod wi_zz7ph_law_lowering_test;
 #[path = "include/wi_cdhsq_lemma_premise_test.rs"]
 mod wi_cdhsq_lemma_premise_test;
+#[path = "include/wi_kf2sd_several_clauses_test.rs"]
+mod wi_kf2sd_several_clauses_test;

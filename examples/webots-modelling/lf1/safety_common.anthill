@@ -6,7 +6,8 @@
 --
 --   - Drone identity (Leader, Follower)
 --   - DistanceBounds, KinematicAssumptions
---   - real_pose_at / observed_pose_at / reachable_real predicates
+--   - real_pose_at / observed_pose_at / reachable_real predicates,
+--     and initial_pose / initial_real for the launch geometry
 --   - the application-specific DistanceBounds + KinematicAssumptions facts
 --
 -- The sensor-specific bridges (gps_drift_axiom, transponder
@@ -159,6 +160,17 @@ namespace anthill.examples.lf1.safety.common
     :- real_pose_at(?k, Leader, ?leader_real),
        real_pose_at(?k, Follower, ?follower_real)
 
+  -- The pair at step 0: the launch geometry, read off the two
+  -- `initial_pose` facts below. This — and not `reachable_real` — is
+  -- what a pointwise refutation `by z3` is OF. A proof reads a call by
+  -- the ONE clause that can answer it, and `real_pose_at` has two (the
+  -- base clause and the step), so a call of it is refused: read as the
+  -- base case alone, a claim written over every k was proved of k = 0
+  -- (WI-20261012-KF2SD). The claim over every k is the inductive one.
+  rule initial_real(?leader_real, ?follower_real)
+    :- initial_pose(Leader, ?leader_real),
+       initial_pose(Follower, ?follower_real)
+
   -- =================================================================
   -- Concrete facts — application-specific values
   -- =================================================================
@@ -223,11 +235,15 @@ namespace anthill.examples.lf1.safety.common
                             control_period:      ?_,
                             sensor_period:       ?_)
 
+  -- Base case: the pose at step 0 is the launch pose — an
+  -- `initial_pose` fact, which the user asserts when wiring to a real
+  -- flight (initial geometry of the formation; the lf1 ones are below).
+  rule real_pose_at(0, ?drone, ?pose)
+    :- initial_pose(?drone, ?pose)
+
   -- Transition relation: pose at k+1 = pose at k + v·tc per axis.
   -- Stated in anthill source so the model is self-documenting; not
-  -- recursively discharged in the SMT proof. `real_pose_at(0, drone, p0)`
-  -- is the base case the user asserts as a fact when wiring to a
-  -- real flight (initial geometry of the formation).
+  -- recursively discharged in the SMT proof.
   rule real_pose_at(?k_next, ?drone, ?pose_next)
     :- real_pose_at(?k, ?drone, ?pose_prev),
        real_velocity_at(?k, ?drone, ?vx, ?vy, ?vz),
@@ -297,18 +313,26 @@ namespace anthill.examples.lf1.safety.common
   --
   -- The lf1 world file `multirotor_leader_follower1.wbt` puts the
   -- leader at origin and the follower at offset `(-4, 0, 0)` at
-  -- altitude 12 m. This gives a concrete `real_pose_at(0, ...)` for
-  -- both drones — without it, the recursive transition rule above
-  -- has no base case and `reachable_real` is groundless.
+  -- altitude 12 m. This gives a concrete `initial_pose` for both
+  -- drones, and through `real_pose_at`'s base clause a concrete
+  -- `real_pose_at(0, ...)` — without it, the recursive transition
+  -- rule above has no base case and `reachable_real` is groundless.
   --
   -- These facts make a SLD-side query like
   --   distance_at_step(0, ?d)
   -- actually evaluate to a concrete `?d ≈ 4.0` via the chain
   --   real_pose_at(0, Leader, ?lp), real_pose_at(0, Follower, ?fp),
   --   position_distance(?lp, ?fp, ?d).
-  -- The constraints `safety_no_collision_*` etc. become refutable
-  -- *for this specific initial geometry*; for a different starting
-  -- formation, these facts must change.
+  -- The constraints `safety_no_collision_*` etc. are refuted *for
+  -- this specific initial geometry* — they read `initial_pose`, by
+  -- `initial_real` above, and say nothing of a later step; for a
+  -- different starting formation, these facts must change.
+  --
+  -- A predicate of its own, and not `fact real_pose_at(0, …)` beside
+  -- the transition rule: a `by z3` proof reads a call by the one
+  -- clause that can answer it, and the transition's head — all
+  -- variables — answers every call of `real_pose_at`
+  -- (WI-20261012-KF2SD). `initial_pose(Leader, ?p)` has one fact.
   --
   -- Universal-over-initial-conditions safety remains the inductive
   -- claim discharged by reachability_band (in safety_gps.anthill).
@@ -325,14 +349,14 @@ namespace anthill.examples.lf1.safety.common
   -- to derive from), so its spawn geometry stays hand-planted here
   -- until its own body-derivation lands (WI-679, tier 3 for it).
 
-  fact real_pose_at(0, Leader, Pose(
+  fact initial_pose(Leader, Pose(
     position: Vec3(x: 0.0, y: 0.0, z: 12.0),
     roll:     0.0,
     pitch:    0.0,
     yaw:      0.0
   ))
 
-  fact real_pose_at(0, Follower, Pose(
+  fact initial_pose(Follower, Pose(
     position: Vec3(x: -4.0, y: 0.0, z: 12.0),
     roll:     0.0,
     pitch:    0.0,
@@ -514,11 +538,11 @@ namespace anthill.examples.lf1.safety.common
   -- structurally over Pose. The split:
   --
   -- real_pose_at(?k, ?drone, ?pose)         — DEFINED operationally
-  --   * Base case:    `fact real_pose_at(0, ?drone, ?initial)`
-  --                   — supplied per flight (initial geometry of
-  --                     formation; not pinned in this file because
+  --   * Base case:    `rule real_pose_at(0, drone, p0) :- initial_pose(drone, p0)`
+  --                   — the `initial_pose` facts are supplied per
+  --                     flight (initial geometry of the formation):
   --                     real_pose_at is a per-flight-instance trace,
-  --                     not a global axiom).
+  --                     not a global axiom.
   --   * Step case:    `rule real_pose_at(k+1, drone, p_next) :- ...`
   --                   — the transition rule above; binds p_next to
   --                     p_prev + v·tc per axis, with v constrained

@@ -1,0 +1,456 @@
+# A call several clauses can answer (WI-20261012-KF2SD) — the count the decision was made on, the decisions,
+# what is refused and what is read, what fails when a part is backed out, which documents moved, what
+# /code-review changed, what was found and is not of this change, and the gate. 2026-10-13.
+# Section 1 is the tree before anything was changed; section 2 is the decisions; sections 3–5 are the tree as
+# delivered.
+#
+# Tree:    main at 70fffe8f (WI-20261012-CDHSQ as committed), and this change on it. The gate (section 8) is of
+#          that tree MERGED with origin/main (8cbf2613, which brings WI-20261012-80259), this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. z3 4.16.0.
+# Every `anthill prove` below is `--no-cache`, the dev build. BEFORE is a build of 70fffe8f in a worktree of its
+# own (`git worktree add --detach`, its own target directory), so a verdict "before" and one "as delivered" are
+# two binaries run on one file, and no source was stashed to get either.
+
+== 1. the count (before anything was decided) ==
+# THE DEFECT, as filed and reproduced on 70fffe8f:
+#     rule related(?a, ?b) :- gte(?a, ?b)
+#     rule related(?a, ?b) :- lte(?a, ?b)
+#     rule lemma: gte(?a, ?b) :- related(?a, ?b)        proof lemma by z3 end
+#   `✓ lemma: proved (z3: unsat)`; and `fact start(5.0)`, `fact start(-1.0)`,
+#   `rule lemma: gte(?d, 0.0) :- start(?d)` — `✓ proved`.
+#
+# THE INSTRUMENT. A temporary one in `anthill-smt-gen`'s `process_body_goal` (taken out before anything else was
+# changed; the tree compared with a saved diff, byte for byte) wrote a line for every call of a rule's predicate
+# a proved body met — the proof, the rule it stood in when read inlined, which of the readings it took, the
+# call's arguments, the predicate's clauses and their heads, and how many of those clauses could answer the
+# call — to a file named by an environment variable. "Could answer": of the call's arity, and no argument of
+# the call ruled out by the head's (a number against another, a constructor against another; a variable either
+# side rules nothing out). Run under it: `anthill prove -v --no-cache examples/webots-modelling/lf1`,
+# `scripts/test.sh -p anthill-smt-gen`, `scripts/test.sh -p anthill-cli`.
+#
+#                              calls met   predicates   skipped    read: one-argument   read: fact or body
+#   lf1                           44          13           2             19                   23
+#   the emitter crate's suite     71          24           5             16                   50
+#   the CLI suite                114          39          52             15                   47
+#
+#   PREDICATES OF MORE THAN ONE CLAUSE that a call was read of, and how many of them can answer each call:
+#   lf1                         real_pose_at/3 — 2 facts (`(0, Leader, Pose(…))`, `(0, Follower, Pose(…))`) and 1 clause
+#                               with a body, the step, its head `(?k_next, ?drone, ?pose_next)` all variables.
+#                               6 calls, in 4 proofs, EACH ANSWERED BY 2: the drone's fact and the step.
+#                                 safety_min_distance, safety_max_distance            real_pose_at(0, Leader, ?l), in
+#                                                                                     `reachable_real_formation`
+#                                 safety_no_collision_transponder,
+#                                 safety_bounded_excursion_transponder                real_pose_at(?k, Leader, ?l) and
+#                                                                                     real_pose_at(?k, Follower, ?f),
+#                                                                                     in `reachable_real`
+#   the emitter crate's suite   real_pose_at/3 of two fixtures (`cross_namespace_inline_test`,
+#                               `qfnra_field_access_test`) — 2 facts each and no step. 10 calls, each answered by
+#                               1: the drone named selects the fact.
+#   the CLI suite               lf1's six again (a row runs lf1's proofs); nothing else that is read.
+#   A CLAUSE OF ANOTHER ARITY: in no predicate lf1 or the emitter crate's suite reads. In the CLI suite,
+#     CDHSQ's fixtures only: `span/2` beside `span/3`, both calls skipped (a structured proof's conclusion) and
+#     neither read.
+#
+# SO THE ONE PREDICATE OF SEVERAL CLAUSES ANYTHING READ AS ONE IS lf1's `real_pose_at`, and the ticket's guess
+# about it was half right: a ground drone does select ONE FACT, and the step's head — all variables — answers
+# every call beside it. What the four proofs proved is the claim at step 0, the launch geometry: the two of the
+# GPS variant are written at `0`; the two of the transponder variant are written over `?k`, which the fact's
+# slot bound to 0. They are lf1's four top-level safety proofs. lf1's own PUNCHLIST calls them the "per-flight
+# refutation … at the lf1 launch geometry"; the rules' comments said "distance never falls below d_min".
+#
+# WHAT EACH OPTION OF THE TICKET DOES TO THOSE FOUR, said to the user with the count:
+#   (a) refused       the four are errors until lf1 gives the base case a predicate of its own
+#   (b) disjunction   the step calls `real_pose_at` again, and is not unfolded: a refusal is still needed there
+#   (c) the relation  `real_pose_at(?k, Leader, ?l)` has a constructor and an entity for arguments, which have
+#                     no SMT form (WI-20261013-PR8SP): the call cannot be stated
+#
+# z3 ON A HAND-WRITTEN DISJUNCTION (for WI-20261013-1KF32's control), `commanded_speed(?range, ?v)` by cases,
+#     (assert (or (and (< range 5.0) (= v 0.0)) (and (>= range 5.0) (= v 2.0))))
+#   with `(assert (not (<= v 2.0)))`   unsat
+#   with `(assert (not (<= v 0.0)))`   sat, range = 5.0, v = 2.0
+
+== 2. the decisions (user, 2026-10-13) ==
+#   ON SECTION 1 — what a call that more than one clause can answer is, in a `by z3` proof's body. Offered, with
+#   (a) recommended: (a) REFUSED; (b) the disjunction of the clauses' readings; (c) the uninterpreted relation,
+#   nothing read of it.
+#   DECIDED: REFUSED NOW, and a ticket with a motivating example for the disjunction — WI-20261013-1KF32, filed
+#   with a definition by cases (`commanded_speed`) and a table of facts (`speed_max`), each measured.
+#   lf1's FOUR PROOFS. Offered: rewrite lf1 so the launch geometry is a predicate of facts alone and the four read
+#   it; or leave lf1 and list the four as refused. DECIDED: REWRITE.
+#   WI-20261012-CDHSQ, delivered and uncommitted when this began: DECIDED committed first (a4c80b1c, 70fffe8f),
+#   so this change's diff, review and back-outs are its own.
+#   AND, asked while the count ran: a ticket for a nullary constructor as a constant of its sort in the SMT
+#   mapping, "a problem for discharge" — WI-20261013-PR8SP, filed with what a `by z3` proof does with one today.
+#   AFTER THE REVIEW (section 6): "commit and push after successful tests". Two things the review raised were put
+#   to the user and are NOT decided — section 7, (ii) and (iii) — and are built the sound way meanwhile: refused.
+#   TAKEN AS FOLLOWING, and said with the result: `WITNESS_FORMAT_VERSION` 4 → 5, by CDHSQ's decision that a
+#   soundness fix of the emitter moves it; and the same refusal in the two other places the review found the
+#   same reading (the rule being proved; an entity premise).
+
+== 3. what is refused, and what is read ==
+# THE RULE (`Emitter::answering_clause`). A call of a rule's predicate in a body that is READ is read by the one
+# clause that can answer it: of the call's arity, its head ruled out by no argument of the call. A number against
+# another number and a constructor against another constructor rule a clause out. The call's own variable counts
+# as what the frame being read has bound it to — a number, a construction, a fact's constructor slot it met —
+# and a free variable, a variable inside a construction, a computed term and a name that is no constructor rule
+# nothing out. One clause: read, as it was. Several: refused, naming the predicate, how many of its clauses can
+# answer, and the rule the call stands in when that is read inlined. None: refused.
+# The same rule in the two other readings /code-review found (section 6): THE RULE BEING PROVED is one clause,
+# and AN ENTITY PREMISE reads an entity of one fact.
+#
+# `anthill prove --no-cache`, each file on both binaries. BEFORE is 70fffe8f. "REFUSED" is an `error:` naming the
+# proof, and no document.
+#   the proof (the files are the rows' fixtures under other names)   BEFORE   AS DELIVERED
+#
+#   THE TICKET'S TWO
+#   gte(?a, ?b) :- related(?a, ?b); related by gte, and by lte        proved   REFUSED: 2 can answer (0 facts, 2 bodies)
+#   gte(?d, 0.0) :- start(?d); fact start(5.0), fact start(-1.0)      proved   REFUSED: 2 can answer (2 facts, 0 bodies)
+#
+#   A FACT BESIDE A CLAUSE WITH A BODY
+#   lte(?d, 5.0) :- cap(?d); fact cap(100.0), cap(?d) :- ?d = 2+3     proved   REFUSED: 2 can answer (1 fact, 1 body)
+#   lte(?x, 1.0) :- at(0, ?x); fact at(0, 1.0) and a step whose head
+#     is all variables (lf1's `real_pose_at` in small)                proved   REFUSED: 2 can answer (1 fact, 1 body)
+#
+#   WHAT SELECTS (facts speed_of(Leader, 5.0), speed_of(Follower, 50.0); gain(some(?x), ?r), gain(none, ?r);
+#   mode(0, ?r), mode(1, ?r); fact at(0, 1.0), fact at(1, 2.0))
+#   lte(?v, 10.0) :- speed_of(Leader, ?v)                             proved   proved
+#   gte(?v, 10.0) :- speed_of(Follower, ?v)                           proved   proved   (the SECOND fact, both times)
+#   lte(?v, 10.0) :- speed_of(?who, ?v)                               proved   REFUSED: 2 can answer (2 facts)
+#   gte(?r, 1.0) :- gain(some(0.0), ?r)                               proved   proved
+#   lte(?r, 0.0) :- gain(none, ?r)                                    error "WI-687: … expects a concrete `some`"   proved
+#   gte(?r, 3.0) :- ?o = some(2.0), gain(?o, ?r)                      proved   proved
+#   gte(?r, 0.0) :- gain(?o, ?r)                                      error (the same)   REFUSED: 2 can answer (2 bodies)
+#   lte(?r, 1.0) :- mode(0, ?r)                                       error "head arg must be a De Bruijn var or a
+#                                                                     constructor"   proved
+#   gte(?r, 2.0) :- ?k = 1, mode(?k, ?r)                              error (the same)   proved
+#   gte(?r, 1.0) :- mode(?k, ?r)                                      error (the same)   REFUSED: 2 can answer (2 bodies)
+#   gte(?x, 2.0) :- ?k = 1, at(?k, ?x)                                COUNTEREXAMPLE   proved   (the first fact was read
+#                                                                     and `?k` rebound: `(assert (not (>= 1.0 2.0)))`)
+#   lte(?v, 10.0) :- lead(?who), speed_of(?who, ?v); fact lead(Follower)   proved   COUNTEREXAMPLE   (it is false: 50)
+#
+#   ANOTHER ARITY (span(?a, ?b) beside span(?a, ?b, ?c))
+#   gte(?b, ?a) :- span(?a, ?b)                                       proved   proved
+#   gte(?c, ?a) :- span(?a, ?b, ?c)                                   error "rule call arity mismatch … expected 2,
+#                                                                     got 3"   proved
+#
+#   ANSWERED, AND NOT READ
+#   gte(?v, 0.0) :- tab(7.0, ?v); facts tab(1.0, 2.0), tab(3.0, 4.0)  error "unhandled body goal functor"   REFUSED:
+#                                                                     no clause can answer
+#   gte(?v, 0.0) :- row(?x + 1.0, ?v); fact row(5.0, 1.0)             error (the same)   REFUSED: a term against a
+#                                                                     fact's slot
+#   lte(?v, 5.0) :- dflt(Leader, ?v); fact dflt(?who, 5.0)            error (the same)   proved
+#   gte(?v, 0.0) :- named(?n, ?v); fact named("a", 1.0)               proved   REFUSED: a slot no variable is bound to
+#
+#   IN AN INLINED RULE, AND NOT READ AT ALL
+#   gte(?a, ?b) :- wrapper(?a, ?b); wrapper calls `related` of two    proved   REFUSED: 2 can answer, "in the body of
+#                                                                     `…wrapper` (read inlined)"
+#   gte(?x, ?y + 1.0) :- related(?x, ?y), using a lemma of `related`  proved   REFUSED: 2 can answer   (the proof READS
+#                                                                     its call beside stating it: section 7, (iv))
+#   a structured proof whose conclusion skips `related` of two        proved   proved
+#
+#   THE RULE BEING PROVED
+#   rule both: gte(?x, 0.0), gte(?x, 5.0) :- gte(?x, 1.0)             proved   REFUSED: the rule is 2 clauses
+#   rule bad: gte(?y, 5.0) :- gte(?y, 1.0), using both                proved   error: its cite did not prove
+#   rule band: gte(?x, 5.0), lte(?x, 10.0) :- gte(?x, 5.0), lte(?x, 10.0)   proved   REFUSED: the rule is 2 clauses
+#     (true, and proved of its first head: what a refusal costs until each head is read — section 7, (ii))
+#   rule viol(?w) :- gte(?w, 1.0), lte(?w, 0.0) beside
+#     rule viol(?w) :- gte(?w, 0.0)                                   proved   REFUSED: the rule is 2 clauses
+#   rule legacy(?m) :- Cfg(scale: ?s), gt(?s, 99), eq(?m, ?s), in
+#     `namespace … .legacy`, fact Cfg(scale: 5)                       COUNTEREXAMPLE   proved   (section 5)
+#
+#   AN ENTITY PREMISE
+#   gte(?c, 0.0) :- Limit(cap: ?c); facts Limit(cap: 5.0), (cap: -1.0)      proved   REFUSED: an entity of several facts
+#   gte(?c, 0.0) :- Mode(kind: 2.0, cap2: ?c); Mode(1.0, 5.0), Mode(2.0, -1.0)   proved   REFUSED (the same)
+#   lte(?t, 3.0) :- One(top: ?t); fact One(top: 3.0)                  proved   proved
+#
+#   A LEMMA STATED OF A PREDICATE (rule safe(?x, ?m) :- gte(?x, ?m); rule safe_mono: safe(?y, ?m) :- safe(?x, ?m),
+#   gte(?y, ?x))
+#   gte(?x, 0.0) :- safe(?x, 0.0)                                     proved   REFUSED: 2 can answer (2 bodies)
+#   safe_mono itself, `by z3`                                         COUNTEREXAMPLE   REFUSED (the same)
+#
+#   WI-20261013-1KF32's (a definition by cases; a table)
+#   lte(?v, 2.0) :- commanded_speed(?range, ?v)   (true of both cases)       proved   REFUSED: 2 can answer (2 bodies)
+#   lte(?v, 0.0) :- commanded_speed(?range, ?v)   (false at range = 6)       proved   REFUSED (the same)
+#   lte(?v, 10.0) :- speed_max(?who, ?v)          (true of both rows)        proved   REFUSED: 2 can answer (2 facts)
+#   lte(?v, 8.0) :- speed_max(?who, ?v)           (false of the Follower's)  proved   REFUSED (the same)
+#
+#   WI-20261013-PR8SP's (`sort Drone`; the two `speed_of` facts)
+#   lte(?v, 10.0) :- ?who = Follower, speed_of(?who, ?v)   (false: 50)       proved   REFUSED: 2 can answer (2 facts)
+#   lte(?v, 10.0) :- ?who = Leader, speed_of(?who, ?v)     (true)            proved   REFUSED (the same)
+#     — the ticket's false verdict is a refusal now, and its true one with it: an equation with a constructor
+#     binds the variable to nothing a fact is selected by. A FACT's constructor slot does (`lead(?who)` above).
+#
+# lf1: `summary: 14 proved, 0 failed, 0 skipped, 14 total`, before and as delivered. With the emitter as delivered
+# and lf1 AS IT WAS: `10 proved, 4 failed` — `safety_min_distance`, `safety_max_distance`,
+# `safety_no_collision_transponder`, `safety_bounded_excursion_transponder`, each "the call of
+# `….real_pose_at/3`, in the body of `….reachable_real_formation` [or `reachable_real`] (read inlined), can be
+# answered by 2 clauses of the predicate (1 fact(s), 1 with a body)".
+#
+# lf1 AS REWRITTEN (`safety_common.anthill`, `safety_gps.anthill`, `safety_transponder.anthill`, PUNCHLIST.md):
+#   fact initial_pose(Leader, Pose(…))    fact initial_pose(Follower, Pose(…))          were `fact real_pose_at(0, …)`
+#   rule real_pose_at(0, ?drone, ?pose) :- initial_pose(?drone, ?pose)                  the recursion's base clause
+#   rule initial_real(?l, ?f) :- initial_pose(Leader, ?l), initial_pose(Follower, ?f)   the pair at step 0
+#   `reachable_real_formation` reads `initial_pose(Leader, ?l)`; the two transponder rules read `initial_real`
+#   where they read `reachable_real`. `reachable_real` (some k) is the model's, and no proof `by z3` reads it.
+#   The four rules keep their names; their comments say they are of the launch geometry, step 0.
+#
+# scaland (`SmtGen.scala`): its emitter reads a rule call in one way, the one-argument form, by `find(hasBody)`.
+# The same refusal there, over the clauses of one argument (a fact too); a fact that answers alone is the tail's
+# refusal, as a predicate of facts only is in that emitter, which binds no call to a fact.
+
+== 4. what fails when a part is backed out (the dev profile; each on the tree as delivered, then restored) ==
+# Over the 6 rows of the emitter crate's `wi_kf2sd_several_clauses_test` (E) and the 17 of `cli_tests`' (P):
+#   cargo test -p anthill-smt-gen --test integration -- wi_kf2sd
+#   cargo test -p anthill-cli --test cli_tests -- wi_kf2sd
+# Each back-out is one edit of `anthill-smt-gen/src/lib.rs` — or lf1's three files put back as 70fffe8f has them
+# (h), or that source whole as 70fffe8f has it (z) — applied by a script and taken out again; after each run the
+# four files were compared with a saved copy, byte for byte. (a)–(u) were run over 22 rows, before P17 was
+# written; the control, (h), (v) and (z) over the 23.
+#
+#   E: `anthill-smt-gen/tests/wi_kf2sd_several_clauses_test.rs` (6)
+#     E1   a_call_several_clauses_can_answer_is_an_error_of_the_entry_point
+#     E2   a_call_read_by_a_fact_depends_on_the_predicate
+#     E3   a_lift_states_a_predicate_of_several_clauses_and_reads_none
+#     E4   a_call_at_an_arity_no_clause_has_is_a_loud_error
+#     E5   a_positional_call_of_a_head_written_by_name_is_a_loud_error
+#     E6   an_obligation_on_a_rule_of_several_clauses_is_refused
+#   P: `anthill-cli/tests/include/wi_kf2sd_several_clauses_test.rs` (17)
+#     P1   a_call_several_clauses_can_answer_is_refused
+#     P2   a_fact_beside_a_clause_with_a_body_is_several
+#     P3   a_ground_argument_selects_one_fact_and_a_variable_does_not
+#     P4   a_constructor_in_the_head_selects_one_clause_with_a_body
+#     P5   a_clause_of_another_arity_answers_no_call
+#     P6   a_call_that_is_answered_and_cannot_be_read_is_refused
+#     P7   a_refused_call_in_an_inlined_rule_names_that_rule
+#     P8   a_call_one_clause_answers_is_read_as_it_was
+#     P9   lf1s_proofs_read_the_launch_geometry_and_not_the_recursion
+#     P10  the_verdicts_of_what_is_read_are_as_they_were
+#     P11  a_proof_of_a_rule_of_several_clauses_is_refused
+#     P12  an_entity_premise_over_several_facts_is_refused
+#     P13  a_clause_is_selected_by_the_frame_being_read_and_no_other
+#     P14  a_number_selects_one_clause_written_or_bound
+#     P15  a_facts_slot_is_read_or_the_call_is_refused
+#     P16  a_lemma_stated_of_a_predicate_is_one_of_its_clauses
+#     P17  a_rule_named_as_its_namespace_is_proved_as_the_rule
+#
+#   AS DELIVERED: emitter 6 pass, cli 17 pass.
+#   (a) several clauses that can answer: the first is read (a fact before a clause with a body)
+#       emitter  fails E1
+#       cli      fails P1, P2, P3, P4, P7, P10, P13, P14, P16
+#   (b) a clause with a body of another arity, met before one of the call's, refuses the call
+#       emitter  fails E4
+#       cli      fails P5
+#   (c) a clause with a body is ruled out by nothing: only a fact's slots are compared
+#       emitter  all pass
+#       cli      fails P4, P13, P14
+#   (d) the call's variable is not looked up: bound to a construction or a number, it rules nothing out
+#       emitter  all pass
+#       cli      fails P4, P13, P14, P15
+#   (e) a call no clause can answer is the caller's error (`unhandled body goal functor`)
+#       emitter  all pass
+#       cli      fails P6
+#   (f) the refusal does not name the rule the call stands in
+#       emitter  all pass
+#       cli      fails P7, P13
+#   (g) a fact's slot met by a term over variables is passed over, and the fact read
+#       emitter  all pass
+#       cli      fails P6
+#   (h) lf1 as it was: `fact real_pose_at(0, …)` beside the step, the four proofs through it
+#       emitter  all pass
+#       cli      fails P9, P10
+#   (j) no clause of the call's arity is the caller's error
+#       emitter  fails E4
+#       cli      all pass
+#   (k) a head written by name that answers alone is read by position
+#       emitter  fails E5
+#       cli      all pass
+#   (l) the rule being proved: of several clauses, the first is read
+#       emitter  fails E6
+#       cli      fails P11
+#   (m) an entity premise: of several facts, the first is read
+#       emitter  all pass
+#       cli      fails P12
+#   (n) a rule read by the one-argument form keeps its caller's entities
+#       emitter  all pass
+#       cli      fails P13
+#   (o) a variable inside a construction is looked up in the frame being read
+#       emitter  all pass
+#       cli      fails P13
+#   (p) a call's variable defined as a number is not known to be it
+#       emitter  all pass
+#       cli      fails P14
+#   (q) a number in the head of a clause with a body is not read
+#       emitter  all pass
+#       cli      fails P14
+#   (r) a variable in a fact's slot is compared with the call's argument
+#       emitter  all pass
+#       cli      fails P15
+#   (s) a nullary constructor in a fact's slot is passed over, the call's variable bound to nothing
+#       emitter  all pass
+#       cli      fails P15
+#   (t) a fact's slot a variable is not bound to is passed over ("skip for v0")
+#       emitter  all pass
+#       cli      fails P15
+#   (u) the refusal of several does not say what a labeled rule of the predicate is
+#       emitter  all pass
+#       cli      fails P16
+#   (v) the rule a proof is of is every clause under its name, a namespace's declaration too
+#       emitter  all pass
+#       cli      fails P17
+#   (z) the emitter as it was before the change (the first fact that agrees, else the first clause with a body)
+#       emitter  fails E1, E4, E5, E6
+#       cli      fails P1, P2, P3, P4, P5, P6, P7, P10, P11, P12, P13, P14, P15, P16, P17
+#
+#   PASS EITHER WAY, by design, each saying so at its site: E2 (what a call one clause answers depends on and is
+#   read as), E3 (a lift reads no call, and is refused none), P8 (the documents the change must not move), and P9
+#   under (z) — it holds lf1's rewrite, and fails under (h) whatever the emitter.
+#   (d) is the lookup that makes a bound variable select; its two halves are (p), a number, and — with P4's
+#   `bound_some` and P15's `led` — a construction. (n) and (o) are the two frame leaks of section 6, (3) and (4):
+#   backed out, P13's `claim0` and `claim_a` each have a document where they are refused.
+#
+# scaland, `sbt "anthillSmtGen/testOnly anthill.smtgen.SeveralClausesTest"`, 5 rows; `SmtGen.scala` as 70fffe8f
+# has it: 3 FAIL — the two refusals (a document, the first clause's `(+ (+ 2.0 3.0) 1.0)`), and the fact that
+# answers alone ("v0: called rule '…alone' must have exactly one pos arg in head", the clause of two arguments
+# taken for the call of one) — and 2 pass either way by design (one clause; another arity).
+
+== 5. which documents moved ==
+# A second temporary instrument (taken out before the gate; `lib.rs` compared with a saved copy) wrote EVERY
+# document the emitter returned — a satisfiability check, an obligation, a lift — and every refusal in its place,
+# whole, to a file. The SAME edit was applied to a worktree of 70fffe8f and to the tree as delivered, and both
+# ran `anthill prove -v --no-cache examples/webots-modelling/lf1`, `scripts/test.sh -p anthill-smt-gen` and
+# `scripts/test.sh -p anthill-cli`. Compared by kind, rule and text:
+#                                before: distinct                          there again, to the byte   moved   gone
+#   lf1                           16  (14 checks, 2 lifts)                  16                         0       0
+#   the emitter crate's suite     66  (40 checks, 6 obligations, 8 lifts,
+#                                      12 refusals)                         66                         0       0
+#   the CLI suite                178  (129 checks, 34 lifts, 15 refusals)  177                         1       0
+#   AFTER: the emitter crate's suite has 7 more, each of a `test.kf2sd.*` rule; the CLI suite 42 — 40 of
+#   `test.kf2sd.*`, and 2 of lf1 (`base_upper_violation`, `decrease_violation_transponder`: sub-queries of the
+#   induction and of the ranking, which a row of this change reaches by proving lf1 and no row did by a dry run).
+#   lf1's own run: its 16 documents are the 16, though four proofs read other rules — `prove -v --dry-run` differs
+#   in four `deps:` lines and nothing else (`initial_pose`, `initial_real` where `real_pose_at`,
+#   `reachable_real` were); stdout sha1 906df605… before, which is the hash ZZ7PH's and CDHSQ's files have.
+#
+# THE ONE THAT MOVED, `test.outcome.legacy` (`prove_outcome_test`, `no_outcome_flags_keeps_legacy_smt`):
+#     namespace test.outcome.legacy … rule legacy(?marker) :- Cfg(scale: ?s), gt(?s, 99), eq(?marker, ?s)
+#     proof legacy by z3(logic: "LIA") end
+#   BEFORE: `(set-logic LIA)`, `(check-sat)`, and nothing between — the document of NO body. The rule has the
+#   name of its namespace's last segment, its head's functor is the namespace's symbol, and the namespace's own
+#   clause is under that name, first: the proof was of the declaration. The row asserts which options the
+#   document lacks, so it passed. Run on a copy with a second rule of the same body under another name:
+#   `✗ …legacy: COUNTEREXAMPLE (z3: sat)` and `✓ …legacy.other: proved (z3: unsat)`.
+#   ON THE FIRST CUT OF THE REVIEW'S FIXES it was "the rule 'test.outcome.legacy' is 2 clauses" — which is how it
+#   was seen. AS DELIVERED: the rule's document, `(define-fun scale () Real 5.0)` … `(assert (> scale 99.0))`,
+#   and `✓ proved`: a proof's rule is the clauses its name STATES — a rule's, a fact's, a constraint's
+#   (`stated_clauses`; P17, back-out v). The lift reads the same clauses.
+
+== 6. what /code-review changed ==
+# THE FIRST CUT selected the clause that answers a call and refused several, in the three readings the ticket
+# names. Fourteen findings, eight of them run by the reviewer on the built binary. What was done for each; a
+# verdict "before" is this file's own run on 70fffe8f.
+#
+# (1) THE RULE BEING PROVED WAS STILL ITS FIRST CLAUSE (`collect_rule`: `.next()`), in the proof and in an
+#     obligation. `both`, `bad`, `viol` of section 3, all proved before. DONE: refused where the name states more
+#     than one clause (P11, E6; back-out l). NOT BUILT: the conjunction of a rule's heads — section 7, (ii).
+# (2) AN ENTITY PREMISE WAS STILL ITS FIRST FACT (`collect_facts_for_referenced_entities`: "for v0 we expect at
+#     most one fact per entity", a comment, and a `break`). `Limit`, `Mode` of section 3, proved before. DONE:
+#     refused where the entity has more than one fact with a numeric field (P12; back-out m).
+# (3) A RULE READ BY THE ONE-ARGUMENT FORM KEPT ITS CALLER'S ENTITIES (`translate_called_rule` swapped the sorts
+#     and not `entity_bindings`), and the first cut selected a clause by an entity binding: `bound(?d) :-
+#     gain(?o, ?d)` called beside an unrelated `?s = some(2.0)` read `gain` by its `some` clause for the free
+#     `?o`, and `gte(?v, 1.0) :- ?s = some(2.0), bound(?v)` PROVED — `bound(0.0)` holds by `gain(none, 0.0)`.
+#     Introduced by the first cut (before: the WI-687 mismatch error). DONE: the callee's entities are its own,
+#     as an inlined rule's are (P13; back-out n).
+# (4) A VARIABLE INSIDE A BOUND CONSTRUCTION WAS LOOKED UP IN THE FRAME BEING READ, and a construction handed
+#     across an inline boundary keeps its caller's variables: `wrap(?o, ?r) :- ?z = some(1.0), pick(?o, ?r)`
+#     called `wrap(some(?y), ?r)` took the caller's free `?y` for `wrap`'s `?z`, and a claim false at `?y = none`
+#     PROVED. Introduced by the first cut. DONE: only the call's own variable is looked up; a variable inside a
+#     construction rules nothing out (P13; back-out o). The unclosed construction itself is BR7P3's.
+# (5) `WITNESS_FORMAT_VERSION` STAYED 4. DONE: 5, by CDHSQ's decision (section 2).
+# (6) EVERY CLAUSE UNDER THE FUNCTOR COUNTS, A LABELED LEMMA TOO, so one rule stated with the predicate for its
+#     head makes every reading of the predicate "several" (`safe_weaken`; `uses` proved before). KEPT, and said
+#     in the refusal: such a rule IS a clause of the predicate — the resolver answers by it — and one that is
+#     trusted adds what the definition beside it does not say (P16; back-out u). Put to the user: section 7, (iii).
+# (7) "SO THE BODY NEVER HOLDS" WAS FALSE OF A SPECIALIZATION. WI-687 synthesizes one clause for an operation's
+#     functor, for the argument shape of whichever proof ran first; a later proof at another shape was told the
+#     body never holds (reviewer's run: `pick` at `some(?x)`, then at `none`). DONE: the refusal says both — where
+#     the clauses are the predicate the body never holds; a clause that is an operation's body specialized to
+#     another call's arguments does not apply. That one specialization serves a functor is WI-687's, as it was
+#     (before: "the specialized arm does not apply to this call").
+# (8) A NUMBER SELECTED AND WAS NOT READ: `mode(0, ?r)` over `rule mode(0, ?r) :- …`, `rule mode(1, ?r) :- …`
+#     chose its clause and then "head arg must be a De Bruijn var or a constructor"; and a variable defined as a
+#     number selected nothing where one bound to a construction did. DONE: a number in a head is read where the
+#     call's argument is known to be it, and said where it is not; a call's variable is known by what the frame
+#     defined it as, a number too (P14; back-outs p, q).
+# (9) THE FACT READER KEPT TWO SILENT SKIPS AND BLAMED THE WRONG SIDE: `fact dflt(?who, 5.0)` called
+#     `dflt(Leader, ?v)` was refused as "argument 1 is a term the fact's slot is not compared with". DONE: a
+#     variable in a fact's slot binds nothing (one named twice is refused); a nullary constructor in a slot binds
+#     the call's variable, as a construction; a string, a boolean, a name that is no constructor are refused
+#     (P15; back-outs r, s, t). The second of these is the half of PR8SP that needs no SMT term.
+# (10) THE ROWS POINTED AT A SECTION 4 THIS FILE DID NOT HAVE YET: it has it, and each test file says at its head
+#     which of its rows fail with the change backed out and which pass either way.
+# (11) scaland HANDED A FACT TO `translateCalledRule` ("has no defining clauses") where it answered alone. DONE:
+#     left to the tail's refusal, with a row.
+# (12) THE REMOVED FUNCTIONS' NAMES IN COMMENTS: `bind_head_arg`'s own (which said a clause is taken "regardless
+#     of the call's shape"), `wi687_match_headed_test`, `body_specialize.rs` (four), the design note, and
+#     PR8SP's text. DONE. The measurement files of other tickets say what was there when they were written.
+# (13) SELECTION AND BINDING ARE TWO WALKS of a head against a call, which disagree where a clause is admitted
+#     and then cannot be read. PARTLY: the constructor-or-entity test and the alignment of fields by short name
+#     are one each (`is_construction`, `field_of`), and what the call's argument is known to be is asked in one
+#     place by both (`known_argument`). NOT DONE: one matcher that answers ruled-out / bound / cannot-read —
+#     `bind_head_arg` is WI-687's reading, 150 lines, and a branch's own bindings are what 1KF32 needs of it.
+# (14) A HEAD WAS MATERIALIZED FOR EVERY CLAUSE BEFORE ITS ARITY WAS ASKED, and two tests of "has this functor a
+#     clause" built every clause to count them. DONE: the arity off the term first; the index asked directly.
+
+== 7. found, and not of this change ==
+# Each was run on 70fffe8f and on the tree as delivered.
+# FILED, with the user's word: WI-20261013-PR8SP (a nullary constructor is no constant of its sort) and
+# WI-20261013-1KF32 (the disjunction). NOT FILED — put to the user, no word yet: (i), (ii), (iii).
+#
+# (i) A SECOND DEFINITION OF A BOUND VARIABLE REBINDS IT, and the first is dropped. The same answer on both trees:
+#       rule twice:   lte(?d, 3.0) :- ?d = 3.0, ?d = 5.0                 COUNTEREXAMPLE, `(assert (not (<= 5.0 3.0)))`
+#       rule through: lte(?d, 3.0) :- ?d = 3.0, five(?d); five(?r) :- ?r = 5.0     COUNTEREXAMPLE, the same document
+#       rule pinned:  gte(?x, 4.0) :- ?d = ?x + 1.0, limit(?d); fact limit(5.0)    COUNTEREXAMPLE, `(not (>= var_1 4.0))`
+#     Each body is unsatisfiable or pins its variable, and the rule holds. The loss is of an `unsat`: a hypothesis
+#     dropped, never one added. (A fourth, `lte(?d, 3.0) :- ?d = 3.0, limit(?d)`, was a COUNTEREXAMPLE and is
+#     "can be answered by no clause" as delivered: a variable defined as a number rules the fact out.)
+# (ii) A RULE OF SEVERAL HEADS CANNOT BE PROVED `by z3` — refused here, where it was proved of its first head.
+#     What is owed is `(assert (not (and H1 … Hn)))` (proposal 032, "Z3 backend"). The loader makes a clause for
+#     each head, and each numbers its variables by its own head first: `gte(?x, 0.0), gte(?y, 0.0) :- gte(?x,
+#     1.0), gte(?y, 2.0)` is `?x` = `var_1`, `?y` = `var_0` in the first clause and the other way in the second
+#     (their two lifts, run here). So one clause's head is not written in another's bindings, and reading each in
+#     a frame of its own is the unbuilt part. `band` of section 3 is true and refused.
+# (iii) IS A LABELED RULE WHOSE HEAD IS A PREDICATE ONE OF ITS CLAUSES, for a proof that reads the predicate?
+#     Built: yes (section 6, (6)) — sound, and a predicate with one lemma stated of it is then read by no proof.
+#     The other reading — a labeled rule is a lemma ABOUT the predicate, and the unlabeled clauses are it — is
+#     sound only where every such lemma is proved and none trusted, which the emitter is not told.
+# (iv) A PROOF THAT CITES A LEMMA OF A PREDICATE READS ITS OWN CALL OF IT TOO, beside stating it (CDHSQ). With a
+#     predicate of two clauses the reading is refused, though the lemma alone discharges the claim (`cited`,
+#     section 3). Stated and not read is 1KF32's "beside it".
+# (v) ONE SPECIALIZATION SERVES AN OPERATION'S FUNCTOR (WI-687), for whichever proof's argument shape came
+#     first: section 6, (7). The reviewer's run; said in the refusal, not changed.
+
+== 8. the gate ==
+#   scripts/test.sh                              the whole workspace, the shared base, anthill-core at opt-level 2
+#
+#   THE TREE GATED is not 70fffe8f with this change: origin/main had moved (WI-20261012-80259, four commits, in
+#   anthill-core's typer and its tests; no file of this change among its seventeen), so it was MERGED first
+#   (8cbf2613) with this change uncommitted on it, and the gate is of the merge with the change — the tree that
+#   was then committed and pushed. One gate, of what is pushed.
+#
+#   2026-10-13 11:02:27 – 11:29:29 (27 min 2 s), nothing else building. `CPU_Speed_Limit` 100 when it began and
+#   55 when it ended: the machine was throttled by the end, after an hour of back-outs and suites before it, so
+#   the time says nothing of the change.
+#     exit 0; 36 result lines, all ok; 9 538 passed, 0 failed, 14 ignored.   `wi_tests`: 6 930 passed, 4 ignored,
+#     207.69 s.   `cli_tests`: 273.   The emitter crate's `integration`: 71.
+#     OBSERVED by the controls: SHARED BASE; terms, a node where an alias is written.
+#   The gate of the tree before (lemma-premise-2026-10-12.txt §8) had 9 497: this ticket adds 23 rows — 6 to the
+#   emitter crate's `integration`, 17 to `cli_tests` — and the merge 18, to `wi_tests`.
+#   scaland: `sbt testFull`, 11:29:29 – 11:31:33 — 1 + 40 + 636 passed, 0 failed, exit 0 (35 → 40: the five rows
+#   of `SeveralClausesTest`).
+#   BEFORE THE GATE, on the tree as delivered and before the merge: the back-outs of section 4, the two document
+#   runs of section 5 (each a full `scripts/test.sh -p anthill-smt-gen` and `-p anthill-cli`, exit 0, under an
+#   instrument that is out), and a `sbt testFull` after the first cut. After it: this section and the work items.
+#   NOT RUN: the other two load recipes and the carrier control — no loader or typer source is changed by this
+#   ticket (one file of anthill-core is, in four comments), and the rows drive the binary and the emitter
+#   crate's own harness, which load as the product does whatever the switches say.

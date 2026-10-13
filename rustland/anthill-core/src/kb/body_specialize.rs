@@ -971,7 +971,7 @@ fn occ_as_ctor(
 /// parameter (or on one of its fields — the constructor heads are statically
 /// known) while keeping the derived rule generic in the leaf values: the SMT
 /// emitter binds each fresh leaf to the caller's actual sub-term when it inlines
-/// the synthesized rule (`try_inline_rule_call`'s structural head binding).
+/// the synthesized rule (`inline_rule_call`'s structural head binding).
 fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
     if let Some((name, pos, named)) = occ_as_ctor(kb, arg) {
         let pos2: Vec<_> = pos.iter().map(|p| skeletonize(kb, p)).collect();
@@ -1450,7 +1450,7 @@ impl KnowledgeBase {
     /// as-is.
     ///
     /// The head **functor is `op` itself** (labeled `<op_qn>__defeq`) so the
-    /// emitter's ordinary `rules_by_functor → try_inline_rule_call` path picks it
+    /// emitter's ordinary `rules_by_functor → inline_rule_call` path picks it
     /// up unchanged. Built over **fresh `Var::Global`s** — not the raw
     /// `Var::DeBruijn`s [`Self::op_defining_equations`] emits — because
     /// [`Self::assert_rule_debruijn_with_nodes`] derives the rule's arity from the
@@ -1573,10 +1573,10 @@ impl KnowledgeBase {
     ///
     /// The head is therefore **constructor-shaped** — `op(some(?0), ?1, ?result)`
     /// rather than `op(?0, ?1, ?result)` — so the SMT emitter's inline path binds
-    /// the head structurally against the call (`try_inline_rule_call` recurses a
+    /// the head structurally against the call (`inline_rule_call` recurses a
     /// constructor head arg against the caller's construction, WI-687). The head
     /// functor is `op` itself (label `<op_qn>__defeq`), so `rules_by_functor →
-    /// try_inline_rule_call` finds it exactly as for the generic path.
+    /// inline_rule_call` finds it exactly as for the generic path.
     ///
     /// Returns `None` — a loud decline — when `op` is not a pure runnable bodied
     /// op, the arity doesn't fit, or the body still doesn't reduce at these
