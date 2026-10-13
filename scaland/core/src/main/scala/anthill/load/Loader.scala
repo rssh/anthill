@@ -2553,7 +2553,7 @@ object Loader:
             fileSym, fileTerms, fact.term, fileTerms.spanOf(fact.term), errors) then
             // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact ns.tgt`
             // is the same reference `fact ns.tgt()` is.
-            val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors, atGoal = true)
+            val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors, atGoal = true, atHead = true)
             val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
             kb.assertFact(kbTerm, sortSort, scope)
 
@@ -2772,7 +2772,7 @@ object Loader:
       // One horn rule per head, sharing body (and shared var scope via vm).
       for headId <- positiveHeads do
         // WI-20260901-719FJ: a rule head is a LOGICAL SUBJECT.
-        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true)
+        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true, atHead = true)
         kb.assertRule(kbHead, kbBody, sortSort, scope)
 
   // ── Proof / Provides loaders (proposal 025 + 031) ────────────
@@ -2883,7 +2883,7 @@ object Loader:
       case ProvidesItem.FactI(f) =>
         // WI-20260901-719FJ: the same head position, inside a `provides … language
         // anthill` block.
-        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true)
+        val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true, atHead = true)
         kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope, errors)
@@ -3001,7 +3001,9 @@ object Loader:
       * DATA slot, which keeps the chain: a fact's argument and the pattern that searches
       * for it must build ONE term. It reaches a child only through a GOAL SLOT of this
       * node — see the `Term.Fn` arm. */
-    atGoal: Boolean = false
+    atGoal: Boolean = false,
+    // Rustland admits an unresolved qualified subject, but not its data slots.
+    atHead: Boolean = false
   ): TermId =
     // WI-1009: refuse a PARSE-TIME MARKER before anything below reads its functor name.
     // Asked of the term's PROVENANCE and not its spelling, which is the whole fix: four
@@ -3039,7 +3041,7 @@ object Loader:
     if atGoal then
       dottedCitationName(fileSym, fileTerms, termId) match
         case Some(name) =>
-          val sym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+          val sym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
           return
             if kb.symbols.isResolved(sym) then kb.alloc(Term.Ref(sym))
             else kb.alloc(Term.Ident(sym))
@@ -3080,7 +3082,7 @@ object Loader:
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
         val kbFunctor = mintedConnectiveSymbol(kb, fileTerms, name, termId)
-          .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId)))
+          .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead))
         // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
         // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
         // the predicate `ns.flag`, where a data reading would negate a `field_access`
@@ -3100,11 +3102,11 @@ object Loader:
         kb.alloc(Term.Fn(kbFunctor, kbPos, kbNamed))
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
         kb.alloc(Term.Ref(kbSym))
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
-        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId))
+        val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
         // WI-20260902-CZJ2N — PROMOTE A RESOLVED BARE NAME TO `Ref`, which is what
         // rustland's `convert_term_inner` has always done and scaland did not. Without
         // it the store still held two nullary forms: `tgtA` stayed `Term.Ident` while
@@ -3154,22 +3156,11 @@ object Loader:
 
   /** THE rung order a WRITTEN name resolves in, and the one place it is spelled.
     *
-    * The `byQualifiedName` rung fires only for a DOTTED spelling — a name with no dot
-    * is a SHORT name, and a short name is answered by scope, never by the global
-    * qualified-name table. Before pass 3 the distinction did not bite, because only
-    * dotted or namespaced declarations reached that table; pass 3 registers an
-    * UNQUALIFIED entry for every top-level rule head, and taking that rung for a short
-    * name then let a top-level `rule p(?y) :- q(?y)` capture an unrelated `sort S`'s
-    * own `rule p(?x) :- q(?x)` — S's law was indexed under the global `p` and `S.p`
-    * got no clauses at all, with no diagnostic.
-    *
-    * Callers differ ONLY in what they make of a miss, which is why the order lives here
-    * and in neither of them: [[resolveName]] interns and carries on, [[processRequires]]
-    * reports. WI-986 — `processRequires` used to ask `byQualifiedName` ALONE, the rung a
-    * short name is never answered by, and then render `in scope '<the declaring scope>'`:
-    * a claim about a search it had not performed, and false whenever the name really did
-    * resolve there (an imported spec). One order is one thing to keep true; rustland has
-    * had one (`resolve_name_in_kb`) all along.
+    * Short names resolve in scope. JRV1T: a dotted name resolves its first segment
+    * in that same scope, then reads each member below an enclosing-link boundary.
+    * This keeps imported aliases and lexical shadowing on the path's head, while
+    * preventing a missing member from being supplied by the owner's container.
+    * A contested segment ends the path rather than falling back to a root lookup.
     *
     * AN ABSOLUTE PATH (`..a.b.c`) HAS ONE RUNG AND NO SCOPE: the symbol whose own
     * qualified name is `a.b.c`, or nothing (§8.6). Asked ahead of the dot test because
@@ -3181,9 +3172,15 @@ object Loader:
       case Some(path) =>
         kb.symbols.byQualifiedName.get(path).fold(ResolveResult.NotFound)(ResolveResult.Found(_))
       case None if name.contains('.') =>
-        kb.symbols.byQualifiedName.get(name) match
-          case Some(sym) => ResolveResult.Found(sym)
-          case None => kb.symbols.resolveInScope(name, scope)
+        // JRV1T: the first segment is a name at the writing scope, not an
+        // absolute address. A contested head ends the search; a missing member
+        // must not restart it at an unrelated root namespace.
+        val segments = name.split('.').toList
+        segments.tail.foldLeft(kb.symbols.resolveInScope(segments.head, scope)) {
+          case (ResolveResult.Found(owner), member) =>
+            kb.symbols.resolveBelowImport(member, kb.symbols.scopeOf(owner))
+          case (result, _) => result
+        }
       case None => kb.symbols.resolveInScope(name, scope)
 
   /** Resolve a name in scope, falling back to intern for user-defined predicates.
@@ -3198,7 +3195,7 @@ object Loader:
     * arguments are separate terms with spans of their own. */
   private def resolveName(
     kb: KnowledgeBase, name: String, scope: kb.ScopeId,
-    errors: ArrayBuffer[LoadError], span: Span
+    errors: ArrayBuffer[LoadError], span: Span, allowQualifiedMiss: Boolean = false
   ): TermSymbol =
     lookupWritten(kb, name, scope) match
       case ResolveResult.Found(sym) => sym
@@ -3213,12 +3210,10 @@ object Loader:
           name, qualNames, span, kb.scopeDisplayName(scope))
         kb.intern(name)
       case ResolveResult.NotFound =>
-        // AN ABSOLUTE MISS IS LOUD. An unmarked name nothing answers is interned as a
-        // predicate the program introduces by using it; a marked one cannot be that —
-        // it names a symbol by its own qualified name, and no such symbol exists. The
-        // intern below is under the text the author wrote, marker included, so the
-        // term that could not be resolved collides with no declared name.
-        if absolutePathTarget(name).isDefined then
+        // A dotted reference must name something. Qualified heads are the one
+        // exception measured in rustland: they introduce nothing but load even
+        // when unresolved. Absolute misses are refused in every position.
+        if absolutePathTarget(name).isDefined || (name.contains('.') && !allowQualifiedMiss) then
           errors += LoadError.UnresolvedName(name, span, kb.scopeDisplayName(scope))
         kb.intern(name)
 

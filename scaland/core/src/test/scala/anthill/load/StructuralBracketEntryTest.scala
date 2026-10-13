@@ -1,5 +1,6 @@
 package anthill.load
 
+import anthill.codegen.scala.StdlibFixture
 import anthill.kb.{KnowledgeBase, LoadFixture}
 import anthill.term.{Term, Var}
 import anthill.resolve.SearchStream
@@ -14,6 +15,9 @@ import anthill.resolve.SearchStream
   * every position), so the fact stores the type's term and a goal that writes the same
   * type matches it. Scaland drops operation bodies at load (WI-1007), so the rows are the
   * clause's own term: a fact, a goal, a rule's head.
+  *
+  * JRV1T: use the stdlib fixture because arrow lowering names its TypeExtractor
+  * and EffectExpression constructors; unresolved dotted references are refused.
   *
   * Each row is a PAIR: the goal that writes the stored entry answers, and the goal that
   * writes another entry of the same shape does not — so an answer is the entry's and not
@@ -40,7 +44,7 @@ class StructuralBracketEntryTest extends munit.FunSuite:
   test("a fact holding a structural entry is matched by the goal that writes it") {
     for (tag, entry, other) <- shapes do
       val ns = s"zzTcsgt$tag"
-      val kb = LoadFixture.loaded(
+      val kb = StdlibFixture.kbWith(LoadFixture.parsed(
         s"""namespace $ns
            |  import anthill.prelude.{Int64, String}
            |  sort Box[V]
@@ -54,7 +58,7 @@ class StructuralBracketEntryTest extends munit.FunSuite:
            |  rule viaHead(1) :- hd(Box[V = $entry])
            |end""".stripMargin,
         s"tcsgt$tag.anthill",
-      )
+      ))
       assertEquals(answers(kb, s"$ns.same"), 1, s"$tag: the goal that writes the stored entry")
       assertEquals(answers(kb, s"$ns.other"), 0, s"$tag: a goal that writes another entry")
       assertEquals(answers(kb, s"$ns.down"), 1, s"$tag: one bracket down")
@@ -62,7 +66,7 @@ class StructuralBracketEntryTest extends munit.FunSuite:
   }
 
   test("a variable in the entry's place, and one inside it, bind") {
-    val kb = LoadFixture.loaded(
+    val kb = StdlibFixture.kbWith(LoadFixture.parsed(
       """namespace zzTcsgtVar
         |  import anthill.prelude.{Int64, String}
         |  sort Box[V]
@@ -73,7 +77,7 @@ class StructuralBracketEntryTest extends munit.FunSuite:
         |  rule wrong(?r)  :- holds(Box[V = (String) -> ?r])
         |end""".stripMargin,
       "tcsgtvar.anthill",
-    )
+    ))
     assertEquals(answers(kb, "zzTcsgtVar.whole"), 1)
     assertEquals(answers(kb, "zzTcsgtVar.inside"), 1)
     assertEquals(answers(kb, "zzTcsgtVar.wrong"), 0)

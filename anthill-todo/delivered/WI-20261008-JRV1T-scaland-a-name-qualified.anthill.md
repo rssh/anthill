@@ -3,9 +3,9 @@
 - id: WI-20261008-JRV1T-scaland-a-name-qualified
 - created: 2026-10-08T10:08:04Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-08T10:08:04Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-13T17:52:47Z
 
 - acceptance: scaland-sbt-test
 
@@ -46,4 +46,8 @@ ONE MORE SPELLING IN THIS TICKET'S POPULATION since WI-20261008-T290W, 2026-10-0
 ### 2026-10-08T14:36:36Z — feedback — claude
 
 A THIRD CARRIER, 2026-10-08 (WI-20261008-T290W's addendum): a type written inside a term. `fact typeRel(Box[T = Rec.E])` binds a bare symbol spelled `Rec.E`, as `Ref(Rec.E)` and `Rec.E(…)` do; it read its last segment before and so resolved through the sort's variant exposure. The same `AbsoluteNameTest` row pins all three as one answer.
+
+### 2026-10-13T17:52:38Z — feedback — codex
+
+Implemented scoped dotted lookup in Loader.lookupWritten: resolve the head where written, then walk members with enclosing links stopped. Ambiguity ends the path; no root fallback after a missing member. Shared lookup covers heads, body goals, constructor calls, Ref and term type bindings. Dotted reference misses now produce located UnresolvedName diagnostics. Measured with the existing rustland CLI: relative fact and rule heads and the fully qualified control each answer 2; the relative body goal answers 1. Unresolved qualified fact/rule heads load in rustland, so Scala preserves that control; unresolved body/data/Ref/type paths are refused. Structural bracket fixtures now load their stdlib constructor declarations, and the old dotted-body silent-miss pin now expects refusal. Regression tests drive resolution, shadowing, imported nested paths and all three term carriers. Back-outs: old lookup causes 6 of 20 AbsoluteNameTest rows to fail (14 controls pass); removing only the dotted diagnostic causes 3 of 26 rows across AbsoluteNameTest and DottedParenLessCitationTest to fail (23 pass). Full sbt -batch testFull: 668 core + 40 SMT + 1 Scala generator tests passed. git diff --check passed. Direct diff review completed; /code-review skill unavailable in this session, not run. No specification changes and no commit.
 

@@ -62,6 +62,12 @@ import anthill.resolve.SearchStream
   * The NEGAND DESCENT the rung made due (`not(ns.flag)` negates the predicate, not a
   * `field_access` chain) is driven and backed out at `DottedParenLessCitationTest`.
   */
+// JRV1T back-outs, measured 2026-10-13 on this suite's 20 tests:
+// scoped lookup -> old absolute-table lookup: 6 fail, 14 pass (including head-miss
+// and absolute-name controls). The two stdlib-driven rows also fail because scoped
+// references in the stdlib now report their misses instead of being silently interned.
+// Dotted-miss diagnostic removed, scoped lookup retained: 3 fail across the 26 tests
+// here and in DottedParenLessCitationTest; the other 23 pass.
 class AbsoluteNameTest extends munit.FunSuite:
 
   private def loaded(src: String)(using munit.Location): KnowledgeBase =
@@ -184,8 +190,8 @@ class AbsoluteNameTest extends munit.FunSuite:
     assert(errs.exists(_.contains("unresolved name '..q'")), s"$errs")
     val kb = loaded("namespace zzAbs.r\n  fact q(1)\n  rule bare(?x) :- q(?x)\nend")
     assertEquals(answers(kb, "zzAbs.r.bare"), 1)
-    // THE CONTROL FOR THE MARKER: the same misses, unmarked, load.
-    loaded("namespace zzAbs.miss\n  rule r(1) :- zzAbsNope.p(1)\n  fact holds(zzAbsNope(1))\nend")
+    // CONTROL: unqualified predicate and data names retain their existing reading.
+    loaded("namespace zzAbs.miss\n  rule r(1) :- freshPredicate(1)\n  fact holds(zzAbsNope(1))\nend")
   }
 
   test("an absolute proof target that names nothing is refused") {
@@ -243,16 +249,76 @@ class AbsoluteNameTest extends munit.FunSuite:
         case other            => fail(s"`$holder` holds $other, not a `Ref`")
   }
 
-  test("a RELATIVE path in Ref resolves as the call spelling of it does — not yet") {
-    // WHAT `Ref(…)` GAVE UP when it stopped reading its last segment. `Ref(Rec.E)` used
-    // to be `Ref(E)`, which the sort's variant exposure happened to resolve; it is the
-    // path `Rec.E` now, and scaland has no relative reading of a dotted path
-    // (WI-20261008-JRV1T: the head is not resolved by scope). So it resolves to nothing,
-    // EXACTLY AS THE CALL `Rec.E(…)` DOES — and that pair is the assertion: one path, one
-    // answer in both carriers, so JRV1T moves them together. The old reading agreed with
-    // nothing: `Ref(other.ns.p)` took whatever `p` was in scope.
-    //
-    // THE CONTROLS resolve: the bare leaf, by exposure, and the fully qualified path.
+  test("relative fact and rule heads join the scoped predicate") {
+    // Relative heads fail with JRV1T backed out; full paths pass either way.
+    for head <- Seq("fact Rec.p(2)", "rule Rec.p(2) :- true", "fact zzRel.Rec.p(2)") do
+      val kb = loaded(s"""namespace zzRel
+        |  sort Rec
+        |    entity E(v: Int64)
+        |    rule p(1) :- true
+        |    rule see(?x) :- p(?x)
+        |  end
+        |  $head
+        |  rule body(?x) :- Rec.p(?x)
+        |end""".stripMargin)
+      assertEquals(answers(kb, "zzRel.Rec.see"), 2, head)
+      assertEquals(answers(kb, "zzRel.body"), 2, head)
+  }
+
+  test("a scoped head shadows a root path and its missing member stays missing") {
+    // Root lookup alone selects 99; scoped resolution selects 1.
+    val prefix = """namespace Rec
+      |  fact p(99)
+      |  fact absent(99)
+      |end
+      |namespace zzRel
+      |  sort Rec
+      |    entity E(v: Int64)
+      |    fact p(1)
+      |  end
+      |""".stripMargin
+    val kb = loaded(prefix + "rule see(1) :- Rec.p(1)\nrule wrong(1) :- Rec.p(99)\nend")
+    assertEquals(answers(kb, "zzRel.see"), 1)
+    assertEquals(answers(kb, "zzRel.wrong"), 0)
+    val errs = refusal(prefix + "rule see(?x) :- Rec.absent(?x)\nend")
+    assert(errs.exists(_.contains("unresolved name 'Rec.absent'")), s"$errs")
+  }
+
+  test("relative paths follow an imported head through nested members") {
+    // Fails with the relative rung backed out: Outer is not an absolute namespace.
+    val kb = loaded("""namespace zzLib
+      |  sort Outer
+      |    sort Inner
+      |      entity E(v: Int64)
+      |      fact p(7)
+      |    end
+      |  end
+      |end
+      |namespace zzUse
+      |  import zzLib.{Outer}
+      |  rule see(1) :- Outer.Inner.p(7)
+      |end""".stripMargin)
+    assertEquals(answers(kb, "zzUse.see"), 1)
+  }
+
+  test("unresolved qualified heads retain rustland's admitted reading") {
+    // Controls: measured in rustland, these load but introduce no scoped predicate.
+    for head <- Seq("fact Rec.nosuch(1)", "rule Rec.nosuch(1) :- true") do
+      val kb = loaded(s"namespace zzRel\n sort Rec\n entity E(v: Int64)\n end\n $head\nend")
+      assertEquals(kb.tryResolveSymbol("zzRel.Rec.nosuch"), None)
+  }
+
+  test("a relative path naming no member is refused in every carrier") {
+    // Each row loads silently with the loud dotted miss backed out.
+    for line <- Seq("rule see(?x) :- Rec.nosuch(?x)", "fact holds(Rec.nosuch(1))",
+        "fact holds(Ref(Rec.nosuch))", "fact holds(Box[T = Rec.nosuch])") do
+      val errs = refusal(s"namespace zzRel\n sort Rec\n entity E(v: Int64)\n end\n $line\nend")
+      assert(errs.exists(_.contains("unresolved name 'Rec.nosuch'")), s"$line: $errs")
+  }
+
+  test("a relative path resolves in Ref, calls and term type bindings") {
+    // JRV1T: all three carriers fail with scoped path reading backed out.
+    // Bare exposure and fully qualified paths pass either way.
     val kb = loaded(
       """namespace zzAbs.rr
         |  sort Rec
@@ -282,8 +348,8 @@ class AbsoluteNameTest extends munit.FunSuite:
       case other       => fail(s"`typeRel` holds $other, not an application")
     assertEquals(named(typeRel), named(held("callRel")),
       "`Box[T = Rec.E]` binds the path `Rec.E(…)` calls")
-    assertEquals(named(held("refRel")), ("Rec.E", false),
-      "GAP (WI-20261008-JRV1T): logic says `zzAbs.rr.Rec.E` — the head `Rec` is in scope")
+    assertEquals(named(held("refRel")), ("zzAbs.rr.Rec.E", true),
+      "the head `Rec` is in scope")
     assertEquals(named(held("refLeaf")), ("zzAbs.rr.Rec.E", true))
     assertEquals(named(held("refFull")), ("zzAbs.rr.Rec.E", true))
   }
