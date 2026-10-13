@@ -250,23 +250,35 @@ fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbo
 /// symmetric with the collector). `set_inferred_type` no-ops on non-`Expr`
 /// occurrences, so a rule head / pattern node is unaffected.
 fn stamp_rule_body_var_types(occ: &Rc<NodeOccurrence>, var_types: &HashMap<u32, Value>) {
+    for_each_var_leaf(occ, &mut |var, leaf| {
+        let vid = match var {
+            Var::Global(vid) => vid.raw(),
+            Var::DeBruijn(idx) => idx,
+            _ => return,
+        };
+        if let Some(ty) = var_types.get(&vid) {
+            leaf.set_inferred_type(ty.clone());
+        }
+    });
+}
+
+/// Every variable leaf under a rule-body occurrence, the ones in a pattern's nested
+/// annotation included: the walk [`stamp_rule_body_var_types`] writes the clause's types
+/// through, and the one a reader of those stamps takes (`relation::ClauseTypes`).
+pub(super) fn for_each_var_leaf(
+    occ: &Rc<NodeOccurrence>,
+    f: &mut impl FnMut(Var, &Rc<NodeOccurrence>),
+) {
     if occ.as_pattern().is_some() {
-        for_each_pattern_child(occ, |c| stamp_rule_body_var_types(c, var_types));
+        for_each_pattern_child(occ, |c| for_each_var_leaf(c, f));
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
-    let vid = match expr {
-        Expr::Var(Var::Global(vid)) => Some(vid.raw()),
-        Expr::Var(Var::DeBruijn(idx)) => Some(*idx),
-        _ => None,
-    };
-    if let Some(vid) = vid {
-        if let Some(ty) = var_types.get(&vid) {
-            occ.set_inferred_type(ty.clone());
-        }
+    if let Expr::Var(var) = expr {
+        f(*var, occ);
         return;
     }
-    for_each_child(expr, |c| stamp_rule_body_var_types(c, var_types));
+    for_each_child(expr, |c| for_each_var_leaf(c, f));
 }
 
 /// WI-282 + WI-603: type every rule body in a single pass. For each live non-fact

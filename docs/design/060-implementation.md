@@ -1806,9 +1806,74 @@ row at the end of `wi_p7vp4_rule_body_requirements_test.rs`:
   typed, gets no condition (it has no argument whose type is unknown) and runs a body that
   never reads the slot. WI-20260926-7D48J's, with C4 and C5.
 
-The enclosing half — a rule sees its own sort's `requires` (user, 2026-09-25) — is
-WI-20260925-0RRQP's and is as measured there. Builtins (`eq`, `<`) read no dictionary and
-wait on WI-20260909-SM910.
+**The enclosing half — a rule sees its own sort's `requires`** (user, 2026-09-25;
+WI-20260925-0RRQP, 2026-10-13). A condition witnessed by a variable that is no head column
+is filled like any other, from the clause's own typing. In
+
+```anthill
+sort Box
+  sort T = ?
+  requires O: WeakOrd[T]
+  entity box(a: T, b: T)
+  rule order(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  operation orderOf(p: Self) -> Int64 effects {Error, Error[EmptyStream]} = order(p).head.c
+  operation directOf(p: Self) -> Int64 = match p case box(a, b) -> WeakOrd.compare(a, b)
+end
+```
+
+`box(a: ?x, b: ?y)` is a `Box[T = t]` over fields typed `t`, and `<=>` gives `?p` that type
+(`constrain_constructed`): the citation's argument for `?p` fixes `t`, and the read witnessed
+by `?x` is routed at it (`ClauseTypes`, read off the types the clause's body was stamped
+with). `Box.orderOf[T = Int64, O = Descending](box(a: 1, b: 5))` answers `4`, and `-4` under
+`Ascending`, as `directOf` does; both answered `-1`. The tie is the constructor's and not the
+sort's: the same rule written in no sort, over `sort Pr[T]`, is filled from a generic
+operation's `requires WeakOrd[T = A]`. Rows and back-outs:
+`wi_0rrqp_clause_typed_through_constructor_test`.
+
+Five things come with it, because a variable reached through a constructor had no type:
+
+- a citation's argument for such a column, and the column's value where it is returned, are
+  checked against the constructor's sort — `order(5)` is a load error;
+- a dot on such a variable is its member's call, as a dot on a variable an entity field
+  types already was: `?c <=> cnt(n: 4), ?x <=> ?c.bump()` binds `5` where it bound the term
+  `cnt(n: 4).bump`, and a member `Cnt` does not have is a load error;
+- a call at such a variable, where the constructor's sort has no parameter left open, is
+  decided at load by that sort and is no condition of the clause (kernel-language §5.3: "a
+  call whose arguments' types are known at load is decided there, by its carrier"): `?p <=>
+  pt(x: 1, y: 2), Desc.describe(?p, ?s)` is `Pt`'s own `describe` whoever cites it, where a
+  citing operation's selected provider used to reach it, and a sort that provides no `Desc`
+  is a load error;
+- two clauses that take one parametric sort apart are one relation: each types the column at
+  a variable of its own, and the two types are matched one against the other where they have
+  no join as written (`join_column_types`). A pair typed by an entity field at its sort's
+  parameter was refused as "disjoint types for column" before this, and a pair typed by
+  constructors would have been;
+- a parameter nothing in the clause says — `wrap(?y)` over a `?y` only a rule goal produces,
+  or `none` — is an open slot: the column read back at a written instance (`-> Wrap[T =
+  Colour] = tag.head.x`) is a load error, as a column typed by an entity field at its sort's
+  parameter already was. A head bound repairs it (`rule tag(?x: Wrap) :- …`): a bound's
+  unwritten slot is a variable the reader may fix.
+
+Where it does not reach, each a row in that file:
+
+- **A sort with two requirements on one sort.** No call can name a provider for each —
+  selections are kept by the required sort alone (`TypeError::ConflictingSelection`) — so
+  which requirement a condition reached cannot be shown. The member operation's call is
+  refused the same way.
+- **A slot the argument's own type says.** `Box.order(mk()).head.c`, over `mk() -> Box[T =
+  Int64, O = Ascending]`, cited by an operation that holds no requirement: the condition is
+  read at the element's type alone and is `Int64`'s own `-1`, where `Box.directOf(mk())`
+  answers `-4`. The clause's typing says `?p` is a `Box[T = t, O = o]` and its condition is
+  `WeakOrd[T = t]`; nothing says `o` answers it. Cited with the slot left out of the
+  signature (`cite[A](b: Box[T = A])`) the slot is the argument's, and it is read: `-4`.
+- **A slot at the citing operation's own type parameter** (`b: Box[T = A, O = P]`) is refused
+  for the member operation's call, and loads and derives for the citation.
+- **A driver run as a rule's goal.** `rule q(?r) :- ?r <=> Driver.desc()`, where `desc`'s
+  body selects a provider for an operation-level `requires` (`via[A = Int64, WeakOrd =
+  Descending](…)`), answers `Int64`'s own `-1`; called by the interpreter it answers `4`.
+  P7VP4's own `viaRule` reads the same, with this change and without it.
+
+Builtins (`eq`, `<`) read no dictionary and wait on WI-20260909-SM910.
 
 ## 8.10 Build sequence — filed 2026-09-09, VVM1R as umbrella
 
@@ -1828,8 +1893,8 @@ fold is now better justified than it was**. The check tier is not a load-time ve
 all (§8.8): it emits the same goal the bind tier does, so it is not a stage riding on S2 —
 it is the SAME code path with `out:` absent, and giving it its own ticket would have
 meant two owners for one relation. §8.9's question had no stage here; its callee half was
-built as WI-20260925-P7VP4 and its enclosing half is WI-20260925-0RRQP's — see §8.9's last
-measurement.
+built as WI-20260925-P7VP4 and its enclosing half as WI-20260925-0RRQP — see the end of
+§8.9.
 
 ## 9. C666A — the guarded join
 

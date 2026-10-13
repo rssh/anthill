@@ -1478,11 +1478,12 @@ pub(super) fn collect_rule_var_types(
     // WI-9C2PZ — which entries are a CALL's placeholder rather than a statement about the
     // variable. Lives for the collection and is dropped with it; see [`constrain_vid`].
     let mut param_backed: ParamBackedVars = HashSet::new();
-    collect_term_type_constraints(kb, head, &mut var_types, &mut param_backed, &mut subst);
+    collect_term_type_constraints(kb, head, None, &mut var_types, &mut param_backed, &mut subst);
     for node in body_nodes {
         collect_occurrence_type_constraints(
             kb,
             node,
+            None,
             &mut var_types,
             &mut param_backed,
             &mut subst,
@@ -1510,20 +1511,32 @@ pub(super) fn collect_rule_var_types(
     // ones — the inheritance silently not applying to that clause alone. There is nothing
     // to protect against either: a failed unification records no binding, so what σ holds
     // is exactly the agreements that were reached.
-    if std::env::var("NO_RESOLVE_9C2PZ").is_err() {
-        for ty in var_types.values_mut() {
-            let (resolved, _) = crate::kb::node_occurrence::subst_value_type(kb, ty, &subst);
+    //
+    // TO THE END, not one step: a binding is a type of its own and may hold a variable
+    // bound after it was made. `?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)` binds
+    // the `T` of `<=>` to `Box[T = t]` and only then `t` to `compare`'s own parameter, so
+    // one step left `?p` at `Box[T = t]` and `?x` at the other variable — two names for
+    // what the clause says is one, which a reader of the two types cannot rejoin. The
+    // unifier's occurs check is what makes this end.
+    for ty in var_types.values_mut() {
+        loop {
+            let (resolved, changed) = crate::kb::node_occurrence::subst_value_type(kb, ty, &subst);
             *ty = resolved;
+            if !changed {
+                break;
+            }
         }
     }
     (var_types, subst.is_contradiction())
 }
 
 /// Collect type constraints from a term: for each variable in an operation/entity
-/// argument position, record the expected type.
+/// argument position, record the expected type. `position` is the declared type of the
+/// position `term` fills, as [`collect_occurrence_type_constraints`] takes it.
 pub(super) fn collect_term_type_constraints(
     kb: &mut KnowledgeBase,
     term: TermId,
+    position: Option<&Value>,
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
@@ -1541,23 +1554,28 @@ pub(super) fn collect_term_type_constraints(
 
             // Expected types from operation params or entity fields — the dispatch the
             // body walker applies to an occurrence, on the head's `TermId` arguments.
-            constrain_application(
+            let nested = constrain_application(
                 kb,
                 functor,
                 &pos_args,
                 &named_args,
+                position,
                 var_types,
                 param_backed,
                 subst,
             );
 
-            // Recurse into subterms
-            for &arg in pos_args.iter() {
-                collect_term_type_constraints(kb, arg, var_types, param_backed, subst);
+            // Recurse into subterms, positional then named — the order
+            // [`NestedPositions`] counts in.
+            let args = pos_args.iter().chain(named_args.iter().map(|(_, arg)| arg));
+            for (index, &arg) in args.enumerate() {
+                let position = nested_position(&nested, index);
+                collect_term_type_constraints(kb, arg, position, var_types, param_backed, subst);
             }
-            for &(_, arg) in named_args.iter() {
-                collect_term_type_constraints(kb, arg, var_types, param_backed, subst);
-            }
+        }
+        Term::Ref(name) | Term::Ident(name) => {
+            let name = *name;
+            constrain_constant_constructor(kb, name, position, subst);
         }
         _ => {}
     }

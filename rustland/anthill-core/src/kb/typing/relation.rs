@@ -719,8 +719,9 @@ pub(super) fn settle_citation_routes(kb: &mut KnowledgeBase) {
 ///
 /// EACH READ IS ROUTED THE WAY THE RUNTIME WOULD DERIVE IT, from types instead of values:
 /// its witness arguments are typed from the citation's columns — an argument's own type
-/// where one binds the column, the column's σ-resolved type otherwise, a fresh variable for
-/// a witness that is no column at all — then [`witness_sort_goal`] / [`anchor_sort_goal`]
+/// where one binds the column, the column's σ-resolved type otherwise, and for a witness
+/// that is no column the type the clause's own typing gave it, as this citation's columns
+/// fix it ([`ClauseTypes`]) — then [`witness_sort_goal`] / [`anchor_sort_goal`]
 /// build the goal the resolver's `fetch_dictionary` builds, and [`resolve`] answers it
 /// against the CALLER's frame chain under the edge's σ (so a rigid `A` meets the caller's
 /// `requires WeakOrd[T = A]` through `param_rigids`, WI-821's σ-class agreement). The tree
@@ -776,6 +777,15 @@ fn citation_requirement_routes(
             }
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // Read only for a clause one of whose reads is witnessed by a variable that is no
+        // column, which is where it is the one source of the witness's type.
+        let witnessed_off_column = body.iter().any(|node| {
+            requirement_read_out(kb, fd, node).is_some()
+                && read_witness_vars(node).any(|d| !slots.iter().any(|(_, _, di)| *di == d))
+        });
+        let clause_types = witnessed_off_column
+            .then(|| ClauseTypes::at_citation(kb, &body, &slots, column_types, bound_types, subst))
+            .flatten();
         for node in &body {
             if requirement_read_out(kb, fd, node).is_none() {
                 continue;
@@ -797,6 +807,7 @@ fn citation_requirement_routes(
                 &slots,
                 &fresh,
                 &carrier_subst,
+                clause_types.as_ref(),
                 column_types,
                 bound_types,
                 subst,
@@ -824,6 +835,7 @@ fn route_requirement_read(
     slots: &[(SlotKey, Symbol, u32)],
     fresh: &[VarId],
     carrier_subst: &Substitution,
+    clause_types: Option<&ClauseTypes>,
     column_types: &[(Symbol, Value)],
     bound_types: &[(Symbol, Value)],
     subst: &Substitution,
@@ -882,25 +894,21 @@ fn route_requirement_read(
     let bracket = requirement_bracket(kb, &Value::Node(Rc::clone(&pos_args[0])));
     let mut arg_types: Vec<Value> = Vec::with_capacity(pos_args.len().saturating_sub(2));
     for witness in &pos_args[2..] {
-        let column = match witness.as_expr() {
-            Some(Expr::Var(Var::DeBruijn(d))) => slots
-                .iter()
-                .find(|(_, _, di)| di == d)
-                .map(|(_, name, _)| *name),
+        let var = match witness.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(d))) => Some(*d),
             _ => None,
         };
-        let ty = column.and_then(|name| {
-            bound_types
+        let column = var.and_then(|d| {
+            slots
                 .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, t)| t.clone())
-                .or_else(|| {
-                    column_types
-                        .iter()
-                        .find(|(n, _)| *n == name)
-                        .map(|(_, t)| walk_type_deep_value(kb, subst, t))
-                })
+                .find(|(_, _, di)| *di == d)
+                .map(|(_, name, _)| *name)
         });
+        let ty = match (column, var) {
+            (Some(name), _) => citation_column_type(kb, name, column_types, bound_types, subst),
+            (None, Some(d)) => clause_types.and_then(|c| c.witness_type(kb, d)),
+            (None, None) => None,
+        };
         let ty = match ty {
             Some(t) => t,
             None => {
@@ -927,6 +935,111 @@ fn route_requirement_read(
         witness_sort_goal(kb, spec_sort, op_functor, &arg_types, &bracket.written)
     }?;
     resolve_route(kb, chain, param_rigids, subst, &built.goal)
+}
+
+/// The type a citation gives the column `name`: its argument's own type where one binds the
+/// column, the column's σ-resolved type otherwise.
+fn citation_column_type(
+    kb: &mut KnowledgeBase,
+    name: Symbol,
+    column_types: &[(Symbol, Value)],
+    bound_types: &[(Symbol, Value)],
+    subst: &Substitution,
+) -> Option<Value> {
+    let bound = bound_types.iter().find(|(n, _)| *n == name);
+    if let Some((_, ty)) = bound {
+        return Some(ty.clone());
+    }
+    let (_, ty) = column_types.iter().find(|(n, _)| *n == name)?;
+    Some(walk_type_deep_value(kb, subst, ty))
+}
+
+/// The De Bruijn index of each witness of a requirement read that is a variable.
+fn read_witness_vars(read: &Rc<NodeOccurrence>) -> impl Iterator<Item = u32> + '_ {
+    let witnesses: &[Rc<NodeOccurrence>] = match read.as_expr() {
+        Some(Expr::Apply { pos_args, .. }) => pos_args.get(2..).unwrap_or(&[]),
+        _ => &[],
+    };
+    witnesses.iter().filter_map(|w| match w.as_expr() {
+        Some(Expr::Var(Var::DeBruijn(d))) => Some(*d),
+        _ => None,
+    })
+}
+
+/// One clause's own typing of its variables, as ONE citation meets it: the type each
+/// variable was stamped with when the clause's body was typed, with the clause's type
+/// variables bound by what the citation gives its columns.
+///
+/// WHY: a condition of the clause may be witnessed by a variable that is no column. In
+/// `rule order(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)` the read
+/// for `compare` is witnessed by `?x`, and the citation `order(p)` says nothing of `?x` —
+/// but the clause's typing does: `?p` is `Box[T = t]` and `?x` is `t`. Bound by the type of
+/// the argument given for `?p`, `t` is the citing operation's own `T`, and the read is
+/// routed to that operation's `requires WeakOrd[T]`. Typed as a variable nothing binds, the
+/// witness named no instance, nothing was routed, and the clause derived `Int64`'s own
+/// dictionary from the values where the caller had chosen another.
+///
+/// THE STAMPS, not a new collection: they were made from the body its author wrote, before
+/// the clause's calls were woven, and a woven call is no application the collector reads.
+/// They are one instantiation for the clause, shared by every citation of it, and stay so:
+/// what a citation binds, it binds in a substitution of its own (`subst`, over the
+/// citation's σ), which is dropped with this value.
+struct ClauseTypes {
+    types: Vec<(u32, Value)>,
+    subst: Substitution,
+}
+
+impl ClauseTypes {
+    /// `None` where a column's stamped type does not admit what this citation gives the
+    /// column: the clause cannot answer the citation as typed, and its witnesses are left
+    /// untyped, as they were.
+    fn at_citation(
+        kb: &mut KnowledgeBase,
+        body: &[Rc<NodeOccurrence>],
+        slots: &[(SlotKey, Symbol, u32)],
+        column_types: &[(Symbol, Value)],
+        bound_types: &[(Symbol, Value)],
+        subst: &Substitution,
+    ) -> Option<Self> {
+        let mut types: Vec<(u32, Value)> = Vec::new();
+        for goal in body {
+            for_each_var_leaf(goal, &mut |var, leaf| {
+                let Var::DeBruijn(d) = var else { return };
+                if types.iter().any(|(seen, _)| *seen == d) {
+                    return;
+                }
+                if let Some(ty) = leaf.inferred_type() {
+                    types.push((d, ty));
+                }
+            });
+        }
+        let mut pins = Substitution::with_parent(subst.clone());
+        for (_, name, d) in slots {
+            let Some((_, stamp)) = types.iter().find(|(seen, _)| seen == d) else {
+                continue;
+            };
+            let Some(given) = citation_column_type(kb, *name, column_types, bound_types, subst)
+            else {
+                continue;
+            };
+            // A column the citation has no type for says nothing of the clause's. A later
+            // load's citation of a clause whose calls were woven has none for a column only
+            // such a call typed.
+            if resolved_var(kb, &given).is_some() {
+                continue;
+            }
+            if !pin_type_vars(kb, &mut pins, &given, stamp) {
+                return None;
+            }
+        }
+        Some(ClauseTypes { types, subst: pins })
+    }
+
+    /// The type of the clause variable at De Bruijn index `d`, as this citation fixes it.
+    fn witness_type(&self, kb: &mut KnowledgeBase, d: u32) -> Option<Value> {
+        let (_, ty) = self.types.iter().find(|(seen, _)| *seen == d)?;
+        Some(walk_type_deep_value(kb, &self.subst, ty))
+    }
 }
 
 /// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —
@@ -1230,6 +1343,10 @@ fn relation_columns_across_clauses(
     // heterogeneous interface) is rejected loudly rather than silently dropped
     // (which would under-approximate the schema — unsound).
     let mut columns = relation_clause_columns(kb, first);
+    // What the clauses' own type variables are bound to where two clauses' types for one
+    // column meet ([`join_column_types`]); the columns are read through it once the fold
+    // is done.
+    let mut met = Substitution::new();
     for &rid in rids.iter().skip(1) {
         let other = relation_clause_columns(kb, rid);
         if !slot_keys_match(&columns, &other) {
@@ -1242,7 +1359,7 @@ fn relation_columns_across_clauses(
             let Some(c) = columns.iter_mut().find(|c| c.slot == oc.slot) else {
                 continue;
             };
-            match join_column_types(kb, c.ty.clone(), oc.ty) {
+            match join_column_types(kb, &mut met, c.ty.clone(), oc.ty) {
                 Some(j) => c.ty = j,
                 None => {
                     let cname = c.name;
@@ -1258,6 +1375,11 @@ fn relation_columns_across_clauses(
                     });
                 }
             }
+        }
+    }
+    if !met.is_empty() {
+        for c in columns.iter_mut() {
+            c.ty = walk_type_deep_value(kb, &met, &c.ty);
         }
     }
     Ok(columns)
@@ -1299,14 +1421,43 @@ fn relation_columns_across_clauses(
 /// the raw `Var::Global` at the producer, so do NOT add a second recognizer here: a
 /// parameter arriving at this function again means the producer stopped normalizing,
 /// and the lub is the wrong place to learn it.
-fn join_column_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<Value> {
+///
+/// A VARIABLE INSIDE THE TYPE is the same absence one level down, and is met the same way.
+/// A clause that takes a list apart types its column `List[T = t]` at a variable of its
+/// own — `rule kind(?l, ?k) :- ?l <=> nil, …` beside `rule kind(?l, ?k) :- ?l <=> cons(head:
+/// ?h, tail: ?t), …` is two such clauses — and [`join_types`] reads two variables, or a
+/// variable and a sort, as incomparable: the relation was refused at its citation for
+/// "disjoint types for column `l`". So where the two types have no join as written, one is
+/// matched against the other ([`pin_type_vars`], either way round), which binds a clause's
+/// own variable to what the other clause says there and never binds a sort's parameter.
+/// `met` keeps those bindings for the columns still to come, so a variable two columns of
+/// one clause share is bound once.
+fn join_column_types(
+    kb: &mut KnowledgeBase,
+    met: &mut Substitution,
+    a: Value,
+    b: Value,
+) -> Option<Value> {
+    let (a, b) = if met.is_empty() {
+        (a, b)
+    } else {
+        (walk_type_deep_value(kb, met, &a), walk_type_deep_value(kb, met, &b))
+    };
     if resolved_var(kb, &a).is_some() {
         return Some(b);
     }
     if resolved_var(kb, &b).is_some() {
         return Some(a);
     }
-    join_types(kb, a, b)
+    if let Some(joined) = join_types(kb, a.clone(), b.clone()) {
+        return Some(joined);
+    }
+    let pinned = [(&b, &a), (&a, &b)].into_iter().find_map(|(ty, bound)| {
+        let mut trial = met.clone();
+        pin_type_vars(kb, &mut trial, ty, bound).then_some(trial)
+    })?;
+    *met = pinned;
+    Some(a)
 }
 
 /// WI-714 — assemble the `Relation[T = schema, E = {Error}]` value type from a final

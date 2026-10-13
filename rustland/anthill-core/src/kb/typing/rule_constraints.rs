@@ -206,9 +206,6 @@ pub(super) fn instantiate_declared_type(
     ty: &Value,
     inst: &mut ParamInstantiation,
 ) -> (Value, bool) {
-    if std::env::var("NO_INST_9C2PZ").is_ok() {
-        return (ty.clone(), false);
-    }
     match ty {
         Value::Term { id, .. } => {
             if !declared_type_mentions_param(kb, *id) {
@@ -292,7 +289,9 @@ impl ConstrainedArg for Rc<NodeOccurrence> {
 /// `twoeq("a", 1)`. Reading the literal makes the columns `String` and `Int64`. The gate
 /// that scopes it is [`constrain_literal_arg`]'s.
 ///
-/// Anything neither a literal nor a variable constrains nothing here.
+/// Anything neither a literal nor a variable constrains nothing here, and the answer is
+/// `false`: the position's type is then the argument's own to meet, where its walker
+/// reaches it ([`NestedPositions`]).
 pub(super) fn constrain_arg<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     arg: &A,
@@ -301,10 +300,10 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
-) {
+) -> bool {
     if let Some(lit) = arg.literal(kb) {
         constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
-        return;
+        return true;
     }
     if let Some(vid) = arg.var_key(kb) {
         constrain_vid(
@@ -316,7 +315,9 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
             param_backed,
             subst,
         );
+        return true;
     }
+    false
 }
 
 /// Shared core of [`constrain_arg`]'s variable arm: record the
@@ -373,12 +374,7 @@ fn constrain_vid(
         }
         return;
     };
-    let mut existing_from_param = param_backed.contains(&vid);
-    let mut from_param = from_param;
-    if std::env::var("FIRST_CUT_9C2PZ").is_ok() {
-        existing_from_param = false;
-        from_param = false;
-    }
+    let existing_from_param = param_backed.contains(&vid);
     // Unify either way: that is what binds a call's parameter to the variable's concrete
     // type, so a SIBLING argument of the same call inherits it.
     if !unify_types(kb, subst, &existing, expected_type) && !from_param && !existing_from_param {
@@ -408,6 +404,9 @@ fn constrain_vid(
 pub(super) fn collect_occurrence_type_constraints(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
+    // The declared type of the position `occ` fills, where its parent is an application
+    // that declares one ([`NestedPositions`]); `None` for a top-level goal.
+    position: Option<&Value>,
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
@@ -418,22 +417,29 @@ pub(super) fn collect_occurrence_type_constraints(
     // `node_to_debruijn` and `collect_occurrence_global_vars_ordered`.
     if occ.as_pattern().is_some() {
         for_each_pattern_child(occ, |c| {
-            collect_occurrence_type_constraints(kb, c, var_types, param_backed, subst)
+            collect_occurrence_type_constraints(kb, c, None, var_types, param_backed, subst)
         });
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
-    if let Some((functor, pos_args, named_args)) = expr_call_parts(expr) {
-        constrain_application(
+    let nested = match expr_call_parts(expr) {
+        Some((functor, pos_args, named_args)) => constrain_application(
             kb,
             functor,
             pos_args,
             named_args,
+            position,
             var_types,
             param_backed,
             subst,
-        );
-    }
+        ),
+        None => {
+            if let Expr::Ref(name) = expr {
+                constrain_constant_constructor(kb, *name, position, subst);
+            }
+            NestedPositions::new()
+        }
+    };
     // Every other form adds no constraint of its own and is reached through the child
     // walk below.
     //
@@ -447,38 +453,79 @@ pub(super) fn collect_occurrence_type_constraints(
     // below. Any nested TermId-typed children (e.g. a Var pattern's
     // type_ann Expr-kind occurrence) are reached via that recursion;
     // no explicit term-level call needed here.
+    //
+    // An application's children are its arguments, positional then named
+    // (`for_each_child`), which is the order [`NestedPositions`] counts in.
+    let mut index = 0;
     for_each_child(expr, |c| {
-        collect_occurrence_type_constraints(kb, c, var_types, param_backed, subst)
+        let position = nested_position(&nested, index);
+        collect_occurrence_type_constraints(kb, c, position, var_types, param_backed, subst);
+        index += 1;
     });
+}
+
+/// The positions of one application whose argument is neither a literal nor a variable,
+/// each with the declared type of the parameter or field it fills: the argument's index
+/// among the application's arguments, positional then named, and that type at this
+/// application's instantiation.
+///
+/// [`constrain_arg`] reads a literal and a variable against the declared type where the
+/// application is read. Any other argument is a term of its own, read when its walker
+/// reaches it, and it is handed the type here so that what it constructs meets the
+/// position it stands in ([`constrain_application`]).
+pub(super) type NestedPositions = SmallVec<[(usize, Value); 2]>;
+
+/// The declared type [`NestedPositions`] holds for argument `index`, if any.
+pub(super) fn nested_position(nested: &NestedPositions, index: usize) -> Option<&Value> {
+    nested.iter().find(|(i, _)| *i == index).map(|(_, t)| t)
 }
 
 /// Constrain the op-arg (positional) / entity-field (named) argument positions of one
 /// application — of a rule head's `Term::Fn` or a body occurrence alike: the op/entity
-/// dispatch both walkers share ([`ConstrainedArg`]).
+/// dispatch both walkers share ([`ConstrainedArg`]). Answers the positions left to the
+/// arguments themselves ([`NestedPositions`]).
+///
+/// A CONSTRUCTOR'S APPLICATION IS OF ITS SORT, at the parameters this application's fields
+/// are read at, and that type is unified with the declared type of the position the
+/// application fills (`position`). In `?p <=> box(a: ?x, b: ?y)` the two sides of `<=>`
+/// are one `T`, and `box` constructs `Box[T = t]` over fields typed `t`: so `?p` is
+/// `Box[T = t]` and `?x` is `t`, one variable, which a citation's argument for `?p` then
+/// binds for `?x` as well. Without it `?p` stayed the bare `T` of `<=>` and nothing said
+/// that `?x` is at `Box`'s parameter, so a condition of the clause witnessed by `?x` could
+/// not be met from the caller's own `requires`.
+///
+/// A disagreement is not recorded as a contradiction of the rule, for the reason
+/// [`constrain_literal_arg`] gives: it is the enclosing call's argument error, and flagging
+/// the rule would skip the check that reports it. A constructor that does not fit its
+/// position pins nothing, the parameters it does share with the position included
+/// ([`constrain_constructed`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn constrain_application<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &[A],
     named_args: &[(Symbol, A)],
+    position: Option<&Value>,
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
-) {
+) -> NestedPositions {
     // WI-9C2PZ: ONE [`ParamInstantiation`] per application — see
     // [`instantiate_declared_type`].
     let mut inst = ParamInstantiation::new();
+    let mut nested = NestedPositions::new();
     if let Some(op) = lookup_operation_info_full(kb, functor) {
         // The parameter a positional argument FILLS, not the one at its index: it ranks
         // among the parameters the labels left open ([`positional_param_indices`]). By
         // index, `pick(?l, k: 1)` over `(k: Int64, l: Leaf)` typed `?l` as `Int64`, and a
         // later `Desc.describe(?l, ?r)` was refused for a carrier the clause never had.
         let pos_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
-        for (arg, param) in pos_args.iter().zip(pos_params) {
+        for (index, (arg, param)) in pos_args.iter().zip(pos_params).enumerate() {
             // WI-341 Stage A: seed inference from the param type carrier-agnostically.
             if let Some((_, param_type)) = param.and_then(|p| op.params.get(p)) {
                 let (param_type, instantiated) =
                     instantiate_declared_type(kb, param_type, &mut inst);
-                constrain_arg(
+                if !constrain_arg(
                     kb,
                     arg,
                     &param_type,
@@ -486,28 +533,88 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                     var_types,
                     param_backed,
                     subst,
-                );
+                ) {
+                    nested.push((index, param_type));
+                }
             }
         }
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
         for (field_sym, field_type) in &field_types {
-            if let Some((_, arg)) = named_args.iter().find(|(s, _)| s == field_sym) {
+            if let Some(named) = named_args.iter().position(|(s, _)| s == field_sym) {
                 // WI-341 Stage A: field type is a carrier-agnostic `Value` —
                 // constrain directly, no re-grounding to a term.
                 let (field_type, instantiated) =
                     instantiate_declared_type(kb, field_type, &mut inst);
-                constrain_arg(
+                if !constrain_arg(
                     kb,
-                    arg,
+                    &named_args[named].1,
                     &field_type,
                     instantiated,
                     var_types,
                     param_backed,
                     subst,
-                );
+                ) {
+                    nested.push((pos_args.len() + named, field_type));
+                }
             }
         }
+        if let Some(position) = position {
+            constrain_constructed(kb, functor, position, &mut inst, subst);
+        }
+    }
+    nested
+}
+
+/// Unify `position` with the sort `constructor` constructs, at the parameters `inst`
+/// reads this application's fields at ([`constrain_application`]).
+///
+/// ON A COPY, kept only where the two unify. A unification that fails has bound what it
+/// met before the disagreement: `holder(h: w2(a: ?x, b: "s"))` over `h: W2[A = E, B =
+/// Int64]` agrees on `A` and then refuses `B`, and the agreement on `A` would tie `?x` to
+/// `holder`'s `E` on the word of a term that is no `holder` field at all.
+///
+/// A sort one of whose declared parameters has no variable says nothing here. The loader
+/// has refused it — a dotted `sort Inner.T = ?` in a secondary entry registers such a
+/// parameter — and [`own_application`] asserts that every parameter has one.
+fn constrain_constructed(
+    kb: &mut KnowledgeBase,
+    constructor: Symbol,
+    position: &Value,
+    inst: &mut ParamInstantiation,
+    subst: &mut Substitution,
+) {
+    let Some(sort) = kb.sort_of_constructor(constructor) else {
+        return;
+    };
+    let published = kb
+        .type_param_syms_of(sort)
+        .iter()
+        .all(|&param| kb.canonical_type_param_var(param).is_some());
+    if !published {
+        return;
+    }
+    let own = Value::term(own_application(kb, sort));
+    let (constructed, _) = instantiate_declared_type(kb, &own, inst);
+    let mut trial = subst.clone();
+    if unify_types(kb, &mut trial, position, &constructed) {
+        *subst = trial;
+    }
+}
+
+/// A constructor that takes no field is written as its name, with no argument list to
+/// apply: `red`, `none`. It is of its sort as an application is
+/// ([`constrain_application`]), at parameters of its own. A constructor that has fields,
+/// written as its name, is the function that constructs, and says nothing here.
+pub(super) fn constrain_constant_constructor(
+    kb: &mut KnowledgeBase,
+    name: Symbol,
+    position: Option<&Value>,
+    subst: &mut Substitution,
+) {
+    let Some(position) = position else { return };
+    if kb.entity_field_types(name).is_some_and(|fields| fields.is_empty()) {
+        constrain_constructed(kb, name, position, &mut ParamInstantiation::new(), subst);
     }
 }
 
@@ -529,7 +636,7 @@ fn constrain_literal_arg(
     instantiated: bool,
     subst: &mut Substitution,
 ) {
-    if !instantiated || std::env::var("NO_LITERAL_9C2PZ").is_ok() {
+    if !instantiated {
         return;
     }
     // A DISAGREEMENT HERE IS NOT RECORDED as a rule-wide contradiction — see
@@ -538,8 +645,5 @@ fn constrain_literal_arg(
     // call check reports at the literal's own span; flagging the rule would skip that
     // check and lose it. The failed unification simply pins nothing.
     let lit_type = literal_sort(kb, lit);
-    let ok = unify_types(kb, subst, expected_type, &lit_type);
-    if !ok && std::env::var("FIRST_CUT_9C2PZ").is_ok() {
-        subst.contradiction = true;
-    }
+    unify_types(kb, subst, expected_type, &lit_type);
 }
