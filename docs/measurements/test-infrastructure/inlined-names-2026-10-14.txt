@@ -205,3 +205,21 @@
 #   instrument of §5, exit 0, 447 passed; lf1, 14 proved.
 #   NOT RUN: the other two load recipes, the carrier control, the families and the oracles — no loader, typer or
 #   anthill-core source is changed; the rows drive the binary and load as the product does.
+
+== 9. WI-20261012-1P005, closed by this change (the user, 2026-10-14: deliver it with its rows) ==
+# A VARIABLE A PREMISE NAMES BEFORE THE GOAL THAT GIVES IT A VALUE was left out of a lift's quantifier — the
+# consumer's variable of the same index — and undeclared in the lemma's own document. `bind_variable` now equates
+# it, which is 1P005's option (b) as an equation. `anthill prove --no-cache`, d7a8ffcb (BEFORE) and 6f5262ce:
+#   the proof (`wi_1p005_binder_after_use_test`)            BEFORE                      AFTER
+#   lifted.eq_user  citing `gte(?kn, 1.0), ?kn = ?a + 1.0`   PROVED (false at x = -5)    COUNTEREXAMPLE
+#   lifted.rel_user citing `related(?k, 1.0), ?k = ?a + 1.0` PROVED (false)              COUNTEREXAMPLE
+#   lifted.ent_user citing `gte(?c, 1.0), Lim(cap: ?c), …`   PROVED (false)              z3: unknown constant cap
+#   proved.eq_ / ent_ / fact_ / one_ / rel_lemma, by z3      z3: unknown constant var_0  proved (each)
+# `ent_user`'s solver error is not of this ticket: the lift names the field constant `cap`, which its consumer does
+# not declare, and so does a lemma whose entity premise comes first, on d7a8ffcb as now (`Lim(cap: ?c), gte(?c,
+# 1.0), ?c = ?a + 1.0` lifted to `(=> (>= cap 1.0) (>= var_1 0.0))` there — the equation overwritten and dropped —
+# and to `(=> (and (>= cap 1.0) (= cap (+ var_1 1.0))) …)` now). Put to the user.
+# Back-outs, each alone on the three rows: the equation substituting — all three; the entity's constant — all
+# three; the fact's slot — the lemma row and the verdicts; the one-argument result — the same.
+# The gate, 6f5262ce with the three rows: `scripts/test.sh`, 2026-10-14 12:30:59 – 12:32:19, exit 0; 36 result lines,
+# all ok; 9 818 passed, 0 failed, 17 ignored. No source changed, so scaland was not run again.
