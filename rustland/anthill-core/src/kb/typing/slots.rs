@@ -4683,20 +4683,35 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// wrong binding:
 ///   * a tail already bound by unification, or a RIGID one (a forall-Skolem is not ours
 ///     to solve — WI-336);
-///   * a declared row with no tail (closed: nothing to infer) or with TWO (a row UNION,
-///     `{E, EffP}` — which lower bound belongs to which tail is not decidable here;
-///     WI-20260820-RDNS4 carries that question one level up);
-///   * an actual row that is itself OPEN or carries `- e` absents — those are the shapes
-///     the unify/subtype arms reason about with their own tail machinery.
+///   * a declared row with no flexible tail (closed, or holding the caller's own rows
+///     alone: nothing to infer) or with TWO (a row UNION, `{E, EffP}` — which lower bound
+///     belongs to which tail is not decidable here; WI-20260820-RDNS4 carries that question
+///     one level up);
+///   * an actual row that is itself OPEN — a tail of it a flexible variable — or carries
+///     `- e` absents: those are the shapes the unify/subtype arms reason about with their
+///     own tail machinery.
 ///
 /// The residual is [`cover_present_labels`]'s `only_a`: the actual's present labels that
 /// no declared present label covers. That is exactly "the body's row minus the handled
 /// labels", computed by the same relation the subtype path uses, so the two cannot drift.
+///
+/// AND THE ACTUAL'S RIGID ROWS the declared row does not hold. A row whose every tail is
+/// rigid — the caller's own row parameter, `h(5)` inside `use[R](h: (n: Int64) -> Int64 @
+/// {R})` — is not open: it is what the callback raises beside its labels, and the residual
+/// holds it. Unification binds the declared tail to it only where the declared row presents
+/// nothing the actual does not: against `@ {Error[String], EffP}` the rigid tail is asked to
+/// take `Error[String]`, which it cannot, and the arm refuses without binding — so `EffP` was
+/// left unconstrained where the slot `@ {EffP}` gave `{R}` (WI-20261014-6MPN2, MEASURED).
+/// Two callbacks raising two of the caller's rows give their union. A residual the declared
+/// row's own absences deny is no lower bound, and a declared row is read as the call reads it
+/// (`read`, by parameter, where the call made it so): `@ {EffP, -s.E}` over `s.E = {Error[Foo],
+/// R}` lacks `R`. The absences are those of every slot naming the tail, read against the union.
 pub(super) fn infer_discharged_row_tails(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     op: &OperationInfoFull,
-    pairs: &[(Value, Value)],
+    pairs: &[(Symbol, Value, Value)],
+    read: &HashMap<Symbol, Value>,
 ) {
     if op.type_params.is_empty() || pairs.is_empty() {
         return;
@@ -4713,9 +4728,17 @@ pub(super) fn infer_discharged_row_tails(
         return;
     }
 
-    // Lower bounds per tail, accumulated across every callback parameter naming it.
-    let mut lower: Vec<(TermId, Vec<Value>)> = Vec::new();
-    for (declared, actual) in pairs {
+    // Lower bounds per tail, accumulated across every callback parameter naming it: the
+    // labels no declared label covers, the caller's rigid rows, and what the slots deny.
+    struct Lower {
+        tail: TermId,
+        labels: Vec<Value>,
+        rows: SmallVec<[TermId; 2]>,
+        denied: Vec<Value>,
+    }
+    let mut lower: Vec<Lower> = Vec::new();
+    for (param, written, actual) in pairs {
+        let declared = read.get(param).unwrap_or(written);
         if !type_head_is_callable(kb, declared) {
             continue;
         }
@@ -4723,13 +4746,19 @@ pub(super) fn infer_discharged_row_tails(
             continue;
         };
         let d_row = canonical_effects_row(kb, &d_eff);
-        let Some((d_present, d_tails, _)) = decompose_effect_row(kb, subst, &d_row) else {
+        let Some((d_present, d_tails, d_absent)) = decompose_effect_row(kb, subst, &d_row) else {
             continue;
         };
-        if d_tails.len() != 1 {
+        // The one flexible tail the pass binds. A rigid tail beside it is the caller's own
+        // row, which holds itself and takes nothing.
+        let d_rigid = rigid_row_tails(kb, subst, &d_tails);
+        let mut flexible = d_tails
+            .iter()
+            .map(|t| walk_type(kb, subst, *t))
+            .filter(|t| !d_rigid.contains(t));
+        let (Some(tail), None) = (flexible.next(), flexible.next()) else {
             continue;
-        }
-        let tail = walk_type(kb, subst, d_tails[0]);
+        };
         if !matches!(kb.get_term(tail), Term::Var(Var::Global(_))) {
             continue;
         }
@@ -4740,43 +4769,74 @@ pub(super) fn infer_discharged_row_tails(
         let Some((a_present, a_tails, a_absent)) = decompose_effect_row(kb, subst, &a_row) else {
             continue;
         };
-        if !a_tails.is_empty() || !a_absent.is_empty() {
+        let a_rigid = rigid_row_tails(kb, subst, &a_tails);
+        let all_rigid = a_tails
+            .iter()
+            .all(|t| a_rigid.contains(&walk_type(kb, subst, *t)));
+        if !all_rigid || !a_absent.is_empty() {
             continue;
         }
+        let rows: SmallVec<[TermId; 2]> = a_rigid
+            .into_iter()
+            .filter(|r| !d_rigid.contains(r))
+            .collect();
         let (only_a, _) = cover_present_labels(kb, subst, &a_present, &d_present);
-        match lower.iter().position(|(t, _)| *t == tail) {
+        match lower.iter().position(|l| l.tail == tail) {
             Some(i) => {
                 for l in only_a {
                     let dup = lower[i]
-                        .1
+                        .labels
                         .iter()
                         .any(|x| resolved_labels_equal(kb, subst, x, &l));
                     if !dup {
-                        lower[i].1.push(l);
+                        lower[i].labels.push(l);
                     }
                 }
+                for r in rows {
+                    if !lower[i].rows.contains(&r) {
+                        lower[i].rows.push(r);
+                    }
+                }
+                lower[i].denied.extend(d_absent);
             }
-            None => lower.push((tail, only_a)),
+            None => lower.push(Lower {
+                tail,
+                labels: only_a,
+                rows,
+                denied: d_absent,
+            }),
         }
     }
 
-    for (tail, labels) in lower {
+    for Lower {
+        tail,
+        labels,
+        rows,
+        denied,
+    } in lower
+    {
         // Re-read: `cover_present_labels` unifies as it pairs, so an earlier iteration
         // may already have bound this tail. Binding a second time would contradict.
         let t = walk_type(kb, subst, tail);
         if !matches!(kb.get_term(t), Term::Var(Var::Global(_))) {
             continue;
         }
+        // A residual a slot naming the tail denies is no lower bound: the callback is refused
+        // at its slot, by the check that names the absence. Unification may have stopped
+        // before it registered them on the tail (`{R}` against `{EffP, -R}`).
+        if row_violates_lacks(kb, subst, &labels, &rows, &denied) {
+            continue;
+        }
         // The verdict is DISCARDED, and these are the refusals it can carry — `t` is a
-        // `Var::Global` by the gate above and `final_tail` is `None`, so the not-bindable
-        // and non-Var arms cannot fire, leaving: a `lacks` violation (WI-328) — a label over
-        // the callback's own parameter is one ([`callback_at_slot`]) — a prelude-less KB,
-        // the occurs check, and a σ contradiction. Each
+        // `Var::Global` by the gate above, so the not-bindable and non-Var arms cannot fire,
+        // leaving: a `lacks` violation (WI-328) — a label over the callback's own parameter
+        // is one ([`callback_at_slot`]), a rigid row the tail lacks another — a prelude-less
+        // KB, the occurs check, and a σ contradiction. Each
         // leaves `tail` unbound, and the symptom the user then sees is
         // `first_unconstrained_type_param`' "type parameter 'Rho' is unconstrained" —
         // accurate about the state, silent about the cause. Conservative rather than
         // wrong: the pass never claims a residual it could not bind.
-        bind_row_tail(kb, subst, t, &labels, None);
+        bind_row_tail(kb, subst, t, &labels, &rows);
     }
 }
 

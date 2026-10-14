@@ -2273,17 +2273,18 @@ fn match_present_labels(
 }
 
 /// Bind a row-tail variable to a synthesized EffectExpression representing
-/// `extra_labels ++ (open(final_tail) | empty_row)`.
+/// `extra_labels ++ (open(t1) ++ … ++ open(tn) | empty_row)`.
 ///
 /// `tail` is the open()'s tail field (a `Term::Var(Var::Global(vid))` in
 /// practice). The binding `vid := merge(present(l1), …, merge(present(ln),
-/// <open(final_tail) or empty_row>))` plays the role of the row-rewrite
+/// <open(t1) … open(tn) or empty_row>))` plays the role of the row-rewrite
 /// equation: subsequent `decompose_effect_row` calls that walk through the
-/// substitution recover the labels and the new tail position.
+/// substitution recover the labels and the new tail positions.
 ///
-/// When `final_tail` is `None`, the tail closes (`empty_row`); when
-/// `Some(fresh)`, it stays open and `fresh` becomes the shared extension
-/// point between two open rows.
+/// When `final_tails` is empty, the tail closes (`empty_row`); with one
+/// `fresh`, it stays open and `fresh` becomes the shared extension
+/// point between two open rows. With several, the row is their union: the caller's own
+/// rows a callback raises ([`infer_discharged_row_tails`]).
 ///
 /// **WI-336 — Var-variant gating**. Only `Var::Global` row tails are
 /// bindable:
@@ -2300,7 +2301,7 @@ fn match_present_labels(
 /// - A non-`Var` tail is defensive only — `decompose_effect_row` returns
 ///   `Some(tail)` only for `Term::Var` nodes. If a malformed input
 ///   somehow reaches here, accept only the literal no-op (no extras, no
-///   final_tail) so the algorithm degrades gracefully.
+///   final tail) so the algorithm degrades gracefully.
 ///
 /// Currently latent for v1a (the typer never produces Rigid/DeBruijn
 /// effect-row tails), but the v1b lacks-constraint + polymorphic-row work
@@ -2312,7 +2313,7 @@ pub(super) fn bind_row_tail(
     subst: &mut Substitution,
     tail: TermId,
     extra_labels: &[Value],
-    final_tail: Option<TermId>,
+    final_tails: &[TermId],
 ) -> bool {
     let vid = match kb.get_term(tail) {
         Term::Var(Var::Global(vid)) => *vid,
@@ -2322,7 +2323,7 @@ pub(super) fn bind_row_tail(
         // Non-Var tail: decompose_effect_row only returns Var for the
         // tail slot, so this is defensive against a malformed input.
         // Accept only a literal no-op.
-        _ => return extra_labels.is_empty() && final_tail.is_none(),
+        _ => return extra_labels.is_empty() && final_tails.is_empty(),
     };
 
     // WI-328: lacks-constraint check. Any present label flowing INTO this
@@ -2335,7 +2336,7 @@ pub(super) fn bind_row_tail(
     // label beside it — is not decided here: the relation and the callback validator decide
     // it, which see the flowing row's own absences ([`row_unshown_outside_lacked`]).
     let vid_lacks = subst.lacks_of(vid);
-    if row_violates_lacks(kb, subst, extra_labels, final_tail.as_slice(), &vid_lacks) {
+    if row_violates_lacks(kb, subst, extra_labels, final_tails, &vid_lacks) {
         return false;
     }
 
@@ -2385,7 +2386,7 @@ pub(super) fn bind_row_tail(
 
     // `extra_labels` folded over the continuation, on the term carrier where every label
     // rides one ([`row_expr_from_parts`]).
-    let row = row_expr_from_parts(kb, extra_labels, &[], final_tail.as_slice());
+    let row = row_expr_from_parts(kb, extra_labels, &[], final_tails);
     match &row {
         Value::Term { id, .. } => {
             if occurs_in(kb, vid, *id) {
@@ -2408,11 +2409,11 @@ pub(super) fn bind_row_tail(
     // `ρ = extra_labels ∪ open(fresh)` and `ρ lacks L` (the extras were
     // already checked clean above) implies `fresh lacks L` — otherwise a
     // later binding of `fresh` could smuggle a forbidden effect back into
-    // the row through the shared tail. Closed continuations (`final_tail =
-    // None`) have no tail to carry the constraint, and that's sound: the
+    // the row through the shared tail. Closed continuations (no final
+    // tail) have no tail to carry the constraint, and that's sound: the
     // row is now fully determined and the extras passed the lacks check.
     if !vid_lacks.is_empty() {
-        if let Some(ft) = final_tail {
+        for &ft in final_tails {
             if let Term::Var(Var::Global(fresh_vid)) = kb.get_term(ft) {
                 let fresh_vid = *fresh_vid;
                 subst.add_lacks(fresh_vid, vid_lacks.iter().cloned());
@@ -2831,7 +2832,7 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
             // states for the same reason).
             //
             // THE SUCCESS PATH BELOW HAS THE SAME PROBLEM AND IS NOT FIXED HERE —
-            // WI-20260820-RDNS4. `bind_row_tail(…, None)` CLOSES the tail, so even when
+            // WI-20260820-RDNS4. `bind_row_tail(…, &[])` CLOSES the tail, so even when
             // this arm succeeds the first argument commits its least solution as if it
             // were the only constraint: the same `two[Rho]` at an ERRORING `a`, and a
             // `two_plain[Rho](a: @{Rho}, b: @{Rho})` with no handled label at all, are
@@ -2841,7 +2842,7 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
             if !directional && !only_b.is_empty() {
                 return false;
             }
-            bind_row_tail(kb, subst, b_t, &only_a, None)
+            bind_row_tail(kb, subst, b_t, &only_a, &[])
         }
         // DIRECTIONAL (5) — `a` open, `b` closed. `b` can absorb nothing through a tail,
         // so `a`'s extras must be empty either way. `a`'s tail then closes to `b`'s extras
@@ -2852,7 +2853,7 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
                 return false;
             }
             let closing: &[Value] = if directional { &[] } else { &only_b };
-            bind_row_tail(kb, subst, a_t, closing, None)
+            bind_row_tail(kb, subst, a_t, closing, &[])
         }
         (Some(a_t), Some(b_t)) => bind_both_open_tails(kb, subst, a_t, b_t, &only_a, &only_b),
     }
@@ -2886,7 +2887,7 @@ fn bind_both_open_tails(
         let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_b.len());
         all_extras.extend(only_a.iter().cloned());
         all_extras.extend(only_b.iter().cloned());
-        return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
+        return bind_row_tail(kb, subst, a_walked, &all_extras, &[fresh_var]);
     }
     // WI-441: tail-to-tail aliasing when ONE side's tail is a RIGID
     // (forall-Skolem) row var — the FORWARDING shape (`find(rest,
@@ -2908,10 +2909,10 @@ fn bind_both_open_tails(
     let b_rigid = matches!(kb.get_term(b_walked), Term::Var(Var::Rigid(_)));
     match (a_rigid, b_rigid) {
         (true, false) if only_b.is_empty() => {
-            return bind_row_tail(kb, subst, b_walked, only_a, Some(a_walked));
+            return bind_row_tail(kb, subst, b_walked, only_a, &[a_walked]);
         }
         (false, true) if only_a.is_empty() => {
-            return bind_row_tail(kb, subst, a_walked, only_b, Some(b_walked));
+            return bind_row_tail(kb, subst, a_walked, only_b, &[b_walked]);
         }
         // Two DISTINCT rigids (the a_walked == b_walked case returned
         // above) never alias; a rigid that must absorb extras fails.
@@ -2923,6 +2924,6 @@ fn bind_both_open_tails(
     // future decompose_effect_row reveals (only_a + only_b) as
     // present labels with shared tail ρ'. The symmetric Rémy fresh-tail step.
     let fresh_var = fresh_row_tail_var(kb);
-    bind_row_tail(kb, subst, a_t, only_b, Some(fresh_var))
-        && bind_row_tail(kb, subst, b_t, only_a, Some(fresh_var))
+    bind_row_tail(kb, subst, a_t, only_b, &[fresh_var])
+        && bind_row_tail(kb, subst, b_t, only_a, &[fresh_var])
 }

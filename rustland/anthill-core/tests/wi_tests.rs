@@ -2124,3 +2124,5 @@ mod wi_450ka_own_row_in_a_slot_row_test;
 mod wi_1tjqh_callback_row_at_its_slot_test;
 #[path = "include/wi_9hkjv_default_at_a_structural_carrier_test.rs"]
 mod wi_9hkjv_default_at_a_structural_carrier_test;
+#[path = "include/wi_6mpn2_label_beside_row_parameter_test.rs"]
+mod wi_6mpn2_label_beside_row_parameter_test;

@@ -697,11 +697,11 @@ pub(super) fn check_apply_iter(
         // receiver's actual per-call type (the synthesis-time discharge point).
         // Populated only when the op has a projection.
         let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
-        // WI-329: (declared callback param type, actual argument type) per callable
+        // WI-329: (callback parameter, its declared type, actual argument type) per callable
         // parameter — the input to `infer_discharged_row_tails`, which runs after BOTH
         // arg loops because a row tail's lower bound is the UNION over every parameter
         // naming it. Empty for an op with no type parameters (the gate at each push).
-        let mut callback_pairs: Vec<(Value, Value)> = Vec::new();
+        let mut callback_pairs: Vec<(Symbol, Value, Value)> = Vec::new();
         // WI-20260926-NEKR0: a type parameter several arguments bind takes their JOIN, bound
         // here BEFORE the loops below unify in parameter order — which is what made the first
         // argument decide it. A projection-bearing parameter is deferred there and here alike.
@@ -784,8 +784,11 @@ pub(super) fn check_apply_iter(
                     // that declares type params — the population a row tail can live in —
                     // so an ordinary call allocates nothing.
                     if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
-                        callback_pairs
-                            .push((param_type.clone(), at_slot.unwrap_or_else(|| arg_result.ty.clone())));
+                        callback_pairs.push((
+                            *param_sym,
+                            param_type.clone(),
+                            at_slot.unwrap_or_else(|| arg_result.ty.clone()),
+                        ));
                     }
                 }
                 merge_effects_into(kb, &mut arg_effects, &arg_result.effects);
@@ -845,6 +848,7 @@ pub(super) fn check_apply_iter(
                     // WI-329 — see the positional loop.
                     if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
                         callback_pairs.push((
+                            *param_sym,
                             (*param_type).clone(),
                             at_slot.unwrap_or_else(|| arg_result.ty.clone()),
                         ));
@@ -966,6 +970,12 @@ pub(super) fn check_apply_iter(
                         callback_at_slot(kb, env, &mut subst, *param_sym, &eff, arg_occ, arg_ty)
                     });
                     unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(arg_ty), &eff);
+                    // The discharge inference reads the callback as this slot reads it: the
+                    // argument loops deferred this parameter, and recorded it as written.
+                    let pair = callback_pairs.iter_mut().find(|(p, _, _)| p == param_sym);
+                    if let (Some(at_slot), Some(pair)) = (at_slot, pair) {
+                        pair.2 = at_slot;
+                    }
                 }
                 effective_param_types.insert(*param_sym, eff);
             }
@@ -1003,8 +1013,9 @@ pub(super) fn check_apply_iter(
         // signature check so a discharged tail is part of the instantiation that check
         // reads, and above `first_unconstrained_type_param` so a tail this solves is no
         // longer reported unconstrained. No-op unless the callee declares type params and
-        // one of them is still unbound.
-        infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs);
+        // one of them is still unbound. Each slot is read as the call reads it
+        // (`effective_param_types`) where the call made it so.
+        infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs, &effective_param_types);
 
         // WI-705: reject a call whose SIGNATURE — the op's own effect row or any
         // arrow-typed param row — an instantiation has made UNINHABITABLE (`{X, -X}`,

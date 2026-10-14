@@ -35,6 +35,8 @@ pub static FAMILY: Family = Family {
                 opt("own", " @ {Modify[k]}"),
                 // That write, and a row parameter for whatever else the callback does.
                 opt("own-open", " @ {Modify[k], EffP}"),
+                // A label, and a row parameter for whatever else the callback does.
+                opt("label-open", " @ {Error[String], EffP}"),
                 // The slot's `{EffP}`, with the call's bracket saying it: the caller's own
                 // row, which is rigid there, and two of them.
                 opt("tail", " @ {EffP}"),
@@ -114,6 +116,7 @@ fn render(picks: &Picks<'_>) -> Program {
         "projected" => ("", " effects {s.E}", ""),
         "own" => ("", " effects {Modify[p]}", ""),
         "own-open" => ("[EffP]", " effects {Modify[p], EffP}", ""),
+        "label-open" => ("[EffP]", " effects {Error[String], EffP}", ""),
         "tail" => ("[EffP]", " effects {EffP}", "[EffP = {R}]"),
         "two-tails" => ("[EffP]", " effects {EffP}", "[EffP = {R, Q}]"),
         other => panic!("no slot `{other}`"),

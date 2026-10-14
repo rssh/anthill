@@ -160,12 +160,6 @@ const EXCEPTIONS: &[Exception] = &[
     },
     Exception {
         property: Property::OneVerdict,
-        when: &["typed=field", "row=own-open"],
-        ticket: TICKET_6T5C6,
-        why: "an entity field's arrow cannot name its own parameter, and the refusal's company differs by spelling",
-    },
-    Exception {
-        property: Property::OneVerdict,
         when: &["typed=result", "does=writes-own"],
         ticket: TICKET_6T5C6,
         why: "an operation result's arrow cannot name its own parameter, and the refusal's company differs by spelling",
