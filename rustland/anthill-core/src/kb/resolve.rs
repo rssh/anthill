@@ -455,6 +455,12 @@ pub struct ReduceFaults {
     errors: Vec<ResolveError>,
     /// A search below was cut short, so an empty answer set here is not a refutation.
     truncated: bool,
+    /// How many bridged calls had no implementation reachable at their arguments
+    /// (`BridgeDisposition::Unreduced`). A COUNT, read before and after one call's
+    /// reduction ([`Self::unreduced_count`]), because the sink is shared by every call a
+    /// goal's evaluation makes and only the call that added to it is unreduced. Not a
+    /// fault: nothing ran short and nothing raised, so [`Self::is_empty`] does not read it.
+    unreduced: usize,
 }
 
 impl ReduceFaults {
@@ -469,6 +475,16 @@ impl ReduceFaults {
     /// A search below was cut short, with nothing to say about it.
     pub(crate) fn truncate(&mut self) {
         self.truncated = true;
+    }
+
+    /// A bridged call had no implementation reachable at its arguments.
+    pub(crate) fn unreduced(&mut self) {
+        self.unreduced += 1;
+    }
+
+    /// The bridged calls so far that had no implementation reachable ([`Self::unreduced`]).
+    pub(crate) fn unreduced_count(&self) -> usize {
+        self.unreduced
     }
 
     /// Did the reduction learn anything the caller must act on?
@@ -6148,7 +6164,11 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
-            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
+            BuiltinTag::FindDictionary => {
+                let inferred = matches!(goal, Value::Node(o)
+                    if super::typing::is_inferred_requirement_read(self, o));
+                self.builtin_find_dictionary(goal, answer_subst, inferred)
+            }
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
             BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
             // `apply_domain` that `step_init` could not lower DELAYS. It is reached only on that
@@ -8506,6 +8526,11 @@ impl KnowledgeBase {
                     crate::eval::BridgeDisposition::Fault => BuiltinResult::Error(
                         ResolveError::new(self.bridge_fault_message(target, &e)),
                     ),
+                    // The carrier's `eq` has no implementation at these operands, so the
+                    // comparison is undecided (proposal 068 §2.2).
+                    crate::eval::BridgeDisposition::Unreduced => BuiltinResult::Unknown {
+                        cause: UnknownCause::Unreduced,
+                    },
                 },
             };
         }
@@ -8929,6 +8954,9 @@ impl KnowledgeBase {
         &mut self,
         goal: &V,
         subst: &Substitution,
+        // The typer INFERRED this read for a woven call (WI-20260925-P7VP4), rather than
+        // the author writing it — see [`Self::read_dictionary_into`]'s no-provider arm.
+        inferred: bool,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } => pos_arity,
@@ -9062,6 +9090,7 @@ impl KnowledgeBase {
                 out,
                 &bracket,
                 typed_instance,
+                inferred,
             ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
@@ -9102,6 +9131,7 @@ impl KnowledgeBase {
         // named.
         bracket: &super::typing::RequirementBracket,
         typed_instance: Option<&Value>,
+        inferred: bool,
     ) -> BuiltinResult {
         use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
         // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
@@ -9186,6 +9216,18 @@ impl KnowledgeBase {
             FindDictFetch::Fetched(dict) => dict,
             FindDictFetch::Guard(FindDictOutcome::Fire) => {
                 unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
+            }
+            // A CARRIER THAT PROVIDES NO INSTANCE. The read the author wrote is the clause's
+            // condition, and it does not hold. The read the typer INFERRED for a woven call
+            // is that call's dictionary, and no implementation is reachable for the call: it
+            // is UNREDUCED (proposal 068 §2.2), undecided and never asked again — failing
+            // here refuted the clause, and `not(…)` over it held. A dictionary a citation
+            // SUPPLIED is the other case: no local row agrees with it, and the check refuses
+            // it (WI-860) rather than let the call run through it beside an undecided read.
+            FindDictFetch::Guard(FindDictOutcome::DontFire) if inferred && !supplied => {
+                return BuiltinResult::Unknown {
+                    cause: UnknownCause::Unreduced,
+                }
             }
             FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
             // The carried type is not readable yet (the witness value is unbound).
@@ -12007,6 +12049,9 @@ impl KnowledgeBase {
             crate::eval::BridgeDisposition::Fault => {
                 faults.fault(self.bridge_fault_message(op, &e))
             }
+            // No implementation of the call is reachable at these arguments: the caller
+            // reads the call as UNREDUCED (`KnowledgeBase::evaluate_call`).
+            crate::eval::BridgeDisposition::Unreduced => faults.unreduced(),
         }
         None
     }

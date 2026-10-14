@@ -1259,6 +1259,7 @@ impl Interpreter {
         if let Err(msg) = crate::kb::typing::marker_refusal(&self.kb, parent.impl_sort()) {
             return Err(EvalError::UnpinnedRequirement {
                 detail: format!("cannot read sub-requirement {k} of {what}: {msg}"),
+                marker: parent.impl_sort(),
             });
         }
         parent.sub(k).ok_or_else(|| {
@@ -1478,7 +1479,10 @@ impl Interpreter {
         dispatching_dict: &super::value::Dictionary,
     ) -> Result<Symbol, EvalError> {
         crate::kb::typing::resolve_op_target_checked(&self.kb, dispatching_dict.impl_sort(), fn_sym)
-            .map_err(|detail| EvalError::UnpinnedRequirement { detail })
+            .map_err(|detail| EvalError::UnpinnedRequirement {
+                detail,
+                marker: dispatching_dict.impl_sort(),
+            })
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer

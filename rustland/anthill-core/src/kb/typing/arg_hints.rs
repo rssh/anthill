@@ -718,7 +718,7 @@ pub(super) fn bind_self_receiver_params_for_hint(
         return;
     };
     if let Some(carrier) = concrete_receiver_carrier(kb, spec_sort, &recv_ty) {
-        bind_spec_params_from_provision(kb, subst, spec_sort, carrier, &recv_ty, &params[idx].1);
+        bind_spec_params_from_provision(kb, subst, spec_sort, carrier, &recv_ty, Some(&params[idx].1));
     }
 }
 

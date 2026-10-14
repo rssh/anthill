@@ -573,6 +573,7 @@ impl KnowledgeBase {
     ) -> Result<Value, Stuck> {
         let call = self.evaluate_call_args(call, subst, faults, depth)?;
         let functor = self.call_functor(&call);
+        let unreduced_before = faults.unreduced_count();
         // The operation the TYPER pinned this site to is the callee, not the spelled one
         // (WI-1026): `PartialOrd.gt(pt(…), pt(…))` is spelled with a builtin and pinned
         // to the carrier's own bodied `gt`. `reduce_op_value` reads that pin, and hands a
@@ -607,6 +608,9 @@ impl KnowledgeBase {
                 self.evaluate_value_at_depth(value, subst, faults, depth + 1)
             }
             Some(value) => Ok(value),
+            // The bridge ran the callee and found no implementation reachable at these
+            // arguments — a requirement slot of its own that no provider answers.
+            None if faults.unreduced_count() > unreduced_before => Err(Stuck::Unreduced),
             None => Err(self.stuck_state(&call, functor, subst)),
         }
     }

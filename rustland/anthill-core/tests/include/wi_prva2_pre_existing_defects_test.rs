@@ -61,6 +61,22 @@ fn extended(src: &str, rules: &str) -> String {
     format!("{body}{rules}end\n")
 }
 
+/// `qn(?r)` is one UNDECIDED row whose cause is UNREDUCED: the woven call's read found no
+/// provision at its carriers, so no implementation of the call is reachable (proposal 068
+/// §2.2; WI-20261013-GFS6A). It used to fail, and the rows below asserted that `qn` was
+/// empty. A guard that FIRES there instead — the back-outs each row names — sends the read
+/// to a fetch that finds nothing, which waits: a conditional row with no cause, which this
+/// refuses as it refused the conditional row before.
+#[track_caller]
+fn assert_unreduced(kb: &mut anthill_core::kb::KnowledgeBase, qn: &str, why: &str) {
+    use anthill_core::kb::resolve::UnknownCause;
+    assert_eq!(
+        crate::common::undecided_causes(kb, qn),
+        vec![vec![UnknownCause::Unreduced]],
+        "{why}",
+    );
+}
+
 // ── (b) WI-670's open-time refutation and the functional-relation view ─────────────────────
 
 /// A non-reorderable builtin (`ground`) on a caller variable, beside an UNWOVEN
@@ -197,14 +213,13 @@ fn a_provision_at_several_parameters_answers_a_woven_call() {
 
 /// (c) CONTROL — passes either way, BY DESIGN, and guards the other direction: the question is
 /// the PROVISION at the carriers, not "some carrier provides". No provision binds `B = Int64`,
-/// so the read is refused and `noRow` is empty, definitely. A guard that asked only the first
-/// carrier (`Meters` provides `Conv`) would fire, and the fetch at `(Meters, Int64)` would come
-/// back undecided — one CONDITIONAL row where there is no answer (measured).
+/// so the read is refused and `noRow` is UNREDUCED ([`assert_unreduced`]). A guard that asked
+/// only the first carrier (`Meters` provides `Conv`) would fire, and the fetch at `(Meters,
+/// Int64)` would come back undecided — a conditional row with no cause (measured).
 #[test]
 fn a_call_no_provision_binds_is_refused() {
     let mut kb = crate::common::load_kb_with(MULTI);
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.multi.noRow");
-    assert!(rows.is_empty(), "no provision of `Conv` at `(Meters, Int64)`; got {rows:?}");
+    assert_unreduced(&mut kb, "wiprva2.multi.noRow", "no provision of `Conv` at `(Meters, Int64)`");
 }
 
 /// (c) THE LOAD-TIME FACE. With both carriers concrete at load, WI-642's check asked each to
@@ -259,15 +274,14 @@ const CONV2: &str = "  sort Conv2\n    sort A = ?\n    sort B = ?\n    provides 
 /// (c) — a CONVERSION is no instance. `Conv2 provides Conv[A = A, B = B]` says "hold a `Conv2`
 /// and you can obtain a `Conv`"; nothing is a `Conv2`, and the provider search skips the row.
 /// Read as a provision with only variables in it, it admitted EVERY carrier pair: `noRow`
-/// became one conditional row (the guard fired, the fetch found no candidate), and
+/// became a conditional row with no cause (the guard fired, the fetch found no candidate), and
 /// `Conv.conv(5, 6)` loaded where it is refused (and a `@[simp]` law rewrote it — measured).
 /// FAILS with `is_conversion_row` dropped from the provision question: `noRow` is a
-/// conditional row, and `bad` loads clean.
+/// conditional row with no cause, and `bad` loads clean.
 #[test]
 fn a_conversion_row_is_no_instance() {
     let mut kb = crate::common::load_kb_with(&extended(MULTI, CONV2));
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.multi.noRow");
-    assert!(rows.is_empty(), "no provision of `Conv` at `(Meters, Int64)`; got {rows:?}");
+    assert_unreduced(&mut kb, "wiprva2.multi.noRow", "no provision of `Conv` at `(Meters, Int64)`");
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(&extended(
             MULTI,
@@ -290,8 +304,8 @@ fn conv_program(ns: &str, rows: &str, rules: &str) -> String {
 
 /// (c) — a STRUCTURAL binding admits no carrier: a carrier is a sort, never an arrow. With
 /// `Meters provides Conv[A = Meters, B = (Int64) -> Int64]`, `toN(m(v: 3), "km")` has no
-/// instance, and `go` is empty. FAILS with such a binding admitting any carrier: the guard
-/// fires, the fetch finds nothing, and `go` is one conditional row.
+/// instance, and `go` is UNREDUCED. FAILS with such a binding admitting any carrier: the guard
+/// fires, the fetch finds nothing, and `go` is a conditional row with no cause.
 #[test]
 fn a_structural_binding_admits_no_carrier() {
     let src = conv_program(
@@ -301,13 +315,13 @@ fn a_structural_binding_admits_no_carrier() {
         "  rule go(?r) :- toN(m(v: 3), \"km\", ?r)\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.arrow.go");
-    assert!(rows.is_empty(), "`String` is no `(Int64) -> Int64`; got {rows:?}");
+    assert_unreduced(&mut kb, "wiprva2.arrow.go", "`String` is no `(Int64) -> Int64`");
 }
 
 /// (c) — one provider variable binds its parameters ALIKE. `Same provides Conv[A = X, B = X]`
 /// serves `(Int64, Int64)` — `goSame` answers `1` — and not `(Int64, String)`, so `goMixed` is
-/// empty. FAILS with each parameter judged alone: `goMixed` is one conditional row.
+/// UNREDUCED. FAILS with each parameter judged alone: `goMixed` is a conditional row with no
+/// cause.
 #[test]
 fn a_variable_binds_its_parameters_alike() {
     let src = conv_program(
@@ -318,8 +332,7 @@ fn a_variable_binds_its_parameters_alike() {
     );
     let mut kb = crate::common::load_kb_with(&src);
     assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.same.goSame"), Some(1));
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.same.goMixed");
-    assert!(rows.is_empty(), "`X` is not both `Int64` and `String`; got {rows:?}");
+    assert_unreduced(&mut kb, "wiprva2.same.goMixed", "`X` is not both `Int64` and `String`");
 }
 
 /// (c) — a carrier at a parameter that is not the spec's CARRIER parameter asks the provision

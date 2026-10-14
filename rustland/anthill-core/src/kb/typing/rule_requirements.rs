@@ -459,7 +459,7 @@ const INFERRED_REQUIREMENT_PASS: &str = "anthill.kb.passes.inferred_requirement"
 /// qualified names and never finds a pass: MEASURED, that spelling answered `false` for
 /// every inferred read, so each one counted as the author's declaration and silenced
 /// NR6FJ's refusal of a slot nothing can fill.
-fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
+pub(crate) fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
     node.synthesized_by().is_some_and(|by| {
         kb.symbols
             .lookup(INFERRED_REQUIREMENT_PASS)

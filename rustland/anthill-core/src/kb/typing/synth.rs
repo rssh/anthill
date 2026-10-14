@@ -844,7 +844,20 @@ pub(super) fn resolve_inner<'a>(
     // been dead code carrying a confident comment. The anchor needs its own two because
     // it is SYNTHESIZED into chains those sites build directly (WI-857); a refinement
     // clause is written by an author and only ever arrives here, as a goal.
-    if !clause_is_dispatchable(kb, goal.spec_sort) {
+    //
+    // NOT A GOAL A CALL'S RECEIVER MADE. A sort with no type parameter is a refinement
+    // where a `requires` clause names it, and there the leaf is right; a call of its
+    // operation at a receiver of another sort that provides it is answered by that sort
+    // (kernel-language.md §5.3), which is what the goal's carrier says. Taken as the leaf,
+    // the rule-body read of `Sp.dflt(?s, ?x)` at a `Car` bound `Sp`'s own dictionary and the
+    // call ran `Sp`'s default where `Car` declares the member.
+    let answered_by_its_carrier = |kb: &KnowledgeBase| {
+        goal.carrier
+            .as_ref()
+            .is_some_and(|c| !same_sort_canonical(kb, c.sort, goal.spec_sort))
+            && !sort_is_data(kb, kb.canonical_sort_sym(goal.spec_sort))
+    };
+    if !clause_is_dispatchable(kb, goal.spec_sort) && !answered_by_its_carrier(kb) {
         return ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
             impl_sort: goal.spec_sort,
             spec_sort: goal.spec_sort,

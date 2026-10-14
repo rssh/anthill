@@ -265,7 +265,7 @@ pub(super) fn receiver_carrier(
 /// Concrete carriers (`List`/`Map` — they HAVE constructors, so `carrier_is_abstract_spec` is
 /// false) dispatch as before.
 pub(super) fn concrete_receiver_carrier(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     spec_sort: Symbol,
     recv_ty: &Value,
 ) -> Option<Symbol> {
@@ -1089,16 +1089,25 @@ pub(super) fn bind_spec_params_from_carrier(
     let Some(recv_ty) = recv_ty else {
         return false;
     };
-    bind_spec_params_from_provision(kb, subst, spec_sort, carrier_sym, &recv_ty, &op.params[idx].1)
+    bind_spec_params_from_provision(
+        kb,
+        subst,
+        spec_sort,
+        carrier_sym,
+        &recv_ty,
+        Some(&op.params[idx].1),
+    )
 }
 
 /// What a self-receiver spec operation's receiver binds through its carrier's provision of
 /// `spec_sort`, read at a receiver of type `recv_ty`: the spec's own parameters, and the
 /// operation's where its receiver parameter (`recv_param_ty`, `s: Stream[T = Elem]`) names
 /// them. The one reading of a provision at a receiver, asked by the call once its
-/// arguments are typed ([`bind_spec_params_from_carrier`]) and by a lambda's hint before
+/// arguments are typed ([`bind_spec_params_from_carrier`]), by a lambda's hint before
 /// they are ([`bind_self_receiver_params_for_hint`]), so a callback's parameter is hinted
-/// with the type the call will hold it to.
+/// with the type the call will hold it to, and by a rule body's requirement read at run
+/// time ([`self_represented_elements`]), which has no operation's parameter to pass
+/// (`recv_param_ty` is `None`).
 ///
 /// The hint used to read only the parameters the provision binds to THIS instance
 /// ([`bind_this_instance_params`]): over `Wrap[A] provides Sp[T = A]`, `Sp.each(w, lambda q
@@ -1109,7 +1118,7 @@ pub(super) fn bind_spec_params_from_provision(
     spec_sort: Symbol,
     carrier_sym: Symbol,
     recv_ty: &Value,
-    recv_param_ty: &Value,
+    recv_param_ty: Option<&Value>,
 ) -> bool {
     let mut any = bind_this_instance_params(kb, subst, spec_sort, carrier_sym, recv_ty);
 
@@ -1142,8 +1151,8 @@ pub(super) fn bind_spec_params_from_provision(
     // (the pre-rewrite ops) — then only the spec sort's params bind, exactly as
     // before. WI-600: keyed by the SPEC sort's canonical param VarId (the op's
     // self-receiver `Stream[T = Elem]` binds the spec's `T`), matched by identity.
-    let op_param_map: Vec<(VarId, Value)> = match extract_type(kb, recv_param_ty) {
-        TypeExtractor::Parameterized { bindings, .. } => bindings
+    let op_param_map: Vec<(VarId, Value)> = match recv_param_ty.map(|t| extract_type(kb, t)) {
+        Some(TypeExtractor::Parameterized { bindings, .. }) => bindings
             .into_iter()
             .filter_map(|(p, v)| type_param_vid_in_sort(kb, spec_sort, p).map(|vid| (vid, v)))
             .collect(),

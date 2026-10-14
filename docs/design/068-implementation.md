@@ -339,6 +339,35 @@ Their tickets hold their design questions: 7D48J — the clause environment, how
 the census's typing count, and Y6ZCD's single dispatch decision; DSEXA — `?d` as a blocker, the
 retired per-consumer reductions, the unfold threading dictionaries.
 
+### 6.1 D1a as delivered (WI-20261013-GFS6A, 2026-10-14)
+
+`?d` was already among a woven call's blockers: CYNPE's coarse blockers are a waiting goal's
+unbound variables, and the walk descends into an `ApplyWithin`'s requirements. What kept the
+call from answering was the READ before it, at four places, each driven by
+`wi_gfs6a_woven_call_waits_on_its_dictionary_test` (back-outs stated at its sites):
+
+- **A self-represented spec's elements come off the carrier's provision**
+  (`self_represented_elements`, read by `witness_sort_goal` and `anchor_sort_goal` alike, through
+  the typer's `bind_spec_params_from_provision`). Left to the wildcard tail, `T` under `Car
+  provides Sp[T = Int64]` met the concrete binding and was refused, so the read never found the
+  provider. An element the written bracket names still selects the row.
+- **A goal its receiver made is answered by the receiver's sort** (`resolve_inner`): the
+  refinement leaf a sort with no type parameter takes is for a `requires` clause, not for a goal
+  with a carrier. Taken there, the read bound `Sp`'s own dictionary and a defaulted call ran the
+  default.
+- **An unbound carrier at an abstract bound waits** (`guard_over_arg_types`, through
+  `concrete_receiver_carrier`): the variable's bound is the spec or a sort others provide, so
+  the value bound later decides. Read as the carrier, a call whose receiver a later goal binds
+  ran `Sp`'s default.
+- **No provider at a ground carrier is UNREDUCED** — for the read the typer INFERRED
+  (`read_dictionary_into`: `Unknown { Unreduced }`, the read parked, the call waiting on `?d`);
+  a read the author wrote still fails, and so does one whose dictionary a citation supplied. At
+  the bridge, an operation's own requirement the arguments pin and no provider answers is a
+  recorded absence (`UnavailableWhy::NoProvider`) rather than a skipped slot; a body that reads
+  it raises `UnpinnedRequirement`, whose disposition is `BridgeDisposition::Unreduced`, and
+  `evaluate_call` reads the call as `Stuck::Unreduced` (KCNA0's three programs: an undecided
+  row naming its cause, where a debug build aborted).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

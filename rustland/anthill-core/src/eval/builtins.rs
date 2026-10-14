@@ -6156,7 +6156,10 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // a dispatch face, and letting it hand back an `OpRef` on the spec op is the
     // silent fall-through the marker exists to prevent.
     let target = resolve_op_target_checked(&interp.kb, h.impl_sort(), spec_op_sym)
-        .map_err(|detail| EvalError::UnpinnedRequirement { detail })?;
+        .map_err(|detail| EvalError::UnpinnedRequirement {
+            detail,
+            marker: h.impl_sort(),
+        })?;
     // WI-857: `target` is the RESOLVED member; `h` is a dictionary for the spec
     // `spec_op_sym` belongs to, whose layout has that spec's chain as its prefix.
     // Carry the named op so applying this ref measures `h` against the right layout —
@@ -6200,7 +6203,10 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     // dictionary that pins no provider at all. That is the silent skip the marker
     // exists to prevent, one level quieter than the one `resolveOp` refuses.
     if let Err(detail) = crate::kb::typing::marker_refusal(&interp.kb, impl_sym) {
-        return Err(EvalError::UnpinnedRequirement { detail });
+        return Err(EvalError::UnpinnedRequirement {
+            detail,
+            marker: impl_sym,
+        });
     }
     let elems: Vec<Value> = interp
         .kb
@@ -6218,7 +6224,10 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
                     named: Some(target),
                     op_reqs: None,
                 })
-                .map_err(|detail| EvalError::UnpinnedRequirement { detail })
+                .map_err(|detail| EvalError::UnpinnedRequirement {
+                    detail,
+                    marker: impl_sym,
+                })
         })
         .collect::<Result<Vec<Value>, EvalError>>()?;
     build_value_list(interp, elems)

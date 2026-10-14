@@ -723,6 +723,29 @@ pub(crate) fn resolve_bridge_requirements_supplied(
                     slot: *name,
                 };
             }
+            // AN OP-HALF GOAL THE ARGUMENTS PINNED, AND NO PROVIDER ANSWERS IT. Skipped,
+            // a body that reads the slot died `DeferToRequirement: … not bound in caller
+            // frame` — an evaluator-invariant error, so a debug build aborted on a program
+            // that loaded clean (KCNA0: `pick(x: Box) requires Desc[T = x.E]` reached from
+            // a rule body at `box(v: blue())`). Recorded as the absence it is: a body that
+            // never reads the slot runs as it did, and one that reads it is refused there,
+            // naming the goal — UNREDUCED at the SLD bridge (proposal 068 §2.2).
+            //
+            // The goal is the SLOT's, rendered here: a `NoMatch` forwarded from beneath a
+            // chosen provider names that provider's own condition in its text and hint, and
+            // the hint is what says which — so the absence carries both.
+            ResolutionResult::NoMatch { hint, .. } if op_half => {
+                trees.push((
+                    *name,
+                    BridgeSlot::Absent {
+                        spec_sort: goal.spec_sort,
+                        why: UnavailableWhy::NoProvider {
+                            goal: format_goal(kb, &goal),
+                            why: hint,
+                        },
+                    },
+                ));
+            }
             // "no unique provider" was the umbrella wording BECAUSE it also covered
             // the tie; with that split off, what is left is a goal that resolves to
             // no provider at all or to a cycle.

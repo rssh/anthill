@@ -1390,7 +1390,7 @@ pub(crate) fn find_dictionary_guard(
     if is_anchor_form(kb, spec_sort, op_functor) {
         return anchor_guard(kb, spec_sort, &arg_types);
     }
-    guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
+    guard_over_arg_types(kb, spec_sort, op_functor, arg_vals, &arg_types)
 }
 
 /// WI-20260909-S8CBV gate (1) — [`witness_arg_types`], with δ applied to the CARRIER
@@ -1457,15 +1457,30 @@ fn witness_arg_types(
 /// The WI-300 guard decision over already-read carried types. A headless argument
 /// rides as `None`; [`simp_guard_holds_core`] decides Fire/DontFire/Suspend from
 /// only the CARRIER indices (a headless carrier ⇒ Suspend).
+///
+/// An argument that is still a VARIABLE rides as `None` too where the type it carries pins
+/// no carrier ([`concrete_receiver_carrier`]: the spec itself, or a sort other sorts
+/// provide): that type is the variable's bound, and the sort of the value bound to it later
+/// — some provider of the bound — is what decides the instance.
+/// Read as the carrier, `rule late(?s, ?x) :- Sp.dflt(?s, ?x), ?s <=> car(n: 1)` took `Sp`'s
+/// own dictionary before `?s` was bound and answered `Sp`'s default where `Car`'s member
+/// answers.
 fn guard_over_arg_types(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     op_functor: Symbol,
+    arg_vals: &[Value],
     arg_types: &[Value],
 ) -> FindDictOutcome {
     let arg_sorts: Vec<Option<Symbol>> = arg_types
         .iter()
-        .map(|t| sort_functor_of_view(kb, t))
+        .zip(arg_vals)
+        .map(|(t, v)| {
+            let sort = sort_functor_of_view(kb, t)?;
+            // The values come σ-walked, so a variable here is an unbound one.
+            let unbound = matches!(v.head(kb), ViewHead::Var(_));
+            (!unbound || concrete_receiver_carrier(kb, spec_sort, t).is_some()).then_some(sort)
+        })
         .collect();
     simp_guard_holds_core(kb, op_functor, spec_sort, |i| {
         arg_sorts.get(i).copied().flatten()
@@ -1718,16 +1733,16 @@ pub(super) fn anchor_sort_goal(
 ) -> Option<WitnessGoal> {
     let carrier_ty = arg_types.first()?.clone();
     if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort)) {
-        let carrier = sort_functor_of_view(kb, &carrier_ty).map(|sort| GoalCarrier {
-            sort,
-            args: receiver_type_args(kb, &carrier_ty),
+        let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+        let carrier = sort_functor_of_view(kb, &carrier_ty).map(|sort| {
+            self_represented_elements(kb, spec_sort, sort, &carrier_ty, written, &mut bindings);
+            GoalCarrier {
+                sort,
+                args: receiver_type_args(kb, &carrier_ty),
+            }
         });
         return Some(sort_goal_with_wildcards(
-            kb,
-            spec_sort,
-            SmallVec::new(),
-            carrier,
-            written,
+            kb, spec_sort, bindings, carrier, written,
         ));
     }
     let param = spec_carrier_param_or_sole(kb, spec_sort)?;
@@ -1824,7 +1839,7 @@ pub(crate) fn fetch_dictionary(
     let verdict = if anchored {
         anchor_guard(kb, spec_sort, &arg_types)
     } else {
-        guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
+        guard_over_arg_types(kb, spec_sort, op_functor, arg_vals, &arg_types)
     };
     match verdict {
         FindDictOutcome::Fire => {}
@@ -2045,16 +2060,21 @@ pub(super) fn witness_sort_goal(
             continue;
         };
         if self_representing {
+            if carrier.is_some() {
+                continue;
+            }
+            let Some(sort) = sort_functor_of_view(kb, &arg_ty) else {
+                continue;
+            };
+            self_represented_elements(kb, spec_sort, sort, &arg_ty, written, &mut bindings);
             // WI-20260828-EKWDC: the carrier's own type ARGUMENTS come off the very
             // value its sort was read from. This producer and the dispatch one
             // ([`receiver_carrier`]) must build the SAME goal for one program — a
             // carrier here that carried only its sort would instantiate the provider's
             // `requires` chain in the declaration scope, which is the defect.
-            carrier = carrier.or_else(|| {
-                sort_functor_of_view(kb, &arg_ty).map(|sort| GoalCarrier {
-                    sort,
-                    args: receiver_type_args(kb, &arg_ty),
-                })
+            carrier = Some(GoalCarrier {
+                sort,
+                args: receiver_type_args(kb, &arg_ty),
             });
             continue;
         }
@@ -2132,6 +2152,48 @@ pub(super) fn witness_sort_goal(
     Some(sort_goal_with_wildcards(
         kb, spec_sort, bindings, carrier, written,
     ))
+}
+
+/// The elements of a self-represented `spec_sort` that its carrier's provision gives it at a
+/// receiver of type `carrier_ty`, whose sort is `carrier`, pushed onto `bindings` — read by
+/// the typer's own reader of a provision at a receiver ([`bind_spec_params_from_provision`]),
+/// so the goal a requirement read builds at run time is the one the typed call builds.
+///
+/// Left to the wildcard tail, `Sp`'s `T` under `Car provides Sp[T = Int64]` met that concrete
+/// binding and refused it, so a carrier that provides the spec found no provider: a woven
+/// call never ran, and a `require[Sp]` anchored at a `Car` never bound its dictionary.
+///
+/// What it leaves to the tail: an element the WRITTEN bracket names ([`written_element`]),
+/// which selects the row as the author wrote it — `require[Sp[T = String]]` at a `Car`
+/// finds no row rather than `Car`'s at `Int64`; an effect row, which the tail leaves out of
+/// the match; and a binding that is not ground. Nothing for a spec with no parameter.
+fn self_represented_elements(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    carrier_ty: &Value,
+    written: &[(Symbol, Value)],
+    bindings: &mut SmallVec<[(Symbol, Value); 2]>,
+) {
+    if kb.type_params_of_sort(spec_sort).is_empty() {
+        return;
+    }
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut at_receiver = Substitution::new();
+    bind_spec_params_from_provision(kb, &mut at_receiver, spec_sort, carrier, carrier_ty, None);
+    for (param, value) in spec_param_bindings(kb, &at_receiver, spec_sort) {
+        let short = kb.local_name_of(param).to_string();
+        if sort_param_is_effect_row(kb, spec_sort, &short)
+            || !type_is_ground(kb, &value)
+            || written_element(kb, written, &short).is_some()
+        {
+            continue;
+        }
+        let key = spec_param_key(kb, &spec_qn, &short, param);
+        if bindings.iter().all(|(k, _)| *k != key) {
+            bindings.push((key, value));
+        }
+    }
 }
 
 /// WI-20260909-QMFC5 — the SHARED tail of every [`SortGoal`] this tier builds: fill the
