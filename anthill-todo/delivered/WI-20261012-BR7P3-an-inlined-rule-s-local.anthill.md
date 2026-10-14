@@ -3,9 +3,9 @@
 - id: WI-20261012-BR7P3-an-inlined-rule-s-local
 - created: 2026-10-12T15:16:24Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-12T15:16:24Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-14T12:16:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -38,4 +38,8 @@ DONE WHEN: the control rows hold and fail when backed out; the documents that mo
 ### 2026-10-12T21:17:39Z — feedback — user
 
 FROM WI-20261012-CDHSQ: a call stated as the relation of a cited lemma's premise is REFUSED when it stands in the body of an inlined rule and names that rule's own variable (`Emitter::state_predicate_call`, the `inlining` stack; row `a_call_in_an_inlined_rule_that_names_its_own_variable_is_refused`) — stated, it was the relation of the caller's variable of the same index, and a false claim proved (docs/measurements/test-infrastructure/lemma-premise-2026-10-12.txt §6 (3)). When the names are told apart here, that refusal goes, and the row turns: such a call is stated of a variable of its own. And a second face of the same collision was a regression of ZZ7PH's, fixed there: whether `?x = <term>` names `?x` was asked of the term's text, which in an inlined rule is in the caller's names (§6 (1)).
+
+### 2026-10-14T12:16:47Z — feedback — user
+
+DELIVERED (6f5262ce), with WI-20261014-FHEEK — the user's decision, 2026-10-14: an inlined rule's own variables are named apart, var_<n> continued past the clause's own. COUNTED FIRST: no lf1 or suite document wrote an inlined rule's own variable (one hit, kf2sd.mixed.at, refused as recursive), so no verdict rested on a collision and the renaming moved no document. Every variable of an inlined frame (inline_rule_call, translate_called_rule) is bound when the frame is opened — its head's to what the caller passed, the rest to names past every name of the document (name_own_variables, frame_size), on across the worlds of one document; sorts kept by those names (an own variable of T declared at T, where it was (lt@T var_1 var_1)); an unbound variable inside an inlined frame is an error. The other direction too: a construction passed into an inlined rule is closed over the caller's frame (fx(P(x: ?a), ?r) read ?a as fx's own ?w, and a false claim proved, with the renaming alone too); a variable bound to a construction written as a term is refused in both frames. The two reproductions are COUNTEREXAMPLES (rows apart, one_arg); 1KF32's helper had made three false proofs of the same collision (by_fact, by_number, by_row), COUNTEREXAMPLES now. CDHSQ's refusal of a stated call naming an inlined rule's own variable is gone and its row turned (a_call_in_an_inlined_rule_that_names_its_own_variable_is_stated_of_it: related stated of wrap2's var_2; deep a COUNTEREXAMPLE). scaland's one-argument form named apart the same. Measurement: docs/measurements/test-infrastructure/inlined-names-2026-10-14.txt.
 
