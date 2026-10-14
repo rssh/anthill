@@ -2304,8 +2304,8 @@ pub(crate) fn carrier_views_overlap<A: TermView, B: TermView>(
 /// Two carrier views that are neither a parameter nor a carrier application — an arrow, a
 /// tuple, a row, a value in a type position. Two ARROWS overlap where their parts pair as the
 /// provision lookup pairs them ([`arrow_part_pairs`]: the parameters by position, the names
-/// lining up or one list written without names, then the result and the row) and each pair
-/// overlaps; two TUPLES where they align as unification aligns them ([`TupleAlign::EQUALITY`]:
+/// lining up or one list written without names, then the result) and each pair overlaps,
+/// and where their rows can be one row ([`rows_overlap`]); two TUPLES where they align as unification aligns them ([`TupleAlign::EQUALITY`]:
 /// one width, the labels one position by position) and each pair of components overlaps — a
 /// named tuple is another type than the positional one. Anything else
 /// overlaps exactly when it is one type: the id test where both are hash-consed, and the same
@@ -2322,8 +2322,11 @@ pub(crate) fn carrier_views_overlap<A: TermView, B: TermView>(
 /// served it at.
 fn structural_views_overlap<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> bool {
     match (type_head(kb, a), type_head(kb, b)) {
-        (TypeHead::Arrow, TypeHead::Arrow) => arrow_part_pairs(kb, a, b)
-            .is_some_and(|pairs| pairs.iter().all(|(x, y)| carrier_views_overlap(kb, x, y))),
+        (TypeHead::Arrow, TypeHead::Arrow) => arrow_part_pairs(kb, a, b).is_some_and(|pairs| {
+            let (row_a, row_b) = &pairs.rows;
+            pairs.parts.iter().all(|(x, y)| carrier_views_overlap(kb, x, y))
+                && rows_overlap(kb, row_a, row_b)
+        }),
         (TypeHead::NamedTuple, TypeHead::NamedTuple) => {
             let (fields_a, fields_b) = (named_tuple_fields(kb, a), named_tuple_fields(kb, b));
             align_named_tuple_slots(kb, &fields_a, &fields_b, TupleAlign::EQUALITY).is_some_and(
@@ -2334,6 +2337,38 @@ fn structural_views_overlap<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A,
             )
         }
         _ => views_structurally_equal(kb, a, b),
+    }
+}
+
+/// Can two arrows' rows be one row at some call? Two closed rows where their labels and their
+/// absences pair one to one, each pair overlapping; a row open at a tail where its labels and
+/// absences are among the other's — the tail takes the rest, which is what a call binds a
+/// provider's row parameter to; two open rows always. A row not read as one ([`row_atoms`])
+/// overlaps only what it is structurally equal to.
+fn rows_overlap(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
+    let (Some(ra), Some(rb)) = (row_atoms(kb, a), row_atoms(kb, b)) else {
+        return views_structurally_equal(kb, a, b);
+    };
+    // Each of `xs` paired with its own of `ys`, in order; `exact`, nothing of `ys` left over.
+    let pair = |xs: &[Value], ys: &[Value], exact: bool| {
+        if xs.len() > ys.len() || (exact && xs.len() != ys.len()) {
+            return false;
+        }
+        let mut left = vec![true; ys.len()];
+        xs.iter().all(|x| {
+            let Some(i) = (0..ys.len()).find(|&i| left[i] && carrier_views_overlap(kb, x, &ys[i]))
+            else {
+                return false;
+            };
+            left[i] = false;
+            true
+        })
+    };
+    match (ra.open, rb.open) {
+        (true, true) => true,
+        (false, false) => pair(&ra.present, &rb.present, true) && pair(&ra.absent, &rb.absent, true),
+        (true, false) => pair(&ra.present, &rb.present, false) && pair(&ra.absent, &rb.absent, false),
+        (false, true) => pair(&rb.present, &ra.present, false) && pair(&rb.absent, &ra.absent, false),
     }
 }
 

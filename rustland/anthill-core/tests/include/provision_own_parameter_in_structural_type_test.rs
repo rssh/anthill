@@ -56,8 +56,8 @@
 //!   { sort T = ?  provides Lo[T = (T, Int64)] }`) loads and dies when the call runs,
 //!   "operation has no body: `Lo.lo`" — at a tuple, an arrow and an applied sort alike, so it
 //!   is not this parameter's spelling: WI-20260909-M8QWJ's shape (e).
-//! * A ROW PARAMETER inside an arrow's effect row (`(A) -> A @ {E}`) is a leaf of the match,
-//!   as every row is, and is bound to nothing.
+//! * A ROW PARAMETER at an arrow's effect row (`(A) -> A @ {E}`) is bound to the call's row,
+//!   the two rows being one (WI-20261014-5JYH9, whose file has the rows).
 
 use crate::common::{assert_refused_naming, interp_for, load_errors_of};
 use anthill_core::eval::Value;

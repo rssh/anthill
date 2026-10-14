@@ -388,9 +388,14 @@ pub(super) fn both_named_tuples<A: TermView, B: TermView>(
     )
 }
 
-/// The parts of two arrows, paired as two arrows are related: the parameters, then the
-/// result, then the effect row. `None` when either is no arrow, when they take different
-/// numbers of parameters, or when their parameter lists do not align.
+/// The parts of two arrows, paired as two arrows are related: the parameters and the
+/// result in [`ArrowPartPairs::parts`], the two effect rows in [`ArrowPartPairs::rows`].
+/// `None` when either is no arrow, when they take different numbers of parameters, or
+/// when their parameter lists do not align.
+///
+/// THE ROWS ARE HANDED BACK APART because a row is not compared as a type is: two arrows
+/// are one binding where their rows are the same row (kernel-language §5.2), a set of
+/// labels and a tail, which each reader compares as a row.
 ///
 /// The parameters of a LIST are paired by position ([`TupleAlign::PARAM_LIST`]: the names
 /// line up, or one list is written without names). A sole parameter is its type, and the
@@ -415,7 +420,7 @@ pub(super) fn arrow_part_pairs<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     b: &B,
-) -> Option<SmallVec<[(Value, Value); 4]>> {
+) -> Option<ArrowPartPairs> {
     let (param_a, result_a, effects_a, arity_a) = arrow_children(kb, a)?;
     let (param_b, result_b, effects_b, arity_b) = arrow_children(kb, b)?;
     if arity_a != arity_b {
@@ -433,8 +438,18 @@ pub(super) fn arrow_part_pairs<A: TermView, B: TermView>(
         pairs.push((param_a, param_b));
     }
     pairs.push((result_a, result_b));
-    pairs.push((effects_a, effects_b));
-    Some(pairs)
+    Some(ArrowPartPairs {
+        parts: pairs,
+        rows: (effects_a, effects_b),
+    })
+}
+
+/// Two arrows' parts as [`arrow_part_pairs`] pairs them.
+pub(super) struct ArrowPartPairs {
+    /// The parameters, then the result.
+    pub(super) parts: SmallVec<[(Value, Value); 4]>,
+    /// The two effect rows.
+    pub(super) rows: (Value, Value),
 }
 
 /// An arrow's parameter slot, result, effect row and parameter count; `None` for a type

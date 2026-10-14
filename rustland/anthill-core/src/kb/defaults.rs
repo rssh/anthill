@@ -800,7 +800,7 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
         format!(
             "'{}' at carrier '{}' ({})",
             kb.qualified_name_of(r.provider),
-            typing::type_display_name(kb, r.carrier),
+            typing::carrier_display_name(kb, r.carrier),
             r.origin.label()
         )
     };
@@ -822,15 +822,15 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
     collisions.sort_by_key(|(a, _)| {
         (
             kb.qualified_name_of(a.spec).to_string(),
-            typing::type_display_name(kb, a.carrier),
+            typing::carrier_display_name(kb, a.carrier),
         )
     });
     collisions
         .into_iter()
         .map(|(a, b)| {
             let (ca, cb) = (
-                typing::type_display_name(kb, a.carrier),
-                typing::type_display_name(kb, b.carrier),
+                typing::carrier_display_name(kb, a.carrier),
+                typing::carrier_display_name(kb, b.carrier),
             );
             LoadError::AmbiguousDefaultProvider {
                 spec: kb.qualified_name_of(a.spec).to_string(),

@@ -337,6 +337,31 @@ fn arrow_rows_that_differ(
     (e != a).then_some((e, a))
 }
 
+/// The row of an arrow at the top of `ty`, where it holds anything: `None` for an arrow
+/// whose row is empty and for a type that is no arrow. The row decides which provision
+/// answers at an arrow (kernel-language §5.2), and a message naming the arrow without it
+/// names the type a provider of the pure arrow is at.
+pub(super) fn arrow_row_shown(kb: &KnowledgeBase, ty: &Value) -> Option<String> {
+    if !matches!(type_head(kb, ty), TypeHead::Arrow) {
+        return None;
+    }
+    let row = view_child_value(kb, ty, "effects")?;
+    let empty = row_atoms(kb, &row)
+        .is_some_and(|atoms| !atoms.open && atoms.present.is_empty() && atoms.absent.is_empty());
+    (!empty).then(|| named_child_display(kb, ty, "effects", Spelling::Meaning))
+}
+
+/// [`type_display_name`] of a provision's carrier, with the row of an arrow at its top where
+/// it holds anything ([`arrow_row_shown`]): two carriers that differ only in that row are
+/// two carriers, and printed alike they read as one.
+pub(crate) fn carrier_display_name(kb: &KnowledgeBase, carrier: TermId) -> String {
+    let text = type_display_name(kb, carrier);
+    match arrow_row_shown(kb, &Value::term(carrier)) {
+        Some(row) => format!("{text} @ {row}"),
+        None => text,
+    }
+}
+
 /// WI-872 — the sort symbols a type MENTIONS, at any depth.
 ///
 /// Shape-agnostic on purpose: it decodes no `sort_ref` / `parameterized` / tuple / arrow

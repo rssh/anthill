@@ -12,11 +12,12 @@
 //! The provision lookup read the variable as the parameter since da39cc3d (`impl_param_ref`),
 //! a reading at that one reader; it is gone, and the loader writes one spelling.
 //!
-//! AN EFFECT ROW STAYS AS A TYPE POSITION HOLDS IT, in this lowering and in the alias reading
-//! that shares its canon (`type_in_clause_canon`): a row's tail is a variable, and the member
-//! rule reads a row slot naming its own row by it. The alias reading turned that tail into
-//! the parameter's name, and a provision binding written through an alias was refused where
-//! the same binding written out answers — found while this change was measured.
+//! A ROW'S TAIL STAYS A VARIABLE, as a type position holds it, in this lowering and in the
+//! alias reading that shares its canon (`type_in_clause_canon`): the member rule reads a row
+//! slot naming its own row by it. The alias reading turned that tail into the parameter's
+//! name, and a provision binding written through an alias was refused where the same binding
+//! written out answers — found while this change was measured. (A row's labels are types,
+//! and a parameter in one is its name since WI-20261014-5JYH9.)
 //!
 //! EVERY ROW DRIVES WHAT IT CLAIMS: the call runs and the provider answers its number, or the
 //! refusal names the type the call binds the parameter to.
@@ -35,8 +36,9 @@
 //!    directly`. In a build with debug assertions each fails at `impl_param_ref`'s
 //!    assertion, which names the parameter whose variable the binding holds; without it,
 //!    10 of the 11 fail by their verdicts.
-//! 2. THE CANON REACHING INTO AN EFFECT ROW (`type_in_clause_canon` and the occurrence
-//!    rewriter without their row stop):
+//! 2. THE CANON REACHING A ROW'S TAIL (`type_in_clause_canon` and the occurrence rewriter
+//!    without their stop at `open`; measured with the stop at the whole row, before
+//!    WI-20261014-5JYH9 moved it to the tail):
 //!    [`an_alias_binding_whose_row_names_its_own_row_meets_the_instance`] alone; its direct
 //!    spelling passes, by design.
 //!

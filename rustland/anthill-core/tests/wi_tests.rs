@@ -39,6 +39,8 @@ mod wi_0gyw1_arrow_provision_labels_test;
 mod provision_own_parameter_in_structural_type_test;
 #[path = "include/wi_34822_clause_parameter_one_spelling_test.rs"]
 mod wi_34822_clause_parameter_one_spelling_test;
+#[path = "include/wi_5jyh9_arrow_row_binding_test.rs"]
+mod wi_5jyh9_arrow_row_binding_test;
 #[path = "include/wi_jmmhq_value_dot_internal_test.rs"]
 mod wi_jmmhq_value_dot_internal_test;
 #[path = "include/wi_rm247_data_sort_equation_test.rs"]

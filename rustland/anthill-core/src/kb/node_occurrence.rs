@@ -3498,22 +3498,28 @@ fn rewrite_type_occurrence<R: TypeChildRewrite>(
 /// type parameter is its NAME there (`Ref(S)`), where a type position has its variable.
 /// Any other variable — a slot left open — is the variable it is in both.
 ///
-/// AN EFFECT ROW IS LEFT AS A TYPE POSITION HOLDS IT, as a row written as a binding
-/// (`E = {EC, Error[Foo]}`) is: a row's tail is a variable, never a name — the row readers
-/// fold it as `open(?E)` — and the member rule reads a row slot naming its own row by that
-/// variable. Rewritten to `Ref(EC)` the tail was a parameter written inside its own slot,
-/// and `provides Holder[C = CR]` over `sort CR = Car[EC = {EC, Error[Foo]}, V = V]` was
-/// refused where the same binding written out answers (MEASURED).
+/// A ROW'S TAIL IS LEFT A VARIABLE (`open(?E)`), as a type position holds it: the row
+/// readers fold a tail as a variable, never a name, and the member rule reads a row slot
+/// naming its own row by it. Rewritten to `Ref(EC)` the tail was a parameter written
+/// inside its own slot, and `provides Holder[C = CR]` over `sort CR = Car[EC = {EC,
+/// Error[Foo]}, V = V]` was refused where the same binding written out answers (MEASURED).
+/// A row's LABELS are types, and a parameter in one is its name as anywhere else
+/// (`Error[T = A]`), which the provision lookup binds as it binds one in a parameter.
 pub(crate) fn type_in_clause_canon(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     match kb.get_term(t).clone() {
         Term::Var(Var::Global(vid)) => match kb.type_param_of_canonical_var(vid) {
             Some(param) => kb.make_sort_ref(param),
             None => t,
         },
-        Term::Fn { .. } if super::typing::is_effects_rows_term(kb, t) => t,
+        Term::Fn { functor, .. } if is_open_row_atom(kb, functor) => t,
         Term::Fn { .. } => kb.map_fn_children(t, type_in_clause_canon),
         _ => t,
     }
+}
+
+/// Is `functor` a row's tail atom, `open(tail)`?
+fn is_open_row_atom(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.qualified_name_of(functor) == "anthill.prelude.EffectExpression.open"
 }
 
 /// [`type_in_clause_canon`] of a type on whatever carrier it rides: a type that holds a
@@ -3526,7 +3532,7 @@ pub(crate) fn value_in_clause_canon(kb: &mut KnowledgeBase, v: Value) -> Value {
     }
 }
 
-/// The occurrence walk of [`type_in_clause_canon`], with the same row stop.
+/// The occurrence walk of [`type_in_clause_canon`], leaving a row's tail as it does.
 struct ClauseCanonRewrite;
 impl TypeChildRewrite for ClauseCanonRewrite {
     fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
@@ -3534,7 +3540,7 @@ impl TypeChildRewrite for ClauseCanonRewrite {
         (nt, nt != t)
     }
     fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
-        if matches!(n.kind, NodeKind::Type(TypeNode::EffectsRows { .. })) {
+        if matches!(n.kind, NodeKind::EffectExpr(EffectExprNode::Open { .. })) {
             return Rc::clone(n);
         }
         rewrite_type_occurrence(self, kb, n).unwrap_or_else(|| Rc::clone(n))

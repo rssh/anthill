@@ -2089,6 +2089,10 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
     // field's type does — an effect row (`{}`), a projection off a parameter (`s.Elem`), an
     // arrow, a tuple, and the type variable a constructed value keeps for a slot nothing
     // fixed.
+    //
+    // AN ARROW'S ROW IS SHOWN where it holds anything ([`arrow_row_shown`]): it decides which
+    // provision answers at the arrow (kernel-language §5.2), and a goal printed without it
+    // named the type a provider of the pure arrow is at.
     if matches!(
         type_head(kb, v),
         TypeHead::Denoted
@@ -2099,7 +2103,11 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
             | TypeHead::Arrow
             | TypeHead::NamedTuple
     ) {
-        return type_display_name_value(kb, v);
+        let text = type_display_name_value(kb, v);
+        return match arrow_row_shown(kb, v) {
+            Some(row) => format!("{text} @ {row}"),
+            None => text,
+        };
     }
     match v.head(kb) {
         // a bare reference is named above via `extract_sort_ref_sym` (WI-361); a still-

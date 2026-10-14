@@ -35788,9 +35788,9 @@ impl<'a> Loader<'a> {
     /// `Fn{S}→Ref(S)` patch (`normalize_ground_leaf`); subsumes WI-387 (which aligned only
     /// the `T = T` param half). A parameterized binding is the plain application a type
     /// position builds ([`Self::assemble_binding_value`]), never the spec-identity
-    /// `SortView`. A tuple or an arrow is the type a type position lowers, held in the
-    /// clause canon ([`node_occurrence::type_in_clause_canon`]). Any other binding (effect
-    /// row, variable, value) falls through [`sort_inst_to_value`] to its catch-all,
+    /// `SortView`. A tuple, an arrow or a row is the type a type position lowers, held in the
+    /// clause canon ([`node_occurrence::type_in_clause_canon`]). Any other binding
+    /// (variable, value) falls through [`sort_inst_to_value`] to its catch-all,
     /// [`Self::type_expr_to_value`] — never to its name arms, which read a type alias as a
     /// SPEC.
     fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
@@ -35910,13 +35910,14 @@ impl<'a> Loader<'a> {
                 self.record_type_application_site(base_sym, named.iter().cloned().collect(), span);
                 self.assemble_binding_value(base_sym, named, span)
             }
-            // A sort's parameter written inside a tuple or an arrow is its `Ref`, as at a
-            // name and in an applied sort: one spelling for every reader of the clause.
-            // Left as the variable the type lowering gives it, the readers that put a
-            // provider's parameters into its `requires` and its conditions, which read the
-            // name, passed it by — `requires Mark[T = (A, Int64)]` was asked at `(?_,
-            // Int64)` beside a provider of `Mark` at `(String, Int64)` (MEASURED).
-            TypeExpr::Tuple(_) | TypeExpr::Arrow { .. } => {
+            // A sort's parameter written inside a tuple, an arrow or a row is its `Ref`, as at
+            // a name and in an applied sort: one spelling for every reader of the clause. Left
+            // as the variable the type lowering gives it, the readers that put a provider's
+            // parameters into its `requires` and its conditions, which read the name, passed
+            // it by — `requires Mark[T = (A, Int64)]` was asked at `(?_, Int64)` beside a
+            // provider of `Mark` at `(String, Int64)` (MEASURED). A row's tail stays the
+            // variable it is in every row (`node_occurrence::type_in_clause_canon`).
+            TypeExpr::Tuple(_) | TypeExpr::Arrow { .. } | TypeExpr::EffectRow(_) => {
                 let as_a_type = self.type_expr_to_value(ty);
                 node_occurrence::value_in_clause_canon(self.kb, as_a_type)
             }

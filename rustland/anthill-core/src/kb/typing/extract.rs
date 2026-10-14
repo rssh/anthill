@@ -209,14 +209,6 @@ pub(crate) fn bottom_sort_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option
         .filter(|s| kb.has_kind(*s, crate::intern::SymbolKind::Sort))
 }
 
-/// Is `t` an effect row in a type slot, `effects_rows(EffectExpression)`? Read by the effect
-/// row of a provision value, which is not wrapped a second time
-/// ([`effect_row_param_value`]), and by the clause canon, which leaves a row as a type
-/// position holds it (`node_occurrence::type_in_clause_canon`).
-pub(crate) fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
-    matches!(type_head(kb, &TermIdView(t)), TypeHead::EffectsRows)
-}
-
 pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
     // WI-436: a 0-ary TypeExtractor meta-ctor (`Nothing`) canonicalizes to a bare
     // `Ref` head, so classify by the functor SYMBOL read off either spelling

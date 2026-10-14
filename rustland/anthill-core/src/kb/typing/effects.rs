@@ -26,6 +26,46 @@ pub(super) fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Opti
     }
 }
 
+/// The atoms of the row `v` — `effects_rows(…)` as written, under no substitution: its
+/// present labels, its absent ones, and whether it is open at a tail anywhere. `None` for a
+/// value that is no row or holds an atom of another kind. Read without minting a symbol,
+/// for a reader that has the KB shared ([`decompose_effect_row_raw`] is the one for a row
+/// read under a substitution).
+pub(super) fn row_atoms<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<RowAtoms> {
+    fn walk(kb: &KnowledgeBase, expr: &Value, atoms: &mut RowAtoms) -> Option<()> {
+        let f = expr.head(kb).functor_sym()?;
+        match kb.qualified_name_of(f) {
+            "anthill.prelude.EffectExpression.empty_row" => {}
+            "anthill.prelude.EffectExpression.open" => atoms.open = true,
+            "anthill.prelude.EffectExpression.present"
+            | "anthill.prelude.EffectExpression.guarded" => {
+                atoms.present.push(view_child_value(kb, expr, "label")?)
+            }
+            "anthill.prelude.EffectExpression.absent" => {
+                atoms.absent.push(view_child_value(kb, expr, "label")?)
+            }
+            "anthill.prelude.EffectExpression.merge" => {
+                walk(kb, &view_child_value(kb, expr, "left")?, atoms)?;
+                walk(kb, &view_child_value(kb, expr, "right")?, atoms)?;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut atoms = RowAtoms::default();
+    walk(kb, &effects_rows_inner(kb, v)?, &mut atoms)?;
+    Some(atoms)
+}
+
+/// A row's atoms as [`row_atoms`] reads them.
+#[derive(Default)]
+pub(super) struct RowAtoms {
+    pub(super) present: Vec<Value>,
+    pub(super) absent: Vec<Value>,
+    /// Open at a tail anywhere.
+    pub(super) open: bool,
+}
+
 /// Decompose an arrow.effects field (`effects_rows(EffectExpression)` Type)
 /// into (present_labels, open_tail, absent_labels) by structurally walking
 /// the EffectExpression algebra through the current substitution.
@@ -2320,15 +2360,6 @@ pub(super) fn bind_row_tail(
     if extra_labels.iter().any(|l| label_over_callback_binder(kb, l)) {
         return false;
     }
-    let mut ground_extras: Vec<TermId> = Vec::with_capacity(extra_labels.len());
-    let mut all_terms = true;
-    for l in extra_labels {
-        match l {
-            Value::Term { id: t, .. } => ground_extras.push(*t),
-            _ => all_terms = false,
-        }
-    }
-
     // WI-337: bootstrap-safety — `decompose_effect_row`'s bare-Var
     // path (line ~5535) returns a `Var::Global` tail without ever
     // resolving any `EffectExpression` symbol, so we can reach here
@@ -2352,40 +2383,22 @@ pub(super) fn bind_row_tail(
         return false;
     }
 
-    if all_terms {
-        // Build the inner tail: open(fresh) if shared, empty_row if closed.
-        let inner = match final_tail {
-            Some(ft) => kb.make_effect_expression_open(ft),
-            None => kb.make_effect_expression_empty_row(),
-        };
-        // Right-fold extras into the inner tail.
-        let mut acc = inner;
-        for &l in ground_extras.iter().rev() {
-            let p = kb.make_effect_expression_present(l);
-            acc = kb.make_effect_expression_merge(p, acc);
+    // `extra_labels` folded over the continuation, on the term carrier where every label
+    // rides one ([`row_expr_from_parts`]).
+    let row = row_expr_from_parts(kb, extra_labels, &[], final_tail.as_slice());
+    match &row {
+        Value::Term { id, .. } => {
+            if occurs_in(kb, vid, *id) {
+                return false;
+            }
+            subst.bind(kb, vid, *id);
         }
-
-        if occurs_in(kb, vid, acc) {
-            return false;
+        _ => {
+            if occurs_in_view(kb, vid, &row) {
+                return false;
+            }
+            subst.bind_value(kb, vid, row);
         }
-        subst.bind(kb, vid, acc);
-    } else {
-        // The same right fold on the occurrence carrier.
-        let span = crate::kb::node_occurrence::empty_span();
-        let mut row = match final_tail {
-            Some(ft) => kb.make_open_occ(TypeChild::Interned(ft), span, None),
-            None => kb.make_empty_row_occ(span, None),
-        };
-        for label in extra_labels.iter().rev() {
-            let label_child = value_to_type_child_at(kb, label, span, None);
-            let atom = kb.make_present_occ(label_child, span, None);
-            row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, None);
-        }
-        let row = Value::Node(row);
-        if occurs_in_view(kb, vid, &row) {
-            return false;
-        }
-        subst.bind_value(kb, vid, row);
     }
     if subst.is_contradiction() {
         return false;
@@ -2504,6 +2517,78 @@ fn register_row_lacks(
 /// Both are out of scope for v1a hardening. This helper consolidates
 /// the four pre-WI-338 inline allocation sites into one place so the
 /// future fix has a single point of change.
+/// A row as a type, `effects_rows(…)`, presenting `present`, absenting `absent` and open
+/// at `tails` (closed where there is none), on the carrier [`row_expr_from_parts`] builds it on.
+pub(super) fn row_type_from_parts(
+    kb: &mut KnowledgeBase,
+    present: &[Value],
+    absent: &[Value],
+    tails: &[TermId],
+) -> Value {
+    match row_expr_from_parts(kb, present, absent, tails) {
+        Value::Term { id, .. } => Value::term(kb.make_effects_rows_type(id)),
+        other => {
+            let span = crate::kb::node_occurrence::empty_span();
+            let child = value_to_type_child_at(kb, &other, span, None);
+            Value::Node(kb.make_effects_rows_occ(child, span, None))
+        }
+    }
+}
+
+/// A row's inner expression: the `present` and `absent` atoms folded right over the
+/// continuation — `open(tail)` for each tail, `empty_row` where there is none. On the term
+/// carrier where every label rides one, on an occurrence otherwise (a label written through
+/// an alias, rebuilt around one, or holding a value, `Modify[r]`). The one fold, read by
+/// [`bind_row_tail`] for a row variable's binding and by [`row_type_from_parts`] for a row.
+fn row_expr_from_parts(
+    kb: &mut KnowledgeBase,
+    present: &[Value],
+    absent: &[Value],
+    tails: &[TermId],
+) -> Value {
+    let on_terms = present
+        .iter()
+        .chain(absent)
+        .all(|l| matches!(l, Value::Term { .. }));
+    if on_terms {
+        let mut row = kb.make_effect_expression_empty_row();
+        for (i, &tail) in tails.iter().rev().enumerate() {
+            let open = kb.make_effect_expression_open(tail);
+            row = if i == 0 { open } else { kb.make_effect_expression_merge(open, row) };
+        }
+        for label in absent.iter().rev() {
+            let atom = kb.make_effect_expression_absent(label.expect_term());
+            row = kb.make_effect_expression_merge(atom, row);
+        }
+        for label in present.iter().rev() {
+            let atom = kb.make_effect_expression_present(label.expect_term());
+            row = kb.make_effect_expression_merge(atom, row);
+        }
+        return Value::term(row);
+    }
+    let span = crate::kb::node_occurrence::empty_span();
+    let mut row = kb.make_empty_row_occ(span, None);
+    for (i, &tail) in tails.iter().rev().enumerate() {
+        let open = kb.make_open_occ(TypeChild::Interned(tail), span, None);
+        row = if i == 0 {
+            open
+        } else {
+            kb.make_merge_occ(TypeChild::Node(open), TypeChild::Node(row), span, None)
+        };
+    }
+    for label in absent.iter().rev() {
+        let child = value_to_type_child_at(kb, label, span, None);
+        let atom = kb.make_absent_occ(child, span, None);
+        row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, None);
+    }
+    for label in present.iter().rev() {
+        let child = value_to_type_child_at(kb, label, span, None);
+        let atom = kb.make_present_occ(child, span, None);
+        row = kb.make_merge_occ(TypeChild::Node(atom), TypeChild::Node(row), span, None);
+    }
+    Value::Node(row)
+}
+
 fn fresh_row_tail_var(kb: &mut KnowledgeBase) -> TermId {
     let fresh_sym = kb.intern("?rho");
     let fresh_vid = kb.fresh_var(fresh_sym);

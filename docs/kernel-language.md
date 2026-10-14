@@ -2172,12 +2172,13 @@ written, naming both.
 A binding that is an arrow or a tuple is compared by its parts, where it is the whole
 binding and where it stands inside an applied sort.  Two arrows are one binding when
 they take as many parameters, their parameter lists relate as two parameter lists do
-(§4.4 "Arrow types"), and their results are the same.  Two tuples are one binding when
-they have the same labels in the same order and the same component types.  So
-`requires Apply[F = (Int64) -> Int64]` and `requires Apply[F = (String) -> Int64]` are
-two requirements: a call at a value of the second type does not read the first, and
-neither does a call at `(Int64, Int64) -> Int64`.  A tuple with a component more is
-another binding than the narrower one, though it conforms to it as a type.
+(§4.4 "Arrow types"), their results are the same, and their effect rows are the same
+row.  Two tuples are one binding when they have the same labels in the same order and
+the same component types.  So `requires Apply[F = (Int64) -> Int64]` and `requires
+Apply[F = (String) -> Int64]` are two requirements: a call at a value of the second
+type does not read the first, and neither does a call at `(Int64, Int64) -> Int64`.  A
+tuple with a component more is another binding than the narrower one, though it
+conforms to it as a type.
 
 A provision answers at such a binding by the same comparison.  A provider at
 `(Int64, Int64) -> Int64` answers a call at `(p: Int64, q: Int64) -> Int64` and
@@ -2187,6 +2188,19 @@ arrow with the names answers at the one without.  A provider at
 arrows.  Two providers whose arrows differ only in the names one of them writes are
 two providers at one binding, and a call that selects neither is refused as a tie is
 (§8.7 "Instance coherence").
+
+A row is one row with another when the two hold the same labels, in any order, and the
+same tail; an arrow written without a row has the empty one.  A provider at
+`(Int64) -> Int64` does not answer a call at `(Int64) -> Int64 @ {ConsoleOutput}`, nor
+the other way round, though a pure function can be passed where the effectful arrow is
+expected; and `requires Apply[F = (Int64) -> Int64]` is not read by a call at the
+effectful arrow.  A provider that answers at any row writes a row parameter of its own,
+`provides Apply[F = (Int64) -> Int64 @ {R}]`: the call binds `R` to its row, or to what
+its row has beside the labels the provider writes next to `R`, and the provider's
+`requires` and conditions are read at that row.  A type parameter written in a label,
+`@ {Error[T = A]}`, is bound as one written anywhere in the binding, and held to one
+type.  A call at a row variable of the caller's — an operation's own row parameter — is
+answered by a provider at a row parameter, or by a requirement written at that row.
 
 Because a named slot is a type parameter, **omitting it means two different
 things and they are decided per call site** (proposal 058 §3.4, WI-1094).  Where
@@ -6501,7 +6515,7 @@ Different namespaces may declare different providers of the same spec for the sa
 
 **Instance coherence.** Selection is **explicit and per-call**, not per-scope (proposal 058 §8; design notes in `docs/design/spec-instance-dispatch.md` and `docs/design/058-implementation.md`).
 
-*At most one default per carrier.* A spec has at most one **default** provider for a given carrier: the carrier's own provision where one exists — inferred, so the existing library needs no marks — or the provider a `DefaultProvider` row names, written either as the `default provides Spec[…]` modifier on the provision or as a by-reference `fact DefaultProvider(spec: …, provider: …)` (§5.1; which of a spec's parameters is the *carrier* is settled there too). Two default rows for one carrier are a **load error naming both**, each by its provider, its carrier, and whether it was *declared* or *inferred* — the inferred row has to be named because the author never wrote it, and would otherwise read the error as firing on a single declaration. That is `AmbiguousDefaultProvider`, raised by the `one_default` check, which compares rows at carriers that **overlap** rather than at carriers that are equal, so a ground row beside a parametric one for the same family collides while two disjoint ground rows coexist. A carrier may be a tuple or an arrow as well as a sort, and two such carriers overlap as a call is matched to a provision: two tuples where their labels are one, position by position, and their components overlap; two arrows where their parameter lists pair as two arrows are related (§4.4: the names line up, or one list is written without names) and their parts overlap. That pairing is not transitive, and it is asked of two carriers at a time. Marks at `(a: Int64, b: Int64) -> Int64` and at `(x: Int64, y: Int64) -> Int64` therefore coexist, since those two lists do not pair, and a call at `(Int64, Int64) -> Int64`, which both answer, takes neither and is refused as a tie; a mark at either named list beside one at the unnamed list is the load error. Nothing *displaces* a default; a rival only collides with one, because a self-providing carrier already holds the inferred row: **fill silence, never overwrite speech.**
+*At most one default per carrier.* A spec has at most one **default** provider for a given carrier: the carrier's own provision where one exists — inferred, so the existing library needs no marks — or the provider a `DefaultProvider` row names, written either as the `default provides Spec[…]` modifier on the provision or as a by-reference `fact DefaultProvider(spec: …, provider: …)` (§5.1; which of a spec's parameters is the *carrier* is settled there too). Two default rows for one carrier are a **load error naming both**, each by its provider, its carrier, and whether it was *declared* or *inferred* — the inferred row has to be named because the author never wrote it, and would otherwise read the error as firing on a single declaration. That is `AmbiguousDefaultProvider`, raised by the `one_default` check, which compares rows at carriers that **overlap** rather than at carriers that are equal, so a ground row beside a parametric one for the same family collides while two disjoint ground rows coexist. A carrier may be a tuple or an arrow as well as a sort, and two such carriers overlap as a call is matched to a provision: two tuples where their labels are one, position by position, and their components overlap; two arrows where their parameter lists pair as two arrows are related (§4.4: the names line up, or one list is written without names), their parts overlap, and their rows can be one row — the same row, or either open at a row parameter, which a call binds to its own row (§5.2). That pairing is not transitive, and it is asked of two carriers at a time. Marks at `(a: Int64, b: Int64) -> Int64` and at `(x: Int64, y: Int64) -> Int64` therefore coexist, since those two lists do not pair, and a call at `(Int64, Int64) -> Int64`, which both answer, takes neither and is refused as a tie; a mark at either named list beside one at the unnamed list is the load error. Nothing *displaces* a default; a rival only collides with one, because a self-providing carrier already holds the inferred row: **fill silence, never overwrite speech.**
 
 *A second provider is permitted, gated on nameability.* Two providers of one spec for one carrier may coexist — if and only if **every** candidate can be *named*, since the repair for an unselected call is to write a name. A witness sort has one, its declared sort name; an instance fact has none — its identity *is* the bindings it asserts — so a group containing one keeps the load-time refusal (`MixedProviderKinds`, or `AmbiguousInstanceFact` for two facts). Missing names are deliberately not generated: a fingerprint breaks every written selection when the fact is edited, and an ordinal one silently swaps their meaning when two declarations are reordered. Two *texts* naming **one** provider are one candidate rather than a group of two — see *One carrier declaring one spec twice* below. Nameability buys coexistence only where a **call site** exists to spend the name at. Semantic equality has none — `eq` dispatches from **unification** (§8.3), so no written call could carry a bracket — and it is therefore coherent permanently: two `eq` suppliers for one carrier are a load error (`AmbiguousEqDispatch`, `build_eq_dispatch_index`) however nameable each is, and the same holds of the `neq` beside it (§8.3, WI-1125). The general form of that rule: a read asking whether a provider **exists** stays boolean, while a read that **selects** one goes loud on the second candidate — at load where it has no later site to complain from, at the use site where it has one, and never by first match.
 

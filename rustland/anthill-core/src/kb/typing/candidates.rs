@@ -943,12 +943,18 @@ pub(super) fn match_candidate_against_goal(
     // provision of `Apply` answers at `(p: Int64, q: Int64) -> Int64`", a `requires` at
     // the one beside a provider at the other "no impl provides", and a selected witness
     // "provides no instance at these bindings").
+    //
+    // THE TWO ROWS ARE ONE ROW (kernel-language §5.2), matched as a row
+    // ([`match_candidate_rows`]): taken for a leaf, every row matched every other by its head,
+    // and a provider at `(Int64) -> Int64` answered a call at `(Int64) -> Int64 @
+    // {ConsoleOutput}` — its member, declared over a pure function, ran one that printed
+    // (MEASURED).
     if matches!(candidate_head, TypeHead::Arrow) {
         let Some(pairs) = arrow_part_pairs(kb, candidate_value, per_call_value) else {
             return false;
         };
         *specificity = specificity.saturating_add(1);
-        return pairs.iter().all(|(c_part, p_part)| {
+        let parts_match = pairs.parts.iter().all(|(c_part, p_part)| {
             match_candidate_against_goal(
                 kb,
                 impl_sort,
@@ -961,6 +967,18 @@ pub(super) fn match_candidate_against_goal(
                 sigma,
             )
         });
+        let (c_row, p_row) = &pairs.rows;
+        return parts_match
+            && match_candidate_rows(
+                kb,
+                impl_sort,
+                c_row,
+                p_row,
+                impl_params,
+                impl_subst,
+                specificity,
+                sigma,
+            );
     }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
     //
@@ -1266,6 +1284,110 @@ pub(super) fn match_candidate_against_goal(
     false
 }
 
+/// A provision's arrow row matched against the call's: one row, as the parameters and the
+/// result are one type (kernel-language §5.2). Each label the provision writes meets one of
+/// the call's ([`match_candidate_against_goal`], which binds a provider's parameter written
+/// in it — `Error[T = A]`); then a CLOSED provision row has nothing left over on the call's
+/// side, and a provision row open at the provider's own row parameter (`@ {R}`) binds that
+/// parameter to what is left over ([`match_impl_param`], held to one row with a binding
+/// made elsewhere in the provision). The parameter is its variable here, a row's tail being
+/// one (`node_occurrence::type_in_clause_canon`).
+///
+/// MATCHING, NOT UNIFICATION, as the rest of the lookup: a call row open at a variable is
+/// answered only by a provision open at a parameter, never by a closed one, which would
+/// guess what the variable is. A tail that is no parameter of the provider (`?`) takes the
+/// rest and binds nothing. A provision row with two tails cannot say which takes what, and
+/// answers no call. Labels are paired in order, the first of the call's each meets.
+#[allow(clippy::too_many_arguments)]
+fn match_candidate_rows(
+    kb: &mut KnowledgeBase,
+    impl_sort: Symbol,
+    candidate_row: &Value,
+    per_call_row: &Value,
+    impl_params: &[Symbol],
+    impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
+    specificity: &mut u32,
+    sigma: Option<&SigmaCtx>,
+) -> bool {
+    // Both rows as written, as the leaf arm reads a pair under a fresh substitution.
+    let none = Substitution::new();
+    let (Some((c_present, c_tails, c_absent)), Some((p_present, p_tails, p_absent))) = (
+        decompose_effect_row_raw(kb, &none, candidate_row),
+        decompose_effect_row_raw(kb, &none, per_call_row),
+    ) else {
+        return false;
+    };
+    let binder = match c_tails.as_slice() {
+        [] => None,
+        [tail] => Some(row_tail_param(kb, *tail, impl_params)),
+        _ => return false,
+    };
+    let meet = |kb: &mut KnowledgeBase,
+                    c_labels: &[Value],
+                    p_labels: &[Value],
+                    impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
+                    specificity: &mut u32|
+     -> Option<Vec<Value>> {
+        let mut left: Vec<Option<&Value>> = p_labels.iter().map(Some).collect();
+        for c_label in c_labels {
+            let met = left.iter().position(|p| {
+                p.is_some_and(|p_label| {
+                    let (saved_subst, saved_spec) = (impl_subst.clone(), *specificity);
+                    let met = match_candidate_against_goal(
+                        kb,
+                        impl_sort,
+                        false,
+                        c_label,
+                        p_label,
+                        impl_params,
+                        impl_subst,
+                        specificity,
+                        sigma,
+                    );
+                    if !met {
+                        (*impl_subst, *specificity) = (saved_subst, saved_spec);
+                    }
+                    met
+                })
+            })?;
+            left[met] = None;
+        }
+        Some(left.into_iter().flatten().cloned().collect())
+    };
+    let Some(rest_present) = meet(kb, &c_present, &p_present, impl_subst, specificity) else {
+        return false;
+    };
+    let Some(rest_absent) = meet(kb, &c_absent, &p_absent, impl_subst, specificity) else {
+        return false;
+    };
+    match binder {
+        None => {
+            *specificity = specificity.saturating_add(1);
+            rest_present.is_empty() && rest_absent.is_empty() && p_tails.is_empty()
+        }
+        Some(None) => true,
+        Some(Some(param)) => {
+            let rest = if c_present.is_empty() && c_absent.is_empty() {
+                per_call_row.clone()
+            } else {
+                row_type_from_parts(kb, &rest_present, &rest_absent, &p_tails)
+            };
+            match_impl_param(kb, sigma, param, &rest, impl_subst)
+        }
+    }
+}
+
+/// The provider's parameter a provision row's tail is, if it is one: the row parameter's
+/// variable (a row's tail is one, `node_occurrence::type_in_clause_canon`) whose parameter
+/// is one of `impl_params`. `None` for any other tail.
+fn row_tail_param(kb: &KnowledgeBase, tail: TermId, impl_params: &[Symbol]) -> Option<Symbol> {
+    let Term::Var(Var::Global(vid)) = kb.get_term(tail) else {
+        return None;
+    };
+    kb.type_param_of_canonical_var(*vid)
+        .filter(|p| impl_params.contains(p))
+}
+
 /// WI-20261001-80ZV8 — the binding `key = value` of a provision head's `base[…]` is the
 /// provider's own named slot forwarded under its own name: `O = O` in `sort Keyed {
 /// requires O: WeakOrd[T]; provides Rel[T = Keyed[T = T, O = O]] }`. See arm (2) of
@@ -1487,8 +1609,8 @@ fn sole_projected_row(kb: &mut KnowledgeBase, value: &Value) -> Value {
 /// A provision's binding names the provider's parameter by its name wherever the
 /// parameter is written in it, inside an arrow or a tuple too: the loader holds the type a
 /// type position lowers there in the clause canon (`Loader::sort_binding_to_value`). The
-/// parameter's variable stays only inside an effect row, which the lookup matches as a
-/// leaf.
+/// parameter's variable stays only at a row's tail, which the lookup reads as a row
+/// ([`match_candidate_rows`]).
 ///
 /// WI-20260829-7QVD5 — CLASSIFIED BY THE SYMBOL'S ROLE, NOT ITS SPELLING. This read the
 /// raw term and accepted only `Ref`/`Ident`, and a test pinned the nullary `Fn{S}` of a
@@ -1513,7 +1635,8 @@ pub(super) fn impl_param_ref<V: TermView>(
         }
         | ViewHead::Ident(s) => s,
         // Read as a wildcard by the caller's leaf arm, the provider's own parameter would
-        // match anything and bind nothing; the loader never writes it so outside a row.
+        // match anything and bind nothing; the loader writes it so only at a row's tail,
+        // which never reaches here.
         ViewHead::Var(Var::Global(vid)) => {
             debug_assert!(
                 kb.type_param_of_canonical_var(vid)
@@ -2192,5 +2315,47 @@ fn instantiate_provider_entries(
     // The resolver's impl-side template: σ keyed by SYMBOL, since these entries' values
     // reference the impl's OWN parameters (see [`provider_requires_subgoals`] for the
     // by-name keying the spec half needs instead).
-    requires_chain_goals(kb, chain, &|kb, v| sigma_subst_type(kb, v, impl_subst))
+    requires_chain_goals(kb, chain, &|kb, v| {
+        let named = sigma_subst_type(kb, v, impl_subst);
+        row_tails_at(kb, &named, impl_subst)
+    })
+}
+
+/// `v` with each row tail that is a provider's row parameter replaced by the row
+/// `impl_subst` binds the parameter to, the row rebuilt flat: its labels beside the bound
+/// row's, its tail the bound row's own. A row's tail is the parameter's VARIABLE in a clause
+/// (`node_occurrence::type_in_clause_canon`), which [`sigma_subst_type`] — reading names —
+/// passes by: `requires Mark[T = (A) -> A @ {R}]` on a provider the lookup bound at `R =
+/// {}` was asked at `@ {?R}`, which no provision at a closed row answers (MEASURED). The
+/// lookup binds a row parameter only where it stands at a row's tail
+/// ([`match_candidate_rows`]), so a variable of one met anywhere else is not one of these.
+fn row_tails_at(kb: &mut KnowledgeBase, v: &Value, impl_subst: &[(Symbol, Value)]) -> Value {
+    let mut tails = Substitution::new();
+    let mut bound: Vec<TermId> = Vec::new();
+    for var in kb.collect_vars(v) {
+        let Some(param) = kb.type_param_of_canonical_var(var) else {
+            continue;
+        };
+        if let Some((_, row)) = impl_subst.iter().find(|(k, _)| *k == param) {
+            tails.bind_value(kb, var, row.clone());
+            bound.push(kb.alloc(Term::Var(Var::Global(var))));
+        }
+    }
+    if bound.is_empty() {
+        return v.clone();
+    }
+    let none = Substitution::new();
+    rewrite_type_leaves(kb, v, &|kb, node| {
+        if !matches!(type_head(kb, node), TypeHead::EffectsRows) {
+            return None;
+        }
+        let (_, written_tails, _) = decompose_effect_row_raw(kb, &none, node)?;
+        if !written_tails.iter().any(|t| bound.contains(t)) {
+            return None;
+        }
+        // Read through `tails`, a bound tail is the row it is bound to.
+        let (present, rest, absent) = decompose_effect_row_raw(kb, &tails, node)?;
+        Some(row_type_from_parts(kb, &present, &absent, &rest))
+    })
+    .unwrap_or_else(|| v.clone())
 }

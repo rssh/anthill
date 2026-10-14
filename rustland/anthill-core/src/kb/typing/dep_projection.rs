@@ -1048,8 +1048,11 @@ fn concrete_pair_verdict<A: TermView, B: TermView>(
 ///   question is whether the two are one type, and order and width are a tuple's
 ///   identity), each component pair.
 ///
-/// AN EFFECT ROW IS A LEAF HERE, compared as it was: by subsumption either way, and
-/// failing that by its head — so two rows never refute, an arrow's included.
+/// AN ARROW'S ROW IS ONE ROW WITH THE OTHER'S ([`rows_verdict`], kernel-language §5.2):
+/// taken for a leaf it never refuted, and `requires Apply[F = (Int64) -> Int64]` covered a
+/// body call at `(Int64) -> Int64 @ {ConsoleOutput}` — the provider it was supplied by, its
+/// member declared over a pure function, ran one that printed (MEASURED). A row standing
+/// alone is still a leaf.
 fn parts_verdict<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     sigma: Option<&SigmaCtx>,
@@ -1091,16 +1094,94 @@ fn parts_verdict<A: TermView, B: TermView>(
                 return Some(SigmaVerdict::Refutes);
             };
             let mut whole = SigmaVerdict::Precise;
-            for (part_a, part_b) in &pairs {
+            for (part_a, part_b) in &pairs.parts {
                 whole = whole.and(|| part_verdict(kb, sigma, part_a, part_b));
             }
-            Some(whole)
+            let (row_a, row_b) = &pairs.rows;
+            Some(whole.and(|| rows_verdict(kb, sigma, row_a, row_b)))
         }
         (TypeHead::NamedTuple, TypeHead::NamedTuple) => {
             Some(tuple_parts_verdict(kb, sigma, a, b, TupleAlign::EQUALITY))
         }
         _ => None,
     }
+}
+
+/// Two arrows' rows ([`parts_verdict`]): one row where the labels pair one to one, each
+/// pair by [`part_verdict`], and so do the tails. A tail on one side alone is a row the other
+/// side's extra labels may be: a tail nothing has determined says nothing, as a part does
+/// ([`part_verdict`]; in the coarse mode every tail is a parameter's wildcard), and one the
+/// scope holds — the enclosing operation's or sort's row parameter — is not a row of labels
+/// written beside it. Both rows are read as written, as a leaf pair is.
+fn rows_verdict<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    a: &A,
+    b: &B,
+) -> SigmaVerdict {
+    let none = Substitution::new();
+    let (Some((a_present, a_tails, a_absent)), Some((b_present, b_tails, b_absent))) = (
+        decompose_effect_row_raw(kb, &none, a),
+        decompose_effect_row_raw(kb, &none, b),
+    ) else {
+        return SigmaVerdict::Refutes;
+    };
+    let as_values = |tails: Vec<TermId>| -> Vec<Value> { tails.into_iter().map(Value::term).collect() };
+    let (a_tails, b_tails) = (as_values(a_tails), as_values(b_tails));
+    if a_tails.len() == b_tails.len() {
+        return labels_verdict(kb, sigma, &a_present, &b_present, true)
+            .and(|| labels_verdict(kb, sigma, &a_absent, &b_absent, true))
+            .and(|| labels_verdict(kb, sigma, &a_tails, &b_tails, true));
+    }
+    // One side holds a tail the other has no counterpart for: its labels must be among the
+    // other side's, and the tail must be one nothing has determined.
+    let (open, closed) = if a_tails.len() > b_tails.len() {
+        ((&a_present, &a_absent, &a_tails), (&b_present, &b_absent, &b_tails))
+    } else {
+        ((&b_present, &b_absent, &b_tails), (&a_present, &a_absent, &a_tails))
+    };
+    let undetermined = |kb: &KnowledgeBase, tail: &Value| match sigma {
+        None => true,
+        Some(ctx) => matches!(sigma_class_terminal(kb, ctx, tail), Some((_, false))),
+    };
+    if !open.2.iter().all(|t| undetermined(kb, t)) {
+        return SigmaVerdict::Refutes;
+    }
+    labels_verdict(kb, sigma, open.0, closed.0, false)
+        .and(|| labels_verdict(kb, sigma, open.1, closed.1, false))
+        .and(|| labels_verdict(kb, sigma, closed.2, open.2, false))
+        .and(|| SigmaVerdict::Vacuous)
+}
+
+/// Each of `xs` paired with one of `ys` its [`part_verdict`] does not refute, the first in
+/// order; `exact` asks that none of `ys` is left over. The verdicts joined.
+fn labels_verdict(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    xs: &[Value],
+    ys: &[Value],
+    exact: bool,
+) -> SigmaVerdict {
+    if xs.len() > ys.len() || (exact && xs.len() != ys.len()) {
+        return SigmaVerdict::Refutes;
+    }
+    let mut left: Vec<bool> = vec![true; ys.len()];
+    let mut whole = SigmaVerdict::Precise;
+    for x in xs {
+        let met = (0..ys.len()).find_map(|i| {
+            if !left[i] {
+                return None;
+            }
+            let verdict = part_verdict(kb, sigma, x, &ys[i]);
+            (verdict != SigmaVerdict::Refutes).then_some((i, verdict))
+        });
+        let Some((i, verdict)) = met else {
+            return SigmaVerdict::Refutes;
+        };
+        left[i] = false;
+        whole = whole.and(|| verdict);
+    }
+    whole
 }
 
 fn has_named_children<V: TermView>(kb: &KnowledgeBase, t: &V) -> bool {

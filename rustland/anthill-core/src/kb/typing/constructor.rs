@@ -790,6 +790,13 @@ pub(super) fn is_self_projection_of(
         && short_name_of(kb.local_name_of(member)) == short_name_of(kb.local_name_of(key))
 }
 
+/// True iff `t` is already an `effects_rows(EffectExpression)` Type — so an
+/// effect-row provision value read pre-wrapped from a provider source is not
+/// double-wrapped by [`effect_row_param_value`].
+fn is_effects_rows_term(kb: &KnowledgeBase, t: TermId) -> bool {
+    matches!(type_head(kb, &TermIdView(t)), TypeHead::EffectsRows)
+}
+
 /// WI-20260828-MDWEW — is every TYPE-PARAMETER leaf of `t` a parameter of `sort` ITSELF?
 ///
 /// The CALLER-SIDE guard [`substitute_carrier_params`] cannot supply, and the reason it lives
