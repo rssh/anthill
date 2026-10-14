@@ -2186,10 +2186,12 @@ object Loader:
     def atom() = errors += LoadError.Other(
       s"a $what must be an atom, not a bare literal (a value is not a proposition)", span)
     fileTerms.get(t) match
-      case Term.Fn(f, pos, _) if Set("ListLiteral", "SetLiteral", "TupleLiteral").contains(fileSym.name(f)) =>
+      case Term.Fn(f, pos, _) if Seq(DesugarTarget.ListLiteral,
+        DesugarTarget.SetLiteral, DesugarTarget.TupleLiteral)
+        .exists(DesugarTarget.is(fileSym.name(f), _)) =>
         atom()
         val names = pos.toSeq.map(bareName)
-        if fileSym.name(f) == "ListLiteral" && names.nonEmpty && names.forall(_.isDefined) then
+        if DesugarTarget.is(fileSym.name(f), DesugarTarget.ListLiteral) && names.nonEmpty && names.forall(_.isDefined) then
           val block = names.flatten.mkString("[", ", ", "]")
           errors += LoadError.Other(s"`$block` is a meta block in the retired spelling: write `@$block`", span)
         true
@@ -2953,7 +2955,7 @@ object Loader:
     if !fileTerms.isMinted(termId) then return None
     fileTerms.get(termId) match
       case fn: Term.Fn
-        if fn.namedArgs.isEmpty && fileSym.name(fn.functor) == "field_access" => ()
+        if fn.namedArgs.isEmpty && DesugarTarget.is(fileSym.name(fn.functor), DesugarTarget.FieldAccess) => ()
       case _ => return None
     val segments = ArrayBuffer.empty[String]
     var cur = termId
@@ -2964,7 +2966,7 @@ object Loader:
           segments += fileSym.name(id.sym)
           done = true
         case fn: Term.Fn
-          if fileSym.name(fn.functor) == "field_access"
+          if DesugarTarget.is(fileSym.name(fn.functor), DesugarTarget.FieldAccess)
             && fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
           fileTerms.get(fn.posArgs(1)) match
             case r: Term.Ref =>
@@ -3081,8 +3083,9 @@ object Loader:
       // declaration and not nowhere.
       case fn: Term.Fn =>
         val name = fileSym.name(fn.functor)
-        val kbFunctor = mintedConnectiveSymbol(kb, fileTerms, name, termId)
-          .getOrElse(resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead))
+        // ERF7T replaces the connective-only override with ordinary absolute lookup.
+        // A missing target fails loudly; a same-spelled local operation cannot answer.
+        val kbFunctor = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
         // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
         // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
         // the predicate `ns.flag`, where a data reading would negate a `field_access`
@@ -3116,43 +3119,6 @@ object Loader:
         if kb.symbols.isResolved(kbSym) then kb.alloc(Term.Ref(kbSym))
         else kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
-
-  /** WI-888 — A MINTED CARRIER-AGNOSTIC CONNECTIVE DENOTES ITS KERNEL PRIMITIVE,
-    * whatever a same-named symbol in scope holds. `None` for every ordinary functor.
-    * Mirrors rustland's `minted_connective_symbol`.
-    *
-    * THE DEFECT, measured on the stdlib the moment WI-888 made `<=>` the only equational
-    * spelling: `reflect.anthill` declares its own `unify(a: Term, b: Term, kb: KB)`
-    * (proposal 049's term-level face), so the three `rule fact_monotonicity(…) <=>
-    * constant() @[simp]` rules written in that same namespace resolve their MINTED
-    * connective through the ordinary ladder onto `anthill.reflect.unify` and file three
-    * clauses under a 3-ary reflect operation. They load clean and fire nothing. The `=`
-    * spelling had worked only because `anthill.reflect` happens to declare no `eq`.
-    * scaland loads `reflect.anthill`, so it had the identical defect — found by review
-    * after the rustland half shipped alone.
-    *
-    * WHY THE LINE IS AT *CARRIER-AGNOSTIC*, and why `eq` is deliberately NOT here: the
-    * spec's Invariant (proposal 049) says `<=>` is structural-only and NEVER dispatches,
-    * and §"`===` — the structural identity *test*" says the same of `===` — so no carrier
-    * can mean something else by them, and a same-named symbol in scope is a collision
-    * rather than an override. `=` is the opposite: it is semantic and DOES dispatch
-    * through a carrier's own `eq` (WI-350/WI-444/WI-627, `Set.eq` / `Map.eq`), so the
-    * ladder answering for it is the feature.
-    *
-    * `isMinted` is the whole gate (WI-948): a user's own `unify(a, b, kb)` CALL is never
-    * minted and keeps the ordinary ladder, so `reflect.anthill`'s operation stays
-    * callable by name from inside its own namespace.
-    *
-    * Both targets live in `anthill.kernel`, which is what makes the qualified name one
-    * concatenation rather than a table; an unloaded target answers `None` and falls to
-    * the ladder, the same defined answer rustland gives for the same reason (a KB with
-    * no kernel has no kernel primitive for the operator to mean). */
-  private def mintedConnectiveSymbol(
-    kb: KnowledgeBase, fileTerms: SimpleTermStore, name: String, termId: TermId
-  ): Option[TermSymbol] =
-    if !fileTerms.isMinted(termId) then None
-    else if !Pratt.isEqualityFamilyFunctor(name) || name == Pratt.eqFunctor then None
-    else kb.tryResolveSymbol(s"anthill.kernel.$name")
 
   /** THE rung order a WRITTEN name resolves in, and the one place it is spelled.
     *

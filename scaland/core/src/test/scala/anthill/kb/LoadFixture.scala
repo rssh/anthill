@@ -13,6 +13,19 @@ import munit.Assertions.{assert, fail}
   */
 object LoadFixture:
 
+  /** ERF7T: an absolute operator target must exist; small loader fixtures
+    * previously relied on an unresolved bare connective. These declarations supply
+    * identities only, without pretending Scala implements their control semantics. */
+  def registerKernel(kb: KnowledgeBase)(using munit.Location): Unit =
+    val file = parsed("""namespace anthill.kernel
+      |operation unify(a: Int64, b: Int64) -> Bool
+      |operation struct_eq(a: Int64, b: Int64) -> Bool
+      |operation cut() -> Bool
+      |operation find_dictionary(spec: Int64) -> Bool
+      |end""".stripMargin, "<kernel-fixture>")
+    val errors = Loader.loadAll(kb, IndexedSeq(file))
+    assert(errors.isEmpty, s"kernel fixture: $errors")
+
   /** `src` parsed under `label` (the file name spans carry); fails the calling test on
     * parse errors. */
   def parsed(src: String, label: String)(using munit.Location): ParsedFile =
@@ -25,6 +38,7 @@ object LoadFixture:
   def loaded(files: IndexedSeq[ParsedFile])(using munit.Location): KnowledgeBase =
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    registerKernel(kb)
     val errs = Loader.loadAll(kb, files)
     assert(errs.isEmpty, s"load errors: $errs")
     kb

@@ -892,6 +892,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val arithmeticPf = parseStdlibFile("anthill.prelude.arithmetic")
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    anthill.kb.LoadFixture.registerKernel(kb)
     val errs = Loader.loadAll(kb, IndexedSeq(arithmeticPf, pf))
     assert(errs.isEmpty, s"load errors: $errs")
     assert(kb.hasQualifiedName("anthill.prelude.Additive.add"))
@@ -1221,6 +1222,7 @@ class ParserIntegrationTest extends munit.FunSuite:
 
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    anthill.kb.LoadFixture.registerKernel(kb)
     val errs = Loader.loadAll(kb, IndexedSeq(eqPf, userPf))
     val unrelated = errs.filterNot(isToleratedLoadError)
     assert(unrelated.isEmpty, s"unexpected load errors: $unrelated")
@@ -1336,6 +1338,7 @@ class ParserIntegrationTest extends munit.FunSuite:
       case Left(errs) => fail(s"parse failed: ${errs.map(_.message).mkString("; ")}")
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    anthill.kb.LoadFixture.registerKernel(kb)
     (kb, Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq)
 
   private def kindOf(kb: KnowledgeBase, qualified: String): Option[SymbolKind] =

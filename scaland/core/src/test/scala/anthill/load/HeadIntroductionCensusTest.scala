@@ -57,6 +57,7 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
       : Either[Seq[String], KnowledgeBase] =
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    LoadFixture.registerKernel(kb)
     val parsed = files.toIndexedSeq.map((label, src) => LoadFixture.parsed(src, label))
     val errs = Loader.loadAll(kb, parsed)
     if errs.isEmpty then Right(kb) else Left(errs.toSeq.map(_.render))

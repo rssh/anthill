@@ -651,10 +651,11 @@ private class AnthillParserImpl(
             case Left(tid) => posArgs += tid
             case Right((k, v)) => namedArgs += ((k, v))
           }
+          // ERF7T: DesugarTargetTest's `?P(1)` mint row fails on a short mint.
           // WI-957: `ho_apply` is a name the loader RESOLVES, so it is located — at
           // the applied variable, the text that produced the application.
           terms.allocAt(
-            Term.Fn(intern("ho_apply"), IArray.from(posArgs), IArray.from(namedArgs)),
+            Term.Fn(intern(DesugarTarget.HoApply), IArray.from(posArgs), IArray.from(namedArgs)),
             span)
     }
 
@@ -941,27 +942,51 @@ private class AnthillParserImpl(
     * (so `! atom` stays prefix negation `not(atom)` — only a bare `!`, where
     * `term` fails for lack of an operand, becomes the cut). */
   private def goalTerm[$: P]: P[TermId] =
-    P(letGoal | term | cutGoal)
+    P(letGoal | requireBindingGoal | requirementGoal | term | cutGoal)
+
+  // ERF7T: control forms mint only the absolute target. DesugarTargetTest
+  // drives both requirement spellings, explicit outputs, and ordinary-call controls.
+  private def requirementGoal[$: P]: P[TermId] =
+    P(
+      (spanOfToken(keyword("requires")) ~ "(" ~ term ~ ")").map {
+        case (span, spec) =>
+          terms.allocAt(Term.Fn(intern(DesugarTarget.FindDictionary), IArray(spec), IArray.empty), span)
+      } |
+      (spanOfToken(keyword("require")) ~ "[" ~/ term ~ "]").map {
+        case (span, spec) => dictionaryGoal(spec, varTermAt("", span), span)
+      }
+    )
+
+  private def requireBindingGoal[$: P]: P[TermId] =
+    P(located(Tokens.variableToken) ~ "=" ~ keyword("require") ~ "[" ~/ term ~ "]").map {
+      case (name, span, spec) => dictionaryGoal(spec, varTermAt(name, span), span)
+    }
+
+  private def dictionaryGoal(spec: TermId, out: TermId, span: Span): TermId =
+    terms.allocAt(Term.Fn(intern(DesugarTarget.FindDictionary), IArray(spec),
+      IArray((intern("out"), out))), span)
 
   /** Goal-position `let ?v = expr` (proposal 049) → `unify(?v, expr)`, the same
     * IR `<=>` builds. Distinct from the expression-position `let_chain` (which
     * carries a continuation body). The cut after `let` is safe — no goal is the
     * bare word `let`, and a longer identifier (`lettuce`) never matches the
-    * keyword (maximal-munch lexing). */
+    * keyword (maximal-munch lexing). ERF7T: DesugarTargetTest compares this
+    * lowering to `<=>`; backing this site out fails that agreement. */
   private def letGoal[$: P]: P[TermId] =
     P(spanOfToken(keyword("let")) ~/ variable ~ "=" ~/ term).map { case (span, v, rhs) =>
       // WI-957: `unify` is resolved like any other functor, so it is located — at the
       // `let` that produced it.
-      terms.allocAt(Term.Fn(intern("unify"), IArray(v, rhs), IArray.empty), span)
+      terms.allocAt(Term.Fn(intern(Pratt.unifyFunctor), IArray(v, rhs), IArray.empty), span)
     }
 
   /** Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568): a nullary
     * `cut` goal that commits to the current rule invocation. scaland has no
-    * resolver-side cut semantics; the goal just round-trips as a `cut()` term. */
+    * resolver-side cut semantics; the goal carries its absolute target.
+    * ERF7T: DesugarTargetTest's `!` mint row fails on the former short mint. */
   private def cutGoal[$: P]: P[TermId] =
     P(spanOfToken("!")).map { span =>
       // WI-957: located at the `!`, for the same reason `unify` is located at `let`.
-      terms.allocAt(Term.Fn(intern("cut"), IArray.empty, IArray.empty), span)
+      terms.allocAt(Term.Fn(intern(DesugarTarget.Cut), IArray.empty, IArray.empty), span)
     }
 
   /** A base atom followed by a dotted access/call chain. WI-278: a chain
@@ -1077,8 +1102,10 @@ private class AnthillParserImpl(
       case (member, span, None)                   => ProjectionMember(member, member, span)
     }
 
-  private lazy val fieldAccessSym = intern("field_access")
-  private lazy val dotApplySym = intern("dot_apply")
+  // ERF7T: DesugarTargetTest's `Foo.f`/`?x.m(1)` rows fail on short mints;
+  // its loaded-identity row also catches capture by local target names.
+  private lazy val fieldAccessSym = intern(DesugarTarget.FieldAccess)
+  private lazy val dotApplySym = intern(DesugarTarget.DotApply)
 
   /** WI-20260829-BAD3V: a dot call may not carry call-site type arguments. `dot_apply`
     * has no channel for them — rustland's `Expr::DotApply` carries no `type_args` field,
@@ -1174,7 +1201,8 @@ private class AnthillParserImpl(
     val accessors = members.map { m =>
       (m.label, buildFieldAccess(obj, m.member, m.span, valueRecv, None))
     }
-    terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.from(accessors)), span)
+    // ERF7T: ParseTest's distributive-projection rows fail on the short mint.
+    terms.allocAt(Term.Fn(intern(DesugarTarget.TupleLiteral), IArray.empty, IArray.from(accessors)), span)
 
   /** Reject the two ill-formed key shapes a multi-member projection could emit
     * into its result tuple, each a silent-corruption footgun (WI-639 review):
@@ -1300,10 +1328,11 @@ private class AnthillParserImpl(
             var result = terms.allocAt(Term.Ident(n.segments.head), n.span)
             for seg <- n.segments.tail do
               val fieldRef = terms.allocAt(Term.Ref(seg), n.span)
+              // ERF7T: DesugarTargetTest's `Foo.f` row drives this separate mint site.
               // WI-618: accessor provenance — a dotted name's segments are built
               // here, they are not written as a `field_access(…)` call.
               result = terms.allocMintedAt(
-                Term.Fn(intern("field_access"), IArray(result, fieldRef), IArray.empty), n.span)
+                Term.Fn(intern(DesugarTarget.FieldAccess), IArray(result, fieldRef), IArray.empty), n.span)
             result
     }
 
@@ -1693,6 +1722,8 @@ private class AnthillParserImpl(
       "-".!.map(_ => intern("-"))
     )).map { case (sym, span) => OpToken(sym, span) }
 
+  // ERF7T: DesugarTargetTest's `[1, 2]`, `{1, 2}`, `(a: 1, b: 2)` rows
+  // fail per mint; its runtime row fails when a short carrier is captured.
   // WI-957: `ListLiteral` / `SetLiteral` / `TupleLiteral` / `forall_impl` are names
   // the loader RESOLVES — they reach `resolveName` like a written call — which means
   // each must be located. The span is the OPENING BRACKET — the token that decided
@@ -1711,13 +1742,13 @@ private class AnthillParserImpl(
       (exprBody.rep(1, sep = ",") ~ "]").map(Some(_))
     )).map { case (span, elems) =>
       terms.allocAt(
-        Term.Fn(intern("ListLiteral"), IArray.from(elems.getOrElse(Seq.empty)), IArray.empty),
+        Term.Fn(intern(DesugarTarget.ListLiteral), IArray.from(elems.getOrElse(Seq.empty)), IArray.empty),
         span)
     }
 
   private def setLiteral[$: P]: P[TermId] =
     P(spanOfToken("{") ~ term.rep(sep = ",") ~ "}").map { case (span, elems) =>
-      terms.allocAt(Term.Fn(intern("SetLiteral"), IArray.from(elems), IArray.empty), span)
+      terms.allocAt(Term.Fn(intern(DesugarTarget.SetLiteral), IArray.from(elems), IArray.empty), span)
     }
 
   /** The refusal for a one-element POSITIONAL tuple literal, `(x,)` (WI-1131).
@@ -1765,7 +1796,7 @@ private class AnthillParserImpl(
     )).map { case (span, body) =>
       body match
         case None =>
-          terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray.empty), span)
+          terms.allocAt(Term.Fn(intern(DesugarTarget.TupleLiteral), IArray.empty, IArray.empty), span)
         case Some((first, rest, _, Some(consequents))) =>
           val antecedents = (first +: rest).collect { case Left(t) => t }
           val antTuple = terms.allocAt(Term.Fn(intern("tuple"),
@@ -1781,7 +1812,7 @@ private class AnthillParserImpl(
                 errors += ParseError(TupleArityOneIsNamedOnly, span)
               tid
             case Right((k, v)) =>
-              terms.allocAt(Term.Fn(intern("TupleLiteral"), IArray.empty, IArray((k, v))), span)
+              terms.allocAt(Term.Fn(intern(DesugarTarget.TupleLiteral), IArray.empty, IArray((k, v))), span)
           else
             val all = first +: rest
             val posArgs = ArrayBuffer.empty[TermId]
@@ -1790,7 +1821,7 @@ private class AnthillParserImpl(
               case Left(tid) => posArgs += tid
               case Right((k, v)) => namedArgs += ((k, v))
             }
-            terms.allocAt(Term.Fn(intern("TupleLiteral"),
+            terms.allocAt(Term.Fn(intern(DesugarTarget.TupleLiteral),
               IArray.from(posArgs), IArray.from(namedArgs)), span)
     }
 

@@ -39,18 +39,22 @@ package anthill.parse
   * are names the loader is MEANT to resolve (see `SimpleTermStore.alloc`'s WI-957 note,
   * which measured exactly that). `proof_stmt` is the near miss and belongs with THEM: the
   * `AnthillParserImpl.proofStatement` doc states its lowering — an inert term carrying the
-  * continuation — so it has one, and a bare intern is how scaland already represents the
+  * continuation — so it has one, and an ordinary term is how scaland represents the
   * rest of that family (`Loader.loadProof` mints `proof_decl` the same way). A marker is a
   * form with NO lowering; that, and not "the parser made it up", is the membership test.
+  *
+  * ERF7T: the four expression forms carry DesugarTarget addresses beside this
+  * provenance. DesugarTargetTest's mint-site row fails if those mints revert to
+  * short names; ExprLoaderTest's refusal rows pass either way by design.
   *
   * `description` is how a diagnostic names the form the USER WROTE — the functor name is
   * an internal spelling and belongs in a diagnostic only as a parenthetical. */
 enum ExprMarker(val functorName: String, val description: String):
-  case MatchExpr extends ExprMarker("match_expr", "a `match` expression")
+  case MatchExpr extends ExprMarker(DesugarTarget.MatchExpr, "a `match` expression")
   case MatchBranch extends ExprMarker("match_branch", "a `case` branch")
-  case IfExpr extends ExprMarker("if_expr", "an `if` expression")
-  case LetExpr extends ExprMarker("let_expr", "a `let` expression")
-  case LambdaExpr extends ExprMarker("lambda_expr", "a `lambda` expression")
+  case IfExpr extends ExprMarker(DesugarTarget.IfExpr, "an `if` expression")
+  case LetExpr extends ExprMarker(DesugarTarget.LetExpr, "a `let` expression")
+  case LambdaExpr extends ExprMarker(DesugarTarget.LambdaExpr, "a `lambda` expression")
   case PatternVar extends ExprMarker("pattern_var", "a binder pattern")
   case PatternWildcard extends ExprMarker("pattern_wildcard", "a `_` wildcard pattern")
   case PatternLiteral extends ExprMarker("pattern_literal", "a literal pattern")

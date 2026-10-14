@@ -487,7 +487,7 @@ class ParseTest extends munit.FunSuite:
     val body = op.body.getOrElse(fail("operation has no body"))
     pf.terms.get(body) match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "let_expr")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.LetExpr)
         assertEquals(fn.posArgs.length, 3)
         assert(namedKeys(pf, body).contains("type_name"),
           s"expected type_name named arg, got ${namedKeys(pf, body)}")
@@ -944,7 +944,7 @@ class ParseTest extends munit.FunSuite:
       .getOrElse(fail("parse failed"))
     val rule = pf.items.collectFirst { case Item.RuleItem(r) => r }.getOrElse(fail("no rule"))
     val head = rule.heads.collectFirst { case RuleHead.TermHead(t) => t }.getOrElse(fail("no head"))
-    assertEquals(functorName(pf, head), "unify")
+    assertEquals(functorName(pf, head), Pratt.unifyFunctor)
   }
 
   test("WI-522: goal-position `let ?v = expr` lowers to a `unify` goal") {
@@ -952,7 +952,7 @@ class ParseTest extends munit.FunSuite:
       .getOrElse(fail("parse failed"))
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
-    assertEquals(functorName(pf, body(0)), "unify")
+    assertEquals(functorName(pf, body(0)), Pratt.unifyFunctor)
   }
 
   // WI-615 / proposal 051: `===` structural identity test lowers to `struct_eq`.
@@ -961,7 +961,7 @@ class ParseTest extends munit.FunSuite:
       .getOrElse(fail("parse failed"))
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
-    assertEquals(functorName(pf, body(0)), "struct_eq")
+    assertEquals(functorName(pf, body(0)), Pratt.structEqFunctor)
   }
 
   // WI-568: the cut control primitive `!`.
@@ -971,7 +971,7 @@ class ParseTest extends munit.FunSuite:
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
     assertEquals(body.length, 3)
-    assertEquals(functorName(pf, body(1)), "cut")
+    assertEquals(functorName(pf, body(1)), DesugarTarget.Cut)
   }
 
   // WI-20260825-P9Y67: the functor is the ADDRESS now, mirroring rustland — `!` names
@@ -1271,7 +1271,7 @@ end
     val (pf, t) = factTerm("fact ?x.field")
     t match
       case Term.Fn(f, pos, named) =>
-        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pf.symbols.name(f), DesugarTarget.DotApply)
         assertEquals(pos.length, 2)
         assert(pf.terms.get(pos(0)).isInstanceOf[Term.Var], "receiver should be a Var")
         pf.terms.get(pos(1)) match
@@ -1284,7 +1284,7 @@ end
     val (pf, t) = factTerm("fact ?x.method(?a, ?b)")
     t match
       case Term.Fn(f, pos, _) =>
-        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pf.symbols.name(f), DesugarTarget.DotApply)
         assertEquals(pos.length, 4) // receiver, Ident(method), a, b
         pf.terms.get(pos(1)) match
           case Term.Ident(s) => assertEquals(pf.symbols.name(s), "method")
@@ -1296,9 +1296,9 @@ end
     val (pf, t) = factTerm("fact ?x.a.b")
     t match
       case Term.Fn(f, pos, _) =>
-        assertEquals(pf.symbols.name(f), "dot_apply")
+        assertEquals(pf.symbols.name(f), DesugarTarget.DotApply)
         pf.terms.get(pos(0)) match
-          case Term.Fn(inner, _, _) => assertEquals(pf.symbols.name(inner), "dot_apply")
+          case Term.Fn(inner, _, _) => assertEquals(pf.symbols.name(inner), DesugarTarget.DotApply)
           case other => fail(s"expected inner dot_apply, got $other")
       case other => fail(s"expected dot_apply Fn, got $other")
   }
@@ -1306,7 +1306,7 @@ end
   test("WI-278: name receiver `Foo.bar` keeps field_access (not dot_apply)") {
     val (pf, t) = factTerm("fact Foo.bar")
     t match
-      case Term.Fn(f, _, _) => assertEquals(pf.symbols.name(f), "field_access")
+      case Term.Fn(f, _, _) => assertEquals(pf.symbols.name(f), DesugarTarget.FieldAccess)
       case other => fail(s"expected field_access Fn, got $other")
   }
 
@@ -1328,7 +1328,7 @@ end
     val body = op.body.getOrElse(fail("no lambda body"))
     pf.terms.get(body) match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "lambda_expr")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.LambdaExpr)
         // The `(x)` param unwraps to a bare `pattern_var`, NOT a `pattern_tuple`.
         assertEquals(functorName(pf, fn.posArgs(0)), "pattern_var")
       case other => fail(s"expected lambda_expr, got $other")
@@ -1402,7 +1402,7 @@ end
     val (pf, t) = factTerm("fact (a: 1)")
     t match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.posArgs.length, 0)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
       case other => fail(s"expected TupleLiteral, got $other")
@@ -1412,7 +1412,7 @@ end
     val (pf, t) = factTerm("fact (a: 1,)")
     t match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
       case other => fail(s"expected TupleLiteral, got $other")
   }
@@ -1428,7 +1428,7 @@ end
     val (pf, t) = factTerm("fact (1, 2,)")
     t match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.posArgs.length, 2)
       case other => fail(s"expected TupleLiteral, got $other")
   }
@@ -1450,10 +1450,10 @@ end
     val (pf, t) = factTerm("fact ?x.(a, b)")
     t match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet, Set("a", "b"))
         // Each column is the SAME accessor `?x.a` builds (value receiver ⇒ dot_apply).
-        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), "dot_apply")
+        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), DesugarTarget.DotApply)
       case other => fail(s"expected TupleLiteral, got $other")
   }
 
@@ -1486,10 +1486,10 @@ end
       val (pf, t) = factTerm(src)
       t match
         case fn: Term.Fn =>
-          assertEquals(pf.symbols.name(fn.functor), "TupleLiteral", src)
+          assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral, src)
           assertEquals(fn.namedArgs.length, 1, s"$src: one keyed component")
           assertEquals(pf.symbols.name(fn.namedArgs(0)._1), key, s"$src: result key")
-          assertEquals(functorName(pf, fn.namedArgs(0)._2), "dot_apply", s"$src: accessor")
+          assertEquals(functorName(pf, fn.namedArgs(0)._2), DesugarTarget.DotApply, s"$src: accessor")
         case other => fail(s"$src: expected TupleLiteral, got $other")
   }
 
@@ -1507,8 +1507,8 @@ end
     val (pf, t) = factTerm("fact Rec.(x, y)")
     t match
       case fn: Term.Fn =>
-        assertEquals(pf.symbols.name(fn.functor), "TupleLiteral")
-        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), "field_access")
+        assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
+        for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), DesugarTarget.FieldAccess)
       case other => fail(s"expected TupleLiteral, got $other")
   }
 
@@ -1516,7 +1516,7 @@ end
     // The projection is a value (a TupleLiteral), so `.a` on it is a value dot.
     val (pf, t) = factTerm("fact ?x.(a, b).a")
     t match
-      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), "dot_apply")
+      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), DesugarTarget.DotApply)
       case other => fail(s"expected outer dot_apply, got $other")
   }
 
