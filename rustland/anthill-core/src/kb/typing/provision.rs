@@ -383,10 +383,12 @@ pub(crate) fn spec_as_its_providers<R>(
 /// the spec's carrier param AND the sort-like base that value names, as one answer.
 ///
 /// One function so the filter — the base must be a SORT or a free-standing entity — is
-/// applied to the view and to the symbol together. A caller that took the raw binding on
-/// its own would accept `Spec[T = OwnParam]`, whose binding names a TYPE PARAM and whose
-/// dispatch carrier is therefore the provider, not the param (WI-859 folds exactly that
-/// shape into the self-provider kind).
+/// applied to the view and to the symbol together. The filter does not tell a type
+/// parameter from a sort, a parameter being declared `sort E = ?`: `sort AnyS { sort E = ?
+/// provides Show[T = E] }` answers `E`, and that provision dispatches at its parameter, not
+/// at its provider — `provision_carrier` answers `AnyS | Show | E`, and `self_provides(AnyS,
+/// Show)` does not hold (MEASURED). A reader that must not take a parameter for a carrier
+/// asks [`genuine_concrete_sort`] as well, as the defaulted call's static pin does.
 ///
 /// WI-860 — the BINDING is read over `TermView` rather than through
 /// [`unwrap_spec_view_value`], which drops any binding it cannot read as a `TermId`:
