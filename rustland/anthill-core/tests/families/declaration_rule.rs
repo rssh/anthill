@@ -316,6 +316,7 @@ fn render(picks: &Picks<'_>) -> Program {
             source: subject,
             entry: None,
             subject: None,
+            refused: false,
         };
     };
     // The instance the entry point drives: `V` where the spec's `x` says it, else `Int64`.
@@ -352,5 +353,6 @@ fn render(picks: &Picks<'_>) -> Program {
         ),
         entry: Some("family.a.go"),
         subject: Some(subject),
+        refused: false,
     }
 }

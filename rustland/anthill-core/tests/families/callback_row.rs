@@ -226,5 +226,6 @@ end
         ),
         entry: Some("family.c.go"),
         subject: None,
+        refused: false,
     }
 }

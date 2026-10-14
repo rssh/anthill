@@ -74,5 +74,6 @@ fn render(picks: &Picks<'_>) -> Program {
         ),
         entry: Some("family.d.go"),
         subject: None,
+        refused: false,
     }
 }
