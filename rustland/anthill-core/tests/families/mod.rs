@@ -18,7 +18,10 @@
 //!    commit that moved it, read by a person.
 //!  * P3, SOUNDNESS. A program that loads and has an entry point runs to its value.
 //!    `loads; drive fails …` is a program the typer admitted and the interpreter could
-//!    not run.
+//!    not run. And a program its template knows the rule refuses ([`Program::refused`] —
+//!    an operation that declares nothing and does something) is refused: one that loads
+//!    or runs is `UNSOUND …`, which no other property can see where every spelling of it
+//!    is admitted alike.
 //!  * P4, ONE VERDICT FOR TWO SPELLINGS. Options of a hole that carry one
 //!    [`Opt::same`] tag are one program written two ways, and get one verdict.
 //!
@@ -38,8 +41,9 @@
 //!
 //! Said where each is driven: [`the_runner_names_a_program_that_kills_its_process`]
 //! (a dead child is a named verdict and the run goes on),
-//! [`a_wrong_line_of_a_verdict_file_is_named`], and the back-outs measured against the
-//! real families at the head of each family's file.
+//! [`a_wrong_line_of_a_verdict_file_is_named`],
+//! [`a_program_the_rule_refuses_is_unsound_where_it_is_admitted`], and the back-outs measured
+//! against the real families at the head of each family's file.
 
 use crate::common;
 use anthill_core::eval::{self, Interpreter};
@@ -52,6 +56,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+mod applied_arrow;
 mod callback_row;
 mod declaration_rule;
 mod mutual_callbacks;
@@ -64,6 +69,7 @@ fn families() -> Vec<&'static Family> {
         &projected_call::FAMILY,
         &callback_row::FAMILY,
         &mutual_callbacks::FAMILY,
+        &applied_arrow::FAMILY,
     ]
 }
 
@@ -110,6 +116,9 @@ pub struct Program {
     /// The entry point's qualified name; it takes nothing and returns an `Int64`.
     pub entry: Option<&'static str>,
     pub subject: Option<String>,
+    /// The template knows the rule refuses this program, so a tree that admits it is
+    /// unsound ([`Verdict::Unsound`]); `false` where the verdict is the tree's to say.
+    pub refused: bool,
 }
 
 /// Which property an [`Exception`] is an exception to. P2 has none: the verdict file is
@@ -302,6 +311,9 @@ pub enum Verdict {
     DriveRefused(String),
     /// Loads with its entry point, and the entry point did not run — a P3 violation.
     DriveFails(String),
+    /// Admitted — loaded, or ran to a value — where the template says the rule refuses it:
+    /// what was admitted, as [`Verdict::Loads`] or [`Verdict::Runs`] write it. A P3 violation.
+    Unsound(String),
     /// The process judging it died — a P1 violation.
     Died(String),
     /// Nothing came back within the run's patience — a P1 violation.
@@ -316,6 +328,7 @@ impl fmt::Display for Verdict {
             Verdict::Refused(classes) => write!(f, "refused {classes}"),
             Verdict::DriveRefused(classes) => write!(f, "loads; drive refused {classes}"),
             Verdict::DriveFails(class) => write!(f, "loads; drive fails {class}"),
+            Verdict::Unsound(admitted) => write!(f, "UNSOUND {admitted}"),
             Verdict::Died(how) => write!(f, "DIED {how}"),
             Verdict::Hung => f.write_str("HUNG"),
         }
@@ -337,6 +350,8 @@ impl Verdict {
             Some(Verdict::DriveRefused(v))
         } else if let Some(v) = tail("loads; drive fails ") {
             Some(Verdict::DriveFails(v))
+        } else if let Some(v) = tail("UNSOUND ") {
+            Some(Verdict::Unsound(v))
         } else {
             tail("DIED ").map(Verdict::Died)
         }
@@ -346,7 +361,7 @@ impl Verdict {
     fn violates(&self) -> Option<Property> {
         match self {
             Verdict::Died(_) | Verdict::Hung => Some(Property::NoCrash),
-            Verdict::DriveFails(_) => Some(Property::Sound),
+            Verdict::DriveFails(_) | Verdict::Unsound(_) => Some(Property::Sound),
             _ => None,
         }
     }
@@ -386,6 +401,22 @@ fn variant_name(value: &dyn fmt::Debug) -> String {
 /// A program's verdict, in this process: its subject, where it has one apart from the
 /// whole file; then the file, loaded and — where it declares an entry point — called.
 pub fn judge_program(program: &Program) -> Verdict {
+    held_to_its_refusal(program, judged(program))
+}
+
+/// What the tree did with `program`, read against what its template knows: a program the rule
+/// refuses ([`Program::refused`]) that the tree admitted is [`Verdict::Unsound`].
+fn held_to_its_refusal(program: &Program, verdict: Verdict) -> Verdict {
+    match verdict {
+        admitted @ (Verdict::Loads | Verdict::Runs(_)) if program.refused => {
+            Verdict::Unsound(admitted.to_string())
+        }
+        verdict => verdict,
+    }
+}
+
+/// [`judge_program`] before the template's expectation is read.
+fn judged(program: &Program) -> Verdict {
     if let Some(subject) = &program.subject {
         let refusals = common::load_outcome(subject).errors();
         if !refusals.is_empty() {
@@ -724,7 +755,10 @@ pub fn property_findings(family: &Family, verdicts: &[Verdict]) -> Vec<Finding> 
         if excused.is_empty() {
             findings.push(Finding {
                 program: picks.name(),
-                what: format!("{property}: {verdict}"),
+                what: match verdict {
+                    Verdict::Unsound(_) => format!("{property}: {verdict}, where the template says the rule refuses it"),
+                    _ => format!("{property}: {verdict}"),
+                },
             });
         }
         for exception in excused {
@@ -1047,6 +1081,7 @@ static FAULTS: Family = Family {
         source: picks.text("does").to_string(),
         entry: None,
         subject: None,
+        refused: false,
     },
     skips: None,
     judge: |program| match program.source.as_str() {
@@ -1176,6 +1211,34 @@ fn a_wrong_line_of_a_verdict_file_is_named() {
         .map(|f| f.program)
         .collect();
     assert_eq!(named, ["x=other", "x=another"]);
+}
+
+/// CONTROL — A PROGRAM THE RULE REFUSES IS UNSOUND WHERE IT IS ADMITTED (P3): one the
+/// template marks refused that loads or runs is `UNSOUND`, a P3 finding, and reads back from a
+/// verdict file as itself; refused, it is the refusal; unmarked, it is what the tree said.
+#[test]
+fn a_program_the_rule_refuses_is_unsound_where_it_is_admitted() {
+    let program = |refused| Program {
+        source: String::new(),
+        entry: None,
+        subject: None,
+        refused,
+    };
+    let runs = || Verdict::Runs("7".into());
+    assert_eq!(held_to_its_refusal(&program(true), runs()), Verdict::Unsound("runs 7".into()));
+    assert_eq!(held_to_its_refusal(&program(true), Verdict::Loads), Verdict::Unsound("loads".into()));
+    let refusal = || Verdict::Refused("TypeMismatch/op-effects".into());
+    assert_eq!(held_to_its_refusal(&program(true), refusal()), refusal());
+    assert_eq!(held_to_its_refusal(&program(false), runs()), runs());
+
+    let unsound = Verdict::Unsound("runs 7".into());
+    assert_eq!(unsound.to_string(), "UNSOUND runs 7");
+    assert_eq!(Verdict::parse(&unsound.to_string()), Some(unsound.clone()));
+    assert_eq!(unsound.violates(), Some(Property::Sound));
+    let found = property_findings(&spellings(&[]), &[Verdict::Loads, Verdict::Loads, unsound]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].program, "x=other");
+    assert!(found[0].what.contains("UNSOUND runs 7, where the template says"), "{found:?}");
 }
 
 /// CONTROL — TWO SPELLINGS, TWO VERDICTS, ONE FINDING (P4); a listed exception takes the

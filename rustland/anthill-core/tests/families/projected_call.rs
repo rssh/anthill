@@ -235,5 +235,6 @@ end
         ),
         entry: Some("family.b.go"),
         subject: None,
+        refused: false,
     }
 }

@@ -218,8 +218,9 @@ holds a value (`Foo[T = Int64, N = 3]`) rides an occurrence on its own
 (WI-20261002-E1WN0). A row of `tests/include/` is a program someone thought of; a FAMILY
 (`anthill-core/tests/families/`) is every program one template gives when a few holes are
 filled from short lists — the cross product, enumerated — so the cases of a typer rule
-meet each other. Four so far, 7 760 programs: the declaration rule, a projected member
-at a call, a callback's effect row, two callbacks typed by each other.
+meet each other. Five so far, 8 168 programs: the declaration rule, a projected member
+at a call, a callback's effect row, two callbacks typed by each other, a function value
+applied to a cell.
 
 ```bash
 scripts/families.sh                    # every family: ~25 s on 24 cores, optimized
@@ -232,8 +233,9 @@ scripts/families.sh dump <dir>         # every program as a file
 Each family is held to four properties, and the run fails naming the PROGRAM that
 breaks one: no crash (the programs are judged in child processes, so a stack overflow
 is a named verdict and the run goes on); no verdict moved from the committed
-`verdicts/<family>.tsv`; a program that loads runs through its entry point; one verdict
-for two spellings of one program. An exception to the last three is listed on the
+`verdicts/<family>.tsv`; a program that loads runs through its entry point, and one its
+template says the rule refuses (`Program::refused`) does not run — `UNSOUND runs …`; one
+verdict for two spellings of one program. An exception to the last three is listed on the
 family with its ticket, and one that excuses nothing fails the run too. **Run it when a
 change touches the typer**, and commit the verdict lines it moved with the change that
 moved them — that diff is what a reviewer reads. A verdict is the refusal's CLASS, not
