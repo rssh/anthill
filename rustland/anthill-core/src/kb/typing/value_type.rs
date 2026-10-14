@@ -267,8 +267,29 @@ pub(super) fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> 
 /// this one what the ELEMENT is — and a reader looking for "why does my list literal get an
 /// expected type" was reading a function named for variants.
 ///
-/// **THE GATE IS ON THE DECLARED ELEMENT, and admits two shapes**, each with its own item
+/// **THE GATE IS ON THE DECLARED ELEMENT, and admits three shapes**, each with its own item
 /// and its own rows:
+///
+///  - it is GROUND (WI-20261013-M32C2): no type parameter and no variable left in the
+///    element type the slot has at this call — as the signature writes it
+///    (`total(xs: List[T = Sp])`), or with what the call itself fixes, its bracket and its
+///    receiver (`cnt[A = Sp](xs: List[T = A])`) — so the slot declares the literal's
+///    element type, as a declared return and an annotated `let` do. Joined first instead, as
+///    every such slot was, `total([car(n: 1), van(n: 2)])` over two providers of `Sp` was
+///    refused before the slot was read: `Car ⊔ Van` has no join, while each is admissible
+///    at `Sp`. An element type still holding a parameter the call instantiates — the
+///    callee's `[A]`, a data sort's `T` (`List.append(xs, ys: List[T = T])`) — declares
+///    nothing: the literal joins, and the call instantiates the parameter from that join
+///    beside its other arguments (§8.1).
+///
+///    ASKED OF `param_type`, which also carries what the call's other arguments pinned
+///    ([`one_arg_hint`]'s `inst`), and not of the slot as the signature writes it. MEASURED
+///    both ways: the written reading refuses `cnt[A = Sp]([car(n: 1), van(n: 2)])`, whose
+///    bracket fixes `A`, and on every shape that pins a parameter from a sibling instead —
+///    a `List[T = Car]` beside the literal, with and without a callback, the literal's
+///    element a variable, a call, an `if`, or two elements with no join — the two readings
+///    give one verdict: the literal is typed before the sibling pins anything, or the
+///    sibling's instantiation already joins the literal's own type.
 ///
 ///  - it MENTIONS AN ENTITY (WI-20260826-JSFHG, restored by WI-20260826-7JDWY once the
 ///    elements were checked rather than overwritten): `takeReds([red(v: 1)])` against
@@ -281,9 +302,9 @@ pub(super) fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> 
 ///    [`arrow_slot_arg_hint`]'s own predicate, borrowed so "is this slot callable" has one
 ///    answer wherever it is asked.
 ///
-/// 5NSZY WITHHELD THE SECOND deliberately, and said why: a hinted literal took its element
-/// type from the hint without reading the elements, so pushing one would have traded a
-/// correct refusal for a silent accept. WI-20260826-7JDWY removed that, which is what makes
+/// 5NSZY WITHHELD THE CALLABLE SHAPE deliberately, and said why: a hinted literal took its
+/// element type from the hint without reading the elements, so pushing one would have traded
+/// a correct refusal for a silent accept. WI-20260826-7JDWY removed that, which is what makes
 /// this admissible now rather than a re-litigation of a settled decision.
 ///
 /// THE ELEMENT IS READ THROUGH [`declared_element_type`], so the slot's collection must
@@ -293,12 +314,109 @@ pub(super) fn seq_slot_arg_hint(
     kb: &KnowledgeBase,
     arg: &Rc<NodeOccurrence>,
     param_type: Option<&Value>,
+    owner: SlotOwner,
 ) -> Option<Value> {
     let pt = param_type?;
     let kind = seq_literal_kind(kb, arg)?;
     let element = declared_element_type(kb, kind, Some(pt))?;
-    (type_mentions_an_entity(kb, &element) || type_head_is_callable(kb, &element))
-        .then(|| pt.clone())
+    (holds_no_parameter_the_call_instantiates(kb, &element, owner)
+        || element_is_read_by_the_checking_direction(kb, &element))
+    .then(|| pt.clone())
+}
+
+/// Whose parameters a slot's element type may hold ([`seq_slot_arg_hint`]).
+#[derive(Clone, Copy)]
+pub(super) enum SlotOwner {
+    /// A call: of a named operation, whose own type parameters and its sort's the call
+    /// instantiates, or of a function value — a name with no operation record — whose slot
+    /// holds the value's own unknowns, every variable there counting as one.
+    Call(Symbol),
+    /// A construction, which instantiates its sort's parameters.
+    Construction(Symbol),
+}
+
+/// WI-20261013-M32C2 — does `element` hold NO type parameter the call instantiates?
+///
+/// A parameter the call instantiates is a WRITTEN one: the callee's own `[A]`, a parameter of
+/// its sort (`List.append`'s `T`, a constructor's `V`). A slot holding one declares nothing —
+/// the literal joins, and the call instantiates the parameter from that join (§8.1). A
+/// parameter the slot leaves UNWRITTEN — `Sp` bare, or `Sp[T = ?]`, an anonymous variable —
+/// is no such parameter: nothing names it, so nothing ties one element's instance to
+/// another's, and the slot declares `Sp`, each element checked against it alone. So
+/// `List[T = Sp]` and `List[T = Sp[T = ?]]` declare alike, and `total[X](xs: List[T = Sp[T =
+/// X]])` does not: its `X` is one for the whole list.
+///
+/// A variable that is a rigid (the caller's own parameter, carried in by an instantiation) or
+/// a de Bruijn index counts as written; so does every variable at a function value's slot,
+/// whose unknowns its call binds.
+fn holds_no_parameter_the_call_instantiates(
+    kb: &KnowledgeBase,
+    element: &Value,
+    owner: SlotOwner,
+) -> bool {
+    if type_is_ground(kb, element) {
+        return true;
+    }
+    let mut written: Vec<VarId> = Vec::new();
+    let sort = match owner {
+        SlotOwner::Call(functor) => {
+            let Some(op) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+                return false;
+            };
+            written.extend(op.type_params.iter().filter_map(|(_, v)| match v {
+                Var::Global(v) => Some(*v),
+                _ => None,
+            }));
+            impl_parent_sort_of_op(kb, functor)
+        }
+        SlotOwner::Construction(ctor) => kb.sort_of_constructor(ctor),
+    };
+    if let Some(sort) = sort {
+        written.extend(
+            sort_type_params_as_pairs(kb, sort)
+                .iter()
+                .filter_map(|(_, t)| match kb.get_term(*t) {
+                    Term::Var(Var::Global(v)) => Some(*v),
+                    _ => None,
+                }),
+        );
+    }
+    !view_mentions_a_written_parameter(kb, element, &written)
+}
+
+/// The walk under [`holds_no_parameter_the_call_instantiates`]: a sort-parameter reference, a
+/// variable in `written`, a rigid, a de Bruijn index, or a carrier with no structure to read.
+fn view_mentions_a_written_parameter<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    written: &[VarId],
+) -> bool {
+    match ty.head(kb) {
+        ViewHead::Var(Var::Global(v)) => written.contains(&v),
+        ViewHead::Var(_) | ViewHead::Opaque => true,
+        ViewHead::Const(_) | ViewHead::Bottom => false,
+        ViewHead::Ident(sym) => is_sort_param_symbol(kb, sym),
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => {
+            functor.is_some_and(|f| is_sort_param_symbol(kb, f))
+                || view_any_child(kb, ty, pos_arity, |c| {
+                    view_mentions_a_written_parameter(kb, c, written)
+                })
+        }
+    }
+}
+
+/// The two shapes of [`seq_slot_arg_hint`]'s gate that are §8.2's checking direction rather
+/// than a declaration: an element type that MENTIONS AN ENTITY, whose variant the elements
+/// are classified at, and one CALLABLE BY HEAD, whose arrow a bare operation name is lifted
+/// against. A constructor's field reads them at the instance the position expects, as its
+/// variant peer does ([`seq_field_expected_from_ctor`]).
+pub(super) fn element_is_read_by_the_checking_direction(
+    kb: &KnowledgeBase,
+    element: &Value,
+) -> bool {
+    type_mentions_an_entity(kb, element) || type_head_is_callable(kb, element)
 }
 
 /// WI-578 — the shared build-finish tail of constructor typing. Given the field-

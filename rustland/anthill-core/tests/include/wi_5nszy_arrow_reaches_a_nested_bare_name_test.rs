@@ -15,7 +15,7 @@
 //!   * `arrow_field_expected_from_ctor` walks the field's declared type through the
 //!     CONSTRUCTOR's own `expected` (`some`'s `value: T` becomes `Function[…]` once `T` is
 //!     pinned). Alone it fires NOWHERE, because the constructor had no `expected` to walk.
-//!   * `ctor_arg_unlocks_an_arrow_for_a_bare_name` supplies that `expected`, pushing the
+//!   * `ctor_arg_unlocks_a_field_hint` supplies that `expected`, pushing the
 //!     call's declared parameter type into a constructor-application argument. Alone it
 //!     changes nothing, because the hint it enables is the one above.
 //!
@@ -307,7 +307,7 @@ end
 
 /// A CONSTRUCTOR NESTED IN A CONSTRUCTOR FIELD, rather than in an operation-call argument.
 /// Found by review. The first cut wired the supplier
-/// (`ctor_arg_unlocks_an_arrow_for_a_bare_name`) into `one_arg_hint` only, so the
+/// (`ctor_arg_unlocks_a_field_hint`) into `one_arg_hint` only, so the
 /// constructor-field chains got the READER (`arrow_field_expected_from_ctor`) with nothing
 /// to supply their `expected` — and `run(holder(some(inc)), 41)` was refused while
 /// `apply_it(some(inc), 41)`, on the very same `Option[T = Function[…]]` slot, returned 42.

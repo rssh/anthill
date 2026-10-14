@@ -198,14 +198,29 @@ fn a_mismatch_names_the_alias_as_written() {
 
 /// An alias written inside a type is shown where it was written, and the whole type it
 /// is once.
+///
+/// The argument is a value and not a literal: a literal at that slot is checked element by
+/// element against the slot's element type (WI-20261013-M32C2), so its refusal names the
+/// element's type — the alias again, shown as written.
 #[test]
 fn a_mismatch_names_an_alias_inside_a_type() {
     let refused = refusal(
         "awninside",
-        "  operation total(bs: List[T = IntBox]) -> Int64 = 0\n  operation go() -> Int64 = total([\"s\"])",
+        "  operation total(bs: List[T = IntBox]) -> Int64 = 0\n  \
+         operation go(ss: List[T = String]) -> Int64 = total(ss)",
     );
     assert!(
         refused.contains("expected List[T = IntBox] (List[T = Box[V = Int64]]), got List[T = String]"),
+        "{refused}"
+    );
+    let refused = refusal(
+        "awnelement",
+        "  operation total(bs: List[T = IntBox]) -> Int64 = 0\n  operation go() -> Int64 = total([\"s\"])",
+    );
+    assert!(
+        refused.contains(
+            "list.element 1 (collection-element): expected IntBox (Box[V = Int64]), got String"
+        ),
         "{refused}"
     );
 }

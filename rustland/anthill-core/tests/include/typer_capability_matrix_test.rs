@@ -1311,10 +1311,15 @@ fn a_bare_operation_name_across_its_routes() {
 ///
 /// 7JDWY closed the first. The rows stay, and their contrast is now about the DIAGNOSTIC
 /// rather than about the verdict: the declared route names the offending ELEMENT
-/// (`list.element 1 … expected Int64, got String`) while the argument route, which infers
-/// the literal bottom-up and checks it where it is consumed, names the whole list
-/// (`got List[T = String]`). Both are right about their own question, and a reader meeting
-/// one message needs to know the other exists.
+/// (`list.element 1 … expected Int64, got String`) while a route that infers the literal
+/// bottom-up and checks it where it is consumed names the whole list (`got List[T =
+/// String]`). Both are right about their own question, and a reader meeting one message
+/// needs to know the other exists.
+///
+/// THE ARGUMENT ROUTE DECLARES TOO since WI-20261013-M32C2: a slot whose element type the
+/// call does not instantiate (`takes_list(s: List[T = Int64])`) declares it, as a return
+/// does, so its rows name the element now. The bottom-up route is an unannotated `let`, the
+/// position that declares nothing.
 #[test]
 fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
     run_routes(vec![
@@ -1356,20 +1361,32 @@ fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
                 expect: "(op-return)",
             },
         ),
-        // ── the ARGUMENT route: no hint is pushed, so elements ARE checked ──
+        // ── the ARGUMENT route: the slot declares its element type (WI-20261013-M32C2) ──
         //
-        // THESE ARE THE ROWS THAT MAKE THE TABLE A MEASUREMENT. Each is the same literal
-        // and the same wrong element as a row above, in the position that behaves
-        // differently; together they locate the hole in the ROUTE rather than in literals.
+        // Each is the same literal and the same wrong element as a row above. These were
+        // the rows that made the table a measurement, while the argument route pushed no
+        // hint and named the whole list; it declares now, and the row below them keeps the
+        // bottom-up reading.
         (
             "arg route / list literal, wrong element (CHECKED — the discriminator)".into(),
             "  operation c() -> Int64 = takes_list([\"x\"])".into(),
-            Verdict::RefusesLocated("got List[T = String]"),
+            Verdict::RefusesLocated(
+                "list.element 1 (collection-element): expected Int64, got String",
+            ),
         ),
         (
             "arg route / set literal, wrong element (CHECKED)".into(),
             "  operation c() -> Int64 = takes_set({\"x\"})".into(),
-            Verdict::RefusesLocated("got Set[T = String]"),
+            Verdict::RefusesLocated(
+                "set.element 1 (collection-element): expected Int64, got String",
+            ),
+        ),
+        (
+            // NO DECLARATION: the literal is a `List[T = String]` of its own, and the
+            // argument check refuses it where it is consumed, naming the whole list.
+            "let route / list literal, wrong element (INFERRED, checked where consumed)".into(),
+            "  operation c() -> Int64 =\n    let xs = [\"x\"]\n    takes_list(xs)".into(),
+            Verdict::RefusesLocated("expected List[T = Int64], got List[T = String]"),
         ),
         (
             // And one-element braces DO make a set here — the counterexample to the
@@ -1406,7 +1423,8 @@ fn a_literal_is_checked_on_every_route_that_declares_an_element_type() {
 /// reason.
 ///
 /// THE NEGATIVE ROW IS WHAT MAKES THE REST A MEASUREMENT: `takes_list([lambda x -> 7])`
-/// refuses, located, naming the arrow it found. Without it, "loads" would be consistent
+/// refuses, located, naming the arrow it found — at the element, since the slot's
+/// `List[T = Int64]` declares the literal's element type (WI-20261013-M32C2). Without it, "loads" would be consistent
 /// with the literal's elements never being looked at — which is exactly what the
 /// RETURN-HINT route used to do before WI-20260826-7JDWY
 /// (`a_literal_is_checked_on_every_route_that_declares_an_element_type`).
@@ -1436,7 +1454,9 @@ fn a_lambda_inside_a_list_literal() {
             // BOTH SIDES of the mismatch. Pinning only `expected …` left the doc's claim
             // — that the refusal names the ARROW it found — unchecked, so a regression on
             // the `got` side would keep this green (found by /code-review).
-            Verdict::RefusesLocated("expected List[T = Int64], got List[T = ??param -> Int64]"),
+            Verdict::RefusesLocated(
+                "list.element 1 (collection-element): expected Int64, got ??param -> Int64",
+            ),
         ),
     ]);
     // The BARE set-literal spelling stays a parse error, and that is a language fact
@@ -2482,28 +2502,37 @@ end
             ),
         ),
         (
-            // AND THE ARGUMENT ROUTE, which is the one 7JDWY's table uses as its control:
+            // AND THE ARGUMENT ROUTE, which is the one 7JDWY's table used as its control:
             // it used to take element ONE's type and let the rest ride free, so
             // `takes_list([\"a\"])` refused while `takes_list([1, \"a\"])` loaded — the same
-            // two elements in the other order. WI-20260829-WBXGX made it a join, and the
-            // refusal is now at the ELEMENT rather than at the argument.
-            "an ARGUMENT slot joins its literal's elements, in either order".into(),
+            // two elements in the other order. WI-20260829-WBXGX made it a join, and since
+            // WI-20261013-M32C2 the slot declares its element type, so each element is
+            // checked against the slot's `Int64` and the first that does not fit is named.
+            "an ARGUMENT slot declares its element type, in either order".into(),
             "  operation c() -> Int64 = takes_list([1, \"a\"])".into(),
             Verdict::RefusesLocated(
-                "list.element 2 (collection-element-join): expected Int64, got String",
+                "list.element 2 (collection-element): expected Int64, got String",
             ),
         ),
         (
             // THE ROW THAT MADE THE TWO ABOVE A MEASUREMENT, and it has done its job: the
             // SAME two elements in the other order refused while they loaded, which is how
-            // the order-dependence was seen at all. Both orders now refuse, at the ELEMENT
-            // and in the same words — so what this cell pins today is that the asymmetry is
-            // GONE. It used to read `takes_list.l (op-arg): expected List[T = Int64], got
-            // List[T = String]`, the whole-list message.
-            "the same two elements reversed refuse IDENTICALLY now".into(),
+            // the order-dependence was seen at all. Both orders refuse at the ELEMENT, naming
+            // the slot's type. It used to read `takes_list.l (op-arg): expected List[T =
+            // Int64], got List[T = String]`, the whole-list message, and then the join's
+            // `expected String, got Int64`.
+            "the same two elements reversed refuse at the element too".into(),
             "  operation c() -> Int64 = takes_list([\"a\", 1])".into(),
             Verdict::RefusesLocated(
-                "list.element 2 (collection-element-join): expected String, got Int64",
+                "list.element 1 (collection-element): expected Int64, got String",
+            ),
+        ),
+        (
+            // WHERE NOTHING DECLARES, THE ELEMENTS JOIN: an unannotated `let`.
+            "an unannotated let joins its literal's elements".into(),
+            "  operation c() -> Int64 =\n    let xs = [1, \"a\"]\n    takes_list(xs)".into(),
+            Verdict::RefusesLocated(
+                "list.element 2 (collection-element-join): expected Int64, got String",
             ),
         ),
         // ── inline constructor, the one cell outside the three rows above ──

@@ -621,7 +621,25 @@ pub(super) fn visit_type(
             // WI-821: keep the WHOLE record — `known_arg_types_and_staged` reads
             // `type_params` besides `params`, and re-looking the record up there
             // would clone every field a second time per hof-bearing call.
-            let op_info = if has_hof_arg || has_call_arg || has_sort_arg || has_ctor_arg {
+            let reads_params = has_hof_arg || has_call_arg || has_sort_arg || has_ctor_arg;
+            // WI-20261013-M32C2: WHAT THE CALLEE IS decides where its slots are read. A value
+            // in scope — a parameter, a `let` — is a function value, whose slots are its
+            // arrow's ([`function_value_param_slots`]); any other name is an operation, whose
+            // slots are its record's. One symbol is never both: a value in scope shadows an
+            // operation of its name, and the call's symbol is the value's (measured with a
+            // parameter `f` beside a top-level `operation f`).
+            let callee_value = if reads_params {
+                env.lookup_var(functor)
+            } else {
+                None
+            };
+            debug_assert!(
+                callee_value.is_none() || lookup_operation_info_full(kb, functor).is_none(),
+                "`{}` names both a value in scope and an operation: the check asks the \
+                 operation first, these hints would read the value",
+                kb.qualified_name_of(functor)
+            );
+            let op_info = if reads_params && callee_value.is_none() {
                 lookup_operation_info_full(kb, functor)
             } else {
                 None
@@ -641,7 +659,16 @@ pub(super) fn visit_type(
             let site = op_info
                 .as_ref()
                 .and_then(|op| call_site_bindings_for_hint(kb, &env, op, &occ_clone, functor));
-            let op_params = op_info.map(|op| op.params);
+            // Nothing is staged for a function value: the staging reads an operation's record.
+            let op_params = match &callee_value {
+                Some(fn_type) => function_value_param_slots(
+                    kb,
+                    fn_type,
+                    pos_args.len(),
+                    pos_args.len() + named_args.len(),
+                ),
+                None => op_info.map(|op| op.params),
+            };
             if staged.is_empty() {
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
                 // argument's type, so hint everything and visit everything.
@@ -713,9 +740,15 @@ pub(super) fn visit_type(
                                 .map(|(_, t)| t.clone());
                             (arg, pt)
                         };
-                        // Before any sibling is typed nothing is instantiated, and a path
-                        // re-keys only a projection the elimination reads, of which a staged
-                        // argument's slot has none to read yet: neither is computed for it.
+                        // Before any sibling is typed nothing is instantiated from one, and a
+                        // path re-keys only a projection the elimination reads, of which a
+                        // staged argument's slot has none to read yet: neither is computed for
+                        // it. What the call's own bracket and receiver bind is instantiated —
+                        // the call binds it before it reads any argument
+                        // ([`call_site_bindings_for_hint`]) — so a staged literal's slot is
+                        // the one the call has (WI-20261013-M32C2): `List.append[T = Sp](ss,
+                        // [car(n: 1), van(n: 2)])` declares `Sp` for the literal as
+                        // `cnt[A = Sp]([…])` does, where it was joined and refused.
                         one_arg_hint(
                             kb,
                             functor,
@@ -723,7 +756,7 @@ pub(super) fn visit_type(
                             pt,
                             &known_param_arg_types,
                             &HashMap::new(),
-                            None,
+                            site.as_ref(),
                         )
                     })
                     .collect();
@@ -900,8 +933,13 @@ pub(super) fn visit_type(
             // The instance the fields are hinted at: what the construction's own bracket
             // and receiver bind, then what the expectation says of the rest
             // ([`constructor_instance_for_hint`]).
-            let site_instance = constructor_instance_for_hint(kb, &env, &occ, name, &expected);
+            let site = constructor_instance_for_hint(kb, &env, &occ, name, &expected);
+            let site_instance = site.as_ref().map(|s| s.expected.clone());
             let instance = if site_instance.is_some() { &site_instance } else { &expected };
+            // WI-20261013-M32C2: what the construction ITSELF fixes — its bracket and its
+            // receiver, without the expectation — for a literal argument's slot, as a call's
+            // bracket and receiver fix its own ([`seq_field_expected_from_ctor`]).
+            let fixed_instance = site.map(|s| s.fixed);
             let pos_hints: Vec<Option<Value>> = pos_args
                 .iter()
                 .enumerate()
@@ -933,7 +971,14 @@ pub(super) fn visit_type(
                     nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
                         .or_else(|| type_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
-                        .or_else(|| seq_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
+                        .or_else(|| {
+                            seq_slot_arg_hint(
+                                kb,
+                                arg,
+                                field.as_ref().map(|(_, t)| t),
+                                SlotOwner::Construction(name),
+                            )
+                        })
                         .or_else(|| arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
@@ -941,12 +986,22 @@ pub(super) fn visit_type(
                         })
                         .or_else(|| {
                             let (_, ft) = field.as_ref()?;
-                            ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, ft)
-                                .then(|| ft.clone())
+                            ctor_arg_unlocks_a_field_hint(kb, arg, ft).then(|| ft.clone())
                         })
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
                             variant_field_expected_from_ctor(kb, name, fs, instance, arg)
+                        })
+                        .or_else(|| {
+                            let fs = field.as_ref().map(|(s, _)| *s)?;
+                            seq_field_expected_from_ctor(
+                                kb,
+                                name,
+                                fs,
+                                &fixed_instance,
+                                instance,
+                                arg,
+                            )
                         })
                 })
                 .collect();
@@ -973,18 +1028,29 @@ pub(super) fn visit_type(
                     nested_call_arg_hint(kb, arg, ft.as_ref())
                         .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
-                        .or_else(|| seq_slot_arg_hint(kb, arg, ft.as_ref()))
+                        .or_else(|| {
+                            seq_slot_arg_hint(kb, arg, ft.as_ref(), SlotOwner::Construction(name))
+                        })
                         .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             arrow_field_expected_from_ctor(kb, name, *fname, instance, arg)
                         })
                         .or_else(|| {
                             let ft = ft.as_ref()?;
-                            ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, ft)
-                                .then(|| ft.clone())
+                            ctor_arg_unlocks_a_field_hint(kb, arg, ft).then(|| ft.clone())
                         })
                         .or_else(|| {
                             variant_field_expected_from_ctor(kb, name, *fname, instance, arg)
+                        })
+                        .or_else(|| {
+                            seq_field_expected_from_ctor(
+                                kb,
+                                name,
+                                *fname,
+                                &fixed_instance,
+                                instance,
+                                arg,
+                            )
                         })
                 })
                 .collect();

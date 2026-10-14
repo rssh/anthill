@@ -94,6 +94,16 @@
 //! this ticket too. A row that separates B cannot also separate A, and this one says which
 //! it is.
 //!
+//! ## WHERE THE JOIN IS ASKED (WI-20261013-M32C2)
+//!
+//! The rows were written at an ARGUMENT slot, which then declared no element type unless it
+//! named a variant or was callable. Since WI-20261013-M32C2 a slot whose element type the call
+//! does not instantiate declares it, as a return does, and its literal is checked element by
+//! element against it (`collection-element`). So each row here binds its literal by an
+//! UNANNOTATED `let`, the position that declares nothing — the same literal, reaching the
+//! join it was written to drive. The back-out counts above were measured at the argument
+//! slot, before that change.
+//!
 //! ## CONTROLS — green either way, by design
 //!
 //! `control_a_homogeneous_literal_is_unchanged` (the overwhelming majority of literals, and
@@ -146,12 +156,20 @@ namespace test.wbxgx.list
   operation takes_list(l: List[T = Int64]) -> Int64 = List.length(l)
 "#;
 
+/// A literal bound by an unannotated `let` and then handed to `takes_list` — the join's
+/// route (see WHERE THE JOIN IS ASKED).
+fn via_let(elems: &str) -> String {
+    format!(
+        "{LIST_HOST}  operation a() -> Int64 =\n    let xs = [{elems}]\n    takes_list(xs)\nend\n"
+    )
+}
+
 /// THE TICKET'S FIRST ROW — a later element that does not join is refused, AT ITS OWN SPAN.
 ///
 /// BACKED OUT: loads clean, with a `String` sitting in a slot the signature types `Int64`.
 #[test]
 fn a_later_element_that_does_not_join_is_refused() {
-    let src = format!("{LIST_HOST}  operation a() -> Int64 = takes_list([1, \"a\"])\nend\n");
+    let src = via_let("1, \"a\"");
     assert_reports(
         &src,
         "list.element 2 (collection-element-join): expected Int64, got String",
@@ -166,7 +184,7 @@ fn a_later_element_that_does_not_join_is_refused() {
 /// above; both are here because neither implies the other.
 #[test]
 fn the_check_reaches_past_the_second_element() {
-    let src = format!("{LIST_HOST}  operation a() -> Int64 = takes_list([1, 2, \"a\"])\nend\n");
+    let src = via_let("1, 2, \"a\"");
     assert_reports(
         &src,
         "list.element 3 (collection-element-join): expected Int64, got String",
@@ -184,7 +202,9 @@ fn the_set_surface_is_checked_the_same_way() {
 namespace test.wbxgx.set
   import anthill.prelude.{Int64, String, Set}
   operation takes_set(s: Set[T = Int64]) -> Int64 = 1
-  operation a() -> Int64 = takes_set({1, "a"})
+  operation a() -> Int64 =
+    let s = {1, "a"}
+    takes_set(s)
 end
 "#;
     assert_reports(
@@ -206,7 +226,7 @@ end
 /// fails on the verdict. Together they say the two orders now agree.
 #[test]
 fn the_reversed_pair_is_refused_at_the_element_too() {
-    let src = format!("{LIST_HOST}  operation a() -> Int64 = takes_list([\"a\", 1])\nend\n");
+    let src = via_let("\"a\", 1");
     assert_reports(
         &src,
         "list.element 2 (collection-element-join): expected String, got Int64",
@@ -235,8 +255,12 @@ namespace test.wbxgx.order
     entity blue(v: Int64)
   end
   operation takeColours(l: List[T = Colour]) -> Int64 = List.length(l)
-  operation viaAb(r: Colour.red, c: Colour) -> Int64 = takeColours([r, c])
-  operation viaBa(r: Colour.red, c: Colour) -> Int64 = takeColours([c, r])
+  operation viaAb(r: Colour.red, c: Colour) -> Int64 =
+    let xs = [r, c]
+    takeColours(xs)
+  operation viaBa(r: Colour.red, c: Colour) -> Int64 =
+    let xs = [c, r]
+    takeColours(xs)
   operation ab() -> Int64 = viaAb(red(v: 1), blue(v: 2))
   operation ba() -> Int64 = viaBa(red(v: 1), blue(v: 2))
 end
@@ -272,7 +296,9 @@ fn an_erasing_join_is_refused_rather_than_widened_to_the_bare_base() {
 namespace test.wbxgx.erase%d
   import anthill.prelude.{Int64, String, List, Option}
   operation takeOpts(l: List[T = Option[T = Int64]]) -> Int64 = 1
-  operation go() -> Int64 = takeOpts([%s])
+  operation go() -> Int64 =
+    let xs = [%s]
+    takeOpts(xs)
 end
 "#;
     for (i, elems, order) in [
@@ -294,7 +320,9 @@ end
 namespace test.wbxgx.erase2
   import anthill.prelude.{Int64, String, List, Option}
   operation takeOpts(l: List[T = Option[T = Int64]]) -> Int64 = 1
-  operation go() -> Int64 = takeOpts([Option.some(value: "x")])
+  operation go() -> Int64 =
+    let xs = [Option.some(value: "x")]
+    takeOpts(xs)
 end
 "#;
     assert_reports(
@@ -353,7 +381,7 @@ end
 /// literals became hard".
 #[test]
 fn control_a_homogeneous_literal_is_unchanged() {
-    let src = format!("{LIST_HOST}  operation a() -> Int64 = takes_list([1, 2, 3])\nend\n");
+    let src = via_let("1, 2, 3");
     load_clean(&src, "a homogeneous literal");
     assert_eq!(drive(&src, "test.wbxgx.list.a"), "Int(3)");
 }

@@ -476,6 +476,10 @@ end
 /// AXES 1 AND 3 both fail it. It is kept because a future widening of the
 /// `type_mentions_an_entity` gate will look for this claim, and finding the retired version
 /// would license a widening whose flip-set nobody has measured.
+///
+/// WI-20261013-M32C2 IS THAT WIDENING: a slot whose element type is ground declares it,
+/// whatever it names. Its flip set, measured over the whole workspace: no verdict moved, and
+/// ten rows' messages moved from the whole argument (or the join) to the element.
 #[test]
 fn the_restored_argument_hint_also_turns_an_acceptance_into_a_refusal() {
     let src = r#"
@@ -498,8 +502,14 @@ end
 
 /// CONTROL — an UNHINTED literal still types from its elements, and was already checked
 /// there. Passes under every axis BY DESIGN, and it is what says the three axes above are
-/// about the DECLARED direction only: the reading an argument-position literal has always
+/// about the DECLARED direction only: the reading a literal at no declaration has always
 /// had is untouched, including the whole-list diagnostic it reports.
+///
+/// THE LITERALS ARE BOUND BY AN UNANNOTATED `let`, the position that declares nothing. They
+/// were written as arguments while an argument slot declared only a variant or callable
+/// element type; since WI-20261013-M32C2 a `List[T = Int64]` slot declares its element type
+/// too, and its literal is checked element by element (`wi_m32c2_list_literal_at_a_slot_-
+/// test`).
 ///
 /// ITS RESIDUAL WAS NAMED HERE AND HAS SINCE CLOSED. This route read the FIRST element and
 /// never compared the rest, so `takeInts([1, "a"])` loaded clean with a `String` in an
@@ -513,7 +523,9 @@ fn control_an_unhinted_literal_still_types_from_its_elements() {
 namespace test.jdy.unhinted
   import anthill.prelude.{Int64, String, List}
   operation takeInts(l: List[T = Int64]) -> Int64 = 1
-  operation wrong() -> Int64 = takeInts(["x"])
+  operation wrong() -> Int64 =
+    let xs = ["x"]
+    takeInts(xs)
 end
 "#;
     assert_reports(
@@ -526,7 +538,9 @@ end
 namespace test.jdy.unhinted2
   import anthill.prelude.{Int64, List}
   operation takeInts(l: List[T = Int64]) -> Int64 = List.length(l)
-  operation n() -> Int64 = takeInts([1, 2, 3])
+  operation n() -> Int64 =
+    let xs = [1, 2, 3]
+    takeInts(xs)
 end
 "#;
     load_clean(right, "a conforming unhinted literal");
@@ -540,7 +554,9 @@ end
 namespace test.jdy.unhinted3
   import anthill.prelude.{Int64, String, List}
   operation takeInts(l: List[T = Int64]) -> Int64 = 1
-  operation wrong() -> Int64 = takeInts([1, "a"])
+  operation wrong() -> Int64 =
+    let xs = [1, "a"]
+    takeInts(xs)
 end
 "#;
     assert_reports(

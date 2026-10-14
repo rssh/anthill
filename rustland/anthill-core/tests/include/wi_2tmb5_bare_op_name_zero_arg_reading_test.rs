@@ -230,7 +230,7 @@ end
 /// (`Option[T = Function[…]]`) could not reach the name — an op-call argument that is a
 /// constructor application was handed no expected type unless its parameter type named an
 /// ENTITY — so the honest answer was to refuse. 5NSZY delivers the arrow instead, through
-/// `ctor_arg_unlocks_an_arrow_for_a_bare_name` plus `arrow_field_expected_from_ctor`, and
+/// `ctor_arg_unlocks_a_field_hint` plus `arrow_field_expected_from_ctor`, and
 /// the reference then takes the ordinary WI-275 path with its dictionary and labels pinned
 /// from the slot. Both halves return 7.
 ///

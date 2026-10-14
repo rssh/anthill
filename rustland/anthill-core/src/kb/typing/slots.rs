@@ -155,6 +155,15 @@ pub(super) fn call_site_bindings_for_hint(
     (!subst.is_empty()).then_some(subst)
 }
 
+/// The instances a CONSTRUCTION names for its fields' hints ([`constructor_instance_for_hint`]).
+pub(super) struct ConstructionInstance {
+    /// Its sort at what the node's own bracket and receiver bind: what the construction
+    /// itself fixes (WI-20261013-M32C2 — a literal field's slot is read here).
+    pub(super) fixed: Value,
+    /// The same, then at what `expected` says of the rest.
+    pub(super) expected: Value,
+}
+
 /// The instance a CONSTRUCTION names for its fields' hints: its sort at what the node's own
 /// bracket and receiver bind, then at what `expected` says of the rest. `None` where the
 /// node writes neither — its fields are then hinted from the expectation alone, as before
@@ -162,13 +171,16 @@ pub(super) fn call_site_bindings_for_hint(
 ///
 /// `Hold.holdf[V = (x: Int64) -> Int64](inc)` over `entity holdf(f: V)` reads `f` as that
 /// arrow, and `Box[V = Colour.red].mk(red(v: 1))` reads `v` as the variant.
+///
+/// Both instances come from one seeding of the bracket and the receiver: the
+/// [`ConstructionInstance::fixed`] one before the expectation is read, the other after.
 pub(super) fn constructor_instance_for_hint(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     ctor_sym: Symbol,
     expected: &Option<Value>,
-) -> Option<Value> {
+) -> Option<ConstructionInstance> {
     if call_type_args_of(occ).is_none() && call_recv_type_of(occ).is_none() {
         return None;
     }
@@ -176,14 +188,20 @@ pub(super) fn constructor_instance_for_hint(
     let mut subst = Substitution::new();
     seed_constructor_type_args(kb, &mut subst, env, occ, Some(sort), ctor_sym, None).ok()?;
     seed_receiver_type_args(kb, &mut subst, env, occ, Some(sort), ctor_sym, None).ok()?;
-    let own = own_application(kb, sort);
-    if let Some(exp) = expected {
-        let mut probe = subst.clone();
-        if unify_types(kb, &mut probe, &TermIdView(own), exp) {
-            subst = probe;
+    let own = Value::term(own_application(kb, sort));
+    let fixed = walk_type_deep_value(kb, &subst, &own);
+    let expected = match expected {
+        Some(exp) => {
+            let mut probe = subst.clone();
+            if unify_types(kb, &mut probe, &own, exp) {
+                walk_type_deep_value(kb, &probe, &own)
+            } else {
+                fixed.clone()
+            }
         }
-    }
-    Some(walk_type_deep_value(kb, &subst, &Value::term(own)))
+        None => fixed.clone(),
+    };
+    Some(ConstructionInstance { fixed, expected })
 }
 
 /// What the bracket written on a callee may bind: the parameters a key names or a

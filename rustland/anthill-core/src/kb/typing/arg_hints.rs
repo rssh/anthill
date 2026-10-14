@@ -675,7 +675,7 @@ pub(super) fn one_arg_hint(
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt));
+        .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt, SlotOwner::Call(functor)));
     if base.is_some() {
         return base;
     }
@@ -692,7 +692,7 @@ pub(super) fn one_arg_hint(
     // the siblings rather than a fix — recorded because `one_arg_hint`'s own doc says the
     // non-HOF hints "never mention a callee type param", which this one can.
     let pt = pt_eliminated.or(pt)?;
-    ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, &pt).then_some(pt)
+    ctor_arg_unlocks_a_field_hint(kb, arg, &pt).then_some(pt)
 }
 
 /// The spec parameters a SELF-RECEIVER spec operation's receiver binds through its carrier's own
@@ -798,6 +798,35 @@ pub(super) fn bind_spec_params_for_hint(
     // to wait for.
     let ground = bind_ground_value_params_from_provider(kb, subst, spec_sort, &view);
     bound || ground
+}
+
+/// WI-20261013-M32C2 — the parameter list a call of a FUNCTION VALUE (`fn_type`, the type
+/// the scope gives the callee) is checked against, for the hints its arguments take: the
+/// slots [`positional_arg_expectations`] gives the check (Path 2 of `check_apply_iter`), or
+/// `None` where it gives none — a count that cannot be right, a callee whose type states no
+/// argument.
+///
+/// Without it such a call took no slot hint of any kind, so a named operation and a function
+/// value with the same parameter disagreed: with `f: (c: Colour.red) -> Int64`, `f(red(v: 1))`
+/// was refused `expected red, got Colour` where `takeRed(red(v: 1))` loads (§8.2), and with
+/// `f: (xs: List[T = Sp]) -> Int64`, `f([car(n: 1), van(n: 2)])` was refused as having no
+/// element type where `total([…])` answers.
+///
+/// A QUANTIFIED value (`let g = lambda x -> x + x`) gets nothing: its arrow is under a ∀,
+/// which the check opens per call and this reader does not, so it states no slots — the
+/// reading such a call had before.
+pub(super) fn function_value_param_slots(
+    kb: &mut KnowledgeBase,
+    fn_type: &Value,
+    positional: usize,
+    total: usize,
+) -> Option<Vec<(Symbol, Value)>> {
+    let callee_ty = extract_callable_type(kb, fn_type);
+    let declared = arrow_declared_param_list(kb, &callee_ty);
+    match positional_arg_expectations(kb, &callee_ty, declared.as_deref(), positional, total) {
+        ArgExpectations::Slots { slots, .. } => Some(slots),
+        ArgExpectations::CountMismatch { .. } | ArgExpectations::NoVerdict => None,
+    }
 }
 
 /// WI-275: the top-down hints for every argument of a call, positional then named.
@@ -1380,6 +1409,42 @@ pub(super) fn variant_field_expected_from_ctor(
     type_head_names_an_entity(kb, &walked).then_some(walked)
 }
 
+/// WI-20261013-M32C2 — [`seq_slot_arg_hint`] for a field whose element type is a parameter
+/// of the constructor's sort: the peer of [`variant_field_expected_from_ctor`], walking
+/// through the same [`ctor_field_expected`].
+///
+/// A constructor is a call (§8.1), so the declaration rule is the call's, read at `fixed` —
+/// the instance the construction's own bracket and receiver bind. A slot whose element type
+/// the construction instantiates declares nothing, and the literal joins: `box(xs: [car(n:
+/// 1), van(n: 2)])` over `entity box(xs: List[T = V])` is refused, `Car ⊔ Van` having no
+/// join, at a declared `Box[V = Sp]` too — the arguments instantiate `V`, and the literal's
+/// join is this one's contribution — as `cnt([…])` is at a declared return. Where the
+/// construction fixes `V` itself the slot is `List[T = Sp]` and declares: `Box.box[V =
+/// Sp](xs: […])` and `Box[V = Sp].box(xs: […])` load, as `cnt[A = Sp]([…])` does.
+///
+/// The checking-direction shapes ([`element_is_read_by_the_checking_direction`]) are read
+/// at `instance`, the expectation included, as the variant peer reads them: `-> Bag[V =
+/// Colour.red] = bag(xs: [red(v: 1)])` classifies the element at `red`, as `-> Box[V =
+/// Colour.red] = box(x: red(v: 1))` does.
+pub(super) fn seq_field_expected_from_ctor(
+    kb: &mut KnowledgeBase,
+    ctor_sym: Symbol,
+    field_sym: Symbol,
+    fixed: &Option<Value>,
+    instance: &Option<Value>,
+    arg: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    let kind = seq_literal_kind(kb, arg)?;
+    if let Some(hint) = ctor_field_expected(kb, ctor_sym, field_sym, fixed).and_then(|walked| {
+        seq_slot_arg_hint(kb, arg, Some(&walked), SlotOwner::Construction(ctor_sym))
+    }) {
+        return Some(hint);
+    }
+    let walked = ctor_field_expected(kb, ctor_sym, field_sym, instance)?;
+    let element = declared_element_type(kb, kind, Some(&walked))?;
+    element_is_read_by_the_checking_direction(kb, &element).then_some(walked)
+}
+
 /// WI-20260828-5NSZY — [`arrow_slot_arg_hint`] for a field whose ARROW arrives through a
 /// type PARAMETER, the one-level-nested case its own gate cannot see. The exact peer of
 /// [`variant_field_expected_from_ctor`], walking through the same [`ctor_field_expected`],
@@ -1398,7 +1463,7 @@ pub(super) fn variant_field_expected_from_ctor(
 /// the CONSTRUCTOR's own `expected`, and an op-call argument that is a constructor
 /// application was given none unless its parameter type named an ENTITY
 /// ([`variant_slot_arg_hint`]'s gate) — `Option[T = …]` names a SORT. See
-/// [`ctor_arg_unlocks_an_arrow_for_a_bare_name`], which supplies it.
+/// [`ctor_arg_unlocks_a_field_hint`], which supplies it.
 pub(super) fn arrow_field_expected_from_ctor(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
@@ -1414,19 +1479,30 @@ pub(super) fn arrow_field_expected_from_ctor(
 }
 
 /// WI-20260828-5NSZY — the OTHER half: may a call's declared parameter type be pushed into
-/// a CONSTRUCTOR-APPLICATION argument, because doing so unlocks an ARROW for a bare
-/// operation name in one of that constructor's fields?
+/// a CONSTRUCTOR-APPLICATION argument, because doing so unlocks a field hint the declared
+/// field type alone does not give — an ARROW for a bare operation name, and (WI-20261013-
+/// M32C2) a VARIANT for a construction or for a literal's elements, the §8.2 readings
+/// [`variant_field_expected_from_ctor`] and [`seq_field_expected_from_ctor`] make at the
+/// instance the construction is expected at?
+///
+/// The variant arms close §8.2 one level down: `takeBox(box(x: red(v: 1)))` over
+/// `takeBox(b: Box[V = Colour.red])` was refused `expected Box[V = red], got Box[V =
+/// Colour]` — the construction typed with no expectation, its `red` classified at the
+/// parent — where `-> Box[V = Colour.red] = box(x: red(v: 1))` loads. A literal's DECLARED
+/// element type is not among them: a construction's parameter is its arguments' to
+/// instantiate, and an expectation does not fix it (§4.6).
 ///
 /// THE GATE IS THE WHOLE ANSWER, not a formality. Pushing an expected type where none was
 /// pushed before is not neutral for a constructor: `check_constructor_iter` reads it for the
 /// §8.2 classification decision (`expected_names_an_entity`, WI-20260826-JSFHG) and seeds it
 /// into the build after the field loops (WI-384/WI-270). So this does not push whenever the
 /// argument is a constructor, nor whenever it carries a bare name — it performs the walk
-/// [`arrow_field_expected_from_ctor`] would perform and pushes only when that walk actually
-/// reaches a CALLABLE for a field whose argument IS a bare operation name. The hint
-/// therefore fires exactly where it changes the reading it exists to change, and the census
-/// of what newly receives one is that same set.
-pub(super) fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
+/// the field hint would perform and pushes only when that walk actually reaches a CALLABLE
+/// for a field whose argument IS a bare operation name, an ENTITY for one that is a
+/// construction, or an entity or callable ELEMENT for one that is a literal — each where the
+/// declared field type does not already. The hint therefore fires exactly where it changes
+/// the reading it exists to change, and the census of what newly receives one is that set.
+pub(super) fn ctor_arg_unlocks_a_field_hint(
     kb: &mut KnowledgeBase,
     arg: &Rc<NodeOccurrence>,
     pt: &Value,
@@ -1447,11 +1523,14 @@ pub(super) fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
     let (ctor, pos_args, named_args) = (*name, pos_args.clone(), named_args.clone());
     // The cheap predicate FIRST: this runs for every constructor-shaped argument of every
     // call that reaches the hint chain, and `entity_field_types(..).to_vec()` allocates.
-    // Nothing below can fire unless some argument is a bare operation name.
+    // Nothing below can fire unless some argument has a shape a field hint reads.
+    let reads_a_field_hint = |kb: &KnowledgeBase, a: &Rc<NodeOccurrence>| {
+        arg_is_bare_operation_name(kb, a) || arg_is_constructor_application(kb, a)
+    };
     if !pos_args
         .iter()
         .chain(named_args.iter().map(|(_, a)| a))
-        .any(|a| arg_is_bare_operation_name(kb, a))
+        .any(|a| reads_a_field_hint(kb, a))
     {
         return false;
     }
@@ -1467,11 +1546,30 @@ pub(super) fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
     // hint fires on four stdlib call sites (`Stream.splitFirst`, `Iterable.iterator`,
     // `FiniteCollection.collect`) plus `wi8q0q5`'s arrow-field carrier, every one of them an
     // already-arrow field; with it, on nothing but the nested-through-a-parameter shape.
-    let unlocks = |kb: &mut KnowledgeBase, field: Symbol, declared: &Value| {
-        !type_head_is_callable(kb, declared)
-            && ctor_field_expected(kb, ctor, field, &exp)
-                .is_some_and(|w| type_head_is_callable(kb, &w))
-    };
+    //
+    // The same holds of the variant arms: a field whose declared type already names an
+    // entity is [`variant_slot_arg_hint`]'s, and a literal whose declared element type is
+    // already read is [`seq_slot_arg_hint`]'s. A literal is asked first, being a
+    // constructor application too.
+    let unlocks =
+        |kb: &mut KnowledgeBase, field: Symbol, declared: &Value, a: &Rc<NodeOccurrence>| {
+            let Some(walked) = ctor_field_expected(kb, ctor, field, &exp) else {
+                return false;
+            };
+            if let Some(kind) = seq_literal_kind(kb, a) {
+                let read = |kb: &KnowledgeBase, t: &Value| {
+                    declared_element_type(kb, kind, Some(t))
+                        .is_some_and(|e| element_is_read_by_the_checking_direction(kb, &e))
+                };
+                !read(kb, declared) && read(kb, &walked)
+            } else if arg_is_bare_operation_name(kb, a) {
+                !type_head_is_callable(kb, declared) && type_head_is_callable(kb, &walked)
+            } else if arg_is_constructor_application(kb, a) {
+                !type_head_names_an_entity(kb, declared) && type_head_names_an_entity(kb, &walked)
+            } else {
+                false
+            }
+        };
     // WI-20260827-1F0QP: the field a positional ARGUMENT takes is the same
     // rank-among-NOT-named rule the constructor's build will use
     // (`positional_to_named_plan`), so a MIXED `mk(f, other: 1)` asks about the field
@@ -1490,26 +1588,26 @@ pub(super) fn ctor_arg_unlocks_an_arrow_for_a_bare_name(
         _ => None,
     };
     for (i, a) in pos_args.iter().enumerate() {
-        if arg_is_bare_operation_name(kb, a) {
+        if reads_a_field_hint(kb, a) {
             let field = match &pos_fields {
                 Some(pf) => fields.iter().find(|(fs, _)| *fs == pf[i]).cloned(),
                 None => fields.get(i).cloned(),
             };
             if let Some((fs, decl)) = field {
-                if unlocks(kb, fs, &decl) {
+                if unlocks(kb, fs, &decl, a) {
                     return true;
                 }
             }
         }
     }
     for (fname, a) in named_args.iter() {
-        if !arg_is_bare_operation_name(kb, a) {
+        if !reads_a_field_hint(kb, a) {
             continue;
         }
         let Some((_, decl)) = fields.iter().find(|(s, _)| s == fname).cloned() else {
             continue;
         };
-        if unlocks(kb, *fname, &decl) {
+        if unlocks(kb, *fname, &decl, a) {
             return true;
         }
     }

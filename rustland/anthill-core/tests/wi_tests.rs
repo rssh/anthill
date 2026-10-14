@@ -1814,6 +1814,9 @@ mod wi_7jdwy_hinted_literal_elements_test;
 #[path = "include/wi_wbxgx_collection_literal_element_join_test.rs"]
 mod wi_wbxgx_collection_literal_element_join_test;
 
+#[path = "include/wi_m32c2_list_literal_at_a_slot_test.rs"]
+mod wi_m32c2_list_literal_at_a_slot_test;
+
 #[path = "include/wi_0qv5a_match_arm_guard_test.rs"]
 mod wi_0qv5a_match_arm_guard_test;
 
