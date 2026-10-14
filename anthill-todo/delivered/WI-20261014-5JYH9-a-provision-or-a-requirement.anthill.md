@@ -3,9 +3,9 @@
 - id: WI-20261014-5JYH9-a-provision-or-a-requirement
 - created: 2026-10-14T09:51:30Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-14T09:51:30Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-14T10:53:35Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,8 @@ A PROVISION OR A REQUIREMENT AT AN ARROW IS MATCHED WITHOUT ITS EFFECT ROW, SO A
 ### 2026-10-14T09:57:28Z — feedback — user
 
 DECIDED (user, 2026-10-14, asked with five programs): A — IDENTICAL ROWS. Where a provision at an arrow is looked up, and where a requirement at an arrow is held against a call, two arrows are one binding when their parameter lists relate, their results are the same AND their effect rows are the same row; a row is not compared by conformance (a pure call is not answered by a provider at @ {ConsoleOutput}), as a tuple with a component more is another binding though it conforms (§5.2). A provider that answers any row writes a row parameter (@ {R}), which the lookup binds to the call's row exactly, and its requires and conditions are read at that row; a type parameter inside a label (Error[T = A]) is bound and held to one type as elsewhere. Consequences, from the examples: Q at (Int64) -> Int64 no longer answers a call at @ {ConsoleOutput} (the printing program is refused at load); Logger at @ {ConsoleOutput} no longer answers a pure call; Q and Logger together are two bindings, no tie (each call answered by its own); AnyRow's requires Mark[T = (Int64) -> Int64 @ {R}] is asked at the call's row; P at (A) -> A @ {Error[T = A]} is refused at @ {Error[T = String]} and at a pure arrow, answers at @ {Error[T = Int64]}. Spec §5.2 to say so. The stdlib writes no provision or requirement at an arrow (grep), so no library clause moves.
+
+### 2026-10-14T10:53:34Z — feedback — user
+
+DELIVERED (ed5e902d), as decided (A, identical rows). The lookup matches an arrow's two rows as one row (match_candidate_rows): labels one to one, a closed row leaves nothing over, a row open at the provider's row parameter @ {R} binds it to what is left; the cover compares rows (rows_verdict); the provider's requires and conditions are read at the bound row (row_tails_at); default marks overlap where their rows can be one (rows_overlap); a clause holds a parameter in a row's labels as its name, the tail as a variable (type_in_clause_canon stops at open; {...} bindings canonized too). The ticket's programs: both printing programs refused at load; the four lone-provider pairs refused, each answering at its own row; the label program held to one A (refused at Error[T = String] and at the pure arrow, answers at Error[T = Int64]); plus: two providers differing only in the row answer each its own call (were ties); AnyRow beside Q; a caller's row parameter answered by @ {R} or a requirement at it; a requirement at the caller's {E} does not serve a pure call (99 for 91); Modify[c] rows; defaults. Messages name an arrow's row where it holds anything ('its carrier is Int64 -> Int64 @ {ConsoleOutput}'). Spec §5.2 (the sentence and a paragraph) and §8.7. 12 rows (wi_5jyh9_arrow_row_binding_test), eight back-outs in its header. No existing row moved. RUN: full gate 9805/0, node carrier 9805/0, families green both carriers, provision oracle 8795/0, scaland testFull 668+40+1. LEFT, measured: the σ substitution read in the lookup and cover (nothing reaches it); a projection bound bare as a row parameter (loads either way); the three label pairings not merged (different contracts). Not done: a row parameter still prints as {?_} in a message (the variable's name), and rows as arguments of an applied sort (Strm[E = {...}]) are still leaves of the lookup, as the decision covered arrows.
 
