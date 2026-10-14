@@ -34,3 +34,9 @@ THE CONTROL: `small` is a COUNTEREXAMPLE and its twin `gte(?a, 3.0)` proves; `pl
 
 DONE WHEN: the control rows hold and fail when backed out; the documents that moved are listed; the gate is green.
 
+## Changes
+
+### 2026-10-14T12:37:40Z — feedback — user
+
+MEASURED, the same mechanism from the variable side: a field named like a variable collides with it. entity E(var_0: Float), fact E(var_0: 5.0), rule f: gte(?x, 3.0) :- E(var_0: ?v), lte(?x, 1.0), lte(?v, 9.0). On d7a8ffcb ?v was bound to the constant var_0, which is also ?v's own name, and the verdict (COUNTEREXAMPLE) came out right by that coincidence; on 6f5262ce bind_variable sees ?v given its own name and binds nothing, and the document both define-funs and declares var_0: z3 'named expression already defined with this name var_0'. Loud. sanitize_smt_id also folds distinct names into one (a.b and a_b are both a_b).
+
