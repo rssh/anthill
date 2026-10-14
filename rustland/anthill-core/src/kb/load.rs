@@ -399,6 +399,9 @@ pub enum RequirementFailure {
         goal: String,
         detail: String,
     },
+    /// WI-20261003-QGVB1 — the requirement leaves slots unwritten, and the provisions that
+    /// answer the rest name different types for them, so it says none; `account` says which.
+    OpenSlotsNamedApart { account: String },
 }
 
 /// The clause after "which requires `{required}`" in an [`LoadError::UnsatisfiedProviderRequires`].
@@ -447,6 +450,7 @@ fn requirement_failure_clause(
             "and its provider `{provider}` was chosen, but `{goal}` beneath it does not hold: \
              {detail}"
         ),
+        RequirementFailure::OpenSlotsNamedApart { account } => format!("but {account}"),
     }
 }
 
@@ -471,6 +475,9 @@ fn requirement_failure_repair(required: &str, failure: &RequirementFailure) -> S
         ),
         RequirementFailure::Ambiguous { .. } => {
             " (retract one of those provisions or make one more specific)".to_string()
+        }
+        RequirementFailure::OpenSlotsNamedApart { .. } => {
+            " (write it in the requirement)".to_string()
         }
         RequirementFailure::Cyclic { .. }
         | RequirementFailure::Refused { .. }
@@ -17347,8 +17354,14 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         // Build a short-name lookup for explicit bindings.
         // Explicit bindings may use plain symbols (e.g., "T") while base_subst
         // uses scope-qualified symbols (e.g., "Monoid.T"). Match by short name.
+        //
+        // WI-20261003-QGVB1 — a binding written `?` is a slot left unwritten (§8.1), and is held
+        // as one: left out here, the slot takes the spec's own parameter below, which every
+        // reader of the clause reads as open.
+        let written_bindings = explicit_bindings.clone();
         let explicit_by_short: Vec<(String, Value)> = explicit_bindings
             .into_iter()
+            .filter(|(_, v)| !super::typing::is_written_wildcard(kb, v, &written_bindings))
             .map(|(s, v)| {
                 let name = kb.local_name_of(s);
                 let short = name.rsplit('.').next().unwrap_or(name).to_owned();

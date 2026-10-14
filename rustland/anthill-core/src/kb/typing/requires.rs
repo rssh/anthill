@@ -1250,6 +1250,10 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     let Some((mut bindings, positional)) = op_requires_application_bindings(kb, entry) else {
         return entry.clone();
     };
+    // WI-20261003-QGVB1 — a binding written `?` is a slot left unwritten, which this clause's
+    // shape holds as no binding.
+    let written = bindings.clone();
+    bindings.retain(|(_, v)| !is_written_wildcard(kb, v, &written));
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     for (name, val) in positional {
         // The spec's OWN parameter symbol, which is what a `SortView`'s named args

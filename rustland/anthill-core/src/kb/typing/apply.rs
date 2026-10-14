@@ -957,6 +957,12 @@ pub(super) fn check_apply_iter(
                     ..Discharge::new(&projection_receivers, &ctx, span)
                 }
                 .eliminate(kb, param_type)?;
+                let eff = ground_param_projections(kb, &subst, &eff);
+                if let Some(why) = UnreadProjection::find(kb, &subst, &eff)
+                    .and_then(|unread| unread.why_unread(kb))
+                {
+                    return Err(projection_type_error(&ctx, span, &why));
+                }
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
                     // The slot's row as this call reads it, before the argument meets it —

@@ -721,7 +721,9 @@ fn unconstrained_elements(
     };
     let mut out: Vec<String> = Vec::new();
     for (k, v) in &goal.bindings {
-        if !is_type_param_view(kb, v) {
+        // WI-20261003-QGVB1 — a slot the requirement leaves open is no element of the call: it
+        // is any type, said by the provisions that answer the rest.
+        if !is_type_param_view(kb, v) || is_open_requires_slot(kb, goal.spec_sort, *k, v) {
             continue;
         }
         if matches!(sigma_class_terminal(kb, ctx, v), Some((_, false))) {
@@ -1349,7 +1351,14 @@ fn build_dispatching_dict_from_chain(
                                 kb.qualified_name_of(goal.spec_sort)
                             ))
                         });
+                        // WI-20261003-QGVB1 — a requirement whose open slots two provisions
+                        // name apart: the account (the resolver's hint) names them and the
+                        // repair, and no scope route is what is missing.
+                        let apart = goal_from_requires_entry(kb, dep)
+                            .and_then(|goal| OpenSlotsNamedApart::of(kb, &goal))
+                            .is_some();
                         let (construction, no_scope_route) = match member_clause {
+                            _ if apart => (construction, false),
                             Some(clause) => (
                                 format!("{construction}{sep}nothing in the enclosing scope supplies it: declare `requires {clause}` on the enclosing operation so the evidence is passed in",
                                     sep = if construction.is_empty() { "" } else { " — " }),
@@ -1358,7 +1367,7 @@ fn build_dispatching_dict_from_chain(
                             None => (construction, true),
                         };
                         *slot = Some(Box::new(RequirementRefusal {
-                            account_names_every_repair: false,
+                            account_names_every_repair: apart,
                             no_scope_route,
                             construction_carries_repair: !no_scope_route,
                             dep_text: render_requires_entry(kb, dep),
@@ -1561,13 +1570,26 @@ pub(super) fn build_concrete_dispatch_dict(
     // Substitute the call-site bindings into each direct requirement so a
     // concretely-pinned dep (`Eq[T]` ⇒ `Eq[Int]`) resolves against its `fact`;
     // an abstract dep is left open for the caller-frame `var_ref` forwarding.
+    // WI-20261003-QGVB1 — and each slot a requirement leaves open said by the provision
+    // at the carrier the call names ([`dep_completed_at_carrier`]), as on the op half.
     let concrete_chain: Vec<RequiresEntry> = abstract_chain
         .iter()
-        .map(|entry| RequiresEntry {
-            required_sort: entry.required_sort,
-            spec: substitute_spec_via_subst(kb, &entry.spec, subst),
-            supply: entry.supply,
-            binder: entry.binder,
+        .map(|entry| {
+            let dep = RequiresEntry {
+                required_sort: entry.required_sort,
+                spec: substitute_spec_via_subst(kb, &entry.spec, subst),
+                supply: entry.supply,
+                binder: entry.binder,
+            };
+            // A sort's clause writes every slot but those it holds open.
+            let leaves_one_open = view_named_children(kb, &dep.spec)
+                .iter()
+                .any(|(k, v)| is_open_requires_slot(kb, dep.required_sort, *k, v));
+            if leaves_one_open {
+                dep_completed_at_carrier(kb, &dep).unwrap_or(dep)
+            } else {
+                dep
+            }
         })
         .collect();
     let Some(syms) = ProjectionSyms::resolve(kb) else {
@@ -2602,6 +2624,11 @@ pub(super) fn unconstrained_for_want_of_a_provision(
 ///
 /// The carrier is the parameter those two readers of a clause take for it
 /// ([`clause_carrier_param`]).
+///
+/// WI-20261003-QGVB1 — and only where the provisions answering the written parameters say
+/// the rest alike ([`open_slots_said`]), whose types are then the ones written: beside a second
+/// provision naming other types for them, the carrier's own reading is one answer of two, and
+/// the slot is left unwritten for the requirement to be refused as saying neither.
 fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Option<RequiresEntry> {
     // Read through the view, each binding on the carrier it rides: a clause's carrier may be
     // a type that holds a value, and what its provision says of an unwritten parameter may
@@ -2620,6 +2647,10 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     let spec = dep.required_sort;
     let spec_params = sort_type_params_as_pairs(kb, spec).to_vec();
     let mut completed: Vec<(Symbol, Value)> = view_named_children(kb, &dep.spec).into_vec();
+    // WI-20261003-QGVB1 — a slot a SORT's clause leaves out is held as the spec's own
+    // parameter, and one written `?` as a variable ([`is_open_requires_slot`]): unwritten
+    // both, as the operation's clause that names no binding for it.
+    completed.retain(|(k, v)| !is_open_requires_slot(kb, spec, *k, v));
     let written = |kb: &KnowledgeBase, vid: VarId| {
         completed
             .iter()
@@ -2636,10 +2667,26 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     }
     let carrier_pvid = type_param_global_var(kb, clause_carrier_param(kb, spec)?)?;
     let carrier = written(kb, carrier_pvid)?;
+    let asked = SortGoal {
+        spec_sort: spec,
+        bindings: completed.iter().cloned().collect(),
+        carrier: None,
+    };
+    let open: Vec<Symbol> = unwritten.iter().map(|(p, _)| *p).collect();
+    let said = match open_slots_said(kb, &asked, &open) {
+        OpenSlotsSaid::Apart(_) => return None,
+        OpenSlotsSaid::One(said) => said,
+        OpenSlotsSaid::Nothing => vec![None; open.len()],
+    };
     let instance = spec_instance_at_receiver(kb, spec, carrier_pvid, &carrier)?;
-    for (param, vid) in unwritten {
-        let said = instance.resolve_as_value(vid)?;
-        let said = resolve_type_deep_value(kb, &instance, &said);
+    for ((param, vid), said) in unwritten.into_iter().zip(said) {
+        let said = match said {
+            Some(said) => said,
+            None => {
+                let value = instance.resolve_as_value(vid)?;
+                resolve_type_deep_value(kb, &instance, &value)
+            }
+        };
         completed.push((param, said));
     }
     kb.canonicalize_record_named_args(functor, &mut completed);

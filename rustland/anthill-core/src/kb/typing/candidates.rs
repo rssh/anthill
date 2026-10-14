@@ -205,6 +205,168 @@ pub(super) fn collect_provides_candidates(
 ) -> Vec<Candidate> {
     // WI-20261011-A3NND — a run of the provision check asks what it put here.
     note_candidate_search(kb, goal, sigma);
+    candidates_at(kb, goal, sigma, &[])
+}
+
+/// WI-20261003-QGVB1 — what the provisions answering the slots a goal WRITES say of the slots
+/// it leaves `open` ([`open_slots_said`]).
+pub(super) enum OpenSlotsSaid {
+    /// One provision answers, or several that name the same types: each open slot's type, in
+    /// the order of `open` — `None` where the provision leaves it to a parameter of its own
+    /// that the written slots do not fix (`MemStore2[K] provides Storage[…, Key = K]` asked
+    /// at a bare `MemStore2`).
+    One(Vec<Option<Value>>),
+    /// Several answer, naming different types for them: the providers.
+    Apart(Vec<Symbol>),
+    /// None answers.
+    Nothing,
+}
+
+/// WI-20261003-QGVB1 — the slots a requirement leaves `open` as the provisions that answer the
+/// rest say them. A requirement that leaves a slot unwritten requires the spec at any binding
+/// of it (kernel-language §8.1), and the dictionary that meets it is the one a provision
+/// answering the rest names: one provision, or several that name the same types. Two that
+/// name different ones — `LeafLeaf` at `Pair[P = Leaf, Q = Leaf]` beside `AnyPebble[X]` at
+/// `Pair[P = X, Q = Pebble]`, for `requires Pair[P = MT]` at `MT = Leaf` — leave the
+/// requirement saying neither. Read from the carrier's own view alone, the open slot was
+/// filled from `LeafLeaf` and `AnyPebble` never weighed (MEASURED: `Partial.p(leaf(),
+/// pebble())` refused "expected Leaf"; the same for an operation's own `requires Pair[P =
+/// X]`), and where `AnyPebble` was the only provision the slot was not filled at all and the
+/// requirement refused "nothing provides" (MEASURED).
+///
+/// Each answering provision's binding is read at what matching the written slots bound of its
+/// own parameters. A search with slots open is one a provision a later load adds can answer
+/// otherwise, so a run of the provision check that makes it holds nothing
+/// ([`note_open_slot_search`]).
+pub(super) fn open_slots_said(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    open: &[Symbol],
+) -> OpenSlotsSaid {
+    note_open_slot_search();
+    let (written, open_names) = written_slots(kb, goal, open);
+    let candidates = candidates_at(kb, &written, None, &open_names);
+    let mut said: Option<Vec<Option<Value>>> = None;
+    for cand in &candidates {
+        let view = provision_fact_spec(kb, cand.row)
+            .expect("a candidate is a provision row, which holds its spec");
+        let row = spec_view_bindings_value(kb, &view);
+        let mut values = Vec::with_capacity(open_names.len());
+        for name in &open_names {
+            let value = row
+                .iter()
+                .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+                .map(|(_, b)| sigma_subst_type(kb, b, &cand.impl_subst))
+                .filter(|v| !view_contains_type_param(kb, v));
+            values.push(value);
+        }
+        match &said {
+            None => said = Some(values),
+            Some(first) => {
+                let agree = first.iter().zip(&values).all(|pair| match pair {
+                    (Some(a), Some(b)) => views_structurally_equal(kb, a, b),
+                    _ => false,
+                });
+                if !agree {
+                    return OpenSlotsSaid::Apart(
+                        candidates.iter().map(|c| c.impl_sort).collect(),
+                    );
+                }
+            }
+        }
+    }
+    match said {
+        Some(said) => OpenSlotsSaid::One(said),
+        None => OpenSlotsSaid::Nothing,
+    }
+}
+
+/// WI-20261003-QGVB1 — why no provision answers a `goal` whose requirement leaves slots open
+/// that several provisions answer, each naming other types for them ([`open_slots_said`]):
+/// the slots, the providers and the goal they answer.
+pub(super) struct OpenSlotsNamedApart {
+    slots: Vec<String>,
+    providers: Vec<String>,
+    answered: String,
+}
+
+impl OpenSlotsNamedApart {
+    /// `None` where that is not why: the goal leaves nothing open, or the provisions that
+    /// answer the rest say it alike.
+    pub(super) fn of(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<Self> {
+        let open: Vec<Symbol> = goal
+            .bindings
+            .iter()
+            .filter(|(k, v)| is_open_requires_slot(kb, goal.spec_sort, *k, v))
+            .map(|(k, _)| *k)
+            .collect();
+        if open.is_empty() {
+            return None;
+        }
+        let OpenSlotsSaid::Apart(providers) = open_slots_said(kb, goal, &open) else {
+            return None;
+        };
+        let (written, slots) = written_slots(kb, goal, &open);
+        Some(OpenSlotsNamedApart {
+            slots,
+            providers: providers
+                .iter()
+                .map(|p| kb.qualified_name_of(*p).to_string())
+                .collect(),
+            answered: format_goal(kb, &written),
+        })
+    }
+
+    /// "the requirement leaves `Q` unwritten, and `A` and `B` answer `Pair[P = Leaf]` naming
+    /// different types for it".
+    pub(super) fn account(&self) -> String {
+        let quote = |xs: &[String], sep: &str| {
+            xs.iter()
+                .map(|x| format!("`{x}`"))
+                .collect::<Vec<_>>()
+                .join(sep)
+        };
+        format!(
+            "the requirement leaves {} unwritten, and {} answer `{}` naming different types \
+             for it",
+            quote(&self.slots, ", "),
+            quote(&self.providers, " and "),
+            self.answered,
+        )
+    }
+}
+
+/// `goal` at the slots it writes, and the short names of the `open` ones it leaves out.
+fn written_slots(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    open: &[Symbol],
+) -> (SortGoal, Vec<String>) {
+    let written = SortGoal {
+        spec_sort: goal.spec_sort,
+        bindings: goal
+            .bindings
+            .iter()
+            .filter(|(k, _)| !open.contains(k))
+            .cloned()
+            .collect(),
+        carrier: goal.carrier.clone(),
+    };
+    let names = open
+        .iter()
+        .map(|k| short_name_of(kb.local_name_of(*k)).to_owned())
+        .collect();
+    (written, names)
+}
+
+/// [`collect_provides_candidates`], each spec parameter named in `open` discriminating no
+/// provider ([`open_slots_said`]).
+fn candidates_at(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    sigma: Option<&SigmaCtx>,
+    open: &[String],
+) -> Vec<Candidate> {
     // WI-660: the spec-base bucket (built index) or the full scan, re-filtered BY CANONICAL
     // SORT (WI-20260923-N3W68 #10 — see [`provides_rows_of_spec_in`]). Collected — the loop
     // below borrows `kb` mutably.
@@ -357,6 +519,9 @@ pub(super) fn collect_provides_candidates(
             if !type_param_names.iter().any(|n| n == short_name) {
                 // Op-binding (auto-bound `eq`/`neq`/…) — doesn't drive
                 // dispatch.
+                continue;
+            }
+            if open.iter().any(|n| n == short_name_of(short_name)) {
                 continue;
             }
             let per_call_value = match goal_binding_value(kb, goal, *binding_short) {

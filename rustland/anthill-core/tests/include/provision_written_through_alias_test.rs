@@ -600,10 +600,13 @@ fn a_noneq_leaf_claimed_through_an_alias_is_a_leaf() {
 
 /// A projection off a spec's parameter, inside a tuple the member rule rebuilds at the
 /// provision's bindings, is read at the binding's type where the binding was written
-/// through an alias: the provision is judged as the one written out is.
+/// through an alias: the provision is judged as the one written out is — and since
+/// WI-20261003-QGVB1 both are admitted and run, where both were refused alike (the
+/// requirement's unwritten `Key` read as written, and the spec's `MemStore.Key` left
+/// unreduced beside the member's `String`).
 #[test]
 fn a_projection_rebuilt_at_a_binding_written_through_an_alias_is_read_at_its_type() {
-    let judged = |spelling: &str, at: &str| {
+    let run = |spelling: &str, at: &str| {
         let ns = format!("pwarigid{spelling}");
         let src = format!(
             "namespace test.{ns}\n  import anthill.prelude.{{Int64, String, List, Error}}\n  \
@@ -617,18 +620,15 @@ fn a_projection_rebuilt_at_a_binding_written_through_an_alias_is_read_at_its_typ
              operation op(s: Self, x: (a: P.Key, b: List)) -> Int64\n  end\n  \
              sort Car\n    entity car(n: Int64)\n    provides Sp[P = {at}, E = {{Error}}]\n    \
              operation size(c: Car) -> Int64 = c.n\n    \
-             operation op(c: Car, x: (a: MemStore.Key, b: List)) -> Int64 = 42\n  end\nend\n"
+             operation op(c: Car, x: (a: MemStore.Key, b: List)) -> Int64 = 42\n  end\n  \
+             operation go() -> Int64 = Sp.size(car(n: 40)) + 2\nend\n"
         );
-        load_errors_of(&src)
+        let mut interp = interp_for(&src);
+        interp.call(&format!("test.{ns}.go"), &[])
     };
-    // The comparison the member rule makes, which names no binding: the same in both.
-    let compared = "the spec's `(a: MemStore.Key, b: List[T = ?T])` admits arguments the \
-                    member's `(a: String, b: List[T = ?T])` does not";
     for (spelling, at) in [("alias", "MS"), ("written", "MemStore")] {
-        let errs = judged(spelling, at);
-        assert_eq!(errs.len(), 2, "{spelling}: {errs:#?}");
-        assert!(errs[0].contains("which requires") && errs[0].contains("but nothing provides"));
-        assert!(errs[1].contains(compared), "{spelling}: {}", errs[1]);
+        let got = run(spelling, at);
+        assert!(matches!(got, Ok(Value::Int(42))), "{spelling}: {got:?}");
     }
 }
 

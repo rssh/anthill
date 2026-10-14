@@ -178,17 +178,19 @@ fn bound_scope_entry_over_the_same_param_still_forwards() {
 /// yet accepted by Strategy 3's entry-driven scope walk, which would only ever
 /// look at `P`. It cannot: a BRACKETED `requires` is stored as a `SortView` whose
 /// omitted parameters are FILLED with the spec's own parameter ref, so the entry
-/// carries `Q = Pair.Q` — a key, not a hole. Both walks therefore see `Q` and
-/// both hand it to `binding_pair_covers`, which refuses the concrete/wildcard
-/// pair. Only a BRACKET-LESS `requires` (no `SortView` at all, hence genuinely no
-/// bindings — the test above) produces the missing key the orientation fix is
-/// about.
+/// carries `Q = Pair.Q` — a key, not a hole, and both walks see it. Only a
+/// BRACKET-LESS `requires` (no `SortView` at all, hence genuinely no bindings —
+/// the test above) produces the missing key the orientation fix is about.
 ///
-/// What that leaves is WI-828's verdict, which this pins: `Q` is unconstrained at
-/// the call, so the requirement cannot be supplied and the load is refused —
-/// naming the element and the wildcard cover it declined to forward.
+/// What the filled key MEANS is WI-20261003-QGVB1's: the slot the clause leaves
+/// open is any type (kernel-language §8.1), so `Holder`'s `Pair[P = Leaf, Q =
+/// Leaf]` supplies `Partial`'s `Pair[P = Leaf]`, where until then the key was
+/// compared as written and the call was refused "cannot be supplied". Inside
+/// `Partial` the open `Q` supplies nothing that writes it: `Callee`'s `Pair[P = MT,
+/// Q = Pebble]` is answered by `AnyPebble` (8), not by the `LeafLeaf` dictionary
+/// `Partial` holds (7).
 #[test]
-fn partially_bound_entry_fills_the_omitted_param_and_is_refused_at_load() {
+fn partially_bound_entry_leaves_the_omitted_param_open() {
     let src = with_desc(
         "wi826.partial",
         r#"  sort Pair
@@ -222,19 +224,9 @@ fn partially_bound_entry_fills_the_omitted_param_and_is_refused_at_load() {
     operation h(n: Int64) -> Int64 = Partial.p(leaf())
   end"#,
     );
-    let errs = crate::common::try_load_kb_with(&src)
-        .err()
-        .unwrap_or_else(|| panic!("expected a load diagnostic, but the source loaded clean"));
-    // ONLY the rendered element is asserted: it is the whole witness (the
-    // unwritten `Q` came back as the spec's own `Pair.Q`, so the entry has a key
-    // there, not a hole). The surrounding WI-828 wording is that ticket's to
-    // change and pinning it here would rot for a reason unrelated to this claim.
-    assert!(
-        errs.iter().any(|e| e.contains("Q = wi826.partial.Pair.Q")),
-        "expected the refusal to render the FILLED omitted parameter as \
-         `Q = Pair.Q` (which is why the ticket's predicted missing-key asymmetry \
-         cannot arise for a bracketed `requires`); got {errs:?}"
-    );
+    let mut interp = crate::common::interp_for(&src);
+    let got = interp.call("wi826.partial.Holder.h", &[Value::Int(0)]);
+    assert!(matches!(got, Ok(Value::Int(8))), "{got:?}");
 }
 
 /// The `Mid` slot spec and the one carrier that provides it, shared by the two

@@ -776,8 +776,16 @@ pub(super) fn supply_covers_demanded_keys(
     supply: Supply,
     demand: Demand,
 ) -> bool {
+    // Resolved where a demand first asks it: most walks meet no open slot.
+    let mut spec: Option<Option<Symbol>> = None;
     for (d_key, d_val) in demand.0 {
         if !is_type_param_binding(kb, *d_key, spec_qn) {
+            continue;
+        }
+        // WI-20261003-QGVB1 — a slot the demand leaves open is any type, which every supply
+        // covers: `Pair[P = MT]` (its `Q` held as `Pair.Q`) is met by `Pair[P = MT, Q = Leaf]`.
+        let demand_spec = *spec.get_or_insert_with(|| kb.try_resolve_symbol(spec_qn));
+        if demand_spec.is_some_and(|spec| is_open_requires_slot(kb, spec, *d_key, d_val)) {
             continue;
         }
         let Some(s_val) = binding_for_param(kb, supply.0, *d_key, BindingKeyMatch::Label) else {

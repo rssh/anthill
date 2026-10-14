@@ -1208,11 +1208,11 @@ end
 }
 
 /// … AND A RIGID TYPE PROJECTION (`P.Key`) UNDER A REBUILT BINDING: the rebuild had no arm for
-/// it, and the loader PANICKED (MEASURED: exit 101 on the tree the ninth review saw). Nothing
-/// runs: the provision is refused, as on the tree the eighth review saw — and both its refusals
-/// are wrong on every build (the `requires Storage[C = P]` reads `Key` and `Val` unreduced, and
-/// the rule compares the spec's `MemStore.Key` unreduced with the member's `String`), a separate
-/// question this row pins only as "no panic, the earlier verdict".
+/// it, and the loader PANICKED (MEASURED: exit 101 on the tree the ninth review saw). Runs to 42
+/// since WI-20261003-QGVB1: until then the provision was refused, as on the tree the eighth
+/// review saw, by two wrong refusals — the `requires Storage[C = P]` read `Key` and `Val` as
+/// written, and the rule compared the spec's `MemStore.Key` unreduced with the member's
+/// `String` — and the row pinned only "no panic, the earlier verdict".
 /// FAILS under ledger part 104.
 #[test]
 fn a_rigid_type_projection_under_a_rebuilt_binding_does_not_panic() {
@@ -1248,11 +1248,7 @@ namespace wi0rp29r9.rigid_proj
     Sp.size(k)
 end
 "#;
-    assert_refused_naming(
-        &load_errors(src),
-        &["its own member 'op' does not fit"],
-        "a rigid type projection under a rebuilt binding",
-    );
+    assert_eq!(run_src(src, "wi0rp29r9.rigid_proj.go"), Ok(42));
 }
 
 // ── a call with no receiver ─────────────────────────────────────────────────────────────────

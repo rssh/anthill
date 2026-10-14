@@ -1079,15 +1079,26 @@ pub(super) fn resolve_inner<'a>(
 
     if candidates.is_empty() {
         stack.pop();
-        return ResolutionResult::NoMatch {
-            goal_text: format_goal(kb, goal),
+        // WI-20261003-QGVB1 — a goal whose requirement leaves slots open that SEVERAL
+        // provisions answer, each naming other types for them: not "no impl", but a
+        // requirement that says none of them ([`open_slots_said`]).
+        let hint = match OpenSlotsNamedApart::of(kb, goal) {
+            Some(apart) => format!(
+                "{}; write it in the requirement, or hold the dictionary in a `requires` of \
+                 the caller that writes it",
+                apart.account()
+            ),
             // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
             // provision, so advising it sent the author back to this same `NoMatch`.
-            hint: format!(
+            None => format!(
                 "no impl provides {0}; declare `provides {0}[…]` on the carrier or on a \
                  witness sort, or add `requires {0}[…]` in scope",
                 kb.qualified_name_of(goal.spec_sort)
             ),
+        };
+        return ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint,
             spec: goal.spec_sort,
             forwarded: false,
         };

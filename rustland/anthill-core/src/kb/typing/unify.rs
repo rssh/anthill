@@ -1689,9 +1689,10 @@ fn ground_rigid_projection_if_concrete(
     else {
         return None;
     };
-    // WI-383: only an OPERATION-type-param projection grounds here (decl_sort = the op). A
-    // SORT-type-param projection (decl_sort = a sort) keeps the WI-428 opacity untouched —
-    // its grounding rides the existing eliminator path.
+    // WI-383: an OPERATION-type-param projection grounds below (decl_sort = the op). A
+    // SORT-type-param projection (decl_sort = a sort) grounds through the requirement that
+    // lends its member ([`ground_sort_param_projection`], WI-20261003-QGVB1) — where that
+    // requirement writes the member, the eliminator has already read it at the declaration.
     //
     // WI-956 answered this ticket's question — is the gate doing MORE than "the owner is
     // an operation"? It was doing LESS. `kind_of` asks which keyword came FIRST, and an
@@ -1711,7 +1712,7 @@ fn ground_rigid_projection_if_concrete(
     // answers `None` unless the OPERATION's BRACKET declares this param — so the split
     // still turns on where the param was declared, never on a registration order.
     if !kb.has_kind(sort, crate::intern::SymbolKind::Operation) {
-        return None;
+        return ground_sort_param_projection(kb, subst, sort, &subject, member);
     }
     // The subject `Ref` is a DISTINCT registration of the op type-param from the canonical
     // inference var the call binds (an op type-param has no `SortAlias`, so
@@ -1782,6 +1783,28 @@ fn ground_rigid_projection_if_concrete(
         // member walks directly (the late nullary-`Fn` normalization is retired).
         return Some(walk_type_deep(kb, subst, bound));
     }
+    // WI-20261003-QGVB1 — no provision OF the carrier lends it (a witness provides the spec
+    // for it, or the requirement leaves the member unwritten): read through the requirement,
+    // as a sort's parameter is ([`ground_sort_param_projection`]) — `f[X](x: X, y: X.Q)
+    // requires Pair[P = X]` at `X = Leaf` reads `Q` from the one provision answering `Pair[P =
+    // Leaf]`, and where none says one type the call cannot read it
+    // ([`UnreadProjection`]).
+    if mentions_subject {
+        let params: SmallVec<[(Symbol, VarId); 4]> =
+            crate::kb::op_info::lookup_operation_info(kb, sort)?
+                .type_params
+                .into_iter()
+                .filter_map(|(name, var)| match var {
+                    Var::Global(v) => Some((name, v)),
+                    _ => None,
+                })
+                .collect();
+        let sigma = params_bound_by(kb, subst, &params);
+        let chain = op_requires_chain_rc(kb, sort);
+        let read = member_through_lending_requirement(kb, &chain, &subject, member, &sigma)?;
+        let read = crate::kb::node_occurrence::value_to_term(kb, &read).ok()?;
+        return Some(walk_type_deep(kb, subst, read));
+    }
     // WI-383 SELF-CARRIER (implicit licensing): no `requires` bound mentions the subject,
     // so the projection is self-licensed — `T.member` reads the carrier's OWN declared
     // `sort <member>` (the resource-declares-its-value-type tie). Ground only a MANIFEST
@@ -1816,6 +1839,172 @@ fn ground_rigid_projection_if_concrete(
         }
     }
     None
+}
+
+/// WI-20261003-QGVB1 — the `params` `subst` has bound to a type, by short name: the bindings a
+/// lending requirement is read at ([`member_through_lending_requirement`]).
+fn params_bound_by(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    params: &[(Symbol, VarId)],
+) -> SmallVec<[(String, Value); 4]> {
+    let mut sigma = SmallVec::new();
+    for &(name, v) in params {
+        let Some(bound) = spec_param_binding(kb, subst, v) else {
+            continue;
+        };
+        if matches!(bound.head(kb), ViewHead::Var(_)) || is_type_param_view(kb, &bound) {
+            continue;
+        }
+        sigma.push((short_name_of(kb.local_name_of(name)).to_owned(), bound));
+    }
+    sigma
+}
+
+/// WI-20261003-QGVB1 — `ty` with each parameter projection whose parameter `subst` has bound to
+/// a concrete sort read as the call reads it ([`ground_rigid_projection_if_concrete`]), and
+/// nothing else walked: what a call's argument is checked against where its parameter's type
+/// is such a projection, which the elimination leaves the neutral it is at the declaration.
+/// A rigid projection always hash-conses (its three slots are ground), so its term is read.
+pub(super) fn ground_param_projections(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    ty: &Value,
+) -> Value {
+    rewrite_type_leaves(kb, ty, &|kb, node| {
+        if !matches!(type_head(kb, node), TypeHead::RigidProjection) {
+            return None;
+        }
+        let Value::Term { id, .. } = node else {
+            return None;
+        };
+        ground_rigid_projection_if_concrete(kb, subst, *id).map(Value::term)
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
+/// WI-20261003-QGVB1 — a parameter projection [`ground_param_projections`] left in a call's
+/// parameter type though the call has bound its parameter to a concrete sort.
+pub(super) struct UnreadProjection {
+    /// The declaration whose parameter it projects off: a sort, or an operation.
+    decl: Symbol,
+    subject: Value,
+    member: Symbol,
+    /// The concrete sort the call bound the parameter to.
+    carrier: Symbol,
+}
+
+impl UnreadProjection {
+    /// The first such projection in `ty`.
+    pub(super) fn find(kb: &KnowledgeBase, subst: &Substitution, ty: &Value) -> Option<Self> {
+        let found: std::cell::RefCell<Option<Self>> = std::cell::RefCell::new(None);
+        type_any_part(kb, ty, &|te| {
+            let TypeExtractor::RigidTypeProjection {
+                sort,
+                subject,
+                member,
+            } = te
+            else {
+                return None;
+            };
+            let subj = view_ref_symbol(kb, subject)?;
+            let walked = if kb.has_kind(*sort, crate::intern::SymbolKind::Operation) {
+                let name = kb.local_name_of(subj).to_owned();
+                match crate::kb::op_info::declared_type_param_var(kb, *sort, &name)? {
+                    Var::Global(v) => {
+                        walk_value_to_resolved(kb, subst, subst.resolve_as_value(v)?.clone())
+                    }
+                    _ => return Some(false),
+                }
+            } else {
+                let var_t = kb.canonical_type_param_var(subj)?;
+                walk_term_to_resolved(kb, subst, var_t)
+            };
+            let carrier = genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)?;
+            *found.borrow_mut() = Some(UnreadProjection {
+                decl: *sort,
+                subject: subject.clone(),
+                member: *member,
+                carrier,
+            });
+            Some(true)
+        });
+        found.into_inner()
+    }
+
+    /// Why the call cannot read it, where a requirement lends it: that requirement leaves the
+    /// member unwritten and the provisions answering the rest do not name one type for it, or
+    /// it writes the member as a type this call does not fix. A parameter type taking any
+    /// argument there would meet a dictionary at one type (MEASURED: `Partial.p(leaf(),
+    /// leaf())` behind `p(x: MT, y: MT.Q)` under `requires Pair[P = MT]` loaded beside a
+    /// caller holding `Pair[P = Leaf, Q = Pebble]`). `None` where no requirement lends it — a
+    /// carrier's own member, read as it was.
+    pub(super) fn why_unread(&self, kb: &mut KnowledgeBase) -> Option<String> {
+        let chain: Vec<RequiresEntry> =
+            if kb.has_kind(self.decl, crate::intern::SymbolKind::Operation) {
+                op_requires_chain_rc(kb, self.decl).as_ref().clone()
+            } else {
+                requires_chain(kb, self.decl)
+            };
+        let key = subject_key_of(kb, &self.subject)?;
+        let member = kb.local_name_of(self.member).to_owned();
+        let entry = lending_requirement(kb, &chain, key, &member)?;
+        let shown = format!(
+            "`{}.{member}` does not read at this call, where `{}` is `{}`",
+            type_display_name_value(kb, &self.subject),
+            type_display_name_value(kb, &self.subject),
+            kb.qualified_name_of(self.carrier),
+        );
+        let lender = render_requires_entry(kb, entry);
+        let written = spec_binding_value(kb, &entry.spec, &member).filter(|v| {
+            let open = kb.type_param_sym_of(entry.required_sort, &member);
+            !open.is_some_and(|p| is_open_requires_slot(kb, entry.required_sort, p, v))
+        });
+        Some(match written {
+            None => format!(
+                "{shown}: the requirement `{lender}` that lends it leaves `{member}` unwritten, \
+                 and no one provision answering the rest names one type for it — write it in \
+                 the requirement"
+            ),
+            Some(v) => format!(
+                "{shown}: the requirement `{lender}` that lends it writes it as `{}`, which this \
+                 call does not fix",
+                type_display_name_value(kb, &v),
+            ),
+        })
+    }
+}
+
+/// WI-20261003-QGVB1 — a SORT-parameter projection (`P.Key`, `P` a parameter of the spec
+/// `decl`) where the call has bound `P` to a concrete sort: read through the requirement of
+/// `decl` that lends the member, at the parameters the call has bound
+/// ([`member_through_lending_requirement`]). `Sp.op(car(n: 1), 5)` behind `op(s: Self, x:
+/// P.Key)` under `requires Storage[C = P]`, `Car` providing `Sp[P = MemStore]`, read `x`'s
+/// type as the neutral and passed an `Int64` where `MemStore`'s `Key` is `String`, and a
+/// result typed `P.Val` met an `Int64` annotation as a neutral (MEASURED). Where the
+/// requirement writes the member (`Key = String`), it was read at the declaration and no
+/// projection is left to reach here.
+fn ground_sort_param_projection(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    decl: Symbol,
+    subject: &Value,
+    member: Symbol,
+) -> Option<TermId> {
+    let subj_sym = view_ref_symbol(kb, subject)?;
+    let subj_var = type_param_global_var(kb, subj_sym)?;
+    let own = own_params_of(kb, decl);
+    if !own.iter().any(|&(_, v)| v == subj_var) {
+        return None;
+    }
+    let subj_name = short_name_of(kb.local_name_of(subj_sym)).to_owned();
+    let sigma = params_bound_by(kb, subst, &own);
+    let (_, bound) = sigma.iter().find(|(n, _)| *n == subj_name)?;
+    genuine_concrete_sort(kb, extract_sort_ref_sym(kb, bound)?)?;
+    let chain = requires_chain(kb, decl);
+    let read = member_through_lending_requirement(kb, &chain, subject, member, &sigma)?;
+    let read = crate::kb::node_occurrence::value_to_term(kb, &read).ok()?;
+    Some(walk_type_deep(kb, subst, read))
 }
 
 /// Walk a type term through the substitution, resolving Vars and type params.

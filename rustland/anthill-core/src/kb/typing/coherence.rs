@@ -669,6 +669,14 @@ fn provision_requirement_errors(
                     failed => failed,
                 };
                 let unentailed = unentailed_condition(kb, &failure, top.as_ref(), p.carrier);
+                // The open slots' account, where it is why: not beside a parameter of the
+                // PROVIDED spec the provision leaves unwritten, whose repair comes first.
+                let apart = match unentailed {
+                    None if spec_params_named_in(kb, &goal, p.spec).is_empty() => {
+                        OpenSlotsNamedApart::of(kb, &goal)
+                    }
+                    _ => None,
+                };
                 let clause = several.then(|| clause_of(kb, clause));
                 errors.push(match unentailed {
                     Some(unentailed) => LoadError::ProvisionConditionsTooWeak {
@@ -685,7 +693,19 @@ fn provision_requirement_errors(
                         required: kb.qualified_name_of(required).to_string(),
                         derived_from: derived_from(kb),
                         clause,
-                        failure: requirement_failure_of(kb, &failure, top.as_ref(), &goal, p.carrier, p.spec),
+                        failure: match apart {
+                            Some(apart) => crate::kb::load::RequirementFailure::OpenSlotsNamedApart {
+                                account: apart.account(),
+                            },
+                            None => requirement_failure_of(
+                                kb,
+                                &failure,
+                                top.as_ref(),
+                                &goal,
+                                p.carrier,
+                                p.spec,
+                            ),
+                        },
                     },
                 });
                 // One report per requirement: a second clause failing the same goal

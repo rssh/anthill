@@ -240,6 +240,18 @@ pub(super) fn note_candidate_search(kb: &KnowledgeBase, goal: &SortGoal, sigma: 
     }
 }
 
+/// WI-20261003-QGVB1 — a search a run of the check made with slots of the goal OPEN, which
+/// [`note_candidate_search`] does not see: the provisions that answer the rest decide what
+/// fills them ([`open_slots_said`]), so a provision a later load adds can change the verdict
+/// and the run holds nothing.
+pub(super) fn note_open_slot_search() {
+    OPEN_GOALS.with(|c| {
+        if let Some(seen) = c.get() {
+            c.set(Some(seen + 1));
+        }
+    });
+}
+
 /// Which rows a run reads: those in a rule slot at or above `first_slot`.
 pub(super) struct RowsToRead {
     pub(super) first_slot: usize,

@@ -1121,24 +1121,26 @@ fn member_narrower_than_spec(
         }
     }
     let instance = resolve_type_deep_value(kb, &prep, &Value::term(own));
-    // A spec type as the call reads it: σ once per parameter, the spec text's own unwritten
-    // slots fresh per occurrence (WI-374), whatever stays open any type — but a slot only the
-    // RETURN reads, which the receiver typed by the spec carries in its view (`s: Store` at
-    // `State = Box[T = Int64]`), stays open there as everywhere ([`leaves_open`]): made any type
-    // at the receiver, it read as FIXED and the member leaving it open was refused (MEASURED:
-    // review 9).
+    let witness_view = carrier_recv.and_then(|(_, _, b, s)| (s != decl).then_some(b));
+    let reader = ProjectionReader::new(kb, recv_sort, spec_canon, sigma, witness_view);
+    // A spec type as the call reads it: σ once per parameter — a projection off a parameter it
+    // binds read through the requirement that lends it ([`ProjectionReader::at_provision`]) —
+    // the spec text's own unwritten slots fresh per occurrence (WI-374), whatever stays open
+    // any type — but a slot only the RETURN reads, which the receiver typed by the spec carries
+    // in its view (`s: Store` at `State = Box[T = Int64]`), stays open there as everywhere
+    // ([`leaves_open`]): made any type at the receiver, it read as FIXED and the member leaving
+    // it open was refused (MEASURED: review 9).
     let spec_side = |kb: &mut KnowledgeBase,
                      prep: &mut Substitution,
                      ty: &Value,
                      template: &[(Symbol, Value)]| {
-        let s = sigma_subst_type(kb, ty, template);
+        let s = reader.at_provision(kb, ty);
+        let s = sigma_subst_type(kb, &s, template);
         let s = expand_sorts_and_row_labels(kb, &s, SlotVar::Rigid);
         let _ = rigidify_open(kb, prep, &s, &kept);
         resolve_type_deep_value(kb, prep, &s)
     };
     let decl_own: SmallVec<[VarId; 4]> = own_params_of(kb, decl).iter().map(|&(_, v)| v).collect();
-    let witness_view = carrier_recv.and_then(|(_, _, b, s)| (s != decl).then_some(b));
-    let reader = ProjectionReader::new(kb, recv_sort, spec_canon, sigma, witness_view);
     // The receiver first — a call binds the member's own parameters from it — then the other
     // positions, then a projection position once those it reads are.
     let n = spec_info.params.len();
@@ -1368,6 +1370,7 @@ fn member_narrower_than_spec(
             None,
         ) {
             Ok(s) => {
+                let s = reader.at_provision(kb, &s);
                 let s = sigma_subst_type(kb, &s, &template);
                 // ONE expansion under a returned arrow's parameters, shared by both forms: each
                 // minting its own rigid there, unification bound the member's variable to
@@ -2214,6 +2217,34 @@ impl ProjectionReader {
             None => Some(agreed),
             Some(_) => self.at_receiver(kb, recv_ty, &written, prep, instance),
         }
+    }
+
+    /// WI-20261003-QGVB1 — `ty` (a spec side) with each projection off a parameter of the spec
+    /// (`P.Key`) read at this provision's bindings, through the requirement that lends it
+    /// ([`member_through_lending_requirement`]): `P.Key` under `requires Storage[C = P]` at `P =
+    /// MemStore` is `MemStore`'s `Key`, which is how the member reads its own `MemStore.Key`.
+    /// Read as σ alone it stayed the neutral `MemStore.Key` beside the member's `String`, and a
+    /// member written as the spec writes it was refused as narrower than itself (MEASURED).
+    fn at_provision(&self, kb: &mut KnowledgeBase, ty: &Value) -> Value {
+        if !value_contains_projection(kb, ty) {
+            return ty.clone();
+        }
+        rewrite_type_leaves(kb, ty, &|kb, node| {
+            let TypeExtractor::RigidTypeProjection {
+                sort,
+                subject,
+                member,
+            } = extract_type(kb, node)
+            else {
+                return None;
+            };
+            if kb.canonical_sort_sym(sort) != self.spec {
+                return None;
+            }
+            let chain = requires_chain(kb, self.spec);
+            member_through_lending_requirement(kb, &chain, &subject, member, &self.bindings)
+        })
+        .unwrap_or_else(|| ty.clone())
     }
 
     /// `ty` (a spec side) with its projections read at `args`, a provision's own variables as

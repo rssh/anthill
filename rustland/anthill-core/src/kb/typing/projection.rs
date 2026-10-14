@@ -2038,7 +2038,7 @@ fn abstract_member_declared_by_requires(
 /// the spec's carrier slot — the documented WI-428 conservative reading (a param mentioned
 /// as a non-carrier binding still licenses); exact carrier-slot precision is the §5.3
 /// normalization end-state, shared with the rigid path.
-fn requires_entry_lends_member(
+pub(super) fn requires_entry_lends_member(
     kb: &KnowledgeBase,
     entry: &RequiresEntry,
     carrier_key: SubjectKey,
@@ -2965,10 +2965,10 @@ pub(super) fn resolve_rigid_projection(
             // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
             // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
             // (`Key = Storage.Key`) — only THAT binding means "bound-open" (the rigid
-            // NEUTRAL). Any other leaf is a user-written binding and grounds: a
-            // concrete sort (`Key = String`), an opaque nominal (`Key = Token`), or a
-            // sibling param of the declaring sort (`Key = K` — grounds to `K`'s ref,
-            // resolved by the ordinary alias machinery downstream).
+            // NEUTRAL); a sort's clause holds a written `?` so too. Any other leaf is a
+            // user-written binding and grounds: a concrete sort (`Key = String`), an opaque
+            // nominal (`Key = Token`), or a sibling param of the declaring sort (`Key = K` —
+            // grounds to `K`'s ref, resolved by the ordinary alias machinery downstream).
             Some(v) => {
                 let binding_key = subject_key_of(kb, &v);
                 let placeholder_key = spec_member_param_key(kb, entry.required_sort, &member_str);
@@ -3024,6 +3024,71 @@ pub(super) fn resolve_rigid_projection(
             ),
         )),
     }
+}
+
+/// WI-20261003-QGVB1 — `P.member`, `P` a parameter of the declaration whose `requires` are
+/// `chain` (a sort's, or an operation's own), read through the requirement that lends the
+/// member — the one entry that declares the member and names `P`, which licenses the
+/// projection ([`resolve_rigid_projection`]) — at `sigma`, the declaration's parameters by
+/// short name: that requirement's goal at those bindings, its open slots said by the provision
+/// that answers it ([`requires_chain_goals`]). `P.Key` under `requires Storage[C = P]` at `P =
+/// MemStore` is `MemStore`'s `Key`.
+///
+/// `None` — the projection stays the neutral it is — where no one entry lends the member, where
+/// the requirement leaves it open (a carrier `sigma` does not name, one providing the required
+/// spec at no binding), and where what it reads still names a parameter or a variable: a
+/// sibling `decl` does not bind is no type here.
+pub(super) fn member_through_lending_requirement(
+    kb: &mut KnowledgeBase,
+    chain: &[RequiresEntry],
+    subject: &Value,
+    member: Symbol,
+    sigma: &[(String, Value)],
+) -> Option<Value> {
+    let key = subject_key_of(kb, subject)?;
+    let name = kb.local_name_of(member).to_owned();
+    let entry = lending_requirement(kb, chain, key, &name)?;
+    let mut goal = requires_chain_goals(kb, std::slice::from_ref(entry), &|kb, v| {
+        subst_requires_value(kb, v, sigma)
+    })
+    .pop()?;
+    // An operation's own clause holds no binding for a parameter it leaves unwritten, where a
+    // sort's holds the spec's own parameter: open both.
+    if !goal
+        .bindings
+        .iter()
+        .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+    {
+        let param = kb.type_param_sym_of(goal.spec_sort, &name)?;
+        let open = Value::term(kb.alloc(Term::Ref(param)));
+        goal.bindings.push((param, open));
+        complete_open_slots_at_carrier(kb, &mut goal, &[param]);
+    }
+    let (k, v) = goal
+        .bindings
+        .iter()
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)?;
+    (!is_open_requires_slot(kb, goal.spec_sort, *k, v) && !view_contains_type_param(kb, v))
+        .then(|| v.clone())
+}
+
+/// WI-20261003-QGVB1 — the one entry of `chain` that lends `member` to the parameter keyed
+/// `key` ([`requires_entry_lends_member`]): entries stating one requirement — a clause the
+/// chain also holds as a slot it synthesized — are one lender. `None` where none lends it, or
+/// two different ones do.
+pub(super) fn lending_requirement<'c>(
+    kb: &KnowledgeBase,
+    chain: &'c [RequiresEntry],
+    key: SubjectKey,
+    member: &str,
+) -> Option<&'c RequiresEntry> {
+    let mut lenders = chain
+        .iter()
+        .filter(|e| requires_entry_lends_member(kb, e, key, member));
+    let first = lenders.next()?;
+    lenders
+        .all(|e| views_structurally_equal(kb, &e.spec, &first.spec))
+        .then_some(first)
 }
 
 /// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`) — the

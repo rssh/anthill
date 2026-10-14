@@ -749,3 +749,85 @@ namespace test.a3own
   end
 end
 "#;
+
+/// WI-20261003-QGVB1 — a library whose provision's contract leaves a slot OPEN: `Sp2`
+/// requires `Pair[P = P]`, and `Car provides Sp2[P = Leaf]` is met by `LeafLeaf`, the one
+/// provision answering `Pair[P = Leaf]`, whatever `Q` it names.
+const OPEN_SLOT_LIB: &str = r#"
+namespace test.a3open
+  import anthill.prelude.{Int64}
+
+  sort Leaf
+    entity leaf
+  end
+
+  sort Pair
+    sort P = ?
+    sort Q = ?
+    operation pd(a: P, b: Q) -> Int64
+  end
+
+  sort LeafLeaf
+    provides Pair[P = Leaf, Q = Leaf]
+    operation pd(a: Leaf, b: Leaf) -> Int64 = 7
+  end
+
+  sort Sp2
+    sort P = ?
+    requires Pair[P = P]
+    operation size(s: Self) -> Int64
+  end
+
+  sort Car
+    entity car(n: Int64)
+    provides Sp2[P = Leaf]
+    operation size(c: Car) -> Int64 = 1
+  end
+end
+"#;
+
+/// A second answer to that open slot, at a type only the later load names: `AnyNovel[X]` at
+/// `Pair[P = X, Q = Novel]`.
+const A_SECOND_ANSWER_FOR_AN_OPEN_SLOT: &str = r#"
+namespace test.a3novel
+  import anthill.prelude.{Int64}
+  import test.a3open.{Pair}
+
+  sort Novel
+    entity novel
+  end
+
+  sort AnyNovel
+    sort X = ?
+    provides Pair[P = X, Q = Novel]
+    operation pd(a: X, b: Novel) -> Int64 = 8
+  end
+end
+"#;
+
+/// WHO ANSWERS AN OPEN SLOT. `Car`'s contract held because ONE provision answered
+/// `Pair[P = Leaf]`; the later load's `AnyNovel` answers it too, naming `Q` otherwise, which
+/// makes the library's provision say neither. Its binding is headed by a type only the later
+/// load names, so no clause of `later_fact_that_reaches_a_held_verdict` reaches the held
+/// verdict: what keeps the library's run from holding it is the run having searched with a
+/// slot open (`note_open_slot_search`). FAILS with that note backed out — the later load is
+/// then clean. The control, a plain sequence of loads, refuses either way.
+#[test]
+fn a_second_answer_for_an_open_slot_is_refused_after_a_seal() {
+    let names_both = |errors: &[String]| {
+        errors.iter().any(|e| {
+            e.contains("'test.a3open.Car' provides 'test.a3open.Sp2'")
+                && e.contains("test.a3open.LeafLeaf")
+                && e.contains("test.a3novel.AnyNovel")
+        })
+    };
+    let mut kb = sealed_library(OPEN_SLOT_LIB);
+    let (sealed, _) = later_load(&mut kb, A_SECOND_ANSWER_FOR_AN_OPEN_SLOT);
+    let sealed = sealed.expect_err("the tie is refused after a seal");
+    assert!(names_both(&sealed), "after a seal; got {sealed:?}");
+
+    let mut kb = loaded(OPEN_SLOT_LIB, LoadOptions::default());
+    let (plain, _) = later_load(&mut kb, A_SECOND_ANSWER_FOR_AN_OPEN_SLOT);
+    let plain = plain.expect_err("the tie is refused in a plain sequence");
+    assert!(names_both(&plain), "in a plain sequence; got {plain:?}");
+}
