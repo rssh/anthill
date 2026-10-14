@@ -21,7 +21,11 @@
 //!     another constructor; a variable and a computed term rule nothing out;
 //!   * exactly one: the call is read by it, as it was;
 //!   * several: REFUSED, naming the predicate and how many. Their disjunction is what
-//!     the call means, and is WI-20261013-1KF32;
+//!     the call means, and is WI-20261013-1KF32 — which READS it so: the body is read in
+//!     a world for each clause, and the document is their disjunction (decided with the
+//!     user, 2026-10-14). The rows that were refusals of several say, each at its site,
+//!     what they hold since: a world for each clause, or a refusal that stands for
+//!     another reason (a recursive predicate; WI-687's construction in a head);
 //!   * none: refused too — the body never holds, and no proof is of that.
 //!
 //! The one predicate of several clauses that any proof of lf1 or of the suites read was
@@ -41,13 +45,15 @@
 //!
 //! WHAT FAILS WHEN THE CHANGE IS BACKED OUT (measured; part by part in the measurement
 //! file's §4). With the emitter as it was — the first fact that agrees, else the first
-//! clause with a body — 15 of these 17 rows FAIL. Two PASS EITHER WAY, by design:
+//! clause with a body — 15 of these 17 rows FAIL. (WI-20261013-1KF32 backed out — the
+//! refusal of several put back — fails the nine rows it turned; its own measurement file,
+//! `docs/measurements/test-infrastructure/disjunction-2026-10-14.txt`, has which.) Two PASS EITHER WAY, by design:
 //!   * `a_call_one_clause_answers_is_read_as_it_was` — the control: the documents the
 //!     change must not move;
 //!   * `lf1s_proofs_read_the_launch_geometry_and_not_the_recursion` — which fails with
 //!     lf1 AS IT WAS, whatever the emitter: it holds the model, not the reading.
 //! `the_verdicts_of_what_is_read_are_as_they_were` fails when EITHER is backed out: a
-//! refusal is in its count, and lf1's fourteen are.
+//! failure is in its count (a refusal, now a COUNTEREXAMPLE), and lf1's fourteen are.
 
 use std::path::PathBuf;
 
@@ -63,8 +69,8 @@ fn errors(out: &Output) -> Vec<&str> {
     out.diagnostics("error:").collect()
 }
 
-/// The assertions of the proof `rule`'s document, in order.
-fn assertions<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
+/// The lines of the proof `rule`'s document.
+fn document<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
     let banner = format!("--- {rule} ---");
     let lines: Vec<&str> = out
         .stdout
@@ -80,9 +86,45 @@ fn assertions<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
         out.stderr
     );
     lines
+}
+
+/// The assertions of the proof `rule`'s document, in order.
+fn assertions<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
+    document(out, rule)
         .into_iter()
         .filter(|l| l.starts_with("(assert "))
         .collect()
+}
+
+/// WI-20261013-1KF32 — the WORLDS of the proof `rule`'s document, a body read in
+/// several: each world's conjunction, in order. (Its comment, which says the choices it
+/// made, is `world_choices`.)
+fn worlds<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
+    disjuncts(out, rule)
+        .filter(|l| !l.starts_with(';'))
+        .collect()
+}
+
+/// What each world of `rule`'s document chose, as its comment says it.
+fn world_choices<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
+    disjuncts(out, rule)
+        .filter_map(|l| l.strip_prefix("; "))
+        .collect()
+}
+
+fn disjuncts<'a>(out: &'a Output, rule: &str) -> impl Iterator<Item = &'a str> {
+    let lines = document(out, rule);
+    assert!(
+        lines.contains(&"(assert (or"),
+        "`{rule}` is read in several worlds:\n{}",
+        lines.join("\n")
+    );
+    lines
+        .into_iter()
+        .skip_while(|l| *l != "(assert (or")
+        .skip(1)
+        .take_while(|l| *l != "))")
+        .map(str::trim)
 }
 
 /// The one error of `out` that names `rule`, which has no document.
@@ -100,24 +142,24 @@ fn refusal<'a>(out: &'a Output, rule: &str) -> &'a str {
     said[0]
 }
 
-/// The refusal of a call that `facts` facts and `bodied` clauses with a body can answer.
-fn refused_as_several(out: &Output, rule: &str, relation: &str, facts: usize, bodied: usize) {
+/// The refusal of a call met while a clause of its own predicate is read
+/// (WI-20261013-1KF32): `relation` in the body of `rule_read`.
+fn refused_as_recursive(out: &Output, rule: &str, relation: &str, predicate: &str) {
     let said = refusal(out, rule);
-    let how_many = format!(
-        "the call of `{relation}` can be answered by {} clauses of the predicate \
-         ({facts} fact(s), {bodied} with a body)",
-        facts + bodied
+    let recursive = format!(
+        "the call of `{relation}`, in the body of `{predicate}` (read inlined), is answered \
+         by a clause of `{predicate}` with a body while a clause of `{predicate}` is being \
+         read: a recursive predicate is not unfolded"
     );
-    assert!(
-        said.contains(&how_many) && said.contains("WI-20261013-1KF32"),
-        "expected `{how_many}`, got:\n{said}"
-    );
+    assert!(said.contains(&recursive), "expected `{recursive}`, got:\n{said}");
 }
 
-/// THE TICKET'S TWO CASES, as filed. Each proved; each is refused, and no document is
-/// written for it.
+/// THE TICKET'S TWO CASES, as filed. Each proved; KF2SD refused each; WI-20261013-1KF32
+/// reads each in a world for each clause, and the second world is where the conclusion
+/// fails (`related(1, 2)` by `lte`; `start(-1.0)`) — a COUNTEREXAMPLE, which
+/// `wi_1kf32_disjunction_test` runs.
 #[test]
-fn a_call_several_clauses_can_answer_is_refused() {
+fn a_call_several_clauses_can_answer_is_their_disjunction() {
     let out = dry_run(
         "rules",
         r#"
@@ -132,7 +174,13 @@ namespace test.kf2sd.rules
 end
 "#,
     );
-    refused_as_several(&out, "test.kf2sd.rules.lemma", "test.kf2sd.rules.related/2", 0, 2);
+    assert_eq!(
+        worlds(&out, "test.kf2sd.rules.lemma"),
+        [
+            "(and (>= var_1 var_0) (not (>= var_1 var_0)))",
+            "(and (<= var_1 var_0) (not (>= var_1 var_0)))"
+        ]
+    );
 
     let out = dry_run(
         "facts",
@@ -148,13 +196,19 @@ namespace test.kf2sd.facts
 end
 "#,
     );
-    refused_as_several(&out, "test.kf2sd.facts.lemma", "test.kf2sd.facts.start/1", 2, 0);
+    assert_eq!(
+        worlds(&out, "test.kf2sd.facts.lemma"),
+        ["(not (>= 5.0 0.0))", "(not (>= (- 1.0) 0.0))"]
+    );
 }
 
 /// A FACT BESIDE A CLAUSE WITH A BODY IS TWO. The one-argument form read the body and
 /// never looked at the fact; the other read the fact and never looked at the body.
 /// `at/2` is lf1's `real_pose_at` in small: a base fact, and a step whose head is all
 /// variables — which a ground argument does not rule out, so `at(0, ?x)` has two.
+/// KF2SD refused both. WI-20261013-1KF32: `capped` is a world for the fact and one for
+/// the body; `base` is refused still, now as RECURSIVE — the step's world reads the
+/// step's own call of `at`, and that is not unfolded.
 #[test]
 fn a_fact_beside_a_clause_with_a_body_is_several() {
     let out = dry_run(
@@ -175,8 +229,16 @@ namespace test.kf2sd.mixed
 end
 "#,
     );
-    refused_as_several(&out, "test.kf2sd.mixed.capped", "test.kf2sd.mixed.cap/1", 1, 1);
-    refused_as_several(&out, "test.kf2sd.mixed.base", "test.kf2sd.mixed.at/2", 1, 1);
+    assert_eq!(
+        worlds(&out, "test.kf2sd.mixed.capped"),
+        ["(not (<= 100.0 5.0))", "(not (<= (+ 2.0 3.0) 5.0))"]
+    );
+    refused_as_recursive(
+        &out,
+        "test.kf2sd.mixed.base",
+        "test.kf2sd.mixed.at/2",
+        "test.kf2sd.mixed.at",
+    );
 }
 
 const TABLE: &str = r#"
@@ -205,7 +267,8 @@ end
 /// A GROUND ARGUMENT SELECTS AMONG FACTS, and a variable there does not. `slow` and
 /// `fast` are each read by the fact of their drone — the second by the SECOND fact,
 /// which no "first that matches" is — and `any`, which proved by the Leader's row, is
-/// refused: it is a claim of both.
+/// a claim of both: KF2SD refused it, and WI-20261013-1KF32 reads it in a world for each
+/// row, the Follower's 50 the one where it fails.
 #[test]
 fn a_ground_argument_selects_one_fact_and_a_variable_does_not() {
     let out = dry_run("table", TABLE);
@@ -217,15 +280,22 @@ fn a_ground_argument_selects_one_fact_and_a_variable_does_not() {
         assertions(&out, "test.kf2sd.table.fast"),
         ["(assert (not (>= 50.0 10.0)))"]
     );
-    refused_as_several(&out, "test.kf2sd.table.any", "test.kf2sd.table.speed_of/2", 2, 0);
-    assert_eq!(errors(&out).len(), 1, "stderr:\n{}", out.stderr);
+    assert_eq!(
+        worlds(&out, "test.kf2sd.table.any"),
+        ["(not (<= 5.0 10.0))", "(not (<= 50.0 10.0))"]
+    );
+    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 }
 
 /// A CONSTRUCTOR IN THE HEAD SELECTS AMONG CLAUSES WITH A BODY, as a ground argument
 /// does among facts — by the call's own argument, and by what its variable is bound to.
 /// The first bodied clause was read whatever the call, so `with_none` was "expects a
 /// concrete `…some` construction": a loud mismatch where the second clause answers. A
-/// variable nothing binds rules neither out.
+/// variable nothing binds rules neither out — and KF2SD refused `with_var` for it.
+/// WI-20261013-1KF32 reads it in a world for each clause, and it is refused STILL, in the
+/// `some(?x)` clause's world: a free variable against a construction in a head is not
+/// bound to it (a construction would carry the clause's own variables into the caller's
+/// frame, WI-20261012-BR7P3), and that is WI-687's own refusal, naming the world.
 #[test]
 fn a_constructor_in_the_head_selects_one_clause_with_a_body() {
     let out = dry_run(
@@ -264,7 +334,17 @@ end
         assertions(&out, "test.kf2sd.ctor.bound_some"),
         ["(assert (not (>= (+ 2.0 1.0) 3.0)))"]
     );
-    refused_as_several(&out, "test.kf2sd.ctor.with_var", "test.kf2sd.ctor.gain/2", 0, 2);
+    let said = refusal(&out, "test.kf2sd.ctor.with_var");
+    assert!(
+        said.contains(
+            "WI-687: 'test.kf2sd.ctor.gain' expects a concrete `anthill.prelude.Option.some` \
+             construction at a constructor-shaped head arg"
+        ) && said.contains(
+            "(in the world where `test.kf2sd.ctor.gain/2` (0 fact(s), 2 with a body) is \
+             answered by its clause 1 of 2)"
+        ),
+        "{said}"
+    );
     assert_eq!(errors(&out).len(), 1, "stderr:\n{}", out.stderr);
 }
 
@@ -348,10 +428,12 @@ end
     );
 }
 
-/// THE REFUSAL NAMES THE RULE THE CALL STANDS IN, when that is not the proof's own:
-/// `deep` calls `wrapper`, and it is `wrapper`'s body that calls `related`.
+/// THE CALL IS NAMED WITH THE RULE IT STANDS IN, when that is not the proof's own:
+/// `deep` calls `wrapper`, and it is `wrapper`'s body that calls `related`. KF2SD's
+/// refusal named it; since WI-20261013-1KF32 each world's comment does, and the rest of
+/// `wrapper`'s body — `gte(?a, 0.0)` — and the proof's conclusion are read in both.
 #[test]
-fn a_refused_call_in_an_inlined_rule_names_that_rule() {
+fn a_call_in_an_inlined_rule_is_named_with_that_rule() {
     let out = dry_run(
         "wrap",
         r#"
@@ -367,13 +449,19 @@ namespace test.kf2sd.wrap
 end
 "#,
     );
-    let said = refusal(&out, "test.kf2sd.wrap.deep");
-    assert!(
-        said.contains(
-            "the call of `test.kf2sd.wrap.related/2`, in the body of \
-             `test.kf2sd.wrap.wrapper` (read inlined), can be answered by 2 clauses"
-        ),
-        "{said}"
+    assert_eq!(
+        world_choices(&out, "test.kf2sd.wrap.deep"),
+        [1, 2].map(|clause| format!(
+            "{clause}: `test.kf2sd.wrap.related/2`, in the body of `test.kf2sd.wrap.wrapper` \
+             (read inlined) (0 fact(s), 2 with a body) is answered by its clause {clause} of 2"
+        ))
+    );
+    assert_eq!(
+        worlds(&out, "test.kf2sd.wrap.deep"),
+        [
+            "(and (>= var_1 var_0) (>= var_1 0.0) (not (>= var_1 var_0)))",
+            "(and (<= var_1 var_0) (>= var_1 0.0) (not (>= var_1 var_0)))"
+        ]
     );
 }
 
@@ -484,7 +572,8 @@ fn lf1s_proofs_read_the_launch_geometry_and_not_the_recursion() {
 
 /// THE VERDICTS, where there is a solver: what one clause answers proves as it did, a
 /// structured proof whose conclusion skips a call of two clauses proves as it did, and
-/// lf1 is fourteen proved.
+/// lf1 is fourteen proved. The table's third proof, `any`, is the one failure: KF2SD's
+/// refusal, and since WI-20261013-1KF32 a COUNTEREXAMPLE.
 #[test]
 fn the_verdicts_of_what_is_read_are_as_they_were() {
     if !z3_available() {
@@ -580,13 +669,15 @@ end
     );
 }
 
-/// AN ENTITY PREMISE READS AN ENTITY OF ONE FACT. Its fields are constants of the
-/// document, defined off the entity's fact — the first, where there were several,
-/// whichever fact the premise's own slots named: `Limit(cap: ?c)` over caps 5 and -1
-/// proved `gte(?c, 0.0)`, and `Mode(kind: 2.0, cap2: ?c)` proved it with the cap of
-/// kind 1. It is the call of several facts in an entity's spelling.
+/// AN ENTITY PREMISE OF ONE FACT reads its fields as constants of the document, defined
+/// off the fact (`single`). Where there were several it read the first, whichever fact
+/// the premise's own slots named: `Limit(cap: ?c)` over caps 5 and -1 proved `gte(?c,
+/// 0.0)`, and `Mode(kind: 2.0, cap2: ?c)` proved it with the cap of kind 1. It is the call
+/// of several facts in an entity's spelling, and KF2SD refused it. WI-20261013-1KF32: a
+/// world for each fact the premise's slots admit, the field's value bound in it — `lemma`
+/// is two, and `of_two` is ONE, the fact of kind 2, whose cap is -1.
 #[test]
-fn an_entity_premise_over_several_facts_is_refused() {
+fn an_entity_premise_over_several_facts_is_a_world_for_each() {
     let out = dry_run(
         "ent",
         r#"
@@ -613,16 +704,22 @@ namespace test.kf2sd.ent
 end
 "#,
     );
-    for (rule, entity) in [
-        ("test.kf2sd.ent.lemma", "test.kf2sd.ent.Limit"),
-        ("test.kf2sd.ent.of_two", "test.kf2sd.ent.Mode"),
-    ] {
-        let said = refusal(&out, rule);
-        assert!(
-            said.contains(&format!("the entity `{entity}` has several facts")),
-            "{said}"
-        );
-    }
+    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
+    assert_eq!(
+        world_choices(&out, "test.kf2sd.ent.lemma"),
+        [1, 2].map(|fact| format!(
+            "{fact}: the entity `test.kf2sd.ent.Limit` (2 facts) is answered by its fact \
+             {fact} of 2"
+        ))
+    );
+    assert_eq!(
+        worlds(&out, "test.kf2sd.ent.lemma"),
+        ["(not (>= 5.0 0.0))", "(not (>= (- 1.0) 0.0))"]
+    );
+    assert_eq!(
+        assertions(&out, "test.kf2sd.ent.of_two"),
+        ["(assert (not (>= (- 1.0) 0.0)))"]
+    );
     assert_eq!(
         assertions(&out, "test.kf2sd.ent.single"),
         ["(assert (not (<= top 3.0)))"]
@@ -666,27 +763,33 @@ end
 ///     clause of `pick` was ruled out by it, and `claim_a` — false at `?y = none`, where
 ///     the answer is -100 — proved.
 ///
-/// Both are refused: two clauses can answer. `chosen` is the control that selection
-/// through an inlined rule still works where the call WRITES what selects.
+/// Both were refused by KF2SD: two clauses can answer. WI-20261013-1KF32 reads each in a
+/// world for each clause, and both are refused STILL, in the world of the clause whose
+/// head is `none`: the call's argument there is a variable the frame being read has bound
+/// to nothing (`?o`, free in `bound`) or a construction over the caller's (`some(?y)`),
+/// neither known to be `none`, which WI-687 refuses — and no world reads the leaked
+/// binding. `chosen` is the control that selection through an inlined rule still works
+/// where the call WRITES what selects.
 #[test]
 fn a_clause_is_selected_by_the_frame_being_read_and_no_other() {
     let out = dry_run("frames", FRAMES);
-    let said = refusal(&out, "test.kf2sd.frames.claim0");
-    assert!(
-        said.contains(
-            "the call of `test.kf2sd.frames.gain/2`, in the body of \
-             `test.kf2sd.frames.bound` (read inlined), can be answered by 2 clauses"
-        ),
-        "{said}"
-    );
-    let said = refusal(&out, "test.kf2sd.frames.claim_a");
-    assert!(
-        said.contains(
-            "the call of `test.kf2sd.frames.pick/2`, in the body of \
-             `test.kf2sd.frames.wrap` (read inlined), can be answered by 2 clauses"
-        ),
-        "{said}"
-    );
+    for (rule, callee, inlined) in [
+        ("claim0", "gain", "bound"),
+        ("claim_a", "pick", "wrap"),
+    ] {
+        let said = refusal(&out, &format!("test.kf2sd.frames.{rule}"));
+        assert!(
+            said.contains(&format!(
+                "WI-687: nullary head constructor `anthill.prelude.Option.none` inlining \
+                 'test.kf2sd.frames.{callee}' does not match the call argument"
+            )) && said.contains(&format!(
+                "(in the world where `test.kf2sd.frames.{callee}/2`, in the body of \
+                 `test.kf2sd.frames.{inlined}` (read inlined) (0 fact(s), 2 with a body) is \
+                 answered by its clause 1 of 2)"
+            )),
+            "{said}"
+        );
+    }
     assert_eq!(
         assertions(&out, "test.kf2sd.frames.chosen"),
         ["(assert (not (>= 3.0 0.0)))"]
@@ -699,6 +802,9 @@ fn a_clause_is_selected_by_the_frame_being_read_and_no_other() {
 /// `mode(0, ?r)` was "head arg must be a De Bruijn var or a constructor", the selection
 /// made and the binding refused. Over facts, `?k = 1, at(?k, ?x)` read the FIRST fact
 /// and rebound `?k` (`(assert (not (>= 1.0 2.0)))`, a COUNTEREXAMPLE of a true claim).
+/// `mode_any`, whose free `?k` selects neither clause, KF2SD refused; WI-20261013-1KF32
+/// reads it in a world for each, `?k` bound to the number of its clause's head, and the
+/// claim — true of both — holds in both.
 #[test]
 fn a_number_selects_one_clause_written_or_bound() {
     let out = dry_run(
@@ -738,8 +844,11 @@ end
         assertions(&out, "test.kf2sd.number.at1"),
         ["(assert (not (>= 2.0 2.0)))"]
     );
-    refused_as_several(&out, "test.kf2sd.number.mode_any", "test.kf2sd.number.mode/2", 0, 2);
-    assert_eq!(errors(&out).len(), 1, "stderr:\n{}", out.stderr);
+    assert_eq!(
+        worlds(&out, "test.kf2sd.number.mode_any"),
+        ["(not (>= 1.0 1.0))", "(not (>= 2.0 1.0))"]
+    );
+    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 }
 
 /// A FACT'S SLOT IS READ, OR THE CALL IS REFUSED — none is passed over.
@@ -801,8 +910,11 @@ end
 /// A LEMMA STATED OF A PREDICATE IS ONE OF ITS CLAUSES: a rule with a label and the
 /// predicate for its head is under the predicate as its definition is, the resolver
 /// answers a goal by it, and what it adds — it is trusted here — is not read by reading
-/// the definition beside it. `uses` read the definition and proved; it is refused, and
-/// told what the second clause is.
+/// the definition beside it. `uses` read the definition and proved; KF2SD refused it as a
+/// call of two clauses, and told it what the second is. Since WI-20261013-1KF32 the
+/// lemma's world is read, and the lemma calls `safe` in its own body: refused as a
+/// RECURSIVE predicate, which is not unfolded — so a predicate with a lemma stated of it
+/// in this shape is still read by no proof (KF2SD §7 (iii), with the user).
 #[test]
 fn a_lemma_stated_of_a_predicate_is_one_of_its_clauses() {
     let out = dry_run(
@@ -821,7 +933,12 @@ namespace test.kf2sd.lemma
 end
 "#,
     );
-    refused_as_several(&out, "test.kf2sd.lemma.uses", "test.kf2sd.lemma.safe/2", 0, 2);
+    refused_as_recursive(
+        &out,
+        "test.kf2sd.lemma.uses",
+        "test.kf2sd.lemma.safe/2",
+        "test.kf2sd.lemma.safe",
+    );
     let said = refusal(&out, "test.kf2sd.lemma.uses");
     assert!(
         said.contains(

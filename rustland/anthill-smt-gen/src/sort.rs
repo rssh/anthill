@@ -1142,7 +1142,7 @@ impl<'kb> Emitter<'kb> {
                     .to_owned(),
             ));
         }
-        if let Some(inlined) = self.inlining.last() {
+        if let Some((inlined, _)) = self.inlining.last() {
             let own = pos_args
                 .iter()
                 .flat_map(debruijn_vars_of)

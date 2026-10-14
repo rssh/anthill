@@ -32,7 +32,7 @@ use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::node_occurrence::{
     for_each_child, materialize_from_handle, Expr, NodeOccurrence,
 };
-use anthill_core::kb::term::{Literal, Term, Var, VarId};
+use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::typing::is_typed_head_domain_goal;
 use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause};
 use anthill_core::parse::desugar_target as dt;
@@ -201,23 +201,213 @@ pub fn emit_satisfiability_check_with_deps(
     rule_qn: &str,
     config: &ProofConfig,
 ) -> Result<(String, Vec<String>), SmtGenError> {
-    let mut emitter = Emitter::new(kb);
-    emitter.abstract_mode = config.abstract_body;
-    emitter.body_is = BodyIs::hypotheses_of(config);
-    emitter.collect_rule(rule_qn)?;
-    emitter.collect_facts_for_referenced_entities()?;
-    emitter.declarations.merge(&config.declarations)?;
-    let smt = emitter.render_satisfiability_with(rule_qn, config);
+    let worlds = read_worlds(kb, |emitter| {
+        emitter.abstract_mode = config.abstract_body;
+        emitter.body_is = BodyIs::hypotheses_of(config);
+        emitter.collect_rule(rule_qn)?;
+        emitter.collect_facts_for_referenced_entities()?;
+        emitter.declarations.merge(&config.declarations)
+    })?;
+    let smt = match worlds.as_slice() {
+        [one] => one.render_satisfiability_with(rule_qn, config),
+        several => render_worlds(several, rule_qn, config)?,
+    };
     // What the proof was handed that no rule it visits names (`ProofConfig::law_sources`)
     // is of its dependency set too.
-    let deps: Vec<String> = emitter
-        .visited_rules
+    let deps: Vec<String> = worlds
         .into_iter()
+        .flat_map(|world| world.visited_rules)
         .chain(config.law_sources.iter().cloned())
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect();
     Ok((smt, deps))
+}
+
+/// WI-20261013-1KF32 — A BODY READ IN EVERY WORLD ITS CHOICES MAKE. A call several
+/// clauses can answer holds when any of them does, so the body means the disjunction of
+/// its readings: one for each combination of the clauses its choice points take
+/// ([`Emitter::choose`]). Each is `read` by an emitter of its own — the whole body and the
+/// conclusion, so what a clause binds is bound for everything after it, and a later call
+/// is selected by it — and the document is unsatisfiable when every world is
+/// ([`render_worlds`]). A body that meets no choice point is ONE world, read as it was.
+///
+/// The worlds are enumerated depth-first by REPLAYING the walk with a longer prefix of
+/// choices: the walk is deterministic, so a prefix reaches the points it names again and
+/// the points beyond it take their first clause, and each of their other clauses is a
+/// prefix still to be read. In the order of the choices, the first clause's world first.
+/// More than [`WORLD_CAP`] worlds are refused.
+fn read_worlds<'kb>(
+    kb: &'kb KnowledgeBase,
+    read: impl Fn(&mut Emitter<'kb>) -> Result<(), SmtGenError>,
+) -> Result<Vec<Emitter<'kb>>, SmtGenError> {
+    let builtins = SmtBuiltinTable::resolve(kb);
+    let mut pending: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut worlds = Vec::new();
+    while let Some(prefix) = pending.pop() {
+        let mut emitter = Emitter::with_builtins(kb, builtins.clone());
+        emitter.choices = Some(Choices {
+            taken: prefix.clone(),
+            met: Vec::new(),
+        });
+        let outcome = read(&mut emitter);
+        let met = emitter
+            .choices
+            .as_ref()
+            .map(|choices| choices.met.clone())
+            .unwrap_or_default();
+        if let Err(refused) = outcome {
+            return Err(match describe_world(&met, &prefix) {
+                Some(world) => SmtGenError::new(format!("{} (in the world where {world})", refused.message)),
+                None => refused,
+            });
+        }
+        assert!(
+            met.len() >= prefix.len(),
+            "a reading met {} choice points where the world it was asked for names {}: the \
+             walk is not deterministic",
+            met.len(),
+            prefix.len()
+        );
+        let path: Vec<usize> = (0..met.len())
+            .map(|at| prefix.get(at).copied().unwrap_or(0))
+            .collect();
+        let mut beyond = Vec::new();
+        for at in (prefix.len()..met.len()).rev() {
+            for clause in 1..met[at].of {
+                let mut sibling = path[..at].to_vec();
+                sibling.push(clause);
+                beyond.push(sibling);
+            }
+        }
+        pending.extend(beyond.into_iter().rev());
+        worlds.push(emitter);
+        if worlds.len() + pending.len() > WORLD_CAP {
+            let points: Vec<String> = met
+                .iter()
+                .map(|point| format!("{} — {} {}s", point.what, point.of, point.answered_by))
+                .collect();
+            return Err(SmtGenError::new(format!(
+                "the body is read in more than {WORLD_CAP} worlds — one for each combination \
+                 of the clauses that answer its calls, and each repeats the body \
+                 (WI-20261013-1KF32). The choices of the world being read when the count \
+                 passed it: {}. Give the cases this proof is about predicates of their own, or \
+                 arguments that select their clauses",
+                points.join("; ")
+            )));
+        }
+    }
+    Ok(worlds)
+}
+
+/// The choices of a world, as a document's comment and a refusal name them; `None` for
+/// a world that met no choice point.
+fn describe_world(met: &[ChoicePoint], taken: &[usize]) -> Option<String> {
+    if met.is_empty() {
+        return None;
+    }
+    let choices: Vec<String> = met
+        .iter()
+        .enumerate()
+        .map(|(at, point)| {
+            let pick = taken.get(at).copied().unwrap_or(0);
+            format!(
+                "{} is answered by its {} {} of {}",
+                point.what,
+                point.answered_by,
+                pick + 1,
+                point.of
+            )
+        })
+        .collect();
+    Some(choices.join("; "))
+}
+
+/// WI-20261013-1KF32 — THE DOCUMENT OF A BODY READ IN SEVERAL WORLDS ([`read_worlds`]):
+/// what each declares, once — a free variable is one constant of the document whoever
+/// names it, which is sound because the worlds are DISJUNCTS, each existentially closed
+/// on its own (`∃x. A ∨ B` is `(∃x. A) ∨ (∃x. B)`) — and their disjunction, each world the
+/// conjunction of its hypotheses and its negated conclusion, read in its own bindings.
+/// `unsat` where every world is: the proof the document would be if it were split by the
+/// choice of clause, and still ONE document, so the record, the cache key and the witness
+/// are of one.
+fn render_worlds(
+    worlds: &[Emitter<'_>],
+    rule_qn: &str,
+    config: &ProofConfig,
+) -> Result<String, SmtGenError> {
+    let mut declarations = Declarations::default();
+    let mut field_consts: BTreeMap<&str, f64> = BTreeMap::new();
+    let mut free: BTreeMap<&str, &SmtSort> = BTreeMap::new();
+    let mut trig_args: BTreeSet<String> = BTreeSet::new();
+    let mut uses_abs = false;
+    for world in worlds {
+        declarations.merge(&world.declarations)?;
+        for (name, value) in &world.field_consts {
+            if let Some(other) = field_consts.insert(name.as_str(), *value) {
+                if other != *value {
+                    return Err(SmtGenError::new(format!(
+                        "the constant `{name}` is {} in one world of the body and {} in \
+                         another, and the document has one",
+                        format_real(other),
+                        format_real(*value)
+                    )));
+                }
+            }
+        }
+        let result = world.result_value.as_ref().map(|_| &world.result_var);
+        for name in world.free_vars.iter().chain(result) {
+            let sort = world.var_sorts.get(name).unwrap_or(&SmtSort::Real);
+            if let Some(other) = free.insert(name.as_str(), sort) {
+                if other != sort {
+                    return Err(SmtGenError::new(format!(
+                        "the variable `{name}` is of sort {other} in one world of the body and \
+                         of {sort} in another, and the document declares it once"
+                    )));
+                }
+            }
+        }
+        trig_args.extend(world.trig_args.iter().cloned());
+        uses_abs |= world.uses_abs;
+    }
+
+    let mut hypotheses = String::from("(assert (or\n");
+    for (at, world) in worlds.iter().enumerate() {
+        let choices = world.choices.as_ref().expect("a world is read with its choices");
+        let described = describe_world(&choices.met, &choices.taken)
+            .expect("a document of several worlds is of choices met");
+        hypotheses.push_str(&format!("  ; {}: {described}\n", at + 1));
+        let mut conjuncts: Vec<String> = Vec::new();
+        if let Some(value) = &world.result_value {
+            conjuncts.push(format!("(= {} {value})", sanitize_smt_id(&world.result_var)));
+        }
+        conjuncts.extend(world.assertions.iter().cloned());
+        conjuncts.extend(world.negated_conclusion());
+        let conjunction = match conjuncts.as_slice() {
+            [] => "true".to_owned(),
+            [one] => one.clone(),
+            several => format!("(and {})", several.join(" ")),
+        };
+        hypotheses.push_str(&format!("  {conjunction}\n"));
+    }
+    hypotheses.push_str("))\n");
+    Ok(render_check(
+        rule_qn,
+        config,
+        CheckParts {
+            note: Some(format!(
+                "; The body is read in {} worlds, one for each choice of the clauses that \
+                 answer its\n; calls, and holds in one of them (WI-20261013-1KF32).\n",
+                worlds.len()
+            )),
+            declarations: &declarations,
+            uses_abs,
+            field_consts: field_consts.into_iter().collect(),
+            free: free.into_iter().collect(),
+            trig_args: &trig_args,
+            hypotheses,
+        },
+    ))
 }
 
 /// Lift a positive-form rule (`R(args) :- premises -: conclusion`)
@@ -534,8 +724,44 @@ struct Emitter<'kb> {
     /// Inside one a name is not what it is in the clause's own frame: the rule's head
     /// variables are written as what the caller passed, and a variable of its own goes
     /// by the name the caller's variable of the same index has (WI-20261012-BR7P3) —
-    /// which [`Self::state_predicate_call`] refuses to state a relation of.
-    inlining: Vec<String>,
+    /// which [`Self::state_predicate_call`] refuses to state a relation of. Each with the
+    /// arity it was called at: `span/2` beside `span/3` is two predicates, and a clause of
+    /// one calling the other is no recursion (WI-20261013-1KF32, /code-review).
+    inlining: Vec<(String, usize)>,
+    /// WI-20261013-1KF32 — THE WORLD BEING READ: which clause answers each call that
+    /// several can ([`Self::choose`]). `None` where the document is not split by them —
+    /// an obligation, whose document is one term's bound, and a lift, which reads no
+    /// call — and there a call several clauses can answer is refused.
+    choices: Option<Choices>,
+    /// The value the body bound the result variable of a function-like head to, beside
+    /// `body_smtlib`, which defines it: a document of several worlds equates it in each.
+    result_value: Option<String>,
+}
+
+/// WI-20261013-1KF32 — THE MOST WORLDS A DOCUMENT IS READ IN (decided with the user,
+/// 2026-10-14). Each repeats the whole body, and the count is the PRODUCT of the clauses
+/// each choice had, so two tables of eight rows are 64. Beyond it the proof is refused.
+const WORLD_CAP: usize = 64;
+
+/// WI-20261013-1KF32 — the choices of one reading of a body ([`read_worlds`]).
+#[derive(Debug, Default)]
+struct Choices {
+    /// The clause taken at each choice point, in the order the points are met: the
+    /// prefix this reading was asked for. A point beyond it takes the first.
+    taken: Vec<usize>,
+    /// Every point this reading met, in order.
+    met: Vec<ChoicePoint>,
+}
+
+/// A call — or an entity premise — that several clauses can answer, met in a reading.
+#[derive(Debug, Clone)]
+struct ChoicePoint {
+    /// How many can answer it.
+    of: usize,
+    /// What it is a call of, as the document's comment and a refusal name it.
+    what: String,
+    /// What answers it: a `clause` of a predicate, a `fact` of an entity.
+    answered_by: &'static str,
 }
 
 /// WI-20261012-CDHSQ — WHAT A CLAUSE'S BODY IS TO THE DOCUMENT BEING WRITTEN, which
@@ -611,6 +837,12 @@ enum Known<'a> {
 
 impl<'kb> Emitter<'kb> {
     fn new(kb: &'kb KnowledgeBase) -> Self {
+        Self::with_builtins(kb, SmtBuiltinTable::resolve(kb))
+    }
+
+    /// An emitter over `kb` whose [`SmtBuiltinTable`] is resolved already: the worlds of
+    /// one document share one ([`read_worlds`]).
+    fn with_builtins(kb: &'kb KnowledgeBase, builtins: SmtBuiltinTable) -> Self {
         Self {
             kb,
             field_consts: BTreeMap::new(),
@@ -625,7 +857,7 @@ impl<'kb> Emitter<'kb> {
             uses_abs: false,
             trig_args: BTreeSet::new(),
             abstract_mode: false,
-            builtins: SmtBuiltinTable::resolve(kb),
+            builtins,
             var_sorts: BTreeMap::new(),
             declarations: Declarations::default(),
             param_defaults: HashMap::new(),
@@ -637,7 +869,32 @@ impl<'kb> Emitter<'kb> {
                 cited: BTreeSet::new(),
             },
             inlining: Vec::new(),
+            choices: None,
+            result_value: None,
         }
+    }
+
+    /// WI-20261013-1KF32 — WHICH OF `of` CLAUSES ANSWERS THE CHOICE POINT MET NOW: the
+    /// one the world being read names, or the first where the point is beyond what it
+    /// names ([`read_worlds`] then reads the others). Where the document is not split by
+    /// choices (`choices` is `None`), `refusal`.
+    fn choose(
+        &mut self,
+        of: usize,
+        answered_by: &'static str,
+        what: impl FnOnce() -> String,
+        refusal: impl FnOnce() -> SmtGenError,
+    ) -> Result<usize, SmtGenError> {
+        let Some(choices) = self.choices.as_mut() else {
+            return Err(refusal());
+        };
+        let pick = choices.taken.get(choices.met.len()).copied().unwrap_or(0);
+        choices.met.push(ChoicePoint {
+            of,
+            what: what(),
+            answered_by,
+        });
+        Ok(pick)
     }
 
     /// Find the rule by qualified name. Walk its body and produce
@@ -785,6 +1042,7 @@ impl<'kb> Emitter<'kb> {
                         sanitize_smt_id(&self.result_var),
                         result_smt
                     );
+                    self.result_value = Some(result_smt.clone());
                 }
                 None if self.result_required => {
                     return Err(SmtGenError::new(format!(
@@ -1034,6 +1292,16 @@ impl<'kb> Emitter<'kb> {
                 }
             }
             let entity_qn = qn.to_string();
+            // WI-20261013-1KF32 — AN ENTITY OF SEVERAL FACTS is the table of a call in an
+            // entity's spelling: a world for each fact the premise's slots admit, its
+            // fields bound in that world ([`Self::read_by_rows`]). Where the document is
+            // not split (a lift, an obligation), the harvest refuses it as before.
+            if self.choices.is_some() {
+                let rows = self.entity_rows(&entity_qn)?;
+                if self.read_by_rows(&rows, named_args) {
+                    return self.read_entity_row(&entity_qn, &rows, named_args, bindings);
+                }
+            }
             self.referenced_entities.insert(entity_qn.clone());
             for (field_sym, val_occ) in named_args {
                 let bind_idx = match val_occ.as_expr() {
@@ -1092,9 +1360,9 @@ impl<'kb> Emitter<'kb> {
             return self.state_predicate_call(functor, pos_args, named_args, bindings);
         }
 
-        // A rule call READ: `<rule>(<a1>, ..., <aN>)`, by THE ONE CLAUSE THAT CAN ANSWER
-        // IT (WI-20261012-KF2SD, [`Self::answering_clause`]) — three ways, by what that
-        // clause is:
+        // A rule call READ: `<rule>(<a1>, ..., <aN>)`, by THE CLAUSE THAT ANSWERS IT in
+        // the world being read (WI-20261012-KF2SD, WI-20261013-1KF32,
+        // [`Self::answering_clause`]) — three ways, by what that clause is:
         //   (1) A fact — a rule with an empty body. Each call-side
         //       DeBruijn var gets bound to the fact's slot (literal →
         //       string binding, entity occurrence → entity_bindings).
@@ -1112,6 +1380,31 @@ impl<'kb> Emitter<'kb> {
                 self.visited_rules.insert(qn.to_string());
                 if answer.clause.is_fact() {
                     self.bind_fact_call(qn, &answer, pos_args, bindings)?;
+                } else if self
+                    .inlining
+                    .iter()
+                    .any(|(reading, arity)| reading == qn && *arity == pos_args.len())
+                {
+                    // WI-20261013-1KF32 — A RECURSIVE CLAUSE IS NOT UNFOLDED (decided with
+                    // the user, 2026-10-14). The call stands in a clause of its own
+                    // predicate being read, and reading the clause that answers it reads
+                    // that call again: a step beside its base case (`at(?k_next, …) :-
+                    // at(?k, …), …`) is a world for each depth there is, and a predicate
+                    // of one such clause has no base case to stop at — measured on
+                    // 79a6703f, `rule loop(?x) :- loop(?x), gte(?x, 0.0)` under a proof
+                    // overflowed the stack and aborted the CLI (exit 134).
+                    let site = self.inlining.last().map_or(String::new(), |(rule, _)| {
+                        format!(", in the body of `{rule}` (read inlined),")
+                    });
+                    return Err(SmtGenError::new(format!(
+                        "the call of `{qn}/{}`{site} is answered by a clause of `{qn}` with a \
+                         body while a clause of `{qn}` is being read: a recursive predicate is \
+                         not unfolded into a proof's document (WI-20261013-1KF32). Prove the \
+                         claim by induction, or give the case this proof is about a predicate \
+                         of its own; a rule stated with a label and this predicate for its \
+                         head is one of its clauses",
+                        pos_args.len()
+                    )));
                 } else if pos_args.len() == 1 {
                     let bind_idx = match pos_args[0].as_expr() {
                         Some(Expr::Var(Var::DeBruijn(i))) => *i,
@@ -1165,24 +1458,28 @@ impl<'kb> Emitter<'kb> {
     /// predicate, as the resolver has it, and what it adds is not read by reading the
     /// definition beside it.
     ///
-    /// SEVERAL: refused. The disjunction of the clauses' readings is what the call
-    /// means; the binding scheme — a variable is one SMT term, an entity one
-    /// occurrence — does not hold it (WI-20261013-1KF32).
+    /// SEVERAL: A CHOICE POINT (WI-20261013-1KF32). The call means the disjunction of
+    /// the clauses' readings, and the document is read once for each — a WORLD, the
+    /// rest of the body read in it as well ([`read_worlds`]) — so a variable a clause
+    /// binds is bound by substitution in its world, an entity is an occurrence there, and
+    /// a later call is selected by what the world bound. This returns the clause the
+    /// world being read takes. Where the document is not split (an obligation), refused.
     ///
     /// `None` where the functor has no clause with arguments at all: the caller's error.
     fn answering_clause(
-        &self,
+        &mut self,
         functor: Symbol,
         call_args: &[Rc<NodeOccurrence>],
         bindings: &BTreeMap<String, String>,
     ) -> Result<Option<Answer>, SmtGenError> {
-        let qn = self.kb.qualified_name_of(functor);
+        let kb = self.kb;
+        let qn = kb.qualified_name_of(functor);
         let arity = call_args.len();
         let mut other_arities: BTreeSet<usize> = BTreeSet::new();
         let mut of_this_arity = 0usize;
         // What can answer, and whether its head is written by position.
         let mut answering: Vec<(Answer, bool)> = Vec::new();
-        for clause in self.kb.program_clauses_by_functor(functor) {
+        for clause in kb.program_clauses_by_functor(functor) {
             let Value::Term { id: head, .. } = clause.head else {
                 return Err(SmtGenError::new(format!(
                     "v0: rule call `{qn}` has a clause with a non-term program head"
@@ -1216,10 +1513,11 @@ impl<'kb> Emitter<'kb> {
             // not ruled out, and read alone it is refused.
             let positional = named == 0;
             let admitted = !positional
-                || call_args
+                || (call_args
                     .iter()
                     .zip(head_args.iter())
-                    .all(|(call, head)| self.admits(head, call, bindings));
+                    .all(|(call, head)| self.admits(head, call, bindings))
+                    && self.one_number_each(&head_args, call_args, bindings));
             if admitted {
                 answering.push((Answer { clause, head_args }, positional));
             }
@@ -1227,54 +1525,70 @@ impl<'kb> Emitter<'kb> {
         // Where the call stands, when it is not the proof's own: the proof names a
         // rule, and the call refused may be three rules down.
         let site = match self.inlining.last() {
-            Some(rule) => format!(", in the body of `{rule}` (read inlined),"),
+            Some((rule, _)) => format!(", in the body of `{rule}` (read inlined),"),
             None => String::new(),
         };
-        match answering.len() {
+        let pick = match answering.len() {
             // Not "the body never holds": a clause may be an operation's body
             // specialized to ANOTHER call's arguments (WI-687 synthesizes one for a
             // functor, for whichever proof ran first), and then the operation is
-            // defined at this call and its clause for it is not here.
-            0 if of_this_arity > 0 => Err(SmtGenError::new(format!(
-                "the call of `{qn}/{arity}`{site} can be answered by no clause of the \
-                 predicate: each of its {of_this_arity} has in its head an argument the call's \
-                 rules out. Where those clauses are the predicate, the body never holds; a \
-                 clause that is an operation's body specialized to another call's arguments \
-                 (WI-687) does not apply to this call"
-            ))),
-            0 if other_arities.is_empty() => Ok(None),
-            0 => Err(SmtGenError::new(format!(
-                "rule call arity mismatch for '{qn}': the call has {arity} argument(s), and \
-                 its clauses have {}",
-                other_arities
-                    .iter()
-                    .map(usize::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            ))),
-            1 => match answering.pop() {
-                Some((answer, true)) => Ok(Some(answer)),
-                _ => Err(SmtGenError::new(format!(
-                    "v0: the clause of '{qn}' that answers this call must have only pos args \
-                     in head"
-                ))),
-            },
+            // defined at this call and its clause for it is not here. So a world in
+            // which a call has none is refused, and not dropped as `false`.
+            0 if of_this_arity > 0 => {
+                return Err(SmtGenError::new(format!(
+                    "the call of `{qn}/{arity}`{site} can be answered by no clause of the \
+                     predicate: each of its {of_this_arity} has in its head an argument the \
+                     call's rules out. Where those clauses are the predicate, the body never \
+                     holds; a clause that is an operation's body specialized to another call's \
+                     arguments (WI-687) does not apply to this call"
+                )))
+            }
+            0 if other_arities.is_empty() => return Ok(None),
+            0 => {
+                return Err(SmtGenError::new(format!(
+                    "rule call arity mismatch for '{qn}': the call has {arity} argument(s), \
+                     and its clauses have {}",
+                    other_arities
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                )))
+            }
+            1 => 0,
             several => {
                 let facts = answering
                     .iter()
                     .filter(|(answer, _)| answer.clause.is_fact())
                     .count();
-                Err(SmtGenError::new(format!(
-                    "the call of `{qn}/{arity}`{site} can be answered by {several} clauses of \
-                     the predicate ({facts} fact(s), {} with a body), and a proof reads a call by \
-                     ONE: the call holds when ANY of them does, which is more than the first \
-                     one says and is not read as their disjunction (WI-20261013-1KF32). Give \
-                     the case this proof is about a predicate of its own, or an argument that \
-                     selects one clause; a rule stated with a label and this predicate for its \
-                     head is one of its clauses",
-                    several - facts
-                )))
+                let bodied = several - facts;
+                self.choose(
+                    several,
+                    "clause",
+                    || {
+                        format!(
+                            "`{qn}/{arity}`{site} ({facts} fact(s), {bodied} with a body)",
+                            site = site.trim_end_matches(',')
+                        )
+                    },
+                    || {
+                        SmtGenError::new(format!(
+                            "the call of `{qn}/{arity}`{site} can be answered by {several} \
+                             clauses of the predicate ({facts} fact(s), {bodied} with a body), \
+                             and an obligation bounds ONE term: the call holds when ANY of them \
+                             does, and its document is not split by them (WI-20261013-1KF32). \
+                             State it as a proof of the rule, or give the case it is about a \
+                             predicate of its own"
+                        ))
+                    },
+                )?
             }
+        };
+        match answering.swap_remove(pick) {
+            (answer, true) => Ok(Some(answer)),
+            (_, false) => Err(SmtGenError::new(format!(
+                "v0: the clause of '{qn}' that answers this call must have only pos args in head"
+            ))),
         }
     }
 
@@ -1292,6 +1606,32 @@ impl<'kb> Emitter<'kb> {
             (Some(head), Some(call)) => self.agree(&head, &call),
             _ => true,
         }
+    }
+
+    /// WI-20261013-1KF32 (/code-review) — A VARIABLE THE CALL WRITES TWICE MEETS ONE NUMBER:
+    /// where the head has a number at two of its positions, they agree. Each position is
+    /// admitted on its own ([`Self::admits`]) and a variable nothing knows rules nothing
+    /// out, so `twice(?k, ?k, ?r)` admitted `rule twice(0, 1, ?r) :- …`, and its world was
+    /// then refused whole — the first number bound `?k`, and the second was not it — where
+    /// the clause cannot answer the call; and `pair(?x, ?x)` read `fact pair(1.0, 2.0)` as
+    /// `?x` = 2.0, the second slot overwriting the first.
+    fn one_number_each(
+        &self,
+        head_args: &[Rc<NodeOccurrence>],
+        call_args: &[Rc<NodeOccurrence>],
+        bindings: &BTreeMap<String, String>,
+    ) -> bool {
+        let mut met: BTreeMap<u32, f64> = BTreeMap::new();
+        call_args.iter().zip(head_args).all(|(call, head)| {
+            match (call.as_expr(), self.known(head)) {
+                (Some(Expr::Var(Var::DeBruijn(index))), Some(Known::Number(number)))
+                    if self.known_argument(call, bindings).is_none() =>
+                {
+                    *met.entry(*index).or_insert(number) == number
+                }
+                _ => true,
+            }
+        })
     }
 
     /// What the call's argument `call` is known to be, in the frame being read
@@ -1322,6 +1662,79 @@ impl<'kb> Emitter<'kb> {
                 .get(&name)
                 .and_then(|term| numeral(term))
                 .map(Known::Number),
+        }
+    }
+
+    /// The name of `call`, a call's argument, where it is a variable nothing has given a
+    /// value: one this frame has bound to no term and no construction, or one bound to a
+    /// VARIABLE — a head's parameter an inlined rule was passed the caller's free variable
+    /// for, which it goes by the name of (/code-review: `wrap(?k, ?r) :- mode(?k, ?r)`
+    /// refused `?k` as "not known" where `mode(?k, ?r)` read it).
+    fn free_variable(
+        &self,
+        call: &Rc<NodeOccurrence>,
+        bindings: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        let Some(Expr::Var(Var::DeBruijn(index))) = call.as_expr() else {
+            return None;
+        };
+        let name = synthetic_var_name(*index);
+        if self.entity_bindings.contains_key(&name) {
+            return None;
+        }
+        match bindings.get(&name) {
+            None => Some(name),
+            Some(term) if parse_synthetic_var_name(term).is_some() => Some(name),
+            Some(_) => None,
+        }
+    }
+
+    /// WI-20261013-1KF32 (/code-review) — `name`, a variable of the frame being read, IS
+    /// `value`: a fact's slot, a head's number or an entity's field says so in the world
+    /// being read. ONE place for the three, which each substituted, and each lost what the
+    /// variable already was:
+    ///   * DEFINED as a term (`?k = ?j + 1.0`, then `start(?k)`): the definition was
+    ///     overwritten and the equation dropped, so a true claim was a COUNTEREXAMPLE.
+    ///     Now `(= <term> value)`, and a numeral that is the value says nothing;
+    ///   * NAMED ALREADY by a goal read before (`lte(?d, 10.0), start(?d)`): the goal kept
+    ///     `var_d`, which the substitution then left undeclared — z3's "unknown constant"
+    ///     (so on 79a6703f, for one fact) — or, declared by another world that does not
+    ///     bind it, unconstrained. Now the variable stays a constant of the document, and
+    ///     `(= var_d value)` is asserted.
+    ///
+    /// Otherwise it is bound by substitution, as it always was: such a document is the one
+    /// it was. A variable bound to a variable — an inlined rule's parameter, which goes by
+    /// its caller's name — is asked of that name.
+    fn bind_variable(
+        &mut self,
+        name: String,
+        value: String,
+        bindings: &mut BTreeMap<String, String>,
+    ) {
+        let term = match bindings.get(&name) {
+            None => name.clone(),
+            Some(variable) if parse_synthetic_var_name(variable).is_some() => variable.clone(),
+            Some(defined) => {
+                if !(numeral(defined).is_some() && numeral(defined) == numeral(&value)) {
+                    self.assertions.push(format!("(= {defined} {value})"));
+                }
+                return;
+            }
+        };
+        let named = self
+            .assertions
+            .iter()
+            .chain(
+                bindings
+                    .iter()
+                    .filter(|(other, _)| **other != name)
+                    .map(|(_, defined)| defined),
+            )
+            .any(|text| smt_tokens(text).contains(&term.as_str()));
+        if named {
+            self.assertions.push(format!("(= {term} {value})"));
+        } else {
+            bindings.insert(name, value);
         }
     }
 
@@ -1439,10 +1852,10 @@ impl<'kb> Emitter<'kb> {
             let synth = synthetic_var_name(*idx);
             match fact_occ.as_expr() {
                 Some(Expr::Const(Literal::Float(f))) => {
-                    bindings.insert(synth, format_real(f.into_inner()));
+                    self.bind_variable(synth, format_real(f.into_inner()), bindings);
                 }
                 Some(Expr::Const(Literal::Int(i))) => {
-                    bindings.insert(synth, format_real(*i as f64));
+                    self.bind_variable(synth, format_real(*i as f64), bindings);
                 }
                 // Entity (Pose, Vec3, …) — defer until field_access reads it. And a
                 // NULLARY CONSTRUCTOR (`Leader`): it has no SMT term
@@ -1502,6 +1915,20 @@ impl<'kb> Emitter<'kb> {
         let mut callee_ent: BTreeMap<String, Rc<NodeOccurrence>> = BTreeMap::new();
         let mut head_caller: Vec<(u32, String)> = Vec::new();
         for (head_arg, call_arg) in callee.head_args.iter().zip(call_args.iter()) {
+            // WI-20261013-1KF32 — A NUMBER IN THE HEAD MET BY A FREE VARIABLE OF THE CALL
+            // BINDS IT, as a fact's slot does ([`Self::bind_fact_call`]; decided with the
+            // user, 2026-10-14): the clause answers the call only where the variable is
+            // that number. So a definition by cases written by its numbers (`rule mode(0,
+            // ?r) :- …`, `rule mode(1, ?r) :- …`) called `mode(?k, ?r)` is a world for
+            // each, `?k` the number of its clause. A variable bound to a computed term, and
+            // a computed term, against a number are still refused ([`Self::bind_head_arg`]).
+            if let (Some(Known::Number(in_head)), Some(free)) = (
+                self.known(head_arg),
+                self.free_variable(call_arg, caller_bindings),
+            ) {
+                self.bind_variable(free, format_real(in_head), caller_bindings);
+                continue;
+            }
             self.bind_head_arg(
                 callee_qn,
                 head_arg,
@@ -1540,7 +1967,7 @@ impl<'kb> Emitter<'kb> {
             .and_then(|()| self.infer_var_sorts(&body_goals))
             .err();
         if err.is_none() {
-            self.inlining.push(callee_qn.to_string());
+            self.inlining.push((callee_qn.to_string(), call_args.len()));
             for goal in &body_goals {
                 if let Err(e) = self.process_body_goal(goal, &mut local) {
                     err = Some(e);
@@ -1614,15 +2041,19 @@ impl<'kb> Emitter<'kb> {
         // clause where the call's is known ([`Self::admits`]). A call's free variable
         // or a computed term there is an equation this does not write, and says so
         // (WI-20261012-KF2SD, /code-review: the clause was selected by its number and
-        // then refused as "head arg must be a De Bruijn var or a constructor").
+        // then refused as "head arg must be a De Bruijn var or a constructor"). A FREE
+        // variable of the call there is bound to the number before this is asked
+        // ([`Self::inline_rule_call`], WI-20261013-1KF32); one inside a construction is
+        // not looked up ([`Self::known_argument`]), and is refused here.
         if let Some(Known::Number(in_head)) = self.known(head_arg) {
             return match self.known_argument(call_arg, caller_bindings) {
                 Some(Known::Number(passed)) if passed == in_head => Ok(()),
                 _ => Err(SmtGenError::new(format!(
                     "'{callee_qn}' has the number {} for an argument of its head, and the \
-                     call's argument there is not known to be it: a variable or a computed \
-                     term against a number in a head is an equation that is not written. \
-                     Pass the number, or a variable defined as it",
+                     call's argument there is not known to be it: a computed term, or a \
+                     variable defined as one, against a number in a head is an equation that \
+                     is not written. Pass the number, a variable defined as it, or a variable \
+                     nothing defines",
                     format_real(in_head)
                 ))),
             };
@@ -1849,7 +2280,7 @@ impl<'kb> Emitter<'kb> {
         // `?o`. The same leak, the other way, handed the callee's entities back.
         let saved_sorts = std::mem::take(&mut self.var_sorts);
         let saved_entities = std::mem::take(&mut self.entity_bindings);
-        self.inlining.push(callee_qn.to_string());
+        self.inlining.push((callee_qn.to_string(), 1));
         let walked = (|| {
             self.seed_bounds(clause)?;
             self.infer_var_sorts(&clause.body_nodes)?;
@@ -2505,26 +2936,6 @@ impl<'kb> Emitter<'kb> {
     /// order) would otherwise decide which head the harvest picks.
     fn collect_facts_for_referenced_entities(&mut self) -> Result<(), SmtGenError> {
         for entity_qn in self.referenced_entities.clone() {
-            let Some(sym) = self.kb.try_resolve_symbol(&entity_qn) else {
-                continue;
-            };
-            let candidates = self
-                .kb
-                .read_facts(sym, &[], BodiedRulePolicy::Refuse)
-                .map_err(|e| match e {
-                    ExtentReadError::BodiedRule { .. } => SmtGenError::new(format!(
-                        "bodied rule for referenced entity `{entity_qn}` refused: {e} — \
-                         guarded field values would enter the SMT encoding unconditionally (WI-772)"
-                    )),
-                    _ => SmtGenError::new(format!(
-                        "referenced entity `{entity_qn}` read failed: {e}"
-                    )),
-                })?;
-            // Accept the fact whose named_args resolve to numeric
-            // literals — that's a ground data fact. (WI-515: only data
-            // facts remain; the entity-declaration row with abstract
-            // field types is no longer asserted.)
-            //
             // WI-20261012-KF2SD (/code-review) — ONE SUCH FACT, OR REFUSED. "For v0 we
             // expect at most one fact per entity" was a comment, and the loop broke at
             // the first: an entity of several facts was read as its first, whichever
@@ -2533,61 +2944,221 @@ impl<'kb> Emitter<'kb> {
             // `Mode(kind: 1.0, cap: 5.0)`, `Mode(kind: 2.0, cap: -1.0)` the premise
             // `Mode(kind: 2.0, cap: ?c)` proved it with the cap of kind 1 — a slot
             // that is no variable is not read, and a field's constant is one for the
-            // document. It is the call of several facts in an entity's spelling.
-            let mut read = false;
-            for row in candidates {
-                let Value::Term { id: head, .. } = row else {
-                    return Err(SmtGenError::new(format!(
-                        "referenced entity `{entity_qn}` has a non-term fact row; \
-                         SMT v0 requires term-carried numeric fields"
-                    )));
-                };
-                let Term::Fn { named_args, .. } = self.kb.get_term(head) else {
-                    continue;
-                };
-                let any_concrete = named_args
-                    .iter()
-                    .any(|(_, t)| literal_as_real(self.kb.get_term(*t)).is_some());
-                if !any_concrete {
+            // document. It is the call of several facts in an entity's spelling, and a
+            // proof's document reads it as one: a world for each fact
+            // ([`Self::read_entity_row`], WI-20261013-1KF32). What reaches this with
+            // several is a document that is not split by them.
+            let rows = self.entity_rows(&entity_qn)?;
+            if rows.len() > 1 {
+                return Err(SmtGenError::new(format!(
+                    "the entity `{entity_qn}` has several facts, and a premise here reads its \
+                     fields off ONE: it would be the first, whichever fact the premise's own \
+                     slots name. A proof's document reads each fact in a world of its own \
+                     (WI-20261013-1KF32); a cited lemma's lift and an obligation are not \
+                     split by them"
+                )));
+            }
+            let Some(&head) = rows.first() else {
+                continue;
+            };
+            let Term::Fn { named_args, .. } = self.kb.get_term(head) else {
+                unreachable!("`entity_rows` keeps a row that is an application");
+            };
+            for (field_sym, val_term) in named_args {
+                let field_name = self.kb.local_name_of(*field_sym).to_string();
+                let const_name = sanitize_smt_id(&field_name);
+                if !self.field_consts.contains_key(&const_name) {
                     continue;
                 }
-                if read {
+                // WI-20261013-1KF32 (/code-review) — A FIELD THAT IS NO NUMBER IS REFUSED,
+                // and not left at the 0.0 its constant was made with: `fact Lim(cap: ?any)`
+                // was `cap` = 0.0, and proved `gte(?c, 0.0) :- Lim(cap: ?c)`. A proof's
+                // document reads such a fact by its row ([`Self::read_by_rows`]); what
+                // reaches this is a lift or an obligation.
+                let Some(v) = literal_as_real(self.kb.get_term(*val_term)) else {
                     return Err(SmtGenError::new(format!(
-                        "the entity `{entity_qn}` has several facts, and a premise reads its \
-                         fields off ONE: it would be the first, whichever fact the premise's \
-                         own slots name. A claim of every fact is their disjunction \
-                         (WI-20261013-1KF32); a proof reads an entity of one fact"
+                        "the premise `{entity_qn}` reads the field `{field_name}` of the entity's \
+                         fact, whose value there is no number, as a constant of the document"
                     )));
-                }
-                read = true;
-                for (field_sym, val_term) in named_args {
-                    let field_name = self.kb.local_name_of(*field_sym).to_string();
-                    let const_name = sanitize_smt_id(&field_name);
-                    if !self.field_consts.contains_key(&const_name) {
-                        continue;
+                };
+                self.field_consts.insert(const_name, v);
+            }
+        }
+        Ok(())
+    }
+
+    /// THE FACTS OF AN ENTITY, by its qualified name: each a row of its fields. A bodied
+    /// rule for it is refused (WI-772).
+    ///
+    /// EVERY ROW (WI-20261013-1KF32, /code-review). Only a row with a field that is a number
+    /// was kept, so a row whose field is a variable — every value there — was no row:
+    /// measured on 79a6703f, `fact Lim(cap: ?any)` beside `fact Lim(cap: 5.0)` was the one
+    /// fact `cap` = 5, and alone it was `cap` = 0.0, the default of a constant no row set;
+    /// both proved `gte(?c, 0.0) :- Lim(cap: ?c)`, which `Lim(cap: -1.0)` refutes. (WI-515:
+    /// the entity-declaration row with abstract field types is no longer asserted.)
+    fn entity_rows(&self, entity_qn: &str) -> Result<Vec<TermId>, SmtGenError> {
+        let Some(sym) = self.kb.try_resolve_symbol(entity_qn) else {
+            return Ok(Vec::new());
+        };
+        let candidates = self
+            .kb
+            .read_facts(sym, &[], BodiedRulePolicy::Refuse)
+            .map_err(|e| match e {
+                ExtentReadError::BodiedRule { .. } => SmtGenError::new(format!(
+                    "bodied rule for referenced entity `{entity_qn}` refused: {e} — \
+                     guarded field values would enter the SMT encoding unconditionally (WI-772)"
+                )),
+                _ => SmtGenError::new(format!("referenced entity `{entity_qn}` read failed: {e}")),
+            })?;
+        let mut rows = Vec::new();
+        for row in candidates {
+            let Value::Term { id: head, .. } = row else {
+                return Err(SmtGenError::new(format!(
+                    "referenced entity `{entity_qn}` has a non-term fact row; \
+                     SMT v0 requires term-carried numeric fields"
+                )));
+            };
+            if matches!(self.kb.get_term(head), Term::Fn { .. }) {
+                rows.push(head);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// The value `row`, a fact of an entity, gives the field `slot` — by its short name, as
+    /// a premise and a fact may qualify a field differently ([`Self::field_of`]).
+    fn row_field(&self, row: TermId, slot: Symbol) -> Option<TermId> {
+        let short = |sym: Symbol| self.kb.local_name_of(sym).rsplit('.').next().map(str::to_owned);
+        let Term::Fn { named_args, .. } = self.kb.get_term(row) else {
+            return None;
+        };
+        named_args
+            .iter()
+            .find(|(name, _)| short(*name) == short(slot))
+            .map(|(_, value)| *value)
+    }
+
+    /// Is a premise of the entity read by its rows, and not by the constants of its one
+    /// fact? Where it has several — a world for each — and where its one fact gives a
+    /// field the premise binds something that is no number, which the constant would be
+    /// 0.0 for.
+    fn read_by_rows(&self, rows: &[TermId], slots: &[(Symbol, Rc<NodeOccurrence>)]) -> bool {
+        match rows {
+            [] => false,
+            [row] => slots.iter().any(|(slot, occ)| {
+                matches!(occ.as_expr(), Some(Expr::Var(Var::DeBruijn(_))))
+                    && self
+                        .row_field(*row, *slot)
+                        .is_none_or(|value| literal_as_real(self.kb.get_term(value)).is_none())
+            }),
+            _ => true,
+        }
+    }
+
+    /// WI-20261013-1KF32 — AN ENTITY PREMISE READ BY THE ENTITY'S ROWS (`Limit(cap: ?c)` over
+    /// `fact Limit(cap: 5.0)`, `fact Limit(cap: -1.0)`): the rows its slots admit, and,
+    /// where several are left, a choice point among them. In the world being read each
+    /// variable slot is the chosen row's field ([`Self::bind_variable`]), and a field that
+    /// is a variable is every value — the slot's variable is free there. A field of the
+    /// entity is no constant of the document here — `cap` would be one name for every
+    /// row's — so the one-fact reading (`(define-fun cap …)`) is not this one's.
+    ///
+    /// ADMITTED: a slot known to be a number rules out a row whose field is another, and a
+    /// variable written in two slots rules out a row whose two fields are two numbers
+    /// (/code-review: `M(kind: ?x, cap: ?x)` had a world for a row of kind 1 and cap 5).
+    /// A slot that is neither a variable nor a number — a computed term, a construction —
+    /// is an equation that is not written, and is refused: it was passed over, and every
+    /// row admitted.
+    fn read_entity_row(
+        &mut self,
+        entity_qn: &str,
+        rows: &[TermId],
+        slots: &[(Symbol, Rc<NodeOccurrence>)],
+        bindings: &mut BTreeMap<String, String>,
+    ) -> Result<(), SmtGenError> {
+        let kb = self.kb;
+        if let Some((slot, _)) = slots.iter().find(|(_, occ)| {
+            !matches!(occ.as_expr(), Some(Expr::Var(_)))
+                && !matches!(self.known_argument(occ, bindings), Some(Known::Number(_)))
+        }) {
+            return Err(SmtGenError::new(format!(
+                "the premise `{entity_qn}` gives its field `{}` a value that is neither a \
+                 variable nor a number, which the entity's facts are not compared with: an \
+                 equation that is not written",
+                kb.local_name_of(*slot)
+            )));
+        }
+        let number = |row: TermId, slot: Symbol| {
+            self.row_field(row, slot)
+                .and_then(|value| literal_as_real(kb.get_term(value)))
+        };
+        let admitted: Vec<TermId> = rows
+            .iter()
+            .copied()
+            .filter(|&row| {
+                let mut met: BTreeMap<u32, f64> = BTreeMap::new();
+                slots.iter().all(|(slot, occ)| {
+                    let Some(field) = number(row, *slot) else {
+                        return true;
+                    };
+                    match (self.known_argument(occ, bindings), occ.as_expr()) {
+                        (Some(Known::Number(premise)), _) => premise == field,
+                        (_, Some(Expr::Var(Var::DeBruijn(index)))) => {
+                            *met.entry(*index).or_insert(field) == field
+                        }
+                        _ => true,
                     }
-                    if let Some(v) = literal_as_real(self.kb.get_term(*val_term)) {
-                        self.field_consts.insert(const_name, v);
-                    }
+                })
+            })
+            .collect();
+        let pick = match admitted.len() {
+            0 => {
+                return Err(SmtGenError::new(format!(
+                    "the premise `{entity_qn}` is answered by none of the entity's {} facts: \
+                     each has a field that is another number than the premise's slot",
+                    rows.len()
+                )))
+            }
+            1 => 0,
+            several => self.choose(
+                several,
+                "fact",
+                || format!("the entity `{entity_qn}` ({several} facts)"),
+                || unreachable!("asked only where the document is split by choices"),
+            )?,
+        };
+        let row = admitted[pick];
+        for (slot, occ) in slots {
+            // A number selected the row, above; `?` is every value.
+            let Some(Expr::Var(Var::DeBruijn(index))) = occ.as_expr() else {
+                continue;
+            };
+            let field_name = kb.local_name_of(*slot);
+            let Some(value) = self.row_field(row, *slot) else {
+                return Err(SmtGenError::new(format!(
+                    "the premise `{entity_qn}` reads the field `{field_name}`, which a fact of \
+                     the entity does not give"
+                )));
+            };
+            match kb.get_term(value) {
+                Term::Var(_) => {} // every value: the variable is free in this world
+                term => {
+                    let Some(number) = literal_as_real(term) else {
+                        return Err(SmtGenError::new(format!(
+                            "the premise `{entity_qn}` reads the field `{field_name}` of a fact \
+                             whose value there is no number, which a variable is not bound to"
+                        )));
+                    };
+                    self.bind_variable(synthetic_var_name(*index), format_real(number), bindings);
                 }
             }
         }
         Ok(())
     }
 
-    /// The logic the document is checked under: the one the proof wrote, or `default`,
-    /// and what the document needs beyond it ([`document_logic`]).
+    /// The logic the document is checked under ([`check_logic`]).
     fn logic_for(&self, config: &ProofConfig, default: &str) -> String {
-        let quantified = config
-            .laws
-            .iter()
-            .chain(&config.assumptions)
-            .any(|hypothesis| hypothesis.contains("(forall "));
-        document_logic(
-            config.logic.as_deref().unwrap_or(default),
-            &self.declarations,
-            quantified,
-        )
+        check_logic(config, default, &self.declarations)
     }
 
     fn render_upper_bound_with(&self, obligation: &Obligation, config: &ProofConfig) -> String {
@@ -2640,80 +3211,135 @@ impl<'kb> Emitter<'kb> {
     }
 
     fn render_satisfiability_with(&self, rule_qn: &str, config: &ProofConfig) -> String {
-        // `LRA` is the default for satisfiability mode (handles `abs`
-        // via the standard if-then-else encoding Z3 applies).
-        let logic = self.logic_for(config, "LRA");
-        let mut out = String::new();
-        out.push_str(&format!(
-            "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"
-        ));
-        out.push_str("; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n");
-        if let Some(t) = config.timeout_ms {
-            out.push_str(&format!("(set-option :timeout {t})\n"));
-        }
-        emit_outcome_options(&mut out, config);
-        out.push_str(&format!("(set-logic {logic})\n\n"));
-
-        emit_abs_prelude(&mut out, self.uses_abs, config);
-        self.declarations.render(&mut out);
-
-        for (name, value) in &self.field_consts {
-            out.push_str(&format!(
-                "(define-fun {name} () Real {})\n",
-                format_real(*value)
-            ));
-        }
-        out.push('\n');
-
-        // Free vars (`?d_prev`, `?step`, etc. that appear in
-        // assertions but aren't bound by an `=` clause) become
-        // existentially-quantified inputs to the satisfiability
-        // check — declared as global consts so `(check-sat)`
-        // picks values for them if any exist. Each at the sort its bound or a
-        // signature gave it, and a `Real` where neither did (WI-20261012-ZZ7PH).
-        for v in &self.free_vars {
-            let sort = self.var_sorts.get(v).unwrap_or(&SmtSort::Real);
-            out.push_str(&format!("(declare-const {v} {sort})\n"));
-        }
-        out.push('\n');
-
-        emit_trig_prelude(&mut out, &self.trig_args);
-
-        emit_assumptions(&mut out, config);
-
         // Body equations bound the result vars; emit them as
         // define-funs so subsequent assertions can reference them.
         // For satisfiability mode we don't have a single result var
         // but intermediate bindings still matter.
+        let mut hypotheses = String::new();
         if !self.body_smtlib.is_empty() {
-            out.push_str(&self.body_smtlib);
-            out.push_str("\n\n");
+            hypotheses.push_str(&self.body_smtlib);
+            hypotheses.push_str("\n\n");
         }
-
         for assertion in &self.assertions {
-            out.push_str(&format!("(assert {assertion})\n"));
+            hypotheses.push_str(&format!("(assert {assertion})\n"));
         }
         // Conclusion clauses (from the `-:` separator) are NEGATED
         // for the discharge: prove `body ∧ ¬conclusion` unsat ⇒
         // `body ⇒ conclusion`. AND-conjoined into a single
         // negation so the verdict cleanly mirrors the lemma's
         // theorem statement.
-        if !self.conclusion_assertions.is_empty() {
-            out.push_str("; Negated conclusion (from `-:` clause).\n");
-            let conj = if self.conclusion_assertions.len() == 1 {
-                self.conclusion_assertions[0].clone()
-            } else {
-                format!("(and {})", self.conclusion_assertions.join(" "))
-            };
-            out.push_str(&format!("(assert (not {conj}))\n"));
+        if let Some(conclusion) = self.negated_conclusion() {
+            hypotheses.push_str("; Negated conclusion (from `-:` clause).\n");
+            hypotheses.push_str(&format!("(assert {conclusion})\n"));
         }
-        match &config.tactic_expr {
-            Some(expr) => out.push_str(&format!("\n(check-sat-using {expr})\n")),
-            None => out.push_str("\n(check-sat)\n"),
-        }
-        emit_outcome_getters(&mut out, config);
-        out
+        render_check(
+            rule_qn,
+            config,
+            CheckParts {
+                note: None,
+                declarations: &self.declarations,
+                uses_abs: self.uses_abs,
+                field_consts: self.field_consts.iter().map(|(n, v)| (n.as_str(), *v)).collect(),
+                // Free vars (`?d_prev`, `?step`, etc. that appear in
+                // assertions but aren't bound by an `=` clause) become
+                // existentially-quantified inputs to the satisfiability
+                // check — declared as global consts so `(check-sat)`
+                // picks values for them if any exist. Each at the sort its bound or a
+                // signature gave it, and a `Real` where neither did (WI-20261012-ZZ7PH).
+                free: self
+                    .free_vars
+                    .iter()
+                    .map(|v| (v.as_str(), self.var_sorts.get(v).unwrap_or(&SmtSort::Real)))
+                    .collect(),
+                trig_args: &self.trig_args,
+                hypotheses,
+            },
+        )
     }
+
+    /// `(not C)` of the conclusion, its goals conjoined; `None` where the rule has none.
+    fn negated_conclusion(&self) -> Option<String> {
+        match self.conclusion_assertions.as_slice() {
+            [] => None,
+            [one] => Some(format!("(not {one})")),
+            several => Some(format!("(not (and {}))", several.join(" "))),
+        }
+    }
+}
+
+/// What a satisfiability check's document declares and asserts, of one world or of
+/// several ([`render_check`]).
+struct CheckParts<'a> {
+    /// A comment of the header's, after what every check's says.
+    note: Option<String>,
+    declarations: &'a Declarations,
+    uses_abs: bool,
+    field_consts: Vec<(&'a str, f64)>,
+    free: Vec<(&'a str, &'a SmtSort)>,
+    trig_args: &'a BTreeSet<String>,
+    /// What stands between the cited lemmas and `(check-sat)`: the body and the negated
+    /// conclusion.
+    hypotheses: String,
+}
+
+/// THE DOCUMENT OF A SATISFIABILITY CHECK, from what one world or several declare and
+/// assert — one renderer, so a document of several worlds has the preamble a document of
+/// one has (WI-20261013-1KF32, /code-review).
+fn render_check(rule_qn: &str, config: &ProofConfig, parts: CheckParts<'_>) -> String {
+    // `LRA` is the default for satisfiability mode (handles `abs`
+    // via the standard if-then-else encoding Z3 applies).
+    let logic = check_logic(config, "LRA", parts.declarations);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "; Generated by anthill-smt-gen — satisfiability check for rule {rule_qn}.\n"
+    ));
+    out.push_str("; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n");
+    if let Some(note) = &parts.note {
+        out.push_str(note);
+    }
+    if let Some(t) = config.timeout_ms {
+        out.push_str(&format!("(set-option :timeout {t})\n"));
+    }
+    emit_outcome_options(&mut out, config);
+    out.push_str(&format!("(set-logic {logic})\n\n"));
+
+    emit_abs_prelude(&mut out, parts.uses_abs, config);
+    parts.declarations.render(&mut out);
+    for (name, value) in &parts.field_consts {
+        out.push_str(&format!(
+            "(define-fun {name} () Real {})\n",
+            format_real(*value)
+        ));
+    }
+    out.push('\n');
+    for (name, sort) in &parts.free {
+        out.push_str(&format!("(declare-const {name} {sort})\n"));
+    }
+    out.push('\n');
+    emit_trig_prelude(&mut out, parts.trig_args);
+    emit_assumptions(&mut out, config);
+    out.push_str(&parts.hypotheses);
+    match &config.tactic_expr {
+        Some(expr) => out.push_str(&format!("\n(check-sat-using {expr})\n")),
+        None => out.push_str("\n(check-sat)\n"),
+    }
+    emit_outcome_getters(&mut out, config);
+    out
+}
+
+/// The logic a document is checked under: the one the proof wrote, or `default`, and what
+/// the document needs beyond it ([`document_logic`]).
+fn check_logic(config: &ProofConfig, default: &str, declarations: &Declarations) -> String {
+    let quantified = config
+        .laws
+        .iter()
+        .chain(&config.assumptions)
+        .any(|hypothesis| hypothesis.contains("(forall "));
+    document_logic(
+        config.logic.as_deref().unwrap_or(default),
+        declarations,
+        quantified,
+    )
 }
 
 /// Splice cited-lemma clauses into the preamble. Each entry in
@@ -3173,7 +3799,7 @@ enum SmtBuiltin {
 /// operation MEANS to this emitter. Built once per [`Emitter`]; a lookup is a
 /// `Symbol` hash, and a user's own `add` (a different `Symbol`, whatever it is
 /// spelled) is simply absent from it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SmtBuiltinTable {
     by_symbol: HashMap<Symbol, SmtBuiltin>,
 }

@@ -1,0 +1,294 @@
+# A call several clauses can answer is their disjunction (WI-20261013-1KF32) — what was there, the decisions,
+# what is read and refused, what fails when a part is backed out, which documents moved, what /code-review
+# changed, what was found and is not of this change, and the gate. 2026-10-14.
+#
+# Tree:    main at 79a6703f, and this change on it.
+# Machine: Intel i7-9750H (6 cores / 12 threads), macOS 25.6. z3 4.16.0.
+# Every `anthill prove` below is `--no-cache`, the dev build. BEFORE is a build of 79a6703f in a worktree of its
+# own (`git worktree add --detach`, its own target directory), so a verdict "before" and one "as delivered" are
+# two binaries run on one file, and no source was stashed to get either.
+
+== 1. what was there (79a6703f) ==
+# The ticket's four, each `error: … the call of `….commanded_speed/2` [`….speed_max/2`] can be answered by 2
+# clauses of the predicate …, and a proof reads a call by ONE` — KF2SD's refusal, as filed.
+#
+# A RECURSIVE PREDICATE OF ONE CLAUSE ABORTS THE BINARY. The emitter had no guard against reading a clause of a
+# predicate inside a clause of the same predicate: one clause is read without a choice, and read again, until the
+# stack is gone.
+#     rule loop(?x) :- loop(?x), gte(?x, 0.0)
+#     rule claim: gte(?x, 0.0) :- loop(?x)            proof claim by z3 end
+#   `thread 'main' has overflowed its stack`, `fatal runtime error: stack overflow, aborting`, exit 134 — and the
+#   run is gone with it: every other proof of the file has no verdict (the probe of §3, whose `ping`/`pong` is the
+#   same in two predicates, has none of its eleven). Of several clauses KF2SD refused before it got there, which is
+#   why lf1's `real_pose_at` never reached it.
+#
+# z3 ON THE ENCODING, written by hand before anything was changed (the ticket's own check, made for one document):
+#     (declare-const var_0 Real)
+#     (assert (or (and (< var_0 5.0) (not (<= 0.0 0.0))) (and (>= var_0 5.0) (not (<= 2.0 0.0)))))   sat, var_0 = 5.0
+#     (assert (or (and (< var_0 5.0) (not (<= 0.0 2.0))) (and (>= var_0 5.0) (not (<= 2.0 2.0)))))   unsat
+
+== 2. the decisions (user, 2026-10-14) ==
+#   Put to the user with the code read and the four reproduced:
+#   (a) THE ENCODING. Offered: worlds in one document (recommended) — the whole body, the conclusion with it, read
+#       once per combination of clause choices, and the document their disjunction; or a local disjunction per
+#       call, with declared constants for what a branch binds and per-field constants for an entity, in which a
+#       later call cannot be selected by a branch's binding (the ticket's (6)). DECIDED: WORLDS, ONE DOCUMENT.
+#   (b) (4) RECURSION. Offered: refused (recommended), the one-clause case too; or read as abstract mode reads a
+#       call, which a claim that needs the recursion then fails as a COUNTEREXAMPLE that is none. DECIDED: REFUSED.
+#   (c) THE CAP. Offered 16, 64 (recommended), 256. DECIDED: 64.
+#   (d) A NUMBER IN A BODIED HEAD met by a free variable (`mode(0, ?r)`, `mode(1, ?r)` called `mode(?k, ?r)`).
+#       Offered: bind it as a fact's slot does (recommended), or leave KF2SD's refusal. DECIDED: BIND.
+#   SAID WITH THE DESIGN AND NOT OBJECTED TO, so taken as following: an entity premise over several facts is a
+#   world per fact its slots admit (the ticket's own feedback calls it this ticket's); an obligation keeps the
+#   refusal (its document is the bound of one term; no CLI path emits one); scaland keeps its refusal (its emitter
+#   reads only the one-argument form, and binds no call to a fact); a world in which a call has no clause is
+#   refused, not dropped as `false` (it may be WI-687's specialization for another call); the ticket's "beside
+#   it" — a call stated and not read — is not built, `cited` proving through the worlds; BR7P3 stays as it is
+#   inside a world.
+
+== 3. what is read, and what is refused ==
+# THE RULE. A call of a rule's predicate in a body that is READ is read by the clauses that can answer it (KF2SD's
+# selection, unchanged: of the call's arity, its head ruled out by no argument of the call). One: read, as it was.
+# Several: a CHOICE POINT (`Emitter::choose`). The body is read once per combination of the choices its points
+# take — a world — by replaying the walk with a longer prefix of choices (`read_worlds`), each world the whole body
+# and the conclusion in its own emitter; and the document (`render_worlds`) declares what the worlds declare, once,
+# and asserts `(or W1 … Wn)`, each world the conjunction of its hypotheses and its negated conclusion, a comment
+# before each naming its choices. One world: the document it was, by the renderer it always had. More than 64:
+# refused, naming each choice and its count. An ENTITY PREMISE over an entity of several data facts is a choice
+# point among the facts its slots admit (`read_entity_row`); its variable slots bound to the chosen fact's fields.
+# A BODIED clause of a predicate a clause of which is being read: refused (`process_body_goal`, the `inlining`
+# stack). A NUMBER in a bodied head met by a free variable of the call binds it (`inline_rule_call`).
+#
+# `anthill prove --no-cache`, each file on both binaries. BEFORE is 79a6703f. "REFUSED" is an `error:` naming the
+# proof, and no document. ("several" below is KF2SD's "can be answered by N clauses … a proof reads a call by ONE".)
+#   the proof                                                          BEFORE                    AS DELIVERED
+#
+#   THE TICKET'S CONTROL
+#   cases.speed_is_bounded   lte(?v, 2.0) :- commanded_speed(…)        REFUSED: several          proved
+#   cases.never_moves        lte(?v, 0.0) :- commanded_speed(…)        REFUSED: several          COUNTEREXAMPLE, model var_0
+#                                                                                                (the range) = 5.0
+#   table.every_drone_is_bounded  lte(?v, 10.0) :- speed_max(?who,?v)  REFUSED: several          proved
+#   table.every_drone_is_slow     lte(?v, 8.0)  :- speed_max(?who,?v)  REFUSED: several          COUNTEREXAMPLE
+#   KF2SD's two (rules.lemma: related by gte and by lte;
+#     facts.lemma: start(5.0), start(-1.0))                            REFUSED: several          COUNTEREXAMPLE, both
+#
+#   KF2SD's ROWS THAT WERE REFUSALS OF SEVERAL
+#   mixed.capped     fact cap(100.0) beside cap(?d) :- ?d = 2+3        REFUSED: several          COUNTEREXAMPLE
+#   mixed.base       at(0, ?x): a base fact and a recursive step       REFUSED: several          REFUSED: recursive (the
+#                                                                                                step's world, its own call)
+#   table.any        lte(?v, 10.0) :- speed_of(?who, ?v), 5 and 50     REFUSED: several          COUNTEREXAMPLE
+#   wrap.deep        through `wrapper`, which calls `related`          REFUSED: several          COUNTEREXAMPLE
+#   number.mode_any  gte(?r, 1.0) :- mode(?k, ?r)                      REFUSED: several          proved (?k bound per world)
+#   ctor.with_var    gte(?r, 0.0) :- gain(?o, ?r), heads some(?x)/none REFUSED: several          REFUSED: WI-687, "expects a
+#                                                                                                concrete `some`", in world 1
+#   frames.claim0, frames.claim_a  (KF2SD's two frame leaks)           REFUSED: several          REFUSED: WI-687, the `none`
+#                                                                                                head, in world 1
+#   lemma.uses       safe(?x, 0.0) beside safe_weaken, its lemma       REFUSED: several          REFUSED: recursive (the
+#                                                                                                lemma's world calls `safe`)
+#   ent.lemma        Limit(cap: ?c), caps 5 and -1                     REFUSED: several facts    COUNTEREXAMPLE
+#   ent.of_two       Mode(kind: 2.0, cap2: ?c)                         REFUSED: several facts    COUNTEREXAMPLE (the kind-2
+#                                                                                                row alone: cap -1)
+#
+#   NEW (the probe; BEFORE from a copy without `ping`/`pong`, whose abort takes the run)
+#   within     speed_max(?who, ?v), margin(?who, ?m): ?who selects    REFUSED: several          proved (2 worlds, not 4)
+#   sum        gain(?g), lag(?l): two tables of two                    REFUSED: several          proved (4 worlds)
+#   low        mode(?k, ?r), lt(?k, 0.5)                               REFUSED: several          proved
+#   one        only(?k, ?r) over `rule only(0, ?r) :- …`, one clause   REFUSED: "has the number  proved
+#                                                                      0.0 … not known to be it"
+#   shifted    ?k = ?j + 1.0, only(?k, ?r)                             REFUSED (the same)        REFUSED (the same, worded
+#                                                                                                for a computed term)
+#   by_var     ?k = 2.0, Mode(kind: ?k, cap2: ?c)                      REFUSED: several facts    COUNTEREXAMPLE (kind 2)
+#   no_row     Mode(kind: 3.0, cap2: ?c)                               REFUSED: several facts    REFUSED: no fact admits it
+#   both_fields  Mode(kind: ?k, cap2: ?c), lte(?c, 0.0) -: ?k <= 2      REFUSED: several facts    proved
+#   cited      gte(?x, ?y+1) :- related(?x, ?y), using a trusted lemma REFUSED: several          proved (the relation stated
+#                                                                                                in each world)
+#   mutual     ping(?x) :- pong(?x), …; pong(?x) :- ping(?x)           ABORT (exit 134)          REFUSED: recursive
+#   rec.claim  loop(?x) :- loop(?x), …                                 ABORT (exit 134)          REFUSED: recursive
+#
+#   UNCHANGED, both binaries: every other proof of KF2SD's seventeen fixtures (`slow`, `fast`, `with_some`,
+#   `with_none`, `bound_some`, `two`, `three`, `absent`, `computed`, `by_body`, `by_fact`, `by_one`, `both`,
+#   `viol`, `bad`, `one_head`, `single`, `chosen`, `mode0`, `mode1`, `at1`, `every`, `led`, `text`), verdict and
+#   refusal alike.
+#
+#   AFTER /code-review (§6) — each of these run on 79a6703f, on the first cut (built in the worktree), and as delivered:
+#                                                                      79a6703f          FIRST CUT          AS DELIVERED
+#   pos     Lim(cap: ?c) over cap 5, cap 6 and `fact Lim(cap: ?any)`   REFUSED: several  proved (2 worlds)  COUNTEREXAMPLE
+#   lone    Lone(cap: ?c) over its one fact `Lone(cap: ?any)`          proved (cap 0.0)  proved (the same)  COUNTEREXAMPLE
+#   two     Two(cap: ?c) over `Two(cap: 5.0)` and `Two(cap: ?any)`     proved (cap 5)    proved (the same)  COUNTEREXAMPLE
+#   early_one  lte(?d, 10.0), one_start(?d); one fact                  z3 error: unknown  the same           proved
+#                                                                      constant var_0
+#   early_fact, ent_early  the same over two facts, two rows           REFUSED           z3 error           proved
+#   early   gte(?k, -5.0), mode(?k, ?r)                                REFUSED           z3 error           proved
+#   lost    gte(?m, ?k), pick(?k, ?r); pick(0, …), pick(?n, …)         REFUSED           COUNTEREXAMPLE     proved
+#   shift   ?k = ?j + 1.0, start2(?k); start2 of 0 and 1               REFUSED           COUNTEREXAMPLE     proved
+#   diag    M(kind: ?x, cap: ?x); rows (1, 5), (2, 2)                  REFUSED           COUNTEREXAMPLE     proved
+#   pair    gte(?x, 5.0) :- pair(?x, ?x); fact pair(1.0, 2.0)          COUNTEREXAMPLE    COUNTEREXAMPLE     REFUSED: no clause
+#                                                                      (?x = 2.0)                           can answer
+#   tw      twice(?k, ?k, ?r); twice(0, 1, …), twice(0, 0, …)          REFUSED           REFUSED (world 1)  proved
+#   wide    span/2 calling span/3                                      proved            REFUSED: recursive proved
+#   wrapped wrap(?k, ?r) :- mode(?k, ?r)                               REFUSED           REFUSED: "not      proved
+#                                                                                        known to be it"
+#   computed_slot  M(kind: ?j + 1.0, cap: ?c)                          REFUSED: several  proved: the slot   REFUSED: neither a
+#                                                                      facts             passed over, both  variable nor a number
+#                                                                                        rows read
+
+== 4. what fails when a part is backed out (the dev profile; each on the tree as delivered, then restored) ==
+# Over the 13 rows of `anthill-cli/tests/include/wi_1kf32_disjunction_test.rs` (K), the 4 of the emitter crate's
+# `wi_1kf32_disjunction_test` (E), and KF2SD's 17 + 6 (F), the nine of them this change turned among them:
+#   cargo test -p anthill-smt-gen --test integration -- wi_1kf32 wi_kf2sd
+#   cargo test -p anthill-cli --test cli_tests -- wi_1kf32 wi_kf2sd
+# Each back-out is one edit of `anthill-smt-gen/src/lib.rs`, applied by a script and taken out again — or the
+# emitter's two sources whole as 79a6703f has them (t); after each run both sources were compared with a saved copy,
+# byte for byte. AS DELIVERED: emitter 10 pass, cli 30 pass.
+#   (a) several clauses: refused, as KF2SD did (the choice point always refuses)
+#       emitter  E: dependency set, function-like head, lift; F: the obligation's row
+#       cli      K: every row but three — the control, the recursion, and `a_variable_written_twice_…`, whose
+#                calls one clause answers; F: the nine rows it turned
+#   (b) no recursion guard
+#       cli      K: recursive (the binary aborts again, exit 134); F: `mixed.base`, `lemma.uses` (the cap stops those)
+#   (c) the guard by name alone, not arity
+#       cli      K: inlined (`wide`, span/2 calling span/3)
+#   (d) a number in a head does not bind a free variable
+#       cli      K: number, named, twice, inlined, verdicts; F: number (`mode_any`)
+#   (e) a variable bound to its caller's name is not free
+#       cli      K: inlined (`wrapped`)
+#   (f) an entity premise read by its constants alone (no worlds)
+#       emitter  E: lift, field
+#       cli      K: rows, named, twice, entity, verdicts; F: entity premise
+#   (g) an entity's rows: those with a numeric field, as before
+#       emitter  E: field
+#       cli      K: rows, verdicts
+#   (h) one row whose bound field is no number read by the constant
+#       emitter  E: field
+#       cli      K: rows, verdicts
+#   (i) the harvest leaves such a field at 0.0
+#       emitter  E: field
+#   (j) every binding substitutes (the first cut)
+#       cli      K: named, verdicts
+#   (k) a variable named before its value is substituted, and only a defined one equated
+#       cli      K: named, verdicts
+#   (l) a variable the call writes twice: each position admitted alone
+#       cli      K: twice
+#   (m) a variable in two slots of an entity premise: each slot admitted alone
+#       cli      K: twice
+#   (n) an entity slot that is neither a variable nor a number passed over
+#       cli      K: entity
+#   (o) the dependency set of the first world alone
+#       emitter  E: dependency set
+#   (p) the function-like head's result not equated in a world
+#       emitter  E: function-like head
+#   (q) no cap
+#       cli      K: cap
+#   (r) a refusal in a world does not say which
+#       cli      F: `ctor.with_var`, `frames.claim0`/`claim_a`
+#   (s) the worlds in the order the stack pops them, not the choices'
+#       cli      K: product, rows
+#   (t) the emitter as 79a6703f
+#       emitter  E: all four; F: the obligation's row
+#       cli      K: all but the control; F: the nine rows it turned
+#
+#   PASSES EITHER WAY, by design, said at its site: K's `a_body_that_meets_no_choice_is_the_document_it_was` — the
+#   documents the change must not move; and KF2SD's rows this change did not turn, which hold the selection.
+# scaland: its emitter keeps KF2SD's refusal; one comment changed, no back-out.
+
+== 5. which documents moved ==
+# The instrument of KF2SD's §5, again: a temporary edit of `anthill-smt-gen/src/lib.rs`, applied by a script to the
+# 79a6703f worktree and to the tree as delivered, renames the three entry points (`emit_satisfiability_check_with_deps`,
+# `emit_obligation_with`, `lift_rule`) and wraps each, writing every document it returns — and every refusal, in its
+# place — to a file named by its hash in a directory an environment variable names. Taken out of this tree after the
+# run, and the source compared with the saved copy, byte for byte. Each tree ran
+# `anthill prove -v --no-cache examples/webots-modelling/lf1` and `scripts/test.sh -p anthill-smt-gen -p anthill-cli`,
+# each with its own suites (79a6703f's are KF2SD's rows as they were). Compared by kind, rule and text:
+#                                before: distinct                                   there again, to the byte   moved   gone
+#   lf1                           16  (14 checks, 2 lifts)                          16                         0       0
+#   the two suites               291  (226 checks, 13 obligations, 52 lifts;       277                        14      0
+#                                      49 of them refusals)
+#   AFTER: lf1 the same 16; the suites 333, the 42 new of this change's rows.
+#   THE FOURTEEN THAT MOVED ARE KF2SD's REFUSALS OF SEVERAL, each a row of §3: nine are documents — `rules.lemma`,
+#   `facts.lemma`, `mixed.capped`, `table.any`, `wrap.deep`, `number.mode_any`, `ent.lemma`, `ent.of_two` and the
+#   emitter crate's `emit.read`; five are refusals of their own — `mixed.base` and `lemma.uses` recursive,
+#   `ctor.with_var`, `frames.claim0` and `frames.claim_a` WI-687's. NO DOCUMENT MOVED: what the review's fixes changed
+#   in a reading (§6: a variable named before its value is equated, every row of an entity read, a variable written
+#   twice meets one value) changed nothing any suite or lf1 emits, and lf1's verdicts are its fourteen.
+
+== 6. what /code-review changed ==
+# Fourteen findings on the first cut, the reviewer's runs on the built binary for the first nine. §3's second table has
+# each before and after.
+# (1) AN ENTITY'S ROW WITH NO NUMERIC FIELD WAS NO ROW (`entity_rows` kept a fact with a field that is a number), so a
+#     fact whose field is a variable got no world, and `pos` PROVED. On 79a6703f the same filter made it one fact
+#     (`two` proved, by `cap` = 5) and, alone, `cap` = 0.0 (`lone` proved) — the constant's default, left where no row
+#     set it. DONE: every row is a row; a field that is a variable leaves the slot's variable free in its world; a
+#     premise of ONE fact whose field it binds is no number is read by the row too, not by the constant
+#     (`read_by_rows`); and the harvest, which a lift and an obligation still use, refuses such a field where it left
+#     0.0.
+# (2) THE RECURSION GUARD COMPARED NAMES, NOT ARITIES: `span/2` calling `span/3` was refused as recursive — proved on
+#     79a6703f. DONE: the `inlining` stack holds the arity, and the guard asks both.
+# (3) (4) (5) EVERY BINDING SITE SUBSTITUTED — a fact's slot, an entity's field, a head's number — losing what the
+#     variable already was: a goal read before kept `var_d`, which the substitution left undeclared (z3's "unknown
+#     constant", `early_one` on 79a6703f, one fact) or, declared by a world that did not bind it, unconstrained (`lost`
+#     a COUNTEREXAMPLE of a true claim); a variable defined as a term had the definition overwritten (`shift`). DONE:
+#     one helper, `bind_variable`: defined as a term, the term is equated with the value; named already, the variable
+#     stays a constant of the document and `(= var value)` is asserted; otherwise substituted, as before — which is
+#     why no document moved (§5).
+# (6) A VARIABLE IN TWO SLOTS OF AN ENTITY PREMISE was admitted per slot, and the second "admitted, so equal": a world
+#     for a row of kind 1 and cap 5 under `M(kind: ?x, cap: ?x)`. DONE: a variable meets one number across a row's
+#     slots, or the row is not admitted.
+# (7) A VARIABLE PASSED THROUGH AN INLINED RULE WAS NOT "FREE" — it is bound there to its caller's name — so a head's
+#     number refused it, the message saying to pass "a variable nothing defines", which it was. DONE: a variable bound
+#     to a variable is free, and `bind_variable` asks the caller's name.
+# (8) ONE VARIABLE AT TWO NUMBERS OF A HEAD (`twice(?k, ?k, ?r)` over `twice(0, 1, ?r)`) was admitted per position, and
+#     its world refused the whole proof. DONE: `one_number_each` — a variable the call writes twice meets one number of
+#     the head, or the clause is not admitted; which also settles `pair(?x, ?x)` over `fact pair(1.0, 2.0)`, read on
+#     79a6703f as ?x = 2.0, the second slot overwriting the first.
+# (9) A SLOT OF AN ENTITY PREMISE THAT IS NEITHER A VARIABLE NOR A NUMBER was passed over, and every row admitted. DONE:
+#     refused.
+# (10) THE ROWS POINTED AT THIS FILE BEFORE IT EXISTED. It does now.
+# (11) THE ROW OF VERDICTS RETURNS WITHOUT A SOLVER. KEPT: the repository's convention (`common::z3_available` says a
+#     row that returns asked nothing, and that what it holds besides belongs under a dry run) — every document a
+#     verdict is of is asserted by a dry-run row, which needs no solver.
+# (12) THE CAP'S REFUSAL said its choices were the first world's; they are the world being read when the count passed
+#     64. DONE: said so.
+# (13) `render_worlds` COPIED THE SINGLE-WORLD RENDERER'S PREAMBLE. DONE: one renderer, `render_check`, for both, the
+#     single-world document byte for byte the one it was (§5), and `check_logic` the logic both ask.
+# (14) THE BUILTIN TABLE WAS RESOLVED PER WORLD. DONE: once per document (`Emitter::with_builtins`). NOT DONE: an
+#     entity's facts are read at the premise and again by the harvest — a read per premise, not per world worth
+#     sharing.
+
+== 7. found, and not of this change ==
+# Each run on 79a6703f and on the tree as delivered. None filed: put to the user with the result.
+# (i) A VARIABLE AN INLINED RULE BINDS, WHICH THE CALLER DEFINED ANOTHER VARIABLE BY, is left undeclared:
+#       fact start(5.0)    rule p(?x) :- start(?x)    rule outer: gte(?e, 0.0) :- ?e = ?d + 1.0, p(?d)
+#     z3's "unknown constant var_0" on both trees. The caller's `?e` is the text `(+ var_d 1.0)`; `p`'s fact gives
+#     `?d` 5.0 in `p`'s frame, and the value is handed back by substitution, which the caller's own definitions do
+#     not see. `bind_variable` asks the frame it binds in and the document's assertions; the caller's frame is not
+#     the one it binds in. Loud — an error, not a verdict — and the path every inlined rule's result takes back to
+#     its caller, so it is not changed here.
+# (ii) A FREE VARIABLE AGAINST A CONSTRUCTION IN A HEAD (`gain(?o, ?r)` over `gain(some(?x), ?r)`, `gain(none, ?r)`)
+#     is WI-687's refusal, in the world of that clause, as §3 has it. Binding `?o` to the construction would carry the
+#     clause's own variables into the caller's frame (WI-20261012-BR7P3) — the nullary half alone (`none`) would bind
+#     cleanly, and saves no row here: each such predicate in the suites has a `some(?x)` clause beside it.
+# (iii) AN ENTITY OF NO FACT still reads its fields as constants left at 0.0 — the body never holds, and 0.0 is a
+#     reading of `false` that loses an `unsat` at most. Not changed.
+# (iv) scaland keeps KF2SD's refusal (§2); whether its one-argument reading has the recursion of §1 was not measured.
+
+== 8. the gate ==
+#   scripts/test.sh                              the whole workspace, the shared base, anthill-core at opt-level 2
+#
+#   THE TREE GATED is 79a6703f with this change on it, uncommitted — the tree of §3 to §6 as delivered, after the
+#   review's findings were applied and the back-outs of §4 run and taken out (the sources compared with a saved
+#   copy). origin/main had moved meanwhile (2aa9fc31, WI-20261013-9HKJV: anthill-core's provision dispatch and its
+#   tests, and stdlib/anthill/reflect/typing.anthill; no file of this change among its ten); this gate is NOT of the
+#   tree merged with it.
+#
+#   2026-10-14 11:20:48 – 11:37:21, nothing else building. `CPU_Speed_Limit` 100 when it began and 64 when it
+#   ended, so the time says nothing of the change.
+#     exit 0; 36 result lines, all ok; 9 776 passed, 0 failed, 17 ignored.   `wi_tests`: 7 151 passed, 7 ignored.
+#     `cli_tests`: 286 (273 + this change's 13). The emitter crate's `integration`: 75 (71 + its 4).
+#     OBSERVED by the controls: SHARED BASE; terms, a node where an alias is written.
+#   scaland: `sbt -batch testFull`, 11:37:37 – 11:38:35 — 668 passed, 0 failed, exit 0 (its count before: one
+#   comment of `SmtGen.scala` changed).
+#   BEFORE THE GATE, on the tree as delivered: `scripts/test.sh -p anthill-smt-gen -p anthill-cli` twice, under the
+#   instrument of §5 and without it, exit 0 both; lf1, 14 proved, under the instrument.
+#   NOT RUN: the other two load recipes and the carrier control — no loader or typer source is changed, and the rows
+#   drive the binary and the emitter crate's own harness, which load as the product does whatever the switches say;
+#   the families, which exercise the typer.
