@@ -155,6 +155,7 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     val parsed = files.map((label, src) => LoadFixture.parsed(src, label)).toIndexedSeq
     val kb = KnowledgeBase()
     Prelude.register(kb)
+    LoadFixture.registerKernel(kb)
     val errs = Loader.loadAll(kb, parsed)
     if errs.isEmpty then Right(kb) else Left(errs.map(_.render).toIndexedSeq)
 

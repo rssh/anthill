@@ -308,15 +308,14 @@ class LoaderTest extends munit.FunSuite:
   test("WI-528: a `<=>`-spelled equation loads and is recognized as an equation") {
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    val parsed = Parser.parse("rule f(?x) <=> g(?x)", "<wi528>")
+    val parsed = Parser.parse("namespace anthill.kernel\n operation unify(a: Int64, b: Int64) -> Bool\nend\nrule f(?x) <=> g(?x)", "<wi528>")
       .toOption.getOrElse(fail("parse failed"))
     val errors = Loader.loadAll(kb, IndexedSeq(parsed))
     assert(errors.isEmpty, s"Load errors: $errors")
 
     // `<=>` desugars the whole rule to head `unify(f(?x), g(?x))`, empty body.
-    // With no kernel.anthill loaded, the `unify` functor interns bare, so
-    // byFunctor(intern("unify")) finds it.
-    val unifyRules = kb.byFunctor(kb.intern("unify"))
+    // ERF7T: the absolute target must denote a declared kernel operation.
+    val unifyRules = kb.byFunctor(kb.resolveSymbol("anthill.kernel.unify"))
     assertEquals(unifyRules.length, 1, "one unify-headed rule loaded")
     assert(kb.isEquation(unifyRules(0)), "the loaded `<=>` rule is an equation")
   }

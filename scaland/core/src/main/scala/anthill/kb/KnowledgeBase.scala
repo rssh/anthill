@@ -581,14 +581,15 @@ class KnowledgeBase:
     * functor resolves to the *Resolved* `anthill.prelude.Eq.eq` /
     * `anthill.kernel.unify` symbol, whose short name is "eq"/"unify" — not the
     * bare interned symbol. Mirrors rustland's `KnowledgeBase::is_equation`
-    * (WI-528). */
+    * (WI-528). ERF7T also admits the absolute parse carrier, measured by
+    * KnowledgeBaseTest's address row, which fails without that admission. */
   def isEquation(id: RuleId): Boolean =
     val entry = rules(id.index)
     if entry.body.nonEmpty || entry.retracted then return false
     terms.get(entry.head) match
       case fn: Term.Fn =>
         val name = symbols.name(fn.functor)
-        (name == "eq" || name == "unify") && fn.posArgs.length == 2
+        (name == "eq" || name == "unify" || name == anthill.parse.Pratt.unifyFunctor) && fn.posArgs.length == 2
       case _ => false
 
   // ── Name-level substitution ──────────────────────────────────

@@ -1,5 +1,6 @@
 package anthill.load
 
+import anthill.parse.DesugarTarget
 import anthill.kb.{KnowledgeBase, SortKind, BuiltinTag}
 import anthill.intern.{SymbolKind, TermSymbol, ImportOrigin}
 
@@ -134,7 +135,7 @@ object Prelude:
       kb.symbols.addExposed(scope, shortName)
 
     // Helper to define a standalone entity directly in the reflect scope.
-    // Visible by default (reflect is a parent of <global> with empty `exposed`).
+    // Reached by qualified name; only metadata receives global imports below.
     // RETURNS its symbol (WI-990): the global-import loop below used to look these
     // names back up by string and drop a miss through `Option.foreach` — a definition
     // and a re-lookup of the same name, with the same silent degrade the WI removed
@@ -142,9 +143,8 @@ object Prelude:
     def defineReflectEntity(shortName: String): TermSymbol =
       defineIn(kb, reflectScope, shortName, SymbolKind.Entity)
 
-    // THIS BLOCK HAS NO PRODUCER — the vocabulary is registered, nothing in scaland emits
-    // it. These are the REFLECT ENTITIES (the spec vocabulary — `stdlib/anthill/reflect/
-    // reflect.anthill` declares the same `var_pattern` / `wildcard` / `MatchBranch`), the
+    // EXPRESSION/PATTERN LOWERING HAS NO PRODUCER. These are the REFLECT ENTITIES
+    // (the spec vocabulary — `stdlib/anthill/reflect/reflect.anthill` declares the same `var_pattern` / `wildcard` / `MatchBranch`), the
     // TARGET of a translation from the parser's PARSE-TIME MARKERS (`pattern_var`,
     // `pattern_wildcard`, `match_branch`, …, see `anthill.parse.ExprMarker`) that
     // rustland performs in `convert_expr_term`. Scaland's copy of it was ported ahead of
@@ -161,8 +161,12 @@ object Prelude:
     // written — which is why adding to this list is safe again. `ExprLoaderTest` drives
     // both halves; do not weaken that refusal to a name test, which is the shape this
     // collision defeats.
+    // ERF7T adds ho_apply/dot_apply, emitted directly by the parser rather than
+    // translated from markers. DesugarTargetTest drives their loaded identities.
     val exprScope = defineSort("Expr", reflectScope)
-    for name <- IndexedSeq("match_expr", "if_expr", "let_expr", "lambda_expr", "apply",
+    for name <- IndexedSeq(DesugarTarget.MatchExpr, DesugarTarget.IfExpr,
+      DesugarTarget.LetExpr, DesugarTarget.LambdaExpr, DesugarTarget.HoApply,
+      DesugarTarget.DotApply).map(DesugarTarget.short) ++ IndexedSeq("apply",
       "constructor", "var_ref", "int_lit", "bigint_lit", "float_lit", "string_lit", "bool_lit") do
       defineEntity(name, exprScope)
 
@@ -181,8 +185,8 @@ object Prelude:
 
     // Collection literal entities (Proposal 019)
     // Used by the parser; the typing process (Proposal 011) desugars to concrete constructors
-    val literalEntities = IndexedSeq("SetLiteral", "TupleLiteral", "ListLiteral")
-      .map(n => (n, defineReflectEntity(n)))
+    for target <- Seq(DesugarTarget.SetLiteral, DesugarTarget.TupleLiteral, DesugarTarget.ListLiteral) do
+      defineReflectEntity(DesugarTarget.short(target))
 
     // anthill.reflect.TypedExpr sort
     val typedExprScope = defineSort("TypedExpr", reflectScope)
@@ -192,7 +196,7 @@ object Prelude:
     // bootstrap, written in no file, so local to none — this is scaland's `<global>`
     // ruling, mirroring rustland's `register_implicit_prelude_effects`.
     val globalScope = kb.globalScope
-    for (name, sym) <- metadataEntities ++ literalEntities do
+    for (name, sym) <- metadataEntities do
       kb.symbols.addImport(globalScope, name, sym, ImportOrigin.Builtin)
 
   /** A kernel operation is DEFINED in its namespace scope, always (WI-990).
@@ -223,7 +227,7 @@ object Prelude:
       (reflect, "resolve_sort_instantiation_param", BuiltinTag.ResolveSortInstParam),
       (reflect, "scope", BuiltinTag.Scope),
       (reflect, "kind", BuiltinTag.Kind),
-      (reflect, "field_access", BuiltinTag.FieldAccess),
+      (reflect, DesugarTarget.short(DesugarTarget.FieldAccess), BuiltinTag.FieldAccess),
     )
 
     for (scope, short, tag) <- builtinDefs do
@@ -238,8 +242,8 @@ object Prelude:
       if scope == kernel then
         kb.symbols.addImport(kb.globalScope, short, sym, ImportOrigin.Builtin)
 
-  /** Add anthill.prelude and anthill.reflect as parents of <global>,
-    * making their exports visible everywhere.
+  /** Add anthill.prelude as a parent of <global> and import reflect metadata.
+    * Parser vocabulary is reached by its absolute address (ERF7T).
     *
     * `anthill.kernel` is NOT parented here, though `registerStdlibScopes` now defines it
     * (WI-20260820-MH90F). Its members are reached through their OPERATORS (`<=>` → `unify`,
@@ -251,4 +255,8 @@ object Prelude:
   private def registerGlobalParents(kb: KnowledgeBase, scopes: StdlibScopes[kb.ScopeId]): Unit =
     val globalScope = kb.globalScope
     kb.symbols.addParent(globalScope, scopes.prelude, isEnclosing = false)
-    kb.symbols.addParent(globalScope, scopes.reflect, isEnclosing = false)
+    // ERF7T: only user-facing metadata stays implicit. Parser vocabulary
+    // resolves by address; DesugarTargetTest drives the host-name control.
+    for name <- kernelMetaSorts do
+      val sym = kb.resolveSymbol(s"anthill.reflect.$name")
+      kb.symbols.addImport(globalScope, name, sym, ImportOrigin.Builtin)

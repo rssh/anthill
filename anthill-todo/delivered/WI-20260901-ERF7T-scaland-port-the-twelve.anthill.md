@@ -3,9 +3,9 @@
 - id: WI-20260901-ERF7T-scaland-port-the-twelve
 - created: 2026-09-01T15:47:17Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-01T15:47:17Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-14T09:49:07Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -99,4 +99,16 @@ nothing classifies on them; a connective that IS classified cannot.
 
 NOT DRIVEN — read from source, same standing as this ticket's own state section. No sbt
 run was made.
+
+### 2026-10-14T09:49:06Z — feedback — user
+
+Implemented the Scala port of all twelve converter target addresses and the WI-909 unify/struct_eq additions. Added DesugarTarget qualified/short/is readers, the complete target list, and the kernel-control partition; short-spelling admission rejects cut, find_dictionary, unify, and struct_eq. All parser mint sites now carry absolute addresses; goal-position let shares Pratt.unifyFunctor. Requirement goals now parse requires(X), require[X], and ?d = require[X] into the absolute find_dictionary target, retaining the named out channel.
+
+Kept ExprMarker provenance alongside absolute addresses: Scala still rejects unsupported expression lowering before symbol resolution. Added ho_apply/dot_apply carrier identities to bootstrap. Removed global reflect parenting and literal imports while retaining metadata imports. Updated literal and rooted-accessor readers and the equation classifier. Removed the obsolete connective-only resolver override: absolute targets use ordinary absolute lookup and missing declarations report errors rather than falling back. Small loader fixtures now supply explicit kernel declarations.
+
+Baseline driven before edits: field_access resolved from global scope through the reflect parent. Regression coverage now drives each mint, host-name lookup, kernel short-name exclusion, loaded symbol identity, and actual SLD matching of literal facts against qualified carriers despite local names and a sibling anthill namespace. Back-out measurement: reverting parser mints plus implicit reflect exposure fails 18 of 20 new rows; the table and ordinary-call controls pass either way. Reverting only the absolute equation-reader admission fails 1 of 17 KnowledgeBaseTest rows.
+
+Acceptance: sbt testFull passed 729 tests (688 core + 40 Scala generator + 1 SMT generator). rustland/scripts/test.sh full workspace passed 9,769 tests in 36 result blocks, zero failures, exit 0. git diff --check passed. Manual diff review completed; /code-review skill is not installed in this session and was not run. No commit made. No language-spec changes. The parser port does not add Scala resolver/codegen semantics for unsupported expression/control forms.
+
+Open unblocked queue measured at 176 after claiming this item; no follow-up tickets created.
 

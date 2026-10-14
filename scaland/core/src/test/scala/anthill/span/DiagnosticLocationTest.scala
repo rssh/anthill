@@ -321,47 +321,39 @@ class DiagnosticLocationTest extends munit.FunSuite:
     assertEquals(src.split("\n")(10).substring(26, 29), "fld")
   }
 
-  test("WI-957: a SYNTHESIZED marker the loader still resolves is located too") {
-    // The trap review caught: "the functor looks synthetic" is NOT a reason a node may
-    // claim `Span.empty`. `reallocTerm` resolves the functor of EVERY `Term.Fn` bar the
-    // two shapes it intercepts first — `typed_var` (WI-582, stripped) and a parse-time
-    // marker (WI-1009, refused; `anthill.parse.ExprMarker` is the set). These five are
-    // NEITHER, and deliberately so: each is a name the loader is meant to resolve, so it
-    // reaches `resolveName` exactly like a written call — and a user who declares an
-    // operation of the same name gets the locationless report this WI exists to retire.
-    // Measured, not reasoned: before the fix all five reported `hasLocation == false`.
-    //
-    // The `let` case is the goal-level `let ?y = ?x` (desugared to `unify`), NOT the
-    // `let_expr` marker — which is why it still resolves after WI-1009.
-    //
-    // Each is located at the token that PRODUCED it (the `let`, the applied `?p`, the
-    // opening bracket), because the functor itself is written nowhere.
+  test("ERF7T: synthesized targets cannot be captured by ambiguous short names") {
+    // The original WI-957 fixture deliberately captured each synthetic functor.
+    // Absolute targets now bypass that ambiguity; the let target is missing from
+    // this minimal KB and must produce a located unresolved-name error instead.
     val cases = Seq(
-      ("unify",        "    rule uses(?x) :- let ?y = ?x",            22),
-      ("ho_apply",     "    rule uses(?p) :- ?p(1)",                  22),
-      ("ListLiteral",  "    rule uses(?x) :- p([?x, ?x])",            24),
-      ("SetLiteral",   "    rule uses(?x) :- p({?x})",                24),
-      ("TupleLiteral", "    rule uses(?x) :- p((a: ?x, b: ?x))",      24),
-    )
-    for (marker, body, col) <- cases do
-      val src =
-        s"""namespace demo
-           |  sort A
-           |    operation $marker(x: A) -> A
-           |  end
-           |  sort B
-           |    operation $marker(x: B) -> B
-           |  end
-           |  sort C
-           |    requires demo.A
-           |    requires demo.B
-           |$body
-           |  end
-           |end""".stripMargin
-      val found = ambiguities(loadErrors(src)).filter(_.name == marker)
-      assertEquals(found.length, 1, s"$marker: expected one ambiguity, got ${found.map(_.render)}")
-      assertEquals(at(found.head.span), (11, col), s"$marker located wrong")
-      assertEquals(found.head.scopeName, "demo.C", s"$marker scope wrong")
+      ("unify", anthill.parse.Pratt.unifyFunctor, "let ?y = ?x", 22),
+      ("ho_apply", anthill.parse.DesugarTarget.HoApply, "?x(1)", 22),
+      ("ListLiteral", anthill.parse.DesugarTarget.ListLiteral, "p([?x, ?x])", 24),
+      ("SetLiteral", anthill.parse.DesugarTarget.SetLiteral, "p({?x})", 24),
+      ("TupleLiteral", anthill.parse.DesugarTarget.TupleLiteral, "p((a: ?x, b: ?x))", 24))
+    for (short, address, body, col) <- cases do
+      val src = s"""namespace demo
+        |  sort A
+        |    operation $short(x: A) -> A
+        |  end
+        |  sort B
+        |    operation $short(x: B) -> B
+        |  end
+        |  sort C
+        |    requires demo.A
+        |    requires demo.B
+        |    rule uses(?x) :- $body
+        |  end
+        |end""".stripMargin
+      val errors = loadErrors(src)
+      assert(ambiguities(errors).isEmpty, errors.toString)
+      if short == "unify" then
+        val error = errors.collectFirst {
+          case e: LoadError.UnresolvedName if e.name == address => e
+        }.getOrElse(fail(s"missing target must fail loudly: $errors"))
+        assertEquals(at(error.span), (11, col))
+        assertEquals(error.scopeName, "demo.C")
+      else assert(errors.isEmpty, errors.toString)
   }
 
   test("an unresolved name is located at the name, and names the scope that declared it") {

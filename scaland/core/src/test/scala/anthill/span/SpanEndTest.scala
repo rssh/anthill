@@ -123,7 +123,7 @@ class SpanEndTest extends munit.FunSuite:
         |end""".stripMargin
     val pf = parse(src)
     // The segment's own span rides on the `TupleLiteral` the projection builds.
-    val span = termSpan(pf, "TupleLiteral")
+    val span = termSpan(pf, anthill.parse.DesugarTarget.TupleLiteral)
     assertSpans(src, span, ".(m, n)")
   }
 
@@ -298,7 +298,7 @@ class SpanEndTest extends munit.FunSuite:
         |  end
         |end""".stripMargin
     val pf = parse(src)
-    assertSpans(src, termSpan(pf, "let_expr"), "let")
+    assertSpans(src, termSpan(pf, anthill.parse.DesugarTarget.LetExpr), "let")
     assertSpans(src, termSpan(pf, "pattern_var"), "y")
   }
 

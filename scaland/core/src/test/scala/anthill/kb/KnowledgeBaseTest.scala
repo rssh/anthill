@@ -331,6 +331,13 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val uRid = kb.assertRule(uHead, IndexedSeq.empty, sort, domain)
     assert(kb.isEquation(uRid), "a `unify`-headed empty-body rule is an equation")
 
+    // ERF7T: fails if isEquation's absolute-carrier admission is backed out;
+    // the short and resolved-symbol rows pass either way by design.
+    val absoluteHead = kb.alloc(Term.Fn(kb.intern(anthill.parse.Pratt.unifyFunctor),
+      IArray(fx, gx), IArray.empty))
+    val absoluteRule = kb.assertRule(absoluteHead, IndexedSeq.empty, sort, domain)
+    assert(kb.isEquation(absoluteRule), "an absolute parse carrier is still an equation")
+
     // A `unify` head with a non-empty body is NOT an equation.
     val guard = kb.alloc(Term.Fn(gSym, IArray(varX), IArray.empty))
     val uBodyRid = kb.assertRule(uHead, IndexedSeq(guard), sort, domain)

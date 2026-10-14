@@ -69,6 +69,10 @@ object Pratt:
   val andFunctor:  String = "..anthill.kernel.and"
   val notFunctor:  String = "..anthill.kernel.not"
 
+  // ERF7T: goal let and infix <=> share this target; DesugarTargetTest compares them.
+  val unifyFunctor: String = "..anthill.kernel.unify"
+  private val structEqAddress: String = "..anthill.kernel.struct_eq"
+
   private val infixTable: Map[String, InfixEntry] = Map(
     "|"   -> InfixEntry(1, Assoc.Left,  orFunctor),
     "or"  -> InfixEntry(1, Assoc.Left,  orFunctor),
@@ -80,12 +84,12 @@ object Pratt:
     // operator token (maximal munch wins `<=>` over `<=`); maps to the `unify`
     // functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
     // builtin_unify; the head/body functor just round-trips.)
-    "<=>" -> InfixEntry(3, Assoc.None,  "unify"),
+    "<=>" -> InfixEntry(3, Assoc.None,  unifyFunctor),
     // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
     // Lexes as one operator token (maximal munch wins `===` over `==`/`=`); maps to the
     // `struct_eq` functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
     // builtin; the head/body functor just round-trips.)
-    "===" -> InfixEntry(3, Assoc.None,  "struct_eq"),
+    "===" -> InfixEntry(3, Assoc.None,  structEqAddress),
     "<"   -> InfixEntry(4, Assoc.None,  ltFunctor),
     "<="  -> InfixEntry(4, Assoc.None,  lteFunctor),
     ">"   -> InfixEntry(4, Assoc.None,  gtFunctor),

@@ -182,7 +182,7 @@ class ExprLoaderTest extends munit.FunSuite:
     * PASSES EITHER WAY today, because no refusal existed to over-fire; it is here to fail
     * the day someone re-derives the marker set from a list of strings. */
   test("WI-1009 control: a WRITTEN functor spelled like a marker still resolves") {
-    val (kb, errors) = loadSrc("rule r(?x) :- lambda_expr(?x)")
+    val (kb, errors) = loadSrc("import anthill.reflect.Expr.lambda_expr\nrule r(?x) :- lambda_expr(?x)")
     assert(errors.isEmpty, s"a written call is not a marker: $errors")
     kb.getTerm(soleGoalOf(kb, "r")) match
       case fn: Term.Fn =>
