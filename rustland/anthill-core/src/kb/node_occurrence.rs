@@ -3494,6 +3494,67 @@ fn rewrite_type_occurrence<R: TypeChildRewrite>(
     }
 }
 
+/// `t`, a type as a type position holds it, in the canon a clause binding holds it in: a
+/// type parameter is its NAME there (`Ref(S)`), where a type position has its variable.
+/// Any other variable — a slot left open — is the variable it is in both.
+///
+/// AN EFFECT ROW IS LEFT AS A TYPE POSITION HOLDS IT, as a row written as a binding
+/// (`E = {EC, Error[Foo]}`) is: a row's tail is a variable, never a name — the row readers
+/// fold it as `open(?E)` — and the member rule reads a row slot naming its own row by that
+/// variable. Rewritten to `Ref(EC)` the tail was a parameter written inside its own slot,
+/// and `provides Holder[C = CR]` over `sort CR = Car[EC = {EC, Error[Foo]}, V = V]` was
+/// refused where the same binding written out answers (MEASURED).
+pub(crate) fn type_in_clause_canon(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    match kb.get_term(t).clone() {
+        Term::Var(Var::Global(vid)) => match kb.type_param_of_canonical_var(vid) {
+            Some(param) => kb.make_sort_ref(param),
+            None => t,
+        },
+        Term::Fn { .. } if super::typing::is_effects_rows_term(kb, t) => t,
+        Term::Fn { .. } => kb.map_fn_children(t, type_in_clause_canon),
+        _ => t,
+    }
+}
+
+/// [`type_in_clause_canon`] of a type on whatever carrier it rides: a type that holds a
+/// value rides an occurrence, and its hash-consed children are put in the canon by it.
+pub(crate) fn value_in_clause_canon(kb: &mut KnowledgeBase, v: Value) -> Value {
+    match v {
+        Value::Term { id, .. } => Value::term(type_in_clause_canon(kb, id)),
+        Value::Node(occ) => Value::Node(ClauseCanonRewrite.node(kb, &occ)),
+        other => panic!("a written type rides a term or an occurrence, got {other:?}"),
+    }
+}
+
+/// The occurrence walk of [`type_in_clause_canon`], with the same row stop.
+struct ClauseCanonRewrite;
+impl TypeChildRewrite for ClauseCanonRewrite {
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
+        let nt = type_in_clause_canon(kb, t);
+        (nt, nt != t)
+    }
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        if matches!(n.kind, NodeKind::Type(TypeNode::EffectsRows { .. })) {
+            return Rc::clone(n);
+        }
+        rewrite_type_occurrence(self, kb, n).unwrap_or_else(|| Rc::clone(n))
+    }
+    /// The term arm's variable, on the occurrence carrier. No lowering puts a parameter's
+    /// variable there today — a type position interns it (`Loader::type_param_var`), and a
+    /// `TypeNode::Var` is a per-site variable — so no row drives this; it is here so the
+    /// canon does not depend on which carrier a variable rides.
+    fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
+        let param = match v {
+            Var::Global(vid) => kb.type_param_of_canonical_var(vid),
+            _ => None,
+        };
+        match param {
+            Some(param) => (TypeChild::Interned(kb.make_sort_ref(param)), true),
+            None => (TypeChild::Node(Rc::clone(occ)), false),
+        }
+    }
+}
+
 struct CloseTypeRewrite<'a> {
     var_order: &'a [VarId],
 }

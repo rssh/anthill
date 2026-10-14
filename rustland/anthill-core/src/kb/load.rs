@@ -23586,20 +23586,6 @@ fn rename_global_vars(kb: &mut KnowledgeBase, t: TermId, renames: &[(VarId, Term
     }
 }
 
-/// `t`, a type as a type position holds it, in the canon a clause binding holds it in: a
-/// type parameter is its NAME there (`Ref(S)`), where a type position has its variable.
-/// Any other variable — a slot left open — is the variable it is in both.
-fn type_in_clause_canon(kb: &mut KnowledgeBase, t: TermId) -> TermId {
-    match kb.get_term(t).clone() {
-        Term::Var(Var::Global(vid)) => match kb.type_param_of_canonical_var(vid) {
-            Some(param) => kb.make_sort_ref(param),
-            None => t,
-        },
-        Term::Fn { .. } => kb.map_fn_children(t, type_in_clause_canon),
-        _ => t,
-    }
-}
-
 /// THE NODE-CARRIER CONTROL — `ANTHILL_TEST_NODE_CARRIER=1`. Every sort named where a type
 /// alias written bare rides its node ([`Loader::bare_alias_read`]) rides one too, standing
 /// for itself. The node changes no meaning, so a suite must give every test the same
@@ -35802,9 +35788,11 @@ impl<'a> Loader<'a> {
     /// `Fn{S}→Ref(S)` patch (`normalize_ground_leaf`); subsumes WI-387 (which aligned only
     /// the `T = T` param half). A parameterized binding is the plain application a type
     /// position builds ([`Self::assemble_binding_value`]), never the spec-identity
-    /// `SortView`; any other binding (effect row, tuple, arrow, variable, value) falls
-    /// through [`sort_inst_to_value`] to its catch-all, [`Self::type_expr_to_value`] — never
-    /// to its name arms, which read a type alias as a SPEC.
+    /// `SortView`. A tuple or an arrow is the type a type position lowers, held in the
+    /// clause canon ([`node_occurrence::type_in_clause_canon`]). Any other binding (effect
+    /// row, variable, value) falls through [`sort_inst_to_value`] to its catch-all,
+    /// [`Self::type_expr_to_value`] — never to its name arms, which read a type alias as a
+    /// SPEC.
     fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
@@ -35921,6 +35909,16 @@ impl<'a> Loader<'a> {
                 // filters by its OWN rule — see `ParameterizedSite::bindings`.
                 self.record_type_application_site(base_sym, named.iter().cloned().collect(), span);
                 self.assemble_binding_value(base_sym, named, span)
+            }
+            // A sort's parameter written inside a tuple or an arrow is its `Ref`, as at a
+            // name and in an applied sort: one spelling for every reader of the clause.
+            // Left as the variable the type lowering gives it, the readers that put a
+            // provider's parameters into its `requires` and its conditions, which read the
+            // name, passed it by — `requires Mark[T = (A, Int64)]` was asked at `(?_,
+            // Int64)` beside a provider of `Mark` at `(String, Int64)` (MEASURED).
+            TypeExpr::Tuple(_) | TypeExpr::Arrow { .. } => {
+                let as_a_type = self.type_expr_to_value(ty);
+                node_occurrence::value_in_clause_canon(self.kb, as_a_type)
             }
             _ => self.sort_inst_to_value(ty),
         }
@@ -41512,15 +41510,15 @@ impl<'a> Loader<'a> {
     /// be supplied where the same clause with the type written out could, and of two
     /// provisions of one type, one written through the alias, a call ran one in silence.
     ///
-    /// In the clause's own canon ([`type_in_clause_canon`]): an alias that names a
-    /// type parameter of its sort (`sort OS = S`, `sort Pairs = Pair[A = S]`) is about that
-    /// parameter, as the clause with `S` written out is. Left as the alias's name the two
-    /// were judged by different rules: `provides Show[T = OS]` over a member taking an
-    /// `Int64` was a mismatch against "`OS`", where `provides Show[T = S]` is told the
+    /// In the clause's own canon ([`node_occurrence::type_in_clause_canon`]): an alias that
+    /// names a type parameter of its sort (`sort OS = S`, `sort Pairs = Pair[A = S]`) is
+    /// about that parameter, as the clause with `S` written out is. Left as the alias's name
+    /// the two were judged by different rules: `provides Show[T = OS]` over a member taking
+    /// an `Int64` was a mismatch against "`OS`", where `provides Show[T = S]` is told the
     /// member takes less than every `S` the provision covers (MEASURED).
     fn clause_alias_type(&mut self, sym: Symbol) -> Option<TermId> {
         let stands_for = self.bare_alias_type(sym)?;
-        Some(type_in_clause_canon(self.kb, stands_for))
+        Some(node_occurrence::type_in_clause_canon(self.kb, stands_for))
     }
 
     /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as

@@ -49,14 +49,14 @@
 //!    [`an_alias_written_above_the_parameter_it_fixes_is_the_parameter`],
 //!    [`a_sort_requirement_through_an_alias_fixing_a_parameter_is_supplied`],
 //!    [`a_conversion_through_an_alias_is_forwarded`],
-//!    [`a_condition_through_an_alias_holds_and_binds`]. MEASURED AGAIN 2026-10-13, the
-//!    provision lookup now reading a parameter's variable as the parameter
-//!    (`provision_own_parameter_in_structural_type_test`): the last TWO fail. The two
-//!    provision rows pass under this back-out, the lookup binding the variable; with that
-//!    reading backed out as well they fail again, and
+//!    [`a_condition_through_an_alias_holds_and_binds`]. MEASURED AGAIN 2026-10-14, the
+//!    provision lookup reading a parameter by its name only (it read the variable as the
+//!    parameter from 2026-10-13, and the loader now writes the name inside a tuple or an
+//!    arrow too, WI-20261013-34822): four fail — the two provision rows, the conversion
+//!    and the condition — and
 //!    [`an_alias_binding_a_tuple_reads_as_the_tuple_written_directly`] with them. The
-//!    requirement row passes under this back-out with that reading or without. Under 1
-//!    that day, 30 of the file's 46 rows fail, the tuple row among them.
+//!    requirement row passes under this back-out. Under 1 on 2026-10-13, 30 of the file's
+//!    46 rows fail, the tuple row among them.
 //! 5. THE PRE-SCAN EXPECTS EVERY NAMED SPEC TO DECODE (its `let … else` an `expect`):
 //!    [`the_reflect_view_named_as_a_spec_is_refused_as_a_data_sort`], as a panic.
 //! 6. A BARE NAME IN AN OPERATION'S `requires` STAYS AS WRITTEN (`bare_contract_spec`):

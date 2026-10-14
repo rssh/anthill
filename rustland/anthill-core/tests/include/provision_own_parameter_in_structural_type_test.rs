@@ -4,8 +4,8 @@
 //! `sort P { sort A = ?  provides Apply[F = (A) -> A]  operation run(f: (A) -> A) … }`. Written
 //! as an argument of an applied sort (`provides Apply[F = Box[T = A]]`) the `A` is a
 //! reference to the parameter, which the lookup binds to what the call states and holds to
-//! one type. Inside an arrow or a tuple the provision's type is lowered as a type position
-//! is, and `A` is the parameter's own VARIABLE. The lookup (`impl_param_ref`) read a
+//! one type. Inside an arrow or a tuple the provision's type was lowered as a type position
+//! is, and `A` was the parameter's own VARIABLE. The lookup (`impl_param_ref`) read a
 //! parameter by its name only, so the variable was a wildcard: it matched anything, bound
 //! nothing and counted as a written type. MEASURED, three ways:
 //!
@@ -16,11 +16,20 @@
 //! * `P` at `(A, A) -> A` beside `Q` at `(Int64, Int64) -> Int64` was a tie, "ambiguous
 //!   dispatch", where `Q`'s head is strictly the more specific (kernel-language §8.7).
 //!
+//! The lookup was first taught the variable (`impl_param_ref`); since WI-20261013-34822 the
+//! loader writes the parameter inside an arrow or a tuple of a clause binding as it writes it
+//! at a name and in an applied sort, its `Ref`, and the lookup reads the name only again
+//! (`wi_34822_clause_parameter_one_spelling_test`).
+//!
 //! EVERY ROW DRIVES WHAT IT CLAIMS: the call runs, and each provider answers its own number.
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
-//! ONE PART — `impl_param_ref` not reading the parameter's variable. 4 FAIL of this file's 5:
+//! ONE PART — the variable, read as a parameter by the lookup at first. MEASURED AGAIN
+//! 2026-10-14 with the loader's tuple-and-arrow arm backed out and the lookup reading the name
+//! only: in a build with debug assertions all 5 fail, at `impl_param_ref`'s assertion that a
+//! provision holds no variable of its provider's parameter; without the assertion the same 4
+//! rows as before fail by their verdicts, and the same row of the other file. The 4:
 //! [`a_parameter_standing_twice_is_held_to_one_type`] (each call loads and answers 30),
 //! [`the_providers_requirement_is_read_at_the_calls_type`] (refused, naming `P.A`),
 //! [`a_provider_at_the_types_themselves_is_the_more_specific`] (refused as a tie) and
@@ -29,9 +38,10 @@
 //! file: `wi_f8pyz_spec_clause_alias_test::an_alias_binding_a_tuple_reads_as_the_tuple_
 //! written_directly`, whose first call is the tie again.
 //!
-//! PASS EITHER WAY, by design: [`a_parameter_standing_once_or_at_one_type_answers`], and in
-//! the rows above the calls at a type only `P` answers (`specific_arrow_other`,
-//! `specific_tuple_other`) and inside `same[T](f: (T) -> T)`.
+//! PASS EITHER WAY BY THEIR VERDICTS, by design:
+//! [`a_parameter_standing_once_or_at_one_type_answers`], and in the rows above the calls at a
+//! type only `P` answers (`specific_arrow_other`, `specific_tuple_other`) and inside
+//! `same[T](f: (T) -> T)`.
 //!
 //! NOT COVERED HERE, and why:
 //! * THE PARAMETER INSIDE AN APPLIED SORT'S ARROW (`provides Apply[F = Box[T = (A) -> A]]`)
@@ -39,14 +49,9 @@
 //!   where no provision was matched, and the sole provider answers a `Box` at any argument.
 //! * A LAMBDA WRITTEN WITHOUT ITS PARAMETER'S TYPE (`Apply.run(lambda x -> x)`) is answered by
 //!   `P` as it was: a part nothing has determined binds nothing.
-//! * THE OTHER READERS OF A CLAUSE read a parameter by its name only, and are not changed
-//!   here (WI-20261013-34822). A provider's `requires`, or a provision's `:-` condition,
-//!   written AT a tuple or an arrow of the parameter (`requires Mark[T = (A, Int64)]`) is not
-//!   read at the call's type: the call is refused, "unresolved: `Mark[T = (_1: ?_, _2:
-//!   Int64)]`", beside a provider of `Mark` at that very tuple. Measured before this change
-//!   and after it. A requirement at an applied sort of the parameter (`requires Mark[T =
-//!   Box[T = A]]`) beside a provision at a tuple of it IS read now: its `A` is the
-//!   reference, which the lookup's binding instantiates.
+//! * A PROVIDER'S `requires`, OR A PROVISION'S `:-` CONDITION, WRITTEN AT a tuple or an arrow
+//!   of the parameter (`requires Mark[T = (A, Int64)]`) is read at the call's type since
+//!   WI-20261013-34822, and its rows are that ticket's file.
 //! * A SORT PROVIDING A SPEC AT A COMPOSITE OF ITS PARAMETER AND SUPPLYING NO MEMBER (`sort Hi
 //!   { sort T = ?  provides Lo[T = (T, Int64)] }`) loads and dies when the call runs,
 //!   "operation has no body: `Lo.lo`" — at a tuple, an arrow and an applied sort alike, so it

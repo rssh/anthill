@@ -4707,8 +4707,8 @@ pub(super) fn dispatch_values_match<P: TermView, C: TermView>(
     // path as `Term::Var`; both shapes mean "for any T."
     //
     // Reached from [`match_candidate_against_goal`], this is never the PROVIDER'S OWN
-    // parameter: that one is bound by its arm (1) in either spelling ([`impl_param_ref`])
-    // and held to one type. What arrives here from a provision is a parameter of another
+    // parameter: that one is bound by its arm (1) ([`impl_param_ref`]) and held to one
+    // type. What arrives here from a provision is a parameter of another
     // scope.
     //
     // The CANDIDATE side only. This function also owns half of WI-824's rule —
