@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-GGXCX-068-c1a-design-the-clause, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-R1W5A-068-c1c-a-call-or-a-binder, WI-20261013-RYDNV-068-c1d-one-classification-per
+- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-GGXCX-068-c1a-design-the-clause, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-R1W5A-068-c1c-a-call-or-a-binder, WI-20261013-RYDNV-068-c1d-one-classification-per, WI-20260911-5G28A-rule-head-type-variables-open
 
 - tags: proposal-068, typing
 

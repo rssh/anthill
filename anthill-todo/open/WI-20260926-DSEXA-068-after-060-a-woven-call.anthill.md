@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20261013-GFS6A-068-d1a-a-woven-call-is, WI-20261013-DEY66-068-d1b-the-per-consumer, WI-20261013-2HX69-068-d1c-the-unfold-threads, WI-20261013-WPVVY-a-labelled-call-of-a-builtin
+- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20261013-GFS6A-068-d1a-a-woven-call-is, WI-20261013-DEY66-068-d1b-the-per-consumer, WI-20261013-2HX69-068-d1c-the-unfold-threads, WI-20261013-WPVVY-a-labelled-call-of-a-builtin, WI-20260911-5G28A-rule-head-type-variables-open
 
 - tags: proposal-068
 
