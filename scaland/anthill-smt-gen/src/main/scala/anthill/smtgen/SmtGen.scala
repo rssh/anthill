@@ -490,8 +490,10 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     // emitted `cap(?c)` as `(+ 2.0 3.0)` (`SeveralClausesTest`), and a claim of both was
     // a claim of the first. The argument is a variable (asked below), which rules no
     // clause out, so every clause of ONE argument can answer — a fact too. Several:
-    // refused; their disjunction is WI-20261013-1KF32. A clause of another arity is
-    // another predicate.
+    // refused HERE. Rustland reads their disjunction (WI-20261013-1KF32: the body read in
+    // a world for each clause, over its fact and inlined readings, which this emitter
+    // does not have); this port keeps the refusal (decided with the user, 2026-10-14). A
+    // clause of another arity is another predicate.
     //
     // THIS ARM READS A CLAUSE WITH A BODY AND NO FACT (rustland binds the call's variable
     // to a fact's slot; nothing here does). So a fact that answers ALONE is left to the

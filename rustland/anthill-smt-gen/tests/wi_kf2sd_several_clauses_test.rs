@@ -3,15 +3,17 @@
 //!
 //! What a PROOF is told is driven through the binary
 //! (`anthill-cli/tests/include/wi_kf2sd_several_clauses_test.rs`). These rows hold what
-//! that does not reach: that the refusal is the entry point's `Err` and not a document;
-//! the dependency set of a call read by a fact; that a LIFT, which reads no call, is
+//! that does not reach: what a call several clauses can answer is to each entry point —
+//! since WI-20261013-1KF32 the disjunction of their worlds in a proof's document, and
+//! still an `Err` of an obligation, whose document is not split by them; the dependency set of a call read by a fact; that a LIFT, which reads no call, is
 //! not refused one; and the arity check behind the loader's, which only a KB the loader
 //! refused can reach.
 //!
 //! WHAT FAILS WHEN THE CHANGE IS BACKED OUT (measured; part by part in
 //! `docs/measurements/test-infrastructure/several-clauses-2026-10-13.txt` §4). With the
-//! emitter as it was, four of these six rows FAIL: the refusal of several, the two
-//! checks behind the loader's, and the obligation. Two PASS EITHER WAY, by design and
+//! emitter as it was, four of these six rows FAIL: the refusal of several (now the
+//! disjunction, which fails with WI-20261013-1KF32 backed out as well), the two checks
+//! behind the loader's, and the obligation. Two PASS EITHER WAY, by design and
 //! said at each: `a_call_read_by_a_fact_depends_on_the_predicate` and
 //! `a_lift_states_a_predicate_of_several_clauses_and_reads_none` — what a call one
 //! clause answers depends on and is read as, and what a lift (which reads none) states.
@@ -42,21 +44,46 @@ namespace test.kf2sd.emit
   fact speed_of(Follower, 50.0)
 
   rule fast: gte(?v, 10.0) :- speed_of(Follower, ?v)
+
+  fact start(5.0)
+  fact start(-1.0)
+  rule top(?d) :- start(?d)
 end
 "#;
 
-/// THE REFUSAL IS AN `Err`, AND THERE IS NO DOCUMENT. `read` came back `Ok`, the body of
-/// the first clause for its hypothesis — `(assert (>= var_1 var_0))` — which the
-/// conclusion follows from, and a solver handed it answers `unsat`.
+/// A CALL SEVERAL CLAUSES CAN ANSWER IS THEIR DISJUNCTION IN A PROOF'S DOCUMENT, AND AN
+/// `Err` OF AN OBLIGATION. `read` came back `Ok`, the body of the first clause for its
+/// hypothesis — `(assert (>= var_1 var_0))` — which the conclusion follows from, and a
+/// solver handed it answers `unsat`; KF2SD made it an `Err`. WI-20261013-1KF32 reads it
+/// in a world for each clause, so the second's `(<= var_1 var_0)` is a world where the
+/// conclusion fails. An obligation bounds ONE term, and its document is not split by
+/// choices: there the call is refused still.
 #[test]
-fn a_call_several_clauses_can_answer_is_an_error_of_the_entry_point() {
+fn a_call_several_clauses_can_answer_is_a_disjunction_and_an_obligations_error() {
     let kb = load_kb_with(SOURCE);
-    let err = emit_satisfiability_check(&kb, "test.kf2sd.emit.read")
-        .expect_err("a call two clauses can answer is not read by one");
+    let smt = emit_satisfiability_check(&kb, "test.kf2sd.emit.read")
+        .expect("a call two clauses can answer is read in two worlds");
+    assert!(
+        smt.contains(
+            "(assert (or\n  ; 1: `test.kf2sd.emit.related/2` (0 fact(s), 2 with a body) is \
+             answered by its clause 1 of 2\n  (and (>= var_1 var_0) (not (>= var_1 var_0)))\n  \
+             ; 2: `test.kf2sd.emit.related/2` (0 fact(s), 2 with a body) is answered by its \
+             clause 2 of 2\n  (and (<= var_1 var_0) (not (>= var_1 var_0)))\n))"
+        ),
+        "{smt}"
+    );
+    let err = emit_obligation(
+        &kb,
+        &Obligation {
+            rule_qn: "test.kf2sd.emit.top".to_owned(),
+            upper_bound: 10.0,
+        },
+    )
+    .expect_err("an obligation reads a call by one clause");
     assert!(
         err.message.contains(
-            "the call of `test.kf2sd.emit.related/2` can be answered by 2 clauses of the \
-             predicate (0 fact(s), 2 with a body)"
+            "the call of `test.kf2sd.emit.start/1` can be answered by 2 clauses of the \
+             predicate (2 fact(s), 0 with a body), and an obligation bounds ONE term"
         ),
         "{}",
         err.message
