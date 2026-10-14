@@ -292,3 +292,9 @@
 #   NOT RUN: the other two load recipes and the carrier control — no loader or typer source is changed, and the rows
 #   drive the binary and the emitter crate's own harness, which load as the product does whatever the switches say;
 #   the families, which exercise the typer.
+#
+#   AND OF THE TREE MERGED WITH origin/main, which is what was pushed: the change committed (de0fb6e3), origin/main
+#   (cf826ed2, WI-20261013-9HKJV and its two follow-ups) merged into it (107a1a02), clean.
+#   2026-10-14 11:41:40 – 12:05:49, `CPU_Speed_Limit` 100 → 66. exit 0; 36 result lines, all ok; 9 786 passed,
+#   0 failed, 17 ignored (the ten more are 9HKJV's). OBSERVED: SHARED BASE; terms, a node where an alias is written.
+#   scaland `sbt -batch testFull` on the merge: 1 + 40 + 668 passed, 0 failed.
