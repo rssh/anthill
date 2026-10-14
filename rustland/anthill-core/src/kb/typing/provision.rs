@@ -383,10 +383,12 @@ pub(crate) fn spec_as_its_providers<R>(
 /// the spec's carrier param AND the sort-like base that value names, as one answer.
 ///
 /// One function so the filter — the base must be a SORT or a free-standing entity — is
-/// applied to the view and to the symbol together. A caller that took the raw binding on
-/// its own would accept `Spec[T = OwnParam]`, whose binding names a TYPE PARAM and whose
-/// dispatch carrier is therefore the provider, not the param (WI-859 folds exactly that
-/// shape into the self-provider kind).
+/// applied to the view and to the symbol together. The filter does not tell a type
+/// parameter from a sort, a parameter being declared `sort E = ?`: `sort AnyS { sort E = ?
+/// provides Show[T = E] }` answers `E`, and that provision dispatches at its parameter, not
+/// at its provider — `provision_carrier` answers `AnyS | Show | E`, and `self_provides(AnyS,
+/// Show)` does not hold (MEASURED). A reader that must not take a parameter for a carrier
+/// asks [`genuine_concrete_sort`] as well, as the defaulted call's static pin does.
 ///
 /// WI-860 — the BINDING is read over `TermView` rather than through
 /// [`unwrap_spec_view_value`], which drops any binding it cannot read as a `TermId`:
@@ -411,9 +413,10 @@ pub(crate) fn spec_as_its_providers<R>(
 /// receiver value's own sort, there being no parameter position that could name a
 /// carrier, so a sort claiming such a spec is claiming to BE one.
 ///
-/// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: the `dispatch_carrier`
-/// builtin mints the PROVIDER, [`witness_dispatch_carrier_value`] declines the witness
-/// kind (so 058 §3.6 infers the default row), and the dot-call witness match declines.
+/// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: [`witness_dispatch_carrier_value`]
+/// declines the witness kind, and the dot-call witness match declines. (058 §3.6's default
+/// rows and the `dispatch_carrier` builtin behind them read the binding on the goal's ladder
+/// instead, [`provision_dispatch_carrier`], and take a `None` there for the provider.)
 /// [`requires_edge_is_carrier_preserving`] is the one that reads it differently — as
 /// "not carrier-preserving" — and that is correct for the same reason: an edge
 /// `requires SelfRepSpec[…]` has no carrier parameter to bind the receiver's carrier to,
@@ -443,14 +446,32 @@ pub(super) fn provision_carrier_binding(
 /// Split out for WI-1102, which needs the same read at a param chosen on a different
 /// ladder ([`spec_carrier_param_or_sole`]). The split is deliberately at the param and
 /// not at the ladder: pushing the fallback INTO `provision_carrier_binding` would move
-/// it under every one of that function's readers — the dot-call receiver probe, 058
-/// §3.6's default rows, the `dispatch_carrier` builtin — and WI-1076 measured what
-/// happens when those read a first parameter that is not a carrier.
+/// it under every one of that function's readers — the dot-call receiver probe and the
+/// witness readers of dispatch — and WI-1076 measured what happens when those read a
+/// first parameter that is not a carrier. 058 §3.6's default rows and the
+/// `dispatch_carrier` builtin read the binding on the other ladder
+/// ([`provision_dispatch_carrier`]), since the goal a default row answers is read on it.
 pub(super) fn provision_binding_at_param(
     kb: &KnowledgeBase,
     carrier_param: Symbol,
     spec_view: &Value,
 ) -> Option<(Value, Symbol)> {
+    let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
+    spec_view_base(kb, &val)
+        .filter(|&s| {
+            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
+                || kb.is_free_standing_entity(s)
+        })
+        .map(|s| (val, s))
+}
+
+/// The value a spec view binds at `carrier_param`, whatever it is — [`provision_binding_at_param`]
+/// before its filter to a sort-like base.
+fn provision_binding_value_at_param(
+    kb: &KnowledgeBase,
+    carrier_param: Symbol,
+    spec_view: &Value,
+) -> Option<Value> {
     let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     // The param's OWN symbol first, short name only as the fallback — `goal_binding_value`'s
     // two-rung ladder, and here it is also what keeps the common case allocation-free:
@@ -465,12 +486,21 @@ pub(super) fn provision_binding_at_param(
             spec_view.named_arg(kb, key)?.to_value()
         }
     };
-    spec_view_base(kb, &val)
-        .filter(|&s| {
-            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
-                || kb.is_free_standing_entity(s)
-        })
-        .map(|s| (val, s))
+    Some(val)
+}
+
+/// A provision's carrier binding at `carrier_param` when it is a STRUCTURAL type — a tuple or
+/// an arrow, a type that is no sort (`provides Apply[F = (Int64, Int64)]`).
+/// [`provision_binding_at_param`] answers `None` for it, as for a provision whose carrier is
+/// the provider itself, and the readers that tell the two apart ask this.
+pub(super) fn provision_structural_carrier(
+    kb: &KnowledgeBase,
+    carrier_param: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, CarrierBucket)> {
+    let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
+    let bucket = structural_bucket(kb, &val)?;
+    Some((val, bucket))
 }
 
 /// WI-20260913-KXNEX — A WRITTEN `provides` CLAUSE MUST NAME A CARRIER. For each

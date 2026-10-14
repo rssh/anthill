@@ -101,15 +101,18 @@ namespace anthill.reflect.typing
   -- Builtin: given a provision's `sort_ref` and its spec view, yields the
   -- carrier that provision's dictionary dispatches at, as a type term.
   --   sort ListOrd provides Ord[T = List[T = E]]   ->  List[T = E]
+  --   sort PairApp provides Apply[F = (Int64, Int64)] ->  (Int64, Int64)
   --   sort Leaf    provides Desc[T = Leaf]             ->  Leaf
   --   sort Leaf    provides Desc                       ->  Leaf
   --   fact Desc[T = Leaf, describe = f]                ->  Leaf
   -- A provision whose carrier IS its provider therefore answers the provider,
   -- which is what lets `self_provides` below be a comparison rather than a
-  -- second copy of the criterion. One owner in the implementation
-  -- (`witness_dispatch_carrier_view`), shared with dispatch and with the
-  -- coherence grouping, so the relations here and the load checks cannot
-  -- disagree about what a witness is.
+  -- second copy of the criterion. A carrier that is a tuple or an arrow has no
+  -- sort name, and is answered as written. One owner in the implementation
+  -- (`provision_dispatch_carrier`). It reads the carrier parameter as a call's
+  -- carrier is read, so for a spec whose operations receive on no parameter
+  -- its one parameter is the carrier; dispatch and the coherence grouping read
+  -- the parameter some operation receives on, and for such a spec find none.
   operation dispatch_carrier(sort_ref: Term, spec: Term) -> Term
 
   -- ================================================================

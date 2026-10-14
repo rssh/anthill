@@ -2108,42 +2108,6 @@ pub(super) fn witness_dispatch_carrier(
     witness_dispatch_carrier_value(kb, spec, provider, spec_view).map(|(_, base)| base)
 }
 
-/// WI-860 — [`witness_dispatch_carrier`] with the carrier's WRITTEN VIEW kept beside
-/// its base: `sort ListOrd provides Ord[T = List[T = E]]` answers
-/// `(List[T = E], List)` where the symbol-only reader answers `List`.
-///
-/// The base alone is the right key for every DISPATCH reader — a dispatch is decided by
-/// the value's sort — but it is NOT enough to decide whether two 058 §3.6 default rows
-/// collide: `List[T = E]` beside `List[T = Int64]` is one family and two rows, while
-/// `List[T = Int64]` beside `List[T = String]` is one family and two DISJOINT rows.
-/// Both pairs share a base, so a base-keyed check would refuse the second with the
-/// first. Hence one function answering both, rather than a second walk in
-/// `defaults.rs` that would have to re-derive the criterion — the WI-838 shape.
-///
-/// `None` still means exactly what it means at the symbol reader: the provision's
-/// dispatch carrier IS the provider (a self-provision, an instance fact, or a
-/// bare / own-param-bound provision that names no other sort).
-///
-/// The TERM entry point. A spec view that is itself a `TermId` has `TermId` children, so
-/// the carrier view comes back term-carried by construction; a non-term answer would mean
-/// the decode invented a carrier out of a view that has none, which is a bug rather than
-/// a case, and it says so.
-pub(crate) fn witness_dispatch_carrier_view(
-    kb: &KnowledgeBase,
-    spec: Symbol,
-    provider: Symbol,
-    spec_view: TermId,
-) -> Option<(TermId, Symbol)> {
-    let (view, base) = witness_dispatch_carrier_value(kb, spec, provider, &Value::term(spec_view))?;
-    match view {
-        Value::Term { id, .. } => Some((id, base)),
-        other => panic!(
-            "witness_dispatch_carrier_view: a term-carried spec view yielded a \
-             non-term carrier {other:?}"
-        ),
-    }
-}
-
 /// WI-860 — the base SORT of a spec view, carrier-neutrally: `crate::kb::load::
 /// provides_spec_base_sym`'s answer for a `TermId`, and the same answer for the
 /// OCCURRENCE carrier the resolver hands a matched `SortProvidesInfo.spec` back on.
@@ -2161,9 +2125,10 @@ pub(crate) fn spec_view_base(kb: &KnowledgeBase, spec_view: &Value) -> Option<Sy
 
 /// WI-860 — THE OWNER of the witness criterion, over any carrier.
 ///
-/// [`witness_dispatch_carrier`] and [`witness_dispatch_carrier_view`] are its two
-/// term-side entry points; the `dispatch_carrier` builtin is the third caller and the
-/// reason this flavour exists at all. A `SortProvidesInfo` fact's `spec` field reads as a
+/// [`witness_dispatch_carrier`] is its term-side entry point; [`provision_dispatch_carrier`],
+/// read by the `dispatch_carrier` builtin and by 058 §3.6's default rows, asks the same
+/// criterion ([`witness_at_param`]) at the parameter a goal's carrier is read at, and is the
+/// reason the criterion is read over any carrier at all. A `SortProvidesInfo` fact's `spec` field reads as a
 /// `TermId` through `fact_head_named_args` (the LOAD path) and as a `Value::Node`
 /// OCCURRENCE when the resolver matches the same fact against a goal (the SLD path), so a
 /// classifier reachable only from a `TermId` is reachable only from half its callers.
@@ -2177,10 +2142,79 @@ pub(crate) fn witness_dispatch_carrier_value(
     provider: Symbol,
     spec_view: &Value,
 ) -> Option<(Value, Symbol)> {
-    let (view, base) = provision_carrier_binding(kb, spec, spec_view)?;
+    if !view_is_sort_view(kb, spec_view) {
+        return None;
+    }
+    witness_at_param(kb, spec_carrier_param(kb, spec)?, provider, spec_view)
+}
+
+/// [`witness_dispatch_carrier_value`] once the carrier parameter is decided.
+fn witness_at_param(
+    kb: &KnowledgeBase,
+    carrier_param: Symbol,
+    provider: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, Symbol)> {
+    let (view, base) = provision_binding_at_param(kb, carrier_param, spec_view)?;
     let carrier_canon = kb.canonical_sort_sym(base);
     // Provider IS the carrier ⇒ a fact / normal self-provider, not a witness.
     (kb.canonical_sort_sym(provider) != carrier_canon).then_some((view, carrier_canon))
+}
+
+/// Where a provision's dictionary DISPATCHES — the question 058 §3.6's defaults ask of every
+/// provision, and the `dispatch_carrier` builtin behind the `default_provider` relation answers.
+/// The witness criterion ([`witness_at_param`]) tells a witness at another SORT from the rest;
+/// of the rest, a carrier binding that is a tuple or an arrow is a witness too, at a type with no
+/// sort to key it by ([`provision_structural_carrier`]), and only what remains is the provider
+/// itself. Read as the provider, a mark on a provision at `F = (Int64, Int64)` was filed as a
+/// default at carrier `P1` — a row no goal asks for — and arbitrated nothing.
+pub(crate) enum DispatchCarrier {
+    /// The provider is the carrier: a self-provision, an instance fact, a bare provision. A
+    /// binding to the provider's own type parameter (`sort AnyS { sort E = ?  provides Show[T =
+    /// E] }`) is not one: that provision is at every type, and is read as a witness at the
+    /// parameter, which no goal names.
+    Provider,
+    /// A witness at another sort: the carrier as written, and its canonical base —
+    /// `sort ListOrd provides Ord[T = List[T = E]]` is `(List[T = E], List)`. The base alone is
+    /// the right key for every DISPATCH reader, a dispatch being decided by the value's sort,
+    /// but not for whether two default rows collide: `List[T = E]` beside `List[T = Int64]`
+    /// is one family and two rows that overlap, `List[T = Int64]` beside `List[T = String]`
+    /// one family and two disjoint rows.
+    Sort(Value, Symbol),
+    /// A witness at a tuple or an arrow: the carrier as written, and the bucket its head
+    /// files it under.
+    Structural(Value, CarrierBucket),
+}
+
+/// The [`DispatchCarrier`] of one provision.
+///
+/// The carrier parameter is read on the ladder a goal's carrier is read on
+/// ([`spec_carrier_param_or_sole`], as `goal_carrier_key` does): a row is filed where the
+/// goal it answers looks. On [`spec_carrier_param`] alone a spec whose operations receive on
+/// no parameter (`sort Tag { sort T = ?  operation name() -> Int64 }`) had no carrier
+/// parameter here and one at the goal, so a mark on `provides Tag[T = Box[T = Int64]]` was
+/// filed at its provider and `Tag.name[T = Box[T = Int64]]()` beside a second provider was
+/// a tie. Only the defaults read this; the witness readers of dispatch keep their own
+/// ladder ([`provision_binding_at_param`] says why).
+pub(crate) fn provision_dispatch_carrier(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    provider: Symbol,
+    spec_view: &Value,
+) -> DispatchCarrier {
+    if !view_is_sort_view(kb, spec_view) {
+        return DispatchCarrier::Provider;
+    }
+    let Some(param) = spec_carrier_param_or_sole(kb, spec) else {
+        return DispatchCarrier::Provider;
+    };
+    if let Some((view, base)) = witness_at_param(kb, param, provider, spec_view) {
+        return DispatchCarrier::Sort(view, base);
+    }
+    match provision_structural_carrier(kb, param, spec_view) {
+        Some((view, bucket)) => DispatchCarrier::Structural(view, bucket),
+        None => DispatchCarrier::Provider,
+    }
 }
 
 /// WI-860 — one `anthill.reflect.SortProvidesInfo` fact as 058 §3.6's defaults substrate
@@ -2250,11 +2284,7 @@ pub(crate) fn carrier_views_overlap<A: TermView, B: TermView>(
     let (Some((base_a, args_a)), Some((base_b, args_b))) =
         (carrier_view_parts(kb, a), carrier_view_parts(kb, b))
     else {
-        // Neither a parameter nor a carrier application — an arrow, a row, a value in a
-        // type position. Two such overlap exactly when they are one type: the id test
-        // above where both are hash-consed, and the same test read structurally where one
-        // rides another carrier (a default's stored row against a goal's own argument).
-        return views_structurally_equal(kb, a, b);
+        return structural_views_overlap(kb, a, b);
     };
     // `for_bases` IS the base gate: `Label` exactly when the two bases are one canonical
     // sort, which is also the mode the per-param lookup must run in (two views of one
@@ -2269,6 +2299,71 @@ pub(crate) fn carrier_views_overlap<A: TermView, B: TermView>(
             None => true,
         },
     )
+}
+
+/// Two carrier views that are neither a parameter nor a carrier application — an arrow, a
+/// tuple, a row, a value in a type position. Two ARROWS overlap where their parts pair as the
+/// provision lookup pairs them ([`arrow_part_pairs`]: the parameters by position, the names
+/// lining up or one list written without names, then the result and the row) and each pair
+/// overlaps; two TUPLES where they align as unification aligns them ([`TupleAlign::EQUALITY`]:
+/// one width, the labels one position by position) and each pair of components overlaps — a
+/// named tuple is another type than the positional one. Anything else
+/// overlaps exactly when it is one type: the id test where both are hash-consed, and the same
+/// test read structurally where one rides another carrier (a default's stored row against a
+/// goal's own argument).
+///
+/// The arrow pairing is no equivalence — `(Int64, Int64) -> Int64` pairs with `(p: Int64, q:
+/// Int64) -> Int64` and with `(x: Int64, y: Int64) -> Int64`, which do not pair with each
+/// other — and this relation is asked of two views at a time, so it needs none: two default
+/// marks at the two named lists coexist, and a call at the unnamed one is served by both and
+/// takes neither ([`crate::kb::defaults::default_provider_for`]'s exactly-one rule). Compared
+/// structurally, an arrow written with names and one written without were two carriers to
+/// this relation and one to the lookup: a default at one did not answer a call the lookup
+/// served it at.
+fn structural_views_overlap<A: TermView, B: TermView>(kb: &KnowledgeBase, a: &A, b: &B) -> bool {
+    match (type_head(kb, a), type_head(kb, b)) {
+        (TypeHead::Arrow, TypeHead::Arrow) => arrow_part_pairs(kb, a, b)
+            .is_some_and(|pairs| pairs.iter().all(|(x, y)| carrier_views_overlap(kb, x, y))),
+        (TypeHead::NamedTuple, TypeHead::NamedTuple) => {
+            let (fields_a, fields_b) = (named_tuple_fields(kb, a), named_tuple_fields(kb, b));
+            align_named_tuple_slots(kb, &fields_a, &fields_b, TupleAlign::EQUALITY).is_some_and(
+                |slots| {
+                    aligned_pairs(&slots, &fields_a, &fields_b)
+                        .all(|(x, y)| carrier_views_overlap(kb, x, y))
+                },
+            )
+        }
+        _ => views_structurally_equal(kb, a, b),
+    }
+}
+
+/// The bucket 058 §3.6's default rows are filed under, and a goal's carrier is looked up in:
+/// the carrier's base sort, or — for a carrier that is no sort — its structural head, a tuple
+/// or an arrow ([`DispatchCarrier::Structural`]). Within a bucket [`carrier_views_overlap`]
+/// decides; the bucket only keeps it from comparing carriers of two families.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum CarrierBucket {
+    Sort(Symbol),
+    Tuple,
+    Arrow,
+}
+
+/// The [`CarrierBucket`] of a carrier view, `None` for a view that is no carrier — a type
+/// parameter, a row, a value.
+pub(crate) fn carrier_view_bucket<V: TermView>(kb: &KnowledgeBase, view: &V) -> Option<CarrierBucket> {
+    if let Some((base, _)) = carrier_view_parts(kb, view) {
+        return Some(CarrierBucket::Sort(kb.canonical_sort_sym(base)));
+    }
+    structural_bucket(kb, view)
+}
+
+/// The bucket of a type that is no sort: a tuple's or an arrow's head, `None` for any other.
+pub(super) fn structural_bucket<V: TermView>(kb: &KnowledgeBase, view: &V) -> Option<CarrierBucket> {
+    match type_head(kb, view) {
+        TypeHead::Arrow => Some(CarrierBucket::Arrow),
+        TypeHead::NamedTuple => Some(CarrierBucket::Tuple),
+        _ => None,
+    }
 }
 
 /// A carrier view as `(base sort, named bindings)` — [`parameterized_parts`] widened by
