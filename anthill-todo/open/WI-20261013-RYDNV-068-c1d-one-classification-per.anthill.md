@@ -29,3 +29,7 @@ ACCEPTANCE (cargo-test, driven): a call the clause typing places at a concrete c
 
 D1a's ANSWER IS IN PLACE (WI-20261013-GFS6A, 4d22dbc2): an INFERRED find_dictionary read at a ground carrier no provider supplies answers Unknown { Unreduced } (read_dictionary_into), not a failure; a written read and one whose dictionary a citation supplied still fail. Retiring inferred_demand's refusal can rely on it.
 
+### 2026-10-14T16:11:48Z — feedback — claude
+
+CORRECTION (38c9e23b, decided with the user 2026-10-14): D1a's answer is the reverse of the note above — an inferred find_dictionary read at a ground carrier no provider supplies FAILS, as a written one does: a missing provider is no undecided answer. Retiring inferred_demand's refusal therefore gives such a call a failing condition, which is now the intended verdict, not the 'definite failure' DSEXA's 2026-09-30 note warned of.
+
