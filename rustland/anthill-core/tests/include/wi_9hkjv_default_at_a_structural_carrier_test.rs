@@ -24,26 +24,30 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! THREE PARTS, each backed out in place and RUN over this file's 9 rows and the defaults
-//! suites beside it (`wi860`, `wi861`, `wi862`, every row naming a default: 163 rows):
+//! FOUR PARTS, each backed out in place and RUN over this file's 10 rows and the suites beside
+//! it — `wi860`, `wi861`, `wi862`, `wi508`, `wi_x9pb4` and `wi_4dyr6`, 105 rows in all:
 //!
 //! 1. A CARRIER BINDING THAT IS A TUPLE OR AN ARROW IS A WITNESS (`provision_structural_carrier`
-//!    answering nothing, so the classifier reads the provider). 7 FAIL:
+//!    answering nothing, so the classifier reads the provider). 8 FAIL:
 //!    [`a_default_at_a_tuple_or_an_arrow_answers_the_call`],
 //!    [`a_requirement_at_a_tuple_takes_the_default`],
 //!    [`a_default_at_an_aliased_tuple_answers_the_call`],
 //!    [`two_defaults_at_one_tuple_or_arrow_are_a_load_error`],
 //!    [`two_arrows_are_one_carrier_where_their_parameter_lists_pair`],
-//!    [`two_tuples_are_one_carrier_where_their_labels_are_one`] and
-//!    [`the_relation_and_the_index_hold_the_row_at_the_tuple`].
+//!    [`two_tuples_are_one_carrier_where_their_labels_are_one`],
+//!    [`the_relation_and_the_index_hold_the_row_at_the_tuple`] and, at its tuple,
+//!    [`a_default_for_a_spec_receiving_on_no_parameter_answers_the_call`].
 //! 2. SUCH A CARRIER HAS A BUCKET, ITS HEAD (`structural_bucket` answering nothing): the same
-//!    7 FAIL — the row is filed nowhere and a goal at the tuple asks nowhere.
+//!    8 FAIL — the row is filed nowhere and a goal at the tuple asks nowhere.
 //! 3. TWO ARROWS, AND TWO TUPLES, OVERLAP AS THE LOOKUP PAIRS THEM (`carrier_views_overlap`
 //!    comparing them by structure, as before). 2 FAIL:
 //!    [`two_arrows_are_one_carrier_where_their_parameter_lists_pair`] — a mark at a named list
 //!    no longer answers a call at the unnamed one — and
 //!    [`two_tuples_are_one_carrier_where_their_labels_are_one`] — a mark at `(E, Int64)` beside
 //!    one at `(Int64, Int64)` loads.
+//! 4. A PROVISION'S CARRIER PARAMETER IS READ AS A GOAL'S (`provision_dispatch_carrier` asking
+//!    `spec_carrier_param` alone, the parameter some operation receives on). 1 FAILS:
+//!    [`a_default_for_a_spec_receiving_on_no_parameter_answers_the_call`].
 //!
 //! PASS EITHER WAY, BY DESIGN: [`a_provider_at_a_tuple_with_no_mark_is_not_reported`] and
 //! [`the_mark_at_a_sort_answers_as_before`], the ticket's controls.
@@ -352,17 +356,31 @@ fn the_relation_and_the_index_hold_the_row_at_the_tuple() {
         facts: "",
         call: None,
     };
-    let mut kb = try_load_kb_with(&program("wi9hkjv.rows", &shape)).expect("loads clean");
-    let want = "Apply | (_1: Int64, _2: Int64) | P1".to_string();
+    assert_rows_of(
+        &program("wi9hkjv.rows", &shape),
+        "Apply",
+        "Apply | (_1: Int64, _2: Int64) | P1",
+    );
+}
+
+/// The `default_provider(?S, ?C, ?W)` relation and the materialized index each hold exactly
+/// `want` among their rows of `spec`.
+fn assert_rows_of(src: &str, spec: &str, want: &str) {
+    let mut kb = try_load_kb_with(src).expect("loads clean");
     let relation =
         crate::wi860_default_provider_relations_test::relation_rows(&mut kb, "default_provider", 3);
     let index = kb
         .default_provider_index()
         .expect("a loaded KB carries the index")
         .rendered_rows(&kb);
+    let prefix = format!("{spec} |");
     for (what, rows) in [("relation", &relation), ("index", &index)] {
-        let apply: Vec<&String> = rows.iter().filter(|r| r.starts_with("Apply |")).collect();
-        assert_eq!(apply, vec![&want], "the {what}'s rows of `Apply`");
+        let of_spec: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.starts_with(&prefix))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(of_spec, vec![want], "the {what}'s rows of `{spec}`");
     }
 }
 
@@ -380,4 +398,70 @@ fn a_requirement_at_a_tuple_takes_the_default() {
         call: None,
     };
     assert_eq!(runs("wi9hkjv.requirement", &shape), Ok(10));
+}
+
+/// `sort Tag { sort T = ?  operation name() -> Int64 }`, `P1` and `P2` providing it at
+/// `carrier`, `P1` marked by `m1` and `P2` by `m2`, and `go` calling `Tag.name[T = carrier]()`.
+fn tag_program(ns: &str, above: &str, (m1, m2): (&str, &str), carrier: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+{above}
+  sort Tag
+    sort T = ?
+    operation name() -> Int64
+  end
+  sort P1
+    {m1}provides Tag[T = {carrier}]
+    operation name() -> Int64 = 10
+  end
+  sort P2
+    {m2}provides Tag[T = {carrier}]
+    operation name() -> Int64 = 30
+  end
+  operation go() -> Int64 = Tag.name[T = {carrier}]()
+end
+"#
+    )
+}
+
+/// A MARK FOR A SPEC WHOSE OPERATIONS RECEIVE ON NO PARAMETER: `Tag`'s one parameter is its
+/// carrier, as a goal reads it, and a row is filed there too — the relation and the index hold
+/// `P1` at it — at `Box[T = Int64]`, at `Int64` and at a tuple the call answers by `P1`, 10, a
+/// requirement `viaG[X]() requires Tag[T = X]` at `Box[T = Int64]` is supplied by it, 10, and
+/// two marks are a load error naming the carrier. Each call was the tie, the requirement "a
+/// requirement suppliable at this call site", at a sort carrier on the tree before 9HKJV as
+/// well, and the two marks loaded clean (MEASURED): the row was filed at the provider, read off
+/// the parameter some operation receives on, of which `Tag` has none. FAILS with the provision
+/// read on that ladder (part 4).
+#[test]
+fn a_default_for_a_spec_receiving_on_no_parameter_answers_the_call() {
+    let boxed = "  sort Box\n    sort T = ?\n    entity box(v: T)\n  end";
+    let via_g = "  operation viaG[X]() -> Int64 requires Tag[T = X] = Tag.name[T = X]()\n  \
+                 operation goG() -> Int64 = viaG[X = Box[T = Int64]]()";
+    let above = format!("{boxed}\n{via_g}");
+    let src = tag_program("wi9hkjv.tag_requirement", &above, ("default ", ""), "Box[T = Int64]");
+    assert_eq!(run_int64(&src, "wi9hkjv.tag_requirement.goG"), Ok(10), "requirement");
+    for (tag, above, carrier, shown) in [
+        ("box", boxed, "Box[T = Int64]", "Box[T = Int64]"),
+        ("int", "", "Int64", "Int64"),
+        ("tuple", "", PAIR, "(_1: Int64, _2: Int64)"),
+    ] {
+        let ns = format!("wi9hkjv.tag_{tag}");
+        let src = tag_program(&ns, above, ("default ", ""), carrier);
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(10), "{tag}");
+        assert_rows_of(&src, "Tag", &format!("Tag | {shown} | P1"));
+        let src = tag_program(&format!("{ns}_both"), above, ("default ", "default "), carrier);
+        assert_refused_naming(
+            &load_errors_of(&src),
+            &[
+                "ambiguous default",
+                &format!("carrier '{shown}'"),
+                "P1' at carrier",
+                "P2' at carrier",
+            ],
+            &format!("two marks at one {tag}"),
+        );
+    }
 }

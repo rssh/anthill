@@ -411,9 +411,10 @@ pub(crate) fn spec_as_its_providers<R>(
 /// receiver value's own sort, there being no parameter position that could name a
 /// carrier, so a sort claiming such a spec is claiming to BE one.
 ///
-/// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: the `dispatch_carrier`
-/// builtin mints the PROVIDER, [`witness_dispatch_carrier_value`] declines the witness
-/// kind (so 058 §3.6 infers the default row), and the dot-call witness match declines.
+/// WHAT EACH CALLER MAKES OF `None`, audited rather than assumed: [`witness_dispatch_carrier_value`]
+/// declines the witness kind, and the dot-call witness match declines. (058 §3.6's default
+/// rows and the `dispatch_carrier` builtin behind them read the binding on the goal's ladder
+/// instead, [`provision_dispatch_carrier`], and take a `None` there for the provider.)
 /// [`requires_edge_is_carrier_preserving`] is the one that reads it differently — as
 /// "not carrier-preserving" — and that is correct for the same reason: an edge
 /// `requires SelfRepSpec[…]` has no carrier parameter to bind the receiver's carrier to,
@@ -443,9 +444,11 @@ pub(super) fn provision_carrier_binding(
 /// Split out for WI-1102, which needs the same read at a param chosen on a different
 /// ladder ([`spec_carrier_param_or_sole`]). The split is deliberately at the param and
 /// not at the ladder: pushing the fallback INTO `provision_carrier_binding` would move
-/// it under every one of that function's readers — the dot-call receiver probe, 058
-/// §3.6's default rows, the `dispatch_carrier` builtin — and WI-1076 measured what
-/// happens when those read a first parameter that is not a carrier.
+/// it under every one of that function's readers — the dot-call receiver probe and the
+/// witness readers of dispatch — and WI-1076 measured what happens when those read a
+/// first parameter that is not a carrier. 058 §3.6's default rows and the
+/// `dispatch_carrier` builtin read the binding on the other ladder
+/// ([`provision_dispatch_carrier`]), since the goal a default row answers is read on it.
 pub(super) fn provision_binding_at_param(
     kb: &KnowledgeBase,
     carrier_param: Symbol,
@@ -484,19 +487,15 @@ fn provision_binding_value_at_param(
     Some(val)
 }
 
-/// A provision's carrier binding when it is a STRUCTURAL type — a tuple or an arrow, a type
-/// that is no sort (`provides Apply[F = (Int64, Int64)]`). [`provision_carrier_binding`]
-/// answers `None` for it, as for a provision whose carrier is the provider itself, and the
-/// readers that tell the two apart ask this.
+/// A provision's carrier binding at `carrier_param` when it is a STRUCTURAL type — a tuple or
+/// an arrow, a type that is no sort (`provides Apply[F = (Int64, Int64)]`).
+/// [`provision_binding_at_param`] answers `None` for it, as for a provision whose carrier is
+/// the provider itself, and the readers that tell the two apart ask this.
 pub(super) fn provision_structural_carrier(
     kb: &KnowledgeBase,
-    spec_sort: Symbol,
+    carrier_param: Symbol,
     spec_view: &Value,
 ) -> Option<(Value, CarrierBucket)> {
-    if !view_is_sort_view(kb, spec_view) {
-        return None;
-    }
-    let carrier_param = spec_carrier_param(kb, spec_sort)?;
     let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
     let bucket = structural_bucket(kb, &val)?;
     Some((val, bucket))

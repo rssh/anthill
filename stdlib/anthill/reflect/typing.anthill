@@ -109,9 +109,10 @@ namespace anthill.reflect.typing
   -- which is what lets `self_provides` below be a comparison rather than a
   -- second copy of the criterion. A carrier that is a tuple or an arrow has no
   -- sort name, and is answered as written. One owner in the implementation
-  -- (`provision_dispatch_carrier`), whose witness criterion is shared with
-  -- dispatch and with the coherence grouping, so the relations here and the
-  -- load checks cannot disagree about what a witness is.
+  -- (`provision_dispatch_carrier`). It reads the carrier parameter as a call's
+  -- carrier is read, so for a spec whose operations receive on no parameter
+  -- its one parameter is the carrier; dispatch and the coherence grouping read
+  -- the parameter some operation receives on, and for such a spec find none.
   operation dispatch_carrier(sort_ref: Term, spec: Term) -> Term
 
   -- ================================================================

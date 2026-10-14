@@ -1431,7 +1431,15 @@ is what that provision dispatches at. A spec **none** of whose operations takes 
 of its type parameters has no carrier parameter, and its provisions record **the
 provider** as their carrier: `Stream`'s operations all receive on `Stream` itself
 and its `T` appears only in return and callback types, so `sort List provides
-Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`.
+Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`. One such spec
+is read otherwise where a provision binds its parameter: a spec with exactly one type
+parameter, none of whose operations takes the spec itself. A binding of that parameter
+is the only way a provision or a call can say which type it is at, so it is what the
+provision records as its carrier. Under `sort Tag { sort T = ?  operation name() ->
+Int64 }`, `sort P1 provides Tag[T = Box[T = Int64]]` is a provision for `Box[T =
+Int64]`, and a `default` on it answers `Tag.name[T = Box[T = Int64]]()`. A provision
+that leaves `T` unbound (`provides Tag`) records its provider, as above, and the rule
+below does not ask it to bind `T`.
 
 **A written `provides` clause over a spec that HAS a carrier parameter must BIND
 it** (WI-20260913-KXNEX), and one that does not is a **load error**. By the rule
