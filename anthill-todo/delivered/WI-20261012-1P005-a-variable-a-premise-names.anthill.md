@@ -3,9 +3,9 @@
 - id: WI-20261012-1P005-a-variable-a-premise-names
 - created: 2026-10-12T21:16:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-12T21:16:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-14T12:32:36Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -28,4 +28,10 @@ TO DECIDE with the user: (a) REFUSE a clause in which a goal names a variable a 
 THE CONTROL: `user` above does not prove with the lemma trusted, and proves when backed out; the lemma proved `by z3` has a verdict or a refusal that names the variable, not a solver error; lf1's documents are as they are, or each that is not is listed.
 
 DONE WHEN: the control rows hold and fail when backed out; the documents that moved are listed; the gate is green.
+
+## Changes
+
+### 2026-10-14T12:32:35Z — feedback — user
+
+DELIVERED (6f5262ce, rows in d8163f8e) — the user, 2026-10-14: deliver it with its rows. Closed by WI-20261014-FHEEK: every place a variable is given a value goes through bind_variable, which equates a variable the document has already written — option (b), as an equation rather than a substitution into what was written; the binders after a use are read where they stand. THE CONTROL: user (the ticket's program, lemma trusted) is a COUNTEREXAMPLE, and PROVED with the equation substituting again; the lemma by z3 proves (was 'unknown constant var_0'). Each binder: equation, entity's field, fact, one-argument value, equation after a relation written for a premise — lemma by z3 proved for each; the lift of eq and rel quantifies the variable ((forall ((var_0 Real) (var_1 Real)) (=> (and (>= var_0 1.0) (= var_0 (+ var_1 1.0))) …))) and their users are COUNTEREXAMPLES. The entity variant's user is the solver's 'unknown constant cap': the lift names the field constant and the consumer does not declare it — so does a lemma whose entity premise comes first, on d7a8ffcb as now; not of this ticket, put to the user. lf1's documents byte for byte (FHEEK's §5). 3 rows (wi_1p005_binder_after_use_test), back-outs in its header; docs/measurements/test-infrastructure/inlined-names-2026-10-14.txt §9. Gate 9818/0.
 
