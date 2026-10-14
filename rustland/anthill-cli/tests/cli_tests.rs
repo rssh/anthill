@@ -151,3 +151,5 @@ mod wi_cdhsq_lemma_premise_test;
 mod wi_kf2sd_several_clauses_test;
 #[path = "include/wi_1kf32_disjunction_test.rs"]
 mod wi_1kf32_disjunction_test;
+#[path = "include/wi_fheek_inlined_names_test.rs"]
+mod wi_fheek_inlined_names_test;

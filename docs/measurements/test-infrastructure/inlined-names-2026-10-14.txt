@@ -1,0 +1,207 @@
+# A variable is given a value where the document has written it, and a rule read inlined has variables of its
+# own (WI-20261014-FHEEK, delivered with WI-20261012-BR7P3) — what was there, the decision, what is read now, what
+# fails when a part is backed out, which documents moved, what /code-review changed, what was found and is not of
+# this change, and the gate. 2026-10-14.
+#
+# Tree:    main at d7a8ffcb, and this change on it.
+# Machine: Intel Core Ultra 9 275HX (24 threads), WSL2 Linux 6.18. z3 5.1.0.
+# Every `anthill prove` below is `--no-cache`, the dev build. BEFORE is the binary of d7a8ffcb, built and copied
+# aside before the first edit (`target/anthill-before`); AFTER is this tree's. Two binaries run on one file.
+
+== 1. what was there (d7a8ffcb) ==
+# THE TICKET. `fact start(5.0)  rule p(?x) :- start(?x)  rule outer: gte(?e, 0.0) :- ?e = ?d + 1.0, p(?d)`:
+#   `? outer: unknown (z3 said (error "… unknown constant var_0"))`. The ticket read it as `inline_rule_call`'s
+#   hand-back; `p` has one argument, so it is the one-argument form (`translate_called_rule`), whose result the
+#   caller bound by substitution — the same defect at another site. The two-argument twin (`p2(?d, ?z)`) is the
+#   hand-back, and two rules down (`mid` calling `p2`) too: all three "unknown constant".
+#
+# THE SAME AT EVERY PLACE A VARIABLE IS GIVEN A VALUE BY SUBSTITUTION, each "unknown constant" where a goal or a
+# definition read before named the variable:
+#   an equation           `lte(?d, 10.0), ?d = 3.0`;           `?e = ?d + 1.0, ?d = 3.0`
+#   a one-argument result `lte(?r, 10.0), bound(?r)`;           `?e = ?r + 1.0, bound(?r)`
+#   an entity's constant  `lte(?c, 10.0), Lim(cap: ?c)`;        `?e = ?c + 1.0, Lim(cap: ?c)`
+#   the hand-back         `lte(?r, 100.0), ?d = 3.0, dbl(?d, ?r)` (the inlined rule's own equation)
+#   and `inc(?d, ?d)` over `?b = ?a + 1.0`: the variable bound to a term of itself.
+# A variable DEFINED twice kept the second: `?d = 3.0, ?d = 4.0` and `?d = 3.0, set4(?d, ?z)` were COUNTEREXAMPLES
+# of bodies that cannot hold. An ALIAS given a value lost the alias: `?x = ?y, start(?x)` (and by an equation, by a
+# rule) left `?y` free, a COUNTEREXAMPLE of a true claim — so on 79a6703f too, before 1KF32's helper.
+#
+# BR7P3 — AN INLINED RULE'S OWN VARIABLE WENT BY ITS INDEX, the name of the clause's variable of that index:
+#   `helper(?x, ?w) :- lt(?x, ?y), lt(?y, ?w)`, `r :- helper(?a, ?b), gte(?a, 5.0)`   proved (satisfiable)
+#   `shifted(?r) :- ?r = ?y + 1.0, gte(?y, 0.0)`, `c :- shifted(?v), lt(?z, 0.0), gte(?v, 0.0)`   proved (satisfiable)
+# AND 1KF32's HELPER MADE IT A FALSE PROOF. `bind_variable` asked whether a variable was written by searching the
+# document's text, which in an inlined frame is ambiguous:
+#   `q2(?x, ?w) :- start(?y), ?x = ?w`;   `h1: gte(?a, 100.0) :- lte(?c, 3.0), q2(?a, ?a)`   PROVED, `?a` free
+#   the document `(<= var_0 3.0) (= var_0 5.0) (not (>= var_1 100.0))` — `q2`'s `?y` equated with `h1`'s `?c`.
+#   The same through a head's number (`mode(0, ?r)`, `h2`) and an entity's row (`Lim`, two facts, `h3`): PROVED.
+#   On 79a6703f the fact's slot substituted (read from its code, `bindings.insert(synth, …)`, not run): h1 a
+#   COUNTEREXAMPLE; h2 and h3 were KF2SD's refusals there.
+# AND THE OTHER WAY: a construction passed INTO an inlined rule kept the caller's variables, read in the rule's
+# frame as the rule's of those indices. `fx(?p, ?r) :- lte(?w, 0.0), ?r = ?p.x` called `fx(P(x: ?a, y: 0.0), ?r)`
+# read `?a` as `fx`'s own `?w`, and `lte(?r, 0.0) :- gte(?a, 1.0), …` PROVED (false: r = a >= 1). Renaming alone
+# leaves it proving: `?a` is then `fx`'s renamed `?w`.
+# AND AN INLINED RULE'S OWN VARIABLE OF A DECLARED SORT: `between(?a: T, ?c: T) :- lt(?a, ?b), lt(?b, ?c)` read in
+# `p(?x: T, ?y: T)` wrote `(lt@T var_1 var_1)`, `?b` as `p`'s `?y`.
+#
+# COUNTED FIRST (BR7P3's "COUNT FIRST"): a temporary instrument recorded every write of an inlined rule's own
+# variable by its index (`translate_expr`, and `bind_variable`'s equation). lf1: none. `scripts/test.sh -p
+# anthill-smt-gen -p anthill-cli`: one, `kf2sd.mixed.at`, whose proof is refused as recursive. So the renaming moves
+# no document of lf1 or the suites, and no proof's verdict rested on a collision.
+
+== 2. the decision (user, 2026-10-14) ==
+#   Put to the user with h1 and the four sibling sites measured: the ticket's two options both ask the text, which
+#   collides. Offered: (a) rename apart here, delivering BR7P3 with FHEEK (recommended); (b) no renaming,
+#   `bind_variable` equating only a variable that came from the caller, a patch that leaves FHEEK one frame down.
+#   DECIDED: RENAME APART. Naming offered: `var_<n>` continued past the clause's own variables (recommended), or
+#   `var_<i>_<k>`. DECIDED: `var_<n>`, CONTINUED.
+#   Taken as following, and said in the report: every binding by substitution goes through the one helper; a
+#   construction crosses into an inlined rule closed over its caller's frame; an alias given a value gives it to
+#   the variable it stands for (found by probing the helper, the same loss); scaland follows, for the sites it has.
+
+== 3. what is read, and what is refused ==
+# THE NAMES. A clause's variables are `var_0` … `var_<size-1>` (`frame_size`: its head, body, bounds and type
+# parameters). A rule read inlined — the multi-argument form (`inline_rule_call`) and the one-argument form
+# (`translate_called_rule`) — has every variable its head was not passed a value or a variable for bound, when its
+# frame is opened, to a name past every name of the document (`name_own_variables`, `next_own_variable`), in the
+# order its head and body first name them; the worlds of one document run on (`read_worlds`). Its sorts are kept
+# by those names (`keep_own_variable_sorts`) and join the clause's before the free variables are declared. In an
+# inlined frame a variable nothing binds is an error now (`translate_expr`, "has no name in the document"); in the
+# clause's own frame it goes by its index, as it did, and closes to that name (`close_occ`).
+# THE HELPER. `bind_variable` at every site: a variable DEFINED is equated with the value (a numeral that is it says
+# nothing); an ALIAS (bound to another variable's name since its frame was opened, `InlinedFrame::names`) gives
+# the value to that variable; a variable WRITTEN — in an assertion, in what the frame binds another variable to, in
+# a construction it holds (`any_fragment`) — is equated and stays a constant; otherwise substituted, as always. The
+# hand-back asks it in the CALLER's frame, and only where the value differs from what was passed.
+# CONSTRUCTIONS. A construction passed to an inlined rule's head is closed over the caller's frame (`bind_head_arg`);
+# a closed field met by a head's variable is what the caller passed there. A variable bound to a construction
+# written as a term is refused (`translate_expr`), in the clause's own frame and in an inlined rule's (§6 (5)).
+#
+#   the proof (`wi_fheek_inlined_names_test`)                     BEFORE (d7a8ffcb)            AFTER
+#   back.ticket / two_args / nested / by_equation / defined_by_it   z3: unknown constant         proved (each)
+#   sites.eq_named, eq_defined_by, one_named, one_defined_by,
+#         ent_named, ent_defined_by, itself                         z3: unknown constant         proved (each)
+#   sites.eq_twice, redefined                                       COUNTEREXAMPLE               proved (vacuous)
+#   own.apart, one_arg (BR7P3's two)                                PROVED (false)               COUNTEREXAMPLE
+#   own.by_fact, by_number, by_row (1KF32's three sites)            PROVED (false)               COUNTEREXAMPLE
+#   sorted.Scope.p                                                  (lt@T var_1 var_1)           ?b = var_5, at T
+#   ctor.passed                                                     PROVED (false)               COUNTEREXAMPLE
+#   ctor.held (`?q = P(x: ?a, …)` in the clause's frame)            REFUSED: cannot be closed    proved
+#   ctor.built (a construction naming `?d`, then `start(?d)`)       z3: unknown constant         proved
+#   ctor.leaf (`fwd(some(?a), ?r)` over `get(some(?x), ?r)`)        COUNTEREXAMPLE (true claim)  proved
+#   alias.by_fact / by_equation / by_rule                           COUNTEREXAMPLE (true claims) proved
+#   many.Scope.worlds (two worlds, own variables of T and of Real)  z3: unknown constant         proved
+#   built_term.inl / top (a construction written as a term)         CDHSQ's refusal / COUNTER-   REFUSED: a construction,
+#                                                                   EXAMPLE (stated of a free    which has no SMT term
+#                                                                   variable)
+#   cdhsq.own.deep (CDHSQ's row, turned)                            REFUSED (BR7P3)              COUNTEREXAMPLE, `related`
+#                                                                                                stated of `wrap2`'s var_2
+#   control.passes / one / direct / free                            the document                 the same, to the byte
+#
+# scaland (`InlinedNamesTest`, its emitter reads the equation, the entity's constant and the one-argument form):
+# the same defects there — "unknown constant" text at the six sites, the overwrite, the lost alias, `one_arg`'s two
+# goals of `var_2147483647` — and the same readings now, `shifted`'s `?y` `var_2147483644` (index 3). Its equation
+# also gets ZZ7PH's condition reading (`?x = ?x + 1.0` is `(= x (+ x 1))`), which it lacked: bound to a term of
+# itself, the variable was left undeclared.
+
+== 4. what fails when a part is backed out ==
+# rustland: temporary env switches in the emitter, one build, each part alone on the 56 rows of `wi_fheek`,
+# `wi_cdhsq`, `wi_1kf32` and `wi_kf2sd` (`scripts/test.sh -p anthill-cli --test cli_tests -- …`); the last two on
+# the 58 after /code-review. Switches and instrument taken out; the source compared with a saved copy, byte for
+# byte, after each.
+#   the hand-back substituting          the_value_an_inlined_rule_gives…, an_inlined_rules_own_variable… (by_number),
+#                                       a_construction_crosses…, the_verdicts
+#   the equation substituting           every_place…, an_alias…, the_verdicts
+#   the entity's constant substituting  every_place…, the_verdicts
+#   the one-argument result             every_place…, the_value_… (ticket), an_alias… (by_rule), the_verdicts
+#   the naming                          an_inlined_rules_own_variable…, an_own_variable_of_a_declared_sort…,
+#                                       every_place…, a_construction_crosses…, the_verdicts, and CDHSQ's
+#                                       a_call_in_an_inlined_rule_that_names_its_own_variable_is_stated_of_it
+#   a construction not closed           a_construction_crosses…, the_verdicts
+#   the clause's own variable not closed a_construction_crosses…, the_verdicts, and KF2SD's
+#                                       a_clause_is_selected_by_the_frame_being_read_and_no_other
+#   a closed field met by a head        a_construction_crosses…, the_verdicts
+#   the alias                           an_alias…, the_verdicts
+#   constructions not read for writes   a_construction_crosses…, the_verdicts
+#   the sorts kept                      an_own_variable_of_a_declared_sort…
+#   the hand-back compared with the caller's name, not what it passed   a_construction_crosses…, the_verdicts
+#   a variable bound to its own name binding nothing (`term == value`)  an_inlined_rules_own_variable…
+#   the worlds each numbered from the clause's frame                    own_names_run_on…
+#   a construction written as a term                                    a_construction_written_as_a_term…
+# MEASURED AND TAKEN OUT, no row failing with each backed out and no program found that needs it:
+#   an occurs check (a value that names the variable equated) — `itself` is caught as written: `?a`'s binding holds
+#   the name; the equation of a variable defined twice skipped where the two TEXTS are equal; the alias's equation
+#   skipped where the value is the variable. Each only kept a tautology out, or was reached by nothing.
+# PASSES EITHER WAY, by design: a_caller_that_writes_nothing_it_hands_on_has_the_document_it_had.
+# scaland: each part backed out by an edit of `SmtGen.scala`, restored from a saved copy (the sbt server does not see
+# a client's environment): the equation — every place…, an alias…; the entity's constant — every place…; the
+# one-argument result — every place…, an alias…; the naming — the one-argument form's own variable…, every place…;
+# the alias — an alias…; the condition — an equation that names its variable…. The control passes either way.
+
+== 5. which documents moved ==
+# The instrument of 1KF32's §5 again: the three entry points wrapped, every document and refusal written to a file
+# named by its hash; applied to d7a8ffcb's source and to this tree's, taken out after, the source compared byte for
+# byte. Each ran `anthill prove -v --no-cache examples/webots-modelling/lf1` and `scripts/test.sh -p anthill-smt-gen
+# -p anthill-cli`.
+#                    before   there again, to the byte   moved   gone   new (this change's rows)
+#   lf1                  16   16                          0       0      0
+#   the two suites      333   330                         3       0      40
+# THE THREE THAT MOVED:
+#   cdhsq.own.deep      CDHSQ's refusal (an inlined rule's own variable) → a document: `related` stated of
+#                       `wrap2`'s `?r` as var_2. The row turned, as BR7P3's feedback said it would.
+#   ranking.ok.decrease_violation   `?n` is the field constant `upc_next`, then `eq(?n, add(?u, 1))`: the equation
+#                       overwrote it, now `(assert (= upc_next (+ upc 1.0)))`. Proved before and after.
+#   kf2sd.frames.claim_a  the same WI-687 refusal; its text prints the call argument's discriminant, and the
+#                       argument is the closed construction's field now (21 → 22).
+# lf1's fourteen proved, before and after.
+
+== 6. what /code-review changed ==
+# Thirteen findings. Done:
+# (1) the refusal "a rule is read inlined before the clause … is opened" had a run of spaces mid-sentence.
+# (2) the one-argument result's lookup was an `expect`: a panic takes every proof of the file; an error now.
+# (3) OWN NAMES WERE NUMBERED PER WORLD: two worlds inlining different clauses named theirs alike, and `worlds`
+#     (own variables of T and of Real) was refused, "of sort T in one world … and of Real in another". The worlds
+#     of one document run on now (`read_worlds` seeds each emitter where the last ended).
+# (5) A CONSTRUCTION WRITTEN AS A TERM: with CDHSQ's refusal gone, `wrap(?p, ?q) :- related(?p, ?q)` called with
+#     `P(x: 1.0)` stated `related` of a variable nothing tied to the construction — as the clause's own frame
+#     already did (`?p = P(x: 1.0), related(?p, ?y)`, a COUNTEREXAMPLE on d7a8ffcb). Refused in both now; lf1 and
+#     both suites unchanged by it.
+# (8) scaland's `nameOwnVariables` returned from inside a `for` (a non-local return): a match first.
+# (10) the check of what is written cloned every string of every construction per binding: walked in place.
+# (12) `inlined_names` was a second stack beside `inlining`: one `InlinedFrame` (rule, arity, names).
+# (13) three copies of one walk: `debruijn_vars_of` keeps order, and `any_fragment` checks in place.
+# (9) this file, which the rows cited before it existed.
+# Not changed:
+# (4) the caller's sort not carried to an own name an alias hands back — MEASURED, not so: the callee's frame is
+#     seeded with the caller's sorts for its head, and `?r = ?b` at an abstract carrier is `eq@T`, no alias;
+#     `caller_sort` declared `var_5` at T.
+# (6) own names against a cited step's step-new variables — the step document collides already (§7 (i)).
+# (7) a string at a head's leaf taken as SMT text — the convention of WI-686, the expression reader's too: a genuine
+#     string there is a bare token, loud at the solver.
+# (11) frame keys and document names share one spelling — re-keying every frame map is a change to every reader of
+#     `bindings`; the one place a document name becomes a key (the sorts' merge) is past the clause's frame.
+
+== 7. found, and not of this change ==
+# Each run on d7a8ffcb and on this tree. None filed: put to the user with the report.
+# (i) A STRUCTURED PROOF'S STEP CITING AN EARLIER STEP DECLARES ITS STEP-NEW VARIABLES TWICE:
+#       proof big  rule h1: gte(?x, 3.0) :- gte(?x, 5.0), lte(?n, 1.0), lte(?k, 2.0)  by z3
+#                  rule h2: gte(?x, 1.0) :- gte(?x, 3.0), helper(?x, ?m)  using h1 by z3  …
+#     `? big: unknown (z3 said "invalid declaration, constant 'var_1' … already declared")` on both trees: h1's lift
+#     declares its step-new `?n` as var_1, and h2's own `?m` is var_1. A step's new variables share the parent's
+#     indices past `shared_arity`; loud, and the same naming question as BR7P3's, for steps.
+# (ii) `proof worlds` inside `sort Scope` of `namespace test.fheek.worlds` is reported as `test.fheek.worlds` — the
+#     name resolved to the namespace's symbol, KF2SD's "a rule named as the last segment of its namespace". The row
+#     was renamed; not measured further.
+
+== 8. the gate ==
+#   THE TREE GATED is d7a8ffcb with this change on it, uncommitted, as delivered: after /code-review's fixes, the
+#   back-outs of §4 run and taken out, the instruments of §1 and §5 taken out, the sources compared with saved
+#   copies. origin/main was d7a8ffcb when it began.
+#   scripts/test.sh — the whole workspace, the shared base, anthill-core at opt-level 2:
+#     2026-10-14 12:13:09 – 12:14:33. exit 0; 36 result lines, all ok; 9 815 passed, 0 failed, 17 ignored (9 805 at
+#     ed5e902d, and this change's ten rows). OBSERVED: SHARED BASE; terms, a node where an alias is written.
+#   scaland `sbt -batch testFull`, 12:14:40 – 12:14:53: 688 + 45 + 1 passed, 0 failed (anthill-smt-gen 40 → 45,
+#   `InlinedNamesTest`'s five).
+#   BEFORE THE GATE, on the tree as delivered: `scripts/test.sh -p anthill-smt-gen -p anthill-cli` under the
+#   instrument of §5, exit 0, 447 passed; lf1, 14 proved.
+#   NOT RUN: the other two load recipes, the carrier control, the families and the oracles — no loader, typer or
+#   anthill-core source is changed; the rows drive the binary and load as the product does.

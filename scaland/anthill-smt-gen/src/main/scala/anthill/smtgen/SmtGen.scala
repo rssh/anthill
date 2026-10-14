@@ -139,6 +139,13 @@ object SmtGen:
   private[smtgen] def parseSyntheticVarName(s: String): Option[Int] =
     if s.startsWith("var_") then s.drop(4).toIntOption else None
 
+  /** The number an SMT text is, where it is a numeral as `formatReal` writes one. */
+  private[smtgen] def numeral(text: String): Option[Double] =
+    if text.startsWith("(- ") && text.endsWith(")") then
+      numeral(text.substring(3, text.length - 1)).map(-_)
+    else if text.nonEmpty && text.forall(c => c.isDigit || c == '.') then text.toDoubleOption
+    else None
+
   /** Map anthill arithmetic functor QNs to SMT-LIB ops. */
   private[smtgen] def mapArithOp(qn: String): Option[String] = stripAbsolute(qn) match
     // WI-20260825-1WBZT — the SYNTAX CATEGORY declares each of these now (`Additive`,
@@ -274,6 +281,19 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
   /** AbstractLift mode: when true, `processBodyGoal` skips rule-call
     * expansion. */
   var abstractMode: Boolean = false
+  /** WI-20261012-BR7P3 — THE DE BRUIJN INDEX THE NEXT VARIABLE OF A RULE READ INLINED
+    * IS NAMED BY: past the clause's own (`ruleArity`) and every such variable named
+    * before it, as rustland's `next_own_variable`. By its own index it would be the
+    * clause's variable of that index. `None` until a clause is opened. */
+  var nextOwnVariable: Option[Int] = None
+  /** The variables `bindVariable` equated with a value, which stay constants of the
+    * document: a one-argument rule's result given its value so is given one. */
+  val equated: TreeSet[String] = TreeSet.empty
+  /** One for each rule read inlined: the name each variable of its frame went by when
+    * the frame was opened ([[nameOwnVariables]]). A variable bound to another name
+    * since is an ALIAS of that variable. In the clause's own frame a variable goes by
+    * its index, and is bound to no name of its own. */
+  val inlinedNames: ArrayBuffer[Map[String, String]] = ArrayBuffer.empty
 
   /** Walk the rule body and produce the SMT-LIB equation that defines
     * the head's result variable.
@@ -284,6 +304,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       case Some(r) => r
       case None    => return Left(SmtGenError(s"rule '$ruleQn' not found"))
 
+    nextOwnVariable = Some(kb.ruleArity(rid))
     val head = kb.ruleHead(rid)
     val headShape = classifyHead(rid)
     headShape match
@@ -376,8 +397,16 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
         case Left(e) => return Left(e)
         case Right(rhsSmt) =>
           lhsTerm match
+            // `?x = <a term that names ?x>` defines nothing: it is a CONDITION on `?x`
+            // (rustland's WI-20261012-ZZ7PH). Taken for a definition the variable was bound
+            // to a term of itself, which named it undeclared.
+            case Term.Var(vid) if kb.collectVars(posArgs(1)).exists(_.id == vid.varId.id) =>
+              return translateExpr(posArgs(0), bindings).map { itself =>
+                assertions += s"(= $itself $rhsSmt)"
+                ()
+              }
             case Term.Var(vid) =>
-              bindings(syntheticVarName(vid.varId.id)) = rhsSmt
+              bindVariable(syntheticVarName(vid.varId.id), rhsSmt, bindings)
               return Right(())
             case _ =>
               translateExpr(posArgs(0), bindings) match
@@ -451,7 +480,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
           case Term.Var(vid) =>
             val fieldName = kb.resolveSym(fieldSym)
             val constName = SmtGen.sanitizeSmtId(fieldName)
-            bindings(syntheticVarName(vid.varId.id)) = constName
+            bindVariable(syntheticVarName(vid.varId.id), constName, bindings)
             if !fieldConsts.contains(constName) then fieldConsts(constName) = 0.0
           case _ => () // wildcards / literals
         i += 1
@@ -524,7 +553,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
           translateCalledRule(qn, rid) match
             case Left(e)        => return Left(e)
             case Right(inlined) =>
-              bindings(syntheticVarName(bindIdx)) = inlined
+              bindVariable(syntheticVarName(bindIdx), inlined, bindings)
               return Right(())
         // No clause of one argument, and one with a body of another arity: said as it was.
         case None if answering.isEmpty && candidates.exists(r => kb.ruleBody(r).nonEmpty) =>
@@ -548,18 +577,96 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       case _ => return Left(SmtGenError(
         s"v0: called rule '$calleeQn' must have exactly one pos arg in head"))
 
+    // WI-20261012-BR7P3 — EVERY VARIABLE OF IT, ITS RESULT TOO, IS ITS OWN: named apart
+    // from the document's before the body is read. By its index it was the clause's
+    // variable of that index: `shifted(?r) :- ?r = ?y + 1.0, gte(?y, 0.0)` called beside
+    // `lt(?z, 0.0)` wrote `shifted`'s `?y` and the caller's `?z` as one variable, and a
+    // satisfiable body was unsatisfiable.
     val localBindings: TreeMap[String, String] = TreeMap.empty
     val body = kb.ruleBody(rid)
+    val own = nameOwnVariables(head +: body, localBindings) match
+      case Left(e)  => return Left(e)
+      case Right(o) => o
+    inlinedNames += namesOf(localBindings)
+    var goalErr: Option[SmtGenError] = None
     var i = 0
-    while i < body.length do
+    while i < body.length && goalErr.isEmpty do
       processBodyGoal(body(i), localBindings) match
-        case Left(e) => return Left(e)
+        case Left(e)  => goalErr = Some(e)
         case Right(_) => ()
       i += 1
-    localBindings.get(syntheticVarName(resultIdx)) match
-      case Some(s) => Right(s)
-      case None => Left(SmtGenError(
-        s"called rule '$calleeQn' never bound its result var"))
+    inlinedNames.dropRightInPlace(1)
+    if goalErr.isDefined then return Left(goalErr.get)
+    // The result is what the body gave it: a value, or — given one where the body had
+    // written it already — the variable it was named, equated with the value. A body that
+    // gives it none defines nothing.
+    val result = syntheticVarName(resultIdx)
+    val value = localBindings(result)
+    if own.get(result).contains(value) && !equated.contains(value) then
+      Left(SmtGenError(s"called rule '$calleeQn' never bound its result var"))
+    else Right(value)
+
+  /** WI-20261012-BR7P3 — name the variables of a rule read inlined: `frame` gets each
+    * `var_<id>` the terms name, in the order they first name them, bound to a name past
+    * every name the document has (`nextOwnVariable`). Returned, the names given. */
+  private def nameOwnVariables(
+    terms: IndexedSeq[TermId],
+    frame: TreeMap[String, String]
+  ): Either[SmtGenError, Map[String, String]] =
+    var next = nextOwnVariable match
+      case Some(first) => first
+      case None => return Left(SmtGenError(
+        "a rule is read inlined before the clause it is read into is opened, so its own " +
+          "variables have no names past the clause's"))
+    var own = Map.empty[String, String]
+    for term <- terms; vid <- kb.collectVars(term) do
+      val local = syntheticVarName(vid.id)
+      if !frame.contains(local) then
+        val named = syntheticVarName(Int.MaxValue - next)
+        next += 1
+        frame(local) = named
+        own += local -> named
+    nextOwnVariable = Some(next)
+    Right(own)
+
+  /** What each variable of a frame goes by, where it goes by a name — `inlinedNames`. */
+  private def namesOf(frame: TreeMap[String, String]): Map[String, String] =
+    frame.iterator.filter((_, bound) => SmtGen.parseSyntheticVarName(bound).isDefined).toMap
+
+  /** WI-20261014-FHEEK — `name`, a variable of the frame being read, IS `value`, as
+    * rustland's `bind_variable`. Each place a variable is given a value — an equation, an
+    * entity's field read by its constant, a one-argument rule's result — substituted, and
+    * each left a variable the document had already written undeclared (`lte(?d, 10.0), ?d
+    * = 3.0`) or lost what it already was:
+    *   * DEFINED as a term: the term is equated with the value — a numeral that is the
+    *     value says nothing — where a second definition overwrote the first;
+    *   * an ALIAS of another variable (`?x = ?y`, then `?x` given a value): the value is
+    *     that variable's, which stays a constant of the document — put in `?x`'s place it
+    *     left `?y` free;
+    *   * WRITTEN already, in an assertion or in what the frame binds another of its
+    *     variables to: the variable stays a constant of the document, and is equated.
+    * Otherwise it is bound by substitution, as it always was. */
+  private def bindVariable(name: String, value: String, bindings: TreeMap[String, String]): Unit =
+    val term = bindings.get(name) match
+      case None => name
+      case Some(variable) if SmtGen.parseSyntheticVarName(variable).isDefined =>
+        if !inlinedNames.lastOption.flatMap(_.get(name)).contains(variable) then
+          assertions += s"(= $variable $value)"
+          equated += variable
+          return
+        variable
+      case Some(defined) =>
+        if !(SmtGen.numeral(defined).isDefined && SmtGen.numeral(defined) == SmtGen.numeral(value))
+        then assertions += s"(= $defined $value)"
+        return
+    if term == value then return
+    def names(text: String): Boolean = text.split("[^a-zA-Z0-9_]+").contains(term)
+    val written = assertions.exists(names)
+      || bindings.exists((other, defined) => other != name && names(defined))
+    if written then
+      assertions += s"(= $term $value)"
+      equated += term
+    else bindings(name) = value
 
   /** Translate an arithmetic expression to an SMT-LIB term. */
   def translateExpr(
@@ -570,9 +677,16 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       case Term.Const(Literal.FloatLit(f))   => Right(SmtGen.formatReal(f.value))
       case Term.Const(Literal.IntLit(i))     => Right(SmtGen.formatReal(i.toDouble))
       case Term.Const(Literal.BigIntLit(bi)) => Right(SmtGen.formatReal(bi.toDouble))
+      // WI-20261012-BR7P3 — a variable nothing binds is the clause's own, and goes by its
+      // index. In an inlined rule's frame every variable is named when it is opened.
       case Term.Var(vid) =>
         val synth = syntheticVarName(vid.varId.id)
-        Right(bindings.getOrElse(synth, synth))
+        bindings.get(synth) match
+          case Some(bound)                   => Right(bound)
+          case None if inlinedNames.isEmpty => Right(synth)
+          case None => Left(SmtGenError(
+            s"`?$synth`, read inlined, has no name in the document: every variable of an " +
+              "inlined rule is named when its frame is opened"))
       case Term.Ref(s)   => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
       case Term.Ident(s) => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
       case f: Term.Fn =>

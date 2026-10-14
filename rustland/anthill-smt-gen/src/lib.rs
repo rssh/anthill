@@ -243,13 +243,18 @@ fn read_worlds<'kb>(
 ) -> Result<Vec<Emitter<'kb>>, SmtGenError> {
     let builtins = SmtBuiltinTable::resolve(kb);
     let mut pending: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut worlds = Vec::new();
+    let mut worlds: Vec<Emitter<'kb>> = Vec::new();
     while let Some(prefix) = pending.pop() {
         let mut emitter = Emitter::with_builtins(kb, builtins.clone());
         emitter.choices = Some(Choices {
             taken: prefix.clone(),
             met: Vec::new(),
         });
+        // An inlined rule's own variable is named past every name of the DOCUMENT, and
+        // the worlds are one document: by the names alone, two worlds inlining different
+        // clauses gave theirs one name, and one of two sorts was refused
+        // (WI-20261012-BR7P3, /code-review).
+        emitter.next_own_variable = worlds.last().and_then(|world| world.next_own_variable);
         let outcome = read(&mut emitter);
         let met = emitter
             .choices
@@ -722,12 +727,12 @@ struct Emitter<'kb> {
     body_is: BodyIs,
     /// The rules whose bodies are being read INLINED into the clause, outermost first.
     /// Inside one a name is not what it is in the clause's own frame: the rule's head
-    /// variables are written as what the caller passed, and a variable of its own goes
-    /// by the name the caller's variable of the same index has (WI-20261012-BR7P3) —
-    /// which [`Self::state_predicate_call`] refuses to state a relation of. Each with the
-    /// arity it was called at: `span/2` beside `span/3` is two predicates, and a clause of
-    /// one calling the other is no recursion (WI-20261013-1KF32, /code-review).
-    inlining: Vec<(String, usize)>,
+    /// variables are written as what the caller passed, and a variable of its own by a
+    /// name past the clause's ([`Self::name_own_variables`]; by its index it was the
+    /// caller's variable of that index, WI-20261012-BR7P3). Each with the arity it was
+    /// called at: `span/2` beside `span/3` is two predicates, and a clause of one calling
+    /// the other is no recursion (WI-20261013-1KF32, /code-review).
+    inlining: Vec<InlinedFrame>,
     /// WI-20261013-1KF32 — THE WORLD BEING READ: which clause answers each call that
     /// several can ([`Self::choose`]). `None` where the document is not split by them —
     /// an obligation, whose document is one term's bound, and a lift, which reads no
@@ -736,6 +741,51 @@ struct Emitter<'kb> {
     /// The value the body bound the result variable of a function-like head to, beside
     /// `body_smtlib`, which defines it: a document of several worlds equates it in each.
     result_value: Option<String>,
+    /// THE NAME THE NEXT VARIABLE OF AN INLINED RULE'S OWN IS GIVEN: `var_<n>`, `n` past
+    /// the clause's own variables ([`frame_size`]) and every such variable named before
+    /// it. A variable of a rule read inlined that its head does not pass is named so when
+    /// the rule's frame is opened ([`Self::name_own_variables`]); by its index it would
+    /// be the clause's variable of that index, and the document would relate two
+    /// variables as one. `None` until a clause is opened; a world of a document of
+    /// several starts where the world read before it ended ([`read_worlds`]).
+    next_own_variable: Option<u32>,
+    /// The sorts of those variables, by the names they are given: an inlined rule's
+    /// frame keeps its sorts by its own indices, and is closed before the document's
+    /// free variables are declared.
+    own_variable_sorts: BTreeMap<String, SmtSort>,
+    /// The variables [`Self::bind_variable`] equated with a value, which stay constants
+    /// of the document: a one-argument rule's result given its value so is given one
+    /// ([`Self::translate_called_rule`]).
+    equated: BTreeSet<String>,
+}
+
+/// A rule whose body is being read inlined ([`Emitter::inlining`]).
+struct InlinedFrame {
+    rule: String,
+    /// The arity it was called at.
+    arity: usize,
+    /// The name each variable of its frame went by when the frame was opened — the
+    /// variable its caller passed, or the name it was given
+    /// ([`Emitter::name_own_variables`]). A variable bound to another name since is an
+    /// ALIAS of that variable ([`Emitter::bind_variable`]). In the clause's own frame a
+    /// variable goes by its index, and is bound to no name of its own.
+    names: BTreeMap<String, String>,
+}
+
+impl InlinedFrame {
+    /// The frame of `rule`, called at `arity`, as `frame` binds it when it is opened.
+    fn opened(rule: &str, arity: usize, frame: &BTreeMap<String, String>) -> Self {
+        let names = frame
+            .iter()
+            .filter(|(_, bound)| parse_synthetic_var_name(bound).is_some())
+            .map(|(local, bound)| (local.clone(), bound.clone()))
+            .collect();
+        Self {
+            rule: rule.to_owned(),
+            arity,
+            names,
+        }
+    }
 }
 
 /// WI-20261013-1KF32 — THE MOST WORLDS A DOCUMENT IS READ IN (decided with the user,
@@ -871,6 +921,9 @@ impl<'kb> Emitter<'kb> {
             inlining: Vec::new(),
             choices: None,
             result_value: None,
+            next_own_variable: None,
+            own_variable_sorts: BTreeMap::new(),
+            equated: BTreeSet::new(),
         }
     }
 
@@ -962,6 +1015,9 @@ impl<'kb> Emitter<'kb> {
                 "SMT v0 cannot compile a non-term rule head for `{rule_qn}`"
             )));
         };
+        let past_the_clause = frame_size(self.kb, clause, *head);
+        self.next_own_variable =
+            Some(self.next_own_variable.map_or(past_the_clause, |next| next.max(past_the_clause)));
         let head_shape = self.classify_head(*head);
         if let HeadShape::FunctionLike { result_idx } = head_shape {
             self.result_var = synthetic_var_name(result_idx);
@@ -1064,6 +1120,14 @@ impl<'kb> Emitter<'kb> {
         // string; without this it would emit undeclared and z3 would error. The
         // result var itself is in `local_bindings`, so it is skipped (never
         // double-declared), and `free_vars` are rendered before `body_smtlib`.
+        //
+        // WI-20261012-BR7P3 — a variable of a rule read inlined is one of them where the
+        // document writes it, at the sort that rule's frame gave it: its name is past the
+        // clause's own, so it is no key of the clause's sorts.
+        for (named, sort) in std::mem::take(&mut self.own_variable_sorts) {
+            let clause_had = self.var_sorts.insert(named, sort);
+            debug_assert!(clause_had.is_none(), "an own variable is named past the clause's");
+        }
         self.note_free_vars(&local_bindings)?;
 
         // Soundness guard (WI-681): the uninterpreted-trig relaxation
@@ -1234,13 +1298,13 @@ impl<'kb> Emitter<'kb> {
                 // off the text, the definition was a CONDITION on the caller's `?x` —
                 // `(= var_0 (+ var_0 var_0))`, so x = 0 — and `lt(?x, 0.0)` beside it
                 // proved unsatisfiable. The variable is written as this frame reads it.
-                let names_itself = debruijn_vars_of(&pos_args[1]).contains(i);
+                let names_itself = debruijn_vars_of([&pos_args[1]]).contains(i);
                 if names_itself {
                     let itself = self.translate_expr(&pos_args[0], bindings)?;
                     self.assertions.push(format!("(= {itself} {rhs_smt})"));
                     return Ok(());
                 }
-                bindings.insert(bound, rhs_smt);
+                self.bind_variable(bound, rhs_smt, bindings);
                 return Ok(());
             }
             let rhs_smt = self.translate_expr(&pos_args[1], bindings)?;
@@ -1310,7 +1374,7 @@ impl<'kb> Emitter<'kb> {
                 };
                 let field_name = self.kb.local_name_of(*field_sym).to_string();
                 let const_name = sanitize_smt_id(&field_name);
-                bindings.insert(synthetic_var_name(bind_idx), const_name.clone());
+                self.bind_variable(synthetic_var_name(bind_idx), const_name.clone(), bindings);
                 self.field_consts.entry(const_name).or_insert(0.0); // resolved later
             }
             return Ok(());
@@ -1383,7 +1447,7 @@ impl<'kb> Emitter<'kb> {
                 } else if self
                     .inlining
                     .iter()
-                    .any(|(reading, arity)| reading == qn && *arity == pos_args.len())
+                    .any(|frame| frame.rule == qn && frame.arity == pos_args.len())
                 {
                     // WI-20261013-1KF32 — A RECURSIVE CLAUSE IS NOT UNFOLDED (decided with
                     // the user, 2026-10-14). The call stands in a clause of its own
@@ -1393,8 +1457,8 @@ impl<'kb> Emitter<'kb> {
                     // of one such clause has no base case to stop at — measured on
                     // 79a6703f, `rule loop(?x) :- loop(?x), gte(?x, 0.0)` under a proof
                     // overflowed the stack and aborted the CLI (exit 134).
-                    let site = self.inlining.last().map_or(String::new(), |(rule, _)| {
-                        format!(", in the body of `{rule}` (read inlined),")
+                    let site = self.inlining.last().map_or(String::new(), |frame| {
+                        format!(", in the body of `{}` (read inlined),", frame.rule)
                     });
                     return Err(SmtGenError::new(format!(
                         "the call of `{qn}/{}`{site} is answered by a clause of `{qn}` with a \
@@ -1416,7 +1480,7 @@ impl<'kb> Emitter<'kb> {
                         }
                     };
                     let inlined = self.translate_called_rule(qn, &answer)?;
-                    bindings.insert(synthetic_var_name(bind_idx), inlined);
+                    self.bind_variable(synthetic_var_name(bind_idx), inlined, bindings);
                 } else {
                     self.inline_rule_call(qn, &answer, pos_args, bindings)?;
                 }
@@ -1525,7 +1589,7 @@ impl<'kb> Emitter<'kb> {
         // Where the call stands, when it is not the proof's own: the proof names a
         // rule, and the call refused may be three rules down.
         let site = match self.inlining.last() {
-            Some((rule, _)) => format!(", in the body of `{rule}` (read inlined),"),
+            Some(frame) => format!(", in the body of `{}` (read inlined),", frame.rule),
             None => String::new(),
         };
         let pick = match answering.len() {
@@ -1641,12 +1705,12 @@ impl<'kb> Emitter<'kb> {
     /// construction (`?state = TFS(…)` before `step(?state, …)`, WI-687) or to a number
     /// (`?k = 0` before `at(?k, ?x)`). ONLY that one — a variable INSIDE a construction
     /// is not looked up (/code-review). A construction handed across an inline boundary
-    /// keeps its caller's variables (`bind_head_arg` binds it as it is written), and
-    /// read in this frame they are other variables of the same index
-    /// (WI-20261012-BR7P3): measured, `wrap(?o, ?r) :- ?z = some(1.0), pick(?o, ?r)`
-    /// called `wrap(some(?y), ?r)` took the caller's free `?y` for its own `?z`, ruled
-    /// the `some(none)` clause of `pick` out by it, and a claim false at `?y = none`
-    /// proved.
+    /// kept its caller's variables, and read in this frame they were other variables of
+    /// the same index (WI-20261012-BR7P3): measured, `wrap(?o, ?r) :- ?z = some(1.0),
+    /// pick(?o, ?r)` called `wrap(some(?y), ?r)` took the caller's free `?y` for its own
+    /// `?z`, ruled the `some(none)` clause of `pick` out by it, and a claim false at `?y
+    /// = none` proved. Such a construction crosses closed over its caller's frame now
+    /// ([`Self::bind_head_arg`]), its variables the SMT text of what they are there.
     fn known_argument<'a>(
         &'a self,
         call: &'a Rc<NodeOccurrence>,
@@ -1702,9 +1766,23 @@ impl<'kb> Emitter<'kb> {
     ///     bind it, unconstrained. Now the variable stays a constant of the document, and
     ///     `(= var_d value)` is asserted.
     ///
+    /// WI-20261014-FHEEK — AND EVERY OTHER PLACE A VARIABLE IS GIVEN A VALUE: an equation
+    /// (`?x = <term>`), a one-argument rule's result, an entity's field read by its
+    /// constant, and the value an inlined rule hands back to its caller — each
+    /// substituted, and each left a variable the document had already written
+    /// undeclared: `?e = ?d + 1.0, p(?d)`, `p` answering `?d` by a fact, was z3's "unknown
+    /// constant", the caller's definition of `?e` naming `?d` where `p`'s frame, which
+    /// bound it, does not see it. The hand-back is asked in the CALLER's frame, whose
+    /// definitions those are.
+    ///
     /// Otherwise it is bound by substitution, as it always was: such a document is the one
     /// it was. A variable bound to a variable — an inlined rule's parameter, which goes by
-    /// its caller's name — is asked of that name.
+    /// its caller's name, or a variable of its own, which goes by the name it was given
+    /// ([`Self::name_own_variables`]) — is asked of that name. That name is the variable's
+    /// alone (WI-20261012-BR7P3): before, an inlined rule's own variable went by the name
+    /// of the clause's variable of the same index, and an equation asked of that text
+    /// equated the two — `q2(?x, ?w) :- start(?y), ?x = ?w` called beside `lte(?c, 3.0)`
+    /// equated `?y` with `?c`, and a false claim proved.
     fn bind_variable(
         &mut self,
         name: String,
@@ -1713,7 +1791,20 @@ impl<'kb> Emitter<'kb> {
     ) {
         let term = match bindings.get(&name) {
             None => name.clone(),
-            Some(variable) if parse_synthetic_var_name(variable).is_some() => variable.clone(),
+            Some(variable) if parse_synthetic_var_name(variable).is_some() => {
+                let goes_by = self.inlining.last().and_then(|frame| frame.names.get(&name));
+                if goes_by != Some(variable) {
+                    // An ALIAS: an equation (`?x = ?y`) or what an inlined rule handed back
+                    // made `name` the variable `variable`, which is written where `name`
+                    // is not — its own occurrences, read later, among them. A value put in
+                    // `name`'s place lost the alias: `?x = ?y, start(?x)` left `?y` free,
+                    // and a true claim of `?y` was a COUNTEREXAMPLE.
+                    self.assertions.push(format!("(= {variable} {value})"));
+                    self.equated.insert(variable.clone());
+                    return;
+                }
+                variable.clone()
+            }
             Some(defined) => {
                 if !(numeral(defined).is_some() && numeral(defined) == numeral(&value)) {
                     self.assertions.push(format!("(= {defined} {value})"));
@@ -1721,20 +1812,81 @@ impl<'kb> Emitter<'kb> {
                 return;
             }
         };
-        let named = self
-            .assertions
-            .iter()
-            .chain(
-                bindings
-                    .iter()
-                    .filter(|(other, _)| **other != name)
-                    .map(|(_, defined)| defined),
-            )
-            .any(|text| smt_tokens(text).contains(&term.as_str()));
-        if named {
+        if term == value {
+            return;
+        }
+        if self.is_written(&term, &name, bindings) {
             self.assertions.push(format!("(= {term} {value})"));
+            self.equated.insert(term);
         } else {
             bindings.insert(name, value);
+        }
+    }
+
+    /// Is `variable`, a variable of the document, written where a value given it by
+    /// substitution would not reach — an assertion, what this frame binds another of its
+    /// variables (`except` is the one being bound) to, or a construction this frame holds,
+    /// whose fields carry their caller's text ([`Self::close_occ`])?
+    fn is_written(
+        &self,
+        variable: &str,
+        except: &str,
+        bindings: &BTreeMap<String, String>,
+    ) -> bool {
+        let names = |text: &str| smt_tokens(text).contains(&variable);
+        self.assertions.iter().any(|text| names(text))
+            || bindings
+                .iter()
+                .any(|(other, defined)| other != except && names(defined))
+            || self
+                .entity_bindings
+                .values()
+                .any(|entity| any_fragment(entity, &names))
+    }
+
+    /// WI-20261012-BR7P3 — NAME THE VARIABLES OF A RULE READ INLINED THAT ITS FRAME DOES
+    /// NOT BIND YET: those its head was not passed a value or a variable for — its own,
+    /// and one passed a construction, which is held as an entity and has no name. `frame`
+    /// gets each `var_<i>` (its index) bound to a name past every name the document has
+    /// (`next_own_variable`), in the order `occs` first name them; returned, `(var_<i>,
+    /// the name)`. Read in the rule's frame, such a variable was `var_<i>`, the clause's
+    /// variable of that index: `helper(?x, ?w) :- lt(?x, ?y), lt(?y, ?w)` called
+    /// `helper(?a, ?b)` related `?y` as `?b`, and a satisfiable body was `unsat`. So in an
+    /// inlined rule's frame every variable has a name of the document, and the clause's
+    /// own frame is the one where a variable nothing binds goes by its index
+    /// ([`Self::translate_expr`]).
+    fn name_own_variables<'a>(
+        &mut self,
+        occs: impl IntoIterator<Item = &'a Rc<NodeOccurrence>>,
+        frame: &mut BTreeMap<String, String>,
+    ) -> Result<Vec<(String, String)>, SmtGenError> {
+        let mut own = Vec::new();
+        for index in debruijn_vars_of(occs) {
+            let local = synthetic_var_name(index);
+            if frame.contains_key(&local) {
+                continue;
+            }
+            let next = self.next_own_variable.as_mut().ok_or_else(|| {
+                SmtGenError::new(
+                    "a rule is read inlined before the clause it is read into is opened, so \
+                     its own variables have no names past the clause's",
+                )
+            })?;
+            let named = synthetic_var_name(*next);
+            *next += 1;
+            frame.insert(local.clone(), named.clone());
+            own.push((local, named));
+        }
+        Ok(own)
+    }
+
+    /// The sorts the frame being closed gave its own variables (`own`, from
+    /// [`Self::name_own_variables`]), kept by the names they go by in the document.
+    fn keep_own_variable_sorts(&mut self, own: &[(String, String)]) {
+        for (local, named) in own {
+            if let Some(sort) = self.var_sorts.get(local) {
+                self.own_variable_sorts.insert(named.clone(), sort.clone());
+            }
         }
     }
 
@@ -1940,6 +2092,13 @@ impl<'kb> Emitter<'kb> {
             )?;
         }
 
+        // WI-20261012-BR7P3 — the variables of its own, named apart from every variable
+        // of the document before any goal of the body writes one.
+        let own = self.name_own_variables(
+            callee.head_args.iter().chain(&clause.body_nodes),
+            &mut callee_str,
+        )?;
+
         // Process the callee's body. We share the global
         // `assertions` / `field_consts` / `referenced_entities` /
         // `free_vars` accumulators (the inlined rule's facts and
@@ -1967,7 +2126,8 @@ impl<'kb> Emitter<'kb> {
             .and_then(|()| self.infer_var_sorts(&body_goals))
             .err();
         if err.is_none() {
-            self.inlining.push((callee_qn.to_string(), call_args.len()));
+            self.inlining
+                .push(InlinedFrame::opened(callee_qn, call_args.len(), &local));
             for goal in &body_goals {
                 if let Err(e) = self.process_body_goal(goal, &mut local) {
                     err = Some(e);
@@ -1976,6 +2136,7 @@ impl<'kb> Emitter<'kb> {
             }
             self.inlining.pop();
         }
+        self.keep_own_variable_sorts(&own);
         self.var_sorts = saved_sorts;
         // Capture the (possibly grown) callee entity_bindings before
         // restoring the caller's view — fact_match calls deeper in
@@ -1988,14 +2149,19 @@ impl<'kb> Emitter<'kb> {
         }
 
         // Propagate body-bound head values back to the caller — both
-        // arithmetic strings and entity_bindings.
+        // arithmetic strings and entity_bindings. WI-20261014-FHEEK — a value is given
+        // the caller's variable as any value is ([`Self::bind_variable`]), in the
+        // CALLER's frame: the caller may have written the variable already, in a goal or
+        // in what it defined another variable as, and a substitution here left that text
+        // naming a variable the document no longer declares.
         for (head_idx, caller_synth) in head_caller {
             let head_synth = synthetic_var_name(head_idx);
             if let Some(value) = local.get(&head_synth) {
                 // Skip the trivial forwarding entry — body never
                 // overrode it, so there's nothing new to push back.
-                if *value != caller_synth {
-                    caller_bindings.insert(caller_synth.clone(), value.clone());
+                let passed = caller_bindings.get(&caller_synth).unwrap_or(&caller_synth);
+                if value != passed {
+                    self.bind_variable(caller_synth.clone(), value.clone(), caller_bindings);
                 }
             }
             if let Some(entity_occ) = final_ent.get(&head_synth) {
@@ -2179,8 +2345,19 @@ impl<'kb> Emitter<'kb> {
             }
             _ if occ_as_fn(call_arg).is_some_and(|(f, _, _)| self.is_construction(f)) => {
                 // Concrete entity / constructor at the call site — expose it for
-                // field_access on the callee side.
-                callee_ent.insert(head_synth, Rc::clone(call_arg));
+                // field_access on the callee side. WI-20261012-BR7P3 — CLOSED over the
+                // caller's frame first: its variables are the caller's, and read in the
+                // callee's frame by their indices they were the callee's — `fx(?p, ?r) :- ?r
+                // = ?p.x` called `fx(P(x: ?a, y: 0.0), ?r)` read `?a` as `fx`'s own `?r`, and
+                // the call said `r = r`.
+                let closed = self.close_occ(call_arg, &self.entity_bindings, caller_bindings)?;
+                callee_ent.insert(head_synth, closed);
+            }
+            // A field of a construction closed over its caller's frame ([`Self::close_occ`]):
+            // the SMT text of what the caller passed there. It was passed over, and the
+            // head's variable left bound to nothing.
+            Some(Expr::Const(Literal::String(passed))) => {
+                callee_str.insert(head_synth, passed.clone());
             }
             _ if occ_as_fn(call_arg).is_some() => {
                 // A COMPUTED (non-entity) argument — an arithmetic / operation
@@ -2278,30 +2455,51 @@ impl<'kb> Emitter<'kb> {
         // clause is now selected by: measured, `bound(?d) :- gain(?o, ?d)` called beside
         // an unrelated `?s = some(2.0)` read `gain` by its `some` clause for the free
         // `?o`. The same leak, the other way, handed the callee's entities back.
+        //
+        // WI-20261012-BR7P3 — and every variable of it, its result too, is its own: named
+        // apart from the document's before the body is read ([`Self::name_own_variables`]).
+        let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
+        let own = self.name_own_variables(
+            callee.head_args.iter().chain(&clause.body_nodes),
+            &mut local_bindings,
+        )?;
         let saved_sorts = std::mem::take(&mut self.var_sorts);
         let saved_entities = std::mem::take(&mut self.entity_bindings);
-        self.inlining.push((callee_qn.to_string(), 1));
+        self.inlining
+            .push(InlinedFrame::opened(callee_qn, 1, &local_bindings));
         let walked = (|| {
             self.seed_bounds(clause)?;
             self.infer_var_sorts(&clause.body_nodes)?;
-            let mut local_bindings: BTreeMap<String, String> = BTreeMap::new();
             for goal in &clause.body_nodes {
                 self.process_body_goal(goal, &mut local_bindings)?;
             }
-            Ok(local_bindings)
+            Ok(())
         })();
         self.inlining.pop();
+        self.keep_own_variable_sorts(&own);
         self.var_sorts = saved_sorts;
         self.entity_bindings = saved_entities;
-        let local_bindings: BTreeMap<String, String> = walked?;
-        local_bindings
-            .get(&synthetic_var_name(result_idx))
-            .cloned()
-            .ok_or_else(|| {
-                SmtGenError::new(format!(
-                    "called rule '{callee_qn}' never bound its result var"
-                ))
-            })
+        walked?;
+        // The result is what the body gave it: a value, or — given one where the body
+        // had written it already — the variable it was named, equated with the value. A
+        // body that gives it none defines nothing.
+        let result = synthetic_var_name(result_idx);
+        let value = local_bindings.get(&result).ok_or_else(|| {
+            SmtGenError::new(format!(
+                "the result of '{callee_qn}' has no name in its frame, where every variable \
+                 is named before its body is read"
+            ))
+        })?;
+        let named = own
+            .iter()
+            .find(|(local, _)| *local == result)
+            .map(|(_, named)| named);
+        if named == Some(value) && !self.equated.contains(value) {
+            return Err(SmtGenError::new(format!(
+                "called rule '{callee_qn}' never bound its result var"
+            )));
+        }
+        Ok(value.clone())
     }
 
     /// Translate an arithmetic expression (anthill prelude ops) to
@@ -2325,9 +2523,27 @@ impl<'kb> Emitter<'kb> {
             // here; were one to reach this arm it would emit as a bare token and
             // fail loudly at the solver, not silently mis-evaluate.
             Some(Expr::Const(Literal::String(s))) => Ok(s.clone()),
+            // WI-20261012-BR7P3 — a variable nothing binds is the clause's own, and goes by
+            // its index. In an inlined rule's frame every variable is bound, to the text
+            // its caller passed or to a name of its own ([`Self::name_own_variables`]): by
+            // its index it would be the clause's variable of that index.
             Some(Expr::Var(Var::DeBruijn(i))) => {
                 let synth = synthetic_var_name(*i);
-                Ok(bindings.get(&synth).cloned().unwrap_or(synth))
+                if self.entity_bindings.contains_key(&synth) {
+                    return Err(SmtGenError::new(format!(
+                        "`?{synth}` is a construction, which has no SMT term: written as one it \
+                         would be a variable nothing ties to it"
+                    )));
+                }
+                match bindings.get(&synth) {
+                    Some(bound) => Ok(bound.clone()),
+                    None if self.inlining.is_empty() => Ok(synth),
+                    None => Err(SmtGenError::new(format!(
+                        "`?{synth}` of `{}`, read inlined, has no name in the document: every \
+                         variable of an inlined rule is named when its frame is opened",
+                        self.inlining.last().map_or("", |frame| frame.rule.as_str())
+                    ))),
+                }
             }
             Some(Expr::Var(other)) => match self.var_name(other) {
                 // A variable of a stored fact's term that the reader of that fact named
@@ -2586,11 +2802,20 @@ impl<'kb> Emitter<'kb> {
                 // (WI-686). A DeBruijn absent from BOTH is a param with no
                 // binding at all — error loudly rather than clone it across the
                 // boundary.
+                //
+                // WI-20261012-BR7P3 — EXCEPT A VARIABLE OF THE CLAUSE'S OWN FRAME, which no
+                // inlined rule reads: its name in the document is its index's, so it closes
+                // to that name. Inside an inlined rule every variable is bound on one of the
+                // two channels — its head's from the call, its own named apart
+                // ([`Self::name_own_variables`]) — and one that is not is the error above.
                 if let Some(bound) = env.get(&synth) {
                     return Ok(Rc::clone(bound));
                 }
                 return match str_env.get(&synth) {
                     Some(smt) => Ok(scalar_param_occ(smt, occ.span, occ.owner)),
+                    None if self.inlining.is_empty() => {
+                        Ok(scalar_param_occ(&synth, occ.span, occ.owner))
+                    }
                     None => Err(SmtGenError::new(format!(
                         "close_occ: parameter ?{i} in a body-derived entity is bound \
                          on neither the entity nor the scalar channel — it cannot be \
@@ -3514,20 +3739,56 @@ fn occ_as_fn(
     }
 }
 
-/// The clause variables an occurrence names, at any depth, by frame index.
-pub(crate) fn debruijn_vars_of(occ: &Rc<NodeOccurrence>) -> BTreeSet<u32> {
-    let mut named = BTreeSet::new();
-    let mut pending = vec![Rc::clone(occ)];
-    while let Some(occ) = pending.pop() {
+/// How many variables the frame of `clause` has, whose head is `head`: one past the
+/// greatest index its head, its body, its bounds and its type parameters name. The
+/// clause's own variables are `var_0` to `var_<size - 1>` in its document, and a
+/// variable of a rule read inlined into it is named past them
+/// ([`Emitter::name_own_variables`]).
+fn frame_size(kb: &KnowledgeBase, clause: &ProgramClause, head: TermId) -> u32 {
+    let head = materialize_from_handle(kb, head);
+    debruijn_vars_of(std::iter::once(&head).chain(&clause.body_nodes))
+        .into_iter()
+        .chain(clause.type_bounds.iter().map(|(index, _)| *index))
+        .chain(clause.frame_type_params.iter().map(|(index, _)| *index))
+        .map(|index| index + 1)
+        .chain(std::iter::once(clause.shared_arity))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Does some SMT text a closed construction carries in its fields, at any depth
+/// ([`scalar_param_occ`]), say `holds` of itself?
+fn any_fragment(occ: &Rc<NodeOccurrence>, holds: &impl Fn(&str) -> bool) -> bool {
+    match occ.as_expr() {
+        Some(Expr::Const(Literal::String(text))) => holds(text),
+        Some(expr) => {
+            let mut found = false;
+            for_each_child(expr, |child| found = found || any_fragment(child, holds));
+            found
+        }
+        None => false,
+    }
+}
+
+/// The clause variables `occs` name, at any depth, by frame index: each once, in the
+/// order they are first met.
+fn debruijn_vars_of<'a>(occs: impl IntoIterator<Item = &'a Rc<NodeOccurrence>>) -> Vec<u32> {
+    fn walk(occ: &Rc<NodeOccurrence>, met: &mut Vec<u32>) {
         match occ.as_expr() {
             Some(Expr::Var(Var::DeBruijn(index))) => {
-                named.insert(*index);
+                if !met.contains(index) {
+                    met.push(*index);
+                }
             }
-            Some(expr) => for_each_child(expr, |child| pending.push(Rc::clone(child))),
+            Some(expr) => for_each_child(expr, |child| walk(child, met)),
             None => {}
         }
     }
-    named
+    let mut met = Vec::new();
+    for occ in occs {
+        walk(occ, &mut met);
+    }
+    met
 }
 
 /// The functor of a NULLARY constructor occurrence — a bare `Ref`/`Ident`, or an

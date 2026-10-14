@@ -26,8 +26,10 @@
 //!   * a proof that cites no such lemma states no call: its document is the one it was;
 //!   * what cannot be written whole is REFUSED, in the lift and in the proof, and not
 //!     left out: named arguments, an argument with no SMT form or no sort, a second
-//!     signature, a call inside an inlined rule that names that rule's own variable —
-//!     and in the lift, a connective over goals and an entity's slot that is no variable.
+//!     signature — and in the lift, a connective over goals and an entity's slot that is
+//!     no variable. A call inside an inlined rule that names that rule's own variable was
+//!     refused too, until WI-20261012-BR7P3 gave such a variable a name of its own: it is
+//!     stated of it.
 //!
 //! A LAW's premise that is a rule's predicate is as WI-20261012-ZZ7PH left it: the law
 //! is not lowered, and said (`wi_zz7ph_law_lowering_test`'s
@@ -612,15 +614,18 @@ end
     );
 }
 
-/// A CALL INSIDE AN INLINED RULE THAT NAMES THAT RULE'S OWN VARIABLE IS REFUSED.
-/// `wrap2`'s `?r` is neither passed by its head nor defined by its body, and an inlined
-/// rule's own variable goes by the name the proof's variable of the same index has
+/// A CALL INSIDE AN INLINED RULE THAT NAMES THAT RULE'S OWN VARIABLE IS STATED OF IT.
+/// `wrap2`'s `?r` is neither passed by its head nor defined by its body. An inlined
+/// rule's own variable went by the name the proof's variable of the same index has
 /// (WI-20261012-BR7P3): the call was stated `(related var_1 var_0)`, `var_0` the PROOF's
 /// `?y`, the lemma's premise held of two variables the proof never related, and `deep` —
-/// false at x = 0, y = 50 — proved (/code-review, measured).
+/// false at x = 0, y = 50 — proved (/code-review, measured); so it was refused here. Now
+/// `?r` is named past `deep`'s two variables, `var_2`, and the relation is stated of it;
+/// `deep` is a COUNTEREXAMPLE (`wi_fheek_inlined_names_test`'s verdict row). FAILS with
+/// BR7P3's naming backed out, as it did before it: refused.
 #[test]
-fn a_call_in_an_inlined_rule_that_names_its_own_variable_is_refused() {
-    let said = refusal(
+fn a_call_in_an_inlined_rule_that_names_its_own_variable_is_stated_of_it() {
+    let out = dry_run(
         "own",
         r#"
 namespace test.cdhsq.own
@@ -636,14 +641,17 @@ namespace test.cdhsq.own
   proof deep using lemma by z3 end
 end
 "#,
-        "test.cdhsq.own.deep",
     );
-    assert!(
-        said.contains("a call of the rule's predicate `test.cdhsq.own.related`")
-            && said.contains("in the body of `test.cdhsq.own.wrap2`, which is inlined")
-            && said.contains("WI-20261012-BR7P3"),
-        "{said}"
-    );
+    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
+    let deep = document(&out, "test.cdhsq.own.deep");
+    for line in [
+        "(declare-const var_2 Real)",
+        "(assert (>= var_1 var_2))",
+        "(assert (test.cdhsq.own.related/2 var_1 var_2))",
+        "(assert (<= var_0 100.0))",
+    ] {
+        assert!(deep.contains(&line), "`{line}`:\n{}", deep.join("\n"));
+    }
 }
 
 /// A PREMISE THAT IS A CONNECTIVE OVER GOALS IS REFUSED. `a | b` is `anthill.kernel.or(a,

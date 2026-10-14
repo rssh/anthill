@@ -56,7 +56,7 @@ use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::typing::{sort_functor_of_view, spec_op_parent_sort, type_param_global_var};
 use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause, SpecLaw};
 
-use crate::{debruijn_vars_of, occ_as_fn, synthetic_var_name, Emitter, SmtGenError};
+use crate::{occ_as_fn, synthetic_var_name, Emitter, SmtGenError};
 
 /// The SMT sort of a term of a document.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1099,14 +1099,14 @@ impl<'kb> Emitter<'kb> {
     ///     number a string spells;
     ///   * an argument that is no variable and that nothing gives a sort, under a scope
     ///     that has an abstract parameter — it may be of the carrier or a scalar, and
-    ///     guessed a `Real` it was "unhandled arithmetic op" for `top`;
-    ///   * a call INSIDE THE BODY OF AN INLINED RULE that names a variable of that rule's
-    ///     own — one its head does not pass and its body does not define. Such a
-    ///     variable goes by the name the proof's variable of the same index has
-    ///     (WI-20261012-BR7P3), so the relation would be stated of a variable of the
-    ///     proof's that the proof never related: measured, `wrap(?p, ?q) :-
-    ///     related(?p, ?r), …` inlined into a proof stated `related` of the proof's own
-    ///     `?y`, and a false claim proved.
+    ///     guessed a `Real` it was "unhandled arithmetic op" for `top`.
+    ///
+    /// A call inside the body of an inlined rule that names a variable of that rule's own
+    /// is stated of that variable, which has a name of its own in the document
+    /// (WI-20261012-BR7P3, `Emitter::name_own_variables`). It was refused: the variable
+    /// went by the name the proof's variable of the same index has, and `wrap(?p, ?q) :-
+    /// related(?p, ?r), …` inlined into a proof stated `related` of the proof's own `?y`
+    /// — measured, a false claim proved.
     ///
     /// An argument of any other shape with no SMT form — a constructor applied, a call
     /// of another predicate — is the expression reader's own loud error.
@@ -1141,21 +1141,6 @@ impl<'kb> Emitter<'kb> {
                 "this one is written with named arguments, which the relation has no order for"
                     .to_owned(),
             ));
-        }
-        if let Some((inlined, _)) = self.inlining.last() {
-            let own = pos_args
-                .iter()
-                .flat_map(debruijn_vars_of)
-                .map(synthetic_var_name)
-                .find(|name| !bindings.contains_key(name));
-            if let Some(own) = own {
-                return Err(not_stated(format!(
-                    "this one is in the body of `{inlined}`, which is inlined, and names \
-                     `?{own}` of that rule's own frame — a variable its head does not pass \
-                     and its body does not define, which the document cannot tell from the \
-                     proof's variable of the same index (WI-20261012-BR7P3)"
-                )));
-            }
         }
         let unsorted_is_refused = self.refusal_subject().is_some();
         let mut sorts = Vec::with_capacity(pos_args.len());
