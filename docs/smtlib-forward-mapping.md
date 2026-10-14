@@ -537,6 +537,20 @@ Walking KB terms (`kb.get_term(id)`) to SMT-LIB s-expressions:
 
 Builtin functors (`add`, `eq`, `gt`, ...) are intercepted and mapped to SMT-LIB built-ins (section 3.3).
 
+### 7.6 Names in a Document
+
+A document names variables, constants and functions, and the solver takes a name for one thing. Two things given one name are one: a constant that proves what the source does not say (`A(cap: ?a), B(cap: ?b)` read as one `cap`, WI-20261014-VVRHJ), two variables related as one (an inlined rule's own variable read as the proof's of the same index, WI-20261012-BR7P3), or one name declared twice (two structured steps' new variables, WI-20261014-S1VNF). So every name follows one policy (decided with the user, 2026-10-14):
+
+1. **Made in one place per document, from what it denotes.** The worlds of a disjunction (§4.5) and the lifts spliced into the document are of the document. No name is made from a short name, and none from an index read in another frame.
+2. **Three kinds, spelled apart.**
+   - **A variable** is `var_<n>`, from one count for the document. The variables of the proof's clause are `var_0` … `var_<k-1>`, by their index in its frame, so a document of one clause is the one it always was. Every other variable continues the count: an inlined rule's own (done, BR7P3), and a structured step's new variable in its lift (S1VNF). A quantifier's variables (a lemma's lift) are bound by it, and are spelled as the document's.
+   - **What the knowledge base declares** — an operation, a relation, a sort, an entity's field read as a constant — is its qualified name, written by `smt_symbol` (simple where the standard admits it, quoted otherwise): `ns.related/2`, `anthill.prelude.PartialOrd.lt@ns.Scope.T`, and a field the entity's qualified name with the field, `test.ent.A.cap` (VVRHJ; a field is its short name `cap` until then). A qualified name always holds a `.`. `sanitize_smt_id`, which folds distinct names into one (`a.b` and `a_b` are both `a_b`), goes with it.
+   - **What the emitter defines for itself** (`anthill_abs`, `anthill_cos`, `anthill_sin`) holds no `.` and does not begin `var_`.
+3. **A name is its identity.** Whether a variable is already written in the document (`Emitter::bind_variable`) is asked of the document's text, token by token. That is exact because of 1 and 2, and only because of them: a token names one thing.
+4. **A change to these rules moves only the documents that held a collision.** Every other document, with its cache key and its witness's hash, is the one it was, to the byte; the change lists those that moved.
+
+scaland's emitter follows the same rules for what it reads.
+
 ## 8. Example: Complete Translation
 
 ### KB State (after loading)

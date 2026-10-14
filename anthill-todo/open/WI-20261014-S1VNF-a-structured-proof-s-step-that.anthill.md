@@ -33,3 +33,9 @@ THE CONTROL: `big` proves; a step whose lift names no new variable, or whose con
 
 DONE WHEN: the control rows hold and fail when backed out; the documents that moved are listed; the gate is green.
 
+## Changes
+
+### 2026-10-14T13:35:00Z — feedback — user
+
+NAMING DECIDED (user, 2026-10-14): docs/smtlib-forward-mapping.md §7.6, Names in a Document. A step's new variable in its lift is a variable of the document that is not the proof clause's, so it continues the document's one count (var_<n>), as an inlined rule's own variable does since BR7P3. What stays to decide here is who declares it (with WI-20261012-5613E).
+

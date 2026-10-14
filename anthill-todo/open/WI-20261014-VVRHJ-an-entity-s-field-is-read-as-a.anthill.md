@@ -40,3 +40,7 @@ DONE WHEN: the control rows hold and fail when backed out; the documents that mo
 
 MEASURED, the same mechanism from the variable side: a field named like a variable collides with it. entity E(var_0: Float), fact E(var_0: 5.0), rule f: gte(?x, 3.0) :- E(var_0: ?v), lte(?x, 1.0), lte(?v, 9.0). On d7a8ffcb ?v was bound to the constant var_0, which is also ?v's own name, and the verdict (COUNTEREXAMPLE) came out right by that coincidence; on 6f5262ce bind_variable sees ?v given its own name and binds nothing, and the document both define-funs and declares var_0: z3 'named expression already defined with this name var_0'. Loud. sanitize_smt_id also folds distinct names into one (a.b and a_b are both a_b).
 
+### 2026-10-14T13:35:01Z — feedback — user
+
+NAMING DECIDED (user, 2026-10-14): docs/smtlib-forward-mapping.md §7.6, Names in a Document. An entity's field read as a constant is named by the entity's qualified name with the field (test.ent.A.cap), written by smt_symbol as an operation's name is; sanitize_smt_id goes with it. What stays to decide here is what a lift does with such a constant (carry it and its value with its declarations, read the field as a quantified variable its fact constrains, or refuse it).
+
