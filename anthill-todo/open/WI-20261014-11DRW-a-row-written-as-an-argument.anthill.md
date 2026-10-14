@@ -1,0 +1,17 @@
+## Attributes
+
+- id: WI-20261014-11DRW-a-row-written-as-an-argument
+- created: 2026-10-14T11:03:43Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-10-14T11:03:43Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A ROW WRITTEN AS AN ARGUMENT OF AN APPLIED SORT IS NOT COMPARED WHERE A PROVISION IS LOOKED UP OR A REQUIREMENT IS HELD AGAINST A CALL — the arrow case of WI-20261014-5JYH9 one position over. With `sort Strm { sort T = ?  effects E = ?  entity strm(v: T) }` and `sort Apply { sort F = ?  operation run(f: F) -> Int64 }`, MEASURED on ed5e902d: (1) `Q provides Apply[F = Strm[T = Int64, E = {}]]` (answers 1) answers `via(s: Strm[T = Int64, E = {ConsoleOutput}]) = Apply.run(s)` — a member declared over a pure stream handed one whose row says it may print; (2) `Q` beside `L provides Apply[F = Strm[T = Int64, E = {ConsoleOutput}]]` (7): a call at the pure stream and one at the printing stream are both refused 'ambiguous dispatch', two providers at one binding; (3) `sort User { requires Apply[F = Strm[T = Int64, E = {}]]  operation go(s: Strm[T = Int64, E = {ConsoleOutput}]) -> Int64 = Apply.run(s) }` beside `L` alone runs, 7 — the requirement at the pure row read by a call at the printing one and supplied by `L`; (4) `AnyRow { effects R = ?  requires Mark[T = Strm[T = Int64, E = {R}]]  provides Apply[F = Strm[T = Int64, E = {R}]] }` at a call at `{ConsoleOutput}` has its requirement supplied by `Mark` at `Strm[T = Int64, E = {Error[T = String]}]` (9) — the row parameter bound to nothing. MECHANISM: `match_candidate_against_goal` arm (2) recurses into an applied sort's bindings, and a row binding is `effects_rows(…)`, which `parametric_view_parts` keeps out of the arm, so it reaches the leaf arm (`dispatch_values_match`), whose last leg compares heads; the cover's `parts_verdict` reads a row argument the same way (`concrete_pair_verdict`). 5JYH9 compared rows only at an arrow's row (`match_candidate_rows`, `rows_verdict`), as the decision it was asked with covered arrows. WHY NOT THE SAME CHANGE: the stdlib writes rows with two tails as a provision's binding — `MappedStream provides Stream[T = T, E = {SourceEffects, TransformEffects}]` (combinators.anthill 54, 170) — and matched as written, the call's row would have to be split between the two parameters, which nothing decides. DIRECTION (user, 2026-10-14): ROWS ARE NORMALIZED BEFORE THEY ARE CHECKED. My reading, to confirm before implementing: each row put in one form first — what is already known substituted (a row parameter the match has bound elsewhere in the binding, the carrier's own arguments read through its provision as arm (2a) reads them), nested rows flattened, labels deduplicated — and then compared as 5JYH9 compares two arrows' rows; so `{SourceEffects, TransformEffects}` at a `MappedStream` whose two parameters are known is the row they are. TO DECIDE WITH IT: what a row with two tails neither of which is known compares as. ACCEPTANCE: (1) refused at load, answering at its own row; (2) each call answered by its own provider; (3) refused, or answered at the requirement's row only; (4) the requirement read at `Strm[T = Int64, E = {ConsoleOutput}]`; the stdlib's Stream and Iterable provisions dispatch as they do; the 5JYH9, 0GYW1, 12NKG rows stay as they are; the families green on both carriers; full workspace green via rustland/scripts/test.sh.
+
