@@ -1733,16 +1733,20 @@ pub(super) fn anchor_sort_goal(
 ) -> Option<WitnessGoal> {
     let carrier_ty = arg_types.first()?.clone();
     if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort)) {
+        // As [`witness_sort_goal`]: a type that pins no carrier decides no instance.
+        let sort = concrete_receiver_carrier(kb, spec_sort, &carrier_ty)?;
         let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-        let carrier = sort_functor_of_view(kb, &carrier_ty).map(|sort| {
-            self_represented_elements(kb, spec_sort, sort, &carrier_ty, written, &mut bindings);
-            GoalCarrier {
-                sort,
-                args: receiver_type_args(kb, &carrier_ty),
-            }
-        });
+        self_represented_elements(kb, spec_sort, sort, &carrier_ty, written, &mut bindings);
+        let carrier = GoalCarrier {
+            sort,
+            args: receiver_type_args(kb, &carrier_ty),
+        };
         return Some(sort_goal_with_wildcards(
-            kb, spec_sort, bindings, carrier, written,
+            kb,
+            spec_sort,
+            bindings,
+            Some(carrier),
+            written,
         ));
     }
     let param = spec_carrier_param_or_sole(kb, spec_sort)?;
@@ -1862,14 +1866,15 @@ pub(crate) fn fetch_dictionary(
         return FindDictFetch::Undecided {
             detail: if anchored {
                 format!(
-                    "the typed head binding's carried type cannot be read as a term, so \
-                     it cannot say which of `{}`'s parameters the carrier fills",
+                    "the typed head binding's carried type cannot be read as a term, or \
+                     pins no carrier of `{}`, so it cannot say which instance is meant",
                     kb.qualified_name_of(spec_sort),
                 )
             } else {
                 format!(
-                    "`{}` has no recorded signature, so the witness arguments' carried \
-                     types cannot say which of `{}`'s parameters they bind",
+                    "`{}` has no recorded signature, or its carrier argument's type pins \
+                     no carrier of `{}`, so the witness arguments' carried types cannot \
+                     say which instance is meant",
                     kb.qualified_name_of(op_functor),
                     kb.qualified_name_of(spec_sort),
                 )
@@ -2063,7 +2068,11 @@ pub(super) fn witness_sort_goal(
             if carrier.is_some() {
                 continue;
             }
-            let Some(sort) = sort_functor_of_view(kb, &arg_ty) else {
+            // A type that pins no carrier decides no instance ([`concrete_receiver_carrier`]):
+            // the spec itself, a sort others provide, a type not known. Taken as the carrier,
+            // a citation at `s: Sp` filled the clause's read with `Sp`'s own dictionary, the
+            // read then derived `Car`'s from the value, and the two disagreed.
+            let Some(sort) = concrete_receiver_carrier(kb, spec_sort, &arg_ty) else {
                 continue;
             };
             self_represented_elements(kb, spec_sort, sort, &arg_ty, written, &mut bindings);
@@ -2149,6 +2158,10 @@ pub(super) fn witness_sort_goal(
     // measurement rather than an un-drivable fixture.
     // `wi_x9pb4_require_dictionary_element_test::an_effect_row_element_is_left_to_its_
     // own_owner` drives both arms.
+    // A self-represented spec's instance is its carrier's: none pinned, no goal.
+    if self_representing && carrier.is_none() {
+        return None;
+    }
     Some(sort_goal_with_wildcards(
         kb, spec_sort, bindings, carrier, written,
     ))

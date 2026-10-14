@@ -857,12 +857,14 @@ fn a_slot_at_the_citers_own_parameter_is_refused_for_a_call_and_not_for_a_citati
     assert_eq!(drive(&src, &format!("{ns}.Out.cited")), -1, "the citation loads, and derives");
 }
 
-/// STATED LIMIT — passes either way. A driver run as a rule's GOAL: the selection `desc`
-/// writes in its own body for an operation-level `requires` does not reach the citation
-/// under it, and the clause derives `Int64`'s own. Run by the interpreter the same driver
-/// answers `4` (`the_tie_is_the_constructors_outside_any_sort`).
+/// A driver run as a rule's GOAL: the selection `desc` writes in its own body for an
+/// operation-level `requires` reaches the citation under it, as it does when the
+/// interpreter runs the driver (`the_tie_is_the_constructors_outside_any_sort`) — `4`.
+/// Until WI-20261013-GFS6A the resolver bridged the selected call with its argument values
+/// only, re-derived the requirement at `Int64`, and the clause answered `Int64`'s own `-1`.
+/// FAILS with the call's own stamps not carried to the bridge (`WovenDispatch::Stamped`).
 #[test]
-fn a_driver_run_as_a_rules_goal_derives() {
+fn a_driver_run_as_a_rules_goal_reads_its_selection() {
     let ns = "wi0rrqp.goal";
     let mut kb = crate::common::load_kb_with(&program(
         ns,
@@ -870,7 +872,7 @@ fn a_driver_run_as_a_rules_goal_derives() {
     ));
     assert_eq!(
         crate::common::one_definite_int(&mut kb, &format!("{ns}.q")),
-        Some(-1),
+        Some(4),
         "`Driver.desc()` as a goal",
     );
 }

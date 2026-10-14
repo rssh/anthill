@@ -455,12 +455,12 @@ pub struct ReduceFaults {
     errors: Vec<ResolveError>,
     /// A search below was cut short, so an empty answer set here is not a refutation.
     truncated: bool,
-    /// How many bridged calls had no implementation reachable at their arguments
-    /// (`BridgeDisposition::Unreduced`). A COUNT, read before and after one call's
-    /// reduction ([`Self::unreduced_count`]), because the sink is shared by every call a
-    /// goal's evaluation makes and only the call that added to it is unreduced. Not a
+    /// How many bridged calls read a requirement no provider answers at their arguments
+    /// (`BridgeDisposition::NoProvider`). A COUNT, read before and after one call's
+    /// reduction ([`Self::no_provider_count`]), because the sink is shared by every call a
+    /// goal's evaluation makes and only the call that added to it has no value. Not a
     /// fault: nothing ran short and nothing raised, so [`Self::is_empty`] does not read it.
-    unreduced: usize,
+    no_provider: usize,
 }
 
 impl ReduceFaults {
@@ -477,14 +477,15 @@ impl ReduceFaults {
         self.truncated = true;
     }
 
-    /// A bridged call had no implementation reachable at its arguments.
-    pub(crate) fn unreduced(&mut self) {
-        self.unreduced += 1;
+    /// A bridged call read a requirement no provider answers at its arguments.
+    pub(crate) fn no_provider(&mut self) {
+        self.no_provider += 1;
     }
 
-    /// The bridged calls so far that had no implementation reachable ([`Self::unreduced`]).
-    pub(crate) fn unreduced_count(&self) -> usize {
-        self.unreduced
+    /// The bridged calls so far that read a requirement no provider answers
+    /// ([`Self::no_provider`]).
+    pub(crate) fn no_provider_count(&self) -> usize {
+        self.no_provider
     }
 
     /// Did the reduction learn anything the caller must act on?
@@ -1562,6 +1563,12 @@ enum WovenDispatch {
     /// for its dictionary chain, one per slot in chain order: `Some` where the slot's read
     /// is bound (a citation filled it), `None` where the bridge derives it as before.
     Slots(Vec<Option<crate::eval::value::Dictionary>>),
+    /// The evidence the TYPER stamped on the call for its callee's own `requires`
+    /// ([`NodeOccurrence::op_dicts`]), one expression per op-scoped slot: what the call site
+    /// selected (`viaRule[A = Int64, WeakOrd = Descending](1, 5)`) or built. The bridge
+    /// evaluates each as eval's apply does and supplies the slots it can; one it cannot read
+    /// — a forward into a caller's frame the bridge has not got — is derived as before.
+    Stamped(SmallVec<[Option<TermId>; 2]>),
 }
 
 impl SearchStream {
@@ -6164,11 +6171,7 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
-            BuiltinTag::FindDictionary => {
-                let inferred = matches!(goal, Value::Node(o)
-                    if super::typing::is_inferred_requirement_read(self, o));
-                self.builtin_find_dictionary(goal, answer_subst, inferred)
-            }
+            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
             BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
             // `apply_domain` that `step_init` could not lower DELAYS. It is reached only on that
@@ -8526,11 +8529,9 @@ impl KnowledgeBase {
                     crate::eval::BridgeDisposition::Fault => BuiltinResult::Error(
                         ResolveError::new(self.bridge_fault_message(target, &e)),
                     ),
-                    // The carrier's `eq` has no implementation at these operands, so the
-                    // comparison is undecided (proposal 068 §2.2).
-                    crate::eval::BridgeDisposition::Unreduced => BuiltinResult::Unknown {
-                        cause: UnknownCause::Unreduced,
-                    },
+                    // The carrier's `eq` reads a requirement no provider answers at these
+                    // operands: it has no value there, and the comparison fails.
+                    crate::eval::BridgeDisposition::NoProvider => BuiltinResult::Failure,
                 },
             };
         }
@@ -8954,9 +8955,6 @@ impl KnowledgeBase {
         &mut self,
         goal: &V,
         subst: &Substitution,
-        // The typer INFERRED this read for a woven call (WI-20260925-P7VP4), rather than
-        // the author writing it — see [`Self::read_dictionary_into`]'s no-provider arm.
-        inferred: bool,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } => pos_arity,
@@ -9090,7 +9088,6 @@ impl KnowledgeBase {
                 out,
                 &bracket,
                 typed_instance,
-                inferred,
             ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
@@ -9131,7 +9128,6 @@ impl KnowledgeBase {
         // named.
         bracket: &super::typing::RequirementBracket,
         typed_instance: Option<&Value>,
-        inferred: bool,
     ) -> BuiltinResult {
         use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
         // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
@@ -9217,18 +9213,9 @@ impl KnowledgeBase {
             FindDictFetch::Guard(FindDictOutcome::Fire) => {
                 unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
             }
-            // A CARRIER THAT PROVIDES NO INSTANCE. The read the author wrote is the clause's
-            // condition, and it does not hold. The read the typer INFERRED for a woven call
-            // is that call's dictionary, and no implementation is reachable for the call: it
-            // is UNREDUCED (proposal 068 §2.2), undecided and never asked again — failing
-            // here refuted the clause, and `not(…)` over it held. A dictionary a citation
-            // SUPPLIED is the other case: no local row agrees with it, and the check refuses
-            // it (WI-860) rather than let the call run through it beside an undecided read.
-            FindDictFetch::Guard(FindDictOutcome::DontFire) if inferred && !supplied => {
-                return BuiltinResult::Unknown {
-                    cause: UnknownCause::Unreduced,
-                }
-            }
+            // A CARRIER KNOWN TO PROVIDE NO INSTANCE: the requirement is not available, and
+            // the read fails — written by the author or inferred for a woven call alike. A
+            // missing provider is no undecided answer.
             FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
             // The carried type is not readable yet (the witness value is unbound).
             // DELAY, and the wake condition needs no new machinery: the goal
@@ -11343,6 +11330,10 @@ impl KnowledgeBase {
                     spec_op_sym: *functor,
                     impl_op_sym: target,
                 });
+                // And the site's evidence for the SPEC op's own `requires` is no evidence
+                // for the member: carried onto the rebuilt call, the bridge read it as the
+                // member's op-scoped slots (`WovenDispatch::Stamped`) and refused the count.
+                call.set_op_dicts(SmallVec::new());
                 (call, woven_next)
             };
             let reduced = self.reduce_op_value(
@@ -11653,6 +11644,17 @@ impl KnowledgeBase {
         // `__req_tag` not bound in caller frame`, tripping `bridge_op_to_eval`'s own
         // internal-error assert. Bridging the callee HERE resolves its `requires` at
         // the concrete argument types instead, which is the one entry that can.
+        // THE CALL SITE'S OWN EVIDENCE FOR ITS CALLEE'S `requires` rides with it to the
+        // bridge, as eval's apply hands it to the frame it pushes. Re-derived from the
+        // argument values instead, a selection the call wrote was lost:
+        // `viaRule[A = Int64, WeakOrd = Descending](1, 5)` answered `Int64`'s own -1 when
+        // run from a rule, and `Descending`'s 4 from the interpreter. Only where the
+        // stamps were built for the operation that runs (`op == functor`).
+        let stamped = (woven.is_none() && op == functor)
+            .then(|| occ.op_dicts())
+            .filter(|stamps| stamps.iter().any(Option::is_some))
+            .map(WovenDispatch::Stamped);
+        let woven = woven.or(stamped.as_ref());
         if needs_dict {
             return self
                 .bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
@@ -11989,13 +11991,17 @@ impl KnowledgeBase {
         // UNENFORCED at every future bridge site.
         // WI-20260909-NAR1X — the woven call's dictionary, read off the evidence this
         // frame was handed and passed to the bridged interpreter EXPLICITLY.
-        let (dispatched_through, supplied_slots) = match woven {
-            Some(WovenDispatch::Dispatched { spec_op, dict }) => (Some((*spec_op, dict)), &[][..]),
-            Some(WovenDispatch::Slots(slots)) => (None, &slots[..]),
-            None => (None, &[][..]),
+        let (dispatched_through, supplied_slots, stamped) = match woven {
+            Some(WovenDispatch::Dispatched { spec_op, dict }) => {
+                (Some((*spec_op, dict)), &[][..], None)
+            }
+            Some(WovenDispatch::Slots(slots)) => (None, &slots[..], None),
+            Some(WovenDispatch::Stamped(stamps)) => (None, &[][..], Some(&stamps[..])),
+            None => (None, &[][..], None),
         };
-        let Some(outcome) = self.run_in_bridge_interp(|interp| {
-            interp.call_op_bridged(op, &args, dispatched_through, supplied_slots)
+        let Some(outcome) = self.run_in_bridge_interp(|interp| match stamped {
+            Some(stamps) => interp.call_op_bridged_stamped(op, &args, stamps),
+            None => interp.call_op_bridged(op, &args, dispatched_through, supplied_slots),
         })
         else {
             // WI-20260911-0V0F7 — THE RE-ENTRY CAP IS A TRUNCATION, and the `?` that
@@ -12049,9 +12055,10 @@ impl KnowledgeBase {
             crate::eval::BridgeDisposition::Fault => {
                 faults.fault(self.bridge_fault_message(op, &e))
             }
-            // No implementation of the call is reachable at these arguments: the caller
-            // reads the call as UNREDUCED (`KnowledgeBase::evaluate_call`).
-            crate::eval::BridgeDisposition::Unreduced => faults.unreduced(),
+            // A requirement the call reads is known not to be available at these
+            // arguments: the caller reads the call as having no value
+            // (`KnowledgeBase::evaluate_call`).
+            crate::eval::BridgeDisposition::NoProvider => faults.no_provider(),
         }
         None
     }

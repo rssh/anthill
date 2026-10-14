@@ -1,13 +1,15 @@
 //! WI-20261013-GFS6A — proposal 068 §2.1–2.2, the dictionary half: a woven call is SUSPENDED
-//! on its dictionary and UNREDUCED where no provider supplies it.
+//! on its dictionary, and the dictionary a provider has reaches it; where no provider has one
+//! the requirement is not available and the goal fails.
 //!
 //! A rule-body call of a sort's operation whose carrier is not known at load is woven
 //! (WI-20260925-P7VP4): an inferred read `find_dictionary(Sp, op, ?s, out: ?d)` stands before
 //! it, and the call carries `?d`. The read derives `?d` from the carrier's VALUE when it runs
 //! and waits while the carrier is unbound; the call waits with `?d` among its blockers
 //! (WI-20260926-CYNPE's coarse ones), answers once it is bound, and is a conditional answer if
-//! it never is. A ground carrier that provides no instance leaves the call UNREDUCED —
-//! undecided, its cause named — never a definite failure.
+//! it never is. A ground carrier known to provide no instance makes the requirement
+//! unavailable: the goal fails, written `require[X]` or unwritten alike — a missing provider
+//! is no undecided answer (decided by the user, 2026-10-14).
 //!
 //! BEFORE, measured on the ticket's two programs and on WI-20260923-KCNA0's three:
 //!   * over `Sp` with a type parameter (`Car provides Sp[T = Int64]`), the read built `Sp[T =
@@ -20,11 +22,15 @@
 //!   * a read run before its carrier was bound took the variable's BOUND, `Sp`, for the
 //!     carrier and bound `Sp`'s own dictionary: `Sp.dflt(?s, ?x), ?s <=> car(n: 1)` answered 7,
 //!     and with `?s` never bound, a definite 7;
-//!   * a read at a carrier that provides nothing FAILED: `dflted(van(n: 1), ?x)` answered no
-//!     solutions and `not(…)` over it held;
 //!   * an operation's own `requires` that the call's arguments pin at a carrier no provider
 //!     answers was skipped at the bridge, and the body's read of it died
-//!     `DeferToRequirement: … not bound in caller frame` — a debug build aborted.
+//!     `DeferToRequirement: … not bound in caller frame` — a debug build aborted;
+//!   * an operation that selected its callee's instance (`viaRule[A = Int64, WeakOrd =
+//!     Descending](1, 5)`) and was run from a rule lost the selection: the fold bridged the
+//!     callee from its argument values and the cited rule answered `Int64`'s own.
+//!
+//! A read at a carrier that provides nothing FAILS, as it did before: `dflted(van(n: 1), ?x)`
+//! has no answer and `not(…)` over it holds.
 //!
 //! ## Back-out
 //!
@@ -36,39 +42,55 @@
 //!     `the_first_program_answers_the_defaulted_member` (a conditional row each), and the
 //!     parameter half of `a_rule_citing_the_clause_answers`,
 //!     `a_dictionary_bound_by_a_later_goal_answers`,
-//!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers` and
-//!     `a_body_less_call_a_later_goal_grounds_answers` (a conditional row each);
+//!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers`,
+//!     `a_body_less_call_a_later_goal_grounds_answers`,
+//!     `a_dictionary_a_later_read_binds_answers` and `an_operation_citing_the_clause_answers`
+//!     (a conditional row, or `.head` over an empty answer, each);
 //!   * the provision's element taken where the written bracket names one
 //!     (`self_represented_elements`) — `a_written_element_still_selects_the_row` (`wrongT`
 //!     answers 42, definitely);
 //!   * the anchor's goal left to the wildcard tail (`anchor_sort_goal` not reading the
 //!     provision) — the parameter half of
 //!     `a_require_anchored_at_a_typed_head_reads_the_carriers_provision`;
+//!   * a goal built at a carrier type that pins no carrier (`witness_sort_goal` /
+//!     `anchor_sort_goal` taking `Sp` itself as the carrier) — the no-parameter `viaSp` of
+//!     `an_operation_citing_the_clause_answers` (the citation fills the read with `Sp`'s own
+//!     dictionary, the read refuses it, and `.head` raises over an empty answer);
 //!   * the refinement leaf taken at a goal a receiver made (`resolve_inner`) —
 //!     `the_second_program_answers_the_defaulted_member`, and the no-parameter half of
-//!     `a_rule_citing_the_clause_answers`, `a_dictionary_bound_by_a_later_goal_answers` and
-//!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers` (7 each) and of
-//!     `a_require_anchored_at_a_typed_head_reads_the_carriers_provision` (`Sp`'s own);
+//!     `a_rule_citing_the_clause_answers`, `a_dictionary_bound_by_a_later_goal_answers`,
+//!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers`,
+//!     `a_dictionary_a_later_read_binds_answers` and `an_operation_citing_the_clause_answers`
+//!     (7 each) and of `a_require_anchored_at_a_typed_head_reads_the_carriers_provision`
+//!     (`Sp`'s own);
 //!   * an unbound carrier read at its abstract bound (`guard_over_arg_types`) — the
 //!     no-parameter half of `a_dictionary_bound_by_a_later_goal_answers` and
 //!     `a_value_slot_whose_dictionary_a_later_goal_binds_answers` (7 each), and of
 //!     `a_dictionary_never_bound_is_a_conditional_answer` (the read answers);
-//!   * an inferred read that finds no provider failing again (`read_dictionary_into`) —
-//!     `a_carrier_that_provides_none_leaves_the_call_unreduced` (no solutions), and the four
-//!     PRVA2 rows that read `assert_unreduced`;
+//!   * a read that finds no provider answered as undecided (`read_dictionary_into`) —
+//!     `a_carrier_that_provides_none_fails` and
+//!     `a_written_require_at_a_carrier_that_provides_none_fails` (one undecided row each), and
+//!     PRVA2's four rows over carriers no provision binds;
 //!   * the op half's pinned no-provider slot skipped again (`resolve_bridge_requirements_
 //!     supplied`) — the three KCNA0 rows (the debug-build panic in `bridge_op_to_eval`);
 //!   * the read of that absence a FAULT, as every marker read is (`bridge_disposition`) — the
-//!     three KCNA0 rows (a conditional row with no cause).
-//!
-//! The PRVA2 rows' own back-out — a guard that fires where no provision binds the carriers —
-//! leaves a conditional row with NO cause, which `assert_unreduced` refuses: measured with the
-//! guard made to fire wherever it refused, which fails those four rows and
-//! `a_carrier_that_provides_none_leaves_the_call_unreduced`.
-//!
-//! NOT DRIVEN: the no-provider arm keeps FAILING a read whose dictionary a citation
-//! SUPPLIED (`read_dictionary_into`, `!supplied`) — no program here reaches a supplied
-//! dictionary at a carrier that provides nothing.
+//!     three KCNA0 rows (the fault on the stream);
+//!   * the call that read it left to `stuck_state` (`evaluate_call` not reading
+//!     `no_provider_count`) — the three KCNA0 rows (a conditional row);
+//!   * a woven call whose `?d` is unbound dispatched on its value instead of waiting
+//!     (`reduce_op_value`'s `ApplyWithin` arm) — `a_dictionary_a_later_read_binds_answers`
+//!     (the two clauses ask alike) and `a_written_element_still_selects_the_row` (`wrongT`
+//!     answers 42);
+//!   * the call site's own stamps not carried to the bridge (`WovenDispatch::Stamped`) —
+//!     `a_selection_an_operation_makes_reaches_the_rule_from_a_rule_goal` and 0RRQP's
+//!     `a_driver_run_as_a_rules_goal_reads_its_selection` (`-1` for `4`);
+//!   * the member call a dispatched woven call is rebuilt as keeping the spec op's stamps
+//!     (`reduce_op_value`'s `ApplyWithin` arm) — `wi_x9pb4_require_dictionary_element_test::
+//!     an_effect_row_element_is_left_to_its_own_owner` (the bridge refuses the member's
+//!     slot count: the debug-build panic in `bridge_op_to_eval`);
+//!   * a stamp that forwards a caller's slot an ERROR where the bridge has no frame
+//!     (`try_eval_requirement_chain_node`) — `a_forwarded_requirement_no_provider_answers_fails`
+//!     and `a_provided_carrier_answers` (the debug-build panic in `bridge_op_to_eval`).
 //!
 //! The CONTROLS pass either way, by design, and each says why at its site. Outside this module
 //! the ticket's controls pass unchanged: P7VP4's and SHED7's rows, and `classic_mini_test`
@@ -141,6 +163,16 @@ fn causes(kb: &mut KnowledgeBase, pattern: &str) -> Vec<Vec<UnknownCause>> {
         .iter()
         .map(|s| s.undecided.iter().map(|(_, c)| *c).collect())
         .collect()
+}
+
+/// `qn(?r)` has no answer and the search that said so is COMPLETE — a refutation, not an
+/// undecided or faulted search.
+#[track_caller]
+fn assert_refuted(kb: &mut KnowledgeBase, qn: &str) {
+    let goal = crate::common::query_pattern_term(kb, &format!("{qn}(?r)"));
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(sols.is_empty(), "{qn}: no answer; got {} solution(s)", sols.len());
+    assert!(!stats.truncated && stats.errors.is_empty(), "{qn}: a complete search: {stats:?}");
 }
 
 // ── the ticket's two programs ───────────────────────────────────────────────────────────
@@ -285,6 +317,103 @@ fn a_dictionary_bound_by_a_later_goal_answers() {
     }
 }
 
+/// THE ACCEPTANCE'S OWN SHAPE: the goal that binds the woven call's dictionary is WRITTEN
+/// AFTER the call — `require[Sp]` covers `Sp.dflt(?s, ?r)` and stands behind it, so the call
+/// runs first with `?d` unbound, waits on it, and answers once the read binds it. Before: a
+/// conditional row over the parameter (the read found no provider), 7 without one (`Sp`'s
+/// own dictionary).
+///
+/// THE WAIT ITSELF is what the count says: the clause with its read written after the call
+/// asks exactly one goal more than the same clause with the read first — the call, asked
+/// before its dictionary exists and again once the read binds it. A call that ran without
+/// its dictionary would answer on its first ask, and both clauses would ask alike.
+#[test]
+fn a_dictionary_a_later_read_binds_answers() {
+    for (ns, param) in [("gfs6a.readp", true), ("gfs6a.readnp", false)] {
+        let rules = "  rule laterRead(?s, ?r) :- Sp.dflt(?s, ?r), require[Sp]\n  \
+                     rule readFirst(?s, ?r) :- require[Sp], Sp.dflt(?s, ?r)\n";
+        let mut kb = crate::common::load_kb_with(&program(ns, param, rules));
+        let mut asked = |rel: &str| {
+            let pattern = format!("test.{ns}.{rel}(test.{ns}.Car.car(n: 1), ?r)");
+            assert_eq!(one_int(&mut kb, &pattern), Some(43), "param: {param}, {rel}");
+            let goal = crate::common::query_pattern_term(&mut kb, &pattern);
+            kb.resolve_with_stats(&[goal], &ResolveConfig::default()).1.goals_asked
+        };
+        let (later, first) = (asked("laterRead"), asked("readFirst"));
+        assert_eq!(later, first + 1, "param: {param}: the call waits once for its dictionary");
+    }
+}
+
+/// An OPERATION cites the clause and control passes into the rule: the read derives the
+/// dictionary from the value the operation hands over. `viaOp` holds a `Car`, whose type
+/// decides the instance at load; `viaSp` holds an `Sp`, which decides none, so the read is
+/// left to the value. Before: a conditional row over the parameter, 7 without one; and
+/// between, `viaSp` without the parameter FAILED its clause — the citation filled the read
+/// with `Sp`'s own dictionary, the read derived `Car`'s, and the two disagreed.
+#[test]
+fn an_operation_citing_the_clause_answers() {
+    for (ns, param) in [("gfs6a.opp", true), ("gfs6a.opnp", false)] {
+        let rules = format!(
+            "  import anthill.prelude.{{Error, EmptyStream}}\n{DFLTED}  \
+             operation viaOp(c: Car) -> Int64 effects {{Error, Error[EmptyStream]}} = dflted(c).head.x\n  \
+             operation viaSp(s: Sp) -> Int64 effects {{Error, Error[EmptyStream]}} = dflted(s).head.x\n  \
+             operation concrete() -> Int64 effects {{Error, Error[EmptyStream]}} = viaOp(car(n: 1))\n  \
+             operation abstract() -> Int64 effects {{Error, Error[EmptyStream]}} = viaSp(car(n: 1))\n"
+        );
+        let src = program(ns, param, &rules);
+        for entry in ["concrete", "abstract"] {
+            assert_eq!(
+                crate::common::run_int64(&src, &format!("test.{ns}.{entry}")),
+                Ok(43),
+                "param: {param}, {entry}",
+            );
+        }
+    }
+}
+
+/// An operation SELECTS the instance its callee's own `requires` gets, and the callee cites a
+/// rule: the selection is the dictionary the rule's woven call runs through, also when the
+/// operation is itself run from a rule's goal. `compare(1, 5)` is `4` under `Descending` and
+/// `-1` under `Int64`'s own. Rows: the selecting operation run from a rule, the same two
+/// operations deep, a selection passed on through an operation that forwards its own
+/// requirement, and — CONTROL, either way — the call with no selection. Before: `-1` for the
+/// first three, the bridge re-deriving `WeakOrd` at `Int64` from the argument values; run by
+/// the interpreter they answered `4` (P7VP4's `ruleDesc`).
+#[test]
+fn a_selection_an_operation_makes_reaches_the_rule_from_a_rule_goal() {
+    let src = r#"
+namespace test.gfs6a.sel
+  import anthill.prelude.{Int64, Error, EmptyStream, WeakOrd}
+  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  operation viaRule[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}
+      requires WeakOrd[T = A] = cmp(x, y).head.c
+  sort Descending
+    provides WeakOrd[T = Int64]
+    operation compare(a: Int64, b: Int64) -> Int64 = Int64.sub(b, a)
+  end
+  operation desc(k: Int64) -> Int64 effects {Error, Error[EmptyStream]} =
+      viaRule[A = Int64, WeakOrd = Descending](1, 5)
+  operation desc2(k: Int64) -> Int64 effects {Error, Error[EmptyStream]} = desc(k)
+  operation fwd[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}
+      requires WeakOrd[T = A] = viaRule(x, y)
+  operation fwdDesc(k: Int64) -> Int64 effects {Error, Error[EmptyStream]} =
+      fwd[A = Int64, WeakOrd = Descending](1, 5)
+  rule selected(?r) :- ?r <=> desc(0)
+  rule nested(?r) :- ?r <=> desc2(0)
+  rule forwarded(?r) :- ?r <=> fwdDesc(0)
+  rule own(?r) :- ?r <=> viaRule(1, 5)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    for (rel, expected) in [("selected", 4), ("nested", 4), ("forwarded", 4), ("own", -1)] {
+        assert_eq!(
+            crate::common::one_definite_int(&mut kb, &format!("test.gfs6a.sel.{rel}")),
+            Some(expected),
+            "{rel}",
+        );
+    }
+}
+
 /// The same with the call in a VALUE slot, where `<=>` waits on the woven call. Before,
 /// without the parameter: 7.
 #[test]
@@ -345,25 +474,37 @@ fn a_dictionary_never_bound_is_a_conditional_answer() {
 
 // ── a carrier that provides none ────────────────────────────────────────────────────────
 
-/// `Van` provides no `Sp`: the read finds no provider, and the call has no implementation —
-/// UNREDUCED, an undecided row naming its cause, and `not(…)` over it is undecided too.
-/// Before: no solutions, and `not(dflted(van(n: 1), 7))` held.
+/// `Van` provides no `Sp`: the requirement the call owes is known not to be available, so
+/// the goal fails and `not(…)` over it holds — as it did before this ticket, and as a written
+/// `require[Sp]` does (the row below). FAILS with that read made undecided: one row whose
+/// cause is `Unreduced`, and the negation undecided.
 #[test]
-fn a_carrier_that_provides_none_leaves_the_call_unreduced() {
+fn a_carrier_that_provides_none_fails() {
     let rules = format!("{DFLTED}  rule notVan(1) :- not(dflted(van(n: 1), 7))\n");
     let mut kb = crate::common::load_kb_with(&program("gfs6a.novan", false, &rules));
     assert_eq!(
         causes(&mut kb, "test.gfs6a.novan.dflted(test.gfs6a.novan.Van.van(n: 1), ?r)"),
-        vec![vec![UnknownCause::Unreduced]],
+        Vec::<Vec<UnknownCause>>::new(),
+        "no row",
     );
+    assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.novan.notVan"), Some(1));
+}
+
+/// A `require[Sp]` the AUTHOR wrote, at a carrier known to provide no instance, does not hold:
+/// the clause fails and `not(…)` over it holds, as the unwritten one does (the row above). It
+/// failed before this ticket too, and is here for the decision that a missing provider is no
+/// undecided answer, written or not.
+#[test]
+fn a_written_require_at_a_carrier_that_provides_none_fails() {
+    let rules = "  rule written(?s, ?r) :- require[Sp], Sp.dflt(?s, ?r)\n  \
+                 rule notWritten(1) :- not(written(van(n: 1), 43))\n";
+    let mut kb = crate::common::load_kb_with(&program("gfs6a.wrote", false, rules));
     assert_eq!(
-        crate::common::query_unary(&mut kb, "test.gfs6a.novan.notVan")
-            .into_iter()
-            .map(|(_, definite)| definite)
-            .collect::<Vec<_>>(),
-        vec![false],
-        "the negation of an undecided goal is undecided",
+        answers(&mut kb, "test.gfs6a.wrote.written(test.gfs6a.wrote.Van.van(n: 1), ?r)"),
+        Vec::<(Option<i64>, bool)>::new(),
+        "no row: the condition does not hold",
     );
+    assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.wrote.notWritten"), Some(1));
 }
 
 // ── WI-20260923-KCNA0: an operation's own requirement no provider answers ───────────────
@@ -380,18 +521,19 @@ fn kcna0(ns: &str, rest: &str) -> String {
     )
 }
 
-/// `answer`'s one row is undecided, its cause UNREDUCED.
+/// `qn` has no answer, by a complete search: the call has no value at its arguments.
 #[track_caller]
-fn assert_kcna0_unreduced(src: &str, qn: &str) {
+fn assert_kcna0_fails(src: &str, qn: &str) {
     let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(crate::common::undecided_causes(&mut kb, qn), vec![vec![UnknownCause::Unreduced]]);
+    assert_refuted(&mut kb, qn);
 }
 
 /// (q1) A projection the call grounds: `x.E` is `Blue` at `box(v: blue())`, and `Blue`
-/// provides no `Desc`. Before: the slot was skipped and the body's read aborted a debug build.
+/// provides no `Desc`, so `pick` has no value there and the goal fails. Before: the slot was
+/// skipped and the body's read aborted a debug build.
 #[test]
-fn a_projection_grounded_at_a_carrier_that_provides_none_is_unreduced() {
-    assert_kcna0_unreduced(
+fn a_projection_grounded_at_a_carrier_that_provides_none_fails() {
+    assert_kcna0_fails(
         &kcna0(
             "gfs6a.q1",
             "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
@@ -403,8 +545,8 @@ fn a_projection_grounded_at_a_carrier_that_provides_none_is_unreduced() {
 
 /// (q2) A structural former: nothing provides `Desc` at the row `{Red}`. Before: the abort.
 #[test]
-fn a_structural_former_no_provider_answers_is_unreduced() {
-    assert_kcna0_unreduced(
+fn a_structural_former_no_provider_answers_fails() {
+    assert_kcna0_fails(
         &kcna0(
             "gfs6a.q2",
             "  operation pick2(x: Box) -> Int64 requires Desc[T = {Red}] = Desc.tag()\n  \
@@ -417,8 +559,8 @@ fn a_structural_former_no_provider_answers_is_unreduced() {
 /// (fwd) Forwarded through a typed caller, which the load admits — `outer` covers `pick` — and
 /// `outer`'s own slot is the unprovided `Desc[T = {Red}]` at the bridge. Before: the abort.
 #[test]
-fn a_forwarded_requirement_no_provider_answers_is_unreduced() {
-    assert_kcna0_unreduced(
+fn a_forwarded_requirement_no_provider_answers_fails() {
+    assert_kcna0_fails(
         &kcna0(
             "gfs6a.fwd",
             "  operation pick(x: Box) -> Int64 requires Desc[T = {x.E}] = Desc.tag()\n  \

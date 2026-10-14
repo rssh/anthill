@@ -343,14 +343,17 @@ retired per-consumer reductions, the unfold threading dictionaries.
 
 `?d` was already among a woven call's blockers: CYNPE's coarse blockers are a waiting goal's
 unbound variables, and the walk descends into an `ApplyWithin`'s requirements. What kept the
-call from answering was the READ before it, at four places, each driven by
-`wi_gfs6a_woven_call_waits_on_its_dictionary_test` (back-outs stated at its sites):
+call from answering was how its dictionary was found and passed, at the places below, each
+driven by `wi_gfs6a_woven_call_waits_on_its_dictionary_test` (back-outs stated at its sites):
 
 - **A self-represented spec's elements come off the carrier's provision**
   (`self_represented_elements`, read by `witness_sort_goal` and `anchor_sort_goal` alike, through
   the typer's `bind_spec_params_from_provision`). Left to the wildcard tail, `T` under `Car
   provides Sp[T = Int64]` met the concrete binding and was refused, so the read never found the
-  provider. An element the written bracket names still selects the row.
+  provider. An element the written bracket names still selects the row. A carrier type that
+  pins no carrier (`concrete_receiver_carrier`: the spec itself, a sort others provide) builds
+  no goal, so a citation from `viaSp(s: Sp) = dflted(s).head.x` leaves the read to the value
+  instead of filling it with `Sp`'s own dictionary, which the read then refused.
 - **A goal its receiver made is answered by the receiver's sort** (`resolve_inner`): the
   refinement leaf a sort with no type parameter takes is for a `requires` clause, not for a goal
   with a carrier. Taken there, the read bound `Sp`'s own dictionary and a defaulted call ran the
@@ -359,14 +362,23 @@ call from answering was the READ before it, at four places, each driven by
   `concrete_receiver_carrier`): the variable's bound is the spec or a sort others provide, so
   the value bound later decides. Read as the carrier, a call whose receiver a later goal binds
   ran `Sp`'s default.
-- **No provider at a ground carrier is UNREDUCED** — for the read the typer INFERRED
-  (`read_dictionary_into`: `Unknown { Unreduced }`, the read parked, the call waiting on `?d`);
-  a read the author wrote still fails, and so does one whose dictionary a citation supplied. At
-  the bridge, an operation's own requirement the arguments pin and no provider answers is a
-  recorded absence (`UnavailableWhy::NoProvider`) rather than a skipped slot; a body that reads
-  it raises `UnpinnedRequirement`, whose disposition is `BridgeDisposition::Unreduced`, and
-  `evaluate_call` reads the call as `Stuck::Unreduced` (KCNA0's three programs: an undecided
-  row naming its cause, where a debug build aborted).
+- **No provider at a ground carrier is a failure, not an undecided answer** (decided by the
+  user, 2026-10-14, reversing the 2026-09-30 note on DSEXA: a missing provider is no undecided
+  answer, and where a provider exists its dictionary is threaded). The read fails, written or
+  inferred, as it did before. At the bridge, an operation's own requirement the arguments pin
+  and no provider answers is a recorded absence (`UnavailableWhy::NoProvider`) rather than a
+  skipped slot; a body that reads it raises `UnpinnedRequirement`, whose disposition is
+  `BridgeDisposition::NoProvider`, and `evaluate_call` reads the call as `Stuck::Absent` — it
+  has no value, as `div(1, 0)` has none (KCNA0's three programs: no answer, where a debug build
+  aborted).
+- **A selection an operation makes reaches the rule when the operation runs from a rule**
+  (`WovenDispatch::Stamped`, `Interpreter::call_op_bridged_stamped`). The fold bridged a nested
+  call to an operation with its own `requires` from the argument values alone, so
+  `viaRule[A = Int64, WeakOrd = Descending](1, 5)` inside `desc` answered `Int64`'s own -1 when a
+  rule ran `desc`, where the interpreter answers `Descending`'s 4. The call's own stamps
+  (`op_dicts`) now ride to the bridge and supply the slots they can; a stamp that forwards a
+  caller's slot the bridge has no frame for is read as unbound (`try_eval_requirement_chain_node`)
+  and its slot derived, as before.
 
 ## 7. Testing
 

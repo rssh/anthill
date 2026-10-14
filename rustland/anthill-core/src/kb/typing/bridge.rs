@@ -729,7 +729,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
             // that loaded clean (KCNA0: `pick(x: Box) requires Desc[T = x.E]` reached from
             // a rule body at `box(v: blue())`). Recorded as the absence it is: a body that
             // never reads the slot runs as it did, and one that reads it is refused there,
-            // naming the goal — UNREDUCED at the SLD bridge (proposal 068 §2.2).
+            // naming the goal — at the SLD bridge the call then has no value, and fails.
             //
             // The goal is the SLOT's, rendered here: a `NoMatch` forwarded from beneath a
             // chosen provider names that provider's own condition in its text and hint, and

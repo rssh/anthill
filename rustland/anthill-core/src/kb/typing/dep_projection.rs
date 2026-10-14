@@ -1557,17 +1557,17 @@ pub enum UnavailableWhy {
     /// provider answers — `why` is the resolution's own account, the condition of a chosen
     /// provider where the failure came from beneath it. KCNA0's `pick(x: Box) requires
     /// Desc[T = x.E]` reached from a rule body at `box(v: blue())`: `x.E` is `Blue` at this
-    /// call and `Blue` provides no `Desc`. A call whose body reads the slot has no
-    /// implementation at these arguments — it is UNREDUCED (proposal 068 §2.2), which the
-    /// read's error carries to the SLD bridge ([`absence_is_unreduced`]); a body that never
-    /// reads it runs.
+    /// call and `Blue` provides no `Desc`. The requirement is known not to be available, so
+    /// a call whose body reads the slot has no value at these arguments — the read's error
+    /// carries that to the SLD bridge ([`absence_is_unprovided`]), and whatever reads the call
+    /// fails; a body that never reads it runs.
     NoProvider { goal: String, why: String },
 }
 
-/// Does the absence `marker` names mean that no implementation is reachable for the call
-/// whose body read it — UNREDUCED (proposal 068 §2.2) — rather than a dictionary the route
+/// Does the absence `marker` names mean that no provider answers a requirement the call's
+/// arguments pinned — so the call has no value there — rather than a dictionary the route
 /// could not carry? `false` for any other record, and for a symbol that names none.
-pub(crate) fn absence_is_unreduced(kb: &KnowledgeBase, marker: Symbol) -> bool {
+pub(crate) fn absence_is_unprovided(kb: &KnowledgeBase, marker: Symbol) -> bool {
     matches!(
         kb.absence_record(marker),
         Some(AbsenceRecord::Slot {

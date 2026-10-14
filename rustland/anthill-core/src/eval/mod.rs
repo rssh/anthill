@@ -863,6 +863,45 @@ impl Interpreter {
     ///     never running with a wrong or missing dict. The two suspend for different
     ///     REASONS and say so, but a bridged eval may not abort the enclosing
     ///     resolution either way (WI-483), so both delay.
+    /// [`Self::call_op_bridged`] for a call that carries the TYPER's evidence for its
+    /// callee's own `requires` (`NodeOccurrence::op_dicts`, one expression per op-scoped
+    /// slot): each is evaluated as eval's apply evaluates it ([`Self::push_op_scoped_slots`]'s
+    /// reading), and supplies its slot; one this frame-less entry cannot read — a forward
+    /// into a caller's frame — leaves its slot to the derivation, as an unfilled read does.
+    pub(crate) fn call_op_bridged_stamped(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+        stamps: &[Option<crate::kb::term::TermId>],
+    ) -> Result<Value, EvalError> {
+        let mut op_slots: Vec<Option<value::Dictionary>> = Vec::with_capacity(stamps.len());
+        for stamp in stamps {
+            op_slots.push(match stamp {
+                Some(tid) => {
+                    let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
+                    self.try_eval_requirement_chain_node(&node)?
+                }
+                None => None,
+            });
+        }
+        if op_slots.iter().all(Option::is_none) {
+            return self.call_op_bridged(sym, args, None, &[]);
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, sym);
+        let sort_len = chain.sort_len();
+        if chain.len() != sort_len + op_slots.len() {
+            return Err(EvalError::Internal(format!(
+                "bridge: the call site supplied {} op-scoped slot(s) for `{}`, whose chain has {}",
+                op_slots.len(),
+                self.kb.qualified_name_of(sym),
+                chain.len() - sort_len.min(chain.len()),
+            )));
+        }
+        let mut slots: Vec<Option<value::Dictionary>> = vec![None; sort_len];
+        slots.extend(op_slots);
+        self.call_op_bridged(sym, args, None, &slots)
+    }
+
     pub(crate) fn call_op_bridged(
         &mut self,
         sym: Symbol,

@@ -1403,7 +1403,7 @@ impl Interpreter {
     /// raises the frame-naming error above at the read — which is where it is a
     /// failure. `ANTHILL_TRACE_REQ` prints what was dropped, exactly as the LEG 2
     /// unsupplied trace does.
-    fn try_eval_requirement_chain_node(
+    pub(super) fn try_eval_requirement_chain_node(
         &self,
         occ: &Rc<NodeOccurrence>,
     ) -> Result<Option<super::value::Dictionary>, EvalError> {
@@ -1446,12 +1446,13 @@ impl Interpreter {
                 }
                 self.build_dictionary(*impl_sort, subs).map(Some)
             }
-            Expr::VarRef { name } => {
-                let top = self.stack.top().ok_or_else(|| {
-                    EvalError::Internal("requirement chain var_ref on empty stack".into())
-                })?;
-                Ok(find_requirement(&top.requirements, *name).cloned())
-            }
+            // No frame binds nothing: the bridge reads a call's stamps before it pushes
+            // one, and a stamp that forwards the caller's own slot names a frame it has not
+            // got (`Interpreter::call_op_bridged_stamped`).
+            Expr::VarRef { name } => Ok(self
+                .stack
+                .top()
+                .and_then(|top| find_requirement(&top.requirements, *name).cloned())),
             other => Err(EvalError::Internal(format!(
                 "expected requirement-chain Expr, got {:?}",
                 std::mem::discriminant(other),

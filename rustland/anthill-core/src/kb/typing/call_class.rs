@@ -451,8 +451,8 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
                 }
                 UnavailableWhy::NoProvider { goal, why } => format!(
                     "the argument types pin `{goal}`, and no provider answers it ({why}), so \
-                     no implementation of this call is reachable at these arguments. Call \
-                     the operation at a carrier that provides `{slot_qn}`."
+                     this call has no value at these arguments. Call the operation at a \
+                     carrier that provides `{slot_qn}`."
                 ),
             }
         }

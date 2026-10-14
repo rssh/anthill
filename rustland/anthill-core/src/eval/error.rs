@@ -192,7 +192,7 @@ pub enum EvalError {
     UnpinnedRequirement {
         detail: String,
         /// The marker the read met — the functor of the dictionary that pins no provider —
-        /// whose filed record says why ([`crate::kb::typing::absence_is_unreduced`]).
+        /// whose filed record says why ([`crate::kb::typing::absence_is_unprovided`]).
         marker: crate::intern::Symbol,
     },
     /// WI-842 (proposal 058 §4.9): value-directed dispatch found TWO OR MORE
@@ -323,11 +323,11 @@ pub enum BridgeDisposition {
     /// raises `match_failed` / `division_by_zero` that ride a row they never appear in
     /// — is a fault.
     Fault,
-    /// No implementation of the callee is reachable at these arguments: its body read a
-    /// requirement slot whose goal the arguments pinned and no provider answers. The call
-    /// is UNREDUCED (proposal 068 §2.2) — undecided, never retried, and no fault: nothing
-    /// ran short and nothing raised.
-    Unreduced,
+    /// The callee's body read a requirement slot whose goal the arguments pinned and no
+    /// provider answers: the requirement is known not to be available, so the call has no
+    /// value at these arguments, as `div(1, 0)` has none, and whatever reads it fails. No
+    /// fault: nothing ran short and nothing raised.
+    NoProvider,
 }
 
 impl EvalError {
@@ -378,14 +378,14 @@ impl EvalError {
 
             // ── Fault: the callee could not be run to an answer ──
             EvalError::Raised { payload } => raised_disposition(kb, payload),
-            // ── Unreduced: no implementation of the call is reachable ──
+            // ── NoProvider: the requirement is known not to be available ──
             //
             // A slot the argument types pinned and no provider answers: the call has no
-            // implementation at these arguments, and no binding can give it one.
+            // value at these arguments, and no binding can give it one.
             EvalError::UnpinnedRequirement { marker, .. }
-                if crate::kb::typing::absence_is_unreduced(kb, *marker) =>
+                if crate::kb::typing::absence_is_unprovided(kb, *marker) =>
             {
-                BridgeDisposition::Unreduced
+                BridgeDisposition::NoProvider
             }
             EvalError::UnboundVar { .. }
             | EvalError::UnknownOperation { .. }

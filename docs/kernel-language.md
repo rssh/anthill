@@ -2622,8 +2622,13 @@ dictionary for the requirement passes its own, so `operation viaRule[A](x: A, y:
 answers through that provider. Where nothing is passed — a query, a goal of another
 rule's body, an operation holding no such requirement — the clause derives the
 dictionary from the argument's carried type when the goal runs, and waits while the
-argument is unbound. Writing `require[X]` names the dictionary or shares it among
-calls; the call owes it either way.
+argument is unbound. Where that type is known to provide no instance, the requirement
+is not available: the condition does not hold and the goal fails, so `not(…)` over it
+holds — whether the author wrote `require[X]` or the call owes it unwritten. A call to an
+operation whose body reads a requirement its arguments fix at a type no provider answers
+has no value there (ABSENT, §8.3), and fails as well; one whose body never reads it runs.
+Writing `require[X]` names the dictionary or shares it among calls; the call owes it
+either way.
 
 A call whose arguments' types are known at load is decided there, by its carrier, and
 has no condition: `rule cmpInt(?c) :- WeakOrd.compare(1, 5, ?c)` is `Int64`'s own
@@ -5568,7 +5573,7 @@ The other face is the **relation** (proposal 052): `Relation[T]` is an unordered
 - **SUSPENDED** — an argument is an unbound variable: the goal waits, and is asked again only once one of its variables is bound — not each time a sibling makes progress (WI-20260926-CYNPE); left over, the answer is conditional.
 - **UNREDUCED** — no implementation is reachable (none of any kind, or a body-less spec operation whose ground carrier no provider supplies): the comparison is **undecided** (`UnknownCause::Unreduced`), never false, and `not(...)` over it proves nothing. The goal is PARKED: kept behind its siblings, so a sibling that fails still refutes the clause, and never asked again — unless another call in it still waits on a variable, since that call may yet turn out ABSENT and fail the goal (`Int64.div(1, ?z) = Conv.tag("km")`, `?z` later bound to `0`).
 - **SYMBOLIC** — an argument is a rigid eigenvariable (`add(n, 1)` inside a proof): kept as a term, equal only to itself.
-- **ABSENT** — it ran and has no value (`Int64.div(1, 0)`): whatever reads it fails, as its relation `div(1, 0, ?r)` fails — `?r <=> div(1, 0)`, `div(1, 0) = 3` and `p(div(1, 0))` answer nothing, and `not(div(1, 0) = 3)` holds.
+- **ABSENT** — it ran and has no value (`Int64.div(1, 0)`, or an operation whose body reads a requirement its arguments fix at a type no provider answers): whatever reads it fails, as its relation `div(1, 0, ?r)` fails — `?r <=> div(1, 0)`, `div(1, 0) = 3` and `p(div(1, 0))` answer nothing, and `not(div(1, 0) = 3)` holds.
 
 A goal-only builtin written as data (`prove(eq(?x, 1))`) and a dotted NAME in a data slot (`holds(ns.rel)`, `stored(Box.zero)`) are not computations and stay the terms they spell.
 

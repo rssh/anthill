@@ -284,7 +284,14 @@ cheap: the evaluator suspends BECAUSE it needed a particular variable, and names
 - **At run time otherwise** — where the carrier depends on something the typer does not fix: a
   type variable of the rule (opened fresh at each use, so the dictionary is flex and the call is
   SUSPENDED first), a variable whose type nothing determines (the WI-282 exemption), a projection
-  grounded only by the call's arguments (KCNA0's q1), an untyped carrier (§6). Once the dictionary
+  grounded only by the call's arguments (KCNA0's q1), an untyped carrier (§6). DECIDED
+  2026-10-14 (the user, with WI-20261013-GFS6A), replacing the rest of this item for a missing
+  PROVIDER: a missing provider is no undecided answer. Where the carrier turns out to provide no
+  instance, the requirement is known not to be available and the goal FAILS — a written
+  `require[X]` and the condition a call owes unwritten alike — and a call whose body reads a
+  requirement its arguments fix at such a type has no value (ABSENT). Where a provider exists,
+  its dictionary is threaded to the call. What follows is kept for the record of the first
+  reading. Once the dictionary
   turns concrete and no provider supplies the member, the call is UNREDUCED: it is evaluated ONCE
   and PARKED on the frame with its cause. It stays behind its siblings — a sibling may still FAIL
   and refute the clause, and a refutation must win over an undecided answer — but it is never asked
