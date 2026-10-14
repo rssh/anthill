@@ -451,6 +451,22 @@ pub(super) fn provision_binding_at_param(
     carrier_param: Symbol,
     spec_view: &Value,
 ) -> Option<(Value, Symbol)> {
+    let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
+    spec_view_base(kb, &val)
+        .filter(|&s| {
+            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
+                || kb.is_free_standing_entity(s)
+        })
+        .map(|s| (val, s))
+}
+
+/// The value a spec view binds at `carrier_param`, whatever it is — [`provision_binding_at_param`]
+/// before its filter to a sort-like base.
+fn provision_binding_value_at_param(
+    kb: &KnowledgeBase,
+    carrier_param: Symbol,
+    spec_view: &Value,
+) -> Option<Value> {
     let carrier_short = short_name_of(kb.local_name_of(carrier_param));
     // The param's OWN symbol first, short name only as the fallback — `goal_binding_value`'s
     // two-rung ladder, and here it is also what keeps the common case allocation-free:
@@ -465,12 +481,25 @@ pub(super) fn provision_binding_at_param(
             spec_view.named_arg(kb, key)?.to_value()
         }
     };
-    spec_view_base(kb, &val)
-        .filter(|&s| {
-            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
-                || kb.is_free_standing_entity(s)
-        })
-        .map(|s| (val, s))
+    Some(val)
+}
+
+/// A provision's carrier binding when it is a STRUCTURAL type — a tuple or an arrow, a type
+/// that is no sort (`provides Apply[F = (Int64, Int64)]`). [`provision_carrier_binding`]
+/// answers `None` for it, as for a provision whose carrier is the provider itself, and the
+/// readers that tell the two apart ask this.
+pub(super) fn provision_structural_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_view: &Value,
+) -> Option<(Value, CarrierBucket)> {
+    if !view_is_sort_view(kb, spec_view) {
+        return None;
+    }
+    let carrier_param = spec_carrier_param(kb, spec_sort)?;
+    let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
+    let bucket = structural_bucket(kb, &val)?;
+    Some((val, bucket))
 }
 
 /// WI-20260913-KXNEX — A WRITTEN `provides` CLAUSE MUST NAME A CARRIER. For each

@@ -1744,14 +1744,6 @@ fn goal_carrier_key<'g>(
     Some(crate::kb::defaults::CarrierKey::View(view))
 }
 
-/// WI-861 — the BASE sort of a carrier view (`List[T = Int64]` ⇒ `List`), for the one
-/// reader that needs the [`crate::kb::defaults::DefaultProviderIndex`] BUCKET rather than the
-/// comparison. `None` for a term that is not a carrier shape at all, which that reader
-/// takes as "no default here".
-pub(crate) fn carrier_view_base<V: TermView>(kb: &KnowledgeBase, view: &V) -> Option<Symbol> {
-    carrier_view_parts(kb, view).map(|(base, _)| base)
-}
-
 /// Build subgoals for a chosen conditional candidate by substituting
 /// the impl-side substitution into the impl sort's **direct** `requires`
 /// (WI-239). Filters out op-bindings (which the loader stores alongside

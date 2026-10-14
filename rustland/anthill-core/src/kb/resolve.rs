@@ -7483,9 +7483,10 @@ impl KnowledgeBase {
     /// all answer the PROVIDER — which is what makes `self_provides` writable in anthill
     /// as "the answer IS the provider" rather than as a second copy of the criterion.
     ///
-    /// THE ONE OWNER of that criterion is [`super::typing::witness_dispatch_carrier_view`],
-    /// shared with `provision_supplier` (dispatch), the WI-838/859 coherence grouping
-    /// (load) and `defaults::build_default_provider_index` (058 §3.6's rows). A builtin
+    /// THE ONE OWNER of that criterion is [`super::typing::provision_dispatch_carrier`] — the
+    /// witness criterion ([`super::typing::witness_dispatch_carrier_value`], shared with
+    /// `provision_supplier` and the WI-838/859 coherence grouping) and a witness at a tuple or
+    /// an arrow — read by `defaults::build_default_provider_index` (058 §3.6's rows) as well. A builtin
     /// rather than a loader-emitted fact for exactly that reason: a derived fact would be
     /// a SECOND materialization of a relation this KB can already answer, and keeping two
     /// derivations of one criterion in step by hand is the shape WI-838 was built out of.
@@ -7523,19 +7524,24 @@ impl KnowledgeBase {
         let Some(spec_sort) = super::typing::spec_view_base(self, &spec_val) else {
             return BuiltinResult::Failure;
         };
-        let carrier = match super::typing::witness_dispatch_carrier_value(
+        let carrier = match super::typing::provision_dispatch_carrier(
             self, spec_sort, provider, &spec_val,
         ) {
             // A WITNESS — the carrier is the view it named, kept AS WRITTEN so a
             // conditional provision's `List[T = E]` stays distinguishable from a ground
             // `List[T = Int64]` (058 §3.6's `one_default` turns on exactly that), and in
-            // the carrier it arrived on rather than flattened through the term store.
-            Some((view, _)) => view,
+            // the carrier it arrived on rather than flattened through the term store. A
+            // tuple or an arrow is one too, and its view is the whole answer: there is no
+            // sort name for `self_provides` to compare.
+            super::typing::DispatchCarrier::Sort(view, _)
+            | super::typing::DispatchCarrier::Structural(view, _) => view,
             // The carrier IS the provider. Minted through `make_name_term_from_sym`, the
             // same shape `extract_sort_ref` hands back — so the anthill rule can ask
             // "is this answer the provider?" by comparing two normalized names rather
             // than by comparing a stored `sort_ref` against a synthesized term.
-            None => Value::term(self.make_name_term_from_sym(provider)),
+            super::typing::DispatchCarrier::Provider => {
+                Value::term(self.make_name_term_from_sym(provider))
+            }
         };
         self.finish_result_value(target, carrier)
     }
