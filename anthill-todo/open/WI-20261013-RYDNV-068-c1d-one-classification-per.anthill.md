@@ -23,3 +23,9 @@ ALSO HERE, from WI-20260926-DSEXA's 2026-09-30 note: the load-time refusal to we
 
 ACCEPTANCE (cargo-test, driven): a call the clause typing places at a concrete carrier is pinned at load and not woven, a row per class, each back-out reddening its own row; P7VP4's, SHED7's and 0RRQP's rows unchanged or flipped as C1a records. WI-20260926-Y6ZCD waits on this part.
 
+## Changes
+
+### 2026-10-14T15:07:44Z — feedback — claude
+
+D1a's ANSWER IS IN PLACE (WI-20261013-GFS6A, 4d22dbc2): an INFERRED find_dictionary read at a ground carrier no provider supplies answers Unknown { Unreduced } (read_dictionary_into), not a failure; a written read and one whose dictionary a citation supplied still fail. Retiring inferred_demand's refusal can rely on it.
+

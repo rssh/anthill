@@ -28,3 +28,9 @@ CONTROLS that must keep working: the same programs with a PROVIDED carrier and a
 
 ACCEPTANCE: q1, q2 and fwd are refused at LOAD with a diagnostic naming the requirement and the carrier (preferred — the NR6FJ doc's own "at the call, at load, where the typer has both"), or, where the carrier genuinely depends on a runtime value, suspend to a NAMED residual at the bridge — never the debug abort. Driven through `load_all` and resolution, back-outs stated at the tests; the controls above green.
 
+## Changes
+
+### 2026-10-14T15:07:43Z — feedback — claude
+
+RUN-TIME HALF DELIVERED by WI-20261013-GFS6A (4d22dbc2): q1, q2 and fwd each answer one undecided row whose cause is Unreduced (Solution::undecided), where a debug build aborted in bridge_op_to_eval; the controls answer 7; a body that never reads the slot runs. The bridge records an operation's own requirement that the arguments pin and no provider answers as an absence (UnavailableWhy::NoProvider) instead of skipping it, and a read of it is BridgeDisposition::Unreduced. Rows: wi_gfs6a_woven_call_waits_on_its_dictionary_test's three KCNA0 rows. WHAT IS LEFT is the preferred LOAD refusal: q2's carrier is written concretely (Desc[T = {Red}]), so it depends on no run-time value and the acceptance's run-time alternative does not cover it — NR6FJ's check_rule_body_operation_requires reads the carrier with sort_functor_of_view, which has no answer for a row; q1 and fwd are grounded by literal arguments the rule body does not type until 7D48J's clause typing.
+
