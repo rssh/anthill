@@ -873,6 +873,36 @@ needed to validate it (contrast the delivered `ExprCarried` neutral, whose decla
 sort must be threaded sideways because the param's source identity erases to a fresh `_`
 var).
 
+### Grounding a bound-open member at a binding (WI-20261003-QGVB1, 2026-10-14)
+
+A bound-open member is open in the BOUND, not in the program: `requires Storage[C = P]`
+is `Storage` at `C = P` and any `Key` (kernel-language §8.1), and wherever `P` is bound to
+a type the member is what the provision answering the bound there says. At `P =
+MemStore`, `P.Key` is `MemStore`'s `Key` — `String` where `MemStore provides
+Storage[C = MemStore, Key = String, …]`. Two places bind `P`, and both read it so:
+
+- **a provision** of the declaring sort (`Car provides Sp[P = MemStore]`): the member rule
+  reads the spec's `x: P.Key` as `String`, which is what a member writing `MemStore.Key`
+  reads, so the member written as the spec writes it fits;
+- **a call** that binds `P` (by its receiver's provision, its arguments or a bracket): an
+  argument at `x: P.Key` is checked against `String`, and a result typed `P.Val` is
+  `Int64`. An operation's own bound (`f[X](…, y: X.Q) requires Pair[P = X]`) is read the
+  same way.
+
+"The provision answering the bound" is the one provision that answers the slots the bound
+writes, or several that name one type for the open member, a witness included. Two that
+name different types (`LeafLeaf` at `Pair[P = Leaf, Q = Leaf]` beside `AnyPebble[X]` at
+`Pair[P = X, Q = Pebble]`) leave the member unread at that binding. A call whose argument
+would be checked against it is then refused, where the neutral would have taken any
+argument while the dictionary handed to the callee is at one type. This holds whoever
+supplies that dictionary — a caller's `requires` that writes `Q` supplies the requirement,
+but the call still cannot read `P.Q` off it. Where no bound lends the member (the WI-383
+self-carrier reading of an operation's own parameter), nothing changes.
+
+The bound is read as the formation read it: a written `?` in it is a member left out, so
+`requires Storage[C = P, Key = ?]` forms and grounds `P.Key` as `requires Storage[C = P]`
+does.
+
 **ζ** — two projections are equal iff same `member`, same canonical `requires`
 application, and carrier vars **in the same σ-class** — a *check*, never a binding (the
 §4 non-injectivity rule unchanged: never unify two vars to force `P.Key ≡ Q.Key`).
