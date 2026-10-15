@@ -4,7 +4,7 @@
 **Depends on:** [018-expressions-and-operation-implementation](018-expressions-and-operation-implementation.md) (expression IR), [022-typing-as-facts](022-typing-as-facts.md) (typing substrate)
 **Related:** [026-expression-evaluator](026-expression-evaluator.md) (the *runtime* sibling — same walk, runtime values), [025-proof-constructs](025-proof-constructs.md) (a consumer — in-body proofs), [048-conditional-effects](048-conditional-effects.md) (a consumer — WI-067 effect discharge), [013-abstract-effects](013-abstract-effects.md) / [045-effect-sets-and-expressions](045-effect-sets-and-expressions.md)
 **Affects:** `rustland/anthill-core/src/kb/typing.rs` (`TypingEnv`, the `if`/`match` checking)
-**Extended by:** [050.1](050.1-memory-alias-and-connected.md) (the memory half of `Γ`: `memory_alias`, `memory_connected`, and an operation's `ensures memory_connected(result, …)`)
+**Extended by:** [050.1](050.1-memory-alias-and-maybe-connected.md) (the memory half of `Γ`: `memory_alias`, `memory_maybe_connected`, and an operation's `ensures memory_maybe_connected(result, …)`)
 
 ## Motivation
 
