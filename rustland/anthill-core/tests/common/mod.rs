@@ -2065,6 +2065,13 @@ pub fn entity_functor(kb: &KnowledgeBase, v: &eval::Value) -> Option<anthill_cor
     }
 }
 
+/// The QUALIFIED name of an entity value's constructor ([`entity_functor`]) — `None` for a
+/// value that is no entity.
+#[allow(dead_code)]
+pub fn entity_functor_qn(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
+    entity_functor(kb, v).map(|s| kb.qualified_name_of(s).to_string())
+}
+
 /// An entity's field BY DECLARED NAME, whatever CARRIER the entity rides on — the
 /// test-side twin of `project_field` (`kb/resolve.rs`).
 ///
@@ -2140,16 +2147,27 @@ pub fn scalar_int(kb: &KnowledgeBase, v: &eval::Value) -> Option<i64> {
     v.literal_int64(kb)
 }
 
-/// The ONE DEFINITE answer of the unary relation `qn` ([`query_unary`]), as the `Int64` it
-/// denotes ([`scalar_int`]) — `None` for a row that denotes no `Int64`. Any other answer
-/// set PANICS, naming it: none, several, or one that is not definite are no single answer.
+/// The ONE DEFINITE answer of the unary relation `qn` ([`query_unary`]). Any other answer
+/// set PANICS, naming it: none, several, or one that is not definite are no single answer —
+/// so a conditional row beside the definite one fails here, where [`definite_unary`] would
+/// drop it.
 #[allow(dead_code)]
-pub fn one_definite_int(kb: &mut KnowledgeBase, qn: &str) -> Option<i64> {
+#[track_caller]
+pub fn one_definite(kb: &mut KnowledgeBase, qn: &str) -> eval::Value {
     let rows = query_unary(kb, qn);
     match rows.as_slice() {
-        [(v, true)] => scalar_int(kb, v),
+        [(v, true)] => v.clone(),
         _ => panic!("{qn}: expected one definite row, got {rows:?}"),
     }
+}
+
+/// [`one_definite`] as the `Int64` it denotes ([`scalar_int`]) — `None` for a row that
+/// denotes no `Int64`.
+#[allow(dead_code)]
+#[track_caller]
+pub fn one_definite_int(kb: &mut KnowledgeBase, qn: &str) -> Option<i64> {
+    let v = one_definite(kb, qn);
+    scalar_int(kb, &v)
 }
 
 /// The UNDECIDED causes of each answer of the unary relation `qn` (`qn(?r)`), in answer order

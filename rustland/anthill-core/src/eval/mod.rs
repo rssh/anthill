@@ -382,7 +382,7 @@ impl ErrorLayer {
         let (reify, result_ok, result_err, error_sort, tag, tv) = {
             let r = |qn: &str| kb.try_resolve_symbol(qn);
             (
-                r("anthill.prelude.Error.reify")?,
+                kb.reify_operation()?,
                 r("anthill.prelude.Result.ok")?,
                 r("anthill.prelude.Result.err")?,
                 r("anthill.prelude.Error")?,
@@ -1301,6 +1301,11 @@ impl Interpreter {
         args: &[Value],
         requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
+        // Proposal 027.4 — `Error.reify` has no body to push: its boundary is a frame
+        // ([`Self::invoke_reify_boundary`]). Keyed by symbol, as in the two in-body faces.
+        if Some(sym) == self.error_layer.as_ref().map(|l| l.reify) {
+            return self.invoke_reify_boundary(sym, args, requirements);
+        }
         // WI-1057 — `sym` and `requirements` are REBOUND rather than passed to a
         // recursive call. When the body-less arm below dispatches value-directed, the
         // impl it picks is run by falling through to the frame push at the BOTTOM OF
@@ -1412,18 +1417,7 @@ impl Interpreter {
         for (i, (pname, _)) in params.iter().enumerate() {
             locals.push((*pname, args[i].clone()));
         }
-        // WI-20260913-2858G — ONLY A TOP-LEVEL ENTRY STARTS A NEW BUDGET. A host function
-        // calling back in from inside a body lands here with the caller's frames still on
-        // the stack, and its work is the OUTER run's work: resetting `step_count` there
-        // let a loop whose every pass makes such a call run for ever under `step_cap`, and
-        // clearing the dispatch ring or dumping the profile would split the one run's
-        // record at each nested call. Before 2858G that path could not complete at all,
-        // so nothing relied on the reset.
-        let top_level = self.stack.depth() == 0;
-        if top_level {
-            self.step_count = 0;
-            self.recent_dispatches.clear();
-        }
+        let top_level = self.begin_host_entry();
         self.stack.push(Frame {
             op: sym,
             expr: body_term,
@@ -1432,10 +1426,40 @@ impl Interpreter {
             awaiting: None,
         })?;
         let result = self.run();
-        if self.profiling && top_level {
-            self.dump_profile(sym);
-        }
+        self.end_host_entry(top_level, sym);
         result
+    }
+
+    /// The start of a host entry's run ([`Self::invoke_op_with_requirements`],
+    /// [`Self::invoke_reify_boundary`]): answers whether it is TOP-LEVEL, for
+    /// [`Self::end_host_entry`].
+    ///
+    /// WI-20260913-2858G — ONLY A TOP-LEVEL ENTRY STARTS A NEW BUDGET. A host function
+    /// calling back in from inside a body lands here with the caller's frames still on
+    /// the stack, and its work is the OUTER run's work: resetting `step_count` there
+    /// let a loop whose every pass makes such a call run for ever under `step_cap`, and
+    /// clearing the dispatch ring or dumping the profile would split the one run's
+    /// record at each nested call. Before 2858G that path could not complete at all,
+    /// so nothing relied on the reset.
+    ///
+    /// INLINED ALWAYS, as [`Self::run_from`] is: both entries are on the bridge's path, whose
+    /// native stack per crossing is a measured budget (`BRIDGE_REENTRY_CAP`).
+    #[inline(always)]
+    fn begin_host_entry(&mut self) -> bool {
+        let top_level = self.stack.depth() == 0;
+        if top_level {
+            self.step_count = 0;
+            self.recent_dispatches.clear();
+        }
+        top_level
+    }
+
+    /// The end of a host entry's run: a top-level run's profile is dumped where it ends.
+    #[inline(always)]
+    fn end_host_entry(&self, top_level: bool, entry: Symbol) {
+        if self.profiling && top_level {
+            self.dump_profile(entry);
+        }
     }
 
     /// Dump the exact operation/builtin profile collected during the last

@@ -1111,6 +1111,7 @@ impl KnowledgeBase {
             unify_connective_sym: plain(&self.unify_connective_sym),
             or_connective_sym: plain(&self.or_connective_sym),
             and_connective_sym: plain(&self.and_connective_sym),
+            reify_operation_sym: plain(&self.reify_operation_sym),
             tuple_literal_sym: plain(&self.tuple_literal_sym),
             unrouted_read_sym: plain(&self.unrouted_read_sym),
             rigid_projection_formations: plain(&self.rigid_projection_formations),

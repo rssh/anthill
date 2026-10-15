@@ -259,6 +259,11 @@ const PINNED: &[(&str, usize, &str)] = &[
          recipes by name, and the unsealed and re-presented loads made by hand",
     ),
     (
+        "include/wi_9wvt7_reify_rule_body_test.rs",
+        1,
+        "registers a host function before the load, for a thunk that raises as it is entered",
+    ),
+    (
         "include/wi_ee0ep_param_dictionary_test.rs",
         1,
         "one row's fixture provides the stdlib's `WeakOrd` at the stdlib's own types, more \

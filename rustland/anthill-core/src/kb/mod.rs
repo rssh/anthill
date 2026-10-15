@@ -1905,6 +1905,11 @@ pub struct KnowledgeBase {
     or_connective_sym: Option<Symbol>,
     and_connective_sym: Option<Symbol>,
 
+    /// Proposal 027.4 — `anthill.prelude.Error.reify`, cached for the reason and at the
+    /// place the connectives above are: [`Self::is_reify_operation`] is asked on the
+    /// resolver's per-goal gates. `None` before the prelude loads, when no symbol is it.
+    reify_operation_sym: Option<Symbol>,
+
     /// WI-657(6): the resolved `anthill.reflect.TupleLiteral` entity symbol, cached
     /// so the typer's `is_tuple_lit` (run per constructor argument during inference)
     /// compares a `Symbol` instead of the 27-char `qualified_name_of(..) ==
@@ -2766,6 +2771,7 @@ impl KnowledgeBase {
             eq_connective_sym: None,
             or_connective_sym: None,
             and_connective_sym: None,
+            reify_operation_sym: None,
             unify_connective_sym: None,
             tuple_literal_sym: None,
             unrouted_read_sym: std::cell::Cell::new(None),
@@ -10000,6 +10006,7 @@ impl KnowledgeBase {
         self.unify_connective_sym = self.try_resolve_symbol("anthill.kernel.unify");
         self.or_connective_sym = self.try_resolve_symbol("anthill.kernel.or");
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
+        self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
     }
 
     /// WI-646 — the candidate equational rule ids for `@[simp]`/`@[unfold]` firing:
@@ -12450,6 +12457,23 @@ impl KnowledgeBase {
             return false;
         }
         self.interpreter_mapped_ops.contains(&sym)
+    }
+
+    /// Proposal 027.4 — `Error.reify`, the one operation the interpreter backs with a FRAME
+    /// it installs by symbol (`Interpreter::enter_reify_boundary`) rather than with a body,
+    /// a builtin or a host function. No `operation_map` names it, so no mapping reader says
+    /// the interpreter can run it: the resolver's rule-body gates ask
+    /// [`Self::is_reify_operation`] to treat a call of it as one the bridge runs, and the
+    /// interpreter's `ErrorLayer` resolves its boundary symbol here, so the two cannot name
+    /// different operations.
+    pub(crate) fn reify_operation(&self) -> Option<Symbol> {
+        self.reify_operation_sym
+    }
+
+    /// Is `f` [`Self::reify_operation`]? One comparison: it is asked on the resolver's
+    /// per-goal gates.
+    pub(crate) fn is_reify_operation(&self, f: Symbol) -> bool {
+        self.reify_operation_sym == Some(f)
     }
 
     /// WI-1122 — register a host function this EMBEDDER supplies, under the `key` its

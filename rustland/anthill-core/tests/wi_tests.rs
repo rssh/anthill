@@ -456,6 +456,9 @@ mod wi_9wvt7_error_reify_test;
 #[path = "include/wi_9wvt7_guarded_callback_row_test.rs"]
 mod wi_9wvt7_guarded_callback_row_test;
 
+#[path = "include/wi_9wvt7_reify_rule_body_test.rs"]
+mod wi_9wvt7_reify_rule_body_test;
+
 #[path = "include/wi_2858g_reentrant_host_call_test.rs"]
 mod wi_2858g_reentrant_host_call_test;
 #[path = "include/wi_dv7dp_declaration_meta_test.rs"]

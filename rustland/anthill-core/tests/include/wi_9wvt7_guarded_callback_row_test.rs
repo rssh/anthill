@@ -157,9 +157,8 @@ fn call(interp: &mut Interpreter, op: &str, args: &[i64]) -> Result<Value, EvalE
 /// The QUALIFIED name of an entity's constructor.
 #[track_caller]
 fn constructor(interp: &Interpreter, v: &Value) -> String {
-    let sym = crate::common::entity_functor(interp.kb(), v)
-        .unwrap_or_else(|| panic!("expected an entity, got {v:?}"));
-    interp.kb().qualified_name_of(sym).to_string()
+    crate::common::entity_functor_qn(interp.kb(), v)
+        .unwrap_or_else(|| panic!("expected an entity, got {v:?}"))
 }
 
 /// The `op` of a `division_by_zero` payload.

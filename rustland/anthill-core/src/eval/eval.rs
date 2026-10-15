@@ -85,11 +85,12 @@ impl Interpreter {
     /// frame no longer faults the next call — it is SILENT, and this truncate is the only
     /// thing keeping leftovers from accumulating (`Interpreter::activation_depth` sees one).
     ///
-    /// HERE AND NOT AT THE DRIVER, because there are three drivers
-    /// (`invoke_op_with_requirements`, `run_with_requirements`, `eval_node_isolated`) and
-    /// repairing one leaves the others to rediscover it. Every present and future entry
-    /// into the trampoline is covered by construction, and `floor` — which this run
-    /// already computes to bound the boundary scan — is exactly the depth to return to.
+    /// HERE AND NOT AT THE DRIVER, because there are four drivers
+    /// (`invoke_op_with_requirements`, `invoke_reify_boundary`, `run_with_requirements`,
+    /// `eval_node_isolated`) and repairing one leaves the others to rediscover it. Every
+    /// present and future entry into the trampoline is covered by construction — each goes
+    /// through [`Self::run_from`] — and `floor` — which this run already computes to bound
+    /// the boundary scan — is exactly the depth to return to.
     ///
     /// The sweep is not optional on this path: releasing a scoped-KB layer only RETIRES
     /// the slot, and `LayerArenaRef::sweep` is what discards it (`eval::layer_arena`).
@@ -102,7 +103,26 @@ impl Interpreter {
         // the success-path `Done`, the reify-boundary scan and this error truncate all read
         // it, and two copies of the expression could disagree.
         let floor = self.stack.depth().saturating_sub(1);
-        let result = self.run_inner(floor);
+        self.run_from(floor, None)
+    }
+
+    /// [`Self::run`] over a floor its driver computed, with the run's FIRST STEP perhaps
+    /// already taken. The one driver that takes it is [`Self::invoke_reify_boundary`]: its
+    /// run's bottom frame is the boundary, and entering the thunk above it is that step. So
+    /// what entering answers — a frame to reduce, a value to deliver, or an error — is read
+    /// by the loop as every step's answer is, and a raise there meets the boundary the entry
+    /// installed, as it does in the in-body faces.
+    ///
+    /// INLINED ALWAYS, because every bridged call runs through here and the bridge's native
+    /// stack per eval↔SLD crossing is a measured budget (`BRIDGE_REENTRY_CAP`): this must not
+    /// be a frame of its own, in an unoptimized build either.
+    #[inline(always)]
+    fn run_from(
+        &mut self,
+        floor: usize,
+        first: Option<Result<StepOutcome, EvalError>>,
+    ) -> Result<Value, EvalError> {
+        let result = self.run_inner(floor, first);
         if result.is_err() {
             self.stack.truncate_to(floor);
             self.sweep_layers();
@@ -110,8 +130,45 @@ impl Interpreter {
         result
     }
 
-    fn run_inner(&mut self, floor: usize) -> Result<Value, EvalError> {
+    /// Proposal 027.4 — `Error.reify` ENTERED FROM THE HOST: a rule body's call, which
+    /// reaches the evaluator through [`Self::invoke_op_with_requirements`] (the bridge's
+    /// `call_op_bridged*`) rather than through the two in-body dispatch faces.
+    ///
+    /// The mechanism is theirs. The one frame this run owns IS the boundary:
+    /// [`Self::enter_reify_boundary`] suspends it and enters the thunk above it, and the
+    /// run's floor sits beneath it. So the boundary's `ok` / `err` is the run's value, and a
+    /// payload it declines leaves the run as the raise it is. The requirement channel is the
+    /// call's — at a rule body, the `ErrorTag` evidence the typer stamped on the call, which
+    /// the bridge hands to `call_op_bridged_stamped` — and it is read, not installed: the
+    /// boundary frame carries none, as the thunk enters with its own.
+    pub(super) fn invoke_reify_boundary(
+        &mut self,
+        reify: Symbol,
+        args: &[Value],
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<Value, EvalError> {
+        let top_level = self.begin_host_entry();
+        let floor = self.stack.depth();
+        self.stack.push(Frame {
+            op: reify,
+            expr: crate::kb::node_occurrence::bottom_node(),
+            locals: SmallVec::new(),
+            requirements: SmallVec::new(),
+            awaiting: None,
+        })?;
+        let entered = self.enter_reify_boundary(args, &requirements);
+        let result = self.run_from(floor, Some(entered));
+        self.end_host_entry(top_level, reify);
+        result
+    }
+
+    fn run_inner(
+        &mut self,
+        floor: usize,
+        mut first: Option<Result<StepOutcome, EvalError>>,
+    ) -> Result<Value, EvalError> {
         let prof = self.profiling;
+        let mut pending: Option<Value> = None;
         // `pending` carries a produced value awaiting delivery to its parent
         // frame. The trampoline alternates between reducing the top frame
         // (`step`) and delivering a value (`deliver`); both return their next
@@ -120,7 +177,6 @@ impl Interpreter {
         // runaway guard: EVERY iteration — a reduction OR a delivery — is one
         // tick, so a no-reduction dispatch/deliver cascade (a self-redispatching
         // spec op) is bounded too, not just `step()`-driven loops.
-        let mut pending: Option<Value> = None;
         // `floor` (from `run`): a `reify` boundary below it belongs to an outer
         // `run()` (a builtin's `interp.call` pushes onto the live stack), and
         // answering that one from here would hand an outer frame's `Result` back as
@@ -137,9 +193,11 @@ impl Interpreter {
             self.step_count = self.step_count.saturating_add(1);
             // WI-SPGBP — discard any scoped-KB layer whose last holder has gone.
             self.sweep_layers();
-            let stepped = match pending.take() {
-                Some(v) => self.deliver(v, floor),
-                None => {
+            let stepped = match (first.take(), pending.take()) {
+                // The step the driver took before the loop (`run_from`).
+                (Some(stepped), _) => stepped,
+                (None, Some(v)) => self.deliver(v, floor),
+                (None, None) => {
                     // Profiling attributes a reduction to the executing op —
                     // only `step()` iterations are reductions, deliveries aren't.
                     if prof {
@@ -2583,7 +2641,7 @@ impl Interpreter {
         //    is the arm an `OpRef` denoting `reify` arrives at, which never passes
         //    through here.)
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values, &requirements);
+            return self.enter_reify_boundary(&arg_values, &requirements);
         }
 
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
@@ -2742,7 +2800,7 @@ impl Interpreter {
         // meaning is its symbol, never its name), so this costs one
         // `Option<Symbol>` comparison per dispatch.
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values, &requirements);
+            return self.enter_reify_boundary(&arg_values, &requirements);
         }
 
         // 1c. WI-20260921-R10KC — A SPEC DEFAULT BODY REACHES ITS OWN SPEC'S MEMBERS
@@ -4109,14 +4167,14 @@ impl Interpreter {
     /// day `reify` gains a `requires`.
     fn enter_reify_boundary(
         &mut self,
-        arg_values: Vec<Value>,
+        arg_values: &[Value],
         requirements: &[(Symbol, super::value::Dictionary)],
     ) -> Result<StepOutcome, EvalError> {
         // EVERYTHING THAT CAN REFUSE THIS CALL RUNS BEFORE ANYTHING IS INSTALLED,
         // so a bad call is a plain error over an untouched stack. Both refusals
         // are reachable from source: a row-polymorphic arrow slot does not refuse
         // a non-callable argument at load, so `Error.reify(42)` reaches here.
-        let [body] = arg_values.as_slice() else {
+        let [body] = arg_values else {
             return Err(EvalError::ArityMismatch {
                 op: "Error.reify",
                 expected: 1,
@@ -4156,14 +4214,15 @@ impl Interpreter {
         // layer construction it is a missing symbol, the layer is `None`, and
         // `Error.reify` fails loudly as a body-less operation instead.
         //
-        // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how an
+        // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how a typed
         // unevidenced call arrives: since WI-20260921-28TAT a `reify` whose `T1` has no
-        // `ErrorTag` evidence is a LOAD ERROR naming the clause to add
-        // (`Error.reify` is body-less and implemented by THIS function; since
-        // WI-20260921-3G1YT every parked refusal is reported, so there is no longer a
-        // body walk that could withhold this one for having no body to walk). What
-        // reaches `None` now is a KB with no prelude, where there is no layer at all.
-        // See `AwaitState::ReifyBoundary::payload`. The ROW is the guarantee either way.
+        // `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an operation
+        // body, and in a rule body since WI-20260908-9WVT7 (`build_op_scoped_dicts`'
+        // rule-body reify gate), where no clause can be added and the payload type must
+        // be fixed at the call. (`Error.reify` is body-less and implemented by THIS
+        // function; since WI-20260921-3G1YT every parked refusal is reported, so there is
+        // no longer a body walk that could withhold this one for having no body to walk.)
+        // What reaches `None` is listed at `AwaitState::ReifyBoundary::payload`.
         let payload = self
             .error_layer
             .as_ref()

@@ -11868,11 +11868,18 @@ impl KnowledgeBase {
         // `TypeMismatch`, an ambiguous dispatch or an exhausted budget both of its
         // clauses are false — the call did not "raise", and no reify fixes it. Raised by
         // `/code-review`, which pointed at this ticket's own `TypeMismatch` row.
+        // A raise out of `Error.reify` ITSELF is a payload its boundary declined, and the
+        // advice to reach for `reify` would send the reader back to the call that just ran.
         let (detail, repair) = match e {
             EvalError::Raised { payload } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
-                " Handle it inside the operation — `Error.reify` turns a raise into a \
-                 `Result` the rule can read.",
+                if self.is_reify_operation(op) {
+                    " The boundary catches the payload it is typed at, which this is not; a \
+                     boundary typed at this payload catches it."
+                } else {
+                    " Handle it inside the operation — `Error.reify` turns a raise into a \
+                     `Result` the rule can read."
+                },
             ),
             other => (other.to_string(), ""),
         };
@@ -12500,16 +12507,32 @@ impl KnowledgeBase {
     ///
     /// It asks the INTERPRETER's own registry, not `is_host_mapped_op`: a cpp
     /// `operation_map` entry is a real supplier for a different runtime and this
-    /// process cannot call it (WI-876/WI-886). Same question `op_is_interpretable`
-    /// asks the typer's side, and the same one `reduce_op_value`'s body-less arm
-    /// already asks before building a scratch interpreter — "will the bridge be able
-    /// to run this".
+    /// process cannot call it (WI-876/WI-886). For the body and the host mapping this is
+    /// the question `op_is_interpretable` asks the typer's side, and the one
+    /// `reduce_op_value`'s body-less arm asks before building a scratch interpreter —
+    /// "will the bridge be able to run this". `Error.reify` is the third supplier and the
+    /// resolver's alone: see [`Self::bridge_runs_anthill_code`].
     ///
     /// The callers' OTHER clauses are untouched and still do their work: effect-free
     /// (an effectful host fn is no more a logical relation than an effectful body) and
     /// rule-LESS (design §3.3 precedence — a hand-written clause still wins).
     fn op_reducible_in_rule_body(&self, f: Symbol) -> bool {
-        self.op_body_node(f).is_some() || self.is_interpreter_mapped_op(f)
+        self.bridge_runs_anthill_code(f) || self.is_interpreter_mapped_op(f)
+    }
+
+    /// Does the bridge run ANTHILL CODE for a call of `f` — `f`'s own body, or, for
+    /// `Error.reify`, the thunk the call hands it?
+    ///
+    /// `Error.reify` has neither a body nor a host function: its boundary is a frame the
+    /// interpreter installs (`Interpreter::invoke_reify_boundary` at the bridge's host
+    /// entry), and what then runs is the thunk, under the bridge's registry, as a body
+    /// runs. So for the two questions that turn on what the bridge runs — may a rule body
+    /// reduce the call ([`Self::op_reducible_in_rule_body`]), and may a parametric row be
+    /// read as a body's ([`Self::effect_row_admits_relational_view`]) — it answers as a
+    /// bodied operation does. Asked here once, so the next such question cannot leave it
+    /// out.
+    fn bridge_runs_anthill_code(&self, f: Symbol) -> bool {
+        self.op_body_node(f).is_some() || self.is_reify_operation(f)
     }
 
     /// WI-20260826-VPEWK — may a VALUE position run `f`'s host implementation?
@@ -12619,13 +12642,16 @@ impl KnowledgeBase {
     /// since expired; that predicate's own doc carries the re-measurement.
     ///
     /// `sig` is passed rather than re-read so the caller keeps its by-ref borrow.
+    ///
+    /// "Bodied" is [`Self::bridge_runs_anthill_code`]: `Error.reify`'s row `{Rho}` is its
+    /// thunk's effects past the discharged `Error[T1]`, and the thunk is what the bridge runs.
     pub(crate) fn effect_row_admits_relational_view(
         &self,
         f: Symbol,
         sig: &super::op_info::OpSignature,
     ) -> bool {
         sig.effects.is_empty()
-            || (self.op_body_node(f).is_some()
+            || (self.bridge_runs_anthill_code(f)
                 && sig
                     .effects
                     .iter()
@@ -13098,12 +13124,14 @@ impl KnowledgeBase {
         // carry, exactly as [`Self::host_op_reducible_at_a_value`]'s doc says it does
         // not carry to a host function.
         //
-        // Calling the owner here would answer IDENTICALLY today (its parametric branch
-        // is gated on `op_body_node(f).is_some()`, which is false for every op that
-        // reaches here) and would then widen SILENTLY if that body clause were ever
-        // relaxed. The strict spelling is the safe stale one; keep it, and re-derive
-        // this paragraph rather than the call if a body-less parametric row ever earns
-        // an admission of its own.
+        // Calling the owner here would answer IDENTICALLY today and would then widen
+        // SILENTLY if its body clause were relaxed. That clause is
+        // [`Self::bridge_runs_anthill_code`]: a body, which no op reaching here has, or
+        // `Error.reify`, the one body-less op it admits, whose thunk is what the bridge
+        // runs. `Error.reify`'s arity+1 view is [`Self::functional_relation_arity`]'s,
+        // which the goal shape asks first; here its row `{Rho}` keeps it out. The strict
+        // spelling is the safe one; keep it, and re-derive this paragraph rather than the
+        // call if another body-less parametric row earns an admission of its own.
         if !sig.effects.is_empty() {
             return None;
         }

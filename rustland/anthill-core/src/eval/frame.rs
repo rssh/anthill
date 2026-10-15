@@ -220,11 +220,20 @@ pub enum AwaitState {
         /// EMPTIED IT OF THE SHAPES IT USED TO HOLD, and that is the point of the move to
         /// the requirement channel: a `T1` standing for an enclosing operation's type
         /// parameter is now supplied by that operation's own `requires ErrorTag[T = P]`,
-        /// and one with NO evidence — a TUPLE payload, whose structural former has no
-        /// sort to carry a derived `TypeValue`, or a generic caller that declared
-        /// nothing — is a LOAD ERROR naming the clause to add, not a silent widening.
-        /// What still reaches `None` is a KB with no prelude, which has no `ErrorLayer`
-        /// and so no boundary either.
+        /// and a generic caller that declared nothing is a LOAD ERROR naming the clause
+        /// to add, not a silent widening — as is a RULE body's `reify` whose `T1` the
+        /// call leaves open, which has no clause to add (WI-20260908-9WVT7).
+        ///
+        /// WHAT STILL REACHES `None`, three shapes, each catching wide:
+        ///   * a `T1` the call FIXES with no instance to read — a TUPLE payload, whose
+        ///     structural former has no sort to carry a derived `TypeValue`
+        ///     (`a_payload_the_runtime_cannot_narrow_is_still_caught`);
+        ///   * a call NO TYPER SAW — a host's `Interpreter::call` hands no evidence;
+        ///   * a GENERIC operation reached from a rule body, whose `requires ErrorTag[T =
+        ///     P]` the bridge fills from the arguments' values and cannot when `P` is in
+        ///     no argument (`catchAll[P](body: () -> Int64 @ {Error[P], R})` cited from
+        ///     a rule): threading the caller's evidence there is 060's S7, and
+        ///     WI-20260911-5G28A owes the test.
         ///
         /// NOT A FALLBACK PAPERING OVER AN ERROR — the ROW is the guarantee either way.
         /// The typer discharged this label by the signature (WI-329), and the narrowing
@@ -381,11 +390,11 @@ impl ActivationStack {
 
     /// Drop back to `depth` frames, discarding everything above.
     ///
-    /// FOR AN ERROR EXIT ONLY, and one caller by design: [`Interpreter::run`] restoring
-    /// the `floor` it entered at when the trampoline returned `Err` — see the comment
-    /// there for what leaking those frames cost, and for why the repair sits at the
-    /// trampoline rather than at any of its three drivers. A no-op when the stack is
-    /// already at or below `depth`.
+    /// FOR AN ERROR EXIT ONLY, and one caller by design: `Interpreter::run_from`, which
+    /// every run goes through, restoring the `floor` it entered at when the trampoline
+    /// returned `Err` — see [`Interpreter::run`] for what leaking those frames cost, and
+    /// for why the repair sits at the trampoline rather than at any of its drivers. A
+    /// no-op when the stack is already at or below `depth`.
     pub(crate) fn truncate_to(&mut self, depth: usize) {
         if self.frames.len() > depth {
             self.frames.truncate(depth);

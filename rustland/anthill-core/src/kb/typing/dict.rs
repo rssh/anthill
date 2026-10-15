@@ -2037,6 +2037,23 @@ pub(super) fn build_op_scoped_dicts(
             binder: entry.binder,
         };
         let dep = dep_completed_at_carrier(kb, &dep).unwrap_or(dep);
+        // A RULE BODY'S `Error.reify` OWES ITS PAYLOAD TYPE AT LOAD. `T1` is what the
+        // boundary catches, read at run time out of this slot's `ErrorTag` evidence, and a
+        // boundary with none catches every payload — the `Error[Other]` its thunk's row
+        // leaves to the caller as well. An operation that cannot fix `T1` declares
+        // `requires ErrorTag[T = P]` and its callers pass the evidence (the forward arm
+        // below names the caller); a rule declares no `requires`, so where the call does
+        // not fix `T1` nothing ever will, and the call is refused where it is written. A
+        // `T1` the call fixes builds its evidence below, and a fixed one no provider
+        // answers — a tuple payload — catches wide by decision, in a rule body as in an
+        // operation body.
+        if park.is_some_and(|s| s.enclosing_op.is_none())
+            && kb.is_reify_operation(callee_op)
+            && reify_payload_left_open(kb, &dep)
+        {
+            kb.unsuppliable_requirements.truncate(parked_mark);
+            return Err(Box::new(open_reify_payload_refusal(kb, &dep)));
+        }
         // WI-20260923-WN9P8 — the sort half's forward rule, on the op half: a slot of the
         // callee's OWN bound to one of the caller's parameters is that parameter's
         // dictionary or a refusal. MEASURED without it: a set typed `O = P` passed into
@@ -2715,6 +2732,75 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
 /// `require[FiniteCollection[C = List[T = String]]]` loads, and `require[WeakOrd[T]]` beside
 /// `?c = Util.sign(?a, ?b)` is refused the same way. An operation-level clause, and a
 /// sort-level one whose sort nothing provides, have no bracket to name and get none.
+/// Does this `ErrorTag[T = …]` slot of an `Error.reify` call leave the payload type open —
+/// a binding that is not a concrete type at this call? See the gate in
+/// [`build_op_scoped_dicts`].
+fn reify_payload_left_open(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
+    match goal_from_requires_entry(kb, dep) {
+        Some(goal) => goal
+            .bindings
+            .iter()
+            .any(|(_, ty)| !resolved_type_is_ground(kb, ty)),
+        // The clause is `Error.reify`'s own `requires ErrorTag[T = T1]`; a slot that does
+        // not read as a goal is no payload this call fixes.
+        None => true,
+    }
+}
+
+/// The refusal of a rule-body `Error.reify` whose payload type the call does not fix — see
+/// the gate in [`build_op_scoped_dicts`]. Both repairs are measured:
+/// `wi_9wvt7_reify_rule_body_test::an_open_payload_type_is_refused_where_it_is_written`.
+/// The slot as the author reads it: a binding that names a type parameter shows that
+/// parameter's own name (`T1`, as `Error.reify`'s signature writes it), not its qualified
+/// symbol.
+fn open_reify_payload_dep_text(kb: &KnowledgeBase, dep: &RequiresEntry) -> String {
+    let Some(goal) = goal_from_requires_entry(kb, dep) else {
+        return render_requires_entry(kb, dep);
+    };
+    let bindings: Vec<String> = goal
+        .bindings
+        .iter()
+        .map(|(key, ty)| {
+            let shown = match crate::kb::term_view::TermView::head(ty, kb) {
+                crate::kb::term_view::ViewHead::Functor {
+                    functor: Some(sym),
+                    pos_arity: 0,
+                    named_arity: 0,
+                } => kb.local_name_of(sym).to_string(),
+                _ => format_value_for_goal(kb, ty),
+            };
+            format!("{} = {shown}", kb.local_name_of(*key))
+        })
+        .collect();
+    format!(
+        "{}[{}]",
+        kb.qualified_name_of(dep.required_sort),
+        bindings.join(", ")
+    )
+}
+
+fn open_reify_payload_refusal(kb: &KnowledgeBase, dep: &RequiresEntry) -> RequirementRefusal {
+    RequirementRefusal {
+        account_names_every_repair: false,
+        no_scope_route: false,
+        construction_carries_repair: true,
+        dep_text: open_reify_payload_dep_text(kb, dep),
+        unconstrained: Vec::new(),
+        refused_covers: Vec::new(),
+        construction: "its carrier is the payload type this `Error.reify` catches, and \
+                       this call does not fix it: it is a rule variable's type, or nothing \
+                       names it. A rule declares no `requires`, so no caller can pass the \
+                       evidence in, and without it the boundary cannot tell its payload \
+                       from another `Error` label of the thunk. Write the thunk so its \
+                       payload sort is known here, or reify inside an operation that \
+                       declares `requires ErrorTag[T = …]` and call that"
+            .to_owned(),
+        pinned: None,
+        unprovided: None,
+        untied: None,
+    }
+}
+
 fn unrescuable_rule_body_refusal(
     kb: &KnowledgeBase,
     dep: &RequiresEntry,

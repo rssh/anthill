@@ -170,11 +170,12 @@ namespace anthill.prelude
     -- installs it by symbol (`Interpreter::enter_reify_boundary`). It cannot be
     -- a builtin — a builtin returns a value and cannot enter a closure.
     --
-    -- CALL IT FROM AN OPERATION BODY. A rule body's `Error.reify(…, ?r)` answers
-    -- NO SOLUTIONS — the host-entry dispatch face has no boundary — which is the
-    -- same silence any unimplemented operation gets there (WI-20260909-M8QWJ),
-    -- not a rule about reify. A rule that calls a bodied operation which reifies
-    -- works: `rule r(?x) :- caught(?x)` answers.
+    -- A rule body calls it with a lambda:
+    -- `rule r(?x) :- Error.reify(lambda () -> f(), ?x)` answers the `Result`. An
+    -- operation named bare there is its zero-argument call, made before the
+    -- boundary exists, so the thunk is written as a lambda. A raise the boundary
+    -- declines is reported as a fault of the goal, and the thunk's other effects
+    -- are those of any higher-order call in a rule body.
     --
     -- IT CATCHES ITS OWN PAYLOAD AND LETS THE REST PAST. A body declaring two
     -- `Error` labels reified at one of them discharges only that one; the other
@@ -185,16 +186,17 @@ namespace anthill.prelude
     -- out of the dictionary this clause puts in the call's requirement channel;
     -- before it, the sort came off a per-frame type-argument channel, and where that
     -- channel could not ground `T1` the boundary silently caught every payload —
-    -- swallowing a label its own row had left to its caller. There is no such
-    -- fallback now: a call whose `T1` has no `ErrorTag` evidence is a LOAD ERROR
-    -- naming the clause to add.
+    -- swallowing a label its own row had left to its caller. A call whose `T1`
+    -- has no `ErrorTag` evidence is refused at load, in an operation body and in a
+    -- rule body. A call no typer saw has none to read — a host's
+    -- `Interpreter::call`, or a generic operation reached from a rule body whose
+    -- `requires` its arguments do not fix — and its boundary catches every payload.
     --
     -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
     -- parameter writes `requires ErrorTag[T = P]`, and its callers supply the
     -- evidence — the ordinary requirement route, one hop per generic level. A
-    -- payload with no derived `TypeValue` instance (a TUPLE, whose structural former
-    -- has no sort to carry one) cannot be reified at until that instance exists.
-    -- 027.4 carries the measurements.
+    -- payload with no derived `TypeValue` instance, a tuple, has no sort to narrow
+    -- to, and its boundary catches every payload. 027.4 carries the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
       effects {Rho}
       requires ErrorTag[T = T1]
