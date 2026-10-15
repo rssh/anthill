@@ -5642,16 +5642,6 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
     Ok(Value::term(new_term))
 }
 
-/// `anthill.prelude.Time.now() -> String`.
-/// Wall-clock timestamp in RFC-3339-with-Z form (`YYYY-MM-DDTHH:MM:SSZ`),
-/// matching the format every legacy `anthill-todo` command writes for
-/// status transitions and feedback. Effectful — declared to depend on
-/// the `Clock` capability so the typer can flag implicit clock reads.
-fn time_now(_interp: &mut Interpreter, _args: &[Value]) -> Result<Value, EvalError> {
-    Ok(Value::Str(
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    ))
-}
 
 /// `anthill.prelude.Int64.to_string(n: Int64) -> String`. Decimal repr, no
 /// padding. Negative numbers carry a leading `-`. The CLI port uses this
@@ -6692,6 +6682,19 @@ effect_dispatcher!(
     "anthill.prelude.Console.read_line",
     "read_line",
     "anthill.prelude.Console.ConsoleInput"
+);
+// `anthill.prelude.Time.now() -> String` — a read of the `Clock` effect, answered by the
+// `Clock` handler the runtime registers (`effects::system_clock_handler`, the wall clock in
+// the `YYYY-MM-DDTHH:MM:SSZ` form every legacy `anthill-todo` command writes). Through the
+// handler and not read here, as the `Console` operations are, so an interpreter with no
+// `Clock` handler cannot read the clock: the SLD→eval bridge's registry is empty by
+// construction, and a rule-body call that reaches a clock read is then undecided rather
+// than a different answer at each query.
+effect_dispatcher!(
+    time_now,
+    "anthill.prelude.Time.now",
+    "now",
+    "anthill.prelude.Time.Clock"
 );
 effect_dispatcher!(
     modify_get,

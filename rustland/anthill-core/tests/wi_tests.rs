@@ -465,6 +465,9 @@ mod wi_9wvt7_spliced_literal_test;
 #[path = "include/wi_9wvt7_bridged_scoped_kb_test.rs"]
 mod wi_9wvt7_bridged_scoped_kb_test;
 
+#[path = "include/wi_9wvt7_clock_handler_test.rs"]
+mod wi_9wvt7_clock_handler_test;
+
 #[path = "include/wi_2858g_reentrant_host_call_test.rs"]
 mod wi_2858g_reentrant_host_call_test;
 #[path = "include/wi_dv7dp_declaration_meta_test.rs"]

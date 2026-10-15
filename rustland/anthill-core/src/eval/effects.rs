@@ -156,6 +156,16 @@ fn stdio_console_write_handler<W: Write + 'static>(sink: W) -> EffectHandler {
     })
 }
 
+/// Default `Clock` handler — the wall clock, in RFC-3339-with-Z form
+/// (`YYYY-MM-DDTHH:MM:SSZ`, UTC, second granularity), which `Time.now` answers.
+pub fn system_clock_handler() -> EffectHandler {
+    Box::new(|_interp, _op_sym, _args| {
+        Ok(HandlerAction::Pure(Value::Str(
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        )))
+    })
+}
+
 /// Default `ConsoleInput` handler — reads a line from `io::stdin()`.
 /// The trailing newline is stripped to match common user expectation.
 pub fn stdio_console_input_handler() -> EffectHandler {
@@ -845,12 +855,14 @@ impl Interpreter {
 
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
-    /// access; tests usually skip this and inject buffered handlers) and
+    /// access; tests usually skip this and inject buffered handlers), the
+    /// wall-clock `Clock` handler (a test reading the clock registers it, or
+    /// one of its own), and
     /// a fresh arena-backed Modify handler — the latter is always useful,
     /// even for tests, since Modify.get/set have no side effect beyond
     /// the handler's own state.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
-        let entries: [(&str, fn() -> EffectHandler); 5] = [
+        let entries: [(&str, fn() -> EffectHandler); 6] = [
             (
                 "anthill.prelude.Console.ConsoleOutput",
                 stdio_console_output_handler,
@@ -865,6 +877,7 @@ impl Interpreter {
             ),
             ("Modify", default_modify_handler),
             ("anthill.prelude.Error", default_error_handler),
+            ("anthill.prelude.Time.Clock", system_clock_handler),
         ];
         for (qname, factory) in entries {
             match self.register_effect_handler(qname, factory()) {

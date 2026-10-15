@@ -2,8 +2,20 @@
 //! mutating commands to stamp `at:` fields on Feedback / status
 //! transitions in the legacy `YYYY-MM-DDTHH:MM:SSZ` form.
 
-use crate::common::interp_for;
-use anthill_core::eval::Value;
+use anthill_core::eval::{Interpreter, Value};
+
+/// An interpreter over `source` with the runtime's `Clock` handler — the wall clock, which
+/// `Time.now` reads through (`effects::system_clock_handler`).
+fn interp_for(source: &str) -> Interpreter {
+    let mut interp = crate::common::interp_for(source);
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Time.Clock",
+            anthill_core::eval::effects::system_clock_handler(),
+        )
+        .expect("register the Clock handler");
+    interp
+}
 
 #[test]
 fn time_now_returns_iso_z_timestamp() {
