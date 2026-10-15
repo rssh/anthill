@@ -3579,6 +3579,13 @@ proof debts. A guard over an enclosing parameter can propagate with that
 parameter substituted. The same effect label may also occur unconditionally;
 refuting one guarded occurrence never removes the unconditional occurrence.
 
+A guarded element in the row of a callback parameter admits no effect of the
+argument. The parameter `f: (x: Int64) -> Int64 @ {Error[DivisionByZero] :- eq(x, 0)}`
+promises the operation that `f` raises only where `x` is 0, and the operation's own
+row is checked on that promise. An argument whose row holds `Error[DivisionByZero]`,
+guarded or not, is refused there, because nothing shows it raises only where the
+guard holds. A parameter that writes the label unguarded admits it.
+
 **An `eq`/`neq` guard is refuted by the carrier's OWN equality** (WI-755), because
 the refutation is an ordinary resolution of the negated goal and `=` is the
 dispatched semantic test of §8.3 — so `{ Boom :- eq(c, Red) }` at `risky(Green)`

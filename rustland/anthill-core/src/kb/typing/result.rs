@@ -688,18 +688,39 @@ pub(super) fn make_arrow_value(
     // `occurrence_to_term` (WI-815). Label order is not load-bearing (rows compare as
     // sets). The former `if poisoned` ground fast-path is retired: the hash-consed
     // arrow is now a *derived* form, not the primary one.
+    //
+    // THE ROW IS WHAT APPLYING THE VALUE INCURS, read as the operation boundary reads a
+    // body's incurred effects ([`explode_incurred_effect_row`]): a row element is its labels
+    // and tails, a guarded atom its label, an absence nothing; and the row is a set. Three
+    // shapes reach here from a call's effects or an operation's declared row, and each was
+    // wrong placed as a label (WI-20260908-9WVT7):
+    //  * a GUARDED atom a call kept, its guard not refuted (WI-067), over the CALLEE's own
+    //    parameters. A value's type has no reader for it: applying a function value never
+    //    discharges. Wrapped in `present` it was a label named `guarded(…)`, so a slot
+    //    declaring `Error[DivisionByZero]` refused `lambda () -> a / b`; placed as the atom,
+    //    it reached a row variable through the multi-tail absorb and a later call to the
+    //    same operation refuted it with its own arguments, dropping a real effect;
+    //  * an ABSENCE, which is the callee's claim about its own body and no effect its caller
+    //    incurs. Wrapped in `present` it was a label named `-X`, refused by a closed slot;
+    //  * two atoms of one label: a dispatched `a / b` carries the spec operation's guarded
+    //    atom beside the implementation's. Kept twice, a reader that counts labels (a
+    //    provision's closed row, a requirement's exact cover) refused the value.
+    let mut incurred: Vec<Value> = Vec::new();
+    for effect in effects {
+        match explode_incurred_effect_row(kb, effect) {
+            Some(atoms) => merge_effects_into(kb, &mut incurred, &atoms),
+            None => merge_effects_into(kb, &mut incurred, std::slice::from_ref(effect)),
+        }
+    }
     let mut row = kb.make_empty_row_occ(span, owner);
-    for label in effects.iter().rev() {
+    for label in incurred.iter().rev() {
         // WI-470: a row-tail `Var` (a row-polymorphic body's open tail, threaded
         // here as `Value::Term(Var::Global)` by `effect_row_present_values`) folds
         // as `open(tail)`, NOT `present(var)` — mirroring the canonicalization the
         // retired ground path got from `build_canonical_effects_rows`. Wrapping a
         // tail var in `present` would make `decompose_effect_row` read it as a
         // present LABEL rather than the row tail (the WI-441 bug class), corrupting
-        // row unify/subtype of an inferred row-polymorphic function value. (Present
-        // labels here are bare sort_ref/parameterized atoms — `op.effects` /
-        // inferred `body_effects` never carry pre-built `present`/`absent` atoms,
-        // so no atom-preservation arm is needed, unlike the loader's row lowering.)
+        // row unify/subtype of an inferred row-polymorphic function value.
         let atom = match label {
             Value::Term { id: t, .. } if kb.row_tail_var_of(*t).is_some() => {
                 let tail = kb.row_tail_var_of(*t).expect("checked is_some");

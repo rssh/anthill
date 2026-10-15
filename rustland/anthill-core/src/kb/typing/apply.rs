@@ -2086,10 +2086,13 @@ pub(super) fn check_apply_iter(
         // The call substitution σ: callee param ↦ the actual argument's goal-term
         // twin (a literal `5`, a threaded `Ref(b)`). Applied to a guard before
         // refutation, so `div(a, 5)`'s `eq(b, 0)` becomes the ground `eq(5, 0)`.
-        // (A threaded VARIABLE argument is already re-keyed into the guard by
-        // `substitute_ref_syms` upstream; σ additionally carries the non-variable
-        // arguments the rename cannot. An argument with no clean twin is absent —
-        // its param stays symbolic and the guard flounders, conservatively kept.)
+        // (Every argument, a threaded variable as much as a literal: a guard's operands
+        // are binder references, `var_ref(name: b)`, which the parameter rename upstream
+        // does not touch. σ is applied to a copy for the refutation only, so an atom the
+        // call keeps still names the callee's own parameters — why a function value's row
+        // carries its label and not the atom (`make_arrow_value`). An argument with no
+        // clean twin is absent — its param stays symbolic and the guard flounders,
+        // conservatively kept.)
         let guard_sigma: HashMap<Symbol, TermId> = if op_has_guarded {
             let mut sigma =
                 build_call_guard_sigma(kb, &op.params, &pos_call_params, pos_args, named_args);
@@ -2137,10 +2140,10 @@ pub(super) fn check_apply_iter(
             // `EffectExpression` (`merge(present(…), …)`), which carries no
             // `effects_rows(…)` wrapper and so missed the flatten below and was pushed
             // WHOLE as a single "label". That malformed atom is invisible at the op
-            // boundary — `explode_incurred_effect_row` re-explodes it there (WI-441) —
-            // but the LAMBDA arrow builder does not: `make_arrow_value` wraps each
-            // element in `present(label = …)`, minting `present(label = merge(…))`. That
-            // is what made a NESTED handler fail: the inner discharge's residual became
+            // boundary — `explode_incurred_effect_row` re-explodes it there (WI-441) — and
+            // the LAMBDA arrow builder now reads its elements the same way, but it used
+            // to wrap each one in `present(label = …)`, minting `present(label = merge(…))`.
+            // That is what made a NESTED handler fail: the inner discharge's residual became
             // one opaque label in the enclosing lambda's row, and the outer handler's
             // callback-row check rejected it. Flatten the bare form here, at the
             // producer, so every reader of this flat atom list sees atoms.

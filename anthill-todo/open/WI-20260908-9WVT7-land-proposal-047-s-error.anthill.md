@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20260911-3MV2C-a-reify-boundary-decides-on
+
 - tags: effects
 
 ## Description
@@ -622,4 +624,45 @@ drifted were replaced by the named sets a back-out actually produces, re-measure
 
 WHAT REMAINS ON THIS TICKET: nothing of its own. The three open questions live on 3MV2C,
 VNQTR and 0V0F7, each with its measured repro and the reason it is not inline work.
+
+### 2026-10-15T14:49:07Z — feedback — claude
+
+RE-MEASURED 2026-10-15 on ee3696eb, and wired to 3MV2C (user, 2026-10-15).
+
+The build path holds: the 28 rows of wi_9wvt7_error_reify_test and wi_9wvt7_reify_typing_test pass. Since the note above, WI-20260921-28TAT replaced the frame type-argument channel with `requires ErrorTag[T = T1]` on `Error.reify`, so the paragraphs above about `None` catching wide, `collect_closed_type_args` and `op_own_param_ref_rewrite` describe code that is gone.
+
+Each leftover, run today:
+ * 3MV2C, the type-argument axis. A `Box[V = String]` raise under an inner `Error.reify[T1 = Box[V = Int64]]`, inside an outer `Error.reify[T1 = Box[V = String]]`, answers "inner-caught". Catching only what a boundary is typed at is this ticket's goal, so this ticket now depends on 3MV2C. That one waits on the continuum decision (point 2 or point 3) in 027.4.
+ * A guarded raise in a callback. `Error.reify(lambda () -> a / b)` and `Error.reify(lambda () -> head(xs))` are refused at load: "the lambda argument declares `Error[T = DivisionByZero]`, which the closed row does not admit". So is any higher-order operation with `@ {Error[DivisionByZero], Rho}`, with `T1` written or not, and an eta'd operation whose row is `Error[DivisionByZero] :- eq(b, 0)`. The direct call under `effects {Error[DivisionByZero]}` loads, and so does a lambda over an unguarded wrapper. Kernel-language §5.5 keeps the label of a guard that is not refuted, so this is a conformance defect. To be fixed here.
+ * VNQTR. Its channel is gone, and its program now shows a different gap: the refusal of forwarding a rigid into an operation that reads it misses an inline and a nested one. `midInline(y: ?t) = tyOf(y)` and `midNested[U](y: List[T = U]) = tyOf(y)` load and panic at run time (`DeferToRequirement: requirement param __req_typevalue not bound in caller frame`); `mid[U](y: U)` is refused. Not a part of this ticket.
+ * M8QWJ's class, not parts of this ticket: `rule direct(?r) :- Error.reify(..., ?r)` answers no solutions; a user-declared layer's `reify` loads and dies "operation has no body".
+ * Unchanged, no ticket: `Result` has no host type mapping; which delimiter wins between a registered `Error` handler and `reify`.
+ * The guardians `LoadChecker.check` is still host Rust. Writing it in anthill needs two decisions about the example: it must read `Source`'s internal `text`, which only `guardians.Source`'s scope can, and the budget strings come from `type_display_name_value` in Rust.
+
+### 2026-10-15T17:18:53Z — feedback — claude
+
+GUARDED RAISES ARE CAUGHT (2026-10-15), after a /code-review at max effort that refuted the first shape of the fix.
+
+`Error.reify(lambda () -> a / b)` returns `err(division_by_zero(op: "Int64.div"))` at `b = 0` and `ok(3)` at `7 / 2`; `Error.reify(lambda () -> head(xs))` returns `err(empty_stream)` on `nil`. Both were refused at load before (the entry above).
+
+THREE REPAIRS, none specific to reify:
+ (1) A function value's row is what applying it incurs. `make_arrow_value` (typing/result.rs; the row of a lambda and of an eta'd operation) wrapped every element in `present`, so a kept guarded atom became a label named `guarded(…)`, an absence a label named `-X`, and two atoms of one label (a dispatched `a / b` carries the spec operation's and the implementation's) stayed two. It now reads each element through `explode_incurred_effect_row`, as the operation boundary does, and builds a set. The same repair admits an eta'd or lambda-wrapped operation declaring `{ -Error }` into a closed slot, and `Apply.call(lambda (x) -> 10 / x)` against a provision at `@ {Error[DivisionByZero]}`; both were refused.
+ (2) Paired rows are sets (`match_present_labels`, typing/effects.rs): a label that pairs with nothing but equals, under the bindings made so far, a paired label of its own row is that element. `Error.reify[T1 = DivisionByZero](zq)` over `zq[Q] effects {Error[Q], Error[DivisionByZero]}` now catches.
+ (3) A guarded atom of a callback slot admits no callback label (`validate_callback_effect_row`, typing/args.rs; proposal 048's lattice, an undecided entailment refuses). Before, `runG(f: (x: Int64) -> Int64 @ {Error[DivisionByZero] :- eq(x, 0)}, b) effects {Error[DivisionByZero] :- eq(b, 0)}` took `lambda (x) -> 7 / k`, and any unguarded raiser, and `runG(…, 5)` was typed pure, so the raise escaped `main` (measured; the unguarded case on HEAD too). A callback that does meet the guard is refused as well.
+
+THE FIRST SHAPE, REFUTED: placing the guarded atom bare in the value's row. Its guard names the callee's parameters, the multi-tail absorb copied the lambda's row into a row variable, and a later call to the same operation refuted the guard with its own arguments: `h(lambda () -> g() + k() + h(lambda () -> 1, 0), 5)` loaded and raised out of an operation declaring no Error. Four reviewers reproduced it, one with Γ holding `neq(x, 0)` for a guard that meant `x - 1`. The same shape made a stream's `-s.E` and `{s.E :- g}` refuse to distribute over such a row.
+
+DRIVEN: `wi_9wvt7_guarded_callback_row_test` (13 rows, four fixtures). Back-outs measured from one build: (1) off fails 10 rows; the bare-atom shape fails 2 (the collision program, the provision); (2) off fails 1; (3) off fails 1; `a_raise_admitted_into_a_slot_is_not_lost` passes either way. Full workspace 9901 passed / 0 failed / 17 ignored; families green, also under ANTHILL_TEST_NODE_CARRIER=1; the 41 `wi_9wvt7` rows green under the node carrier.
+
+VERDICTS THAT MOVED BESIDES THE TARGET: `run2[Rho](f: () -> Int64 @ {Rho}) -> Int64 effects {Rho, -Error[DivisionByZero]}` given a lambda dividing by a variable is refused with one tail or several, as its unguarded twin always was (with several it loaded before: the atom was opaque); a guarded slot's correct callback (`lambda (x) -> 35 / x` at `eq(x, 0)`) is refused.
+
+FOUND AND NOT FIXED, each pre-existing (same verdict on HEAD):
+ * The greedy pairing binds `T1` to whichever `Error` label of a two-label body comes first, so swapping `if` branches flips a reify verdict; `[T1 = …]` is the workaround. A design question: which label an unwritten `T1` is.
+ * An operation declaring a guarded row variable (`{Rho :- eq(b, 0)}`) is refused when called directly ("undeclared effect: ?R"); resolving the kept atom through the call's σ did not fix it (tried and reverted).
+ * `run5[Rho = {Error[DivisionByZero]}]` into `@ {Rho, -Error}` loads: the self-contradiction check compares a bare `-Error` with `Error[DivisionByZero]` by equality, the tail-binding check by unification. What a bare lacks constraint means for an ordinary label is left open in permission_entails' doc.
+ * The entry above put a rule body's `Error.reify(…, ?r)` (no solutions) in M8QWJ's class. It is not: reify is implemented. It is a rule-body evaluation gap with no ticket.
+
+### 2026-10-15T17:32:45Z — feedback — claude
+
+FILED (user, 2026-10-15) for the three pre-existing items the entry above lists as found and not fixed: WI-20261015-D2KZ5 (which `Error` label an unwritten `T1` is when the body raises two), WI-20261015-HCQVS (a guarded row variable refused at a direct call), WI-20261015-CZWFF (a bare `-Error` against an explicitly written `Rho`). None is a dependency of this ticket.
 

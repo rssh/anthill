@@ -2242,9 +2242,19 @@ fn match_present_labels(
     // existed to limit subst pollution from doomed attempts — now
     // unnecessary with the per-attempt snapshot/restore — and is
     // removed. `unify_types`' return value is authoritative.
+    //
+    // A ROW IS A SET: a label its row presents twice is one element. The copies come from
+    // producers that append (a row variable bound beside a declared label of the same name,
+    // `effects {Error[Foo], R}` with `R` holding `Error[Foo]`), and from bindings: two labels
+    // of one row that the pairing itself makes equal, `{Error[Q], Error[Foo]}` once `Q := Foo`.
+    // Paired as a multiset, the second copy found every label of the other row taken and went
+    // into that row's tail, so `Error.reify` charged its caller the effect it had caught
+    // (WI-20260908-9WVT7). Asked only of a label that pairs with nothing, and under the
+    // bindings made so far: a row whose labels all pair pays nothing.
     let mut b_matched = vec![false; b_present.len()];
+    let mut a_paired: SmallVec<[usize; 4]> = SmallVec::new();
     let mut only_a: Vec<Value> = Vec::new();
-    for al in a_present {
+    for (ai, al) in a_present.iter().enumerate() {
         let mut paired = false;
         for (i, bl) in b_present.iter().enumerate() {
             if one_to_one && b_matched[i] {
@@ -2260,16 +2270,37 @@ fn match_present_labels(
             *subst = snapshot;
         }
         if !paired {
+            paired = a_paired
+                .iter()
+                .any(|&p| labels_equal_under(kb, subst, &a_present[p], al));
+        }
+        if paired {
+            a_paired.push(ai);
+        } else {
             only_a.push(al.clone());
         }
     }
-    let only_b: Vec<Value> = b_present
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !b_matched[*i])
-        .map(|(_, t)| t.clone())
-        .collect();
+    let mut only_b: Vec<Value> = Vec::new();
+    for (i, bl) in b_present.iter().enumerate() {
+        if b_matched[i] {
+            continue;
+        }
+        let copy = (0..b_present.len())
+            .any(|j| b_matched[j] && labels_equal_under(kb, subst, &b_present[j], bl));
+        if !copy {
+            only_b.push(bl.clone());
+        }
+    }
     (only_a, only_b)
+}
+
+/// Are two labels of one row equal under `subst`, walked deep — a binding made inside an
+/// argument (`Error[T = ?Q]`, `?Q := Foo`) included, which [`resolved_labels_equal`]'s
+/// top-level walk does not see.
+fn labels_equal_under(kb: &mut KnowledgeBase, subst: &Substitution, x: &Value, y: &Value) -> bool {
+    let x = walk_type_deep_value(kb, subst, x);
+    let y = walk_type_deep_value(kb, subst, y);
+    views_structurally_equal(kb, &x, &y)
 }
 
 /// Bind a row-tail variable to a synthesized EffectExpression representing

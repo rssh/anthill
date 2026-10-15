@@ -2853,6 +2853,30 @@ pub(super) fn validate_callback_effect_row(
         .iter()
         .map(|l| walk_type_deep_value(kb, subst, l))
         .collect();
+    // A GUARDED ATOM OF THE DECLARED ROW ADMITS NO LABEL OF THE CALLBACK'S (proposal 048,
+    // "Lattice of guarded rows": `{E} <: {E :- g}` holds only where `g` is entailed, and an
+    // undecided entailment refuses). The decomposition reads `E :- g` as `E`, conservatively
+    // present: right for what the slot charges where the callback is applied, wrong for what
+    // it admits. A slot `@ {Error[Foo] :- eq(x, 0)}` promises its operation that the callback
+    // raises only at `x = 0`, the operation's own row is checked on that promise, and nothing
+    // here shows a callback keeps it: `runG(lambda (x) -> 7 / k, 5)` loaded and raised out of a
+    // `main` declaring no `Error` (MEASURED, WI-20260908-9WVT7), and so did an unguarded
+    // callback in the same slot. The guarded labels leave the admitting list one occurrence
+    // per atom, so an unguarded twin beside one (`{E, E :- g}`) still admits, and a callback
+    // label only a guarded atom would admit is refused by name below.
+    let e_guarded: Vec<Value> = collect_guarded_atoms(kb, subst, &decl_row)
+        .into_iter()
+        .map(|(label, _)| walk_type_deep_value(kb, subst, &label))
+        .collect();
+    let mut e_admitting = e_present.clone();
+    for g in &e_guarded {
+        if let Some(pos) = e_admitting
+            .iter()
+            .position(|e| views_structurally_equal(kb, e, g))
+        {
+            e_admitting.remove(pos);
+        }
+    }
     // A label naming a CALLBACK PARAMETER's place (`<op>.g.y`) says its position itself: that
     // kind of place exists in the row of its own arrow only (WI-341,
     // [`callback_binder_position`]), so an expression that says no places of its own and carries
@@ -2879,7 +2903,7 @@ pub(super) fn validate_callback_effect_row(
         }
     }
     for la in &a_present {
-        if e_present
+        if e_admitting
             .iter()
             .any(|le| labels_match_aligned(kb, subst, &place_map, la, le))
         {
@@ -2907,6 +2931,33 @@ pub(super) fn validate_callback_effect_row(
                 // typing pass allocates nothing.
                 actual: format!(
                     "{} declares `{}` on the corresponding parameter",
+                    subject(kb),
+                    type_display_name_value(kb, la),
+                ),
+            });
+        }
+        // Admitted only by a guarded atom of the declared row (see `e_guarded` above).
+        if let Some(guarded) = e_guarded
+            .iter()
+            .find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
+        {
+            return Some(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::OperationArgument {
+                    op_name: fn_sym,
+                    param: param_sym,
+                },
+                expected: format!(
+                    "callback effects admitted by parameter `{}` of `{}`, whose row holds `{}` \
+                     only under a guard",
+                    kb.local_name_of(param_sym),
+                    kb.qualified_name_of(fn_sym),
+                    type_display_name_value(kb, guarded),
+                ),
+                actual: format!(
+                    "{} declares `{}`, and nothing shows it raises that only where the guard \
+                     holds; a slot that writes the label unguarded admits it",
                     subject(kb),
                     type_display_name_value(kb, la),
                 ),

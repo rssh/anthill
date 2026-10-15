@@ -55,3 +55,29 @@ ACCEPTANCE: `viaInline`, called with a concrete list, grounds `tyOf`'s `T` — t
 `viaBracket[U]` row as the control that already passes (it is `wi708_body_type_arg_read_test`'s
 `a_type_argument_passed_through_a_generic_caller_is_ground`).
 
+## Changes
+
+### 2026-10-15T15:17:01Z — feedback — claude
+
+RE-MEASURED 2026-10-15 on ee3696eb: the channel this ticket describes is gone. WI-20260921-28TAT removed `Frame.type_args`, `set_resolved_type_args` and `op_own_param_ref_rewrite`; a type parameter's run-time value is now read through a `TypeValue` requirement (proposal 065). In today's language the program is
+
+  operation tyOf[T](x: T) -> Type requires TypeValue[T = T] = Cell[V = T]
+  operation viaInline(b: List[T = ?t]) -> Type requires TypeValue[T = ?t] = tyOf(b)
+
+and `viaInline(cons(1, nil))` answers `Cell(V: List(T: Int64))`, as the bracketed `viaBracket[U]` does. With the clause written, the inline family carries the requirement like a bracket, so the acceptance as written holds.
+
+WHAT IS LEFT IS A DIFFERENT GAP, and the inline family is only half of it. The refusal of forwarding a rigid into an operation that reads it (kernel-language.md, 065: `mid[U](y: U) = tyOf(y)` is refused at the call, naming the clause to add) misses two shapes. Both load and then fail at run time with `DeferToRequirement: requirement param __req_typevalue not bound in caller frame`, a panic through the rule-body bridge in a debug build:
+ * an inline rigid: `midInline(y: ?t) -> Type = tyOf(y)`;
+ * a rigid nested in a type argument: `midNested[U](y: List[T = U]) -> Type = tyOf(y)`, where the derived `TypeValue` for `List[T = U]` is conditioned on `TypeValue[T = U]`, which the caller does not hold. The same with an inline `?t` in place of `U` loads too.
+`mid[U](y: U) -> Type = tyOf(y)` is refused at load, as the spec says.
+
+PROPOSED, not done: rescope this ticket to that refusal, with the acceptance that both shapes are refused at load naming the clause to add, and that each, with the clause written, answers at run time.
+
+### 2026-10-15T17:18:54Z — feedback — claude
+
+CORRECTION to the entry above (2026-10-15, found by the /code-review sweep): the run-time failure it describes is not caused by the missing refusal.
+
+Through an anthill caller the unrefused shapes return the right Type: `midX(y: ?t) -> Type = tyOf(y)` gives `midX(5) === tyOf(5)` true (the control against `tyOf("s")` false), and `midX[U](y: List[T = U])` behaves the same, behind a generic caller too. The panic was measured through a rule body (`rule rc(?r) :- c(?r)`), and through a rule body even the clause-written twins and the spec's own repair, `mid[U](y: U) requires TypeValue[T = U] = tyOf(y)`, panic "frame binds []", while `let r = tyOf(y)` then `r` answers. That is WI-20261012-EZJXH's mechanism, a whole-body call reached from a rule body, here with the type fixed by an argument rather than a bracket.
+
+What stands: the load-time refusal of a forward misses the inline shape and the nested one. The proposed acceptance's "answers at run time" holds through an anthill caller; through a rule body it waits on EZJXH.
+
