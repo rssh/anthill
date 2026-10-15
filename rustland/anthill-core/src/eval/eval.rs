@@ -510,23 +510,36 @@ impl Interpreter {
                 self.reduce_requirement_at_sort_node(chain, *slot)
             }
             Expr::Dictionary { impl_sort, subs } => self.reduce_dictionary_node(*impl_sort, subs),
+            // `ListLit` / `SetLit` / `TupleLit` are the literal nodes of a rule's own
+            // term. In an operation body, and in a lambda a rule body writes, the typer
+            // has read one as the constructor written there
+            // (`typing::literal_as_constructor`), which the `Constructor` arm above
+            // constructs. One that reaches here was SPLICED in when a rule-body call was
+            // evaluated — the binding of a rule variable the lambda captured (`h((1, 2),
+            // ?r)` over `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)`) — and no
+            // typer saw it, so it is read the way the typer reads one: as that
+            // constructor, built by the same arm.
+            Expr::ListLit(elements) => {
+                let literal = self.reflect.list_literal;
+                self.start_literal_constructor(literal, elements, &[])
+            }
+            Expr::SetLit(elements) => {
+                let literal = self.reflect.set_literal;
+                self.start_literal_constructor(literal, elements, &[])
+            }
+            Expr::TupleLit { positional, named } => {
+                let literal = self.reflect.tuple_literal;
+                self.start_literal_constructor(literal, positional, named)
+            }
             // `DotApply` is a pre-dispatch form: the `@[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
             // Reaching here means it survived unresolved.
-            //
-            // `ListLit` / `SetLit` / `TupleLit` are the literal nodes of a rule's own
-            // term. In an operation body the typer has read one as the constructor
-            // written there (`typing::literal_as_constructor`), which the `Constructor`
-            // arm above constructs; one reaching here was not typed.
             Expr::HoApply { .. }
             | Expr::HoApplyWithin { .. }
             | Expr::ConstructorWithin { .. }
             | Expr::LambdaWithin { .. }
             | Expr::Instantiation { .. }
-            | Expr::DotApply { .. }
-            | Expr::ListLit(_)
-            | Expr::SetLit(_)
-            | Expr::TupleLit { .. } => Err(EvalError::Internal(format!(
+            | Expr::DotApply { .. } => Err(EvalError::Internal(format!(
                 "unhandled Expr variant in eval: {:?}",
                 std::mem::discriminant(expr),
             ))),
@@ -2505,6 +2518,24 @@ impl Interpreter {
             },
             first,
         )
+    }
+
+    /// A collection literal of a rule's term, built as the constructor the typer reads it
+    /// as (`typing::literal_as_constructor`): `literal` is the reflect literal entity —
+    /// `None` only in a KB with no prelude, where no literal has an entity to be.
+    fn start_literal_constructor(
+        &mut self,
+        literal: Option<Symbol>,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let Some(name) = literal else {
+            return Err(EvalError::Internal(
+                "a collection literal reached eval in a KB with no reflect literal entities"
+                    .into(),
+            ));
+        };
+        self.start_constructor(name, pos_args, named_args)
     }
 
     fn start_constructor(

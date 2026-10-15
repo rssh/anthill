@@ -682,3 +682,7 @@ REVIEWED (/code-review max, 2026-10-15): fixed in this change — the dead reduc
 
 THE GENERAL VERSION is filed: WI-20261015-ZPETZ (proposal-068), one dispatch for the host entry and the in-body faces.
 
+### 2026-10-15T20:59:11Z — feedback — user
+
+FIXED INLINE (2026-10-15, the plan the user approved): a tuple or set literal a rule-body lambda captures through a rule variable. `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)` evaluated as `h((1, 2), ?r)` panicked a debug build ("unhandled Expr variant in eval: Discriminant(13)", the `debug_assert` in `bridge_op_to_eval`) and faulted a release one: the binding is spliced into the lambda when the call is evaluated, and reached the evaluator as `Expr::TupleLit`, which only the typer reads as a constructor. The evaluator now reads a spliced `TupleLit` / `SetLit` / `ListLit` as that constructor and builds it by the arm the typed one takes (`start_literal_constructor`), so `h((1, 2), ?r)` answers `(1, 2)`, a fact-held tuple and a tuple inside an entity answer too, and a spliced set is the `SetLiteral` value an operation body builds from the same literal. Rows: `wi_9wvt7_spliced_literal_test` (4); the literal arm backed out fails 3, the controls pass either way. Full workspace 9913 passed / 0 failed / 17 ignored; the stack canary unchanged at opt-level 0 and 2.
+
