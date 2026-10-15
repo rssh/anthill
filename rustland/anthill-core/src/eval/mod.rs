@@ -2030,6 +2030,37 @@ impl Interpreter {
             .retain(|_, entry| matches!(entry, ConstCacheEntry::Forcing));
     }
 
+    /// The KB this interpreter was lent goes back to its owner — the resolver, for a
+    /// bridged run (`KnowledgeBase::run_in_bridge_interp`) — with no scoped-KB layer
+    /// (`KB.loaded`) still applied to it.
+    ///
+    /// A layer is applied IN PLACE, to the one KB, and undone only when its last holder is
+    /// gone ([`Self::sweep_layers`]). A run whose holders all went inside it has nothing
+    /// left once swept here. A run that ANSWERS a value still holding one — a `KB`, or a
+    /// `Result` around one — would hand the resolver its own KB with the layer applied, and
+    /// every later goal, of this clause or another, would read the scoped source's facts:
+    /// MEASURED, `loads(?r), seen(n: ?n)` answered the loaded `42` beside the base's `1`,
+    /// the same two goals swapped answered only `1`, and a failed clause's layer survived
+    /// the backtrack. So such an answer is refused ([`EvalError::ScopedKbOutlivesCall`]),
+    /// the layer is discarded, and the call has no value.
+    pub(crate) fn release_layers_for_handback(
+        &mut self,
+        outcome: Result<Value, EvalError>,
+    ) -> Result<Value, EvalError> {
+        self.sweep_layers();
+        if self.layers.depth() == 0 {
+            return outcome;
+        }
+        // The answer holds a layer. Dropped, its handles retire and the sweep discards;
+        // what this interpreter's own arenas still hold goes by force, since nothing of
+        // it outlives the handback.
+        drop(outcome);
+        self.sweep_layers();
+        let layers = self.layers.clone();
+        layers.discard_all(&mut self.kb);
+        Err(EvalError::ScopedKbOutlivesCall)
+    }
+
     /// WI-SPGBP — how many scoped-KB layers are currently applied.
     pub fn layer_depth(&self) -> usize {
         self.layers.depth()

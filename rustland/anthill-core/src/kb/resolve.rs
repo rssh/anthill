@@ -12108,6 +12108,7 @@ impl KnowledgeBase {
             Ok(()) => f(&mut interp),
             Err(e) => Err(e),
         };
+        let outcome = interp.release_layers_for_handback(outcome);
         *self = interp.into_kb();
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));
         Some(outcome)

@@ -271,6 +271,13 @@ pub enum EvalError {
     /// reader, and `stored_facts_of`'s was `Internal`, each reachable from inside
     /// resolution once the readers became reducible at a rule-body operand.
     KbReadFailed(crate::kb::reflect_reader::ReflectReadError),
+    /// A call evaluated against a KB its caller lent it — a rule body's, through the
+    /// SLD→eval bridge — answered a value still holding a scoped KB (`KB.loaded`). The
+    /// layer is applied to the caller's own KB, so it cannot stay applied past the call,
+    /// and a handle to a discarded layer refers to nothing: the call has no value
+    /// (`Interpreter::release_layers_for_handback`). A PROGRAM limit, not an evaluator
+    /// invariant, so not [`Self::Internal`].
+    ScopedKbOutlivesCall,
     Internal(String),
 }
 
@@ -409,6 +416,7 @@ impl EvalError {
             | EvalError::MacroRejected { .. }
             | EvalError::UnboundTypeParam { .. }
             | EvalError::KbReadFailed(_)
+            | EvalError::ScopedKbOutlivesCall
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -636,6 +644,13 @@ impl std::fmt::Display for EvalError {
                  and this call route did not; a parameter with no binding is not a type"
             ),
             EvalError::KbReadFailed(e) => write!(f, "{e}"),
+            EvalError::ScopedKbOutlivesCall => write!(
+                f,
+                "its value holds a scoped KB (`KB.loaded`), which cannot outlive the call \
+                 that loaded it here: the call ran against its caller's own KB, so the layer \
+                 is discarded when the call ends, and the value would refer to nothing — \
+                 read what the scoped KB answers inside the call, and return that"
+            ),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

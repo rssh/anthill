@@ -239,6 +239,34 @@ impl LayerArenaRef {
         }
     }
 
+    /// Discard EVERY live layer, innermost first, whether or not its holders are gone. For
+    /// an interpreter about to hand back the KB its layers scope
+    /// (`Interpreter::release_layers_for_handback`), which refuses to let a holder out —
+    /// so a handle left afterwards is one the interpreter's own arenas hold and drop with
+    /// it, and its drop only lowers the count of a slot nothing reads again.
+    pub(crate) fn discard_all(&self, kb: &mut KnowledgeBase) -> usize {
+        let mut discarded = 0;
+        loop {
+            let snapshot = {
+                let mut arena = self.0.arena.borrow_mut();
+                let Some(top) = arena.stack.pop() else {
+                    break;
+                };
+                arena.slots[top as usize].snapshot.take()
+            };
+            match snapshot {
+                // Restored with NO arena borrow held, as `sweep` does.
+                Some(s) => {
+                    kb.restore_scoped(s);
+                    discarded += 1;
+                }
+                None => unreachable!("WI-SPGBP: a live layer slot always holds its snapshot"),
+            }
+        }
+        self.0.retired.set(false);
+        discarded
+    }
+
     /// Live (unswept) layer count — the reader the refcount tests assert on.
     pub(crate) fn depth(&self) -> usize {
         self.0.arena.borrow().stack.len()
