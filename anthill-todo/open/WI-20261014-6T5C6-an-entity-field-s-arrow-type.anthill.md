@@ -9,7 +9,9 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- tags: typing
+- depends_on: WI-20261014-7EZS6-applying-a-let-held-lambda, WI-20261015-809JN-proposal-050-1-stage-1-a-write
+
+- tags: typing, proposal-050.1
 
 ## Description
 
