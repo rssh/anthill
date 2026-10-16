@@ -480,7 +480,7 @@ end
     let mut interp = Interpreter::new(kb);
     let err = interp.call("test.m2_match_fail.main", &[]).unwrap_err();
     match err {
-        EvalError::Raised { payload } => match &payload {
+        EvalError::Raised { payload, .. } => match &payload {
             Value::Entity { functor, named, .. } => {
                 assert_eq!(
                     interp.kb().qualified_name_of(*functor),
@@ -1732,7 +1732,7 @@ end
     // `division_by_zero(op:)` payload (was bespoke EvalError::DivisionByZero),
     // routed through the Error handler so an installed handler can catch it.
     match err {
-        anthill_core::eval::EvalError::Raised { payload } => {
+        anthill_core::eval::EvalError::Raised { payload, .. } => {
             let op = match &payload {
                 Value::Entity { named, .. } => {
                     named.iter().find_map(|(_, v)| scalar_str(interp.kb(), v))
@@ -2986,10 +2986,12 @@ end
     let mut interp = interp_for(src);
     register_modify_handler(&mut interp);
 
+    // The program's error, not the evaluator's: it was `Internal("Modify.get: no value
+    // set …")`, which reads as an evaluator bug.
     let err = interp.call("test.m5_unset.read", &[]).unwrap_err();
     match err {
-        EvalError::Internal(msg) => assert!(msg.contains("no value set"), "got {msg}"),
-        other => panic!("expected Internal 'no value set', got {other:?}"),
+        EvalError::ResourceUnset { resource } => assert_eq!(resource, "counter"),
+        other => panic!("expected ResourceUnset, got {other:?}"),
     }
 }
 
@@ -3032,6 +3034,39 @@ end
     let b = interp.call("test.m5_independent.fetch", &[rb]).unwrap();
     assert_eq!(a.literal_int64(interp.kb()), Some(1));
     assert_eq!(b.literal_int64(interp.kb()), Some(99));
+}
+
+/// TWO RESOURCES OF ONE CONSTRUCTOR ARE REFUSED, NOT SHARED. The standard handler holds one
+/// slot per constructor, so `box(id: 1)` and `box(id: 2)` were one place: written 10 and 20,
+/// the first read 20. Until the handler keeps them apart (WI-200) one built with fields
+/// is an error naming it. The nullary row above is the control and passes either way, by
+/// design.
+///
+/// BACK-OUT: the refusal in `default_modify_handler` taken out, and this fails, the write
+/// answering.
+#[test]
+fn m5_modify_a_resource_with_fields_is_refused() {
+    let src = r#"
+namespace test.m5_fields
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+  import ModifyRuntime.{set}
+
+  sort Box
+    provides Modifiable[T = Self]
+    entity box(id: Int64)
+  end
+
+  operation mk(n: Int64) -> Box = box(id: n)
+  operation put(r: Box, n: Int64) -> Unit effects Modify[r] = set(r, n)
+end
+"#;
+    let mut interp = interp_for(src);
+    register_modify_handler(&mut interp);
+    let one = interp.call("test.m5_fields.mk", &[Value::Int(1)]).unwrap();
+    match interp.call("test.m5_fields.put", &[one, Value::Int(10)]) {
+        Err(EvalError::ResourceWithFields { resource }) => assert_eq!(resource, "box(id: 1)"),
+        other => panic!("a resource with fields is refused, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3151,7 +3186,7 @@ fn wi389_throw_action_surfaces_as_raised() {
         .invoke_effect_handler("anthill.prelude.Modify", op_sym, &[])
         .unwrap_err();
     match err {
-        EvalError::Raised { payload: got } => {
+        EvalError::Raised { payload: got, .. } => {
             assert_eq!(
                 scalar_str(interp.kb(), &got).as_deref(),
                 Some("boom"),
@@ -3226,7 +3261,7 @@ fn wi073_raise_surfaces_as_raised_with_payload() {
         )
         .unwrap_err();
     match err {
-        EvalError::Raised { payload } => {
+        EvalError::Raised { payload, .. } => {
             assert_eq!(
                 scalar_str(interp.kb(), &payload).as_deref(),
                 Some("kaboom"),

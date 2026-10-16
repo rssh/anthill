@@ -535,7 +535,7 @@ fn string_list(interp: &mut Interpreter, r: &Result<Value, EvalError>) -> Vec<St
 /// separates the declared partiality from an unrelated eval error.
 fn assert_raises_empty_stream(interp: &mut Interpreter, op: &str) {
     match interp.call(op, &[]) {
-        Err(EvalError::Raised { payload }) => match &payload {
+        Err(EvalError::Raised { payload, .. }) => match &payload {
             Value::Entity { functor, .. } => assert_eq!(
                 interp.kb().qualified_name_of(*functor),
                 "anthill.prelude.EmptyStream.empty_stream",

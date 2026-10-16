@@ -4229,24 +4229,36 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 /// over a case no program can present. Exploding a row that arrives some OTHER way is
 /// still needed and still happens — a `provides Spec[E = {…}]` binding is one, and
 /// [`check_written_row_bindings`] explodes it — but not here.
-/// May an operation's declared effect row hold `effect`? It may through a member of that kind,
-/// a row parameter (`effects E`, `s.E`), or a member whose kind this cannot name, which is read
-/// as possibly so. The SLD→eval bridge's report reads it: a run that asks a handler for an
-/// effect its row cannot hold asks for one the row hides — a write through `ModifyRuntime` to
-/// a cell the operation keeps to itself, whose `Modify` the typer drops from the row — and the
-/// report says so rather than that the operation performs it.
-pub(crate) fn declared_row_may_hold(kb: &KnowledgeBase, effects: &[Value], effect: Symbol) -> bool {
-    effects.iter().any(|e| {
-        kb.effect_member_is_parametric(e)
-            || effect_label_kind(kb, e).is_none_or(|kind| same_sort_canonical(kb, kind, effect))
-    })
-}
-
 fn effect_label_kind(kb: &KnowledgeBase, label: &Value) -> Option<Symbol> {
     match type_head(kb, &resolve_effect_label_alias(kb, label)?) {
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
         _ => None,
     }
+}
+
+/// May an operation's declared effect row hold `effect`? A member holds it when it names that
+/// kind — written bare, as `+X`, or guarded (`X :- g`) — and a row parameter (`effects E`,
+/// `s.E`) or a member whose kind this cannot name is read as possibly holding it; a denial
+/// (`-X`) holds nothing. The SLD→eval bridge's report reads it: a run that asks a handler for
+/// an effect its operation's row cannot hold is reported as that, not as performing it.
+pub(crate) fn declared_row_may_hold(kb: &KnowledgeBase, effects: &[Value], effect: Symbol) -> bool {
+    effects.iter().any(|e| {
+        if kb.effect_member_is_parametric(e) {
+            return true;
+        }
+        let label = match e.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)) {
+            Some("anthill.prelude.EffectExpression.absent") => return false,
+            Some(
+                "anthill.prelude.EffectExpression.present"
+                | "anthill.prelude.EffectExpression.guarded",
+            ) => match view_child_value(kb, e, "label") {
+                Some(label) => label,
+                None => return true,
+            },
+            _ => e.clone(),
+        };
+        effect_label_kind(kb, &label).is_none_or(|kind| same_sort_canonical(kb, kind, effect))
+    })
 }
 
 /// WI-20260901-47VWX — WHAT A RUN OF [`check_written_row_bindings`] IS FOR.

@@ -1095,9 +1095,9 @@ pub(super) fn resolve_inner<'a>(
             }) =>
             {
                 format!(
-                    "no impl provides {0}: its instances are derived, a parametric sort's only \
-                     where each type argument has one, and none may be written — a tuple or an \
-                     arrow has none; add `requires {0}[…]` in scope to take it from the caller",
+                    "no impl provides {0}: its instances are derived, for a sort that is no \
+                     spec, a parametric one's only where each type argument has one, and none \
+                     may be written; add `requires {0}[…]` in scope to take it from the caller",
                     kb.qualified_name_of(goal.spec_sort)
                 )
             }

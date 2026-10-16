@@ -98,6 +98,9 @@ pub enum EvalError {
     /// raised Error aborts evaluation carrying its payload here.
     Raised {
         payload: Value,
+        /// Who raised it, where a report must tell the runtime's account of a search it
+        /// could not finish from a program's own raise of the same payload.
+        origin: RaiseOrigin,
     },
     /// A handler returned a continuation-manipulating action (`Fail`,
     /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
@@ -116,6 +119,21 @@ pub enum EvalError {
         backtrace: std::backtrace::Backtrace,
     },
     CyclicReference,
+    /// A `Modify` operation on a resource built by a constructor with fields, which the
+    /// standard handler (`effects::default_modify_handler`) cannot keep apart: it holds
+    /// one slot per constructor, so `box(id: 1)` and `box(id: 2)` would be one place.
+    /// Refused rather than shared until the handler keeps the values of one constructor apart
+    /// (WI-200).
+    /// `resource` is the value, rendered.
+    ResourceWithFields {
+        resource: String,
+    },
+    /// A `Modify` read of a resource nothing has set, under the standard handler. The
+    /// program's own error, not the evaluator's: no write reached that slot. `resource` is
+    /// the value, rendered.
+    ResourceUnset {
+        resource: String,
+    },
     /// Proposal 039 / WI-084: a `const`'s value was demanded while it is already
     /// being forced — a dependency cycle (`const A = B + 1; const B = A + 1`).
     /// The value cache's forcing sentinel detects this dynamically; `name` is the
@@ -386,7 +404,7 @@ impl EvalError {
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──
-            EvalError::Raised { payload } => raised_disposition(kb, payload),
+            EvalError::Raised { payload, .. } => raised_disposition(kb, payload),
             // ── NoProvider: the requirement is known not to be available ──
             //
             // A slot the argument types pinned and no provider answers: the call has no
@@ -426,6 +444,8 @@ impl EvalError {
             | EvalError::StepsExhausted { .. }
             | EvalError::UnsupportedHandlerAction { .. }
             | EvalError::CyclicReference
+            | EvalError::ResourceWithFields { .. }
+            | EvalError::ResourceUnset { .. }
             | EvalError::ConstCycle { .. }
             | EvalError::AmbiguousRequirement { .. }
             | EvalError::UnpinnedRequirement { .. }
@@ -438,6 +458,19 @@ impl EvalError {
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
+}
+
+/// Who raised an [`EvalError::Raised`] payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaiseOrigin {
+    /// `Error.raise`, a host function's declared `Error`, a handler's `Throw`: a raise of
+    /// the program's, whatever its payload.
+    Program,
+    /// A resolver search behind a stream reported a fault (`Interpreter::fault_stream`),
+    /// and the runtime raised its `evaluation_failure`: the account of a search it could not
+    /// finish, which a boundary around the call does not repair. A program's own raise of
+    /// that constructor is [`RaiseOrigin::Program`].
+    SearchFault,
 }
 
 /// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless
@@ -594,6 +627,16 @@ impl std::fmt::Display for EvalError {
                 write!(f, "\nbacktrace:\n{backtrace}")
             }
             EvalError::CyclicReference => write!(f, "cyclic reference detected"),
+            EvalError::ResourceWithFields { resource } => write!(
+                f,
+                "the standard `Modify` handler holds one slot per constructor, so it cannot keep \
+                 `{resource}` apart from another value of its constructor; a resource with \
+                 fields needs a handler that keeps the values of one constructor apart (WI-200)"
+            ),
+            EvalError::ResourceUnset { resource } => write!(
+                f,
+                "`{resource}` is read through `Modify` before anything set it"
+            ),
             EvalError::ConstCycle { name } => write!(
                 f,
                 "const `{name}` depends on itself (cycle detected while forcing its value)"

@@ -353,7 +353,7 @@ end
 "#;
     let mut interp = interp_for(SRC);
     match interp.call("test.wi730naf.p", &[]) {
-        Err(EvalError::Raised { payload }) => {
+        Err(EvalError::Raised { payload, .. }) => {
             let functor = match &payload {
                 Value::Entity { functor, .. } => *functor,
                 other => panic!("expected a floundered-relation entity payload, got {other:?}"),

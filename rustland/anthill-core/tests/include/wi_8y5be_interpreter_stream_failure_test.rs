@@ -81,7 +81,7 @@ fn field<'v>(interp: &anthill_core::eval::Interpreter, payload: &'v Value, name:
 fn a_faulted_query_raises_evaluation_failure() {
     let mut interp = interp_for(SRC);
     let payload = match interp.call("test.wi8y5be.probe", &[]) {
-        Err(EvalError::Raised { payload }) => payload,
+        Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!(
             "a goal the search could not ask must raise the declared Error, not yield a \
              row; got {other:?}"
@@ -142,7 +142,7 @@ fn a_query_that_does_not_lower_raises_malformed_query() {
     let mut interp = interp_for(SRC);
     let kb = interp.call("anthill.reflect.KB.kb", &[]).expect("the ambient kb()");
     let payload = match interp.call("anthill.reflect.KB.execute", &[kb, Value::Int(1)]) {
-        Err(EvalError::Raised { payload }) => payload,
+        Err(EvalError::Raised { payload, .. }) => payload,
         other => panic!("a non-query must raise malformed_query; got {other:?}"),
     };
     match &payload {
@@ -159,6 +159,7 @@ fn raised_functor(interp: &anthill_core::eval::Interpreter, err: EvalError) -> S
     match err {
         EvalError::Raised {
             payload: Value::Entity { functor, .. },
+            ..
         } => interp.kb().qualified_name_of(functor).to_string(),
         other => panic!("expected a raised entity payload, got {other:?}"),
     }

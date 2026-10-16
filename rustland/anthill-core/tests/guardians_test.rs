@@ -636,7 +636,10 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
         // A FAILED REQUEST IS THE DECLARED `Error`, raised — not a fault and not an
         // empty reply. `complete`'s row carries `Error` for exactly this.
         let reply = chat_completion(&endpoint, &model, &prompt)
-            .map_err(|msg| anthill_core::eval::EvalError::Raised { payload: Value::Str(msg) })?;
+            .map_err(|msg| anthill_core::eval::EvalError::Raised {
+                payload: Value::Str(msg),
+                origin: anthill_core::eval::RaiseOrigin::Program,
+            })?;
         text_value(interp.kb(), &reply)
     })
     .expect("register guardians_live_complete");
@@ -793,7 +796,7 @@ fn load_failure_to_rejected(
     e: anthill_core::eval::EvalError,
 ) -> Result<Value, anthill_core::eval::EvalError> {
     let payload = match &e {
-        anthill_core::eval::EvalError::Raised { payload } => payload.clone(),
+        anthill_core::eval::EvalError::Raised { payload, .. } => payload.clone(),
         _ => return Err(e),
     };
     let load_failed = interp
@@ -2866,7 +2869,7 @@ fn a_live_model_generates_a_triage_through_the_repair_loop() {
         let args = [p.harness.clone(), llm.clone(), prompt.clone()];
         let src = match p.interp.call("guardians.FileHarness.generate", &args) {
             Ok(src) => src,
-            Err(anthill_core::eval::EvalError::Raised { payload }) => {
+            Err(anthill_core::eval::EvalError::Raised { payload, .. }) => {
                 let why = format!("RAISED by the model call: {payload:?}");
                 write(format!("round-{round}.verdict.txt"), &why);
                 eprintln!("[{}] round {round} ({:.0?}): {why}", cfg.model, started.elapsed());

@@ -1165,10 +1165,11 @@ end
 /// ErrorTag[…]` row, which loads and which no boundary reads.
 ///
 /// BACK-OUT: `former_carrier`'s walk into a binding (`FormerCarrier::Within`) taken out, and
-/// both programs are refused with the row advice again.
+/// both fail on the former: they are refused without it, by the library's no-row text below.
+/// With that text taken out as well, both carry the row advice again, and fail on it too.
 #[test]
 fn a_library_spec_at_a_former_inside_a_sort_is_refused_naming_a_value() {
-    for (shape, src, repair, dead_end) in [
+    for (shape, src, repair) in [
         (
             "TypeValue",
             r#"
@@ -1183,7 +1184,6 @@ namespace test.n31xx.within
 end
 "#,
             "Pass a value whose type is a sort with no tuple or arrow among its type arguments",
-            "declare `provides anthill.reflect.TypeValue",
         ),
         (
             "ErrorTag",
@@ -1201,7 +1201,6 @@ end
 "#,
             "Raise, in the thunk, a value whose type is a sort with no tuple or arrow among its \
              type arguments",
-            "declare `provides anthill.prelude.ErrorTag",
         ),
     ] {
         let errs = load_errors(src);
@@ -1212,15 +1211,29 @@ end
         ] {
             assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         }
-        assert!(
-            !errs[0].contains(dead_end),
-            "{shape}: no row can stand in, so none is advised; got {:?}",
-            errs[0]
-        );
+        assert_names_no_row_advice(shape, &errs[0]);
+    }
+}
+
+/// The advice a library spec's refusal must not give: a written row, which is refused at
+/// load (`TypeValue`) or read by no boundary (`ErrorTag`), and a `requires` in scope, which
+/// hands the same refusal to the caller, every element being written.
+const ROW_ADVICE: [&str; 3] = [
+    "declare `provides",
+    "needs a row at this instantiation",
+    "in scope to take it from the caller",
+];
+
+fn assert_names_no_row_advice(shape: &str, err: &str) {
+    for advice in ROW_ADVICE {
+        assert!(!err.contains(advice), "{shape}: no row can stand in, so none is advised; got {err:?}");
     }
 }
 
 /// THE ADVISED REPAIR ANSWERS: the tuple replaced by a sort, the payload is caught.
+///
+/// CONTROL — PASSES EITHER WAY BY DESIGN: the repair was a program that runs before the
+/// refusal named it.
 #[test]
 fn the_advised_value_of_a_sort_is_caught() {
     let mut interp = crate::common::interp_for(
@@ -1249,6 +1262,245 @@ end
         .call("test.n31xx.withinok.caught", &[])
         .expect("the boundary catches the payload");
     assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("caught"));
+}
+
+/// A LIBRARY SPEC WITH NO ROW THAT ANSWERS, AND NO FORMER IN SIGHT, gets the same kind of
+/// repair: a value. Three shapes: a type argument nothing writes (`none()`), a spec as the
+/// carrier, and a spec as a raised payload, which a sort that is no spec has a `TypeValue`
+/// row for and a spec has none. They advised a written row — "declare `provides …`", or
+/// "… needs a row at this instantiation" — and a `requires` in scope.
+///
+/// BACK-OUT: the library arm of `RequirementRefusal::render` taken out, and all three carry
+/// the row advice again.
+#[test]
+fn a_library_spec_with_no_answering_row_is_refused_naming_a_value() {
+    let type_value = "no row of `anthill.reflect.TypeValue` answers here, and none may be \
+                      written";
+    for (shape, src, want) in [
+        (
+            "a type argument nothing writes",
+            r#"
+namespace test.n31xx.libopen
+  import anthill.prelude.{Option, Type}
+  import anthill.prelude.Option.{none}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+
+  operation ask() -> Type = tyOf(none())
+end
+"#,
+            type_value,
+        ),
+        (
+            "a spec as the carrier",
+            r#"
+namespace test.n31xx.libspec
+  import anthill.prelude.{Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  sort Shape
+    sort T = ?
+    operation area(s: T) -> Int64
+  end
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+
+  operation ask(s: Shape) -> Type = tyOf(s)
+end
+"#,
+            type_value,
+        ),
+        (
+            "a spec as a raised payload",
+            r#"
+namespace test.n31xx.libtag
+  import anthill.prelude.{Error, Int64}
+  import anthill.prelude.Result.{ok, err}
+
+  sort Shape
+    sort T = ?
+    operation area(s: T) -> Int64
+  end
+
+  sort Sq
+    entity sq(side: Int64)
+    provides Shape[T = Sq]
+    operation area(s: Sq) -> Int64 = 4
+  end
+
+  operation declaresShape() -> Int64 effects {Error[Shape]} = 1
+
+  operation caught() -> Int64 =
+    match Error.reify(lambda () -> declaresShape())
+      case ok(n) -> n
+      case err(_) -> 0
+end
+"#,
+            "no row of `anthill.prelude.ErrorTag` answers here, and a written one is no repair",
+        ),
+    ] {
+        let errs = load_errors(src);
+        assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
+        assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
+        assert_names_no_row_advice(shape, &errs[0]);
+    }
+}
+
+/// AT A CONSTRUCTION, the refusals a call gets: a sort whose `requires TypeValue[T = T]` is
+/// built at a sort holding a former, or at a bare former, is refused naming the former and a
+/// value. Inside a sort it was given the row advice, and the bare former was told to declare a
+/// requirement slot for it, which hands the refusal to the caller.
+///
+/// BACK-OUT: each of the construction path's two former checks taken out alone — the one
+/// beside `unprovided_provision`, and the `Option` fails (refused by the library's no-row
+/// text, which names no former); the one in the plain no-route arm, and the bare tuple is
+/// told to declare a slot again, and so is `wi_0gyw1_arrow_provision_labels_test::
+/// two_lists_of_unrelated_names_stay_two_arrows`, whose sort-level `requires` at an arrow is
+/// that shape. `former_carrier`'s walk into a binding taken out fails this row too, with the
+/// row above.
+#[test]
+fn a_construction_at_a_former_is_refused_as_a_call_is() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.construct
+  import anthill.prelude.{Option, Type}
+  import anthill.prelude.Option.{some}
+  import anthill.reflect.{TypeValue}
+
+  sort Box
+    import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
+    sort T = ?
+    requires TypeValue[T = T]
+    entity box(v: T)
+    operation tyOf(b: Self) -> Type = TypeValue.type_value()
+  end
+
+  operation inside() -> Type = Box.tyOf(box(some((1, 2))))
+  operation bare() -> Type = Box.tyOf(box((1, 2)))
+end
+"#,
+    );
+    assert_eq!(errs.len(), 2, "one refusal per construction, got {errs:#?}");
+    for (shape, want) in [
+        (
+            "within a sort",
+            "its carrier `anthill.prelude.Option[T = (_1: Int64, _2: Int64)]` has a STRUCTURAL \
+             FORMER — a tuple or an arrow — among its type arguments",
+        ),
+        (
+            "a bare former",
+            "its carrier is `(_1: Int64, _2: Int64)`, a STRUCTURAL FORMER",
+        ),
+    ] {
+        let err = errs
+            .iter()
+            .find(|e| e.contains(want))
+            .unwrap_or_else(|| panic!("{shape}: expected {want:?}; got {errs:#?}"));
+        assert!(err.contains("for the construction `test.n31xx.construct.Box.box`"), "{shape}: {err}");
+        assert!(
+            err.contains("Pass a value whose type is a sort with no tuple or arrow among its type \
+                          arguments"),
+            "{shape}: {err}"
+        );
+        assert!(!err.contains("declare a requirement slot"), "{shape}: {err}");
+        assert_names_no_row_advice(shape, err);
+    }
+}
+
+/// THE SEARCH'S OWN ACCOUNT ADVISES NO `TypeValue` ROW EITHER. A provision whose contract asks
+/// for `TypeValue` where none holds — `W provides Desc[T = Option[T = (Int64, Int64)]]`, `Desc`
+/// requiring `TypeValue[T = T]` — is refused saying the instances are derived, where it was
+/// told to declare `provides TypeValue[…]` on the carrier, which is refused at load.
+///
+/// BACK-OUT: the `TypeValue` arm of the resolver's no-provider hint taken out, and this fails
+/// on the row advice.
+#[test]
+fn a_provision_contract_at_no_type_value_names_no_row() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.contract
+  import anthill.prelude.{Int64, Option, Type}
+  import anthill.reflect.{TypeValue}
+
+  sort Desc
+    import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
+    sort T = ?
+    requires TypeValue[T = T]
+    operation d() -> Type
+  end
+
+  sort W
+    import anthill.prelude.{Int64, Option, Type}
+    import anthill.reflect.{TypeValue}
+    provides Desc[T = Option[T = (Int64, Int64)]]
+    operation d() -> Type = TypeValue.type_value()
+  end
+end
+"#,
+    );
+    let contract = errs
+        .iter()
+        .find(|e| e.contains("'test.n31xx.contract.W' provides 'test.n31xx.contract.Desc'"))
+        .unwrap_or_else(|| panic!("the provision's contract is refused, got {errs:#?}"));
+    assert!(
+        contract.contains(
+            "no impl provides anthill.reflect.TypeValue: its instances are derived, for a sort \
+             that is no spec, a parametric one's only where each type argument has one, and none \
+             may be written"
+        ),
+        "the account says why: {contract}"
+    );
+    assert!(
+        !contract.contains("declare `provides anthill.reflect.TypeValue"),
+        "and advises no row: {contract}"
+    );
+}
+
+/// A SPEC OF THE PROGRAM'S OWN WHOSE CONTRACT HOLDS NOWHERE AT THE CALL is not advised a row
+/// either: `Desc requires TypeValue[T = T]`, and at `Option[T = (Int64, Int64)]` a row of
+/// `Desc` would be refused for `TypeValue[T = Option[T = (…)]]`, as a provision's contract is
+/// checked. It was told to declare `provides Desc[T = Option[T = (…)]]`, which is then
+/// refused; the refusal names the contract and the library's repair.
+///
+/// BACK-OUT: the contract check of `unprovided_provision` (`library_contract_unheld`)
+/// answering `None`, and this fails on the row advice. The row below is the control.
+#[test]
+fn a_users_spec_whose_library_contract_holds_nowhere_is_given_its_repair() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.contract2
+  import anthill.prelude.{Int64, Option, Type}
+  import anthill.prelude.Option.{some}
+  import anthill.reflect.{TypeValue}
+
+  sort Desc
+    import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
+    sort T = ?
+    requires TypeValue[T = T]
+    operation d() -> Type
+  end
+
+  operation dOf[B](x: B) -> Type requires Desc[T = B] = Desc.d()
+
+  operation ask() -> Type = dOf(some((1, 2)))
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    assert!(
+        errs[0].contains(
+            "a row of `test.n31xx.contract2.Desc` at these bindings would be refused for its own \
+             contract, `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: Int64, _2: \
+             Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none may be written"
+        ),
+        "the contract and its repair: {:?}",
+        errs[0]
+    );
+    assert_names_no_row_advice("a contract that holds nowhere", &errs[0]);
 }
 
 /// CONTROL — PASSES EITHER WAY BY DESIGN: a spec of the program's own at the same type keeps

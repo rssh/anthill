@@ -134,7 +134,7 @@ fn canonical(
 /// a routed `Error` effect surfaces as `Raised` carrying the payload entity.
 fn assert_floundered(interp: &anthill_core::eval::Interpreter, err: EvalError) -> usize {
     let payload = match err {
-        EvalError::Raised { payload } => payload,
+        EvalError::Raised { payload, .. } => payload,
         other => panic!(
             "a floundered drain must RAISE on the Error channel (E ⊇ {{Error}} already), \
              got {other:?}"

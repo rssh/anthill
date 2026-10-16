@@ -337,7 +337,7 @@ fn every_arm_guarded_and_declining_raises_match_failed() {
         .call("test.qv5a.strict", &[Value::Int(3)])
         .expect_err("every arm declined, so the match is exhausted");
     match &err {
-        EvalError::Raised { payload } => match payload {
+        EvalError::Raised { payload, .. } => match payload {
             Value::Entity { functor, named, .. } => {
                 assert_eq!(
                     interp.kb().qualified_name_of(*functor),

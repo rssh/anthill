@@ -150,7 +150,7 @@ fn kb_loaded_refuses_an_ill_typed_fact_over_a_base_entity() {
     };
 
     let payload = match loaded(ILL) {
-        Err(EvalError::Raised { payload }) => format!("{payload:?}"),
+        Err(EvalError::Raised { payload, .. }) => format!("{payload:?}"),
         other => panic!("a candidate that does not load is RAISED, as `load_failed`; got {other:?}"),
     };
     assert!(

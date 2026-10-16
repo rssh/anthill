@@ -1095,6 +1095,20 @@ pub(super) fn match_candidate_against_goal(
     }
     // One reading of the candidate's head serves the two arms that turn on it.
     let candidate_head = type_head(kb, candidate_value);
+    // (1.2) THE BOTTOM TYPE IS MATCHED AS ITSELF. `Nothing` is a subtype of every type, and
+    // read through the subtype relation (arm 3) or viewed at a carrier it matched every
+    // provision of the spec: 169 for `TypeValue[T = Nothing]`. Ranked at the call, the most
+    // specific won and the answer was right; as a provider's own sub-goal, locality kept the
+    // provider, so `List`'s `TypeValue[T = Nothing]` was answered by `List`'s row and
+    // `TypeValue[T = List[T = Nothing]]` was refused. A provision answers at `Nothing` where
+    // it is written at it, or where its own parameter stands (arm 1).
+    if matches!(type_head(kb, per_call_value), TypeHead::Nothing) {
+        if matches!(candidate_head, TypeHead::Nothing) {
+            *specificity = specificity.saturating_add(1);
+            return true;
+        }
+        return false;
+    }
     // (1.5) Candidate side is an ARROW — matched part by part, the parts paired as two
     // arrows are related ([`arrow_part_pairs`]): the parameters of a list by position,
     // the names lining up or one list written without names. A goal that is no arrow —

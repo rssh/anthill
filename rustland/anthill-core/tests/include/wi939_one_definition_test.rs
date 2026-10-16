@@ -1,9 +1,9 @@
 //! WI-939 item 4 — ONE OPERATION, ONE DEFINITION: a body OR hand-written clauses,
 //! never both.
 //!
-//! THE HAZARD, and it is a LOSS rather than an ambiguity. A rule's operation name is
-//! its label else its head functor (proposal 052 §"Naming the relation"), so a clause
-//! landing on a bodied operation's functor is a second DEFINITION of it. Design §3.3
+//! THE HAZARD, and it is a LOSS rather than an ambiguity. A clause landing on a bodied
+//! operation's functor is a second DEFINITION of it, labelled or not: a label names the
+//! clause, not what its head is about (kernel-language.md §5.3). Design §3.3
 //! gives the clauses precedence ("rules win"), which SUPPRESSES the body's derived
 //! relational view (WI-938) — so the pair does not offer two readings, it removes the
 //! one that worked. [`body_alone_answers_a_definite_value`] and
@@ -29,16 +29,18 @@
 //! MEASURED by making each edit and re-running, not predicted.
 //!
 //! Delete the `check_operation_body_and_clauses(kb)` call in `load_phase_inner` —
-//! **5 fail, 9 pass**: [`a_clause_beside_a_body_answers_a_residual_instead`],
-//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`] and the three host and boundary
+//! **7 fail, 9 pass**: [`a_clause_beside_a_body_answers_a_residual_instead`],
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`] and the five host and boundary
 //! rows below, each fixture then loading clean, which is the defect. The rest PASS EITHER
 //! WAY, BY DESIGN — they are the controls, and without them a check that refused every
 //! operation carrying clauses (the standard library included) would look correct here.
 //!
-//! Drop the `bool_view` disjunct, leaving `params + 1` — **exactly 2 fail**,
-//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`] and
-//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`]. That is the first cut,
-//! and it is what /code-review refuted.
+//! Drop the `bool_view` disjunct, leaving `params + 1` — **exactly 4 fail**,
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`],
+//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`],
+//! [`a_host_bool_refusal_names_the_slot_its_clauses_sit_at`] and
+//! [`a_labelled_clause_on_a_host_operation_is_refused_as_a_definition`]. That is the first
+//! cut, and it is what /code-review refuted.
 //!
 //! Drop the BUILTIN gate in `would_derive_bool_relation` — **exactly 2 fail**, both
 //! lemma rows: [`a_clause_at_the_operations_own_arity_is_a_lemma`] and
@@ -51,12 +53,17 @@
 //! reads the goal there as the call — at arity + 1, and at a `Bool` operation's own arity —
 //! the clause replaced the call in a rule body alone: `rule String.length(?s, 99) :- true`
 //! made `String.length("abc", ?n)` answer `99` beside `?n <=> String.length("abc")`
-//! answering `3`. Restrict the population to bodies again — **exactly 3 fail**,
+//! answering `3`. Restrict the population to bodies again — **exactly 5 fail**,
 //! [`a_clause_beside_a_host_operation_is_refused`],
-//! [`a_clause_beside_error_reify_is_refused`] and
-//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`], each loading clean. Count
-//! the own-arity slot for bodies only, as the first cut of this did — **exactly 1 fails**,
-//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`].
+//! [`a_clause_beside_error_reify_is_refused`],
+//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`],
+//! [`a_host_bool_refusal_names_the_slot_its_clauses_sit_at`] and
+//! [`a_labelled_clause_on_a_host_operation_is_refused_as_a_definition`], each loading
+//! clean. Count the own-arity slot for bodies only, as the first cut of this did —
+//! **exactly 3 fail**, the three of those five that write a clause there. Read the slot off
+//! the operation instead of off each clause — the same 3, on the slot's wording. Give the
+//! host refusal its earlier reason ("a rule's operation name is its label else its head
+//! functor") — **exactly 1 fails**, the labelled row.
 //! [`a_clause_at_a_host_operations_own_arity_is_another_relation`] passes either way, by
 //! design.
 
@@ -431,10 +438,68 @@ end
     for want in [
         "operation 'anthill.prelude.String.contains'",
         "is implemented by the host function \"string_contains\"",
-        "has 1 hand-written clause at its arity + 1 or, as it returns `Bool`, at its own arity:",
+        "has 1 hand-written clause at its own arity, as it returns `Bool`:",
     ] {
         assert!(e.contains(want), "expected {want:?}; got {e}");
     }
+}
+
+/// The refusal names the slot each clause sits at, not every slot the operation has: a clause
+/// at a host `Bool` operation's arity + 1 is named so, and the own arity is named only beside
+/// a clause there.
+///
+/// BACK-OUT: the slot read off the operation (does it have the `Bool` view?) instead of off
+/// the clauses, and the first program fails, reading both slots for its one clause; so do the
+/// two own-arity rows beside it.
+#[test]
+fn a_host_bool_refusal_names_the_slot_its_clauses_sit_at() {
+    for (shape, clauses, want) in [
+        (
+            "arity + 1 alone",
+            r#"rule String.contains("abc", "z", true) :- true"#,
+            "has 1 hand-written clause at its arity + 1:",
+        ),
+        (
+            "both slots",
+            "rule String.contains(\"abc\", \"z\", true) :- true\n  \
+             rule String.contains(\"abc\", \"y\") :- true",
+            "has 2 hand-written clauses at its arity + 1 and, as it returns `Bool`, at its own \
+             arity:",
+        ),
+    ] {
+        let e = refusal(&format!(
+            "namespace wi939d.hostslots\n  import anthill.prelude.{{String}}\n  {clauses}\nend\n"
+        ));
+        assert!(e.contains(want), "{shape}: expected {want:?}; got {e}");
+    }
+}
+
+/// A LABELLED CLAUSE IS A DEFINITION TOO, and the refusal says why in those terms: a label names
+/// the clause, not what its head is about. Loaded, `rule lemma: String.contains(?s, "") :-
+/// true` made `String.contains("abc", "b")` stop holding in a rule body. The reason the
+/// message gave was "a rule's operation name is its label else its head functor", which by its
+/// own wording made this clause no definition of `String.contains`.
+///
+/// BACK-OUT: that sentence put back, and this fails on its reason; no other row reads it.
+#[test]
+fn a_labelled_clause_on_a_host_operation_is_refused_as_a_definition() {
+    let e = refusal(
+        r#"
+namespace wi939d.hostlabel
+  import anthill.prelude.{String}
+  rule lemma: String.contains(?s, "") :- true
+end
+"#,
+    );
+    for want in [
+        "operation 'anthill.prelude.String.contains'",
+        "has 1 hand-written clause at its own arity, as it returns `Bool`:",
+        "A clause there is a second definition of the operation, labelled or not, since a label \
+         names the clause and not what its head is about.",
+    ] {
+        assert!(e.contains(want), "expected {want:?}; got {e}");
+    }
+    assert!(!e.contains("its label else its head functor"), "{e}");
 }
 
 /// PASSES EITHER WAY BY DESIGN: at the OWN arity of a host operation that does not return

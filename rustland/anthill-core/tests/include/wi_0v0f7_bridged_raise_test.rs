@@ -474,6 +474,7 @@ end
                 pos: Vec::new().into(),
                 named: Vec::new().into(),
             },
+            origin: anthill_core::eval::RaiseOrigin::Program,
         }
     };
     for qname in [

@@ -265,6 +265,11 @@ pub struct UnprovidedProvision {
     /// element of the spec: a refusal raised over a requirement with elements still open —
     /// the carrier having no provision to say them is the very reason they are.
     provision_in_full: Option<String>,
+    /// A requirement of the library's two specs in `spec`'s own contract that holds nowhere
+    /// at these bindings, rendered: a row of `spec` here would be refused for it, so no row
+    /// is the repair ([`library_contract_unheld`]). `None` where none fails, or where the
+    /// requirement leaves an element open.
+    contract_unheld: Option<(String, LibraryInstances)>,
 }
 
 /// WI-1102 — does any provision of `spec` dispatch at `carrier`?
@@ -424,6 +429,29 @@ impl RequirementRefusal {
                 "; the enclosing scope's {} covers only as a wildcard and is not forwarded — its element is a different type parameter under this {under} (WI-821)",
                 list.join(", "),
             ));
+        }
+        // The library's two specs take no written row, and every element is pinned here, so
+        // a `requires` in scope only hands the same refusal to the caller: their repair
+        // replaces the search's account, whose advice is that `requires`, and every tail
+        // below.
+        if let Some(u) = &self.unprovided {
+            if let Some(library) = library_instances(kb, u.spec) {
+                msg.push_str("; ");
+                msg.push_str(library.unprovided_repair());
+                return msg;
+            }
+            // A row of the program's spec would itself be refused here, for a requirement of
+            // its contract no row can answer, so the same repair stands, said of that
+            // requirement.
+            if let Some((requirement, library)) = &u.contract_unheld {
+                msg.push_str(&format!(
+                    "; a row of `{}` at these bindings would be refused for its own contract, \
+                     `{requirement}`: {}",
+                    kb.qualified_name_of(u.spec),
+                    library.unprovided_repair()
+                ));
+                return msg;
+            }
         }
         if !self.construction.is_empty() {
             msg.push_str(&format!("; {}", self.construction));
@@ -1232,6 +1260,7 @@ fn build_dispatching_dict_from_chain(
                                 spec: dep.required_sort,
                                 has_a_row: false,
                                 provision_in_full: None,
+                                contract_unheld: None,
                             }
                         })
                     };
@@ -1279,7 +1308,12 @@ fn build_dispatching_dict_from_chain(
                         // a_body_that_reads_an_unsuppliable_slot_agrees_on_both_
                         // spellings` is the row that says so. Parking only the op half
                         // would have split them.
-                        if let Some(unprovided) = unprovided_provision(kb, dep) {
+                        //
+                        // A library spec at a sort holding a structural former is the
+                        // former's refusal, as at a call.
+                        if let Some(former @ FormerCarrier::Within { .. }) = former_carrier(kb, dep) {
+                            *slot = Some(Box::new(former_refusal(kb, dep, &former)));
+                        } else if let Some(unprovided) = unprovided_provision(kb, dep) {
                             let construction = describe_resolution_failure(kb, nomatch);
                             *slot = Some(Box::new(RequirementRefusal {
                                 account_names_every_repair: false,
@@ -1322,6 +1356,14 @@ fn build_dispatching_dict_from_chain(
                     // cannot repair a cycle, with `construction is cyclic: A -> B -> A`
                     // printed nowhere.
                     if slot.is_none() {
+                        // A binding that is or holds a structural former is that refusal's,
+                        // as at a call: a scope route would carry evidence nothing can give,
+                        // so a requirement slot declared for it moves the refusal to the
+                        // caller.
+                        if let Some(former) = former_carrier(kb, dep) {
+                            *slot = Some(Box::new(former_refusal(kb, dep, &former)));
+                            return Ok(None);
+                        }
                         let construction = match &s3_failure {
                             Some(
                                 f @ (ResolutionResult::NoMatch { .. }
@@ -2412,9 +2454,8 @@ pub(super) fn build_op_scoped_dicts(
                 // will MISS the slot lives only in its body, which may not be typed yet.
                 // See [`UnsuppliableRequirement`].
                 // A library spec at a type holding a structural former is the former arm's
-                // below, not this one's: no row of any carrier answers there, so the
-                // carrier's repair line would name a row that is refused at load
-                // (`TypeValue`) or that no boundary reads (`ErrorTag`).
+                // below, not this one's: that arm names the former, which is why no row
+                // answers there.
                 let former = former_carrier(kb, &dep);
                 let unprovided = match (&s3_failure, &former) {
                     (
@@ -2480,17 +2521,23 @@ pub(super) fn build_op_scoped_dicts(
                                         // and the same reason, as the projection arm above.
                                         no_scope_route: false,
                                         construction_carries_repair: false,
-                                        dep_text: c.clause.clone(),
+                                        dep_text: c.requirement.clone(),
                                         unconstrained: Vec::new(),
                                         refused_covers: Vec::new(),
                                         construction: format!(
-                                            "its carrier is `{}`, a type parameter of the CALLING \
+                                            "{}, a type parameter of the CALLING \
                                      operation `{}`, which declares no `requires` that \
                                      covers it — the caller's frame is the only thing that \
                                      could ever fill this slot, and it holds nothing for \
                                      `{}`. {}, or call `{}` with a type whose provision is \
                                      known here",
-                                            c.carrier,
+                                            match &c.within {
+                                                Some(within) => format!(
+                                                    "its carrier `{within}` holds `{}`",
+                                                    c.carrier
+                                                ),
+                                                None => format!("its carrier is `{}`", c.carrier),
+                                            },
                                             kb.qualified_name_of(enclosing_op),
                                             c.carrier,
                                             c.repair(kb),
@@ -2510,45 +2557,7 @@ pub(super) fn build_op_scoped_dicts(
                         // declaration this one cannot. See [`former_carrier`].
                         match rigid {
                             Some(r) => Some(r),
-                            None => former.map(|former| {
-                                RequirementRefusal {
-                                    account_names_every_repair: false,
-                                    no_scope_route: false,
-                                    // THE ACCOUNT CARRIES ITS OWN REPAIR — there is no
-                                    // `provides` to suggest, so the generic "declare it on
-                                    // the carrier" tail would name a declaration that cannot
-                                    // exist. Same flag, same reason, as the tie arm above.
-                                    construction_carries_repair: true,
-                                    dep_text: render_requires_entry(kb, &dep),
-                                    unconstrained: Vec::new(),
-                                    refused_covers: Vec::new(),
-                                    construction: match &former {
-                                        FormerCarrier::At(at) => format!(
-                                            "its carrier is `{at}`, a STRUCTURAL FORMER — a \
-                                     tuple or an arrow — and nothing provides `{spec}` \
-                                     at it. A former cannot CARRY a provision itself (a \
-                                     `provides` row is written on a sort), and the \
-                                     derived instances cover sorts only, so this slot \
-                                     stays empty and the call would load and then die \
-                                     reading a requirement the frame never bound. {repair}",
-                                            spec = kb.qualified_name_of(dep.required_sort),
-                                            repair = former_repair(kb, dep.required_sort, &former),
-                                        ),
-                                        FormerCarrier::Within { within, .. } => format!(
-                                            "its carrier `{within}` has a STRUCTURAL FORMER — \
-                                     a tuple or an arrow — among its type arguments, and \
-                                     nothing provides `{spec}` at it: a sort's instance \
-                                     holds only where each of its type arguments has one, \
-                                     and a former has none. {repair}",
-                                            spec = kb.qualified_name_of(dep.required_sort),
-                                            repair = former_repair(kb, dep.required_sort, &former),
-                                        ),
-                                    },
-                                    pinned: None,
-                                    unprovided: None,
-                                    untied: None,
-                                }
-                            }),
+                            None => former.map(|former| former_refusal(kb, &dep, &former)),
                         }
                     }
                 };
@@ -2633,6 +2642,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
                 spec,
                 has_a_row: carrier_has_provision_row(kb, carrier, spec),
                 provision_in_full: None,
+                contract_unheld: None,
             }),
             untied: None,
         }),
@@ -3197,12 +3207,49 @@ fn unprovided_provision(
 ) -> Option<UnprovidedProvision> {
     let goal = goal_from_requires_entry(kb, dep)?;
     let carrier = pinned_goal_carrier(kb, &goal)?;
+    let contract_unheld = library_contract_unheld(kb, &goal);
     Some(UnprovidedProvision {
         carrier,
         spec: dep.required_sort,
         has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
         provision_in_full: Some(format_goal(kb, &goal)),
+        contract_unheld,
     })
+}
+
+/// The first requirement of the library's two specs in `goal`'s spec's own contract that no
+/// row answers at `goal`'s bindings, rendered — `Desc requires TypeValue[T = T]` at `Desc[T =
+/// Option[T = (Int64, Int64)]]` asks `TypeValue[T = Option[T = (Int64, Int64)]]`, which holds
+/// nowhere. A row of the spec at those bindings would be refused for it, as a provision's
+/// contract is checked, so the row the refusal would advise is no repair. Only the library's
+/// specs, which no row of the program's can supply; a contract of a program's own spec the
+/// program can still provide.
+fn library_contract_unheld(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+) -> Option<(String, LibraryInstances)> {
+    library_instances(kb, goal.spec_sort).is_none().then_some(())?;
+    // Keyed by the spec's short parameter name, `provider_requires_subgoals`' convention.
+    let sigma: Vec<(String, Value)> = goal
+        .bindings
+        .iter()
+        .map(|(k, v)| (kb.local_name_of(*k).to_string(), v.clone()))
+        .collect();
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        pin: None,
+        sub_goal_requires: &[],
+    };
+    for sub in provider_requires_subgoals(kb, goal.spec_sort, &sigma, &[]) {
+        let Some(library) = library_instances(kb, sub.spec_sort) else {
+            continue;
+        };
+        if !matches!(resolve(kb, &sub, &scope), ResolutionResult::Resolved(_)) {
+            return Some((format_goal(kb, &sub), library));
+        }
+    }
+    None
 }
 
 /// WI-20260927-YCPAJ — the verdict [`unprovided_provision`] cannot give for a dep the call
@@ -3559,6 +3606,7 @@ pub(super) fn unprovided_spec_at_carrier(
                 spec: goal.spec_sort,
                 has_a_row: false,
                 provision_in_full: goal_pins_every_param(kb, goal).then(|| format_goal(kb, goal)),
+                contract_unheld: None,
             }),
             untied: None,
         }),
@@ -3848,6 +3896,46 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<FormerCarri
     })
 }
 
+/// The refusal of a requirement whose binding is or holds a structural former
+/// ([`former_carrier`]), at a call or at a construction.
+fn former_refusal(
+    kb: &KnowledgeBase,
+    dep: &RequiresEntry,
+    former: &FormerCarrier,
+) -> RequirementRefusal {
+    let spec = kb.qualified_name_of(dep.required_sort);
+    let repair = former_repair(kb, dep.required_sort, former);
+    RequirementRefusal {
+        account_names_every_repair: false,
+        no_scope_route: false,
+        // THE ACCOUNT CARRIES ITS OWN REPAIR — there is no `provides` to suggest, so the
+        // generic "declare it on the carrier" tail would name a declaration that cannot
+        // exist. Same flag, same reason, as the tie arm of the call path.
+        construction_carries_repair: true,
+        dep_text: render_requires_entry(kb, dep),
+        unconstrained: Vec::new(),
+        refused_covers: Vec::new(),
+        construction: match former {
+            FormerCarrier::At(at) => format!(
+                "its carrier is `{at}`, a STRUCTURAL FORMER — a tuple or an arrow — and \
+                 nothing provides `{spec}` at it. A former cannot CARRY a provision itself (a \
+                 `provides` row is written on a sort), and the derived instances cover sorts \
+                 only, so this slot stays empty, and the program would load and then die reading \
+                 a requirement the frame never bound. {repair}",
+            ),
+            FormerCarrier::Within { within, .. } => format!(
+                "its carrier `{within}` has a STRUCTURAL FORMER — a tuple or an arrow — among \
+                 its type arguments, and nothing provides `{spec}` at it: a sort's instance \
+                 holds only where each of its type arguments has one, and a former has none. \
+                 {repair}",
+            ),
+        },
+        pinned: None,
+        unprovided: None,
+        untied: None,
+    }
+}
+
 /// Where [`former_carrier`] found the structural former, rendered.
 enum FormerCarrier {
     /// A binding IS the former: `(a: Int64, b: String)`.
@@ -3856,7 +3944,8 @@ enum FormerCarrier {
     /// Only for the two specs whose instances the library supplies ([`library_instances`]):
     /// a sort's instance of either holds only where each type argument has one, so none
     /// reaches the type, and no row can stand in. For any other spec a row naming the
-    /// whole type answers, and [`unprovided_provision`] advises it.
+    /// whole type may answer, where the spec's own requirements hold at it, and
+    /// [`unprovided_provision`] advises it.
     Within {
         within: String,
         library: LibraryInstances,
@@ -3867,13 +3956,34 @@ enum FormerCarrier {
 /// every sort and refused when written, and `ErrorTag`, whose one reader, an `Error.reify`
 /// boundary, takes the payload's sort from the `TypeValue` evidence of `Error`'s own
 /// provision and refuses to run without it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum LibraryInstances {
     TypeValue,
     ErrorTag,
 }
 
 impl LibraryInstances {
+    /// The account and repair where a requirement of this spec at a sort finds no row that
+    /// answers: a value whose type has the evidence, since no row can stand in.
+    fn unprovided_repair(self) -> &'static str {
+        match self {
+            LibraryInstances::TypeValue => {
+                "no row of `anthill.reflect.TypeValue` answers here, and none may be written: \
+                 every instance is derived, one for a sort that is no spec, for a parametric \
+                 sort only where each of its type arguments has one. Pass a value whose type \
+                 is such a sort, every type argument of it written"
+            }
+            LibraryInstances::ErrorTag => {
+                "no row of `anthill.prelude.ErrorTag` answers here, and a written one is no \
+                 repair: an `Error.reify` boundary reads `Error`'s own provision alone, which \
+                 answers wherever the payload's type has a `TypeValue`, one derived for a \
+                 sort that is no spec, for a parametric sort only where each of its type \
+                 arguments has one. Raise, in the thunk, a value whose type is such a sort, \
+                 every type argument of it written"
+            }
+        }
+    }
+
     /// The structural-former refusal's repair for this spec: a value, since no row works.
     fn former_repair(self) -> &'static str {
         match self {
@@ -3932,12 +4042,19 @@ pub(crate) struct CallerRigidCarrier {
     /// The parameter, spelled as the CALLER wrote it (`U`, `T`) — never the callee's
     /// formal, which is a name from a declaration the author does not own.
     pub(super) carrier: String,
-    /// The whole requirement re-keyed into that spelling, ready to be pasted after
-    /// `requires`. The WHOLE clause and not just the carrier binding, for
-    /// [`RequirementRefusal::render`]'s own measured reason one arm over: a
-    /// multi-parameter spec written with a binding omitted fills the rest from its own
-    /// parameters, which §5.2 legislates as a second load error — advice that trades one
-    /// refusal for another.
+    /// Where the carrier stands inside a sort application the call passes — `Option[T =
+    /// C]` for `tyOf(some(x))` over `x: C` — that application in the caller's spelling;
+    /// `None` where a binding is the carrier itself.
+    pub(super) within: Option<String>,
+    /// The whole requirement in that spelling: what the refusal says cannot be supplied.
+    pub(super) requirement: String,
+    /// What to declare, ready to be pasted after `requires`: the whole requirement, and not
+    /// just the carrier binding, for [`RequirementRefusal::render`]'s own measured reason
+    /// one arm over — a multi-parameter spec written with a binding omitted fills the rest
+    /// from its own parameters, which §5.2 legislates as a second load error, advice that
+    /// trades one refusal for another. For the library's two specs at a carrier inside an
+    /// application it is `TypeValue` at each parameter instead: their instances are
+    /// derived per type argument, so the evidence the caller lacks is that one.
     pub(super) clause: String,
     /// WHERE that clause goes — the calling OPERATION when the carrier is one of its
     /// `[…]` brackets, the enclosing SORT when it is one of the sort's parameters. The
@@ -4022,6 +4139,9 @@ fn caller_rigid_carrier(
     let mut found: Option<(Symbol, Symbol)> = None;
     let mut member: Option<Symbol> = None;
     let mut bindings: Vec<String> = Vec::new();
+    // The caller's parameters met inside an application, and the first such application.
+    let mut inside: Vec<(Symbol, Symbol)> = Vec::new();
+    let mut within: Option<String> = None;
     for (k, v) in &goal.bindings {
         // EVERY BINDING MUST BE WRITEABLE BY THE CALLER, or there is no clause to print
         // and this function answers `None`. Two spellings qualify and nothing else does:
@@ -4055,8 +4175,34 @@ fn caller_rigid_carrier(
             }
             // Concrete: no σ-class, and it renders as the sort it names.
             None if type_is_ground(kb, v) => format_value_for_goal(kb, v),
+            // A sort applied to what the caller can write, holding a parameter of the
+            // caller's (`tyOf(some(x))` over `x: C`): that parameter is still the one the
+            // caller holds no evidence for, inside the application.
+            None => {
+                let before = inside.len();
+                let rendered = caller_writeable_application(
+                    kb,
+                    ctx,
+                    &params,
+                    v,
+                    dep.required_sort,
+                    &mut inside,
+                )?;
+                for (name, owner) in &inside[before..] {
+                    if found.is_none() {
+                        found = Some((*name, *owner));
+                    }
+                    if member.is_none() && kb.member_param_head(*name).is_some() {
+                        member = Some(*name);
+                    }
+                }
+                if within.is_none() && inside.len() > before {
+                    within = Some(rendered.clone());
+                }
+                rendered
+            }
             // Open (the WI-415/418 gap), or a carrier this function cannot name.
-            _ => return None,
+            Some((_, false)) => return None,
         };
         bindings.push(format!("{} = {}", kb.local_name_of(*k), rendered));
     }
@@ -4064,18 +4210,86 @@ fn caller_rigid_carrier(
     // and the bracket is unconditional — a `!bindings.is_empty()` guard here would be a
     // branch nothing can take.
     let (carrier, declare_on) = found?;
-    let clause = format!(
+    let requirement = format!(
         "{}[{}]",
         kb.qualified_name_of(goal.spec_sort),
         bindings.join(", ")
     );
+    let type_value = type_value_spec_sym(kb).filter(|_| {
+        within.is_some() && library_instances(kb, dep.required_sort).is_some()
+    });
+    let clause = match type_value {
+        Some(tv) => {
+            let mut seen: Vec<Symbol> = Vec::new();
+            inside
+                .iter()
+                .filter(|(name, _)| {
+                    let new = !seen.contains(name);
+                    seen.push(*name);
+                    new
+                })
+                .map(|(name, _)| {
+                    format!("{}[T = {}]", kb.qualified_name_of(tv), type_param_display_name(kb, *name))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        None => requirement.clone(),
+    };
     Some(CallerRigidCarrier {
         carrier: type_param_display_name(kb, carrier),
+        within,
+        requirement,
         clause,
         // A member is the calling operation's own, and a clause that names its bracket's
         // parameter goes on that operation whatever declares the carrier.
         declare_on: if member.is_some() { caller_op } else { declare_on },
     })
+}
+
+/// A type argument of a call that is a sort applied to what the caller can write, rendered
+/// in the caller's spelling — a parameter the caller declares, a ground type, or such an
+/// application again — with each parameter met pushed onto `inside`. Only through a sort
+/// with a row of `spec`, so a carrier no row could answer at is not read as missing the
+/// caller's evidence; `None` for anything else, a binding nothing here may name.
+fn caller_writeable_application(
+    kb: &KnowledgeBase,
+    ctx: &SigmaCtx,
+    params: &[(VarId, Symbol, Symbol)],
+    v: &Value,
+    spec: Symbol,
+    inside: &mut Vec<(Symbol, Symbol)>,
+) -> Option<String> {
+    // A variable σ bound to the application is read through.
+    let bound;
+    let v = match v.head(kb) {
+        ViewHead::Var(Var::Global(vid)) => {
+            bound = ctx.subst.resolve_as_value(vid)?.clone();
+            &bound
+        }
+        _ => v,
+    };
+    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, v) else {
+        return None;
+    };
+    if !carrier_has_provision_row(kb, base, spec) {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(bindings.len());
+    for (k, a) in &bindings {
+        let rendered = match sigma_class_terminal(kb, ctx, a) {
+            Some((cls, true)) => {
+                let (_, name, owner) = params.iter().find(|(r, _, _)| *r == cls)?;
+                inside.push((*name, *owner));
+                type_param_display_name(kb, *name)
+            }
+            Some((_, false)) => return None,
+            None if type_is_ground(kb, a) => format_value_for_goal(kb, a),
+            None => caller_writeable_application(kb, ctx, params, a, spec, inside)?,
+        };
+        parts.push(format!("{} = {rendered}", kb.local_name_of(*k)));
+    }
+    Some(format!("{}[{}]", kb.qualified_name_of(base), parts.join(", ")))
 }
 
 /// WI-20261006-XQGEW — the first element of `dep` that this use binds to a parameter the

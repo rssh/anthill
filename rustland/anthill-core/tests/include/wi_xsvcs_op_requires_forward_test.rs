@@ -23,14 +23,23 @@
 //! rows), never a deletion and never a count guessed from reading:
 //!
 //! * **the rule off** — `caller_rigid_carrier` returning `None` unconditionally, so an
-//!   unfilled rigid-carrier slot goes back to being a silent absence: **4 red**, and
-//!   exactly the four the census predicted —
+//!   unfilled rigid-carrier slot goes back to being a silent absence: **4 red** when this
+//!   file was written, exactly the four the census predicted —
 //!   [`a_forward_of_the_callers_own_rigid_is_refused_at_the_call`],
 //!   [`the_corpus_instance_wi416_is_refused_and_the_clause_repairs_it`],
 //!   [`the_printed_repair_loads_and_answers`], and
 //!   `wi_n31xx_type_value_read_rule_test::a_middle_level_that_drops_the_clause_is_
-//!   refused_at_the_call`'s plain-spec half. Nothing else in the binary moves, which is
-//!   what says the rule refuses the population it was measured against and no other.
+//!   refused_at_the_call`'s plain-spec half. Measured again over the whole binary since
+//!   (7335 rows): **11 red** — those four, [`the_same_forward_is_refused_whichever_body_the_callee_has`],
+//!   the two rows of a rigid inside an application below, three of
+//!   `wi_xqgew_member_param_test` (`a_forward_over_a_member_is_told_the_spelling_that_works`,
+//!   `a_member_in_a_later_binding_takes_the_members_repair`,
+//!   `every_member_of_the_spec_moves_to_the_bracket`) and
+//!   `spec_op_requirement_at_member_test::a_call_whose_member_is_chosen_later_owes_the_spec_operations_requirement`
+//!   — each a forward written after the census.
+//! * **the reading of an application off** — `caller_writeable_application` answering
+//!   `None`, so a rigid inside a sort application is not read: **2 red**, the two rows of
+//!   it below, and nothing else in the binary moves.
 //! * **the READ gate off** — `report_unsuppliable_requirements` reporting every parked
 //!   op-slot refusal without consulting the body: **5 red** when this file was written,
 //!   and WI-20260921-3G1YT then took that measurement as its instruction. The gate is
@@ -49,8 +58,8 @@
 //!   caller parameter matches, and the whole refusal is withheld.
 //!
 //! NOT MEASURED HERE, and said rather than left to be discovered: the writeability gate
-//! in [`caller_rigid_carrier`] — every binding must be a caller parameter or a ground
-//! type, or no clause is printed and no refusal is parked. Backing it out is **0 red**,
+//! in [`caller_rigid_carrier`] — every binding must be a caller parameter, a ground type
+//! or a sort applied to such, or no clause is printed and no refusal is parked. Backing it out is **0 red**,
 //! because the census found no dep of that shape in the corpus and one cannot be built
 //! out of a single-parameter spec. It is there so the printed repair is pastable by
 //! CONSTRUCTION rather than by the luck of every live spec having one element; a row
@@ -319,6 +328,120 @@ end
 /// rule had to avoid lives there. `load_stdlib_kb` panics on any load error, so this is
 /// a real assertion and not a smoke test; the census counted 57 unfilled op slots across
 /// the workspace and this rule touches only the 4 that name a caller rigid.
+/// A RIGID INSIDE A SORT APPLICATION IS FORWARDED TOO. `tyOf(some(x))` over `x: C` hands
+/// `Option[T = C]` to an operation that demands evidence about it, and `Option`'s instance
+/// holds only where `C`'s does, which `f` holds none of. It loaded clean, and reached from a
+/// query it panicked "`__req_typevalue` not bound in caller frame"; a bare `tyOf(x)` was
+/// already refused. Refused now, naming the evidence the caller lacks: `TypeValue` at the
+/// parameter itself, since the library's instances are derived per type argument.
+///
+/// BACK-OUT: the reading of an application (`caller_writeable_application`) answering
+/// `None`, and the program loads clean again; with the forward rule off as a whole, the
+/// same.
+const NESTED: &str = r#"
+namespace test.xsvcs.nested
+  import anthill.prelude.{Int64, Option, Type}
+  import anthill.prelude.Option.{some}
+  import anthill.reflect.{TypeValue}
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation f[C](x: C) -> Type = tyOf(some(x))
+  operation viaF() -> Type = f(1)
+end
+"#;
+
+#[test]
+fn a_rigid_inside_an_application_is_refused_and_the_printed_repair_answers() {
+    let errs = load_errors(NESTED);
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    let e = &errs[0];
+    for want in [
+        "`anthill.reflect.TypeValue[T = anthill.prelude.Option[T = C]]` cannot be supplied for \
+         call to `test.xsvcs.nested.tyOf`",
+        "its carrier `anthill.prelude.Option[T = C]` holds `C`, a type parameter of the \
+         CALLING operation `test.xsvcs.nested.f`",
+    ] {
+        assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
+    }
+    let (clause, declaration) = printed_repair(e);
+    assert_eq!(clause, "requires anthill.reflect.TypeValue[T = C]");
+    assert_eq!(declaration, "test.xsvcs.nested.f");
+    let repaired = crate::common::replace_in_fixture(
+        NESTED,
+        "operation f[C](x: C) -> Type = tyOf(some(x))",
+        &format!("operation f[C](x: C) -> Type {clause} = tyOf(some(x))"),
+    );
+    assert_eq!(load_errors(&repaired), Vec::<String>::new());
+    assert_eq!(eval_type(&repaired, "test.xsvcs.nested.viaF"), "Option(T: Int64)");
+}
+
+/// And over a spec of the program's own, provided at `Box` on the condition of its element
+/// (`Quiet requires Desc[T = E]`, `provides Desc[T = Box[B = E]]`): the clause printed is the
+/// requirement as the call states it, which a caller can hold whatever the provision's
+/// condition is, and pasted it answers through `Quiet`'s row.
+///
+/// BACK-OUT: as the row above.
+const NESTED_OWN: &str = r#"
+namespace test.xsvcs.nestedown
+  import anthill.prelude.{Int64}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Box
+    sort B = ?
+    entity box(inner: B)
+  end
+  sort IntDesc
+    provides Desc[T = Int64]
+    operation describe(x: Int64) -> Int64 = 1
+  end
+  sort Quiet
+    sort E = ?
+    requires Desc[T = E]
+    provides Desc[T = Box[B = E]]
+    operation describe(b: Box[B = E]) -> Int64 = 5
+  end
+  sort Reader
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[T = HT] = Desc.describe(x)
+  end
+  operation fwd[C](x: C) -> Int64 = Reader.probe(box(inner: x))
+  operation go() -> Int64 = fwd(3)
+end
+"#;
+
+#[test]
+fn a_rigid_inside_an_application_of_a_programs_spec_is_refused_too() {
+    let errs = load_errors(NESTED_OWN);
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    let e = &errs[0];
+    assert!(
+        e.contains(
+            "its carrier `test.xsvcs.nestedown.Box[B = C]` holds `C`, a type parameter of the \
+             CALLING operation `test.xsvcs.nestedown.fwd`"
+        ),
+        "{e}"
+    );
+    let (clause, declaration) = printed_repair(e);
+    assert_eq!(
+        clause,
+        "requires test.xsvcs.nestedown.Desc[T = test.xsvcs.nestedown.Box[B = C]]"
+    );
+    assert_eq!(declaration, "test.xsvcs.nestedown.fwd");
+    let repaired = crate::common::replace_in_fixture(
+        NESTED_OWN,
+        "operation fwd[C](x: C) -> Int64 = Reader.probe(box(inner: x))",
+        &format!("operation fwd[C](x: C) -> Int64 {clause} = Reader.probe(box(inner: x))"),
+    );
+    assert_eq!(load_errors(&repaired), Vec::<String>::new());
+    let mut interp = interp_for(&repaired);
+    let v = interp.call("test.xsvcs.nestedown.go", &[]).expect("go runs");
+    assert_eq!(
+        anthill_core::kb::term_view::TermView::literal_int64(&v, interp.kb()),
+        Some(5)
+    );
+}
+
 #[test]
 fn the_stdlib_still_loads() {
     let kb = load_stdlib_kb();

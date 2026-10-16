@@ -6719,11 +6719,11 @@ effect_dispatcher!(
 );
 
 // `Error.raise` deliberately does NOT use the generic dispatcher. An unhandled
-// Console/Modify effect is a missing-capability `Internal` fault, but an
+// Console/Modify/Clock effect is `EvalError::UnhandledEffect`, but an
 // unhandled `Error` DEFAULTS to Throw — [`Interpreter::raise_error`]'s
 // no-handler arm is `Raised { payload }` (WI-467: the payload is never lost),
 // the same channel a native builtin's declared `effects Error` takes. The
-// generic dispatcher's no-handler `Internal` became reachable from surface
+// generic dispatcher's no-handler fault became reachable from surface
 // code the moment `Stream.head`'s default body raised (WI-818).
 fn error_raise(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [payload] = args else {

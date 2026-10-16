@@ -405,7 +405,7 @@ fn an_unreified_raise_still_escapes() {
         .call("test.reify.uncaught", &[])
         .expect_err("a raise outside every boundary propagates");
     match err {
-        EvalError::Raised { payload } => {
+        EvalError::Raised { payload, .. } => {
             assert_eq!(short_name(&interp, &payload), "boom");
             assert_eq!(str_of(&interp, &field(&interp, &payload, "why", 0)), "negative");
         }
@@ -559,7 +559,7 @@ fn a_boundary_declines_a_payload_it_is_not_typed_at() {
         .call("test.reify.declinedEscapes", &[])
         .expect_err("a payload the boundary is not typed at must travel past it");
     match err {
-        EvalError::Raised { payload } => {
+        EvalError::Raised { payload, .. } => {
             assert_eq!(
                 short_name(&interp, &payload),
                 "other",
@@ -625,7 +625,7 @@ fn a_host_raise_is_not_mistaken_for_the_declared_payload() {
         .call("test.reify.hostRaiseInsideBoundary", &[])
         .expect_err("a MatchFailed is not a Boom, so the boundary must decline it");
     match err {
-        EvalError::Raised { payload } => assert_eq!(
+        EvalError::Raised { payload, .. } => assert_eq!(
             short_name(&interp, &payload),
             "match_failed",
             "the escaping raise must still be the MatchFailed, undisturbed"
@@ -854,7 +854,7 @@ fn a_narrowed_boundary_does_not_steal_an_unreadable_payload() {
     let mut interp = interp();
 
     match interp.call("test.reify.tupleInnerAtBoom", &[Value::Int(7)]) {
-        Err(EvalError::Raised { payload }) => {
+        Err(EvalError::Raised { payload, .. }) => {
             assert_eq!(str_of(&interp, &field(&interp, &payload, "b", 1)), "tup")
         }
         other => panic!(

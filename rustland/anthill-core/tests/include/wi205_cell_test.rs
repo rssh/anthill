@@ -298,7 +298,7 @@ end
 /// registered for effect `anthill.prelude.Modify`".
 ///
 /// BACK-OUT: the short name put back in `register_standard_effect_handlers`, and this fails
-/// with that error.
+/// at the registration, which names it.
 #[test]
 fn the_standard_handlers_answer_modify_runtime_on_a_cell() {
     let src = r#"
@@ -321,6 +321,24 @@ end
     assert_eq!(v.literal_int64(interp.kb()), Some(9));
 }
 
+/// And a name the KB does not declare is an error, not a handler left out: over a KB loaded
+/// without the standard library the first of the six is named. Skipped, a misspelled entry
+/// passed every row and failed only where a program performed it, as `Modify`'s short name
+/// did.
+///
+/// BACK-OUT: the skip of an `UnknownOperation` put back, and this fails (`Ok`).
+#[test]
+fn the_standard_handlers_refuse_an_undeclared_effect() {
+    let mut interp =
+        anthill_core::eval::Interpreter::new(anthill_core::kb::KnowledgeBase::new());
+    match interp.register_standard_effect_handlers() {
+        Err(anthill_core::eval::EvalError::UnknownOperation { name }) => {
+            assert_eq!(name, "anthill.prelude.Console.ConsoleOutput")
+        }
+        other => panic!("an undeclared effect is an error, got {other:?}"),
+    }
+}
+
 /// A RULE BODY DECLINES `ModifyRuntime` ON A CELL ITS CALLEE KEEPS TO ITSELF, AND SAYS WHY
 /// IN THE ROW'S TERMS. `localMod`'s row is pure — the cell never leaves it, so the typer drops
 /// its `Modify` — but the write asks the `Modify` handler, and a rule body's run has none. The
@@ -330,7 +348,8 @@ end
 /// `Cell.set` twin answers 9.
 ///
 /// BACK-OUT: the report's row check (`declared_row_may_hold`) answering yes, and this fails on
-/// the old wording; the `Cell.set` half passes either way, by design.
+/// the old wording; an unhandled effect scheduled again, as it was, and it fails with no
+/// report. The `Cell.set` half passes either way, by design.
 #[test]
 fn a_rule_body_declines_modify_runtime_on_a_callees_own_cell_naming_its_row() {
     use anthill_core::kb::resolve::ResolveConfig;

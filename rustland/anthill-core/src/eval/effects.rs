@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
+use crate::kb::term_view::{TermView, ViewHead};
 
 use super::{EvalError, Interpreter, Value};
 
@@ -36,7 +37,8 @@ pub struct ContSnapshot;
 /// What a handler tells the runtime to do with the (implicit) continuation
 /// when it returns — proposal 027 §Outputs, the `HandlerAction` carrier.
 /// The handler never receives the continuation as a value; it returns one
-/// of these variants and the dispatch site ([`Interpreter::invoke_effect_handler`])
+/// of these variants and the dispatch site (`Interpreter::run_effect_handler`, under
+/// `Interpreter::dispatch_effect_operation` and [`Interpreter::invoke_effect_handler`])
 /// interprets it.
 ///
 /// Only `Pure` and `Throw` are interpreted today (WI-389). `Fail`,
@@ -235,6 +237,9 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
 ///   functor → fallback functor-keyed map. The functor symbol is the
 ///   key; mixing types for the same resource is not rejected (runtime
 ///   is dynamically typed; the typer is the place to catch mismatches).
+///   A resource built with fields is refused
+///   ([`EvalError::ResourceWithFields`]): one slot per functor would make
+///   `box(id: 1)` and `box(id: 2)` one place.
 ///
 /// The Cell path matches what `Cell.set` does directly; routing
 /// `Modify.set(cell, v)` here gives the same arena semantics, so user
@@ -282,7 +287,18 @@ pub fn default_modify_handler() -> EffectHandler {
             };
         }
 
-        // Fallback: functor-keyed map for anonymous resources.
+        // Fallback: one slot per constructor, for a resource a constructor names. One built
+        // with fields would share that slot with every other value of its constructor —
+        // `box(id: 1)` and `box(id: 2)` one place, where two places are two resources — so
+        // it is refused until the handler keeps the values of one constructor apart (WI-200).
+        if matches!(
+            target.head(interp.kb()),
+            ViewHead::Functor { pos_arity, named_arity, .. } if pos_arity + named_arity > 0
+        ) {
+            return Err(EvalError::ResourceWithFields {
+                resource: super::render_raised_payload(interp.kb(), target),
+            });
+        }
         let key = resource_key(interp, Some(target))?;
         match op_name {
             "get" => cells
@@ -290,11 +306,8 @@ pub fn default_modify_handler() -> EffectHandler {
                 .get(&key)
                 .cloned()
                 .map(HandlerAction::Pure)
-                .ok_or_else(|| {
-                    EvalError::Internal(format!(
-                        "Modify.get: no value set for `{}`",
-                        interp.kb().local_name_of(key)
-                    ))
+                .ok_or_else(|| EvalError::ResourceUnset {
+                    resource: super::render_raised_payload(interp.kb(), target),
                 }),
             "set" => {
                 let new_val = args
@@ -386,7 +399,7 @@ fn detect_cycle(
         // key `resource_key` accepted. Both halves of the `Entity` arm above, read
         // carrier-neutrally: the head names the target, or a child references it.
         Value::Node(_) => {
-            use crate::kb::term_view::{TermView, ViewItem};
+            use crate::kb::term_view::ViewItem;
             if crate::eval::eval::value_functor(interp.kb(), value) == Some(target) {
                 return Err(EvalError::CyclicReference);
             }
@@ -569,9 +582,10 @@ impl Interpreter {
         self.effect_handlers.remove(sym)
     }
 
-    /// Invoke the handler for `effect_qname` with the given operation
-    /// symbol and arguments. Used by builtins that represent effectful
-    /// operations (e.g. `Console.print` routes through `ConsoleOutput`).
+    /// Invoke the handler for `effect_qname` with an operation symbol already resolved
+    /// and the arguments: [`Self::raise_error`]'s route, and a test's. The builtins of
+    /// an effect operation go through `Self::dispatch_effect_operation` instead, which
+    /// takes the handler before it resolves the operation.
     pub fn invoke_effect_handler(
         &mut self,
         effect_qname: &str,
@@ -641,7 +655,10 @@ impl Interpreter {
         // then, rather than being silently dropped.
         match action? {
             HandlerAction::Pure(v) => Ok(v),
-            HandlerAction::Throw(payload) => Err(EvalError::Raised { payload }),
+            HandlerAction::Throw(payload) => Err(EvalError::Raised {
+                payload,
+                origin: super::RaiseOrigin::Program,
+            }),
             // Fail / Choice / Suspend manipulate the continuation and need
             // the Branch / suspend-resume substrate (WI-075). Until then,
             // hitting one is a runtime-internal not-implemented state — fail
@@ -698,7 +715,10 @@ impl Interpreter {
                 )),
             }
         } else {
-            EvalError::Raised { payload }
+            EvalError::Raised {
+                payload,
+                origin: super::RaiseOrigin::Program,
+            }
         }
     }
 
@@ -905,10 +925,9 @@ impl Interpreter {
     /// even for tests, since Modify.get/set have no side effect beyond
     /// the handler's own state.
     ///
-    /// Each by its qualified name. An effect the KB does not declare is skipped, since no
-    /// program over it can perform one; `Modify` was registered by its short name, which
-    /// resolves to nothing, and so was skipped in every KB — `ModifyRuntime.set` on a cell
-    /// died "no handler registered for effect `anthill.prelude.Modify`" under `anthill run`.
+    /// Each by its qualified name, and a name the KB does not declare is an error
+    /// (`UnknownOperation`), not a handler left out: the six are the standard library's,
+    /// and a KB loaded without it has no program to run with them.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
         let entries: [(&str, fn() -> EffectHandler); 6] = [
             (
@@ -928,10 +947,7 @@ impl Interpreter {
             ("anthill.prelude.Time.Clock", system_clock_handler),
         ];
         for (qname, factory) in entries {
-            match self.register_effect_handler(qname, factory()) {
-                Ok(()) | Err(EvalError::UnknownOperation { .. }) => {}
-                Err(e) => return Err(e),
-            }
+            self.register_effect_handler(qname, factory())?;
         }
         Ok(())
     }

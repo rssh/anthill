@@ -496,7 +496,7 @@ fn raises_relation_floundered(program: &str, entry: &str) {
         .call(&format!("wi5g28a.demo2.Driver.{entry}"), &[])
         .expect_err("PINNED: the relation is undecided; if an answer comes back, flip this row");
     match &err {
-        anthill_core::eval::EvalError::Raised { payload } => {
+        anthill_core::eval::EvalError::Raised { payload, .. } => {
             let raised = sort_named(interp.kb(), payload);
             assert!(
                 raised.ends_with(".relation_floundered"),
