@@ -30,7 +30,7 @@ TARGET STATE.
   (1) The file loads with ZERO load errors, and the smoke test asserts that instead of tolerating them.
   (2) PART I in term-backed notation, effects as rows: synth / check carry an EffectExpression row; union is `merge`; SUB uses row subtyping; LAM puts the body row on the arrow; APP instantiates the callee's declared row with guard discharge; handler discharge removes what a handler covers.
   (3) The deferred helper relations are written, or the language fragment they cover is listed as out of scope, by name, in one place.
-  (4) A conformance test DRIVES the oracle: for a corpus of operation bodies it resolves `synth(Γ, body, ?T, ?E)` by SLD and compares type and row with what the Rust typer records. Control: a mutated spec rule, and a deliberately wrong typer answer, each fail it.
+  (4) A test DRIVES the oracle, not just loads it: for a handful of operation bodies it resolves `synth(Γ, body, ?T, ?E)` by SLD and asserts the type and the row. Control: a mutated spec rule fails it. The corpus-wide comparison against the Rust typer is WI-079 (typing-pass parity test), which depends on this item.
 
-OPEN, to decide at promotion: does PART II (type_check) also run as a third typer whose results are compared, or is it kept as reference prose aligned with PART I; is scaland checked against the oracle too, or Rust only.
+OPEN, to decide at promotion: does PART II (type_check) also run as a third typer — WI-079 compares the TypeOf facts PART II produces, so it assumes yes — or is it kept as reference prose aligned with PART I; is scaland checked against the oracle too, or Rust only.
 
