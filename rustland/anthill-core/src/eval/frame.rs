@@ -195,11 +195,10 @@ pub enum AwaitState {
     /// `UnhandledEffect` and the rest pass through: a reify boundary handles the
     /// `Error` EFFECT, not interpreter faults.
     ReifyBoundary {
-        /// The payload SORT this boundary discharges — `Some(Boom)` for a `reify` typed
-        /// at `Error[Boom]`, read at the call site out of the dictionary
-        /// `Error.reify requires ErrorTag[T = T1]` puts in the requirement channel
-        /// (WI-20260921-28TAT; it used to come off the per-frame type-argument channel,
-        /// which that ticket removed).
+        /// The payload SORT this boundary discharges — `Boom` for a `reify` typed at
+        /// `Error[Boom]`, read at the call site out of the dictionary `Error.reify requires
+        /// ErrorTag[T = T1]` puts in the requirement channel (WI-20260921-28TAT; it used to
+        /// come off the per-frame type-argument channel, which that ticket removed).
         ///
         /// CARRIED BECAUSE THE TYPE SYSTEM ALREADY DRAWS THIS LINE AND THE RUNTIME MUST
         /// TOO. `reify`'s row shares its tail: a body raising `{Error[Boom],
@@ -215,32 +214,18 @@ pub enum AwaitState {
         /// value's SORT, which is all `runtime_carrier_sort` can answer, so resolving
         /// `T1` to that sort once at INSTALL keeps the catch path total.
         ///
-        /// `None` IS "THIS BOUNDARY CANNOT BE NARROWED", AND IT CATCHES WIDE — exactly
-        /// what every boundary did before the narrowing existed. WI-20260921-28TAT
-        /// EMPTIED IT OF THE SHAPES IT USED TO HOLD, and that is the point of the move to
-        /// the requirement channel: a `T1` standing for an enclosing operation's type
-        /// parameter is now supplied by that operation's own `requires ErrorTag[T = P]`,
-        /// and a generic caller that declared nothing is a LOAD ERROR naming the clause
-        /// to add, not a silent widening — as is a RULE body's `reify` whose `T1` the
-        /// call leaves open, which has no clause to add (WI-20260908-9WVT7).
-        ///
-        /// WHAT STILL REACHES `None` is a `T1` an OPERATION body's call fixes with no
-        /// instance to read — a TUPLE payload, whose structural former has no sort to carry
-        /// a derived `TypeValue` (`a_payload_the_runtime_cannot_narrow_is_still_caught`).
-        /// A rule body's call with no evidence is refused at load, a tuple's with it; and
-        /// where the bridge fills the slot from the arguments' values — a host's
-        /// `Interpreter::call`, a generic operation reifying at its own `P` cited from a
-        /// rule — arguments that do not pin `T1` leave an absence, which
-        /// `Interpreter::enter_reify_boundary` refuses when it reads the slot, so neither
-        /// reaches here.
-        ///
-        /// NOT A FALLBACK PAPERING OVER AN ERROR — the ROW is the guarantee either way.
-        /// The typer discharged this label by the signature (WI-329), and the narrowing
-        /// is an ADDITIONAL check available only where the payload is nominal. Refusing
-        /// instead was measured and is worse than useless: `rule viaGenericRule(?r) :-
-        /// catchIt(lambda () -> mayFail(0 - 1), ?r)` aborted on a `debug_assert` in debug
-        /// and SILENTLY LOST ITS ANSWER in release, for a program that worked before.
-        payload: Option<Symbol>,
+        /// NOT AN `Option`: EVERY BOUNDARY IS NARROWED. A boundary that could not be
+        /// narrowed used to catch WIDE, on the reading that the row guarantees what it may
+        /// catch — MEASURED false for a thunk whose row holds a second `Error` label, whose
+        /// raise the wide boundary took from the caller it was left to. The shapes that
+        /// reached it are refused instead: a `T1` with no evidence at load, in an operation
+        /// body (a generic caller is told the `requires ErrorTag[T = P]` to add) and in a
+        /// rule body; a TUPLE or arrow payload at load, since a structural former has no
+        /// derived `TypeValue`; and evidence that names no sort when the boundary is entered
+        /// (`Interpreter::enter_reify_boundary`) — a host entry that hands none, a written
+        /// `provides ErrorTag[…]`, or the bridge's absence where the arguments do not pin
+        /// `T1` (user, 2026-10-16, WI-20260908-9WVT7).
+        payload: Symbol,
     },
 }
 
@@ -374,7 +359,7 @@ impl ActivationStack {
     /// `Result` back as the inner call's value. (`deliver` popping past the base was the
     /// wider defect of the same shape; WI-20260913-2858G made the success path stop at
     /// the floor too.)
-    pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[(usize, Option<Symbol>); 2]> {
+    pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[(usize, Symbol); 2]> {
         self.frames
             .iter()
             .enumerate()
@@ -530,7 +515,7 @@ mod tests {
         let boundary = || {
             let mut f = dummy_frame();
             f.awaiting = Some(AwaitState::ReifyBoundary {
-                payload: Some(Symbol::from_raw(1)),
+                payload: Symbol::from_raw(1),
             });
             f
         };
@@ -540,7 +525,7 @@ mod tests {
         s.push(boundary()).unwrap(); // 2 — this run's boundary
         s.push(dummy_frame()).unwrap(); // 3 — the thunk
 
-        let idx = |v: SmallVec<[(usize, Option<Symbol>); 2]>| -> Vec<usize> {
+        let idx = |v: SmallVec<[(usize, Symbol); 2]>| -> Vec<usize> {
             v.into_iter().map(|(i, _)| i).collect()
         };
         // A run whose floor is 2 sees only its own.
@@ -566,7 +551,7 @@ mod tests {
         s.push(dummy_frame()).unwrap();
         let mut b = dummy_frame();
         b.awaiting = Some(AwaitState::ReifyBoundary {
-            payload: Some(Symbol::from_raw(1)),
+            payload: Symbol::from_raw(1),
         });
         s.push(b).unwrap();
         s.push(dummy_frame()).unwrap();

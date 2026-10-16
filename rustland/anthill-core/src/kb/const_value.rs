@@ -68,6 +68,15 @@ pub(crate) enum ConstUnavailableWhy {
     UnknownHostKey(String),
     /// The `const_map` key names a host function that takes arguments.
     HostNotNullary { key: String, arity: usize },
+    /// The host value source is the host function of an operation that declares an effect
+    /// other than `Error` — `time_now` is `Time.now`'s, which reads `Clock` — and a load
+    /// performs no effect. Asked before the source is run: run over the scratch
+    /// interpreter, it fails for want of a handler, and says so as an internal error.
+    HostPerformsEffect {
+        key: String,
+        op: Symbol,
+        effect: Symbol,
+    },
     /// The host value source ran and failed.
     HostFailed { key: String, message: String },
     /// The host value source returned something that is not a scalar literal.
@@ -102,6 +111,12 @@ impl ConstUnavailable {
             ConstUnavailableWhy::HostNotNullary { key, arity } => format!(
                 "the `const_map` entry for `{at}` names {key:?}, which takes {arity} \
                  argument(s); a const's value source takes none"
+            ),
+            ConstUnavailableWhy::HostPerformsEffect { key, op, effect } => format!(
+                "`{at}`'s host value source {key:?} is `{}`'s host function, which performs \
+                 `{}`, and a load performs no effect",
+                kb.qualified_name_of(*op),
+                kb.qualified_name_of(*effect)
             ),
             ConstUnavailableWhy::HostFailed { key, message } => {
                 format!("`{at}`'s host value source {key:?} failed: {message}")
@@ -152,7 +167,10 @@ impl KnowledgeBase {
                 Some(ConstSource::Alias(next)) => at = next,
                 Some(ConstSource::Computed) => break Err(ConstUnavailableWhy::Computed),
                 Some(ConstSource::Host(key)) => {
-                    break crate::eval::builtins::host_const_literal(self, &key)
+                    if let Some((op, effect)) = self.host_source_effect(&key) {
+                        break Err(ConstUnavailableWhy::HostPerformsEffect { key, op, effect });
+                    }
+                    break crate::eval::builtins::host_const_literal(self, &key);
                 }
                 None => break Err(ConstUnavailableWhy::NoInterpreterBinding),
             }
@@ -160,6 +178,17 @@ impl KnowledgeBase {
         let answer = answer.map_err(|why| ConstUnavailable { at, why });
         self.const_slot_values.insert(sym, answer.clone());
         answer
+    }
+
+    /// An effect other than `Error` that an operation declares whose interpreter mapping
+    /// names host function `key`, with that operation: `time_now` is `Time.now`'s, which
+    /// declares `{Clock}` (`HostOperationMapping::performs`, the one reader).
+    fn host_source_effect(&self, key: &str) -> Option<(Symbol, Symbol)> {
+        self.host_op_mappings().iter().find_map(|m| {
+            (m.lang == crate::kb::load::INTERPRETER_LANG && m.host_fn == key)
+                .then_some(())
+                .and_then(|()| Some((m.op?, m.performs?)))
+        })
     }
 
     /// `sym`'s value from the EVALUATOR (`force_const`), as a literal, or `None` when it

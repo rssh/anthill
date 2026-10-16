@@ -2501,7 +2501,7 @@ pub(super) fn build_op_scoped_dicts(
                         // declaration this one cannot. See [`former_carrier`].
                         match rigid {
                             Some(r) => Some(r),
-                            None => former_carrier(kb, &dep, callee_op).map(|former| {
+                            None => former_carrier(kb, &dep).map(|former| {
                                 RequirementRefusal {
                                     account_names_every_repair: false,
                                     no_scope_route: false,
@@ -2520,11 +2520,9 @@ pub(super) fn build_op_scoped_dicts(
                                      `provides` row is written on a sort), and the \
                                      derived instances cover sorts only, so this slot \
                                      stays empty and the call would load and then die \
-                                     reading a requirement the frame never bound. Give \
-                                     some sort the row that names this former — \
-                                     `provides {spec}[… = {former}]` — or pass a value \
-                                     whose type is a sort",
+                                     reading a requirement the frame never bound. {repair}",
                                         spec = kb.qualified_name_of(dep.required_sort),
+                                        repair = former_repair(kb, dep.required_sort, &former),
                                     ),
                                     pinned: None,
                                     unprovided: None,
@@ -3779,28 +3777,17 @@ pub(super) fn unclassified_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> 
 /// 065 open question 3 proposed refusing "at the read, naming the row". This refuses at
 /// the CALL, which is where the carrier is known — a body reading `B` cannot see that
 /// some caller will pass a tuple. The former is named in the message either way.
-fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry, callee_op: Symbol) -> Option<String> {
-    // A BODY-LESS CALLEE'S ABSENT DICTIONARY IS THE HOST'S TO INTERPRET, and this guard
-    // is the whole reason the arm is not simply "a former cannot be provided".
-    //
-    // MEASURED, and it cost 20 red rows to learn: `Error.reify` declares
-    // `requires ErrorTag[T = T1]` and is body-less ON PURPOSE — the boundary is a frame
-    // the interpreter installs by symbol — and a TUPLE payload is a LIVE, CORRECT corpus
-    // program. `wi_9wvt7_error_reify_test`'s fixture says so at its own line: "a tuple
-    // type's head is the ENTITY `TypeExtractor.NamedTuple`, which names no sort, so this
-    // boundary CANNOT be narrowed and must catch wide — as every boundary did before the
-    // narrowing existed". The host NARROWS when the evidence is there and catches WIDE
-    // when it is not, so the missing dictionary is not a death, it is the wide case.
-    //
-    // AN ANTHILL BODY HAS NO SUCH FALLBACK: 065 §1 lowers a value read to a dispatch
-    // through the slot, so an absent one is the `DeferToRequirement` abort this arm
-    // exists to prevent.
-    //
-    // THIS IS NOT THE BODY WALK WI-20260921-3G1YT DELETED. That one asked what a body
-    // CONTAINS — whether it reads the slot — and was deleted because a declared
-    // `requires` is owed because it is declared. This asks only whether an anthill body
-    // EXISTS, which decides WHO interprets the absence, not whether the clause is owed.
-    kb.op_body_node(callee_op)?;
+///
+/// A BODY-LESS CALLEE IS HELD TO IT TOO (user, 2026-10-16). One was exempt, on the reading
+/// that its host interprets an absent slot: `Error.reify` (`requires ErrorTag[T = T1]`,
+/// body-less on purpose) caught WIDE where it had no evidence, and the row was taken to
+/// guarantee what it may catch. MEASURED false for a thunk whose row holds a second
+/// `Error` label: `Error.reify(lambda () -> raiseTup(n))` over `{Error[(Int64, Int64)],
+/// Error[Other]}` caught `other(n: 7)` as the tuple's `err`, past the boundary at `Other`
+/// around it. The boundary refuses evidence that names no payload sort now
+/// (`Interpreter::enter_reify_boundary`), so there is no wide case left for an exemption
+/// to protect (WI-20260908-9WVT7).
+fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<String> {
     let goal = goal_from_requires_entry(kb, dep)?;
     // EVERY BINDING, not just the carrier one. `spec_carrier_param_or_sole` names the
     // parameter a declared OPERATION receives on, which is the right question for
@@ -3822,6 +3809,32 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry, callee_op: Symbol) ->
         is_structural_former(kb, v).then_some(v)
     })?;
     Some(format_value_for_goal(kb, former))
+}
+
+/// The repair the structural-former refusal names: a sort's row that names the former, as
+/// `control_a_former_carrier_with_a_provision_loads` writes one, or a value whose type is a
+/// sort. Not the row for the two specs whose instances come from the library, where it
+/// would be refused in turn — `TypeValue`, none of whose instances may be written, and
+/// `ErrorTag`, whose one reader, an `Error.reify` boundary, takes the payload's sort from the
+/// `TypeValue` evidence of `Error`'s own provision and refuses to run without it.
+fn former_repair(kb: &KnowledgeBase, spec: Symbol, former: &str) -> String {
+    let canon = kb.canonical_sort_sym(spec);
+    if type_value_spec_sym(kb).is_some_and(|tv| kb.canonical_sort_sym(tv) == canon) {
+        "Pass a value whose type is a sort: every `TypeValue` instance is derived, and none \
+         may be written"
+            .to_owned()
+    } else if is_error_tag_spec(kb, spec) {
+        "Raise, in the thunk, a value whose type is a sort: an `Error.reify` boundary takes \
+         the payload's sort from the `TypeValue` evidence of `Error`'s own provision, which \
+         neither a former nor a written row has"
+            .to_owned()
+    } else {
+        format!(
+            "Give some sort the row that names this former — `provides {}[… = {former}]` — or \
+             pass a value whose type is a sort",
+            kb.qualified_name_of(spec)
+        )
+    }
 }
 
 /// A tuple or an arrow, by its head and whatever stands inside it: a type no `provides`

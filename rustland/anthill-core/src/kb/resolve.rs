@@ -11881,6 +11881,12 @@ impl KnowledgeBase {
                      `Result` the rule can read."
                 },
             ),
+            // An effect the call performs, which a rule body does not: the scratch
+            // interpreter's registry is empty, so the operation asking a handler stopped.
+            EvalError::UnhandledEffect { name, .. } => (
+                format!("it performs `{name}`, and a rule body performs no effect"),
+                "",
+            ),
             other => (other.to_string(), ""),
         };
         format!(

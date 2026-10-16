@@ -396,7 +396,12 @@ arms; the P1TPE residual check).
   their behaviour on a call that is not evaluated, which follows §2 — SUSPENDED rotates and is asked
   again, UNREDUCED is parked — instead of falling through to an empty answer (WI-20260924-35E14).
 - Effects: an effectful operation is still declined by the bridge's empty effect registry (§5.3),
-  and whether `Error` alone may run (WI-20260827-NFXPZ) stays open.
+  and whether `Error` alone may run (WI-20260827-NFXPZ) stays open. The decline is reported, as
+  a fault naming the effect (2026-10-16): it had left a bare residual, and a drain of the
+  relation from an operation body died `relation_floundered`. The registry stops an
+  operation that asks a handler; a host function that performs its effect itself (`Cell.set`, a
+  store's writer) asks none and runs. The boundary declines such an application by its typed row,
+  which the clause typing of §3 computes (a row on WI-20260926-7D48J, 2026-10-16).
 
 ## 6. Carriers that are not typed
 

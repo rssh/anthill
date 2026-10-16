@@ -4213,35 +4213,56 @@ impl Interpreter {
         // layer construction it is a missing symbol, the layer is `None`, and
         // `Error.reify` fails loudly as a body-less operation instead.
         //
-        // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how a typed
-        // unevidenced call arrives: since WI-20260921-28TAT a `reify` whose `T1` has no
-        // `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an operation
-        // body, and in a rule body since WI-20260908-9WVT7 (`build_op_scoped_dicts`, at a
-        // rule body's unfilled `ErrorTag` slot), where no clause can be added and the
-        // payload type must be fixed at the call. (`Error.reify` is body-less and
-        // implemented by THIS function; since WI-20260921-3G1YT every parked refusal is
-        // reported, so there is no longer a body walk that could withhold this one for
-        // having no body to walk.) What reaches `None` is listed at
-        // `AwaitState::ReifyBoundary::payload`.
-        let slot = self
+        // A TYPED CALL ARRIVES WITH ITS EVIDENCE: since WI-20260921-28TAT a `reify` whose
+        // `T1` has no `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an
+        // operation body, and in a rule body since WI-20260908-9WVT7
+        // (`build_op_scoped_dicts`, at a rule body's unfilled `ErrorTag` slot), where no
+        // clause can be added and the payload type must be fixed at the call; and a tuple
+        // or arrow payload, which has no instance, is refused at the call in both
+        // (`former_carrier`). (`Error.reify` is body-less and implemented by THIS function;
+        // since WI-20260921-3G1YT every parked refusal is reported, so there is no longer a
+        // body walk that could withhold this one for having no body to walk.) What is
+        // refused below is evidence no typer built.
+        let Some((slot, sub)) = self
             .error_layer
             .as_ref()
-            .map(|l| l.reify_payload_slot)
-            .and_then(|slot| requirements.iter().find(|(n, _)| *n == slot));
-        // A slot holding the ABSENCE MARKER is evidence that could not be built — the
-        // bridge's for an `ErrorTag` its arguments could not pin — and is refused at the
-        // read, as every marker is: read as "cannot narrow" it would catch every payload.
-        if let Some((_, dict)) = slot {
-            if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, dict.impl_sort()) {
-                return Err(EvalError::UnpinnedRequirement {
-                    detail,
-                    marker: dict.impl_sort(),
-                });
-            }
+            .map(|l| (l.reify_payload_slot, l.reify_payload_sub))
+        else {
+            return Err(EvalError::Internal(
+                "enter_reify_boundary: entered with no error layer".into(),
+            ));
+        };
+        // NO EVIDENCE IS NO BOUNDARY. Each way the payload's sort can be missing is refused
+        // here, before anything is installed, and none is read as "cannot narrow", which
+        // would catch every payload, including a label the thunk's row leaves to the caller.
+        let Some((_, dict)) = requirements.iter().find(|(n, _)| *n == slot) else {
+            return Err(EvalError::ReifyPayloadUnread {
+                detail: "`anthill.prelude.Error.reify` was entered with no `ErrorTag` evidence \
+                         of the payload sort it catches — a host entry that hands none; call \
+                         it from an operation, or with arguments that pin the payload"
+                    .to_owned(),
+            });
+        };
+        // The ABSENCE MARKER — the bridge's, for an `ErrorTag` its arguments could not pin —
+        // is refused as every marker is.
+        if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, dict.impl_sort()) {
+            return Err(EvalError::UnpinnedRequirement {
+                detail,
+                marker: dict.impl_sort(),
+            });
         }
-        let payload = slot
-            .and_then(|(_, dict)| dict.sub(self.error_layer.as_ref()?.reify_payload_sub))
-            .map(|tv| tv.impl_sort());
+        let Some(payload) = dict.sub(sub).map(|tv| tv.impl_sort()) else {
+            return Err(EvalError::ReifyPayloadUnread {
+                detail: format!(
+                    "the `ErrorTag` evidence `anthill.prelude.Error.reify` was handed, `{}`'s \
+                     provision, carries no `TypeValue` of the payload, so it names no sort to \
+                     catch: the boundary reads the payload's sort from `Error`'s own \
+                     provision (`provides ErrorTag[T = T] :- TypeValue[T = T]`) — raise a \
+                     value whose type is a sort",
+                    self.kb.qualified_name_of(dict.impl_sort())
+                ),
+            });
+        };
 
         // The profiler counts this the way `enter_operation` counts an ordinary
         // entry; without it `Error.reify` appears in neither `ANTHILL_PROFILE`
@@ -4296,10 +4317,9 @@ impl Interpreter {
     /// `{Error[Boom], Error[Other]}` reified at `T1 = Boom` has the second label left in
     /// the CALLER's row by the typer, and this is where the runtime says the same: the
     /// scan takes the innermost boundary that ACCEPTS the payload, and a raise no
-    /// boundary accepts propagates out of the run carrying its own payload. A boundary
-    /// the runtime could not narrow accepts anything
-    /// ([`super::frame::AwaitState::ReifyBoundary`]'s `payload`), which is what every
-    /// boundary did before this rule existed.
+    /// boundary accepts propagates out of the run carrying its own payload. Every
+    /// boundary judges: one that could not be narrowed is refused where it would be
+    /// installed ([`super::frame::AwaitState::ReifyBoundary`]'s `payload`).
     ///
     /// On success the boundary frame is left on TOP and no longer awaiting, so
     /// the caller delivers the returned `err(payload)` FROM it: `deliver` pops
@@ -4327,11 +4347,7 @@ impl Interpreter {
             .stack
             .reify_boundaries(floor)
             .into_iter()
-            .find(|(_, declared)| match declared {
-                // A narrowed boundary judges; an un-narrowable one catches wide.
-                Some(sort) => self.payload_matches(*sort, &raised),
-                None => true,
-            });
+            .find(|(_, declared)| self.payload_matches(*declared, &raised));
         let Some((idx, _)) = accepted else {
             return Err(e);
         };
@@ -4366,20 +4382,16 @@ impl Interpreter {
     /// runtime then declined the raise it would escape an operation the typer has
     /// already typed effect-free, so equality alone would be unsound, not merely strict.
     ///
-    /// A NARROWED BOUNDARY DECLINES A PAYLOAD WHOSE SORT IT CANNOT READ, and the
-    /// alternative was tried and is WRONG. Catching it looked symmetric with the
-    /// un-narrowable boundary rule — "neither side is known, so catch" — but the two are
-    /// not symmetric: a boundary that narrowed HAS been told what it discharges, and the
-    /// row told the OUTER boundary about everything else. MEASURED on a fixture that
-    /// loads clean — `innerAtBoom` at `T1 = Boom` declaring a tuple label as escaping,
+    /// A BOUNDARY DECLINES A PAYLOAD WHOSE SORT IT CANNOT READ, and the alternative was
+    /// tried and is WRONG: a boundary has been told what it discharges, and the row told
+    /// the OUTER boundary about everything else. MEASURED on a fixture that loaded clean
+    /// at the time — `innerAtBoom` at `T1 = Boom` declaring a tuple label as escaping,
     /// wrapped in a `reify` typed at that tuple — catching gave `ok` at the outer
     /// boundary and `err(Tuple{…})` at the inner: the inner stole a label the row had
     /// assigned to the outer, which is the exact defect this narrowing exists to close.
-    ///
-    /// The un-narrowable side still catches those payloads, because a tuple's own
-    /// boundary is un-narrowable too (its `T1` head is the ENTITY
-    /// `TypeExtractor.NamedTuple`), so `None` accepts it before this predicate is
-    /// consulted. That is why declining here costs nothing a program can spell.
+    /// No boundary is typed at a tuple now (a structural former has no `TypeValue`, and
+    /// the call is refused), so a raised tuple is declined by every boundary and leaves
+    /// the run as the raise it is, which is what its row says.
     ///
     /// THE TYPE-ARGUMENT AXIS IS NOT DECIDED HERE, and that is a PRE-EXISTING hole this
     /// narrowing neither opens nor closes: a value's runtime sort is its head, so a

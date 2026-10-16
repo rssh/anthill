@@ -251,8 +251,8 @@ namespace test.reify
 
   -- A GENERIC boundary that must DECLINE. `catchItEsc` discharges its OWN `P` and leaves
   -- `Error[Other]` in its caller's row, so an `Other` raised inside it has to travel past
-  -- it. This is the row that needs `P` ground: a boundary that cannot be narrowed catches
-  -- wide, so it would swallow the `Other`.
+  -- it. This is the row that needs `P`'s evidence: a boundary typed wider than `P` would
+  -- swallow the `Other`.
   operation catchItEsc[P](body: () -> Int64 @ {Error[P], Error[Other]})
       -> Result[E = P, T = Int64] effects {Error[Other]}
       requires ErrorTag[T = P] =
@@ -264,19 +264,11 @@ namespace test.reify
   operation genericDeclineOuter() -> Result[E = Other, T = Result[E = Boom, T = Int64]] =
     Error.reify(lambda () -> genericDeclines())
 
-  -- A TUPLE payload. A tuple type's head is the ENTITY `TypeExtractor.NamedTuple`, which
-  -- names no sort, so this boundary CANNOT be narrowed and must catch wide — as every
-  -- boundary did before the narrowing existed.
-  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} =
-    Error.raise((a: n, b: "neg"))
-
-  operation caughtTuple() -> Result[E = (a: Int64, b: String), T = Int64] =
-    Error.reify(lambda () -> raisesTuple(0 - 1))
-
-  -- NESTED, AT A READABLE AND AN UNREADABLE PAYLOAD. `innerAtBoom` is WRITTEN at `Boom`
-  -- around a body that raises both a `Boom` and a tuple, so the typer makes it declare the
-  -- tuple label as escaping — the row saying it discharged only `Boom`. The tuple must
-  -- therefore reach the outer boundary, the one typed at it.
+  -- A READABLE AND AN UNREADABLE PAYLOAD. `tupleInnerAtBoom` is WRITTEN at `Boom` around a
+  -- body that raises both a `Boom` and a tuple, so the typer makes it declare the tuple label
+  -- as escaping — the row saying it discharged only `Boom`. The tuple must therefore leave
+  -- it; no boundary can be typed at a tuple (a structural former has no `TypeValue`), so it
+  -- leaves the call.
   operation boomOrTuple(n: Int64) -> Int64 effects {Error[Boom], Error[(a: Int64, b: String)]} =
     if n < 0 then Error.raise(boom("neg")) else Error.raise((a: n, b: "tup"))
 
@@ -284,21 +276,9 @@ namespace test.reify
       effects {Error[(a: Int64, b: String)]} =
     Error.reify[T1 = Boom](lambda () -> boomOrTuple(n))
 
-  operation nestedAtBoth(n: Int64)
-      -> Result[E = (a: Int64, b: String), T = Result[E = Boom, T = Int64]] =
-    Error.reify(lambda () -> tupleInnerAtBoom(n))
-
-  operation nestedTupleEscapes()
-      -> Result[E = (a: Int64, b: String), T = Result[E = Boom, T = Int64]] =
-    nestedAtBoth(7)
-
-  operation nestedBoomCaught()
-      -> Result[E = (a: Int64, b: String), T = Result[E = Boom, T = Int64]] =
-    nestedAtBoth(0 - 1)
-
-  -- The generic boundary reached through a RULE BODY. The bridge pushes a frame with an
-  -- EMPTY type-argument channel, so nothing can ground `P` — the boundary is un-narrowable
-  -- there and must still answer. `viaPlainRule` is the same call at a concrete payload.
+  -- The generic boundary reached through a RULE BODY: `catchIt`'s `requires ErrorTag[T = P]`
+  -- is filled at the rule's call, `P` being the payload of the thunk's row.
+  -- `viaPlainRule` is the same call at a concrete payload.
   rule viaGenericRule(?r) :- catchIt(lambda () -> mayFail(0 - 1), ?r)
   rule viaPlainRule(?r) :- caught(?r)
 
@@ -746,14 +726,12 @@ fn a_row_without_error_is_still_refused() {
 /// (`P = Boom`) before the dispatch, so the boundary installs at a payload sort like any
 /// other.
 ///
-/// THE THIRD ROW IS THE ONE THAT DRIVES IT, and the first two say why it is needed. An
-/// un-narrowable boundary catches WIDE (see `AwaitState::ReifyBoundary::payload`), so
-/// `viaGeneric` and `viaGenericOk` pass with or without the grounding — a boundary that
-/// catches everything still catches its own `Boom`. Only a boundary that must DECLINE
-/// separates the two: `catchItEsc` discharges `P` and leaves `Error[Other]` for its
-/// caller, so with `P` ground the `Other` travels out to `genericDeclineOuter`, and
-/// without it the inner boundary swallows the `Other` into a `Result[E = Boom]` and the
-/// outer sees `ok`.
+/// THE THIRD ROW IS THE ONE THAT DRIVES IT, and the first two say why it is needed:
+/// `viaGeneric` and `viaGenericOk` pass at any boundary that catches a `Boom`, a wider one
+/// too. Only a boundary that must DECLINE separates the two: `catchItEsc` discharges `P`
+/// and leaves `Error[Other]` for its caller, so at `P = Boom` the `Other` travels out to
+/// `genericDeclineOuter`, and a wider inner boundary would swallow the `Other` into a
+/// `Result[E = Boom]`, the outer seeing `ok`.
 #[test]
 fn a_reify_at_an_operations_own_type_parameter_catches() {
     let mut interp = interp();
@@ -782,35 +760,6 @@ fn a_reify_at_an_operations_own_type_parameter_catches() {
     let payload = field(&interp, &outer, "error", 0);
     assert_eq!(short_name(&interp, &payload), "other");
     assert_eq!(int_of(&interp, &field(&interp, &payload, "n", 0)), 7);
-}
-
-/// A BOUNDARY THE RUNTIME CANNOT NARROW CATCHES WIDE — it does not silently decline.
-///
-/// A tuple type's head is `anthill.prelude.TypeExtractor.NamedTuple`, an ENTITY, so `T1`
-/// here names no sort and no value's `runtime_carrier_sort` could ever equal it. Reading
-/// the head without asking whether it names a sort installed a boundary that declined
-/// every raise, including its own: MEASURED before the check, `caughtTuple` let its raise
-/// escape `main` as `error: Tuple`, out of an operation the typer had typed effect-free.
-///
-/// MEASURED: back `genuine_concrete_sort` out of `payload_sort_of` and THREE rows go red
-/// — this one and `a_narrowed_boundary_does_not_steal_an_unreadable_payload` for the
-/// no-sort half, and `a_generic_boundary_answers_through_a_rule_body` for the type-param
-/// half (a parameter passes `has_kind(_, Sort)`, which is why the check is the typer's
-/// predicate and not that test alone). Every other row uses a nominal payload and narrows
-/// fine either way.
-#[test]
-fn a_payload_the_runtime_cannot_narrow_is_still_caught() {
-    let mut interp = interp();
-    let caught = interp
-        .call("test.reify.caughtTuple", &[])
-        .expect("a tuple payload has no sort to narrow to, so the boundary catches wide");
-    assert_eq!(short_name(&interp, &caught), "err");
-    let payload = field(&interp, &caught, "error", 0);
-    assert_eq!(
-        str_of(&interp, &field(&interp, &payload, "b", 1)),
-        "neg",
-        "the caught payload is the raised tuple itself"
-    );
 }
 
 /// A DECLINED RAISE LEAVES THE INTERPRETER USABLE — the boundary frames it walked past
@@ -849,20 +798,16 @@ fn a_declined_raise_leaves_the_interpreter_usable() {
     assert_eq!(int_of(&interp, &field(&interp, &again, "value", 0)), 42);
 }
 
-/// THE GENERIC BOUNDARY THROUGH A RULE BODY, where nothing can ground `P` at all.
+/// THE GENERIC BOUNDARY THROUGH A RULE BODY. `catchIt`'s `requires ErrorTag[T = P]` is
+/// filled at the rule's call, `P` being the payload of the thunk's row, so the boundary is
+/// typed at `Boom` there as in an operation body.
 ///
-/// `bridge_op_to_eval` pushes a frame with an EMPTY type-argument channel (as does every
-/// host `interp.call`), so `T1` arrives as a reference to `catchIt`'s own parameter and
-/// stays one. That is the un-narrowable case, and it must answer — the ROW discharged the
-/// label whatever the runtime can tell about the payload.
-///
-/// MEASURED, and this is why the check is `genuine_concrete_sort` rather than
-/// `has_kind(_, Sort)` alone: a type parameter is registered as a `SymbolKind::Sort` (so
-/// `x: P` routes through the type-param branch), so taking the head at face value narrowed
-/// the boundary to `catchIt.P` — a symbol no value can carry — and `viaGenericRule`
-/// answered **no solutions**, silently, while `viaPlainRule` (the same shape at a concrete
-/// payload) answered normally. Both rows are here for that reason: the plain one passes
-/// either way and is the control.
+/// MEASURED when the boundary read `T1` off a per-frame type-argument channel, which the
+/// bridge left empty: a type parameter is registered as a `SymbolKind::Sort`, so taking the
+/// head at face value narrowed the boundary to `catchIt.P` — a symbol no value can carry —
+/// and `viaGenericRule` answered **no solutions**, silently, while `viaPlainRule` (the same
+/// shape at a concrete payload) answered normally. Both rows are here for that reason: the
+/// plain one passes either way and is the control.
 ///
 /// `definite_unary`, not a solution COUNT: a floundered answer is a suspension — "I could
 /// not decide this" — and must never read as success. The value is asserted too, because a
@@ -891,44 +836,104 @@ fn a_generic_boundary_answers_through_a_rule_body() {
     }
 }
 
-/// A NARROWED BOUNDARY DOES NOT STEAL A PAYLOAD IT CANNOT READ — the nested case, which
-/// is where "catch what you cannot read" turns out to be wrong.
+/// A BOUNDARY DOES NOT STEAL A PAYLOAD IT CANNOT READ — where "catch what you cannot read"
+/// turns out to be wrong.
 ///
 /// `tupleInnerAtBoom` is written `Error.reify[T1 = Boom]` around a body raising BOTH `Boom`
 /// and a tuple, and the typer requires it to declare the tuple label as ESCAPING — the row
-/// saying the `Boom` boundary discharged only `Boom`. So the tuple must reach the outer
-/// boundary, the one typed at it.
+/// saying the `Boom` boundary discharged only `Boom`. So the tuple leaves the boundary, and
+/// the call, as the raise it is.
 ///
-/// MEASURED when `payload_matches` caught an unreadable carrier instead of declining:
-/// outer = `ok`, inner = `err(Tuple{a: 7, b: "tup"})` — the inner boundary swallowed a
-/// label the row had assigned to the outer, which is the exact defect the narrowing exists
-/// to close. The `Boom` row is the control: it is the inner boundary's OWN payload and
-/// answers through it either way.
+/// MEASURED when `payload_matches` caught an unreadable carrier instead of declining: a
+/// boundary typed at the tuple around this one answered `ok`, and this one
+/// `err(Tuple{a: 7, b: "tup"})` — it swallowed a label the row had assigned elsewhere,
+/// which is the exact defect the narrowing exists to close. The `Boom` row is the control:
+/// it is the boundary's OWN payload and answers through it either way.
 #[test]
 fn a_narrowed_boundary_does_not_steal_an_unreadable_payload() {
     let mut interp = interp();
 
-    let outer = interp
-        .call("test.reify.nestedTupleEscapes", &[])
-        .expect("the tuple label reaches the boundary typed at it");
-    assert_eq!(
-        short_name(&interp, &outer),
-        "err",
-        "`ok` here means the inner `Boom` boundary stole the tuple label"
-    );
-    let payload = field(&interp, &outer, "error", 0);
-    assert_eq!(str_of(&interp, &field(&interp, &payload, "b", 1)), "tup");
+    match interp.call("test.reify.tupleInnerAtBoom", &[Value::Int(7)]) {
+        Err(EvalError::Raised { payload }) => {
+            assert_eq!(str_of(&interp, &field(&interp, &payload, "b", 1)), "tup")
+        }
+        other => panic!(
+            "the tuple label leaves the `Boom` boundary as the raise it is — an `err` here \
+             means the boundary stole it; got {other:?}"
+        ),
+    }
 
-    // The control: the inner boundary's OWN payload still answers through it.
+    // The control: the boundary's OWN payload still answers through it.
     let own = interp
-        .call("test.reify.nestedBoomCaught", &[])
-        .expect("a Boom is the inner boundary's own payload");
-    assert_eq!(
-        short_name(&interp, &own),
-        "ok",
-        "the outer saw a normal return"
-    );
-    assert_eq!(err_why(&interp, &field(&interp, &own, "value", 0)), "neg");
+        .call("test.reify.tupleInnerAtBoom", &[Value::Int(-1)])
+        .expect("a Boom is the boundary's own payload");
+    assert_eq!(short_name(&interp, &own), "err");
+    assert_eq!(err_why(&interp, &own), "neg");
+}
+
+/// A written `provides ErrorTag[…]` at a tuple: the call finds the row and loads, and the
+/// row carries no `TypeValue` of the payload.
+const WRITTEN_TAG_PROGRAM: &str = r#"
+namespace test.reifytag
+  import anthill.prelude.{Int64, String, Error, Result, ErrorTag}
+  sort Other
+    entity other(n: Int64)
+  end
+  sort Wrapper
+    import anthill.prelude.{Int64, String, ErrorTag}
+    entity wrap(n: Int64)
+    provides ErrorTag[T = (a: Int64, b: String)]
+  end
+  operation raiseTup(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)], Error[Other]} =
+    if n < 0 then Error.raise((a: n, b: "neg")) else Error.raise(other(n))
+  operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
+      effects {Error[Other]} =
+    Error.reify(lambda () -> raiseTup(n))
+end
+"#;
+
+/// EVIDENCE THAT NAMES NO PAYLOAD SORT IS REFUSED where the boundary would be installed,
+/// and never read as "cannot narrow": a boundary that catches every payload takes a label
+/// the thunk's row leaves to the caller. MEASURED with the wide catch: `tupOp(7)` below
+/// answered `err(other(n: 7))`, an `Other` delivered as the tuple's `err`. Two routes reach
+/// the refusal — a written `ErrorTag` row, which carries no `TypeValue` (the advised row
+/// of a former refusal leads here, so that refusal names a value of a sort instead), and a
+/// host entry that hands no evidence at all (`call_with_requirements` fills only the parent
+/// sort's chain).
+///
+/// BACK-OUT: the boundary installed at no sort and catching wide, and both rows answer.
+#[test]
+fn evidence_that_names_no_payload_sort_is_refused() {
+    let mut tagged = crate::common::interp_for(WRITTEN_TAG_PROGRAM);
+    match tagged.call("test.reifytag.tupOp", &[Value::Int(7)]) {
+        Err(e @ EvalError::ReifyPayloadUnread { .. }) => {
+            let text = e.to_string();
+            for want in ["`test.reifytag.Wrapper`'s", "carries no `TypeValue` of the payload"] {
+                assert!(text.contains(want), "expected {want:?}; got {text}");
+            }
+        }
+        other => panic!("a written `ErrorTag` row is no payload sort, got {other:?}"),
+    }
+    assert_eq!(tagged.activation_depth(), 0, "the refused entry leaves no frame");
+
+    let mut interp = interp();
+    let op = interp
+        .kb()
+        .try_resolve_symbol("test.reify.returned")
+        .expect("`returned` is declared");
+    let thunk = Value::OpRef {
+        op,
+        dict: None,
+        named: None,
+        spread_labels: None,
+        op_reqs: None,
+    };
+    match interp.call_with_requirements("anthill.prelude.Error.reify", &[thunk], Default::default()) {
+        Err(e @ EvalError::ReifyPayloadUnread { .. }) => {
+            assert!(e.to_string().contains("with no `ErrorTag` evidence"), "{e}")
+        }
+        other => panic!("a host entry with no evidence is refused, got {other:?}"),
+    }
 }
 
 /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, because the ROW already does.

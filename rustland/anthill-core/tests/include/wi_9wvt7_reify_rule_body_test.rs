@@ -61,6 +61,8 @@
 //!   * (d)'s load refusal backed out → `an_unfilled_error_tag_is_refused_where_it_is_written`:
 //!     its programs load clean, and the bridge's absence faults `either(7, 7, ?r)` when it
 //!     runs. With both of (d)'s halves backed out it answers `err(other(n: 7))`, definitely.
+//!   * an unhandled effect scheduled again, as it was → `an_effectful_thunk_leaves_the_goal_undecided`
+//!     (the declined print is named nowhere).
 //!   * (d)'s bridge absence backed out → `a_generic_catcher_cited_from_a_rule_faults`
 //!     (`err(other(n: 7))`, definite) and `an_unpinned_host_entry_is_refused_and_leaves_no_frame`
 //!     (the boundary catches every payload).
@@ -216,7 +218,8 @@ fn a_payload_the_boundary_declines_is_a_fault() {
 
 /// A thunk with another effect (`ConsoleOutput`) is not run to an answer: the bridge's
 /// effect registry is empty, so the print is not performed and the goal stays UNDECIDED —
-/// one answer, not definite. Before (a) the goal was refuted instead: no answer at all.
+/// one answer, not definite — with the decline reported, naming the effect. Before (a) the
+/// goal was refuted instead: no answer at all.
 #[test]
 fn an_effectful_thunk_leaves_the_goal_undecided() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
@@ -224,6 +227,16 @@ fn an_effectful_thunk_leaves_the_goal_undecided() {
     assert!(
         matches!(rows.as_slice(), [(_, false)]),
         "one answer, undecided: {rows:?}"
+    );
+    let goal = crate::common::query_pattern_term(&mut kb, "test.rrb.printing(?r)");
+    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(
+        stats
+            .errors
+            .iter()
+            .any(|e| e.message.contains("performs `anthill.prelude.Console.ConsoleOutput`")),
+        "the declined print is named: {:?}",
+        stats.errors
     );
 }
 

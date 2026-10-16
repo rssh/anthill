@@ -281,6 +281,16 @@ pub enum EvalError {
     ScopedKbOutlivesCall {
         raised: Option<String>,
     },
+    /// Proposal 027.4 — `Error.reify` was entered without evidence that names the payload
+    /// sort it catches: no `ErrorTag` slot in the call's requirement channel (a host entry
+    /// that hands none), or a dictionary for it that carries no `TypeValue` (a written
+    /// `provides ErrorTag[…]`, which `Error`'s own provision is not). Read as "cannot
+    /// narrow", it would catch every payload, including a label the thunk's row leaves to
+    /// the caller. `detail` is pre-rendered at the boundary. A PROGRAM limit, not an
+    /// evaluator invariant, so not [`Self::Internal`].
+    ReifyPayloadUnread {
+        detail: String,
+    },
     Internal(String),
 }
 
@@ -375,16 +385,6 @@ impl EvalError {
             // Proposal 039 / WI-084: the const type-checks and only its runtime VALUE
             // is absent from this build. The same spec-only-vs-codegen axis as above.
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
-            // THE BRIDGE'S OWN SOUNDNESS CONTRACT SAYS SO, in `bridge_op_to_eval`'s
-            // doc: "the scratch interpreter's effect registry is EMPTY (an effect →
-            // unhandled → error → residualize)". `docs/kernel-language.md`'s
-            // WI-20260830-DQD5W argument rests on it — a parametric effect row is
-            // admitted into the `Bool` relational view BECAUSE a carrier that
-            // instantiates it to a real effect raises, the bridge catches it, and the
-            // goal residualizes. Calling that a fault would make a program that loads
-            // today stop loading, and would advise `Error.reify` for something no
-            // reify repairs.
-            EvalError::UnhandledEffect { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──
             EvalError::Raised { payload } => raised_disposition(kb, payload),
@@ -397,7 +397,17 @@ impl EvalError {
             {
                 BridgeDisposition::NoProvider
             }
-            EvalError::UnboundVar { .. }
+            // AN EFFECT A RULE BODY REACHED is declined there — the scratch interpreter's
+            // registry is empty, so the operation asking a handler stops — and REPORTED:
+            // scheduled, it left a bare residual, and a drain of the relation died
+            // `relation_floundered`, reading as an unbound variable (user, 2026-10-16).
+            // The goal still delays (a fault's value answer is `None` as a schedule's is),
+            // which `docs/kernel-language.md`'s WI-20260830-DQD5W argument rests on: a
+            // parametric row admitted into a relational view instantiates to a real effect,
+            // raises it here, and the goal residualizes. The message names the effect
+            // (`KnowledgeBase::bridge_fault_message`), not a `reify`.
+            EvalError::UnhandledEffect { .. }
+            | EvalError::UnboundVar { .. }
             | EvalError::UnknownOperation { .. }
             | EvalError::TypeMismatch { .. }
             | EvalError::ArityMismatch { .. }
@@ -420,6 +430,7 @@ impl EvalError {
             | EvalError::UnboundTypeParam { .. }
             | EvalError::KbReadFailed(_)
             | EvalError::ScopedKbOutlivesCall { .. }
+            | EvalError::ReifyPayloadUnread { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -664,6 +675,7 @@ impl std::fmt::Display for EvalError {
                     ),
                 }
             }
+            EvalError::ReifyPayloadUnread { detail } => write!(f, "{detail}"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

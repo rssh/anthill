@@ -4724,6 +4724,49 @@ pub(crate) fn effect_element_labels(
 /// deepest shape in the tree is one row behind one alias.
 const EFFECT_ELEMENT_DEPTH_LIMIT: u32 = 8;
 
+/// The first effect other than `Error` that operation `op` DECLARES IT PERFORMS, by its
+/// sort — `Clock` for `Time.now`, `Modify` for `Cell.set` — read through a label's alias
+/// chain and through a row, as [`effect_element_labels`] reads one, but keeping a row's
+/// PRESENT half only: a denial (`-X`) is no effect the operation performs, and a row
+/// variable names none. `None` when `op` declares nothing but `Error`.
+///
+/// THE ONE READER of what a HOST function performs, recorded on each operation mapping
+/// (`HostOperationMapping::performs`) for the load, which must not run one for a
+/// `const_map` value source (`KnowledgeBase::const_slot_value`). Read off the operation's
+/// declaration, which is what says it performs one: a host function that asks no handler
+/// is stopped by no empty registry. A rule-body application that performs one is declined
+/// by its own typed row, not here (WI-20260926-7D48J): a host function reached under an
+/// operation that masks the effect, a cell local to it, performs nothing the rule sees.
+pub(crate) fn declared_effect_other_than_error(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+) -> Option<Symbol> {
+    let effects = crate::kb::op_info::lookup_operation_info(kb, op)?.effects;
+    let error = kb.try_resolve_symbol("anthill.prelude.Error");
+    let label_key = kb.intern("label");
+    let mut stack: Vec<(Value, u32)> = effects.into_iter().rev().map(|e| (e, 0)).collect();
+    while let Some((cur, depth)) = stack.pop() {
+        if depth > EFFECT_ELEMENT_DEPTH_LIMIT || resolved_functor_name(kb, &cur) == Some("absent")
+        {
+            continue;
+        }
+        let peeled = peel_effect_atom(kb, &cur, label_key);
+        let Some(resolved) = resolve_effect_label_alias(kb, &peeled) else {
+            continue;
+        };
+        if let Some((present, _absent)) = explode_declared_effect_row(kb, &resolved) {
+            stack.extend(present.into_iter().rev().map(|l| (l, depth + 1)));
+            continue;
+        }
+        if let Some(kind) = effect_label_kind(kb, &resolved) {
+            if !error.is_some_and(|es| same_sort_canonical(kb, kind, es)) {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
 /// WI-20260831-RSRP5 — FOLLOW A LABEL'S `sort X = Y` ALIAS CHAIN to the value it names.
 /// The walk [`effect_label_kind`] has always done, split out because a second gate needs
 /// the resolved VALUE and not just its base symbol.

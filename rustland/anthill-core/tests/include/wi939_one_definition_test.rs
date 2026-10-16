@@ -44,6 +44,16 @@
 //! [`a_same_arity_lemma_on_a_builtin_backed_bool_op_is_legal`]. That is the trap on
 //! the other side: widening to the Bool arity WITHOUT the builtin gate refuses the
 //! 26 `PartialOrd.gte` / `.lte` SMT lemmas the spec says are intended.
+//!
+//! A HOST FUNCTION AND `Error.reify` ARE DEFINITIONS TOO (user, 2026-10-16). The
+//! functional-relation view reads a goal at arity + 1 as the call for every operation the
+//! bridge runs, so a clause there replaced the call in a rule body alone: `rule
+//! String.length(?s, 99) :- true` made `String.length("abc", ?n)` answer `99` beside
+//! `?n <=> String.length("abc")` answering `3`. Restrict the population to bodies again —
+//! **exactly 2 fail**, [`a_clause_beside_a_host_operation_is_refused`] and
+//! [`a_clause_beside_error_reify_is_refused`], each loading clean.
+//! [`a_clause_at_a_host_operations_own_arity_is_another_relation`] passes either way, by
+//! design.
 
 use anthill_core::eval::Value;
 use anthill_core::intern::SymbolKind;
@@ -351,5 +361,76 @@ namespace wi939d.eff
   end
 end
 "#,
+    );
+}
+
+/// A clause at a HOST-IMPLEMENTED operation's arity + 1 is a second definition of it: the
+/// rule-body goal there is the operation's call, answered by the host function.
+#[test]
+fn a_clause_beside_a_host_operation_is_refused() {
+    let e = refusal(
+        r#"
+namespace wi939d.host
+  import anthill.prelude.{String}
+  rule String.length(?s, 99) :- true
+end
+"#,
+    );
+    for want in [
+        "operation 'anthill.prelude.String.length' is implemented by the host function \"string_length\"",
+        "has 1 hand-written clause at its arity + 1",
+        "Delete the clauses",
+    ] {
+        assert!(e.contains(want), "expected {want:?}; got {e}");
+    }
+}
+
+/// And at `Error.reify`'s, whose boundary the interpreter installs.
+#[test]
+fn a_clause_beside_error_reify_is_refused() {
+    let e = refusal(
+        r#"
+namespace wi939d.reify
+  import anthill.prelude.{Error}
+  import anthill.prelude.Result.{ok}
+  rule Error.reify(?f, ok(0)) :- true
+end
+"#,
+    );
+    for want in [
+        "operation 'anthill.prelude.Error.reify' is implemented by a boundary the interpreter installs",
+        "at its arity + 1",
+    ] {
+        assert!(e.contains(want), "expected {want:?}; got {e}");
+    }
+}
+
+/// PASSES EITHER WAY BY DESIGN: at a host operation's OWN arity a clause is no graph slot,
+/// and it loads. It makes the functor a relation, so an arity + 1 goal beside it is read
+/// against its clauses and refused at load for its arity — loudly; no call is replaced in
+/// silence.
+#[test]
+fn a_clause_at_a_host_operations_own_arity_is_another_relation() {
+    crate::common::load_kb_with(
+        r#"
+namespace wi939d.hostown
+  import anthill.prelude.{String}
+  rule String.length("abc") :- true
+end
+"#,
+    );
+    let errs = crate::common::load_errors_of(
+        r#"
+namespace wi939d.hostown2
+  import anthill.prelude.{String}
+  rule String.length("abc") :- true
+  rule asked(?n) :- String.length("abc", ?n)
+end
+"#,
+    );
+    crate::common::assert_refused_naming(
+        &errs,
+        &["a clause of `anthill.prelude.String.length` can match (1 positional), got 2 positional"],
+        "an arity + 1 goal beside an own-arity clause",
     );
 }

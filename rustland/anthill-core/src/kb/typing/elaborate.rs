@@ -1542,7 +1542,7 @@ pub(super) fn surviving_dot_apply(
 // takes the whole frame. `wi_r541x_body_read_of_type_param_test`'s five rows are its
 // drivers and they pass on the general rule.
 
-fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
+pub(super) fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.TypeValue")
 }
 

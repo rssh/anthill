@@ -485,6 +485,19 @@ fn requirement_failure_repair(required: &str, failure: &RequirementFailure) -> S
     }
 }
 
+/// What defines an operation besides clauses — the definition a clause at the graph slot of
+/// the functional-relation view would be a second one of
+/// ([`LoadError::OperationBodyAndClauses`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationDefinition {
+    /// An anthill `=` body.
+    Body,
+    /// A host function of this runtime, by the key its `operation_map` entry names.
+    HostFunction(String),
+    /// `Error.reify`'s boundary, a frame the interpreter installs by symbol.
+    Boundary,
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     /// A name that resolves to nothing — a typo, or a reference to something
@@ -1549,8 +1562,11 @@ pub enum LoadError {
     OperationBodyAndClauses {
         /// The operation's QUALIFIED name.
         op: String,
-        /// Where the operation carrying the body is declared, rendered.
-        decl_site: String,
+        /// What already defines it, which the clauses would be a second definition of.
+        definition: OperationDefinition,
+        /// Where the operation is declared, rendered — `None` for one an earlier load
+        /// declared, whose sites that load's ledger held (a library operation).
+        decl_site: Option<String>,
         /// One rendered location per clause under that functor, in load order.
         /// Always at least one — its non-emptiness IS the verdict.
         clause_sites: Vec<String>,
@@ -3846,9 +3862,10 @@ impl LoadError {
             }
             LoadError::OperationBodyAndClauses {
                 op,
+                definition,
                 decl_site,
                 clause_sites,
-            } => body_and_clauses_message(op, decl_site, clause_sites),
+            } => body_and_clauses_message(op, definition, decl_site, clause_sites),
             LoadError::NameCapture {
                 sort,
                 construct,
@@ -4285,12 +4302,13 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::OperationBodyAndClauses {
                 op,
+                definition,
                 decl_site,
                 clause_sites,
             } => write!(
                 f,
                 "{}",
-                body_and_clauses_message(op, decl_site, clause_sites)
+                body_and_clauses_message(op, definition, decl_site, clause_sites)
             ),
             LoadError::NameCapture {
                 sort,
@@ -8167,15 +8185,45 @@ fn duplicate_const_message(name: &str, sites: &[String]) -> String {
 /// this check. Measured — `List.nth`, `insert`, `empty`, `split`, `Relation.where`
 /// and three `Stream` ops all carry equations beside a body, and the census of this
 /// predicate over the whole corpus is ZERO.
-fn body_and_clauses_message(op: &str, decl_site: &str, clause_sites: &[String]) -> String {
+fn body_and_clauses_message(
+    op: &str,
+    definition: &OperationDefinition,
+    decl_site: &Option<String>,
+    clause_sites: &[String],
+) -> String {
     let rendered = clause_sites
         .iter()
         .map(|at| format!("`rule` at {at}"))
         .collect::<Vec<_>>()
         .join(", ");
+    // NO BODY TO DROP. The definition is the host's, or the interpreter's boundary, so the
+    // one repair is the clauses' — and a relation of the author's own takes a name of its own.
+    let implemented_by = match definition {
+        OperationDefinition::Body => None,
+        OperationDefinition::HostFunction(key) => Some(format!("the host function {key:?}")),
+        OperationDefinition::Boundary => {
+            Some("a boundary the interpreter installs".to_string())
+        }
+    };
+    if let Some(implemented_by) = implemented_by {
+        let declared = match decl_site {
+            Some(at) => format!(", declared at {at},"),
+            None => String::new(),
+        };
+        return format!(
+            "operation '{op}'{declared} is implemented by {implemented_by}, \
+             and has {} hand-written clause{} at its arity + 1: {rendered}. A rule-body goal \
+             at that arity is the operation's call, and a clause there is a second \
+             definition of it: the clauses take precedence (design §3.3), so the goal \
+             answers from them while a value slot and an operation body still make the \
+             call. Delete the clauses, and give a relation of your own a name of its own.",
+            clause_sites.len(),
+            if clause_sites.len() == 1 { "" } else { "s" },
+        );
+    }
     format!(
         "operation '{op}' has BOTH a body and {} hand-written clause{}: the body is \
-         declared at {decl_site}, and {rendered}. One operation, ONE definition — a \
+         declared at {}, and {rendered}. One operation, ONE definition — a \
          rule's operation name is its label else its head functor (proposal 052), so \
          a clause under a bodied operation's functor is a second DEFINITION of it, \
          not a second view of it. They cannot both answer: design §3.3 gives the \
@@ -8191,6 +8239,7 @@ fn body_and_clauses_message(op: &str, decl_site: &str, clause_sites: &[String]) 
          what this refusal is about.",
         clause_sites.len(),
         if clause_sites.len() == 1 { "" } else { "s" },
+        decl_site.as_deref().unwrap_or("<unknown>"),
     )
 }
 
@@ -18132,6 +18181,11 @@ pub struct HostOperationMapping {
     pub op_qn: String,
     pub host_fn: String,
     pub lang: String,
+    /// The effect other than `Error` the operation declares it performs, by its sort
+    /// (`Clock` for `Time.now`) — `typing::declared_effect_other_than_error`. A host
+    /// function asks no handler for it, so a load, which performs no effect, must not call
+    /// it for a const's value (`KnowledgeBase::const_slot_value`).
+    pub performs: Option<Symbol>,
     /// The `OperationMapping` fact this entry was read from. WI-20260922-BRT4Y — the
     /// drift check's phase scope: a fact at or past the phase's first rule is one this
     /// phase asserted.
@@ -18259,8 +18313,15 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             op_qn,
             host_fn,
             lang,
+            performs: None,
             fact: rid,
         });
+    }
+    // After the walk, which borrows the facts it reads.
+    for m in &mut out {
+        m.performs = m
+            .op
+            .and_then(|op| super::typing::declared_effect_other_than_error(kb, op));
     }
     kb.set_host_op_mappings(out);
     errors
@@ -20191,13 +20252,45 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// CORPUS COST ZERO, measured with the instrument proven positive first: planting
 /// `operation twice(b) = 2` beside `rule twice(?b, ?r)` is found, and beside
 /// `rule twice(?b)` is found, while the loaded stdlib plus Rust bindings hold none.
+///
+/// NOR A HOST-IMPLEMENTED OPERATION'S, OR `Error.reify`'s (user, 2026-10-16). The
+/// functional-relation view reads a goal at arity + 1 as the call for every operation the
+/// bridge runs (`KnowledgeBase::functional_relation_arity`): a body, a host function of
+/// this runtime, and `Error.reify`, whose boundary the interpreter installs. So a clause
+/// there is a second definition of either of the other two as well, and it loaded clean:
+/// `rule String.length(?s, 99) :- true` made `String.length("abc", ?n)` answer `99` beside
+/// `?n <=> String.length("abc")` and an operation body answering `3`, and `rule
+/// Error.reify(?f, ok(0)) :- true` turned the rule-body boundary into no solutions. Only
+/// the arity + 1 slot for these: the Bool view at an operation's own arity is a body's. A
+/// resolver builtin is not among them — its clauses are alternatives (WI-899).
 fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let mut population: Vec<(Symbol, OperationDefinition)> = kb
+        .op_bodies_iter()
+        .map(|(sym, _)| (sym, OperationDefinition::Body))
+        .collect();
+    for m in kb.host_op_mappings() {
+        if m.lang != INTERPRETER_LANG {
+            continue;
+        }
+        let Some(op) = m.op else { continue };
+        if kb.op_body_node(op).is_some() || kb.builtin_of(op).is_some() {
+            continue;
+        }
+        population.push((
+            kb.canonical_sym(op),
+            OperationDefinition::HostFunction(m.host_fn.clone()),
+        ));
+    }
+    if let Some(reify) = kb.reify_operation().filter(|r| kb.op_body_node(*r).is_none()) {
+        population.push((kb.canonical_sym(reify), OperationDefinition::Boundary));
+    }
+    let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    population.retain(|(sym, _)| seen.insert(kb.canonical_sym(*sym)));
     // By symbol index, not `HashMap` order: two runs over one corpus must report
     // identically.
-    let mut hits: Vec<(Symbol, Vec<SourceSpan>)> = kb
-        .op_bodies_iter()
-        .map(|(sym, _)| sym)
-        .filter_map(|sym| {
+    let mut hits: Vec<(Symbol, OperationDefinition, Vec<SourceSpan>)> = population
+        .into_iter()
+        .filter_map(|(sym, definition)| {
             // WHICH ARITIES THE DERIVED VIEW OCCUPIES, and there are TWO — an
             // earlier cut counted only the first and let WI-580's own unsound shape
             // back in (found by /code-review, measured, pinned by
@@ -20206,7 +20299,8 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
             //   * `params` — the BOOL relational view, `eq(op(args), true)`, which
             //     sits at the operation's own arity ([`bare_bodied_bool_relation`]).
             let params = super::op_info::lookup_operation_info(kb, sym)?.params.len();
-            let bool_view = would_derive_bool_relation(kb, sym);
+            let bool_view =
+                definition == OperationDefinition::Body && would_derive_bool_relation(kb, sym);
             let occupied = |n: usize| n == params + 1 || (bool_view && n == params);
             let sites: Vec<SourceSpan> = kb
                 .rules_by_functor_iter(sym)
@@ -20217,23 +20311,23 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
             // name fewer places than it counted, so an empty span list reads as "no
             // clauses" rather than as a spanless refusal. Unreachable today — every
             // source clause carries a head span — and kept total.
-            (!sites.is_empty()).then_some((sym, sites))
+            (!sites.is_empty()).then_some((sym, definition, sites))
         })
         .collect();
     if hits.is_empty() {
         return Vec::new(); // the universal case
     }
-    hits.sort_by_key(|(s, _)| s.index());
+    hits.sort_by_key(|(s, _, _)| s.index());
     hits.into_iter()
-        .map(|(op, sites)| LoadError::OperationBodyAndClauses {
+        .map(|(op, definition, sites)| LoadError::OperationBodyAndClauses {
             op: kb.qualified_name_of(op).to_string(),
+            definition,
             decl_site: kb
                 .op_decl_sites
                 .get(&op)
                 .and_then(|v| v.first())
                 .or_else(|| kb.functor_spans.get(&op))
-                .map(|s| render_decl_site(kb, *s))
-                .unwrap_or_else(|| "<unknown>".to_string()),
+                .map(|s| render_decl_site(kb, *s)),
             clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
         })
         .collect()
