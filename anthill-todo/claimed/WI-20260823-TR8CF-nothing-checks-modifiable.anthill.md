@@ -3,9 +3,9 @@
 - id: WI-20260823-TR8CF-nothing-checks-modifiable
 - created: 2026-08-23T10:51:46Z
 
-- status: Open
+- status: Claimed
 - status_agent: claude
-- status_at: 2026-08-23T10:51:46Z
+- status_at: 2026-10-16T13:30:02Z
 
 - acceptance: cargo-test
 
@@ -66,4 +66,28 @@ channel is the one that decides this); the corpus stays green; a control says wh
 fall when the check is backed out, and a NON-matching cause is mixed in so a homogeneous
 fixture cannot bless a wrong predicate; the two NOT YET ENFORCED annotations 39AD2 left in
 the stdlib are removed.
+
+## Changes
+
+### 2026-10-16T15:25:11Z — feedback — user
+
+PARTLY DELIVERED, COMMITTED WITH OPEN REVIEW FINDINGS (user, 2026-10-16: "commit all").
+
+DONE. `check_modify_targets` refuses a `Modify` over a place whose type admits none, naming `Modifiable` (acceptance row: `Modify[pattern]` on `pattern: String`). "Admits" is `region::type_admits_modify`, the same predicate the boundary classifier re-keys with: a sort a `Modifiable` provision names or one that `provides` such a sort (`region::is_region_sort`), a type argument or entity field that admits, a type parameter (lenient). Decided with the user: an abstract carrier says so itself — the stdlib's `Store` and `ExecutionEnvironment` now `provides Modifiable[T = Self]`, and `NonMonotonicStore` inherits through `provides Store`. Census (full suite with the check on, before repairs): 46 failures — the webots example's 7 device sorts and ~15 fixture files, each either a real mutable resource lacking a claim (claimed) or a `Modify[result]` over-declaration on an `Int64`/`Bool` result (label dropped). kernel-language.md §5.6 states the rule; the two NOT YET ENFORCED annotations are gone. Back-outs measured per part (check, path walk, provides closure, type-parameter arm). Rows: wi_tr8cf_modifiable_target_test.
+
+OPEN — /code-review (15 findings, not yet applied):
+ 1. the predicate rides `region_sorts`, which over-approximates: `provides Modifiable[T = Box[V = Int64]]` makes `Int64` modifiable program-wide (fix: an exact set — the claim's `T` head — closed over provides, computed once; also removes the per-node provider walks, finding 11).
+ 2. a type-parameter place is admitted, so `touch[T](x: T) effects Modify[x]` called at `Int64` leaves the caller unable to declare `Modify[n]`. USER DIRECTION: drop `Modify[X]` for a non-modifiable X rather than refuse; possibly generalise as an effect kind's default guard (`Modify[X] :- requires ModifyRuntime[X]`, discharged as a proposal-048 guarded atom) — a proposal 071 is said to exist in another session and is not yet visible here.
+ 3. masking (`result_type_admits_region`) and the check disagree on arrow-typed results (route masking through `admits_modify`).
+ 4. `Function[…]` with an effect-row binding or a modifiable type argument admits.
+ 5. `check_written_row_bindings` (rows in type arguments / provides clauses) does not apply the rule.
+ 6. `Modify[result]` reads the return type from the cached first signature, not the fact being checked.
+ 7. guardians `wide_row_modify.anthill`: `Mailbox` now refused for a second cause.
+ 8. `declared_field_type`: positional `_n`, multi-variant same-named fields, bindings not substituted.
+ 9. unexpected place shapes admit silently (CLAUDE.md: loud over silent).
+ 10. stale docs on `check_modify_targets` and `type_admits_modify`.
+ 12. `region_sorts` recomputed and sealed stdlib facts re-walked every load.
+ 13. duplicated dedup/formatting in `modify_place_not_modifiable`.
+ 14. the test shows the refused set but not that the accepted ops load clean.
+ 15. `extract_type` allocation per node in `result_type_admits_region`.
 
