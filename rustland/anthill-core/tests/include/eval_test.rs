@@ -2840,10 +2840,11 @@ end
 fn m5_modify_counter_write_then_read() {
     let src = r#"
 namespace test.m5_counter
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{get, set}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -2925,10 +2926,11 @@ end
 fn m5_modify_an_ambient_resource_write_then_read() {
     let src = r#"
 namespace test.m5_ambient
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{get, set}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -2970,10 +2972,11 @@ end
 fn m5_modify_get_before_set_errors() {
     let src = r#"
 namespace test.m5_unset
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, Modifiable}
   import ModifyRuntime.{get}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -2995,10 +2998,11 @@ fn m5_modify_two_resources_are_independent() {
     // Two distinct resource entities should not share state.
     let src = r#"
 namespace test.m5_independent
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{get, set}
 
   sort Cells
+    provides Modifiable[T = Self]
     entity a
     entity b
   end
@@ -3037,10 +3041,11 @@ fn m5_modify_self_referential_set_errors_with_cyclic_reference() {
     // structural walk catches this.
     let src = r#"
 namespace test.m5_cycle
-  import anthill.prelude.{Unit, Modify}
+  import anthill.prelude.{Unit, Modify, Modifiable}
   import ModifyRuntime.{set}
 
   sort CycleState
+    provides Modifiable[T = Self]
     entity counter
   end
 

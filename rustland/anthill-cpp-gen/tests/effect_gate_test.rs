@@ -97,11 +97,12 @@ fn unrealizable_effect_names_the_active_profile() {
 fn realized_effects_lower_fine() {
     let source = r#"
         namespace test.wi576.ok
-          import anthill.prelude.{Int64, Unit, Modify, Error}
+          import anthill.prelude.{Int64, Unit, Modify, Error, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.prelude.Option.{none, some}
 
           sort Robot
+            provides Modifiable[T = Self]
             operation bump(self: Robot, n: Int64) -> Unit
               effects Modify[self]
             operation risky(n: Int64) -> Int64

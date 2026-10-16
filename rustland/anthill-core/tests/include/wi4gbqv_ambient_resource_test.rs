@@ -67,10 +67,11 @@ fn refused_as_type(errs: &[String], label: &str) -> bool {
 fn an_ambient_slot_is_declarable() {
     let src = r#"
 namespace test.wi4gbqv.ambient
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{get, set}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -92,10 +93,11 @@ end
 fn the_parenless_ambient_spelling_is_the_same_place() {
     let src = r#"
 namespace test.wi4gbqv.parenless
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{set}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -140,10 +142,11 @@ end
 fn an_undeclared_ambient_write_is_still_refused() {
     let src = r#"
 namespace test.wi4gbqv.undeclared
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{set}
 
   sort CounterState
+    provides Modifiable[T = Self]
     entity counter
   end
 
@@ -465,14 +468,20 @@ end
 fn a_field_path_declaration_is_refused_at_the_call_too() {
     let src = r#"
 namespace test.wi4gbqv.field_path
-  import anthill.prelude.{Int64, Modify}
+  import anthill.prelude.{Int64, Modify, Modifiable}
+
+  -- The written field must be a resource: a `Modify` fires only on a modifiable type.
+  sort Res
+    entity res
+    provides Modifiable[T = Self]
+  end
 
   sort Box
-    entity mkBox(contents: Int64)
+    entity mkBox(contents: Res)
   end
 
   operation poke(d: Box) -> Box effects Modify[d.contents] = d
-  operation fresh() -> Box = mkBox(contents: 0)
+  operation fresh() -> Box = mkBox(contents: res())
   operation caller() -> Box effects {} = poke(fresh())
 end
 "#;

@@ -40,7 +40,7 @@ use crate::common::load_errors_of_files as load_errors;
 /// effect — by design — so the effect must be derived from `MutBox.peek`.
 const CARRIER: &str = r#"
 namespace test.wi365.carrier
-  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Modify, EffectsRuntime, Modifiable}
 
   sort Box
     effects Effect = ?
@@ -48,6 +48,7 @@ namespace test.wi365.carrier
   end
 
   sort MutBox
+    provides Modifiable[T = Self]
     entity mb(fd: Int64)
     provides Box
     operation peek(b: MutBox) -> Int64 effects Modify[b] =

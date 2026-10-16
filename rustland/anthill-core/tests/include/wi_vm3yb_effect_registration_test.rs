@@ -595,10 +595,11 @@ fn the_prelude_effect_kinds_are_all_registered() {
     let src = r#"
         namespace vm3yb.every_prelude_kind
           import anthill.prelude.{Unit, Int64, Console, Time, External, Error,
-                                  Suspension, Branch, Modify}
+                                  Suspension, Branch, Modify, Modifiable}
           import anthill.prelude.Console.{ConsoleOutput, ConsoleError, ConsoleInput}
           import anthill.prelude.Time.{Clock}
           sort W
+            provides Modifiable[T = Self]
             entity w
             operation ping(x: W) -> Unit
               effects {Modify[x], Error[Int64], Suspension, External,

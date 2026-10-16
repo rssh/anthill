@@ -14,8 +14,11 @@
 --   const double *getEmitterDirection() const;  // Vec3, unit vector
 
 sort anthill.examples.lf1.webots.Receiver
-  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify, Modifiable}
   import anthill.geometry.{Vec3}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   -- Lifecycle.
   operation enable(self: Receiver, sampling_period: Int64) -> Unit

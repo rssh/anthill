@@ -220,6 +220,14 @@ pub(crate) fn is_result_region_sym(kb: &KnowledgeBase, sym: Symbol) -> bool {
     kb.is_result_binder(sym)
 }
 
+/// Whether `sort` is a region sort: one a `Modifiable` claim names ([`region_sorts`]),
+/// or one that `provides` such a sort — a refinement is the resource its spec is
+/// (`NonMonotonicStore provides Store`, and `Store` claims `Modifiable`).
+/// WI-20260823-TR8CF.
+pub(crate) fn is_region_sort(kb: &KnowledgeBase, sort: Symbol, regions: &HashSet<Symbol>) -> bool {
+    regions.contains(&sort) || regions.iter().any(|&r| kb.sort_provides(sort, r))
+}
+
 /// Whether `ty` can carry a modifiable region out of the operation — i.e.
 /// its own type structure mentions a `regions` sort (directly, via a tuple
 /// field, a list / parameterized type-arg, or a bare type variable, for
@@ -240,7 +248,7 @@ pub(crate) fn result_type_admits_region<V: TermView>(
     // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
     // bare `Ref(S)` a type-arg takes (WI-361).
     if let Some(s) = extract_sort_ref_sym(kb, ty) {
-        if regions.contains(&s) {
+        if is_region_sort(kb, s, regions) {
             return true;
         }
     }
@@ -265,7 +273,7 @@ pub(crate) fn result_type_admits_region<V: TermView>(
     // WI-361: a parameterized region (`-> Cell[V]`) carries its base sort as the
     // FUNCTOR, which the children exclude — check it directly so the region is still
     // admitted.
-    if functor.is_some_and(|f| regions.contains(&f)) {
+    if functor.is_some_and(|f| is_region_sort(kb, f, regions)) {
         return true;
     }
     view_any_child(kb, ty, pos_arity, |child| {
@@ -283,7 +291,7 @@ pub(crate) fn result_type_admits_region<V: TermView>(
 /// such a field, or is a type parameter (it may be instantiated with a `Cell`)
 /// or anything else this does not read. A function value never admits, nor a
 /// sort with no constructors that is not `Modifiable` (`Int64`).
-fn type_admits_modify(kb: &KnowledgeBase, ty: &Value, regions: &HashSet<Symbol>) -> bool {
+pub(crate) fn type_admits_modify(kb: &KnowledgeBase, ty: &Value, regions: &HashSet<Symbol>) -> bool {
     admits_modify(kb, ty, regions, &mut HashSet::new(), None)
 }
 
@@ -304,7 +312,7 @@ fn admits_modify<V: TermView>(
     let var_admits = |id: u32| !free.is_some_and(|ids| ids.contains(&id));
     match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => {
-            if regions.contains(&s) {
+            if is_region_sort(kb, s, regions) {
                 true
             } else if super::typing::is_sort_param_symbol(kb, s) {
                 param_var_id(kb, s).is_none_or(var_admits)
@@ -316,7 +324,7 @@ fn admits_modify<V: TermView>(
         }
         TypeExtractor::FlexVar { id, .. } => var_admits(id),
         TypeExtractor::Parameterized { base, bindings } => {
-            if regions.contains(&base) {
+            if is_region_sort(kb, base, regions) {
                 return true;
             }
             let mut bound_free = HashSet::new();

@@ -15,11 +15,12 @@ fn simple_sort_with_two_operations() {
     // Greeter with a carrier so self-types resolve.
     let source_with_carrier = r#"
         namespace test.simple
-          import anthill.prelude.{Int64, Unit, String, Modify, Option}
+          import anthill.prelude.{Int64, Unit, String, Modify, Option, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.prelude.Option.{none, some}
 
           sort Greeter
+            provides Modifiable[T = Self]
             operation greet(self: Greeter, name: String) -> Unit
               effects Modify[self]
             operation count(self: Greeter) -> Int64
@@ -65,11 +66,12 @@ fn emitted_bodies_actually_compile() {
     // that body lowering produces valid C++ — beyond textual matching.
     let source = r#"
         namespace test.bodies
-          import anthill.prelude.{Int64, Unit, String, Modify, Option}
+          import anthill.prelude.{Int64, Unit, String, Modify, Option, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding}
           import anthill.prelude.Option.{none, some}
 
           sort Counter
+            provides Modifiable[T = Self]
             operation increment(self: Counter) -> Unit
               effects Modify[self]
             operation reset(self: Counter) -> Unit

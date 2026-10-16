@@ -155,7 +155,7 @@ namespace {ns}
   import anthill.prelude.{{Int64, Bool, MutableStack}}
   import anthill.prelude.FiniteCollection.{{size}}
 
-  operation useNew() -> Int64 effects Modify[result] =
+  operation useNew() -> Int64 =
     {bound}
     let _ = MutableStack.push(x, 10)
     size(x)
@@ -209,7 +209,7 @@ fn wi508_concrete_new_unpinned_element_loads() {
 namespace test.wi508g.amb
   import anthill.prelude.{Int64, Bool, MutableStack}
 
-  operation ambNew() -> Bool effects Modify[result] =
+  operation ambNew() -> Bool =
     let x = MutableStack.new()
     true
 end

@@ -59,8 +59,9 @@ end
 fn entity_param_field_projection() {
     let src = r#"
 namespace wi262.entityparam
-  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Modify, EffectsRuntime, Modifiable}
   sort Backend
+    provides Modifiable[T = Self]
     entity backend(slot: Int64)
   end
   sort Cellish
@@ -101,9 +102,9 @@ end
 fn multilevel_field_projection() {
     let src = r#"
 namespace wi262.multi
-  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Cell, Modify, EffectsRuntime}
   sort Leaf
-    entity leaf(slot: Int64)
+    entity leaf(slot: Cell[V = Int64])
   end
   sort Mid
     import wi262.multi.Leaf
@@ -261,8 +262,9 @@ end
 fn projected_effect_propagates_and_rejects_pure_caller() {
     let src = r#"
 namespace wi262.propagate
-  import anthill.prelude.{Int64, Bool, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Bool, Modify, EffectsRuntime, Modifiable}
   sort Backend
+    provides Modifiable[T = Self]
     entity backend(slot: Int64)
   end
   sort Cellish

@@ -10,8 +10,11 @@
 --   double getNoise() const;
 
 sort anthill.examples.lf1.webots.InertialUnit
-  import anthill.prelude.{Int64, Float, Unit, Modify}
+  import anthill.prelude.{Int64, Float, Unit, Modify, Modifiable}
   import anthill.geometry.{EulerAngles}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   operation enable(self: InertialUnit, sampling_period: Int64) -> Unit
     effects Modify[self]

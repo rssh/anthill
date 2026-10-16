@@ -81,9 +81,10 @@ namespace anthill.prelude
   -- the typing-level token; the runtime must back it with a registered handler
   -- before any `Modify` over a place of type X actually fires.
   --
-  -- NOT YET ENFORCED — WI-20260823-39AD2 (second half): no site checks
-  -- `Modifiable[typeof(target)]`, so `Modify[pattern]` on a `pattern: String`
-  -- parameter loads clean.
+  -- Enforced by `check_modify_targets` (WI-20260823-TR8CF): `Modify[pattern]` on a
+  -- `pattern: String` parameter is a load error naming `Modifiable`. A type is
+  -- modifiable when a provision names it, when it `provides` a sort that is, when a
+  -- type argument or entity field of it is, or when it is a type parameter.
   sort Modifiable {
     sort T = ?
   }

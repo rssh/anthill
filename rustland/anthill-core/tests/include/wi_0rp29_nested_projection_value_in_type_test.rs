@@ -624,13 +624,14 @@ fn effect_row_program(ns: &str, declared: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Bool, Modify, EffectsRuntime, Int64, Error, EmptyStream}}
+  import anthill.prelude.{{Bool, Modify, EffectsRuntime, Int64, Error, EmptyStream, Modifiable}}
   sort Strm
     sort T = ?
     effects E = ?
     operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Producer
+    provides Modifiable[T = Self]
     operation eff_stream(p: Producer) -> Strm[T = Int64, E = {{Modify[p]}}]
     operation relay(s: Strm) -> Strm[T = s.T, E = {{s.E, Error[EmptyStream]}}]
   end
@@ -1299,13 +1300,14 @@ fn remix_program(ns: &str, declared: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Bool, Modify, EffectsRuntime, Int64}}
+  import anthill.prelude.{{Bool, Modify, EffectsRuntime, Int64, Modifiable}}
   sort Strm
     sort T = ?
     effects E = ?
     operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Producer
+    provides Modifiable[T = Self]
     operation pure_stream(p: Producer) -> Strm[T = Int64, E = {{}}]
     operation remix2(s: Strm, k: s.T, p: Producer) -> Strm[T = Int64, E = {{Modify[p]}}]
   end
@@ -1347,7 +1349,7 @@ fn mixed_call_program(ns: &str, declared: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Modify, EffectsRuntime, List, String}}
+  import anthill.prelude.{{Int64, Modify, EffectsRuntime, List, String, Modifiable}}
 
   sort Box
     effects Effect = ?
@@ -1355,6 +1357,7 @@ namespace {ns}
   end
 
   sort MutBox
+    provides Modifiable[T = Self]
     entity mb(fd: Int64)
     provides Box
     operation peek(x: Int64, b: MutBox, c: Box) -> Int64 effects Modify[b] =

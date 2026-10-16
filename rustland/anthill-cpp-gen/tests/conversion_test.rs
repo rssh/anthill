@@ -30,13 +30,14 @@ fn marshalled_lift_wraps_carrier_return() {
     // call. Without it, the Vec3 return would be decl-only.
     let source = r#"
         namespace test.conv
-          import anthill.prelude.{Float, Int64, Unit, Modify}
+          import anthill.prelude.{Float, Int64, Unit, Modify, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
           import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
           sort Sensor
+            provides Modifiable[T = Self]
             operation get_values(self: Sensor) -> Vec3
             operation reset(self: Sensor) -> Unit
               effects Modify[self]
@@ -92,13 +93,14 @@ fn marshalled_lower_wraps_carrier_argument() {
     // consumer yet but is the bidirectional half of the mechanism.
     let source = r#"
         namespace test.lower
-          import anthill.prelude.{Float, Unit, Modify}
+          import anthill.prelude.{Float, Unit, Modify, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
           import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
           sort Actuator
+            provides Modifiable[T = Self]
             operation set_target(self: Actuator, target: Vec3) -> Unit
               effects Modify[self]
           end
@@ -145,13 +147,14 @@ fn marshalled_argument_without_lower_is_loud() {
     // NOT the old `// TODO … return {};`, which COMPILED and answered zero.
     let source = r#"
         namespace test.nolower
-          import anthill.prelude.{Float, Unit, Modify}
+          import anthill.prelude.{Float, Unit, Modify, Modifiable}
           import anthill.realization.{Implementation, CarrierBinding, TypeMapping}
           import anthill.prelude.Option.{none, some}
 
           entity Vec3(x: Float, y: Float, z: Float)
 
           sort Actuator
+            provides Modifiable[T = Self]
             operation set_orient(self: Actuator, e: Vec3) -> Unit
               effects Modify[self]
           end

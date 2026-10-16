@@ -282,7 +282,7 @@ namespace wijn09w.stack
   import anthill.prelude.{Int64, MutableStack}
   import anthill.prelude.FiniteCollection.{size}
 
-  operation go() -> Int64 effects Modify[result] = size(MutableStack.new())
+  operation go() -> Int64 = size(MutableStack.new())
 end
 "#,
     );

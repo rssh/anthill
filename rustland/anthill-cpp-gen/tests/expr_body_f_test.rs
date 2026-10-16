@@ -73,8 +73,11 @@ fn error_effect_in_effects_set_still_wraps() {
     // them as a list. We pick out Error from anywhere in that list.
     let source = r#"
         namespace test.expr_f_multi
-          import anthill.prelude.{Int64}
+          import anthill.prelude.{Int64, Modifiable}
           entity Calc(state: Int64)
+          namespace Calc
+            provides Modifiable[T = Calc]
+          end
           sort CalcOps
             operation step(self: Calc) -> Int64 effects {Error, Modify[self]} = 0
           end
@@ -94,8 +97,11 @@ fn no_error_effect_keeps_plain_return_type() {
     // Sanity: an op with `Modify[self]` but no Error stays unwrapped.
     let source = r#"
         namespace test.expr_f_modify_only
-          import anthill.prelude.{Int64}
+          import anthill.prelude.{Int64, Modifiable}
           entity Calc(state: Int64)
+          namespace Calc
+            provides Modifiable[T = Calc]
+          end
           sort CalcOps
             operation poke(self: Calc) -> Int64 effects Modify[self] = 0
           end

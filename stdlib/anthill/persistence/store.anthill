@@ -27,7 +27,7 @@
 -- direction and not a commitment (057, the implementable slice, has no `pull`).
 namespace anthill.persistence
   import anthill.reflect.{Term, FactRef, StoredRef, Symbol, Monotonicity}
-  import anthill.prelude.{List, Stream, Option, Type}
+  import anthill.prelude.{List, Stream, Option, Type, Modifiable}
   import anthill.prelude.Meta.{Meta}
 
   -- ================================================================
@@ -35,6 +35,11 @@ namespace anthill.persistence
   -- ================================================================
 
   sort Store {
+    -- A store is a mutable resource: its operations write `Modify[store]`, and a
+    -- `Modify` fires only on a modifiable type (proposal 037 Rule 8). Claimed on the
+    -- spec, so every sort that `provides Store` is modifiable through it.
+    provides Modifiable[T = Self]
+
     -- Persist a fact to its backing store. Permitted iff the fact's functor
     -- is not `constant` (proposal 053).
     operation persist(store: Store, fact: Term, meta: Meta) -> StoredRef[T = Term]

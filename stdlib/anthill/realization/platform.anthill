@@ -18,7 +18,7 @@
 
 namespace anthill.realization.platform
   import anthill.prelude.{List, String, Bool, Int64, Option}
-  import anthill.prelude.{Timestamp}
+  import anthill.prelude.{Timestamp, Modifiable}
   import anthill.reflect.{Term, KB}
   import anthill.realization.{LanguageMapping}
   -- `needs_rebuild` below uses the Filesystem operations as relations.
@@ -76,6 +76,11 @@ namespace anthill.realization.platform
   )
 
   sort ExecutionEnvironment
+    -- `exec` writes `Modify[env]` — running a command mutates the environment — and a
+    -- `Modify` fires only on a modifiable type (proposal 037 Rule 8). Its fields hold
+    -- no modifiable value, so the claim is the sort's own.
+    provides Modifiable[T = Self]
+
     entity execution_environment(
       platform : ExecutionPlatform,
       fs       : Filesystem

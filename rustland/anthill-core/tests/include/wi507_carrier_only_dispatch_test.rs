@@ -54,14 +54,14 @@ namespace test.wi507
 
   -- top-level drivers (no requires) that thread one handle through the abstract
   -- Wiper ops on a concrete MutableStack.
-  operation driveBare() -> Int64 effects Modify[result] =
+  operation driveBare() -> Int64 =
     let s = fresh()
     let _ = pushN(s, 10)
     let _ = pushN(s, 20)
     let _ = Wiper.wipeBareIt(s)
     depth(s)
 
-  operation driveInsert() -> Int64 effects Modify[result] =
+  operation driveInsert() -> Int64 =
     let s = fresh()
     let _ = Wiper.addIt(s, 10)
     let _ = Wiper.addIt(s, 20)

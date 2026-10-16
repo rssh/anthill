@@ -2148,3 +2148,5 @@ mod wi_6mpn2_label_beside_row_parameter_test;
 mod wi_gfs6a_woven_call_waits_on_its_dictionary_test;
 #[path = "include/wi_qgvb1_requires_unwritten_slot_test.rs"]
 mod wi_qgvb1_requires_unwritten_slot_test;
+#[path = "include/wi_tr8cf_modifiable_target_test.rs"]
+mod wi_tr8cf_modifiable_target_test;

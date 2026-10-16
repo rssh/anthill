@@ -9,8 +9,11 @@
 --   const double *getSpeedVector() const; // -> Vec3 (velocity x/y/z)
 
 sort anthill.examples.lf1.webots.GPS
-  import anthill.prelude.{Int64, Float, Unit, Modify}
+  import anthill.prelude.{Int64, Float, Unit, Modify, Modifiable}
   import anthill.geometry.{Vec3}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   -- GPS is a handle obtained from Robot.get_gps; carrier-bound to a
   -- non-owning webots::GPS* on the C++ side (see realization.anthill).

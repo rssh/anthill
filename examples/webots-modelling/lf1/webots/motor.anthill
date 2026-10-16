@@ -10,7 +10,10 @@
 --   double getMaxPosition() const;
 
 sort anthill.examples.lf1.webots.Motor
-  import anthill.prelude.{Float, Unit, Modify}
+  import anthill.prelude.{Float, Unit, Modify, Modifiable}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   -- Position setpoint (rad or m depending on motor type).
   -- Pass +infinity to switch to pure velocity control.

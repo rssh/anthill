@@ -6,9 +6,12 @@
 -- model only what the controller calls into.
 
 sort anthill.examples.lf1.webots.Robot
-  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify, Modifiable}
   import anthill.examples.lf1.webots.{GPS, Gyro, InertialUnit, Motor,
                                        Emitter, Receiver}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   -- Robot is a sort without a constructor — there is no anthill-side
   -- way to "create a Robot." Robot values come from

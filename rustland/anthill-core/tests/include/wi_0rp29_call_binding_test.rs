@@ -434,9 +434,10 @@ fn place_program(ns: &str, holder: &str, call: &str, place: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Modify, EffectsRuntime}}
+  import anthill.prelude.{{Int64, Modify, EffectsRuntime, Modifiable}}
 
   sort Cell
+    provides Modifiable[T = Self]
     entity cell(v: Int64)
   end
 

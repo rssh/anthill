@@ -14,7 +14,10 @@
 -- comm_delay_max from them.
 
 sort anthill.examples.lf1.webots.Emitter
-  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify}
+  import anthill.prelude.{Int64, Float, Unit, String, Bool, Modify, Modifiable}
+  -- A device handle is a mutable resource: its operations write `Modify[self]`,
+  -- and a `Modify` fires only on a modifiable type (proposal 037 Rule 8).
+  provides Modifiable[T = Self]
 
   -- Sentinel for broadcast (mirrors webots::Emitter::CHANNEL_BROADCAST = -1).
   -- A term-level constant (WI-084 / proposal 039): it IS the Int64 `-1` at every
