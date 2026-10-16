@@ -3942,8 +3942,11 @@ decides all of these, and also where the operation boundary may re-key a callbac
 parameter's write and whether a result type carries a region out
 (`region::type_admits_modify`), so an operation is never asked to declare a label the
 check refuses; a region reachable only through a returned sort's field is therefore kept.
-The type is also what the ordinary parameter-conformance check (§8.7) compares against a
-provision's binding.
+The reflect op `anthill.reflect.is_modifiable(t)` asks the same walk, **definitely**: what
+the walk cannot read — a bare `List`'s element, a type variable — answers false there,
+where the typer refuses only on a type known to hold nothing; on a concrete type the two
+agree. The type is also what the ordinary parameter-conformance check (§8.7) compares
+against a provision's binding.
 
 Both rules are enforced by `check_modify_targets` (`kb/typing.rs`) on an operation's own
 effect row, and by `check_written_row_bindings` on a written row. A

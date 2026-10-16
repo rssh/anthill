@@ -479,13 +479,17 @@ namespace anthill.reflect
   -- without re-stating every other field on the anthill side.
   operation replace_named_arg(t: Term, name: String, value: Term) -> Term @[host_implemented]
 
-  -- WI-206: whether `t` is a modifiable resource — i.e. whether some
-  -- `Modifiable[T = S]` fact names t's head sort, the marker proposal 037
-  -- Rule 8 demands before `Modify[t]` may appear in an effect row. The sort is
+  -- WI-206: whether a `Modify` can fire on a place of type `t` — proposal 037
+  -- Rule 8's question, answered by the predicate the kernel typer enforces it
+  -- with (WI-20260823-TR8CF), so the two cannot disagree. True for a sort a
+  -- `provides Modifiable[T = …]` claim names (`Cell`, `KB`) or one that provides
+  -- such a sort (`NonMonotonicStore`), and for a type holding one: a type
+  -- argument (`List[T = Cell]`), an entity field (a data sort with a `Cell`
+  -- inside). A claimed base answers for its instances (`Cell[V = Int64]`); a
+  -- claim's type argument is not made modifiable by it. DEFINITE where the typer
+  -- is conservative: what is unknown — a bare `List`'s element, an unbound type
+  -- variable — answers false. A data value is refused, not answered. The sort is
   -- passed by reference (`is_modifiable(Cell)`), like `facts_of` / `sort_template`.
-  --
-  -- The head sort decides, so a parameterized instance answers as its base does:
-  -- `fact Modifiable[T = Cell]` makes both `Cell` and `Cell[V = Int64]` modifiable.
   --
   -- Use it to introspect what the kernel typer enforces: defensive code that only
   -- mutates a modifiable argument, and reflection-driven listings of the modifiable

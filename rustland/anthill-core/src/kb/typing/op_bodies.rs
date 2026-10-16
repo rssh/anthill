@@ -247,17 +247,16 @@ pub(super) fn check_operation_bodies(
     // (`type_check_sorts_collect`'s loop) plus once for the free ops, so the line that
     // used to stand here — `let region_sorts = region::region_sorts(kb);` — ran 204 times
     // on a stdlib load, and each run is a full walk of the provision relation
-    // (`all_provisions`, which `modifiable_claim_heads` filters down to the `Modifiable`
-    // claims). That is `sorts × provisions` — a term that grows with BOTH factors, in a
+    // (`all_provisions`, which `region_sorts` filters down to the `Modifiable` claims).
+    // That is `sorts × provisions` — a term that grows with BOTH factors, in a
     // pass whose own comment said it was computed once. MEASURED (release, stdlib + an
     // empty namespace, medians of 15 interleaved runs, both arms in one binary): the
     // `type_check_sorts` mark is 18.61 ms with the per-call walk and 16.09 ms with this
     // hoist, and its growth when WI-20260919-HXGXF's gate is forced open falls from
     // +3.37 ms to +1.70 ms. Per-call counters: `all_provisions` goes from 204 calls to 1.
     // Hoisted to the caller, which computes it before the loop, exactly as this comment
-    // always claimed. `region.rs`' own note ("`region_sorts` is computed ONCE per typing
-    // pass — `type_check_sorts` calls it before the per-op loop") is true as of this
-    // change and was not before.
+    // always claimed; `region_sorts`' own COST note says so (and, since WI-20260823-TR8CF,
+    // reads one provider-index bucket per modifiable sort rather than the relation).
     //
     // THE HOIST IS ONLY SOUND IF THE SET IS LOOP-INVARIANT, which is the same property
     // the `simp_enabled` gate below rests on and states: this pass rewrites op bodies and

@@ -2436,6 +2436,15 @@ pub(super) fn carrier_view_parts<V: TermView>(
     view_ref_symbol(kb, t).map(|s| (s, SmallVec::new()))
 }
 
+/// WI-20260823-TR8CF — the provisions OF `spec`, as `(provider, spec view)`, through the
+/// keyed provider index ([`super::provides_index::provides_rows_of_spec`]) rather than a
+/// walk of the whole relation: what `region::region_sorts` reads, one bucket per sort.
+pub(crate) fn provisions_of_spec(kb: &KnowledgeBase, spec: Symbol) -> Vec<(Symbol, Value)> {
+    super::provides_index::provides_rows_of_spec(kb, spec)
+        .map(|row| (row.provider, row.spec_view))
+        .collect()
+}
+
 /// WI-860 — every provision, as [`ProvisionRow`]s.
 ///
 /// A thin wrapper over [`collect_provisions`] so the defaults pass walks the provision

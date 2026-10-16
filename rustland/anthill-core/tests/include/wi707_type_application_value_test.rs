@@ -20,8 +20,11 @@ use anthill_core::kb::term::Term;
 use crate::common::{interp_for, try_load_kb_with};
 
 /// The WI-206 acceptance line, now reachable FROM SOURCE: a parameterized instance
-/// of a modifiable sort is modifiable (the op keys on the head sort), and a
-/// parameterized instance of a non-modifiable sort is not.
+/// of a modifiable sort is modifiable, and a `List[T = Int64]` is not. The op answers
+/// whether a `Modify` can fire on a place of the type — the typer's predicate since
+/// 2026-10-16 (WI-20260823-TR8CF) — so the NESTED `Map[…, V = Cell[V = Int64]]` is
+/// modifiable too: its argument holds cells. It answered false while the op read only
+/// the head sort (`Map` carries no claim).
 #[test]
 fn parameterized_type_as_a_value_argument() {
     let src = r#"
@@ -43,15 +46,16 @@ end
         ("cell_named", true),
         ("cell_positional", true),
         ("list_int", false),
-        ("nested", false),
+        ("nested", true),
     ] {
         let got = interp
             .call(&format!("test.wi707.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
         assert!(
             matches!(got, Value::Bool(b) if b == want),
-            "{op}: expected {want} — only Cell has a `Modifiable[T = …]` fact, and a \
-             parameterized instance answers as its base sort does — got {got:?}"
+            "{op}: expected {want} — a `Modify` fires on a place of a type that is, or \
+             holds, a modifiable sort: `Cell`'s instances and a `Map` of cells do, a \
+             `List` of `Int64` does not — got {got:?}"
         );
     }
 }
