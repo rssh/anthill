@@ -217,6 +217,28 @@ end
     assert_eq!(undeclared(src), labels(&["d", "l", "w", "z"]));
 }
 
+/// A result typed by a type variable may be a `Cell` at a call, so the escaping
+/// accumulator's `Modify[result]` is kept beside the seed's `Modify[z]`. FAILS with
+/// the type-variable arm of `result_type_admits_region` backed out: only `Modify[z]`
+/// was reported (MEASURED, 2026-10-16) — the variable fell through to the functor
+/// test and read as "cannot carry a region". (No `*_declared` twin: an op declaring
+/// `Modify[z]` must be handed a place for `z` at its own recursive call, and a
+/// `let`-bound step is then charged `Modify[acc]` — the same for a `Cell` fold, and
+/// not this rule's.)
+#[test]
+fn a_type_variable_result_keeps_the_escaping_modify() {
+    let src = r#"
+namespace anthill.test.wi341untraced.generic
+  import anthill.prelude.{Int64, Unit, Cell, Modify, List}
+  operation fold_g[Acc](xs: List[T = Cell[V = Int64]], z: Acc, f: (a: Acc, t: Cell[V = Int64]) -> Acc @ Modify[a]) -> Acc =
+    match xs
+      case nil() -> z
+      case cons(h, rest) -> fold_g(rest, f(z, h), f)
+end
+"#;
+    assert_eq!(undeclared(src), labels(&["result", "z"]));
+}
+
 /// The recursion hands the accumulator `z` an ordinary call's result, so `z` is
 /// untraced, and so is `f.a`, which `z` feeds: `Modify[l]` as well as `Modify[z]`.
 #[test]

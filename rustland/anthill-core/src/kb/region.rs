@@ -244,6 +244,18 @@ pub(crate) fn result_type_admits_region<V: TermView>(
             return true;
         }
     }
+    // A type variable, or a type parameter named as a sort, may be instantiated with a
+    // region sort, so it admits — the conservative answer this doc promises. The code
+    // answered `false` for it, falling through to the functor test below (a variable has
+    // no functor): `foldG[Acc](…) -> Acc` masked the `Modify[result]` of an accumulator
+    // its callback writes and returns (MEASURED, 2026-10-16).
+    match extract_type(kb, ty) {
+        TypeExtractor::TypeVar(_) | TypeExtractor::FlexVar { .. } | TypeExtractor::Skolem { .. } => {
+            return true;
+        }
+        TypeExtractor::SortRef(s) if super::typing::is_sort_param_symbol(kb, s) => return true,
+        _ => {}
+    }
     let ViewHead::Functor {
         functor, pos_arity, ..
     } = ty.head(kb)
