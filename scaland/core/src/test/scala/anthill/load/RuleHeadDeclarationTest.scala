@@ -83,7 +83,7 @@ import anthill.term.{Literal, Term}
   *    arm — see `J38JE GAP: a boolean constant goal has no reading below the top level`.
   *    What the strip is FOR here is the body's SHAPE: only an EMPTY body makes `fact H`
   *    and `rule H :- true` one clause, which is 061 item 5.
-  *  * **THE PASS-1b MINT** — `if false then` in `DeclarePredicatePass.declare`. **8 rows
+  *  * **THE PASS-1 MINT** — `if false then` in `Loader.declarePredicate`. **8 rows
   *    fail**: all five channels, the named-owner row, the equation-subject row and the
   *    two-FILES row. The declaration mints nothing, so the heads it was to collect either
   *    collide or split.
@@ -432,12 +432,8 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     // 059 R4 clause 3 refuses exactly that for every other pair of declarations at one
     // address.
     //
-    // BOTH ORDERS, AND THAT IS THE ROW THAT DROVE `DeclarePredicatePass` INTO ITS OWN
-    // WALK. A scaland symbol carries ONE kind, so minting the declaration inside pass 1
-    // let the text order decide it: MEASURED on the first cut of this port, `opfirst` was
-    // refused and `rulefirst` LOADED CLEAN with `has` stamped a `Goal`. Deferring every
-    // declaration until every other name in every file exists is what makes the pair
-    // agree — the WI-321 invariant, applied to the one kind that did not have it.
+    // N3WGM: declarations mint in pass 1. Back out define's kind merge and the
+    // rule-first arm loads clean; operation-first remains the control.
     for (label, body) <- Seq(
       ("opfirst", "  operation has(x: Int64) -> Bool\n  rule has(?x)\n"),
       ("rulefirst", "  rule has(?x)\n  operation has(x: Int64) -> Bool\n"),
@@ -917,9 +913,8 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
   // been. Each row below names the back-out that reds it.
 
   test("061: a declaration may not shadow a LADDER-reached non-declarable name") {
-    // BACK-OUT: drop the `shadowed` arm in `DeclarePredicatePass.declare` — the first
-    // block reds. Move `autoImportPrelude` back after pass 1b and it reds too, for the
-    // same reason: the question is only answerable once the enclosing names are visible.
+    // BACK-OUT: drop the completed-ladder check in refuseDeclarationThatCannotStand.
+    // The first block then loads clean: the local Goal hides the enclosing operation.
     //
     // `refuseDeclarationThatCannotStand` already refuses this pair from the scope's OWN
     // locals (`061: a declaration of a name another construct owns is refused`). One

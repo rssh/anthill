@@ -110,7 +110,25 @@ enum SymbolKind:
   * accepted: 15 KB against a load phase that allocates ~15 MB. */
 enum SymbolDef[+S]:
   case Unresolved(name: String) extends SymbolDef[Nothing]
-  case Resolved(shortName: String, qualifiedName: String, kind: SymbolKind, scope: S)
+  case Resolved(shortName: String, qualifiedName: String, kinds: Vector[SymbolKind], scope: S)
+
+  /** Membership is the semantic reading; no role wins by declaration order. */
+  def hasKind(kind: SymbolKind): Boolean = this match
+    case Resolved(_, _, kinds, _) => kinds.contains(kind)
+    case Unresolved(_) => false
+
+  def kindsSet: Set[SymbolKind] = this match
+    case Resolved(_, _, kinds, _) => kinds.toSet
+    case Unresolved(_) => Set.empty
+
+  /** Declaration order is used for reflection display only, never semantic tests. */
+  def primaryKind: Option[SymbolKind] = this match
+    case Resolved(_, _, kinds, _) => kinds.headOption
+    case Unresolved(_) => None
+
+  /** Only for readers requiring exactly one role, never a membership shortcut. */
+  def exclusiveKind: Option[SymbolKind] =
+    Option.when(kindsSet.size == 1)(kindsSet.head)
 
 enum ResolveResult:
   case Found(sym: TermSymbol)

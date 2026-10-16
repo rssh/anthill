@@ -23,8 +23,9 @@ import anthill.term.{Literal, Term}
   * In `Loader.ruleHeadLadderAnswer`, replace the guarded re-ask
   * `kb.symbols.resolveRuleHeadInsideNamespace(name, scope)` with `ResolveResult.Found(sym)`.
   * **3 rows fail**: the `operation`, `sort` and staged rows. The DECLARATION row is the
-  * same change at its second call site: back out `DeclarePredicatePass`'s
-  * `ruleHeadLadderAnswer` to `kb.symbols.resolveInScope` and it alone fails. **3 pass either way by
+  * same boundary at the declaration check: after N3WGM, replace its namespace-aware
+  * lookup in `refuseDeclarationThatCannotStand` with `resolveWithOverlay(name, scope,
+  * _ => None)` and it alone fails. **3 pass either way by
   * design**: the top-level `rule` spelling, the documented top-level form joining at
   * `<global>`, and a namespace REFERENCE to a top-level name. */
 class GlobalDeclarationHeadTest extends munit.FunSuite:

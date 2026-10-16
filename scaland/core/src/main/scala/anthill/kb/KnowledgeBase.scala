@@ -68,7 +68,8 @@ class KnowledgeBase:
     * Scaland had NO canon at all here (rustland's WI-511 rewrote the same shape for a
     * registered constructor), so all five kinds the ticket names were split: a nullary
     * PREDICATE, a nullary OPERATION, an EQUATION FUNCTOR, a namespace-level ENTITY and a
-    * sort-nested constructor.
+    * sort-nested constructor. N3WGM gives free-standing entities their Sort role, so
+    * those now retain the two forms required by their type reading.
     *
     * THE GATE IS TYPE-HOOD, not constructor-hood, and rustland's own note carries the
     * measurement: removing it outright makes 792 symbols change spelling and the standard
@@ -89,9 +90,8 @@ class KnowledgeBase:
     * give `Ref(S)` and `Fn(S)` different meanings? The one gate [[alloc]]'s nullary canon
     * asks. */
   private def hasTypeReading(sym: TermSymbol): Boolean =
-    symbols.get(sym) match
-      case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
-      case _                                            => false
+    // Membership: additional constructor/predicate roles do not erase a type reading.
+    symbols.get(sym).hasKind(SymbolKind.Sort)
 
   def intern(s: String): TermSymbol = symbols.intern(s)
 

@@ -1342,9 +1342,8 @@ class ParserIntegrationTest extends munit.FunSuite:
     (kb, Loader.loadAll(kb, IndexedSeq(pf)).toIndexedSeq)
 
   private def kindOf(kb: KnowledgeBase, qualified: String): Option[SymbolKind] =
-    kb.symbols.byQualifiedName.get(qualified).map(kb.symbols.get).collect {
-      case SymbolDef.Resolved(_, _, kind, _) => kind
-    }
+    // Exclusive: these fixtures introduce exactly one role per symbol.
+    kb.symbols.byQualifiedName.get(qualified).flatMap(s => kb.symbols.get(s).exclusiveKind)
 
   /** The `ite` shape verbatim: a functor NO declaration names, introduced by its
     * equations alone and reached from another sort by a selective import. */

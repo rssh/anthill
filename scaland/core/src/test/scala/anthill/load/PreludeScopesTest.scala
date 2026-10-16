@@ -106,7 +106,8 @@ class PreludeScopesTest extends munit.FunSuite:
         case SymbolDef.Resolved(gotShort, gotQual, kind, sc) =>
           assertEquals(gotShort, short)
           assertEquals(gotQual, qualName)
-          assertEquals(kind, SymbolKind.Operation)
+          // Exclusive: a kernel builtin has only its operation role.
+          assertEquals(kind, Vector(SymbolKind.Operation))
           sc
         case other => fail(s"`$qualName` should be resolved, got $other")
       assertEquals(kb.scopeDisplayName(scope), nsPrefix)

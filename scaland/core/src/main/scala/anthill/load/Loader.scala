@@ -98,46 +98,29 @@ object Loader:
     // behalf of; the scan clears the cursor on the way out.
     val fileIds = files.map(kb.symbols.fileIdOf)
 
+    // Blocks name a realized sort through imports; collect their work during pass 1
+    // and run it after imports, without another scope walk (G2BXZ).
+    val deferredBlocks = ArrayBuffer.empty[() => Unit]
     // Pass 1: Define all names
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
-      walkScopes(DefinePass(kb, file.symbols), file.items)
+      walkScopes(DefinePass(kb, file.symbols, file.terms, errors, deferredBlocks, fid), file.items)
 
-    // Post-pass: auto-import prelude sort contents into global scope. BEFORE PASS 1b,
-    // not merely before pass 3, and the earlier position is what makes pass 1b's mint
-    // guard answerable: that guard asks whether a head's name ALREADY denotes, so every
-    // name the prelude provides must be visible before it is asked. Measured with the
-    // auto-import after pass 1b: `namespace hp { rule ite(?a, ?b, ?c) }` minted a local
-    // `ite` that shadowed the prelude's operation for the whole scope, because nothing
-    // the guard could see yet named it.
-    //
-    // AHEAD OF PASS 2 IS THE RIGHT PRECEDENCE ANYWAY, independent of that: `addImport`
-    // moves a repeated name to last, so a user's own `import` of a prelude name now
-    // arrives after the auto-import and wins, where before it was overridden by it.
+    // Before user imports, so explicit imports retain precedence over the prelude.
     autoImportPrelude(kb)
-
-    // Pass 1b (proposal 061): the PREDICATES body-less rules declare. A separate walk,
-    // after every other name in every file exists — see [[DeclarePredicatePass]] for why
-    // scaland cannot interleave it the way rustland does.
-    for (file, fid) <- files.zip(fileIds) do
-      kb.symbols.setAskingFile(Some(fid))
-      walkScopes(DeclarePredicatePass(kb, file.symbols, file.terms, errors), file.items)
 
     // Pass 2: Process requires and imports (all sorts exist now). A Selective
     // import of an AUTO-DECLARED predicate cannot resolve here — its head-functor symbol
     // is not registered until pass 3 — so such names are deferred into `pending` and
     // retried below (WI-295). A predicate a body-less rule DECLARES is not one of those
-    // since proposal 061: pass 1b minted it above, so it resolves here like any other
+    // since proposal 061: pass 1 minted it above, so it resolves here like any other
     // declared name.
     val pending = ArrayBuffer.empty[PendingImport[kb.ScopeId]]
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
 
-    // G2BXZ: block declarations need the realized sort's imports to be wired first.
-    for (file, fid) <- files.zip(fileIds) do
-      kb.symbols.setAskingFile(Some(fid))
-      walkScopes(DeclarePredicatePass(kb, file.symbols, file.terms, errors, blocksOnly = true), file.items)
+    deferredBlocks.foreach(_())
 
     // A type alias whose definition reaches its own name is refused where it is declared
     // ([[reportRecursiveAliases]]). After pass 2, because a definition names what its
@@ -575,12 +558,12 @@ object Loader:
 
     /** Every item that does not open a scope, with the scope and prefix enclosing it.
       *
-      * WI-1007: [[LoadPass]]'s implementation is EXHAUSTIVE and three others end in a
+      * WI-1007: [[LoadPass]]'s implementation is EXHAUSTIVE and the definition/import scans end in a
       * catch-all, which is a decision and not drift. `LoadPass` is the pass whose job is
       * "everything that reaches the KB reaches it here", so an `Item` kind it does not
       * name is data loss — that is how `ConstraintItem` was found being dropped in
       * silence. `DefinePass` (defines names), `ImportPass` (handles imports) and
-      * `DeclarePredicatePass` (2 of 23 kinds) are narrow scans, where a catch-all says
+      * `declarePredicate` (2 of 23 kinds) are narrow scans, where a catch-all says
       * "not my job" honestly and enumerating would be 18 arms of noise.
       *
       * [[RuleHeadCollectPass]] IS EXHAUSTIVE TOO (WI-20260821-RDGQC), for `LoadPass`'s
@@ -650,13 +633,11 @@ object Loader:
 
   // ── Pass 1: Define names ─────────────────────────────────────
 
-  /** Pass 1 — DEFINE every name. The pass that creates the scopes the others look up,
-    * so its `enterScope` defines rather than resolving, and can never miss.
-    *
-    * A PREDICATE IS NOT DEFINED HERE, and that is a scaland-specific ordering rather than
-    * a difference of rule — see [[DeclarePredicatePass]], the sub-pass that follows this
-    * one. */
-  private final class DefinePass(val kb: KnowledgeBase, val fileSym: SymbolTable) extends ScopePass:
+  /** Define every declared name, accumulating all roles at the same address. */
+  private final class DefinePass(
+    val kb: KnowledgeBase, val fileSym: SymbolTable, fileTerms: SimpleTermStore,
+    errors: ArrayBuffer[LoadError], deferredBlocks: ArrayBuffer[() => Unit], fileId: FileId
+  ) extends ScopePass:
 
     def enterScope(
       decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
@@ -716,6 +697,9 @@ object Loader:
         case Item.EntityItem(entity) =>
           val (shortName, qualName, target) = declSite(kb, fileSym, entity.name.segments, prefix, scope)
           val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, target)
+          // §6.3: a free-standing entity also names its type, like `sort E { entity E }`.
+          // Nested variants keep their constructor-only reading and their own identity.
+          if !isSortScope(kb, scope) then kb.symbols.addKind(sym, SymbolKind.Sort)
           val entityTerm = kb.makeNameTermFromSym(sym)
           kb.registerSort(entityTerm, SortKind.Constructor)
           // WI-985: the entity→parent edge is a SORT-BODY edge and ONLY that. This used
@@ -757,13 +741,32 @@ object Loader:
           val (shortName, qualName, target) = declSite(kb, fileSym, c.name.segments, prefix, scope)
           defineSymbolOnce(kb, shortName, qualName, SymbolKind.Const, target)
 
-        // The LABEL only. A rule's label is a citation handle (`using X`) and exists
-        // whatever the rule reads as; the PREDICATE a body-less rule declares is minted
-        // one sub-pass later ([[DeclarePredicatePass]]).
-        case Item.RuleItem(rule) => defineRuleLabel(rule, scope, prefix)
+        case Item.RuleItem(rule) =>
+          defineRuleLabel(rule, scope, prefix)
+          declarePredicate(kb, fileSym, fileTerms, rule, scope, prefix)
 
         case Item.RuleBlockItem(block) =>
-          for rule <- block.entries do defineRuleLabel(rule, scope, prefix)
+          for rule <- block.entries do
+            defineRuleLabel(rule, scope, prefix)
+            declarePredicate(kb, fileSym, fileTerms, rule, scope, prefix)
+
+        case Item.ProvidesBlockItem(pb) =>
+          val askingFile = Some(fileId)
+          deferredBlocks += (() => {
+            kb.symbols.setAskingFile(askingFile)
+            for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
+              val targetPrefix = kb.scopeDisplayName(target)
+              for inner <- pb.items do inner match
+                case ProvidesItem.RuleI(rule) =>
+                  declarePredicate(kb, fileSym, fileTerms, rule, target, targetPrefix)
+                case ProvidesItem.RuleBlockI(block) =>
+                  for rule <- block.entries do
+                    declarePredicate(kb, fileSym, fileTerms, rule, target, targetPrefix)
+                case ProvidesItem.ProvidesClauseI(pc) =>
+                  processProvidesConditions(kb, pc, fileSym, target, errors)
+                  processProvidesHead(kb, pc, fileSym, target, errors)
+                case _ => ()
+          })
 
         // WI-840 (proposal 058 §4.7): a NAMED requirement slot — `requires O: Ord[T]`
         // — declares a type PARAMETER of the enclosing sort, which is what lets the
@@ -794,131 +797,15 @@ object Loader:
         kb.symbols.define(shortName, makeQualified(prefix, shortName), SymbolKind.Rule, scope)
       }
 
-  /** Pass 1b (proposal 061, WI-20260821-SBZ2A) — DEFINE THE PREDICATES BODY-LESS RULES
-    * DECLARE. A predicate was the only name in the language created as a side effect of
-    * USING it, so the pass that decided its binding was the pass that created it; every
-    * other name kind is immune because pass 1 defines all of them across every file
-    * before anything resolves anything (WI-321). A declaration gives the head something
-    * to land on, put there like every other name, so WHEN pass 3's ladder is asked stops
-    * mattering.
-    *
-    * A SEPARATE WALK, AND THAT IS SCALAND-SPECIFIC. rustland mints a declaration inside
-    * pass 1 itself, which is safe there because a symbol carries a kind SET —
-    * `SymbolDef::Resolved.kinds: SmallVec<[SymbolKind; 2]>` with `add_kind`, so a
-    * repeated `(name, scope)` ACCUMULATES roles. Here [[anthill.intern.SymbolDef]] has a
-    * single `kind` field and no merge: `define` returns the existing symbol and keeps
-    * whichever kind got there first. (scaland records a name's OTHER roles in separate
-    * registries instead — `SortKind` per sort TERM, `constructorSymbols_`,
-    * `entityParent_` — one role each, never a set on the symbol.)
-    *
-    * SO AN INTERLEAVED WALK LET THE TEXT ORDER DECIDE THE KIND: MEASURED,
-    * `operation has(x) -> Bool` beside `rule has(?x)` was refused with the operation
-    * written first and LOADED CLEAN with the rule written first, stamping `has` a `Goal`
-    * and silently swallowing the no-op line. Deferring every declaration until every
-    * other name in every file exists restores the WI-321 invariant for this kind too:
-    * whatever else declares the name, it is already there.
-    *
-    * THE OTHER FIX WOULD BE A KIND SET, and it is worth naming rather than leaving as an
-    * unstated road not taken: give scaland's `SymbolDef` rustland's `kinds` and this pass
-    * folds back into pass 1. That is a change to every one of the ~20 sites that
-    * pattern-match `SymbolDef.Resolved` by kind, so it is a ticket of its own, not this
-    * one's to take.
-    *
-    * BEFORE PASS 2, so a selective `import P.{p}` of a DECLARED predicate resolves like
-    * any other declared name rather than through pass 4's deferred retry. */
-  private final class DeclarePredicatePass(
-    val kb: KnowledgeBase,
-    val fileSym: SymbolTable,
-    fileTerms: SimpleTermStore,
-    errors: ArrayBuffer[LoadError],
-    blocksOnly: Boolean = false
-  ) extends ScopePass:
-
-    def enterScope(
-      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
-    ): Option[kb.ScopeId] =
-      lookupScope(kb, qualName, decl.name.span, errors)
-
-    def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
-      item match
-        case Item.RuleItem(rule) if !blocksOnly => declare(rule, scope, prefix)
-        case Item.RuleBlockItem(block) if !blocksOnly => for rule <- block.entries do declare(rule, scope, prefix)
-        case Item.ProvidesBlockItem(pb) if blocksOnly =>
-          for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
-            val targetPrefix = kb.scopeDisplayName(target)
-            for inner <- pb.items do inner match
-              case ProvidesItem.RuleI(rule) => declare(rule, target, targetPrefix)
-              case ProvidesItem.RuleBlockI(block) =>
-                for rule <- block.entries do declare(rule, target, targetPrefix)
-              case ProvidesItem.ProvidesClauseI(pc) =>
-                processProvidesConditions(kb, pc, fileSym, target, errors)
-                processProvidesHead(kb, pc, fileSym, target, errors)
-              case _ => ()
-        case _ =>
-
-    /** [[defineSymbolOnce]], like every other declaration mint in this loader. Its gate
-      * is `define`'s UNCONDITIONAL `byQualifiedName` write, reached "by any route to a
-      * colliding qualified name" (see its doc) — and this pass is a new such route, so
-      * exempting it would reopen exactly what that gate is for. rustland's `scan_rule`
-      * writes a plain `define` here; it can, because its `SymbolTable::define` merges a
-      * kind SET onto a repeated `(name, scope)` and scaland's keeps the first kind.
-      *
-      * IT COSTS NOTHING THE DECLARATION NEEDS. Two declarations of one predicate at one
-      * scope stay idempotent (the second finds the qualified name registered), and
-      * another construct's kind is still left in place for
-      * [[refuseDeclarationThatCannotStand]] to find (the operation's mint got there
-      * first). What changes is only the unreachable case the gate exists for, and it
-      * changes it from a silent remapping to that method's loud
-      * "was never brought into existence". */
-    private def declare(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
-      ruleReading(rule, fileSym, fileTerms) match
-        // The reading CARRIES the name it declares, so this mint and the load's refusal
-        // to assert cannot be about two different names.
-        case RuleReading.Declaration(name) =>
-          // A DECLARATION MAY NOT SHADOW A NAME THE LADDER REACHES AS SOMETHING A RULE
-          // CANNOT DECLARE. [[refuseDeclarationThatCannotStand]] makes exactly this
-          // refusal from the scope's OWN locals — `operation has(x) -> Bool` beside
-          // `rule has(?x)` — and says at its site that the ladder is the wrong
-          // instrument for it, which is right for a name of a DECLARABLE kind and
-          // wrong for one of any other. Asked there it also cannot fire: pass 1b's
-          // mint is in `locals` by then, so the lookup finds the fresh `Goal` and the
-          // construct it displaced is already invisible. So it is asked HERE, before
-          // the mint, and only about the kinds that were never a rule's to declare.
-          //
-          // MEASURED WITHOUT IT: `namespace hp { rule ite(?a, ?b, ?c) }` minted a
-          // local `Goal` that shadowed the prelude's OPERATION for the whole scope —
-          // `resolveRecursive` reads `locals` before `imports` and before any parent —
-          // and nothing said so. `headNameCollisions` could not: the head DENOTES once
-          // minted, so it filters out.
-          //
-          // A DECLARABLE KIND IS LEFT ALONE, and that is 061's rule rather than a
-          // concession: a sort body may declare a predicate its namespace also
-          // declares, and the two are separate predicates BECAUSE BOTH ARE WRITTEN
-          // (`845G7 channel 1`'s `body5` arm drives it). Refusing on the ladder
-          // outright collapsed that pair into one predicate — measured, that arm reds.
-          // AN AMBIGUOUS ANSWER IS LEFT TO ITS OWN DIAGNOSTIC. This refusal is about
-          // one name a rule may not take over; a contested set is a different defect
-          // and reporting it here would name only whichever candidate came first.
-          // THE HEAD'S OWN LADDER (WI-20260821-HSG31): a `<global>` name is not what a
-          // declaration inside a namespace shadows, any more than it is what a bodied
-          // head there joins — refusing it here and minting it there made the two
-          // spellings of one predicate disagree.
-          val shadowed = ruleHeadLadderAnswer(kb, name, scope) match
-            case ResolveResult.Found(sym) => kb.symbols.get(sym) match
-              case SymbolDef.Resolved(_, _, k, _) if !DeclarableByARule.contains(k) => Some(k)
-              case _ => None
-            case _ => None
-          shadowed match
-            case Some(k) =>
-              errors += LoadError.Other(
-                s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
-                  s"names something this scope reaches (kind: $k), which a rule cannot " +
-                  "declare — the declaration would shadow it for the whole scope. " +
-                  "Rename the predicate, or drop the line if the head meant to cite it",
-                rule.span)
-            case None =>
-              defineSymbolOnce(kb, name, makeQualified(prefix, name), SymbolKind.Goal, scope)
-        case RuleReading.Clause | RuleReading.DeclaresNothing(_) =>
+  /** Mint during pass 1; validate against the complete role set at load time. */
+  private def declarePredicate(
+    kb: KnowledgeBase, fileSym: SymbolTable, fileTerms: SimpleTermStore,
+    rule: Rule, scope: kb.ScopeId, prefix: String
+  ): Unit =
+    ruleReading(rule, fileSym, fileTerms) match
+      case RuleReading.Declaration(name) =>
+        defineSymbolOnce(kb, name, makeQualified(prefix, name), SymbolKind.Goal, scope)
+      case RuleReading.Clause | RuleReading.DeclaresNothing(_) => ()
 
   /** Define an ABSTRACT sort in `scope` and, when `isParam` and the scope is a
     * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
@@ -1010,9 +897,10 @@ object Loader:
       }
       (segments.last, innermost)
 
-  /** Define a symbol of `kind` unless its qualified name is already
-    * registered — mirrors rustland's `is_new` reuse gate (load.rs:1110, the
-    * entity arm). Shared by operations and consts. A kernel operation such as
+  /** Merge a role into an existing local, or define a new local only when its
+    * qualified name is free. The existing-local arm is essential for N3WGM: a rule
+    * declaration and an operation must accumulate both roles in either text order.
+    * Shared by operations, consts and rule functors. A kernel operation such as
     * `anthill.kernel.not` is FIRST registered as a builtin by
     * `Prelude.registerBuiltinTags` (into the prelude's `anthill.kernel` scope); the
     * stdlib then ALSO declares `operation not(...)` in kernel.anthill, and minting a
@@ -1034,7 +922,8 @@ object Loader:
     kind: SymbolKind,
     scope: kb.ScopeId
   ): Unit =
-    if !kb.symbols.byQualifiedName.contains(qualName) then
+    if kb.symbols.scope(scope).exists(_.locals.contains(shortName)) ||
+        !kb.symbols.byQualifiedName.contains(qualName) then
       kb.symbols.define(shortName, qualName, kind, scope)
 
   // ── Pass 2: Process requires/imports ─────────────────────────
@@ -1671,13 +1560,13 @@ object Loader:
     * A predicate whose heads are all in ONE file is auto-declared by them, at the scope
     * they are written in. One with heads in MORE THAN ONE file is a predicate assembled
     * by two parties that never agreed on it (059 §Definitions), and must be DECLARED — a
-    * body-less rule, minted in pass 1b — or the load is refused naming the files.
+    * body-less rule, minted in pass 1 — or the load is refused naming the files.
     *
     * KEYED ON THE SCOPE, which since 845G7 is the same thing as the predicate: a head
     * never lands anywhere but where it is written, so the group is `(scope, name)` and
     * the cross-SCOPE half of what this used to report is [[reportHeadNameCollisions]].
     *
-    * A DECLARED predicate never reaches here: its heads all denote (pass 1b minted the
+    * A DECLARED predicate never reaches here: its heads all denote (pass 1 minted the
     * name), so they are excluded — which is what makes "declare it" a remedy the message
     * can name.
     *
@@ -1783,7 +1672,7 @@ object Loader:
     * already reads a body-less head two ways, and [[parseConnectiveHead]] is where. */
   private enum RuleReading:
     /** A body-less plain head: it DECLARES its predicate and asserts nothing. The name
-      * is minted in PASS 1b by [[DeclarePredicatePass]], like every other declared name
+      * is minted in PASS 1 by [[declarePredicate]], like every other declared name
       * (WI-321),
       * which is what makes a head's binding independent of the order a pass walks in.
       *
@@ -1791,7 +1680,7 @@ object Loader:
       * a predicate declaration carries no signature, no arity claim and no clause, so
       * two of them name the same symbol and lose nothing.
       *
-      * `name` is the predicate it declares — carried, so pass 1b's mint and the load's
+      * `name` is the predicate it declares — carried, so pass 1's mint and the load's
       * refusals read the one answer instead of walking the head again. */
     case Declaration(name: String)
     /** Anything with a body — and the shapes 061 leaves alone, which are the
@@ -1811,7 +1700,7 @@ object Loader:
     case DeclaresNothing(why: NoIntroduction)
 
   /** [[RuleReading]] for one rule — the single decider, asked by pass 1's mint
-    * ([[DeclarePredicatePass]]) and by [[loadRuleHeads]]. Both must give the same answer:
+    * ([[declarePredicate]]) and by [[loadRuleHeads]]. Both must give the same answer:
     * the mint puts in exactly the names the load then declines to assert. Mirrors
     * rustland's `rule_reading`. */
   private def ruleReading(
@@ -1839,7 +1728,7 @@ object Loader:
     * DECLARATION may find already sitting at its scope without having declared nothing:
     * [[SymbolKind.Goal]] (its own), [[SymbolKind.EquationFunctor]] (a sibling equation
     * about the same subject) and [[SymbolKind.Rule]] (a LABEL of that spelling, which
-    * [[DefinePass.defineRuleLabel]] defines one pass earlier). Anything else is another
+    * [[DefinePass.defineRuleLabel]] defines in the same pass). Anything else is another
     * construct's declaration that pass 1's `define` merged into. */
   private val DeclarableByARule: Set[SymbolKind] =
     Set(SymbolKind.Goal, SymbolKind.EquationFunctor, SymbolKind.Rule)
@@ -1862,6 +1751,22 @@ object Loader:
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError]
   ): Unit =
+    // Membership on the completed ladder, excluding the predicate minted in pass 1.
+    // This also catches an enclosing operation declared later or in another file.
+    val reached = if kb.symbols.isInsideNamespace(scope) then
+      kb.symbols.resolveRuleHeadInsideNamespace(name, scope, ownLocalsVisible = false)
+    else kb.symbols.resolveWithOverlay(name, scope, _ => None)
+    reached match
+      case ResolveResult.Found(sym) =>
+        kb.symbols.get(sym).kindsSet.diff(DeclarableByARule).toSeq.sortBy(_.ordinal).foreach { k =>
+          errors += LoadError.Other(
+            s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
+              s"names something this scope reaches (kind: $k), which a rule cannot " +
+              "declare — the declaration would shadow it for the whole scope. " +
+              "Rename the predicate, or drop the line if the head meant to cite it", rule.span)
+        }
+      case _ => ()
+
     // A declaration stores no clause, so there is nothing for a citation handle or a
     // `@[…]` tag to attach to. Refused rather than dropped: a label on a declaration
     // defines a `Rule` symbol that `using` then finds nothing under, and both carriers
@@ -1895,8 +1800,8 @@ object Loader:
               "nothing and assert nothing",
               rule.span)
           case Some(sym) =>
-            // SOMETHING ELSE ALREADY DECLARED THE NAME HERE, and pass 1b's mint left it
-            // alone rather than minting anything — `operation has(x) -> Bool` beside
+            // SOMETHING ELSE ALSO DECLARED THE NAME HERE; pass 1 merged both roles:
+            // `operation has(x) -> Bool` beside
             // `rule has(?x)`, or `sort Foo` beside `rule Foo(?x)`. The declaration then
             // declares nothing new and asserts nothing: a no-op line, which 059 R4
             // clause 3 refuses for every other pair of declarations at one address. NOT
@@ -1910,10 +1815,8 @@ object Loader:
             // 061's admitted SECOND DECLARATION of one predicate at one address —
             // idempotent, and naming a predicate that really exists. Only the `None` arm
             // above is the silent no-op, and it is the one that speaks.
-            val kind = kb.symbols.get(sym) match
-              case SymbolDef.Resolved(_, _, k, _) => Some(k)
-              case SymbolDef.Unresolved(_)        => None
-            kind.filterNot(DeclarableByARule.contains).foreach { k =>
+            // Membership: ANY non-rule role makes this declaration a collision.
+            kb.symbols.get(sym).kindsSet.diff(DeclarableByARule).toSeq.sortBy(_.ordinal).foreach { k =>
               errors += LoadError.Other(
                 s"`$name` is already declared in this scope (kind: $k), so a body-less " +
                 "rule adds nothing to it — write `:- true` to make this a CLAUSE of it, " +
@@ -2344,14 +2247,12 @@ object Loader:
     kb: KnowledgeBase, sym: TermSymbol, allowed: Set[SymbolKind],
     clause: String, span: Span, errors: ArrayBuffer[LoadError]
   ): Option[kb.ScopeId] =
-    val actual = kb.symbols.get(sym) match
-      case SymbolDef.Resolved(_, _, kind, _) => Some(kind)
-      case SymbolDef.Unresolved(_) => None
+    // Membership: any role with contents admits this parent edge.
+    val actual = kb.symbols.get(sym).kindsSet
     if actual.exists(allowed.contains) then Some(kb.symbols.scopeOf(sym))
     else
-      val got = actual
-        .map(k => s"names a ${k.toString.toLowerCase}")
-        .getOrElse("names nothing declared")
+      val got = if actual.isEmpty then "names nothing declared"
+        else s"names a ${actual.toSeq.sortBy(_.ordinal).map(_.toString.toLowerCase).mkString("/")}"
       val wanted = allowed.toIndexedSeq.map(_.toString.toLowerCase).sorted.mkString(" or a ")
       errors += LoadError.Other(
         s"$clause $got, '${kb.qualifiedNameOf(sym)}' — only a $wanted has contents to " +
@@ -2716,7 +2617,7 @@ object Loader:
       if refused then return
 
     // PROPOSAL 061 — NO BODY ⇒ DECLARES. A body-less plain head brought its predicate
-    // into existence in PASS 1b ([[DeclarePredicatePass]]) and asserts NOTHING here;
+    // into existence in PASS 1 ([[declarePredicate]]) and asserts NOTHING here;
     // asserting it is what `fact` and the explicit `:- true` are for. The reading is
     // taken from the ONE decider both passes share, so the name pass 1 minted and the
     // clause this pass declines to store cannot disagree.
@@ -3237,9 +3138,8 @@ object Loader:
     * because `<global>` is Unresolved, not because the term failed a scope-shape test —
     * that test, and the `Option` it used to return, are gone). */
   private def isSortScope(kb: KnowledgeBase, scope: kb.ScopeId): Boolean =
-    kb.symbols.get(kb.symbols.symbolOf(scope)) match
-      case SymbolDef.Resolved(_, _, SymbolKind.Sort, _) => true
-      case _ => false
+    // Membership: a sort body remains a sort when the symbol acquires other roles.
+    kb.symbols.get(kb.symbols.symbolOf(scope)).hasKind(SymbolKind.Sort)
 
   // `private[load]` so `Prelude.defineIn` joins by the SAME rule (WI-990) rather than
   // re-spelling it — including the empty-prefix arm, which a bare `s"$prefix.$name"`

@@ -572,7 +572,8 @@ class LoaderTest extends munit.FunSuite:
     // Pass 1 defines the name, so the zero below is not a vanished symbol.
     val incSym = kb.tryResolveSymbol("inc").getOrElse(fail("`inc` must be defined"))
     kb.symbols.get(incSym) match
-      case SymbolDef.Resolved(_, _, SymbolKind.Operation, _) => ()
+      // Membership: the fixture requires an operation reading.
+      case d if d.hasKind(SymbolKind.Operation) => ()
       case other => fail(s"`inc` should be an Operation, got $other")
 
     def solutionsOf(sym: TermSymbol): Int =

@@ -203,8 +203,9 @@ object Builtins:
       case Some((symArg, resultArg)) =>
         nameArgSymbol(kb, symArg) match
           case Some(functor) =>
-            kb.symbols.get(functor) match
-              case SymbolDef.Resolved(_, _, kind, _) =>
+            // Display only: reflection reports the first declaration's keyword.
+            kb.symbols.get(functor).primaryKind match
+              case Some(kind) =>
                 val strTerm = kb.alloc(Term.Const(Literal.StringLit(kind.toString.toLowerCase)))
                 bindResult(kb, resultArg, strTerm, subst)
               case _ => BuiltinResult.Delay

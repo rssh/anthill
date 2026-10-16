@@ -298,18 +298,28 @@ class SymbolTable:
     })
 
   /** Define a new resolved symbol in a scope. If the same shortName
-    * already exists in the scope, returns the existing symbol (merge behavior).
+    * already exists in the scope, adds its role and returns the existing identity.
     */
   def define(shortName: String, qualifiedName: String, kind: SymbolKind, scopeId: ScopeId): TermSymbol =
     val scope = scopeEntry(scopeId)
     scope.locals.get(shortName) match
-      case Some(existing) => existing
+      case Some(existing) =>
+        addKind(existing, kind)
+        existing
       case None =>
         val sym = TermSymbol.fromRaw(defs.length)
-        defs += SymbolDef.Resolved(shortName, qualifiedName, kind, scopeId)
+        defs += SymbolDef.Resolved(shortName, qualifiedName, Vector(kind), scopeId)
         scope.locals(shortName) = sym
         byQualifiedName(qualifiedName) = sym
         sym
+
+  /** Add a role without minting another identity. Unresolved symbols cannot have roles. */
+  def addKind(sym: TermSymbol, kind: SymbolKind): Unit = get(sym) match
+    case SymbolDef.Resolved(short, qualified, kinds, scope) =>
+      if !kinds.contains(kind) then
+        defs(sym.raw) = SymbolDef.Resolved(short, qualified, kinds :+ kind, scope)
+    case SymbolDef.Unresolved(name) =>
+      throw IllegalArgumentException(s"Cannot add a kind to unresolved symbol '$name'")
 
   /** Mark a name as exposed from a scope to its enclosing scope via the
     * variant-exposure parent link (populated from entity variants only). */
@@ -451,9 +461,9 @@ class SymbolTable:
     * ONLY THE LOCALS. `<global>`'s imports and parents — here including the prelude
     * auto-import's exposure links — are still walked: what they reach lives elsewhere.
     * Rustland's twin is `SymbolTable::resolve_rule_head_inside_namespace`. */
-  def resolveRuleHeadInsideNamespace(name: String, scopeId: ScopeId): ResolveResult =
+  def resolveRuleHeadInsideNamespace(name: String, scopeId: ScopeId, ownLocalsVisible: Boolean = true): ResolveResult =
     val visited = HashSet.empty[ScopeId]
-    resolveRecursive(name, scopeId, visited, globalLocalsVisible = false)
+    resolveRecursive(name, scopeId, visited, globalLocalsVisible = false, ownLocalsVisible = ownLocalsVisible)
 
   /** WI-20260821-HSG31 — is `scopeId` a namespace, or lexically inside one? ENCLOSING
     * links only: "inside" is a statement about nesting, and an import edge is not one.
@@ -467,7 +477,8 @@ class SymbolTable:
       val s = frontier.remove(frontier.length - 1)
       if s != globalScopeId && seen.add(s) then
         get(symbolOf(s)) match
-          case SymbolDef.Resolved(_, _, SymbolKind.Namespace, _) => return true
+          // Membership: a namespace role is sufficient to enclose this scope.
+          case d if d.hasKind(SymbolKind.Namespace) => return true
           case _ =>
         scopes.get(s).foreach(sc => frontier ++= sc.parents.filter(_.isEnclosing).map(_.parent))
     false
