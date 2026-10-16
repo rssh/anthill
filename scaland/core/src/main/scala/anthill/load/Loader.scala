@@ -44,6 +44,7 @@ enum LoadError:
   case DuplicateDeclaration(name: String, first: Span, span: Span)
   case SealedDeclarations(name: String, first: Span, span: Span)
   case EqualityOfEarlierSort(name: String, span: Span)
+  case ConstantInGoalPosition(literal: String, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -76,6 +77,11 @@ enum LoadError:
       span.render(s"sealed declaration '$name' is made again; first declaration: ${first.render(name)}")
     case EqualityOfEarlierSort(name, span) =>
       span.render(s"the equality of '$name' is closed by the load that defined it")
+    case ConstantInGoalPosition(literal, span) =>
+      span.render(s"constant `$literal` in a GOAL position names no predicate. " +
+        "Only `true` and `false` read as goals (kernel-language.md §5.3); " +
+        s"put data in an argument (`p($literal)`) or comparison (`?x = $literal`), " +
+        "or write `false` for a goal that always fails.")
     case Other(message, span) =>
       span.render(message)
 
@@ -1630,19 +1636,10 @@ object Loader:
     * body-emptiness, and so does every reader that asks whether a rule is a fact. 061
     * item 5, settled by keeping BOTH readings.
     *
-    * SCALAND HAS ONLY THIS HALF. J38JE's resolver arm is not ported, so a boolean
-    * constant the strip cannot see gets no reading at all — MEASURED here:
-    * `:- not(false)` answers 0 where logic says 1, `:- base(9) | true` answers 0 where
-    * logic says 1, and a NON-Bool constant goal (`:- 42`) loads clean and silently never
-    * matches (J38JE item 4, refused in rustland). `:- false` answers 0 for the WRONG
-    * REASON — a constant names no name, so it resolves to no clause and no builtin, and
-    * WI-1034's "names nothing" refusal cannot reach it. Recorded rather than discovered:
-    * the row "J38JE GAP: a boolean constant goal has no reading below the top level"
-    * drives every one of those answers.
-    *
-    * THE COROLLARY FOR THIS FILE'S BACK-OUTS: removing the strip fells rows HERE that it
-    * fells none of in rustland, because there the arm answers what the strip stops
-    * seeing. That number measures the missing arm, not the strip. */
+    * NARC7 ports the resolver reading and refuses non-boolean constants in goal slots.
+    * Measured strip back-out: every search answer in RuleHeadDeclarationTest stays
+    * correct. The empty-body identity and unconditional-denial refusal fail, because
+    * those depend on body shape rather than the operational reading of `true`. */
   private def isEmptyConjunctionGoal(fileTerms: SimpleTermStore, tid: TermId): Boolean =
     fileTerms.get(tid) match
       case Term.Const(Literal.BoolLit(true)) => true
@@ -2640,8 +2637,7 @@ object Loader:
     // `rule H :- true` the exact spelling of `fact H`: the same clause, with the same
     // empty body, reached by the two syntaxes §6.1 says mean one thing. It is NOT what
     // `true` MEANS — that is J38JE's "a boolean constant in goal position is a SEARCH",
-    // which belongs in the resolver and is not ported here. See
-    // [[isEmptyConjunctionGoal]] for the split and for what scaland is missing.
+    // which belongs in the resolver (NARC7). See [[isEmptyConjunctionGoal]] for the split.
     val kbBody = rule.body.map(_.filterNot(isEmptyConjunctionGoal(fileTerms, _)).map(b =>
       reallocTerm(kb, fileTerms, fileSym, b, scope, errors, vm, atGoal = true))).getOrElse(IndexedSeq.empty)
 
@@ -2951,7 +2947,15 @@ object Loader:
         case None => ()
 
     fileTerms.get(termId) match
-      case Term.Const(lit) => kb.alloc(Term.Const(lit))
+      case Term.Const(lit) =>
+        // NARC7: goal slots descend through this same path. Literal arguments of
+        // ordinary predicates remain data; only Bool has a constant-goal reading.
+        if atGoal && !atHead then
+          lit match
+            case Literal.BoolLit(_) => ()
+            case other => errors += LoadError.ConstantInGoalPosition(
+              Parser.renderLiteral(other), fileTerms.spanOf(termId))
+        kb.alloc(Term.Const(lit))
       case Term.Var(v) =>
         // Map parse-time VarId to a fresh KB VarId (preserves sharing within
         // scope). Parse terms carry only `Global` vars; `assertRule`/`assertFact`
