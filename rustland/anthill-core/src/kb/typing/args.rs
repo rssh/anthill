@@ -1021,7 +1021,8 @@ fn synthesize_some_wrap(
 /// surface form of `(a: 1, b: 2)` is an `Expr::Constructor` over
 /// `anthill.reflect.TupleLiteral` whose elements ALL ride in `named_args`
 /// (parse/convert.rs relabels positional ones `_1`, `_2`, …). It is NOT
-/// `Expr::TupleLit`, which is a non-surface IR shape eval refuses outright, and
+/// `Expr::TupleLit`, a rule term's literal node, which eval delivers as the value it
+/// already is rather than constructing it, and
 /// NOT an `Expr::Apply`, which eval would dispatch as an operation call
 /// (`UnknownOperation`). Eval routes the constructor through `start_constructor`
 /// to a `Value::Tuple`, and `classify_ctor_arg` hoists an `_N`-at-index-N run

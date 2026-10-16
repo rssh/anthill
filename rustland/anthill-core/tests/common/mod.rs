@@ -2065,11 +2065,30 @@ pub fn entity_functor(kb: &KnowledgeBase, v: &eval::Value) -> Option<anthill_cor
     }
 }
 
-/// The QUALIFIED name of an entity value's constructor ([`entity_functor`]) — `None` for a
+/// The QUALIFIED name of an entity value's constructor ([`entity_functor`]). Panics on a
 /// value that is no entity.
 #[allow(dead_code)]
-pub fn entity_functor_qn(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
-    entity_functor(kb, v).map(|s| kb.qualified_name_of(s).to_string())
+#[track_caller]
+pub fn constructor_qn(kb: &KnowledgeBase, v: &eval::Value) -> String {
+    let sym = entity_functor(kb, v).unwrap_or_else(|| panic!("expected an entity, got {v:?}"));
+    kb.qualified_name_of(sym).to_string()
+}
+
+/// The `Int64` an `ok` arm of `anthill.prelude.Result` carries. Panics on any other value.
+#[allow(dead_code)]
+#[track_caller]
+pub fn result_ok_int(kb: &KnowledgeBase, result: &eval::Value) -> i64 {
+    assert_eq!(constructor_qn(kb, result), "anthill.prelude.Result.ok");
+    let v = entity_field(kb, result, "value", 0);
+    scalar_int(kb, &v).unwrap_or_else(|| panic!("`value` is an Int64: {v:?}"))
+}
+
+/// The payload an `err` arm of `anthill.prelude.Result` carries. Panics on any other value.
+#[allow(dead_code)]
+#[track_caller]
+pub fn result_err_payload(kb: &KnowledgeBase, result: &eval::Value) -> eval::Value {
+    assert_eq!(constructor_qn(kb, result), "anthill.prelude.Result.err");
+    entity_field(kb, result, "error", 0)
 }
 
 /// An entity's field BY DECLARED NAME, whatever CARRIER the entity rides on — the

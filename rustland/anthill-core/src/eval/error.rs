@@ -272,12 +272,15 @@ pub enum EvalError {
     /// resolution once the readers became reducible at a rule-body operand.
     KbReadFailed(crate::kb::reflect_reader::ReflectReadError),
     /// A call evaluated against a KB its caller lent it — a rule body's, through the
-    /// SLD→eval bridge — answered a value still holding a scoped KB (`KB.loaded`). The
-    /// layer is applied to the caller's own KB, so it cannot stay applied past the call,
-    /// and a handle to a discarded layer refers to nothing: the call has no value
-    /// (`Interpreter::release_layers_for_handback`). A PROGRAM limit, not an evaluator
-    /// invariant, so not [`Self::Internal`].
-    ScopedKbOutlivesCall,
+    /// SLD→eval bridge — answered a value, or raised a payload, still holding a scoped KB
+    /// (`KB.loaded`). The layer is applied to the caller's own KB, so it cannot stay
+    /// applied past the call, and a handle to a discarded layer refers to nothing: the call
+    /// has no value (`Interpreter::release_layers_for_handback`). `raised` is the payload's
+    /// text when the call raised. A PROGRAM limit, not an evaluator invariant, so not
+    /// [`Self::Internal`].
+    ScopedKbOutlivesCall {
+        raised: Option<String>,
+    },
     Internal(String),
 }
 
@@ -416,7 +419,7 @@ impl EvalError {
             | EvalError::MacroRejected { .. }
             | EvalError::UnboundTypeParam { .. }
             | EvalError::KbReadFailed(_)
-            | EvalError::ScopedKbOutlivesCall
+            | EvalError::ScopedKbOutlivesCall { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -644,13 +647,23 @@ impl std::fmt::Display for EvalError {
                  and this call route did not; a parameter with no binding is not a type"
             ),
             EvalError::KbReadFailed(e) => write!(f, "{e}"),
-            EvalError::ScopedKbOutlivesCall => write!(
-                f,
-                "its value holds a scoped KB (`KB.loaded`), which cannot outlive the call \
-                 that loaded it here: the call ran against its caller's own KB, so the layer \
-                 is discarded when the call ends, and the value would refer to nothing — \
-                 read what the scoped KB answers inside the call, and return that"
-            ),
+            EvalError::ScopedKbOutlivesCall { raised } => {
+                const WHY: &str = "a scoped KB (`KB.loaded`) cannot leave the call that made it \
+                                   here: a rule-body call runs against its caller's own KB, \
+                                   each operation application in a run of its own, arguments \
+                                   first, so the layer is discarded when the call ends";
+                match raised {
+                    Some(payload) => write!(
+                        f,
+                        "it raised {payload}, whose payload holds a scoped KB, and {WHY}"
+                    ),
+                    None => write!(
+                        f,
+                        "its value holds a scoped KB, and {WHY} — load and read it in one \
+                         operation, or in a lambda, and call that from the rule"
+                    ),
+                }
+            }
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

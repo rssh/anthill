@@ -1039,7 +1039,7 @@ FROM WI-20260925-P7VP4 (2026-10-08, 81ea3c9e): S7's edge measured with an INFERR
 
 THE 068 SET NOW DEPENDS ON THIS TICKET (user, 2026-10-14): DSEXA and 7D48J, the two umbrellas the proposal-068 tickets close through, depend on 5G28A, for S7 (rule->rule implicit arguments). MEASURED 2026-10-14 with GFS6A's fixes in the tree: over sort Descending provides WeakOrd[T = Int64] with compare = sub(b, a), rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c), rule outer(?a, ?b, ?c) :- cmp(?a, ?b, ?c), an operation holding requires WeakOrd[T = A] that cites cmp answers 4 under viaCmp[A = Int64, WeakOrd = Descending](1, 5), and the same through outer (viaOuter[...] = outer(x, y).head.c) answers -1, Int64's own: outer has no condition of its own (its body calls a rule, not an operation of WeakOrd), so the citation has nothing to fill, and cmp, reached as a goal of another rule, derives its dictionary from the value. A middle rule cannot state the requirement either: require[WeakOrd] there is refused, 'expected a body call to one of WeakOrd's operations ... got no such call'. The case: a provider exists, but the rule where the call runs is generic and cannot know which; only its caller knows.
 
-### 2026-10-15T19:42:06Z — feedback — user
+### 2026-10-15T19:42:06Z — feedback — claude
 
 S7 OWES A TEST FOR THREADING `ErrorTag` (user, 2026-10-15, from the WI-20260908-9WVT7 review). `Error.reify requires ErrorTag[T = T1]`, and its boundary narrows to the payload sort that evidence names; a boundary with no evidence catches every payload. A rule body whose reify is typed at a rule variable's type has none: nothing at the call pins `T1`, and the rule cannot know the instance — its caller does, or the value bound to the variable.
 

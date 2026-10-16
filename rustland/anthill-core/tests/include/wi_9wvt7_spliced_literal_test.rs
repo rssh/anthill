@@ -1,44 +1,50 @@
-//! WI-20260908-9WVT7 (found by its review) — a COLLECTION LITERAL SPLICED INTO A RULE-BODY
-//! LAMBDA.
+//! WI-20260908-9WVT7 (found by its reviews) — a COLLECTION LITERAL SPLICED INTO A RULE-BODY
+//! LAMBDA is the value the rule bound.
 //!
-//! `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)` evaluated as `h((1, 2), ?r)`
-//! panicked a debug build ("unhandled Expr variant in eval") and faulted a release one. When
-//! the call is evaluated, the binding of `?e` — a rule term's own tuple literal — is spliced
-//! into the lambda's body, and no typer saw it there, so it reached the evaluator as
-//! `Expr::TupleLit`, which only the typer's reading (`typing::literal_as_constructor`) turns
-//! into a constructor. The evaluator now reads it the same way, and builds it by the arm the
-//! typed one takes. A set literal took the same road; a list literal is a `cons` spine in a
-//! rule's term and never reached it.
+//! `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)` evaluated as `h((1, 2), ?r)` panicked
+//! a debug build ("unhandled Expr variant in eval") and faulted a release one: when the call is
+//! evaluated, the binding of `?e` — a rule term's own literal — is spliced into the lambda's
+//! body, and it reached the evaluator as `Expr::TupleLit` / `SetLit` / `ListLit`, which only
+//! the typer's reading turns into a constructor. A binding is already a value (068 §1.2), so
+//! the evaluator now delivers it as the term the rule holds. The first repair BUILT it again
+//! instead, and that was a second value — a tuple with no functor, a set with its duplicates
+//! dropped, a by-name `ListLiteral` turned into a `cons` spine — none of which unifies with the
+//! rule's own literal: `holder(p: ?p), not(roundTrips(?p))` proved the falsehood definitely.
 //!
-//! WHAT FAILS UNDER THE BACK-OUT — MEASURED: the evaluator's literal arm put back to its
-//! `Internal` → `a_spliced_tuple_literal_is_built`,
-//! `a_spliced_set_literal_is_the_set_an_operation_body_builds` and
-//! `a_tuple_inside_a_spliced_entity_is_built` (the debug assertion in `bridge_op_to_eval`
-//! fires). PASSES EITHER WAY BY DESIGN: `the_controls_answer_either_way` — a scalar binding,
-//! and a tuple written inside the lambda, which the typer reads at load.
+//! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, in one build:
+//!
+//!   * the literal arm put back to BUILDING the constructor → `a_spliced_literal_round_trips`
+//!     and `nothing_is_lost_in_the_round_trip` (the identity callback changes the value);
+//!   * put back to `Internal` → those two and `a_spliced_tuple_reads_as_its_components` (the
+//!     debug assertion in `bridge_op_to_eval` fires).
+//!
+//! PASSES EITHER WAY BY DESIGN: `the_controls_answer_either_way` — a scalar binding, and a
+//! tuple written inside the lambda, which the typer reads at load.
 
 use anthill_core::eval::Value;
 
 const PROGRAM: &str = r#"
 namespace test.splice
-  import anthill.prelude.{Int64, String, Set}
+  import anthill.prelude.{Int64, String}
 
   sort Holder
     entity holder(p: (Int64, Int64))
   end
   fact holder(p: (1, 2))
 
+  fact keepSet({1, 1, 2})
+
   operation okIt[E](e: E) -> E = e
   operation callIt[A](f: () -> A) -> A = f()
-  operation aSet() -> Set[T = Int64] = {1, 2}
 
   rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)
 
   rule tuple(?r) :- h((1, 2), ?r)
-  rule fromFact(?r) :- holder(p: ?p), h(?p, ?r)
-  rule set(?r) :- h({1, 2}, ?r)
-  rule setViaOp(?r) :- aSet(?r)
-  rule nested(?r) :- h(holder(p: (3, 4)), ?r)
+  rule tupleBack(?p) :- holder(p: ?p), h(?p, ?r), holder(p: ?r)
+  rule setBack(?s) :- keepSet(?s), h(?s, ?r), keepSet(?r)
+  rule nestedBack(?b) :- holder(p: ?p), ?b <=> holder(p: ?p), h(?b, ?r), ?r <=> holder(p: ?p)
+  rule roundTrips(?p) :- h(?p, ?r), holder(p: ?r)
+  rule lost(?p) :- holder(p: ?p), not(roundTrips(?p))
   rule scalar(?r) :- h(5, ?r)
   rule written(?r) :- callIt(lambda () -> (1, 2), ?r)
 end
@@ -47,46 +53,42 @@ end
 /// The two components of a pair, read through the carrier-neutral view.
 #[track_caller]
 fn pair(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (i64, i64) {
-    let at = |k| {
-        let c = crate::common::entity_field(kb, v, &format!("_{}", k + 1), k);
+    let at = |k: usize| {
+        let label = anthill_core::intern::positional_label(k);
+        let c = crate::common::entity_field(kb, v, &label, k);
         crate::common::scalar_int(kb, &c).unwrap_or_else(|| panic!("an Int64 at {k}: {v:?}"))
     };
     (at(0), at(1))
 }
 
-/// THE DEFECT. A tuple a rule term holds, and one a fact holds, each spliced into the lambda.
+/// A tuple a rule term holds, spliced into the lambda, reads as its two components.
 #[test]
-fn a_spliced_tuple_literal_is_built() {
+fn a_spliced_tuple_reads_as_its_components() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
     let r = crate::common::one_definite(&mut kb, "test.splice.tuple");
     assert_eq!(pair(&kb, &r), (1, 2));
-    let r = crate::common::one_definite(&mut kb, "test.splice.fromFact");
-    assert_eq!(pair(&kb, &r), (1, 2));
 }
 
-/// A set literal is built as the set an operation body builds from the same literal.
+/// THE DEFECT. What the identity callback hands back is the value it was given: it matches
+/// the fact it came from — a tuple, a set with a duplicate, a tuple inside an entity.
 #[test]
-fn a_spliced_set_literal_is_the_set_an_operation_body_builds() {
+fn a_spliced_literal_round_trips() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    let spliced = crate::common::one_definite(&mut kb, "test.splice.set");
-    let typed = crate::common::one_definite(&mut kb, "test.splice.setViaOp");
-    assert!(
-        anthill_core::kb::term_view::views_structurally_equal(&kb, &spliced, &typed),
-        "the spliced set {spliced:?} is the operation body's {typed:?}"
-    );
+    for qn in ["test.splice.tupleBack", "test.splice.setBack", "test.splice.nestedBack"] {
+        let rows = crate::common::query_unary(&mut kb, qn);
+        assert!(
+            matches!(rows.as_slice(), [(_, true)]),
+            "{qn}: one definite answer, got {rows:?}"
+        );
+    }
 }
 
-/// A tuple inside an entity the rule spliced in.
+/// And the negation of the round trip proves nothing: no binding is lost on the way.
 #[test]
-fn a_tuple_inside_a_spliced_entity_is_built() {
+fn nothing_is_lost_in_the_round_trip() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    let r = crate::common::one_definite(&mut kb, "test.splice.nested");
-    assert_eq!(
-        crate::common::entity_functor_qn(&kb, &r).as_deref(),
-        Some("test.splice.Holder.holder")
-    );
-    let p = crate::common::entity_field(&kb, &r, "p", 0);
-    assert_eq!(pair(&kb, &p), (3, 4));
+    let rows = crate::common::query_unary(&mut kb, "test.splice.lost");
+    assert!(rows.is_empty(), "no lost binding: {rows:?}");
 }
 
 /// PASSES EITHER WAY BY DESIGN: nothing here is a spliced literal.

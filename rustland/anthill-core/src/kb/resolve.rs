@@ -12039,7 +12039,15 @@ impl KnowledgeBase {
         // design: WI-483 substitution-transparency says a callee's own failure must not
         // break the enclosing rule, so the operand stays un-reduced and the goal
         // delays. What changes is WHAT THE STREAM IS TOLD about the delay.
-        let disposition = e.bridge_disposition(self);
+        // A raise out of `Error.reify` ITSELF is a payload its boundary declined, whatever the
+        // payload: the two raises `raised_disposition` reads as "no answer yet" are the
+        // missing-reify case, and here a reify is present, typed at another label.
+        let disposition = match &e {
+            EvalError::Raised { .. } if self.is_reify_operation(op) => {
+                crate::eval::BridgeDisposition::Fault
+            }
+            _ => e.bridge_disposition(self),
+        };
         // An evaluator-INVARIANT bug is still asserted loudly in debug/test builds (the
         // loud-over-silent rule) while residualizing in release rather than aborting
         // resolution. It answers `Fault` below, so release builds now NAME it too.
@@ -12108,7 +12116,8 @@ impl KnowledgeBase {
             Ok(()) => f(&mut interp),
             Err(e) => Err(e),
         };
-        let outcome = interp.release_layers_for_handback(outcome);
+        let mut outcome = outcome;
+        interp.release_layers_for_handback(&mut outcome);
         *self = interp.into_kb();
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));
         Some(outcome)

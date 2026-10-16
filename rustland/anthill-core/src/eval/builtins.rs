@@ -5642,7 +5642,6 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
     Ok(Value::term(new_term))
 }
 
-
 /// `anthill.prelude.Int64.to_string(n: Int64) -> String`. Decimal repr, no
 /// padding. Negative numbers carry a leading `-`. The CLI port uses this
 /// for `"180 work item(s):"` and per-status counts.
@@ -6643,7 +6642,7 @@ pub fn require_symbol(
 // ── Builtins that route an operation through a registered effect handler.
 // Each is identical in shape: resolve the op symbol, invoke the handler
 // for a specific effect sort with `(op_sym, args)`. The macro keeps the
-// five instances aligned and the wiring grep-friendly.
+// instances aligned and the wiring grep-friendly.
 macro_rules! effect_dispatcher {
     ($fname:ident, $op_qname:literal, $op_short:literal, $effect_qname:literal) => {
         fn $fname(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {

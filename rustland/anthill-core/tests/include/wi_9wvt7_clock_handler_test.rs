@@ -14,8 +14,6 @@
 //! WHAT FAILS UNDER THE BACK-OUT — MEASURED: `time_now` put back to reading the clock itself
 //! → `a_clock_read_in_a_rule_body_is_not_performed` (four definite timestamps) and
 //! `an_operation_reads_the_clock_through_its_handler` (the frozen handler is not asked).
-//! PASSES EITHER WAY BY DESIGN: `a_direct_clock_goal_stays_refused` — `Time.now(?t)` itself
-//! is no relational view, its `{Clock}` row being concrete.
 
 use anthill_core::eval::effects::{EffectHandler, HandlerAction};
 use anthill_core::eval::{EvalError, Value};
@@ -39,7 +37,6 @@ namespace test.clock
   rule viaHof(?r) :- applyThunk(lambda () -> now(), ?r)
   rule viaMap(?r) :- List.mapElems(cons(1, nil()), lambda (x) -> now(), ?r)
   rule inValueSlot(?r) :- ?r <=> plainStamp()
-  rule direct(?r) :- now(?r)
 end
 "#;
 
@@ -89,12 +86,4 @@ fn an_operation_reads_the_clock_through_its_handler() {
         crate::common::scalar_str(interp.kb(), &v).as_deref(),
         Some("2000-01-01T00:00:00Z")
     );
-}
-
-/// PASSES EITHER WAY BY DESIGN: the clock read as a goal of its own is no relational view.
-#[test]
-fn a_direct_clock_goal_stays_refused() {
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    let rows = crate::common::query_unary(&mut kb, "test.clock.direct");
-    assert!(rows.is_empty(), "no answer: {rows:?}");
 }

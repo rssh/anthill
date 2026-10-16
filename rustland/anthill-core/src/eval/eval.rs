@@ -103,15 +103,16 @@ impl Interpreter {
         // the success-path `Done`, the reify-boundary scan and this error truncate all read
         // it, and two copies of the expression could disagree.
         let floor = self.stack.depth().saturating_sub(1);
-        self.run_from(floor, None)
+        self.run_from(floor, Ok(StepOutcome::Continue))
     }
 
-    /// [`Self::run`] over a floor its driver computed, with the run's FIRST STEP perhaps
-    /// already taken. The one driver that takes it is [`Self::invoke_reify_boundary`]: its
-    /// run's bottom frame is the boundary, and entering the thunk above it is that step. So
-    /// what entering answers — a frame to reduce, a value to deliver, or an error — is read
-    /// by the loop as every step's answer is, and a raise there meets the boundary the entry
-    /// installed, as it does in the in-body faces.
+    /// [`Self::run`] over a floor its driver computed, and the answer of the step taken
+    /// before the loop: `Continue` for a driver that only pushed its frame. The one driver
+    /// that takes a step of its own is [`Self::invoke_reify_boundary`]: its run's bottom
+    /// frame is the boundary, and entering the thunk above it is that step. So what entering
+    /// answers — a frame to reduce, a value to deliver, or an error — is read by the loop as
+    /// every step's answer is: a raise there meets the boundary the entry installed, as it
+    /// does in the in-body faces, and any other error leaves the run truncated to its floor.
     ///
     /// INLINED ALWAYS, because every bridged call runs through here and the bridge's native
     /// stack per eval↔SLD crossing is a measured budget (`BRIDGE_REENTRY_CAP`): this must not
@@ -120,7 +121,7 @@ impl Interpreter {
     fn run_from(
         &mut self,
         floor: usize,
-        first: Option<Result<StepOutcome, EvalError>>,
+        first: Result<StepOutcome, EvalError>,
     ) -> Result<Value, EvalError> {
         let result = self.run_inner(floor, first);
         if result.is_err() {
@@ -145,7 +146,7 @@ impl Interpreter {
         &mut self,
         reify: Symbol,
         args: &[Value],
-        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+        requirements: &[(Symbol, super::value::Dictionary)],
     ) -> Result<Value, EvalError> {
         let top_level = self.begin_host_entry();
         let floor = self.stack.depth();
@@ -156,8 +157,8 @@ impl Interpreter {
             requirements: SmallVec::new(),
             awaiting: None,
         })?;
-        let entered = self.enter_reify_boundary(args, &requirements);
-        let result = self.run_from(floor, Some(entered));
+        let entered = self.enter_reify_boundary(args, requirements);
+        let result = self.run_from(floor, entered);
         self.end_host_entry(top_level, reify);
         result
     }
@@ -165,10 +166,11 @@ impl Interpreter {
     fn run_inner(
         &mut self,
         floor: usize,
-        mut first: Option<Result<StepOutcome, EvalError>>,
+        mut stepped: Result<StepOutcome, EvalError>,
     ) -> Result<Value, EvalError> {
         let prof = self.profiling;
         let mut pending: Option<Value> = None;
+        // `stepped` is the answer of the last action, read at the top of each turn;
         // `pending` carries a produced value awaiting delivery to its parent
         // frame. The trampoline alternates between reducing the top frame
         // (`step`) and delivering a value (`deliver`); both return their next
@@ -182,6 +184,16 @@ impl Interpreter {
         // answering that one from here would hand an outer frame's `Result` back as
         // this call's value. See `ActivationStack::reify_boundaries`.
         loop {
+            match stepped {
+                Ok(StepOutcome::Done(v)) => return Ok(v),
+                Ok(StepOutcome::Continue) => {}
+                Ok(StepOutcome::Deliver(v)) => pending = Some(v),
+                // Proposal 027.4 — a raise looks for the innermost `Error.reify`
+                // boundary this run owns. Found, the stack unwinds to it and
+                // `err(payload)` is delivered FROM it; not found — or not a
+                // `Raised` at all — the error propagates untouched.
+                Err(e) => pending = Some(self.recover_at_reify_boundary(e, floor)?),
+            }
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
                     return Err(EvalError::StepsExhausted {
@@ -193,11 +205,9 @@ impl Interpreter {
             self.step_count = self.step_count.saturating_add(1);
             // WI-SPGBP — discard any scoped-KB layer whose last holder has gone.
             self.sweep_layers();
-            let stepped = match (first.take(), pending.take()) {
-                // The step the driver took before the loop (`run_from`).
-                (Some(stepped), _) => stepped,
-                (None, Some(v)) => self.deliver(v, floor),
-                (None, None) => {
+            stepped = match pending.take() {
+                Some(v) => self.deliver(v, floor),
+                None => {
                     // Profiling attributes a reduction to the executing op —
                     // only `step()` iterations are reductions, deliveries aren't.
                     if prof {
@@ -208,22 +218,6 @@ impl Interpreter {
                     self.step()
                 }
             };
-            let outcome = match stepped {
-                Ok(o) => o,
-                // Proposal 027.4 — a raise looks for the innermost `Error.reify`
-                // boundary this run owns. Found, the stack unwinds to it and
-                // `err(payload)` is delivered FROM it; not found — or not a
-                // `Raised` at all — the error propagates untouched.
-                Err(e) => {
-                    pending = Some(self.recover_at_reify_boundary(e, floor)?);
-                    continue;
-                }
-            };
-            match outcome {
-                StepOutcome::Done(v) => return Ok(v),
-                StepOutcome::Continue => {}
-                StepOutcome::Deliver(v) => pending = Some(v),
-            }
         }
     }
 
@@ -516,20 +510,14 @@ impl Interpreter {
             // (`typing::literal_as_constructor`), which the `Constructor` arm above
             // constructs. One that reaches here was SPLICED in when a rule-body call was
             // evaluated — the binding of a rule variable the lambda captured (`h((1, 2),
-            // ?r)` over `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)`) — and no
-            // typer saw it, so it is read the way the typer reads one: as that
-            // constructor, built by the same arm.
-            Expr::ListLit(elements) => {
-                let literal = self.reflect.list_literal;
-                self.start_literal_constructor(literal, elements, &[])
-            }
-            Expr::SetLit(elements) => {
-                let literal = self.reflect.set_literal;
-                self.start_literal_constructor(literal, elements, &[])
-            }
-            Expr::TupleLit { positional, named } => {
-                let literal = self.reflect.tuple_literal;
-                self.start_literal_constructor(literal, positional, named)
+            // ?r)` over `rule h(?e, ?r) :- callIt(lambda () -> okIt(?e), ?r)`) — and a
+            // binding is already a value (068 §1.2): it is delivered as the term the rule
+            // holds, so an identity callback hands back exactly what it was given. Built
+            // again here it would be another value: a tuple with no functor, a set with its
+            // duplicates dropped, a by-name `ListLiteral` turned into a `cons` spine — none
+            // of which unifies with the rule's own literal.
+            Expr::ListLit(_) | Expr::SetLit(_) | Expr::TupleLit { .. } => {
+                Ok(StepOutcome::Deliver(Value::Node(Rc::clone(occ))))
             }
             // `DotApply` is a pre-dispatch form: the `@[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
@@ -2520,24 +2508,6 @@ impl Interpreter {
         )
     }
 
-    /// A collection literal of a rule's term, built as the constructor the typer reads it
-    /// as (`typing::literal_as_constructor`): `literal` is the reflect literal entity —
-    /// `None` only in a KB with no prelude, where no literal has an entity to be.
-    fn start_literal_constructor(
-        &mut self,
-        literal: Option<Symbol>,
-        pos_args: &[Rc<NodeOccurrence>],
-        named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    ) -> Result<StepOutcome, EvalError> {
-        let Some(name) = literal else {
-            return Err(EvalError::Internal(
-                "a collection literal reached eval in a KB with no reflect literal entities"
-                    .into(),
-            ));
-        };
-        self.start_constructor(name, pos_args, named_args)
-    }
-
     fn start_constructor(
         &mut self,
         name: Symbol,
@@ -4189,13 +4159,11 @@ impl Interpreter {
     /// this frame and delivers `err(payload)` ([`Self::recover_at_reify_boundary`]).
     /// Both then pop the boundary and hand a `Result` to its parent.
     ///
-    /// WHAT IS DELIBERATELY DROPPED: the call's `requirements`, and the `Rho` / `X`
-    /// halves of its `type_args`. The channel is keyed by `Error.reify`'s own op-scoped
-    /// symbols and the thunk is a separate operation with its own, so FORWARDING it to
-    /// the thunk would install the wrong parameters. `T1` is READ here rather than
-    /// forwarded — it is what the boundary is typed at — which is why `type_args` is a
-    /// parameter of this function. The `requirements` discard stops being harmless the
-    /// day `reify` gains a `requires`.
+    /// WHAT IS DELIBERATELY DROPPED: the call's `requirements`. The channel is keyed by
+    /// `Error.reify`'s own op-scoped symbols and the thunk is a separate operation with its
+    /// own, so FORWARDING it to the thunk would install the wrong parameters. Its one slot,
+    /// `requires ErrorTag[T = T1]`, is READ here instead — it is what the boundary is typed
+    /// at.
     fn enter_reify_boundary(
         &mut self,
         arg_values: &[Value],
@@ -4248,17 +4216,30 @@ impl Interpreter {
         // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how a typed
         // unevidenced call arrives: since WI-20260921-28TAT a `reify` whose `T1` has no
         // `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an operation
-        // body, and in a rule body since WI-20260908-9WVT7 (`build_op_scoped_dicts`'
-        // rule-body reify gate), where no clause can be added and the payload type must
-        // be fixed at the call. (`Error.reify` is body-less and implemented by THIS
-        // function; since WI-20260921-3G1YT every parked refusal is reported, so there is
-        // no longer a body walk that could withhold this one for having no body to walk.)
-        // What reaches `None` is listed at `AwaitState::ReifyBoundary::payload`.
-        let payload = self
+        // body, and in a rule body since WI-20260908-9WVT7 (`build_op_scoped_dicts`, at a
+        // rule body's unfilled `ErrorTag` slot), where no clause can be added and the
+        // payload type must be fixed at the call. (`Error.reify` is body-less and
+        // implemented by THIS function; since WI-20260921-3G1YT every parked refusal is
+        // reported, so there is no longer a body walk that could withhold this one for
+        // having no body to walk.) What reaches `None` is listed at
+        // `AwaitState::ReifyBoundary::payload`.
+        let slot = self
             .error_layer
             .as_ref()
             .map(|l| l.reify_payload_slot)
-            .and_then(|slot| requirements.iter().find(|(n, _)| *n == slot))
+            .and_then(|slot| requirements.iter().find(|(n, _)| *n == slot));
+        // A slot holding the ABSENCE MARKER is evidence that could not be built — the
+        // bridge's for an `ErrorTag` its arguments could not pin — and is refused at the
+        // read, as every marker is: read as "cannot narrow" it would catch every payload.
+        if let Some((_, dict)) = slot {
+            if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, dict.impl_sort()) {
+                return Err(EvalError::UnpinnedRequirement {
+                    detail,
+                    marker: dict.impl_sort(),
+                });
+            }
+        }
+        let payload = slot
             .and_then(|(_, dict)| dict.sub(self.error_layer.as_ref()?.reify_payload_sub))
             .map(|tv| tv.impl_sort());
 

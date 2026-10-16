@@ -154,18 +154,11 @@ fn call(interp: &mut Interpreter, op: &str, args: &[i64]) -> Result<Value, EvalE
     interp.call(op, &args)
 }
 
-/// The QUALIFIED name of an entity's constructor.
-#[track_caller]
-fn constructor(interp: &Interpreter, v: &Value) -> String {
-    crate::common::entity_functor_qn(interp.kb(), v)
-        .unwrap_or_else(|| panic!("expected an entity, got {v:?}"))
-}
-
 /// The `op` of a `division_by_zero` payload.
 #[track_caller]
 fn division_op(interp: &Interpreter, payload: &Value) -> String {
     assert_eq!(
-        constructor(interp, payload),
+        crate::common::constructor_qn(interp.kb(), payload),
         "anthill.prelude.DivisionByZero.division_by_zero"
     );
     let op = crate::common::entity_field(interp.kb(), payload, "op", 0);
@@ -175,11 +168,7 @@ fn division_op(interp: &Interpreter, payload: &Value) -> String {
 /// The `op` of the `division_by_zero` an `err` arm carries.
 #[track_caller]
 fn caught_division(interp: &Interpreter, result: &Value) -> String {
-    assert_eq!(constructor(interp, result), "anthill.prelude.Result.err");
-    division_op(
-        interp,
-        &crate::common::entity_field(interp.kb(), result, "error", 0),
-    )
+    division_op(interp, &crate::common::result_err_payload(interp.kb(), result))
 }
 
 /// The `op` of the `division_by_zero` a raise carried out of the call.
@@ -191,16 +180,6 @@ fn raised_division(interp: &Interpreter, e: EvalError) -> String {
     division_op(interp, &payload)
 }
 
-#[track_caller]
-fn ok_value(interp: &Interpreter, result: &Value) -> i64 {
-    assert_eq!(constructor(interp, result), "anthill.prelude.Result.ok");
-    int_value(
-        interp,
-        &crate::common::entity_field(interp.kb(), result, "value", 0),
-    )
-}
-
-#[track_caller]
 fn int_value(interp: &Interpreter, v: &Value) -> i64 {
     crate::common::scalar_int(interp.kb(), v)
         .unwrap_or_else(|| panic!("expected an Int64, got {v:?}"))
@@ -215,7 +194,7 @@ fn a_guarded_division_is_caught() {
     let r = call(&mut interp, "test.gcb.safeDiv", &[7, 0]).expect("the division is caught");
     assert_eq!(caught_division(&interp, &r), "Int64.div");
     let r = call(&mut interp, "test.gcb.safeDiv", &[7, 2]).expect("no raise");
-    assert_eq!(ok_value(&interp, &r), 3);
+    assert_eq!(crate::common::result_ok_int(interp.kb(), &r), 3);
     let r = call(&mut interp, "test.gcb.safeDivLet", &[7, 0]).expect("a let-held lambda");
     assert_eq!(caught_division(&interp, &r), "Int64.div");
 }
@@ -225,14 +204,14 @@ fn a_guarded_division_is_caught() {
 fn a_guarded_head_is_caught() {
     let mut interp = crate::common::interp_for(CAUGHT);
     let r = call(&mut interp, "test.gcb.emptyHead", &[]).expect("the head of nil is caught");
-    assert_eq!(constructor(&interp, &r), "anthill.prelude.Result.err");
+    assert_eq!(crate::common::constructor_qn(interp.kb(), &r), "anthill.prelude.Result.err");
     let payload = crate::common::entity_field(interp.kb(), &r, "error", 0);
     assert_eq!(
-        constructor(&interp, &payload),
+        crate::common::constructor_qn(interp.kb(), &payload),
         "anthill.prelude.EmptyStream.empty_stream"
     );
     let r = call(&mut interp, "test.gcb.fiveHead", &[]).expect("the head of a list");
-    assert_eq!(ok_value(&interp, &r), 5);
+    assert_eq!(crate::common::result_ok_int(interp.kb(), &r), 5);
 }
 
 /// An unguarded and a guarded copy of one label in one lambda's row are one element of it:
@@ -245,7 +224,7 @@ fn two_copies_of_one_label_are_one_element() {
     let r = call(&mut interp, "test.gcb.bothCopies", &[0]).expect("the guarded raise");
     assert_eq!(caught_division(&interp, &r), "guardedSeven");
     let r = call(&mut interp, "test.gcb.bothCopies", &[1]).expect("no raise");
-    assert_eq!(ok_value(&interp, &r), 7);
+    assert_eq!(crate::common::result_ok_int(interp.kb(), &r), 7);
 }
 
 /// Beside a second label, a boundary written at the guarded one catches the division and
@@ -291,7 +270,7 @@ fn an_absence_is_no_effect_of_the_value() {
     let r = call(&mut interp, "test.gcb.pingCaught", &[7, 0]).expect("the division is caught");
     assert_eq!(caught_division(&interp, &r), "Int64.div");
     let r = call(&mut interp, "test.gcb.pingCaught", &[7, 7]).expect("no raise");
-    assert_eq!(ok_value(&interp, &r), 9);
+    assert_eq!(crate::common::result_ok_int(interp.kb(), &r), 9);
 }
 
 /// A row variable bound beside a declared label of the same name gives one label, not two.

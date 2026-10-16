@@ -205,22 +205,38 @@ impl LayerArenaRef {
     /// Idempotent, and O(1) when there is nothing to do. Slots are never reused, so a
     /// swept `raw` can only be reached through a handle that no longer exists.
     pub(crate) fn sweep(&self, kb: &mut KnowledgeBase) -> usize {
+        self.unwind(kb, false)
+    }
+
+    /// Discard EVERY live layer, innermost first, whether or not its holders are gone. For
+    /// an interpreter about to hand back the KB its layers scope
+    /// (`Interpreter::release_layers_for_handback`), which refuses to let a holder out —
+    /// so a handle left afterwards is one the interpreter's own arenas hold and drop with
+    /// it, and its drop only lowers the count of a slot nothing reads again.
+    pub(crate) fn discard_all(&self, kb: &mut KnowledgeBase) {
+        self.unwind(kb, true);
+    }
+
+    /// The one restore loop of [`Self::sweep`] and [`Self::discard_all`]: pop the innermost
+    /// layer while its holders are gone — or, `force`d, whatever its count — and restore what
+    /// it displaced.
+    fn unwind(&self, kb: &mut KnowledgeBase, force: bool) -> usize {
         let mut discarded = 0;
         loop {
-            if !self.0.retired.get() {
+            if !force && !self.0.retired.get() {
                 return discarded;
             }
             let snapshot = {
                 let mut arena = self.0.arena.borrow_mut();
                 match arena.stack.last().copied() {
-                    Some(top) if arena.slots[top as usize].refcount == 0 => {
+                    Some(top) if force || arena.slots[top as usize].refcount == 0 => {
                         arena.stack.pop();
                         arena.slots[top as usize].snapshot.take()
                     }
-                    // The innermost layer is still held. A deeper retired layer waits for
-                    // it — see the module docs on why unwinding out of order would
-                    // install a state that never existed. Clearing the flag is safe: the
-                    // inner layer's own release sets it again.
+                    // The innermost layer is still held, or none is left. A deeper retired
+                    // layer waits for a held one — see the module docs on why unwinding out
+                    // of order would install a state that never existed. Clearing the flag
+                    // is safe: the inner layer's own release sets it again.
                     _ => {
                         self.0.retired.set(false);
                         return discarded;
@@ -237,34 +253,6 @@ impl LayerArenaRef {
                 None => unreachable!("WI-SPGBP: a live layer slot always holds its snapshot"),
             }
         }
-    }
-
-    /// Discard EVERY live layer, innermost first, whether or not its holders are gone. For
-    /// an interpreter about to hand back the KB its layers scope
-    /// (`Interpreter::release_layers_for_handback`), which refuses to let a holder out —
-    /// so a handle left afterwards is one the interpreter's own arenas hold and drop with
-    /// it, and its drop only lowers the count of a slot nothing reads again.
-    pub(crate) fn discard_all(&self, kb: &mut KnowledgeBase) -> usize {
-        let mut discarded = 0;
-        loop {
-            let snapshot = {
-                let mut arena = self.0.arena.borrow_mut();
-                let Some(top) = arena.stack.pop() else {
-                    break;
-                };
-                arena.slots[top as usize].snapshot.take()
-            };
-            match snapshot {
-                // Restored with NO arena borrow held, as `sweep` does.
-                Some(s) => {
-                    kb.restore_scoped(s);
-                    discarded += 1;
-                }
-                None => unreachable!("WI-SPGBP: a live layer slot always holds its snapshot"),
-            }
-        }
-        self.0.retired.set(false);
-        discarded
     }
 
     /// Live (unswept) layer count — the reader the refcount tests assert on.

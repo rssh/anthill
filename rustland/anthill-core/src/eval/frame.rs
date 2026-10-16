@@ -224,16 +224,15 @@ pub enum AwaitState {
         /// to add, not a silent widening — as is a RULE body's `reify` whose `T1` the
         /// call leaves open, which has no clause to add (WI-20260908-9WVT7).
         ///
-        /// WHAT STILL REACHES `None`, three shapes, each catching wide:
-        ///   * a `T1` the call FIXES with no instance to read — a TUPLE payload, whose
-        ///     structural former has no sort to carry a derived `TypeValue`
-        ///     (`a_payload_the_runtime_cannot_narrow_is_still_caught`);
-        ///   * a call NO TYPER SAW — a host's `Interpreter::call` hands no evidence;
-        ///   * a GENERIC operation reached from a rule body, whose `requires ErrorTag[T =
-        ///     P]` the bridge fills from the arguments' values and cannot when `P` is in
-        ///     no argument (`catchAll[P](body: () -> Int64 @ {Error[P], R})` cited from
-        ///     a rule): threading the caller's evidence there is 060's S7, and
-        ///     WI-20260911-5G28A owes the test.
+        /// WHAT STILL REACHES `None` is a `T1` an OPERATION body's call fixes with no
+        /// instance to read — a TUPLE payload, whose structural former has no sort to carry
+        /// a derived `TypeValue` (`a_payload_the_runtime_cannot_narrow_is_still_caught`).
+        /// A rule body's call with no evidence is refused at load, a tuple's with it; and
+        /// where the bridge fills the slot from the arguments' values — a host's
+        /// `Interpreter::call`, a generic operation reifying at its own `P` cited from a
+        /// rule — arguments that do not pin `T1` leave an absence, which
+        /// `Interpreter::enter_reify_boundary` refuses when it reads the slot, so neither
+        /// reaches here.
         ///
         /// NOT A FALLBACK PAPERING OVER AN ERROR — the ROW is the guarantee either way.
         /// The typer discharged this label by the signature (WI-329), and the narrowing

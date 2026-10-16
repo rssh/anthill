@@ -604,6 +604,18 @@ pub(crate) fn resolve_bridge_requirements_supplied(
                 None => {
                     if let Some((param, binder)) = type_carried {
                         trees.push((*name, param_slot_marker(goal.spec_sort, param, binder)));
+                    } else if is_error_tag_spec(kb, goal.spec_sort) {
+                        // An `ErrorTag` slot is READ by the `Error.reify` boundary it reaches,
+                        // and a skipped one reads there as "catch every payload" — the label
+                        // its thunk's row leaves to the caller as well. Kept as the absence it
+                        // is, so that read is loud (`Interpreter::enter_reify_boundary`).
+                        trees.push((
+                            *name,
+                            BridgeSlot::Absent {
+                                spec_sort: goal.spec_sort,
+                                why: UnavailableWhy::UnderDetermined,
+                            },
+                        ));
                     }
                     continue;
                 }

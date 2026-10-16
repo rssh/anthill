@@ -1304,7 +1304,7 @@ impl Interpreter {
         // Proposal 027.4 — `Error.reify` has no body to push: its boundary is a frame
         // ([`Self::invoke_reify_boundary`]). Keyed by symbol, as in the two in-body faces.
         if Some(sym) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.invoke_reify_boundary(sym, args, requirements);
+            return self.invoke_reify_boundary(sym, args, &requirements);
         }
         // WI-1057 — `sym` and `requirements` are REBOUND rather than passed to a
         // recursive call. When the body-less arm below dispatches value-directed, the
@@ -2035,30 +2035,33 @@ impl Interpreter {
     /// (`KB.loaded`) still applied to it.
     ///
     /// A layer is applied IN PLACE, to the one KB, and undone only when its last holder is
-    /// gone ([`Self::sweep_layers`]). A run whose holders all went inside it has nothing
-    /// left once swept here. A run that ANSWERS a value still holding one — a `KB`, or a
-    /// `Result` around one — would hand the resolver its own KB with the layer applied, and
-    /// every later goal, of this clause or another, would read the scoped source's facts:
-    /// MEASURED, `loads(?r), seen(n: ?n)` answered the loaded `42` beside the base's `1`,
-    /// the same two goals swapped answered only `1`, and a failed clause's layer survived
-    /// the backtrack. So such an answer is refused ([`EvalError::ScopedKbOutlivesCall`]),
-    /// the layer is discarded, and the call has no value.
-    pub(crate) fn release_layers_for_handback(
-        &mut self,
-        outcome: Result<Value, EvalError>,
-    ) -> Result<Value, EvalError> {
+    /// gone ([`Self::sweep_layers`]). The interpreter's own holders go first — a const forced
+    /// in the run caches its value — and a run whose holders all went inside it has nothing
+    /// left. What still holds a layer is then the `outcome`: the value it answers, or the
+    /// payload of the raise it reports. Neither may leave, since the layer is discarded
+    /// here and a handle to it would refer to nothing, so the outcome becomes
+    /// [`EvalError::ScopedKbOutlivesCall`], naming the raise when there was one.
+    pub(crate) fn release_layers_for_handback(&mut self, outcome: &mut Result<Value, EvalError>) {
+        self.const_cache
+            .retain(|_, entry| matches!(entry, ConstCacheEntry::Forcing));
         self.sweep_layers();
         if self.layers.depth() == 0 {
-            return outcome;
+            return;
         }
-        // The answer holds a layer. Dropped, its handles retire and the sweep discards;
-        // what this interpreter's own arenas still hold goes by force, since nothing of
-        // it outlives the handback.
-        drop(outcome);
-        self.sweep_layers();
+        let refused = match outcome {
+            Ok(_) => Some(EvalError::ScopedKbOutlivesCall { raised: None }),
+            Err(EvalError::Raised { payload }) => Some(EvalError::ScopedKbOutlivesCall {
+                raised: Some(render_raised_payload(&self.kb, payload)),
+            }),
+            // An error that carries no value holds no layer: what holds it is an arena of
+            // this interpreter, and it goes with the interpreter.
+            Err(_) => None,
+        };
+        if let Some(refused) = refused {
+            *outcome = Err(refused);
+        }
         let layers = self.layers.clone();
         layers.discard_all(&mut self.kb);
-        Err(EvalError::ScopedKbOutlivesCall)
     }
 
     /// WI-SPGBP — how many scoped-KB layers are currently applied.

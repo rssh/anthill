@@ -4,8 +4,8 @@
 -- WI-20260922-BRT4Y: registered by hardcoded qualified name in `eval/builtins.rs` until
 -- this ticket, and invisible to every reader of "is this operation host-backed". They
 -- are one file because they are one kind of thing — each reaches state only the
--- interpreter holds: a registered effect HANDLER (`Console.*`, `ModifyRuntime.*`), the
--- cell ARENA (`Cell.*`), the error channel (`Error.raise`), the wall clock (`Time.now`).
+-- interpreter holds: a registered effect HANDLER (`Console.*`, `Time.now`,
+-- `ModifyRuntime.*`), the cell ARENA (`Cell.*`), the error channel (`Error.raise`).
 --
 -- Being mapped does NOT make them callable from a rule body. The rule-body gate
 -- (`host_op_reducible_at_a_value`, kb/resolve.rs) also asks for an EMPTY effect row,
