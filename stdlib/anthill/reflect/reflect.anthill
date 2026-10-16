@@ -126,8 +126,7 @@ namespace anthill.reflect
 
      `type_value()` answers the `Type` that `T` names, from a DEFAULT BODY that serves
      every carrier (see the member). Every INSTANCE is DERIVED by the loader — a
-     user-written `provides TypeValue[…]` is a load error. NOT YET ENFORCED: the
-     refusal is still unbuilt, so a hand-written provision loads today.
+     user-written `provides TypeValue[…]` is a load error.
      That is not a style rule. A forgeable instance
      makes every type read a CLAIM instead of a fact: `Boom provides TypeValue[T =
      Boom]` with a `type_value` answering `Int64` would route a boundary, a

@@ -4207,11 +4207,10 @@ impl Interpreter {
         //
         // KEYED BY SYMBOLS THE LAYER RESOLVED ONCE (`reify_payload_slot`,
         // `reify_payload_sub`), never by spelling `__req_errortag` or `0` here. Read by
-        // name or position, a clause renamed in `effects.anthill` would be
-        // indistinguishable from a payload that genuinely cannot be narrowed, and every
-        // boundary in the program would quietly revert to catching wide. Resolved at
-        // layer construction it is a missing symbol, the layer is `None`, and
-        // `Error.reify` fails loudly as a body-less operation instead.
+        // name or position, a clause renamed in `effects.anthill` would read as a call
+        // that handed no evidence, and every boundary in the program would refuse to run
+        // naming its caller. Resolved at layer construction it is a missing symbol, the
+        // layer is `None`, and `Error.reify` fails loudly as a body-less operation instead.
         //
         // A TYPED CALL ARRIVES WITH ITS EVIDENCE: since WI-20260921-28TAT a `reify` whose
         // `T1` has no `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an

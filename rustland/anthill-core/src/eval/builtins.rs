@@ -665,6 +665,10 @@ fn const_value_source(
 /// Value`), so there is nothing in the KB for it to read, and the KB a clause converts
 /// against is half-loaded. Lending that KB to a full interpreter would make the value
 /// depend on how far the load had got.
+///
+/// Its effect registry is empty too, and a load performs no effect: a source that asks a
+/// handler (`time_now` asks `Clock`'s) stops there, before it resolves anything
+/// (`Interpreter::dispatch_effect_operation`), and is refused naming the effect.
 pub(crate) fn host_const_literal(
     kb: &crate::kb::KnowledgeBase,
     key: &str,
@@ -679,9 +683,15 @@ pub(crate) fn host_const_literal(
         },
     })?;
     let mut scratch = Interpreter::new(crate::kb::KnowledgeBase::new());
-    let value = host.call(&mut scratch, &[]).map_err(|e| Why::HostFailed {
-        key: key.to_string(),
-        message: e.to_string(),
+    let value = host.call(&mut scratch, &[]).map_err(|e| match e {
+        EvalError::UnhandledEffect { name } => Why::HostPerformsEffect {
+            key: key.to_string(),
+            effect: name,
+        },
+        e => Why::HostFailed {
+            key: key.to_string(),
+            message: e.to_string(),
+        },
     })?;
     value
         .as_literal(scratch.kb())
@@ -6640,14 +6650,14 @@ pub fn require_symbol(
 }
 
 // ── Builtins that route an operation through a registered effect handler.
-// Each is identical in shape: resolve the op symbol, invoke the handler
-// for a specific effect sort with `(op_sym, args)`. The macro keeps the
-// instances aligned and the wiring grep-friendly.
+// Each is identical in shape: take the handler for a specific effect sort, then
+// resolve the op symbol and invoke the handler with `(op_sym, args)`
+// (`Interpreter::dispatch_effect_operation`). The macro keeps the instances
+// aligned and the wiring grep-friendly.
 macro_rules! effect_dispatcher {
     ($fname:ident, $op_qname:literal, $op_short:literal, $effect_qname:literal) => {
         fn $fname(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-            let op_sym = require_symbol(interp, $op_qname, $op_short)?;
-            interp.invoke_effect_handler($effect_qname, op_sym, args)
+            interp.dispatch_effect_operation($effect_qname, $op_qname, $op_short, args)
         }
     };
 }

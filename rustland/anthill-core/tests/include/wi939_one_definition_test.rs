@@ -29,14 +29,15 @@
 //! MEASURED by making each edit and re-running, not predicted.
 //!
 //! Delete the `check_operation_body_and_clauses(kb)` call in `load_phase_inner` —
-//! **2 fail, 8 pass**: [`a_clause_beside_a_body_answers_a_residual_instead`] and
-//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`], each fixture then loading
-//! clean, which is the defect. The rest PASS EITHER WAY, BY DESIGN — they are the
-//! controls, and without them a check that refused every operation carrying clauses
-//! (the standard library included) would look correct here.
+//! **5 fail, 9 pass**: [`a_clause_beside_a_body_answers_a_residual_instead`],
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`] and the three host and boundary
+//! rows below, each fixture then loading clean, which is the defect. The rest PASS EITHER
+//! WAY, BY DESIGN — they are the controls, and without them a check that refused every
+//! operation carrying clauses (the standard library included) would look correct here.
 //!
-//! Drop the `bool_view` disjunct, leaving `params + 1` — **exactly 1 fails**,
-//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`]. That is the first cut,
+//! Drop the `bool_view` disjunct, leaving `params + 1` — **exactly 2 fail**,
+//! [`a_same_arity_clause_on_a_bodied_bool_op_is_refused`] and
+//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`]. That is the first cut,
 //! and it is what /code-review refuted.
 //!
 //! Drop the BUILTIN gate in `would_derive_bool_relation` — **exactly 2 fail**, both
@@ -45,13 +46,17 @@
 //! the other side: widening to the Bool arity WITHOUT the builtin gate refuses the
 //! 26 `PartialOrd.gte` / `.lte` SMT lemmas the spec says are intended.
 //!
-//! A HOST FUNCTION AND `Error.reify` ARE DEFINITIONS TOO (user, 2026-10-16). The
-//! functional-relation view reads a goal at arity + 1 as the call for every operation the
-//! bridge runs, so a clause there replaced the call in a rule body alone: `rule
-//! String.length(?s, 99) :- true` made `String.length("abc", ?n)` answer `99` beside
-//! `?n <=> String.length("abc")` answering `3`. Restrict the population to bodies again —
-//! **exactly 2 fail**, [`a_clause_beside_a_host_operation_is_refused`] and
-//! [`a_clause_beside_error_reify_is_refused`], each loading clean.
+//! A HOST FUNCTION AND `Error.reify` ARE DEFINITIONS TOO (user, 2026-10-16), so a clause
+//! at the slots a body's would be refused at is a second definition of either. Where a view
+//! reads the goal there as the call — at arity + 1, and at a `Bool` operation's own arity —
+//! the clause replaced the call in a rule body alone: `rule String.length(?s, 99) :- true`
+//! made `String.length("abc", ?n)` answer `99` beside `?n <=> String.length("abc")`
+//! answering `3`. Restrict the population to bodies again — **exactly 3 fail**,
+//! [`a_clause_beside_a_host_operation_is_refused`],
+//! [`a_clause_beside_error_reify_is_refused`] and
+//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`], each loading clean. Count
+//! the own-arity slot for bodies only, as the first cut of this did — **exactly 1 fails**,
+//! [`a_clause_at_a_host_bool_operations_own_arity_is_refused`].
 //! [`a_clause_at_a_host_operations_own_arity_is_another_relation`] passes either way, by
 //! design.
 
@@ -376,9 +381,12 @@ namespace wi939d.host
 end
 "#,
     );
+    // Two tokens, not one: a load that also holds the declaration's site names it in
+    // between (", declared at …,"), as a one-call load over the stdlib does.
     for want in [
-        "operation 'anthill.prelude.String.length' is implemented by the host function \"string_length\"",
-        "has 1 hand-written clause at its arity + 1",
+        "operation 'anthill.prelude.String.length'",
+        "is implemented by the host function \"string_length\"",
+        "has 1 hand-written clause at its arity + 1:",
         "Delete the clauses",
     ] {
         assert!(e.contains(want), "expected {want:?}; got {e}");
@@ -398,17 +406,41 @@ end
 "#,
     );
     for want in [
-        "operation 'anthill.prelude.Error.reify' is implemented by a boundary the interpreter installs",
-        "at its arity + 1",
+        "operation 'anthill.prelude.Error.reify'",
+        "is implemented by a boundary the interpreter installs",
+        "at its arity + 1:",
     ] {
         assert!(e.contains(want), "expected {want:?}; got {e}");
     }
 }
 
-/// PASSES EITHER WAY BY DESIGN: at a host operation's OWN arity a clause is no graph slot,
-/// and it loads. It makes the functor a relation, so an arity + 1 goal beside it is read
-/// against its clauses and refused at load for its arity — loudly; no call is replaced in
-/// silence.
+/// And at a host operation's OWN arity when it returns `Bool`: the relational view reads the
+/// goal there as the call (`eq(op(args), true)`), as it does a bodied `Bool` operation's.
+/// Loaded, the clause made `String.contains("abc", "z")` hold in a rule body where the call
+/// answers `false`, and `String.contains("abc", "b")` stop holding.
+#[test]
+fn a_clause_at_a_host_bool_operations_own_arity_is_refused() {
+    let e = refusal(
+        r#"
+namespace wi939d.hostbool
+  import anthill.prelude.{String}
+  rule String.contains("abc", "z") :- true
+end
+"#,
+    );
+    for want in [
+        "operation 'anthill.prelude.String.contains'",
+        "is implemented by the host function \"string_contains\"",
+        "has 1 hand-written clause at its arity + 1 or, as it returns `Bool`, at its own arity:",
+    ] {
+        assert!(e.contains(want), "expected {want:?}; got {e}");
+    }
+}
+
+/// PASSES EITHER WAY BY DESIGN: at the OWN arity of a host operation that does not return
+/// `Bool` a clause is no graph slot, and it loads. It makes the functor a relation, so an
+/// arity + 1 goal beside it is read against its clauses and refused at load for its arity
+/// — loudly; no call is replaced in silence.
 #[test]
 fn a_clause_at_a_host_operations_own_arity_is_another_relation() {
     crate::common::load_kb_with(

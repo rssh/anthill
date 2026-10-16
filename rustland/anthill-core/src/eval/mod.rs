@@ -350,9 +350,10 @@ pub(crate) struct ErrorLayer {
     /// the required spec's name
     /// (`op_dict_entries(reify).names()`), so it changes if the clause is rewritten or
     /// removed. Read ad hoc at the boundary, a clause deleted from
-    /// `stdlib/anthill/prelude/effects.anthill` would leave every boundary in the
-    /// program silently catching wide. Resolved at construction, the whole layer is
-    /// `None` and `Error.reify` fails loudly as an unimplemented body-less operation.
+    /// `stdlib/anthill/prelude/effects.anthill` would make every boundary in the program
+    /// refuse to run, naming its caller for evidence the caller was never asked for.
+    /// Resolved at construction, the whole layer is `None` and `Error.reify` fails loudly
+    /// as an unimplemented body-less operation.
     pub reify_payload_slot: Symbol,
     /// WI-20260921-28TAT — WHICH SUB-DICTIONARY of that slot carries the payload sort.
     ///

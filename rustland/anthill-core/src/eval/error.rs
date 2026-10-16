@@ -1,4 +1,3 @@
-use crate::intern::Symbol;
 use crate::span::SourceSpan;
 
 use super::Value;
@@ -73,22 +72,22 @@ pub enum EvalError {
         chain: Vec<String>,
     },
     /// An effect operation was dispatched with NO HANDLER registered for its effect
-    /// sort. NOT an evaluator-invariant bug: the SLD→eval bridge's scratch interpreter
-    /// has an EMPTY effect registry BY CONSTRUCTION (resolution must not perform
-    /// effects), so this is the ordinary outcome there and the bridge residualizes.
+    /// sort — or over a KB that does not declare the effect, where none can be. NOT an
+    /// evaluator-invariant bug: the SLD→eval bridge's scratch interpreter has an EMPTY
+    /// effect registry BY CONSTRUCTION (resolution must not perform effects), and so has
+    /// the one a load runs a `const_map` value source on. The bridge declines the goal and
+    /// reports the effect (`BridgeDisposition::Fault`); the load refuses the const, naming
+    /// it (`ConstUnavailableWhy::HostPerformsEffect`).
     ///
     /// WI-20260911-0V0F7 GAVE IT ITS PRODUCER. `invoke_effect_handler` raised
-    /// `Internal("no handler registered for effect …")` instead, which is wrong twice:
-    /// `bridge_op_to_eval` `debug_assert`s on `Internal`, so a program that merely
-    /// instantiated a parametric effect row with a real effect — the case
-    /// `docs/kernel-language.md` admits into the `Bool` relational view BECAUSE the
-    /// bridge residualizes it — ABORTED a debug build; and in release it was classified
-    /// as a fault rather than as the capability gap it is.
+    /// `Internal("no handler registered for effect …")` instead, and `bridge_op_to_eval`
+    /// `debug_assert`s on `Internal`, so a program that merely instantiated a parametric
+    /// effect row with a real effect — the case `docs/kernel-language.md` admits into the
+    /// `Bool` relational view because the bridge declines it — ABORTED a debug build.
     UnhandledEffect {
-        /// The effect sort whose handler is absent.
-        effect: Symbol,
-        /// Its qualified name, captured at the raise site: `Display` has no
-        /// `KnowledgeBase` to resolve `effect` with, and the name IS the diagnostic.
+        /// The effect sort's qualified name, captured at the raise site: `Display` has no
+        /// `KnowledgeBase`, the name IS the diagnostic, and over a KB that does not declare
+        /// the effect there is no symbol to carry.
         name: String,
     },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
@@ -405,7 +404,12 @@ impl EvalError {
             // which `docs/kernel-language.md`'s WI-20260830-DQD5W argument rests on: a
             // parametric row admitted into a relational view instantiates to a real effect,
             // raises it here, and the goal residualizes. The message names the effect
-            // (`KnowledgeBase::bridge_fault_message`), not a `reify`.
+            // (`KnowledgeBase::bridge_fault_message`), not a `reify`. As a fault it marks the
+            // WHOLE search incomplete from the moment the goal is first tried, a branch a
+            // later goal refutes included — so a negation over it is conditional, a drain of
+            // it fails, a quantified constraint over it is undecidable and does not load, and
+            // the verdict follows the goal order. Kept so (user, 2026-10-16), as a raise
+            // already behaves; `wi_9wvt7_clock_handler_test`'s refuted-branch rows pin each.
             EvalError::UnhandledEffect { .. }
             | EvalError::UnboundVar { .. }
             | EvalError::UnknownOperation { .. }

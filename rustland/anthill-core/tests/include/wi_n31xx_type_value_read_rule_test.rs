@@ -947,7 +947,8 @@ end
         // and these two strings are exactly what the first cut got wrong.
         "nothing provides `anthill.reflect.TypeValue` at it",
         // AND THE REPAIR THAT WORKS for `TypeValue`, none of whose instances may be written.
-        "Pass a value whose type is a sort: every `TypeValue` instance is derived",
+        "Pass a value whose type is a sort with no tuple or arrow among its type arguments: \
+         every `TypeValue` instance is derived",
     ] {
         assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
     }
@@ -1154,6 +1155,130 @@ end
             assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         }
     }
+}
+
+/// A REQUIREMENT OF THE LIBRARY'S TWO SPECS AT A SORT HOLDING A FORMER is refused as one
+/// at the former itself, naming the same repair. A sort's `TypeValue` instance holds only
+/// where each of its type arguments has one, so `Option[T = (a: Int64, b: String)]` has
+/// none, and `Error`'s `ErrorTag` row, conditioned on it, does not answer there either. The
+/// refusal advised a `provides TypeValue[…]` row, which is refused at load, and a `provides
+/// ErrorTag[…]` row, which loads and which no boundary reads.
+///
+/// BACK-OUT: `former_carrier`'s walk into a binding (`FormerCarrier::Within`) taken out, and
+/// both programs are refused with the row advice again.
+#[test]
+fn a_library_spec_at_a_former_inside_a_sort_is_refused_naming_a_value() {
+    for (shape, src, repair, dead_end) in [
+        (
+            "TypeValue",
+            r#"
+namespace test.n31xx.within
+  import anthill.prelude.{Int64, Option, Type}
+  import anthill.prelude.Option.{some}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+
+  operation ask() -> Type = tyOf(some((1, 2)))
+end
+"#,
+            "Pass a value whose type is a sort with no tuple or arrow among its type arguments",
+            "declare `provides anthill.reflect.TypeValue",
+        ),
+        (
+            "ErrorTag",
+            r#"
+namespace test.n31xx.withintag
+  import anthill.prelude.{Error, Int64, Option, Result, String}
+  import anthill.prelude.Option.{some}
+
+  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} =
+    Error.raise(some((a: 1, b: "x")))
+
+  operation caught() -> Result[E = Option[T = (a: Int64, b: String)], T = Int64] =
+    Error.reify(lambda () -> raisesOpt())
+end
+"#,
+            "Raise, in the thunk, a value whose type is a sort with no tuple or arrow among its \
+             type arguments",
+            "declare `provides anthill.prelude.ErrorTag",
+        ),
+    ] {
+        let errs = load_errors(src);
+        assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
+        for want in [
+            "has a STRUCTURAL FORMER — a tuple or an arrow — among its type arguments",
+            repair,
+        ] {
+            assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
+        }
+        assert!(
+            !errs[0].contains(dead_end),
+            "{shape}: no row can stand in, so none is advised; got {:?}",
+            errs[0]
+        );
+    }
+}
+
+/// THE ADVISED REPAIR ANSWERS: the tuple replaced by a sort, the payload is caught.
+#[test]
+fn the_advised_value_of_a_sort_is_caught() {
+    let mut interp = crate::common::interp_for(
+        r#"
+namespace test.n31xx.withinok
+  import anthill.prelude.{Error, Int64, Option, Result, String}
+  import anthill.prelude.Result.{ok, err}
+  import anthill.prelude.Option.{some}
+
+  sort Pair
+    import anthill.prelude.{Int64, String}
+    entity pair(a: Int64, b: String)
+  end
+
+  operation raisesOpt() -> Int64 effects {Error[Option[T = Pair]]} =
+    Error.raise(some(pair(1, "x")))
+
+  operation caught() -> String =
+    match Error.reify(lambda () -> raisesOpt())
+      case ok(_) -> "ok"
+      case err(_) -> "caught"
+end
+"#,
+    );
+    let v = interp
+        .call("test.n31xx.withinok.caught", &[])
+        .expect("the boundary catches the payload");
+    assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("caught"));
+}
+
+/// CONTROL — PASSES EITHER WAY BY DESIGN: a spec of the program's own at the same type keeps
+/// the row advice, since a row naming the whole type answers there.
+#[test]
+fn control_a_users_spec_at_a_former_inside_a_sort_keeps_the_row_advice() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.withinuser
+  import anthill.prelude.{Int64, Option, Type}
+  import anthill.prelude.Option.{some}
+
+  sort TT
+    import anthill.prelude.Type
+    sort T = ?
+    operation valueOf() -> Type
+  end
+
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+
+  operation ask() -> Type = tyOf(some((1, 2)))
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    assert!(
+        errs[0].contains("declare `provides test.n31xx.withinuser.TT[T = anthill.prelude.Option["),
+        "the row naming the whole type is the repair; got {:?}",
+        errs[0]
+    );
 }
 
 /// CONTROL — A FORMER CARRIER **WITH** A PROVISION STILL LOADS, which is what says the

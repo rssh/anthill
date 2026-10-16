@@ -578,18 +578,61 @@ impl Interpreter {
         op_sym: Symbol,
         args: &[Value],
     ) -> Result<Value, EvalError> {
-        let effect_sym = self.kb.try_resolve_symbol(effect_qname).ok_or_else(|| {
-            EvalError::UnknownOperation {
-                name: effect_qname.to_string(),
+        let (effect_sym, handler) = self.take_handler_for_invoke(effect_qname)?;
+        self.run_effect_handler(effect_sym, handler, effect_qname, op_sym, args)
+    }
+
+    /// [`Self::invoke_effect_handler`] for the operation named `op_qname`: the entry of the
+    /// builtins that dispatch an effect operation (`effect_dispatcher!`). The handler is
+    /// taken before the operation is resolved, so a run with none says which effect it
+    /// needed whatever its KB holds — a rule body's run, and a load's run of a `const_map`
+    /// value source over an empty KB (`builtins::host_const_literal`).
+    pub(crate) fn dispatch_effect_operation(
+        &mut self,
+        effect_qname: &str,
+        op_qname: &str,
+        op_short: &str,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
+        let (effect_sym, handler) = self.take_handler_for_invoke(effect_qname)?;
+        match crate::eval::builtins::require_symbol(self, op_qname, op_short) {
+            Ok(op_sym) => self.run_effect_handler(effect_sym, handler, effect_qname, op_sym, args),
+            Err(e) => {
+                self.effect_handlers.return_handler(effect_sym, handler);
+                Err(e)
             }
-        })?;
-        let mut handler = self
+        }
+    }
+
+    /// The handler registered for `effect_qname`, taken for one invocation. A KB that does
+    /// not declare the effect has no handler registered for it either, so both misses are
+    /// [`EvalError::UnhandledEffect`].
+    fn take_handler_for_invoke(
+        &mut self,
+        effect_qname: &str,
+    ) -> Result<(Symbol, EffectHandler), EvalError> {
+        let unhandled = || EvalError::UnhandledEffect {
+            name: effect_qname.to_string(),
+        };
+        let effect_sym = self
+            .kb
+            .try_resolve_symbol(effect_qname)
+            .ok_or_else(unhandled)?;
+        let handler = self
             .effect_handlers
             .take_for_invoke(effect_sym)
-            .ok_or_else(|| EvalError::UnhandledEffect {
-                effect: effect_sym,
-                name: effect_qname.to_string(),
-            })?;
+            .ok_or_else(unhandled)?;
+        Ok((effect_sym, handler))
+    }
+
+    fn run_effect_handler(
+        &mut self,
+        effect_sym: Symbol,
+        mut handler: EffectHandler,
+        effect_qname: &str,
+        op_sym: Symbol,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
         let action = handler(self, op_sym, args);
         self.effect_handlers.return_handler(effect_sym, handler);
         // Interpret the carrier. Only `Pure`/`Throw` are wired (WI-389);
@@ -861,6 +904,11 @@ impl Interpreter {
     /// a fresh arena-backed Modify handler — the latter is always useful,
     /// even for tests, since Modify.get/set have no side effect beyond
     /// the handler's own state.
+    ///
+    /// Each by its qualified name. An effect the KB does not declare is skipped, since no
+    /// program over it can perform one; `Modify` was registered by its short name, which
+    /// resolves to nothing, and so was skipped in every KB — `ModifyRuntime.set` on a cell
+    /// died "no handler registered for effect `anthill.prelude.Modify`" under `anthill run`.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
         let entries: [(&str, fn() -> EffectHandler); 6] = [
             (
@@ -875,7 +923,7 @@ impl Interpreter {
                 "anthill.prelude.Console.ConsoleInput",
                 stdio_console_input_handler,
             ),
-            ("Modify", default_modify_handler),
+            ("anthill.prelude.Modify", default_modify_handler),
             ("anthill.prelude.Error", default_error_handler),
             ("anthill.prelude.Time.Clock", system_clock_handler),
         ];

@@ -291,3 +291,86 @@ end
         "expected `Cell` among the Modifiable carriers (FileStore etc. too); got {carriers:?}",
     );
 }
+
+/// The STANDARD handlers answer `ModifyRuntime` on a cell, as `anthill run` registers them:
+/// the write goes through the cell arena, as `Cell.set` does. `Modify` was registered by its
+/// short name, which resolves to nothing, so it was skipped and the write died "no handler
+/// registered for effect `anthill.prelude.Modify`".
+///
+/// BACK-OUT: the short name put back in `register_standard_effect_handlers`, and this fails
+/// with that error.
+#[test]
+fn the_standard_handlers_answer_modify_runtime_on_a_cell() {
+    let src = r#"
+namespace test.wi205_runtime
+  import anthill.prelude.{Int64, Cell, ModifyRuntime}
+
+  operation viaRuntime(n: Int64) -> Int64 =
+    let c = Cell.new(n)
+    let _ = ModifyRuntime.set(c, n + 6)
+    Cell.get(c)
+end
+"#;
+    let mut interp = interp_for(src);
+    interp
+        .register_standard_effect_handlers()
+        .expect("register the standard handlers");
+    let v = interp
+        .call("test.wi205_runtime.viaRuntime", &[Value::Int(3)])
+        .expect("the standard Modify handler answers the write");
+    assert_eq!(v.literal_int64(interp.kb()), Some(9));
+}
+
+/// A RULE BODY DECLINES `ModifyRuntime` ON A CELL ITS CALLEE KEEPS TO ITSELF, AND SAYS WHY
+/// IN THE ROW'S TERMS. `localMod`'s row is pure — the cell never leaves it, so the typer drops
+/// its `Modify` — but the write asks the `Modify` handler, and a rule body's run has none. The
+/// call is declined as before, and the report says the row declares no `Modify`, where it said
+/// "it performs `anthill.prelude.Modify`", which contradicts the row the typer checked (user,
+/// 2026-10-16, for now; a run-time counterpart of the typer's masking is a separate item). The
+/// `Cell.set` twin answers 9.
+///
+/// BACK-OUT: the report's row check (`declared_row_may_hold`) answering yes, and this fails on
+/// the old wording; the `Cell.set` half passes either way, by design.
+#[test]
+fn a_rule_body_declines_modify_runtime_on_a_callees_own_cell_naming_its_row() {
+    use anthill_core::kb::resolve::ResolveConfig;
+    let src = r#"
+namespace test.wi205_rulebody
+  import anthill.prelude.{Int64, Cell, ModifyRuntime}
+
+  operation localCell(n: Int64) -> Int64 =
+    let c = Cell.new(n)
+    let _ = Cell.set(c, n + 6)
+    Cell.get(c)
+
+  operation localMod(n: Int64) -> Int64 =
+    let c = Cell.new(n)
+    let _ = ModifyRuntime.set(c, n + 6)
+    ModifyRuntime.get(c)
+
+  rule viaCell(?r) :- localCell(3, ?r)
+  rule viaMod(?r) :- localMod(3, ?r)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let rows = crate::common::query_unary(&mut kb, "test.wi205_rulebody.viaCell");
+    assert!(
+        matches!(rows.as_slice(), [(v, true)] if v.literal_int64(&kb) == Some(9)),
+        "the Cell.set twin answers 9: {rows:?}"
+    );
+    let goal = crate::common::query_pattern_term(&mut kb, "test.wi205_rulebody.viaMod(?r)");
+    let (solutions, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(
+        solutions.iter().all(|s| !s.is_definite()),
+        "declined, so no definite answer"
+    );
+    let messages: Vec<&str> = stats.errors.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("its row declares no `anthill.prelude.Modify`")),
+        "the report names the row: {messages:?}"
+    );
+    assert!(
+        messages.iter().all(|m| !m.contains("it performs `anthill.prelude.Modify`")),
+        "and does not say the pure operation performs it: {messages:?}"
+    );
+}
