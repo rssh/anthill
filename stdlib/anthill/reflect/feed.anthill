@@ -21,14 +21,26 @@ namespace anthill.reflect.feed
   end
 
   -- A feed edge over places. These facts ARE the feed-relationship; the
-  -- loader asserts a per-operation set, derived from the body (or its laws).
+  -- loader asserts a per-operation set, derived from the body.
+  --
+  -- traced(to: p): every value the derivation saw reach place `p` was followed
+  -- to its source, so `p`'s feeds are exactly the `flow` facts into it and
+  -- into what feeds it. The pass asserts it for the parameters of an
+  -- operation's callbacks and for its `result`. A place WITHOUT it was fed
+  -- something the pass could not follow — an ordinary call's result, a value
+  -- the callback got through an alias or from another operation, a constructed
+  -- value returned — so its origins are unknown and nothing on it may drop.
   enum Flow
     entity flow(kind: FlowKind, from: Symbol, to: Symbol)
+    entity traced(to: Symbol)
   end
 
   -- A place's boundary role, from the op's frame. Not stored as facts: it is
   -- a function of the place symbol's kind (WI-352), exposed by the
   -- `provenance` builtin below.
+  -- `fresh_output` is an ASSUMPTION, not something the pass proves: a callback
+  -- may return its own argument or a cell its closure holds (see the
+  -- flow_derive module doc).
   enum Provenance
     entity input          -- an operation parameter (caller-supplied)
     entity fresh_output   -- a value the op freshly produced (a callback result)
@@ -53,11 +65,24 @@ namespace anthill.reflect.feed
   rule origin(?place, ?src) :- reaches(?src, ?place)
 
   -- keep_modify(?p, ?r): a `Modify[?p]` on a callback parameter surfaces, kept
-  -- and re-keyed to ?r, when ?p's origin is an input (?r = that input) …
+  -- and re-keyed to ?r. Asked with BOTH arguments ground — `not` over an
+  -- unbound place would flounder. Kept when ?p's origin is an input (?r = that
+  -- input) …
   rule keep_modify(?p, ?r) :- origin(?p, ?r), provenance(?r, input)
-  -- … or a fresh output that escapes through the op result (?r = result).
-  -- Otherwise (fresh-but-non-escaping, locals): no solution -> dropped.
+  -- … or a fresh output that escapes through the op result (?r = result) …
   rule keep_modify(?p, ?result)
     :- origin(?p, ?src), provenance(?src, fresh_output),
        reaches(?src, ?result), provenance(?result, op_result)
+  -- … or a fresh output when what the result holds was not traced: it may be
+  -- in there …
+  rule keep_modify(?p, ?result)
+    :- origin(?p, ?src), provenance(?src, fresh_output),
+       provenance(?result, op_result), not(traced(to: ?result))
+  -- … or, when ?p's own feeds were not traced, on every input and on the
+  -- result: all-to-all, the flow-presence conservative axis (046 §"Role of
+  -- kind"). Only a traced place can drop.
+  rule keep_modify(?p, ?r) :- not(traced(to: ?p)), provenance(?r, input)
+  rule keep_modify(?p, ?r) :- not(traced(to: ?p)), provenance(?r, op_result)
+  -- Otherwise — a traced place fed only locals, or fresh outputs a traced
+  -- result does not hold — no solution: dropped.
 end

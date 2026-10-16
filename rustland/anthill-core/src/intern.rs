@@ -309,13 +309,16 @@ pub enum SymbolDef {
         /// WI-352 — for a *callable* place (an operation, or a callback-typed
         /// parameter), the ordered argument-place symbols it binds: an op's
         /// param places (`reduce.xs`, `reduce.z`, `reduce.f`) or a callback's
-        /// own param places (`reduce.f.a`, `reduce.f.t`). Empty for everything
-        /// else. This makes the higher-order structure self-describing on the
-        /// symbol, so a body's `apply(F, args)` maps `args[i]` to `F`'s i-th
+        /// own param places (`reduce.f.a`, `reduce.f.t`). `None` for everything
+        /// else — and `Some(empty)` for a callable that takes no arguments (a
+        /// `() -> T` callback), which an empty list could not tell from "not
+        /// callable" (it read so, and a thunk's application was invisible to the
+        /// flow pass). This makes the higher-order structure self-describing on
+        /// the symbol, so a body's `apply(F, args)` maps `args[i]` to `F`'s i-th
         /// place purely from symbol data — what the flow-derivation pass keys
         /// on, for the op (self-recursion) and callbacks alike. The result
         /// place is `<F>.result`, found by name, so it is not stored here.
-        arg_places: Vec<Symbol>,
+        arg_places: Option<Vec<Symbol>>,
     },
 }
 
@@ -1137,7 +1140,7 @@ impl SymbolTable {
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
             scope,
-            arg_places: Vec::new(),
+            arg_places: None,
         });
         scope_data.locals.insert(local_name.to_owned(), sym);
         self.set_canonical(qualified_name, sym);
@@ -1221,7 +1224,7 @@ impl SymbolTable {
             qualified_name: qualified_name.to_owned(),
             kinds: SmallVec::from_elem(kind, 1),
             scope,
-            arg_places: Vec::new(),
+            arg_places: None,
         });
         self.set_canonical(qualified_name, sym);
         sym
@@ -1233,18 +1236,34 @@ impl SymbolTable {
     /// an unresolved symbol.
     pub fn set_arg_places(&mut self, sym: Symbol, places: Vec<Symbol>) {
         if let Some(SymbolDef::Resolved { arg_places, .. }) = self.defs.get_mut(sym.0 as usize) {
-            *arg_places = places;
+            *arg_places = Some(places);
         }
     }
 
     /// WI-352 — the ordered argument-place symbols of `sym` (empty when `sym`
-    /// is not a callable place, or unresolved). The result place is `<sym>.result`
-    /// (found by name), not included here.
+    /// is not a callable place, or unresolved — ask [`Self::is_callable`] to
+    /// tell that from a callable taking no arguments). The result place is
+    /// `<sym>.result` (found by name), not included here.
     pub fn arg_places(&self, sym: Symbol) -> &[Symbol] {
         match self.defs.get(sym.0 as usize) {
-            Some(SymbolDef::Resolved { arg_places, .. }) => arg_places,
+            Some(SymbolDef::Resolved {
+                arg_places: Some(places),
+                ..
+            }) => places,
             _ => &[],
         }
+    }
+
+    /// Whether `sym` is a callable place — an operation, or a callback-typed
+    /// parameter, a `() -> T` one included (its [`Self::arg_places`] are empty).
+    pub fn is_callable(&self, sym: Symbol) -> bool {
+        matches!(
+            self.defs.get(sym.0 as usize),
+            Some(SymbolDef::Resolved {
+                arg_places: Some(_),
+                ..
+            })
+        )
     }
 
     /// WI-369: record that `sym` was declared `internal`, so cross-scope
