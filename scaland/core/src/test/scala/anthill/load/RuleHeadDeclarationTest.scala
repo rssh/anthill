@@ -35,9 +35,8 @@ import anthill.term.{Literal, Term}
   *     `true` goal no clause and no builtin resolves, so those predicates answered
   *     NOTHING. The stdlib parses AND loads clean in scaland, which is what kept sbt
   *     green; no row DROVE any of those predicates. The top-level strip closes that; the
-  *     GENERAL reading of a boolean goal is WI-20260822-J38JE's resolver arm, which
-  *     scaland still lacks — driven as a gap by `J38JE GAP: a boolean constant goal has
-  *     no reading below the top level`.
+  *     GENERAL reading of a boolean goal is WI-20260822-J38JE's resolver arm, ported
+  *     by NARC7 and driven by the retained `J38JE GAP CLOSED` row.
   *
   * ── THE RULE, IN TWO SENTENCES ──────────────────────────────────────────────
   *
@@ -69,20 +68,10 @@ import anthill.term.{Literal, Term}
   *    body-less rule ASSERTS again. **11 rows fail**: the four `061:` rows about what a
   *    declaration is or is not, all five channels, the named-owner row and the two-FILES
   *    row.
-  *  * **THE TOP-LEVEL `true` STRIP** — drop `filterNot(isEmptyConjunctionGoal(…))` from
-  *    `loadRuleHeads`' body build. **15 rows fail** — nearly every row, because once
-  *    `rule H` declares, `:- true` is how an assertion is spelled, and an unerased `true`
-  *    is a constant goal nothing resolves. All three CONTROLs fail here too, which is the
-  *    point: they measure that each scope reaches its OWN clause, and there are no
-  *    clauses left.
-  *
-  *    THAT 14 MEASURES A MISSING FEATURE, NOT THE STRIP, and it must be read that way:
-  *    the same back-out fells **zero** rows in rustland, because WI-20260822-J38JE's
-  *    resolver arm answers every `true` the strip stops seeing, and rustland corrected
-  *    `wi_fqc85`'s own back-out list when it shipped. scaland has the strip and not the
-  *    arm — see `J38JE GAP: a boolean constant goal has no reading below the top level`.
-  *    What the strip is FOR here is the body's SHAPE: only an EMPTY body makes `fact H`
-  *    and `rule H :- true` one clause, which is 061 item 5.
+  *  * **THE TOP-LEVEL `true` STRIP** — NARC7 remeasured this back-out after porting
+  *    boolean search: ZERO answer rows fail. Two shape checks fail: the empty-body
+  *    `fact H` / `rule H :- true` identity and the unconditional-denial refusal.
+  *    The former 15 failures measured the missing resolver arm, not the strip.
   *  * **THE PASS-1 MINT** — `if false then` in `Loader.declarePredicate`. **8 rows
   *    fail**: all five channels, the named-owner row, the equation-subject row and the
   *    two-FILES row. The declaration mints nothing, so the heads it was to collect either
@@ -247,8 +236,8 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     // WHAT THE STRIP IS FOR is the body's SHAPE, not the meaning of `true`: only an EMPTY
     // body makes `fact H` and `rule H :- true` ONE clause rather than two with equal
     // answers. The MEANING is WI-20260822-J38JE's — a boolean constant in goal position
-    // is a SEARCH — and it lives in the resolver, which scaland has not ported; see the
-    // gap row below.
+    // is a SEARCH — and it lives in the resolver, ported by NARC7; see the closed-gap
+    // row below.
     //
     // THE STRIP HAD TO BE MADE REAL HERE, not merely prescribed. MEASURED in scaland
     // before this change: `rule p(1) :- true` loaded clean AND ANSWERED NOTHING — `true`
@@ -263,6 +252,9 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
         |end""".stripMargin)
     assertEquals(answers(kb, "sbz.tt.readp", 1), 1, "`:- true` asserts")
     assertEquals(answers(kb, "sbz.tt.readq", 1), 1, "and so does `fact`")
+    val p = kb.tryResolveSymbol("sbz.tt.p").getOrElse(fail("p must resolve"))
+    assert(kb.byFunctor(p).forall(rid => kb.ruleBody(rid).isEmpty),
+      "fact / :- true identity requires an empty stored body")
     assertEquals(clauses(kb, "sbz.tt.p"), Some(1),
       "one clause — the `true` contributed no goal, it IS the empty body")
     // AND THEY AGREE ON THE NAME (WI-20260821-RDGQC). This row asserted `None` — a
@@ -272,55 +264,71 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
       "a `fact` head is scoped where it is written, as the `rule` spelling is")
   }
 
-  test("J38JE GAP: a boolean constant goal has no reading below the top level") {
-    // THE LIMIT OF THE STRIP, driven so it is written down rather than discovered. 061
-    // introduced the top-level `:- true` erasure under the reading "`true` IS the empty
-    // conjunction"; WI-20260822-J38JE then settled the MEANING one rung lower — a boolean
-    // constant in GOAL position is a SEARCH, `true` succeeding and `false` failing, at
-    // EVERY goal position, which is where §6.6 already puts the boolean OPERATORS. That
-    // reading lives in the RESOLVER (rustland's `SearchStream::step_init`) precisely
-    // because a loader strip over the body's top-level goal list can never reach a goal
-    // nested under `not` or `|`.
-    //
-    // SCALAND HAS THE STRIP AND NOT THE ARM, so the rows below diverge from rustland.
-    // They are asserted at the values scaland ACTUALLY gives, with the logical answer
-    // named, so the row fails the day the arm lands and has to be updated on purpose.
-    // J38JE's item 4 — a NON-Bool constant goal — is the same hole: `:- 42` loads clean
-    // and never matches, where rustland refuses it, located.
-    //
-    // WITH THE STDLIB, because `|` is minted with the address `..anthill.kernel.or`,
-    // and an address naming nothing is a load error (WI-20261008-T290W) —
-    // `kernel.anthill` is what declares it.
+  test("J38JE GAP CLOSED (NARC7): boolean goals run below the top level") {
+    // Resolver back-out: nottrue, ortrue, andtrue and direct true fail. The false /
+    // notfalse / ptrue rows pass either way by design; they were accidental controls.
+    // Removing only the loader strip leaves every answer unchanged, but changes the
+    // empty-body identity asserted in the 061 test above.
     val kb = anthill.codegen.scala.StdlibFixture.kbWith(LoadFixture.parsed(
       """namespace jj
         |  fact base(7)
         |  rule ptrue(1) :- true
         |  rule pfalse(1) :- false
-        |  rule pint(1) :- 42
         |  rule notfalse(1) :- not(false)
         |  rule nottrue(1) :- not(true)
         |  rule ortrue(1) :- base(9) | true
+        |  rule andtrue(1) :- true & base(7)
+        |  rule andfalse(1) :- base(7) & false
+        |  rule afterchoice(1) :- (false | true), base(9)
         |end""".stripMargin, "j.anthill"))
-    // THE TWO THE STRIP REACHES, and they are right.
-    assertEquals(answers(kb, "jj.ptrue", 1), 1, "a top-level `true` is erased: the clause fires")
-    assertEquals(answers(kb, "jj.pfalse", 1), 0,
-      "and `false` answers 0 — BY ACCIDENT: a constant names no name, so it resolves to " +
-      "no clause and no builtin; it does not FAIL, it never becomes a goal")
-    // ONE MORE IS RIGHT SINCE `not` REACHES NAF (WI-20261008-T290W; it was 0), and by
-    // the same accident: the negand `false` is a goal nothing proves, so its negation
-    // holds.
-    assertEquals(answers(kb, "jj.notfalse", 1), 1, "`not` of a goal nothing proves")
-    // THE THREE THE STRIP DOES NOT REACH. `not(true)` IS THE ONE THAT SEPARATES THE TWO
-    // READINGS, and it went WRONG when NAF went live: a constant negand is a goal
-    // nothing proves, `true` as much as `false`, so both negations hold. While `not` was
-    // dead it answered 0, the same accident as `false`. WI-20260908-NARC7 owns the arm.
-    assertEquals(answers(kb, "jj.nottrue", 1), 1,
-      "GAP (WI-20260908-NARC7): logic says 0 — `true` succeeds, so its negation fails")
-    assertEquals(answers(kb, "jj.ortrue", 1), 0,
-      "GAP (WI-20260908-NARC7): push_choice now runs, but a nested `true` still " +
-      "names no clause; logic says 1")
-    assertEquals(answers(kb, "jj.pint", 1), 0,
-      "GAP: rustland REFUSES `:- 42`, located (J38JE item 4); here the clause is silently dead")
+    val expected = Seq("ptrue" -> 1, "pfalse" -> 0, "notfalse" -> 1,
+      "nottrue" -> 0, "ortrue" -> 1, "andtrue" -> 1, "andfalse" -> 0, "afterchoice" -> 0,
+      "direct true" -> 1, "direct false" -> 0)
+    val actual = expected.map { (name, _) =>
+      val count = name match
+        case "direct true" | "direct false" =>
+          val goal = kb.alloc(Term.Const(Literal.BoolLit(name == "direct true")))
+          SearchStream.resolve(kb, goal).allSolutions(kb).length
+        case _ => answers(kb, s"jj.$name", 1)
+      name -> count
+    }
+    assertEquals(actual, expected)
+
+  }
+
+  test("NARC7: non-boolean goal constants are located load errors; data stays data") {
+    // Loader refusal back-out: every refusal below fails. The data control passes.
+    for literal <- Seq("42", "\"hello\"", "1.5") do
+      for wrap <- Seq[String => String](identity, s => s"not($s)",
+          s => s"base(9) | $s", s => s"$s & base(7)",
+          s => s"anthill.kernel.push_choice($s, base(7))",
+          s => s"anthill.kernel.push_and(base(7), $s)") do
+        val src = s"namespace bad\n  fact base(7)\n  rule p(1) :- ${wrap(literal)}\nend"
+        val kb = anthill.codegen.scala.StdlibFixture.kbWith()
+        val errors = Loader.loadAll(kb, IndexedSeq(LoadFixture.parsed(src, "constant.anthill")))
+        val error = errors.collectFirst { case e @ LoadError.ConstantInGoalPosition(_, _) => e }
+          .getOrElse(fail(s"expected constant refusal for $src, got $errors"))
+        error match
+          case LoadError.ConstantInGoalPosition(rendered, span) =>
+            assertEquals(rendered, literal)
+            assertEquals(span.file, "constant.anthill")
+            assertEquals(span.startRow, 3)
+            assertEquals(src.substring(span.start, span.end), literal)
+            assert(error.render.contains(s"constant `$literal`"))
+          case _ => fail("expected constant diagnostic")
+    val kb = loaded("data.anthill" ->
+      """namespace data
+        |  fact p(42, "hello", 1.5)
+        |  rule read(1) :- p(42, "hello", 1.5)
+        |  fact or(42, 1.5)
+        |  fact and(42, 1.5)
+        |  rule reador(1) :- or(42, 1.5)
+        |  rule readand(1) :- and(42, 1.5)
+        |  fact stored(not(42))
+        |  rule readstored(1) :- stored(not(42))
+        |end""".stripMargin)
+    for name <- Seq("read", "reador", "readand", "readstored") do
+      assertEquals(answers(kb, s"data.$name", 1), 1, "literal arguments are data")
   }
 
   test("061: THE SHIPPED STDLIB — an intuitionistic axiom is a DECLARATION, not a fact") {

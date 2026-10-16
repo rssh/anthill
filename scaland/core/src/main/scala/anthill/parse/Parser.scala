@@ -1,6 +1,7 @@
 package anthill.parse
 
 import anthill.intern.SymbolTable
+import anthill.term.Literal
 import scala.collection.mutable.ArrayBuffer
 
 /** Parse entry point — delegates to AnthillParser (fastparse-based).
@@ -25,3 +26,11 @@ object Parser:
       Right(ParsedFile(ArrayBuffer.empty, SymbolTable(), terms))
     else
       AnthillParser.parseInto(source, fileName, terms)
+
+  /** Source spelling shared by parser defaults and located loader diagnostics. */
+  private[anthill] def renderLiteral(lit: Literal): String = lit match
+    case Literal.StringLit(s) => Tokens.encodeStringLiteral(s)
+    case Literal.IntLit(v)    => v.toString
+    case Literal.BigIntLit(v) => v.toString
+    case Literal.FloatLit(v)  => Tokens.floatSurface(v.value)
+    case Literal.BoolLit(v)   => v.toString

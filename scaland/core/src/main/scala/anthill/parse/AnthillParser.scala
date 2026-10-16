@@ -2568,7 +2568,7 @@ private class AnthillParserImpl(
   /** Render a parse-time term as surface syntax. Reached from `renderTypeExpr` only,
     * for a value-in-type (`Vector[Int64, 3]`) or an effect guard's goals. */
   private def renderTerm(tid: TermId): String = terms.get(tid) match
-    case Term.Const(lit)  => renderLiteral(lit)
+    case Term.Const(lit)  => Parser.renderLiteral(lit)
     case Term.Var(v)      => v match
       // The parser only ever builds `Global`; `DeBruijn` is the loader's canonical
       // form for a STORED rule and `Rigid` is resolution's, so neither can reach here.
@@ -2582,15 +2582,6 @@ private class AnthillParserImpl(
       val pos = fn.posArgs.map(renderTerm)
       val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)}: ${renderTerm(v)}")
       s"${symbols.name(fn.functor)}(${(pos ++ named).mkString(", ")})"
-
-  private def renderLiteral(lit: Literal): String = lit match
-    // Through the `Tokens` spellings, so a quoted default is anthill source the author
-    // could paste back.
-    case Literal.StringLit(s) => Tokens.encodeStringLiteral(s)
-    case Literal.IntLit(v)    => v.toString
-    case Literal.BigIntLit(v) => v.toString
-    case Literal.FloatLit(v)  => Tokens.floatSurface(v.value)
-    case Literal.BoolLit(v)   => v.toString
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
     * requirement slots found in the `requires` lists — each becomes an operation type

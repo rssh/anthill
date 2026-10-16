@@ -634,16 +634,16 @@ class KnowledgeBase:
     * nothing else — empty for a plain predicate or a data constructor. Mirrors rustland's
     * `KnowledgeBase::goal_arg_slots`.
     *
-    * ONE ROW, because the resolver has one such dispatch: `not`, which
-    * [[anthill.resolve.SearchStream]] negates by proving its FIRST argument, whatever
-    * follows it ([[anthill.resolve.Builtins.firstArg]]). The row says the same, so the
-    * loader reads as a goal exactly the argument the resolver proves. Keyed on the TAG —
-    * a node is a connective because of what it resolves to, never because of its
-    * spelling. `or` / `and` join here when the resolver gains them. */
+    * Primitives are keyed on their dispatch tags. The derived kernel `or` / `and`
+    * rules have no tag, so compare their resolved symbols, never a user's short name.
+    * NARC7: the loader must check constants in the same slots the resolver proves. */
   def goalArgSlots(functor: TermSymbol, posArity: Int): Set[Int] =
     builtinOf(functor) match
       case Some(BuiltinTag.Not) if posArity >= 1 => Set(0)
-      case _                                     => Set.empty
+      case Some(BuiltinTag.PushChoice | BuiltinTag.PushAnd) if posArity == 2 => Set(0, 1)
+      case _ if posArity == 2 && Seq("anthill.kernel.or", "anthill.kernel.and")
+          .exists(name => tryResolveSymbol(name).contains(functor)) => Set(0, 1)
+      case _ => Set.empty
 
 // ── BuiltinTag ────────────────────────────────────────────────
 

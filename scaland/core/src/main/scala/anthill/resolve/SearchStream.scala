@@ -1,7 +1,7 @@
 package anthill.resolve
 
 import anthill.kb.{KnowledgeBase, BuiltinTag, RuleId}
-import anthill.term.{Term, TermId}
+import anthill.term.{Literal, Term, TermId}
 import anthill.subst.Substitution
 import scala.collection.mutable.ArrayBuffer
 
@@ -161,6 +161,19 @@ class SearchStream private (
         val walked = kb.applySubst(frame.goals(0), frame.subst)
         frame.goals(0) = walked
         walked
+
+    // NARC7 / §5.3: boolean goals are searches at every depth, including NAF and
+    // binary-control continuations. The loader's top-level true strip only keeps
+    // fact-shaped bodies empty; it cannot supply this operational meaning.
+    kb.getTerm(goal) match
+      case Term.Const(Literal.BoolLit(value)) =>
+        if value then
+          frame.goals.remove(0)
+          frame.depth = depth + 1
+          frame.state = FrameState.Init(delayMode.reset)
+        else stack.remove(stack.length - 1)
+        return Some(StepResult.Continue)
+      case _ => ()
 
     // 4. Builtin
     kb.getBuiltin(goal) match
