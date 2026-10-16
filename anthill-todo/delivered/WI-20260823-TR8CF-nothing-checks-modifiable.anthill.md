@@ -3,9 +3,9 @@
 - id: WI-20260823-TR8CF-nothing-checks-modifiable
 - created: 2026-08-23T10:51:46Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-16T13:30:02Z
+- status_at: 2026-10-16T16:50:27Z
 
 - acceptance: cargo-test
 
@@ -90,4 +90,8 @@ OPEN — /code-review (15 findings, not yet applied):
  13. duplicated dedup/formatting in `modify_place_not_modifiable`.
  14. the test shows the refused set but not that the accepted ops load clean.
  15. `extract_type` allocation per node in `result_type_admits_region`.
+
+### 2026-10-16T16:50:24Z — feedback — user
+
+DELIVERED (f6829f24, on 44bc04f9). All 15 /code-review findings applied: one exact predicate (`region_sorts` = each claim's `T` head closed over `provides`; masking = `type_admits_modify`, which follows fields and reads a function value through its result only); a `Modify` arising at an instantiation over a non-modifiable place dropped as vacuous (user's direction) while a written one on a concrete type stays refused; written rows judged; per-fact return type; field paths by position, every constructor and bindings; unreadable shapes reported; sealed operations skipped and the region set built lazily. Back-outs measured per fix. Merged tree: workspace 9961 / 0, families green, scaland 692 / 0. Not taken here: the user's generalisation (an effect kind's default guard, `Modify[X] :- requires ModifyRuntime[X]`, discharged as a proposal-048 guarded atom) — a proposal of its own if wanted; proposal 071 is TypePattern (Error), not this.
 
