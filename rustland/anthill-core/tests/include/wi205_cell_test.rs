@@ -264,8 +264,8 @@ fn modify_set_get_on_cell_routes_through_arena() {
 /// own body, or in a `namespace <Store>` secondary entry beside a free-standing entity
 /// — and a provision is not a clause. Asking the old question after the migration got
 /// the answer this test is here to refuse: zero, from a tree where every claim is
-/// present. `region.rs`'s `modifiable_claim_heads` made the same move at the same time,
-/// and for the same reason.
+/// present. `region.rs` made the same move at the same time, and for the same reason
+/// (its claim reader is `region_sorts` now, over the keyed provider index).
 #[test]
 fn modifiable_claims_for_stdlib_resources_resolve() {
     let interp = interp_for(

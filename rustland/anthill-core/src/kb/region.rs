@@ -55,107 +55,47 @@ use crate::intern::{Symbol, SymbolKind};
 /// for masking — so `provides Modifiable[T = Box[V = Int64]]` put `Int64` in it and every
 /// `Modify` over an `Int64` place then passed the declaration check, program-wide
 /// (WI-20260823-TR8CF review). A result that merely MENTIONS a modifiable sort is still
-/// kept: [`admits_modify`] walks the type's arguments and fields for it.
+/// kept: [`admits_modify`] walks the type's arguments and fields for it. The reflect op
+/// `anthill.reflect.is_modifiable` asks the same predicate, so reflection and the kernel
+/// cannot disagree.
+///
+/// ONE CHANNEL, THE PROVISION RELATION (WI-862, WI-20260917-S8JYF). A claim is a
+/// `provides Modifiable[T = …]` wherever it is written — a sort body, or a `namespace
+/// <Carrier>` secondary entry. A raw `fact Modifiable[T = X]` claims nothing about any
+/// spec and is not read; reading the raw-fact index alone once went blind on the
+/// migrated stdlib (`is_modifiable(Cell)` answered false).
+///
+/// COST: one bucket of the keyed provider index per modifiable sort (`Modifiable`'s, then
+/// each found sort's providers), not a walk of the relation. `type_check_sorts` computes
+/// it once per typing pass and threads it in (WI-20260920-E3DC5: it once ran per SORT,
+/// 204 times on a stdlib load, each a full walk — the `debug_assert` at its old site in
+/// `check_operation_bodies` pins the hoist's loop-invariance); `check_modify_targets` and
+/// the written-row gate compute it lazily, only when some place needs judging; the
+/// reflect op per call.
 pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
     let mut out = HashSet::new();
     let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
         return out; // no Modifiable claims loaded — nothing admits a region
     };
-    let canonical_modifiable = kb.canonical_sort_sym(modifiable);
-    let provisions = super::typing::all_provisions(kb);
-    for p in &provisions {
-        if kb.canonical_sort_sym(p.spec) != canonical_modifiable {
-            continue;
-        }
-        let claimed = extract_type_param(kb, &p.spec_view, "T").and_then(|bound| type_head_sort(kb, &bound));
+    let mut queue: Vec<Symbol> = Vec::new();
+    for (_, view) in super::typing::provisions_of_spec(kb, modifiable) {
+        let claimed = extract_type_param(kb, &view, "T").and_then(|bound| type_head_sort(kb, &bound));
         if let Some(sort) = claimed.filter(|&s| !super::typing::is_sort_param_symbol(kb, s)) {
-            out.insert(sort);
-        }
-    }
-    // Closed over `provides`, to a fixpoint: a provider of a provider is one too.
-    let mut canonical: HashSet<Symbol> = out.iter().map(|&s| kb.canonical_sort_sym(s)).collect();
-    loop {
-        let before = out.len();
-        for p in &provisions {
-            if canonical.contains(&kb.canonical_sort_sym(p.spec)) && out.insert(p.provider) {
-                canonical.insert(kb.canonical_sort_sym(p.provider));
+            if out.insert(sort) {
+                queue.push(sort);
             }
         }
-        if out.len() == before {
-            return out;
+    }
+    // Closed over `provides`: each modifiable sort's own providers, to a fixpoint — a
+    // provider of a provider is one too.
+    while let Some(sort) = queue.pop() {
+        for (provider, _) in super::typing::provisions_of_spec(kb, sort) {
+            if out.insert(provider) {
+                queue.push(provider);
+            }
         }
     }
-}
-
-/// WI-862 — EVERY claim that some sort is `Modifiable`, as the claim's own head term.
-///
-/// ONE CHANNEL, AND IT IS THE PROVISION RELATION (WI-20260917-S8JYF). This module used
-/// to scan `rules_by_functor` — the RAW FACT index — and WI-862 widened it to read the
-/// provision relation BESIDE it, because 058 §4's migration of `fact Modifiable[T =
-/// Cell]` to `provides Modifiable[T = Cell]` files a `SortProvidesInfo` and no fact, and
-/// the fact-only scan went blind on the migrated stdlib (`is_modifiable(Cell)` answered
-/// **false** — a wrong ANSWER, not an error, across five tests in `wi206`, `wi707`,
-/// `wi314` and `kb::region::wi353_tests`).
-///
-/// THE RAW-FACT LEG IS NOW GONE, and dropping it is the retirement rather than an
-/// optimisation: a `fact Modifiable[T = X]` is an ordinary fact and claims nothing
-/// about any spec, so a reader that still took one for a provision would be the last
-/// site at which the retired spelling kept working — the spelling-dependent meaning
-/// this loader no longer has. What the widening bought stays: the `provides` leg is
-/// the only leg, and it sees the claim wherever it is written (a sort body, or a
-/// `namespace <Carrier>` secondary entry).
-///
-/// BOTH CALLERS READ A HEAD THE SAME WAY — the `T` binding's head sort (WI-206). This
-/// was a recorded landmine while `region_sorts` collected every sort reachable anywhere
-/// in the head; it no longer does (WI-20260823-TR8CF). This function supplies the heads
-/// for [`is_modifiable_sort`]; [`region_sorts`] walks the provision rows itself, since it
-/// also closes over their providers.
-///
-/// COST: one `all_provisions` walk per call, where this used to be an index lookup.
-/// Acceptable at both callers — `region_sorts` is computed ONCE per typing pass
-/// (`type_check_sorts` calls it before the per-op loop, saying so), and
-/// `is_modifiable_sort` backs a reflect introspection op, not a dispatch. If a third
-/// caller ever puts this on a hot path, the answer is the `EqDispatchIndex`/
-/// `DefaultProviderIndex` pattern, not a narrower channel list.
-///
-/// WI-20260920-E3DC5 — "ONCE per typing pass" ONLY BECAME TRUE WITH THAT TICKET, and the
-/// gap is worth knowing about because this comment is what made it invisible. The call
-/// sat inside `check_operation_bodies`, which `type_check_sorts_collect` invokes once per
-/// SORT, so it ran 204 times on a stdlib load — `sorts × provisions` — while reading as
-/// though it ran once. It is now hoisted to that loop's caller and threaded in; see the
-/// `debug_assert` at the old site, which pins the loop-invariance the hoist rests on.
-fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<Value> {
-    let canonical = kb.canonical_sort_sym(modifiable);
-    super::typing::all_provisions(kb)
-        .into_iter()
-        .filter(|p| kb.canonical_sort_sym(p.spec) == canonical)
-        .map(|p| p.spec_view)
-        .collect()
-}
-
-/// WI-206: whether `sort` is admitted by a `Modifiable[T = …]` fact — the test
-/// behind the `anthill.reflect.is_modifiable` reflect op.
-///
-/// Reads the claim's `T` BINDING and takes ITS head sort — the reading [`region_sorts`]
-/// takes too. Collecting every sort reachable anywhere in the head is a wrong ANSWER:
-/// under `Modifiable[T = Cell[V = Int64]]` — the parameterized shape `cell.anthill`
-/// itself describes — it would report `Int64` as modifiable. Unlike [`region_sorts`] it
-/// does not close over `provides`: it answers the reflect op, which asks of the claim.
-///
-/// The head sort decides, so a parameterized instance answers as its base does:
-/// `Modifiable[T = Cell]` makes `Cell[V = Int64]` modifiable too.
-pub(crate) fn is_modifiable_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
-    let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
-        return false; // no Modifiable claims loaded — nothing is modifiable
-    };
-    // WI-862 — BOTH spellings of the claim; see [`modifiable_claim_heads`].
-    modifiable_claim_heads(kb, modifiable)
-        .into_iter()
-        .any(|head| {
-            extract_type_param(kb, &head, "T")
-                .and_then(|bound| type_head_sort(kb, &bound))
-                == Some(sort)
-        })
+    out
 }
 
 /// The head sort a type NAMES: `Cell` for both the bare `Cell` and the
@@ -219,7 +159,21 @@ pub(crate) fn result_type_admits_region<V: TermView>(
 /// later caller supplies. An effect row never admits, nor a sort with no constructors
 /// that is not modifiable (`Int64`).
 pub(crate) fn type_admits_modify<V: TermView>(kb: &KnowledgeBase, ty: &V, regions: &HashSet<Symbol>) -> bool {
-    admits_modify(kb, ty, regions, &mut HashSet::new(), None)
+    admits_modify(kb, ty, regions, true, &mut HashSet::new(), None)
+}
+
+/// [`type_admits_modify`]'s DEFINITE reading: the same walk, with whatever it cannot read
+/// — a type variable, an unbound parameter (a bare `List`'s element), an unbound
+/// `Function` result, a shape it does not know — counted as admitting NONE. What the
+/// reflect op `anthill.reflect.is_modifiable` answers: a query wants "yes, a `Modify` can
+/// fire here", where the typer refuses only on "no, it cannot". On a concrete type the two
+/// agree, the walk being one.
+pub(crate) fn type_definitely_admits_modify<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    regions: &HashSet<Symbol>,
+) -> bool {
+    admits_modify(kb, ty, regions, false, &mut HashSet::new(), None)
 }
 
 /// [`type_admits_modify`]'s walk. `free` is set while an entity field of some
@@ -227,16 +181,18 @@ pub(crate) fn type_admits_modify<V: TermView>(kb: &KnowledgeBase, ty: &V, region
 /// the application being followed bound to a type that does not admit. A field
 /// declaration writes a parameter AS that variable (`cons(head: T, …)` reads
 /// `head` as an anonymous variable, the one `T` published — WI-954), so a
-/// variable admits unless it is there. `visiting` is the sorts whose fields are
+/// variable not there is unknown. `unknown` is what anything unknown answers — `true` for
+/// the typer, `false` for the definite reading. `visiting` is the sorts whose fields are
 /// being read further up (a recursive sort's own field decides nothing new).
 fn admits_modify<V: TermView>(
     kb: &KnowledgeBase,
     ty: &V,
     regions: &HashSet<Symbol>,
+    unknown: bool,
     visiting: &mut HashSet<Symbol>,
     free: Option<&HashSet<u32>>,
 ) -> bool {
-    let var_admits = |id: u32| !free.is_some_and(|ids| ids.contains(&id));
+    let var_admits = |id: u32| unknown && !free.is_some_and(|ids| ids.contains(&id));
     // The type of a function value, written as an application.
     let is_function = |s: Symbol| kb.qualified_name_of(s) == "anthill.prelude.Function";
     match extract_type(kb, ty) {
@@ -244,18 +200,18 @@ fn admits_modify<V: TermView>(
             if regions.contains(&s) {
                 true
             } else if super::typing::is_sort_param_symbol(kb, s) {
-                param_var_id(kb, s).is_none_or(var_admits)
+                param_var_id(kb, s).map_or(unknown, var_admits)
             } else if is_function(s) {
                 // `Function` with its result unbound: it may return anything.
-                true
+                unknown
             } else {
-                // Its own parameters, if it has any, are unbound here: nothing
-                // is known of them, so they admit.
-                fields_admit_modify(kb, s, regions, visiting, &HashSet::new())
+                // Its own parameters, if it has any, are unbound here: nothing is known
+                // of them, so they answer as anything unknown does.
+                fields_admit_modify(kb, s, regions, unknown, visiting, &HashSet::new())
             }
         }
         TypeExtractor::FlexVar { id, .. } => var_admits(id),
-        TypeExtractor::TypeVar(_) | TypeExtractor::Skolem { .. } => true,
+        TypeExtractor::TypeVar(_) | TypeExtractor::Skolem { .. } => unknown,
         TypeExtractor::Parameterized { base, bindings } => {
             if regions.contains(&base) {
                 return true;
@@ -266,11 +222,11 @@ fn admits_modify<V: TermView>(
                 return bindings
                     .iter()
                     .find(|(param, _)| kb.local_name_of(*param) == "B")
-                    .is_none_or(|(_, result)| admits_modify(kb, result, regions, visiting, free));
+                    .map_or(unknown, |(_, result)| admits_modify(kb, result, regions, unknown, visiting, free));
             }
             let mut bound_free = HashSet::new();
             for (param, value) in &bindings {
-                if admits_modify(kb, value, regions, visiting, free) {
+                if admits_modify(kb, value, regions, unknown, visiting, free) {
                     return true;
                 }
                 let name = kb.local_name_of(*param);
@@ -282,19 +238,19 @@ fn admits_modify<V: TermView>(
                     bound_free.insert(id);
                 }
             }
-            fields_admit_modify(kb, base, regions, visiting, &bound_free)
+            fields_admit_modify(kb, base, regions, unknown, visiting, &bound_free)
         }
         TypeExtractor::NamedTuple(fields) => fields
             .iter()
-            .any(|(_, t)| admits_modify(kb, t, regions, visiting, free)),
+            .any(|(_, t)| admits_modify(kb, t, regions, unknown, visiting, free)),
         // A function value carries out what it returns: a closure handing back its fresh
         // cell (`-> (x: Int64) -> Cell`) carries the cell; its parameters' types are the
         // later caller's to supply, never carried out (`-> (c: Cell) -> Int64`).
-        TypeExtractor::Arrow { result, .. } => admits_modify(kb, &result, regions, visiting, free),
-        TypeExtractor::PolyType { body, .. } => admits_modify(kb, &body, regions, visiting, free),
+        TypeExtractor::Arrow { result, .. } => admits_modify(kb, &result, regions, unknown, visiting, free),
+        TypeExtractor::PolyType { body, .. } => admits_modify(kb, &body, regions, unknown, visiting, free),
         // An effect row or a value standing in a type: no value of the place's own.
         TypeExtractor::Nothing | TypeExtractor::EffectsRows(_) | TypeExtractor::Denoted(_) => false,
-        _ => true,
+        _ => unknown,
     }
 }
 
@@ -314,6 +270,7 @@ fn fields_admit_modify(
     kb: &KnowledgeBase,
     sort: Symbol,
     regions: &HashSet<Symbol>,
+    unknown: bool,
     visiting: &mut HashSet<Symbol>,
     free: &HashSet<u32>,
 ) -> bool {
@@ -328,7 +285,7 @@ fn fields_admit_modify(
         .collect();
     let admits = field_types
         .iter()
-        .any(|t| admits_modify(kb, t, regions, visiting, Some(free)));
+        .any(|t| admits_modify(kb, t, regions, unknown, visiting, Some(free)));
     visiting.remove(&sort);
     admits
 }

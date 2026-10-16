@@ -5732,25 +5732,44 @@ fn stored_ref_value(
     })
 }
 
-/// `anthill.reflect.is_modifiable(t: Type) -> Bool` (WI-206). True iff `t`'s head
-/// sort is admitted by a `Modifiable[T = …]` fact — the marker proposal 037 Rule 8
-/// demands before `Modify[t]` may appear in an effect row.
+/// `anthill.reflect.is_modifiable(t: Type) -> Bool` (WI-206). Whether a `Modify` can fire
+/// on a place of type `t` — proposal 037 Rule 8's question, answered by the walk the
+/// kernel typer enforces it with (`region::type_definitely_admits_modify`,
+/// WI-20260823-TR8CF), so on a concrete type reflection and the kernel cannot disagree.
+/// True for a sort a `Modifiable` claim names (`Cell`, `KB`) or one that `provides` such a
+/// sort (`NonMonotonicStore`), and for a type holding one — a type argument (`List[T =
+/// Cell]`), an entity field (a data sort with a `Cell` inside). A claimed base answers
+/// for its instances (`Cell[V = Int64]`); a claim's type ARGUMENT is not made modifiable
+/// by it.
 ///
-/// The test is on the HEAD SORT, so a parameterized instance answers as its base
-/// does: `fact Modifiable[T = Cell]` (cell.anthill) makes `Cell` and `Cell[V =
-/// Int64]` alike modifiable. A literal `Modifiable[T = t]` KB query could not do
-/// that — the fact's `T` is the bare `Ref(Cell)`, which does not unify with the
-/// parameterized `Cell[V = Int64]`.
+/// DEFINITE, where the typer is conservative: what the walk cannot read — a type
+/// variable, an unbound parameter (a bare `List`'s element), an unbound `Function`
+/// result — counts as NO here, where the typer refuses a `Modify` only on a type known to
+/// hold nothing. And only a TYPE is asked about: a data value (`some(3)`, `plain(n: 3)`)
+/// is refused loudly rather than answered.
 ///
-/// Reads the fact set through `region::is_modifiable_sort`, the same reader the
-/// typer's region analysis uses, so reflection and the kernel cannot disagree
-/// about what is modifiable.
+/// It answered "does `t`'s HEAD sort carry a claim" until 2026-10-16, which the typer had
+/// stopped asking: it said false for `NonMonotonicStore`, `List[T = Cell]` and a `Cell`-
+/// holding sort while a `Modify` on each was accepted.
 fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::typing::{extract_type, TypeExtractor};
     let [ty] = expect_args::<1>("is_modifiable", args)?;
-    let sort = crate::eval::eval::value_functor(&interp.kb, &ty)
-        .ok_or_else(|| type_mismatch("Type (a sort reference)", &ty, None))?;
-    Ok(Value::Bool(crate::kb::region::is_modifiable_sort(
-        &interp.kb, sort,
+    let kb = &interp.kb;
+    // A sort — a free-standing entity being its own — or an application of one.
+    let is_sort = |s: crate::intern::Symbol| {
+        kb.kind_of(s) == Some(crate::intern::SymbolKind::Sort) || kb.sort_of_constructor(s) == Some(s)
+    };
+    let is_type = match extract_type(kb, &ty) {
+        TypeExtractor::SortRef(s) | TypeExtractor::Parameterized { base: s, .. } => is_sort(s),
+        TypeExtractor::NamedTuple(_) | TypeExtractor::Arrow { .. } | TypeExtractor::PolyType { .. } => true,
+        _ => false,
+    };
+    if !is_type {
+        return Err(type_mismatch("Type (a sort, or a type built from sorts)", &ty, None));
+    }
+    let regions = crate::kb::region::region_sorts(kb);
+    Ok(Value::Bool(crate::kb::region::type_definitely_admits_modify(
+        kb, &ty, &regions,
     )))
 }
 

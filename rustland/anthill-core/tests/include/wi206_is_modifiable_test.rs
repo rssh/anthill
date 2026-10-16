@@ -1,24 +1,28 @@
 //! WI-206 — the `anthill.reflect.is_modifiable(t: Type) -> Bool` reflect op:
-//! whether `t` is a modifiable resource, i.e. whether a `Modifiable[T = S]` fact
-//! names t's head sort (the marker proposal 037 Rule 8 demands before `Modify[t]`
-//! may appear in an effect row). It lets user code introspect what the kernel
-//! typer enforces — defensive code that mutates only a modifiable argument,
-//! reflection-driven listings of the modifiable resources in scope.
+//! whether a `Modify` can fire on a place of type `t` (proposal 037 Rule 8). Since
+//! 2026-10-16 it asks the predicate the kernel typer enforces the rule with
+//! (`region::type_admits_modify`, WI-20260823-TR8CF), so reflection and the kernel
+//! cannot disagree: a claimed sort, a provider of one, a type holding one. It lets
+//! user code introspect what the kernel typer enforces — defensive code that mutates
+//! only a modifiable argument, reflection-driven listings of the modifiable resources
+//! in scope.
 //!
 //! Two surfaces are pinned here:
 //!   * from anthill source, with the sort passed BY REFERENCE (`is_modifiable(Cell)`,
 //!     the `facts_of(kb(), WorkItem)` convention of WI-632). A bare SORT name had no
 //!     value reading before this WI (only a free-standing ENTITY did), so the op also
 //!     brought the sort-as-`Type` reading in the typer + eval;
-//!   * at the value level, where the HEAD-SORT semantics shows: a parameterized
-//!     `Cell[V = Int64]` is modifiable because its base `Cell` is. A literal
-//!     `Modifiable[T = t]` KB query could NOT answer that — the fact's `T` is the
-//!     bare `Ref(Cell)`, which does not unify with the parameterized type.
+//!   * at the value level: a parameterized `Cell[V = Int64]` is modifiable because its
+//!     claimed base `Cell` is — which a literal `Modifiable[T = t]` KB query could not
+//!     answer, the claim's `T` being the bare `Cell` — and a value that is no type is
+//!     refused.
 //!
-//! Writing that parameterized type in SOURCE (`is_modifiable(Cell[V = Int64])`) is a
-//! separate language surface — a type expression used as a value argument, missing
-//! today for every `Type`-taking reflect op alike (`facts_of(kb(), List[T = Int64])`
-//! fails identically) — filed as its own WI.
+//! The parameterized type written in SOURCE (`is_modifiable(List[T = Cell])`) is
+//! WI-707's surface, and the type-argument row below uses it.
+//!
+//! DEFINITE where the typer is conservative (`region::type_definitely_admits_modify`):
+//! what the walk cannot read — a bare `List`'s element, a type variable — answers false,
+//! where the typer refuses a `Modify` only on a type known to hold nothing.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::term::Term;
@@ -26,9 +30,8 @@ use smallvec::SmallVec;
 
 use crate::common::{interp_for, try_load_kb_with};
 
-/// The stdlib asserts `fact Modifiable[T = Cell]` (cell.anthill) and
-/// `fact Modifiable[T = KB]` (reflect.anthill), and nothing asserts one for
-/// `Int64` — so the op answers true, true, false from anthill source.
+/// The stdlib claims `provides Modifiable[T = Self]` in `Cell` and `KB`, and nothing
+/// claims one for `Int64` — so the op answers true, true, false from anthill source.
 #[test]
 fn is_modifiable_answers_the_modifiable_facts() {
     let src = r#"
@@ -83,9 +86,9 @@ fn parameterized_instance_is_modifiable_via_its_base_sort() {
         .expect("is_modifiable(Cell[V = Int64])");
     assert!(
         matches!(got, Value::Bool(true)),
-        "a parameterized Cell[V = Int64] is modifiable because its base sort Cell is \
-         — the op matches the head sort, which a literal `Modifiable[T = t]` query \
-         could not (the fact's T is the bare `Ref(Cell)`) — got {got:?}"
+        "a parameterized Cell[V = Int64] is modifiable because its claimed base Cell is, \
+         which a literal `Modifiable[T = t]` query could not answer (the claim's T is \
+         the bare `Cell`) — got {got:?}"
     );
 }
 
@@ -93,12 +96,11 @@ fn parameterized_instance_is_modifiable_via_its_base_sort() {
 /// ARGUMENT: under `fact Modifiable[T = Box[V = Int64]]`, `Box` is modifiable and
 /// `Int64` is not.
 ///
-/// The op must therefore read the fact's `T` binding and take its head sort — NOT
-/// reuse the typer's `region_sorts`, which deliberately over-approximates (it
-/// collects every sort reachable anywhere in the head, because for effect-masking a
-/// result type that merely MENTIONS a region-bearing sort must keep its `Modify`).
-/// Sharing that reader would report `Int64` modifiable here, and `cell.anthill`
-/// documents exactly this `Modifiable[T = Cell[V]]` shape — so the trap is live.
+/// The claim's `T` binding is read for its head sort. `region_sorts`, which the op now
+/// shares with the typer, used to collect every sort reachable anywhere in a claim's
+/// head and would have reported `Int64` modifiable here — the trap this row pinned while
+/// the two readers were kept apart; it now pins that the shared set is exact
+/// (WI-20260823-TR8CF).
 #[test]
 fn a_parameterized_modifiable_fact_does_not_make_its_type_argument_modifiable() {
     let src = r#"
@@ -174,4 +176,121 @@ end
         "expected the ordinary destination mismatch proposal 055 §2 specifies \
          (`expected Int64, got Type`), got {errs:?}"
     );
+}
+
+/// REFLECTION AND THE KERNEL AGREE: a sort that `provides` a claimed spec
+/// (`NonMonotonicStore provides Store`) and a data sort holding a `Cell` in a field
+/// (`Wrap`) are modifiable — the op says so, AND a `Modify` on a place of each loads —
+/// while a sort holding none (`Plain`) is not, and a `Modify` on it is refused. A bare
+/// generic sort (`List`, its element unbound) answers false: the op is definite.
+/// `wrap_is` FAILS with the op reading only the HEAD sort (its reading before 2026-10-16);
+/// `nonmono_is` with the `provides` closure of `region_sorts` backed out
+/// (`NonMonotonicStore` carries no claim of its own — and that back-out refuses the
+/// stdlib's own rows, so every load fails with it); `bare_list_is` with the op on the
+/// typer's conservative reading (an unbound element counted as admitting); `plain_is`
+/// passes either way, by design. MEASURED, 2026-10-16.
+#[test]
+fn is_modifiable_answers_what_the_typer_accepts() {
+    let src = r#"
+namespace test.wi206e
+  import anthill.prelude.{Cell, Int64, Bool, Unit, List, Modify}
+  import anthill.reflect.{is_modifiable}
+  import anthill.persistence.{NonMonotonicStore}
+
+  sort Wrap
+    entity wrap(rep: Cell[V = Int64])
+  end
+  sort Plain
+    entity plain(n: Int64)
+  end
+
+  operation nonmono_is() -> Bool = is_modifiable(NonMonotonicStore)
+  operation wrap_is() -> Bool = is_modifiable(Wrap)
+  operation plain_is() -> Bool = is_modifiable(Plain)
+  operation bare_list_is() -> Bool = is_modifiable(List)
+end
+"#;
+    let mut interp = interp_for(src);
+    for (op, want) in [
+        ("nonmono_is", true),
+        ("wrap_is", true),
+        ("plain_is", false),
+        ("bare_list_is", false),
+    ] {
+        let got = interp
+            .call(&format!("test.wi206e.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        assert!(matches!(got, Value::Bool(b) if b == want), "{op}: expected {want}, got {got:?}");
+    }
+    // The kernel's side of the same question, on the same sorts.
+    let kernel = r#"
+namespace test.wi206k
+  import anthill.prelude.{Cell, Int64, Unit, Modify}
+  import anthill.persistence.{NonMonotonicStore}
+  sort Wrap
+    entity wrap(rep: Cell[V = Int64])
+  end
+  sort Plain
+    entity plain(n: Int64)
+  end
+  operation on_nonmono(s: NonMonotonicStore) -> Unit effects Modify[s]
+  operation on_wrap(w: Wrap) -> Unit effects Modify[w]
+  operation on_plain(p: Plain) -> Unit effects Modify[p]
+end
+"#;
+    let errs = crate::common::load_errors_of(kernel);
+    assert!(
+        errs.len() == 1 && errs[0].contains("on_plain") && errs[0].contains("not `Modifiable`"),
+        "the kernel must accept `Modify` on `NonMonotonicStore` and `Wrap` and refuse it on \
+         `Plain`, as the op answers; got: {errs:#?}"
+    );
+}
+
+/// … AND A TYPE ARGUMENT, written in source (WI-707): `List[T = Cell]` holds cells, so a
+/// `Modify` on a place of it is accepted and the op answers true; `List[T = Int64]` does
+/// not. The `Cell` row FAILS with the op reading only the head sort (`List` carries no
+/// claim, measured); the `Int64` row passes either way, by design.
+#[test]
+fn a_type_argument_that_is_modifiable_makes_the_type_modifiable() {
+    let src = r#"
+namespace test.wi206f
+  import anthill.prelude.{Cell, Int64, Bool, List}
+  import anthill.reflect.{is_modifiable}
+
+  operation cells_is() -> Bool = is_modifiable(List[T = Cell[V = Int64]])
+  operation ints_is() -> Bool = is_modifiable(List[T = Int64])
+end
+"#;
+    let mut interp = interp_for(src);
+    for (op, want) in [("cells_is", true), ("ints_is", false)] {
+        let got = interp
+            .call(&format!("test.wi206f.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        assert!(matches!(got, Value::Bool(b) if b == want), "{op}: expected {want}, got {got:?}");
+    }
+}
+
+/// A VALUE THAT IS NO TYPE IS REFUSED, NOT ANSWERED. `plain(n: 3)` is a data value — a
+/// constructor applied to an `Int64` — and the op raises a type mismatch for it. FAILS
+/// with the guard reduced to "has a functor" (the guard before the review): the value
+/// passes and is answered rather than refused (MEASURED; under the conservative reading
+/// it was answered TRUE, the walk counting its unreadable argument as admitting).
+#[test]
+fn a_data_value_is_refused_as_no_type() {
+    let mut interp = interp_for(
+        "namespace test.wi206g\n  import anthill.prelude.{Int64}\n  sort Plain\n    entity plain(n: Int64)\n  end\nend\n",
+    );
+    let value = {
+        let kb = interp.kb_mut();
+        let plain = kb.try_resolve_symbol("test.wi206g.Plain.plain").expect("plain");
+        let n = kb.intern("n");
+        let three = kb.alloc(Term::Const(anthill_core::kb::term::Literal::Int(3)));
+        Value::term(kb.alloc(Term::Fn {
+            functor: plain,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(n, three)]),
+        }))
+    };
+    let got = interp.call("anthill.reflect.is_modifiable", &[value]);
+    assert!(got.is_err(), "a data value must be refused as no type; got {got:?}");
 }
