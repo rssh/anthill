@@ -32,8 +32,9 @@
 //!       elsewhere means "no answer yet" — and the message names the boundary's reason
 //!       instead of advising a `reify` around the call that is one.
 //!   (d) AN `ErrorTag` SLOT A RULE BODY CANNOT FILL IS REFUSED (user, 2026-10-15). With no
-//!       evidence the boundary would catch every payload, including the `Error[Other]` its
-//!       thunk's row leaves to the caller, and a rule-body call's `ErrorTag` is no
+//!       evidence the boundary has no payload sort to catch and refuses to run — it caught
+//!       every payload, including the `Error[Other]` its thunk's row leaves to the caller,
+//!       until the second review of this ticket — and a rule-body call's `ErrorTag` is no
 //!       condition its clause can be handed (until 060's S7, WI-20260911-5G28A). The typer
 //!       refuses the call at load (`build_op_scoped_dicts`) when the call builds no
 //!       evidence — a payload type that is a rule variable's or none, a collection whose
@@ -49,10 +50,13 @@
 //!     `an_effectful_thunk_leaves_the_goal_undecided` (no solutions: refuted, not undecided);
 //!     outside this file, the rows that reach a clock read or a scoped load through a
 //!     rule-body reify (`wi_9wvt7_clock_handler_test`, `wi_9wvt7_bridged_scoped_kb_test`).
-//!   * (b) backed out → the first three, `the_advised_repairs_answer` and
-//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame`: the bridge is asked and answers
-//!     no body, which leaves the goal undecided — so the effectful-thunk row passes under (b);
-//!     outside this file, the scoped-KB row that loads through a rule-body reify.
+//!   * (b) backed out → the first three, `the_advised_repairs_answer`,
+//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame` and
+//!     `an_effectful_thunk_leaves_the_goal_undecided`: the bridge is asked and answers no body,
+//!     which leaves the goal undecided with nothing naming the declined print; outside this
+//!     file, the scoped-KB row that loads through a rule-body reify,
+//!     `wi_9wvt7_clock_handler_test::a_declined_clock_read_is_reported` and
+//!     `wi_9wvt7_error_reify_test::evidence_that_names_no_payload_sort_is_refused`.
 //!   * (b)'s first step backed out — an error from entering the thunk returned past the run,
 //!     as the host entry first did → `an_unpinned_host_entry_is_refused_and_leaves_no_frame`
 //!     (the boundary's frame is left on the stack).
@@ -60,12 +64,13 @@
 //!     declined `load_failed` silent).
 //!   * (d)'s load refusal backed out → `an_unfilled_error_tag_is_refused_where_it_is_written`:
 //!     its programs load clean, and the bridge's absence faults `either(7, 7, ?r)` when it
-//!     runs. With both of (d)'s halves backed out it answers `err(other(n: 7))`, definitely.
+//!     runs. With both of (d)'s halves backed out it is still undecided, the boundary
+//!     refusing evidence that names no payload sort.
 //!   * an unhandled effect scheduled again, as it was → `an_effectful_thunk_leaves_the_goal_undecided`
 //!     (the declined print is named nowhere).
-//!   * (d)'s bridge absence backed out → `a_generic_catcher_cited_from_a_rule_faults`
-//!     (`err(other(n: 7))`, definite) and `an_unpinned_host_entry_is_refused_and_leaves_no_frame`
-//!     (the boundary catches every payload).
+//!   * (d)'s bridge absence backed out → `a_generic_catcher_cited_from_a_rule_faults` and
+//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame`: each is still refused, by the
+//!     boundary's own refusal of no evidence, which names no unpinned slot.
 //!
 //! The operation-body twin of `direct` — the same reify in an operation the rule calls — is
 //! `viaPlainRule` in `wi_9wvt7_error_reify_test::a_generic_boundary_answers_through_a_rule_body`.
@@ -243,8 +248,8 @@ fn an_effectful_thunk_leaves_the_goal_undecided() {
 /// A HOST CALL whose `ErrorTag` slot its arguments do not pin is refused where the boundary
 /// reads its payload, before the thunk is entered: an operation reference carries no type
 /// the bridge's pinning reads (it views as the runtime sort `OpRef`, not as its arrow), so
-/// the slot is an absence, as at a rule body's generic catcher above, where the boundary
-/// caught every payload. The refusal leaves no frame behind — entering is the run's first
+/// the slot is an absence, as at a rule body's generic catcher above. The refusal leaves no
+/// frame behind — entering is the run's first
 /// step, read by the loop, so the run truncates to its floor — and the interpreter answers
 /// its next call.
 #[test]
@@ -379,11 +384,11 @@ end
 ];
 
 /// A rule-body call whose `ErrorTag` slot it builds no evidence for is refused where it is
-/// written. The boundary reads what it catches out of that evidence, and with none it catches
-/// every payload: with both of (d)'s halves backed out, `either(7, 7, ?r)` answers
-/// `err(other(n: 7))` DEFINITELY — the `Other` the thunk's row leaves to the caller. The
-/// one-label shapes are refused too, though catching wide would answer them: nothing at the
-/// call tells the two apart.
+/// written. The boundary reads what it catches out of that evidence, and with none it refuses
+/// to run, so the call can never answer: with both of (d)'s halves backed out the programs
+/// load and `either(7, 7, ?r)` is undecided at every query. Before the boundary refused
+/// such evidence it caught every payload, and `either(7, 7, ?r)` answered `err(other(n: 7))`,
+/// the `Other` the thunk's row leaves to the caller.
 #[test]
 fn an_unfilled_error_tag_is_refused_where_it_is_written() {
     for (shape, src) in UNFILLED_ERROR_TAG_PROGRAMS {

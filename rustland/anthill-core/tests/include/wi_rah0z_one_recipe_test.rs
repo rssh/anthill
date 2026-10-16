@@ -259,6 +259,11 @@ const PINNED: &[(&str, usize, &str)] = &[
          recipes by name, and the unsealed and re-presented loads made by hand",
     ),
     (
+        "include/wi_9wvt7_clock_handler_test.rs",
+        1,
+        "orders the program BEFORE the stdlib in one call",
+    ),
+    (
         "include/wi_9wvt7_reify_rule_body_test.rs",
         1,
         "registers a host function before the load, for a thunk that raises as it is entered",

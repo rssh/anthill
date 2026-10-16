@@ -2253,13 +2253,14 @@ pub(super) fn build_op_scoped_dicts(
             // AN `ErrorTag` SLOT A RULE BODY CANNOT FILL IS REFUSED, whatever left it
             // empty — the exception to the marker exemption the rule-body arm below
             // grants. The slot is the payload sort an `Error.reify` boundary catches, read
-            // at run time out of this evidence, and a boundary with none catches every
-            // payload, including an `Error` label its thunk's row leaves to the caller. An
-            // operation body is handed the evidence by its caller (the forward arms above)
-            // or refused naming the clause to add; a rule-body call's `ErrorTag` is no
-            // condition of its clause, since no argument carries its type, so what the
-            // call does not build here no caller supplies later: a payload type that is a
-            // rule variable's or none at all, a tuple, a collection whose element is open.
+            // at run time out of this evidence, and a boundary with none refuses to run
+            // (`EvalError::ReifyPayloadUnread`), so a call that builds none here can never
+            // answer. An operation body is handed the evidence by its caller (the forward
+            // arms above) or refused naming the clause to add; a rule-body call's
+            // `ErrorTag` is no condition of its clause, since no argument carries its type,
+            // so what the call does not build here no caller supplies later: a payload type
+            // that is a rule variable's or none at all, a tuple, a collection whose element
+            // is open.
             // Keyed by the SLOT, not the callee, so an operation that reifies at its own
             // `P` (`requires ErrorTag[T = P]`) is held to it as `Error.reify` is.
             if park.is_some_and(|s| s.enclosing_op.is_none())
@@ -2410,8 +2411,16 @@ pub(super) fn build_op_scoped_dicts(
                 // proves the element is pinned lives only here, and whether the callee
                 // will MISS the slot lives only in its body, which may not be typed yet.
                 // See [`UnsuppliableRequirement`].
-                let unprovided = match &s3_failure {
-                    Some(nomatch @ ResolutionResult::NoMatch { .. }) => {
+                // A library spec at a type holding a structural former is the former arm's
+                // below, not this one's: no row of any carrier answers there, so the
+                // carrier's repair line would name a row that is refused at load
+                // (`TypeValue`) or that no boundary reads (`ErrorTag`).
+                let former = former_carrier(kb, &dep);
+                let unprovided = match (&s3_failure, &former) {
+                    (
+                        Some(nomatch @ ResolutionResult::NoMatch { .. }),
+                        None | Some(FormerCarrier::At(_)),
+                    ) => {
                         unprovided_provision(kb, &dep)
                             .map(|u| (u, describe_resolution_failure(kb, nomatch)))
                     }
@@ -2501,7 +2510,7 @@ pub(super) fn build_op_scoped_dicts(
                         // declaration this one cannot. See [`former_carrier`].
                         match rigid {
                             Some(r) => Some(r),
-                            None => former_carrier(kb, &dep).map(|former| {
+                            None => former.map(|former| {
                                 RequirementRefusal {
                                     account_names_every_repair: false,
                                     no_scope_route: false,
@@ -2513,17 +2522,28 @@ pub(super) fn build_op_scoped_dicts(
                                     dep_text: render_requires_entry(kb, &dep),
                                     unconstrained: Vec::new(),
                                     refused_covers: Vec::new(),
-                                    construction: format!(
-                                        "its carrier is `{former}`, a STRUCTURAL FORMER — a \
+                                    construction: match &former {
+                                        FormerCarrier::At(at) => format!(
+                                            "its carrier is `{at}`, a STRUCTURAL FORMER — a \
                                      tuple or an arrow — and nothing provides `{spec}` \
                                      at it. A former cannot CARRY a provision itself (a \
                                      `provides` row is written on a sort), and the \
                                      derived instances cover sorts only, so this slot \
                                      stays empty and the call would load and then die \
                                      reading a requirement the frame never bound. {repair}",
-                                        spec = kb.qualified_name_of(dep.required_sort),
-                                        repair = former_repair(kb, dep.required_sort, &former),
-                                    ),
+                                            spec = kb.qualified_name_of(dep.required_sort),
+                                            repair = former_repair(kb, dep.required_sort, &former),
+                                        ),
+                                        FormerCarrier::Within { within, .. } => format!(
+                                            "its carrier `{within}` has a STRUCTURAL FORMER — \
+                                     a tuple or an arrow — among its type arguments, and \
+                                     nothing provides `{spec}` at it: a sort's instance \
+                                     holds only where each of its type arguments has one, \
+                                     and a former has none. {repair}",
+                                            spec = kb.qualified_name_of(dep.required_sort),
+                                            repair = former_repair(kb, dep.required_sort, &former),
+                                        ),
+                                    },
                                     pinned: None,
                                     unprovided: None,
                                     untied: None,
@@ -2792,12 +2812,12 @@ fn unfilled_error_tag_refusal(kb: &KnowledgeBase, dep: &RequiresEntry) -> Requir
         refused_covers: Vec::new(),
         construction: "its carrier is the payload sort an `Error.reify` boundary catches, \
                        and this call builds no evidence of it. A rule-body call's \
-                       `ErrorTag` is no condition its clause can be handed, so without it \
-                       the boundary would catch every payload, including an `Error` label \
-                       the thunk's row leaves to the caller. Raise, in the thunk, a value of \
-                       a sort the call names — a type written on a rule variable does not \
-                       reach here, and a tuple, or a collection whose element is open, has \
-                       no instance; write an operation named bare as `lambda () -> f()`, \
+                       `ErrorTag` is no condition its clause can be handed, and without it \
+                       the boundary has no payload sort to catch and refuses to run. Raise, \
+                       in the thunk, a value of a sort the call names — a type written on a \
+                       rule variable does not reach here, and a tuple, or a collection whose \
+                       element is open, has no instance; write an operation named bare as \
+                       `lambda () -> f()`, \
                        since a rule body reads the bare name as its zero-argument call; and \
                        a thunk that raises no `Error` label needs no boundary"
             .to_owned(),
@@ -3787,7 +3807,7 @@ pub(super) fn unclassified_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> 
 /// around it. The boundary refuses evidence that names no payload sort now
 /// (`Interpreter::enter_reify_boundary`), so there is no wide case left for an exemption
 /// to protect (WI-20260908-9WVT7).
-fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<String> {
+fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<FormerCarrier> {
     let goal = goal_from_requires_entry(kb, dep)?;
     // EVERY BINDING, not just the carrier one. `spec_carrier_param_or_sole` names the
     // parameter a declared OPERATION receives on, which is the right question for
@@ -3807,33 +3827,96 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<String> {
         // a provision could name it, and [`unprovided_provision`] says so — nor is a
         // variable, which is one of the open cases the arms beside this one own.
         is_structural_former(kb, v).then_some(v)
-    })?;
-    Some(format_value_for_goal(kb, former))
+    });
+    if let Some(former) = former {
+        return Some(FormerCarrier::At(format_value_for_goal(kb, former)));
+    }
+    let library = library_instances(kb, dep.required_sort)?;
+    // Through sort applications only, the positions a sort's instance is conditioned on.
+    let holds_former = |v: &Value| {
+        type_any_part(kb, v, &|te| match te {
+            TypeExtractor::Arrow { .. } | TypeExtractor::NamedTuple(_) => Some(true),
+            TypeExtractor::Parameterized { .. } => None,
+            _ => Some(false),
+        })
+    };
+    goal.bindings.iter().find_map(|(_, v)| {
+        holds_former(v).then(|| FormerCarrier::Within {
+            within: format_value_for_goal(kb, v),
+            library,
+        })
+    })
+}
+
+/// Where [`former_carrier`] found the structural former, rendered.
+enum FormerCarrier {
+    /// A binding IS the former: `(a: Int64, b: String)`.
+    At(String),
+    /// A binding holds one among its type arguments: `Option[T = (a: Int64, b: String)]`.
+    /// Only for the two specs whose instances the library supplies ([`library_instances`]):
+    /// a sort's instance of either holds only where each type argument has one, so none
+    /// reaches the type, and no row can stand in. For any other spec a row naming the
+    /// whole type answers, and [`unprovided_provision`] advises it.
+    Within {
+        within: String,
+        library: LibraryInstances,
+    },
+}
+
+/// The two specs whose instances only the library supplies: `TypeValue`, derived for
+/// every sort and refused when written, and `ErrorTag`, whose one reader, an `Error.reify`
+/// boundary, takes the payload's sort from the `TypeValue` evidence of `Error`'s own
+/// provision and refuses to run without it.
+#[derive(Clone, Copy)]
+enum LibraryInstances {
+    TypeValue,
+    ErrorTag,
+}
+
+impl LibraryInstances {
+    /// The structural-former refusal's repair for this spec: a value, since no row works.
+    fn former_repair(self) -> &'static str {
+        match self {
+            LibraryInstances::TypeValue => {
+                "Pass a value whose type is a sort with no tuple or arrow among its type \
+                 arguments: every `TypeValue` instance is derived, and none may be written"
+            }
+            LibraryInstances::ErrorTag => {
+                "Raise, in the thunk, a value whose type is a sort with no tuple or arrow \
+                 among its type arguments: an `Error.reify` boundary takes the payload's sort \
+                 from the `TypeValue` evidence of `Error`'s own provision, which neither a \
+                 former nor a written row has"
+            }
+        }
+    }
+}
+
+fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstances> {
+    let canon = kb.canonical_sort_sym(spec);
+    if type_value_spec_sym(kb).is_some_and(|tv| kb.canonical_sort_sym(tv) == canon) {
+        Some(LibraryInstances::TypeValue)
+    } else if is_error_tag_spec(kb, spec) {
+        Some(LibraryInstances::ErrorTag)
+    } else {
+        None
+    }
 }
 
 /// The repair the structural-former refusal names: a sort's row that names the former, as
 /// `control_a_former_carrier_with_a_provision_loads` writes one, or a value whose type is a
-/// sort. Not the row for the two specs whose instances come from the library, where it
-/// would be refused in turn — `TypeValue`, none of whose instances may be written, and
-/// `ErrorTag`, whose one reader, an `Error.reify` boundary, takes the payload's sort from the
-/// `TypeValue` evidence of `Error`'s own provision and refuses to run without it.
-fn former_repair(kb: &KnowledgeBase, spec: Symbol, former: &str) -> String {
-    let canon = kb.canonical_sort_sym(spec);
-    if type_value_spec_sym(kb).is_some_and(|tv| kb.canonical_sort_sym(tv) == canon) {
-        "Pass a value whose type is a sort: every `TypeValue` instance is derived, and none \
-         may be written"
-            .to_owned()
-    } else if is_error_tag_spec(kb, spec) {
-        "Raise, in the thunk, a value whose type is a sort: an `Error.reify` boundary takes \
-         the payload's sort from the `TypeValue` evidence of `Error`'s own provision, which \
-         neither a former nor a written row has"
-            .to_owned()
-    } else {
-        format!(
-            "Give some sort the row that names this former — `provides {}[… = {former}]` — or \
-             pass a value whose type is a sort",
-            kb.qualified_name_of(spec)
-        )
+/// sort. Not the row for the two specs whose instances come from the library
+/// ([`library_instances`]), where it would be refused in turn or never read.
+fn former_repair(kb: &KnowledgeBase, spec: Symbol, former: &FormerCarrier) -> String {
+    match former {
+        FormerCarrier::Within { library, .. } => library.former_repair().to_owned(),
+        FormerCarrier::At(at) => match library_instances(kb, spec) {
+            Some(library) => library.former_repair().to_owned(),
+            None => format!(
+                "Give some sort the row that names this former — `provides {}[… = {at}]` — \
+                 or pass a value whose type is a sort",
+                kb.qualified_name_of(spec)
+            ),
+        },
     }
 }
 

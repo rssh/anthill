@@ -1088,6 +1088,19 @@ pub(super) fn resolve_inner<'a>(
                  the caller that writes it",
                 apart.account()
             ),
+            // `TypeValue` is the one spec no row may be written for (`HandWrittenTypeValue`),
+            // so advising one sent the author to a second refusal.
+            None if type_value_spec_sym(kb).is_some_and(|tv| {
+                kb.canonical_sort_sym(tv) == kb.canonical_sort_sym(goal.spec_sort)
+            }) =>
+            {
+                format!(
+                    "no impl provides {0}: its instances are derived, a parametric sort's only \
+                     where each type argument has one, and none may be written — a tuple or an \
+                     arrow has none; add `requires {0}[…]` in scope to take it from the caller",
+                    kb.qualified_name_of(goal.spec_sort)
+                )
+            }
             // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
             // provision, so advising it sent the author back to this same `NoMatch`.
             None => format!(

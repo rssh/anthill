@@ -195,9 +195,10 @@ namespace anthill.prelude
     -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
     -- parameter writes `requires ErrorTag[T = P]`, and its callers supply the
     -- evidence — the ordinary requirement route, one hop per generic level. A
-    -- tuple payload has no derived `TypeValue` instance, so a call at one is
-    -- refused, as a requirement at any tuple is; and a boundary whose evidence
-    -- names no payload sort refuses to run, so none catches every payload. 027.4
+    -- tuple payload, or a sort with one among its type arguments, has no derived
+    -- `TypeValue` instance, so a call at one is refused, as a requirement at a
+    -- structural former with no provider is; and a boundary whose evidence names
+    -- no payload sort refuses to run, so none catches every payload. 027.4
     -- carries the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
       effects {Rho}

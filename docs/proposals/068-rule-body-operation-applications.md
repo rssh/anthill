@@ -400,8 +400,9 @@ arms; the P1TPE residual check).
   a fault naming the effect (2026-10-16): it had left a bare residual, and a drain of the
   relation from an operation body died `relation_floundered`. The registry stops an
   operation that asks a handler; a host function that performs its effect itself (`Cell.set`, a
-  store's writer) asks none and runs. The boundary declines such an application by its typed row,
-  which the clause typing of §3 computes (a row on WI-20260926-7D48J, 2026-10-16).
+  store's writer) asks none and runs. Such an application is refused at load by its typed row,
+  which the clause typing of §3 computes, and run time keeps the decline, reported, for a goal no
+  typer sees (a row on WI-20260926-7D48J, amended 2026-10-16).
 
 ## 6. Carriers that are not typed
 
