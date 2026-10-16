@@ -34,9 +34,10 @@ namespace test.wi475.strm
   end
 end
 namespace test.wi475.carrier
-  import anthill.prelude.{Int64, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Modify, EffectsRuntime, Modifiable}
   import test.wi475.strm.{Strm}
   sort Producer
+    provides Modifiable[T = Self]
     operation pure_stream(p: Producer) -> Strm[T = Int64, E = {}]
     operation eff_stream(p: Producer) -> Strm[T = Int64, E = {Modify[p]}]
   end

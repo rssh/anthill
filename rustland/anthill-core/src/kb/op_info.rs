@@ -174,6 +174,28 @@ pub fn all_operation_params_and_effects(
         .collect()
 }
 
+/// WI-20260823-TR8CF — `(symbol, params, return type, declared effects)` per
+/// `OperationInfo` FACT, paired at the fact for [`all_operation_params_and_effects`]'s
+/// reason: a `Modify[result]` is judged against THAT fact's return type, not the
+/// first-fact cache a symbol's [`OpSignature`] holds. The return type is `None` for a
+/// head that lacks one (malformed).
+#[allow(clippy::type_complexity)]
+pub fn all_operation_signature_facts(
+    kb: &KnowledgeBase,
+) -> Vec<(Symbol, Vec<(Symbol, Value)>, Option<Value>, Vec<Value>)> {
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .map(|(op_sym, head)| {
+            (
+                op_sym,
+                extract_params(kb, head_field(kb, head, "params")),
+                head_field_value(kb, head, "return_type"),
+                effects_of_head(kb, head),
+            )
+        })
+        .collect()
+}
+
 /// WI-20260831-V25N3 — every operation's own `requires` / `ensures` clauses, each with
 /// the keyword it was written under. The contract-clause twin of
 /// [`all_operation_params_and_effects`], and ONE ENTRY PER FACT for that function's

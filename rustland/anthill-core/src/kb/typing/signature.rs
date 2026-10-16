@@ -3539,9 +3539,9 @@ pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol)
 ///
 /// SCOPE, and both limits have a witness rather than a caution.
 ///
-///   * THE TARGET SLOT ONLY, not what its type admits. A `Modify` over a place whose
-///     type is not `Modifiable` (`Modify[pattern]` on a `pattern: String`) is admitted
-///     here — the other half of WI-20260823-39AD2, not yet written.
+///   * THE TARGET'S TYPE TOO (WI-20260823-TR8CF): a place whose type admits no `Modify`
+///     (`Modify[pattern]` on a `pattern: String`) is refused naming `Modifiable` — see
+///     [`modify_place_type`] for how the place's type is read.
 ///   * AN OPERATION'S OWN ROW ONLY, not an effect row nested in a PARAMETER's arrow
 ///     type (`handle(body: () -> Int64 @ {Modify[X], Sig})`). That position scopes
 ///     differently — its lawful target is the arrow's OWN binder, the `CallbackParam`
@@ -3569,10 +3569,14 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
     let modify = Some(modify_sym);
     let mut errors = Vec::new();
     let mut reported: HashSet<(Symbol, String)> = HashSet::new();
-    // WI-20260823-TR8CF — the place's TYPE must admit a `Modify`; the region sorts are the
-    // `Modifiable` claims, program-global, read once.
-    let regions = crate::kb::region::region_sorts(kb);
-    for (op_sym, params, effects) in crate::kb::op_info::all_operation_params_and_effects(kb) {
+    // WI-20260823-TR8CF — the place's TYPE must admit a `Modify`. The modifiable sorts are
+    // program-global and read once, and only if some place needs judging.
+    let mut regions: Option<HashSet<Symbol>> = None;
+    for (op_sym, params, return_type, effects) in crate::kb::op_info::all_operation_signature_facts(kb) {
+        // A sealed load's operation was judged when that load ran, and no later load can
+        // change its places' verdicts: the modifiable sorts only grow. So its places are
+        // not judged again (the type-target leg below still is, as before).
+        let judge_places = !kb.sealed.holds_typed_operation(op_sym);
         // WI-20260831-RSRP5: through [`effect_element_labels`], for the reason its doc
         // gives — a bound alias (`effects E = Modify[Thing]`) and a row behind one were
         // both invisible here while the sibling registration gate followed the alias.
@@ -3599,27 +3603,25 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
                 Some(pair) => pair,
                 None => continue,
             };
-            let detail = match kind {
+            let (detail, rule): (String, &str) = match kind {
                 ModifyTarget::Place => {
-                    if let Some(e) = modify_place_not_modifiable(
-                        kb,
-                        op_sym,
-                        &params,
-                        written,
-                        &label_value,
-                        &keys,
-                        &regions,
-                        &mut reported,
-                    ) {
-                        errors.push(e);
+                    if !judge_places {
+                        continue;
                     }
-                    continue;
+                    let fact = PlaceFact {
+                        params: &params,
+                        return_type: return_type.as_ref(),
+                    };
+                    match place_not_modifiable(kb, Some(fact), &label_value, &keys, &mut regions) {
+                        Some(detail) => (detail, MODIFIABLE_RULE),
+                        None => continue,
+                    }
                 }
-                ModifyTarget::Type => "whose target is a TYPE",
+                ModifyTarget::Type => ("whose target is a TYPE".to_string(), PLACE_RULE),
                 // Distinguished because the repair differs: a bare `Modify` is not a
                 // mis-named place, it names nothing at all, so "name the parameter"
                 // reads as advice about a target the author never wrote.
-                ModifyTarget::Missing => "which names no target at all",
+                ModifyTarget::Missing => ("which names no target at all".to_string(), PLACE_RULE),
             };
             let label = type_display_name_value(kb, &label_value);
             if !reported.insert((op_sym, label.clone())) {
@@ -3636,17 +3638,11 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
             };
             errors.push(crate::kb::load::LoadError::Other {
                 message: format!(
-                    "operation `{}` declares effect {} {} — a `Modify` target is a \
-                     PLACE: anything that DENOTES a value, i.e. a parameter, `result`, a \
-                     field path off one, a value-producing zero-arg operation, or a \
-                     NULLARY CONSTRUCTOR naming an ambient resource \
-                     (kernel-language.md §5.6 — `Env` maps resource NAMES). A type there \
-                     names no resource, and no instantiation can make it one: a provision \
-                     binds a type parameter to a TYPE, never to a place. Name the place \
-                     that is mutated (e.g. `Modify[target]`).",
+                    "operation `{}` declares effect {} {} — {}",
                     kb.qualified_name_of(op_sym),
                     named_as,
                     detail,
+                    rule,
                 ),
             });
         }
@@ -3654,71 +3650,93 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
     errors
 }
 
-/// WI-20260823-TR8CF — a `Modify` over a place whose TYPE admits none is refused, naming
-/// `Modifiable`. `Modify` fires only on a modifiable type (`prelude/effects.anthill`;
-/// proposal 037 Rule 8): `operation touch(n: Int64) -> Unit effects Modify[n]` loaded
-/// clean, and an op's honest row then had to repeat it at every caller.
-///
-/// "Admits" is the boundary classifier's own reading ([`crate::kb::region::type_admits_modify`]),
-/// so an op is never asked to declare a label this refuses: a `Modifiable` sort (`Cell`),
-/// a type holding one (`List[T = Cell]`, an entity with a `Cell` field), or a type
-/// parameter — a parametric carrier (`MutableCollection`'s `c: C`) is not refused for
-/// being unknown. A place whose type is not known at all (a path through an abstract
-/// sort) is not refused either.
-#[allow(clippy::too_many_arguments)]
-fn modify_place_not_modifiable(
+/// The rule a `Modify` over a TYPE (or over nothing) breaks, as [`check_modify_targets`]
+/// states it.
+const PLACE_RULE: &str = "a `Modify` target is a PLACE: anything that DENOTES a value, i.e. \
+    a parameter, `result`, a field path off one, a value-producing zero-arg operation, or a \
+    NULLARY CONSTRUCTOR naming an ambient resource (kernel-language.md §5.6 — `Env` maps \
+    resource NAMES). A type there names no resource, and no instantiation can make it one: a \
+    provision binds a type parameter to a TYPE, never to a place. Name the place that is \
+    mutated (e.g. `Modify[target]`).";
+
+/// The rule a `Modify` over a place of a non-modifiable type breaks (WI-20260823-TR8CF).
+const MODIFIABLE_RULE: &str = "a `Modify` fires only on a place of a modifiable type: a sort \
+    that provides `Modifiable` (`Cell`) or `provides` a sort that does, a type that holds one \
+    (`List[T = Cell]`, an entity with a `Cell` field), or a type parameter (proposal 037 Rule \
+    8, kernel-language.md §5.6). Nothing at this place can be mutated; drop the label, or \
+    name the place that is.";
+
+/// The fact a `Modify` target is judged under when it stands on an operation's OWN row:
+/// that fact's parameters and return type. One symbol may carry two `OperationInfo`
+/// facts (WI-1049), so they are read off the fact, not off the symbol's cached signature.
+struct PlaceFact<'a> {
+    params: &'a [(Symbol, Value)],
+    return_type: Option<&'a Value>,
+}
+
+/// What [`modify_place_type`] learns of a `Modify` target's place.
+enum PlaceType {
+    /// The place's declared type, as each candidate it may be: a field path through a
+    /// sort whose several constructors declare that field has one per constructor.
+    Known(Vec<Value>),
+    /// Not knowable here — a path through a type that is not a concrete data shape, a
+    /// callback's binder, a body local. Not refused for being unknown.
+    Unknown,
+}
+
+/// WI-20260823-TR8CF — why the place `label` targets admits no `Modify`, or `None` when
+/// it does (or its type is not known). "Admits" is [`crate::kb::region::type_admits_modify`],
+/// the reading result masking and the boundary's re-key targets take too, so an operation
+/// is never asked to declare a label this refuses. A place the check cannot read at all
+/// is reported rather than admitted (CLAUDE.md: a loud error over a silent skip).
+fn place_not_modifiable(
     kb: &mut KnowledgeBase,
-    op_sym: Symbol,
-    params: &[(Symbol, Value)],
-    written: &Value,
+    fact: Option<PlaceFact<'_>>,
     label: &Value,
     keys: &ModifyTargetKeys,
-    regions: &HashSet<Symbol>,
-    reported: &mut HashSet<(Symbol, String)>,
-) -> Option<crate::kb::load::LoadError> {
-    let target = named_child_value(kb, label, keys.t)
-        .or_else(|| label.pos_arg(kb, 0).map(|it| view_item_value(&it)))?;
-    let ty = modify_place_type(kb, op_sym, params, &target)?;
-    if crate::kb::region::type_admits_modify(kb, &ty, regions) {
-        return None;
+    regions: &mut Option<HashSet<Symbol>>,
+) -> Option<String> {
+    match modify_place_type(kb, fact, label, keys) {
+        Ok(PlaceType::Known(types)) => {
+            let regions = regions.get_or_insert_with(|| crate::kb::region::region_sorts(kb));
+            if types
+                .iter()
+                .any(|t| crate::kb::region::type_admits_modify(kb, t, regions))
+            {
+                return None;
+            }
+            let shown: Vec<String> = types.iter().map(|t| type_display_name_value(kb, t)).collect();
+            Some(format!(
+                "over a place of type `{}`, which is not `Modifiable`",
+                shown.join("` or `")
+            ))
+        }
+        Ok(PlaceType::Unknown) => None,
+        Err(why) => Some(format!(
+            "over a place whose type this check cannot read ({why}) — a defect of the check, \
+             not of the program"
+        )),
     }
-    let label_display = type_display_name_value(kb, label);
-    if !reported.insert((op_sym, label_display.clone())) {
-        return None;
-    }
-    let written = type_display_name_value(kb, written);
-    let named_as = if written == label_display {
-        format!("`{label_display}`")
-    } else {
-        format!("`{written}`, which names `{label_display}`,")
-    };
-    Some(crate::kb::load::LoadError::Other {
-        message: format!(
-            "operation `{}` declares effect {} over a place of type `{}`, which is not \
-             `Modifiable` — a `Modify` fires only on a place of a modifiable type: a sort \
-             that provides `Modifiable` (`Cell`), a type that holds one (`List[T = Cell]`, \
-             an entity with a `Cell` field), or a type parameter (proposal 037 Rule 8). \
-             Nothing at this place can be mutated; drop the label, or name the place that is.",
-            kb.qualified_name_of(op_sym),
-            named_as,
-            type_display_name_value(kb, &ty),
-        ),
-    })
 }
 
 /// WI-20260823-TR8CF — the declared type of the place a `Modify` target names: a
 /// parameter's, `result`'s (the return type), a value-producing zero-arg operation's
 /// (its return type, WI-313), a nullary constructor's (its sort, WI-20260823-4GBQV),
-/// then each field of a path (`c.rep`) in turn. `None` when a step is not known — the
-/// running type is not a concrete data shape — so the place is not refused for it.
+/// then each field of a path (`c.rep`) in turn. On an operation's own row the parameter
+/// and the result are read off `fact`; elsewhere — a row written as a type argument —
+/// off the signature of the operation that declares the place. `Err` for a shape this
+/// does not read, so it is reported and not admitted.
 fn modify_place_type(
     kb: &mut KnowledgeBase,
-    op_sym: Symbol,
-    params: &[(Symbol, Value)],
-    target: &Value,
-) -> Option<Value> {
-    let TypeExtractor::Denoted(value) = extract_type(kb, target) else {
-        return None;
+    fact: Option<PlaceFact<'_>>,
+    label: &Value,
+    keys: &ModifyTargetKeys,
+) -> Result<PlaceType, String> {
+    let target = named_child_value(kb, label, keys.t)
+        .or_else(|| label.pos_arg(kb, 0).map(|it| view_item_value(&it)))
+        .ok_or("the label carries no target")?;
+    let TypeExtractor::Denoted(value) = extract_type(kb, &target) else {
+        return Err("the target is not a denoted place".to_string());
     };
     // The path, read from the outside in: `Ref(head)` under one `.field` per segment.
     let mut fields: Vec<Symbol> = Vec::new();
@@ -3736,59 +3754,115 @@ fn modify_place_type(
                     Value::Node(receiver.clone())
                 }
                 Some(Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s }) => break *s,
-                _ => return None,
+                _ => return Err("its place is written as an expression the check does not read".to_string()),
             },
             other => match type_head(kb, other) {
                 TypeHead::SortRef(s) => break s,
-                _ => return None,
+                _ => return Err("its place is not a name".to_string()),
             },
         };
         cur = next;
     };
-    let return_type = |kb: &KnowledgeBase, op: Symbol| {
-        kb.op_record(op)
+    // The signature of the operation that declares `place` (a parameter's, `result`'s).
+    let owner_signature = |kb: &KnowledgeBase, place: Symbol| {
+        let owner = kb.symbols.declaring_scope(place)?.owner();
+        kb.op_record(owner)?.signature.clone()
+    };
+    let head_name = kb.local_name_of(head).to_owned();
+    let mut types: Vec<Value> = match kb.kind_of(head) {
+        Some(crate::intern::SymbolKind::OpResult) => vec![fact
+            .as_ref()
+            .and_then(|f| f.return_type.cloned())
+            .or_else(|| owner_signature(kb, head).map(|sig| sig.return_type))
+            .ok_or("its operation records no return type")?],
+        Some(crate::intern::SymbolKind::Param) => {
+            let declared = match &fact {
+                Some(f) => f.params.iter().find(|(q, _)| kb.local_name_of(*q) == head_name).map(|(_, t)| t.clone()),
+                None => owner_signature(kb, head)
+                    .and_then(|sig| sig.params.into_iter().find(|(q, _)| kb.local_name_of(*q) == head_name))
+                    .map(|(_, t)| t),
+            };
+            vec![declared.ok_or_else(|| format!("`{head_name}` is not among its operation's parameters"))?]
+        }
+        Some(crate::intern::SymbolKind::Operation) => vec![kb
+            .op_record(head)
             .and_then(|r| r.signature.as_ref())
             .map(|sig| sig.return_type.clone())
-    };
-    let mut ty: Value = match kb.kind_of(head) {
-        Some(crate::intern::SymbolKind::OpResult) => return_type(kb, op_sym)?,
-        Some(crate::intern::SymbolKind::Param) => {
-            let name = kb.local_name_of(head);
-            params
-                .iter()
-                .find(|(p, _)| kb.local_name_of(*p) == name)
-                .map(|(_, t)| t.clone())?
-        }
-        Some(crate::intern::SymbolKind::Operation) => return_type(kb, head)?,
+            .ok_or_else(|| format!("the operation `{head_name}` records no return type"))?],
         Some(crate::intern::SymbolKind::Entity) => {
-            let sort = kb.sort_of_constructor(head)?;
-            Value::term(kb.make_name_term_from_sym(sort))
+            let sort = kb
+                .sort_of_constructor(head)
+                .ok_or_else(|| format!("the constructor `{head_name}` has no sort"))?;
+            vec![Value::term(kb.make_name_term_from_sym(sort))]
         }
-        _ => return None,
+        // A callback's binder or result, or a body local: its type is on no signature
+        // this reads.
+        Some(
+            crate::intern::SymbolKind::CallbackParam
+            | crate::intern::SymbolKind::CallbackResult
+            | crate::intern::SymbolKind::LocalLet,
+        ) => return Ok(PlaceType::Unknown),
+        other => return Err(format!("its place `{head_name}` is a {other:?}, which names no value")),
     };
     for field in fields.iter().rev() {
-        ty = declared_field_type(kb, &ty, kb.local_name_of(*field))?;
+        let field = kb.local_name_of(*field).to_owned();
+        let mut next = Vec::new();
+        for ty in &types {
+            match declared_field_types(kb, ty, &field) {
+                Some(found) => next.extend(found),
+                None => return Ok(PlaceType::Unknown),
+            }
+        }
+        types = next;
     }
-    Some(ty)
+    Ok(PlaceType::Known(types))
 }
 
-/// The declared type of field `field` of a value of type `ty` — a tuple's named
-/// field, or the field of that name an entity of the sort declares.
-fn declared_field_type(kb: &KnowledgeBase, ty: &Value, field: &str) -> Option<Value> {
-    match extract_type(kb, ty) {
-        TypeExtractor::NamedTuple(fields) => fields
-            .into_iter()
-            .find(|(f, _)| kb.local_name_of(*f) == field)
-            .map(|(_, t)| t),
-        TypeExtractor::SortRef(sort) | TypeExtractor::Parameterized { base: sort, .. } => kb
-            .field_constructors_of_sort(sort)
-            .into_iter()
-            .filter_map(|c| kb.entity_field_types(c))
-            .flat_map(|fs| fs.iter())
-            .find(|(f, _)| kb.local_name_of(*f) == field)
-            .map(|(_, t)| t.clone()),
-        _ => None,
-    }
+/// The declared type of field `field` of a value of type `ty`: a tuple's field by name,
+/// or by position (`_1`); for a sort, the field of that name EVERY constructor declaring
+/// one gives it (each a candidate), with the application's own bindings substituted for
+/// a field typed by the sort's parameter (`box(v: T)` at `Box[T = Int64]` is an `Int64`).
+/// `None` for a type that is not a concrete data shape, or a sort no constructor of which
+/// declares the field (the loader already refused that for a concrete one).
+fn declared_field_types(kb: &KnowledgeBase, ty: &Value, field: &str) -> Option<Vec<Value>> {
+    let (sort, bindings) = match extract_type(kb, ty) {
+        TypeExtractor::NamedTuple(fields) => {
+            let named = fields.iter().find(|(f, _)| kb.local_name_of(*f) == field).map(|(_, t)| t.clone());
+            return named
+                .or_else(|| {
+                    crate::intern::positional_label_index(field).and_then(|i| fields.get(i).map(|(_, t)| t.clone()))
+                })
+                .map(|t| vec![t]);
+        }
+        TypeExtractor::SortRef(sort) => (sort, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    // The canonical variable of each bound parameter, and what the application binds it to.
+    let bound: Vec<(u32, Value)> = bindings
+        .iter()
+        .filter_map(|(param, value)| {
+            let name = kb.local_name_of(*param);
+            let declared = *kb.type_param_syms_of(sort).iter().find(|&&p| kb.local_name_of(p) == name)?;
+            Some((crate::kb::region::param_var_id(kb, declared)?, value.clone()))
+        })
+        .collect();
+    let found: Vec<Value> = kb
+        .field_constructors_of_sort(sort)
+        .into_iter()
+        .filter_map(|c| kb.entity_field_types(c))
+        .flat_map(|fs| fs.iter())
+        .filter(|(f, _)| kb.local_name_of(*f) == field)
+        .map(|(_, t)| match extract_type(kb, t) {
+            TypeExtractor::FlexVar { id, .. } => bound
+                .iter()
+                .find(|(v, _)| *v == id)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| t.clone()),
+            _ => t.clone(),
+        })
+        .collect();
+    (!found.is_empty()).then_some(found)
 }
 
 /// WI-20260825-CBRSW — an operation's OWN declared effect row may not both ADMIT and
@@ -4531,6 +4605,8 @@ pub(crate) fn check_written_row_bindings(
         Symbol,
         String,
     )> = HashSet::new();
+    // The modifiable sorts, read once and only if a written place needs judging.
+    let mut regions: Option<HashSet<Symbol>> = None;
     for b in &bindings {
         for label in effect_element_labels(kb, &b.value, keys.label) {
             let display = type_display_name_value(kb, &label);
@@ -4554,7 +4630,18 @@ pub(crate) fn check_written_row_bindings(
             };
             if let Some((_, kind)) = classify_modify_target(kb, &label, modify, &keys) {
                 let which = match kind {
-                    ModifyTarget::Place => None,
+                    // WI-20260823-TR8CF — the operation-row rule, at the row's origin: a
+                    // place in a written row (`-> Strm[E = {Modify[p]}]`) must be of a type a
+                    // `Modify` can fire on, or a caller projecting the row inherits a label
+                    // it cannot declare. The place's type is read off the signature of the
+                    // operation that declares it.
+                    ModifyTarget::Place => {
+                        if let Some(detail) = place_not_modifiable(kb, None, &label, &keys, &mut regions) {
+                            push(format!("{detail} — {MODIFIABLE_RULE}"));
+                            continue;
+                        }
+                        None
+                    }
                     ModifyTarget::Type => Some("whose target is a TYPE"),
                     ModifyTarget::Missing => Some("which names no target at all"),
                 };

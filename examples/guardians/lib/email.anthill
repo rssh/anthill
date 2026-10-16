@@ -30,11 +30,18 @@ sort guardians.Outbox
 end
 
 namespace guardians
-  import anthill.prelude.{String}
+  import anthill.prelude.{String, Modifiable}
 
   entity MessageId(value: String)
   entity Address(local: String, domain: String)
   entity Mailbox(owner: Address)
+  -- A mailbox is a mutable resource: a `Modify[box]` writes it, and a `Modify` fires only
+  -- on a modifiable type (proposal 037 Rule 8). Its fields hold none, so the claim is
+  -- its own — and `Triage`'s frame condition (a spec granting no `Modify` asserts the
+  -- mailbox is left as it was) is about exactly this resource.
+  namespace Mailbox
+    provides Modifiable[T = Mailbox]
+  end
 
   -- A bodyless `rule` is proposal 061's DECLARATION; the rows are a deployment's
   -- (fixtures/mailbox.anthill). The block below is the one a body-less declaration

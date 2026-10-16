@@ -29,9 +29,10 @@ use crate::common::load_errors_of_files as load_errors;
 /// element `T = Int64`. These are exactly the two WI-375 surface forms.
 const CARRIER: &str = r#"
 namespace test.wi375.carrier
-  import anthill.prelude.{Int64, Stream, Modify, EffectsRuntime}
+  import anthill.prelude.{Int64, Stream, Modify, EffectsRuntime, Modifiable}
 
   sort Producer
+    provides Modifiable[T = Self]
     -- A pure stream: nothing is incurred to observe it.
     operation pure_stream(p: Producer) -> Stream[T = Int64, E = {}]
     -- An effectful stream: observing it incurs Modify[p].

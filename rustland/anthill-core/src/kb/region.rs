@@ -34,31 +34,57 @@ use smallvec::SmallVec;
 
 use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
-use super::term_view::{TermView, ViewHead};
+use super::term_view::TermView;
 use super::typing::{
-    external_effects, extract_effect_resource_sym, extract_sort_ref_sym, extract_type,
-    extract_type_param, substitute_ref_syms, view_any_child, TypeExtractor, TypingEnv,
+    external_effects, extract_effect_resource_sym, extract_type, extract_type_param,
+    substitute_ref_syms, TypeExtractor, TypingEnv,
 };
 use super::KnowledgeBase;
 use crate::eval::value::Value;
 use crate::intern::{Symbol, SymbolKind};
 
-/// The sorts admitted by `Modifiable[T = …]` facts (`{Cell}` in the
-/// current stdlib). A result type that structurally mentions one of these
-/// can carry a freshly-allocated region out of the operation, so a
-/// `Modify[result]` on such an op is kept rather than masked. Sourcing the
-/// set from the facts (rather than hard-coding `Cell`) means a future
-/// `Modifiable` resource that grows a `Modify[result]` constructor is
-/// handled without touching this module.
+/// The MODIFIABLE SORTS: the sort each `Modifiable[T = …]` claim's `T` binding names
+/// (its head sort — `Cell` for `Cell[V = V]`, never a type parameter), closed over
+/// `provides` — a sort that provides a modifiable sort is one, a refinement being the
+/// resource its spec is (`NonMonotonicStore provides Store`, and `Store` claims
+/// `Modifiable`). Built once per pass, so a reader asks `contains`.
+///
+/// The one set behind every reading of "a `Modify` can fire here" ([`type_admits_modify`]):
+/// result masking, the boundary's re-key targets, and `check_modify_targets`. It used to
+/// collect every sort reachable ANYWHERE in a claim's head — an over-approximation meant
+/// for masking — so `provides Modifiable[T = Box[V = Int64]]` put `Int64` in it and every
+/// `Modify` over an `Int64` place then passed the declaration check, program-wide
+/// (WI-20260823-TR8CF review). A result that merely MENTIONS a modifiable sort is still
+/// kept: [`admits_modify`] walks the type's arguments and fields for it.
 pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
     let mut out = HashSet::new();
     let Some(modifiable) = kb.try_resolve_symbol("anthill.prelude.Modifiable") else {
         return out; // no Modifiable claims loaded — nothing admits a region
     };
-    for head in modifiable_claim_heads(kb, modifiable) {
-        collect_sort_refs(kb, &head, modifiable, &mut out);
+    let canonical_modifiable = kb.canonical_sort_sym(modifiable);
+    let provisions = super::typing::all_provisions(kb);
+    for p in &provisions {
+        if kb.canonical_sort_sym(p.spec) != canonical_modifiable {
+            continue;
+        }
+        let claimed = extract_type_param(kb, &p.spec_view, "T").and_then(|bound| type_head_sort(kb, &bound));
+        if let Some(sort) = claimed.filter(|&s| !super::typing::is_sort_param_symbol(kb, s)) {
+            out.insert(sort);
+        }
     }
-    out
+    // Closed over `provides`, to a fixpoint: a provider of a provider is one too.
+    let mut canonical: HashSet<Symbol> = out.iter().map(|&s| kb.canonical_sort_sym(s)).collect();
+    loop {
+        let before = out.len();
+        for p in &provisions {
+            if canonical.contains(&kb.canonical_sort_sym(p.spec)) && out.insert(p.provider) {
+                canonical.insert(kb.canonical_sort_sym(p.provider));
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
 }
 
 /// WI-862 — EVERY claim that some sort is `Modifiable`, as the claim's own head term.
@@ -79,12 +105,11 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// the only leg, and it sees the claim wherever it is written (a sort body, or a
 /// `namespace <Carrier>` secondary entry).
 ///
-/// AND EACH CALLER KEEPS ITS OWN READING OF A HEAD, which is WI-206's recorded landmine:
-/// `region_sorts` collects every sort reachable ANYWHERE in the head (an
-/// over-approximation, deliberately — effect masking must keep a `Modify` whose result
-/// type merely mentions a region-bearing sort), while `is_modifiable_sort` reads the `T`
-/// BINDING and takes its head sort, because as an exact predicate the over-approximation
-/// inverts the answer. This function supplies the heads and decides nothing else.
+/// BOTH CALLERS READ A HEAD THE SAME WAY — the `T` binding's head sort (WI-206). This
+/// was a recorded landmine while `region_sorts` collected every sort reachable anywhere
+/// in the head; it no longer does (WI-20260823-TR8CF). This function supplies the heads
+/// for [`is_modifiable_sort`]; [`region_sorts`] walks the provision rows itself, since it
+/// also closes over their providers.
 ///
 /// COST: one `all_provisions` walk per call, where this used to be an index lookup.
 /// Acceptable at both callers — `region_sorts` is computed ONCE per typing pass
@@ -111,14 +136,11 @@ fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<Value> 
 /// WI-206: whether `sort` is admitted by a `Modifiable[T = …]` fact — the test
 /// behind the `anthill.reflect.is_modifiable` reflect op.
 ///
-/// Reads the fact's `T` BINDING and takes ITS head sort — deliberately NOT
-/// [`region_sorts`], despite both being driven by the same facts. `region_sorts`
-/// over-approximates on purpose: it collects every sort *reachable anywhere* in the
-/// head, because a result type that merely MENTIONS a region-bearing sort must keep
-/// its `Modify` effect (an over-approximation is the safe direction for masking).
-/// For "is this type modifiable" the same over-approximation is a wrong ANSWER:
-/// under a `fact Modifiable[T = Cell[V = Int64]]` — the parameterized shape
-/// `cell.anthill` itself describes — it would report `Int64` as modifiable.
+/// Reads the claim's `T` BINDING and takes ITS head sort — the reading [`region_sorts`]
+/// takes too. Collecting every sort reachable anywhere in the head is a wrong ANSWER:
+/// under `Modifiable[T = Cell[V = Int64]]` — the parameterized shape `cell.anthill`
+/// itself describes — it would report `Int64` as modifiable. Unlike [`region_sorts`] it
+/// does not close over `provides`: it answers the reflect op, which asks of the claim.
 ///
 /// The head sort decides, so a parameterized instance answers as its base does:
 /// `Modifiable[T = Cell]` makes `Cell[V = Int64]` modifiable too.
@@ -149,61 +171,6 @@ fn type_head_sort<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
     }
 }
 
-/// Collect every `sort_ref` symbol reachable in `term`, skipping `skip`
-/// (the `Modifiable` head itself). Robust to either fact-head shape —
-/// `Modifiable[T = Cell]` stored as `Fn{functor: Modifiable, T: Cell}` or
-/// as `parameterized(sort_ref(Modifiable), bindings: [T = Cell])`.
-fn collect_sort_refs<V: TermView>(
-    kb: &KnowledgeBase,
-    claim: &V,
-    skip: Symbol,
-    out: &mut HashSet<Symbol>,
-) {
-    // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
-    // bare `Ref(Cell)` a `Modifiable[T = Cell]` type-arg takes (WI-361), so one
-    // check covers both fact-head shapes.
-    if let Some(s) = extract_sort_ref_sym(kb, claim) {
-        // WI-20261001-80ZV8: …BUT NOT A TYPE PARAMETER, which names no sort. `Cell[V =
-        // V]` binds the slot to the sort's own parameter, and the set stays what the
-        // claim gave it while it was written `Modifiable[T = Cell]`. NOT DRIVEN by a row
-        // of its own: a result typed by a bare parameter is already kept conservatively
-        // ([`result_type_admits_region`]), so nothing observable tells `{Cell}` from
-        // `{Cell, V}` today.
-        if s != skip && !super::typing::is_sort_param_symbol(kb, s) {
-            out.insert(s);
-        }
-        return;
-    }
-    // WI-20261001-80ZV8: AN APPLICATION NAMES ITS HEAD TOO. `provides Modifiable[T =
-    // Self]` inside `sort Cell` is `Modifiable[T = Cell[V = V]]`, and the sort that claim
-    // is about is the application's base — which is not one of its subterms. Walking the
-    // arguments alone collected `V` and missed `Cell`: MEASURED on the stdlib written
-    // with `Self`, no operation returning a fresh cell owed a `Modify[result]` any more
-    // (`wi314 escaping_let_bound_cell_requires_declaration` and `wi353
-    // fold_accumulator_mixed_provenance_keeps_seed_and_result` fail without this arm).
-    // The module's own doc gives `Modifiable[T = Cell[V = Int64]]` as a shape it reads.
-    if let Some(base) = type_head_sort(kb, claim) {
-        if base != skip {
-            out.insert(base);
-        }
-    }
-    // Every child, read through the view: the claim is held on whichever carrier its
-    // provision is.
-    let ViewHead::Functor { pos_arity, .. } = claim.head(kb) else {
-        return;
-    };
-    for i in 0..pos_arity {
-        if let Some(child) = claim.pos_arg(kb, i) {
-            collect_sort_refs(kb, &child, skip, out);
-        }
-    }
-    for key in claim.named_keys(kb) {
-        if let Some(child) = claim.named_arg(kb, key) {
-            collect_sort_refs(kb, &child, skip, out);
-        }
-    }
-}
-
 /// True when `sym` is an operation's reserved return-value name
 /// (`<op>.result`, proposal 041) — the resource a constructor's
 /// `Modify[result]` refers to. Field-projection forms (`result.a`) are
@@ -220,78 +187,38 @@ pub(crate) fn is_result_region_sym(kb: &KnowledgeBase, sym: Symbol) -> bool {
     kb.is_result_binder(sym)
 }
 
-/// Whether `sort` is a region sort: one a `Modifiable` claim names ([`region_sorts`]),
-/// or one that `provides` such a sort — a refinement is the resource its spec is
-/// (`NonMonotonicStore provides Store`, and `Store` claims `Modifiable`).
-/// WI-20260823-TR8CF.
-pub(crate) fn is_region_sort(kb: &KnowledgeBase, sort: Symbol, regions: &HashSet<Symbol>) -> bool {
-    regions.contains(&sort) || regions.iter().any(|&r| kb.sort_provides(sort, r))
-}
-
-/// Whether `ty` can carry a modifiable region out of the operation — i.e.
-/// its own type structure mentions a `regions` sort (directly, via a tuple
-/// field, a list / parameterized type-arg, or a bare type variable, for
-/// which it conservatively returns `true` and keeps the effect).
-///
-/// NARROW-SLICE LIMITATION (WI-314): this inspects the *return type's
-/// structure* only. A region reachable solely through a returned **named
-/// sort's field** (e.g. `-> Pair` where `Pair` has a `Cell` field) is not
-/// seen, so such a `Modify[result]` is masked — an unsound drop. Closing it
-/// needs type-param-aware reachability over sort definitions, deferred to
-/// proposal 046. Unreachable in the current stdlib: no op returns a
-/// fresh-cell-bearing named sort.
+/// Whether `ty` can carry a modifiable region out of the operation — the one
+/// predicate [`type_admits_modify`] (WI-20260823-TR8CF). It used to be a walk of its
+/// own over the type's structure, and the two disagreed: an arrow's PARAMETER types were
+/// walked here (a `Cell` its later caller supplies counted as carried out) and refused
+/// there, so an operation could be asked to declare a `Modify[result]` the declaration
+/// check then refused, and a region
+/// reachable only through a returned named sort's FIELD (`-> Pair`, a `Cell` inside)
+/// was masked — WI-314's recorded narrow slice, an unsound drop, now gone because the
+/// shared walk follows fields.
 pub(crate) fn result_type_admits_region<V: TermView>(
     kb: &KnowledgeBase,
     ty: &V,
     regions: &HashSet<Symbol>,
 ) -> bool {
-    // `extract_sort_ref_sym` names the sort for both a deep `sort_ref` and the
-    // bare `Ref(S)` a type-arg takes (WI-361).
-    if let Some(s) = extract_sort_ref_sym(kb, ty) {
-        if is_region_sort(kb, s, regions) {
-            return true;
-        }
-    }
-    // A type variable, or a type parameter named as a sort, may be instantiated with a
-    // region sort, so it admits — the conservative answer this doc promises. The code
-    // answered `false` for it, falling through to the functor test below (a variable has
-    // no functor): `foldG[Acc](…) -> Acc` masked the `Modify[result]` of an accumulator
-    // its callback writes and returns (MEASURED, 2026-10-16).
-    match extract_type(kb, ty) {
-        TypeExtractor::TypeVar(_) | TypeExtractor::FlexVar { .. } | TypeExtractor::Skolem { .. } => {
-            return true;
-        }
-        TypeExtractor::SortRef(s) if super::typing::is_sort_param_symbol(kb, s) => return true,
-        _ => {}
-    }
-    let ViewHead::Functor {
-        functor, pos_arity, ..
-    } = ty.head(kb)
-    else {
-        return false;
-    };
-    // WI-361: a parameterized region (`-> Cell[V]`) carries its base sort as the
-    // FUNCTOR, which the children exclude — check it directly so the region is still
-    // admitted.
-    if functor.is_some_and(|f| is_region_sort(kb, f, regions)) {
-        return true;
-    }
-    view_any_child(kb, ty, pos_arity, |child| {
-        result_type_admits_region(kb, child, regions)
-    })
+    type_admits_modify(kb, ty, regions)
 }
 
-/// Whether a place of type `ty` can be the target of a `Modify`. `Modify` fires
-/// only on a modifiable type (`Modifiable`, `effects.anthill`; proposal 037 Rule
-/// 8 — not yet checked of a WRITTEN label, WI-20260823-39AD2). Read so that a
-/// place is refused only when its type is known to hold none: it admits when the
-/// type is a `Modifiable` sort, has a type argument that admits (`List[T =
-/// Cell]`), is a data sort an entity field of which admits (`Wrap` holding a
-/// `Cell` — what [`result_type_admits_region`] does not follow), is a tuple with
-/// such a field, or is a type parameter (it may be instantiated with a `Cell`)
-/// or anything else this does not read. A function value never admits, nor a
-/// sort with no constructors that is not `Modifiable` (`Int64`).
-pub(crate) fn type_admits_modify(kb: &KnowledgeBase, ty: &Value, regions: &HashSet<Symbol>) -> bool {
+/// Whether a place of type `ty` can be the target of a `Modify`. `Modify` fires only
+/// on a modifiable type (`Modifiable`, `effects.anthill`; proposal 037 Rule 8), and
+/// this is the one reading of it: result masking ([`result_type_admits_region`]), the
+/// boundary's re-key targets, the vacuous-label drop, and `check_modify_targets`'
+/// refusal all ask it, so an operation is never asked to declare a label the
+/// declaration check refuses (WI-20260823-TR8CF). Read so that a place is refused only
+/// when its type is known to hold none: it admits when the type is a modifiable sort
+/// ([`region_sorts`]), has a type argument that admits (`List[T = Cell]`), is a data
+/// sort an entity field of which admits (`Wrap` holding a `Cell`), is a tuple with such
+/// a field, or is a type variable or parameter (it may be instantiated with a `Cell`)
+/// or anything else this does not read. A function value — an arrow, or `Function[A,
+/// B]` — admits through what it RETURNS and never through its parameters, which its
+/// later caller supplies. An effect row never admits, nor a sort with no constructors
+/// that is not modifiable (`Int64`).
+pub(crate) fn type_admits_modify<V: TermView>(kb: &KnowledgeBase, ty: &V, regions: &HashSet<Symbol>) -> bool {
     admits_modify(kb, ty, regions, &mut HashSet::new(), None)
 }
 
@@ -310,12 +237,17 @@ fn admits_modify<V: TermView>(
     free: Option<&HashSet<u32>>,
 ) -> bool {
     let var_admits = |id: u32| !free.is_some_and(|ids| ids.contains(&id));
+    // The type of a function value, written as an application.
+    let is_function = |s: Symbol| kb.qualified_name_of(s) == "anthill.prelude.Function";
     match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => {
-            if is_region_sort(kb, s, regions) {
+            if regions.contains(&s) {
                 true
             } else if super::typing::is_sort_param_symbol(kb, s) {
                 param_var_id(kb, s).is_none_or(var_admits)
+            } else if is_function(s) {
+                // `Function` with its result unbound: it may return anything.
+                true
             } else {
                 // Its own parameters, if it has any, are unbound here: nothing
                 // is known of them, so they admit.
@@ -323,9 +255,18 @@ fn admits_modify<V: TermView>(
             }
         }
         TypeExtractor::FlexVar { id, .. } => var_admits(id),
+        TypeExtractor::TypeVar(_) | TypeExtractor::Skolem { .. } => true,
         TypeExtractor::Parameterized { base, bindings } => {
-            if is_region_sort(kb, base, regions) {
+            if regions.contains(&base) {
                 return true;
+            }
+            if is_function(base) {
+                // A function value carries out what it RETURNS (`B`), never what it is
+                // handed (`A`); an unbound `B` may be anything.
+                return bindings
+                    .iter()
+                    .find(|(param, _)| kb.local_name_of(*param) == "B")
+                    .is_none_or(|(_, result)| admits_modify(kb, result, regions, visiting, free));
             }
             let mut bound_free = HashSet::new();
             for (param, value) in &bindings {
@@ -346,15 +287,19 @@ fn admits_modify<V: TermView>(
         TypeExtractor::NamedTuple(fields) => fields
             .iter()
             .any(|(_, t)| admits_modify(kb, t, regions, visiting, free)),
-        TypeExtractor::Arrow { .. } | TypeExtractor::PolyType { .. } | TypeExtractor::Nothing => {
-            false
-        }
+        // A function value carries out what it returns: a closure handing back its fresh
+        // cell (`-> (x: Int64) -> Cell`) carries the cell; its parameters' types are the
+        // later caller's to supply, never carried out (`-> (c: Cell) -> Int64`).
+        TypeExtractor::Arrow { result, .. } => admits_modify(kb, &result, regions, visiting, free),
+        TypeExtractor::PolyType { body, .. } => admits_modify(kb, &body, regions, visiting, free),
+        // An effect row or a value standing in a type: no value of the place's own.
+        TypeExtractor::Nothing | TypeExtractor::EffectsRows(_) | TypeExtractor::Denoted(_) => false,
         _ => true,
     }
 }
 
 /// The id of the canonical variable a type parameter is written as (WI-954).
-fn param_var_id(kb: &KnowledgeBase, param: Symbol) -> Option<u32> {
+pub(crate) fn param_var_id(kb: &KnowledgeBase, param: Symbol) -> Option<u32> {
     let var = kb.canonical_type_param_var(param)?;
     match extract_type(kb, &Value::term(var)) {
         TypeExtractor::FlexVar { id, .. } => Some(id),
@@ -542,26 +487,14 @@ pub(crate) fn op_boundary_effects(
                     // every param whose type admits no `Modify` (`Int64`, a
                     // `Function[…]`), which re-keying would charge with one that
                     // then spreads to every caller.
-                    let param_types: Vec<(Symbol, Value)> = kb
-                        .op_record(op_sym)
-                        .and_then(|r| r.signature.as_ref())
-                        .map(|sig| sig.params.clone())
-                        .unwrap_or_default();
-                    let admits_modify_of = |p: Symbol| {
-                        let name = kb.local_name_of(p);
-                        // A param whose type is not on the signature: not known
-                        // to admit none, so it stays a target.
-                        param_types
-                            .iter()
-                            .find(|(q, _)| kb.local_name_of(*q) == name)
-                            .is_none_or(|(_, ty)| type_admits_modify(kb, ty, regions))
-                    };
                     let mut v: Vec<Symbol> = kb
                         .symbols
                         .arg_places(op_sym)
                         .iter()
                         .copied()
-                        .filter(|&p| !kb.symbols.is_callable(p) && admits_modify_of(p))
+                        .filter(|&p| {
+                            !kb.symbols.is_callable(p) && param_admits_modify(kb, op_sym, p, regions)
+                        })
                         .collect();
                     if let Some(r) = op_result {
                         v.push(r);
@@ -596,6 +529,17 @@ pub(crate) fn op_boundary_effects(
                 // kept on every candidate: the all-to-all fallback, the
                 // flow-presence conservative axis (046 §"Role of kind").
             }
+            // A `Modify` re-keyed onto this op's OWN parameter whose type admits none —
+            // a generic callee instantiated at `Int64` (`touch[T](x: T) effects
+            // Modify[x]` called as `touch(n)`). Nothing at such a place can be mutated,
+            // so the label is vacuous and dropped (user, 2026-10-16), and the caller owes
+            // no declaration the declaration check would refuse. A WRITTEN `Modify[n]` on
+            // a concrete non-modifiable type is still refused, by `check_modify_targets`.
+            Some(sym)
+                if kb.kind_of(sym) == Some(SymbolKind::Param)
+                    && kb.symbols.declaring_scope(sym).map(|s| s.owner()) == Some(op_sym)
+                    && is_modify_effect(kb, &effect)
+                    && !param_admits_modify(kb, op_sym, sym, regions) => {}
             _ => {
                 // Parameter / unknown resource / another op's callback place —
                 // external, keep.
@@ -604,6 +548,27 @@ pub(crate) fn op_boundary_effects(
         }
     }
     out
+}
+
+/// Whether `op_sym`'s parameter place `param` is of a type a `Modify` can fire on
+/// ([`type_admits_modify`]), its type read off the operation's signature by name. A
+/// parameter the signature does not list is not known to admit none, so it admits.
+fn param_admits_modify(kb: &KnowledgeBase, op_sym: Symbol, param: Symbol, regions: &HashSet<Symbol>) -> bool {
+    let name = kb.local_name_of(param);
+    kb.op_record(op_sym)
+        .and_then(|r| r.signature.as_ref())
+        .and_then(|sig| sig.params.iter().find(|(q, _)| kb.local_name_of(*q) == name))
+        .is_none_or(|(_, ty)| type_admits_modify(kb, ty, regions))
+}
+
+/// Whether `effect` is a `Modify` label (the prelude's).
+fn is_modify_effect(kb: &KnowledgeBase, effect: &Value) -> bool {
+    match extract_type(kb, effect) {
+        TypeExtractor::Parameterized { base, .. } | TypeExtractor::SortRef(base) => {
+            kb.qualified_name_of(base) == "anthill.prelude.Modify"
+        }
+        _ => false,
+    }
 }
 
 /// WI-353: whether `keep_modify(place, into)` holds via the WI-352 `feed` rules
@@ -885,5 +850,37 @@ end
             [foreign].into_iter().collect(),
             "a foreign callback place is external to `each`: kept, not re-keyed or dropped"
         );
+    }
+}
+
+/// WI-20260823-TR8CF — result masking and the declaration check ask one predicate.
+#[cfg(test)]
+mod tr8cf_tests {
+    use super::*;
+
+    const SRC: &str = r#"
+namespace anthill.test.tr8cfmask
+  import anthill.prelude.{Int64, Cell}
+  operation mk_fn() -> (u: Cell[V = Int64]) -> Int64
+end
+"#;
+
+    /// A function value carries no region out, though a `Cell` is among its parameter
+    /// types. FAILS with masking's own walk restored: it walked the arrow's children and
+    /// answered yes, so an op returning such a value could be asked to declare a
+    /// `Modify[result]` the declaration check refuses.
+    #[test]
+    fn a_function_value_result_carries_no_region() {
+        let kb = crate::kb::test_support::load_stdlib(Some(SRC));
+        let op = kb
+            .try_resolve_symbol("anthill.test.tr8cfmask.mk_fn")
+            .expect("mk_fn");
+        let ret = kb
+            .op_record(op)
+            .and_then(|r| r.signature.as_ref())
+            .map(|sig| sig.return_type.clone())
+            .expect("mk_fn's return type");
+        let regions = region_sorts(&kb);
+        assert!(!result_type_admits_region(&kb, &ret, &regions));
     }
 }

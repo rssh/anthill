@@ -3923,18 +3923,30 @@ and so does an abstract carrier over a mutable resource — `Store`, `ExecutionE
 when it `provides` a sort that is (`NonMonotonicStore provides Store`), when a type argument
 of it is (`List[T = Cell]`), when an entity field of it is (a data sort holding a `Cell`),
 or when it is a **type parameter**: a parameter may be instantiated with a modifiable type,
-so a parametric place is not refused for being unknown. A function value is never
-modifiable, nor a value sort such as `Int64` or `String`:
+so a parametric place is not refused for being unknown. A function value carries out only
+what it **returns** — an arrow or `Function[A, B]` admits through its result type, never
+through its parameters, which its later caller supplies (a closure handing back a fresh
+`Cell` carries it; `(c: Cell) -> Int64` carries nothing). A value sort such as `Int64` or
+`String` is never modifiable, and a parameterized claim makes its *sort* modifiable, not its
+arguments (`Modifiable[T = Box[V = Int64]]` says nothing of `Int64`).
 `operation touch(n: Int64) -> Unit effects Modify[n]` is a load error naming `Modifiable`
-(WI-20260823-TR8CF), and so is `Modify[result]` on an operation returning one. A field
-path is judged by its last field's declared type (`Modify[c.rep]`). The same reading
-decides where the operation boundary may re-key a callback parameter's write and whether a
-result type can carry a region out (`region::type_admits_modify`, `is_region_sort`), so an
-operation is never asked to declare a label this refuses. The type is also what the
-ordinary parameter-conformance check (§8.7) compares against a provision's binding.
+(WI-20260823-TR8CF), and so is `Modify[result]` on an operation returning one, and so is
+such a place in a row written as a type argument (`-> Strm[E = {Modify[p]}]`, judged at
+that origin). A field path is judged by the field it reaches — by position in a tuple
+(`result._1`), by every constructor declaring the field, with the application's bindings
+for a field typed by the sort's parameter. **Where the label arises rather than being
+written** — a generic `touch[T](x: T) effects Modify[x]` called as `touch(n)` with
+`n: Int64` — the re-keyed `Modify[n]` names a place nothing can mutate, and it is
+**dropped** as vacuous: the caller owes no declaration (user, 2026-10-16). One predicate
+decides all of these, and also where the operation boundary may re-key a callback
+parameter's write and whether a result type carries a region out
+(`region::type_admits_modify`), so an operation is never asked to declare a label the
+check refuses; a region reachable only through a returned sort's field is therefore kept.
+The type is also what the ordinary parameter-conformance check (§8.7) compares against a
+provision's binding.
 
 Both rules are enforced by `check_modify_targets` (`kb/typing.rs`) on an operation's own
-effect row. A
+effect row, and by `check_written_row_bindings` on a written row. A
 **computed** region — an application in the target slot, `Modify[glob(pattern)]` — is
 refused earlier still, by the type grammar. Inside a *parameter's* arrow type
 (`handle(body: () -> X @ {Modify[…], ρ})`) the target is the arrow's own binder, not the
