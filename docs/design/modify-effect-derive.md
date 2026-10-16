@@ -13,9 +13,11 @@ analysis lives), `docs/design/value-facts-carrier-agnostic-resolver.md` (how
 WI-353 (`region.rs` op-boundary classifier — **delivered** `ef9aae5`, masking
 only) → WI-341 (binder-as-value-var / loader binder context) + WI-342
 (entity-representation migration) → WI-360 (front-end emit of a callback's
-`Modify[a]` → place `f.a`, activates WI-353 end-to-end); WI-354 (in-operation
-rule ergonomics, deferred). The `find`-style `-Modify(a)` *checking* direction
-rides on WI-341.
+`Modify[a]` → place `f.a`, activates WI-353 end-to-end — **delivered** with
+WI-341); WI-354 (in-operation rule ergonomics — **closed, obsolete**
+2026-10-16: flow facts are read only while an operation *body* is typed, so a
+bodyless op has no reader for them; it states the result as its `effects`
+row). The `find`-style `-Modify(a)` *checking* direction rides on WI-341.
 
 ## The question
 
@@ -211,6 +213,7 @@ namespace anthill.effect.feed
   end
   sort Flow                            -- flow facts ARE the feed-relationship
     entity flow(kind: FlowKind, from: Symbol, to: Symbol)
+    entity traced(to: Symbol)          -- every value reaching `to` was followed
   end
   sort Provenance
     entity input  entity fresh_output  entity op_result  entity local
@@ -226,12 +229,21 @@ namespace anthill.effect.feed
 
   -- a Modify on ?p surfaces as Modify on an input origin …
   rule keep_modify(?p, ?r) :- origin(?p, ?r), provenance(?r, input)
-  -- … or on the op result a fresh output escapes through.
+  -- … or on the op result a fresh output escapes through …
   rule keep_modify(?p, ?result) :- origin(?p, ?src),
                                     provenance(?src, fresh_output),
                                     reaches(?src, ?result),
                                     provenance(?result, op_result)
-  -- (fresh-but-non-escaping, and locals: no fact — drop is absence.)
+  -- … or may escape through, when what the result holds was not traced …
+  rule keep_modify(?p, ?result) :- origin(?p, ?src),
+                                    provenance(?src, fresh_output),
+                                    provenance(?result, op_result),
+                                    not(traced(to: ?result))
+  -- … or, when ?p's own feeds were not traced, on every input and the result.
+  rule keep_modify(?p, ?r) :- not(traced(to: ?p)), provenance(?r, input)
+  rule keep_modify(?p, ?r) :- not(traced(to: ?p)), provenance(?r, op_result)
+  -- (a TRACED place fed only locals, or fresh outputs a traced result does not
+  -- hold: no solution — dropped. A drop needs evidence; see below.)
 
   -- B. foldLeft's feed — ground facts (derived / declared)
   --    foldLeft[S,T,E](xs: List[T], z: S, f: (a:S, t:T) -> S @ E): S
@@ -256,6 +268,29 @@ is the `element_of` kind on one `flow` fact (not a predicate — `xs` is symboli
 loop-carried output); **the accumulator** is just the place `foldLeft.f.a`. And
 the graph is *acyclic* (`f.result` is a source — the opaque callback's interior is
 not walked), so `reaches` terminates with no fixpoint machinery.
+
+**A drop needs evidence** (2026-10-16). As first written, "no `flow` fact" read
+as "fed a fresh local" and dropped — so every feed the derivation did not see was
+a silent unsound drop. Measured, each loaded typed pure while writing a cell its
+caller holds: `f(first(l, d))` (an ordinary call's result), `let k = f; k(h)` (an
+alias), a `() -> T` callback's result (not recognised as a callback at all). Now
+the derivation asserts `traced(to: p)` only for a place whose every feed it
+followed — not for one fed an ordinary call's result, a lambda's binder or a
+constructed value, nor for the places of a callback read as a value (aliased,
+handed to another operation, returned), nor for anything fed from those — and
+an untraced place is kept on every input and on the result: the flow-presence
+conservative axis below, applied place by place. A construct the derivation does
+not recognise costs precision, never soundness. `keep_modify` is asked with both
+arguments ground, so the `not` does not flounder.
+
+One drop is still not evidence-backed: `fresh_output`. A callback may return its
+own argument or a cell its closure captured, so a place fed only callback results
+is not proven fresh (measured: `f(g(h))` with `g = lambda x -> x` loads pure
+while writing an element of `l`; a fold step `(a, t) -> t` makes the accumulator
+an element of `xs`, which the `{z, result}` answer above omits). The typer's own
+local masking makes the same assumption of every call's result (`let x = first(l,
+d); Cell.set(x, 1)` loads pure), so lifting it is a question for both —
+WI-20261016-HE2J6.
 
 ### Derived from a body — the same facts, auto-generated
 
@@ -318,7 +353,8 @@ from its whole:
   precision, since over-claiming `Modify[result]` is already sound.
 
 There are thus **two conservative axes**, both sound coarsenings: (1) **flow
-presence** — conservative = all-to-all (no body); (2) **`kind`** — conservative =
+presence** — conservative = all-to-all (no body; and, per place, a place the
+derivation did not trace — §"A drop needs evidence"); (2) **`kind`** — conservative =
 treat every edge as `direct`. **046 v1 should keep the `kind` field but ignore it
 in keep/drop and re-key everything as `direct`** — the core cases (Cell.new
 masking WI-314; foldLeft/foreach at region granularity) do not consume it; it is
@@ -335,6 +371,13 @@ Most ops never declare flow: it is **derived**, not written.
   flow pass reads flow from those laws exactly as from a body, so a primitive that
   is *specified by rules* needs no flow declaration either.
 - **Only fully-opaque FFI** (no body, no laws) must declare flow by hand.
+
+> **As built (2026-10-16):** neither of the last two exists. The flow pass reads
+> bodies only — not laws — and nothing reads flow facts for a bodyless op: the
+> only consumer, `region::op_boundary_effects`, runs while an operation's BODY is
+> typed. A bodyless op states the result of the analysis directly, as its
+> `effects` row. So the declaration-syntax question below is moot (WI-354, closed
+> obsolete) until a call-site consumer exists.
 
 That last set is small, but for it the **top-level qualified-fact form is too
 verbose to use** — five `fact flow(kind: direct, from: foldLeft.z, to: foldLeft.f.a)`

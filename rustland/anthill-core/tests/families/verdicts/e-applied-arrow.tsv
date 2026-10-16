@@ -135,7 +135,7 @@ typed=parameter,row=exact,applied=alias,does=nothing,declares=none	runs 4112
 typed=parameter,row=exact,applied=alias,does=raises,declares=all	runs 4112
 typed=parameter,row=exact,applied=alias,does=raises,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=exact,applied=alias,does=writes-own,declares=all	runs 552
-typed=parameter,row=exact,applied=alias,does=writes-own,declares=none	UNSOUND runs 552
+typed=parameter,row=exact,applied=alias,does=writes-own,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=exact,applied=alias,does=writes-scope,declares=all	runs 515
 typed=parameter,row=exact,applied=alias,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=exact,applied=alias,does=raises-callers,declares=all	runs 4112
@@ -211,15 +211,15 @@ typed=parameter,row=own-open,applied=call,does=writes-scope,declares=none	refuse
 typed=parameter,row=own-open,applied=call,does=raises-callers,declares=all	runs 4112
 typed=parameter,row=own-open,applied=call,does=raises-callers,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=alias,does=nothing,declares=all	runs 4112
-typed=parameter,row=own-open,applied=alias,does=nothing,declares=none	UNSOUND runs 4112
+typed=parameter,row=own-open,applied=alias,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=alias,does=raises,declares=all	runs 4112
-typed=parameter,row=own-open,applied=alias,does=raises,declares=none	UNSOUND runs 4112
+typed=parameter,row=own-open,applied=alias,does=raises,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=alias,does=writes-own,declares=all	runs 552
-typed=parameter,row=own-open,applied=alias,does=writes-own,declares=none	UNSOUND runs 552
+typed=parameter,row=own-open,applied=alias,does=writes-own,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=alias,does=writes-scope,declares=all	runs 515
-typed=parameter,row=own-open,applied=alias,does=writes-scope,declares=none	UNSOUND runs 515
+typed=parameter,row=own-open,applied=alias,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=alias,does=raises-callers,declares=all	runs 4112
-typed=parameter,row=own-open,applied=alias,does=raises-callers,declares=none	UNSOUND runs 4112
+typed=parameter,row=own-open,applied=alias,does=raises-callers,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=slot,does=nothing,declares=all	runs 4112
 typed=parameter,row=own-open,applied=slot,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=own-open,applied=slot,does=raises,declares=all	runs 4112

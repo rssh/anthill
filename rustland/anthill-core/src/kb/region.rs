@@ -261,6 +261,113 @@ pub(crate) fn result_type_admits_region<V: TermView>(
     })
 }
 
+/// Whether a place of type `ty` can be the target of a `Modify`. `Modify` fires
+/// only on a modifiable type (`Modifiable`, `effects.anthill`; proposal 037 Rule
+/// 8 — not yet checked of a WRITTEN label, WI-20260823-39AD2). Read so that a
+/// place is refused only when its type is known to hold none: it admits when the
+/// type is a `Modifiable` sort, has a type argument that admits (`List[T =
+/// Cell]`), is a data sort an entity field of which admits (`Wrap` holding a
+/// `Cell` — what [`result_type_admits_region`] does not follow), is a tuple with
+/// such a field, or is a type parameter (it may be instantiated with a `Cell`)
+/// or anything else this does not read. A function value never admits, nor a
+/// sort with no constructors that is not `Modifiable` (`Int64`).
+fn type_admits_modify(kb: &KnowledgeBase, ty: &Value, regions: &HashSet<Symbol>) -> bool {
+    admits_modify(kb, ty, regions, &mut HashSet::new(), None)
+}
+
+/// [`type_admits_modify`]'s walk. `free` is set while an entity field of some
+/// sort is read: the canonical variables of that sort's type parameters which
+/// the application being followed bound to a type that does not admit. A field
+/// declaration writes a parameter AS that variable (`cons(head: T, …)` reads
+/// `head` as an anonymous variable, the one `T` published — WI-954), so a
+/// variable admits unless it is there. `visiting` is the sorts whose fields are
+/// being read further up (a recursive sort's own field decides nothing new).
+fn admits_modify<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    regions: &HashSet<Symbol>,
+    visiting: &mut HashSet<Symbol>,
+    free: Option<&HashSet<u32>>,
+) -> bool {
+    let var_admits = |id: u32| !free.is_some_and(|ids| ids.contains(&id));
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => {
+            if regions.contains(&s) {
+                true
+            } else if super::typing::is_sort_param_symbol(kb, s) {
+                param_var_id(kb, s).is_none_or(var_admits)
+            } else {
+                // Its own parameters, if it has any, are unbound here: nothing
+                // is known of them, so they admit.
+                fields_admit_modify(kb, s, regions, visiting, &HashSet::new())
+            }
+        }
+        TypeExtractor::FlexVar { id, .. } => var_admits(id),
+        TypeExtractor::Parameterized { base, bindings } => {
+            if regions.contains(&base) {
+                return true;
+            }
+            let mut bound_free = HashSet::new();
+            for (param, value) in &bindings {
+                if admits_modify(kb, value, regions, visiting, free) {
+                    return true;
+                }
+                let name = kb.local_name_of(*param);
+                let declared = kb
+                    .type_param_syms_of(base)
+                    .iter()
+                    .find(|&&p| kb.local_name_of(p) == name);
+                if let Some(id) = declared.and_then(|&p| param_var_id(kb, p)) {
+                    bound_free.insert(id);
+                }
+            }
+            fields_admit_modify(kb, base, regions, visiting, &bound_free)
+        }
+        TypeExtractor::NamedTuple(fields) => fields
+            .iter()
+            .any(|(_, t)| admits_modify(kb, t, regions, visiting, free)),
+        TypeExtractor::Arrow { .. } | TypeExtractor::PolyType { .. } | TypeExtractor::Nothing => {
+            false
+        }
+        _ => true,
+    }
+}
+
+/// The id of the canonical variable a type parameter is written as (WI-954).
+fn param_var_id(kb: &KnowledgeBase, param: Symbol) -> Option<u32> {
+    let var = kb.canonical_type_param_var(param)?;
+    match extract_type(kb, &Value::term(var)) {
+        TypeExtractor::FlexVar { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// Whether some entity field of `sort` admits a `Modify` ([`admits_modify`]),
+/// `free` holding the variables of the sort's parameters bound to a type that
+/// does not.
+fn fields_admit_modify(
+    kb: &KnowledgeBase,
+    sort: Symbol,
+    regions: &HashSet<Symbol>,
+    visiting: &mut HashSet<Symbol>,
+    free: &HashSet<u32>,
+) -> bool {
+    if !visiting.insert(sort) {
+        return false;
+    }
+    let field_types: Vec<Value> = kb
+        .field_constructors_of_sort(sort)
+        .into_iter()
+        .filter_map(|c| kb.entity_field_types(c))
+        .flat_map(|fields| fields.iter().map(|(_, t)| t.clone()))
+        .collect();
+    let admits = field_types
+        .iter()
+        .any(|t| admits_modify(kb, t, regions, visiting, Some(free)));
+    visiting.remove(&sort);
+    admits
+}
+
 /// Re-key an effect's resource symbol `from` → `to` (a callee's
 /// `Cell.new.result` → the enclosing op's own `result`), so the propagated
 /// label is well-scoped in the caller and matches its declaration.
@@ -335,9 +442,10 @@ pub(crate) fn resolve_op_result_sym(kb: &KnowledgeBase, op_sym: Symbol) -> Optio
 /// WI-352 flow facts — `keep_modify(f.a, into)` (checking mode) over the op's
 /// argument places + `result` — and kept re-keyed to each `into` that holds
 /// (input origin → that input; fresh output escaping the result → `result`,
-/// gated on the same return-type escape test as WI-314; neither → dropped).
-/// Mixed provenance (a foldLeft accumulator fed by both the seed and the
-/// callback's own output) keeps the union. `op_sym` supplies those candidate
+/// gated on the same return-type escape test as WI-314; a place whose feeds the
+/// flow pass did not trace → every input and `result`; none of these →
+/// dropped). Mixed provenance (a foldLeft accumulator fed by both the seed and
+/// the callback's own output) keeps the union. `op_sym` supplies those candidate
 /// `into` places (`SymbolTable::arg_places`).
 pub(crate) fn op_boundary_effects(
     kb: &mut KnowledgeBase,
@@ -385,7 +493,17 @@ pub(crate) fn op_boundary_effects(
                 }
                 // else: the fresh region cannot reach the result — drop.
             }
-            Some(sym) if kb.kind_of(sym) == Some(SymbolKind::CallbackParam) => {
+            // A place of ANOTHER operation's callback is not this op's to mask:
+            // its feeds are that op's, none of whose places is a candidate below,
+            // so the classifier would drop it whatever it does. It falls to the
+            // last arm and stays as written. Identity is enough: every operation
+            // (an `operation` block's entries too) gets its own symbol, whose
+            // scope `scan_operation_params` registers its places under, and the
+            // typer types the body under that same symbol.
+            Some(sym)
+                if kb.kind_of(sym) == Some(SymbolKind::CallbackParam)
+                    && kb.symbols.declaring_scope(sym).map(|s| s.owner()) == Some(op_sym) =>
+            {
                 // WI-353: a callback parameter's latent `Modify[f.a]`. Resolve
                 // its origin(s) by flow reachability and keep one re-keyed label
                 // per candidate `into` place that `keep_modify` holds for. `kind`
@@ -397,16 +515,33 @@ pub(crate) fn op_boundary_effects(
                 let op_result =
                     *op_result_sym_memo.get_or_insert_with(|| resolve_op_result_sym(kb, op_sym));
                 let candidates = into_candidates.get_or_insert_with(|| {
-                    // DATA places only: the op's non-callback params + its
-                    // `result`. A callback param is a function value, never a
-                    // modifiable re-key target — exclude it (a `Param` carries
-                    // its arrow's places, so `arg_places` non-empty marks it).
+                    // DATA places only: the op's params a `Modify` can fire on +
+                    // its `result` (gated below by `admits`). A callback param is a
+                    // function value, never a modifiable re-key target — exclude it
+                    // (a `() -> T` one too, whose argument places are empty), and
+                    // every param whose type admits no `Modify` (`Int64`, a
+                    // `Function[…]`), which re-keying would charge with one that
+                    // then spreads to every caller.
+                    let param_types: Vec<(Symbol, Value)> = kb
+                        .op_record(op_sym)
+                        .and_then(|r| r.signature.as_ref())
+                        .map(|sig| sig.params.clone())
+                        .unwrap_or_default();
+                    let admits_modify_of = |p: Symbol| {
+                        let name = kb.local_name_of(p);
+                        // A param whose type is not on the signature: not known
+                        // to admit none, so it stays a target.
+                        param_types
+                            .iter()
+                            .find(|(q, _)| kb.local_name_of(*q) == name)
+                            .is_none_or(|(_, ty)| type_admits_modify(kb, ty, regions))
+                    };
                     let mut v: Vec<Symbol> = kb
                         .symbols
                         .arg_places(op_sym)
                         .iter()
                         .copied()
-                        .filter(|&p| kb.symbols.arg_places(p).is_empty())
+                        .filter(|&p| !kb.symbols.is_callable(p) && admits_modify_of(p))
                         .collect();
                     if let Some(r) = op_result {
                         v.push(r);
@@ -432,21 +567,18 @@ pub(crate) fn op_boundary_effects(
                     let kept = rekey_resource_value(kb, &effect, sym, into);
                     push_effect_dedup(kb, &mut out, kept);
                 }
-                // No candidate held → drop. Sound when the WI-352 flow facts
-                // fully captured the feed: the callback was fed a fresh,
-                // non-escaping local (absence is the drop, 046 feed spec).
-                // LIMITATION (v1, mirrors the WI-314 narrow slice above): if
-                // `flow_derive` under-approximated the feed — e.g. the callback
-                // arg is a library-accessor result, or a nested-callback
-                // application it does not model — there is *also* no solution, so
-                // the label is dropped: an unsound drop. Not reachable from
-                // source yet (a callback's `Modify[a]` cannot reach the boundary
-                // until the binder→place front-end, WI-341/342); when it goes
-                // live the sound coarse fallback is the doc's all-to-all keep
-                // (046 §"Role of kind", the flow-presence conservative axis).
+                // No candidate held → drop. That needs evidence: `keep_modify`
+                // drops only a place `flow_derive` marked `traced` — every value
+                // reaching it followed to a source — whose sources are all fresh
+                // and non-escaping (absence is the drop, 046 feed spec). A place
+                // whose feed the pass did not follow (an ordinary call's result,
+                // a callback aliased or handed on) has no `traced` fact and is
+                // kept on every candidate: the all-to-all fallback, the
+                // flow-presence conservative axis (046 §"Role of kind").
             }
             _ => {
-                // Parameter / unknown resource — external, keep.
+                // Parameter / unknown resource / another op's callback place —
+                // external, keep.
                 push_effect_dedup(kb, &mut out, effect);
             }
         }
@@ -460,8 +592,9 @@ pub(crate) fn op_boundary_effects(
 /// delays a rule whose body has the `provenance` builtin with an unbound output
 /// — so the boundary classifier instead checks each candidate `into` place it
 /// already has in hand (the op's inputs + result). A genuine, residual-free
-/// solution is required; an absent `feed` substrate (e.g. `reflect/feed` not
-/// loaded) yields `false` (nothing to keep), leaving the label to drop.
+/// solution is required. An absent `feed` substrate (e.g. `reflect/feed` not
+/// loaded) yields `true`: with no flow facts nothing proves the label may drop,
+/// so it is kept on every candidate.
 ///
 /// The `.any()` scans *all* solutions — it must NOT be reduced to
 /// `max_solutions: 1` + first-solution: the resolver can return a residual
@@ -470,7 +603,7 @@ pub(crate) fn op_boundary_effects(
 fn keep_modify_holds(kb: &mut KnowledgeBase, place: Symbol, into: Symbol) -> bool {
     let km = match kb.try_resolve_symbol("anthill.reflect.feed.keep_modify") {
         Some(s) => s,
-        None => return false,
+        None => return true,
     };
     let p_term = kb.alloc(Term::Ref(place));
     let into_term = kb.alloc(Term::Ref(into));
@@ -529,10 +662,10 @@ mod tests {
 /// WI-353 — the `Modify` slice of `effect_derive` (proposal 046): the
 /// `op_boundary_effects` callback-parameter classifier, exercised against the
 /// **real** WI-352 flow facts (derived from each op's body) and the **real**
-/// registered places. The input effect row is built synthetically — a callback's
-/// `Modify[<its own arrow param>]` cannot yet reach the boundary from source (the
-/// binder→place wiring is WI-341/342), so `modify_label` stands in for it,
-/// keyed to the genuine `CallbackParam` place the loader registered.
+/// registered places. The input effect row is built synthetically (`modify_label`,
+/// keyed to the genuine `CallbackParam` place the loader registered), so a label
+/// no source program puts in a row can be asked too. The same verdicts from
+/// source, through the whole pipeline, are `wi341_callback_modify_test`.
 #[cfg(test)]
 mod wi353_tests {
     use super::*;
@@ -613,11 +746,22 @@ end
         ret_qn: &str,
         modify_on: &str,
     ) -> HashSet<Symbol> {
+        let resource = format!("{op_qn}.{modify_on}");
+        boundary_of(kb, op_qn, ret_qn, &resource)
+    }
+
+    /// `boundary` for a label on any place, `resource_qn` qualified in full.
+    fn boundary_of(
+        kb: &mut KnowledgeBase,
+        op_qn: &str,
+        ret_qn: &str,
+        resource_qn: &str,
+    ) -> HashSet<Symbol> {
         let op_sym = sym(kb, op_qn);
         let regions = region_sorts(kb);
         let ret = sym(kb, ret_qn);
         let ret_ty = Value::term(kb.alloc(Term::Ref(ret)));
-        let resource = sym(kb, &format!("{op_qn}.{modify_on}"));
+        let resource = sym(kb, resource_qn);
         let row = vec![modify_label(kb, resource)];
         let env = TypingEnv::empty();
         // WI-657(11): `<op>.result` is now resolved lazily inside op_boundary_effects.
@@ -661,10 +805,14 @@ end
         );
     }
 
+    /// An all-`Int64` fold: neither component survives. The result type cannot
+    /// carry the region (the WI-314 escape test masks the escaping-to-result
+    /// component), and the seed `z: Int64` admits no `Modify` — `Modify` fires
+    /// only on a modifiable type — so the input component is masked too. It kept
+    /// `{z}` before the input targets were gated by type.
     #[test]
-    fn fold_result_type_cannot_carry_region_masks_it() {
+    fn fold_over_types_admitting_no_modify_masks_both_components() {
         let mut kb = load_ops();
-        let z = sym(&kb, "anthill.test.wi353.foldInt.z");
         let got = boundary(
             &mut kb,
             "anthill.test.wi353.foldInt",
@@ -673,9 +821,9 @@ end
         );
         assert_eq!(
             got,
-            [z].into_iter().collect(),
-            "an `Int64` result cannot carry the region: the escaping-to-result \
-             component is masked (WI-314 escape test); only the seed `z` survives"
+            HashSet::new(),
+            "an `Int64` result cannot carry the region and an `Int64` seed admits no \
+             `Modify`: nothing survives"
         );
     }
 
@@ -695,6 +843,27 @@ end
             got,
             [xs].into_iter().collect(),
             "the element param `f.t` comes only from `xs`"
+        );
+    }
+
+    /// A label on ANOTHER operation's callback place is not `each`'s to mask: it
+    /// stays as written. Without the owner check it went to `keep_modify` against
+    /// `each`'s candidates, none of which `foldCell`'s flow facts name, and was
+    /// dropped (both places traced). FAILS with the owner check backed out.
+    #[test]
+    fn another_ops_callback_place_stays_as_written() {
+        let mut kb = load_ops();
+        let foreign = sym(&kb, "anthill.test.wi353.foldCell.f.a");
+        let got = boundary_of(
+            &mut kb,
+            "anthill.test.wi353.each",
+            "anthill.prelude.Unit",
+            "anthill.test.wi353.foldCell.f.a",
+        );
+        assert_eq!(
+            got,
+            [foreign].into_iter().collect(),
+            "a foreign callback place is external to `each`: kept, not re-keyed or dropped"
         );
     }
 }
