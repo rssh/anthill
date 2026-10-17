@@ -2,7 +2,7 @@
 //! every sort, CONDITIONAL for a parametric one, and a hand-written one is refused.
 //!
 //! `type_value()` answers the `Type` a rigid names. Every row below calls it THROUGH A
-//! REQUIREMENT SLOT — `operation tv[B](…) requires TypeValue[T = B] = TypeValue.type_value()`
+//! REQUIREMENT SLOT — `operation tv[B](…) requires TypeValue[T = B] = TypeValue.type_value[T = B]()`
 //! — because the slot is the only thing that carries the answer: `type_value()` is
 //! NULLARY, so no argument and no receiver names the type, and the dispatching dictionary
 //! is the sole evidence.
@@ -66,7 +66,7 @@ namespace wihxgxf.tv
     entity duo(l: L, r: R)
   end
   sort D
-    operation tv[B](n: Int64) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+    operation tv[B](n: Int64) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 {ops}
   end
 end
@@ -142,7 +142,7 @@ fn a_type_argument_that_is_nothing_answers_itself() {
         r#"    operation bottom(n: Int64) -> Type = tv[B = Nothing](0)
     operation listOfBottom(n: Int64) -> Type = tv[B = List[T = Nothing]](0)
     operation listOfInt(n: Int64) -> Type = tv[B = List[T = Int64]](0)
-    operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+    operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
     operation inferredListOfBottom(n: Int64) -> Type =
       let xs = []
       D.tyOf(xs)"#,

@@ -25,9 +25,10 @@
 //! **WHY THE ROWS CARRY NO OPERATION.** `TypeValue.type_value` is body-less and backed by
 //! a BUILTIN on the spec op (`BuiltinTag::TypeValueOf`, registered in `load`), so one
 //! backing serves every carrier and no derived row needs a member. That is forced, not
-//! chosen: `type_value()` is nullary, so nothing but the dictionary names the type, so the
-//! call must reach the requirement slot — and a spec op with a DEFAULT BODY is dispatched
-//! statically and never does (measured: the body ran with an empty requirements frame).
+//! chosen: `type_value[X]()` takes no argument, so nothing but the dictionary of the
+//! instance its bracket names carries the type, so the call must be handed that
+//! dictionary — and a spec op with a DEFAULT BODY was dispatched statically and never was
+//! (measured: the body ran with an empty requirements frame).
 //! See the spec's own comment in `stdlib/anthill/reflect/reflect.anthill`.
 //!
 //! SCOPE: sorts. Structural FORMERS (named tuples, arrows) have no sort to carry a

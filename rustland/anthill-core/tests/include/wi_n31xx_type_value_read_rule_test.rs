@@ -263,7 +263,7 @@ namespace test.n31xx.userclass
     operation stamp() -> Int64
   end
 
-  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp()
+  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp[T = B]()
 
   rule names(?x, ?n) :- ?n = stampOf(?x)
 end
@@ -416,7 +416,7 @@ namespace test.n31xx.pinned
     sort GM = ?
     sort GN = ?
     requires Tag[M = GM, N = GN]
-    operation probe(x: GM) -> Int64 = Tag.code()
+    operation probe(x: GM) -> Int64 = Tag.code[M = GM, N = GN]()
   end
 
   rule ra(?n) :- Ghost.probe(alpha(), ?n)
@@ -619,7 +619,7 @@ namespace test.n31xx.othersp
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
   operation mid[U](y: U) -> Type = tyOf(y)
   operation ask() -> Type = mid(5)
 end
@@ -975,7 +975,7 @@ namespace test.n31xx.formertt
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf((1, 2))
 end
@@ -1057,7 +1057,7 @@ namespace test.n31xx.plainsort
     entity plain(n: Int64)
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf(plain(1))
 end
@@ -1178,7 +1178,7 @@ namespace test.n31xx.within
   import anthill.prelude.Option.{some}
   import anthill.reflect.{TypeValue}
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask() -> Type = tyOf(some((1, 2)))
 end
@@ -1285,7 +1285,7 @@ namespace test.n31xx.libopen
   import anthill.prelude.Option.{none}
   import anthill.reflect.{TypeValue}
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask() -> Type = tyOf(none())
 end
@@ -1304,7 +1304,7 @@ namespace test.n31xx.libspec
     operation area(s: T) -> Int64
   end
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask(s: Shape) -> Type = tyOf(s)
 end
@@ -1374,7 +1374,7 @@ namespace test.n31xx.construct
     sort T = ?
     requires TypeValue[T = T]
     entity box(v: T)
-    operation tyOf(b: Self) -> Type = TypeValue.type_value()
+    operation tyOf(b: Self) -> Type = TypeValue.type_value[T = T]()
   end
 
   operation inside() -> Type = Box.tyOf(box(some((1, 2))))
@@ -1520,7 +1520,7 @@ namespace test.n31xx.withinuser
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf(some((1, 2)))
 end
@@ -1572,7 +1572,7 @@ namespace test.n31xx.formerprov
     operation valueOf() -> Type = Int64
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf((a: 1, b: "x"))
 end

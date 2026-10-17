@@ -6056,8 +6056,9 @@ fn type_value_of_self(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let dict = interp.builtin_dispatch_dict.clone().ok_or_else(|| {
         EvalError::Internal(
             "TypeValue.type_value: no dispatching dictionary. The call reached this builtin \
-             without going through a requirement slot, so nothing names the type it is \
-             about — `type_value()` is nullary and the dictionary is its only evidence."
+             without its instance's dictionary, so nothing names the type it is about — \
+             `type_value[X]()` takes no argument, and the dictionary of `TypeValue[T = X]` \
+             is its answer."
                 .into(),
         )
     })?;
@@ -6088,10 +6089,10 @@ fn type_of_dictionary(
         // because `TermPrinter` renders both as `Int64`.
         return Ok(interp.kb_mut().make_sort_ref(head));
     }
-    // The head's own type parameters, in DECLARATION order — the order
-    // `type_value_derive` emits the conditions in, so condition `i` is the evidence for
-    // parameter `i`.
-    let params: Vec<crate::intern::Symbol> = interp.kb().type_param_syms_of(head).to_vec();
+    // The head's own type parameters, by their declared names in DECLARATION order — the
+    // order `type_value_derive` emits the conditions in, so condition `i` is the evidence
+    // for parameter `i`.
+    let params: Vec<String> = interp.kb().type_params_of_sort(head);
     // THE CONDITIONS DO NOT START AT SUB 0. A provision's dictionary chain is the
     // carrier's OWN sort-level `requires` first and the provision's conditions after
     // (`provider_dict_chain`), so a carrier that writes `requires` — `Map requires Eq[T =
@@ -6108,8 +6109,9 @@ fn type_of_dictionary(
             params.len(),
         )));
     }
-    let mut named: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> = Vec::with_capacity(arity);
-    for (i, p) in params.into_iter().enumerate() {
+    let mut bindings: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> =
+        Vec::with_capacity(params.len());
+    for (i, name) in params.iter().enumerate() {
         // Total by construction: `Dictionary::from_value` validated the whole tree, and
         // `i < arity`. A `None` here would be that invariant broken, so it is loud.
         let sub = dict.sub(base + i).ok_or_else(|| {
@@ -6117,14 +6119,17 @@ fn type_of_dictionary(
                 "type_value_of_self: dictionary sub {i} missing below arity {arity}"
             ))
         })?;
-        named.push((p, type_of_dictionary(interp, &sub)?));
+        let ty = type_of_dictionary(interp, &sub)?;
+        bindings.push((interp.kb_mut().intern(name), ty));
     }
+    // BUILT AS A TYPE WRITTEN IN VALUE POSITION IS (`Interpreter::finish_sort_type`): each
+    // argument keyed by its parameter's declared name, through the one canonical builder,
+    // which also orders the arguments. Assembled by hand and keyed by the parameter's
+    // qualified symbol, `type_value[T = Option[T = E]]()` at `E = Int64` was a term that
+    // printed `Option(T: Int64)` and was not equal to the written `Option[T = Int64]`.
     let kb = interp.kb_mut();
-    Ok(kb.alloc(crate::kb::term::Term::Fn {
-        functor: head,
-        pos_args: smallvec::SmallVec::new(),
-        named_args: named.into_iter().collect(),
-    }))
+    let base_ref = kb.make_sort_ref(head);
+    Ok(kb.make_parameterized_type(base_ref, &bindings))
 }
 
 /// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.

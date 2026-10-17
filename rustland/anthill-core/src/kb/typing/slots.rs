@@ -118,13 +118,15 @@ pub(super) fn seed_op_type_args(
     let Some(type_args) = call_type_args_of(occ) else {
         return Ok(Vec::new());
     };
-    // POSITIONALS reach the operation's OWN parameters only — `declared`'s first
-    // segment. See `resolve_call_type_arg_targets`.
-    let (declared, positional_limit) = call_bracket_scopes_split(kb, op, fn_sym);
+    // A POSITIONAL takes the next parameter no key took, in the one list a key names:
+    // the operation's own, then its sort's. `TypeValue.type_value[Option[T = E]]()` binds
+    // the spec's `T` as `type_value[T = Option[T = E]]()` does, and `Cell.empty[Int64]()`
+    // the sort's `V`; it was refused as over-applied, the positional reaching the
+    // operation's own parameters alone.
+    let declared = call_bracket_scopes(kb, op, fn_sym);
     let slots = callee_requirement_slots(kb, fn_sym);
     let scope = BracketScope {
         declared: &declared,
-        positional_limit,
         slots: &slots,
     };
     seed_bracket_bindings(kb, subst, env, type_args, &scope, fn_sym, span)
@@ -209,8 +211,6 @@ pub(super) fn constructor_instance_for_hint(
 struct BracketScope<'a> {
     /// The declared type parameters, by bare name, in the order a positional counts.
     declared: &'a [(Symbol, Var)],
-    /// How many of `declared`, from the front, a positional reaches.
-    positional_limit: usize,
     /// The requirement slots a key may select by spec short name.
     slots: &'a [CalleeSlot],
 }
@@ -246,7 +246,6 @@ pub(super) fn seed_constructor_type_args(
     };
     let scope = BracketScope {
         declared: &declared,
-        positional_limit: declared.len(),
         slots: &[],
     };
     // A named slot's selection is read back out of σ where the requirement is asked
@@ -307,7 +306,6 @@ fn seed_bracket_bindings(
         kb,
         type_args,
         declared,
-        scope.positional_limit,
         scope.slots,
         fn_sym,
         span,
@@ -3227,27 +3225,15 @@ pub(super) fn call_bracket_scopes(
     op: &OperationInfoFull,
     fn_sym: Symbol,
 ) -> Vec<(Symbol, Var)> {
-    call_bracket_scopes_split(kb, op, fn_sym).0
-}
-
-/// [`call_bracket_scopes`], with the length of its first segment — the operation's own
-/// parameters, which is as far as a positional reaches. One computation, so the list and
-/// the count [`resolve_call_type_arg_targets`] indexes it by cannot disagree.
-fn call_bracket_scopes_split(
-    kb: &mut KnowledgeBase,
-    op: &OperationInfoFull,
-    fn_sym: Symbol,
-) -> (Vec<(Symbol, Var)>, usize) {
     let mut declared: Vec<(Symbol, Var)> =
         crate::kb::op_info::bracket_type_params(kb, &op.type_params).collect();
-    let own = declared.len();
     // WI-956: the kind gate is `impl_parent_sort_of_op`'s — under `kind_of` a sort
     // whose Entity role registered first lost its params here, silently.
     let Some(parent) = impl_parent_sort_of_op(kb, fn_sym) else {
-        return (declared, own);
+        return declared;
     };
     declared.extend(sort_bracket_params(kb, parent));
-    (declared, own)
+    declared
 }
 
 /// WI-841 (058 §4.2 rule 2) — one requirement slot a call bracket on `fn_sym` may
@@ -3794,7 +3780,6 @@ fn resolve_call_type_arg_targets(
     kb: &mut KnowledgeBase,
     type_args: &[(Option<Symbol>, crate::eval::value::Value)],
     declared: &[(Symbol, Var)],
-    positional_limit: usize,
     slots: &[CalleeSlot],
     fn_sym: Symbol,
     span: Option<Span>,
@@ -3879,8 +3864,7 @@ fn resolve_call_type_arg_targets(
             }
         }
     }
-    // Over the operation's OWN parameters, matching what a positional may reach.
-    let free = taken.iter().take(positional_limit).filter(|t| !**t).count();
+    let free = taken.iter().filter(|t| !**t).count();
 
     let mut targets = Vec::with_capacity(type_args.len());
     let mut next_free = 0;
@@ -3895,13 +3879,10 @@ fn resolve_call_type_arg_targets(
                 .map(|(_, t)| *t)
                 .expect("named key resolved in the pass above"),
             None => {
-                while next_free < positional_limit && taken[next_free] {
+                while next_free < declared.len() && taken[next_free] {
                     next_free += 1;
                 }
-                match declared
-                    .get(next_free)
-                    .filter(|_| next_free < positional_limit)
-                {
+                match declared.get(next_free) {
                     Some(param) => {
                         taken[next_free] = true;
                         declared_param_target(kb, fn_sym, *param, span)?
@@ -3913,7 +3894,7 @@ fn resolve_call_type_arg_targets(
                             given: type_args.iter().filter(|(n, _)| n.is_none()).count(),
                             free,
                         })
-                    } // (`free` counts the operation's own free slots — see below.)
+                    }
                 }
             }
         };

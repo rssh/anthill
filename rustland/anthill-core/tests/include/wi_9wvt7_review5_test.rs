@@ -150,7 +150,7 @@ end
 }
 
 /// TWO PROVIDERS AT THE BOTTOM TYPE ARE A TIE, REFUSED AT LOAD. `Counter.count([])` over
-/// `count[A](xs: List[T = A]) requires Stamp[T = A] = Stamp.stamp()`, `Stamp` provided at `Leaf`
+/// `count[A](xs: List[T = A]) requires Stamp[T = A] = Stamp.stamp[T = A]()`, `Stamp` provided at `Leaf`
 /// and at `Bang`: the nullary member runs, so the dictionary matters, and the bottom type
 /// reaches both. Under the bottom type's arm no provision matched, nothing reported the
 /// requirement, and the program loaded and died "`__req_stamp` not bound in caller frame".
@@ -175,7 +175,7 @@ namespace test.r5.tie
     operation stamp() -> Int64 = 7
   end
   sort Counter
-    operation count[A](xs: List[T = A]) -> Int64 requires Stamp[T = A] = Stamp.stamp()
+    operation count[A](xs: List[T = A]) -> Int64 requires Stamp[T = A] = Stamp.stamp[T = A]()
   end
   operation go() -> Int64 =
     let xs = []
@@ -390,7 +390,7 @@ namespace test.r5.keyedreq
     requires Desc[T = K]
     entity keyed(k: K)
   end
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
   operation catchIt[P](x: P) -> Int64 requires ErrorTag[T = P] =
     match Error.reify(lambda () -> Error.raise(x))
       case ok(v) -> 1
@@ -721,7 +721,7 @@ namespace test.r5.noinst
     entity wrap(v: V)
     entity other(n: Int64)
   end
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
   operation spec[C](s: Coll[T = C]) -> Type = tyOf(s)
   operation part[C](x: C, s: Shape) -> Type requires TypeValue[T = C] = tyOf(pair(x, s))
   operation variant[C](w: Wrap.wrap[V = C]) -> Type = tyOf(w)
@@ -762,7 +762,7 @@ namespace test.r5.former
   import anthill.prelude.{{Int64, Pair, Type}}
   import anthill.prelude.Pair.{{pair}}
   import anthill.reflect.{{TypeValue}}
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
   operation f[C](x: C) -> Type{clause} = tyOf(pair(x, (1, 2)))
 end
 "#
@@ -793,7 +793,7 @@ namespace test.r5.names
   import anthill.prelude.Pair.{{pair}}
   import anthill.reflect.{{TypeValue}}
   sort Ty
-    operation tyOf[X](x: X) -> Type requires TypeValue[T = X] = TypeValue.type_value()
+    operation tyOf[X](x: X) -> Type requires TypeValue[T = X] = TypeValue.type_value[T = X]()
   end
   sort Holder
 {decls}

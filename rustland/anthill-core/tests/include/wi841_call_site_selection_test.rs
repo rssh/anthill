@@ -1115,16 +1115,13 @@ fn an_op_level_type_argument_still_binds_and_still_reports() {
     );
 }
 
-/// A POSITIONAL binding reaches the operation's OWN parameters and stops there.
-///
-/// Rule (1) spans two scopes BY NAME; position does not travel with it. Concatenating
-/// the two lists for positional allocation too would let an over-application spill
-/// silently into the receiver's element (measured: `conv[String, Bool]` bound the
-/// sort's `CT := Bool` and surfaced as an unrelated ARGUMENT mismatch instead of the
-/// loud over-application it had always been). Selection is likewise NAME-only: a
-/// requirement slot has no position a call site could count to, since the two lists it
-/// might index are separate and the sort-level one is the FACT order at every
-/// typer-side reader.
+/// A POSITIONAL binding takes the next parameter of the one list a key names: the
+/// operation's own first, then its sort's (user, 2026-10-17: a positional is a form of a
+/// key). `Holder.probe[Int64](2, 3)`, over a `probe` that declares none of its own, binds
+/// `Holder`'s `HT` as `Holder.probe[HT = Int64](2, 3)` does, and answers 5; it was refused
+/// as over-applied, the positional stopping at the operation's own list. Past both lists it
+/// is over-applied still. Selection stays NAME-only: a requirement slot has no position a
+/// call site could count to.
 #[test]
 fn a_positional_binds_the_ops_own_params_and_selection_stays_by_name() {
     let ok = program(
@@ -1144,17 +1141,23 @@ fn a_positional_binds_the_ops_own_params_and_selection_stays_by_name() {
         0,
     );
 
-    // Past the operation's own list it is over-application, not the sort's params and
-    // not a slot.
+    for call in ["Holder.probe[Int64](2, 3)", "Holder.probe[HT = Int64](2, 3)"] {
+        let src = program(
+            "wi841.positionalsort",
+            "",
+            &format!("{HOLDER_SORT_LEVEL}{}", driver(call)),
+        );
+        assert_eq!(eval_int(&src, "wi841.positionalsort.Driver.go", call), 5, "{call}");
+    }
     let excess = program(
         "wi841.positionalexcess",
         "",
-        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Int64](2, 3)")),
+        &format!("{HOLDER_SORT_LEVEL}{}", driver("Holder.probe[Int64, Bool](2, 3)")),
     );
     refused_with(
         &excess,
         "over-applied",
-        "`probe` declares no type parameters of its own, so a positional has no target",
+        "`probe` declares no type parameter and `Holder` one, so a second positional has no target",
     );
 }
 
@@ -1351,35 +1354,38 @@ fn a_pin_is_validated_before_the_classification_early_returns() {
     );
 }
 
-/// A POSITIONAL bracket argument binds the operation's OWN parameters only. Letting
-/// it spill into the enclosing sort's turned a loud over-application into a silent
-/// rebinding of the receiver's element — and `seed_op_type_args` discards `unify`'s
-/// verdict, so the contradiction surfaced later as an unrelated argument mismatch.
+/// A POSITIONAL REACHES THE ENCLOSING SORT'S PARAMETERS AS A KEY DOES, and a contradiction
+/// with an argument is reported as for the named spelling. `Coll.conv[String, Bool](mk(v:
+/// 1), "x")` binds `B = String` and the sort's `CT = Bool`, and is refused at `conv.c` as
+/// `Coll.conv[B = String, CT = Bool](…)` is. Until 2026-10-17 the positional stopped at the
+/// operation's own list and this was refused as over-applied (WI-841's reading, which
+/// measured the argument mismatch as the less direct report); a positional is a form of a
+/// key now (user, 2026-10-17). With `Int64` the call loads.
 #[test]
 fn a_positional_does_not_spill_into_the_enclosing_sorts_params() {
-    let src = program(
-        "wi841.spill",
-        "",
-        r#"  sort Coll
-    sort CT = ?
-    entity mk(v: CT)
-    operation conv[B](c: Coll[CT = CT], b: B) -> Int64 = 1
-  end
-  sort Driver
-    operation go(n: Int64) -> Int64 = Coll.conv[String, Bool](mk(v: 1), "x")
-  end"#,
-    );
-    refused_with(&src, "over-applied", "one declared param, two positionals");
-    let errs = load_errs(&src);
-    assert!(
-        !errs.iter().any(|e| e.contains("conv.c")),
-        "the bracket is the mistake, not the argument it silently re-typed; got: {errs:?}",
-    );
+    let src = |bracket: &str| {
+        program(
+            "wi841.spill",
+            "",
+            &format!(
+                "  sort Coll\n    sort CT = ?\n    entity mk(v: CT)\n    operation conv[B](c: Coll[CT = \
+                 CT], b: B) -> Int64 = 1\n  end\n  sort Driver\n    operation go(n: Int64) -> Int64 = \
+                 Coll.conv{bracket}(mk(v: 1), \"x\")\n  end"
+            ),
+        )
+    };
+    for bracket in ["[String, Bool]", "[B = String, CT = Bool]"] {
+        refused_with(
+            &src(bracket),
+            "conv.c (op-arg): expected Coll[CT = Bool], got Coll[CT = Int64]",
+            bracket,
+        );
+    }
+    assert!(crate::common::try_load_kb_with(&src("[String, Int64]")).is_ok());
 }
 
-/// A NAMED sort-level parameter is still bindable by name — the positional
-/// restriction above must not take the name channel with it (§5.3's construction
-/// site is written `Box.mk[T = String](…)`, not positionally).
+/// A NAMED sort-level parameter is bindable by name — the channel §5.3's construction site
+/// is written in, `Box.mk[T = String](…)`.
 #[test]
 fn the_named_sort_level_channel_survives_the_positional_restriction() {
     let src = program(

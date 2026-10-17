@@ -1596,14 +1596,10 @@ fn type_value_clause_param_at(
 /// WI-20260919-N31XX (proposal 065 §1) — the FRAME SLOT that backs a value read of the
 /// rigid `param`, as an index into the enclosing operation's composed dictionary chain.
 ///
-/// WHY A DIRECT CHAIN LOOKUP RATHER THAN THE DISPATCH MACHINERY. `type_value()` is
-/// NULLARY (WI-20260919-HXGXF's fact 1): no argument and no receiver names the type, so
-/// `check_apply_iter`'s ordinary route has nothing to pin `TypeValue.T` with and cannot
-/// tell two clauses apart — `twoReq[P, Q] requires TypeValue[T = P], TypeValue[T = Q]`
-/// offers two slots and the call site says nothing about which. 065 §8's own spelling
-/// `type_value[T = B]()` would say it, but that binds the SORT's parameter through a
-/// callee bracket, which is refused today. Here the answer is not inferred at all: the
-/// READ names its parameter, so the slot is a lookup, and the ambiguity never arises.
+/// WHY A DIRECT CHAIN LOOKUP RATHER THAN THE DISPATCH MACHINERY. The read is the call
+/// `TypeValue.type_value[T = B]()` written short, and it names its parameter, so the slot
+/// is a lookup: `twoReq[P, Q] requires TypeValue[T = P], TypeValue[T = Q]` offers two
+/// slots, and the read of `Q` takes the second, as the written call's bracket would.
 /// Driven by `a_lowered_read_answers_through_its_slot`'s two-parameter row, which a
 /// lookup that ignored the parameter would answer `Pair2(A: Int64, B: Int64)`.
 ///

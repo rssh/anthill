@@ -1,64 +1,41 @@
-//! WI-20260917-NR6FJ DEFECT B — A DEFAULTED SPEC OP CALLED INSIDE AN OPERATION THAT DECLARED
-//! `requires Spec[T = C]` READS THE SLOT; it no longer folds the spec's own default.
+//! WI-20260917-NR6FJ DEFECT B — A DEFAULTED SPEC OP AND ITS BODY-LESS TWIN ANSWER THE SAME
+//! at the instance the call names; it no longer folds the spec's own default.
 //!
-//! A `requires` is an IMPLICIT PARAMETER — "the A dictionary is PASSED IN, an inbound
-//! slot the caller fills" (`SupplySource`'s own words). The author of
+//! The call names its instance in its bracket (user, 2026-10-17):
 //!
 //! ```text
-//! operation viaop() -> Int64 requires Desc[T = Rich] = Desc.tag()
+//! operation viaop() -> Int64 requires Desc[T = Rich] = Desc.tag[T = Rich]()
 //! ```
 //!
-//! has said which `Desc` dictionary is in scope. Before this, `Desc.tag()` ignored it
-//! and ran `Desc`'s own `= 1`.
+//! and `Rich`'s `tag` answers, whether the spec's `tag` carries a default body or not. A
+//! `requires` in scope supplies the evidence for the instance a call names and does not
+//! stand in for the bracket: `Desc.tag()` beside the same clause is refused at load,
+//! advising `Desc.tag[T = Rich]()`. Until 2026-10-17 the clause decided — the declared
+//! slot was a carrier source (`carrier_from_declared_slot`, this ticket's), and the two
+//! spellings were made to agree by reading it.
 //!
 //! ## The measurement that made this a defect and not a policy
 //!
-//! Same program, same declaration, and the ONLY difference between the two rows is
-//! whether the spec's operation happens to carry a default body:
+//! Same program, and the ONLY difference between the two rows is whether the spec's
+//! operation happens to carry a default body:
 //!
-//! | `Desc.tag`                     | before | after |
-//! |--------------------------------|--------|-------|
-//! | `operation tag() -> Int64`     | 7 ✓    | 7     |
-//! | `operation tag() -> Int64 = 1` | **1**  | **7** |
+//! | `Desc.tag`                     | before NR6FJ | now (bracket written) |
+//! |--------------------------------|--------------|-----------------------|
+//! | `operation tag() -> Int64`     | 7 ✓          | 7                     |
+//! | `operation tag() -> Int64 = 1` | **1**        | **7**                 |
 //!
-//! So adding a default to a spec silently changed a caller's answer from 7 to 1 — and
-//! the caller cannot see the thing that decided it. That contradicts the rule the
-//! codebase already states at [`spec_op_parent_sort`]: *"defaults fill gaps, they do not
-//! shadow"*. `Rich` writes its own `tag`; nothing should have shadowed it.
-//!
-//! ## Where it was
-//!
-//! `lookup_spec_op_dispatch` is body-less-only, so a defaulted op never reaches the
-//! WI-210 dispatch block; the WI-444 defaulted block above it pins the carrier's
-//! override, but only from a SELF-RECEIVER or a CARRIER-PARAM argument. A NULLARY op has
-//! neither, so nothing pinned and the default ran. `carrier_from_declared_slot` adds the
-//! declared slot as a third carrier source, consulted only when those two are silent.
+//! Adding a default to a spec silently changed a caller's answer from 7 to 1 — and the
+//! caller cannot see the thing that decided it. That contradicts the rule the codebase
+//! states at [`spec_op_parent_sort`]: *"defaults fill gaps, they do not shadow"*.
 //!
 //! ## Back-out
 //!
-//! Drop the `.or_else(carrier_from_declared_slot)` and THREE rows fail, each by
-//! answering the spec's `1`: the two acceptances and
-//! `a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member`. The other FOUR
-//! pass either way BY DESIGN and say so at their sites (one of them,
-//! `an_abstract_argument_still_dispatches_on_the_runtime_value`, is the control on the
-//! change's GATE rather than on its feature, and fails only when that gate is removed) — they exist because the obvious
-//! over-fire (route every defaulted call whose enclosing chain merely NAMES the spec
-//! into dispatch) was BUILT and MEASURED, and it broke three shipped rows where the
-//! default is the right answer. See `a_type_variable_slot_now_reaches_the_provider_too`
-//! for which three and why a static reroute is the wrong instrument.
-//!
-//! Full workspace with the change in: 7114 passed, 0 failed — 7105 before, and the NINE
-//! that moved are this file's own rows. Zero corpus rows changed their verdict.
-//!
-//! ## THE RESIDUE IS CLOSED — WI-20260919-H20YY
-//!
-//! This ticket closed the half where the declared slot names a CONCRETE carrier and left
-//! the TYPE-PARAMETER half open, pinned by `a_type_variable_slot_now_reaches_the_
-//! provider_too` (then named `..._is_unchanged_and_still_disagrees`). H20YY closed that
-//! half with the instrument this file's own prose named — a DEFERRAL at the call rather
-//! than a static reroute — so that row is now a positive and every cell of the table
-//! above reads 7. A slot over a type parameter has no carrier to pin; it has a
-//! dictionary, and the call is classified to walk it.
+//! MEASURED with the refusal of a call that names no instance off: the bare-call halves of
+//! `a_defaulted_spec_op_reads_the_declared_slot`, `two_slots_that_disagree_pin_nothing` and
+//! `with_no_slot_declared_the_default_still_runs` load. The bracketed calls answer through
+//! the slot their bracket's clause holds, so they pass whichever carrier source is off; the
+//! carrier the bracket binds where no clause holds it is
+//! `wi_9wvt7_type_value_bracket_test::a_defaulted_member_runs_at_the_instance_its_bracket_names`.
 
 use anthill_core::eval::Value;
 
@@ -114,24 +91,42 @@ fn answer(ns: &str, spec_op: &str, tail: &str) -> Option<i64> {
     }
 }
 
-/// The call under test, parameterised by what the operation declares.
-fn via(requires: &str) -> String {
+/// The call under test, parameterised by what the operation declares and the bracket the
+/// call writes.
+fn via(requires: &str, bracket: &str) -> String {
     format!(
-        "  operation viaop() -> Int64 {requires}= Desc.tag()\n  \
+        "  operation viaop() -> Int64 {requires}= Desc.tag{bracket}()\n  \
          rule answer(?r) :- viaop(?r)\n"
     )
 }
 
-/// THE ACCEPTANCE — the declared slot decides, and the carrier's own `tag` answers.
+/// The call written with no bracket is refused, advising `advice`.
+#[track_caller]
+fn assert_names_no_instance(ns: &str, spec_op: &str, tail: &str, advice: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fixture(ns, spec_op, tail)),
+        &[&format!("a call of `{ns}.Desc.tag` that names no instance of `{ns}.Desc`"), advice],
+        "the call with no bracket",
+    );
+}
+
+/// THE ACCEPTANCE — the instance the call names answers through the carrier's own `tag`,
+/// and the same call with no bracket is refused, advising it.
 ///
-/// FAILS WITH THE CHANGE BACKED OUT by answering `1`: the author's
-/// `requires Desc[T = Rich]` ignored and `Desc`'s own `= 1` folded in its place, while
-/// `Rich`'s written `= 7` — an implementation the program contains — never runs.
+/// FAILS WITH THE CHANGE BACKED OUT by answering `1`: `Desc`'s own `= 1` folded in place of
+/// `Rich`'s written `= 7` — an implementation the program contains — at the instance the
+/// call names.
 #[test]
 fn a_defaulted_spec_op_reads_the_declared_slot() {
     assert_eq!(
-        answer("test.defb.acc", DEFAULTED, &via("requires Desc[T = Rich] ")),
+        answer("test.defb.acc", DEFAULTED, &via("requires Desc[T = Rich] ", "[T = Rich]")),
         Some(7),
+    );
+    assert_names_no_instance(
+        "test.defb.acc",
+        DEFAULTED,
+        &via("requires Desc[T = Rich] ", ""),
+        "`test.defb.acc.Desc.tag[T = test.defb.acc.Rich]()`",
     );
 }
 
@@ -145,8 +140,8 @@ fn a_defaulted_spec_op_reads_the_declared_slot() {
 /// passed before and still does, which is what pins the disagreement as the defect.
 #[test]
 fn both_spellings_of_the_spec_now_answer_the_same() {
-    let defaulted = answer("test.defb.d", DEFAULTED, &via("requires Desc[T = Rich] "));
-    let body_less = answer("test.defb.b", BODY_LESS, &via("requires Desc[T = Rich] "));
+    let defaulted = answer("test.defb.d", DEFAULTED, &via("requires Desc[T = Rich] ", "[T = Rich]"));
+    let body_less = answer("test.defb.b", BODY_LESS, &via("requires Desc[T = Rich] ", "[T = Rich]"));
     assert_eq!(
         (defaulted, body_less),
         (Some(7), Some(7)),
@@ -155,14 +150,12 @@ fn both_spellings_of_the_spec_now_answer_the_same() {
     );
 }
 
-/// CONTROL — NO SLOT, NO CHANGE: the default still runs.
-///
-/// PASSES EITHER WAY BY DESIGN. It is what says the change keys on the DECLARATION and
-/// not on the presence of a provider: nobody demanded `Desc` here, so the spec's own
-/// fallback is the right answer and the widening must not reach it.
+/// NO SLOT AND NO BRACKET: the call names no instance, and `Rich` and `Other` both provide
+/// `Desc`, so it is refused. It ran the spec's own default (1) until 2026-10-17, which is a
+/// reading of `Desc.tag()` at no instance where two would answer.
 #[test]
 fn with_no_slot_declared_the_default_still_runs() {
-    assert_eq!(answer("test.defb.nos", DEFAULTED, &via("")), Some(1));
+    assert_names_no_instance("test.defb.nos", DEFAULTED, &via("", ""), "`test.defb.nos.Desc.tag[T = …]()`");
 }
 
 /// CONTROL — DEFAULTS FILL GAPS. A carrier that PROVIDES the spec but writes no `tag`
@@ -178,7 +171,7 @@ fn a_providing_carrier_with_no_override_still_takes_the_default() {
         "test.defb.bare",
         DEFAULTED,
         BARE,
-        &via("requires Desc[T = Bare] "),
+        &via("requires Desc[T = Bare] ", "[T = Bare]"),
     ));
     assert!(
         matches!(
@@ -238,23 +231,15 @@ end
     );
 }
 
-/// CONTROL — TWO SLOTS THAT DISAGREE PIN NOTHING, and the default runs as before.
-///
-/// PASSES EITHER WAY BY DESIGN, and it is here to refuse one specific shortcut: taking
-/// the FIRST matching entry of the chain. That would make the answer depend on the order
-/// two `requires` were written — the silent route-order choice WI-1010's family of
-/// refusals exists to prevent. No corpus program writes two such slots, so this row is
-/// the only thing holding the behaviour.
+/// TWO SLOTS: THE BRACKET SAYS WHICH. With `requires Desc[T = Rich], Desc[T = Other]` the
+/// call that names neither is refused, advising no clause in particular, and the one that
+/// names `Other` answers `Other`'s 9. Taking the FIRST matching entry of the chain would
+/// make the answer depend on the order two `requires` were written.
 #[test]
 fn two_slots_that_disagree_pin_nothing() {
-    assert_eq!(
-        answer(
-            "test.defb.two",
-            DEFAULTED,
-            &via("requires Desc[T = Rich], Desc[T = Other] "),
-        ),
-        Some(1),
-    );
+    let two = "requires Desc[T = Rich], Desc[T = Other] ";
+    assert_names_no_instance("test.defb.two", DEFAULTED, &via(two, ""), "`test.defb.two.Desc.tag[T = …]()`");
+    assert_eq!(answer("test.defb.two", DEFAULTED, &via(two, "[T = Other]")), Some(9));
 }
 
 /// A PARAMETERIZED CARRIER IN THE SLOT dispatches to the carrier's own `tag`.
@@ -263,7 +248,7 @@ fn two_slots_that_disagree_pin_nothing() {
 ///
 /// PASSES EITHER WAY? NO — it FAILS WITH THE CHANGE BACKED OUT, by answering `1`. It is
 /// listed among the controls because what it CONTROLS is a construction choice, not the
-/// defect: `carrier_from_declared_slot` hands back a [`GoalCarrier::bare`], which drops
+/// defect: `carrier_the_call_binds` hands back a [`GoalCarrier::bare`], which drops
 /// the carrier's type ARGUMENTS (`E = Int64`) and keeps only the base `Box`. That is the
 /// documented shape for "a carrier whose arguments this route cannot see", and this row
 /// is the measurement that it is harmless here rather than an assumption that it is: a
@@ -289,7 +274,7 @@ fn a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member() {
     operation tag() -> Int64 = 5
   end
 
-  operation viaop() -> Int64 requires Desc[T = Box[E = Int64]] = Desc.tag()
+  operation viaop() -> Int64 requires Desc[T = Box[E = Int64]] = Desc.tag[T = Box[E = Int64]]()
   rule answer(?r) :- viaop(?r)
 end
 "#;
@@ -315,9 +300,9 @@ end
 /// value — because it consulted the slot whenever `statically_pinned_carrier` returned
 /// `None`, without distinguishing "this call names no carrier" from "this call's carrier
 /// is not yet known". Those are not the same thing, and the second belongs to eval.
-/// `carrier_from_declared_slot` now asks the DECLARATION (does the spec op declare a
-/// carrier-typed parameter at all) rather than the call-site classification, which is
-/// `None` for both.
+/// The carrier sources past the arguments now ask the DECLARATION (`call_names_no_carrier`:
+/// does the spec op declare a carrier-typed parameter at all) rather than the call-site
+/// classification, which is `None` for both.
 ///
 /// FAILS WITH THAT GATE REMOVED, by answering 7, which makes it the control on the gate
 /// rather than on the feature; it passes both with the whole change backed out and with
@@ -396,7 +381,7 @@ end
 /// returns to `(1, 7)`, the state it pinned before.
 #[test]
 fn a_type_variable_slot_now_reaches_the_provider_too() {
-    let tv = "  operation viaop[U](x: U) -> Int64 requires Desc[T = U] = Desc.tag()\n  \
+    let tv = "  operation viaop[U](x: U) -> Int64 requires Desc[T = U] = Desc.tag[T = U]()\n  \
               rule answer(?r) :- viaop(rich(), ?r)\n";
     assert_eq!(
         (

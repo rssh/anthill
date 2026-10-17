@@ -137,7 +137,7 @@ namespace test.xsvcs.fwd
     operation valueOf() -> Type = Boom
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
   operation mid[U](y: U) -> Type = tyOf(y)
   operation direct() -> Type = tyOf(boom(why: "x"))
   operation viaMid() -> Type = mid(boom(why: "x"))
@@ -222,7 +222,7 @@ fn the_printed_repair_loads_and_answers() {
 #[test]
 fn the_same_forward_is_refused_whichever_body_the_callee_has() {
     let never_read = FORWARD.replace(
-        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
+        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()",
         "operation tyOf[B](x: B) -> Type requires TT[T = B] = Boom",
     );
     assert_ne!(never_read, FORWARD, "the fixture edit must have applied");
@@ -257,7 +257,7 @@ fn the_same_forward_is_refused_whichever_body_the_callee_has() {
 #[test]
 fn deleting_the_clause_the_body_never_uses_is_the_repair() {
     let repaired = FORWARD.replace(
-        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
+        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()",
         "operation tyOf[B](x: B) -> Type = Boom",
     );
     assert_ne!(repaired, FORWARD, "the fixture edit must have applied");
@@ -339,7 +339,7 @@ namespace test.xsvcs.nested
   import anthill.prelude.{Int64, Option, Type}
   import anthill.prelude.Option.{some}
   import anthill.reflect.{TypeValue}
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
   operation f[C](x: C) -> Type = tyOf(some(x))
   operation viaF() -> Type = f(1)
 end

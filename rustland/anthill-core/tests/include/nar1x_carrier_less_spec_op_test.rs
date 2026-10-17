@@ -328,7 +328,7 @@ fn the_selected_impls_own_requirement_is_filled_from_the_dictionary() {
     sort E = ?
     entity wrap(inner: E)
     provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
       operation tag(x: Self) -> Int64 = 9
     end
   end
@@ -380,7 +380,7 @@ fn the_filled_requirement_follows_the_element_and_is_not_a_constant() {
     sort E = ?
     entity wrap(inner: E)
     provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
       operation tag(x: Self) -> Int64 = 9
     end
   end
@@ -542,7 +542,7 @@ fn a_dictionary_crossing_a_rule_head_is_read_on_its_own_carrier() {
     sort E = ?
     entity wrap(inner: E)
     provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
       operation tag(x: Self) -> Int64 = 9
     end
   end

@@ -180,8 +180,8 @@ const STRING: &str = "Buf[T = Int64, N = String]";
 fn user(unrelated: &str) -> String {
     format!(
         "\n  sort User\n    sort S = ?\n    requires Store[State = S]\n    \
-         operation ask() -> Int64 = Store.zero()\n    \
-         operation show(x: {unrelated}) -> Int64 = Store.zero()\n    \
+         operation ask() -> Int64 = Store.zero[State = S]()\n    \
+         operation show(x: {unrelated}) -> Int64 = Store.zero[State = S]()\n    \
          operation go1(s: S) -> Int64 = Store.peek(s)\n  end\n"
     )
 }
@@ -352,7 +352,8 @@ fn a_spec_typed_value_does_not_say_it_either() {
 
 /// …NOR ONE TYPED AT THE CALLEE'S OWN SPEC, in either spelling of its binding. `Hold.ask()`
 /// fixes nothing of `Hold`'s `C`, and the `h: Hold[C = Buf[…]]` beside it is a `Hold` at a
-/// carrier the call never names. This is the shape in which the holder's contract and the
+/// carrier the call never names: the call names no instance of `Hold`, and is refused so,
+/// advising the bracket. This is the shape in which the holder's contract and the
 /// requirement are written over ONE parameter: where the holder's binding is not read — a
 /// type that holds a value rides as an occurrence — the two sides were that parameter and
 /// the cover held. Loaded at both spellings on the parent commit; after the first cut of
@@ -364,7 +365,7 @@ fn a_value_of_the_callees_own_spec_does_not_say_it_either() {
         let at = sp.call;
         let body = format!(
             "\n  sort Hold\n    sort C = ?\n    requires Store[State = C]\n    \
-             operation touch(c: C) -> Int64\n    operation ask() -> Int64 = Store.zero()\n  end\n  \
+             operation touch(c: C) -> Int64\n    operation ask() -> Int64 = Store.zero[State = C]()\n  end\n  \
              sort P\n    provides Store[State = {at}]\n    \
              operation peek(s: {at}) -> Int64 = s.v + 100\n    operation zero() -> Int64 = 100\n    \
              provides Hold[C = {at}]\n    operation touch(c: {at}) -> Int64 = c.v\n  end\n  \
@@ -373,9 +374,8 @@ fn a_value_of_the_callees_own_spec_does_not_say_it_either() {
         assert_refused_naming(
             &load_errors_of(&program(&ns, &body)),
             &[
-                &format!("`{ns}.Store[State = {ns}.Hold.C]`"),
-                &format!("cannot be supplied for call to `{ns}.Hold.ask`"),
-                &format!("element `State = {ns}.Hold.C` is unconstrained at this call site"),
+                &format!("a call of `{ns}.Hold.ask` that names no instance of `{ns}.Hold`"),
+                &format!("`{ns}.Hold.ask[C = …]()`"),
             ],
             &format!("`Hold.ask()` beside an `h: Hold[C = …]`, {}", sp.tag),
         );
@@ -937,7 +937,7 @@ namespace {ns}
     sort S = ?
     requires {first}
     requires {second}
-    operation both(x: K) -> Int64 = Store.zero()
+    operation both(x: K) -> Int64 = Store.zero[State = S]()
   end
   operation outside(w: Tagger.C) -> Int64 = User.both(w)
   operation go() -> Int64 = outside(b(k: 0))

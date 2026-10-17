@@ -413,12 +413,136 @@ pub(super) struct Unselectable {
     pub(super) clauses: bool,
 }
 
+/// A CALL THAT NOTHING ELSE NAMES THE INSTANCE OF NAMES IT ITSELF (user, 2026-10-17):
+/// `Some(refusal)` for a call, in an operation body, of a member of a sort that may be
+/// provided ([`spec_op_parent_sort`]) whose signature names nothing of that sort — no
+/// argument, result or effect stands at the sort or at a parameter of it, and it is ground
+/// ([`signature_names_no_carrier`], [`signature_is_ground`]) — whose bracket fixes none of
+/// the sort's parameters, that selects no provider, and where some sort provides it.
+///
+/// THE CALL'S BRACKET IS THE ONE PLACE LEFT TO SAY IT. A member whose argument, result or
+/// effect names the sort has its instance inferred from the call's types (a carrier only in
+/// the result is read off the type expected of it, WI-508); one whose signature names
+/// nothing of it does not, and a `requires` in scope does not stand in: it supplies the
+/// evidence for the instance a call names and says nothing of which instance that is.
+/// `Stamp.stamp()` under `requires Stamp[T = A]` ran at `A`, and now advises
+/// `Stamp.stamp[T = A]()`; `TypeValue.type_value()` under `requires TypeValue[T = B]`
+/// advises `TypeValue.type_value[T = B]()`. Read from the clause, the call answered the
+/// clause's instance whatever it meant: a member of `Box` writing `type_value()` under
+/// `requires TypeValue[T = V]` answered `V` and not `Box[V = V]`.
+///
+/// NOR DOES A LONE PROVIDER. Inferring the call's instance from the one sort that provides
+/// the sort would read past the clause the author wrote: `pick(x: Box) requires Desc[T =
+/// x.E] = Desc.tag()`, with `Red` the only provider, answered `Red`'s tag at a box of `Blue`,
+/// whose requirement no provider answers. With NO provider there is no instance to choose
+/// and the sort's own operation runs (`Error.reify`, whose boundary the interpreter
+/// installs); where that runs nothing, [`unselectable_spec_operation_call`] refuses it.
+///
+/// NOT REFUSED: a sibling call in a member of the sort itself, which is at the instance its
+/// body was entered at (`place_sibling_call_at_callers_instance`); a sort that declares no
+/// parameter, which has no instance to name; and a rule body, whose goals are answered from
+/// the values they are fired with. A member of a sort that PROVIDES the callee's is refused
+/// as any other caller is: every sort provides `TypeValue`, and exempted, `type_value()` in a
+/// member of `Box` under `requires TypeValue[T = V]` still answered `V`.
+pub(super) fn receiver_less_call_names_no_instance(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    fn_sym: Symbol,
+    selections: &[InstanceSelection],
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if env.in_rule_body() || !selections.is_empty() {
+        return None;
+    }
+    let spec = spec_op_parent_sort(kb, fn_sym)?;
+    if !signature_names_no_carrier(kb, fn_sym, spec) || !signature_is_ground(kb, fn_sym) {
+        return None;
+    }
+    if env
+        .enclosing_sort()
+        .is_some_and(|enclosing| same_sort_canonical(kb, enclosing, spec))
+    {
+        return None;
+    }
+    if kb.type_params_of_sort(spec).is_empty() || call_fixes_a_sort_param(kb, subst, spec) {
+        return None;
+    }
+    // A SUB-INTERFACE answers at no instance of its own — a provider without constructors
+    // whose row forwards its own parameters (`Mid provides Base[T = T]`): its values are its
+    // providers' values. Where only such rows provide the sort, nothing provides it, and the
+    // sort's own operation runs (`Mid.f()`, reaching `Base.f` through the provision).
+    let rows: Vec<ProvidesRow> = provides_rows_of_spec(kb, spec).collect();
+    rows.iter().find(|row| {
+        sort_is_data(kb, row.provider)
+            || !is_param_forwarding(kb, row.provider, row.spec_base, &row.bindings(kb))
+    })?;
+    // The bracket to write: the bindings of the one clause over the sort in scope, where
+    // there is one — the instance it holds evidence for — and the sort's parameters left for
+    // the author to fill otherwise.
+    let bindings = sole_chain_entry_over_spec(kb, env.enclosing_frame_chain(), spec)
+        .and_then(|entry| goal_from_requires_entry(kb, &entry))
+        .map(|goal| {
+            goal.bindings
+                .iter()
+                .map(|(k, v)| format!("{} = {}", kb.local_name_of(*k), binding_as_the_caller_writes(kb, v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| {
+            kb.type_params_of_sort(spec)
+                .iter()
+                .map(|p| format!("{p} = …"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+    let args = match crate::kb::op_info::lookup_operation_info(kb, fn_sym) {
+        Some(rec) if rec.params.is_empty() => "()",
+        _ => "(…)",
+    };
+    Some(TypeError::CallNamesNoInstance {
+        span,
+        op: fn_sym,
+        spec,
+        suggestion: format!("{}[{bindings}]{args}", kb.qualified_name_of(fn_sym)),
+    })
+}
+
+/// A binding of a clause in scope as the caller writes it in a bracket: a type parameter of
+/// the enclosing declaration by its own name (`P`, where the clause holds the parameter's
+/// symbol, printed `tagOfP.P` by the goal's renderer), anything else as written.
+fn binding_as_the_caller_writes(kb: &KnowledgeBase, v: &Value) -> String {
+    let param = match v.head(kb) {
+        ViewHead::Ident(s) => Some(s),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            ..
+        } if v.named_keys(kb).is_empty() => Some(s),
+        ViewHead::Var(Var::Global(var)) => kb.type_param_of_canonical_var(var),
+        _ => None,
+    };
+    match param.filter(|s| is_sort_param_symbol(kb, *s)) {
+        Some(s) => type_param_display_name(kb, s),
+        None => format_value_for_goal(kb, v),
+    }
+}
+
+/// Does the call's substitution bind one of `sort`'s own type parameters — what a bracket, an
+/// argument or the expected type fixed of the instance the call is at.
+pub(super) fn call_fixes_a_sort_param(kb: &KnowledgeBase, subst: &Substitution, sort: Symbol) -> bool {
+    sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if subst.resolve_as_value(*v).is_some()))
+}
+
 /// WI-20260909-M8QWJ — `op` has nothing of its own a call runs: no body, no host mapping
 /// or builtin ([`op_is_executable`], spelled with the side tables — its body leg builds the
 /// whole operation record, and this runs on every call of a sort's member with no
 /// receiver), it is not the `eq` a carrier's equality dispatches to, and not
 /// `Error.reify`'s frame.
-fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
+pub(super) fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
     kb.op_body_node(op).is_none()
         && !kb.is_builtin(op)
         && !kb.is_host_mapped_op(op)
@@ -1644,11 +1768,10 @@ fn frame_tree(kb: &mut KnowledgeBase, chain: &DictChain) -> Vec<RequiresNode> {
 /// DOES dispatch to the provider through the slot (R541X's (C) fixtures,
 /// `TypeTermB.valueOfB`). One declaration, two meanings, decided by whether the spec op
 /// happens to carry a default body — which is WI-20260917-NR6FJ DEFECT B's sentence
-/// verbatim, one binding-shape over. That ticket closed the half where the slot names a
-/// CONCRETE carrier (`requires Desc[T = Rich]`, served by
-/// [`carrier_from_declared_slot`]); this is the half where it names a type PARAMETER,
-/// which pins no static carrier at all and which that function's doc wrongly recorded as
-/// "already works".
+/// verbatim, one binding-shape over. Since 2026-10-17 the call names that instance in its
+/// bracket (`TypeTerm.valueOf[T = P]()`) and a clause in scope only supplies its evidence:
+/// a concrete one is a carrier the call binds ([`carrier_the_call_binds`]), and over a type
+/// PARAMETER, which pins no static carrier, the slot this route defers to.
 ///
 /// WHY A DEFERRAL AND NOT A CARRIER. Over `requires TypeTerm[T = P]` there is no carrier
 /// to name at load: which provider `P` stands for is settled per call, and the evidence
@@ -1697,28 +1820,14 @@ pub(super) fn defer_defaulted_call_to_slot(
     // below and is handed to the op half, which asks it in its own words, so the two
     // halves refuse a pinned call for one reason rather than two.
     let pinned_spec = pinned_witness_for(kb, selections, spec_sort).is_some();
-    // FOR A RECEIVER-LESS CALL: EXACTLY ONE CLAUSE OVER THE SPEC, OR NOTHING IS DIRECTED.
-    // This is the same refusal
-    // [`bind_sort_params_from_sole_enclosing_requirement`] applies to the same shape, and
-    // asked through the same owner so the two cannot drift.
-    //
-    // WITHOUT IT THIS ROUTE PICKS, which is exactly what it must not do, and two shipped
-    // rows measured it: `requires Desc[T = Rich], Desc[T = Other]` answered `Rich`'s 7
-    // where the default (1) is the only honest answer
-    // (`wi_nr6fj_defect_b_slot_over_default_test::two_slots_that_disagree_pin_nothing`),
-    // and R541X's `twoReq[P, Q] requires TypeTerm[T = P], TypeTerm[T = Q]` LOADED — the
-    // deferral silently supplied the evidence whose absence is what N31XX refuses the
-    // program for (`wi_r541x_body_read_of_type_param_test::
-    // two_clauses_over_one_spec_are_refused_at_load`). Both are the ORDER-DEPENDENT
-    // answer, reached through the soft first-match tie-break the locating walks fall back
-    // to when no clause is σ-precise; the walks are right to be soft for a call that
-    // pins something; the original receiver-less route pins nothing at all.
-    // DF0TS: a clause at this receiver's rigid carrier is instance-precise
-    // evidence; the slot walks below check σ and can distinguish two clauses.
-    // A receiver-less call still needs the original sole-clause gate.
-    if !carrier_licensed
-        && sole_chain_entry_over_spec(kb, env.enclosing_frame_chain(), spec_sort).is_none()
-    {
+    // FOR A RECEIVER-LESS CALL: THE CALL NAMES THE INSTANCE, OR NOTHING IS DIRECTED. A clause
+    // in scope is found by the σ-precise walks below at the instance the call's bracket or
+    // expected type fixes (`Stamp.stamp[T = B]()` beside `requires Stamp[T = A], Stamp[T =
+    // B]` takes the second); a call that fixes nothing was refused already
+    // ([`receiver_less_call_names_no_instance`]), and where that refusal does not run — a rule
+    // body — the walks' soft first-match tie-break is not let pick a clause for it.
+    // DF0TS: a clause at this receiver's rigid carrier is instance-precise evidence too.
+    if !carrier_licensed && !call_fixes_a_sort_param(kb, subst, spec_sort) {
         return false;
     }
     let enclosing_sort = env.enclosing_sort();

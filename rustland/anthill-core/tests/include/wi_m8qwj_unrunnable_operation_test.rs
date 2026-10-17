@@ -219,7 +219,7 @@ fn a_provider_does_not_make_the_call_selectable_and_a_requires_does() {
         run_int64(
             &format!(
                 "namespace m8br\n  import anthill.prelude.{{Int64}}\n{MYSPEC}{provider}  \
-                 operation g[A](x: A) -> Int64 requires MySpec[T = A] = MySpec.ping()\n  \
+                 operation g[A](x: A) -> Int64 requires MySpec[T = A] = MySpec.ping[T = A]()\n  \
                  operation drive() -> Int64 = g(1)\nend\n"
             ),
             "m8br.drive",
@@ -342,7 +342,7 @@ fn a_default_body_reaching_a_member_that_runs_nothing_is_refused_at_its_call() {
              sort Sp\n    sort T = ?\n    operation name() -> Int64\n    \
              operation greet() -> Int64 = name() + 1\n  end\n  \
              sort W\n    provides Sp[T = Int64]\n    operation name() -> Int64 = 41\n  end\n  \
-             operation g[A](x: A) -> Int64 requires Sp[T = A] = Sp.greet()\n  \
+             operation g[A](x: A) -> Int64 requires Sp[T = A] = Sp.greet[T = A]()\n  \
              operation drive() -> Int64 = g(1)\nend\n",
             "m8sibreq.drive",
         ),
@@ -450,7 +450,7 @@ fn a_witness_of_a_spec_naming_no_parameter_is_refused() {
     let errs = load_errors_of(&format!(
         "namespace m8wc\n  import anthill.prelude.{{Int64}}\n{MYSPEC}  \
          sort Hi\n    provides MySpec[T = Int64]\n  end\n  \
-         operation g[A](x: A) -> Int64 requires MySpec[T = A] = MySpec.ping()\n  \
+         operation g[A](x: A) -> Int64 requires MySpec[T = A] = MySpec.ping[T = A]()\n  \
          operation drive() -> Int64 = g(1)\nend\n"
     ));
     assert_refused_naming(

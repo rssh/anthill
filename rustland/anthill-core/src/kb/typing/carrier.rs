@@ -1874,44 +1874,17 @@ pub(super) struct LicensingClause {
     pub(super) bindings: Vec<(VarId, Value)>,
 }
 
-/// WI-20260918-R541X (A) / WI-20260919-H20YY — THE SOLE `requires` ENTRY OVER `spec` in
-/// the enclosing scope's COMPOSED chain (its sort's slots, then its operation's), or
-/// `None` when the chain holds none — or MORE THAN ONE.
+/// THE SOLE `requires` ENTRY OVER `spec` in the enclosing scope's COMPOSED chain (its sort's
+/// slots, then its operation's), or `None` when the chain holds none — or more than one.
 ///
-/// "More than one" is a REFUSAL and not a tie-break, and it is the whole reason this is
-/// one function rather than four lines at each site. Nothing picks between
-/// `requires TypeTerm[T = P], TypeTerm[T = Q]` at a call that names neither, so taking
-/// the first written would make the answer depend on the ORDER two clauses appear in —
-/// the silent route-order choice WI-1010's family of refusals exists to prevent.
-/// [`carrier_from_declared_slot`] states the same rule for its own half ("TWO SLOTS THAT
-/// DISAGREE PIN NOTHING") and `wi_nr6fj_defect_b_slot_over_default_test::
-/// two_slots_that_disagree_pin_nothing` is the row holding it, since no corpus program
-/// writes two such slots.
+/// Read for ADVICE only: the bracket a call that names no instance is told to write
+/// ([`receiver_less_call_names_no_instance`]) is the one clause's, the instance that clause
+/// holds evidence for. It decided the call's instance until 2026-10-17, when a clause in
+/// scope stopped standing in for the bracket. With two clauses no one is advised: nothing
+/// picks between `requires TypeTerm[T = P], TypeTerm[T = Q]`.
 ///
-/// THE TWO ASKERS want opposite things from the same answer and must not diverge about
-/// what "sole" means: [`bind_sort_params_from_sole_enclosing_requirement`] BINDS from the
-/// entry, and [`defer_defaulted_call_to_slot`] uses its existence as the licence to hand
-/// the call to that slot. Were the second looser than the first, a call could be
-/// dispatched through a clause the typer had refused to read bindings from.
-///
-/// DIRECT ENTRIES ONLY, stated because the deferral's own routes search wider: both
-/// [`find_requires_location`] and [`op_scoped_defer_location`] walk the requires TREE and
-/// can locate a spec nested inside a direct requirement. A transitively-required spec has
-/// no direct entry here, so this answers `None` and the deferral declines — conservative,
-/// and deliberately so: counting only what the author wrote is what makes "more than one"
-/// a statement about the PROGRAM rather than about how deep a walk happened to go.
-///
-/// ONE RESIDUAL DIVERGENCE, NAMED RATHER THAN LEFT SILENT. The count is over the WHOLE
-/// composed chain, so a spec required at BOTH the enclosing sort and the enclosing
-/// operation reads as two and the deferral declines. For a BODY-LESS op the same program
-/// resolves: the body-less block tries the sort half first and its op half is only the
-/// fallback ([`defer_to_op_scoped_slot`]'s ORDER note), so the sort's clause wins rather
-/// than refusing. Counting per half would match that precedence and still hold both
-/// refusals above — NOT DONE, because no fixture in the corpus writes that shape, and a
-/// gate split on a case nothing drives would pin a claim this ticket cannot measure. The
-/// cost of the conservative reading is a defaulted call falling back to its default where
-/// a body-less one dispatches; the cost of guessing wrong would be a silent wrong answer,
-/// which is the trade this whole family of refusals already makes.
+/// DIRECT ENTRIES ONLY: a spec required by a direct requirement in turn has no entry here,
+/// so a counted clause is one the author wrote.
 pub(super) fn sole_chain_entry_over_spec(
     kb: &KnowledgeBase,
     chain: &DictChain,
@@ -1924,87 +1897,6 @@ pub(super) fn sole_chain_entry_over_spec(
         .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
     let entry = over_spec.next().cloned()?;
     over_spec.next().is_none().then_some(entry)
-}
-
-/// WI-20260918-R541X (A) — bind a callee's STILL-FREE sort parameters from the ONE
-/// clause of the enclosing scope (its sort's `requires`, then its operation's) that
-/// requires the callee's own sort.
-///
-/// `operation tagOf[P](x: P) -> Type requires TypeTerm[T = P] = TypeTerm.valueOf()`: the
-/// call `TypeTerm.valueOf()` has no argument and a `Type` return, so nothing at the call
-/// pins `TypeTerm.T` — yet the scope says, in its own `requires`, which `TypeTerm` it is
-/// running under. MEASURED before this: the channel write skipped the free var and the
-/// spec's default body read of `T` answered `T` (and, since (D), is refused). WI-590's
-/// [`enclosing_requires_licensing_clause`] reads the same clauses but is licensed by a
-/// RECEIVER typed at the spec's carrier, and reads the SORT half only — a receiver-less
-/// member and an operation-level `requires` both miss it.
-///
-/// THREE REFUSALS, each leaving the var free (and so loud downstream rather than guessed):
-///   * TWO clauses over the callee's sort. No rule picks between `requires TypeTerm[T = P],
-///     TypeTerm[T = Q]`, so neither is taken.
-///   * a call that pinned ANY of the sort's parameters — an argument, a bracket,
-///     `expected`, or a sibling call's placement at its caller's instance
-///     ([`place_sibling_call_at_callers_instance`], which runs just before this). Such a
-///     call names an instance of its own, which the clause need not be about (see the site
-///     for the measured case).
-///   * a clause value that is neither an enclosing parameter (resolved to its BODY RIGID —
-///     a clause is stored against the declared symbols, the body sees the rigids) nor a
-///     ground type. Same resolution as WI-590's, by symbol identity.
-pub(super) fn bind_sort_params_from_sole_enclosing_requirement(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    env: &TypingEnv,
-    callee_parent_sort: Option<Symbol>,
-) {
-    let Some(spec) = callee_parent_sort else {
-        return;
-    };
-    let chain = env.enclosing_frame_chain();
-    if chain.entries().is_empty() {
-        return;
-    }
-    let Some(entry) = sole_chain_entry_over_spec(kb, chain, spec) else {
-        return;
-    };
-    // THE CALL MUST SAY NOTHING ABOUT WHICH INSTANCE. One pinned parameter means the call
-    // names an instance of its own, and the clause may be about a different one:
-    // `FiniteCollection.collect(rest)` over a `rest : Mapped[…]` inside a sort that
-    // `requires FiniteCollection[C = S, …]` — MEASURED (wi606), borrowing the clause's
-    // `Element`/`E` there bound them to the wrong carrier's. WI-590 answers the same
-    // hazard with a receiver comparison (its GATE 3); a receiver-less call has nothing to
-    // compare, so the only safe licence is that nothing was pinned at all.
-    let param_vids: Vec<VarId> = sort_type_params_as_pairs(kb, spec)
-        .iter()
-        .filter_map(|(_, t)| match kb.get_term(*t) {
-            Term::Var(Var::Global(v)) => Some(*v),
-            _ => None,
-        })
-        .collect();
-    if param_vids
-        .iter()
-        .any(|v| subst.resolve_as_value(*v).is_some())
-    {
-        return;
-    }
-    let Some((_, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-        return;
-    };
-    for (p, t) in bindings {
-        let Some(spec_vid) = type_param_vid_in_sort(kb, spec, p) else {
-            continue;
-        };
-        let value = match clause_named_type_param(kb, &t) {
-            Some(v) => env
-                .param_rigids()
-                .iter()
-                .find(|(pv, _)| *pv == v)
-                .map(|(_, r)| Value::term(*r)),
-            None => type_is_ground(kb, &t).then_some(t),
-        };
-        if let Some(value) = value.filter(|v| !occurs_in_view(kb, spec_vid, v)) {
-            subst.bind_value(kb, spec_vid, value);
-        }
-    }
 }
 
 /// WI-590 — bind what [`enclosing_requires_licensing_clause`] resolved. Split from the

@@ -140,7 +140,7 @@ namespace wi1093.tower
       -- the answer can only come from the `Sp[E]` condition slot of this carrier's OWN
       -- provision — the ELEMENT's dictionary. 10 = the element's, 20 = this carrier's
       -- own (the wrong one), a raise = none at all.
-      operation rank(x: Self) -> Int64 = Sp.mark()
+      operation rank(x: Self) -> Int64 = Sp.mark[T = E]()
     end
   end
 

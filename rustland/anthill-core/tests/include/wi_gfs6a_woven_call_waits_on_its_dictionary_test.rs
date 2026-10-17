@@ -536,7 +536,7 @@ fn a_projection_grounded_at_a_carrier_that_provides_none_fails() {
     assert_kcna0_fails(
         &kcna0(
             "gfs6a.q1",
-            "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+            "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
              rule answer(?r) :- pick(box(v: blue()), ?r)\n",
         ),
         "test.gfs6a.q1.answer",
@@ -549,7 +549,7 @@ fn a_structural_former_no_provider_answers_fails() {
     assert_kcna0_fails(
         &kcna0(
             "gfs6a.q2",
-            "  operation pick2(x: Box) -> Int64 requires Desc[T = {Red}] = Desc.tag()\n  \
+            "  operation pick2(x: Box) -> Int64 requires Desc[T = {Red}] = Desc.tag[T = {Red}]()\n  \
              rule answer(?r) :- pick2(box(v: red()), ?r)\n",
         ),
         "test.gfs6a.q2.answer",
@@ -563,7 +563,7 @@ fn a_forwarded_requirement_no_provider_answers_fails() {
     assert_kcna0_fails(
         &kcna0(
             "gfs6a.fwd",
-            "  operation pick(x: Box) -> Int64 requires Desc[T = {x.E}] = Desc.tag()\n  \
+            "  operation pick(x: Box) -> Int64 requires Desc[T = {x.E}] = Desc.tag[T = {x.E}]()\n  \
              operation outer(b: Box) -> Int64 requires Desc[T = {b.E}] = pick(b)\n  \
              rule answer(?r) :- outer(box(v: red()), ?r)\n",
         ),
@@ -577,7 +577,7 @@ fn a_forwarded_requirement_no_provider_answers_fails() {
 fn a_provided_carrier_answers() {
     let src = kcna0(
         "gfs6a.ok",
-        "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+        "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
          operation outer(b: Box) -> Int64 requires Desc[T = b.E] = pick(b)\n  \
          rule direct(?r) :- pick(box(v: red()), ?r)\n  \
          rule forwarded(?r) :- outer(box(v: red()), ?r)\n",

@@ -766,7 +766,7 @@ namespace {ns}
     operation tag() -> Int64 = 9
   end
 {extra}
-  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()
+  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()
   operation outer(b: Box[E = Buf[T = Int64, N = {n}]]) -> Int64{outer_requires} = pick(b)
   operation go() -> Int64 = outer(box(v: buf(v: 1)))
 end

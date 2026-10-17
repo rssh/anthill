@@ -2324,9 +2324,9 @@ pub(super) fn build_op_scoped_dicts(
             // That rule exists for a measured reason its own comment gives: 29 stdlib
             // bodies declare a chain and NEVER READ IT, so a slot no dictionary could
             // fill costs them nothing. `TypeValue` cannot be one of them.
-            // `type_value()` is NULLARY (WI-20260919-HXGXF's fact 1), so no argument and
-            // no receiver names the type and the DISPATCHING DICTIONARY is the only
-            // carrier of the answer — a body holding this evidence necessarily reads it
+            // `type_value[X]()` takes no argument, so the DISPATCHING DICTIONARY of the
+            // instance its bracket names is the only carrier of the answer — a body holding
+            // this evidence necessarily reads it
             // through the slot, and an unfilled slot is therefore either an eval-time
             // `Internal` death no handler can catch, or a clause that was pure noise.
             //

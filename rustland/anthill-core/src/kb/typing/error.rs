@@ -413,6 +413,17 @@ pub enum TypeError {
         reached: Symbol,
         clauses: bool,
     },
+    /// A call, in an operation body, of a member of a sort that may be provided, with no
+    /// receiver, that fixes none of the sort's parameters — by its bracket, its arguments or
+    /// the type expected of its result — and that no single provision answers. A `requires`
+    /// in scope does not stand in: it supplies the evidence for the instance a call names.
+    /// `suggestion` is the call with the bracket written.
+    CallNamesNoInstance {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        suggestion: String,
+    },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
     /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
@@ -1577,17 +1588,38 @@ impl TypeError {
                 } else {
                     format!("{what} has no body, host mapping or builtin")
                 };
+                let params = kb
+                    .type_params_of_sort(*spec)
+                    .iter()
+                    .map(|p| format!("{p} = …"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!(
                     "a call of `{qn}` that nothing can run: `{spec_qn}` may be provided, but \
                      no provider can be selected here — no argument, result or effect of \
-                     `{short}` stands at `{spec_qn}` or at a parameter of it, and no \
-                     `requires {spec_qn}[…]` is in scope — so the call reaches `{qn}` \
-                     itself, and {own}. Add `requires {spec_qn}[…]` to the enclosing \
-                     operation, so that its callers supply the provider, or give `{body}` \
-                     a body",
+                     `{short}` stands at `{spec_qn}` or at a parameter of it, the call writes \
+                     no bracket, and no `requires {spec_qn}[…]` is in scope — so the call \
+                     reaches `{qn}` itself, and {own}. Name the instance in the call's \
+                     bracket, `{qn}[{params}](…)`, with a `requires {spec_qn}[…]` on the \
+                     enclosing operation where the bracket names a parameter of it, or give \
+                     `{body}` a body",
                     body = short_name_of(kb.qualified_name_of(*reached)),
                 )
             }
+            TypeError::CallNamesNoInstance {
+                op,
+                spec,
+                suggestion,
+                ..
+            } => format!(
+                "a call of `{}` that names no instance of `{}`: nothing at the call — its \
+                 bracket, its arguments, the type expected of its result — fixes a parameter \
+                 of `{1}`, and no single provision answers it. A `requires` in scope supplies \
+                 the evidence for the instance a call names, and does not say which instance \
+                 that is. Write the instance in the call's bracket: `{suggestion}`",
+                kb.qualified_name_of(*op),
+                kb.qualified_name_of(*spec),
+            ),
             TypeError::AmbiguousRequirementKey {
                 op, name, slots, ..
             } => {
@@ -2161,6 +2193,7 @@ impl TypeError {
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::CallOfUnselectableSpecOperation { span, .. }
+            | TypeError::CallNamesNoInstance { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2454,7 +2487,8 @@ impl TypeError {
             // One string for both faces, as the selection refusals below have it: the
             // message carries the whole repair.
             TypeError::CallOfClauseDefinedOperation { op, .. }
-            | TypeError::CallOfUnselectableSpecOperation { op, .. } => LoadError::TypeMismatch {
+            | TypeError::CallOfUnselectableSpecOperation { op, .. }
+            | TypeError::CallNamesNoInstance { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "call".to_string(),

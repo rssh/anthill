@@ -1048,7 +1048,7 @@ pub(crate) fn unwrap_spec_view_value(
 /// stored key may have been interned through different paths (the
 /// candidate-side loader vs. the goal-construction call below) — but
 /// they always render to the same short name (e.g. "T").
-fn goal_binding_value<'g>(
+pub(super) fn goal_binding_value<'g>(
     kb: &KnowledgeBase,
     goal: &'g SortGoal,
     short: Symbol,
