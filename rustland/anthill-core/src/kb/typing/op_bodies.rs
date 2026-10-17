@@ -177,7 +177,7 @@ pub(super) fn check_operation_bodies(
             .map(|(n, t)| {
                 let ty = rigidify_unwritten_sort_params(
                     kb,
-                    UnwrittenFill::Projection(*n),
+                    UnwrittenFill::Projection(ValuePath::var(*n)),
                     t,
                     SlotPosition::Body,
                     body_node.span,
@@ -358,6 +358,7 @@ pub(super) fn check_operation_bodies(
                             kb,
                             &cur,
                             &decl,
+                            Receivers::Own(None),
                             None,
                             &TypeErrorContext::OperationArgument {
                                 op_name: op.op_sym,
@@ -377,7 +378,7 @@ pub(super) fn check_operation_bodies(
                             // predates this ticket).
                             let elim = rigidify_unwritten_sort_params(
                                 kb,
-                                UnwrittenFill::Projection(*name),
+                                UnwrittenFill::Projection(ValuePath::var(*name)),
                                 &elim,
                                 SlotPosition::Body,
                                 op.body_node.span,
@@ -408,6 +409,7 @@ pub(super) fn check_operation_bodies(
                         kb,
                         &cur,
                         &decl,
+                        Receivers::Own(None),
                         None,
                         &TypeErrorContext::OperationArgument {
                             op_name: op.op_sym,
@@ -472,6 +474,7 @@ pub(super) fn check_operation_bodies(
                 kb,
                 &op.return_type,
                 &param_map,
+                Receivers::Own(None),
                 None,
                 &TypeErrorContext::OperationReturn {
                     op_name: op.op_sym,
@@ -516,6 +519,7 @@ pub(super) fn check_operation_bodies(
                     kb,
                     e,
                     &param_map,
+                    Receivers::Own(None),
                     None,
                     &TypeErrorContext::OperationEffects { op_name: op.op_sym },
                     op.span,

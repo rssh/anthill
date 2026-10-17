@@ -1206,6 +1206,7 @@ pub(super) fn check_bare_ref(
             &ret,
             &HashSet::new(),
             &[],
+            None,
             occ.span,
             occ.owner,
         )

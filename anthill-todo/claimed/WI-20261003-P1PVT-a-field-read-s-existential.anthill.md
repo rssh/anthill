@@ -3,9 +3,9 @@
 - id: WI-20261003-P1PVT-a-field-read-s-existential
 - created: 2026-10-03T12:31:54Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T12:31:54Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-10-17T14:15:44Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

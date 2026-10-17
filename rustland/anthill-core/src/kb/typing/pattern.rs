@@ -664,6 +664,7 @@ pub(super) fn bind_and_label_pattern(
                         kb,
                         &v,
                         &env.var_bindings,
+                        Receivers::Own(Some(env.receiver_aliases())),
                         None,
                         &ctx,
                         Some(ann.span.span),

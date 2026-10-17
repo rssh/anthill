@@ -2267,7 +2267,7 @@ impl ProjectionReader {
             arg_syms: rekey,
             denoted_syms: rekey,
             reading: Some(&read),
-            ..Discharge::new(args, ctx, None)
+            ..Discharge::new(args, Receivers::Own(None), ctx, None)
         }
         .eliminate(kb, ty)
         .map_err(|e| match e {

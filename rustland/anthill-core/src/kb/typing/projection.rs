@@ -227,8 +227,14 @@ pub(super) fn stable_receiver_path(
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Vec<Symbol>> {
     // A value reference is an `Expr::VarRef` (an unqualified let/lambda/param binder
-    // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
+    // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name — but a
+    // bare NULLARY OPERATION, which is a zero-arg CALL (§5.4) and names no value: read as
+    // one, `let y = mk` and `let z = mk` aliased one `mk`, and `same(y.s, z.s)` took two
+    // calls' streams for one row (WI-20261003-P1PVT, MEASURED: its review).
     if let Some(name) = leaf_var_ref(occ) {
+        if crate::kb::op_info::is_nullary_operation(kb, name) {
+            return None;
+        }
         return Some(vec![name]);
     }
     match occ.as_expr()? {
@@ -732,13 +738,47 @@ pub(super) fn build_projection_from_segs(
     member: Symbol,
     span: crate::span::SourceSpan,
 ) -> Value {
-    debug_assert!(!segs.is_empty(), "projection receiver path is non-empty");
-    if segs.len() == 1 {
-        let receiver_term = kb.alloc(Term::Ref(segs[0]));
+    let path = ValuePath::of(segs).expect("a projection receiver path is non-empty");
+    build_projection_off(kb, path, member, span)
+}
+
+/// WI-20261003-P1PVT — a stable value PATH: a head and the fields read off it (`h`, `h.s`), the
+/// receiver an unwritten slot's projection is taken off. It has a head, so it is never empty.
+#[derive(Clone, Copy)]
+pub(super) struct ValuePath<'a> {
+    pub(super) head: Symbol,
+    pub(super) fields: &'a [Symbol],
+}
+
+impl<'a> ValuePath<'a> {
+    /// The path of one variable — a parameter, a binder.
+    pub(super) fn var(head: Symbol) -> Self {
+        ValuePath { head, fields: &[] }
+    }
+
+    /// The path a receiver's segments spell, head first; `None` for no segments.
+    pub(super) fn of(segs: &'a [Symbol]) -> Option<Self> {
+        let (head, fields) = segs.split_first()?;
+        Some(ValuePath {
+            head: *head,
+            fields,
+        })
+    }
+}
+
+/// [`build_projection_from_segs`] over a [`ValuePath`].
+pub(super) fn build_projection_off(
+    kb: &mut KnowledgeBase,
+    path: ValuePath<'_>,
+    member: Symbol,
+    span: crate::span::SourceSpan,
+) -> Value {
+    if path.fields.is_empty() {
+        let receiver_term = kb.alloc(Term::Ref(path.head));
         return Value::term(kb.make_expr_carried(receiver_term, member));
     }
-    let mut receiver = NodeOccurrence::new_expr(Expr::Ref(segs[0]), span, None);
-    for &field in &segs[1..] {
+    let mut receiver = NodeOccurrence::new_expr(Expr::Ref(path.head), span, None);
+    for &field in path.fields {
         receiver = NodeOccurrence::new_expr(
             Expr::DotApply {
                 receiver,
@@ -911,6 +951,7 @@ pub(super) fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
     arg_types: &HashMap<Symbol, Value>,
+    receivers: Receivers<'_>,
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
@@ -918,9 +959,26 @@ pub(super) fn eliminate_type_projections(
     Discharge {
         arg_syms,
         denoted_syms: arg_syms,
-        ..Discharge::new(arg_types, ctx, span)
+        ..Discharge::new(arg_types, receivers, ctx, span)
     }
     .eliminate(kb, ty)
+}
+
+/// WI-20261003-P1PVT — WHOSE NAMES a projection's receivers are, which decides what names the
+/// open slots of a field path ([`field_type_at_path`]). Each discharge says, because the two
+/// differ exactly where a path's head is re-keyed to nothing: in a body that head is the body's
+/// own variable, at a call it is the callee's, which names nothing the caller holds.
+#[derive(Clone, Copy)]
+pub(super) enum Receivers<'a> {
+    /// A body's or a declaration's own variables: a path is named as written, read through the
+    /// `let` aliases in scope where there are any (`let t = h` makes `t.s.E` `h.s.E`).
+    Own(Option<&'a HashMap<Symbol, Vec<Symbol>>>),
+    /// A call's: the callee's parameters. A path is the argument's, re-keyed as a neutral is
+    /// ([`rekeyed_neutral`]); off an argument that is no path the slot opens fresh, as a read
+    /// off a call's result does. Kept callee-keyed, a self-recursive `run2(mk_int(), v, n - 1)`
+    /// passed the caller's `v: h.s.T` for `mk_int()`'s, the callee's `h` being the caller's
+    /// own, and ran `inc` on a `String` (MEASURED: review of this ticket).
+    Call,
 }
 
 /// WI-20260929-0RP29 — a caller's own reading of a projection — given its receiver, the
@@ -938,6 +996,8 @@ pub(super) type ProjectionReading<'r> =
 /// [`Discharge::eliminate`].
 pub(super) struct Discharge<'a> {
     pub(super) arg_types: &'a HashMap<Symbol, Value>,
+    /// Whose names the receivers are ([`Receivers`]).
+    pub(super) receivers: Receivers<'a>,
     /// A single-ref projection receiver's re-key (WI-459): caller variables.
     pub(super) arg_syms: Option<&'a HashMap<Symbol, Symbol>>,
     /// A `denoted`'s re-key (WI-481) — for a PARAMETER type the call's EFFECT re-key, a field
@@ -964,14 +1024,17 @@ pub(super) struct Discharge<'a> {
 }
 
 impl<'a> Discharge<'a> {
-    /// Projections read off `arg_types`, nothing re-keyed, refusals reported at `ctx`/`span`.
+    /// Projections read off `arg_types`, whose names are `receivers`', nothing re-keyed,
+    /// refusals reported at `ctx`/`span`.
     pub(super) fn new(
         arg_types: &'a HashMap<Symbol, Value>,
+        receivers: Receivers<'a>,
         ctx: &'a TypeErrorContext,
         span: Option<Span>,
     ) -> Self {
         Discharge {
             arg_types,
+            receivers,
             arg_syms: None,
             denoted_syms: None,
             row_syms: None,
@@ -1511,18 +1574,16 @@ fn child_type_value(kb: &mut KnowledgeBase, v: Value, cx: &Discharge) -> Result<
 fn resolve_receiver_path_type(
     kb: &mut KnowledgeBase,
     receiver: &Value,
-    arg_types: &HashMap<Symbol, Value>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
+    cx: &Discharge,
 ) -> Result<(Value, Option<Symbol>), TypeError> {
     // Innermost head: a value reference `Ref(s)` (the DotApply chain bottoms out in
     // it). The receiver is the argument bound to param `s` — a top-level reference, not a
     // field projection, so no declaring sort is attached here.
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
-        let ty = arg_types.get(&head).cloned().ok_or_else(|| {
+        let ty = cx.arg_types.get(&head).cloned().ok_or_else(|| {
             projection_type_error(
-                ctx,
-                span,
+                cx.ctx,
+                cx.span,
                 &format!(
                     "type projection receiver '{}' is not an argument-bound parameter of this call",
                     kb.local_name_of(head),
@@ -1544,14 +1605,74 @@ fn resolve_receiver_path_type(
     // possible: `head` / `named_arg` see through either carrier, so the verdict no
     // longer depends on which one the type is written on (WI-425).
     if let Some((base, field)) = bare_field_access(kb, receiver) {
-        let (base_ty, _) = resolve_receiver_path_type(kb, &base, arg_types, ctx, span)?;
-        return resolve_field_type(kb, &base_ty, field, ctx, span);
+        let (base_ty, _) = resolve_receiver_path_type(kb, &base, cx)?;
+        let (field_ty, decl_sort) = resolve_field_type(kb, &base_ty, field, cx.ctx, cx.span)?;
+        return Ok((
+            field_type_at_path(kb, &base_ty, field_ty, receiver, cx),
+            decl_sort,
+        ));
     }
     Err(projection_type_error(
-        ctx,
-        span,
+        cx.ctx,
+        cx.span,
         "type projection receiver is not a value-reference field path (`s.field…`)",
     ))
+}
+
+/// WI-20261003-P1PVT — the type of the field path `receiver`, given its declared field type at
+/// the base's type: the field's own existentials named by the path, as its expression read
+/// names them ([`open_existentials`]) — so a written `h.s.E` IS the neutral the read `h.s`
+/// carries. Read as declared, it was the declaration's own flexible `?`, which any use bound:
+/// `u1(h: Hold, x: h.s.T) = takes_int(x)` loaded over `s: Strm[T = ?]` and ran `x + 1` on the
+/// `String` a caller passed (MEASURED).
+///
+/// WHICH PATH is [`Receivers`]': re-keyed where the maps name the head (at `use(k, …)` the
+/// parameter's `h.s.E` is `k.s.E`), else as written in a body, through its `let` aliases; at a
+/// call whose argument is no path there is none, and the slots open fresh. What the base's type
+/// put into the field type (`held`) is the receiver's and stays.
+fn field_type_at_path(
+    kb: &mut KnowledgeBase,
+    base_ty: &Value,
+    field_ty: Value,
+    receiver: &Value,
+    cx: &Discharge,
+) -> Value {
+    let segs = receiver_path_segs(kb, receiver)
+        .expect("a receiver `resolve_receiver_path_type` resolved is a value-reference path");
+    let path = match rekeyed_segs(segs, cx.arg_syms, cx.arg_paths) {
+        Ok(rekeyed) => Some(rekeyed),
+        Err(written) => match cx.receivers {
+            Receivers::Own(aliases) => Some(match aliases {
+                Some(aliases) => canonical_receiver_path(aliases, written),
+                None => written,
+            }),
+            Receivers::Call => None,
+        },
+    };
+    let mut seen = HashSet::new();
+    let mut vars: Vec<VarId> = Vec::new();
+    crate::kb::node_occurrence::collect_value_type(kb, base_ty, &mut vars, &mut seen);
+    let held: HashSet<u32> = vars.iter().map(|v| v.raw()).collect();
+    // What the field type holds beyond the base's, named: the reduction's `brought`
+    // ([`vars_a_reduction_brought`]) with the base's variables as both `before` and `held`.
+    let mut field_vars: Vec<VarId> = Vec::new();
+    crate::kb::node_occurrence::collect_value_type(kb, &field_ty, &mut field_vars, &mut seen);
+    let brought: Vec<VarId> = field_vars
+        .into_iter()
+        .filter(|v| !anonymous_var_name(kb, v.name()))
+        .collect();
+    let (span, owner) = site_of(receiver);
+    open_existentials(
+        kb,
+        HashMap::new(),
+        &field_ty,
+        &held,
+        &brought,
+        path.as_deref().and_then(ValuePath::of),
+        span,
+        owner,
+    )
+    .unwrap_or(field_ty)
 }
 
 /// Resolve field `field_sym`'s type given a receiver's sort type (WI-397): find the
@@ -1756,8 +1877,7 @@ fn project_expr_carried(
     member: Symbol,
     cx: &Discharge,
 ) -> Result<Option<Value>, TypeError> {
-    let (recv_ty, recv_decl_sort) =
-        resolve_receiver_path_type(kb, value, cx.arg_types, cx.ctx, cx.span)?;
+    let (recv_ty, recv_decl_sort) = resolve_receiver_path_type(kb, value, cx)?;
     if let Some(v) = cx
         .reading
         .and_then(|read| read(kb, value, &recv_ty, member))
@@ -1819,19 +1939,33 @@ fn rekeyed_neutral(
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
     arg_paths: Option<&HashMap<Symbol, Vec<Symbol>>>,
 ) -> Option<Value> {
-    let mut segs = receiver_path_segs(kb, value)?;
-    match arg_paths.and_then(|paths| paths.get(&segs[0])) {
-        Some(path) => {
-            segs.splice(0..1, path.iter().copied());
-        }
-        None => segs[0] = *arg_syms?.get(&segs[0])?,
-    }
+    let segs = rekeyed_segs(receiver_path_segs(kb, value)?, arg_syms, arg_paths).ok()?;
     Some(build_projection_from_segs(
         kb,
         &segs,
         member,
         site_of(value).0,
     ))
+}
+
+/// A receiver path's segments with the HEAD re-keyed as [`rekeyed_neutral`] re-keys it, or the
+/// segments back, untouched, where nothing re-keys it.
+fn rekeyed_segs(
+    mut segs: Vec<Symbol>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    arg_paths: Option<&HashMap<Symbol, Vec<Symbol>>>,
+) -> Result<Vec<Symbol>, Vec<Symbol>> {
+    if let Some(path) = arg_paths.and_then(|paths| paths.get(&segs[0])) {
+        segs.splice(0..1, path.iter().copied());
+        return Ok(segs);
+    }
+    match arg_syms.and_then(|syms| syms.get(&segs[0])) {
+        Some(sym) => {
+            segs[0] = *sym;
+            Ok(segs)
+        }
+        None => Err(segs),
+    }
 }
 
 /// WI-400: outcome of projecting a member off a receiver's type. A projection either

@@ -624,12 +624,15 @@ fn a_variable_two_fields_share_is_one_for_both_binders() {
 /// unknown, as a read of a field written at `?` already was; left as the declaration's
 /// variable, `takes_int(t.a)` loaded (MEASURED). CONTROL — the same read handed to an
 /// operation that takes any `Box` runs.
+///
+/// The unknown is named by the path the read is off, `t.a.T` (WI-20261003-P1PVT); it was a
+/// rigid printing `?x` before.
 #[test]
 fn a_field_read_opens_a_named_variable_too() {
     let read = |call: &str| format!("operation read(t: Two) -> Int64 = {call}(t.a)");
     assert_refused_naming(
         &load_errors(&field_program("wi80zv8q.i1", &read("takes_int"), "0")),
-        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = ?x]"],
+        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = t.a.T]"],
         "a read of `a: Box[T = ?x]`",
     );
     let any = field_program(

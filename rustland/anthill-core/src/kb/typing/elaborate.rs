@@ -93,7 +93,7 @@ use super::*;
 /// for it is at the recursion site.
 pub(super) fn rigidify_unwritten_sort_params(
     kb: &mut KnowledgeBase,
-    fill: UnwrittenFill,
+    fill: UnwrittenFill<'_>,
     ty: &Value,
     position: SlotPosition<'_>,
     span: crate::span::SourceSpan,
@@ -293,7 +293,7 @@ pub(super) fn rigidify_unwritten_sort_params(
         {
             Value::term(kb.make_nothing_type())
         } else {
-            fill.mint(kb, *param)
+            fill.mint(kb, *param, span)
         };
         bindings.push((*param, filled));
         changed = true;
@@ -358,16 +358,67 @@ pub(super) fn rigidify_unwritten_sort_params(
 /// `?` there is, and each is opened to one rigid for this use; left flexible, `takes_int(t.a)`
 /// loaded over a `two` holding boxes of `String` (MEASURED, beside the pattern binder that
 /// [`FieldOpening`] opens). Empty where nothing was reduced.
+///
+/// `path`: the stable value path the result is READ off, where the call is a field read
+/// (`h.s`) — see [`open_existentials`]. `None` for every other call.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn open_existential_return(
     kb: &mut KnowledgeBase,
     callee_op: Symbol,
     ret: &Value,
     held: &HashSet<u32>,
     brought: &[VarId],
+    path: Option<ValuePath<'_>>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
-    let mut opened = unbound_return_var_openings(kb, callee_op, ret);
+    let opened = unbound_return_var_openings(kb, callee_op, ret);
+    open_existentials(kb, opened, ret, held, brought, path, span, owner)
+}
+
+/// The opening behind [`open_existential_return`], given the variables already `opened`: every
+/// `brought` variable not among them opened too, then each slot left open filled.
+///
+/// WI-20261003-P1PVT — A FIELD READ OFF A STABLE VALUE PATH NAMES ITS EXISTENTIALS BY THE PATH.
+/// `h.s` over `s: Strm[T = Int64, E = ?]` is a `Strm[T = Int64, E = h.s.E]`, not a fresh rigid
+/// per read: a path read twice denotes one value, so its existential is one, and the path's own
+/// projection names it — a hand-written `h.s.E` is that neutral (WI-400's path identity). Opened
+/// fresh, the read and the written spelling were two types: `Strm.each(h.s, g)` refused a `g`
+/// declaring `-h.s.E` against the read's `s.E` (MEASURED), and two reads of `h.s` did not
+/// agree. A read off what no path names — a call's result, `mk().s` — keeps the fresh rigid;
+/// the expression read and a written projection's receiver ([`resolve_receiver_path_type`])
+/// both come here, so they cannot disagree about which slots a path names.
+///
+/// THE TOP LEVEL ONLY: a slot nested inside a written binding (`s: Strm[T = List[T = ?]]`) has
+/// no projection to name it ([`UnwrittenFill::Anonymous`]) and opens per read. A NAMED variable
+/// the field writes as a top-level slot (`a: Pair[A = ?x, B = ?x]`) takes the projection of the
+/// first slot it fills, so the tie holds and the path names it (`h.a.B` is `h.a.A`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_existentials(
+    kb: &mut KnowledgeBase,
+    mut opened: HashMap<u32, Value>,
+    ret: &Value,
+    held: &HashSet<u32>,
+    brought: &[VarId],
+    path: Option<ValuePath<'_>>,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Option<Value> {
+    if let Some(path) = path {
+        if let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ret) {
+            for (param, v) in &bindings {
+                let Some(vid) = value_flex_var_id(kb, v) else {
+                    continue;
+                };
+                if opened.contains_key(&vid.raw()) || !brought.iter().any(|b| b.raw() == vid.raw())
+                {
+                    continue;
+                }
+                let named = UnwrittenFill::Projection(path).mint(kb, *param, span);
+                opened.insert(vid.raw(), named);
+            }
+        }
+    }
     for vid in brought {
         if !opened.contains_key(&vid.raw()) {
             let fresh = kb.fresh_var(vid.name());
@@ -377,7 +428,10 @@ pub(super) fn open_existential_return(
     }
     rigidify_unwritten_sort_params(
         kb,
-        UnwrittenFill::Anonymous,
+        match path {
+            Some(path) => UnwrittenFill::Projection(path),
+            None => UnwrittenFill::Anonymous,
+        },
         ret,
         SlotPosition::CallResult {
             opened: &opened,
@@ -482,7 +536,7 @@ impl FieldOpening {
         rigidify_unwritten_sort_params(
             kb,
             match binder {
-                Some(name) => UnwrittenFill::Projection(name),
+                Some(name) => UnwrittenFill::Projection(ValuePath::var(name)),
                 None => UnwrittenFill::Anonymous,
             },
             &field_type,
@@ -544,7 +598,7 @@ pub(super) fn closed_where_named(
     rigidify_unwritten_sort_params(
         kb,
         match binder {
-            Some(name) => UnwrittenFill::Projection(name),
+            Some(name) => UnwrittenFill::Projection(ValuePath::var(name)),
             None => UnwrittenFill::Anonymous,
         },
         &ty,
@@ -971,10 +1025,12 @@ impl SlotPosition<'_> {
 /// how it is FILLED. One enum rather than a `bool`, because the two arms are not more/less of
 /// one thing: one names the slot, the other cannot.
 #[derive(Clone, Copy)]
-pub(super) enum UnwrittenFill {
-    /// The TOP LEVEL of a PARAMETER's declared type, carrying that parameter's name. The
-    /// slot takes the projection off the value that carries it — `s: Stream[T = Int64]` is
-    /// checked as `s: Stream[T = Int64, E = s.E]`.
+pub(super) enum UnwrittenFill<'a> {
+    /// The TOP LEVEL of the type of a value a PATH names, carrying the path. The slot takes
+    /// the projection off the value that carries it — `s: Stream[T = Int64]` is checked as
+    /// `s: Stream[T = Int64, E = s.E]`. A parameter or a binder is a path of one segment; a
+    /// field read off one is a longer path (`h.s` is a `Stream[T = Int64, E = h.s.E]`,
+    /// WI-20261003-P1PVT, [`open_existentials`]).
     ///
     /// THE PROJECTION, NOT A FRESH VAR, and this is the WI-1059 design. A fresh rigid per
     /// slot is sound but ANONYMOUS: nothing else can name it. The stdlib names these
@@ -985,7 +1041,7 @@ pub(super) enum UnwrittenFill {
     /// and the pair no longer matches. MEASURED — the fresh-var cut cost 27 stdlib load
     /// errors, almost all of the shape `expected List[T = s.T], got List[T = ?T]`, and not
     /// one of them was a wrong program.
-    Projection(Symbol),
+    Projection(ValuePath<'a>),
     /// A slot NESTED inside a written binding. A fresh anonymous `Var::Rigid`, one per slot.
     ///
     /// NOT A CHOICE — nothing can name a nested slot. `l: List[T = Stream]` writes `List`'s
@@ -1020,9 +1076,9 @@ pub(super) enum UnwrittenFill {
     Anonymous,
 }
 
-impl UnwrittenFill {
+impl UnwrittenFill<'_> {
     /// Mint this position's filler for one unwritten parameter `param`.
-    fn mint(self, kb: &mut KnowledgeBase, param: Symbol) -> Value {
+    fn mint(self, kb: &mut KnowledgeBase, param: Symbol, span: crate::span::SourceSpan) -> Value {
         // Both arms name the result after the parameter's SHORT name (`E`, not
         // `Stream.E`) — the projection because that is the member spelling a hand-written
         // `s.E` produces, the rigid because a skolem's identity is its fresh `VarId` and the
@@ -1031,9 +1087,8 @@ impl UnwrittenFill {
         let member = kb.intern(&short);
         match self {
             // Built byte-identically to the loader's `s.E` — `make_expr_carried(Ref(recv),
-            // intern(short))` — and keyed by the carrier's own `<sort>.<P>` symbol, so it is
-            // the same neutral a hand-written `s.E` produces and compares to one by path
-            // identity.
+            // intern(short))`, and for a longer path its `h.s.E` — so it is the same neutral
+            // a hand-written projection produces and compares to one by path identity.
             //
             // BARE, INCLUDING FOR AN EFFECT-ROW PARAMETER — the single-label row `{s.E}` an
             // effect slot ultimately wants is wrapped where the receiver is CONSUMED
@@ -1046,10 +1101,7 @@ impl UnwrittenFill {
             // also what lets [`is_self_projection_of`] recognize a materialized receiver by
             // shape; a wrapped fill would silently stop matching there and disable the
             // WI-594 effect threading.
-            UnwrittenFill::Projection(recv_name) => {
-                let recv = kb.alloc(Term::Ref(recv_name));
-                Value::term(kb.make_expr_carried(recv, member))
-            }
+            UnwrittenFill::Projection(path) => build_projection_off(kb, path, member, span),
             // The same mint as [`rigidify_op_type_params`], which is the point: a slot the
             // author left unwritten and a slot they declared as the op's own `[E]` are the
             // same universally-quantified variable, so the body must see the same KIND of
@@ -1183,7 +1235,7 @@ fn param_is_covariant(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> bool {
 /// per-variable entry wins ([`SlotPosition::opened_named_var`] is consulted before
 /// [`UnwrittenFill::mint`]). Two independent `?`s in one return would then share one ρ — the
 /// exact tie the map's own doc says must never be invented.
-fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
+pub(super) fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
     matches!(kb.local_name_of(name), "_" | "?" | "?_")
 }
 
