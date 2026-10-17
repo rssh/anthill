@@ -81,3 +81,9 @@ FOUND, OPEN: store writes declare `{Modify[store], Error}`, not `External` (`sto
 
 DECISION ON STORE WRITES UNDER BRANCH (user, 2026-10-17): option (a). An operation that writes state outside the process declares `External`, as proposal 054 defines outside state, so 054's refusal of `Branch` with `External` covers it and no undo is owed for it. The store operations that reach the disk declare `{Modify[store], Error}` today and gain `External`, and so do their callers (anthill-todo's commit path among them); which of `persist`, `flush`, `retract` and `update` reach the disk is settled in the implementation plan. Written into proposal 037 §6.2 and §8; the open question in §10 is removed.
 
+### 2026-10-17T11:21:13Z — feedback — claude
+
+DECISION ON THE POOL (user, 2026-10-17): the file backends' pool is declared once, in `anthill.persistence.filesystem`, the module that declares all three (`FileStore`, `IndexedFileStore`, `ItemPerFileStore`), since any two of them can name one directory. Not `Store`'s: a store backed by something else, such as a database, shares nothing with the files and declares its own pool in its own module. Not `platform.anthill`'s `Filesystem`, a read-only oracle of the build-platform model that the persistence backends do not use. Its spelling stays open. Written into proposal 037 §3.2 and §10.
+
+CORRECTION TO DECISION 1's list of base sorts: since 60cbd8ca (WI-20260909-M8QWJ) `ExecutionEnvironment` holds data only, its `exec` deleted together with its `Modifiable` claim, so it is not a base sort; proposal 037 §2 no longer names it. In passing: the plain `FileStore` is configured by no project (the tracker uses `ItemPerFileStore`, examples/github-todo `IndexedFileStore`); its entity is built only in tests, and its Rust implementation lives on as `IndexedFileStore`'s inner layer.
+

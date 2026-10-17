@@ -38,7 +38,7 @@ The typer already draws this line. A base sort is one that a `provides Modifiabl
 | `Cell` | `Cell.new`, fresh | its handle | the interpreter's arena |
 | `KB` | `kb()`, the root; or a `loaded(…)` layer | its handle | the interpreter |
 | the `Store` family | its value names a root and a convention | the mount of its key | the KB's store mirror |
-| `ExecutionEnvironment`, the webots devices, guardians' `Mailbox` | declared only | — | — |
+| the webots devices, guardians' `Mailbox` | declared only | — | — |
 
 ## 3. Identity
 
@@ -52,7 +52,7 @@ Whether a write may be dropped from a row, and whether two places may be one res
 
 - **An allocating operation declares no memory clause, so its result is fresh,** connected with nothing. `Cell.new` is the case. A write to a cell that never escapes is local, and is dropped from the row (the masking of WI-314).
 - **A value that names something outside is connected to a pool**, `ensures memory_maybe_connected(result, pool)`, where `pool` is an ambient resource standing for that outside state. Such a value is never fresh, and any two values connected to one pool may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
-- **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three store backends share one pool.
+- **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three file backends share one pool. It is declared once, in `anthill.persistence.filesystem`, the module that declares all three. A store backed by something else, such as a database, declares its own pool in its own module, so it is not connected with the files.
 
 ### 3.3 The constructor says so
 
@@ -63,7 +63,7 @@ entity FileStore(root: String, convention: FileConvention)
   ensures memory_maybe_connected(result, pool)
 ```
 
-An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected. Which sort owns the store family's pool, and how a pool is spelled, are open (§10).
+An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected. How a pool is spelled is open (§10).
 
 ### 3.4 At run time
 
@@ -228,7 +228,7 @@ Considered and not taken in the 2026-10-17 discussion:
 
 ## 10. Open questions
 
-- Which sort owns the store family's pool: `Store`, or the filesystem (`platform.anthill`'s `Filesystem`). Also, how a pool is spelled.
+- How a pool is spelled. The file backends' pool is declared in `anthill.persistence.filesystem` (§3.2).
 - Implementations written in anthill (§4.3), and interceptors.
 - The name and signature of the scoped installing operation.
 - A transaction scope that rolls back on a raise (§6.1).
