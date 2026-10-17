@@ -28,6 +28,20 @@
   bespoke `with handler … do … end` grammar). 027's effect *catalog* and `HandlerAction` carrier
   remain valid — this proposal reinterprets the carrier as defunctionalized reflection.
 
+## Superseded in part by
+- [037](037-anthill-state-model.md), revised 2026-10-17, **for `Modify`**. A handler for `Modify`
+  is not a witness of a `ModifyRuntime` spec in the requirement slot:
+  - there is no generic `ModifyRuntime` (037 §4.1);
+  - a handler is an implementation of a base modifiable sort (037 §4.2);
+  - each resource is bound to one implementation (037 §5.1);
+  - the implementations in force form an installation map, read when a resource is made or
+    mounted (037 §5.2).
+
+  For `Modify`, the order against `Error` and `Branch` is fixed by 037 §6, not by §8's rank
+  table: a raise keeps the writes made before it (`ExceptT` over `StateT`), and an abandoned
+  alternative's writes are undone. §10's two `Modify` questions are answered there. The rest of
+  this proposal (`Error`, `Branch`, `Suspension`, the reflection mechanism) is unaffected.
+
 ---
 
 ## 1. What 027 left open, and the unifying answer
@@ -57,7 +71,8 @@ effect provides."* So:
 - **An effect is a sort — a set of operations over types.** This is already true:
   `sort Error { sort T = ?; operation raise(error: T) -> Nothing effects Error[T] }`,
   `sort Branch { operation fail() -> Nothing effects Branch }`,
-  `sort ModifyRuntime { operation get(target: T) -> V; operation set(target: T, value: V) -> Unit }`.
+  `sort ModifyRuntime { operation get(target: T) -> V; operation set(target: T, value: V) -> Unit }`
+  (for `Modify` this is withdrawn: each base sort's operations are its own, 037 §4.1).
   Typeclasses (`Eq`, `Ord`), effects (`Error`, `Modify`), and the resumable effects
   (`Suspension`, `Branch`) are **the same kind of thing**: a sort with operations. The only
   difference is what an operation *does*.
@@ -85,7 +100,7 @@ effect provides."* So:
   | `Suspension` | `F[]:Suspend` (a suspension/continuation functor) | `await` ≙ a `Suspend` node holding the continuation |
   | `State` | `State[S, _]` | `set(v)` ≙ state threading |
   | `Reader` | `Reader[E, _]` | `ask()` ≙ `λe. e` |
-  | `Modify[T]` | (State over the resource) | `set(target, v)` ≙ threaded mutation |
+  | `Modify[x]` | (State over the resource; realized as 037 §4–§5 describe) | `set(target, v)` ≙ threaded mutation |
 
   `Branch ↦ Stream` (not List) is load-bearing: anthill nondeterminism is **lazy and potentially
   infinite** (SLD search; solutions pulled incrementally via `splitFirst`). List would wrongly
@@ -379,9 +394,9 @@ real presence-dependency demands. (top-order vs numeric is then just a *configur
 - **"The other order" is a different effect, not a re-nesting.** A single fixed order means you
   cannot locally flip the order of the *same* pair — deliberately: when both orders are genuinely
   wanted, the two semantics are *different effects* and should be **named as such**. State×Branch is
-  already this in anthill: persistent `Modify` (`persist`/`retract` bypass the handler, §10; ranked
-  *below* `Branch`, so it survives backtracking) versus a backtrackable local state (ranked *above*
-  `Branch`, undone on backtrack). **Logging is the clean illustration**: an audit/trace log that must
+  already this in anthill, as 037 §6.2 (2026-10-17) settles it. A write outside the process is a
+  different effect, `External`, which is refused under `Branch` (054). Every in-process `Modify`
+  is undone on backtrack. **Logging is the clean illustration**: an audit/trace log that must
   survive backtracking is one effect (ranked below `Branch`); a speculative log that should be undone
   when a branch fails is a *different* effect (ranked above `Branch`). Reifying the order distinction
   as effect *identity* is louder and truer than hiding it in stack position — and matches the repo's
@@ -418,11 +433,11 @@ General mechanism, achievable for all effects; per-effect detail deferred.
 
 - **Entity → `RequirementHandle` constructor**: confirm a runtime constructor (vs the insertion-pass
   origin) composes with carrier-aware dispatch (WI-350) and the row checker (WI-307).
-- **Multi-instance witnesses** (WI-200): scoped `provide` is option (c) of WI-200 — confirm the slot
-  keys by witness identity, not just functor symbol, so two `Modify` instances don't collide.
-- **`Modify` as State vs direct store access**: `persist`/`retract` currently bypass the `Modify`
-  handler (direct `store_registry`); decide whether `Modify` is realized as the State monad through
-  the slot, or stays a direct carrier with `provide` only wrapping the sub-buffer for `transaction`.
+- **Multi-instance witnesses** (WI-200). *Answered by 037 (2026-10-17):* each resource is bound
+  to one implementation, so two instances never collide (037 §5.1).
+- **`Modify` as State vs direct store access.** *Answered by 037 (2026-10-17):* neither. A handler
+  is an implementation of a base sort, reached through the resource it is bound to (037 §4–§5). A
+  transaction scope is a later construct (037 §6.1).
 - **Cost of reflection for first-order effects**: confirm the specialized carrier path (cheap abort
   for `Throw`) is taken so `Error` never pays general `shift`/`reset`.
 - **Default rank assignment, and the partial-order refinement**: decide the default numeric ranks for

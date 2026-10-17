@@ -130,7 +130,7 @@ What remains is **soundness**, not typing. Today `List` provides `PersistentColl
 - **[001-map](001-map.md)** — the keyed instance. `PersistentMap` provides `PersistentCollection`; `MutableMap` provides `MutableCollection`; both provide `MapReadable` (the keyed read layer, richer than `Iteration` because maps have key lookup).
 - **027.1 (allocator effects)** — `MutableCollection.new()` declares `Modify[result]`; the discharge rule fires the same as for `MutableMap.new`.
 - **045 / WI-320 (effect rows)** — `Effect`/`E` are effect-row parameters; the pure binding `{}` follows `List`'s **WI-301** caveat (`Effect = {}` not yet expressible as a type argument, so it is omitted, leaving the row unbound = pure).
-- **037 (state model)** — `MutableCollection` carriers are state-bearing arena resources; `PersistentCollection` carriers are value-shaped.
+- **037 (state model, revised 2026-10-17)** — `MutableCollection` carriers are base modifiable sorts, or secondary sorts over them such as `MutableStack` over `Cell` (037 §2); `PersistentCollection` carriers are persistent values.
 - **`IndexedSeq` (existing)** — orthogonal read refinement, unaffected.
 
 ## Open questions
