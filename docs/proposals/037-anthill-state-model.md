@@ -157,7 +157,7 @@ Each alternative starts from the state at the branch point. In `pick(c) = branch
 This differs from a raise. A caught raise is a computation that happened and failed; an abandoned alternative never happened, and alternatives must not depend on the order in which they are tried.
 
 - **The undo is done by the implementation each resource is bound to.** It keeps old values while a branch is open, and restores them when an alternative is abandoned: the `register_undo` design of 027 and `docs/design/cell-runtime.md`. Every implementation of a base sort owes this.
-- **State outside the process cannot be undone,** so `Branch` together with `External` is refused at load (054). Store writes declare `{Modify[store], Error}`, not `External`, so that refusal does not reach them yet. Today a Branch region calling `Store.flush` would be neither refused nor undoable (§10).
+- **State outside the process cannot be undone.** So an operation that writes it declares `External`, as 054 defines outside state, and `Branch` together with `External` is refused at load (054). The store operations that reach the disk do not declare it yet: they declare `{Modify[store], Error}`, so today a Branch region calling `Store.flush` would be neither refused nor undoable. Adding `External` to them closes that gap (§8).
 - **SLD backtracking needs nothing,** since a rule body writes no shared state (§5.4).
 
 This is the contract WI-070 implements.
@@ -204,6 +204,7 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 - every base operation goes to the implementation its resource is bound to, `Cell.*` included (the user's direction, WI-20260908-9WVT7 note F10). Stores keep finding theirs by mounted key;
 - the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h));
 - every implementation gets mark and undo, for `Branch` (WI-070);
+- the store operations that write outside the process declare `External`, and so do their callers, anthill-todo's commit path among them. 054's refusal then covers them under `Branch`;
 - in the spec, §5.6 adopts 050.1 §6's text on resources and memory, and §5.7 takes the stack of §6.1, each written only after its wording is agreed;
 - proposal 072 adds a constructor's `ensures`.
 
@@ -228,10 +229,6 @@ Considered and not taken in the 2026-10-17 discussion:
 ## 10. Open questions
 
 - Which sort owns the store family's pool: `Store`, or the filesystem (`platform.anthill`'s `Filesystem`). Also, how a pool is spelled.
-- Store writes under `Branch`. They declare `Modify`, not `External`, and a write to disk cannot be undone. There are three options:
-  - the operations that write outside the process declare `External`, so 054's refusal covers them (recommended);
-  - a store implementation buffers writes until the branch commits;
-  - each base sort declares whether it can undo, and Branch over one that cannot is refused.
 - Implementations written in anthill (§4.3), and interceptors.
 - The name and signature of the scoped installing operation.
 - A transaction scope that rolls back on a raise (§6.1).

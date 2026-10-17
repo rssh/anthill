@@ -77,3 +77,7 @@ CORRECTION TO DECISION 4's "one pool per keyed sort": the pool belongs to what t
 
 FOUND, OPEN: store writes declare `{Modify[store], Error}`, not `External` (`store.anthill`), so 054's refusal of `Branch` with `External` does not reach them, and under the Branch decision a Branch region calling `Store.flush` would be neither refused nor undoable. Options in 037 §10: the operations that write outside the process declare `External` (recommended); a store implementation buffers writes until the branch commits; or each base sort declares whether it can undo.
 
+### 2026-10-17T11:08:14Z — feedback — claude
+
+DECISION ON STORE WRITES UNDER BRANCH (user, 2026-10-17): option (a). An operation that writes state outside the process declares `External`, as proposal 054 defines outside state, so 054's refusal of `Branch` with `External` covers it and no undo is owed for it. The store operations that reach the disk declare `{Modify[store], Error}` today and gain `External`, and so do their callers (anthill-todo's commit path among them); which of `persist`, `flush`, `retract` and `update` reach the disk is settled in the implementation plan. Written into proposal 037 §6.2 and §8; the open question in §10 is removed.
+
