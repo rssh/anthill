@@ -3,9 +3,9 @@
 - id: WI-20261017-T34HP-modify-framework-design-in-the
 - created: 2026-10-17T07:37:17Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-17T07:37:17Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-17T12:47:17Z
 
 - acceptance: cargo-test
 
@@ -102,4 +102,8 @@ REVIEW OF PROPOSAL 037 (2026-10-17), four findings, each checked against the sou
 ### 2026-10-17T12:29:45Z — feedback — claude
 
 PLAN DRAFTED (2026-10-17): docs/design/037-implementation.md, the last step. Eight steps, each with what changes and the tests it moves: (1) retire ModifyRuntime, Cell's provision, default_modify_handler and the three EvalError variants only it produces; (2) the installation map, Cell.new reading it, a cell handle carrying Rc<dyn CellImplementation>; (3) installing for a host call, and wrapping; (4) the store rows (flush External; persist / retract / update Modify[kb]) and anthill-todo's callers; (5) mount keys compared by Eq; (6) FileStorage and 072, after 050.1 stage 1; (7) Cell's memory clauses, with 050.1 stage 3; (8) undo for Branch, WI-070. Nine decisions are PROPOSED there (D1-D9), to be taken with the user one at a time. FOUND while surveying, recorded in the plan: KB.assert and KB.add_guard have no implementation in the interpreter, only in the generated-Rust KbBridge (D9, against 037 Rule 8); a store write while a KB.loaded layer is live leaves the store and the KB disagreeing, by reading, not measured (D7); the store mount key prints local names, so it is coarser than equality (D8).
+
+### 2026-10-17T12:47:10Z — feedback — claude
+
+DONE (2026-10-17). Proposal 037 is revised and reviewed; 027, 027.1, 036, 047 and 050.1 agree with it; spec §5.6, §5.7 and §8.7 are written; docs/design/037-implementation.md is written, its nine decisions taken with the user. The work continues in tickets tagged proposal-037: WI-200 (step 1, retire ModifyRuntime and the generic handler); WI-20261017-ASBZP (step 2, the installation map); WI-078 (h) (step 3, installing for a host call and wrapping; after ASBZP); WI-20261017-KE2GP (steps 4 and 5: the store rows, mount keys by Eq, and the refusal of a store write under a live layer); WI-20261017-WPBXQ (072, constructor contracts, rows 1-4); WI-20261017-J4WGC (step 6, the FileStorage pool and the backends' ensures; after WPBXQ and 050.1 stage 1, WI-20261015-809JN); WI-20261015-X57XR (step 7, Cell's memory clauses, in 050.1 stage 3); WI-070 (step 8, undo through one log; after ASBZP); WI-20261017-KQ4SR (KB.assert and KB.add_guard in the interpreter; after KE2GP). WI-20260926-7D48J's boundary rule is the prerequisite of 037 §5.4 and §6.2's rule-body claims. ACCEPTANCE NOTE: this ticket changed no code, so its recorded cargo-test acceptance measures nothing of its own; what it was held to is 037's own acceptance list, all four items done.
 

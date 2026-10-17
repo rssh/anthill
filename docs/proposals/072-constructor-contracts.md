@@ -2,7 +2,7 @@
 
 ## Status: Draft (2026-10-17). The user asked on 2026-10-17, while proposal 037 was being revised, that this be a proposal of its own rather than part of 037. Nothing here is implemented.
 
-## Tracked by: WI-20261017-T34HP for the design. Its implementation gets a ticket of its own when T34HP is delivered (user, 2026-10-17; `docs/design/037-implementation.md` D6).
+## Tracked by: WI-20261017-WPBXQ (the implementation, acceptance rows 1–4) and WI-20261017-J4WGC (row 5, proposal 037's pool, after 050.1 stage 1). Designed under WI-20261017-T34HP (user, 2026-10-17; `docs/design/037-implementation.md` D6).
 
 ## Relates to: [037](037-anthill-state-model.md) §3.3 (a keyed sort's constructor declares its connection to the sort's pool), [050.1](050.1-memory-alias-and-maybe-connected.md) (memory relations: §2's construction rule, §8's fresh default), [041](041-operation-result-naming.md) (the `result` binder), [058](058-modular-instances.md) §8 (the two kinds of `requires` item), `docs/kernel-language.md` §5.2 (entities and sort-level `requires`), §5.4 (a constructor in an operation body is a call), §8.5 (proof obligations).
 

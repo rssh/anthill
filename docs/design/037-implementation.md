@@ -1,6 +1,6 @@
 # 037 implementation — the Modify framework at run time
 
-## Status: Decided (2026-10-17). The last step of WI-20261017-T34HP. The proposal is
+## Status: Decided (2026-10-17). The last step of WI-20261017-T34HP, delivered the same day. The proposal is
 [`../proposals/037-anthill-state-model.md`](../proposals/037-anthill-state-model.md), revised and
 reviewed on 2026-10-17; this document owns HOW. Nothing here is implemented. Its nine decisions
 (§3) were taken with the user the same day, one at a time.
@@ -16,7 +16,8 @@ Tag `proposal-037`; every edge is technical.
 | 3 | WI-078 (h), re-scoped (D3) | installing for the duration of a call, and wrapping (§2.4) | 2 |
 | 4 | WI-20261017-KE2GP (D6) | the store rows: `External` on `flush`, `Modify[kb]` on `persist`, `retract` and `update`, and on their callers (§2.5) | — |
 | 5 | WI-20261017-KE2GP, with step 4 (D8) | a mount key compared by `Eq` (§2.6) | — |
-| 6 | 072's own, filed when T34HP is delivered (D6) | `FileStorage`; constructor contracts; the file backends' `ensures` (§2.7) | 050.1 stage 1 (WI-20261015-809JN) |
+| 6a | WI-20261017-WPBXQ (072, D6) | constructor contracts: `requires` and `ensures` on an entity declaration (§2.7) | — |
+| 6b | WI-20261017-J4WGC (D6) | `FileStorage`; the file backends' `ensures` (§2.7) | 6a; 050.1 stage 1 (WI-20261015-809JN) |
 | 7 | WI-20261015-X57XR (050.1 stage 3) | Cell's memory clauses (§2.8) | 050.1 stage 1 |
 | 8 | WI-070 | undo in every implementation, for `Branch` (§2.9) | 2 |
 | — | WI-20260926-7D48J | a rule-body application that modifies shared state refused at load (§2.10) | its own sequence |
@@ -538,11 +539,14 @@ taken.
 - **D6 — tickets.** DECIDED for steps 2 and 4 (user, 2026-10-17): filed as WI-20261017-ASBZP and
   WI-20261017-KE2GP, tagged `proposal-037` with WI-200. WI-078 depends on ASBZP, for its item (h).
   WI-200 is gated on `scaland-sbt-test` as well, since step 1 changes the Scala bootstrap's list.
-  Step 5 is D8's. Step 6, DECIDED (user, 2026-10-17): 072's implementation gets a ticket of its own
-  when T34HP is delivered, since T34HP is the design ticket and is done with this document. That
-  ticket covers the grammar in both parsers, the loader and the typer. It is gated on `cargo-test`
-  and `scaland-sbt-test`, and 072's memory row (its acceptance 5) follows 050.1 stage 1. Not
-  taken: keeping T34HP open until 072 lands.
+  Step 5 is D8's. Step 6, DECIDED (user, 2026-10-17): filed when T34HP was delivered, as two
+  tickets, both gated on `cargo-test` and `scaland-sbt-test`.
+  - WI-20261017-WPBXQ is 072's mechanism: the grammar in both parsers, the loader and the typer,
+    held to 072's rows 1–4. It waits on nothing.
+  - WI-20261017-J4WGC is the pool and the backends' clauses, held to 072's row 5. It follows
+    WPBXQ and 050.1 stage 1, which reads memory clauses at calls.
+  - Not taken: one ticket, which would hold rows 1–4 behind stage 1; keeping T34HP open until 072
+    lands.
 - **D7 — a store write under a live layer** (§1.4; found by reading, not measured). DECIDED (user,
   2026-10-17): refuse now, undo later, in step 4's ticket (WI-20261017-KE2GP).
   - First a failing test that measures it: `persist` while a `KB.loaded` layer is live, the layer
@@ -640,9 +644,12 @@ Backed out to the old rows, rows 1–3 load, so they fail.
 2. A store entity with a `Float` field is refused at mount, naming the field.
 3. The keying suites pass with store values built from resolved symbols.
 
-**Step 6.** 072's acceptance, rows 1–5. Row 5 is this step's: with 050.1 stage 1, a write through a
-`FileStore` that an operation without a memory clause returns stays in the row, charged
-`Modify[file_storage]`.
+**Step 6a (WPBXQ).** 072's acceptance, rows 1–4.
+
+**Step 6b (J4WGC).** 072's row 5: with 050.1 stage 1, a write through a `FileStore` that an
+operation without a memory clause returns stays in the row, charged `Modify[file_storage]`, and is
+refused where the row does not declare it. Without the backends' clause, 050.1's fresh default drops
+that write, so the row fails.
 
 **Step 7.** The review's program: `operation bad(p: Cell[V = Int64]) -> Unit = (let c = Cell.new(p);
 let q = Cell.get(c); Cell.set(q, 5))` declares nothing and is refused, the write charged to `p`. Declaring
