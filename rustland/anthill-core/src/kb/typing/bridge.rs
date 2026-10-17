@@ -867,7 +867,15 @@ fn ground_entry_spec(
                 op_name: op,
                 surface: None,
             };
-            match eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None) {
+            match eliminate_type_projections(
+                kb,
+                &entry.spec,
+                param_arg_types,
+                Receivers::Call,
+                None,
+                &ctx,
+                None,
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     delta_error = Some(delta_failure_text(&e));

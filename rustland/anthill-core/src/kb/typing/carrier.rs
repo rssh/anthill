@@ -3548,7 +3548,15 @@ pub(super) fn dispatched_impl_effects_of(
             // names the holder, not the field, so `k.E` with `k` bound to `h.s` became `h.E` —
             // the HOLDER's row — and a caller declaring `h.E` loaded with `h.s`'s row undeclared
             // (MEASURED).
-            match eliminate_type_projections(kb, e, &param_to_arg_type, arg_syms, &ctx, None) {
+            match eliminate_type_projections(
+                kb,
+                e,
+                &param_to_arg_type,
+                Receivers::Call,
+                arg_syms,
+                &ctx,
+                None,
+            ) {
                 Ok(reduced) if !effect_is_unresolved_var(kb, &reduced) => reduced,
                 _ => substitute_ref_syms_value(kb, e, &places.vars),
             }
@@ -3761,7 +3769,7 @@ pub(super) fn projection_receivers<'a>(
         for &i in &pass {
             let (param_sym, param_type, arg_ty, projects) = options[i];
             let read = if projects {
-                eliminate_type_projections(kb, param_type, &out, None, &ctx, None)
+                eliminate_type_projections(kb, param_type, &out, Receivers::Call, None, &ctx, None)
                     .unwrap_or_else(|_| param_type.clone())
             } else {
                 param_type.clone()
@@ -3922,7 +3930,7 @@ pub(super) fn override_declared_at_call(
         Discharge {
             arg_syms: receivers,
             denoted_syms: denoted,
-            ..Discharge::new(reading.arg_types, ctx, span)
+            ..Discharge::new(reading.arg_types, Receivers::Call, ctx, span)
         }
         .eliminate(kb, ty)
         .ok()
@@ -4017,7 +4025,7 @@ pub(super) fn override_at_call(
         }
     }
     let spec_at_call = |kb: &mut KnowledgeBase, spec_ty: &Value| {
-        let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, None, &ctx, span)
+        let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, Receivers::Call, None, &ctx, span)
             .unwrap_or_else(|_| mask_projections(kb, spec_ty));
         let bound = walk_type_deep_value(kb, call_subst, &reduced);
         expand_sorts_deep(kb, &bound, SlotVar::Flexible)

@@ -1035,7 +1035,7 @@ fn eliminate_callback_hint_projection(
     };
     Discharge {
         arg_paths: Some(arg_paths),
-        ..Discharge::new(param_arg_types, &ctx, None)
+        ..Discharge::new(param_arg_types, Receivers::Call, &ctx, None)
     }
     .eliminate(kb, pt)
     .ok()

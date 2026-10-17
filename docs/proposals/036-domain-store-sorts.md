@@ -10,7 +10,8 @@
 
 §2's passages on dispatch, `Branch` and identity are revised to agree with the revised 037:
 - **Dispatch.** A call goes to the implementation its resource is bound to (037 §5).
-- **`Branch`.** An abandoned alternative's writes are undone, and the store operations that reach the disk declare `External`, which is refused under `Branch` (037 §6.2).
+- **`Branch`.** An abandoned alternative's writes are undone, and `Store.flush`, the store operation that reaches the disk, declares `External`, which is refused under `Branch` (037 §6.2).
+- **The knowledge base.** `persist`, `retract` and `update` change the KB's resident facts as well as the store, so they declare `Modify[kb]` beside `Modify[store]`, and so do their callers (037 §3.2).
 - **Identity** belongs to the sort (037 §3).
 
 The single-instance limitation §2 described no longer exists. The store is a `Cell[V = State]` (WI-203/204), and a cell is keyed by its slot (WI-205).
@@ -194,7 +195,7 @@ The host's startup work: allocate a `Cell[WIS]` initialized to `wis(backend, sca
 
 #### `Modify[s]` covers the backend reach
 
-A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to: per 037 §6.3, `Modify[s]` covers any component reachable through s — including the backend reachable via `Cell.get(s).backend`. The declaration `effects {Modify[s], Error}` is the conservative bound: "anything reachable from s may change," which includes the disk write.
+A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to: per 037 §6.3, `Modify[s]` covers any component reachable through s — including the backend reachable via `Cell.get(s).backend`. The declaration `effects {Modify[s], Error}` is the conservative bound: "anything reachable from s may change," which includes the store's buffered writes. It does not include the knowledge base or the disk, which are not reachable from `s`; they are the `Modify[kb]` and `External` of the next subsection.
 
 At run time each call goes to the implementation its own resource is bound to (037 §5.1): `persist(backend, ...)` to `backend`'s, and `Cell.set(s, ...)` to `s`'s. Coverage is a typing and effect-row concern, not a dispatch one.
 
@@ -202,7 +203,7 @@ At run time each call goes to the implementation its own resource is bound to (0
 
 An abandoned alternative's writes are undone by the implementation each resource is bound to, so the cell's `id_counter` would roll back.
 
-The store operations that reach the disk are to declare `External` (037 §6.2, §8). Once they do, `commit`, which calls them, carries `External`. Since `Branch` together with `External` is refused at load (054), `commit` cannot be called inside `Branch`.
+`Store.flush`, the store operation that reaches the disk, is to declare `External`, and `persist` is to declare `Modify[kb]`, since it asserts the fact into the knowledge base, which is not reachable from `s` (037 §3.2, §6.2, §8). Once they do, `commit`, which calls them, carries both. Since `Branch` together with `External` is refused at load (054), `commit` cannot be called inside `Branch`.
 
 A different backend brings its own State type and bodies. A purely in-memory backend writes nothing outside the process, so it declares no `External`, and its writes are undone like the cell's. The bundle uses no `Branch` (it is a one-shot CLI), so none of this is load-bearing today.
 

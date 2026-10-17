@@ -979,7 +979,7 @@ pub(super) fn check_apply_iter(
                     arg_paths: Some(&arg_paths),
                     selections: &selections,
                     reading: Some(&this_instance),
-                    ..Discharge::new(&projection_receivers, &ctx, span)
+                    ..Discharge::new(&projection_receivers, Receivers::Call, &ctx, span)
                 }
                 .eliminate(kb, param_type)?;
                 let eff = ground_param_projections(kb, &subst, &eff);
@@ -1369,7 +1369,7 @@ pub(super) fn check_apply_iter(
                 arg_paths: Some(&arg_paths),
                 selections: &selections,
                 reading: Some(&this_instance),
-                ..Discharge::new(&projection_receivers, &ret_ctx, span)
+                ..Discharge::new(&projection_receivers, Receivers::Call, &ret_ctx, span)
             };
             let eliminated = cx.eliminate(kb, &op.return_type).and_then(|rt| {
                 let effs = op
@@ -1732,12 +1732,24 @@ pub(super) fn check_apply_iter(
         // so no annotation could say what it was (MEASURED: review 9 — every field read of an
         // open slot was rigid). A field DECLARED with a slot left out (`s: Stream[T = Int64]`)
         // or written `?` is still an existential, and is opened.
+        //
+        // WI-20261003-P1PVT — A FIELD READ OFF A STABLE VALUE PATH opens it to the path's own
+        // projections (`h.s` is a `Strm[T = Int64, E = h.s.E]`), the path as the receiver
+        // projections name it — a `let` alias read as what it names ([`open_existentials`]).
+        // A field read's return is a `FieldOf` the reduction above computed, so a call whose
+        // return no constructor reduced is no read and asks nothing more.
+        let read_path = (op_return_ctors.iter().any(|f| *f)
+            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(fn_sym))
+        .then(|| stable_receiver_path(kb, occ))
+        .flatten()
+        .map(|path| env.canonicalize_receiver_path(path));
         let proj_return_type = match open_existential_return(
             kb,
             return_owner,
             &proj_return_type,
             &held,
             &brought,
+            read_path.as_deref().and_then(ValuePath::of),
             occ.span,
             occ.owner,
         ) {
@@ -5268,6 +5280,7 @@ pub(super) fn check_apply_iter(
                 &ret,
                 &HashSet::new(),
                 &[],
+                None,
                 occ.span,
                 occ.owner,
             )

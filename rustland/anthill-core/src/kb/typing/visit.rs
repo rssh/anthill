@@ -122,6 +122,7 @@ pub(super) fn visit_type(
                         kb,
                         &ann,
                         &env.var_bindings,
+                        Receivers::Own(Some(env.receiver_aliases())),
                         None,
                         &ctx,
                         occ_span,

@@ -1031,7 +1031,7 @@ pub(super) fn eliminate_declared_row_projections(
             if !value_contains_projection(kb, e) {
                 return e.clone();
             }
-            eliminate_type_projections(kb, e, &param_map, None, &ctx, span)
+            eliminate_type_projections(kb, e, &param_map, Receivers::Own(None), None, &ctx, span)
                 .unwrap_or_else(|_| e.clone())
         })
         .collect()

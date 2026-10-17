@@ -1995,7 +1995,15 @@ pub(super) fn build_op_scoped_dicts(
             // MEASURED by passing the map and backing it out — ZERO rows moved, and the
             // `projected` spec read `outer.b` either way. A branch that cannot be driven
             // is not in the diff.
-            match eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None) {
+            match eliminate_type_projections(
+                kb,
+                &entry.spec,
+                param_arg_types,
+                Receivers::Call,
+                None,
+                &ctx,
+                None,
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     // KEPT, not swallowed — see [`delta_failure_text`]. The spec still

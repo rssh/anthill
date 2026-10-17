@@ -1,8 +1,8 @@
 # 037: The Modify Effect Framework
 
-## Status: Draft, revised 2026-10-17 under WI-20261017-T34HP. The model below was decided in discussion with the user on 2026-10-17; each decision is recorded on that ticket (decisions 1, 3, 4 and 5, the Branch decision, the rule-body decision and its amendment). This revision replaces the 2026-05 draft, and §9 lists what it withdraws. Nothing here is implemented beyond what §8 says exists today.
+## Status: Draft, revised 2026-10-17 under WI-20261017-T34HP. The model below was decided in discussion with the user on 2026-10-17; each decision is recorded on that ticket (decisions 1, 3, 4 and 5, the Branch decision, the rule-body decision and its amendment). This revision replaces the 2026-05 draft, and §9 lists what it withdraws. Reviewed the same day, and four findings folded in: a write is covered by containment, never by possible sharing (§6.3); a new cell holds its initial value (§3.2); a store write changes the knowledge base (§3.2, §6.2; the user chose to say so in the rows); SLD backtracking needs no undo only once WI-20260926-7D48J's rule is enforced (§5.4, §6.2). Nothing here is implemented beyond what §8 says exists today.
 
-## Tracks: WI-20261017-T34HP (this revision, and the proposals it brings into agreement). WI-200 (multi-instance state; its scope follows from §3 and §5). WI-078 (h) (handler scoping, §5.2). WI-070 (Branch, §6.2).
+## Tracks: WI-20261017-T34HP (this revision, and the proposals it brings into agreement; delivered 2026-10-17). The implementation is sequenced in [`docs/design/037-implementation.md`](../design/037-implementation.md), tag `proposal-037`: WI-200 (step 1, retire `ModifyRuntime`), WI-20261017-ASBZP (step 2, the installation map), WI-078 (h) (step 3, installing and wrapping), WI-20261017-KE2GP (steps 4–5, the store rows and mount keys), WI-20261017-WPBXQ and WI-20261017-J4WGC (step 6, 072 and the pool), WI-070 (step 8, Branch), WI-20261017-KQ4SR (`KB.assert` in the interpreter).
 
 ## Relates to: [027](027-effect-handlers-and-standard-effects.md) (effect handlers and the standard effects; for `Modify`, its handler model and its catalog entry are superseded by §4–§6), [027.1](027.1-alloc-effect-and-allocator-revision.md) (allocation is `Modify[result]`), [027.4](027.4-error-effect-reify.md) (the `Error.reify` frame, which §5.2 reuses), [038](038-builtin-sorts.md) (host bindings, the default implementation of §4.2), [045](045-effect-sets-and-expressions.md) and [046](046-region-tracking-and-effect-derive.md) (rows, places, masking), [047](047-effects-as-monads-via-reflection.md) (its reading of `Modify` as State through a requirement slot is not taken, §9), [050.1](050.1-memory-alias-and-maybe-connected.md) (memory relations: freshness and sharing, §3), [054](054-external-effect.md) (state outside the process), 072 (constructor contracts, `requires` and `ensures` on an entity declaration; to be written; §3.3 needs it), `docs/kernel-language.md` §5.5–§5.7.
 
@@ -18,7 +18,7 @@ The 2026-05 draft of this proposal made identity "a property of the handler". Th
 
 ## 1. What `Modify` says
 
-`Modify[x]` on an operation says the operation may change the state reachable from the place `x`: a parameter, `result`, a field path, or a zero-argument accessor. Anything that shares no state with a place in the row is unchanged by the call (kernel-language §5.6; with 050.1, "`Modify[x]` modifies everything connected to `x`"). The label is the same for every resource, and reading is silent (Rules 2 and 3).
+`Modify[x]` on an operation says the operation may change the state reachable from the place `x`: a parameter, `result`, a field path, or a zero-argument accessor. Anything that shares no state with a place in the row is unchanged by the call (kernel-language §5.6; with 050.1, "`Modify[x]` modifies everything connected to `x`", which is what a caller may assume; what a row covers is narrower, §6.3). The label is the same for every resource, and reading is silent (Rules 2 and 3).
 
 This section changes nothing. The rest of the proposal says what happens at run time.
 
@@ -51,7 +51,10 @@ What tells two resources of a sort apart is fixed by the sort, never by an imple
 
 Whether a write may be dropped from a row, and whether two places may be one resource, is read from 050.1's memory relations, as it is for every other operation. There is no identity kind.
 
-- **An allocating operation declares no memory clause, so its result is fresh,** connected with nothing. `Cell.new` is the case. A write to a cell that never escapes is local, and is dropped from the row (the masking of WI-314).
+- **An allocating operation's result is a new resource.** It is no other resource, and it shares memory only with what the operation puts in it, as the operation's clauses declare. `Cell.new(v)` declares `ensures memory_maybe_connected(result, v)`, `Cell.get(c)` declares `memory_maybe_connected(result, c)`, and `Cell.set(c, v)` declares `memory_maybe_connected(c, v)`, 050.1 §2's store.
+  - Where `V` can hold no resource, the clauses say nothing (050.1 §1's filter). `Cell.new(3)`'s result is connected with nothing, so a write to a cell that never escapes is local, and is dropped from the row (the masking of WI-314).
+  - Where `V` can, the new cell holds its initial value. After `let c = Cell.new(p)` and `let q = Cell.get(c)`, `Cell.set(q, 5)` writes `p`, and is charged to it.
+  - Regions are coarse, so a write to the new cell's own slot is charged to `p` as well. That is imprecise, never unsound; telling a container from its contents is 050.1 §8 C1, deferred.
 - **A value that names something outside is connected to a pool**, `ensures memory_maybe_connected(result, pool)`, where `pool` is the constant of a pool sort (§2), an ambient resource standing for that outside state. Such a value is never fresh, and any two values connected to one pool may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
 - **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three file backends share one pool. It is declared once, in `anthill.persistence.filesystem`, the module that declares all three:
 
@@ -63,6 +66,7 @@ Whether a write may be dropped from a row, and whether two places may be one res
   ```
 
   Memory relations are untyped: they connect places of any types, as `box(cell: c)` lies in `c`'s regions. The `Modifiable` claim is there for the row. 050.1 charges a write through a store the body built to the outside region it reaches, so a row may carry `Modify[file_storage]` ("may change the file storage"), and the TR8CF check admits a `Modify` target only over a modifiable type. While 050.1 §1 keeps its filter on which places take part in relations, the claim also lets the pool pass it. A store backed by something else, such as a database, declares its own pool sort (`DatabaseStorage`) in its own module, so it is not connected with the files.
+- **A store's writes also change the knowledge base.** `persist` asserts the fact into the interpreter's KB as well as buffering it for the disk, and `retract` and `update` take it out again (`KnowledgeBase::persist_mirrored`, `retract_persistent`, `update_persistent`), so what `kb` answers changes. The KB is not connected with the store's value, so those three operations declare it in their rows, `{Modify[store], Modify[kb], Error}`, as `KB.assert` declares `Modify[kb]` for the knowledge base it is handed. Their callers carry it too. `flush` writes the disk only (§6.2). Decided by the user after the review of 2026-10-17, over declaring a connection to `kb` on the stores' constructors.
 
 ### 3.3 The constructor says so
 
@@ -135,7 +139,7 @@ Installing an implementation decides what the resources made or mounted while it
 
 1. **Extent.** There is a whole-run default version, chosen by the embedder at startup. Inside the program there are scopes, installed by an ordinary higher-order operation that works as the `Error.reify` frame does (027.4). Its frame sets the new version on entry, and its exit or unwind restores the previous one, so scopes nest.
 2. **A scope affects the allocations that run inside it**, not the code written inside it. A closure made inside a scope and called outside it allocates under its caller's implementation.
-3. **Wrapping.** An implementation may wrap another and pass calls on to it, which is how audit and logging are expressed. A wrapper sees only the resources bound to it. The registry must allow this: today `EffectRegistry::take_for_invoke` takes a handler out of its slot while it runs, so a handler cannot reach another.
+3. **Wrapping.** An implementation may wrap another and pass calls on to it, which is how audit and logging are expressed. A wrapper sees only the resources bound to it. The installation map allows this, since nothing takes an implementation out of its entry while it runs. The effect registry does take a handler out of its slot (`EffectRegistry::take_for_invoke`), so a handler cannot reach another, and that is why the base sorts leave it (§8).
 4. **Compiled code** fixes the default implementation at build time. Choosing another at run time is an interpreter feature.
 
 ### 5.3 The default is always available
@@ -148,7 +152,9 @@ A local allocation in pure-typed code follows the same rule as any other: the im
 
 A call from a rule body runs in a scratch interpreter, the SLD→eval bridge.
 - **A pure call**, one whose row after masking holds no `Modify`, runs with each sort's default, as today. Its private cells are its own.
-- **A call that modifies shared state** would inherit the installations of the querying interpreter: the current version of the installation map. Under WI-20260926-7D48J's rule no such call runs in a rule body, so today every bridged call runs with the defaults.
+- **A call that modifies shared state** would inherit the installations of the querying interpreter: the current version of the installation map. Under WI-20260926-7D48J's rule no such call runs in a rule body, and every bridged call then runs with the defaults.
+
+That rule is not enforced yet. A higher-order call in a rule body writes a cell today: over `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)`, `hofWR(?v)` answers `?v = 9` (measured on WI-20260926-7D48J, 2026-10-16). The boundary check that refuses such a call at load, and declines it at run time where no typer sees it, is that ticket's. Until it lands, what this section and §6.2 say of rule bodies is a target, not a property.
 
 With `Branch` implemented (§6.2), a rule-body call may need no child interpreter at all. That is a future question.
 
@@ -169,14 +175,18 @@ Each alternative starts from the state at the branch point. In `pick(c) = branch
 This differs from a raise. A caught raise is a computation that happened and failed; an abandoned alternative never happened, and alternatives must not depend on the order in which they are tried.
 
 - **The undo is done by the implementation each resource is bound to.** It keeps old values while a branch is open, and restores them when an alternative is abandoned: the `register_undo` design of 027 and `docs/design/cell-runtime.md`. Every implementation of a base sort owes this.
-- **State outside the process cannot be undone.** So an operation that writes it declares `External`, as 054 defines outside state, and `Branch` together with `External` is refused at load (054). The store operations that reach the disk do not declare it yet: they declare `{Modify[store], Error}`, so today a Branch region calling `Store.flush` would be neither refused nor undoable. Adding `External` to them closes that gap (§8).
-- **SLD backtracking needs nothing,** since a rule body writes no shared state (§5.4).
+- **State outside the process cannot be undone.** So an operation that writes it declares `External`, as 054 defines outside state, and `Branch` together with `External` is refused at load (054).
+  - Of the store operations, only `flush` reaches the disk: the three file backends buffer `persist`, `retract` and `update` until it runs. `flush` declares `{Modify[store], Error}` today, so a Branch region calling it would be neither refused nor undoable. Declaring `External` closes that gap (§8).
+  - The other three write inside the process: the store's buffer, and the knowledge base's resident facts (§3.2). They are undone like any resource there.
+- **SLD backtracking needs no undo, once a rule body writes no shared state** (§5.4). That holds when WI-20260926-7D48J's boundary rule is enforced. Until then, a write that a rule-body call makes survives a backtrack, and nothing here undoes it.
 
 This is the contract WI-070 implements.
 
 ### 6.3 With other `Modify` effects
 
-`Modify[s]` covers what is reachable from `s`. A field path coarsens to its head at a call, so `Modify[s.rep]` is covered by `Modify[s]` (WI-506), and under 050.1 a write through a place connected to `s` is `Modify[s]`. A row does not have to list each base resource a secondary value holds.
+`Modify[s]` covers what lies in `s`'s memory. A field path coarsens to its head at a call, so `Modify[s.rep]` is covered by `Modify[s]` (WI-506). Under 050.1 a write through an alias of `s`, or through a value the body took out of `s`, is charged to `s` as well (050.1 §3). A row does not have to list each base resource a secondary value holds.
+
+A place that may only overlap `s`'s memory is not covered. If two containers share one cell, a write to a cell that only the second one holds is not `Modify[first]`. A possible overlap decides what a caller must forget after the call, never what a row covers (050.1 §1.3).
 
 ### 6.4 With time travel
 
@@ -201,7 +211,7 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 
 ## 8. Today, and what changes
 
-`docs/design/037-implementation.md` will give the plan. In summary:
+[`docs/design/037-implementation.md`](../design/037-implementation.md) gives the plan, with the decisions it still needs. In summary:
 
 **What exists:**
 - the Cell arena, with slot identity (WI-205);
@@ -214,10 +224,13 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 **What changes:**
 - `ModifyRuntime` and the functor map are retired, and the m5 `Box` and `counter` fixtures become load errors;
 - every base operation goes to the implementation its resource is bound to, `Cell.*` included (the user's direction, WI-20260908-9WVT7 note F10). Stores keep finding theirs by mounted key;
-- the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h));
+- for the base sorts, the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h)). The registry keeps the effects this proposal does not cover, `Console`, `Clock` and `Error`, until WI-078 decides their scoping (user, 2026-10-17);
 - every implementation gets mark and undo, for `Branch` (WI-070);
-- the store operations that write outside the process declare `External`, and so do their callers, anthill-todo's commit path among them. 054's refusal then covers them under `Branch`;
-- in the spec, §5.6 adopts 050.1 §6's text on resources and memory, and §5.7 takes the stack of §6.1, each written only after its wording is agreed;
+- `Store.flush`, the one store operation that writes outside the process, declares `External`, and `persist`, `retract` and `update` declare `Modify[kb]` (§3.2). So do their callers, anthill-todo's commit path among them. 054's refusal then covers `flush` under `Branch`;
+- Cell's operations declare their memory clauses (§3.2), with the census of 050.1 §7 stage 3;
+- `KB.assert` and `KB.add_guard` get an implementation in the interpreter, held to their declarations by BRT4Y (WI-20261017-KQ4SR). Today only the generated-Rust host bridge implements them, so Rule 8's default implementation does not yet exist for them;
+- WI-20260926-7D48J's boundary rule is enforced: a rule-body application whose row holds an effect other than `Error` is refused at load where it is typed, and declined at run time otherwise. §5.4 and the last item of §6.2 rest on it;
+- in the spec, §5.6 adopts 050.1 §6's text on resources and memory, and §5.7 takes the stack of §6.1 (written 2026-10-17, the wording agreed; §5.6's sentence on fresh resources revised after the review);
 - proposal 072 adds a constructor's `ensures`.
 
 ## 9. What this revision withdraws
