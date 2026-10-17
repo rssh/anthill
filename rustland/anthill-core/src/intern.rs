@@ -10,18 +10,93 @@ use std::collections::{HashMap, HashSet};
 
 use crate::span::SourceId;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// A name, as a handle into a [`SymbolTable`] — plus ONE BIT, the TYPE FACE
+/// (WI-20260902-JB6RS; kernel-language.md §4.4, *A name has a reading in each
+/// context*).
+///
+/// A constructor is a sort in its own right (§6.3), so its one declaration has two
+/// readings: the INSTANCE (`red`, `Foo(a: 1)`) and the TYPE (`Colour.red` in a
+/// signature, `Foo[]` written as data). The plain symbol is the constructor; its
+/// [`Self::type_face`] is the type. The two are different `Symbol` VALUES — unequal,
+/// hashed apart — so a term headed by one is never the term headed by the other, at
+/// any arity and whatever its labels: the term store, unify, the discrimination tree
+/// and `MapKey` keep them apart by identity, with no table lookup on the hot path.
+///
+/// THE TABLE DOES NOT SEE THE BIT. One declaration is one table entry — one name,
+/// one scope, one list of kinds (WI-926) — and [`Self::index`] is that entry's slot,
+/// the face masked off. Every `SymbolTable` read goes through it, so a face answers
+/// every table question exactly as its constructor does; only IDENTITY tells them
+/// apart. A face never enters the table itself: every write (`add_kind`, the
+/// canonical map, `set_arg_places`, `mark_internal`) refuses one in a debug build,
+/// and `define` / `intern` only ever mint plain symbols.
+///
+/// A sort with no constructor of its name (`Int64`, `Cell`) has one face, the plain
+/// one, and is never given the bit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
+/// The bit [`Symbol::type_face`] sets. The top bit, so a plain symbol's value is its
+/// table slot: tables stay far below 2^31 entries.
+const TYPE_FACE_BIT: u32 = 1 << 31;
+
 impl Symbol {
+    /// The TABLE SLOT of this symbol's declaration — the type face masked off, so
+    /// `c.index() == c.type_face().index()`. For a table lookup or an ordering key;
+    /// NOT an identity (two faces share it): round-trip a symbol through
+    /// [`Self::to_bits`] / [`Self::from_bits`] instead.
     pub fn index(self) -> u32 {
-        self.0
+        self.0 & !TYPE_FACE_BIT
     }
 
     /// Create from raw index. Used for synthetic VarIds (de Bruijn). `const` so
-    /// a fixed symbol can be a `const` (e.g. a test's stable functor id).
+    /// a fixed symbol can be a `const` (e.g. a test's stable functor id). Always the
+    /// PLAIN face: a slot is a declaration, and a face is reached from one by
+    /// [`Self::type_face`].
     pub const fn from_raw(raw: u32) -> Self {
+        debug_assert!(raw & TYPE_FACE_BIT == 0, "Symbol::from_raw: a table slot has no face bit");
         Symbol(raw)
+    }
+
+    /// The constructor face — the declaration's own symbol. Identity on a plain one.
+    pub fn plain(self) -> Self {
+        Symbol(self.0 & !TYPE_FACE_BIT)
+    }
+
+    /// The TYPE face of this declaration's constructor — the bare bit operation. It
+    /// does not ask the table whether the declaration HAS a constructor, and a face of
+    /// one that does not (`Int64`, `Cell`) is a second identity for a sort the spec
+    /// gives exactly one (§4.4); so it is crate-private, for the KB's guarded entry
+    /// point and this module's tests.
+    pub(crate) fn type_face(self) -> Self {
+        Symbol(self.0 | TYPE_FACE_BIT)
+    }
+
+    /// Is this the type face of a constructor?
+    pub fn is_type_face(self) -> bool {
+        self.0 & TYPE_FACE_BIT != 0
+    }
+
+    /// The whole value, face included — the IDENTITY, for a key that must come back
+    /// as the same symbol through [`Self::from_bits`] (a cache key, a hash input).
+    pub fn to_bits(self) -> u32 {
+        self.0
+    }
+
+    /// The inverse of [`Self::to_bits`].
+    pub fn from_bits(bits: u32) -> Self {
+        Symbol(bits)
+    }
+}
+
+/// `Symbol(5)` for a constructor or any other name, `Symbol(5†)` for a type face —
+/// so a test failure that compares the two says which is which.
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_type_face() {
+            write!(f, "Symbol({}†)", self.index())
+        } else {
+            write!(f, "Symbol({})", self.0)
+        }
     }
 }
 
@@ -333,7 +408,11 @@ impl SymbolTable {
     /// a nested one, so nothing would otherwise record that the name also
     /// constructs.
     pub fn add_kind(&mut self, sym: Symbol, kind: SymbolKind) {
-        if let Some(SymbolDef::Resolved { kinds, .. }) = self.defs.get_mut(sym.0 as usize) {
+        debug_assert!(
+            !sym.is_type_face(),
+            "add_kind({sym:?}): a type face is not a declaration, and the table holds plain symbols only"
+        );
+        if let Some(SymbolDef::Resolved { kinds, .. }) = self.defs.get_mut(sym.index() as usize) {
             if !kinds.contains(&kind) {
                 kinds.push(kind);
             }
@@ -1070,7 +1149,9 @@ impl SymbolTable {
             owner.index(),
             self.defs.len(),
         );
-        ScopeId(owner)
+        // A scope is opened by a DECLARATION, and a type face is not one: `Foo†` and
+        // `Foo` own the same scope (WI-20260902-JB6RS), so the owner is always plain.
+        ScopeId(owner.plain())
     }
 
     /// Intern a name, returning a Symbol. Creates an Unresolved entry
@@ -1166,6 +1247,10 @@ impl SymbolTable {
     /// defined (its definition stays, `defs` being append-only; the rows that spelled
     /// it are tombstones).
     fn set_canonical(&mut self, qualified_name: &str, sym: Symbol) {
+        debug_assert!(
+            !sym.is_type_face(),
+            "set_canonical({qualified_name}, {sym:?}): a name's canonical image is its declaration, never a type face"
+        );
         let moved = match self.by_qualified_name.insert(qualified_name.to_owned(), sym) {
             Some(earlier) => earlier != sym,
             None => self.intern_map.get(qualified_name).is_some_and(|twin| *twin != sym),
@@ -1235,7 +1320,8 @@ impl SymbolTable {
     /// [`SymbolDef::Resolved::arg_places`]. Idempotent overwrite; a no-op on
     /// an unresolved symbol.
     pub fn set_arg_places(&mut self, sym: Symbol, places: Vec<Symbol>) {
-        if let Some(SymbolDef::Resolved { arg_places, .. }) = self.defs.get_mut(sym.0 as usize) {
+        debug_assert!(!sym.is_type_face(), "set_arg_places({sym:?}): a type face is not a declaration");
+        if let Some(SymbolDef::Resolved { arg_places, .. }) = self.defs.get_mut(sym.index() as usize) {
             *arg_places = Some(places);
         }
     }
@@ -1245,7 +1331,7 @@ impl SymbolTable {
     /// tell that from a callable taking no arguments). The result place is
     /// `<sym>.result` (found by name), not included here.
     pub fn arg_places(&self, sym: Symbol) -> &[Symbol] {
-        match self.defs.get(sym.0 as usize) {
+        match self.defs.get(sym.index() as usize) {
             Some(SymbolDef::Resolved {
                 arg_places: Some(places),
                 ..
@@ -1258,7 +1344,7 @@ impl SymbolTable {
     /// parameter, a `() -> T` one included (its [`Self::arg_places`] are empty).
     pub fn is_callable(&self, sym: Symbol) -> bool {
         matches!(
-            self.defs.get(sym.0 as usize),
+            self.defs.get(sym.index() as usize),
             Some(SymbolDef::Resolved {
                 arg_places: Some(_),
                 ..
@@ -1270,12 +1356,13 @@ impl SymbolTable {
     /// resolution hides it (kernel-language.md §8.6). No-op-safe to call more
     /// than once.
     pub fn mark_internal(&mut self, sym: Symbol) {
-        self.internal_syms.insert(sym.0);
+        debug_assert!(!sym.is_type_face(), "mark_internal({sym:?}): a type face is not a declaration");
+        self.internal_syms.insert(sym.index());
     }
 
     /// WI-369: whether `sym` was declared `internal`.
     pub fn is_internal(&self, sym: Symbol) -> bool {
-        self.internal_syms.contains(&sym.0)
+        self.internal_syms.contains(&sym.index())
     }
 
     /// WI-369: is `sym` visible from `from_scope`? A non-`internal` symbol
@@ -2688,7 +2775,7 @@ impl SymbolTable {
     /// language-level `anthill.reflect.short_name`, both of which `rsplit` for exactly
     /// this reason. Named `name` (and aliased `resolve`) until WI-956.
     pub fn local_name(&self, sym: Symbol) -> &str {
-        match &self.defs[sym.0 as usize] {
+        match &self.defs[sym.index() as usize] {
             SymbolDef::Unresolved { name } => name,
             SymbolDef::Resolved { local_name, .. } => local_name,
         }
@@ -2696,7 +2783,7 @@ impl SymbolTable {
 
     /// Get the full SymbolDef for a symbol.
     pub fn get(&self, sym: Symbol) -> &SymbolDef {
-        &self.defs[sym.0 as usize]
+        &self.defs[sym.index() as usize]
     }
 
     /// WI-5XBBQ — how many symbols this table has minted; `Symbol::from_raw(i)` is a
@@ -2712,7 +2799,7 @@ impl SymbolTable {
 
     /// Check if a symbol is resolved (has kind, scope, qualified name).
     pub fn is_resolved(&self, sym: Symbol) -> bool {
-        matches!(&self.defs[sym.0 as usize], SymbolDef::Resolved { .. })
+        matches!(&self.defs[sym.index() as usize], SymbolDef::Resolved { .. })
     }
 
     /// WI-984 — THE SCOPE `sym` WAS DECLARED IN. `None` only for an unresolved
@@ -2720,7 +2807,7 @@ impl SymbolTable {
     /// [`ScopeId::owner`] is total. The stored-representation reader every caller
     /// wanting the declaring scope (or its owner) should go through.
     pub fn declaring_scope(&self, sym: Symbol) -> Option<ScopeId> {
-        match self.defs.get(sym.0 as usize) {
+        match self.defs.get(sym.index() as usize) {
             Some(SymbolDef::Resolved { scope, .. }) => Some(*scope),
             _ => None,
         }
@@ -3299,5 +3386,58 @@ mod tests {
         // whatever `small` happens to hold at that index.
         let foreign_from_small = small.intern("only");
         let _accepted: ScopeId = large.scope_id(foreign_from_small);
+    }
+
+    /// WI-20260902-JB6RS — a constructor's TYPE FACE is a different symbol VALUE over
+    /// the SAME declaration: identity sees the bit, the table does not.
+    ///
+    /// BACKED OUT (`Symbol::index` returning the whole value, i.e. not masking): the
+    /// first block's table reads index past the end of `defs` and panic, and the
+    /// `scope_id` row fails the same way. The identity block passes either way, BY
+    /// DESIGN — the bit is what makes the faces unequal, masked or not.
+    #[test]
+    fn a_type_face_is_another_identity_over_the_same_declaration() {
+        let mut st = SymbolTable::new();
+        let ns = st.intern("shapes");
+        let scope = st.scope_id(ns);
+        let c = st.define("Foo", "shapes.Foo", SymbolKind::Sort, scope);
+        st.add_kind(c, SymbolKind::Entity);
+        let face = c.type_face();
+
+        // The table answers the face as it answers the declaration.
+        assert_eq!(face.index(), c.index(), "one table slot");
+        assert_eq!(st.local_name(face), "Foo");
+        assert!(matches!(
+            st.get(face),
+            SymbolDef::Resolved { qualified_name, .. } if qualified_name == "shapes.Foo"
+        ));
+        assert!(st.get(face).has_kind(SymbolKind::Sort) && st.get(face).has_kind(SymbolKind::Entity));
+        assert!(st.is_resolved(face));
+        assert_eq!(st.declaring_scope(face), st.declaring_scope(c));
+        assert_eq!(st.scope_id(face), st.scope_id(c), "a face owns its declaration's scope");
+        assert_eq!(st.scope_id(face).owner(), c, "and the owner is the plain symbol");
+
+        // Identity does not.
+        assert_ne!(face, c);
+        let set: HashSet<Symbol> = [c, face].into_iter().collect();
+        assert_eq!(set.len(), 2, "the faces hash apart");
+        assert!(face.is_type_face() && !c.is_type_face());
+        assert_eq!(face.plain(), c);
+        assert_eq!(c.plain(), c, "plain is identity on a plain symbol");
+        assert_eq!(Symbol::from_bits(face.to_bits()), face, "the bits round-trip the face");
+        assert_eq!(Symbol::from_raw(face.index()), c, "a slot is the plain face");
+        assert_eq!(format!("{face:?}"), format!("Symbol({}†)", c.index()));
+        assert_eq!(format!("{c:?}"), format!("Symbol({})", c.index()));
+    }
+
+    /// The table holds plain symbols only: recording a kind on a face is a caller
+    /// confusing the type with its declaration, refused loudly (a debug assertion —
+    /// the test profiles keep them on).
+    #[test]
+    #[should_panic(expected = "a type face is not a declaration")]
+    fn the_table_refuses_a_type_face() {
+        let mut st = SymbolTable::new();
+        let c = st.intern("Foo");
+        st.add_kind(c.type_face(), SymbolKind::Sort);
     }
 }

@@ -435,7 +435,7 @@ impl KnowledgeBase {
                         order.iter().position(|f| f == s).unwrap_or(usize::MAX)
                     });
                 } else {
-                    named_args.sort_by_key(|(s, _)| s.index());
+                    named_args.sort_by_key(|(s, _)| s.to_bits());
                 }
                 // WI-511: route through `alloc` so a 0-ary constructor entity
                 // lowers to the canonical `Ref(c)`, not a divergent `Fn{c}`.

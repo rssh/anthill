@@ -2450,7 +2450,7 @@ fn fingerprint_into<V: TermView>(
                 out.push(StructToken::Opaque);
             }
             if !ordered_product {
-                keys.sort_by_key(|s| s.index());
+                keys.sort_by_key(|s| s.to_bits());
             }
             // A REPEATED LABEL DEFEATS KEY-ADDRESSED CHILDREN. `named_arg` resolves by
             // SYMBOL and returns the FIRST match, so `(d: 1, d: 2)` and `(d: 1, d: 3)`

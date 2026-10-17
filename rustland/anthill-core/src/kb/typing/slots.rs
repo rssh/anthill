@@ -4308,8 +4308,8 @@ pub(super) fn check_unnamed_requirement_lines(kb: &mut KnowledgeBase) -> Vec<Typ
     }
     // In symbol order: the record is a hash map, and a refusal's place among the load's
     // errors should not follow its iteration.
-    sorts.sort_by_key(|sym| sym.index());
-    ops.sort_by_key(|sym| sym.index());
+    sorts.sort_by_key(|sym| sym.to_bits());
+    ops.sort_by_key(|sym| sym.to_bits());
     ops.dedup();
     let mut errors: Vec<TypeError> = Vec::new();
     for sort in sorts {

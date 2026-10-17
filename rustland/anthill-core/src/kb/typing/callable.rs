@@ -592,7 +592,7 @@ pub(super) fn function_pairing_permutes_a(
     // them up either and the pairing is refused by name (see [`TupleOrder::Free`] on the
     // Symbol-vs-short-name split, which predates this and bounds both sides alike).
     let sorted = |v: &[Symbol]| {
-        let mut k: Vec<u32> = v.iter().map(|s| s.index()).collect();
+        let mut k: Vec<u32> = v.iter().map(|s| s.to_bits()).collect();
         k.sort_unstable();
         k
     };

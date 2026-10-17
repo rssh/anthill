@@ -1236,14 +1236,14 @@ mod tests {
     fn roots(kb: &KnowledgeBase) -> Vec<&Rc<NodeOccurrence>> {
         let mut roots: Vec<&Rc<NodeOccurrence>> = Vec::new();
         let mut ops: Vec<_> = kb.op_records.iter().collect();
-        ops.sort_by_key(|(op, _)| op.index());
+        ops.sort_by_key(|(op, _)| op.to_bits());
         roots.extend(ops.into_iter().filter_map(|(_, record)| record.body.as_ref()));
         for rule in &kb.rules {
             roots.extend(rule.body_nodes.iter());
             roots.extend(rule.rhs_node.as_ref());
         }
         let mut consts: Vec<_> = kb.const_bodies.iter().collect();
-        consts.sort_by_key(|(name, _)| name.index());
+        consts.sort_by_key(|(name, _)| name.to_bits());
         roots.extend(consts.into_iter().map(|(_, body)| body));
         roots
     }

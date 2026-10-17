@@ -12519,7 +12519,7 @@ fn find_in_nested_scope(
         }
         matches.push(*sym);
     }
-    matches.sort_by_key(|s| s.index());
+    matches.sort_by_key(|s| s.to_bits());
     matches.dedup();
     if matches.len() == 1 {
         Some(matches[0])
@@ -12755,7 +12755,7 @@ fn resolve_scan_alias_heads(kb: &mut KnowledgeBase) -> bool {
         .filter(|(sym, _)| !kb.alias_heads.contains_key(sym))
         .map(|(sym, d)| (*sym, d.clone()))
         .collect();
-    open.sort_by_key(|(sym, _)| sym.index());
+    open.sort_by_key(|(sym, _)| sym.to_bits());
     let mut progress = false;
     for (alias, decl) in open {
         let previous = kb.symbols.set_asking_file(Some(decl.source));
@@ -20282,7 +20282,7 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
     if dups.is_empty() {
         return Vec::new(); // the universal case: no fact walk at all
     }
-    dups.sort_by_key(|(s, _)| s.index());
+    dups.sort_by_key(|(s, _)| s.to_bits());
     let fact_counts = super::op_info::operation_info_fact_counts(kb);
     dups.into_iter()
         .map(|(op, sites)| LoadError::DuplicateOperationDeclaration {
@@ -20547,7 +20547,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     if hits.is_empty() {
         return Vec::new(); // the universal case
     }
-    hits.sort_by_key(|(s, _, _, _)| s.index());
+    hits.sort_by_key(|(s, _, _, _)| s.to_bits());
     hits.into_iter()
         .map(|(op, definition, slots, sites)| {
             LoadError::OperationBodyAndClauses {
@@ -23609,7 +23609,7 @@ fn dotted_by_provision(
         // Deduped at the SYMBOL: two `ScopeInclusion` entries can name one parent scope
         // (an edge that is both the enclosing link and a provision), and two provided
         // sorts can be one sort reached twice. Either way it is ONE answer.
-        hits.sort_by_key(|s| s.index());
+        hits.sort_by_key(|s| s.to_bits());
         hits.dedup();
         match hits.len() {
             0 => {}
@@ -25107,6 +25107,10 @@ impl<'a> Loader<'a> {
     /// Plain intern — no scope-aware resolution. Used for field names,
     /// param names, meta keys, variable names.
     fn reintern(&mut self, sym: Symbol) -> Symbol {
+        // The parse interner never mints a type face (WI-20260902-JB6RS): which face a
+        // name takes is decided where the KB resolves it, by its context, so a face
+        // reaching here would be keyed onto its constructor and silently lose the bit.
+        debug_assert!(!sym.is_type_face(), "reintern({sym:?}): a parse-side symbol is never a type face");
         if let Some(&mapped) = self.sym_map.get(&sym.index()) {
             return mapped;
         }
@@ -36640,7 +36644,7 @@ impl<'a> Loader<'a> {
         // type-param bindings against SortView's own field list — all unmatched,
         // collapsing to `usize::MAX` and a non-index order — breaking the WI-449
         // byte-identity. Index order is the right canonical key for this slot.
-        named.sort_by_key(|(s, _)| s.index());
+        named.sort_by_key(|(s, _)| s.to_bits());
         // A spec is ground iff every binding is ground; any non-`Term` binding
         // poisons the whole spec to a value carrier (no information lost).
         let any_value = pos.iter().any(|v| !matches!(v, Value::Term { .. }))

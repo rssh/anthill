@@ -7935,7 +7935,7 @@ impl KnowledgeBase {
         }
         match self.entity_field_names(functor) {
             Some(fields) => named.sort_by_key(|(s, _)| Self::declared_rank(fields, *s)),
-            None => named.sort_by_key(|(s, _)| s.index()),
+            None => named.sort_by_key(|(s, _)| s.to_bits()),
         }
     }
 

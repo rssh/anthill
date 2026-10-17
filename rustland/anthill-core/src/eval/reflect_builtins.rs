@@ -277,7 +277,7 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
             Some(order) => {
                 named.sort_by_key(|(s, _)| order.iter().position(|f| f == s).unwrap_or(usize::MAX))
             }
-            None => named.sort_by_key(|(s, _)| s.index()),
+            None => named.sort_by_key(|(s, _)| s.to_bits()),
         }
     }
     Value::Entity {
