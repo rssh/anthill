@@ -2945,6 +2945,15 @@ object Loader:
             if kb.symbols.isResolved(sym) then kb.alloc(Term.Ref(sym))
             else kb.alloc(Term.Ident(sym))
         case None => ()
+    // A CONSTRUCTOR'S QUALIFIED NAME IS THE REFERENCE ITS ONE-SEGMENT NAME IS, in a data slot
+    // too (§6.7): `fact holds(Colour.red)` holds `red`'s symbol, as `fact plain(red)` does, so
+    // a goal writing either spelling finds either fact. Any other dotted chain in a data slot
+    // keeps its spelling. Mirrors rustland's `data_slot_dotted_ctor`.
+    else
+      dottedCitationName(fileSym, fileTerms, termId).map(lookupWritten(kb, _, scope)) match
+        case Some(ResolveResult.Found(sym)) if kb.isConstructorSymbol(sym) =>
+          return kb.alloc(Term.Ref(sym))
+        case _ => ()
 
     fileTerms.get(termId) match
       case Term.Const(lit) =>

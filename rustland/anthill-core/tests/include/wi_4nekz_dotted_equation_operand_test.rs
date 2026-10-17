@@ -275,13 +275,16 @@ fn every_citation_form_reaches_the_same_reading() {
 /// WI-20260902-40KSW and will move when it lands — what must not move is the two
 /// positions agreeing.
 ///
-/// THREE OF THE FIVE NO LONGER PAIR, by WI-20261012-RXT6S: a sort named by a path is its
-/// type value in an operation body, so a chain that names a sort, a free-standing entity,
-/// or a constructor past a sort is read there (`eq.b: expected Type, got Int64`) and only
-/// the rule body walks into its segments. For those the row holds the rule body to a
-/// refusal that is not the rung's own — the comparison against a `Relation`, which is
-/// what a too-wide rung would put there — and the operation body to not blaming the
-/// path's root. The row's name is kept: the delivered ticket cites it.
+/// ONE OF THE FIVE NO LONGER PAIRS, by WI-20261012-RXT6S: a sort named by a path is its
+/// type value in an operation body, so a chain that names a sort is read there (`eq.b:
+/// expected Type, got Int64`) and only the rule body walks into its segments. For it the
+/// row holds the rule body to a refusal that is not the rung's own — the comparison against
+/// a `Relation`, which is what a too-wide rung would put there — and the operation body to
+/// not blaming the path's root. A constructor's qualified name pairs again: it is the
+/// constructor in both positions, as its one-segment name is (WI-20260908-9WVT7,
+/// `wi_9wvt7_qualified_constructor_test`), so both compare `red` with `7` (`eq.b: expected
+/// Color, got Int64`), and both read a free-standing entity's as its bare name, a type
+/// (`eq.b: expected Type, got Int64`). The row's name is kept: the delivered ticket cites it.
 #[test]
 fn the_five_other_name_kinds_still_agree_with_the_operation_body() {
     const DECL: &str = "\
@@ -298,10 +301,10 @@ namespace zz4nf.inner
 end
 ";
     for (label, body, paired) in [
-        ("constructor", "zz4nf.Color.red = 7", false),
+        ("constructor", "zz4nf.Color.red = 7", true),
         ("sort", "zz4nf.Color = 7", false),
         ("namespace", "zz4nf.inner = 7", true),
-        ("entity", "zz4nf.acct = 7", false),
+        ("entity", "zz4nf.acct = 7", true),
         ("nothing", "zz4nf.nosuch.x = 7", true),
     ] {
         let rule = crate::common::try_load_kb_with(&format!(

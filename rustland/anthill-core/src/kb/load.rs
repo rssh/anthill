@@ -22560,6 +22560,13 @@ fn convert_query_term_expecting(
                         return expr_node(Expr::Const(lit));
                     }
                 }
+                // A constructor named by its qualified name is the reference its
+                // one-segment name is (the `Term::Ident` arm below).
+                if let Some(ctor) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                    .and_then(|name| ctor_named(kb, &name, scope))
+                {
+                    return expr_node(Expr::Ref(ctor));
+                }
             }
             let functor_name = parse_symbols.local_name(functor);
             let kb_functor = resolve_query_name(kb, functor_name, scope);
@@ -22962,6 +22969,17 @@ fn const_fold_goal_slots(
 fn const_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
     match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) if kb.kind_of(sym) == Some(SymbolKind::Const) => Some(sym),
+        _ => None,
+    }
+}
+
+/// The entity constructor a one-segment or dotted `name` denotes at `scope`, or `None` when it
+/// denotes anything else or nothing. A name and its qualified spelling are one reference to
+/// the constructor's symbol, so a dotted chain naming one is read as the one-segment name is.
+/// Quiet, for [`const_named`]'s reason.
+fn ctor_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
+    match resolve_name_in_kb(kb, name, scope) {
+        ResolveResult::Found(sym) if kb.is_entity_constructor(sym) => Some(sym),
         _ => None,
     }
 }
@@ -27903,6 +27921,32 @@ impl<'a> Loader<'a> {
         const_named(self.kb, &name, self.current_scope)
     }
 
+    /// The entity constructor a converter-minted dotted chain (`Colour.red`) names, when this
+    /// walk is in a clause DATA slot: a constructor's qualified name is the reference its
+    /// one-segment name is, so `fact holds(Colour.red)` holds `red`'s symbol, and a goal or a
+    /// query writing `red`, `Colour.red` or the whole qualified name finds it. Rooted at no
+    /// binding, as [`Self::data_slot_dotted_const`] is.
+    fn data_slot_dotted_ctor(&self, parse_id: TermId) -> Option<Symbol> {
+        if self.const_fold != ConstFold::Data {
+            return None;
+        }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        ctor_named(self.kb, &name, self.current_scope)
+    }
+
+    /// The term a clause holds for a resolved name `sym`: a const in a data slot its value, a
+    /// type alias there the type it stands for, anything else its reference. One reading for
+    /// the one-segment name and a constructor's qualified one.
+    fn resolved_name_term(&mut self, sym: Symbol, parse_id: TermId, span: Span) -> Term {
+        match self.data_slot_const_value(sym, parse_id) {
+            Some(lit) => Term::Const(lit),
+            None => match self.data_slot_alias_type(sym) {
+                Some(ty) => self.kb.get_term(ty).clone(),
+                None => self.bare_contract_spec(sym, span),
+            },
+        }
+    }
+
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
     /// clause's own term is read, unless its root is a clause parameter or a local
     /// binder: such a chain is a projection on that binding and names nothing, however
@@ -28110,6 +28154,14 @@ impl<'a> Loader<'a> {
                         self.term_map.insert(parse_id.raw(), kb_id);
                         return kb_id;
                     }
+                }
+                // A constructor's qualified name is the term its one-segment name is.
+                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    let span = self.parsed.terms.span(parse_id);
+                    let term = self.resolved_name_term(ctor, parse_id, span);
+                    let kb_id = self.kb.alloc(term);
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
                 }
                 // Every child of this node is a DATA slot unless the node is a connective
                 // in goal position, whose goal slots the positional loop below sets per
@@ -29242,13 +29294,7 @@ impl<'a> Loader<'a> {
                     // const in a clause data slot, to its value (WI-20261001-KDMQS), and for a
                     // type alias there to the type it stands for.
                     if self.kb.symbols.is_resolved(new_sym) {
-                        match self.data_slot_const_value(new_sym, parse_id) {
-                            Some(lit) => Term::Const(lit),
-                            None => match self.data_slot_alias_type(new_sym) {
-                                Some(ty) => self.kb.get_term(ty).clone(),
-                                None => self.bare_contract_spec(new_sym, span),
-                            },
-                        }
+                        self.resolved_name_term(new_sym, parse_id, span)
                     } else {
                         Term::Ident(new_sym)
                     }
@@ -29918,6 +29964,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_sort_ref(parse_id, whole, results) {
                                     return;
                                 }
+                                if self.try_qualified_ctor_ref(parse_id, whole, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -30533,6 +30582,28 @@ impl<'a> Loader<'a> {
         results: &mut Vec<TermId>,
     ) -> bool {
         let Some(sym) = whole.filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort)) else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
+    /// AN ENTITY CONSTRUCTOR NAMED BY A DOTTED PATH with no trailing `(…)` — `Colour.red`,
+    /// `Colour.method.proof` — is the reference its one-segment name lowers to: a name and
+    /// its qualified spelling are one reference to the constructor's symbol. Left a chain,
+    /// it was typed as a call of reflect's `field_access` with the constructor's value
+    /// where the field's name goes (`field_access.field: expected String, got Colour`), or,
+    /// past a nested sort, as a name nothing declares; the applied `Colour.red()` and the
+    /// one-segment `red` were the entity. After the sort's rung, which takes a free-standing
+    /// entity's name first, as the one-segment spelling's reading does.
+    fn try_qualified_ctor_ref(
+        &mut self,
+        parse_id: TermId,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = whole.filter(|sym| self.kb.is_entity_constructor(*sym)) else {
             return false;
         };
         self.push_name_ref(parse_id, sym, results);
@@ -33253,6 +33324,19 @@ impl<'a> Loader<'a> {
     /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
     /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
 
+    /// The expression a rule body's walk reads a resolved name `sym` as, outside a goal: a
+    /// const in a data slot its value, a type its type value, a nullary operation its call,
+    /// anything else its reference. One reading for the one-segment name and a constructor's
+    /// qualified one.
+    fn body_resolved_name_expr(&mut self, sym: Symbol, parse_id: TermId, span: SourceSpan) -> Expr {
+        match self.data_slot_const_value(sym, parse_id) {
+            Some(lit) => Expr::Const(lit),
+            None => self
+                .body_bare_type_value(sym, span)
+                .unwrap_or_else(|| self.nullary_op_call_or_ref(sym, parse_id)),
+        }
+    }
+
     fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
             return Expr::Apply {
@@ -33356,12 +33440,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
-                match self.data_slot_const_value(s, parse_id) {
-                    Some(lit) => Expr::Const(lit),
-                    None => self
-                        .body_bare_type_value(s, span)
-                        .unwrap_or_else(|| self.nullary_op_call_or_ref(s, parse_id)),
-                }
+                self.body_resolved_name_expr(s, parse_id, span)
             }
             Term::Ident(sym) => {
                 // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
@@ -33394,12 +33473,7 @@ impl<'a> Loader<'a> {
                     }
                     // WI-20261001-KDMQS — and a const in a DATA slot is its value, the
                     // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
-                    match self.data_slot_const_value(new_sym, parse_id) {
-                        Some(lit) => Expr::Const(lit),
-                        None => self
-                            .body_bare_type_value(new_sym, span)
-                            .unwrap_or_else(|| self.nullary_op_call_or_ref(new_sym, parse_id)),
-                    }
+                    self.body_resolved_name_expr(new_sym, parse_id, span)
                 } else {
                     Expr::Ident(new_sym)
                 }
@@ -33454,6 +33528,11 @@ impl<'a> Loader<'a> {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
                         return NodeOccurrence::new_expr(Expr::Const(lit), span, None);
                     }
+                }
+                // A constructor's qualified name is the reference its one-segment name is.
+                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    let expr = self.body_resolved_name_expr(ctor, parse_id, span);
+                    return NodeOccurrence::new_expr(expr, span, None);
                 }
                 // Every child is a DATA slot unless this node is a connective in goal
                 // position (its goal slots are set per child in the positional loop). The
