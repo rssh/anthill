@@ -143,14 +143,14 @@ fn wi5r2xt_the_name_comes_from_the_redex_not_from_the_dot_spelling() {
 /// stdlib uses. Nothing in the typer, the expander or the reader names `join`, `join_run`
 /// or `conjoin_of`, and this fixture would keep failing if any of them did.
 ///
-/// `myRun`'s body is a self-call (a body-less namespace operation is a load error since
+/// `myRun`'s body is `todo()` (a body-less namespace operation is a load error since
 /// WI-20260909-M8QWJ) and `mySurface` has only its `@[simp]` rule: the diagnostic under test
 /// is raised while TYPING the call, before any body would be reached.
 #[test]
 fn wi5r2xt_a_user_defined_macro_names_its_own_surface_operation() {
     let src = r#"
 namespace test.wi5r2xt.own
-  import anthill.prelude.{String, Int64, Bool, List, Relation, Concat}
+  import anthill.prelude.{String, Int64, Bool, List, Relation, Concat, todo}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{NodeOccurrence, make_apply}
 
@@ -164,7 +164,7 @@ namespace test.wi5r2xt.own
   rule pet_row(?owner, ?name) :- pet(owner: ?owner, name: ?name)
 
   operation myRun[L, R](r1: Relation[T = L], r2: Relation[T = R])
-    -> Relation[T = Concat[A = L, B = R]] = myRun(r1, r2)
+    -> Relation[T = Concat[A = L, B = R]] = todo()
 
   operation mySurface[L, R](r1: Relation[T = L], r2: Relation[T = R])
     -> Relation[T = Concat[A = L, B = R]]
@@ -228,9 +228,9 @@ fn wi5r2xt_control_an_ordinary_call_carries_no_expansion_clause() {
 fn wi5r2xt_control_a_runner_sharing_the_surface_short_name_renders_it_once() {
     let src = r#"
 namespace test.wi5r2xt.back
-  import anthill.prelude.{Int64, Bool, List, Relation, Concat}
+  import anthill.prelude.{Int64, Bool, List, Relation, Concat, todo}
   operation merge2[L, R](r1: Relation[T = L], r2: Relation[T = R])
-    -> Relation[T = Concat[A = L, B = R]] = merge2(r1, r2)
+    -> Relation[T = Concat[A = L, B = R]] = todo()
 end
 
 namespace test.wi5r2xt.front

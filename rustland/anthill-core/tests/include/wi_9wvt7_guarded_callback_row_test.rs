@@ -450,7 +450,7 @@ end
 
     let distribute = r#"
 namespace test.gcb_distribute
-  import anthill.prelude.{Int64, Error, DivisionByZero, Bool}
+  import anthill.prelude.{Int64, Error, DivisionByZero, Bool, todo}
   import anthill.prelude.PartialEq.{eq}
   sort Strm
     sort T = ?
@@ -458,7 +458,7 @@ namespace test.gcb_distribute
     operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {EffP, -s.E}) -> Bool effects {EffP} = true
     operation obs(s: Self, d: Int64) -> Bool effects {s.E :- eq(d, 0)} = true
   end
-  operation mk[R](f: () -> Int64 @ {R}) -> Strm[T = Int64, E = {R}] = mk(f)
+  operation mk[R](f: () -> Int64 @ {R}) -> Strm[T = Int64, E = {R}] = todo()
   operation both[R1, R2](f: () -> Int64 @ {R1}, g: () -> Int64 @ {R2}, a: Int64, b: Int64)
       -> Bool effects {R1, R2, Error[DivisionByZero]} =
     Strm.each(mk(lambda () -> f() + g() + a / b), lambda (x: Int64) -> true)

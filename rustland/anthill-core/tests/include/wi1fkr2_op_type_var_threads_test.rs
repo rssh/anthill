@@ -148,7 +148,7 @@ end
 fn threads_a_label_through_a_label_preserving_library_operation() {
     loads_clean(&label_program(
         "flow_ok",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = todo()
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)",
     ));
 }
@@ -166,7 +166,7 @@ fn threads_a_label_through_a_label_preserving_library_operation() {
 fn a_threaded_label_is_still_enforced_at_the_sink() {
     let err = sole_error(&label_program(
         "flow_leak",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = todo()
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
   operation send(body: Text[L = Public]) -> Unit = ()
   operation leak(t: Text[L = Untrusted]) -> Unit = send(summarize(t))",
@@ -179,7 +179,7 @@ fn a_threaded_label_is_still_enforced_at_the_sink() {
     );
     loads_clean(&label_program(
         "flow_pub",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = todo()
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
   operation send(body: Text[L = Public]) -> Unit = ()
   operation ok(t: Text[L = Public]) -> Unit = send(summarize(t))",
@@ -231,7 +231,7 @@ enum {ns}.Text
   entity text(raw: String)
 end
 namespace {ns}
-  import anthill.prelude.{{String, Unit}}
+  import anthill.prelude.{{String, Unit, todo}}
   import {ns}.Trust.{{Untrusted, Public}}
   import {ns}.{{Text}}
 {body}

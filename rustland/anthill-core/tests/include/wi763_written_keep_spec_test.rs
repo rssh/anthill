@@ -356,11 +356,11 @@ end
 fn wi763_tuple_type_components_survive_comments_and_arrows() {
     let src = r#"
 namespace test.wi763walk
-  import anthill.prelude.{Int64, String}
+  import anthill.prelude.{Int64, String, todo}
   operation pair() -> (Int64, -- a comment between components
-                       String) = pair()
+                       String) = todo()
   operation use_pair() -> (Int64, String) = pair()
-  operation with_fn() -> ((Int64) -> String, Int64) = with_fn()
+  operation with_fn() -> ((Int64) -> String, Int64) = todo()
   operation use_with_fn() -> ((Int64) -> String, Int64) = with_fn()
 end
 "#;

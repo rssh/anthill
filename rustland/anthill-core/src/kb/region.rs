@@ -817,8 +817,8 @@ mod tr8cf_tests {
 
     const SRC: &str = r#"
 namespace anthill.test.tr8cfmask
-  import anthill.prelude.{Int64, Cell}
-  operation mk_fn() -> (u: Cell[V = Int64]) -> Int64 = mk_fn()
+  import anthill.prelude.{Int64, Cell, todo}
+  operation mk_fn() -> (u: Cell[V = Int64]) -> Int64 = todo()
 end
 "#;
 

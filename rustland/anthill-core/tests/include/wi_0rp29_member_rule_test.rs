@@ -3604,7 +3604,7 @@ fn field_path_program(ns: &str, ret: &str) -> String {
     with_app(&format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, String, List}}
+  import anthill.prelude.{{Int64, String, List, todo}}
   sort Bag
     entity bag(items: List, others: List)
   end
@@ -3618,7 +3618,7 @@ namespace {ns}
     entity car(v: V)
     provides Sp[T = V]
     operation count(c: Self, g: Bag) -> Int64 = List.length(g.items)
-    operation first(c: Self, g: Bag) -> {ret} = first(c, g)
+    operation first(c: Self, g: Bag) -> {ret} = todo()
   end
   operation relay(c: Car[V = Int64], b: Bag) -> b.items.T = Sp.first(c, b)
   operation go() -> Int64 =

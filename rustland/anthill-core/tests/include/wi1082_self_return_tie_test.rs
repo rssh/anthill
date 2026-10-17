@@ -113,7 +113,7 @@ fn errors_of(src: &str) -> Vec<String> {
 }
 
 const STREAM: &str = "namespace test.wi1082.stream\n\
-    \x20 import anthill.prelude.{Int64, Error}\n\
+    \x20 import anthill.prelude.{Int64, Error, todo}\n\
     \x20 sort MyStream\n\
     \x20   sort T = ?\n\
     \x20   effects E = ?\n\
@@ -354,12 +354,12 @@ fn a_written_slot_is_never_touched() {
 fn a_foreign_return_still_opens_per_call() {
     let errs = errors_of(
         "namespace test.wi1082.foreignopen\n\
-         \x20 import anthill.prelude.{Int64, Error}\n\
+         \x20 import anthill.prelude.{Int64, Error, todo}\n\
          \x20 sort Box\n\
          \x20   sort T = ?\n\
          \x20   entity box(n: Int64)\n\
          \x20 end\n\
-         \x20 operation mk(n: Int64) -> Box = mk(n)\n\
+         \x20 operation mk(n: Int64) -> Box = todo()\n\
          \x20 operation takes_int_box(b: Box[T = Int64]) -> Int64 = 0\n\
          \x20 operation use(n: Int64) -> Int64 = takes_int_box(mk(n))\n\
          end\n",
@@ -406,8 +406,8 @@ fn an_elided_self_return_still_threads_the_element() {
 /// check ([`the_headline_a_self_sort_return_no_longer_launders`]), so the population that
 /// survived is exactly the one with no body to check — spec operations, host-mapped members,
 /// declaration-only members. (Since WI-20260909-M8QWJ a declaration-only member of a sort with
-/// constructors is refused at its declaration, so both members here are self-calls: a body
-/// that returns its own call's type gives the return check nothing to catch.)
+/// constructors is refused at its declaration, so both members here are `todo()` (WI-20261017-JRHZ0):
+/// a body of type `Nothing` gives the return check nothing to catch.)
 ///
 /// THE SECOND HALF is the worse form, where nothing is even about effects: `Box.pick(b: Box[T =
 /// Int64]) -> Box` leaves `U` elided on both sides, so the result satisfied a `U = String`
@@ -417,7 +417,7 @@ fn an_elided_self_return_still_threads_the_element() {
 #[test]
 fn a_bodyless_member_cannot_launder_either() {
     let effects = errors_of(&stream(
-        "operation widen(s: MyStream[T = Int64, E = E]) -> Self = widen(s)",
+        "operation widen(s: MyStream[T = Int64, E = E]) -> Self = todo()",
         "operation use(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure(MyStream.widen(s))",
     ));
@@ -429,12 +429,12 @@ fn a_bodyless_member_cannot_launder_either() {
 
     let data = errors_of(
         "namespace test.wi1082.twodemand\n\
-         \x20 import anthill.prelude.{Int64, String}\n\
+         \x20 import anthill.prelude.{Int64, String, todo}\n\
          \x20 sort Box\n\
          \x20   sort T = ?\n\
          \x20   sort U = ?\n\
          \x20   entity box(n: Int64)\n\
-         \x20   operation pick(b: Box[T = Int64, U = U]) -> Self = pick(b)\n\
+         \x20   operation pick(b: Box[T = Int64, U = U]) -> Self = todo()\n\
          \x20 end\n\
          \x20 operation want_str(b: Box[T = Int64, U = String]) -> Int64 = 0\n\
          \x20 operation both(b: Box[T = Int64, U = Int64]) -> Int64 = want_str(Box.pick(b))\n\
@@ -500,6 +500,7 @@ fn a_sibling_called_at_another_element_runs() {
 #[test]
 fn a_self_returning_member_result_shares_the_receivers_parameter() {
     const SRC: &str = "namespace test.wi1082.pathdep\n\
+        \x20 import anthill.prelude.{todo}\n\
         \x20 sort DataProvider\n\
         \x20   sort K = ?\n\
         \x20   MEMBER\n\
@@ -525,11 +526,13 @@ fn a_self_returning_member_result_shares_the_receivers_parameter() {
     );
     let free = SRC
         .replace("MEMBER", "")
-        .replace("FREE", "operation pick(p: DataProvider) -> DataProvider = pick(p)")
+        .replace("FREE", "operation pick(p: DataProvider) -> DataProvider = todo()")
         .replace("CALL", "pick(p)");
+    let refused = errors_of(&free);
     assert!(
-        !errors_of(&free).is_empty(),
+        refused.iter().any(|e| e.contains("m.annotation")),
         "declared OUTSIDE the sort the two references are foreign, so `y` keeps its own \
-         element and the annotation is refused — §4.1's stability rule still decides that half",
+         element and the annotation is refused — §4.1's stability rule still decides that \
+         half: {refused:?}",
     );
 }

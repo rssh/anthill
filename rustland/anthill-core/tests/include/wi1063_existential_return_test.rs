@@ -195,8 +195,8 @@ fn the_ensures_carrier_is_still_abstract_at_the_consumer() {
 fn two_openings_of_one_operation_are_unrelated() {
     let msg = refusal(
         "namespace test.wi1063.fresh\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk(n: Int64) -> Stream[T = Int64] = mk(n)\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
+         \x20 operation mk(n: Int64) -> Stream[T = Int64] = todo()\n\
          \x20 operation takes_same[E](x: Stream[T = Int64, E = E], y: Stream[T = Int64, E = E]) \
          -> Int64 = 0\n\
          \x20 operation two(a: Int64, b: Int64) -> Int64 = takes_same(mk(a), mk(b))\n\
@@ -221,8 +221,8 @@ fn two_openings_of_one_operation_are_unrelated() {
 fn a_row_polymorphic_consumer_accepts_a_skolem() {
     crate::common::load_kb_with(
         "namespace test.wi1063.rowpoly\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk(n: Int64) -> Stream[T = Int64] = mk(n)\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
+         \x20 operation mk(n: Int64) -> Stream[T = Int64] = todo()\n\
          \x20 operation f[E](s: Stream[T = Int64, E = E]) -> Int64 = 0\n\
          \x20 operation ok(a: Int64) -> Int64 = f(mk(a))\n\
          end\n",
@@ -267,11 +267,11 @@ fn a_self_sort_return_is_not_opened_but_a_foreign_one_on_a_member_is() {
     );
     let member = refusal(
         "namespace test.wi1063.memberret\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
          \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 sort Box\n\
          \x20   entity box(n: Int64)\n\
-         \x20   operation open_stream(b: Box) -> Stream[T = Int64] = open_stream(b)\n\
+         \x20   operation open_stream(b: Box) -> Stream[T = Int64] = todo()\n\
          \x20 end\n\
          \x20 operation use_it(b: Box) -> Int64 = takes_pure(Box.open_stream(b))\n\
          end\n",
@@ -325,8 +325,8 @@ fn every_spelling_of_an_unbound_return_slot_opens() {
     );
     let named = refusal(
         "namespace test.wi1063.named\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk_named() -> Stream[T = Int64, E = ?A] = mk_named()\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
+         \x20 operation mk_named() -> Stream[T = Int64, E = ?A] = todo()\n\
          \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation ok() -> Int64 = takes_pure(mk_named())\n\
          end\n",
@@ -460,9 +460,9 @@ fn the_skolem_survives_a_let_binding() {
 fn a_bare_nullary_operation_name_opens_too() {
     let leak = refusal(
         "namespace test.wi1063.bareref\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
          \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
-         \x20 operation mk() -> Stream[T = Int64] = mk()\n\
+         \x20 operation mk() -> Stream[T = Int64] = todo()\n\
          \x20 operation use_bare() -> Int64 = takes_pure(mk)\n\
          end\n",
     );
@@ -473,9 +473,9 @@ fn a_bare_nullary_operation_name_opens_too() {
     );
     let elem = refusal(
         "namespace test.wi1063.barerefelem\n\
-         \x20 import anthill.prelude.{Int64, String, Stream}\n\
+         \x20 import anthill.prelude.{Int64, String, Stream, todo}\n\
          \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
-         \x20 operation mk_str() -> Stream[T = String] = mk_str()\n\
+         \x20 operation mk_str() -> Stream[T = String] = todo()\n\
          \x20 operation use_bare() -> Int64 = takes_pure(mk_str)\n\
          end\n",
     );
@@ -553,9 +553,9 @@ fn the_eta_reading_opens_the_return_too() {
 fn an_unwritten_parameter_still_binds_from_the_argument() {
     crate::common::load_kb_with(
         "namespace test.wi1063.paramside\n\
-         \x20 import anthill.prelude.{Int64, Stream}\n\
+         \x20 import anthill.prelude.{Int64, Stream, todo}\n\
          \x20 operation takes_any(s: Stream) -> Int64 = 0\n\
-         \x20 operation mk_int() -> Stream[T = Int64, E = {}] = mk_int()\n\
+         \x20 operation mk_int() -> Stream[T = Int64, E = {}] = todo()\n\
          \x20 operation ok() -> Int64 = takes_any(mk_int())\n\
          end\n",
     );

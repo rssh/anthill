@@ -233,11 +233,11 @@ fn modify_value_param_in_effects_is_denoted() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi302
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, value)
+    = todo()
 end
 "#,
     );
@@ -456,12 +456,12 @@ fn compound_value_path_effect_rekeys_at_call_site() {
     // and surface as a SPURIOUS undeclared effect.
     let ok = r#"
 namespace test.wi302.rekey
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Box
     sort T = ?
     entity box(contents: T)
   end
-  operation poke(d: Box) -> Box effects Modify[d.contents] = poke(d)
+  operation poke(d: Box) -> Box effects Modify[d.contents] = todo()
   operation wrap(c: Box) -> Box effects Modify[c.contents] = poke(c)
 end
 "#;
@@ -481,12 +481,12 @@ fn compound_value_path_undeclared_effect_is_named() {
     // value. (Also confirms the re-key path is real: the effect IS incurred and checked.)
     let bad = r#"
 namespace test.wi302.undecl
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Box
     sort T = ?
     entity box(contents: T)
   end
-  operation poke(d: Box) -> Box effects Modify[d.contents] = poke(d)
+  operation poke(d: Box) -> Box effects Modify[d.contents] = todo()
   operation wrap(c: Box) -> Box = poke(c)
 end
 "#;
@@ -514,11 +514,11 @@ fn wi342_e2_modify_c_loads_value_carried() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, value)
+    = todo()
 end
 "#,
     );
@@ -1331,6 +1331,8 @@ fn member_facts_for_sort_with_body() {
 
 #[test]
 fn member_facts_for_sort_with_params_and_ops() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort Account
   sort AccountId = ?
   entity checking(id: AccountId, balance: Int64)
@@ -1365,6 +1367,8 @@ end
 
 #[test]
 fn member_facts_for_namespace() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"namespace banking {
   entity Account(id: String, balance: Int64)
   operation deposit(a: Account, m: Int64) -> Account = deposit(a, m)
@@ -1694,6 +1698,8 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
 
 #[test]
 fn mutual_reference_two_namespaces() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // File 1: namespace X references sort from namespace Y (via import).
     // WI-1089: the import names the SORT it uses. `import Units` binds the
     // namespace name alone — reaching `Measure` through it takes `Units.Measure`,
@@ -4011,6 +4017,8 @@ fn parse_arrow_type_with_effect_set() {
 /// empty_row))` chain whose labels are the two effect functors.
 #[test]
 fn load_arrow_type_with_effect_set_canonical_row() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort Modifies { sort T = ? entity Modifies(target: T) }
 sort Reads { sort T = ? entity Reads(target: T) }
 sort Host {
@@ -4516,6 +4524,8 @@ end
 
 #[test]
 fn load_polynom_with_ring_requirement() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort List
   sort T = ?
 end
@@ -6040,6 +6050,8 @@ fn assert_var_id(kb: &KnowledgeBase, term: TermId) -> u32 {
 
 #[test]
 fn load_op_type_param_resolves_bare_name_to_var() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let parsed =
         parse::parse("operation identity[T](x: T) -> T = identity(x)\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
@@ -6052,6 +6064,8 @@ fn load_op_type_param_resolves_bare_name_to_var() {
 
 #[test]
 fn load_op_type_param_shares_var_across_param_and_return() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // Bare-name references to a declared type param share a VarId
     // throughout the operation.
     let parsed =
@@ -6077,6 +6091,8 @@ fn load_op_type_param_shares_var_across_param_and_return() {
 
 #[test]
 fn load_op_distinct_type_params_get_distinct_vars() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> A = pair(a, b)\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
@@ -6091,6 +6107,8 @@ fn load_op_distinct_type_params_get_distinct_vars() {
 
 #[test]
 fn load_op_type_param_shares_var_into_parameterized_return() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // Use a locally-defined parameterized sort `Box` so the test is
     // self-contained — no stdlib import dependency.
     let source = "\
@@ -6178,11 +6196,11 @@ fn wi342_tyslot_lambda_carries_modify_effect() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342lambda
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, v)
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64] @ {Modify[s]}
     = lambda v -> set_cell(s, v)
@@ -6202,11 +6220,11 @@ end
     // effect instead.
     let pure_decl = r#"
 namespace test.wi342lambda_neg
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, v)
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64]
     = lambda v -> set_cell(s, v)
@@ -6237,11 +6255,11 @@ fn wi342_env_dataflow_let_bound_lambda_carries_modify_effect() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342letenv
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, v)
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64] @ {Modify[s]}
     = let f = lambda v -> set_cell(s, v)
@@ -6260,11 +6278,11 @@ end
     // the arrow would type as pure (pure <: effectful) and wrongly load.
     let pure_decl = r#"
 namespace test.wi342letenv_neg
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
-    = set_cell(c, v)
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64]
     = let f = lambda v -> set_cell(s, v)

@@ -21,10 +21,10 @@ fn foldleft_callback_places_resolve() {
     // reference the feed/flow analysis names must resolve to a place symbol.
     let source = r#"
 namespace anthill.test.wi351
-  import anthill.prelude.{List, Int64}
+  import anthill.prelude.{List, Int64, todo}
 
   operation reduce[S, T](xs: List[T = T], z: S, f: (a: S, t: T) -> S) -> S
-    = reduce(xs, z, f)
+    = todo()
 end
 "#;
     let kb = load_with(source);

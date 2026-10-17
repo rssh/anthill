@@ -302,16 +302,16 @@ fn a_fresh_cell_inside_a_result_typed_through_an_alias_owes_its_effect() {
 /// the alias: a field the type has is taken, one it has not is refused.
 #[test]
 fn a_result_field_effect_is_checked_through_an_alias() {
-    let decls = "  import anthill.prelude.{Cell}\n  \
+    let decls = "  import anthill.prelude.{Cell, todo}\n  \
                  sort Two = (a: Cell[V = Int64], b: Cell[V = Int64])\n";
     let taken = load_errors_of(&source(
         "awnfield",
-        &format!("{decls}  operation pair() -> Two\n    effects {{Modify[result.a], Modify[result.b]}} = pair()"),
+        &format!("{decls}  operation pair() -> Two\n    effects {{Modify[result.a], Modify[result.b]}} = todo()"),
     ));
     assert!(taken.is_empty(), "{taken:#?}");
     let refused = refusal(
         "awnfieldbad",
-        &format!("{decls}  operation pair() -> Two\n    effects Modify[result.nonexistent] = pair()"),
+        &format!("{decls}  operation pair() -> Two\n    effects Modify[result.nonexistent] = todo()"),
     );
     assert!(
         refused.contains("field projection") && refused.contains("nonexistent"),

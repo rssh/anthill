@@ -190,13 +190,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(pf.symbols.name(outer.name.segments(0)), "test")
     assertEquals(pf.symbols.name(outer.name.segments(1)), "nested_imports")
 
-    // Imports: anthill.prelude.{List, String, Bool}
+    // Imports: anthill.prelude.{List, String, Bool, todo} — `todo` is the body of the nested
+    // namespace's stub (WI-20261017-JRHZ0), reached through this outer import too.
     assertEquals(outer.imports.length, 1, "Expected 1 import")
     outer.imports.head.kind match
       case ImportKind.Selective(names) =>
-        assertEquals(names.length, 3)
+        assertEquals(names.length, 4)
         val importedNames = names.map(n => pf.symbols.name(n.last)).toSet
-        assertEquals(importedNames, Set("List", "String", "Bool"))
+        assertEquals(importedNames, Set("List", "String", "Bool", "todo"))
       case other => fail(s"Expected selective import, got $other")
 
     // Inner items: abstract sort (Path), operation, nested namespace (PathOps)

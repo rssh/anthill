@@ -14931,7 +14931,8 @@ fn operation_without_definition_message(
         "operation `{op}` has no definition: no body, no `@[host_implemented]` claim, no \
          builtin, no `@[simp]` equation and no clause defines it. Nothing can supply one \
          either — {why}. A call of it fails when it runs.{equations} Give it a \
-         body (`operation … = …`), or declare it `@[host_implemented]` and map it in a \
+         body (`operation … = …`; `= todo()` keeps the signature of one not written yet, \
+         and faults if it is called), or declare it `@[host_implemented]` and map it in a \
          binding block's `operation_map`."
     )
 }

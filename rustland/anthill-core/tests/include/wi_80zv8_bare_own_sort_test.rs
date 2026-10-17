@@ -275,13 +275,13 @@ fn a_companion_receivers_own_bracket_is_a_calls_bracket() {
         format!(
             r#"
 namespace wi80zv8b.recv
-  import anthill.prelude.{{Int64, String, Option}}
+  import anthill.prelude.{{Int64, String, Option, todo}}
   sort Box
     sort T = ?
     sort U = ?
     entity box(v: T)
     operation keep(b: Self) -> Self = b
-    operation fresh() -> Self = fresh()
+    operation fresh() -> Self = todo()
     operation via(b: Self) -> Int64 =
       {call}
   end

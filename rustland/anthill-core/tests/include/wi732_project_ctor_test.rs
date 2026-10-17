@@ -122,7 +122,7 @@ fn render_schema(kb: &KnowledgeBase, ty: &anthill_core::eval::Value) -> String {
 
 const REL: &str = r#"
   import anthill.prelude.{String, Int64, Bool, List, Relation}
-  import anthill.prelude.{Project}
+  import anthill.prelude.{Project, todo}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -218,7 +218,7 @@ fn wi732_project_is_writable_and_stays_symbolic_while_abstract() {
 namespace test.wi732sym
 {REL}
   operation wrap[S, K](r: Relation[T = S])
-    -> Relation[T = Project[T = S, Keep = K], E = r.E] = wrap(r)
+    -> Relation[T = Project[T = S, Keep = K], E = r.E] = todo()
 end
 "#
     );

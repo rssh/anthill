@@ -38,6 +38,15 @@ pub enum EvalError {
     Overflow {
         op: &'static str,
     },
+    /// WI-20261017-JRHZ0 — `anthill.prelude.todo()` was reached: the body of an
+    /// operation not written yet. A HOLE, not a domain failure, so it rides no `Error`
+    /// row and nothing catches it — as `Overflow` is reached from a pure `Int64.add`.
+    /// `running` is the operation whose body called it (a builtin enters no frame, so the
+    /// top frame is the caller's); `None` when no frame was running — a rule-body goal
+    /// the bridge reduced directly.
+    NotImplemented {
+        running: Option<String>,
+    },
     /// WI-20260827-T2470 — a constructor APPLICATION in an evaluated body gives more
     /// positional arguments than the entity has unfilled fields. The eval twin of
     /// [`crate::kb::execute::LowerError::OverArityConstructor`], raised from
@@ -443,6 +452,9 @@ impl EvalError {
             | EvalError::TypeMismatch { .. }
             | EvalError::ArityMismatch { .. }
             | EvalError::Overflow { .. }
+            // A hole a rule body reached: the goal has no value, and the author is told
+            // which operation is not written yet.
+            | EvalError::NotImplemented { .. }
             | EvalError::OverArityConstructor { .. }
             // THE TWO BUDGET EXHAUSTIONS AGREE, and an earlier draft had them
             // disagreeing — `DepthExceeded` as a silent truncation beside
@@ -567,6 +579,12 @@ impl std::fmt::Display for EvalError {
                 write!(f, "{op}: expected {expected} args, got {got}")
             }
             EvalError::Overflow { op } => write!(f, "{op}: integer overflow"),
+            EvalError::NotImplemented { running: Some(op) } => {
+                write!(f, "not implemented: `{op}` reached `todo()`")
+            }
+            EvalError::NotImplemented { running: None } => {
+                write!(f, "not implemented: `todo()` reached")
+            }
             EvalError::OverArityConstructor {
                 functor,
                 given,

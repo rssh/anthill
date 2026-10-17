@@ -41,10 +41,10 @@ use crate::common::load_errors_of_files as load_errors;
 fn result_tuple_component_projection() {
     let src = r#"
 namespace wi262.resulttuple
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
-    = make_pair()
+    = todo()
 end
 "#;
     let errs = load_errors(&[src]);
@@ -130,10 +130,10 @@ end
 fn positional_tuple_projection() {
     let src = r#"
 namespace wi262.positional
-  import anthill.prelude.{Cell, Int64, Modify, EffectsRuntime}
+  import anthill.prelude.{Cell, Int64, Modify, EffectsRuntime, todo}
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects Modify[result._1]
-    = make_pair()
+    = todo()
 end
 "#;
     let errs = load_errors(&[src]);
@@ -150,8 +150,8 @@ end
 fn sort_head_stays_qualified_name() {
     let src = r#"
 namespace wi262.sorthead
-  import anthill.prelude.{Cell, Int64}
-  operation make() -> Cell[V = Int64] = make()
+  import anthill.prelude.{Cell, Int64, todo}
+  operation make() -> Cell[V = Int64] = todo()
 end
 "#;
     let errs = load_errors(&[src]);

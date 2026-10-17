@@ -1,0 +1,14 @@
+-- Rust binding for the namespace-level operations of anthill.prelude. Proposal 038.
+--
+-- `todo()` (WI-20261017-JRHZ0) is the one so far: the hole an unwritten operation's body
+-- is, whose host function faults with `EvalError::NotImplemented` naming the running
+-- operation. A NAMESPACE target, as most of `anthill.reflect`'s surface is — that
+-- binding says why a namespace is a legitimate `operation_map` target.
+namespace anthill.prelude
+  provides anthill.prelude language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      todo: "prelude_todo"
+    }
+  end
+end

@@ -274,12 +274,12 @@ end
 fn wi759_abstract_receiver_stays_symbolic_then_reduces() {
     let src = r#"
 namespace test.wi759abs
-  import anthill.prelude.{Int64, String, FieldOf}
+  import anthill.prelude.{Int64, String, FieldOf, todo}
   sort Rec
     import anthill.prelude.{Int64, String}
     entity rec(name: String, age: Int64)
   end
-  operation field_of_any[S](r: S) -> FieldOf[T = S, Name = "name"] = field_of_any(r)
+  operation field_of_any[S](r: S) -> FieldOf[T = S, Name = "name"] = todo()
   operation wrap[S2](r: S2) -> FieldOf[T = S2, Name = "name"] = field_of_any(r)
   operation grounded(r: Rec) -> String = wrap(r)
 end

@@ -45,9 +45,9 @@ end
 fn alias_projection_projects_resolved_member() {
     let src = r#"
 namespace test.wi381.proj
-  import anthill.prelude.{List, Int64}
+  import anthill.prelude.{List, Int64, todo}
   sort IntList = List[T = Int64]
-  operation peek(l: IntList) -> l.T = peek(l)
+  operation peek(l: IntList) -> l.T = todo()
   operation caller(xs: IntList) -> Int64 = peek(xs)
 end
 "#;
@@ -64,9 +64,9 @@ end
 fn alias_projection_wrong_member_rejected() {
     let src = r#"
 namespace test.wi381.proj_wrong
-  import anthill.prelude.{List, Int64, String}
+  import anthill.prelude.{List, Int64, String, todo}
   sort IntList = List[T = Int64]
-  operation peek(l: IntList) -> l.T = peek(l)
+  operation peek(l: IntList) -> l.T = todo()
   operation caller(xs: IntList) -> String = peek(xs)
 end
 "#;
@@ -83,10 +83,10 @@ end
 fn alias_chain_projection() {
     let src = r#"
 namespace test.wi381.chain
-  import anthill.prelude.{List, Int64}
+  import anthill.prelude.{List, Int64, todo}
   sort Mid = List[T = Int64]
   sort Top = Mid
-  operation peek(l: Top) -> l.T = peek(l)
+  operation peek(l: Top) -> l.T = todo()
   operation caller(xs: Top) -> Int64 = peek(xs)
 end
 "#;

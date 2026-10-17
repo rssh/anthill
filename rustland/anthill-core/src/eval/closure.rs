@@ -41,6 +41,14 @@ pub struct Closure {
     /// `docs/design/operation-call-model.md`. Name-keyed (WI-237 names
     /// model): each entry is `(synthesized __req_* name, handle)`.
     pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 1]>,
+    /// WI-20261017-JRHZ0 — the operation whose body WROTE the lambda: the frame that
+    /// reduced it, which for a lambda nested in another is that lambda's own. The
+    /// closure's frame reports it as its `op`, so an error raised in the lambda's body —
+    /// a `todo()` hole above all — names the declaration its source is in, not whichever
+    /// operation applied it (`List.map`, `Error.reify`). `None` for a lambda a RULE wrote
+    /// (`closure_of_applied_lambda_node`): no operation holds it, and its frame reports the
+    /// operation that applied it.
+    pub written_in: Option<Symbol>,
 }
 
 struct Slot {
@@ -261,6 +269,7 @@ mod tests {
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            written_in: None,
         }
     }
 
@@ -306,6 +315,7 @@ mod tests {
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            written_in: None,
         });
         let pat = h.with(|c| c.param_pattern.clone());
         assert!(Rc::ptr_eq(&pat, &param));
@@ -326,6 +336,7 @@ mod tests {
             body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            written_in: None,
         };
         let pa = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let pb = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);

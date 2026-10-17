@@ -127,7 +127,7 @@ enum {ns}.Text
 end
 
 namespace {ns}
-  import anthill.prelude.{{Unit, String, Int64}}
+  import anthill.prelude.{{Unit, String, Int64, todo}}
   import {ns}.Level.{{Untrusted, Public}}
   import {ns}.Text
   import {ns}.Text.{{mk}}
@@ -136,8 +136,8 @@ namespace {ns}
   fact flows_to(Untrusted, Untrusted)
   -- ABSENT, and the point of the whole file: flows_to(Untrusted, Public)
 
-  operation fetch() -> Text[L = Untrusted] = fetch()
-  operation banner() -> Text[L = Public] = banner()
+  operation fetch() -> Text[L = Untrusted] = todo()
+  operation banner() -> Text[L = Public] = todo()
 
   operation send(body: Text[L = ?l]) -> Unit
     requires flows_to(?l, Public)

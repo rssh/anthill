@@ -3258,6 +3258,14 @@ host-backed obligation; an operation with `=` has an Anthill implementation.
 
 What still reaches an unrunnable target when a program runs is a dispatch gap only the run can find — a carrier no provider supplies an operation for, reached by value. From an operation body it is the fault `OperationBodyMissing`; from a rule body it is §8.3's UNREDUCED comparison, parked as undecided so that a failing sibling still refutes the clause.
 
+**An operation not written yet has the body `todo()`** (WI-20261017-JRHZ0; user decisions 2026-10-17). `anthill.prelude.todo() -> Nothing` is a host function, pure, nullary, and imported like any prelude name. `Nothing` is the bottom sort and conforms to every type, so `operation area(s: Shape) -> Measure = todo()` keeps its signature under the rule above, whatever the signature says — type parameters, an open row, a `requires`. It is the hole Rust spells `todo!()` and Scala `???`:
+
+- **It loads, and runs.** The load gives no warning, and nothing about a program that holds one changes until a call reaches it.
+- **Reaching it is a fault**, `NotImplemented`, naming the operation whose body called it — for a `todo()` inside a lambda, the operation that wrote the lambda, not the one that applied it. It is not a domain failure, so it is outside every effect row and no boundary catches it — as `Int64.add`'s overflow is reached from a pure operation — and not the `Error` channel that `match_failed` and `division_by_zero` ride. From a rule body it is a fault of the goal: the goal has no value, the search is reported incomplete, and the hole is named — never a refutation. A search an operation *drains* (a relation, an `execute`) reports that fault as it reports any: as the drain's declared `evaluation_failure`, which names the hole. That raise is the drain's, so a boundary around the drain catches it; the hole itself is caught nowhere.
+- **Codegen refuses it.** A backend that lowers a body refuses one that calls `todo()` — an operation's body or a const's value — naming the declaration that holds the hole: there is no host expression a hole could map to, and generated code that compiled one would fail only when it ran. The C++ backend is the one that lowers bodies today; the Rust and Scala generators emit signatures only, and the Rust bundle runs the interpreter, which faults as above.
+
+A body that only calls itself is not the same thing: `stub(x) = stub(x)` loads too, and a call of it never returns.
+
 Parameters are **named bindings** — referenced by name (without `?`) in
 `requires`, `ensures`, effects, and the body. This distinguishes them from rule
 variables (`?x`), which are pattern-matching unification variables. A

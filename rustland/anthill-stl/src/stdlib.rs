@@ -413,6 +413,12 @@ pub static SOURCES: &[(&str, &str)] = &[
         "rustland/anthill-stl/runtime",
         include_str!("../anthill/runtime.anthill"),
     ),
+    // WI-20261017-JRHZ0: `anthill.prelude.todo`, the hole. The stdlib declares it
+    // `@[host_implemented]`, so it does not load without this block.
+    (
+        "rustland/anthill-stl/prelude",
+        include_str!("../anthill/prelude.anthill"),
+    ),
 ];
 
 // Build-time tripwire: a fully-empty embedded set means the layout moved or the

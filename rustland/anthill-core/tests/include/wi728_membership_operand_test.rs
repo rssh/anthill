@@ -215,12 +215,12 @@ end
 fn wi728_membership_is_general_not_keyed_on_negate() {
     let accepted = r#"
 namespace test.wi728genok
-  import anthill.prelude.{Unit, Membership}
+  import anthill.prelude.{Unit, Membership, todo}
 
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = close(s)
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = todo()
   end
 
   -- The declared return is the REDUCED `Unit`, so this conforms only if the reduction ran.
@@ -233,12 +233,12 @@ end
 
     let refused = r#"
 namespace test.wi728genbad
-  import anthill.prelude.{Unit, Int64, Membership}
+  import anthill.prelude.{Unit, Int64, Membership, todo}
 
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = close(s)
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = todo()
   end
 
   operation useOpen(s: Slot[T = Int64]) -> Slot[T = Unit] = Slot.close(s)

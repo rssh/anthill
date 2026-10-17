@@ -10,25 +10,26 @@ sort List
 end
 
 sort Polynom
+  import anthill.prelude.{todo}
   sort R = ?
   requires Ring[R]
 
   entity polynom(coefficients: List[R])
 
   -- Evaluate polynomial at point x (Horner's method)
-  operation eval(p: Polynom[R], x: R) -> R = eval(p, x)
+  operation eval(p: Polynom[R], x: R) -> R = todo()
 
   -- Map a function over coefficients
-  operation map_coeffs(p: Polynom[R], f: (R) -> R) -> Polynom[R] = map_coeffs(p, f)
+  operation map_coeffs(p: Polynom[R], f: (R) -> R) -> Polynom[R] = todo()
 
   -- Zip two polynomials with a binary operation
-  operation zip_with(f: (R, R) -> R, p1: Polynom[R], p2: Polynom[R]) -> Polynom[R] = zip_with(f, p1, p2)
+  operation zip_with(f: (R, R) -> R, p1: Polynom[R], p2: Polynom[R]) -> Polynom[R] = todo()
 
   -- Add two polynomials (uses + from Ring)
-  operation add(p1: Polynom[R], p2: Polynom[R]) -> Polynom[R] = add(p1, p2)
+  operation add(p1: Polynom[R], p2: Polynom[R]) -> Polynom[R] = todo()
 
   -- Scale by a constant
-  operation scale(c: R, p: Polynom[R]) -> Polynom[R] = scale(c, p)
+  operation scale(c: R, p: Polynom[R]) -> Polynom[R] = todo()
 
   -- Polynomial addition is commutative (uses infix + from Ring)
   rule ?p1 + ?p2 <=> ?p2 + ?p1

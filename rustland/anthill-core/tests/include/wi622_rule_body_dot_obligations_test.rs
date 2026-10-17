@@ -76,10 +76,10 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 // `make[T]` carries its type-param `T` ONLY in the return type, so a call with no
 // caller-side `expected` cannot pin it. `GHolder` gives a `Gadget`-typed var.
 const GADGET: &str = r#"
-  import anthill.prelude.{Int64, Option}
+  import anthill.prelude.{Int64, Option, todo}
   sort Gadget
     entity gadget(id: Int64)
-    operation make[T](g: Gadget) -> Option[T = T] = make(g)
+    operation make[T](g: Gadget) -> Option[T = T] = todo()
   end
   sort GHolder
     entity gholder(g: Gadget)

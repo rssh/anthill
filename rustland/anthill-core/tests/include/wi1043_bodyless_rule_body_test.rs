@@ -385,7 +385,7 @@ fn a_carrier_with_no_instance_is_refused_at_load() {
 #[test]
 fn the_walk_gate_is_the_two_halves_and_a_data_sorts_operations() {
     let kb: KnowledgeBase = crate::common::load_kb_with(
-        "namespace wi1043.probe\n  sort Held\n    sort V = ?\n    entity held(v: V)\n    operation open(h: Held[V]) -> V = open(h)\n    operation peek(h: Held[V]) -> V = h.v\n  end\nend\n",
+        "namespace wi1043.probe\n  import anthill.prelude.{todo}\n  sort Held\n    sort V = ?\n    entity held(v: V)\n    operation open(h: Held[V]) -> V = todo()\n    operation peek(h: Held[V]) -> V = h.v\n  end\nend\n",
     );
     // The declaring sort read off the operation's own name, so what is said of it is
     // built from nothing the gates under test answer.

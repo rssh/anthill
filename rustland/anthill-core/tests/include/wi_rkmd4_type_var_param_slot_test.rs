@@ -100,7 +100,7 @@ end
 fn program(ns: &str, body: &str) -> String {
     format!(
         "{}namespace {ns}
-  import anthill.prelude.{{String, List, Unit, Option}}
+  import anthill.prelude.{{String, List, Unit, Option, todo}}
   import {ns}.Trust.{{Untrusted, Public}}
   import {ns}.{{Text, Message}}
 {body}
@@ -124,8 +124,8 @@ fn sole_error(src: &str) -> String {
 fn refuses_a_wrong_sort_against_a_variable_containing_parameter() {
     let src = program(
         "nest4",
-        "  operation fetch_one() -> Message[Trust = Untrusted] = fetch_one()
-  operation sum_flat(m: Text[Trust = ?t]) -> Text[Trust = ?t] = sum_flat(m)
+        "  operation fetch_one() -> Message[Trust = Untrusted] = todo()
+  operation sum_flat(m: Text[Trust = ?t]) -> Text[Trust = ?t] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(sum_flat(fetch_one()))",
     );
@@ -147,8 +147,8 @@ fn refuses_a_wrong_sort_against_a_variable_containing_parameter() {
 fn refuses_a_wrong_element_sort_beneath_a_matching_container() {
     let src = program(
         "nest3",
-        "  operation fetch_msgs() -> List[T = Message[Trust = Untrusted]] = fetch_msgs()
-  operation sum_list(msgs: List[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = sum_list(msgs)
+        "  operation fetch_msgs() -> List[T = Message[Trust = Untrusted]] = todo()
+  operation sum_list(msgs: List[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(sum_list(fetch_msgs()))",
     );
@@ -172,8 +172,8 @@ fn refuses_a_wrong_element_sort_beneath_a_matching_container() {
 fn control_a_matching_element_sort_still_propagates_and_the_sink_refuses() {
     let src = program(
         "nest2",
-        "  operation fetch_texts() -> List[T = Text[Trust = Untrusted]] = fetch_texts()
-  operation sum_list(msgs: List[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = sum_list(msgs)
+        "  operation fetch_texts() -> List[T = Text[Trust = Untrusted]] = todo()
+  operation sum_list(msgs: List[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(sum_list(fetch_texts()))",
     );
@@ -193,7 +193,7 @@ fn control_a_matching_element_sort_still_propagates_and_the_sink_refuses() {
 fn control_ground_against_ground_was_already_refused() {
     let src = program(
         "gnd",
-        "  operation fetch_one() -> Message[Trust = Untrusted] = fetch_one()
+        "  operation fetch_one() -> Message[Trust = Untrusted] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(fetch_one())",
     );
@@ -214,8 +214,8 @@ fn control_ground_against_ground_was_already_refused() {
 fn control_a_conforming_polymorphic_call_still_loads_clean() {
     let src = program(
         "okpoly",
-        "  operation fetch_text() -> Text[Trust = Untrusted] = fetch_text()
-  operation sum_flat(m: Text[Trust = ?t]) -> Text[Trust = ?t] = sum_flat(m)
+        "  operation fetch_text() -> Text[Trust = Untrusted] = todo()
+  operation sum_flat(m: Text[Trust = ?t]) -> Text[Trust = ?t] = todo()
   operation audit(body: Text[Trust = Untrusted]) -> Unit = ()
   operation ok() -> Unit = audit(sum_flat(fetch_text()))",
     );
@@ -356,8 +356,8 @@ end
 fn refuses_a_wrong_element_sort_beneath_a_shared_option() {
     let src = program(
         "optel",
-        "  operation fetch_opt() -> Option[T = Message[Trust = Untrusted]] = fetch_opt()
-  operation sum_opt(m: Option[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = sum_opt(m)
+        "  operation fetch_opt() -> Option[T = Message[Trust = Untrusted]] = todo()
+  operation sum_opt(m: Option[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(sum_opt(fetch_opt()))",
     );
@@ -377,8 +377,8 @@ fn refuses_a_wrong_element_sort_beneath_a_shared_option() {
 fn control_a_bare_value_at_an_option_slot_is_left_to_the_some_coercion() {
     let src = program(
         "optco",
-        "  operation fetch_text() -> Text[Trust = Untrusted] = fetch_text()
-  operation sum_opt(m: Option[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = sum_opt(m)
+        "  operation fetch_text() -> Text[Trust = Untrusted] = todo()
+  operation sum_opt(m: Option[T = Text[Trust = ?t]]) -> Text[Trust = ?t] = todo()
   operation audit(body: Text[Trust = Untrusted]) -> Unit = ()
   operation ok() -> Unit = audit(sum_opt(fetch_text()))",
     );
@@ -406,8 +406,8 @@ fn control_a_bare_value_at_an_option_slot_is_left_to_the_some_coercion() {
 fn refuses_a_wrong_sort_against_a_nested_option_slot() {
     let src = program(
         "optnest",
-        "  operation fetch() -> List[T = Message[Trust = Untrusted]] = fetch()
-  operation take(xs: List[T = Option[T = Text[Trust = ?t]]]) -> Text[Trust = ?t] = take(xs)
+        "  operation fetch() -> List[T = Message[Trust = Untrusted]] = todo()
+  operation take(xs: List[T = Option[T = Text[Trust = ?t]]]) -> Text[Trust = ?t] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(take(fetch()))",
     );
@@ -426,8 +426,8 @@ fn refuses_a_wrong_sort_against_a_nested_option_slot() {
 fn control_the_nested_option_slot_was_already_refused_when_ground() {
     let src = program(
         "optnestg",
-        "  operation fetch() -> List[T = Message[Trust = Untrusted]] = fetch()
-  operation take(xs: List[T = Option[T = Text[Trust = Untrusted]]]) -> Text[Trust = Untrusted] = take(xs)
+        "  operation fetch() -> List[T = Message[Trust = Untrusted]] = todo()
+  operation take(xs: List[T = Option[T = Text[Trust = Untrusted]]]) -> Text[Trust = Untrusted] = todo()
   operation sink(body: Text[Trust = Public]) -> Unit = ()
   operation leak() -> Unit = sink(take(fetch()))",
     );

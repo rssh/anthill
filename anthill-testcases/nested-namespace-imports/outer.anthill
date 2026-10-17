@@ -7,7 +7,7 @@
 -- Nested namespaces should see these via the enclosing scope chain.
 
 namespace test.nested_imports
-  import anthill.prelude.{List, String, Bool}
+  import anthill.prelude.{List, String, Bool, todo}
 
   sort Path = String
 
@@ -17,7 +17,7 @@ namespace test.nested_imports
   -- Nested namespace with a distinct name: imports from the
   -- enclosing scope (List, String, Bool, Path) should resolve.
   namespace PathOps
-    operation components(p: Path) -> List[T = String] = components(p)
+    operation components(p: Path) -> List[T = String] = todo()
     operation is_valid(p: Path) -> Bool = true
   end
 
