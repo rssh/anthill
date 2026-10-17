@@ -29,6 +29,7 @@ This section changes nothing. The rest of the proposal says what happens at run 
   - Its mutating operations are anthill bodies over base operations: `MutableStack.push` is `Cell.set(s.rep, …)`.
   - It has no identity of its own. Two of its values are one resource exactly when they hold the same base resources.
   - It is modifiable by containment, and an `internal` constructor keeps its invariants (WI-369).
+- **A pool sort** is a modifiable sort whose only value names state outside the process, for the typer (§3.2). It has no operations and no implementation. Nothing writes it directly, and at run time nothing is bound to it.
 - **Persistent values are not resources.** `Map.put` and `Substitution.compose` return new values.
 
 The typer already draws this line. A base sort is one that a `provides Modifiable[T = …]` names, directly or through a spec it provides (`region::region_sorts`). A secondary sort is admitted through its fields and type arguments (`region::type_admits_modify`). `Modifiable` stays a marker spec, with no dictionary.
@@ -51,8 +52,17 @@ What tells two resources of a sort apart is fixed by the sort, never by an imple
 Whether a write may be dropped from a row, and whether two places may be one resource, is read from 050.1's memory relations, as it is for every other operation. There is no identity kind.
 
 - **An allocating operation declares no memory clause, so its result is fresh,** connected with nothing. `Cell.new` is the case. A write to a cell that never escapes is local, and is dropped from the row (the masking of WI-314).
-- **A value that names something outside is connected to a pool**, `ensures memory_maybe_connected(result, pool)`, where `pool` is an ambient resource standing for that outside state. Such a value is never fresh, and any two values connected to one pool may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
-- **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three file backends share one pool. It is declared once, in `anthill.persistence.filesystem`, the module that declares all three. A store backed by something else, such as a database, declares its own pool in its own module, so it is not connected with the files.
+- **A value that names something outside is connected to a pool**, `ensures memory_maybe_connected(result, pool)`, where `pool` is the constant of a pool sort (§2), an ambient resource standing for that outside state. Such a value is never fresh, and any two values connected to one pool may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
+- **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three file backends share one pool. It is declared once, in `anthill.persistence.filesystem`, the module that declares all three:
+
+  ```anthill
+  sort FileStorage
+    provides Modifiable[T = Self]
+    entity file_storage
+  end
+  ```
+
+  Memory relations are untyped: they connect places of any types, as `box(cell: c)` lies in `c`'s regions. The `Modifiable` claim is there for the row. 050.1 charges a write through a store the body built to the outside region it reaches, so a row may carry `Modify[file_storage]` ("may change the file storage"), and the TR8CF check admits a `Modify` target only over a modifiable type. While 050.1 §1 keeps its filter on which places take part in relations, the claim also lets the pool pass it. A store backed by something else, such as a database, declares its own pool sort (`DatabaseStorage`) in its own module, so it is not connected with the files.
 
 ### 3.3 The constructor says so
 
@@ -60,10 +70,10 @@ In an operation body a constructor is a call like any other (kernel-language §5
 
 ```anthill
 entity FileStore(root: String, convention: FileConvention)
-  ensures memory_maybe_connected(result, pool)
+  ensures memory_maybe_connected(result, file_storage)
 ```
 
-An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected. How a pool is spelled is open (§10).
+An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected.
 
 ### 3.4 At run time
 
@@ -72,6 +82,8 @@ A value finds its implementation through its handle when an allocating operation
 ### 3.5 A sort with no operations of its own has no resource
 
 Nothing writes such a sort, whatever it claims. `Box` and `counter` in the m5 fixtures were written only through the generic `ModifyRuntime.set`. Under this proposal that call is a load error, and `default_modify_handler`'s map, which kept one slot per functor for them, goes. WI-200's goal, two boxes kept apart by that handler, has no counterpart. State keyed by data inside the process is a `Map` held in a `Cell`.
+
+A pool sort (§2) also has no operations, and is still modifiable. It names outside state for the typer, and nothing at run time is bound to it.
 
 ## 4. Implementations
 
@@ -228,7 +240,6 @@ Considered and not taken in the 2026-10-17 discussion:
 
 ## 10. Open questions
 
-- How a pool is spelled. The file backends' pool is declared in `anthill.persistence.filesystem` (§3.2).
 - Implementations written in anthill (§4.3), and interceptors.
 - The name and signature of the scoped installing operation.
 - A transaction scope that rolls back on a raise (§6.1).
