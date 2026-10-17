@@ -3934,8 +3934,9 @@ target naming the type they share would erase exactly that distinction.
 
 **A value of a modifiable sort is a reference to its resource.** Binding it — by a `let`,
 a pattern, or an argument — names the same resource and copies nothing. An operation that
-returns a fresh resource makes a new one, and a fresh resource shares memory with nothing.
-A value that names state outside the process, such as a store's root, is connected to that
+returns a fresh resource makes a new one: it is no other resource, and it shares memory only
+with what the operation puts in it, as the operation's postconditions declare (`Cell.new(v)`
+holds `v`). A value that names state outside the process, such as a store's root, is connected to that
 state's pool, the constant of a pool sort ([proposal 037](proposals/037-anthill-state-model.md)
 §3.2), so two such values may be one resource. Within a body, two places name one resource
 (`memory_alias`) or may share memory (`memory_maybe_connected`) as the bindings, patterns,

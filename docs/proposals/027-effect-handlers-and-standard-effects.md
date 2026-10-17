@@ -433,7 +433,8 @@ end
 | Resource | Operation | Under `Branch` |
 |---|---|---|
 | KB facts, cells: every `Modify` resource inside the process | `KB.assert`, `Cell.set` | **undone** when the alternative is abandoned, by the implementation each resource is bound to. Not implemented yet (WI-070) |
-| Persistence stores | the store operations that reach the disk | they declare `External`, and `Branch` together with `External` is refused at load (054) |
+| Persistence stores | `persist`, `retract`, `update`: the store's buffer and the KB's resident facts | **undone**, like every resource inside the process (037 §6.2) |
+| Persistence stores | `flush`, the one that reaches the disk | it declares `External`, and `Branch` together with `External` is refused at load (054) |
 | Console output | `Console.print/println` | **sticky-by-physics** (irreversible): resolved by a buffered handler that absorbs writes for the branch, or by a static constraint preventing the op inside Branch. 037 does not cover `Console` |
 | Stream sources, pure (`Stream[T, ()]`) | source pull | per-snapshot independent positions (clone source on snapshot) |
 | Stream sources, effectful (`Stream[T, E≠()]`) | source pull | use statically prevented inside `Branch` via Branch+Consumes constraint |
@@ -565,7 +566,7 @@ end
 - **The label.** `Modify[x]` says the operation may change the state reachable from the place `x`: a parameter, `result`, a field path, or a zero-argument accessor. It is never a type (WI-20260823-39AD2). Reading is silent (037 Rule 3).
 - **`Modify` has no operations.** Each base modifiable sort declares its own state operations: Cell's `new`, `get` and `set`; KB's `assert` and `add_guard`; a store's `persist` and `flush`. No generic runtime spec ranges over them (037 §4.1).
 - **A handler is an implementation of a base sort** (037 §4.2). The default is the sort's host realization; time travel, audit and a test fixture are others. Each resource is bound to one implementation, and every call on it goes there (037 §5.1). The installation map chooses which implementation new resources are bound to, for the whole run or for a scope (037 §5.2).
-- **Identity is the sort's** (037 §3). A resource made by an allocating operation (`Cell.new`, with `effects Modify[result]`) is fresh. A value that names something outside is connected to a pool.
+- **Identity is the sort's** (037 §3). A resource made by an allocating operation (`Cell.new`, with `effects Modify[result]`) is a new resource, which shares memory only with what the operation puts in it (`Cell.new(v)` holds `v`). A value that names something outside is connected to a pool.
 - **Composition** (037 §6). A raise keeps the writes made before it. An abandoned `Branch` alternative's writes are undone by the bound implementation. An operation that writes outside the process declares `External`, which is refused under `Branch` (054).
 - **Admission** (037 Rule 8, enforced since WI-20260823-TR8CF). `Modify` applies only where the place's type admits it: a base sort through its `Modifiable` claim, a secondary sort through containment.
 
