@@ -1509,6 +1509,68 @@ end
         }
     }
 
+    /// WI-20260902-JB6RS — the round trip keeps a constructor's TYPE FACE: reify of the
+    /// type `red†` (or `Foo[X = Int64]`) reflects back to that type, never to the
+    /// constructor. The ticket measured the old loss: reify of the canon-exempt `Fn{S}`
+    /// gave `RefRepr(S)`, which reflected to `Ref(S)` — the concrete identity became the
+    /// wildcard.
+    ///
+    /// Passes with or without step 2's code, BY DESIGN: both realizations carry the
+    /// `Symbol` VALUE (`RefRepr.name` here is a `Ref(sym)` read back by content), so the
+    /// bit rides along. It fails if a realization re-resolved the name by its string.
+    #[test]
+    fn kb_reflect_keeps_a_type_face() {
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.reflect_face
+  import anthill.prelude.Int64
+  sort Color
+    entity red
+  end
+  sort Foo
+    sort X = ?
+    entity Foo(a: X)
+  end
+end
+"#,
+        );
+        let red = interp.kb().try_resolve_symbol("test.reflect_face.Color.red").expect("red");
+        let foo = interp.kb().try_resolve_symbol("test.reflect_face.Foo").expect("Foo");
+        let int64 = interp.kb().try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let red_face = interp.kb().type_face_of(red);
+        let foo_face = interp.kb().type_face_of(foo);
+        let x = interp.kb_mut().intern("X");
+        let int64_ref = interp.kb_mut().alloc(CoreTerm::Ref(int64));
+        let red_type = interp.kb_mut().alloc(CoreTerm::Ref(red_face));
+        let foo_type = interp.kb_mut().alloc(CoreTerm::Fn {
+            functor: foo_face,
+            pos_args: smallvec::SmallVec::new(),
+            named_args: smallvec::SmallVec::from_elem((x, int64_ref), 1),
+        });
+        let red_instance = interp.kb_mut().alloc(CoreTerm::Ref(red));
+        let mut round_trip = |tid: TermId| -> TermId {
+            let reified = interp
+                .call("anthill.reflect.KB.reify", &[Value::Unit, Value::term(tid)])
+                .expect("reify call");
+            match interp.call("anthill.reflect.KB.reflect", &[Value::Unit, reified]).expect("reflect call") {
+                Value::Term { id, .. } => id,
+                other => panic!("expected Value::Term, got {other:?}"),
+            }
+        };
+        assert_eq!(round_trip(red_type), red_type, "the type `red[]` comes back as itself");
+        assert_eq!(round_trip(red_instance), red_instance, "the instance `red` comes back as itself");
+        assert_ne!(red_type, red_instance, "premise: the type and the instance are two terms");
+        // An APPLIED type keeps its face as the functor. Not its labels: the repr has
+        // none (`FnRepr` carries the arguments only, and `reflect_walk` rebuilds them
+        // positionally), so the term that comes back is `Fn{Foo†; [Int64]}` — the same
+        // loss an instance `Foo(a: 1)` has, and not this ticket's.
+        let back = round_trip(foo_type);
+        match interp.kb().get_term(back) {
+            CoreTerm::Fn { functor, .. } => assert_eq!(*functor, foo_face, "the type face survives"),
+            other => panic!("expected an application, got {other:?}"),
+        }
+    }
+
     // `kb_nonvar_and_ground_classify_terms` (a `Ref` term is nonvar+ground, a
     // `Var` term is neither) is not deleted, it is the first two rows of the test
     // below — where they are labelled CONTROL, because those are exactly the two

@@ -3765,7 +3765,10 @@ impl KnowledgeBase {
     /// carriers deciding this by two tests is exactly how one spelling stops matching the
     /// other, which is what the canon exists to prevent.
     pub(crate) fn nullary_name_canons_to_ref(&self, functor: Symbol) -> bool {
-        !self.has_kind(functor, SymbolKind::Sort)
+        // A constructor's TYPE FACE has one reading — the type — so its nullary
+        // application and its bare name are one term (`Foo[]` is `Foo†`), whatever the
+        // declaration's kinds say about the plain face (WI-20260902-JB6RS).
+        functor.is_type_face() || !self.has_kind(functor, SymbolKind::Sort)
     }
 
     /// Allocate a term (hash-consed, refcounted). Applies [`Self::nullary_canon`].
@@ -12028,7 +12031,11 @@ impl KnowledgeBase {
     /// Check if a functor symbol is a constructor (entity with a parent sort).
     /// O(1) lookup via pre-built index populated by register_entity_of.
     pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {
-        self.constructor_symbols.contains(&Decl::of(functor))
+        // A constructor's TYPE FACE is a type, never a constructor (WI-20260902-JB6RS).
+        // Every caller but a few asks this of a term's HEAD, where answering `true` for
+        // a face would build an instance from a type; one that asks about the
+        // DECLARATION says so, with `functor.plain()`.
+        !functor.is_type_face() && self.constructor_symbols.contains(&Decl::of(functor))
     }
 
     /// WI-20260823-4GBQV — does `sym` name an AMBIENT RESOURCE: a NULLARY
@@ -12141,7 +12148,10 @@ impl KnowledgeBase {
     /// refusal of such a sort applied as a call (WI-20260824-JM6ZW). `has_kind`, not
     /// `kind_of`: WI-20260824-Q0093's namespace-before-sort row.
     pub fn is_type_value_head(&self, sym: Symbol) -> bool {
-        self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym)
+        // A constructor's type face is a type, nested (`red†`, no `Sort` kind) or not
+        // (WI-20260902-JB6RS).
+        sym.is_type_face()
+            || (self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym))
     }
 
     /// WI-20260902-JB6RS — the TYPE FACE of `sym`'s declaration, when that declaration
@@ -12174,6 +12184,9 @@ impl KnowledgeBase {
     /// with no parent sort, so it is not a constructor. A bare reference to one
     /// denotes the entity as a type rather than a construction.
     pub fn is_free_standing_entity(&self, functor: Symbol) -> bool {
+        // A question about the DECLARATION — the face of a free-standing entity is its
+        // type, which is what the callers read a bare one as (WI-20260902-JB6RS).
+        let functor = functor.plain();
         self.entity_field_types(functor).is_some() && !self.is_constructor_symbol(functor)
     }
 
@@ -12202,6 +12215,11 @@ impl KnowledgeBase {
     /// (an unresolved name, which must reach the typer's scoping diagnostic)
     /// silently constructed `Box.box` instead.
     pub fn is_entity_constructor(&self, functor: Symbol) -> bool {
+        // An application of a constructor's TYPE FACE is a type application
+        // (`Foo[X = Int64]`), never a construction (WI-20260902-JB6RS).
+        if functor.is_type_face() {
+            return false;
+        }
         if self.is_constructor_symbol(functor) {
             return true;
         }
@@ -16495,7 +16513,9 @@ end
             assert_eq!(kb.strict_parent_sort(face), kb.strict_parent_sort(c), "{qn}: strict parent");
             assert_eq!(field_names(&kb, face), field_names(&kb, c), "{qn}: field types");
             assert_eq!(kb.entity_field_names(face), kb.entity_field_names(c), "{qn}: field names");
-            assert_eq!(kb.is_constructor_symbol(face), kb.is_constructor_symbol(c), "{qn}: constructor");
+            assert!(!kb.is_constructor_symbol(face), "{qn}: a type face is never a constructor");
+            assert_eq!(kb.is_constructor_symbol(face.plain()), kb.is_constructor_symbol(c), "{qn}: its declaration is");
+            assert_eq!(kb.is_free_standing_entity(face), kb.is_free_standing_entity(c), "{qn}: free-standing");
             assert_eq!(kb.type_arg_owner(face), kb.type_arg_owner(c), "{qn}: type-arg owner");
             assert_eq!(kb.sort_of_head(face), kb.sort_of_head(c), "{qn}: trigger sort");
             assert_eq!(kb.sort_children(face), kb.sort_children(c), "{qn}: children");
@@ -16535,5 +16555,114 @@ end
             let s = sym(&kb, qn);
             assert_eq!(kb.type_face_of(s), s, "{qn}: no constructor, no second face");
         }
+    }
+
+    /// Step 2 — a constructor's type and its instance are NEVER ONE TERM, through every
+    /// reader that decides by matching: the store, the structural comparator, the
+    /// discrimination tree with unify, the map key and the printer. Measured at
+    /// HEAD before the faces: `fact held(Foo[X = Int64])` WAS found by
+    /// `:- held(Foo(X: ?v))` — the two shared a functor and, here, a label.
+    ///
+    /// BACKED OUT:
+    ///  * the face arm of `nullary_name_canons_to_ref`: `Fn{Foo†}` and `Ref(Foo†)` are
+    ///    two terms (the eponymous and free-standing rows; `red†` has no `Sort` kind
+    ///    and canonicalizes either way);
+    ///  * the face guard of `is_entity_constructor`, or the face arm of
+    ///    `is_type_value_head`: the predicate rows;
+    ///  * the face arms of the printer: the print rows.
+    /// The identity rows (store, comparator, tree, map key) pass with or without this
+    /// step's code, BY DESIGN — they are what step 0's bit buys, and fail only if
+    /// `Symbol`'s equality stopped seeing it.
+    #[test]
+    fn a_type_face_and_its_constructor_are_never_one_term() {
+        use crate::eval::map_arena::MapKey;
+        use crate::eval::value::Value;
+        use crate::kb::term::Var;
+        use crate::persistence::print::TermPrinter;
+        use smallvec::SmallVec;
+
+        let mut kb = crate::kb::test_support::load_stdlib(Some(SRC));
+        let sym = |kb: &KnowledgeBase, qn: &str| kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn}"));
+        let fn0 = |kb: &mut KnowledgeBase, f: Symbol| {
+            kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::new(), named_args: SmallVec::new() })
+        };
+        let unary = |kb: &mut KnowledgeBase, f: Symbol, a: TermId| {
+            kb.alloc(Term::Fn { functor: f, pos_args: SmallVec::from_elem(a, 1), named_args: SmallVec::new() })
+        };
+        let held = kb.intern("jb6rs.held");
+        let domain = kb.intern("jb6rs");
+        let config = resolve::ResolveConfig { max_solutions: 4, ..resolve::ResolveConfig::default() };
+
+        for qn in ["jb6rs.faces.Colour.red", "jb6rs.faces.Foo", "jb6rs.faces.Bar"] {
+            let c = sym(&kb, qn);
+            let face = kb.type_face_of(c);
+            let face_ref = kb.alloc(Term::Ref(face));
+            let c_ref = kb.alloc(Term::Ref(c));
+
+            // The store: the face's two nullary spellings are one term, the type; the
+            // constructor's are not that term in either spelling.
+            assert_eq!(fn0(&mut kb, face), face_ref, "{qn}: `Foo[]` is the bare type");
+            assert_ne!(face_ref, c_ref, "{qn}");
+            assert_ne!(face_ref, fn0(&mut kb, c), "{qn}");
+            assert!(!term_view::views_structurally_equal(&kb, &face_ref, &c_ref), "{qn}: comparator");
+            assert_ne!(
+                MapKey::try_from_value(&kb, &Value::term(face_ref)),
+                MapKey::try_from_value(&kb, &Value::term(c_ref)),
+                "{qn}: map key"
+            );
+
+            // The predicates: an application of the face is a type, never a construction.
+            assert!(!kb.is_entity_constructor(face), "{qn}: a face constructs nothing");
+            assert!(kb.is_type_value_head(face), "{qn}: a face heads a type value");
+
+            // The tree and unify: a fact over the type is not found by the instance, nor
+            // the reverse, and a variable binds the type itself.
+            let fact = unary(&mut kb, held, face_ref);
+            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+            let by_instance = unary(&mut kb, held, c_ref);
+            assert!(kb.resolve(&[by_instance], &config).is_empty(), "{qn}: the instance does not find the type");
+            let by_type = unary(&mut kb, held, face_ref);
+            assert_eq!(kb.resolve(&[by_type], &config).len(), 1, "{qn}: the type finds itself");
+            kb.retract(rid);
+            let fact = unary(&mut kb, held, c_ref);
+            let rid = kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+            let by_type = unary(&mut kb, held, face_ref);
+            assert!(kb.resolve(&[by_type], &config).is_empty(), "{qn}: the type does not find the instance");
+            kb.retract(rid);
+        }
+
+        // The measured collision: a type and an instance pattern with ONE label.
+        let foo = sym(&kb, "jb6rs.faces.Foo");
+        let foo_face = kb.type_face_of(foo);
+        let int64 = sym(&kb, "anthill.prelude.Int64");
+        let x = kb.intern("X");
+        let int64_ref = kb.alloc(Term::Ref(int64));
+        let ty = kb.alloc(Term::Fn {
+            functor: foo_face,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((x, int64_ref), 1),
+        });
+        let fact = unary(&mut kb, held, ty);
+        kb.assert_fact(fact, ClauseKind::Fact, domain, None);
+        let v = kb.fresh_var(x);
+        let vt = kb.alloc(Term::Var(Var::Global(v)));
+        let pattern = kb.alloc(Term::Fn {
+            functor: foo,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((x, vt), 1),
+        });
+        let goal = unary(&mut kb, held, pattern);
+        assert!(kb.resolve(&[goal], &config).is_empty(), "`held(Foo(X: ?v))` does not find `held(Foo[X = Int64])`");
+
+        // The printer writes a type as DATA with the bracket, and the instance bare.
+        let printer = TermPrinter::new(&kb);
+        assert_eq!(printer.print_term(fact), "jb6rs.held(Foo[X = Int64])");
+        let red = sym(&kb, "jb6rs.faces.Colour.red");
+        let red_face = kb.type_face_of(red);
+        let red_face_ref = kb.alloc(Term::Ref(red_face));
+        let red_ref = kb.alloc(Term::Ref(red));
+        let printer = TermPrinter::new(&kb);
+        assert_eq!(printer.print_term(red_face_ref), "red[]");
+        assert_eq!(printer.print_term(red_ref), "red");
     }
 }

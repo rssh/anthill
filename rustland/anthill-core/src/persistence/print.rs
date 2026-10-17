@@ -1250,6 +1250,19 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 pos_args,
                 named_args,
             } => {
+                // WI-20260902-JB6RS — a constructor's TYPE FACE heads a type, and a type
+                // written as DATA takes the bracket (kernel §4.4): `Foo[X = Int64]`, the
+                // parameterized-type surface the type writer already prints. Written
+                // `Foo(X: …)` it would reload as an instance.
+                if functor.is_type_face() {
+                    // Never nullary in the store: `alloc` keeps a face's bare spelling.
+                    debug_assert!(
+                        !pos_args.is_empty() || !named_args.is_empty(),
+                        "a nullary application of a type face is stored as its `Ref`"
+                    );
+                    self.write_type_term(id, buf);
+                    return;
+                }
                 // WI-20261001-KDMQS — a NAME-ROOTED `field_access` chain prints as the
                 // dotted name it spells. See [`Self::dotted_chain_name`].
                 if let Some(name) = self.dotted_chain_name(id) {
@@ -1546,6 +1559,12 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             buf.push_str("nothing");
         } else {
             buf.push_str(self.view.sym_name(sym));
+            // A constructor's TYPE written as data is `Foo[]`: its bare name there is
+            // the instance (kernel §4.4, WI-20260902-JB6RS). The type writer prints a
+            // face bare — `write_type_term`'s own `Ref` arm, which does not come here.
+            if sym.is_type_face() {
+                buf.push_str("[]");
+            }
         }
     }
 
