@@ -162,6 +162,37 @@ pub(crate) fn type_admits_modify<V: TermView>(kb: &KnowledgeBase, ty: &V, region
     admits_modify(kb, ty, regions, true, &mut HashSet::new(), None)
 }
 
+/// Whether a value of type `ty` is ITSELF a place a `Modify` writes, as `ModifyRuntime.get`
+/// and `.set` read and write the very place they are handed: a modifiable sort
+/// ([`region_sorts`]) or a variant of one, or a type parameter or variable (it may be
+/// instantiated with one), or a shape this does not read. Not a type that only HOLDS one —
+/// an empty `List[T = Cell]`, a tuple with a `Cell` part, a function value returning one, an
+/// entity with a `Cell` field — which [`type_admits_modify`] admits, since a `Modify` of such
+/// a place covers a write to what it holds; the place itself is no resource.
+pub(crate) fn type_is_modifiable_place<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    regions: &HashSet<Symbol>,
+) -> bool {
+    let modifiable = |s: Symbol| {
+        regions.contains(&s) || kb.sort_of_constructor(s).is_some_and(|sort| regions.contains(&sort))
+    };
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => modifiable(s) || super::typing::is_sort_param_symbol(kb, s),
+        TypeExtractor::Parameterized { base, .. } => modifiable(base),
+        TypeExtractor::FlexVar { .. } | TypeExtractor::TypeVar(_) | TypeExtractor::Skolem { .. } => {
+            true
+        }
+        TypeExtractor::PolyType { body, .. } => type_is_modifiable_place(kb, &body, regions),
+        TypeExtractor::NamedTuple(_)
+        | TypeExtractor::Arrow { .. }
+        | TypeExtractor::Nothing
+        | TypeExtractor::EffectsRows(_)
+        | TypeExtractor::Denoted(_) => false,
+        _ => true,
+    }
+}
+
 /// [`type_admits_modify`]'s DEFINITE reading: the same walk, with whatever it cannot read
 /// — a type variable, an unbound parameter (a bare `List`'s element), an unbound
 /// `Function` result, a shape it does not know — counted as admitting NONE. What the

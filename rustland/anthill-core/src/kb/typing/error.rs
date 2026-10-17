@@ -1189,6 +1189,11 @@ pub enum TypeErrorContext {
         /// reader to guess.
         source: ElementTypeSource,
     },
+    /// A construction of `ctor` that the program may not write: one of the runtime's
+    /// accounts ([`crate::kb::RuntimeAccount`]), which a program reads and does not build.
+    Construction {
+        ctor: Symbol,
+    },
 }
 
 /// WI-20261012-80259 — which pattern [`TypeErrorContext::PatternPosition`] is about. A
@@ -1260,6 +1265,7 @@ impl TypeErrorContext {
             TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
             // (the `source` rides in `kind_tag`)
+            TypeErrorContext::Construction { ctor } => kb.local_name_of(*ctor).to_string(),
         }
     }
 
@@ -1292,6 +1298,7 @@ impl TypeErrorContext {
                 source: ElementTypeSource::Siblings,
                 ..
             } => "collection-element-join",
+            TypeErrorContext::Construction { .. } => "construction",
         }
     }
 
@@ -1321,6 +1328,7 @@ impl TypeErrorContext {
             // from one. The 0-based `index` is kept in the variant so the value is the
             // element's position in `pos_args` and needs no reader to undo the display.
             TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
+            TypeErrorContext::Construction { .. } => "construction".to_string(),
         }
     }
 }

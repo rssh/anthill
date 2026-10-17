@@ -2,10 +2,12 @@
 //!
 //! A. A provision matched only through the subtype relation is ranked with the rest, and a
 //!    provider's own row is local to its dictionary only where it meets the sub-goal as
-//!    itself (user, 2026-10-17); the bottom type's arm in the candidate matcher is gone.
-//! B. The runtime marks the raises it makes for its own reasons, the bridge's partition reads
-//!    the mark, and a payload the runtime raised keeps it across a catch and a raise again
-//!    (user, 2026-10-17).
+//!    itself (user, 2026-10-17); the bottom type's arm in the candidate matcher is gone. Since
+//!    the sixth review the rank is one order on the heads and locality is read by the half of
+//!    the dictionary a sub-goal fills (`wi_9wvt7_review6_test`).
+//! B. A payload the runtime raised keeps its cause across a catch and a raise again (user,
+//!    2026-10-17); since the sixth review the cause is the payload's constructor, which no
+//!    program constructs (`wi_9wvt7_review6_test`).
 //! C. `ModifyRuntime.get`/`set` at a place of a type no `Modify` fires on is refused at load
 //!    (user, 2026-10-17).
 //! D. The refusals' accounts: a library spec failing at another spec's goal, a former at a
@@ -15,7 +17,8 @@
 //!
 //! G. Found while fixing: an effect of the program's own named like a row atom.
 //!
-//! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build, over this
+//! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED on the fifth review's commit (b437fdbb; the subtype
+//! tie-break and the raise's mark are gone since), each switched off alone in one build, over this
 //! file and the files the fixes touched (`wi_n31xx_*`, `wi_xsvcs_*`, `wi939_*`, `wi_0v0f7_*`,
 //! `wi4gbqv_*`, `wi_9wvt7_clock_handler_test`, `wi_hxgxf_*`, `wi_0gyw1_*`, `eval_test`,
 //! `wi205_cell_test`); the typer-wide ones over the whole `wi_tests` binary too, where each
@@ -28,10 +31,10 @@
 //!   * the bottom type's arm put back → [`an_empty_list_takes_its_elements_provider`],
 //!     [`two_providers_at_the_bottom_type_are_refused_at_load`] and
 //!     [`a_raising_callback_meets_its_arrow_provision`];
-//!   * the bridge's partition read off the payload's constructor →
-//!     [`a_programs_own_floundered_raise_is_a_fault`] and
+//!   * the bridge's partition read off the channel →
 //!     `wi_0v0f7_bridged_raise_test::the_raise_partition_is_by_cause_not_by_channel`;
-//!   * a boundary not keeping the runtime's mark → [`a_drain_failure_raised_again_gets_no_boundary_advice`];
+//!   * the advice read off anything but the payload's constructor →
+//!     [`a_drain_failure_raised_again_gets_no_boundary_advice`];
 //!   * the `ModifyRuntime` place check off →
 //!     [`modify_runtime_at_a_place_no_modify_fires_on_is_refused_at_load`];
 //!   * the handler asking for fields before a constructor →
@@ -64,7 +67,12 @@
 //!     [`an_effect_named_like_a_row_atom_is_its_own_effect`].
 //!
 //! PASSES EITHER WAY, BY DESIGN: the controls inside the rows — a `Modifiable` place written and
-//! read, the direct drain beside the one raised again, the operation named otherwise.
+//! read, the direct drain beside the one raised again, the operation named otherwise, the sort
+//! named `absent` that provides `Effect` (the twin that does not is what the reading moves) —
+//! and every repair a refusal advises, run: `Desc[T = Float]` provided for `Keyed`, `StrApply`
+//! for the conditional former, the slot declared for the held one, the boundary's `requires`,
+//! and the pasted clauses with their unequal control. A fix to an account changes what the
+//! refusal says, not whether the repaired program runs.
 
 use crate::common::{assert_refused_naming, fault_messages, load_errors_of, run_int64};
 
@@ -214,48 +222,13 @@ end
 
 // ── B. who raised it ─────────────────────────────────────────────────────────────────────
 
-const FLOUNDER: &str = r#"
-namespace test.r5.flounder
-  import anthill.prelude.{Int64, String, Error, List, RelationFloundered}
-  import anthill.prelude.List.{nil}
-  import anthill.prelude.RelationFloundered.{relation_floundered}
-  operation fakeFlounder(n: Int64) -> Int64 effects {Error[RelationFloundered]} =
-    if n > 0 then Error.raise(relation_floundered(goals: nil())) else 0
-  rule viaFlounder(?r) :- ?r <=> fakeFlounder(1)
-end
-"#;
-
-/// A PROGRAM'S OWN RAISE OF THE RUNTIME'S CONSTRUCTOR IS ITS OWN FAILURE, A FAULT: reported,
-/// and a quantified constraint over it is not decided. Told apart by the constructor, it was
-/// scheduled with nothing said, and the constraint loaded as holding.
-#[test]
-fn a_programs_own_floundered_raise_is_a_fault() {
-    let messages = fault_messages(FLOUNDER, "test.r5.flounder.viaFlounder(?r)");
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("could not be evaluated by the resolver: raised relation_floundered")),
-        "the raise is reported: {messages:?}"
-    );
-    let errs = load_errors_of(&crate::common::replace_in_fixture(
-        FLOUNDER,
-        "  rule viaFlounder(?r) :- ?r <=> fakeFlounder(1)\n",
-        "  rule viaFlounder(?r) :- ?r <=> fakeFlounder(1)\n  fact item(1)\n  \
-         constraint allOk: forall ?n: item(?n) -: viaFlounder(?n)\n",
-    ));
-    assert_refused_naming(
-        &errs,
-        &["integrity constraint 'allOk' is not decided", "raised relation_floundered"],
-        "a constraint over a program's own floundered raise",
-    );
-}
-
 /// A DRAIN'S FAILURE CAUGHT AND RAISED AGAIN IS STILL THE RUNTIME'S. `Result.reflect(Error.reify(
 /// …))` catches the `evaluation_failure` of a drain whose search asked the `Clock` handler and
-/// raises the same value again; the rule reading it is told the effect, and no boundary.
-/// Marked on the error alone, the raise again was the program's, and the rule was told to
-/// reach for `Error.reify`, which only hides the declined read. The direct twin is the control
-/// and passes either way.
+/// raises the same value again; the rule reading it is told the effect, and no boundary. The
+/// payload's constructor says whose it is, since no program constructs one (the sixth review,
+/// `wi_9wvt7_review6_test`); before, a mark on the error alone made the raise again the
+/// program's, and the rule was told to reach for `Error.reify`, which only hides the declined
+/// read. The direct twin is the control and passes either way.
 #[test]
 fn a_drain_failure_raised_again_gets_no_boundary_advice() {
     let src = r#"
@@ -808,14 +781,15 @@ end
 /// not; a direct binding is no application's; two parameters of the sort take a `requires` each,
 /// and a parameter of the sort beside one of the operation's go on the operation. It named `A`,
 /// said `Box[B = D]` held `C`, printed `requires TypeValue[T = A], TypeValue[T = B]` for a sort,
-/// and sent a clause naming the operation's `B` to the sort.
+/// and sent a clause naming the operation's `B` to the sort. A program with the clauses pasted
+/// runs: the type `probe` reads is the pair's.
 #[test]
 fn the_refusal_names_the_parameter_the_caller_lacks_and_its_clauses_paste() {
     let holder = |decls: &str, op: &str, clause: &str| {
         format!(
             r#"
 namespace test.r5.names
-  import anthill.prelude.{{Int64, Type, Pair}}
+  import anthill.prelude.{{Int64, Type, Pair, PartialEq}}
   import anthill.prelude.Pair.{{pair}}
   import anthill.reflect.{{TypeValue}}
   sort Ty
@@ -825,6 +799,10 @@ namespace test.r5.names
 {decls}
     operation {op} -> Type{clause} = Ty.tyOf(pair(fst: a, snd: b))
   end
+  operation go() -> Int64 =
+    if PartialEq.eq(Holder.probe(1, "s"), Ty.tyOf(pair(fst: 2, snd: "t"))) then 5 else 0
+  operation swapped() -> Int64 =
+    if PartialEq.eq(Holder.probe(1, "s"), Ty.tyOf(pair(fst: "t", snd: 2))) then 5 else 0
 end
 "#
         )
@@ -855,7 +833,8 @@ end
         "probe(a: A, b: B)",
         "",
     );
-    assert_eq!(load_errors_of(&pasted), Vec::<String>::new());
+    assert_eq!(run_int64(&pasted, "test.r5.names.go"), Ok(5));
+    assert_eq!(run_int64(&pasted, "test.r5.names.swapped"), Ok(0), "the pair's own type, no other");
     let mixed = holder("    sort A = ?\n", "probe[B](a: A, b: B)", "");
     assert_refused_naming(
         &load_errors_of(&mixed),
@@ -868,7 +847,7 @@ end
         "probe[B](a: A, b: B)",
         " requires anthill.reflect.TypeValue[T = A], anthill.reflect.TypeValue[T = B]",
     );
-    assert_eq!(load_errors_of(&pasted), Vec::<String>::new());
+    assert_eq!(run_int64(&pasted, "test.r5.names.go"), Ok(5));
     assert_refused_naming(
         &load_errors_of(
             r#"
@@ -954,7 +933,7 @@ fn a_bodied_bool_refusal_names_the_slot_its_clause_sits_at() {
             "namespace test.r5.slot\n  sort Colour\n    entity red\n    entity green\n    \
              operation isbig(c: Colour) -> Bool = true\n    rule isbig(red) :- true\n  end\nend\n",
         ),
-        &["the goal at the operation's own arity stops answering a definite value"],
+        &["has BOTH a body and 1 hand-written clause at its own arity, as it returns `Bool`:"],
         "an own-arity clause beside a bodied Bool operation",
     );
 }
@@ -965,18 +944,23 @@ fn a_bodied_bool_refusal_names_the_slot_its_clause_sits_at() {
 /// `Effect`, written `effects {absent[label = Int64]}`. The row's atoms were recognised by a
 /// name's last segment, so this was read as the absence atom and its label as the effect, and
 /// refused: "declares effect `Int64`, but `anthill.prelude.Int64` is not a REGISTERED effect
-/// kind".
+/// kind". The twin that does not provide `Effect` is what tells the readings apart: it is
+/// refused naming the sort, where the last-segment reading named its label.
 #[test]
 fn an_effect_named_like_a_row_atom_is_its_own_effect() {
-    let src = r#"
-namespace test.r5.atomname
-  import anthill.prelude.{Int64, Effect}
-  sort absent
-    sort label = ?
-    provides Effect[T = absent]
-  end
-  operation f(x: Int64) -> Int64 effects {absent[label = Int64]} = x
-end
-"#;
-    assert_eq!(load_errors_of(src), Vec::<String>::new());
+    let program = |provides: &str| {
+        format!(
+            "namespace test.r5.atomname\n  import anthill.prelude.{{Int64, Effect}}\n  sort absent\n    \
+             sort label = ?\n{provides}  end\n  operation f(x: Int64) -> Int64 effects {{absent[label = \
+             Int64]}} = x\nend\n"
+        )
+    };
+    assert_eq!(load_errors_of(&program("    provides Effect[T = absent]\n")), Vec::<String>::new());
+    let errs = load_errors_of(&program(""));
+    assert_refused_naming(
+        &errs,
+        &["`test.r5.atomname.absent` is not a REGISTERED effect kind"],
+        "a sort named `absent` that is no effect",
+    );
+    assert!(errs.iter().all(|e| !e.contains("anthill.prelude.Int64")), "{errs:#?}");
 }

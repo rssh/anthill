@@ -2654,15 +2654,6 @@ pub fn query_pattern_functor(
     }
 }
 
-/// The WHOLE pattern a query converts to, by the same shipped path
-/// [`query_pattern_functor`] reads its head off (WI-917 lifted this out of it): a test
-/// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of
-/// the head symbol alone.
-///
-/// WI-20260904-J0RM4 — a `load::QueryPattern` (an `Rc<NodeOccurrence>`), not a `TermId`:
-/// the query converter no longer interns. Every `TermView` consumer takes it unchanged
-/// (`kb.resolve(&[goal], …)` is the common one here); a test that needs to read its
-/// STRUCTURE asks `TermView::head` / `pos_arg` / `named_arg` rather than `kb.get_term`.
 /// Load `src` and resolve the query `pattern` over it: the solutions, and the messages of
 /// the faults the search recorded (`ResolveStats::errors`) — what a bridged operation that
 /// raised, or asked a handler for an effect, reports to the rule that read it.
@@ -2684,6 +2675,15 @@ pub fn fault_messages(src: &str, pattern: &str) -> Vec<String> {
     resolve_with_messages(src, pattern).1
 }
 
+/// The WHOLE pattern a query converts to, by the same shipped path
+/// [`query_pattern_functor`] reads its head off (WI-917 lifted this out of it): a test
+/// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of
+/// the head symbol alone.
+///
+/// WI-20260904-J0RM4 — a `load::QueryPattern` (an `Rc<NodeOccurrence>`), not a `TermId`:
+/// the query converter no longer interns. Every `TermView` consumer takes it unchanged
+/// (`kb.resolve(&[goal], …)` is the common one here); a test that needs to read its
+/// STRUCTURE asks `TermView::head` / `pos_arg` / `named_arg` rather than `kb.get_term`.
 #[allow(dead_code)]
 pub fn query_pattern_term(
     kb: &mut KnowledgeBase,

@@ -519,6 +519,15 @@ impl ClauseSlots {
             (false, false) => None,
         }
     }
+
+    /// Where the clauses sit, as both refusals say it.
+    fn phrase(self) -> &'static str {
+        match self {
+            ClauseSlots::Both => "at its arity + 1 and, as it returns `Bool`, at its own arity",
+            ClauseSlots::OwnArity => "at its own arity, as it returns `Bool`",
+            ClauseSlots::ArityPlusOne => "at its arity + 1",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2198,6 +2207,15 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
+    /// One of the runtime's accounts ([`crate::kb::RuntimeAccount`]) written in a clause: a
+    /// fact, a rule head or a goal. A clause's term is a value wherever it binds a variable,
+    /// and a program does not construct the runtime's accounts — the bridge reads a raise's
+    /// cause off its payload's constructor (kernel-language.md §5.3).
+    RuntimeAccountInClause {
+        /// The constructor, qualified.
+        ctor: String,
+        span: Span,
+    },
     /// WI-797 / proposal 057 §"Mounts": a source-file `fact` or `rule` whose head
     /// functor is owned by a mounted [`ExtentSource`](crate::kb::extent) (`kb.extents`).
     /// The extent virtualizes that functor's reads through its store, so a resident
@@ -2845,6 +2863,7 @@ impl LoadError {
             | LoadError::PatternAnnotatedTwice { span }
             | LoadError::LetAnnotationOnNonPattern { span }
             | LoadError::BareArrowInLogicPosition { span, .. }
+            | LoadError::RuntimeAccountInClause { span, .. }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
             | LoadError::UnresolvedTypeName { span, .. }
@@ -3729,6 +3748,9 @@ impl LoadError {
                     loc.format_start(*span),
                     bare_arrow_logic_msg(position, unresolved)
                 )
+            }
+            LoadError::RuntimeAccountInClause { ctor, span } => {
+                format!("{}: {}", loc.format_start(*span), runtime_account_in_clause_msg(ctor))
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 format!("{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span), label_suffix(label))
@@ -5148,6 +5170,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     bare_arrow_logic_msg(position, unresolved),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::RuntimeAccountInClause { ctor, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    runtime_account_in_clause_msg(ctor),
                     span.start,
                     span.end
                 )
@@ -8034,6 +8065,15 @@ fn subject_introduces<'a>(
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
 /// so cross-scope resolution hides it (kernel-language.md §8.6). `public` /
 /// unspecified is the visible default and records nothing.
+/// The sentence of [`LoadError::RuntimeAccountInClause`], one owner for its two renderings.
+fn runtime_account_in_clause_msg(ctor: &str) -> String {
+    format!(
+        "`{ctor}` is an account the runtime gives of something it could not do, and a clause \
+         that writes it constructs one wherever it binds a variable: a program matches one in \
+         an operation's pattern and raises a caught one again, and does not construct one"
+    )
+}
+
 fn record_internal(kb: &mut KnowledgeBase, sym: Symbol, vis: Option<Visibility>) {
     if vis == Some(Visibility::Internal) {
         kb.symbols.mark_internal(sym);
@@ -8243,11 +8283,7 @@ fn body_and_clauses_message(
             Some(at) => format!(", declared at {at},"),
             None => String::new(),
         };
-        let slot = match slots {
-            ClauseSlots::Both => "at its arity + 1 and, as it returns `Bool`, at its own arity",
-            ClauseSlots::OwnArity => "at its own arity, as it returns `Bool`",
-            ClauseSlots::ArityPlusOne => "at its arity + 1",
-        };
+        let slot = slots.phrase();
         return format!(
             "operation '{op}'{declared} is implemented by {implemented_by}, and has {count} \
              hand-written clause{plural} {slot}: {rendered}. A clause there is a second \
@@ -8259,13 +8295,13 @@ fn body_and_clauses_message(
         );
     }
     format!(
-        "operation '{op}' has BOTH a body and {} hand-written clause{}: the body is \
+        "operation '{op}' has BOTH a body and {} hand-written clause{} {}: the body is \
          declared at {}, and {rendered}. One operation, ONE definition — a \
          clause under a bodied operation's functor, labelled or not (a label names the \
          clause, not what its head is about), is a second DEFINITION of it, not a \
          second view of it. They cannot both answer: design §3.3 gives the \
          clauses precedence, which SUPPRESSES the body's derived relational view — \
-         measured, the goal {} stops answering a definite value and answers a \
+         measured, the goal there stops answering a definite value and answers a \
          residual instead, so the clauses take a working reading away rather than \
          adding one. Keep ONE. Either delete the clauses and let the body's derived \
          view serve the relational goal (WI-938), or drop the `=` body and let the \
@@ -8276,12 +8312,8 @@ fn body_and_clauses_message(
          what this refusal is about.",
         count,
         plural,
+        slots.phrase(),
         decl_site.as_deref().unwrap_or("<unknown>"),
-        match slots {
-            ClauseSlots::ArityPlusOne => "at arity + 1",
-            ClauseSlots::OwnArity => "at the operation's own arity",
-            ClauseSlots::Both => "at arity + 1 and at the operation's own arity",
-        },
     )
 }
 
@@ -16300,6 +16332,7 @@ fn load_phase_inner(
     // before `resolve_instantiations`) because it reads the RULE index, and a rule
     // head only lands on the operation's functor once every name is resolved.
     all_errors.extend(check_operation_body_and_clauses(kb));
+    all_errors.extend(check_induction_axiom_names(kb));
     mark!("check_operation_body_and_clauses");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
@@ -20298,6 +20331,55 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// `rule Error.reify(?f, ok(0)) :- true` turned the rule-body boundary into no solutions. A
 /// resolver builtin is not among them — its clauses are alternatives (WI-899) — and neither
 /// is a mapping in another language, which this runtime does not run.
+/// A sort's derived induction axiom (`<Sort>.induction(?P)`) owns its name. An operation
+/// under it would be one predicate with the axiom, whose clause then answers a rule-body goal
+/// at it in the operation's place: under `operation induction(c: Colour) -> Bool = true`,
+/// `Colour.induction(red)` in a rule body answered nothing while the call answered `true`
+/// (MEASURED, also with the operation added by a later load to a sort an earlier one
+/// declared). A hand-written rule `induction` joins the axiom's relation, which then answers
+/// through the axiom's clause what the rule never said. Any other declaration of the name (an
+/// entity, a const, a nested sort) is no predicate and is left alone, and so are the facts
+/// about an entity of the name, which are its data.
+///
+/// By symbol index, not `HashSet` order: two runs over one corpus report identically.
+fn check_induction_axiom_names(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let mut axioms: Vec<Symbol> = kb.induction_axioms.iter().copied().collect();
+    axioms.sort_by_key(|s| s.index());
+    let mut out = Vec::new();
+    for axiom in axioms {
+        let (what, site) = if kb.has_kind(axiom, SymbolKind::Operation) {
+            let site = kb
+                .op_decl_sites
+                .get(&axiom)
+                .and_then(|v| v.first())
+                .or_else(|| kb.functor_spans.get(&axiom))
+                .map(|s| render_decl_site(kb, *s));
+            ("an operation", site)
+        } else if let Some(rid) = (!kb.has_kind(axiom, SymbolKind::Entity))
+            .then(|| {
+                kb.rules_by_functor_iter(axiom)
+                    .find(|rid| kb.clause_origin(*rid) == crate::kb::ClauseOrigin::Source)
+            })
+            .flatten()
+        {
+            ("a rule", kb.rule_head_span(rid).map(|s| render_decl_site(kb, s)))
+        } else {
+            continue;
+        };
+        let name = kb.qualified_name_of(axiom);
+        let sort = name.strip_suffix(".induction").unwrap_or(name);
+        out.push(LoadError::Other {
+            message: format!(
+                "`{name}` names the induction axiom derived for `{sort}`, and {what} {} takes \
+                 the same name: the axiom's clause would answer a rule-body goal at it in the \
+                 declaration's place. Give the declaration another name",
+                site.map_or_else(|| "(at a site the loader did not record)".to_string(), |at| format!("declared at {at}")),
+            ),
+        });
+    }
+    out
+}
+
 fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     let mut population: Vec<(Symbol, OperationDefinition)> = kb
         .op_bodies_iter()
@@ -23956,6 +24038,10 @@ struct Loader<'a> {
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
     in_op_body_value: bool,
+    /// While an operation's body is lowered a second time, as a term, for its defining
+    /// equation (`load_operation`): the same text `convert_expr_term` built, which the typer
+    /// checks as the operation body it is, so a clause-term reading does not apply to it.
+    lowering_op_body_term: bool,
     // WI-1046: true while building a rule-body occurrence that sits in a GOAL position
     // — a top-level body atom, or a goal slot of a connective above it
     // (`KnowledgeBase::goal_arg_slots`). The MIRROR of `in_op_body_value`, and the half
@@ -24523,6 +24609,7 @@ impl<'a> Loader<'a> {
             alias_nodes: false,
             written_binder_anns: HashMap::new(),
             in_op_body_value: false,
+            lowering_op_body_term: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_non_value_role: false,
@@ -27749,6 +27836,21 @@ impl<'a> Loader<'a> {
                 }
 
                 let mut new_functor = self.remap_functor(functor, parse_id);
+                // A WRITTEN application of one of the runtime's accounts in a clause's own
+                // term: a clause term binds the variables it meets, so here it is a
+                // construction. The text written as an operation body is (an operation's
+                // body, a const's value, a rule body's compound expression) is the typer's
+                // to refuse, where a pattern is told apart from a construction.
+                if !self.in_op_body_value
+                    && !self.lowering_op_body_term
+                    && !self.parsed.terms.is_minted(parse_id)
+                    && self.kb.runtime_account_of(new_functor).is_some()
+                {
+                    self.errors.push(LoadError::RuntimeAccountInClause {
+                        ctor: self.kb.qualified_name_of(new_functor).to_string(),
+                        span: self.parsed.terms.span(parse_id),
+                    });
+                }
 
                 // WI-20260911-073GH — DOES THIS WRITTEN FUNCTOR DENOTE AN ENTITY?
                 // Read ONCE here and used by every entity-shaped reading below (the
@@ -37494,24 +37596,12 @@ impl<'a> Loader<'a> {
         // reuse that without inserting their qualified name into
         // `by_qualified_name` — making each subsequent <Sort>.induction
         // unreachable by qualified-name lookup.
+        // The axiom owns its name: an operation or a hand-written rule under it, in this load
+        // or a later one, is refused after the load (`check_induction_axiom_names`). Any
+        // other declaration of the name (an entity, a const, a nested sort) is no predicate,
+        // and the axiom's clause is filed under its symbol as before.
         let induction_sym =
             if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
-                // A declaration of the sort's own under the axiom's name — an operation
-                // `induction` — would be one predicate with the axiom, whose clause then
-                // answers a rule-body goal at it in the operation's place: under `operation
-                // induction(c: Colour) -> Bool = true`, `Colour.induction(red)` in a rule
-                // body answered nothing while the call answered `true` (MEASURED).
-                if self.kb.kind_of(existing).is_some_and(|kind| kind != SymbolKind::Goal) {
-                    self.errors.push(LoadError::Other {
-                        message: format!(
-                            "`{induction_name}` names the induction axiom derived for \
-                             `{sort_name}`, and a declaration in `{sort_name}` takes the same \
-                             name: the axiom's clause would answer a rule-body goal at it in \
-                             the declaration's place. Give the declaration another name"
-                        ),
-                    });
-                    return;
-                }
                 existing
             } else {
                 self.kb.symbols.define(
@@ -37522,6 +37612,8 @@ impl<'a> Loader<'a> {
                 )
             };
 
+        let canonical = self.kb.canonical_sym(induction_sym);
+        self.kb.induction_axioms.insert(canonical);
         let head = self.kb.alloc(Term::Fn {
             functor: induction_sym,
             pos_args: SmallVec::from_slice(&[p_term]),
@@ -40291,7 +40383,9 @@ impl<'a> Loader<'a> {
         // equation keeps the resolver primitives for those three names. That predates
         // this ticket and is untouched by it.
         let prev_scope = std::mem::replace(&mut self.current_scope, op_scope);
+        let prev_lowering = std::mem::replace(&mut self.lowering_op_body_term, true);
         let body_kb = self.convert_term(body_parse_id);
+        self.lowering_op_body_term = prev_lowering;
         self.current_scope = prev_scope;
 
         let mut param_vars: Vec<(Symbol, VarId)> = Vec::new();

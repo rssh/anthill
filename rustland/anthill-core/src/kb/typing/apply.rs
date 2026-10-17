@@ -4403,8 +4403,8 @@ pub(super) fn check_apply_iter(
                         }
                     })?;
                     // WI-945 — §5.2's unconstrained-element refusal, PARKED for the
-                    // pass that runs once every body is typed. Two gates, each with a
-                    // mechanism behind it rather than a corpus behind it:
+                    // pass that runs once every body is typed. A gate with a mechanism
+                    // behind it rather than a corpus behind it, and a deferred report:
                     //
                     //  * `enclosing_op` (asked for above): this dictionary is the
                     //    call's only supply only in an OPERATION body, where eval
@@ -4418,9 +4418,9 @@ pub(super) fn check_apply_iter(
                     //    (wi625 Layer B) and `PartialEq[T = PartialOrd.T]` at
                     //    `anthill.prelude.PartialOrd` are exactly this — 93 of the 97
                     //    instrumented hits across the workspace — and they all work.
-                    //  * whether the callee's body reads the slot — deferred to
-                    //    [`report_unsuppliable_requirements`]; see
-                    //    [`UnsuppliableRequirement`].
+                    //  * the report — deferred to [`report_unsuppliable_requirements`],
+                    //    which reports every parked refusal once every callee is
+                    //    classified; see [`UnsuppliableRequirement`].
                     //
                     // No `dispatch_dict.is_none()` guard beside this: the builder fills
                     // the slot on the one path that then returns `Ok(None)`, so a
@@ -5347,10 +5347,11 @@ fn defaulted_call_at_non_instance(
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }
 
-/// `ModifyRuntime.get` or `.set` handed a place whose type admits no `Modify`, by the reading
-/// the declaration check refuses a written label with ([`crate::kb::region::type_admits_modify`]):
-/// a type known to hold nothing that can be mutated. A type parameter, and a type that holds a
-/// modifiable one, admit.
+/// `ModifyRuntime.get` or `.set` handed a place that is no resource: they read and write the
+/// very place they are handed, so the place must itself be of a modifiable type
+/// ([`crate::kb::region::type_is_modifiable_place`]) — a type that only holds one (an empty
+/// `List[T = Cell]`, whose every `nil` is one slot of the standard handler's) is refused as a
+/// type that holds nothing is. A type parameter is accepted: a later call instantiates it.
 #[allow(clippy::too_many_arguments)]
 fn modify_runtime_at_unmodifiable_place(
     kb: &KnowledgeBase,
@@ -5363,11 +5364,11 @@ fn modify_runtime_at_unmodifiable_place(
     placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    let op = kb.canonical_sym(fn_sym);
-    let reads_or_writes = ["anthill.prelude.ModifyRuntime.get", "anthill.prelude.ModifyRuntime.set"]
-        .iter()
-        .any(|q| kb.try_resolve_symbol(q).is_some_and(|s| kb.canonical_sym(s) == op));
-    if !reads_or_writes {
+    // By the qualified name, which is the canonical symbol's: no lookup per call.
+    if !matches!(
+        kb.qualified_name_of(fn_sym),
+        "anthill.prelude.ModifyRuntime.get" | "anthill.prelude.ModifyRuntime.set"
+    ) {
         return None;
     }
     // The place is the operation's first parameter, `target`.
@@ -5379,8 +5380,8 @@ fn modify_runtime_at_unmodifiable_place(
         supplied_arg_pairs(kb, params, pos_call_params, pos_results, named_args, named_results)
             .into_iter()
             .find(|(p, _, _)| p == target)?;
-    let regions = crate::kb::region::region_sorts(kb);
-    if crate::kb::region::type_admits_modify(kb, &ty, &regions) {
+    let regions = remembered_region_sorts(kb);
+    if crate::kb::region::type_is_modifiable_place(kb, &ty, &regions) {
         return None;
     }
     Some(TypeError::Other {
@@ -5390,15 +5391,15 @@ fn modify_runtime_at_unmodifiable_place(
             op_name: fn_sym,
             param: *target,
         },
-        expected: "a place of a modifiable type: a sort that provides `Modifiable` (`Cell`) or \
-                   `provides` a sort that does, a type that holds one (`List[T = Cell]`, an \
-                   entity with a `Cell` field), or a type parameter (proposal 037 Rule 8, \
+        expected: "a place of a modifiable type: a `Cell`, a sort that provides `Modifiable` or \
+                   `provides` a sort that does, or a type parameter (proposal 037 Rule 8, \
                    kernel-language.md §5.6)"
             .to_string(),
         actual: format!(
-            "a place of type `{}`, which nothing can mutate, so the `Modify` handler has no place \
-             to keep for it: give the place a sort of the program's own that declares `provides \
-             Modifiable[T = Self]`, or make it a `Cell`",
+            "a place of type `{}`, which is no place the `Modify` handler keeps: `get` and `set` \
+             read and write the place itself, not what it holds. Make the place a `Cell`; a sort \
+             of the program's own whose constructors take no fields may instead declare \
+             `provides Modifiable[T = Self]`",
             type_display_name_value(kb, &ty)
         ),
     })

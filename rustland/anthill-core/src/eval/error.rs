@@ -96,12 +96,7 @@ pub enum EvalError {
     /// `Value` — error-ness lives in *this variant* (the channel), not in
     /// the value itself. Until catch/recover constructs land (WI-195+), a
     /// raised Error aborts evaluation carrying its payload here.
-    Raised {
-        payload: Value,
-        /// Who raised it, where a report must tell the runtime's account of a search it
-        /// could not finish from a program's own raise of the same payload.
-        origin: RaiseOrigin,
-    },
+    Raised { payload: Value },
     /// A handler returned a continuation-manipulating action (`Fail`,
     /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
     /// need the Branch / suspend-resume substrate (WI-075). Hitting one is
@@ -356,9 +351,12 @@ pub enum BridgeDisposition {
     /// an eval-side relation drain whose sub-search stayed undischarged) and
     /// `raise_load_failed` (WI-SPGBP — `KB.loaded` reporting that its sources do not
     /// load) ride `Raised` and are not domain failures of the callee; they answer
-    /// [`Self::Schedule`]. Every other payload — a user `Error.raise`, and the host
-    /// raises `match_failed` / `division_by_zero` that ride a row they never appear in
-    /// — is a fault.
+    /// [`Self::Schedule`]. The payload's constructor is the cause: both are runtime
+    /// accounts no program constructs ([`crate::kb::RuntimeAccount`]), so the same value
+    /// raised again by the program that caught it is still that account. Every other
+    /// payload — a user `Error.raise`, the host raises `match_failed` / `division_by_zero`
+    /// that ride a row they never appear in, and the runtime's `evaluation_failure` — is a
+    /// fault.
     Fault,
     /// The callee's body read a requirement slot whose goal the arguments pinned and no
     /// provider answers: the requirement is known not to be available, so the call has no
@@ -372,8 +370,8 @@ impl EvalError {
     /// the SLD→eval bridge. See that enum for why each side exists.
     ///
     /// BESIDE `Display` AND NOT INSIDE THE BRIDGE, so the list that must be revisited
-    /// when a variant is added sits with the variants. `kb` is needed only to partition
-    /// [`Self::Raised`] by its payload's constructor.
+    /// when a variant is added sits with the variants. `kb` partitions [`Self::Raised`] by
+    /// its payload's constructor and reads an absence's marker.
     pub fn bridge_disposition(&self, kb: &crate::kb::KnowledgeBase) -> BridgeDisposition {
         match self {
             // ── Schedule: nothing is wrong, the answer is merely not here ──
@@ -404,7 +402,7 @@ impl EvalError {
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──
-            EvalError::Raised { origin, .. } => raised_disposition(*origin),
+            EvalError::Raised { payload } => raised_disposition(kb, payload),
             // ── NoProvider: the requirement is known not to be available ──
             //
             // A slot the argument types pinned and no provider answers: the call has no
@@ -460,34 +458,17 @@ impl EvalError {
     }
 }
 
-/// Who raised an [`EvalError::Raised`] payload: the program, or the runtime giving its
-/// account of something it could not do. A program's own raise of one of the runtime's
-/// constructors is [`RaiseOrigin::Program`], and a payload the runtime raised keeps its
-/// origin when a boundary catches it and the same value is raised again in that run
-/// (`Interpreter::origin_of_raise`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RaiseOrigin {
-    /// `Error.raise`, a host function's declared `Error`, a handler's `Throw`: a raise of
-    /// the program's, whatever its payload.
-    Program,
-    /// A resolver search behind a stream reported a fault (`Interpreter::fault_stream`),
-    /// and the runtime raised its `evaluation_failure`: the account of a search it could not
-    /// finish, which a boundary around the call does not repair.
-    SearchFault,
-    /// A relation drain stayed undischarged (`Interpreter::raise_relation_floundered`): the
-    /// search did not decide, which is no failure of the callee.
-    RelationFloundered,
-    /// A scoped load reported its diagnostics (`Interpreter::raise_load_failed`): a verdict
-    /// the operation was asked for, delivered on the `Error` channel.
-    LoadFailed,
-}
-
-/// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless the
-/// runtime raised it for a reason that is no domain failure of the callee. Read off the
-/// raise and not off its payload's constructor, which a program may build and raise itself:
-/// such a raise is the program's, and a fault.
-fn raised_disposition(origin: RaiseOrigin) -> BridgeDisposition {
-    match origin {
+/// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless its
+/// payload is the runtime's account of a drain that did not decide or of a load that did not
+/// happen. No program constructs one of the runtime's accounts ([`crate::kb::RuntimeAccount`]),
+/// so the payload names its cause wherever it is raised, also where a boundary caught it and
+/// the program raised it again, in that operation or in a later goal of the rule.
+///
+/// KEYED BY SYMBOL, never by name (WI-897), and read through [`crate::eval::value_functor`],
+/// so a payload riding as a term answers as one riding as an entity. An unresolved account
+/// matches no payload, which is the loud side: a fault.
+fn raised_disposition(kb: &crate::kb::KnowledgeBase, payload: &Value) -> BridgeDisposition {
+    match crate::eval::value_functor(kb, payload).and_then(|f| kb.runtime_account_of(f)) {
         // WI-737 — an eval-side relation drain that stayed undischarged. The sub-search did
         // not decide; that is [`BridgeDisposition::Schedule`]'s exact meaning, and calling
         // it a fault would report "the callee failed" for a goal nothing has answered yet.
@@ -495,8 +476,12 @@ fn raised_disposition(origin: RaiseOrigin) -> BridgeDisposition {
         // verdict the operation was asked for, delivered on the channel the language gives
         // it; the rule that called it without an `Error.reify` gets no value, and that is
         // the missing reify rather than a failure of the load.
-        RaiseOrigin::RelationFloundered | RaiseOrigin::LoadFailed => BridgeDisposition::Schedule,
-        RaiseOrigin::Program | RaiseOrigin::SearchFault => BridgeDisposition::Fault,
+        Some(crate::kb::RuntimeAccount::RelationFloundered | crate::kb::RuntimeAccount::LoadFailed) => {
+            BridgeDisposition::Schedule
+        }
+        // A search behind a stream that faulted: the account of a search the runtime could
+        // not finish, which a boundary around the call does not repair.
+        Some(crate::kb::RuntimeAccount::EvaluationFailure) | None => BridgeDisposition::Fault,
     }
 }
 

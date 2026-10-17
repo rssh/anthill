@@ -651,10 +651,7 @@ impl Interpreter {
         // then, rather than being silently dropped.
         match action? {
             HandlerAction::Pure(v) => Ok(v),
-            HandlerAction::Throw(payload) => Err(EvalError::Raised {
-                origin: self.origin_of_raise(&payload),
-                payload,
-            }),
+            HandlerAction::Throw(payload) => Err(EvalError::Raised { payload }),
             // Fail / Choice / Suspend manipulate the continuation and need
             // the Branch / suspend-resume substrate (WI-075). Until then,
             // hitting one is a runtime-internal not-implemented state — fail
@@ -711,33 +708,8 @@ impl Interpreter {
                 )),
             }
         } else {
-            EvalError::Raised {
-                origin: self.origin_of_raise(&payload),
-                payload,
-            }
+            EvalError::Raised { payload }
         }
-    }
-
-    /// Who raises `payload` now: the runtime, where the runtime raised that value earlier in
-    /// this run and a boundary caught it ([`Self::runtime_raises`]) — a program that catches
-    /// the runtime's account of something and raises it again does not make it its own —
-    /// and the program otherwise.
-    pub(crate) fn origin_of_raise(&self, payload: &Value) -> super::RaiseOrigin {
-        self.runtime_raises
-            .iter()
-            .find(|(raised, _)| {
-                crate::kb::term_view::views_structurally_equal(&self.kb, raised, payload)
-            })
-            .map_or(super::RaiseOrigin::Program, |(_, origin)| *origin)
-    }
-
-    /// A raise the runtime makes for its own reason, marked as the runtime's whatever an
-    /// installed `Error` handler did with it on the way.
-    fn runtime_raise(mut e: EvalError, origin: super::RaiseOrigin) -> EvalError {
-        if let EvalError::Raised { origin: marked, .. } = &mut e {
-            *marked = origin;
-        }
-        e
     }
 
     /// Build an `Error`-effect payload entity `ctor(field: value, …)` and route
@@ -832,12 +804,11 @@ impl Interpreter {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let e = self.raise_error_payload(
-            "anthill.prelude.RelationFloundered.relation_floundered",
+        self.raise_error_payload(
+            crate::kb::RuntimeAccount::RelationFloundered.qualified_name(),
             "relation_floundered",
             vec![("goals", goals)],
-        );
-        Self::runtime_raise(e, super::RaiseOrigin::RelationFloundered)
+        )
     }
 
     /// WI-SPGBP — raise a failed SCOPED LOAD as an anthill `Error[LoadFailed]` effect:
@@ -859,12 +830,11 @@ impl Interpreter {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let e = self.raise_error_payload(
-            "anthill.reflect.LoadFailed.load_failed",
+        self.raise_error_payload(
+            crate::kb::RuntimeAccount::LoadFailed.qualified_name(),
             "load_failed",
             vec![("diagnostics", list)],
-        );
-        Self::runtime_raise(e, super::RaiseOrigin::LoadFailed)
+        )
     }
 
     /// WI-20260911-8Y5BE — raise a query that could not be LOWERED as the declared
@@ -929,12 +899,11 @@ impl Interpreter {
                 Err(e) => return e,
             },
         };
-        let e = self.raise_error_payload(
-            "anthill.reflect.ResolveStreamFailure.evaluation_failure",
+        self.raise_error_payload(
+            crate::kb::RuntimeAccount::EvaluationFailure.qualified_name(),
             "evaluation_failure",
             vec![("goals", goals), ("reason", Value::Str(reason)), ("at", at)],
-        );
-        Self::runtime_raise(e, super::RaiseOrigin::SearchFault)
+        )
     }
 
     /// Register the standard effect handlers. Includes real-stdio

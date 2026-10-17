@@ -467,6 +467,8 @@ mod wi_9wvt7_bridged_scoped_kb_test;
 
 #[path = "include/wi_9wvt7_review5_test.rs"]
 mod wi_9wvt7_review5_test;
+#[path = "include/wi_9wvt7_review6_test.rs"]
+mod wi_9wvt7_review6_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
 mod wi_9wvt7_clock_handler_test;
 

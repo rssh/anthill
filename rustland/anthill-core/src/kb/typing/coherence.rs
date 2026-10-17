@@ -963,18 +963,7 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
 /// it answers `false` and stays the structural-reading gap WI-644's enumeration leaves
 /// open (`check_use_site_requires_eq`'s non-scope item 2, and §8.3).
 fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: &Value) -> bool {
-    // The spec's own carrier parameter (`NonEq[T = …]`) — read off the declaration rather
-    // than spelled, the same way `eq_derive::spec_view` builds the views these rows are
-    // recorded under. The two must agree or the goal matches no provision.
-    let param = {
-        let name = kb
-            .type_params_of_sort(noneq_sym)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "T".to_string());
-        kb.intern(&name)
-    };
-    spec_resolves_at_bindings(kb, noneq_sym, smallvec::smallvec![(param, ty.clone())])
+    matches!(resolve_spec_at(kb, noneq_sym, ty), Some(ResolutionResult::Resolved(_)))
 }
 
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a

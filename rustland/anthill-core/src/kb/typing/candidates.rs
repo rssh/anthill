@@ -509,7 +509,7 @@ fn candidates_at(
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
         let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-        let mut weight = HeadWeight::default();
+        let mut notes = MatchNotes::default();
         let mut all_match = true;
         let mut resolved_head_bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         // Decoded here, for the rows the conversion test and the carrier filter kept.
@@ -564,7 +564,7 @@ fn candidates_at(
                 &per_call_value,
                 &impl_param_set,
                 &mut impl_subst,
-                &mut weight,
+                &mut notes,
                 sigma,
             ) {
                 all_match = false;
@@ -582,12 +582,20 @@ fn candidates_at(
         // HEAD LEFT FREE. See [`carrier_arg_impl_subst`] for the rule and the shape it
         // exists for.
         carrier_arg_impl_subst(kb, goal, impl_sort, &impl_param_set, &mut impl_subst);
+        // A PROVISION THE BOTTOM TYPE MET AT A STRUCTURED HEAD left that head's parameters
+        // open: where its conditions name one, which of its instances answers is a guess, and
+        // it is no candidate (the WI-824/828 rule that no answer is the honest one for what
+        // nothing pinned). `ListDesc provides Desc[T = List[T = E]] :- Desc[T = E]` met at
+        // `Nothing` asks `Desc[T = E]` of an `E` nothing names.
+        if !notes.open_at_bottom.is_empty()
+            && provider_conditions_name(kb, impl_sort, &impl_subst, goal.spec_sort, &notes.open_at_bottom)
+        {
+            continue;
+        }
         let cand = Candidate {
             impl_sort,
             resolved_head_bindings,
             impl_subst,
-            head_specificity: weight.specificity,
-            head_subsumed: weight.subsumed,
             row: row.rid,
         };
         // WI-1032 — TWO PROVISIONS THAT SAY THE SAME THING ARE ONE CANDIDATE. The rule
@@ -599,13 +607,14 @@ fn candidates_at(
         // collector did not.
         //
         // Structural equality is the whole criterion and it is SOUND BY CONSTRUCTION: a
-        // `Candidate` is `(impl_sort, resolved_head_bindings, impl_subst,
-        // head_specificity, head_subsumed)`, and everything downstream — the resolved tree
-        // node, the subgoals `requires_chain(impl_sort)` instantiates through `impl_subst` —
-        // is a function of exactly those. Two equal candidates therefore resolve identically,
-        // so picking either is picking the same thing. This is NOT first-match: candidates
-        // that differ in ANY field are all kept, and `pick_most_specific` still refuses to
-        // choose among them.
+        // `Candidate` is `(impl_sort, resolved_head_bindings, impl_subst)` beside the row
+        // its head is read from, and everything downstream — the resolved tree node, the
+        // subgoals `requires_chain(impl_sort)` instantiates through `impl_subst`, the rank
+        // its head has ([`pick_most_specific`]) — is a function of exactly those. Two
+        // candidates equal in the three, whose rows' heads each answer the other's, resolve
+        // and rank identically, so picking either is picking the same thing. This is NOT
+        // first-match: candidates that differ in ANY of it are all kept, and
+        // `pick_most_specific` still refuses to choose among them.
         //
         // WHAT IT FIXES, measured: `sort Leaf { provides Desc[T = Leaf]; operation
         // describe … }` beside a namespace `fact Desc[T = Leaf]` is ONE dictionary written
@@ -662,13 +671,19 @@ fn candidates_at(
         // `TermId` where it is a term, and structurally the same where it rides another
         // carrier ([`same_bindings`]).
         let cand_carrier = kb.canonical_sort_sym(cand.impl_sort);
-        if !out.iter().any(|c| {
-            kb.canonical_sort_sym(c.impl_sort) == cand_carrier
+        let mut same = false;
+        for c in &out {
+            if kb.canonical_sort_sym(c.impl_sort) == cand_carrier
                 && same_bindings(kb, &c.resolved_head_bindings, &cand.resolved_head_bindings)
                 && same_bindings(kb, &c.impl_subst, &cand.impl_subst)
-                && c.head_specificity == cand.head_specificity
-                && c.head_subsumed == cand.head_subsumed
-        }) {
+                && (c.row == cand.row
+                    || head_answers(kb, c.row, cand.row) && head_answers(kb, cand.row, c.row))
+            {
+                same = true;
+                break;
+            }
+        }
+        if !same {
             out.push(cand);
         }
     }
@@ -1084,14 +1099,13 @@ pub(super) fn match_candidate_against_goal(
     per_call_value: &Value,
     impl_params: &[Symbol],
     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-    weight: &mut HeadWeight,
+    notes: &mut MatchNotes,
     // WI-827: the call-site σ (`None` on the σ-less dispatch/diagnostic path).
     sigma: Option<&SigmaCtx>,
 ) -> bool {
     // (1) Candidate side is an impl-param ref → bind it (or check consistency
     // with an earlier binding). Both σ modes live in [`match_impl_param`] so
-    // they cannot drift (mirrors [`binding_pair_covers`]); an impl-param ref
-    // contributes no specificity weight.
+    // they cannot drift (mirrors [`binding_pair_covers`]).
     if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
@@ -1116,11 +1130,24 @@ pub(super) fn match_candidate_against_goal(
     // and a provider at `(Int64) -> Int64` answered a call at `(Int64) -> Int64 @
     // {ConsoleOutput}` — its member, declared over a pure function, ran one that printed
     // (MEASURED).
+    //
+    // A PARAMETER IS MET AS ITSELF, a result through the subtype relation: two arrows are
+    // one binding where their parameter lists relate as two lists do and the call's result
+    // is the provision's or below it. Matched one way only, a parameter took the goal's as
+    // a subtype of the provision's — a provision at `(Animal) -> Int64`, whose member hands
+    // the callback an `animal`, answered a callback that reads a `Dog`'s field (MEASURED:
+    // the run died "entity has no field"), and once the bottom type no longer stopped it, a
+    // callback taking `Nothing`. So each parameter part is matched back the other way at
+    // the bindings the match made (the result part is the last).
     if matches!(candidate_head, TypeHead::Arrow) {
         let Some(pairs) = arrow_part_pairs(kb, candidate_value, per_call_value) else {
+            // The bottom type is below every arrow, and fixes none of its parts.
+            if matches!(type_head(kb, per_call_value), TypeHead::Nothing) {
+                note_open_at_bottom(kb, candidate_value, impl_params, notes);
+                return true;
+            }
             return false;
         };
-        weight.specificity = weight.specificity.saturating_add(1);
         let parts_match = pairs.parts.iter().all(|(c_part, p_part)| {
             match_candidate_against_goal(
                 kb,
@@ -1130,12 +1157,31 @@ pub(super) fn match_candidate_against_goal(
                 p_part,
                 impl_params,
                 impl_subst,
-                weight,
+                notes,
                 sigma,
             )
         });
+        // Matched back with the roles swapped: the goal's parameter as the head, the
+        // provision's at the bindings made as the goal — so a part is compared as deep as
+        // the match itself reads it (`List[T = Dog]` against `List[T = Animal]`).
+        let params = &pairs.parts[..pairs.parts.len().saturating_sub(1)];
+        let params_as_themselves = parts_match
+            && params.iter().all(|(c_part, p_part)| {
+                let at_bindings = sigma_subst_type(kb, c_part, impl_subst);
+                match_candidate_against_goal(
+                    kb,
+                    impl_sort,
+                    false,
+                    p_part,
+                    &at_bindings,
+                    &[],
+                    &mut SmallVec::new(),
+                    &mut MatchNotes::default(),
+                    sigma,
+                )
+            });
         let (c_row, p_row) = &pairs.rows;
-        return parts_match
+        return params_as_themselves
             && match_candidate_rows(
                 kb,
                 impl_sort,
@@ -1143,7 +1189,7 @@ pub(super) fn match_candidate_against_goal(
                 p_row,
                 impl_params,
                 impl_subst,
-                weight,
+                notes,
                 sigma,
             );
     }
@@ -1187,6 +1233,15 @@ pub(super) fn match_candidate_against_goal(
             _ => None,
         };
         let per_call_value = per_call_at_sort.as_ref().unwrap_or(per_call_value);
+        // THE BOTTOM TYPE IS BELOW EVERY APPLICATION, and fixes none of its arguments:
+        // `Nothing` meets `List[T = E]` as it meets a bare `Leaf` through arm (3), with `E`
+        // left open — so two spellings of one provision (`Stamp[T = Box]`, `Stamp[T =
+        // Box[V = V]]`) answer it alike. Before (2a), which would view it at the head's sort
+        // and bind `E` to whatever that view leaves.
+        if matches!(type_head(kb, per_call_value), TypeHead::Nothing) {
+            note_open_at_bottom(kb, candidate_value, impl_params, notes);
+            return true;
+        }
         // (2a) WI-20261001-80ZV8 — THE GOAL'S VALUE IS A CARRIER OF THE CANDIDATE'S SORT.
         // `sort Strm … provides Iter[C = Strm[T = T, E = E], …]` — the form `C = Self`
         // lowers to — against the goal `Iter[C = One[T = Int64], …]`, where `One provides
@@ -1220,10 +1275,6 @@ pub(super) fn match_candidate_against_goal(
                 // bindings are: one sort on both sides, so the key rule is the same-base
                 // arm's ([`BindingKeyMatch::for_bases`] is its owner).
                 let key_match = BindingKeyMatch::for_bases(kb, c_base, c_base);
-                weight.specificity = weight.specificity.saturating_add(1);
-                // The goal's sort is reached through its provision of the candidate's, not
-                // at its own type, which a provision written at that sort would be.
-                weight.subsumed = weight.subsumed.saturating_add(1);
                 for (k, c_val) in &c_bindings {
                     let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).cloned() else {
                         return false;
@@ -1236,7 +1287,7 @@ pub(super) fn match_candidate_against_goal(
                         &p_val,
                         impl_params,
                         impl_subst,
-                        weight,
+                        notes,
                         sigma,
                     ) {
                         return false;
@@ -1318,7 +1369,6 @@ pub(super) fn match_candidate_against_goal(
         if key_match != BindingKeyMatch::Label {
             return false;
         }
-        weight.specificity = weight.specificity.saturating_add(1);
         // WI-768: one base ⟹ compare binding KEYS by the shared rule. The two producers
         // spell one slot differently — a WRITTEN `provides Spec[T = Relation[T = .., E =
         // ..]]` keys `T`/`E` BARE (loader `reintern(p.last())`), a relation VALUE from a
@@ -1369,7 +1419,7 @@ pub(super) fn match_candidate_against_goal(
                 &p_val,
                 impl_params,
                 impl_subst,
-                weight,
+                notes,
                 sigma,
             ) {
                 return false;
@@ -1440,7 +1490,6 @@ pub(super) fn match_candidate_against_goal(
                 // falls through to step (3)'s shallow match — the pre-fix behavior —
                 // rather than masking an abstract sub-goal as a full match (review).
                 if aligned {
-                    weight.specificity = weight.specificity.saturating_add(1);
                     return true;
                 }
             }
@@ -1448,41 +1497,57 @@ pub(super) fn match_candidate_against_goal(
     }
     // (3) Concrete sort ref/identifier — use the existing shallow check.
     if dispatch_values_match(kb, per_call_value, candidate_value) {
-        weight.specificity = weight.specificity.saturating_add(1);
-        if leaf_reached_through_subtype(kb, per_call_value, candidate_value) {
-            weight.subsumed = weight.subsumed.saturating_add(1);
-        }
         return true;
     }
     false
 }
 
-/// What a provision's head matched a goal by, which ranks two candidates
-/// ([`pick_most_specific`]) and decides whether a provider's own row is local to its
-/// dictionary (`resolve_inner`): `specificity` counts the parts the head fixed, and
-/// `subsumed` the leaves the goal's type reached only through the subtype relation or a
-/// carrier's provision of the head's sort, where a row written at that type would have
-/// matched it as itself.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct HeadWeight {
-    pub(super) specificity: u32,
-    pub(super) subsumed: u32,
+/// What matching a provision's head against a goal noted beside its verdict.
+#[derive(Clone, Debug, Default)]
+pub(super) struct MatchNotes {
+    /// The provider's parameters the bottom type left open where it met a structured head:
+    /// `Nothing` is a subtype of every `List[T = E]` and fixes no `E`. A provision whose
+    /// conditions name one is no candidate ([`provider_conditions_name`]): which of its
+    /// instances would answer is a guess.
+    pub(super) open_at_bottom: SmallVec<[Symbol; 2]>,
 }
 
-/// Whether arm (3) matched the goal's leaf to the candidate's through the subtype relation
-/// rather than at one type: the goal's is the bottom type and the candidate's is not, or the
-/// two are sorts and different ones (`Dog` against a provision at `Animal`, `Nothing`
-/// against one at `Int64`). Nothing else is: a variable on either side, which arm (3)
-/// matches as any type (an untyped rule variable's `?_` meets every provision so); a value
-/// in a type position, which it relates by value; a structural type.
-fn leaf_reached_through_subtype(kb: &KnowledgeBase, per_call: &Value, candidate: &Value) -> bool {
-    match (type_head(kb, per_call), type_head(kb, candidate)) {
-        (TypeHead::Nothing, TypeHead::Nothing) => false,
-        (TypeHead::Nothing, TypeHead::SortRef(_) | TypeHead::Parameterized { .. }) => true,
-        (
-            TypeHead::SortRef(a) | TypeHead::Parameterized { base: a },
-            TypeHead::SortRef(b) | TypeHead::Parameterized { base: b },
-        ) => !same_sort_canonical(kb, a, b),
+/// Record in `notes` the provider's parameters the structured head `candidate_value` holds,
+/// met by the bottom type, which fixes none of them.
+fn note_open_at_bottom(
+    kb: &KnowledgeBase,
+    candidate_value: &Value,
+    impl_params: &[Symbol],
+    notes: &mut MatchNotes,
+) {
+    for p in impl_params {
+        if value_names_param(kb, candidate_value, *p) && !notes.open_at_bottom.contains(p) {
+            notes.open_at_bottom.push(*p);
+        }
+    }
+}
+
+/// Does `v` name the type parameter `param` anywhere: by its name, or by its variable, as a
+/// parameter is written in one clause and in another (`node_occurrence::type_in_clause_canon`).
+/// [`view_contains_type_param`]'s walk, asked of one parameter.
+fn value_names_param(kb: &KnowledgeBase, v: &Value, param: Symbol) -> bool {
+    let var = kb.canonical_type_param_var(param).and_then(|t| match kb.get_term(t) {
+        Term::Var(Var::Global(var)) => Some(*var),
+        _ => None,
+    });
+    view_names_param(kb, v, kb.canonical_sym(param), var)
+}
+
+fn view_names_param<V: TermView>(kb: &KnowledgeBase, v: &V, param: Symbol, var: Option<VarId>) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(Var::Global(x)) => Some(x) == var,
+        ViewHead::Ident(s) => kb.canonical_sym(s) == param,
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => {
+            functor.is_some_and(|f| kb.canonical_sym(f) == param)
+                || view_any_child(kb, v, pos_arity, |a| view_names_param(kb, a, param, var))
+        }
         _ => false,
     }
 }
@@ -1509,7 +1574,7 @@ fn match_candidate_rows(
     per_call_row: &Value,
     impl_params: &[Symbol],
     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-    weight: &mut HeadWeight,
+    notes: &mut MatchNotes,
     sigma: Option<&SigmaCtx>,
 ) -> bool {
     // Both rows as written, as the leaf arm reads a pair under a fresh substitution.
@@ -1529,13 +1594,13 @@ fn match_candidate_rows(
                     c_labels: &[Value],
                     p_labels: &[Value],
                     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-                    weight: &mut HeadWeight|
+                    notes: &mut MatchNotes|
      -> Option<Vec<Value>> {
         let mut left: Vec<Option<&Value>> = p_labels.iter().map(Some).collect();
         for c_label in c_labels {
             let met = left.iter().position(|p| {
                 p.is_some_and(|p_label| {
-                    let (saved_subst, saved_weight) = (impl_subst.clone(), *weight);
+                    let (saved_subst, saved_notes) = (impl_subst.clone(), notes.clone());
                     let met = match_candidate_against_goal(
                         kb,
                         impl_sort,
@@ -1544,11 +1609,11 @@ fn match_candidate_rows(
                         p_label,
                         impl_params,
                         impl_subst,
-                        weight,
+                        notes,
                         sigma,
                     );
                     if !met {
-                        (*impl_subst, *weight) = (saved_subst, saved_weight);
+                        (*impl_subst, *notes) = (saved_subst, saved_notes);
                     }
                     met
                 })
@@ -1557,15 +1622,14 @@ fn match_candidate_rows(
         }
         Some(left.into_iter().flatten().cloned().collect())
     };
-    let Some(rest_present) = meet(kb, &c_present, &p_present, impl_subst, weight) else {
+    let Some(rest_present) = meet(kb, &c_present, &p_present, impl_subst, notes) else {
         return false;
     };
-    let Some(rest_absent) = meet(kb, &c_absent, &p_absent, impl_subst, weight) else {
+    let Some(rest_absent) = meet(kb, &c_absent, &p_absent, impl_subst, notes) else {
         return false;
     };
     match binder {
         None => {
-            weight.specificity = weight.specificity.saturating_add(1);
             rest_present.is_empty() && rest_absent.is_empty() && p_tails.is_empty()
         }
         Some(None) => true,
@@ -1963,7 +2027,7 @@ pub(super) fn values_structurally_equal<A: TermView, B: TermView>(
 /// candidate is ONE provider (a provider may contribute several rows — a written
 /// provision and a derived one — and those are one choice, not a tie), else `None`.
 /// Among one provider's rows the most specific is taken, then the first.
-pub(super) fn sole_provider(kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
+pub(super) fn sole_provider(kb: &mut KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
     let first = candidates.first()?.impl_sort;
     let canon = kb.canonical_sort_sym(first);
     candidates
@@ -1972,32 +2036,133 @@ pub(super) fn sole_provider(kb: &KnowledgeBase, candidates: &[Candidate]) -> Opt
         .then(|| pick_most_specific(kb, candidates).unwrap_or(0))
 }
 
-/// Coherence-by-specificity. Picks the candidate with the strictly-
-/// highest `head_specificity` count, and among those the one whose head the goal reached
-/// through the subtype relation at the fewest leaves (`head_subsumed`): at a `Dog`, a
-/// provision written at `Dog` is more specific than one at `Animal`, and at `Nothing` the
-/// bottom type's own than any other. Returns `None` if no unique winner (multiple
-/// candidates tied at both).
-pub(super) fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
-    if candidates.is_empty() {
-        return None;
+/// Coherence-by-specificity (kernel-language §8.7, *Which one a call gets*): the candidate
+/// more specific than every other, or `None` where there is none — two whose heads neither
+/// is more specific than the other, at the top, tie ([`maximal_candidates`] names them).
+///
+/// ONE ORDER ON THE PROVISIONS' HEADS, not a count: `a` is more specific than `b` where `b`
+/// answers at `a`'s head and `a` does not answer at `b`'s ([`more_specific`]). A count of the
+/// parts a head fixes ranked heads the order leaves apart — `Desc[T = Tri[A = Dog, B =
+/// Animal, C = Animal]]` over `Desc[T = Tri[A = Animal, B = Dog, C = Dog]]` at a
+/// `Tri[Dog, Dog, Dog]`, a silent pick where the two tie — and left a chain unranked: at a
+/// `Dog`, a provision at `Animal` is more specific than one at `Being`, and at `Nothing` the
+/// bottom type's own than every other.
+///
+/// Found in one pass and confirmed in another: where a greatest candidate exists the first
+/// pass ends at it, since none is more specific than it.
+pub(super) fn pick_most_specific(kb: &mut KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
+    if candidates.len() <= 1 {
+        return candidates.first().map(|_| 0);
     }
-    let max = candidates.iter().map(|c| c.head_specificity).max().unwrap();
-    let fewest = candidates
-        .iter()
-        .filter(|c| c.head_specificity == max)
-        .map(|c| c.head_subsumed)
-        .min()
-        .unwrap();
-    let mut winners = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.head_specificity == max && c.head_subsumed == fewest);
-    let first = winners.next()?;
-    if winners.next().is_some() {
-        return None;
+    let mut best = 0;
+    for i in 1..candidates.len() {
+        if more_specific(kb, &candidates[i], &candidates[best]) {
+            best = i;
+        }
     }
-    Some(first.0)
+    (0..candidates.len())
+        .all(|i| i == best || more_specific(kb, &candidates[best], &candidates[i]))
+        .then_some(best)
+}
+
+/// The candidates no other is more specific than ([`more_specific`]): the tie a dispatch
+/// with no greatest candidate stands at, which a default arbitrates and an ambiguity names.
+pub(super) fn maximal_candidates(kb: &mut KnowledgeBase, candidates: &[Candidate]) -> Vec<usize> {
+    (0..candidates.len())
+        .filter(|&i| {
+            (0..candidates.len()).all(|j| i == j || !more_specific(kb, &candidates[j], &candidates[i]))
+        })
+        .collect()
+}
+
+/// Is `a` strictly more specific than `b`: `b`'s provision answers at `a`'s head and `a`'s
+/// does not answer at `b`'s ([`head_answers`]).
+pub(super) fn more_specific(kb: &mut KnowledgeBase, a: &Candidate, b: &Candidate) -> bool {
+    a.row != b.row && head_answers(kb, b.row, a.row) && !head_answers(kb, a.row, b.row)
+}
+
+/// Does the provision `row` answer at the head of the provision `asked`: `asked`'s bindings
+/// read as a goal, its provider's own parameters made rigid, so each is a type no provision
+/// names and `row` meets one only through a parameter of its own (a rigid does not match a
+/// concrete head, WI-824). The match is [`candidates_at`]'s, binding by binding; a type
+/// parameter `asked` leaves unwritten is any, which a row that writes it does not answer at.
+pub(super) fn head_answers(kb: &mut KnowledgeBase, row: RuleId, asked: RuleId) -> bool {
+    let (Some(row), Some(asked)) = (
+        decode_provides_row(kb, row, |_| true),
+        decode_provides_row(kb, asked, |_| true),
+    ) else {
+        return false;
+    };
+    let type_param_names: Vec<String> = kb.type_params_of_sort(row.spec_base);
+    let rigids: Vec<(Symbol, Value)> = impl_param_symbols(kb, asked.provider)
+        .into_iter()
+        .map(|p| (p, Value::term(fresh_rigid_named(kb, p))))
+        .collect();
+    let written: Vec<(Symbol, Value)> = asked
+        .bindings(kb)
+        .into_iter()
+        .filter(|(k, _)| type_param_names.iter().any(|n| n == kb.local_name_of(*k)))
+        .collect();
+    let goal_bindings: SmallVec<[(Symbol, Value); 2]> = written
+        .into_iter()
+        .map(|(k, v)| (k, sigma_subst_type(kb, &v, &rigids)))
+        .collect();
+    let goal = SortGoal {
+        spec_sort: row.spec_base,
+        bindings: goal_bindings,
+        carrier: None,
+    };
+    let impl_params = impl_param_symbols(kb, row.provider);
+    let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    let mut notes = MatchNotes::default();
+    for (key, candidate_value) in row.bindings(kb) {
+        let short = kb.local_name_of(key).to_string();
+        if !type_param_names.iter().any(|n| *n == short) {
+            continue;
+        }
+        let Some(asked_value) = goal_binding_value(kb, &goal, key).cloned() else {
+            if sort_param_is_effect_row(kb, goal.spec_sort, &short) {
+                continue;
+            }
+            return false;
+        };
+        if !match_candidate_against_goal(
+            kb,
+            row.provider,
+            true,
+            &candidate_value,
+            &asked_value,
+            &impl_params,
+            &mut impl_subst,
+            &mut notes,
+            None,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a condition of `impl_sort`'s provision at `spec`, or a `requires` of its own,
+/// names one of `params`: the parameters a match left open ([`MatchNotes::open_at_bottom`]).
+fn provider_conditions_name(
+    kb: &mut KnowledgeBase,
+    impl_sort: Symbol,
+    impl_subst: &[(Symbol, Value)],
+    spec: Symbol,
+    params: &[Symbol],
+) -> bool {
+    let names = |kb: &KnowledgeBase, goal: &SortGoal| {
+        goal.bindings
+            .iter()
+            .any(|(_, v)| params.iter().any(|p| value_names_param(kb, v, *p)))
+    };
+    let own = candidate_provider_sub_goals(kb, impl_sort, impl_subst, spec);
+    if own.iter().any(|g| names(kb, g)) {
+        return true;
+    }
+    alternative_condition_goals(kb, impl_sort, impl_subst, spec)
+        .is_some_and(|groups| groups.iter().flatten().any(|g| names(kb, g)))
 }
 
 /// WI-861 — 058 §3.2 RUNG 2a at the PROVISION tie: the index of the tied candidate the
@@ -2017,18 +2182,25 @@ pub(super) fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) 
 /// WI-20260916-8WRJC that is the only shape which declines: a spec whose carrier
 /// parameter no operation receives on reaches rung 2 of `spec_carrier_param_or_sole`
 /// and is keyed like any other.
+///
+/// ONLY AMONG THE TIE (`tied`, [`maximal_candidates`]): a default arbitrates the most
+/// specific candidates and never one a more specific candidate outranks — handed every
+/// candidate, a self-provision default at `Desc[T = Box[B = B]]` answered over two witnesses
+/// at `Desc[T = Box[B = Int64]]` that tie, where the dispatch is refused (MEASURED).
 pub(super) fn default_among_candidates(
     kb: &KnowledgeBase,
     goal: &SortGoal,
     candidates: &[Candidate],
+    tied: &[usize],
 ) -> Option<usize> {
     let carrier = goal_carrier_key(kb, goal)?;
     crate::kb::defaults::default_among(
         kb,
         goal.spec_sort,
         carrier,
-        candidates.iter().map(|c| c.impl_sort),
+        tied.iter().map(|&i| candidates[i].impl_sort),
     )
+    .map(|j| tied[j])
 }
 
 /// WI-861 — the CARRIER a [`SortGoal`] names, as 058 §3.6's rows are keyed.

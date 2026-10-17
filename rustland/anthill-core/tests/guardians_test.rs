@@ -638,7 +638,6 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
         let reply = chat_completion(&endpoint, &model, &prompt)
             .map_err(|msg| anthill_core::eval::EvalError::Raised {
                 payload: Value::Str(msg),
-                origin: anthill_core::eval::RaiseOrigin::Program,
             })?;
         text_value(interp.kb(), &reply)
     })

@@ -440,12 +440,11 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // of the callee. Testing the CHANNEL instead of the CAUSE sweeps them in, which is
     // what the reverted first attempt did.
     //
-    // THE CAUSE IS THE RAISE'S, not its payload's constructor: the runtime marks the two
-    // raises it makes for those reasons (`RaiseOrigin`), and a program's own raise of either
-    // constructor is a fault (user, 2026-10-17). Keyed by the constructor, a program's
-    // `Error.raise(relation_floundered(…))` was scheduled in silence, and a constraint over
-    // it loaded as holding (MEASURED; `wi_9wvt7_review5_test::a_programs_own_floundered_raise_is_a_fault`
-    // drives it).
+    // THE CAUSE IS THE PAYLOAD'S CONSTRUCTOR, because no program constructs one of the
+    // runtime's accounts — a construction of one is refused at load (user, 2026-10-17;
+    // `wi_9wvt7_review6_test` drives the refusal) — so the constructor says who raised it
+    // wherever it is raised again. Read through the carrier-neutral head: a payload riding
+    // as a TERM answers as the entity does (the reader before matched `Value::Entity` only).
     //
     // DRIVEN AT THE PREDICATE, not through a fixture: reaching either raise from a
     // bridged rule body needs a program that is itself about something else, and a row
@@ -455,10 +454,8 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // predicate over a genuine raise, so the two together say the partition is on the
     // right seam rather than that the channel was left off. Back out the cause read
     // (`matches!(e, EvalError::Raised { .. }) => Fault`) and THIS row fails while that
-    // one keeps passing; read the payload's constructor again and it fails on the
-    // program's own raise.
-    use anthill_core::eval::RaiseOrigin;
-    let kb = crate::common::load_kb_with(
+    // one keeps passing; read the entity carrier alone and the term rows fail.
+    let mut kb = crate::common::load_kb_with(
         r#"
 namespace bru.part
   import anthill.prelude.{Int64}
@@ -466,43 +463,41 @@ namespace bru.part
 end
 "#,
     );
-    let raise_of = |qname: &str, origin: RaiseOrigin| {
-        let functor = kb
-            .try_resolve_symbol(qname)
-            .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"));
-        EvalError::Raised {
-            payload: Value::Entity {
-                functor,
-                pos: Vec::new().into(),
-                named: Vec::new().into(),
-            },
-            origin,
-        }
+    let functor_of = |kb: &anthill_core::kb::KnowledgeBase, qname: &str| {
+        kb.try_resolve_symbol(qname)
+            .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"))
     };
-    for (qname, origin) in [
+    let entity = |functor| EvalError::Raised {
+        payload: Value::Entity {
+            functor,
+            pos: Vec::new().into(),
+            named: Vec::new().into(),
+        },
+    };
+    for (qname, disposition) in [
         (
             "anthill.prelude.RelationFloundered.relation_floundered",
-            RaiseOrigin::RelationFloundered,
-        ),
-        ("anthill.reflect.LoadFailed.load_failed", RaiseOrigin::LoadFailed),
-    ] {
-        assert_eq!(
-            raise_of(qname, origin).bridge_disposition(&kb),
             BridgeDisposition::Schedule,
-            "the runtime's `{qname}` is not a domain failure of the callee — it must reach \
-             the bridge as Schedule, so the goal delays with nothing said"
-        );
-        assert_eq!(
-            raise_of(qname, RaiseOrigin::Program).bridge_disposition(&kb),
+        ),
+        ("anthill.reflect.LoadFailed.load_failed", BridgeDisposition::Schedule),
+        (
+            "anthill.reflect.ResolveStreamFailure.evaluation_failure",
             BridgeDisposition::Fault,
-            "a program's own raise of `{qname}` is its own failure, and a fault"
+        ),
+        ("anthill.prelude.MatchFailed.match_failed", BridgeDisposition::Fault),
+    ] {
+        let functor = functor_of(&kb, qname);
+        assert_eq!(
+            entity(functor).bridge_disposition(&kb),
+            disposition,
+            "`{qname}` on the entity carrier: a drain that did not decide and a load's verdict \
+             are no failure of the callee, and every other payload is a fault"
+        );
+        let term = kb.make_name_term_from_sym(functor);
+        assert_eq!(
+            EvalError::Raised { payload: Value::term(term) }.bridge_disposition(&kb),
+            disposition,
+            "`{qname}` on the term carrier answers as on the entity"
         );
     }
-    assert_eq!(
-        raise_of("anthill.prelude.MatchFailed.match_failed", RaiseOrigin::Program)
-            .bridge_disposition(&kb),
-        BridgeDisposition::Fault,
-        "and every OTHER payload is a fault — a host raise rides a row it never appears \
-         in, which is exactly the case the acceptance measures"
-    );
 }

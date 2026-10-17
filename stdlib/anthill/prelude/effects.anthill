@@ -51,6 +51,7 @@
 -- CONSTRUCTOR is a constant of its sort, hence a value, hence a name for a slot:
 --
 --   sort CounterState
+--     provides Modifiable[T = Self]
 --     entity counter
 --   end
 --   operation write(n: Int64) -> Unit effects Modify[counter] = set(counter(), n)

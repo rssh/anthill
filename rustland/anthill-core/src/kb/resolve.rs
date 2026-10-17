@@ -11873,12 +11873,14 @@ impl KnowledgeBase {
         // A search the operation drained that faulted carries that fault's own sentence as
         // its reason, cause and repair together, so it gets no repair of its own, out of
         // `Error.reify` or any other call: a declined effect is not one a boundary repairs.
-        // Read off the raise (`RaiseOrigin::SearchFault`), not off its constructor, which a
-        // program may raise too, and a boundary around that call does catch.
+        // Read off the payload's constructor: `evaluation_failure` is an account of the
+        // runtime's, which no program constructs ([`super::RuntimeAccount`]).
         let (detail, repair) = match e {
-            EvalError::Raised { payload, origin } => (
+            EvalError::Raised { payload } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
-                if *origin == crate::eval::RaiseOrigin::SearchFault {
+                if crate::eval::value_functor(self, payload).and_then(|f| self.runtime_account_of(f))
+                    == Some(super::RuntimeAccount::EvaluationFailure)
+                {
                     ""
                 } else if self.is_reify_operation(op) {
                     " The boundary catches the payload it is typed at, which this is not; a \
