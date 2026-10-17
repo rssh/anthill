@@ -1,25 +1,26 @@
 # 037 implementation — the Modify framework at run time
 
-## Status: Draft (2026-10-17). The last step of WI-20261017-T34HP. The proposal is
+## Status: Decided (2026-10-17). The last step of WI-20261017-T34HP. The proposal is
 [`../proposals/037-anthill-state-model.md`](../proposals/037-anthill-state-model.md), revised and
-reviewed on 2026-10-17; this document owns HOW. Nothing here is implemented. What the user has not
-decided is marked PROPOSED and collected in §3.
+reviewed on 2026-10-17; this document owns HOW. Nothing here is implemented. Its nine decisions
+(§3) were taken with the user the same day, one at a time.
 
 ## 0. The sequence
 
-Every edge is technical.
+Tag `proposal-037`; every edge is technical.
 
 | step | ticket | what | after |
 |---|---|---|---|
-| 1 | WI-200, re-scoped (PROPOSED, D1) | retire `ModifyRuntime`, Cell's `provides ModifyRuntime`, the generic `Modify` handler, and the fixtures only it served (§2.1) | — |
-| 2 | to be filed (D6) | the installation map; `Cell.new` reads it; a cell handle carries the implementation it is bound to (§2.2, §2.3) | — |
+| 1 | WI-200, re-scoped (D1) | retire `ModifyRuntime`, Cell's `provides ModifyRuntime`, the generic `Modify` handler, and the fixtures only it served (§2.1) | — |
+| 2 | WI-20261017-ASBZP (D6) | the installation map; `Cell.new` reads it; a cell handle carries the implementation it is bound to (§2.2, §2.3) | — |
 | 3 | WI-078 (h), re-scoped (D3) | installing for the duration of a call, and wrapping (§2.4) | 2 |
-| 4 | to be filed (D6) | the store rows: `External` on `flush`, `Modify[kb]` on `persist`, `retract` and `update`, and on their callers (§2.5) | — |
-| 5 | step 4's, or its own (D6, D8) | a mount key compared by `Eq` (§2.6) | — |
-| 6 | 072's, on T34HP (no ticket of its own, by the user's decision) | `FileStorage`; constructor contracts; the file backends' `ensures` (§2.7) | 050.1 stage 1 (WI-20261015-809JN) |
+| 4 | WI-20261017-KE2GP (D6) | the store rows: `External` on `flush`, `Modify[kb]` on `persist`, `retract` and `update`, and on their callers (§2.5) | — |
+| 5 | WI-20261017-KE2GP, with step 4 (D8) | a mount key compared by `Eq` (§2.6) | — |
+| 6 | 072's own, filed when T34HP is delivered (D6) | `FileStorage`; constructor contracts; the file backends' `ensures` (§2.7) | 050.1 stage 1 (WI-20261015-809JN) |
 | 7 | WI-20261015-X57XR (050.1 stage 3) | Cell's memory clauses (§2.8) | 050.1 stage 1 |
 | 8 | WI-070 | undo in every implementation, for `Branch` (§2.9) | 2 |
 | — | WI-20260926-7D48J | a rule-body application that modifies shared state refused at load (§2.10) | its own sequence |
+| — | WI-20261017-KQ4SR (D9) | `KB.assert` and `KB.add_guard` implemented in the interpreter | 4 |
 
 Step 1 first is not an edge but a saving: the generic handler has a `Cell` arm, and step 2 changes
 the type that arm reads. 037 §5.4 and the last item of §6.2 are claims about rule bodies that hold
@@ -317,7 +318,7 @@ The sites, all small, since one place mints a handle (§1.1):
   (`installations.get(cell_sort)`) and forward to it, which is how audit and logging are expressed
   (037 §5.2 item 3). Nothing is taken out of a slot while it runs, so the wrapped implementation
   stays reachable. A wrapper sees only the cells bound to it.
-- **An installing operation in anthill waits** (PROPOSED, D3). It is a higher-order operation whose
+- **An installing operation in anthill waits** (D3). It is a higher-order operation whose
   frame sets the version on entry and restores it on exit or unwind, as `Error.reify`'s frame does
   (027.4; `Interpreter::enter_reify_boundary`, `eval/eval.rs:4174`). It needs an anthill value that
   is an implementation, which exists only once 037 §4.3's design does; its name and signature are
@@ -432,7 +433,7 @@ join 050.1 stage 3's census of the stdlib's clauses, which is where they belong.
 bound to. None exists (§1.5). This step is WI-070's, and states only what each implementation owes
 it.
 
-- **One log on the interpreter** (D5). While a branch is open, each write records how to undo
+- **One log on the interpreter** (D5, decided). While a branch is open, each write records how to undo
   itself, in the order the writes happen. The `Branch` frame marks the log on entry, replays
   newest-first down to the mark when an alternative is abandoned, and drops the entries when the
   alternative commits. That is `cell-runtime.md` §"Branch interaction", whose marks nest as a stack
@@ -500,63 +501,77 @@ and is left alone (`kb/region.rs:148`, `kb/typing/signature.rs:3665`, `eval/buil
 
 ## 3. Decisions
 
-All PROPOSED; none is decided yet.
+Taken with the user one at a time on 2026-10-17; all nine are DECIDED, and each names what was not
+taken.
 
-- **D1 — WI-200 is re-scoped to step 1.** Its description is the generic handler's functor map
-  ("two `wis(backend_a, …)` and `wis(backend_b, …)` share a single cell"), and 037 §3.5 says that
-  goal has no counterpart: nothing writes a `Box`. Step 1 deletes the map, so it is the change
-  WI-200's history leads to. The other way is to close WI-200 as superseded and file step 1 anew.
+- **D1 — WI-200 is re-scoped to step 1.** DECIDED (user, 2026-10-17); the ticket's description is
+  rewritten. Its description was the generic handler's functor map ("two `wis(backend_a, …)` and
+  `wis(backend_b, …)` share a single cell"), and 037 §3.5 says that goal has no counterpart: nothing
+  writes a `Box`. Step 1 deletes the map, so it is the change WI-200's history leads to. Not taken:
+  closing WI-200 as superseded and filing step 1 anew.
 - **D2 — the effect registry keeps `Console`, `Clock` and `Error`; only the base modifiable sorts
-  leave it.** After step 1 the registry serves no base sort, and 037 covers `Modify` only (its
-  treatment of `Console` under `Branch` is open). 037 §8's "the flat registry is replaced by the
-  installation map" then reads "for the base sorts", and the registry's `take_for_invoke`, which
-  keeps a handler from reaching another, stays for the three effects until WI-078 decides their
-  scoping. 037 §8's bullet would say so.
-- **D3 — installing is a host entry first** (§2.4). The anthill-level operation needs an anthill
-  value that is an implementation (037 §4.3), and its name and signature are 037 §10's question.
-  WI-078 (h) is re-scoped to the host entry and the wrapping; the anthill operation is its later
-  half.
+  leave it.** DECIDED (user, 2026-10-17); 037 §5.2 item 3 and §8 say so. After step 1 the registry
+  serves no base sort, and 037 covers `Modify` only (its treatment of `Console` under `Branch` is
+  open). The registry's `take_for_invoke`, which keeps a handler from reaching another, stays for
+  those effects until WI-078 decides their scoping. Not taken: moving them to the installation map,
+  which would need an implementation trait per effect and 037's model extended to them first.
+- **D3 — installing is a host entry first** (§2.4). DECIDED (user, 2026-10-17); recorded on
+  WI-078. The anthill-level operation needs an anthill value that is an implementation (037 §4.3),
+  and its name and signature are 037 §10's question. WI-078 (h) is re-scoped to the host entry and
+  the wrapping; the anthill operation is its later half. Not taken: designing 037 §4.3 and §10
+  before step 3.
 - **D4 — kernel-language §5.3's bridge paragraph loses its `ModifyRuntime` example**
-  (`docs/kernel-language.md:2127`): "as a write through `ModifyRuntime` to a cell the operation keeps
-  to itself does, the typer dropping that `Modify` from the row". After step 1 a write to a local
-  cell asks no handler, so the example names nothing. The rule before it stays, as the diagnostic of
-  a typer that dropped an effect it should not have. A spec change, so its wording is agreed at
-  step 1.
-- **D5 — undo goes through one log on the interpreter** (§2.9), as `cell-runtime.md` §"Branch
-  interaction" designs it: a write made while a branch is open records how to undo it, in the order
-  the writes happen, and an abandoned alternative replays its part of the log newest first. Each
-  entry is undone by the implementation the resource is bound to. The other way, each
-  implementation keeping its own log and the `Branch` frame asking every implementation that took a
-  write, loses the order between two implementations.
-- **D6 — tickets.** Steps 2, 4 and 5 have none. Proposed: one ticket for step 2, with step 3 as
-  WI-078 (h) after it (D3); one for step 4; step 5 folded into step 4's ticket, or its own (D8).
-  Step 6 is 072's implementation, which rides T34HP by the user's decision. T34HP is the design
-  ticket and is done when this document is, so either it stays open until 072 lands, or 072's
-  implementation gets a ticket when T34HP is delivered. None is filed before the user agrees.
-- **D7 — a store write under a live layer** (§1.4; found by reading, not measured). The first move
-  is the failing test: `persist` while a `KB.loaded` layer is live, the layer dropped, then `flush`.
-  It should show a file holding a fact the KB no longer has. Then one of:
-  - (a) refuse a store write while a layer is live, loudly. Small, and it closes the gap now.
-  - (b) discard, with the layer, the store writes made since its snapshot. That is the backends' undo
-    of §2.9, the work `Branch` needs anyway.
-  - (c) write the resident fact below the layer. Not possible while a layer is applied in place.
-
-  Proposed: (a) now, and (b) when step 8 gives the backends an undo.
-- **D8 — step 5 now, or later.** The collision it removes needs two store sorts with one local name,
-  which no shipped project has. But the key's doc comment claims an equality it does not have, and
-  037 §3.4 states the rule. Proposed: with step 4, in its ticket. The refusals of a key that is not
-  totally `Eq`, and of a key sort with an `Eq` of its own, are what make the rule hold.
-- **D9 — `KB.assert` and `KB.add_guard` in the interpreter** (§1.4). 037 Rule 8 says a base sort
-  has a default implementation that BRT4Y holds to its declarations, and the interpreter has none
-  for these two. They are not `@[host_implemented]`, so BRT4Y does not ask. Only the generated-Rust
-  host bridge implements them. Either:
-  - (a) host functions over `assert_checked` and `add_guard_labeled`, mapped in `reflect.anthill`'s
-    binding block and tagged `@[host_implemented]`, so the check holds them;
-  - (b) 037's table says the interpreter implements only `kb()` and `loaded`, and the KB's writes
-    stay host-only.
-
-  Proposed: (a), with step 4, which writes the KB's rows anyway. It also gives step 8 a KB write to
-  undo that is not a store's.
+  (`docs/kernel-language.md:2127`). DECIDED (user, 2026-10-17), the wording agreed, and written with
+  step 1 so the spec does not run ahead of the code. The clause "as a write through `ModifyRuntime`
+  to a cell the operation keeps to itself does, the typer dropping that `Modify` from the row" is
+  deleted. The paragraph then ends "the fault says that instead: the run asked a handler for an
+  effect the row does not hold." After step 1 a write to a local cell asks no handler, so the
+  example names nothing, while the rule before it still describes a diagnostic the code gives.
+  Not taken: replacing the example with a statement of the cause.
+- **D5 — undo goes through one log on the interpreter** (§2.9). DECIDED (user, 2026-10-17). As
+  `cell-runtime.md` §"Branch interaction" designs it, a write made while a branch is open records
+  how to undo it, in the order the writes happen, and an abandoned alternative replays its part of
+  the log newest first. Each entry is undone by the implementation the resource is bound to, through
+  a method that defaults to its write. Not taken: a log in each implementation, with the `Branch`
+  frame marking and rolling back every implementation, which loses the order between two
+  implementations.
+- **D6 — tickets.** DECIDED for steps 2 and 4 (user, 2026-10-17): filed as WI-20261017-ASBZP and
+  WI-20261017-KE2GP, tagged `proposal-037` with WI-200. WI-078 depends on ASBZP, for its item (h).
+  WI-200 is gated on `scaland-sbt-test` as well, since step 1 changes the Scala bootstrap's list.
+  Step 5 is D8's. Step 6, DECIDED (user, 2026-10-17): 072's implementation gets a ticket of its own
+  when T34HP is delivered, since T34HP is the design ticket and is done with this document. That
+  ticket covers the grammar in both parsers, the loader and the typer. It is gated on `cargo-test`
+  and `scaland-sbt-test`, and 072's memory row (its acceptance 5) follows 050.1 stage 1. Not
+  taken: keeping T34HP open until 072 lands.
+- **D7 — a store write under a live layer** (§1.4; found by reading, not measured). DECIDED (user,
+  2026-10-17): refuse now, undo later, in step 4's ticket (WI-20261017-KE2GP).
+  - First a failing test that measures it: `persist` while a `KB.loaded` layer is live, the layer
+    dropped, then `flush`. It should show a file holding a fact the KB no longer has, and the
+    `retract` twin should show the reverse.
+  - Then a store write (`persist`, `retract`, `update`) while a layer is live is a loud error.
+  - When step 8 gives the backends an undo, dropping the layer undoes the store writes made since
+    its snapshot, and the refusal goes.
+  - Not taken: leaving it until step 8; a ticket of its own; writing the resident fact below the
+    layer, which is not possible while a layer is applied in place.
+- **D8 — step 5 goes with step 4, in WI-20261017-KE2GP.** DECIDED (user, 2026-10-17). The
+  collision it removes needs two store sorts with one local name, which no shipped project has. But
+  the key's doc comment claims an equality it does not have, and 037 §3.4 states the rule. The
+  refusals of a key that is not totally `Eq`, and of a key sort with an `Eq` of its own, are what
+  make the rule hold. Not taken: a ticket of its own; leaving it until a clash appears.
+- **D9 — `KB.assert` and `KB.add_guard` get an implementation in the interpreter**, in a ticket of
+  their own, WI-20261017-KQ4SR, after WI-20261017-KE2GP. DECIDED (user, 2026-10-17).
+  - **Why.** 037 Rule 8 says a base sort has a default implementation that BRT4Y holds to its
+    declarations, and the interpreter has none for these two. They are not `@[host_implemented]`,
+    so BRT4Y does not ask, and an interpreted call fails at run time with `OperationBodyMissing`.
+    Only the generated-Rust host bridge implements them.
+  - **What.** Host functions over `assert_checked` and `add_guard_labeled`, mapped in
+    `reflect.anthill`'s binding block and tagged `@[host_implemented]`, so the check holds them.
+  - **The ticket also decides** what an assert means while a layer is live (D7's question), and
+    whether the KB argument names where it goes.
+  - **It follows KE2GP**, which builds the refusal of a KB write while a layer is live for the
+    store's writes (D7). The same guard answers the assert's case unless KQ4SR decides otherwise.
+  - Not taken: doing it inside KE2GP, which would bring the layer question into that ticket;
+    documenting the gap instead.
 
 ## 4. Acceptance, per step
 
@@ -612,6 +627,10 @@ forwards:
 4. anthill-todo's suite passes, and `store_anthill_typechecks` loads the real file (controls).
 
 Backed out to the old rows, rows 1–3 load, so they fail.
+
+5. D7: a `persist`, a `retract` and an `update` made while a `KB.loaded` layer is live are each
+   refused, naming the layer. The measuring test written first shows the desync that the refusal
+   removes: without the refusal, the flushed file holds a fact the KB no longer has.
 
 **Step 5.**
 

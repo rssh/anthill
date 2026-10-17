@@ -139,7 +139,7 @@ Installing an implementation decides what the resources made or mounted while it
 
 1. **Extent.** There is a whole-run default version, chosen by the embedder at startup. Inside the program there are scopes, installed by an ordinary higher-order operation that works as the `Error.reify` frame does (027.4). Its frame sets the new version on entry, and its exit or unwind restores the previous one, so scopes nest.
 2. **A scope affects the allocations that run inside it**, not the code written inside it. A closure made inside a scope and called outside it allocates under its caller's implementation.
-3. **Wrapping.** An implementation may wrap another and pass calls on to it, which is how audit and logging are expressed. A wrapper sees only the resources bound to it. The registry must allow this: today `EffectRegistry::take_for_invoke` takes a handler out of its slot while it runs, so a handler cannot reach another.
+3. **Wrapping.** An implementation may wrap another and pass calls on to it, which is how audit and logging are expressed. A wrapper sees only the resources bound to it. The installation map allows this, since nothing takes an implementation out of its entry while it runs. The effect registry does take a handler out of its slot (`EffectRegistry::take_for_invoke`), so a handler cannot reach another, and that is why the base sorts leave it (§8).
 4. **Compiled code** fixes the default implementation at build time. Choosing another at run time is an interpreter feature.
 
 ### 5.3 The default is always available
@@ -224,10 +224,11 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 **What changes:**
 - `ModifyRuntime` and the functor map are retired, and the m5 `Box` and `counter` fixtures become load errors;
 - every base operation goes to the implementation its resource is bound to, `Cell.*` included (the user's direction, WI-20260908-9WVT7 note F10). Stores keep finding theirs by mounted key;
-- the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h));
+- for the base sorts, the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h)). The registry keeps the effects this proposal does not cover, `Console`, `Clock` and `Error`, until WI-078 decides their scoping (user, 2026-10-17);
 - every implementation gets mark and undo, for `Branch` (WI-070);
 - `Store.flush`, the one store operation that writes outside the process, declares `External`, and `persist`, `retract` and `update` declare `Modify[kb]` (§3.2). So do their callers, anthill-todo's commit path among them. 054's refusal then covers `flush` under `Branch`;
 - Cell's operations declare their memory clauses (§3.2), with the census of 050.1 §7 stage 3;
+- `KB.assert` and `KB.add_guard` get an implementation in the interpreter, held to their declarations by BRT4Y (WI-20261017-KQ4SR). Today only the generated-Rust host bridge implements them, so Rule 8's default implementation does not yet exist for them;
 - WI-20260926-7D48J's boundary rule is enforced: a rule-body application whose row holds an effect other than `Error` is refused at load where it is typed, and declined at run time otherwise. §5.4 and the last item of §6.2 rest on it;
 - in the spec, §5.6 adopts 050.1 §6's text on resources and memory, and §5.7 takes the stack of §6.1 (written 2026-10-17, the wording agreed; §5.6's sentence on fresh resources revised after the review);
 - proposal 072 adds a constructor's `ensures`.
