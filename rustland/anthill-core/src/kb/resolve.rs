@@ -11840,17 +11840,6 @@ impl KnowledgeBase {
         }
     }
 
-    /// Is `payload` the `evaluation_failure` a relation drain raises for a search that
-    /// faulted (`Interpreter::fault_stream`)? By symbol, on any carrier.
-    fn is_evaluation_failure(&self, payload: &Value) -> bool {
-        let Some(failure) =
-            self.try_resolve_symbol("anthill.reflect.ResolveStreamFailure.evaluation_failure")
-        else {
-            return false;
-        };
-        matches!(payload.head(self), ViewHead::Functor { functor: Some(f), .. } if f == failure)
-    }
-
     /// WI-20260911-0V0F7 — what a bridged operation's FAULT says, for the TWO bridges
     /// that have one to report ([`Self::bridge_op_to_eval`] and the carrier-`eq` bridge
     /// in [`Self::sem_eq_dispatch`]).
@@ -11881,17 +11870,19 @@ impl KnowledgeBase {
         // `/code-review`, which pointed at this ticket's own `TypeMismatch` row.
         // A raise out of `Error.reify` ITSELF is a payload its boundary declined, and the
         // advice to reach for `reify` would send the reader back to the call that just ran.
-        // A search the operation drained that faulted (`evaluation_failure`) carries that
-        // fault's own sentence as its reason, cause and repair together, so it gets no
-        // repair of its own: a declined effect is not one a `reify` repairs.
+        // A search the operation drained that faulted carries that fault's own sentence as
+        // its reason, cause and repair together, so it gets no repair of its own, out of
+        // `Error.reify` or any other call: a declined effect is not one a boundary repairs.
+        // Read off the raise (`RaiseOrigin::SearchFault`), not off its constructor, which a
+        // program may raise too, and a boundary around that call does catch.
         let (detail, repair) = match e {
-            EvalError::Raised { payload } => (
+            EvalError::Raised { payload, origin } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
-                if self.is_reify_operation(op) {
+                if *origin == crate::eval::RaiseOrigin::SearchFault {
+                    ""
+                } else if self.is_reify_operation(op) {
                     " The boundary catches the payload it is typed at, which this is not; a \
                      boundary typed at this payload catches it."
-                } else if self.is_evaluation_failure(payload) {
-                    ""
                 } else {
                     " Handle it inside the operation — `Error.reify` turns a raise into a \
                      `Result` the rule can read."
@@ -11899,10 +11890,11 @@ impl KnowledgeBase {
             ),
             // An effect the call performs, which a rule body does not: the scratch
             // interpreter's registry is empty, so the operation asking a handler stopped.
-            // Where the operation's own row cannot hold that effect, the run asked for one
-            // the row hides — a write through `ModifyRuntime` to a cell of its own — and the
-            // report says that, since "it performs" would contradict the row the typer
-            // checked.
+            // Where the operation's own row cannot hold that effect the report says so, since
+            // "it performs" would contradict the row the typer checked. More than one route
+            // gets there — a write through `ModifyRuntime` to a cell the operation keeps to
+            // itself, a const whose host value source asks the handler, a lambda a rule
+            // passes where the parameter's row is closed — so it names none of them.
             EvalError::UnhandledEffect { name } => {
                 let hidden = self
                     .try_resolve_symbol(name)
@@ -11914,8 +11906,7 @@ impl KnowledgeBase {
                     (
                         format!(
                             "its row declares no `{name}`, yet running it asks the `{name}` \
-                             handler — as a write through `ModifyRuntime` to a cell it keeps \
-                             to itself does — and a rule body's run has no handler"
+                             handler, and a rule body's run has no handler"
                         ),
                         "",
                     )

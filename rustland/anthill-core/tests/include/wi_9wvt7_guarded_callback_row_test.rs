@@ -174,7 +174,7 @@ fn caught_division(interp: &Interpreter, result: &Value) -> String {
 /// The `op` of the `division_by_zero` a raise carried out of the call.
 #[track_caller]
 fn raised_division(interp: &Interpreter, e: EvalError) -> String {
-    let EvalError::Raised { payload } = e else {
+    let EvalError::Raised { payload, .. } = e else {
         panic!("expected EvalError::Raised, got {e:?}");
     };
     division_op(interp, &payload)
@@ -235,7 +235,7 @@ fn a_guarded_label_beside_another_is_caught_at_its_own_boundary() {
     let r = call(&mut interp, "test.gcb.twoLabels", &[7, 0]).expect("the division is caught");
     assert_eq!(caught_division(&interp, &r), "Int64.div");
     match call(&mut interp, "test.gcb.twoLabels", &[-1, 0]).expect_err("the String escapes") {
-        EvalError::Raised { payload } => assert_eq!(
+        EvalError::Raised { payload, .. } => assert_eq!(
             crate::common::scalar_str(interp.kb(), &payload).as_deref(),
             Some("negative")
         ),

@@ -26,10 +26,12 @@
 //!
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build:
 //!
-//!   * `time_now` put back to reading the clock itself → every row that reads it:
+//!   * `time_now` put back to reading the clock itself → every row that reads it, fifteen of
+//!     the sixteen:
 //!     `a_clock_read_in_a_rule_body_is_not_performed` (four definite timestamps),
-//!     `a_declined_clock_read_is_reported`, the three drained rows and the three other
-//!     refuted-branch rows (nothing is declined),
+//!     `a_declined_clock_read_is_reported`, the four drained rows, the three other
+//!     refuted-branch rows, `a_guarded_clock_member_is_reported_as_performed` and
+//!     `a_clock_const_read_from_a_rule_names_the_row_and_no_route` (nothing is declined),
 //!     `an_operation_reads_the_clock_through_its_handler` and
 //!     `a_clock_const_in_an_operation_body_reads_the_handler` (the frozen handler is not
 //!     asked), and both data-slot rows (the const reads the wall clock at load).
@@ -38,9 +40,12 @@
 //!     and `a_clock_const_in_a_data_slot_is_refused_naming_clock_ahead_of_the_stdlib`
 //!     ("internal evaluator error: anthill.prelude.Time.now not in scope": the scratch
 //!     interpreter a load runs the source on has an empty KB).
-//!   * an unhandled effect scheduled again, as it was → `a_declined_clock_read_is_reported`
-//!     (no fault), `a_drained_relation_names_the_declined_effect` (`relation_floundered`),
-//!     `a_drain_reached_from_a_rule_names_the_effect_and_no_reify` (a floundered drain is
+//!   * an unhandled effect scheduled again, as it was → `a_declined_clock_read_is_reported`,
+//!     `a_guarded_clock_member_is_reported_as_performed` and
+//!     `a_clock_const_read_from_a_rule_names_the_row_and_no_route` (no fault),
+//!     `a_drained_relation_names_the_declined_effect` (`relation_floundered`),
+//!     `a_drain_reached_from_a_rule_names_the_effect_and_no_reify` and
+//!     `a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice` (a floundered drain is
 //!     no fault, so the outer goal reports nothing), and the four refuted-branch rows:
 //!     `a_branch_refuted_after_a_declined_effect_is_incomplete` (complete),
 //!     `a_negation_over_a_declined_effect_is_conditional` (definite),
@@ -48,7 +53,16 @@
 //!     `a_constraint_over_a_declined_effect_does_not_load` (it loads). Their `testFirst`
 //!     halves are the controls, which pass under every back-out here.
 //!   * the drain's `evaluation_failure` given the `Error.reify` repair again →
-//!     `a_drain_reached_from_a_rule_names_the_effect_and_no_reify`.
+//!     `a_drain_reached_from_a_rule_names_the_effect_and_no_reify` and
+//!     `a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice`; the reify arm put
+//!     ahead of the drain's arm → the second alone; the drain told apart by its payload's
+//!     constructor instead of by its raise → `a_programs_own_evaluation_failure_keeps_the_reify_advice`.
+//!   * the peel of a guarded member taken out of `typing::declared_row_may_hold` →
+//!     `a_guarded_clock_member_is_reported_as_performed`.
+//!   * the report's cell-write clause put back, or its row check answering yes →
+//!     `a_clock_const_read_from_a_rule_names_the_row_and_no_route`.
+//!   * the constraint refusal's depth-budget wording put back →
+//!     `a_constraint_over_a_declined_effect_does_not_load`.
 //!
 //! PASSES UNDER ALL BUT THE FIRST, BY DESIGN: `a_clock_const_in_an_operation_body_reads_the_handler`.
 
@@ -135,7 +149,7 @@ fn a_declined_clock_read_is_reported() {
 fn a_drained_relation_names_the_declined_effect() {
     let mut interp = crate::common::interp_for(PROGRAM);
     match interp.call("test.clock.stampCount", &[]) {
-        Err(EvalError::Raised { payload }) => {
+        Err(EvalError::Raised { payload, .. }) => {
             let reason = crate::common::entity_field(interp.kb(), &payload, "reason", 1);
             let reason = crate::common::scalar_str(interp.kb(), &reason)
                 .unwrap_or_else(|| panic!("a reason String, got {payload:?}"));
@@ -166,6 +180,105 @@ fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
     assert!(
         messages.iter().all(|m| !m.contains("Error.reify")),
         "no reify is advised for it: {messages:?}"
+    );
+}
+
+/// The faults resolving `goal` over a load of `src` recorded, by message.
+fn fault_messages(src: &str, goal: &str) -> Vec<String> {
+    use anthill_core::kb::resolve::ResolveConfig;
+    let mut kb = crate::common::load_kb_with(src);
+    let goal = crate::common::query_pattern_term(&mut kb, goal);
+    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    stats.errors.iter().map(|e| e.message.clone()).collect()
+}
+
+/// And through a rule-body `Error.reify` typed at another payload, the drain's failure gets no
+/// boundary advice either: `countOrBoom` drains `viaHof`, and a rule reifies it at `Boom`. It
+/// was told that a boundary typed at this payload catches it, which reads as a repair.
+///
+/// BACK-OUT: the reify arm put ahead of the `evaluation_failure` arm in `bridge_fault_message`,
+/// and this fails on that sentence.
+#[test]
+fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
+    let src = crate::common::replace_in_fixture(
+        PROGRAM,
+        "  rule countFromRule(?n) :- ?n <=> stampCount()\n",
+        "  rule countFromRule(?n) :- ?n <=> stampCount()\n  \
+         operation countOrBoom(n: Int64) -> Int64 effects {Error[Boom], Error} =\n    \
+         if n < 0 then Error.raise(boom(\"negative\")) else List.length(viaHof.takeN(10))\n  \
+         rule viaReifyDrain(?r) :- Error.reify(lambda () -> countOrBoom(1), ?r)\n",
+    );
+    let messages = fault_messages(&src, "test.clock.viaReifyDrain(?r)");
+    assert!(
+        messages.iter().any(|m| m.contains("raised evaluation_failure")
+            && m.contains("it performs `anthill.prelude.Time.Clock`")),
+        "the drain's failure carries the declined effect: {messages:?}"
+    );
+    assert!(
+        messages.iter().all(|m| !m.contains("a boundary typed at this payload catches it")
+            && !m.contains("Handle it inside the operation")),
+        "no boundary is advised for it: {messages:?}"
+    );
+}
+
+/// A PROGRAM'S OWN RAISE OF THAT CONSTRUCTOR KEEPS THE ADVICE: `Error.raise(evaluation_failure(…))`
+/// in an operation a rule reads is a raise of the program's, which a boundary around the call
+/// catches. The drain's is marked as the runtime's on the raise (`RaiseOrigin::SearchFault`),
+/// where it was recognised by its constructor, which any program can build.
+///
+/// BACK-OUT: the report keyed by the payload's constructor again, and this fails, the advice
+/// gone; the two drain rows above pass under it.
+#[test]
+fn a_programs_own_evaluation_failure_keeps_the_reify_advice() {
+    let messages = fault_messages(
+        r#"
+namespace test.clockfake
+  import anthill.prelude.{Int64, String, Error, List, Option}
+  import anthill.prelude.List.{nil}
+  import anthill.prelude.Option.{none}
+  import anthill.reflect.{ResolveStreamFailure}
+  import anthill.reflect.ResolveStreamFailure.{evaluation_failure}
+  operation fake() -> Int64 effects {Error[ResolveStreamFailure]} =
+    Error.raise(evaluation_failure(goals: nil(), reason: "made up by the program", at: none()))
+  rule viaFake(?r) :- ?r <=> fake()
+end
+"#,
+        "test.clockfake.viaFake(?r)",
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("raised evaluation_failure")
+            && m.contains("Handle it inside the operation — `Error.reify`")),
+        "a raise of the program's is told the repair: {messages:?}"
+    );
+}
+
+/// A MEMBER GUARDED BY A CONDITION DECLARES ITS EFFECT, and the report says the call performs
+/// it: `{ Clock :- eq(b, true) }`, called at `true`. Read through its `guarded` wrapper, which
+/// names no effect, it was reported as a row that declares no `Clock`.
+///
+/// BACK-OUT: the peel of `present` and `guarded` in `typing::declared_row_may_hold` taken out,
+/// and this fails on the wording.
+#[test]
+fn a_guarded_clock_member_is_reported_as_performed() {
+    let messages = fault_messages(
+        r#"
+namespace test.clockguarded
+  import anthill.prelude.{Bool, String}
+  import anthill.prelude.Time.{now, Clock}
+  operation stampIf(b: Bool) -> String effects { Clock :- eq(b, true) } =
+    if b then now() else "none"
+  rule viaGuarded(?s) :- ?s <=> stampIf(true)
+end
+"#,
+        "test.clockguarded.viaGuarded(?s)",
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("it performs `anthill.prelude.Time.Clock`")),
+        "the guarded member declares it: {messages:?}"
+    );
+    assert!(
+        messages.iter().all(|m| !m.contains("its row declares no")),
+        "{messages:?}"
     );
 }
 
@@ -227,7 +340,7 @@ fn a_negation_over_a_declined_effect_is_conditional() {
 fn a_drain_over_a_refuted_branch_fails_naming_the_effect() {
     let mut interp = crate::common::interp_for(REFUTED_AFTER_THE_EFFECT);
     match interp.call("test.clockrefuted.countEffectFirst", &[]) {
-        Err(EvalError::Raised { payload }) => {
+        Err(EvalError::Raised { payload, .. }) => {
             let reason = crate::common::entity_field(interp.kb(), &payload, "reason", 1);
             let reason = crate::common::scalar_str(interp.kb(), &reason)
                 .unwrap_or_else(|| panic!("a reason String, got {payload:?}"));
@@ -257,10 +370,14 @@ fn a_constraint_over_a_declined_effect_does_not_load() {
     crate::common::assert_refused_naming(
         &errs,
         &[
-            "integrity constraint 'c_effect_first' is undecidable within the resolver depth budget",
+            "integrity constraint 'c_effect_first' is not decided",
             "it performs `anthill.prelude.Time.Clock`",
         ],
         "a constraint over a declined effect",
+    );
+    assert!(
+        errs.iter().all(|e| !e.contains("depth budget")),
+        "a fault is no depth cut: {errs:?}"
     );
     crate::common::load_kb_with(&with(
         "constraint c_test_first: no ?n: rec(n: ?n) -: testFirst(?n)",
@@ -348,8 +465,9 @@ fn a_clock_const_in_a_data_slot_is_refused_naming_clock() {
     );
 }
 
-/// And whatever order the files load in: the program handed to the loader BEFORE the
-/// stdlib, in one call, where no file declaring `Time.now` has converted when the fact does.
+/// And in one call with the program handed to the loader before the stdlib. The source runs
+/// on a scratch interpreter over an empty KB in every recipe, so the refusal reads nothing a
+/// file has loaded.
 #[test]
 fn a_clock_const_in_a_data_slot_is_refused_naming_clock_ahead_of_the_stdlib() {
     // NOT THE RECIPE, BY NAME (WI-20261008-RAH0Z): the recipe hands the loader the stdlib
@@ -378,8 +496,32 @@ fn a_clock_const_in_a_data_slot_is_refused_naming_clock_ahead_of_the_stdlib() {
     );
 }
 
-/// PASSES EITHER WAY BY DESIGN: an operation body folds the const when it runs, through the
-/// handler the interpreter registers.
+/// Read from a rule, the operation reporting no `Clock` in its row is said to ask the handler
+/// all the same, and no route is named: the const's host value source is how it asks here. The
+/// report named one, a write through `ModifyRuntime` to a cell, which this is not.
+///
+/// BACK-OUT: that clause put back in the report, and this fails on it.
+#[test]
+fn a_clock_const_read_from_a_rule_names_the_row_and_no_route() {
+    let src = crate::common::replace_in_fixture(
+        CONST_IN_BODY,
+        "  operation stamp() -> String = Stamp.buildStamp\n",
+        "  operation stamp() -> String = Stamp.buildStamp\n  rule viaConst(?s) :- ?s <=> stamp()\n",
+    );
+    let messages = fault_messages(&src, "test.clockconst.viaConst(?s)");
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "its row declares no `anthill.prelude.Time.Clock`, yet running it asks the \
+             `anthill.prelude.Time.Clock` handler, and a rule body's run has no handler"
+        )),
+        "the report names the row: {messages:?}"
+    );
+    assert!(messages.iter().all(|m| !m.contains("cell")), "and no route: {messages:?}");
+}
+
+/// An operation body folds the const when it runs, through the handler the interpreter
+/// registers. PASSES UNDER ALL BUT THE FIRST BACK-OUT, BY DESIGN: the load is not where it
+/// is read.
 #[test]
 fn a_clock_const_in_an_operation_body_reads_the_handler() {
     let mut interp = crate::common::interp_for(CONST_IN_BODY);

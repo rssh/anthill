@@ -545,7 +545,7 @@ fn a_kb_loaded_candidate_adding_to_a_base_sorts_equality_is_refused() {
         .build_list_value(vec![Value::Str(READING_EQ.to_string())], &[])
         .expect("build List[String]");
     let payload = match interp.call("anthill.reflect.KB.loaded", &[list]) {
-        Err(EvalError::Raised { payload }) => format!("{payload:?}"),
+        Err(EvalError::Raised { payload, .. }) => format!("{payload:?}"),
         other => panic!("the candidate is RAISED, as `load_failed`; got {other:?}"),
     };
     assert!(

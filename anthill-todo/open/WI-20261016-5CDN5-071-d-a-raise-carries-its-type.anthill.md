@@ -20,3 +20,9 @@ THE CHANGE: `operation raise(error: T) -> Nothing effects Error[T] requires Type
 MEASURED (2026-10-16): `caughtS(n) -> Result[E = Boom[Reason = String], T = Int64] effects {Error[Boom[Reason = Int64]]} = Error.reify(lambda () -> both(n))`, inside an outer boundary, answers "inner" for `boom(5)` where "outer" is right — the runtime compares head sorts. Census: no `Error[(…)]` label outside tests; six in three test files (`wi_9wvt7_reify_rule_body_test`, `wi_9wvt7_error_reify_test`, `wi_n31xx_type_value_read_rule_test`), all fixtures of the tuple refusal, which move from the reify to the raise.
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh, scaland sbt testFull): 3MV2C's nested boundaries at `Box[V = Int64]` / `Box[V = String]` answer through the outer for a `Box[V = String]` raise and the inner for a `Box[V = Int64]` one, the two-distinct-sorts row passing either way; the "inner"/"outer" row above answers "outer"; `1 / 0` inside a reify at `DivisionByZero` still caught; a tuple raise refused at load naming the former.
 
+## Changes
+
+### 2026-10-16T17:56:10Z — feedback — claude
+
+CORRECTION to the census above: seven in three test files, not six. Besides the six labels at a tuple, `wi_n31xx_type_value_read_rule_test`'s `raisesOpt` declares `Error[Option[T = (a: Int64, b: String)]]`, a sort holding a tuple, which has no `TypeValue` either (a sort's holds only where each type argument has one), so `raise … requires TypeValue[T = T]` refuses it too. The stage's rule covers a sort holding a former as well as a bare one; 071 §1.3 says so.
+

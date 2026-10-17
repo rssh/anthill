@@ -124,7 +124,7 @@ fn s7yf5_declared_callers_execute_effects() {
             let mut interp = interp_for(&error_program(provision, "Error[String]", body));
             let result = interp.call("s7yf5.main", &[]);
             assert!(
-                matches!(result, Err(EvalError::Raised { payload: Value::Str(ref s) }) if s == "boom"),
+                matches!(result, Err(EvalError::Raised { payload: Value::Str(ref s), .. }) if s == "boom"),
                 "{body} under {provision}: {result:?}"
             );
         }

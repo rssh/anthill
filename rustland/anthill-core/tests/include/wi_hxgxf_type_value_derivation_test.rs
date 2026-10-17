@@ -125,6 +125,37 @@ fn a_written_type_answers_itself() {
     }
 }
 
+/// `Nothing` IS A TYPE ARGUMENT LIKE ANOTHER: `List[T = Nothing]` answers itself, as
+/// `Nothing` alone does. The bottom type matched every provision by subsumption (169 for
+/// `TypeValue[T = Nothing]`), and as `List`'s own sub-goal the locality rule kept `List`'s
+/// row, so `tv[B = List[T = Nothing]]` was refused, "no row of `TypeValue` answers here". A
+/// provision answers at `Nothing` where it is written at it. `Nothing` alone and
+/// `List[T = Int64]` are the controls and pass either way, by design.
+///
+/// BACK-OUT: the bottom type matched as before (arm 1.2 of `match_candidate_against_goal`
+/// taken out), and the program is refused.
+#[test]
+fn a_type_argument_that_is_nothing_answers_itself() {
+    let src = program(
+        r#"    operation bottom(n: Int64) -> Type = tv[B = Nothing](0)
+    operation listOfBottom(n: Int64) -> Type = tv[B = List[T = Nothing]](0)
+    operation listOfInt(n: Int64) -> Type = tv[B = List[T = Int64]](0)"#,
+    )
+    .replace(
+        "import anthill.prelude.{Int64, Type, List, Option, Map}",
+        "import anthill.prelude.{Int64, Type, List, Option, Map, Nothing}",
+    );
+    assert_eq!(refusals(&src), Vec::<String>::new());
+    // The display spells the bottom type `nothing`.
+    for (op, want) in [
+        ("bottom", "nothing"),
+        ("listOfBottom", "List[T = nothing]"),
+        ("listOfInt", "List[T = Int64]"),
+    ] {
+        assert_eq!(type_answer(&src, &format!("wihxgxf.tv.D.{op}")), want, "{op}");
+    }
+}
+
 /// A CARRIER THAT WRITES ITS OWN `requires` — `Map requires Eq[T = K]` — so its derived
 /// conditions do NOT start at sub 0 of the dictionary. Reading from 0 would hand back the
 /// `Eq` dictionary's impl sort as a type argument, silently and with a plausible-looking

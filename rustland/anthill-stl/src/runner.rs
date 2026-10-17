@@ -104,7 +104,7 @@ pub fn exit_code_from_main(kb: &KnowledgeBase, result: Result<Value, EvalError>)
             eprintln!("error: main returned non-Int64 value: {other:?}");
             EXIT_RUNTIME
         }
-        Err(EvalError::Raised { payload }) => {
+        Err(EvalError::Raised { payload, .. }) => {
             eprintln!("error: {}", render_raised_payload(kb, &payload));
             EXIT_RUNTIME
         }

@@ -284,7 +284,7 @@ end
     let mut interp = crate::common::interp_for(src);
     let got = interp.call("wi818.boom.Use.boom", &[]);
     match got {
-        Err(EvalError::Raised { ref payload }) => {
+        Err(EvalError::Raised { ref payload, .. }) => {
             let Value::Entity { functor, .. } = payload else {
                 panic!("expected an empty_stream entity payload; got {payload:?}");
             };

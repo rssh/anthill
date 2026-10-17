@@ -26,7 +26,9 @@ use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
 use crate::parse::desugar_target as dt;
 
-pub use error::{macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError};
+pub use error::{
+    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError, RaiseOrigin,
+};
 pub use eval::value_functor;
 pub use frame::{ActivationStack, Frame};
 pub use value::Value;
@@ -2051,7 +2053,7 @@ impl Interpreter {
         }
         let refused = match outcome {
             Ok(_) => Some(EvalError::ScopedKbOutlivesCall { raised: None }),
-            Err(EvalError::Raised { payload }) => Some(EvalError::ScopedKbOutlivesCall {
+            Err(EvalError::Raised { payload, .. }) => Some(EvalError::ScopedKbOutlivesCall {
                 raised: Some(render_raised_payload(&self.kb, payload)),
             }),
             // An error that carries no value holds no layer: what holds it is an arena of
@@ -2292,7 +2294,15 @@ impl Interpreter {
         fault: crate::kb::resolve::SearchFault,
     ) -> EvalError {
         handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
-        self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
+        // Marked as the runtime's, so a report can tell it from a program's own raise of
+        // `evaluation_failure` — whatever an installed `Error` handler did with it on the way.
+        match self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at) {
+            EvalError::Raised { payload, .. } => EvalError::Raised {
+                payload,
+                origin: error::RaiseOrigin::SearchFault,
+            },
+            other => other,
+        }
     }
 
     /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a

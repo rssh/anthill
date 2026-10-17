@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20261016-5CDN5-071-d-a-raise-carries-its-type
+
 - tags: effects
 
 ## Description

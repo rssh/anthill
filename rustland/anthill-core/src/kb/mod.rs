@@ -148,7 +148,8 @@ pub enum GuardCheck {
     /// with the invariant unenforced.
     Unsupported(Option<String>, String),
     /// WI-628 — the constraint's proof search TRUNCATED at the resolver depth
-    /// limit, so it can be neither confirmed nor refuted within budget. Distinct
+    /// limit, or a goal of it faulted, so it can be neither confirmed nor refuted;
+    /// the reason says which. Distinct
     /// from `Unsupported` (a malformed form): the form is fine, the SEARCH was
     /// incomplete. The loader routes this to a load-BLOCKING error rather than
     /// silently passing — deciding a constraint from a truncated search is the

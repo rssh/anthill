@@ -498,6 +498,33 @@ pub enum OperationDefinition {
     Boundary,
 }
 
+/// Which of an operation's two relational slots the clauses
+/// [`LoadError::OperationBodyAndClauses`] refuses sit at: arity + 1, and the operation's own
+/// arity, which counts where it returns `Bool` and has that relational view
+/// ([`would_derive_bool_relation`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClauseSlots {
+    ArityPlusOne,
+    OwnArity,
+    Both,
+}
+
+impl ClauseSlots {
+    /// The slot of one clause, if it sits at either.
+    fn of(at_arity_plus_one: bool, at_own_arity: bool) -> Option<Self> {
+        match (at_arity_plus_one, at_own_arity) {
+            (true, true) => Some(ClauseSlots::Both),
+            (true, false) => Some(ClauseSlots::ArityPlusOne),
+            (false, true) => Some(ClauseSlots::OwnArity),
+            (false, false) => None,
+        }
+    }
+
+    fn join(self, other: Self) -> Self {
+        if self == other { self } else { ClauseSlots::Both }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     /// A name that resolves to nothing — a typo, or a reference to something
@@ -1564,9 +1591,8 @@ pub enum LoadError {
         op: String,
         /// What already defines it, which the clauses would be a second definition of.
         definition: OperationDefinition,
-        /// It returns `Bool` and has the relational view at its OWN arity as well as at
-        /// arity + 1 ([`would_derive_bool_relation`]), so a clause refused may sit at either.
-        bool_view: bool,
+        /// Which of the two slots the refused clauses sit at.
+        slots: ClauseSlots,
         /// Where the operation is declared, rendered — `None` for one an earlier load
         /// declared, whose sites that load's ledger held (a library operation).
         decl_site: Option<String>,
@@ -2213,9 +2239,9 @@ pub enum LoadError {
         label: Option<String>,
         detail: String,
     },
-    /// WI-628: a registered integrity constraint whose proof search TRUNCATED at
-    /// the resolver depth limit — it can be neither confirmed nor refuted within
-    /// budget, so it is neither cleanly `Violated` nor safely `Holds`.
+    /// WI-628: a registered integrity constraint whose proof search did not decide it —
+    /// it TRUNCATED at the resolver depth limit, or a goal of it faulted — so it is
+    /// neither cleanly `Violated` nor safely `Holds`; `detail` says which.
     /// Load-BLOCKING: admitting the KB while a constraint's verdict was decided
     /// from an incomplete search is the unsoundness WI-628 closes. Distinct from
     /// `ConstraintLoweringFailed` (a malformed constraint FORM — here the form is
@@ -3726,7 +3752,7 @@ impl LoadError {
             }
             LoadError::ConstraintUndecidable { label, detail } => {
                 format!(
-                    "integrity constraint{} is undecidable within the resolver depth budget: {}",
+                    "integrity constraint{} is not decided: {}",
                     label_suffix(label),
                     detail,
                 )
@@ -3866,10 +3892,10 @@ impl LoadError {
             LoadError::OperationBodyAndClauses {
                 op,
                 definition,
-                bool_view,
+                slots,
                 decl_site,
                 clause_sites,
-            } => body_and_clauses_message(op, definition, *bool_view, decl_site, clause_sites),
+            } => body_and_clauses_message(op, definition, *slots, decl_site, clause_sites),
             LoadError::NameCapture {
                 sort,
                 construct,
@@ -4307,13 +4333,13 @@ impl std::fmt::Display for LoadError {
             LoadError::OperationBodyAndClauses {
                 op,
                 definition,
-                bool_view,
+                slots,
                 decl_site,
                 clause_sites,
             } => write!(
                 f,
                 "{}",
-                body_and_clauses_message(op, definition, *bool_view, decl_site, clause_sites)
+                body_and_clauses_message(op, definition, *slots, decl_site, clause_sites)
             ),
             LoadError::NameCapture {
                 sort,
@@ -5157,7 +5183,7 @@ impl std::fmt::Display for LoadError {
             LoadError::ConstraintUndecidable { label, detail } => {
                 write!(
                     f,
-                    "integrity constraint{} is undecidable within the resolver depth budget: {}",
+                    "integrity constraint{} is not decided: {}",
                     label_suffix(label),
                     detail
                 )
@@ -8193,7 +8219,7 @@ fn duplicate_const_message(name: &str, sites: &[String]) -> String {
 fn body_and_clauses_message(
     op: &str,
     definition: &OperationDefinition,
-    bool_view: bool,
+    slots: ClauseSlots,
     decl_site: &Option<String>,
     clause_sites: &[String],
 ) -> String {
@@ -8206,9 +8232,9 @@ fn body_and_clauses_message(
     let plural = if count == 1 { "" } else { "s" };
     // NO BODY TO DROP. The definition is the host's, or the interpreter's boundary, so the
     // one repair is the clauses' — and a relation of the author's own takes a name of its own.
-    // The reason is the one-definition rule, not the view: an effectful operation has no
-    // view a clause could replace, and a clause under its name is a second definition all
-    // the same, as one beside an effectful body is.
+    // The reason is the one-definition rule, not the view: at arity + 1 an effectful
+    // operation has no view a clause could replace, and a clause there is a second
+    // definition all the same, as one beside an effectful body is.
     let implemented_by = match definition {
         OperationDefinition::Body => None,
         OperationDefinition::HostFunction(key) => Some(format!("the host function {key:?}")),
@@ -8221,16 +8247,16 @@ fn body_and_clauses_message(
             Some(at) => format!(", declared at {at},"),
             None => String::new(),
         };
-        let slot = if bool_view {
-            "at its arity + 1 or, as it returns `Bool`, at its own arity"
-        } else {
-            "at its arity + 1"
+        let slot = match slots {
+            ClauseSlots::Both => "at its arity + 1 and, as it returns `Bool`, at its own arity",
+            ClauseSlots::OwnArity => "at its own arity, as it returns `Bool`",
+            ClauseSlots::ArityPlusOne => "at its arity + 1",
         };
         return format!(
             "operation '{op}'{declared} is implemented by {implemented_by}, and has {count} \
              hand-written clause{plural} {slot}: {rendered}. A clause there is a second \
-             definition of the operation, since a rule's operation name is its label else its \
-             head functor (proposal 052). Where a rule-body goal at that arity is read as the \
+             definition of the operation, labelled or not, since a label names the clause and \
+             not what its head is about. Where a rule-body goal at that arity is read as the \
              call, the clauses take precedence (design §3.3) and answer it while a value slot \
              and an operation body still make the call. Delete the clauses, and give a \
              relation of your own a name of its own."
@@ -8239,9 +8265,9 @@ fn body_and_clauses_message(
     format!(
         "operation '{op}' has BOTH a body and {} hand-written clause{}: the body is \
          declared at {}, and {rendered}. One operation, ONE definition — a \
-         rule's operation name is its label else its head functor (proposal 052), so \
-         a clause under a bodied operation's functor is a second DEFINITION of it, \
-         not a second view of it. They cannot both answer: design §3.3 gives the \
+         clause under a bodied operation's functor, labelled or not (a label names the \
+         clause, not what its head is about), is a second DEFINITION of it, not a \
+         second view of it. They cannot both answer: design §3.3 gives the \
          clauses precedence, which SUPPRESSES the body's derived relational view — \
          measured, the arity+1 goal stops answering a definite value and answers a \
          residual instead, so the clauses take a working reading away rather than \
@@ -20259,8 +20285,9 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// NOR A HOST-IMPLEMENTED OPERATION'S, OR `Error.reify`'s (user, 2026-10-16). A host
 /// function of this runtime and `Error.reify`'s boundary, which the interpreter installs,
 /// define their operations as a body does, so a clause at the same slots is a second
-/// definition of either — whether or not a view reads the goal there, as for an effectful
-/// body. Where one does (`KnowledgeBase::functional_relation_arity` at arity + 1,
+/// definition of either: at arity + 1 whether or not a view reads the goal there, as for an
+/// effectful body, and at a `Bool` operation's own arity where its effect-free view does.
+/// Where one does (`KnowledgeBase::functional_relation_arity` at arity + 1,
 /// `bare_bodied_bool_relation` at a `Bool` operation's own arity, both granted to a host
 /// function the bridge calls), the clause replaced the call in a rule body alone, on a
 /// program that loaded clean: `rule String.length(?s, 99) :- true` made
@@ -20295,7 +20322,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     population.retain(|(sym, _)| seen.insert(kb.canonical_sym(*sym)));
     // By symbol index, not `HashMap` order: two runs over one corpus must report
     // identically.
-    let mut hits: Vec<(Symbol, OperationDefinition, bool, Vec<SourceSpan>)> = population
+    let mut hits: Vec<(Symbol, OperationDefinition, ClauseSlots, Vec<SourceSpan>)> = population
         .into_iter()
         .filter_map(|(sym, definition)| {
             // WHICH ARITIES THE DERIVED VIEW OCCUPIES, and there are TWO — an
@@ -20307,17 +20334,26 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
             //     sits at the operation's own arity ([`bare_bodied_bool_relation`]).
             let params = super::op_info::lookup_operation_info(kb, sym)?.params.len();
             let bool_view = would_derive_bool_relation(kb, sym);
-            let occupied = |n: usize| n == params + 1 || (bool_view && n == params);
-            let sites: Vec<SourceSpan> = kb
-                .rules_by_functor_iter(sym)
-                .filter(|rid| head_arg_count(kb, *rid).is_some_and(occupied))
-                .filter_map(|rid| kb.rule_head_span(rid))
-                .collect();
-            // A clause whose span the loader did not record would make the refusal
-            // name fewer places than it counted, so an empty span list reads as "no
-            // clauses" rather than as a spanless refusal. Unreachable today — every
-            // source clause carries a head span — and kept total.
-            (!sites.is_empty()).then_some((sym, definition, bool_view, sites))
+            let mut slots: Option<ClauseSlots> = None;
+            let mut sites: Vec<SourceSpan> = Vec::new();
+            for rid in kb.rules_by_functor_iter(sym) {
+                let Some(n) = head_arg_count(kb, rid) else {
+                    continue;
+                };
+                let Some(here) = ClauseSlots::of(n == params + 1, bool_view && n == params) else {
+                    continue;
+                };
+                // A clause whose span the loader did not record would make the refusal
+                // name fewer places than it counted, so it is not counted either.
+                // Unreachable today — every source clause carries a head span — and kept
+                // total.
+                let Some(span) = kb.rule_head_span(rid) else {
+                    continue;
+                };
+                slots = Some(slots.map_or(here, |s| s.join(here)));
+                sites.push(span);
+            }
+            slots.map(|slots| (sym, definition, slots, sites))
         })
         .collect();
     if hits.is_empty() {
@@ -20325,17 +20361,19 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     }
     hits.sort_by_key(|(s, _, _, _)| s.index());
     hits.into_iter()
-        .map(|(op, definition, bool_view, sites)| LoadError::OperationBodyAndClauses {
-            op: kb.qualified_name_of(op).to_string(),
-            definition,
-            bool_view,
-            decl_site: kb
-                .op_decl_sites
-                .get(&op)
-                .and_then(|v| v.first())
-                .or_else(|| kb.functor_spans.get(&op))
-                .map(|s| render_decl_site(kb, *s)),
-            clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+        .map(|(op, definition, slots, sites)| {
+            LoadError::OperationBodyAndClauses {
+                op: kb.qualified_name_of(op).to_string(),
+                definition,
+                slots,
+                decl_site: kb
+                    .op_decl_sites
+                    .get(&op)
+                    .and_then(|v| v.first())
+                    .or_else(|| kb.functor_spans.get(&op))
+                    .map(|s| render_decl_site(kb, *s)),
+                clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+            }
         })
         .collect()
 }

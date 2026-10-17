@@ -6,7 +6,7 @@
 
 ## Relates to: [066](066-provision-member-blocks.md) (a provision's `where` block, which is what lets `TypeValue`'s row read `T` as a value), [070](070-self-and-fresh-bare-sorts.md) (the open slot, `kernel-language.md` §5.4), WI-20260911-3MV2C (a boundary blind to type arguments — delivered by stage (d)), WI-20261015-D2KZ5 (what an unwritten `T1` binds — open question 1), WI-20260921-28TAT (which introduced `ErrorTag`), WI-20260908-9WVT7 (whose review found that a written `ErrorTag` row stops the boundary: finding F1).
 
-## Tracked by: tickets tagged `proposal-071`, one per stage (§4) — not filed yet.
+## Tracked by: tickets tagged `proposal-071`, one per stage (§4): WI-20261016-Y1EZJ (a), WI-20261016-SQZPQ (b), WI-20261016-YM8HD (c), WI-20261016-5CDN5 (d), WI-20261016-BDVYW (e).
 
 ## The problem
 
@@ -55,7 +55,7 @@ operation raise(error: T) -> Nothing effects Error[T] requires TypeValue[T = T] 
 
 The typer knows each raise's payload type: `Error.raise(box(v: "s"))` is `Error[Box[V = String]]`. A monomorphic raise's evidence is resolved statically; a generic raiser states it, `raiseAt[P](p: P) requires TypeValue[T = P] = Error.raise(p)`, as 065 requires of any reader. A host raiser (`division_by_zero`, `match_failed`, `evaluation_failure`, …) builds the payload of a sort it knows and supplies that sort's derived evidence. The raised error travels with the evidence.
 
-A raise at a tuple or an arrow payload has no `TypeValue` (065 §2: structural formers have no instance yet) and is refused at load. Census, 2026-10-16: no `Error[(…)]` label in `stdlib/`, `rustland/anthill-stl/anthill/`, `examples/` or anthill-todo; six in three test files, all fixtures of the tuple refusal itself.
+A raise at a tuple or an arrow payload, or at a sort holding one among its type arguments, has no `TypeValue` (065 §2: structural formers have no instance yet, and a sort's holds only where each type argument has one) and is refused at load. Census, 2026-10-16: no such `Error[…]` label in `stdlib/`, `rustland/anthill-stl/anthill/`, `examples/` or anthill-todo; seven in three test files, all fixtures of the former refusals themselves: six at a tuple, and one at `Option[T = (a: Int64, b: String)]` (`wi_n31xx_type_value_read_rule_test`, `raisesOpt`).
 
 ### 1.4 A boundary catches by its pattern
 

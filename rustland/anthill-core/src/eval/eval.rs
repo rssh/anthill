@@ -4331,7 +4331,7 @@ impl Interpreter {
         e: EvalError,
         floor: usize,
     ) -> Result<Value, EvalError> {
-        let EvalError::Raised { payload } = &e else {
+        let EvalError::Raised { payload, .. } = &e else {
             return Err(e);
         };
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {

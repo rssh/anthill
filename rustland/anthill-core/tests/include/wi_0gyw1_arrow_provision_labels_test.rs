@@ -205,8 +205,12 @@ fn a_selected_witness_at_the_other_spelling_supplies() {
 
 /// TWO LISTS OF UNRELATED NAMES STAY TWO ARROWS, as they do where a value is passed: other
 /// names, the same names in another order, one name of three different, and `_2, _1`, which
-/// is not the list written without names. Each of the ticket's three shapes is refused as
-/// it was. Passes with the change backed out, by design.
+/// is not the list written without names. Each of the ticket's three shapes is refused, the
+/// `requires` one as a requirement at a structural former, written on the sort or on the
+/// operation alike. Passes with the change backed out, by design. The sort's spelling was
+/// told "no impl provides" and to declare a requirement slot, which moves the refusal to the
+/// caller, before a construction's former refusal was read as a call's is; with that check
+/// backed out it is told so again, and this fails.
 #[test]
 fn two_lists_of_unrelated_names_stay_two_arrows() {
     let rows = [
@@ -240,11 +244,25 @@ fn two_lists_of_unrelated_names_stay_two_arrows() {
             &format!("a call at `{called}` beside a provider at `{provided}` alone"),
         );
     }
+    let at_the_former = [
+        "cannot be supplied",
+        "its carrier is `(p: Int64, q: Int64) -> Int64`, a STRUCTURAL FORMER",
+        "Give some sort the row that names this former",
+    ];
     let required = format!("{}{}", provider("P", OTHER, 30), user(NAMED));
     assert_refused_naming(
         &refusal("wi0gyw1.two_required", &required, &format!("User.via({FIRST})")),
-        &["cannot be supplied", "no impl provides"],
+        &at_the_former,
         "`requires Apply[F = (p, q) -> …]` beside a provider at `(x, y) -> …` alone",
+    );
+    let required_on_the_operation = format!(
+        "{}\n  operation via(f: {NAMED}) -> Int64 requires Apply[F = {NAMED}] = Apply.run(f)\n",
+        provider("P", OTHER, 30)
+    );
+    assert_refused_naming(
+        &refusal("wi0gyw1.two_required_op", &required_on_the_operation, &format!("via({FIRST})")),
+        &at_the_former,
+        "the same `requires` written on the operation",
     );
     let selected = format!(
         "{}{}{}",
