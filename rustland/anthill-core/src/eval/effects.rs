@@ -287,10 +287,12 @@ pub fn default_modify_handler() -> EffectHandler {
             };
         }
 
-        // Fallback: one slot per constructor, for a resource a constructor names. One built
-        // with fields would share that slot with every other value of its constructor —
+        // Fallback: one slot per constructor, for a resource a constructor names; a value no
+        // constructor names (a tuple, a function value) is no resource at all. One built with
+        // fields would share that slot with every other value of its constructor —
         // `box(id: 1)` and `box(id: 2)` one place, where two places are two resources — so
         // it is refused until the handler keeps the values of one constructor apart (WI-200).
+        let key = resource_key(interp, target)?;
         if matches!(
             target.head(interp.kb()),
             ViewHead::Functor { pos_arity, named_arity, .. } if pos_arity + named_arity > 0
@@ -299,7 +301,6 @@ pub fn default_modify_handler() -> EffectHandler {
                 resource: super::render_raised_payload(interp.kb(), target),
             });
         }
-        let key = resource_key(interp, Some(target))?;
         match op_name {
             "get" => cells
                 .borrow()
@@ -330,12 +331,7 @@ pub fn default_modify_handler() -> EffectHandler {
     })
 }
 
-fn resource_key(interp: &Interpreter, arg: Option<&Value>) -> Result<Symbol, EvalError> {
-    let v = arg.ok_or_else(|| EvalError::ArityMismatch {
-        op: "Modify",
-        expected: 1,
-        got: 0,
-    })?;
+fn resource_key(interp: &Interpreter, v: &Value) -> Result<Symbol, EvalError> {
     crate::eval::eval::value_functor(interp.kb(), v).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Entity, Cell, or nullary Term (resource identifier)",
         got: v.type_name().to_string(),
@@ -656,8 +652,8 @@ impl Interpreter {
         match action? {
             HandlerAction::Pure(v) => Ok(v),
             HandlerAction::Throw(payload) => Err(EvalError::Raised {
+                origin: self.origin_of_raise(&payload),
                 payload,
-                origin: super::RaiseOrigin::Program,
             }),
             // Fail / Choice / Suspend manipulate the continuation and need
             // the Branch / suspend-resume substrate (WI-075). Until then,
@@ -716,10 +712,32 @@ impl Interpreter {
             }
         } else {
             EvalError::Raised {
+                origin: self.origin_of_raise(&payload),
                 payload,
-                origin: super::RaiseOrigin::Program,
             }
         }
+    }
+
+    /// Who raises `payload` now: the runtime, where the runtime raised that value earlier in
+    /// this run and a boundary caught it ([`Self::runtime_raises`]) — a program that catches
+    /// the runtime's account of something and raises it again does not make it its own —
+    /// and the program otherwise.
+    pub(crate) fn origin_of_raise(&self, payload: &Value) -> super::RaiseOrigin {
+        self.runtime_raises
+            .iter()
+            .find(|(raised, _)| {
+                crate::kb::term_view::views_structurally_equal(&self.kb, raised, payload)
+            })
+            .map_or(super::RaiseOrigin::Program, |(_, origin)| *origin)
+    }
+
+    /// A raise the runtime makes for its own reason, marked as the runtime's whatever an
+    /// installed `Error` handler did with it on the way.
+    fn runtime_raise(mut e: EvalError, origin: super::RaiseOrigin) -> EvalError {
+        if let EvalError::Raised { origin: marked, .. } = &mut e {
+            *marked = origin;
+        }
+        e
     }
 
     /// Build an `Error`-effect payload entity `ctor(field: value, …)` and route
@@ -814,11 +832,12 @@ impl Interpreter {
             Ok(v) => v,
             Err(e) => return e,
         };
-        self.raise_error_payload(
+        let e = self.raise_error_payload(
             "anthill.prelude.RelationFloundered.relation_floundered",
             "relation_floundered",
             vec![("goals", goals)],
-        )
+        );
+        Self::runtime_raise(e, super::RaiseOrigin::RelationFloundered)
     }
 
     /// WI-SPGBP — raise a failed SCOPED LOAD as an anthill `Error[LoadFailed]` effect:
@@ -840,11 +859,12 @@ impl Interpreter {
             Ok(v) => v,
             Err(e) => return e,
         };
-        self.raise_error_payload(
+        let e = self.raise_error_payload(
             "anthill.reflect.LoadFailed.load_failed",
             "load_failed",
             vec![("diagnostics", list)],
-        )
+        );
+        Self::runtime_raise(e, super::RaiseOrigin::LoadFailed)
     }
 
     /// WI-20260911-8Y5BE — raise a query that could not be LOWERED as the declared
@@ -909,11 +929,12 @@ impl Interpreter {
                 Err(e) => return e,
             },
         };
-        self.raise_error_payload(
+        let e = self.raise_error_payload(
             "anthill.reflect.ResolveStreamFailure.evaluation_failure",
             "evaluation_failure",
             vec![("goals", goals), ("reason", Value::Str(reason)), ("at", at)],
-        )
+        );
+        Self::runtime_raise(e, super::RaiseOrigin::SearchFault)
     }
 
     /// Register the standard effect handlers. Includes real-stdio

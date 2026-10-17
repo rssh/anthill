@@ -183,14 +183,7 @@ fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
     );
 }
 
-/// The faults resolving `goal` over a load of `src` recorded, by message.
-fn fault_messages(src: &str, goal: &str) -> Vec<String> {
-    use anthill_core::kb::resolve::ResolveConfig;
-    let mut kb = crate::common::load_kb_with(src);
-    let goal = crate::common::query_pattern_term(&mut kb, goal);
-    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    stats.errors.iter().map(|e| e.message.clone()).collect()
-}
+use crate::common::fault_messages;
 
 /// And through a rule-body `Error.reify` typed at another payload, the drain's failure gets no
 /// boundary advice either: `countOrBoom` drains `viaHof`, and a rule reifies it at `Boom`. It

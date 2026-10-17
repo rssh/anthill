@@ -426,6 +426,11 @@ pub struct Interpreter {
     pub(crate) builtins: HashMap<Symbol, BuiltinFn>,
     pub(crate) reflect: ReflectSymbols,
     pub(crate) error_layer: Option<ErrorLayer>,
+    /// The payloads the runtime raised for a reason of its own ([`RaiseOrigin`]) that a
+    /// boundary of this run caught, each with its origin: a program that catches one and
+    /// raises the same value again raises the runtime's account, not its own
+    /// (`Interpreter::origin_of_raise`).
+    pub(crate) runtime_raises: Vec<(Value, RaiseOrigin)>,
     /// WI-20260919-HXGXF — the dispatching DICTIONARY of the builtin currently running,
     /// or `None` outside one.
     ///
@@ -543,6 +548,7 @@ impl Interpreter {
             config,
             step_count: 0,
             recent_dispatches: std::collections::VecDeque::new(),
+            runtime_raises: Vec::new(),
         }
     }
 
@@ -2294,15 +2300,7 @@ impl Interpreter {
         fault: crate::kb::resolve::SearchFault,
     ) -> EvalError {
         handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
-        // Marked as the runtime's, so a report can tell it from a program's own raise of
-        // `evaluation_failure` — whatever an installed `Error` handler did with it on the way.
-        match self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at) {
-            EvalError::Raised { payload, .. } => EvalError::Raised {
-                payload,
-                origin: error::RaiseOrigin::SearchFault,
-            },
-            other => other,
-        }
+        self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
     }
 
     /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a

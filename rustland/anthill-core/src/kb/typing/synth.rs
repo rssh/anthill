@@ -1067,11 +1067,22 @@ pub(super) fn resolve_inner<'a>(
     // bindings: a `W` that provides the spec only at OTHER bindings contributes no
     // candidate here and the search proceeds globally, rather than being narrowed to
     // an instance that does not fit.
+    //
+    // `W` PROVIDES THE SUB-GOAL WHERE ITS ROW MATCHES IT AT THE SUB-GOAL'S OWN TYPES, through
+    // its own parameters, and not where the sub-goal's type only reaches the row through the
+    // subtype relation: such a row is ranked with the rest. Inside `List`'s
+    // `TypeValue[T = List[T = T]]` at `T = Nothing`, the sub-goal `TypeValue[T = Nothing]`
+    // reached `List`'s own row through it, and locality kept that row over `Nothing`'s, so
+    // `TypeValue[T = List[T = Nothing]]` was refused; under `Animal provides Desc[T = Animal]
+    // :- Desc[T = Dog]` with `Dog` a subtype of `Animal`, `Animal`'s row answered its own
+    // `Desc[T = Dog]` sub-goal over `Dog`'s, a cycle (MEASURED: it loaded and died at run time).
     if let Some(w) = local_provider.map(|l| l.sort) {
         // Canonicalize `w` ONCE, not once per candidate per pass.
         let w_canon = kb.canonical_sort_sym(w);
-        let is_w =
-            |c: &Candidate| c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon;
+        let is_w = |c: &Candidate| {
+            c.head_subsumed == 0
+                && (c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon)
+        };
         if candidates.iter().any(&is_w) {
             candidates.retain(&is_w);
         }
@@ -1089,16 +1100,27 @@ pub(super) fn resolve_inner<'a>(
                 apart.account()
             ),
             // `TypeValue` is the one spec no row may be written for (`HandWrittenTypeValue`),
-            // so advising one sent the author to a second refusal.
+            // so advising one sent the author to a second refusal. A `requires` in scope is
+            // advice only where the goal holds a parameter a caller could say: at a ground
+            // type there is no caller to take it from, and such a clause holds nowhere.
             None if type_value_spec_sym(kb).is_some_and(|tv| {
                 kb.canonical_sort_sym(tv) == kb.canonical_sort_sym(goal.spec_sort)
             }) =>
             {
+                let ground = goal.bindings.iter().all(|(_, v)| type_is_ground(kb, v));
                 format!(
                     "no impl provides {0}: its instances are derived, for a sort that is no \
-                     spec, a parametric one's only where each type argument has one, and none \
-                     may be written; add `requires {0}[…]` in scope to take it from the caller",
-                    kb.qualified_name_of(goal.spec_sort)
+                     spec, a parametric one's only where each type argument has one, and a \
+                     tuple or an arrow has none; none may be written{1}",
+                    kb.qualified_name_of(goal.spec_sort),
+                    if ground {
+                        String::new()
+                    } else {
+                        format!(
+                            "; add `requires {}[…]` in scope to take it from the caller",
+                            kb.qualified_name_of(goal.spec_sort)
+                        )
+                    }
                 )
             }
             // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
@@ -1578,6 +1600,11 @@ pub(super) struct Candidate {
     /// candidate whose head still carries impl-params. Used by
     /// `pick_most_specific`.
     pub(super) head_specificity: u32,
+    /// The leaves of the goal the head reached only through the subtype relation or a
+    /// carrier's provision of the head's sort ([`HeadWeight::subsumed`]): `0` where the
+    /// head matched the goal at its own types, which `pick_most_specific` prefers and the
+    /// locality rule of `resolve_inner` requires of a provider's own row.
+    pub(super) head_subsumed: u32,
     /// The provision row this candidate was matched from — which LOAD wrote it is a
     /// question of its slot (WI-20261010-9BKZ4, `sealed::provisions_that_change_a_
     /// sealed_dispatch`). Where two provisions that say the same thing are one

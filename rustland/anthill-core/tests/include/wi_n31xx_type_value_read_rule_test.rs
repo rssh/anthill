@@ -1412,10 +1412,12 @@ end
 /// THE SEARCH'S OWN ACCOUNT ADVISES NO `TypeValue` ROW EITHER. A provision whose contract asks
 /// for `TypeValue` where none holds — `W provides Desc[T = Option[T = (Int64, Int64)]]`, `Desc`
 /// requiring `TypeValue[T = T]` — is refused saying the instances are derived, where it was
-/// told to declare `provides TypeValue[…]` on the carrier, which is refused at load.
+/// told to declare `provides TypeValue[…]` on the carrier, which is refused at load, and then
+/// to add `requires TypeValue[…]` in scope, which a ground goal has no caller to take from:
+/// written on `W`, the provision loaded and could never answer.
 ///
 /// BACK-OUT: the `TypeValue` arm of the resolver's no-provider hint taken out, and this fails
-/// on the row advice.
+/// on the row advice; its `requires` tail given at a ground goal again, and it fails on that.
 #[test]
 fn a_provision_contract_at_no_type_value_names_no_row() {
     let errs = load_errors(
@@ -1448,15 +1450,13 @@ end
     assert!(
         contract.contains(
             "no impl provides anthill.reflect.TypeValue: its instances are derived, for a sort \
-             that is no spec, a parametric one's only where each type argument has one, and none \
-             may be written"
+             that is no spec, a parametric one's only where each type argument has one, and a \
+             tuple or an arrow has none; none may be written"
         ),
         "the account says why: {contract}"
     );
-    assert!(
-        !contract.contains("declare `provides anthill.reflect.TypeValue"),
-        "and advises no row: {contract}"
-    );
+    // Nor a `requires` in scope: the goal is ground, and there is no caller to take it from.
+    assert_names_no_row_advice("a provision's contract", contract);
 }
 
 /// A SPEC OF THE PROGRAM'S OWN WHOSE CONTRACT HOLDS NOWHERE AT THE CALL is not advised a row
@@ -1493,9 +1493,10 @@ end
     assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
     assert!(
         errs[0].contains(
-            "a row of `test.n31xx.contract2.Desc` at these bindings would be refused for its own \
-             contract, `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: Int64, _2: \
-             Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none may be written"
+            "no row of `test.n31xx.contract2.Desc` at these bindings can answer, its own \
+             contract asking `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: \
+             Int64, _2: Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none \
+             may be written"
         ),
         "the contract and its repair: {:?}",
         errs[0]

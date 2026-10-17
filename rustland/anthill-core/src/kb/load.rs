@@ -510,7 +510,7 @@ pub enum ClauseSlots {
 }
 
 impl ClauseSlots {
-    /// The slot of one clause, if it sits at either.
+    /// The slots a set of clauses sits at: some at arity + 1, some at the own arity.
     fn of(at_arity_plus_one: bool, at_own_arity: bool) -> Option<Self> {
         match (at_arity_plus_one, at_own_arity) {
             (true, true) => Some(ClauseSlots::Both),
@@ -518,10 +518,6 @@ impl ClauseSlots {
             (false, true) => Some(ClauseSlots::OwnArity),
             (false, false) => None,
         }
-    }
-
-    fn join(self, other: Self) -> Self {
-        if self == other { self } else { ClauseSlots::Both }
     }
 }
 
@@ -8269,7 +8265,7 @@ fn body_and_clauses_message(
          clause, not what its head is about), is a second DEFINITION of it, not a \
          second view of it. They cannot both answer: design §3.3 gives the \
          clauses precedence, which SUPPRESSES the body's derived relational view — \
-         measured, the arity+1 goal stops answering a definite value and answers a \
+         measured, the goal {} stops answering a definite value and answers a \
          residual instead, so the clauses take a working reading away rather than \
          adding one. Keep ONE. Either delete the clauses and let the body's derived \
          view serve the relational goal (WI-938), or drop the `=` body and let the \
@@ -8281,6 +8277,11 @@ fn body_and_clauses_message(
         count,
         plural,
         decl_site.as_deref().unwrap_or("<unknown>"),
+        match slots {
+            ClauseSlots::ArityPlusOne => "at arity + 1",
+            ClauseSlots::OwnArity => "at the operation's own arity",
+            ClauseSlots::Both => "at arity + 1 and at the operation's own arity",
+        },
     )
 }
 
@@ -20322,7 +20323,8 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     population.retain(|(sym, _)| seen.insert(kb.canonical_sym(*sym)));
     // By symbol index, not `HashMap` order: two runs over one corpus must report
     // identically.
-    let mut hits: Vec<(Symbol, OperationDefinition, ClauseSlots, Vec<SourceSpan>)> = population
+    type Hit = (Symbol, OperationDefinition, ClauseSlots, Vec<Option<SourceSpan>>);
+    let mut hits: Vec<Hit> = population
         .into_iter()
         .filter_map(|(sym, definition)| {
             // WHICH ARITIES THE DERIVED VIEW OCCUPIES, and there are TWO — an
@@ -20334,26 +20336,30 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
             //     sits at the operation's own arity ([`bare_bodied_bool_relation`]).
             let params = super::op_info::lookup_operation_info(kb, sym)?.params.len();
             let bool_view = would_derive_bool_relation(kb, sym);
-            let mut slots: Option<ClauseSlots> = None;
-            let mut sites: Vec<SourceSpan> = Vec::new();
+            let (mut at_plus_one, mut at_own) = (false, false);
+            let mut sites: Vec<Option<SourceSpan>> = Vec::new();
             for rid in kb.rules_by_functor_iter(sym) {
+                // The clauses the source wrote: one the loader derives is no definition an
+                // author gave, and the one that could stand under an operation's own functor
+                // — the induction axiom of a sort with an operation `induction` — is refused
+                // where it is derived (`emit_induction_rule`).
+                if kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
+                    continue;
+                }
                 let Some(n) = head_arg_count(kb, rid) else {
                     continue;
                 };
-                let Some(here) = ClauseSlots::of(n == params + 1, bool_view && n == params) else {
+                let (plus_one, own) = (n == params + 1, bool_view && n == params);
+                if !(plus_one || own) {
                     continue;
-                };
-                // A clause whose span the loader did not record would make the refusal
-                // name fewer places than it counted, so it is not counted either.
-                // Unreachable today — every source clause carries a head span — and kept
-                // total.
-                let Some(span) = kb.rule_head_span(rid) else {
-                    continue;
-                };
-                slots = Some(slots.map_or(here, |s| s.join(here)));
-                sites.push(span);
+                }
+                at_plus_one |= plus_one;
+                at_own |= own;
+                // Every source clause carries its head's span; one that did not is still
+                // counted, and named as unrecorded rather than left out.
+                sites.push(kb.rule_head_span(rid));
             }
-            slots.map(|slots| (sym, definition, slots, sites))
+            ClauseSlots::of(at_plus_one, at_own).map(|slots| (sym, definition, slots, sites))
         })
         .collect();
     if hits.is_empty() {
@@ -20372,7 +20378,15 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
                     .and_then(|v| v.first())
                     .or_else(|| kb.functor_spans.get(&op))
                     .map(|s| render_decl_site(kb, *s)),
-                clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+                clause_sites: sites
+                    .iter()
+                    .map(|s| {
+                        s.map_or_else(
+                            || "a site the loader did not record".to_string(),
+                            |s| render_decl_site(kb, s),
+                        )
+                    })
+                    .collect(),
             }
         })
         .collect()
@@ -37351,6 +37365,22 @@ impl<'a> Loader<'a> {
         // unreachable by qualified-name lookup.
         let induction_sym =
             if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
+                // A declaration of the sort's own under the axiom's name — an operation
+                // `induction` — would be one predicate with the axiom, whose clause then
+                // answers a rule-body goal at it in the operation's place: under `operation
+                // induction(c: Colour) -> Bool = true`, `Colour.induction(red)` in a rule
+                // body answered nothing while the call answered `true` (MEASURED).
+                if self.kb.kind_of(existing).is_some_and(|kind| kind != SymbolKind::Goal) {
+                    self.errors.push(LoadError::Other {
+                        message: format!(
+                            "`{induction_name}` names the induction axiom derived for \
+                             `{sort_name}`, and a declaration in `{sort_name}` takes the same \
+                             name: the axiom's clause would answer a rule-body goal at it in \
+                             the declaration's place. Give the declaration another name"
+                        ),
+                    });
+                    return;
+                }
                 existing
             } else {
                 self.kb.symbols.define(

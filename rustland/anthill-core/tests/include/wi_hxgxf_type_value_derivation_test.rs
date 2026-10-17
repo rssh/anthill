@@ -126,20 +126,26 @@ fn a_written_type_answers_itself() {
 }
 
 /// `Nothing` IS A TYPE ARGUMENT LIKE ANOTHER: `List[T = Nothing]` answers itself, as
-/// `Nothing` alone does. The bottom type matched every provision by subsumption (169 for
-/// `TypeValue[T = Nothing]`), and as `List`'s own sub-goal the locality rule kept `List`'s
-/// row, so `tv[B = List[T = Nothing]]` was refused, "no row of `TypeValue` answers here". A
-/// provision answers at `Nothing` where it is written at it. `Nothing` alone and
-/// `List[T = Int64]` are the controls and pass either way, by design.
+/// `Nothing` alone does, written or inferred for `[]`. The bottom type reaches every
+/// provision through the subtype relation (169 for `TypeValue[T = Nothing]`); `Nothing`'s own
+/// meets it as itself and is the more specific, and `List`'s own row, reached only through
+/// the relation, is no answer local to `List`'s dictionary. Locality kept `List`'s row, so
+/// `tv[B = List[T = Nothing]]` was refused, "no row of `TypeValue` answers here". `Nothing`
+/// alone and `List[T = Int64]` are the controls and pass either way, by design.
 ///
-/// BACK-OUT: the bottom type matched as before (arm 1.2 of `match_candidate_against_goal`
-/// taken out), and the program is refused.
+/// BACK-OUT: locality keeping a provider's own row the sub-goal reaches only through the
+/// subtype relation, and `listOfBottom` is refused; the ranking without its subtype tie-break,
+/// and `inferredListOfBottom` is, the 169 provisions tied.
 #[test]
 fn a_type_argument_that_is_nothing_answers_itself() {
     let src = program(
         r#"    operation bottom(n: Int64) -> Type = tv[B = Nothing](0)
     operation listOfBottom(n: Int64) -> Type = tv[B = List[T = Nothing]](0)
-    operation listOfInt(n: Int64) -> Type = tv[B = List[T = Int64]](0)"#,
+    operation listOfInt(n: Int64) -> Type = tv[B = List[T = Int64]](0)
+    operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+    operation inferredListOfBottom(n: Int64) -> Type =
+      let xs = []
+      D.tyOf(xs)"#,
     )
     .replace(
         "import anthill.prelude.{Int64, Type, List, Option, Map}",
@@ -151,6 +157,7 @@ fn a_type_argument_that_is_nothing_answers_itself() {
         ("bottom", "nothing"),
         ("listOfBottom", "List[T = nothing]"),
         ("listOfInt", "List[T = Int64]"),
+        ("inferredListOfBottom", "List[T = nothing]"),
     ] {
         assert_eq!(type_answer(&src, &format!("wihxgxf.tv.D.{op}")), want, "{op}");
     }

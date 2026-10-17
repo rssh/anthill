@@ -404,7 +404,7 @@ impl EvalError {
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──
-            EvalError::Raised { payload, .. } => raised_disposition(kb, payload),
+            EvalError::Raised { origin, .. } => raised_disposition(*origin),
             // ── NoProvider: the requirement is known not to be available ──
             //
             // A slot the argument types pinned and no provider answers: the call has no
@@ -460,7 +460,11 @@ impl EvalError {
     }
 }
 
-/// Who raised an [`EvalError::Raised`] payload.
+/// Who raised an [`EvalError::Raised`] payload: the program, or the runtime giving its
+/// account of something it could not do. A program's own raise of one of the runtime's
+/// constructors is [`RaiseOrigin::Program`], and a payload the runtime raised keeps its
+/// origin when a boundary catches it and the same value is raised again in that run
+/// (`Interpreter::origin_of_raise`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RaiseOrigin {
     /// `Error.raise`, a host function's declared `Error`, a handler's `Throw`: a raise of
@@ -468,40 +472,32 @@ pub enum RaiseOrigin {
     Program,
     /// A resolver search behind a stream reported a fault (`Interpreter::fault_stream`),
     /// and the runtime raised its `evaluation_failure`: the account of a search it could not
-    /// finish, which a boundary around the call does not repair. A program's own raise of
-    /// that constructor is [`RaiseOrigin::Program`].
+    /// finish, which a boundary around the call does not repair.
     SearchFault,
+    /// A relation drain stayed undischarged (`Interpreter::raise_relation_floundered`): the
+    /// search did not decide, which is no failure of the callee.
+    RelationFloundered,
+    /// A scoped load reported its diagnostics (`Interpreter::raise_load_failed`): a verdict
+    /// the operation was asked for, delivered on the `Error` channel.
+    LoadFailed,
 }
 
-/// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless
-/// its payload names one of the two constructors the runtime raises for reasons that
-/// are not domain failures of the callee.
-///
-/// KEYED BY SYMBOL, never by name (WI-897): both constructors are resolved through the
-/// KB's qualified-name table, so a rename moves the key with the declaration. An
-/// UNRESOLVED name answers `None` and therefore matches no payload — which degrades to
-/// "this is a fault", the loud side, rather than to silence.
-fn raised_disposition(kb: &crate::kb::KnowledgeBase, payload: &Value) -> BridgeDisposition {
-    let Value::Entity { functor, .. } = payload else {
-        return BridgeDisposition::Fault;
-    };
-    // WI-737 — an eval-side relation drain that stayed undischarged. The sub-search did
-    // not decide; that is [`BridgeDisposition::Schedule`]'s exact meaning, and calling
-    // it a fault would report "the callee failed" for a goal nothing has answered yet.
-    // WI-SPGBP — `KB.loaded` reporting that the sources it was handed do not load. A
-    // verdict the operation was asked for, delivered on the channel the language gives
-    // it; the rule that called it without an `Error.reify` gets no value, and that is
-    // the missing reify rather than a failure of the load.
-    const NON_FAULT_RAISES: [&str; 2] = [
-        "anthill.prelude.RelationFloundered.relation_floundered",
-        "anthill.reflect.LoadFailed.load_failed",
-    ];
-    for qname in NON_FAULT_RAISES {
-        if kb.try_resolve_symbol(qname) == Some(*functor) {
-            return BridgeDisposition::Schedule;
-        }
+/// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless the
+/// runtime raised it for a reason that is no domain failure of the callee. Read off the
+/// raise and not off its payload's constructor, which a program may build and raise itself:
+/// such a raise is the program's, and a fault.
+fn raised_disposition(origin: RaiseOrigin) -> BridgeDisposition {
+    match origin {
+        // WI-737 — an eval-side relation drain that stayed undischarged. The sub-search did
+        // not decide; that is [`BridgeDisposition::Schedule`]'s exact meaning, and calling
+        // it a fault would report "the callee failed" for a goal nothing has answered yet.
+        // WI-SPGBP — `KB.loaded` reporting that the sources it was handed do not load. A
+        // verdict the operation was asked for, delivered on the channel the language gives
+        // it; the rule that called it without an `Error.reify` gets no value, and that is
+        // the missing reify rather than a failure of the load.
+        RaiseOrigin::RelationFloundered | RaiseOrigin::LoadFailed => BridgeDisposition::Schedule,
+        RaiseOrigin::Program | RaiseOrigin::SearchFault => BridgeDisposition::Fault,
     }
-    BridgeDisposition::Fault
 }
 
 impl std::fmt::Display for EvalError {

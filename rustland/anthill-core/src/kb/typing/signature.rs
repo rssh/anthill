@@ -3477,10 +3477,17 @@ pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol)
     // Bounded by the row's own depth; the loop terminates because each step descends
     // into a strictly smaller child.
     loop {
-        let is_wrapper = matches!(
-            resolved_functor_name(kb, &cur),
-            Some("guarded") | Some("absent") | Some("present")
-        );
+        // By the constructor's qualified name, as `row_atoms` reads them: a sort of the
+        // program's own named `absent` is no wrapper (MEASURED: `effects {absent[label =
+        // Int64]}` over a user effect `absent` was refused, its label read as the effect).
+        let is_wrapper = cur.head(kb).functor_sym().is_some_and(|f| {
+            matches!(
+                kb.qualified_name_of(f),
+                "anthill.prelude.EffectExpression.guarded"
+                    | "anthill.prelude.EffectExpression.absent"
+                    | "anthill.prelude.EffectExpression.present"
+            )
+        });
         if !is_wrapper {
             return cur;
         }

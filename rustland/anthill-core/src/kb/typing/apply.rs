@@ -2183,6 +2183,26 @@ pub(super) fn check_apply_iter(
                 return Err(err);
             }
         }
+        // A `Modify` fires only on a place of a modifiable type (proposal 037 Rule 8), and the
+        // standard handler's `ModifyRuntime.get` and `set` read and write the very place they
+        // are handed. At a place whose type admits none the arising `Modify[p]` is dropped as
+        // vacuous and the handler wrote the place all the same (MEASURED: `set(p, 5)` over
+        // `p: Plain`, a sort with no `Modifiable`, loaded, and a nullary one was written in
+        // silence), so the call is refused, as a written `effects Modify[p]` there is. An
+        // argument that names no place at all is the refusal above's.
+        if let Some(refusal) = modify_runtime_at_unmodifiable_place(
+            kb,
+            fn_sym,
+            &op.params,
+            &pos_call_params,
+            pos_results,
+            named_args,
+            named_results,
+            &places.placeless,
+            span,
+        ) {
+            return Err(refusal);
+        }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
         let mut effects = merge_effects(kb, &substituted_op_effects, &arg_effects);
@@ -3598,8 +3618,9 @@ pub(super) fn check_apply_iter(
                         && !op_requires_covers_call(kb, env, &subst, spec_sort)
                     {
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
-                        if let Some(refusal) = pinned_carrier
-                            .or_else(|| unclassified_goal_carrier(kb, &goal))
+                        let carrier =
+                            pinned_carrier.or_else(|| unclassified_goal_carrier(kb, &goal));
+                        if let Some(refusal) = carrier
                             .and_then(|c| unprovided_spec_at_carrier(kb, &goal, c, fn_sym, span))
                         {
                             return Err(refusal);
@@ -5324,6 +5345,63 @@ fn defaulted_call_at_non_instance(
         return None;
     }
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
+}
+
+/// `ModifyRuntime.get` or `.set` handed a place whose type admits no `Modify`, by the reading
+/// the declaration check refuses a written label with ([`crate::kb::region::type_admits_modify`]):
+/// a type known to hold nothing that can be mutated. A type parameter, and a type that holds a
+/// modifiable one, admit.
+#[allow(clippy::too_many_arguments)]
+fn modify_runtime_at_unmodifiable_place(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    params: &[(Symbol, Value)],
+    pos_call_params: &[Option<usize>],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+    placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let op = kb.canonical_sym(fn_sym);
+    let reads_or_writes = ["anthill.prelude.ModifyRuntime.get", "anthill.prelude.ModifyRuntime.set"]
+        .iter()
+        .any(|q| kb.try_resolve_symbol(q).is_some_and(|s| kb.canonical_sym(s) == op));
+    if !reads_or_writes {
+        return None;
+    }
+    // The place is the operation's first parameter, `target`.
+    let (target, _) = params.first()?;
+    if placeless.contains_key(target) {
+        return None;
+    }
+    let (_, _, ty) =
+        supplied_arg_pairs(kb, params, pos_call_params, pos_results, named_args, named_results)
+            .into_iter()
+            .find(|(p, _, _)| p == target)?;
+    let regions = crate::kb::region::region_sorts(kb);
+    if crate::kb::region::type_admits_modify(kb, &ty, &regions) {
+        return None;
+    }
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationArgument {
+            op_name: fn_sym,
+            param: *target,
+        },
+        expected: "a place of a modifiable type: a sort that provides `Modifiable` (`Cell`) or \
+                   `provides` a sort that does, a type that holds one (`List[T = Cell]`, an \
+                   entity with a `Cell` field), or a type parameter (proposal 037 Rule 8, \
+                   kernel-language.md §5.6)"
+            .to_string(),
+        actual: format!(
+            "a place of type `{}`, which nothing can mutate, so the `Modify` handler has no place \
+             to keep for it: give the place a sort of the program's own that declares `provides \
+             Modifiable[T = Self]`, or make it a `Cell`",
+            type_display_name_value(kb, &ty)
+        ),
+    })
 }
 
 /// Each argument a call supplies that was typed, with the parameter it fills: `(parameter,

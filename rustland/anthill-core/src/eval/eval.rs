@@ -4329,9 +4329,10 @@ impl Interpreter {
         e: EvalError,
         floor: usize,
     ) -> Result<Value, EvalError> {
-        let EvalError::Raised { payload, .. } = &e else {
+        let EvalError::Raised { payload, origin } = &e else {
             return Err(e);
         };
+        let origin = *origin;
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {
             return Err(e);
         };
@@ -4350,6 +4351,15 @@ impl Interpreter {
         let Some((idx, _)) = accepted else {
             return Err(e);
         };
+        // The runtime's account, now a value the program holds: raised again, it is still
+        // the runtime's (`Interpreter::origin_of_raise`).
+        if origin != super::RaiseOrigin::Program
+            && !self.runtime_raises.iter().any(|(p, _)| {
+                crate::kb::term_view::views_structurally_equal(&self.kb, p, &raised)
+            })
+        {
+            self.runtime_raises.push((raised.clone(), origin));
+        }
         let caught = self.build_result_arm(err_ctor, raised)?;
         self.stack.unwind_to_boundary(idx);
         Ok(caught)

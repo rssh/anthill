@@ -45,7 +45,6 @@
 use anthill_core::eval::{BridgeDisposition, EvalError, Value};
 use anthill_core::kb::extent::ExtentReadError;
 use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
-use anthill_core::kb::resolve::ResolveConfig;
 
 /// The fixture the ticket was measured on. `match n case k | k > 0 -> k` is
 /// GUARD-EXHAUSTIBLE — it loads clean (a `sort` scrutinee's arms are not checked for
@@ -63,13 +62,7 @@ namespace bru.guard
 end
 "#;
 
-fn resolve(src: &str, pattern: &str) -> (Vec<anthill_core::kb::resolve::Solution>, Vec<String>) {
-    let mut kb = crate::common::load_kb_with(src);
-    let goal = crate::common::query_pattern_term(&mut kb, pattern);
-    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    let msgs = stats.errors.iter().map(|e| e.message.clone()).collect();
-    (sols, msgs)
-}
+use crate::common::resolve_with_messages as resolve;
 
 // ── THE ACCEPTANCE ────────────────────────────────────────────────────────────
 
@@ -447,6 +440,13 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // of the callee. Testing the CHANNEL instead of the CAUSE sweeps them in, which is
     // what the reverted first attempt did.
     //
+    // THE CAUSE IS THE RAISE'S, not its payload's constructor: the runtime marks the two
+    // raises it makes for those reasons (`RaiseOrigin`), and a program's own raise of either
+    // constructor is a fault (user, 2026-10-17). Keyed by the constructor, a program's
+    // `Error.raise(relation_floundered(…))` was scheduled in silence, and a constraint over
+    // it loaded as holding (MEASURED; `wi_9wvt7_review5_test::a_programs_own_floundered_raise_is_a_fault`
+    // drives it).
+    //
     // DRIVEN AT THE PREDICATE, not through a fixture: reaching either raise from a
     // bridged rule body needs a program that is itself about something else, and a row
     // whose fixture stops loading for an unrelated reason would go quietly green.
@@ -455,7 +455,9 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // predicate over a genuine raise, so the two together say the partition is on the
     // right seam rather than that the channel was left off. Back out the cause read
     // (`matches!(e, EvalError::Raised { .. }) => Fault`) and THIS row fails while that
-    // one keeps passing.
+    // one keeps passing; read the payload's constructor again and it fails on the
+    // program's own raise.
+    use anthill_core::eval::RaiseOrigin;
     let kb = crate::common::load_kb_with(
         r#"
 namespace bru.part
@@ -464,7 +466,7 @@ namespace bru.part
 end
 "#,
     );
-    let raise_of = |qname: &str| {
+    let raise_of = |qname: &str, origin: RaiseOrigin| {
         let functor = kb
             .try_resolve_symbol(qname)
             .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"));
@@ -474,22 +476,31 @@ end
                 pos: Vec::new().into(),
                 named: Vec::new().into(),
             },
-            origin: anthill_core::eval::RaiseOrigin::Program,
+            origin,
         }
     };
-    for qname in [
-        "anthill.prelude.RelationFloundered.relation_floundered",
-        "anthill.reflect.LoadFailed.load_failed",
+    for (qname, origin) in [
+        (
+            "anthill.prelude.RelationFloundered.relation_floundered",
+            RaiseOrigin::RelationFloundered,
+        ),
+        ("anthill.reflect.LoadFailed.load_failed", RaiseOrigin::LoadFailed),
     ] {
         assert_eq!(
-            raise_of(qname).bridge_disposition(&kb),
+            raise_of(qname, origin).bridge_disposition(&kb),
             BridgeDisposition::Schedule,
-            "`{qname}` is not a domain failure of the callee — it must reach the bridge \
-             as Schedule, so the goal delays with nothing said"
+            "the runtime's `{qname}` is not a domain failure of the callee — it must reach \
+             the bridge as Schedule, so the goal delays with nothing said"
+        );
+        assert_eq!(
+            raise_of(qname, RaiseOrigin::Program).bridge_disposition(&kb),
+            BridgeDisposition::Fault,
+            "a program's own raise of `{qname}` is its own failure, and a fault"
         );
     }
     assert_eq!(
-        raise_of("anthill.prelude.MatchFailed.match_failed").bridge_disposition(&kb),
+        raise_of("anthill.prelude.MatchFailed.match_failed", RaiseOrigin::Program)
+            .bridge_disposition(&kb),
         BridgeDisposition::Fault,
         "and every OTHER payload is a fault — a host raise rides a row it never appears \
          in, which is exactly the case the acceptance measures"

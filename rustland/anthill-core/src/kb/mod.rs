@@ -4858,8 +4858,8 @@ impl KnowledgeBase {
                     self.retract(rule_id);
                     return None;
                 }
-                // WI-628: the guard's search truncated at the depth limit — we
-                // cannot CONFIRM this fact preserves the invariant. An integrity
+                // WI-628: the guard's search truncated at the depth limit, or a goal of it
+                // faulted — we cannot CONFIRM this fact preserves the invariant. An integrity
                 // guard must never admit a fact it cannot verify, so REJECT
                 // (retract) rather than decide from an incomplete search. The
                 // load-time path surfaces this loudly as `ConstraintUndecidable`;
@@ -4870,9 +4870,9 @@ impl KnowledgeBase {
                 Ok(GuardStatus::Undecidable(reason)) => {
                     let label = self.guards[idx].label.clone();
                     eprintln!(
-                        "anthill: integrity constraint{} undecidable within the resolver \
-                         depth budget ({}) — fact rejected (an integrity guard must not \
-                         admit a fact it cannot verify)",
+                        "anthill: integrity constraint{} is not decided ({}) — fact \
+                         rejected (an integrity guard must not admit a fact it cannot \
+                         verify)",
                         load::label_suffix(&label),
                         reason,
                     );

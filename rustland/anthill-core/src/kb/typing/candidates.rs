@@ -509,7 +509,7 @@ fn candidates_at(
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
         let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-        let mut head_specificity: u32 = 0;
+        let mut weight = HeadWeight::default();
         let mut all_match = true;
         let mut resolved_head_bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         // Decoded here, for the rows the conversion test and the carrier filter kept.
@@ -564,7 +564,7 @@ fn candidates_at(
                 &per_call_value,
                 &impl_param_set,
                 &mut impl_subst,
-                &mut head_specificity,
+                &mut weight,
                 sigma,
             ) {
                 all_match = false;
@@ -586,7 +586,8 @@ fn candidates_at(
             impl_sort,
             resolved_head_bindings,
             impl_subst,
-            head_specificity,
+            head_specificity: weight.specificity,
+            head_subsumed: weight.subsumed,
             row: row.rid,
         };
         // WI-1032 — TWO PROVISIONS THAT SAY THE SAME THING ARE ONE CANDIDATE. The rule
@@ -599,9 +600,9 @@ fn candidates_at(
         //
         // Structural equality is the whole criterion and it is SOUND BY CONSTRUCTION: a
         // `Candidate` is `(impl_sort, resolved_head_bindings, impl_subst,
-        // head_specificity)`, and everything downstream — the resolved tree node, the
-        // subgoals `requires_chain(impl_sort)` instantiates through `impl_subst` — is a
-        // function of exactly those. Two equal candidates therefore resolve identically,
+        // head_specificity, head_subsumed)`, and everything downstream — the resolved tree
+        // node, the subgoals `requires_chain(impl_sort)` instantiates through `impl_subst` —
+        // is a function of exactly those. Two equal candidates therefore resolve identically,
         // so picking either is picking the same thing. This is NOT first-match: candidates
         // that differ in ANY field are all kept, and `pick_most_specific` still refuses to
         // choose among them.
@@ -666,6 +667,7 @@ fn candidates_at(
                 && same_bindings(kb, &c.resolved_head_bindings, &cand.resolved_head_bindings)
                 && same_bindings(kb, &c.impl_subst, &cand.impl_subst)
                 && c.head_specificity == cand.head_specificity
+                && c.head_subsumed == cand.head_subsumed
         }) {
             out.push(cand);
         }
@@ -1082,7 +1084,7 @@ pub(super) fn match_candidate_against_goal(
     per_call_value: &Value,
     impl_params: &[Symbol],
     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-    specificity: &mut u32,
+    weight: &mut HeadWeight,
     // WI-827: the call-site σ (`None` on the σ-less dispatch/diagnostic path).
     sigma: Option<&SigmaCtx>,
 ) -> bool {
@@ -1095,20 +1097,6 @@ pub(super) fn match_candidate_against_goal(
     }
     // One reading of the candidate's head serves the two arms that turn on it.
     let candidate_head = type_head(kb, candidate_value);
-    // (1.2) THE BOTTOM TYPE IS MATCHED AS ITSELF. `Nothing` is a subtype of every type, and
-    // read through the subtype relation (arm 3) or viewed at a carrier it matched every
-    // provision of the spec: 169 for `TypeValue[T = Nothing]`. Ranked at the call, the most
-    // specific won and the answer was right; as a provider's own sub-goal, locality kept the
-    // provider, so `List`'s `TypeValue[T = Nothing]` was answered by `List`'s row and
-    // `TypeValue[T = List[T = Nothing]]` was refused. A provision answers at `Nothing` where
-    // it is written at it, or where its own parameter stands (arm 1).
-    if matches!(type_head(kb, per_call_value), TypeHead::Nothing) {
-        if matches!(candidate_head, TypeHead::Nothing) {
-            *specificity = specificity.saturating_add(1);
-            return true;
-        }
-        return false;
-    }
     // (1.5) Candidate side is an ARROW — matched part by part, the parts paired as two
     // arrows are related ([`arrow_part_pairs`]): the parameters of a list by position,
     // the names lining up or one list written without names. A goal that is no arrow —
@@ -1132,7 +1120,7 @@ pub(super) fn match_candidate_against_goal(
         let Some(pairs) = arrow_part_pairs(kb, candidate_value, per_call_value) else {
             return false;
         };
-        *specificity = specificity.saturating_add(1);
+        weight.specificity = weight.specificity.saturating_add(1);
         let parts_match = pairs.parts.iter().all(|(c_part, p_part)| {
             match_candidate_against_goal(
                 kb,
@@ -1142,7 +1130,7 @@ pub(super) fn match_candidate_against_goal(
                 p_part,
                 impl_params,
                 impl_subst,
-                specificity,
+                weight,
                 sigma,
             )
         });
@@ -1155,7 +1143,7 @@ pub(super) fn match_candidate_against_goal(
                 p_row,
                 impl_params,
                 impl_subst,
-                specificity,
+                weight,
                 sigma,
             );
     }
@@ -1232,7 +1220,10 @@ pub(super) fn match_candidate_against_goal(
                 // bindings are: one sort on both sides, so the key rule is the same-base
                 // arm's ([`BindingKeyMatch::for_bases`] is its owner).
                 let key_match = BindingKeyMatch::for_bases(kb, c_base, c_base);
-                *specificity = specificity.saturating_add(1);
+                weight.specificity = weight.specificity.saturating_add(1);
+                // The goal's sort is reached through its provision of the candidate's, not
+                // at its own type, which a provision written at that sort would be.
+                weight.subsumed = weight.subsumed.saturating_add(1);
                 for (k, c_val) in &c_bindings {
                     let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).cloned() else {
                         return false;
@@ -1245,7 +1236,7 @@ pub(super) fn match_candidate_against_goal(
                         &p_val,
                         impl_params,
                         impl_subst,
-                        specificity,
+                        weight,
                         sigma,
                     ) {
                         return false;
@@ -1327,7 +1318,7 @@ pub(super) fn match_candidate_against_goal(
         if key_match != BindingKeyMatch::Label {
             return false;
         }
-        *specificity = specificity.saturating_add(1);
+        weight.specificity = weight.specificity.saturating_add(1);
         // WI-768: one base ⟹ compare binding KEYS by the shared rule. The two producers
         // spell one slot differently — a WRITTEN `provides Spec[T = Relation[T = .., E =
         // ..]]` keys `T`/`E` BARE (loader `reintern(p.last())`), a relation VALUE from a
@@ -1378,7 +1369,7 @@ pub(super) fn match_candidate_against_goal(
                 &p_val,
                 impl_params,
                 impl_subst,
-                specificity,
+                weight,
                 sigma,
             ) {
                 return false;
@@ -1449,7 +1440,7 @@ pub(super) fn match_candidate_against_goal(
                 // falls through to step (3)'s shallow match — the pre-fix behavior —
                 // rather than masking an abstract sub-goal as a full match (review).
                 if aligned {
-                    *specificity = specificity.saturating_add(1);
+                    weight.specificity = weight.specificity.saturating_add(1);
                     return true;
                 }
             }
@@ -1457,10 +1448,43 @@ pub(super) fn match_candidate_against_goal(
     }
     // (3) Concrete sort ref/identifier — use the existing shallow check.
     if dispatch_values_match(kb, per_call_value, candidate_value) {
-        *specificity = specificity.saturating_add(1);
+        weight.specificity = weight.specificity.saturating_add(1);
+        if leaf_reached_through_subtype(kb, per_call_value, candidate_value) {
+            weight.subsumed = weight.subsumed.saturating_add(1);
+        }
         return true;
     }
     false
+}
+
+/// What a provision's head matched a goal by, which ranks two candidates
+/// ([`pick_most_specific`]) and decides whether a provider's own row is local to its
+/// dictionary (`resolve_inner`): `specificity` counts the parts the head fixed, and
+/// `subsumed` the leaves the goal's type reached only through the subtype relation or a
+/// carrier's provision of the head's sort, where a row written at that type would have
+/// matched it as itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct HeadWeight {
+    pub(super) specificity: u32,
+    pub(super) subsumed: u32,
+}
+
+/// Whether arm (3) matched the goal's leaf to the candidate's through the subtype relation
+/// rather than at one type: the goal's is the bottom type and the candidate's is not, or the
+/// two are sorts and different ones (`Dog` against a provision at `Animal`, `Nothing`
+/// against one at `Int64`). Nothing else is: a variable on either side, which arm (3)
+/// matches as any type (an untyped rule variable's `?_` meets every provision so); a value
+/// in a type position, which it relates by value; a structural type.
+fn leaf_reached_through_subtype(kb: &KnowledgeBase, per_call: &Value, candidate: &Value) -> bool {
+    match (type_head(kb, per_call), type_head(kb, candidate)) {
+        (TypeHead::Nothing, TypeHead::Nothing) => false,
+        (TypeHead::Nothing, TypeHead::SortRef(_) | TypeHead::Parameterized { .. }) => true,
+        (
+            TypeHead::SortRef(a) | TypeHead::Parameterized { base: a },
+            TypeHead::SortRef(b) | TypeHead::Parameterized { base: b },
+        ) => !same_sort_canonical(kb, a, b),
+        _ => false,
+    }
 }
 
 /// A provision's arrow row matched against the call's: one row, as the parameters and the
@@ -1485,7 +1509,7 @@ fn match_candidate_rows(
     per_call_row: &Value,
     impl_params: &[Symbol],
     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-    specificity: &mut u32,
+    weight: &mut HeadWeight,
     sigma: Option<&SigmaCtx>,
 ) -> bool {
     // Both rows as written, as the leaf arm reads a pair under a fresh substitution.
@@ -1505,13 +1529,13 @@ fn match_candidate_rows(
                     c_labels: &[Value],
                     p_labels: &[Value],
                     impl_subst: &mut SmallVec<[(Symbol, Value); 2]>,
-                    specificity: &mut u32|
+                    weight: &mut HeadWeight|
      -> Option<Vec<Value>> {
         let mut left: Vec<Option<&Value>> = p_labels.iter().map(Some).collect();
         for c_label in c_labels {
             let met = left.iter().position(|p| {
                 p.is_some_and(|p_label| {
-                    let (saved_subst, saved_spec) = (impl_subst.clone(), *specificity);
+                    let (saved_subst, saved_weight) = (impl_subst.clone(), *weight);
                     let met = match_candidate_against_goal(
                         kb,
                         impl_sort,
@@ -1520,11 +1544,11 @@ fn match_candidate_rows(
                         p_label,
                         impl_params,
                         impl_subst,
-                        specificity,
+                        weight,
                         sigma,
                     );
                     if !met {
-                        (*impl_subst, *specificity) = (saved_subst, saved_spec);
+                        (*impl_subst, *weight) = (saved_subst, saved_weight);
                     }
                     met
                 })
@@ -1533,15 +1557,15 @@ fn match_candidate_rows(
         }
         Some(left.into_iter().flatten().cloned().collect())
     };
-    let Some(rest_present) = meet(kb, &c_present, &p_present, impl_subst, specificity) else {
+    let Some(rest_present) = meet(kb, &c_present, &p_present, impl_subst, weight) else {
         return false;
     };
-    let Some(rest_absent) = meet(kb, &c_absent, &p_absent, impl_subst, specificity) else {
+    let Some(rest_absent) = meet(kb, &c_absent, &p_absent, impl_subst, weight) else {
         return false;
     };
     match binder {
         None => {
-            *specificity = specificity.saturating_add(1);
+            weight.specificity = weight.specificity.saturating_add(1);
             rest_present.is_empty() && rest_absent.is_empty() && p_tails.is_empty()
         }
         Some(None) => true,
@@ -1949,17 +1973,26 @@ pub(super) fn sole_provider(kb: &KnowledgeBase, candidates: &[Candidate]) -> Opt
 }
 
 /// Coherence-by-specificity. Picks the candidate with the strictly-
-/// highest `head_specificity` count. Returns `None` if no unique
-/// winner (multiple candidates tied at the max).
+/// highest `head_specificity` count, and among those the one whose head the goal reached
+/// through the subtype relation at the fewest leaves (`head_subsumed`): at a `Dog`, a
+/// provision written at `Dog` is more specific than one at `Animal`, and at `Nothing` the
+/// bottom type's own than any other. Returns `None` if no unique winner (multiple
+/// candidates tied at both).
 pub(super) fn pick_most_specific(_kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
     if candidates.is_empty() {
         return None;
     }
     let max = candidates.iter().map(|c| c.head_specificity).max().unwrap();
+    let fewest = candidates
+        .iter()
+        .filter(|c| c.head_specificity == max)
+        .map(|c| c.head_subsumed)
+        .min()
+        .unwrap();
     let mut winners = candidates
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.head_specificity == max);
+        .filter(|(_, c)| c.head_specificity == max && c.head_subsumed == fewest);
     let first = winners.next()?;
     if winners.next().is_some() {
         return None;

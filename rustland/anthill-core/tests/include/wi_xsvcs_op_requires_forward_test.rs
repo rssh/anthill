@@ -324,10 +324,6 @@ end
     );
 }
 
-/// THE STDLIB STILL LOADS — asserted rather than assumed, because the population this
-/// rule had to avoid lives there. `load_stdlib_kb` panics on any load error, so this is
-/// a real assertion and not a smoke test; the census counted 57 unfilled op slots across
-/// the workspace and this rule touches only the 4 that name a caller rigid.
 /// A RIGID INSIDE A SORT APPLICATION IS FORWARDED TOO. `tyOf(some(x))` over `x: C` hands
 /// `Option[T = C]` to an operation that demands evidence about it, and `Option`'s instance
 /// holds only where `C`'s does, which `f` holds none of. It loaded clean, and reached from a
@@ -442,6 +438,12 @@ fn a_rigid_inside_an_application_of_a_programs_spec_is_refused_too() {
     );
 }
 
+/// THE STDLIB STILL LOADS — asserted rather than assumed, because the population this
+/// rule had to avoid lives there. `load_stdlib_kb` panics on any load error, so this is
+/// a real assertion and not a smoke test; the census counted 57 unfilled op slots across
+/// the workspace and this rule touches only the ones that name a caller rigid.
+///
+/// PASSES EITHER WAY BY DESIGN: the control the module doc names.
 #[test]
 fn the_stdlib_still_loads() {
     let kb = load_stdlib_kb();

@@ -2663,6 +2663,27 @@ pub fn query_pattern_functor(
 /// the query converter no longer interns. Every `TermView` consumer takes it unchanged
 /// (`kb.resolve(&[goal], …)` is the common one here); a test that needs to read its
 /// STRUCTURE asks `TermView::head` / `pos_arg` / `named_arg` rather than `kb.get_term`.
+/// Load `src` and resolve the query `pattern` over it: the solutions, and the messages of
+/// the faults the search recorded (`ResolveStats::errors`) — what a bridged operation that
+/// raised, or asked a handler for an effect, reports to the rule that read it.
+#[allow(dead_code)]
+pub fn resolve_with_messages(
+    src: &str,
+    pattern: &str,
+) -> (Vec<anthill_core::kb::resolve::Solution>, Vec<String>) {
+    let mut kb = load_kb_with(src);
+    let goal = query_pattern_term(&mut kb, pattern);
+    let (sols, stats) =
+        kb.resolve_with_stats(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    (sols, stats.errors.iter().map(|e| e.message.clone()).collect())
+}
+
+/// [`resolve_with_messages`]' fault messages alone.
+#[allow(dead_code)]
+pub fn fault_messages(src: &str, pattern: &str) -> Vec<String> {
+    resolve_with_messages(src, pattern).1
+}
+
 #[allow(dead_code)]
 pub fn query_pattern_term(
     kb: &mut KnowledgeBase,
