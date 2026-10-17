@@ -95,6 +95,20 @@ impl RequirementUse {
     }
 }
 
+/// Where a `requires` that covers a spec operation's call is written, for the refusal that
+/// asks for one ([`TypeError::MissingRequiresForSpecOp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiresSite {
+    /// In an operation's body: the operation's own `requires`, or its sort's where it is a
+    /// member of one.
+    Operation {
+        op: Symbol,
+        sort: Option<Symbol>,
+    },
+    /// In a rule's body: a `requires(…)` goal of the clause.
+    Clause,
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeError {
     /// Canonical type mismatch from `assert_compatible`. `context` is where
@@ -657,6 +671,9 @@ pub enum TypeError {
         spec_op_sym: Symbol,
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
+        /// Where the covering clause is written: the calling operation's own `requires`, or
+        /// its sort's, or a `requires(…)` goal in the clause a rule body calls from.
+        site: RequiresSite,
     },
     /// Proposal 066 (WI-20260919-1Z3E7) — [`Self::MissingRequiresForSpecOp`] where the
     /// carrier DOES hold the evidence, as a condition of one of its provisions, and the
@@ -1877,20 +1894,14 @@ impl TypeError {
                 spec_op_sym,
                 spec_sort_sym,
                 abstract_params,
+                site,
                 ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
-                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
-                let spec_short = short_name_of(spec_qn);
-                let params_list: Vec<String> = abstract_params
-                    .iter()
-                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
-                    .collect();
+                let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
                 format!(
-                    "spec op `{}` called at abstract type — add `requires {}[{}]` to the enclosing sort, or specialize to a concrete carrier",
-                    op_qn,
-                    spec_short,
-                    params_list.join(", "),
+                    "spec op `{op_qn}` called at abstract type — {}, or specialize to a concrete carrier",
+                    missing_requires_repair(kb, &clause, *site),
                 )
             }
             TypeError::ProvisionConditionOutOfScope {
@@ -2657,20 +2668,13 @@ impl TypeError {
                 spec_op_sym,
                 spec_sort_sym,
                 abstract_params,
+                site,
                 ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
-                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
-                let spec_short = short_name_of(spec_qn);
-                let params_list: Vec<String> = abstract_params
-                    .iter()
-                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
-                    .collect();
-                let suggestion = format!(
-                    "missing `requires {}[{}]` on enclosing sort",
-                    spec_short,
-                    params_list.join(", "),
-                );
+                let spec_short = short_name_of(kb.qualified_name_of(*spec_sort_sym));
+                let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
+                let suggestion = format!("missing {}", missing_requires_place(kb, &clause, *site));
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: op_qn.to_string(),
@@ -3199,5 +3203,50 @@ pub(crate) fn unnamed_requirement_line_error(
         expected_type: "a requirement this line states, or a name of its own".to_string(),
         actual_type: detail,
         span,
+    }
+}
+
+/// The clause [`TypeError::MissingRequiresForSpecOp`] asks for, `Spec[T = …]`: the spec's
+/// short name and the parameters the call left abstract.
+fn missing_requires_clause(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    abstract_params: &[Symbol],
+) -> String {
+    let params: Vec<String> = abstract_params
+        .iter()
+        .map(|p| format!("{} = …", kb.local_name_of(*p)))
+        .collect();
+    format!("{}[{}]", short_name_of(kb.qualified_name_of(spec)), params.join(", "))
+}
+
+/// Where that clause goes, as a repair: on the calling operation or its sort, or in the
+/// clause of a rule body.
+fn missing_requires_repair(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+    match site {
+        RequiresSite::Operation { op, sort: Some(sort) } => format!(
+            "add `requires {clause}` to `{}` or to its sort `{}`",
+            kb.qualified_name_of(op),
+            kb.qualified_name_of(sort)
+        ),
+        RequiresSite::Operation { op, sort: None } => {
+            format!("add `requires {clause}` to `{}`", kb.qualified_name_of(op))
+        }
+        RequiresSite::Clause => format!("write `requires({clause})` in the rule's body"),
+    }
+}
+
+/// The same place, as what is missing from it.
+fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+    match site {
+        RequiresSite::Operation { op, sort: Some(sort) } => format!(
+            "`requires {clause}` on `{}` or on its sort `{}`",
+            kb.qualified_name_of(op),
+            kb.qualified_name_of(sort)
+        ),
+        RequiresSite::Operation { op, sort: None } => {
+            format!("`requires {clause}` on `{}`", kb.qualified_name_of(op))
+        }
+        RequiresSite::Clause => format!("`requires({clause})` in the rule's body"),
     }
 }

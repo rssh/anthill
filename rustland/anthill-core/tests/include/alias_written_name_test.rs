@@ -80,7 +80,8 @@
 //!     a_result_field_effect_is_checked_through_an_alias — the same fence at the result:
 //!       the field path of `Modify[result.a]` is walked over the type the alias stands for.
 //!     a_rule_reads_the_type_and_no_alias — the fence for a rule: the same answers with
-//!       the alias lowered to its type's term.
+//!       the alias lowered to its type's term. Its alias halves FAIL with an alias in a
+//!       clause's data slot read as its own name (`wi_9wvt7_value_position_alias_test`).
 //!     a_type_written_without_an_alias_is_shown_once — the other side of the message.
 
 use std::io::Write;
@@ -140,10 +141,10 @@ fn an_alias_typed_parameter_is_the_type_it_stands_for() {
 }
 
 /// A rule over the reflect relations reads the parameter's type, and no alias: the
-/// `FieldInfo` of `pay(m: Money)` holds `Int64` to a goal that asks for it, and is no
-/// answer to one that asks for `Money`. (What that goal does find is every operation whose
-/// one parameter is a type variable, which takes any type.) The result of `price() ->
-/// Money` reads the same way.
+/// `FieldInfo` of `pay(m: Money)` holds `Int64`, which a goal asking for `Int64` finds. A
+/// goal asking for `Money` finds it too, since an alias held in a clause's data slot is the
+/// type it stands for (§5.1); it found nothing while the fact held the alias's own name.
+/// The result of `price() -> Money` reads the same way.
 #[test]
 fn a_rule_reads_the_type_and_no_alias() {
     let mut kb = load_kb_with(&source(
@@ -166,9 +167,15 @@ fn a_rule_reads_the_type_and_no_alias() {
             .collect()
     };
     assert!(answers(&mut kb, "test.awnrule.takes_one_int").contains(&pay), "`pay` takes an `Int64`");
-    assert!(!answers(&mut kb, "test.awnrule.takes_one_money").contains(&pay), "its slot holds no alias");
+    assert!(
+        answers(&mut kb, "test.awnrule.takes_one_money").contains(&pay),
+        "asked through the alias, the goal asks for `Int64`"
+    );
     assert!(answers(&mut kb, "test.awnrule.gives_int").contains(&price), "`price` gives an `Int64`");
-    assert!(!answers(&mut kb, "test.awnrule.gives_money").contains(&price), "its result holds no alias");
+    assert!(
+        answers(&mut kb, "test.awnrule.gives_money").contains(&price),
+        "asked through the alias, the goal asks for `Int64`"
+    );
 }
 
 // ── the name it was written by ──────────────────────────────────────────────

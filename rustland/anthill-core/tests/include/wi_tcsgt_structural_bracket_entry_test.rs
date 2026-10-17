@@ -37,7 +37,7 @@
 //!     a_result_is_the_type
 //!     one_bracket_down_is_the_type
 //!     a_positional_entry_is_the_named_one
-//!     a_positional_entry_in_a_clauses_term_is_stored_as_written
+//!     a_positional_entry_in_a_clauses_term_is_the_named_one
 //!     a_parenthesized_receiver_in_an_operation_body_answers_as_its_companion_call
 //!     a_parenthesized_receiver_in_a_rule_body_answers_as_its_companion_call
 //!     a_fact_is_matched_by_a_goal
@@ -57,7 +57,7 @@
 //!   the top-level positional route (`convert_instantiation_term` handing a tuple type, an
 //!   arrow type and a row to `convert_term`) — FAIL:
 //!     a_positional_entry_is_the_named_one
-//!     a_positional_entry_in_a_clauses_term_is_stored_as_written
+//!     a_positional_entry_in_a_clauses_term_is_the_named_one
 //!     an_effect_row_entry_is_its_row (its positional row)
 //!     an_entry_is_no_spec_instance
 //!     a_query_pattern_refuses_the_entry_by_name (its positional pattern)
@@ -339,12 +339,12 @@ fn a_positional_entry_is_the_named_one() {
     });
 }
 
-/// In a clause's own term a bracket is the term as written, for a structural entry as for
-/// a nominal one: the positional spelling is stored and matched by itself, and is not the
-/// named spelling's term. Reading every type written in a clause's term is
-/// WI-20260823-53W12's; the unmatched rows pin today's answer and turn with it.
+/// In a clause's own term the positional entry and the named one are two inputs normalized
+/// to one term, for a structural entry as for a nominal one: a fact holding the one is
+/// matched by a goal writing the other, as an operation body evaluates both to one type
+/// (user, 2026-10-17). They were two terms, each matched by itself alone.
 #[test]
-fn a_positional_entry_in_a_clauses_term_is_stored_as_written() {
+fn a_positional_entry_in_a_clauses_term_is_the_named_one() {
     for (tag, entry) in SHAPES {
         let ns = format!("tcsgtposfact{tag}");
         let body = format!("  fact holds(Box[{entry}])\n  rule r(?x) :- holds(Box[{entry}]), ?x <=> 1");
@@ -352,10 +352,14 @@ fn a_positional_entry_in_a_clauses_term_is_stored_as_written() {
         let ns = format!("tcsgtposfactnamed{tag}");
         let body =
             format!("  fact holds(Box[{entry}])\n  rule r(?x) :- holds(Box[V = {entry}]), ?x <=> 1");
-        assert_eq!(ints(&ns, &body), [0i64; 0], "{ns}");
+        assert_eq!(ints(&ns, &body), [1], "{ns}");
+        let ns = format!("tcsgtnamedfactpos{tag}");
+        let body =
+            format!("  fact holds(Box[V = {entry}])\n  rule r(?x) :- holds(Box[{entry}]), ?x <=> 1");
+        assert_eq!(ints(&ns, &body), [1], "{ns}");
     }
     let body = "  fact holds(Box[String])\n  rule r(?x) :- holds(Box[V = String]), ?x <=> 1";
-    assert_eq!(ints("tcsgtposfactnominal", body), [0i64; 0]);
+    assert_eq!(ints("tcsgtposfactnominal", body), [1]);
     // A fact and a rule may write the bracket as their head, entry and all.
     for (ns, body) in [
         ("tcsgtposheadfact", "  fact Box[(Int64) -> Int64]\n  rule r(?x) :- Box[(Int64) -> Int64], ?x <=> 1"),

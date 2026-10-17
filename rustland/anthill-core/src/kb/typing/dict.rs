@@ -3736,13 +3736,19 @@ pub(super) fn unprovided_spec_at_former(
     let former = goal_carrier_binding(kb, goal).filter(|v| is_structural_former(kb, *v))?;
     let spec = kb.qualified_name_of(goal.spec_sort);
     let former_text = format_value_for_goal(kb, former);
+    let library = library_instances(kb, goal.spec_sort);
     // THREE REPAIRS, by what the call states. A type stated in full is one a sort could
     // provide the spec at. One that names a type parameter of the declaration the call is
     // written in is each caller's to supply for, which is what a `requires` there says.
     // One with a part nothing has said is no type a row could name, and the part is the
     // author's to write — a provision is matched at the type as the call states it, so
     // one that would answer once the part is written is not looked for.
-    let repair = if type_is_ground(kb, former) {
+    //
+    // None of them for a spec whose instances only the library supplies: a row is
+    // refused or never read there, and no caller can supply one at a former.
+    let repair = if let Some(library) = library {
+        library.former_repair_at_call().to_owned()
+    } else if type_is_ground(kb, former) {
         format!(
             "Give some sort the row that names this type — `provides {spec}[… = \
              {former_text}]` — or pass a value whose type is a sort"
@@ -3786,9 +3792,14 @@ pub(super) fn unprovided_spec_at_former(
             construction: format!(
                 "its carrier is `{former_text}`, a tuple or an arrow, and no provision of \
                  `{spec}` answers at it. A tuple or an arrow carries no provision itself (a \
-                 `provides` row is written on a sort) and its value has no sort whose member \
-                 could answer when the call runs, so the call would load and then find no \
-                 operation. {repair}"
+                 `provides` row is written on a sort) {why}. {repair}",
+                why = if library.is_some() {
+                    "and the derived instances cover sorts only, so the call would load and \
+                     then have no instance to answer from"
+                } else {
+                    "and its value has no sort whose member could answer when the call runs, \
+                     so the call would load and then find no operation"
+                },
             ),
             pinned: None,
             unprovided: None,
@@ -3829,7 +3840,17 @@ pub(super) fn carrier_is_an_instance(kb: &KnowledgeBase, carrier: Symbol, spec: 
 /// only the mapping here gives a binding-less load a SECOND diagnosis of that same absence
 /// (measured: `wi931…::stdlib_alone_declares_no_store_provision`, whose load must fail for
 /// the unsupplied claims only).
+///
+/// A BUILTIN WHOSE ANSWER IS ITS INSTANCE'S DICTIONARY IS NO SUCH IMPLEMENTATION, whatever
+/// its declaration claims ([`crate::kb::resolve::BuiltinTag::answers_from_its_dictionary`]):
+/// `TypeValue.type_value[X]()`, `@[host_implemented]`, answers only where `X` has an
+/// instance. Counted as one, `type_value[T = (Int64, String)]()` loaded with nothing to
+/// hand it, and inside a member of a sort it answered that sort, through the dictionary its
+/// own frame was entered with (MEASURED).
 pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
+    if kb.builtin_of(op).is_some_and(|tag| tag.answers_from_its_dictionary()) {
+        return false;
+    }
     kb.is_builtin(op)
         || kb.is_host_mapped_op(kb.canonical_sym(op))
         || crate::kb::op_info::lookup_operation_info(kb, op).is_some_and(|rec| {
@@ -4187,6 +4208,20 @@ impl LibraryInstances {
                  arguments has one. Raise, in the thunk, a value whose type is such a sort, \
                  every type argument of it written"
             }
+        }
+    }
+
+    /// The structural-former refusal's repair at a call of this spec's own member: the call
+    /// names a sort, since no row works. `ErrorTag` declares no member, so a call of one
+    /// is never refused here.
+    fn former_repair_at_call(self) -> &'static str {
+        match self {
+            LibraryInstances::TypeValue => {
+                "Name a sort in the call's bracket, with no tuple or arrow among its type \
+                 arguments: every `TypeValue` instance is derived, one for a sort, and none \
+                 may be written"
+            }
+            LibraryInstances::ErrorTag => self.former_repair(),
         }
     }
 

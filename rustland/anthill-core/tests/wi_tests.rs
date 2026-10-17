@@ -471,6 +471,8 @@ mod wi_9wvt7_review5_test;
 mod wi_9wvt7_review6_test;
 #[path = "include/wi_9wvt7_type_value_bracket_test.rs"]
 mod wi_9wvt7_type_value_bracket_test;
+#[path = "include/wi_9wvt7_value_position_alias_test.rs"]
+mod wi_9wvt7_value_position_alias_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
 mod wi_9wvt7_clock_handler_test;
 

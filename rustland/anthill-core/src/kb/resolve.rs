@@ -216,7 +216,7 @@ pub enum BuiltinTag {
     /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
     /// reflexivity / dispatch / buried-override / structural cascade.
     SemEq,
-    /// WI-20260919-HXGXF — `anthill.reflect.TypeValue.type_value()` (proposal 065 §2).
+    /// WI-20260919-HXGXF — `anthill.reflect.TypeValue.type_value[X]()` (proposal 065 §2).
     ///
     /// REGISTERED FOR ITS LOAD-TIME EFFECT, not for an SLD one. `op_backed` accepts a
     /// spec op that `is_builtin`, and that is what backs the derived `TypeValue`
@@ -225,9 +225,10 @@ pub enum BuiltinTag {
     /// requirement slot that carries its only evidence (see the spec's own comment).
     ///
     /// The ANSWER is produced by the INTERPRETER builtin of the same name, which reads
-    /// the dispatching dictionary. A rule body has no dictionaries, so a `type_value()`
-    /// GOAL has nothing to resolve against and the arm below says so rather than
-    /// inventing a type.
+    /// the dictionary of the instance the call's bracket names
+    /// ([`Self::answers_from_its_dictionary`]). A rule body has no dictionaries, so a
+    /// `type_value` GOAL has nothing to resolve against and the arm below says so rather
+    /// than inventing a type.
     TypeValueOf,
     /// `anthill.prelude.PartialEq.neq(?a, ?b)` — semantic inequality
     /// (`neq(a,b) <=> not(eq(a,b))`): [`KnowledgeBase::sem_eq_core`] with the
@@ -349,6 +350,17 @@ pub enum BuiltinTag {
     /// dictionary operand. Registered so the loader's name check knows the symbol; reaching
     /// it as a goal is an error.
     DomainSub,
+}
+
+impl BuiltinTag {
+    /// Is this builtin's answer the dictionary of the instance its call is handed, rather
+    /// than one the host gives at every carrier? `TypeValue.type_value[X]()` answers `X`
+    /// read off the dictionary of `TypeValue[T = X]`, so it answers only where `X` has an
+    /// instance, and a call at a type with none is refused as a call of an operation no
+    /// one implements there is.
+    pub(crate) fn answers_from_its_dictionary(self) -> bool {
+        matches!(self, BuiltinTag::TypeValueOf)
+    }
 }
 
 /// A fault the resolver DETECTED but could not previously report — the payload of
@@ -6036,13 +6048,14 @@ impl KnowledgeBase {
             // WI-20260919-HXGXF — the tag exists for its LOAD-TIME effect (backing the
             // body-less spec op); there is no SLD answer to give. A rule body carries no
             // requirement dictionaries, and the dictionary is the only thing that names
-            // which type a nullary `type_value()` is about — so this is a malformed
-            // QUESTION, not an unproven one, and it says so instead of failing silently
-            // into a `not(…)` that would then read as true.
+            // which type a `type_value[X]()` is about — so this is a malformed QUESTION,
+            // not an unproven one, and it says so instead of failing silently into a
+            // `not(…)` that would then read as true.
             BuiltinTag::TypeValueOf => BuiltinResult::Error(ResolveError::new(
-                "anthill.reflect.TypeValue.type_value() has no answer in a rule body: it \
-                 reads the requirement dictionary that dispatched it, and a rule body has \
-                 none. Call it from an operation whose `requires TypeValue[…]` supplies one."
+                "anthill.reflect.TypeValue.type_value has no answer in a rule body: it \
+                 reads the dictionary of the instance its call names, and a rule body has \
+                 none. Call `TypeValue.type_value[X]()` from an operation, with `requires \
+                 TypeValue[T = X]` there where `X` names a parameter of it."
                     .to_string(),
             )),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),

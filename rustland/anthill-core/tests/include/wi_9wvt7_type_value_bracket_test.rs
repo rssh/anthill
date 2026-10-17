@@ -5,7 +5,7 @@
 //! A. `type_value[X]()` answers `X`: named or positional, at a ground type, a parameter the
 //!    scope's `requires` covers, or a type built over such parameters — the type written in
 //!    value position. `type_value()` is refused at load, and so is a type-argument nothing
-//!    supplies.
+//!    supplies, a tuple or an arrow among them.
 //! B. Every spec: a `requires` in scope supplies the evidence for the instance a call names
 //!    and does not name it. With no bracket the call is refused, advising one; with it the
 //!    call runs at that instance, a default body included. A sort nothing provides runs its
@@ -36,7 +36,8 @@
 //!     [`a_type_argument_nothing_supplies_is_refused_at_load`];
 //!   * the slot deferral asking for a sole clause → [`two_clauses_and_the_bracket_says_which`];
 //!   * a sub-interface counted as a provider → [`what_needs_no_bracket_runs`] and
-//!     `wi752_dotted_ladder_test`.
+//!     `wi752_dotted_ladder_test`;
+//!   * the builtin counted as serving every carrier → [`a_tuple_or_an_arrow_has_no_instance`].
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -197,6 +198,50 @@ fn a_type_argument_nothing_supplies_is_refused_at_load() {
         )),
         &["covering abstract type parameter"],
         "a type parameter nothing covers",
+    );
+}
+
+const DESC_AT: &str = "  sort Desc\n    sort T = ?\n    operation d(x: T) -> Type\n  end\n  sort \
+                       Box\n    entity box(n: Int64)\n    provides Desc[T = Box]\n    operation d(x: \
+                       Box) -> Type = TypeValue.type_value[T = {at}]()\n  end\n  operation dOf[X](x: \
+                       X) -> Type requires Desc[T = X] = Desc.d(x)\n";
+
+/// A TUPLE OR AN ARROW HAS NO INSTANCE, so `type_value` at one is refused at load, in a free
+/// operation and in a provision's member alike, advising a sort in the bracket. The
+/// builtin's `@[host_implemented]` claim exempted the call from the refusal a callee nobody
+/// implements gets; the call loaded with no dictionary to hand it, and in `Box.d`, entered
+/// through `Desc`, it answered `Box`, through the dictionary `d`'s own frame was entered
+/// with. A sort at the same place runs.
+///
+/// FAILS with the builtin counted as serving every carrier: the three calls load, and
+/// `dOf(box(1))` answers `Box`.
+#[test]
+fn a_tuple_or_an_arrow_has_no_instance() {
+    let decls = format!(
+        "  operation tup() -> Type = TypeValue.type_value[T = (Int64, String)]()\n  operation \
+         arr() -> Type = TypeValue.type_value[T = (x: Int64) -> Int64]()\n{}",
+        DESC_AT.replace("{at}", "(Int64, String)")
+    );
+    let errs = load_errors_of(&program("tvformer", &decls, "0"));
+    assert_refused_naming(
+        &errs,
+        &[
+            "its carrier is `(_1: Int64, _2: String)`, a tuple or an arrow",
+            "its carrier is `Int64 -> Int64`, a tuple or an arrow",
+            "the derived instances cover sorts only",
+            "Name a sort in the call's bracket",
+        ],
+        "a type-argument at a former",
+    );
+    assert_eq!(errs.len(), 3, "one refusal per call: {errs:#?}");
+    assert_eq!(
+        run(
+            "tvformersort",
+            &DESC_AT.replace("{at}", "Pair[A = Int64, B = String]"),
+            "bit(PartialEq.eq(dOf(box(1)), Pair[A = Int64, B = String])) + 2 * \
+             bit(PartialEq.eq(dOf(box(1)), Box))"
+        ),
+        Ok(1)
     );
 }
 

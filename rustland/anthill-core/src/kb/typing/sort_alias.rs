@@ -968,6 +968,109 @@ pub(crate) fn alias_receiver_type(kb: &mut KnowledgeBase, alias: Symbol) -> Opti
     Some(kb.make_parameterized_type(base, &fixed))
 }
 
+/// What a type ALIAS written as a VALUE stands for — a type value in an operation body, a
+/// type held in a clause's data slot or in a query's: the type its definition names, as
+/// that type is written there. So `IntOpt` over `sort IntOpt = Option[T = Int64]` is the
+/// value `Option[T = Int64]` is, and a fact holding the one is found by a query holding the
+/// other.
+#[derive(Clone, Debug)]
+pub(crate) enum ValueAlias {
+    /// The sort the alias stands for and the bindings it fixes, in the canon a data slot is
+    /// written in: a type parameter as `Ref(param)`, each key a parameter's declared name. A
+    /// slot the definition leaves open with `?` is left unwritten, as a type value written
+    /// without it leaves it: `sort Some = Box[V = ?]` is the value `Box`.
+    Sort {
+        base: Symbol,
+        fixed: SmallVec<[(Symbol, TermId); 2]>,
+    },
+    /// A tuple, an arrow or a row: the type itself, the value a bracket's entry writing it
+    /// is ([`KnowledgeBase::alias_types`]).
+    Structural(TermId),
+}
+
+/// [`ValueAlias`] for `sym`, or `None` for a name that is no type alias, and for one read as
+/// written in a value position as in a type position: a chain that comes back to itself, a
+/// name that also owns members, and one that names a type parameter of the sort declaring
+/// it where `within_declaring_scope` is false — outside that sort the parameter is
+/// nobody's. A tuple, an arrow or a row naming a parameter is read as written inside the
+/// sort too: nothing gives such a type its parameter's value at run time.
+pub(crate) fn value_alias(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    within_declaring_scope: bool,
+) -> Option<ValueAlias> {
+    let (base, bindings) = match alias_expansion(kb, sym)? {
+        AliasExpansion::Sort { base, bindings } => (base, bindings),
+        AliasExpansion::NotASort(_) => {
+            let ty = *kb.alias_types.get(&sym)?;
+            let names_a_parameter = kb
+                .collect_vars(&TermIdView(ty))
+                .into_iter()
+                .any(|v| kb.is_canonical_type_param_var(v));
+            return (!names_a_parameter).then_some(ValueAlias::Structural(ty));
+        }
+        AliasExpansion::Cycle(_) | AliasExpansion::AlsoDeclared(_) => return None,
+    };
+    let names_a_parameter = is_sort_param_symbol(kb, base)
+        || bindings.iter().any(|(_, v)| names_a_type_parameter(kb, *v));
+    if names_a_parameter && !within_declaring_scope {
+        return None;
+    }
+    let fixed = bindings
+        .into_iter()
+        .filter_map(|(key, value)| written_type_value(kb, value).map(|v| (key, v)))
+        .collect();
+    Some(ValueAlias::Sort { base, fixed })
+}
+
+/// Does the clause-canon type `ty` name a type parameter anywhere — a `Ref(param)` leaf?
+fn names_a_type_parameter(kb: &KnowledgeBase, ty: TermId) -> bool {
+    let mut stack = vec![ty];
+    while let Some(t) = stack.pop() {
+        match kb.get_term(t) {
+            Term::Ref(p) if is_sort_param_symbol(kb, *p) => return true,
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
+                stack.extend(pos_args.iter().copied());
+                stack.extend(named_args.iter().map(|(_, v)| *v));
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A binding's value as a type value writes it: `None` for a slot left open (`?`), and a
+/// sort application with its own open slots left unwritten, its other bindings in their
+/// order.
+fn written_type_value(kb: &mut KnowledgeBase, value: TermId) -> Option<TermId> {
+    match kb.get_term(value).clone() {
+        Term::Var(_) => None,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && kb.has_kind(functor, crate::intern::SymbolKind::Sort) => {
+            let kept: SmallVec<[(Symbol, TermId); 2]> = named_args
+                .iter()
+                .filter_map(|(k, v)| written_type_value(kb, *v).map(|v| (*k, v)))
+                .collect();
+            if kept.is_empty() {
+                return Some(kb.make_sort_ref(functor));
+            }
+            Some(kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: kept,
+            }))
+        }
+        _ => Some(value),
+    }
+}
+
 /// Does `sym` own a declaration's members — anything pass 1 defined inside it? A sort
 /// body's parameters and operations, or a `namespace` entry's items, live in the owner's
 /// scope; a `sort X = T` alias opens no scope, so a pure alias owns nothing. Pass 1

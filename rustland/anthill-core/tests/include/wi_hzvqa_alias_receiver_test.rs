@@ -324,31 +324,52 @@ fn a_qualified_path_through_an_alias_carries_it() {
 }
 
 /// `sort BS = Box[V = S]` written inside `sort Outer[S]` fixes `V` to that parameter.
+///
+/// A `let` binds the alias's VALUE, the type it stands for (§5.1), so `S` is read as a value
+/// there, as it is in `let t = Box[V = S]`: the let-bound spelling takes the clause its
+/// written twin takes, and without it the two are refused alike. A written receiver binds
+/// the call's types and reads no value. The let-bound alias loaded with no clause while its
+/// value was the alias's own name.
 #[test]
 fn an_alias_that_names_the_enclosing_parameter_is_at_that_parameter() {
-    let outer = |body: &str| {
-        format!("  sort Outer[S]\n    entity o(s: S)\n    sort BS = Box[V = S]\n{body}\n  end\n")
+    let outer = |clause: &str, body: &str| {
+        format!(
+            "  sort Outer[S]\n    entity o(s: S)\n    sort BS = Box[V = S]\n{clause}{body}\n  end\n"
+        )
     };
-    for (ns, good, bad) in [
+    let reads_s = "    requires anthill.reflect.TypeValue[T = S]\n";
+    for (ns, clause, good, bad) in [
         (
             "hzvqaouterw",
+            "",
             "    operation use(x: S) -> S = BS.wrap(x)",
             "    operation use(x: S) -> String = BS.wrap(\"s\")",
         ),
         (
             "hzvqaouterb",
+            reads_s,
             "    operation use(x: S) -> S =\n      let t = BS\n      t.wrap(x)",
             "    operation use(x: S) -> String =\n      let t = BS\n      t.wrap(\"s\")",
         ),
     ] {
         assert_eq!(
-            run(ns, &format!("{}  operation go() -> Int64 = Outer.use(4)", outer(good))),
+            run(ns, &format!("{}  operation go() -> Int64 = Outer.use(4)", outer(clause, good))),
             "4",
             "{ns}"
         );
         let bad_ns = format!("{ns}bad");
-        let rendered = refusal(&bad_ns, &format!("{}  operation go() -> Int64 = 1", outer(bad)));
+        let rendered =
+            refusal(&bad_ns, &format!("{}  operation go() -> Int64 = 1", outer(clause, bad)));
         assert!(rendered.contains("wrap.x (op-arg)"), "{bad_ns}: {rendered}");
+    }
+    for (ns, bound) in [("hzvqaouternotv", "BS"), ("hzvqaouternotvw", "Box[V = S]")] {
+        let body = format!("    operation use(x: S) -> S =\n      let t = {bound}\n      t.wrap(x)");
+        let rendered =
+            refusal(ns, &format!("{}  operation go() -> Int64 = 1", outer("", &body)));
+        assert!(
+            rendered.contains("`S` is read as a VALUE and nothing in scope requires `TypeValue[T = S]`"),
+            "{ns}: {rendered}"
+        );
     }
 }
 

@@ -50,7 +50,7 @@ use crate::span::SourceSpan;
 /// `CallClass::UnresolvedSpecOp` tags — the typer detected an abstract
 /// spec-op call without a covering `requires`. Returned to the load
 /// pipeline alongside the typer's errors.
-pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+pub fn run(kb: &mut KnowledgeBase) -> Vec<(TypeError, crate::span::SourceId)> {
     // Collect into Vecs so we don't hold a borrow on `kb.op_bodies`
     // while emitting (each `record_*` mutates `kb.dispatch_rewrites`).
     //
@@ -71,7 +71,8 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     // error-only entries (UnresolvedSpecOp — no rewrite, just a
     // diagnostic). Materializing every entry would waste allocation
     // for the error-only ones and pollute `dispatch_origin`.
-    let mut errors: Vec<TypeError> = Vec::new();
+    // Each with the file its call is written in, so it is reported at `path:line:col`.
+    let mut errors: Vec<(TypeError, crate::span::SourceId)> = Vec::new();
     let mut to_materialize: Vec<RawClassified> = Vec::with_capacity(raw_entries.len());
     for raw in raw_entries {
         match &raw.class {
@@ -95,21 +96,34 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 let provisions =
                     crate::kb::typing::hidden_conditions_over(kb, raw.op, *spec_sort_sym);
                 if !provisions.is_empty() {
-                    errors.push(TypeError::ProvisionConditionOutOfScope {
-                        span: *span,
-                        op: raw.op,
-                        spec_op_sym: *spec_op_sym,
-                        spec_sort_sym: *spec_sort_sym,
-                        provisions,
-                    });
+                    errors.push((
+                        TypeError::ProvisionConditionOutOfScope {
+                            span: *span,
+                            op: raw.op,
+                            spec_op_sym: *spec_op_sym,
+                            spec_sort_sym: *spec_sort_sym,
+                            provisions,
+                        },
+                        raw.span.source,
+                    ));
                     continue;
                 }
-                errors.push(TypeError::MissingRequiresForSpecOp {
-                    span: *span,
-                    spec_op_sym: *spec_op_sym,
-                    spec_sort_sym: *spec_sort_sym,
-                    abstract_params: abstract_params.clone(),
-                });
+                errors.push((
+                    TypeError::MissingRequiresForSpecOp {
+                        span: *span,
+                        spec_op_sym: *spec_op_sym,
+                        spec_sort_sym: *spec_sort_sym,
+                        abstract_params: abstract_params.clone(),
+                        // A free operation's enclosing scope is its namespace, which takes
+                        // no `requires`.
+                        site: crate::kb::typing::RequiresSite::Operation {
+                            op: raw.op,
+                            sort: enclosing_sort
+                                .filter(|s| kb.has_kind(*s, crate::intern::SymbolKind::Sort)),
+                        },
+                    },
+                    raw.span.source,
+                ));
             }
             _ => to_materialize.push(raw),
         }
