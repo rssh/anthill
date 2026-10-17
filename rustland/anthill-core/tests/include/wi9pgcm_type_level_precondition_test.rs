@@ -127,7 +127,7 @@ enum {ns}.Text
 end
 
 namespace {ns}
-  import anthill.prelude.{{Unit, String, Int64}}
+  import anthill.prelude.{{Unit, String, Int64, todo}}
   import {ns}.Level.{{Untrusted, Public}}
   import {ns}.Text
   import {ns}.Text.{{mk}}
@@ -136,16 +136,18 @@ namespace {ns}
   fact flows_to(Untrusted, Untrusted)
   -- ABSENT, and the point of the whole file: flows_to(Untrusted, Public)
 
-  operation fetch() -> Text[L = Untrusted]
-  operation banner() -> Text[L = Public]
+  operation fetch() -> Text[L = Untrusted] = todo()
+  operation banner() -> Text[L = Public] = todo()
 
   operation send(body: Text[L = ?l]) -> Unit
     requires flows_to(?l, Public)
+    = ()
 
   -- MIXED: ONE atom naming both a type-level variable and a value parameter.
   fact allowed(Public, 1)
   operation gate(body: Text[L = ?l], n: Int64) -> Unit
     requires allowed(?l, n)
+    = ()
 "#
     )
 }
@@ -337,7 +339,7 @@ fn a_universally_true_obligation_needs_no_declaration() {
     let src = format!(
         "{}\n  rule anything(?x)\n    :- true\n\
          \n  operation strict(body: Text[L = ?l]) -> Unit\n    \
-         requires anything(?l)\n\
+         requires anything(?l)\n    = ()\n\
          \n  operation wrap(t: Text[L = ?m]) -> Unit =\n    strict(t)\nend\n",
         taint_prelude("test.wi9pgcm.univ")
     );
@@ -523,7 +525,7 @@ fn a_declared_clause_discharges_in_a_match_guard_too() {
     // FAILS when the guard's Γ is reverted to `FlowEnv::empty()`.
     let guard_src = format!(
         "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
-         requires allowed(?l, n)\n\
+         requires allowed(?l, n)\n    = true\n\
          \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
          requires allowed(?m, n)\n    = match t\n        \
          case mk(r) | checkg(t, n) -> 1\n        \
@@ -540,7 +542,7 @@ fn a_declared_clause_discharges_in_a_match_guard_too() {
 
     let body_src = format!(
         "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
-         requires allowed(?l, n)\n\
+         requires allowed(?l, n)\n    = true\n\
          \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
          requires allowed(?m, n)\n    = match t\n        \
          case mk(r) -> if checkg(t, n) then 1 else 0\n        \
@@ -565,7 +567,7 @@ fn a_guard_still_gates_an_undeclared_wrapper() {
     // which is why it is stated separately: it measures that the fix narrowed nothing.
     let src = format!(
         "{}\n  operation checkg(body: Text[L = ?l], n: Int64) -> Bool\n    \
-         requires allowed(?l, n)\n\
+         requires allowed(?l, n)\n    = true\n\
          \n  operation relay(t: Text[L = ?m], n: Int64) -> Int64\n    \
          = match t\n        \
          case mk(r) | checkg(t, n) -> 1\n        \

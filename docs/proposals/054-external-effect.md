@@ -6,7 +6,7 @@
 
 ## First consumer: WI-437 increment 3 (the `Mirror` carrier of `rustland/anthill-todo/docs/design/backend-github-coordination.md` §8.3) — which depends on **WI-699 alone**, not on the umbrella: the hardening gates are not on its path.
 
-## Relates to: 037 (Modify — tracked-heap mutation; `External` is its complement for state the typer cannot see; 037's branch-interaction contracts are exactly what `External` state cannot offer), 027 + 027.2 + 027.3 (`Branch`, `register_undo`, solvers — §"`Branch` and `External`" below), 045 (effect rows — `External` is an ordinary row member, no new machinery), 047 (effects as monads via reflection — its §8 rank ordering is the table `External` can join at *no* rank), 053 (fact mutability — its eval-side guard family is the shape `External`'s decline-gates join), WI-347 (refine-don't-widen spec rows — the mechanism of §"Faking"), WI-329 (row-discharge typing — what makes the `Branch` gate compositional), `prelude/time.anthill` + `prelude/console.anthill` (the proto-`External` precedents).
+## Relates to: 037 (Modify — tracked-heap mutation; `External` is its complement for state the typer cannot see; 037 §6.2's undo of an abandoned alternative is exactly what `External` state cannot offer; since 037's 2026-10-17 revision the store operations that reach the disk declare `External`), 027 + 027.2 + 027.3 (`Branch`, `register_undo`, solvers — §"`Branch` and `External`" below), 045 (effect rows — `External` is an ordinary row member, no new machinery), 047 (effects as monads via reflection — its §8 rank ordering is the table `External` can join at *no* rank), 053 (fact mutability — its eval-side guard family is the shape `External`'s decline-gates join), WI-347 (refine-don't-widen spec rows — the mechanism of §"Faking"), WI-329 (row-discharge typing — what makes the `Branch` gate compositional), `prelude/time.anthill` + `prelude/console.anthill` (the proto-`External` precedents).
 
 ## Problem
 
@@ -29,6 +29,8 @@ these cases:
 2. **Absorption under `Modify[s]` via a carrier** — the persistence pattern:
    `persist`/`retract`/`flush` on an `IndexedFileStore` ride 037's
    reachability transitivity, so store ops need only `{Modify[s], Error}`.
+   (037, revised 2026-10-17, ends this fiction for the file stores: their
+   operations that reach the disk declare `External`, §6.2 and §8.)
    For genuinely external state this is a fiction (the GitHub issue registry
    is not "state reachable from a handle in the heap"), and the fiction has a
    hole exactly where it matters — **reads**. A read of external state mutates
@@ -239,9 +241,9 @@ entity:
    (How refinement reaches *call sites* — the union as a row parameter's
    upper bound, refinement as instantiation — is §"Mechanism" below.)
 3. **The fake's state is an ordinary tracked resource** — an in-memory
-   registry — implementing 037's branch-interaction contract like any other
-   `Modify` resource: snapshotted on `Branch` entry, unwound by
-   `register_undo` on backtrack.
+   registry — under 037 §6.2 like any other `Modify` resource: its writes in an
+   abandoned alternative are undone by the implementation it is bound to, on
+   backtrack (the `register_undo` design).
 4. **Therefore the fake composes with `Branch` while the real one cannot.**
    A search explores schedules against the fake registry and every abandoned
    branch rolls it back: `oracle(xs)` (027.2) replays one chosen interleaving —

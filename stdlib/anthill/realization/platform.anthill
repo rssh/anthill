@@ -15,11 +15,19 @@
 --
 -- Inspired by Bazel/CMake/Nix/Gradle: platform = property bag,
 -- toolchain = tool + platform constraints.
+--
+-- DATA ONLY (WI-20260909-M8QWJ). The operations this file used to declare —
+-- `ExecutionPlatform.has_property`, `Toolchain.build`, `ExecutionEnvironment.exec` /
+-- `env_var`, `Runtime.evaluate` / `trace`, and the free path operations `basename`,
+-- `dirname`, `extension`, `components`, `join` — had no body, no host binding and no
+-- caller. A body-less operation of a sort with constructors, or of a namespace, is
+-- refused at load when nothing defines it, since nothing could ever run it; they are
+-- deleted rather than given a definition nobody needs. `Filesystem`'s two operations
+-- stay: it has no constructors, so a provider may supply them.
 
 namespace anthill.realization.platform
-  import anthill.prelude.{List, String, Bool, Int64, Option}
-  import anthill.prelude.{Timestamp, Modifiable}
-  import anthill.reflect.{Term, KB}
+  import anthill.prelude.{List, String, Bool, Int64}
+  import anthill.prelude.{Timestamp}
   import anthill.realization.{LanguageMapping}
   -- `needs_rebuild` below uses the Filesystem operations as relations.
   import anthill.realization.platform.Filesystem.{exists, status}
@@ -37,8 +45,6 @@ namespace anthill.realization.platform
       name       : String,
       properties : List[T = (String, String)]
     )
-
-    operation has_property(p: ExecutionPlatform, key: String, value: String) -> Bool
   end
 
   -- ================================================================
@@ -55,11 +61,6 @@ namespace anthill.realization.platform
       exec    : ExecutionPlatform,
       target  : ExecutionPlatform
     )
-
-    operation build(tc: Toolchain, env: ExecutionEnvironment,
-                    inputs: List[T = Path],
-                    outputs: List[T = Path]) -> ProcessResult
-      effects {Error, Modify[env]}
   end
 
   -- ================================================================
@@ -67,7 +68,6 @@ namespace anthill.realization.platform
   -- ================================================================
 
   -- Concrete runtime context: a platform with a filesystem.
-  -- Subsumes CommandShell — exec and env_var are operations on the environment.
 
   entity ProcessResult(
     exit_code : Int64,
@@ -76,24 +76,10 @@ namespace anthill.realization.platform
   )
 
   sort ExecutionEnvironment
-    -- `exec` writes `Modify[env]` — running a command mutates the environment — and a
-    -- `Modify` fires only on a modifiable type (proposal 037 Rule 8). Its fields hold
-    -- no modifiable value, so the claim is the sort's own.
-    provides Modifiable[T = Self]
-
     entity execution_environment(
       platform : ExecutionPlatform,
       fs       : Filesystem
     )
-
-    operation exec(env: ExecutionEnvironment, command: String,
-                   args: List[T = String], working_dir: Path,
-                   extra_env: List[T = (String, String)])
-      -> ProcessResult
-      effects {Error, Modify[env]}
-
-    operation env_var(env: ExecutionEnvironment, name: String)
-      -> Option[T = String]
   end
 
   -- ================================================================
@@ -114,12 +100,6 @@ namespace anthill.realization.platform
       name     : String,
       builtins : List[T = Builtin]
     )
-
-    operation evaluate(rt: Runtime, term: Term, kb: KB) -> Term
-      effects Error
-
-    operation trace(rt: Runtime, term: Term, kb: KB) -> List[T = Term]
-      effects Error
   end
 
   -- ================================================================
@@ -127,13 +107,6 @@ namespace anthill.realization.platform
   -- ================================================================
 
   sort Path = String
-
-  -- Path operations (free-standing, not in a nested namespace)
-  operation basename(p: Path) -> String
-  operation dirname(p: Path) -> Path
-  operation extension(p: Path) -> String
-  operation components(p: Path) -> List[T = String]
-  operation join(base: Path, child: String) -> Path
 
   entity FileStatus(
     size        : Int64,

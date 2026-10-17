@@ -50,7 +50,7 @@ namespace test.wi927
     sort T = ?
     entity Box(value: T)
   end
-  operation takes_type927(t: Type) -> Bool
+  operation takes_type927(t: Type) -> Bool = true
 {body}
 end
 "#
@@ -67,7 +67,7 @@ namespace test.wi927ctl
     sort T = ?
     entity mk(value: T)
   end
-  operation takes_type927(t: Type) -> Bool
+  operation takes_type927(t: Type) -> Bool = true
 {body}
 end
 "#

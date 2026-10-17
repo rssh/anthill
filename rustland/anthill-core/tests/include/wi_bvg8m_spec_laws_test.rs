@@ -46,7 +46,7 @@ namespace test.bvg8m.laws
     sort T = ?
 
     operation {
-      weight(a: T) -> Int64
+      weight(a: T) -> Int64 = 0
       heavier(a: T, b: T) -> Bool = gt(weight(a), weight(b))
     }
 

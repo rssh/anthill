@@ -222,7 +222,7 @@ namespace test.wi888.guarded
   sort C
     import anthill.prelude.{Int64, Bool}
     entity c(v: Int64)
-    operation pick(a: Int64, b: Int64) -> Int64
+    operation pick(a: Int64, b: Int64) -> Int64 = 0
     rule pick(?a, ?b) = ?a :- Int64.gt(?a, ?b)
   end
 end

@@ -494,6 +494,31 @@ pub(super) fn check_apply_iter(
         } else {
             None
         };
+        // WI-20260909-M8QWJ — A CALL NO PROVIDER CAN BE SELECTED FOR, of an operation with
+        // nothing of its own to run. See [`unselectable_spec_operation_call`]. An operation
+        // body's obligation, as the clause-defined refusal above is: in a rule body the
+        // spelling is a goal or a term. Here, where the requirement licence is in hand and
+        // before any classification reads the call as a dispatch to defer.
+        if !env.in_rule_body() && dispatches_on_nothing && enclosing_requires_clause.is_none() {
+            if let Some(Unselectable {
+                spec,
+                reached,
+                clauses,
+            }) = unselectable_spec_operation_call(
+                kb,
+                env,
+                fn_sym,
+                call_type_args_of(occ).is_some() || call_recv_type_of(occ).is_some(),
+            ) {
+                return Err(TypeError::CallOfUnselectableSpecOperation {
+                    span,
+                    op: fn_sym,
+                    spec,
+                    reached,
+                    clauses,
+                });
+            }
+        }
         // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by three
         // sites (the WI-496/598 abstract-spec deferral and both `statically_pinned_carrier`
         // calls). The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps

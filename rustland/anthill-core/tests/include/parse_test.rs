@@ -103,7 +103,7 @@ fn load_literal_type_arg_in_body_no_reentrancy_panic() {
     // NOT re-enter `convert_expr_term` (it is not re-entrant). Loading must not
     // panic (an Err for unrelated resolution reasons is acceptable).
     let mut kb = KnowledgeBase::new();
-    let src = "operation g[n](x: Int64) -> Int64\noperation f(x: Int64) -> Int64 = g[3](x)\n";
+    let src = "operation g[n](x: Int64) -> Int64 = 0\noperation f(x: Int64) -> Int64 = g[3](x)\n";
     let parsed = parse::parse(src).expect("parse failed");
     crate::common::expect_loaded(load::load_all(&mut kb, &[&parsed], &NullResolver));
 }
@@ -170,7 +170,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     }
 
     // (1) c is a PARAMETER (a value) -> denoted (now a Value::Node)
-    let (kb, eff) = effects_of_f("operation f(c: Int64) -> Int64 effects Modify[c]\n")
+    let (kb, eff) = effects_of_f("operation f(c: Int64) -> Int64 effects Modify[c] = 0\n")
         .expect("parameter case should load");
     assert!(
         eff.iter().any(|e| label_denotes(&kb, e)),
@@ -181,7 +181,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // sugar for a single-constructor sort (§6.3), so its bare name is a TYPE.
     // WI-313: entities are NOT value-in-type (this was the original mis-modeling).
     let (kbe, effe) =
-        effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int64 effects Modify[kb]\n")
+        effects_of_f("sort KB\n  entity kb\nend\noperation f() -> Int64 effects Modify[kb] = 0\n")
             .expect("entity case should load");
     assert!(
         effe.iter().all(|e| !label_denotes(&kbe, e)),
@@ -191,16 +191,17 @@ fn modify_name_arg_denotes_by_resolution_kind() {
     // (1c) kb is a zero-arg OPERATION (value-producing, like reflect's ambient-KB
     // accessor) -> denoted. This is the value-in-type case WI-313 was really
     // about: `kb()` yields a value, so a reference to it in a type slot denotes.
-    let (kbo, effo) =
-        effects_of_f("operation kb() -> Int64\noperation f() -> Int64 effects Modify[kb]\n")
-            .expect("operation case should load");
+    let (kbo, effo) = effects_of_f(
+        "operation kb() -> Int64 = 0\noperation f() -> Int64 effects Modify[kb] = 0\n",
+    )
+    .expect("operation case should load");
     assert!(
         effo.iter().any(|e| label_denotes(&kbo, e)),
         "Modify[kb] with kb a zero-arg operation should denote, effects={effo:?}",
     );
 
     // (2) C is a SORT (a type) -> NOT denoted (sort_ref)
-    let (kb2, eff2) = effects_of_f("sort C = ?\noperation f() -> Int64 effects Modify[C]\n")
+    let (kb2, eff2) = effects_of_f("sort C = ?\noperation f() -> Int64 effects Modify[C] = 0\n")
         .expect("sort case should load");
     assert!(
         eff2.iter().all(|e| !label_denotes(&kb2, e)),
@@ -209,7 +210,7 @@ fn modify_name_arg_denotes_by_resolution_kind() {
 
     // (3) name does not resolve -> load error
     assert!(
-        effects_of_f("operation f() -> Int64 effects Modify[nope]\n").is_err(),
+        effects_of_f("operation f() -> Int64 effects Modify[nope] = 0\n").is_err(),
         "Modify[nope] with `nope` unresolved should be a load error",
     );
 }
@@ -232,10 +233,11 @@ fn modify_value_param_in_effects_is_denoted() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi302
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 end
 "#,
     );
@@ -305,6 +307,7 @@ namespace test.wi302.compound
 
   operation touch(b: Box) -> Int64
     effects Modify[b.contents]
+    = 0
 end
 "#,
     );
@@ -397,6 +400,7 @@ namespace test.wi302.lower
   end
   operation touch(b: Box) -> Int64
     effects Modify[b.contents]
+    = 0
 end
 "#,
     );
@@ -452,12 +456,12 @@ fn compound_value_path_effect_rekeys_at_call_site() {
     // and surface as a SPURIOUS undeclared effect.
     let ok = r#"
 namespace test.wi302.rekey
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Box
     sort T = ?
     entity box(contents: T)
   end
-  operation poke(d: Box) -> Box effects Modify[d.contents]
+  operation poke(d: Box) -> Box effects Modify[d.contents] = todo()
   operation wrap(c: Box) -> Box effects Modify[c.contents] = poke(c)
 end
 "#;
@@ -477,12 +481,12 @@ fn compound_value_path_undeclared_effect_is_named() {
     // value. (Also confirms the re-key path is real: the effect IS incurred and checked.)
     let bad = r#"
 namespace test.wi302.undecl
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Box
     sort T = ?
     entity box(contents: T)
   end
-  operation poke(d: Box) -> Box effects Modify[d.contents]
+  operation poke(d: Box) -> Box effects Modify[d.contents] = todo()
   operation wrap(c: Box) -> Box = poke(c)
 end
 "#;
@@ -510,10 +514,11 @@ fn wi342_e2_modify_c_loads_value_carried() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], value: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 end
 "#,
     );
@@ -558,6 +563,7 @@ namespace test.wi342b
 
   operation may_fail(x: Int64) -> Int64
     effects Error
+    = 0
 end
 "#,
     );
@@ -914,6 +920,7 @@ fn load_banking_namespace() {
   operation deposit(a: Account, m: Money) -> Account
     requires gt(m, zero-val)
     ensures eq(balance(result), add(balance(a), m))
+    = a
 
   fact initial-balance(dollars(0)) @[trust: axiom]
 end
@@ -1031,9 +1038,11 @@ fn load_sort_with_operation() {
   operation deposit(a: Self, m: Money) -> Self
     requires gt(m, zero-val)
     ensures eq(balance(result), add(balance(a), m))
+    = a
 
   operation withdraw(a: Self, m: Money) -> Self
     requires gt(m, zero-val), gte(balance(a), m)
+    = a
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1136,10 +1145,13 @@ sort Store {
   entity store
   operation persist(s: Store, fact: Int64) -> Int64
     effects Modify[store]
+    = 0
   operation retrieve(s: Store, pattern: Int64) -> Int64
     effects Error[store]
+    = 0
   operation process(s: Store, x: Int64) -> Int64
     effects {Error[store], Modify[store]}
+    = 0
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1319,11 +1331,13 @@ fn member_facts_for_sort_with_body() {
 
 #[test]
 fn member_facts_for_sort_with_params_and_ops() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort Account
   sort AccountId = ?
   entity checking(id: AccountId, balance: Int64)
   entity savings(id: AccountId, balance: Int64)
-  operation deposit(a: Self, m: Int64) -> Self
+  operation deposit(a: Self, m: Int64) -> Self = deposit(a, m)
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1353,9 +1367,11 @@ end
 
 #[test]
 fn member_facts_for_namespace() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"namespace banking {
   entity Account(id: String, balance: Int64)
-  operation deposit(a: Account, m: Int64) -> Account
+  operation deposit(a: Account, m: Int64) -> Account = deposit(a, m)
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -1682,6 +1698,8 @@ fn check_term_contains(kb: &KnowledgeBase, term: TermId, target: TermId, found: 
 
 #[test]
 fn mutual_reference_two_namespaces() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // File 1: namespace X references sort from namespace Y (via import).
     // WI-1089: the import names the SORT it uses. `import Units` binds the
     // namespace name alone — reaching `Measure` through it takes `Units.Measure`,
@@ -1692,7 +1710,7 @@ fn mutual_reference_two_namespaces() {
     entity circle(radius: Int64)
     entity rect(w: Int64, h: Int64)
   }
-  operation area(s: Shape) -> Measure
+  operation area(s: Shape) -> Measure = area(s)
 end
 "#;
     // File 2: namespace Y references sort from namespace X (via import)
@@ -1702,7 +1720,7 @@ end
     entity meters(n: Int64)
     entity pixels(n: Int64)
   }
-  operation convert(m: Measure, target: Shape) -> Measure
+  operation convert(m: Measure, target: Shape) -> Measure = convert(m, target)
 end
 "#;
 
@@ -3917,7 +3935,7 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
 
     // Named params preserved.
     let named =
-        callback_field_names("operation foo(f: (acc: Int64, elem: Int64) -> Int64) -> Int64\n");
+        callback_field_names("operation foo(f: (acc: Int64, elem: Int64) -> Int64) -> Int64 = 0\n");
     assert_eq!(
         named,
         vec!["acc".to_string(), "elem".to_string()],
@@ -3925,7 +3943,7 @@ fn wi355_arrow_param_names_lowered_to_named_tuple() {
     );
 
     // Unnamed params → 1-based positional, not 0-based.
-    let unnamed = callback_field_names("operation foo(f: (Int64, Int64) -> Int64) -> Int64\n");
+    let unnamed = callback_field_names("operation foo(f: (Int64, Int64) -> Int64) -> Int64 = 0\n");
     assert_eq!(
         unnamed,
         vec!["_1".to_string(), "_2".to_string()],
@@ -3999,13 +4017,15 @@ fn parse_arrow_type_with_effect_set() {
 /// empty_row))` chain whose labels are the two effect functors.
 #[test]
 fn load_arrow_type_with_effect_set_canonical_row() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort Modifies { sort T = ? entity Modifies(target: T) }
 sort Reads { sort T = ? entity Reads(target: T) }
 sort Host {
   sort A = ?
   sort B = ?
   entity host
-  operation run(f: (A) -> B @ {Modifies[host], Reads[host]}) -> B
+  operation run(f: (A) -> B @ {Modifies[host], Reads[host]}) -> B = run(f)
 }
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -4150,9 +4170,10 @@ end
 sort Host
   entity host
 "#;
-    let source_bare = format!("{preamble}\n  operation foo() -> Int64 effects Modify[host]\nend\n");
+    let source_bare =
+        format!("{preamble}\n  operation foo() -> Int64 effects Modify[host] = 0\nend\n");
     let source_plus =
-        format!("{preamble}\n  operation foo() -> Int64 effects +Modify[host]\nend\n");
+        format!("{preamble}\n  operation foo() -> Int64 effects +Modify[host] = 0\nend\n");
     let parsed_bare = parse::parse(&source_bare).expect("bare parse failed");
     let parsed_plus = parse::parse(&source_plus).expect("`+E` parse failed");
 
@@ -4221,7 +4242,7 @@ sort Error
 end
 sort Host
   entity host
-  operation foo() -> Int64 effects -Error
+  operation foo() -> Int64 effects -Error = 0
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
@@ -4271,10 +4292,10 @@ sort Host
   entity host
 "#;
     let source_merge = format!(
-        "{preamble}\n  operation foo() -> Int64 effects merge(Modify[host], Reads[host])\nend\n"
+        "{preamble}\n  operation foo() -> Int64 effects merge(Modify[host], Reads[host]) = 0\nend\n"
     );
     let source_braced = format!(
-        "{preamble}\n  operation foo() -> Int64 effects {{Modify[host], Reads[host]}}\nend\n"
+        "{preamble}\n  operation foo() -> Int64 effects {{Modify[host], Reads[host]}} = 0\nend\n"
     );
     let parsed_merge = parse::parse(&source_merge).expect("merge parse failed");
     let parsed_braced = parse::parse(&source_braced).expect("braced parse failed");
@@ -4503,6 +4524,8 @@ end
 
 #[test]
 fn load_polynom_with_ring_requirement() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     let source = r#"sort List
   sort T = ?
 end
@@ -4518,7 +4541,7 @@ sort Polynom
   sort R = ?
   requires Ring[R]
   entity polynom(coefficients: List[R])
-  operation eval(p: Polynom[R], x: R) -> R
+  operation eval(p: Polynom[R], x: R) -> R = eval(p, x)
 end
 
 fact Polynom[Int64]
@@ -5464,15 +5487,19 @@ fn parse_tuple_literal_with_lambda_element() {
 
 #[test]
 fn load_operation_without_body() {
+    // The body-less operation is a member of a sort without constructors (a spec):
+    // since WI-20260909-M8QWJ a namespace-level one is refused at load.
     let mut kb = load_with_stdlib(
         r#"
 namespace test.expr
-  operation abstract_op(x: Int64) -> Int64
+  sort Abstract
+    operation abstract_op(x: Int64) -> Int64
+  end
 end
 "#,
     );
 
-    let op_info = find_op_info(&mut kb, "test.expr.abstract_op");
+    let op_info = find_op_info(&mut kb, "test.expr.Abstract.abstract_op");
     // No body field anymore (WI-305); a body-less op has no op_body_node entry.
     assert!(
         op_body_occ(&kb, op_info, "name").is_none(),
@@ -6023,7 +6050,10 @@ fn assert_var_id(kb: &KnowledgeBase, term: TermId) -> u32 {
 
 #[test]
 fn load_op_type_param_resolves_bare_name_to_var() {
-    let parsed = parse::parse("operation identity[T](x: T) -> T\n").expect("parse failed");
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
+    let parsed =
+        parse::parse("operation identity[T](x: T) -> T = identity(x)\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
@@ -6034,9 +6064,12 @@ fn load_op_type_param_resolves_bare_name_to_var() {
 
 #[test]
 fn load_op_type_param_shares_var_across_param_and_return() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // Bare-name references to a declared type param share a VarId
     // throughout the operation.
-    let parsed = parse::parse("operation identity[A](x: A) -> A\n").expect("parse failed");
+    let parsed =
+        parse::parse("operation identity[A](x: A) -> A = identity(x)\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
@@ -6058,7 +6091,9 @@ fn load_op_type_param_shares_var_across_param_and_return() {
 
 #[test]
 fn load_op_distinct_type_params_get_distinct_vars() {
-    let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> A\n").expect("parse failed");
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
+    let parsed = parse::parse("operation pair[A, B](a: A, b: B) -> A = pair(a, b)\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
@@ -6072,13 +6107,15 @@ fn load_op_distinct_type_params_get_distinct_vars() {
 
 #[test]
 fn load_op_type_param_shares_var_into_parameterized_return() {
+    // NO STDLIB in this KB, so no `todo()` (WI-20261017-JRHZ0): the stub keeps its
+    // signature legal by calling itself, and nothing here calls it.
     // Use a locally-defined parameterized sort `Box` so the test is
     // self-contained — no stdlib import dependency.
     let source = "\
 sort Box
   sort T = ?
 end
-operation just[A](x: A) -> Box[A]
+operation just[A](x: A) -> Box[A] = just(x)
 ";
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
@@ -6103,7 +6140,7 @@ operation just[A](x: A) -> Box[A]
 
 #[test]
 fn load_op_without_type_params_unaffected() {
-    let parsed = parse::parse("operation length(x: Int64) -> Int64\n").expect("parse failed");
+    let parsed = parse::parse("operation length(x: Int64) -> Int64 = 0\n").expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
@@ -6159,10 +6196,11 @@ fn wi342_tyslot_lambda_carries_modify_effect() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342lambda
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64] @ {Modify[s]}
     = lambda v -> set_cell(s, v)
@@ -6182,10 +6220,11 @@ end
     // effect instead.
     let pure_decl = r#"
 namespace test.wi342lambda_neg
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64]
     = lambda v -> set_cell(s, v)
@@ -6216,10 +6255,11 @@ fn wi342_env_dataflow_let_bound_lambda_carries_modify_effect() {
     let kb = load_with_stdlib(
         r#"
 namespace test.wi342letenv
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64] @ {Modify[s]}
     = let f = lambda v -> set_cell(s, v)
@@ -6238,10 +6278,11 @@ end
     // the arrow would type as pure (pure <: effectful) and wrongly load.
     let pure_decl = r#"
 namespace test.wi342letenv_neg
-  import anthill.prelude.{Cell, Int64}
+  import anthill.prelude.{Cell, Int64, todo}
 
   operation set_cell(c: Cell[V = Int64], v: Int64) -> Cell[V = Int64]
     effects Modify[c]
+    = todo()
 
   operation outer(s: Cell[V = Int64]) -> (Int64) -> Cell[V = Int64]
     = let f = lambda v -> set_cell(s, v)

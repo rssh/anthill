@@ -4,7 +4,16 @@
 
 ## Tracks: WI-192
 
-## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-202 (phase 1 prerequisite — IndexedFileStore primary-key index + QueryableStore + retrieve builtin), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore source-span retract — already landed; WI-202 extends the struct with the id index), WI-200 (multi-instance Modify state — resolves the single-instance limitation noted below), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
+## Relates to: 037 (Modify framework — canonical state model; this proposal is a concrete consumer), WI-202 (phase 1 prerequisite — IndexedFileStore primary-key index + QueryableStore + retrieve builtin), WI-188 (entity copy), WI-189 (reify/reflect operators), WI-190 (quasi-quote patterns), WI-194 (commit), WI-195 (Error effect wired), WI-187 (IndexedFileStore source-span retract — already landed; WI-202 extends the struct with the id index), WI-200 (multi-instance Modify state; the limitation it addressed is gone, see §2), WI-201 (`Spec.AssociatedType` syntax — would let polymorphic bundle commands drop the explicit `?S where WorkItemStore[?S]` noise)
+
+## Agreement with 037 (revised 2026-10-17)
+
+§2's passages on dispatch, `Branch` and identity are revised to agree with the revised 037:
+- **Dispatch.** A call goes to the implementation its resource is bound to (037 §5).
+- **`Branch`.** An abandoned alternative's writes are undone, and the store operations that reach the disk declare `External`, which is refused under `Branch` (037 §6.2).
+- **Identity** belongs to the sort (037 §3).
+
+The single-instance limitation §2 described no longer exists. The store is a `Cell[V = State]` (WI-203/204), and a cell is keyed by its slot (WI-205).
 
 ## Motivation
 
@@ -36,7 +45,7 @@ sort WorkItemStore
   sort State = ?
 
   -- Mutating operations: Modify[s] covers everything reachable from
-  -- s (per 037's transitivity rule).
+  -- s (037 §6.3).
   operation next_id(s: Cell[State]) -> String
     effects Modify[s]
   operation commit(s: Cell[State], w: WorkItem) -> Unit
@@ -174,62 +183,50 @@ What commit does end-to-end (file-backed impl):
 |---|---|---|
 | 1 | `match Cell.get(s)` | Reads s's cell slot. Returns `wis(backend, counter)`. |
 | 2 | `case wis(backend, counter)` | Destructures, binding `backend` and `counter` locally. |
-| 3 | `persist(backend, w, ...)` | Routes to Store's handler keyed by `backend`. Writes the file. |
-| 4 | `flush(backend, nil())` | Routes to Store's handler. Flushes pending writes. |
-| 5 | `Cell.set(s, wis(backend, counter + 1))` | Routes to Cell's handler keyed by `s`. Overwrites slot — only id_counter advances. |
+| 3 | `persist(backend, w, ...)` | Goes to the implementation `backend` is bound to, through the mount of its key. Writes the file. |
+| 4 | `flush(backend, nil())` | Goes to the same implementation. Flushes pending writes. |
+| 5 | `Cell.set(s, wis(backend, counter + 1))` | Goes to the implementation `s` is bound to, through its slot. Overwrites the slot, so only `id_counter` advances. |
 | 6 | (later) `lookup(s, id)` from any other op | Reads `wis(backend, _)` from cell, calls `retrieve(backend, ...)` on the queryable backend. |
 
-Two distinct mutations: Store's slot in steps 3-4 (the file), Cell's slot in step 5 (id_counter). They route to two separate handlers. The `Modify[s]` declaration on commit's signature covers both transitively (per 037's transitivity rule — `s.backend` is reachable from `s`).
+Two distinct mutations: Store's slot in steps 3-4 (the file), Cell's slot in step 5 (id_counter). They go to two implementations. The `Modify[s]` declaration on commit's signature covers both (037 §6.3: `s.backend` is reachable from `s`).
 
 The host's startup work: allocate a `Cell[WIS]` initialized to `wis(backend, scan_max_id(backend) + 1)` — one scan to seed the counter; subsequent lookups go through `retrieve` directly.
 
 #### `Modify[s]` covers the backend reach
 
-A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to: per 037's transitivity rule, `Modify[s]` covers any component reachable through s — including the backend reachable via `Cell.get(s).backend`. The declaration `effects {Modify[s], Error}` is the conservative bound: "anything reachable from s may change," which includes the disk write.
+A reader might expect `commit` to declare `Modify[backend]` separately since the body calls `persist(backend, ...) effects {Modify[store], Error}`. It doesn't need to: per 037 §6.3, `Modify[s]` covers any component reachable through s — including the backend reachable via `Cell.get(s).backend`. The declaration `effects {Modify[s], Error}` is the conservative bound: "anything reachable from s may change," which includes the disk write.
 
-Handler dispatch at the call site stays per-resource: `persist(backend, ...)` goes through the Store handler keyed by `backend`, while `Cell.set(s, ...)` goes through Cell's handler keyed by `s`. Transitivity is a typing/effect-row concern, not a runtime-dispatch one.
+At run time each call goes to the implementation its own resource is bound to (037 §5.1): `persist(backend, ...)` to `backend`'s, and `Cell.set(s, ...)` to `s`'s. Coverage is a typing and effect-row concern, not a dispatch one.
 
-#### Branch-interaction propagates through `s`'s components
+#### Under `Branch` (revised 2026-10-17, 037 §6.2)
 
-The Branch-interaction reasoning has to follow reachability the same way. `Cell[WIS]`'s state is value-tree, so it could in principle be branch-local-snapshot. But the wis value's `backend` field is a `Store`, which 037 declares **sticky-by-physics** for filesystem-backed impls — the filesystem can't roll back atomically. Since `commit` transitively mutates whatever the backend mutates, the cell's effective contract under Branch is the *intersection* of its components, dominated by the most-restrictive component (the backend). For a file-backed Store, that's sticky-by-physics overall; for a hypothetical purely-in-memory mock backend, branch-local-snapshot would be admissible. Until the framework grows path effects + per-component contract reasoning (or a buffered Store handler absorbs disk writes for the branch's duration, or a static constraint rejects `commit` inside Branch — analogous to the Branch+Consumes constraint from 027), `commit` cannot be called soundly inside `Branch` against a sticky-by-physics backend. For the bundle's v0.1 (one-shot CLI, no Branch use), this is not load-bearing — the gap is documented at the framework level (037 §"Store" contract row).
+An abandoned alternative's writes are undone by the implementation each resource is bound to, so the cell's `id_counter` would roll back.
 
-A switch to a different backend (GitHub issues, remote API) brings its own State type and bodies. The cell's effective Branch behavior is dictated by whichever components the impl's State value reaches; e.g. a hypothetical purely-in-memory mock backend would be branch-local-snapshot admissible.
+The store operations that reach the disk are to declare `External` (037 §6.2, §8). Once they do, `commit`, which calls them, carries `External`. Since `Branch` together with `External` is refused at load (054), `commit` cannot be called inside `Branch`.
+
+A different backend brings its own State type and bodies. A purely in-memory backend writes nothing outside the process, so it declares no `External`, and its writes are undone like the cell's. The bundle uses no `Branch` (it is a one-shot CLI), so none of this is load-bearing today.
 
 #### Forward compatibility with time-travel
 
-A future time-travel handler (versioned state, audit trails, history queries) should coexist with `Modify` without breaking changes. WorkItemStore's design satisfies the five forward-compat invariants of 037 §"With time-travel":
+A future time-travel handler (versioned state, audit trails, history queries) should coexist with `Modify` without breaking changes. WorkItemStore's design satisfies the five forward-compat invariants of 037 §6.4:
 
 1. `set(s, v)`'s observable contract is "next `get(s)` returns `v`."
 2. `get(s)` returns the current head; `get_at` (if added later) lives under a separate `TimeTravel[s]` effect.
 3. `Modify[s]` doesn't expose handler-internal structure.
 4. `set` returns `Unit`, not the prior value.
-5. Operation signatures don't encode rollback policy — that's the resource's contract.
+5. Operation signatures don't encode rollback policy; 037 §6 fixes it for every operation.
 
 The spec satisfies all five — `commit` calls `Cell.set` returning `Unit`; `lookup` calls `Cell.get`; only `Modify[s]` is declared in the spec's effect rows. A future time-travel handler could substitute a versioned representation of the State `Cell` without changing any user-visible code.
 
-#### Single-instance-per-functor limitation
+#### Single-instance-per-functor limitation — gone
 
-Today's transitional Rust scheme (the type-independent `default_modify_handler`) keys cells by **functor symbol only** — `file_wis(...)` regardless of field values shares a single cell. Two `file_wis(backend_a, ..., counter: 5)` and `file_wis(backend_b, ..., counter: 10)` would collide. This is fine for the bundle's WI-192 use case (one CLI invocation = one project = one WorkItemStore) but breaks for multi-instance scenarios:
-
-- Tests that exercise `cmd_X` against multiple isolated stores in the same process.
-- A future `anthill-todo-server` managing N project workspaces.
-- Composition where two operations independently want isolated state of the same sort type.
-
-Per 037, identity is a property of the *handler* (`ModifyHandler[Resource, IdentityKey]`), not the resource sort. The framework permits three identity schemes for the handler to pick:
-
-- **Functor-only** (`IdentityKey = Unit`) — current scheme; one slot per Resource type.
-- **Identity-by-key** (`IdentityKey = String / Int64 / IdentityKey` opaque type, computed via a sort-declared `key` operation) — multi-instance via a domain key the user supplies (project name, workspace id).
-- **Opaque-handle** (`IdentityKey = ` allocation-time uid) — multi-instance via fresh handles per construction.
-
-WI-200 tracks the runtime work to wire per-resource handlers under these schemes. Until WI-200 lands, every Modify-using resource is functor-keyed. WI-192 v0.1 ships under this limitation and uses functor-only on purpose (single-store bundle). Documented here so the limitation is visible at design-review time, not surprise at multi-tenant time.
-
-Under v0.1's transitional handler scheme (functor-only identity), the field values inside `s` don't participate in state lookup — the runtime keys all `file_wis(...)` calls to one slot. That matches the bundle's single-store usage. When WI-200 lands and Cell migrates to opaque-handle identity, `s`'s allocation-time uid will become the keying scheme; multi-store usage follows without changing user-visible code.
-
-Earlier drafts considered three other options (functional threading; a new Cell value variant; a separate registry pattern duplicating what Modify already does). All inferior to using the framework as-is. Discarded.
+*Superseded 2026-10-17.* This section described two things that no longer hold:
+- **A functor-keyed handler** under which two stores in one process shared one cell. The store has been a `Cell[V = State]` since WI-203/204, and a cell has been keyed by its arena slot since WI-205, so two stores are two cells and the collision does not happen.
+- **An identity menu** from 037's 2026-05 draft: identity as "a property of the handler", chosen among functor-only, by-key and opaque-handle schemes. That menu is withdrawn. Identity belongs to the sort (037 §3), and each resource is bound to one implementation (037 §5).
 
 #### Note: registries and state are the same idea
 
-This is the framework's central observation, spelled out in 037 §3 "Type-specific Modify handlers": the Modify cell, the host store registry, KB indexes, arenas, source maps are all *handlers for resource-specific Modify effects*. They differ in state representation; they are uniform in dispatch. The WorkItemStore spec's state happens to be value-shaped (a `Cell[X]` for some X), so it plugs into the Cell-style handler with no new machinery. Resources whose state spills outside the Value model (e.g. backend objects with non-Value internals) get a different state-representation choice but the same dispatch architecture.
+In the revised 037's terms, the cell arena, the host's store mirror and the KB's indexes are each the default implementation of a base sort (037 §4.2). They differ in how they store state, and every call reaches one through the resource the call is made on (037 §5). The WorkItemStore's state is a `Cell[V = State]`, so it uses Cell's implementation with no new machinery.
 
 Cross-reference 037 for the full framework; WI-192 is its first end-to-end consumer.
 

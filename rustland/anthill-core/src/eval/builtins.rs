@@ -353,6 +353,8 @@ const HOST_FNS: &[(
     ("modify_runtime_get", 1, modify_get),
     ("modify_runtime_set", 2, modify_set),
     ("error_raise", 1, error_raise),
+    // WI-20261017-JRHZ0 — the hole (`rustland/anthill-stl/anthill/prelude.anthill`).
+    ("prelude_todo", 0, prelude_todo),
     ("cell_new", 1, cell_new),
     ("cell_get", 1, cell_get),
     ("cell_set", 2, cell_set),
@@ -6753,6 +6755,19 @@ fn error_raise(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
         });
     };
     Err(interp.raise_error(payload.clone()))
+}
+
+/// WI-20261017-JRHZ0 — `anthill.prelude.todo() -> Nothing`, the body of an operation not
+/// written yet. It has no value to return, so it faults: [`EvalError::NotImplemented`],
+/// naming the operation whose body called it — the top frame, since a builtin enters
+/// none of its own.
+fn prelude_todo(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("todo", args)?;
+    let running = interp
+        .stack
+        .top()
+        .map(|f| interp.kb().qualified_name_of(f.op).to_string());
+    Err(EvalError::NotImplemented { running })
 }
 
 // ── Fact monotonicity guard (proposal 053) ─────────────────────

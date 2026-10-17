@@ -23,11 +23,11 @@
 
 use crate::common::try_load_kb_with;
 
-/// A bodyless `merge` whose schema lives purely in its signature, plus a GENERIC wrapper
+/// A `merge` whose schema lives purely in its signature (its body is `todo()`), plus a GENERIC wrapper
 /// whose own operands are abstract — so `merge`'s return inside it is a residual `Concat`.
 const GENERIC: &str = r#"
   import anthill.prelude.{String, Int64, Bool, Relation}
-  import anthill.prelude.{Concat}
+  import anthill.prelude.{Concat, todo}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -49,7 +49,7 @@ const GENERIC: &str = r#"
   -- unresolved row. `project_run`'s signature now threads `E = r.E` exactly as
   -- `where_run` / `join_run` do, so the row propagates instead.
   operation merge[L, R](a: Relation[T = L], b: Relation[T = R])
-    -> Relation[T = Concat[A = L, B = R], E = {a.E, b.E}]
+    -> Relation[T = Concat[A = L, B = R], E = {a.E, b.E}] = todo()
 
   operation mergeWrap[L2, R2](a: Relation[T = L2], b: Relation[T = R2])
     -> Relation[T = Concat[A = L2, B = R2], E = {a.E, b.E}] = merge(a, b)
@@ -148,7 +148,7 @@ fn wi734_nested_residual_operand_stays_symbolic() {
     const SRC: &str = r#"
 namespace test.wi734nest
   import anthill.prelude.{String, Int64, Bool, Relation}
-  import anthill.prelude.{Concat, Without}
+  import anthill.prelude.{Concat, Without, todo}
   sort Person
     entity person(name: String, age: Int64)
   end
@@ -156,7 +156,7 @@ namespace test.wi734nest
   rule person_row(?name, ?age) :- person(name: ?name, age: ?age)
 
   operation nest[S, D, B2](p: Relation[T = S], q: Relation[T = B2])
-    -> Relation[T = Concat[A = Without[T = S, Drop = D], B = B2]]
+    -> Relation[T = Concat[A = Without[T = S, Drop = D], B = B2]] = todo()
   operation nestWrap[S2, D2, B3](p: Relation[T = S2], q: Relation[T = B3])
     -> Relation[T = Concat[A = Without[T = S2, Drop = D2], B = B3]] = nest(p, q)
 end

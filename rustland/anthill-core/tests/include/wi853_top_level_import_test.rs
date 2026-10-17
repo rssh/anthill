@@ -67,12 +67,12 @@ fn assert_unresolved(sources: &[&str], name: &str, why: &str) {
 #[test]
 fn a_top_level_import_brings_a_name_into_the_top_level_scope() {
     assert_unresolved(
-        &[LIB, "operation use_s(s: S) -> Int64\n"],
+        &[LIB, "operation use_s(s: S) -> Int64 = 0\n"],
         "S",
         "the control: without an import, a bare `S` at the top level names nothing",
     );
     assert_loads(
-        &[LIB, "import wi853.lib.S\n\noperation use_s(s: S) -> Int64\n"],
+        &[LIB, "import wi853.lib.S\n\noperation use_s(s: S) -> Int64 = 0\n"],
         "a top-level import must bind its name at the top level",
     );
 }
@@ -85,16 +85,16 @@ fn a_top_level_import_brings_a_name_into_the_top_level_scope() {
 #[test]
 fn importing_a_namespace_binds_the_namespace_name_not_its_contents() {
     assert_unresolved(
-        &[LIB, "import wi853.lib\n\noperation use_s(s: S) -> Int64\n"],
+        &[LIB, "import wi853.lib\n\noperation use_s(s: S) -> Int64 = 0\n"],
         "S",
         "`import wi853.lib` binds `lib`; a bare `S` is not in scope through it",
     );
     assert_loads(
-        &[LIB, "import wi853.lib.*\n\noperation use_s(s: S) -> Int64\n"],
+        &[LIB, "import wi853.lib.*\n\noperation use_s(s: S) -> Int64 = 0\n"],
         "the wildcard form is how a scope's contents come in",
     );
     assert_loads(
-        &[LIB, "import wi853.lib\n\noperation use_s(s: lib.S) -> Int64\n"],
+        &[LIB, "import wi853.lib\n\noperation use_s(s: lib.S) -> Int64 = 0\n"],
         "and the bound name qualifies the path to what it contains",
     );
 }
@@ -112,7 +112,7 @@ fn every_import_form_is_admitted_at_the_top_level() {
         "import wi853.lib.*\n",
     ] {
         assert_loads(
-            &[LIB, &format!("{form}\noperation use_s(s: S) -> Int64\n")],
+            &[LIB, &format!("{form}\noperation use_s(s: S) -> Int64 = 0\n")],
             &format!("`{}` must be admitted at the top level", form.trim()),
         );
     }
@@ -135,7 +135,7 @@ fn every_import_form_is_admitted_at_the_top_level() {
 fn a_top_level_import_does_not_escape_the_file_that_wrote_it() {
     let other = "\
 namespace wi853.other
-  operation use_s(s: S) -> Int64
+  operation use_s(s: S) -> Int64 = 0
 end
 ";
     assert_unresolved(
@@ -154,7 +154,7 @@ end
     assert_loads(
         &[
             "sort SGlobal853\n  entity mk(x: Int64)\nend\n",
-            "namespace wi853.def_user\n  operation use_g(s: SGlobal853) -> Int64\nend\n",
+            "namespace wi853.def_user\n  operation use_g(s: SGlobal853) -> Int64 = 0\nend\n",
         ],
         "a top-level DEFINITION is still visible from another file's namespace",
     );

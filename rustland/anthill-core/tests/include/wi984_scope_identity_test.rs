@@ -42,9 +42,10 @@ use smallvec::SmallVec;
 
 const SOURCE: &str = r#"
 namespace wi984
+  import anthill.prelude.{todo}
   sort Tank
     entity Full(litres: Int64)
-    operation fill(t: Tank) -> Tank
+    operation fill(t: Tank) -> Tank = todo()
   end
 end
 "#;

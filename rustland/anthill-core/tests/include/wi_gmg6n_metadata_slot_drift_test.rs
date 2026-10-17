@@ -58,11 +58,11 @@ use smallvec::SmallVec;
 /// already rides — and joined to `SortInfo` from there.
 const SUBJECT: &str = r#"
 sort probe.Thing
-  import anthill.prelude.{Error, External}
+  import anthill.prelude.{Error, External, todo}
   entity mk
 
   operation act(self: Thing) -> Thing
-    effects {External, Error}
+    effects {External, Error} = todo()
 end
 
 namespace probe

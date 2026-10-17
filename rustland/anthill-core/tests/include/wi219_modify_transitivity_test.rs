@@ -154,6 +154,7 @@ namespace anthill.test.wi219
 
     operation persist(b: Backend, value: Int64) -> Unit
       effects Modify[b]
+      = ()
   end
 
   -- Wrapper state holds the backend plus a counter

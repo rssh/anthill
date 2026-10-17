@@ -1360,9 +1360,9 @@ mod tests {
             r#"
 sort Store {
   entity store
-  operation persist(s: Store, fact: Int64) -> Int64
-  operation retract(s: Store, id: Int64) -> Int64
-  operation flush(s: Store) -> Int64
+  operation persist(s: Store, fact: Int64) -> Int64 = fact
+  operation retract(s: Store, id: Int64) -> Int64 = id
+  operation flush(s: Store) -> Int64 = 0
 }
 "#,
         );
@@ -1402,8 +1402,8 @@ sort Buf {
 }
 sort Store {
   entity store
-  operation persist(s: Store, b: Buf[T = Int64, N = 3]) -> Int64
-  operation retract(s: Store, b: Buf[T = Int64, N = 4]) -> Int64
+  operation persist(s: Store, b: Buf[T = Int64, N = 3]) -> Int64 = 0
+  operation retract(s: Store, b: Buf[T = Int64, N = 4]) -> Int64 = 0
 }
 "#,
         );
@@ -1865,9 +1865,9 @@ fact cat
             r#"
 sort Store {
   entity store
-  operation persist(s: Store, fact: Int64) -> Int64
-  operation retract(s: Store, id: Int64) -> Int64
-  operation flush(s: Store) -> Int64
+  operation persist(s: Store, fact: Int64) -> Int64 = fact
+  operation retract(s: Store, id: Int64) -> Int64 = id
+  operation flush(s: Store) -> Int64 = 0
 }
 "#,
         );
@@ -2184,7 +2184,7 @@ fact test.wi632_bridge.Beta.dup(y: "hi")
 sort Tank {
   entity tank(fuel: Int64)
   entity Full(t: Tank)
-  operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
+  operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t) = t
 }
 "#,
         );
@@ -2230,7 +2230,7 @@ sort Buf {
 }
 sort Tank {
   entity tank(fuel: Int64)
-  operation fill(t: Tank, b: Buf[T = Int64, N = 3]) -> Tank
+  operation fill(t: Tank, b: Buf[T = Int64, N = 3]) -> Tank = t
 }
 "#,
         );

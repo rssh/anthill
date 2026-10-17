@@ -432,7 +432,7 @@ pluggable effect therefore already declares three things for its **concrete** se
    concrete resource;
 2. its **carrier / denotation monad** (027's `HandlerAction` / 047's monad-in-API) — its control
    shape;
-3. its **branch-interaction contract** (037) — how its resources behave under Choice/backtracking.
+3. its **behaviour under Choice/backtracking**. Since 037's 2026-10-17 revision this is one rule rather than a per-resource contract: an abandoned alternative's writes are undone, and state outside the process is `External`, refused under `Branch` (037 §6.2).
 
 The Γ-transfer is a **generic derivation over these three declarations** — no fourth authored
 artifact. The state side derives from the footprint:
@@ -500,7 +500,7 @@ domain*, and the `AbstractEnv` API is the abstract analogue of `RuntimeAPI`.
 | `Pure(v)` | linear: Γ continues; footprint kills/marks of §6.2 apply; `v`'s abstract value carries type + deps |
 | `Throw(p)` | this path ends; its Γ flows only to the catch/reify boundary (047 §5), meeting the other throwing paths there |
 | `Fail` | path infeasible: Γ = ⊥ — the join ignores dead branches |
-| `Choice(v, alts)` | fork Γ per alternative; join = 050's meet. **037's branch-interaction contract is exactly the fork rule**: a branch-local-snapshot resource gives every alternative the *same* Γ snapshot (rollback restores state); a sticky-by-physics resource (Console) has no readable Γ anyway |
+| `Choice(v, alts)` | fork Γ per alternative; join = 050's meet. **037 §6.2's rule is exactly the fork rule**: an abandoned alternative's writes are undone, so every alternative starts from the *same* Γ snapshot. State outside the process is `External`, refused under `Branch` (054); a sticky-by-physics resource (Console) has no readable Γ anyway |
 | `Suspend(k)` | at the resume point: **top** on resource-dependent facts — arbitrary activity may interleave before resume (a scheduler contract could later refine this) |
 
 **Soundness — supersedes an earlier framing.** A "knowledge-decreasing API" does **not** by

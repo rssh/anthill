@@ -228,6 +228,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "registers an embedder's host function before the load, which is its subject",
     ),
     (
+        "include/wi_rm247_data_sort_equation_test.rs",
+        1,
+        "backs a data sort's operation through an embedder's host function, registered before the load",
+    ),
+    (
         "include/wi219_modify_transitivity_test.rs",
         1,
         "mounts the forge host stand-ins before the stdlib's own load, for its `LoadResult`",

@@ -197,7 +197,7 @@ namespace test.wi618.legit
     :- ?t <=> (Int64 -> Int64)
 
   operation describe(f: (a: Int64) -> Int64) -> String
-    ensures mentions(result, Int64 -> Int64)
+    ensures mentions(result, Int64 -> Int64) = ""
 end
 "#,
     );

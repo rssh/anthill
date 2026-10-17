@@ -53,9 +53,10 @@
 //!   of the parameter (`requires Mark[T = (A, Int64)]`) is read at the call's type since
 //!   WI-20261013-34822, and its rows are that ticket's file.
 //! * A SORT PROVIDING A SPEC AT A COMPOSITE OF ITS PARAMETER AND SUPPLYING NO MEMBER (`sort Hi
-//!   { sort T = ?  provides Lo[T = (T, Int64)] }`) loads and dies when the call runs,
-//!   "operation has no body: `Lo.lo`" — at a tuple, an arrow and an applied sort alike, so it
-//!   is not this parameter's spelling: WI-20260909-M8QWJ's shape (e).
+//!   { sort T = ?  provides Lo[T = (T, Int64)] }`) is a witness provision that backs nothing,
+//!   refused at load since WI-20260909-M8QWJ (its shape (e); it used to load and die when the
+//!   call ran) — at a tuple, an arrow and an applied sort alike, so it is not this
+//!   parameter's spelling. `wi_m8qwj_unrunnable_operation_test` has the applied-sort row.
 //! * A ROW PARAMETER at an arrow's effect row (`(A) -> A @ {E}`) is bound to the call's row,
 //!   the two rows being one (WI-20261014-5JYH9, whose file has the rows).
 

@@ -4,3 +4,14 @@
    Connected to denial rules: ⊥ in rule heads expresses non-existence. >}
 sort anthill.prelude.Nothing
 end
+
+namespace anthill.prelude
+  -- THE HOLE (WI-20261017-JRHZ0; kernel-language.md §5.4). `= todo()` is a body for
+  -- any signature — `Nothing` conforms to every type — so an operation that is not
+  -- written yet keeps its signature and still has something that runs it. Reaching
+  -- it is a fault naming the running operation, the way Rust's `todo!()` and Scala's
+  -- `???` are: no value, outside every effect row, caught by nothing. A program that
+  -- holds one loads and runs; only a call that reaches it fails. Codegen refuses a
+  -- body that calls it.
+  operation todo() -> Nothing @[host_implemented]
+end

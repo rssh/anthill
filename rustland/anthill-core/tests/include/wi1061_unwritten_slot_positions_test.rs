@@ -96,7 +96,7 @@ use crate::wi1012_static_supplier_tie_test::refusal;
 /// `Stream` inside it bare, so the row it hands on is one nothing in the signature named.
 const NESTED: &str = "namespace test.wi1061.nested\n\
     \x20 import anthill.prelude.{Int64, Stream, List, Error}\n\
-    \x20 operation takes_pure(l: List[T = Stream[T = Int64, E = {}]]) -> Int64\n\
+    \x20 operation takes_pure(l: List[T = Stream[T = Int64, E = {}]]) -> Int64 = 0\n\
     \x20 operation feed(l: List[T = Stream[T = Int64]]) -> Int64 = takes_pure(l)\n\
     \x20 operation caller(l: List[T = Stream[T = Int64, E = {Error}]]) -> Int64 = feed(l)\n\
     end\n";
@@ -107,7 +107,7 @@ const NESTED: &str = "namespace test.wi1061.nested\n\
 /// foot of this file read those two halves apart.
 const WIDEN: &str = "namespace test.wi1061.ret\n\
     \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
     \x20 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s\n\
     \x20 operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen(s))\n\
     end\n";
@@ -195,7 +195,7 @@ fn an_unwritten_row_in_a_callback_result_or_a_tuple_component_is_rigid() {
     let arrow = refusal(
         "namespace test.wi1061.arrow\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation feed(f: (x: Int64) -> Stream[T = Int64]) -> Int64 = takes_pure(f(1))\n\
          \x20 operation caller(f: (x: Int64) -> Stream[T = Int64, E = {Error}]) -> Int64 = \
          feed(f)\n\
@@ -209,7 +209,7 @@ fn an_unwritten_row_in_a_callback_result_or_a_tuple_component_is_rigid() {
     let tuple = refusal(
         "namespace test.wi1061.tuple\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-         \x20 operation takes_pure(p: (s: Stream[T = Int64, E = {}], n: Int64)) -> Int64\n\
+         \x20 operation takes_pure(p: (s: Stream[T = Int64, E = {}], n: Int64)) -> Int64 = 0\n\
          \x20 operation feed(p: (s: Stream[T = Int64], n: Int64)) -> Int64 = takes_pure(p)\n\
          \x20 operation caller(p: (s: Stream[T = Int64, E = {Error}], n: Int64)) -> Int64 = \
          feed(p)\n\
@@ -236,7 +236,7 @@ fn a_body_that_holds_for_every_instantiation_still_loads() {
     crate::common::load_kb_with(
         "namespace test.wi1061.polymorphic\n\
          \x20 import anthill.prelude.{Int64, Stream, List}\n\
-         \x20 operation takes_any(l: List[T = Stream[T = Int64]]) -> Int64\n\
+         \x20 operation takes_any(l: List[T = Stream[T = Int64]]) -> Int64 = 0\n\
          \x20 operation feed(l: List[T = Stream[T = Int64]]) -> Int64 = takes_any(l)\n\
          end\n",
     );

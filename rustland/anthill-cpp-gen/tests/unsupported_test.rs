@@ -305,3 +305,60 @@ fn persistence_sort_in_signature_rejected() {
         "diagnostic should name the offending sort: {msg}"
     );
 }
+
+#[test]
+fn a_todo_body_is_refused_naming_its_operation() {
+    // WI-20261017-JRHZ0 — `anthill.prelude.todo()` is a HOLE, the body of an operation not
+    // written yet. There is no C++ expression it could map to, and a header that compiled
+    // one would fail only when it ran, so cpp-gen refuses (fatal, the user's decision) and
+    // names the operation that holds the hole — not the generic "name the host expression in
+    // an `operation_map`" every other unmapped body-less operation gets, which is the wrong
+    // repair here. BACKED OUT (the `todo` arm of `unlowerable_operation` removed) this reds:
+    // the generic message names `anthill.prelude.todo` and not `Calc.stub`.
+    let hole = r#"
+        namespace test.jrhz0
+          import anthill.prelude.{Int64, todo}
+          sort Calc
+            operation stub(x: Int64) -> Int64 = todo()
+            operation fine(x: Int64) -> Int64 = x + 1
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(hole);
+    let msg = emit_traits_struct(&mut kb, "test.jrhz0.Calc")
+        .expect_err("a body that calls todo() must be refused")
+        .to_string();
+    assert!(
+        msg.contains("`test.jrhz0.Calc.stub` is not implemented")
+            && msg.contains("anthill.prelude.todo()"),
+        "the refusal names the operation that holds the hole: {msg}"
+    );
+    assert!(
+        !msg.contains("operation_map"),
+        "a hole is not a primitive missing its binding: {msg}"
+    );
+
+    // A const's value is a body too, and its refusal names the const.
+    let mut kb = load_kb_with(
+        r#"
+        namespace test.jrhz0k
+          import anthill.prelude.{Int64, todo}
+          sort Calc
+            const K: Int64 = todo()
+            operation fine(x: Int64) -> Int64 = x + 1
+          end
+        end
+    "#,
+    );
+    let msg = emit_traits_struct(&mut kb, "test.jrhz0k.Calc")
+        .expect_err("a const whose value calls todo() must be refused")
+        .to_string();
+    assert!(
+        msg.contains("`test.jrhz0k.Calc.K` is not implemented"),
+        "the refusal names the const that holds the hole: {msg}"
+    );
+
+    // CONTROL (passes either way): the same sort with the hole written emits.
+    let mut kb = load_kb_with(&hole.replace("= todo()", "= x"));
+    emit_traits_struct(&mut kb, "test.jrhz0.Calc").expect("the written sort emits");
+}

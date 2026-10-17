@@ -367,13 +367,21 @@ end
 ///    arm 1.
 #[test]
 fn yqb1y_concat_and_without_are_inverses_at_arity_one() {
+    // `resid` is a body-less member of a sort with no constructor, called from inside it:
+    // in a namespace it is refused at its declaration (WI-20260909-M8QWJ), and a body
+    // cannot stand in — the declared return is compared UNREDUCED with the body's value
+    // (`expected Concat[…], got (a: Int64, c: Bool)`), measured with a self-call and with
+    // a literal, in both arms.
+    //
     // Drop `b`, then merge `(c: Bool)` — the §6.8 shape, verbatim.
     let errs = load_errs(
         r#"
 namespace test.yqb1yinv
   import anthill.prelude.{String, Int64, Bool, Concat, Without}
-  operation resid() -> Concat[A = Without[T = (a: Int64, b: String), Drop = (b: String)], B = (c: Bool)]
-  operation use_it() -> (a: Int64, c: Bool) = resid()
+  sort Fx
+    operation resid() -> Concat[A = Without[T = (a: Int64, b: String), Drop = (b: String)], B = (c: Bool)]
+    operation use_it() -> (a: Int64, c: Bool) = resid()
+  end
 end
 "#,
     );
@@ -388,8 +396,10 @@ end
         r#"
 namespace test.yqb1yinv2
   import anthill.prelude.{String, Int64, Concat, Without}
-  operation resid() -> Without[T = Concat[A = (a: Int64), B = (b: String)], Drop = (b: String)]
-  operation use_it() -> (a: Int64) = resid()
+  sort Fx
+    operation resid() -> Without[T = Concat[A = (a: Int64), B = (b: String)], Drop = (b: String)]
+    operation use_it() -> (a: Int64) = resid()
+  end
 end
 "#,
     );

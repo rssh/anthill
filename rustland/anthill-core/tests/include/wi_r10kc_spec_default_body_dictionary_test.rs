@@ -725,9 +725,13 @@ fn the_channel_reaches_a_named_slot_and_not_a_nameless_one() {
 /// either falls back to the loud error, so it can only restore a refusal and never break
 /// a working call — which is why the four rows above still pass.
 ///
-/// BACKED OUT: this row answers `99` instead of raising.
+/// WI-20260909-M8QWJ moved this program from eval to LOAD: `Other.mark()` names no
+/// carrier, has no `requires Other` in scope and no body, so nothing can run it, and the
+/// typer refuses the call (`CallOfUnselectableSpecOperation`) before any route is taken.
+/// The row now pins that refusal. It no longer drives the gate: the program never runs,
+/// so a back-out of the gate cannot fail it.
 #[test]
-fn the_sibling_route_does_not_dispatch_across_specs_by_short_name() {
+fn a_call_the_sibling_route_once_misdispatched_is_refused_at_load() {
     let src = r#"
 namespace r10kc.crossspec
   import anthill.prelude.{Int64, String, Bool, List, WeakOrd, Ord}
@@ -770,11 +774,10 @@ namespace r10kc.crossspec
   end
 end
 "#;
-    let mut interp = crate::common::interp_for(src);
-    let got = interp.call("r10kc.crossspec.Driver.go", &[Value::Int(0)]);
-    assert!(
-        got.is_err(),
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(src),
+        &["a call of `r10kc.crossspec.Other.mark` that nothing can run"],
         "`Other.mark` is not a member of anything `Box` provides, so the frame's `Box` \
-         dictionary must not answer it — a short-name match is not a dispatch. Got {got:?}"
+         dictionary must not answer it — a short-name match is not a dispatch",
     );
 }

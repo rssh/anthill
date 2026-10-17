@@ -524,8 +524,10 @@ fn the_dot_spelling_reads_the_same_arbitration_on_a_bodyless_op() {
 /// too, so a reroute that did not gate on a TIE would change what an ordinary dot calls.
 ///
 /// The shape that makes it reachable is `carrier_override_suppliers`' interpretability
-/// filter: `Leaf` DECLARES `describe2` with no body, so it is dropped from the supplier
-/// set and the witness is the only one left — one supplier whose target is not the member
+/// filter: `Leaf` DECLARES `describe2` with no body and realizes it only in C++ (a plain
+/// body-less member of a data sort is a load error since WI-20260909-M8QWJ), so this
+/// interpreter cannot run it, it is dropped from the supplier set and the witness is the
+/// only one left — one supplier whose target is not the member
 /// the dot resolved. `Take` is the answer, as it was before this ticket; measured 7 (the
 /// witness, reached through the ordinary defaulted path) only if the reroute over-fires.
 #[test]
@@ -545,7 +547,11 @@ namespace {ns}
 
   sort Leaf
     entity leaf
-    operation describe2(x: Leaf) -> Int64
+    operation describe2(x: Leaf) -> Int64 @[host_implemented]
+  end
+
+  provides Leaf language cpp
+    operation_map {{ describe2: "leaf_describe2($1)" }}
   end
 
   sort Rival2

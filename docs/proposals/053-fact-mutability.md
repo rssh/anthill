@@ -64,7 +64,7 @@ The one real residual failure — a functor *declared* `non_monotone` whose back
 - **`retract` of a functor whose monotonicity is not `non_monotone` → loud error.** This is the sole guard — the non-monotone step that desynchronizes re-derived structure from the program and falsifies caches over it.
 - **`assert` of a `constant` functor → loud error.** Otherwise `assert` is permitted (the `monotone` default).
 
-WI-666 implements this as a **runtime** guard — in the eval `Store.persist` / `Store.retract` builtins, surfaced via the `Error` effect (037 §"With Error"). Those builtins run at eval only, never during a load phase, so the guard cannot trip the loader establishing facts. (A static load-time `LoadError` variant, where the functor and its store are known at load, is a possible refinement — not implemented.)
+WI-666 implements this as a **runtime** guard — in the eval `Store.persist` / `Store.retract` builtins, surfaced via the `Error` effect (037 §6.1). Those builtins run at eval only, never during a load phase, so the guard cannot trip the loader establishing facts. (A static load-time `LoadError` variant, where the functor and its store are known at load, is a possible refinement — not implemented.)
 
 ## Out of scope
 

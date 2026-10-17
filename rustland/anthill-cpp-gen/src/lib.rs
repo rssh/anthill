@@ -726,6 +726,14 @@ pub struct CodegenContext {
     /// at a boundary it owns. THE CONTRACT IS THE CLEAR-THEN-READ, so any second
     /// degrading caller must do the same; there is one today.
     pub(crate) capability_gap: std::cell::Cell<bool>,
+    /// WI-20261017-JRHZ0 — the declaration whose body is being lowered: an operation's,
+    /// set by [`synthesise_body_for`], or a const's value, set by the const emitter, each
+    /// around its `lower_node` call (saved and restored). Read by the `todo()` refusal, so
+    /// it names the declaration that holds the hole rather than the hole.
+    pub(crate) lowering_decl: std::cell::Cell<Option<Symbol>>,
+    /// `anthill.prelude.todo`, resolved once (WI-897: an operation is keyed by its
+    /// symbol, not by its spelling). `None` in a KB that does not load the prelude.
+    todo_op: Option<Symbol>,
 }
 
 impl CodegenContext {
@@ -759,6 +767,8 @@ impl CodegenContext {
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
             capability_gap: std::cell::Cell::new(false),
+            lowering_decl: std::cell::Cell::new(None),
+            todo_op: kb.try_resolve_symbol("anthill.prelude.todo"),
         })
     }
 
@@ -1415,7 +1425,12 @@ fn lower_one_const(
     // span the arms, and lowering the body needs `&mut` on the KB.
     let body_node = kb.const_body_node(sym).cloned();
     let cpp_value = match &body_node {
-        Some(body) => lower_node(kb, ctx, body)?,
+        Some(body) => {
+            let enclosing = ctx.lowering_decl.replace(Some(sym));
+            let lowered = lower_node(kb, ctx, body);
+            ctx.lowering_decl.set(enclosing);
+            lowered?
+        }
         None => ctx
             .host_consts
             .lookup(sym)
@@ -2032,7 +2047,10 @@ fn synthesise_body_for(
             .map(|param| (param.source_name.clone(), param.name.clone()))
             .collect();
         let _param_guard = ctx.push_value_bindings(frame);
-        match lower_node(kb, ctx, &body_node) {
+        let enclosing = ctx.lowering_decl.replace(Some(op_sym));
+        let lowered = lower_node(kb, ctx, &body_node);
+        ctx.lowering_decl.set(enclosing);
+        match lowered {
             Ok(expr) => {
                 return Ok(Some(if return_type == "void" {
                     format!("{expr};")
@@ -4387,6 +4405,22 @@ fn unlowerable_operation(
         || kb.op_body_node(op).is_some()
     {
         return None;
+    }
+    // WI-20261017-JRHZ0 — `todo()` is a HOLE, not a primitive missing its binding: no
+    // `operation_map` is the repair, so the refusal is its own and names the declaration
+    // that holds it. Fatal like the rest (the user's decision): a header that compiled
+    // a hole would fail only when it ran, and cpp-gen refuses rather than emitting one.
+    if ctx.todo_op == Some(op) {
+        let holder = match ctx.lowering_decl.get() {
+            Some(holder) => format!("`{}` is not implemented", kb.qualified_name_of(holder)),
+            None => "a declaration is not implemented".to_string(),
+        };
+        return Some(CppCodegenError {
+            message: format!(
+                "{holder}: it calls `anthill.prelude.todo()`, a hole, and cpp-gen does not \
+                 lower one. Write the body before generating C++ for it."
+            ),
+        });
     }
     let qn = kb.qualified_name_of(op).to_string();
     let carrier = parent_qualified_name(kb, op).unwrap_or_else(|| "<unknown>".to_string());

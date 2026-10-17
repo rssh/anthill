@@ -87,7 +87,7 @@ sort anthill.prelude.Float
     floor(a: Float) -> Int64 @[host_implemented]                -- round toward negative infinity; partial
     ceil(a: Float) -> Int64 @[host_implemented]                 -- round toward positive infinity; partial
     round(a: Float) -> Int64 @[host_implemented]                -- round to nearest, half away from zero; partial
-    recip(a: Float) -> Float              -- 1/a
+    recip(a: Float) -> Float = div(1.0, a)                     -- 1/a; see DEFINITION below
     -- IEEE 754 predicates: needed because Float.eq returns false for NaN
     -- (NaN != NaN in IEEE), so users can't detect NaN via equality.
     isNaN(a: Float) -> Bool @[host_implemented]               -- true iff a is NaN
@@ -121,6 +121,15 @@ sort anthill.prelude.Float
     tau() -> Float @[host_implemented]                        -- τ = 2π = 6.28318…
   }
 
+  -- WI-20260909-M8QWJ: the ADDITIVE AND MULTIPLICATIVE IDENTITIES. `Float` provides
+  -- `Additive` and `Multiplicative` (through `Numeric` and `Ring`), and no carrier
+  -- implemented `zero` or `one` — `arithmetic.anthill` recorded the census — so a generic
+  -- sum reaching `Additive.zero` at `Float` died at eval on a program that loaded clean.
+  -- `check_provider_operations` now holds a host carrier to every operation of a spec it
+  -- provides. BODIES, not host mappings: a literal needs no host function.
+  operation zero() -> Float = 0.0
+  operation one() -> Float = 1.0
+
   -- Special IEEE 754 values as term-level constants (WI-084 / proposal 039).
   -- Bodyless / host-supplied: anthill has no surface literal for ±Inf or NaN,
   -- so each is a `const` whose value is produced by a registered host builtin
@@ -150,8 +159,16 @@ sort anthill.prelude.Float
   -- reason: INLINING IS NOT DISPATCH, and it does not reach every call form.
 
   -- DEFINITION. `recip` IS `1/a`, bit for bit, for every input including ±0.0, ±inf
-  -- and NaN — the host `f64::recip` is literally `1.0/self`. So the equation is the
+  -- and NaN — the host `f64::recip` is literally `1.0/self`. So `div(1.0, a)` is the
   -- implementation and `recip` needs no host mapping of its own; `div` already has one.
+  --
+  -- A BODY AND THE EQUATION, each for the calls the other cannot reach
+  -- (WI-20260909-M8QWJ). The `@[simp]` equation inlines a call that names `Float.recip`,
+  -- which is what keeps a generated backend from calling a `recip` it has no function for
+  -- (the C++ binding maps none). It reaches no call made through a dictionary:
+  -- `Field.recip` dispatched at `Float` found no member it could run and died at eval, and
+  -- `provides Field[T = Float]` is now refused unless the carrier backs `recip` with
+  -- something a dispatch can run — the body (kernel-language.md §5.3, §8.7).
   rule recip(?a) <=> div(1.0, ?a) @[simp]
 
   -- SPECIFICATION, and an EXACT one — `2·π` is exact in binary floating point (doubling
@@ -189,8 +206,10 @@ sort anthill.prelude.Float
   rule abs(neg(?a)) <=> abs(?a)
 
   -- WI-658: Float provides NonEq (see the fact in the rust binding). The witness
-  -- for "IEEE eq is not reflexive" is `nan` — `eq(nan, nan) = false`.
-  rule nonEqRefl() <=> nan
+  -- for "IEEE eq is not reflexive" is `nan` — `eq(nan, nan) = false`. A BODY, where an
+  -- untagged equation (`rule nonEqRefl() <=> nan`) stood: that one was inert (§5.3), so
+  -- `NonEq.nonEqRefl` at `Float` died at eval (WI-20260909-M8QWJ).
+  operation nonEqRefl() -> Float = nan
 
   -- WI-882 DELETED six denial constraints that stood here — `recip_nonzero`,
   -- `div_float_nonzero`, `sqrt_nonneg`, `log_positive`, `log10_positive`,

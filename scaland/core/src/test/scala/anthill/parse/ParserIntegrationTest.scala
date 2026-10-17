@@ -190,13 +190,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(pf.symbols.name(outer.name.segments(0)), "test")
     assertEquals(pf.symbols.name(outer.name.segments(1)), "nested_imports")
 
-    // Imports: anthill.prelude.{List, String, Bool}
+    // Imports: anthill.prelude.{List, String, Bool, todo} — `todo` is the body of the nested
+    // namespace's stub (WI-20261017-JRHZ0), reached through this outer import too.
     assertEquals(outer.imports.length, 1, "Expected 1 import")
     outer.imports.head.kind match
       case ImportKind.Selective(names) =>
-        assertEquals(names.length, 3)
+        assertEquals(names.length, 4)
         val importedNames = names.map(n => pf.symbols.name(n.last)).toSet
-        assertEquals(importedNames, Set("List", "String", "Bool"))
+        assertEquals(importedNames, Set("List", "String", "Bool", "todo"))
       case other => fail(s"Expected selective import, got $other")
 
     // Inner items: abstract sort (Path), operation, nested namespace (PathOps)
@@ -943,9 +944,14 @@ class ParserIntegrationTest extends munit.FunSuite:
     // different operations: `Float`'s SATURATE to an infinity, `Int64`'s RAISE on
     // overflow, `BigInt`'s cannot overflow. `Float` declares its own so its binding's
     // `operation_map` has something to key `float_add` to.
-    assertEquals(opCount, 37, "Float should expose 37 operations")
-    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
-      "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
+    // WI-20260909-M8QWJ: + `zero`/`one` (the additive and multiplicative identities, which
+    // no carrier implemented, so `Additive.zero` at `Float` died at eval) and + `nonEqRefl`,
+    // a bodied operation where an inert untagged equation stood — so the rules lose
+    // `nonEqRefl`. `recip` gained a body beside its `@[simp]` equation (no dispatch through
+    // `Field` can run an equation), so it keeps its rule.
+    assertEquals(opCount, 40, "Float should expose 40 operations")
+    assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 4,
+      "Float should declare 4 algebraic rules (neg, abs, recip, tau)")
     // WI-882: WAS 6 — `recip_nonzero`, `div_float_nonzero`, `sqrt_nonneg`,
     // `log_positive`, `log10_positive`, `log2_positive`. Every one named a domain
     // restriction on an operation that is TOTAL: WI-881 backed them with the IEEE

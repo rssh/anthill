@@ -309,7 +309,7 @@ namespace {ns}
   sort MyEff
 {claim}
   end
-  operation act(x: Int64) -> Int64 effects {{MyEff}}
+  operation act(x: Int64) -> Int64 effects {{MyEff}} = 0
 end
 "#
         )

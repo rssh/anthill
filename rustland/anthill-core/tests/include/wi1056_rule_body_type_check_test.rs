@@ -130,7 +130,7 @@ fn carrier(tail: &str) -> String {
          \n\
          \x20 sort W\n\
          \x20   entity Wv(n: Int64)\n\
-         \x20   operation bump(w: W, by: Int64) -> Int64\n\
+         \x20   operation bump(w: W, by: Int64) -> Int64 = 0\n\
          \x20 end\n\
          \n{tail}end\n",
     )
@@ -304,7 +304,7 @@ fn all_four_spellings_of_one_type_conform_alike() {
              \x20   sort T = ?\n\
              \x20   sort U = ?\n\
              \x20   entity Box(t: T, u: U)\n\
-             \x20   operation get(b: Self) -> Int64\n\
+             \x20   operation get(b: Self) -> Int64 = 0\n\
              \x20 end\n\
              \n\
              \x20 operation takes_full(b: Box[T = Int64, U = Bool]) -> Int64 = Box.get(b)\n\
@@ -316,7 +316,7 @@ fn all_four_spellings_of_one_type_conform_alike() {
         format!(
             "namespace test.wi1056.erow\n\
              \x20 import anthill.prelude.{{Int64, Bool, Stream, List}}\n\
-             \x20 operation takes_pure(s: Stream[T = Int64, E = {{}}]) -> Int64\n\
+             \x20 operation takes_pure(s: Stream[T = Int64, E = {{}}]) -> Int64 = 0\n\
              \x20 operation {op}(s: {param}) -> Int64 = takes_pure(s)\n\
              end\n",
         )

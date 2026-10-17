@@ -28,7 +28,7 @@ use crate::common::load_errors_of_files as load_errors;
 fn bidirectional_flow_conforms() {
     let ok = r#"
 namespace test.wi427.ok
-  import anthill.prelude.String
+  import anthill.prelude.{String, todo}
   sort Inner
     sort T = ?
     entity inner(v: T)
@@ -37,8 +37,8 @@ namespace test.wi427.ok
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = ""
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = todo()
   operation caller() -> String = check(poly(), "abc")
 end
 "#;
@@ -56,7 +56,7 @@ end
 fn bidirectional_flow_wrong_value_rejected_for_right_reason() {
     let wrong = r#"
 namespace test.wi427.wrong
-  import anthill.prelude.{String, Int64}
+  import anthill.prelude.{String, Int64, todo}
   sort Inner
     sort T = ?
     entity inner(v: T)
@@ -65,8 +65,8 @@ namespace test.wi427.wrong
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = ""
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = todo()
   operation caller() -> String = check(poly(), 42)
 end
 "#;
@@ -86,7 +86,7 @@ end
 fn bidirectional_flow_constructor_field_pins() {
     let ok = r#"
 namespace test.wi427.ctor
-  import anthill.prelude.String
+  import anthill.prelude.{String, todo}
   sort Inner
     sort T = ?
     entity inner(v: T)
@@ -98,7 +98,7 @@ namespace test.wi427.ctor
   sort Holder
     entity hold(w: Wrapper[P = Inner[T = String]])
   end
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = todo()
   operation caller() -> Holder = hold(poly())
 end
 "#;

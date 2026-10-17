@@ -15,6 +15,10 @@
 -- the ground case is kept as the control that pinned the failure on the
 -- CALLER's polymorphism. `wi1fkr2_op_type_var_threads_test` loads this file and
 -- asserts the clean load, so the record cannot drift from the loader.
+--
+-- The callees carry identity bodies since WI-20260909-M8QWJ: a namespace-level
+-- operation nothing defines is refused at load. What each case measures is the
+-- CALLER's body, which delegates exactly as before.
 -- ================================================================
 
 -- ── case 1: a BARE type variable ─────────────────────────────────────────
@@ -29,7 +33,7 @@
 -- callee's own returned un-substituted — which `types_compatible` has no arm
 -- for. Skolemizing the caller's makes them one `TermId` and one type.
 namespace tv1
-  operation idv(x: ?t) -> ?t
+  operation idv(x: ?t) -> ?t = x
   operation via_bare(x: ?t) -> ?t = idv(x)
 end
 
@@ -51,7 +55,7 @@ enum tv2.Box
 end
 namespace tv2
   import tv2.{Box}
-  operation id(b: Box[?t]) -> Box[?t]
+  operation id(b: Box[?t]) -> Box[?t] = b
   operation via(b: Box[?t]) -> Box[?t] = id(b)
 end
 
@@ -68,6 +72,6 @@ end
 namespace tv3
   import anthill.prelude.{Int64}
   import tv3.{Box}
-  operation id(b: Box[?t]) -> Box[?t]
+  operation id(b: Box[?t]) -> Box[?t] = b
   operation via_ground(b: Box[Int64]) -> Box[Int64] = id(b)
 end

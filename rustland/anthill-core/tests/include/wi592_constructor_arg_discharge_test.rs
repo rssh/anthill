@@ -55,7 +55,7 @@ const COLOR_PRELUDE: &str = r#"
   end
 
   operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
+    effects { Boom :- eq(c, Red) } = 0
 "#;
 
 #[test]
@@ -162,7 +162,7 @@ const ALT_GUARD_PRELUDE: &str = r#"
   end
 
   operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Green) }
+    effects { Boom :- eq(c, Green) } = 0
 "#;
 
 #[test]

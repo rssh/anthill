@@ -1621,11 +1621,12 @@ fn the_library_and_the_examples_type_no_position_at_a_spec() {
     assert_eq!(census("guardians/lib", &lib), Vec::<String>::new());
     let agents = collect_anthill_files(&guardians.join("fixtures"));
     assert!(agents.len() >= 20, "guardians: {} fixtures", agents.len());
-    // A fixture the LOADER refuses has no declarations to read — four do, each forging or
-    // relabelling an entity internal to the library, which is what it is a fixture of. They
-    // are named here with the refusal each is a fixture of, and read as text below: the
-    // list is the whole of what the reader above does not count, and a fixture the loader
-    // refuses for another reason is not on it.
+    // A fixture the LOADER refuses has no declarations to read — five do: four forge or
+    // relabel an entity internal to the library, and `declared_mint` declares a trusted
+    // producer nothing defines (WI-20260909-M8QWJ), which is what each is a fixture of.
+    // They are named here with the refusal each is a fixture of, and read as text below:
+    // the list is the whole of what the reader above does not count, and a fixture the
+    // loader refuses for another reason is not on it.
     let mut unread: Vec<(String, String, Vec<String>)> = Vec::new();
     for agent in agents {
         let text = std::fs::read_to_string(&agent).expect("fixture");
@@ -1639,6 +1640,10 @@ fn the_library_and_the_examples_type_no_position_at_a_spec() {
     }
     unread.sort();
     let refused_for = [
+        (
+            "declared_mint.anthill",
+            "operation `guardians.agent.DeclaredMintTriage.launder` has no definition",
+        ),
         ("forged_llm.anthill", "'fake_llm' is internal to 'guardians.FakeLlm'"),
         ("forged_source.anthill", "'source' is internal to 'guardians.Source'"),
         ("match_relabel.anthill", "'text' is internal to 'guardians.Text'"),

@@ -1291,6 +1291,7 @@ impl Interpreter {
             body,
             env,
             requirements,
+            written_in: self.stack.top().map(|f| f.op),
         });
         Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
@@ -4089,6 +4090,8 @@ impl Interpreter {
             body: Rc::clone(body),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
+            // A rule wrote it: no operation holds its source (`Closure::written_in`).
+            written_in: None,
         });
         Value::Closure(handle)
     }
@@ -4107,10 +4110,10 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, requirements) = handle.with(|c| {
+        let (param_pattern, body, requirements, written_in) = handle.with(|c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
-            (c.param_pattern.clone(), c.body.clone(), reqs)
+            (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in)
         });
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
         let bindings = match match_pattern(self, &param_pattern, &arg) {
@@ -4125,13 +4128,15 @@ impl Interpreter {
             locals.push((sym, v));
         }
         // TCO: same rationale as enter_operation. A closure call in any
-        // position is a tail call relative to its own apply frame. The
-        // closure inherits its caller's `op` for error-reporting purposes.
+        // position is a tail call relative to its own apply frame. The frame
+        // reports the operation that WROTE the lambda (WI-20261017-JRHZ0,
+        // `Closure::written_in`), and a rule's lambda, which no operation wrote,
+        // its caller's — `op` is for error reporting and profiling only.
         let top = self
             .stack
             .top_mut()
             .ok_or_else(|| EvalError::Internal("enter_closure with no parent".into()))?;
-        let op = top.op;
+        let op = written_in.unwrap_or(top.op);
         *top = Frame {
             op,
             expr: body,

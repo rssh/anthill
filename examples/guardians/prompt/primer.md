@@ -35,8 +35,9 @@ end
 namespace demo
   import anthill.prelude.{String, Error}
   import demo.{Mood}
+  import demo.Mood.{Happy}
   operation mood_of(name: String) -> Mood
-    effects {Error}
+    effects {Error} = Happy
 end
 
 -- YOUR SIDE: a helper in your own namespace ...

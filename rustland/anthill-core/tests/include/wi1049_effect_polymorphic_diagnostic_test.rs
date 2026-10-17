@@ -134,7 +134,7 @@ fn concrete_effect_still_reads_as_effectful() {
           import anthill.prelude.{Int64, External}
           sort Sink
             entity sink(n: Int64)
-            operation emit(s: Sink, x: Int64) -> Int64 effects External
+            operation emit(s: Sink, x: Int64) -> Int64 effects External = 0
           end
         end
     "#;
@@ -168,7 +168,7 @@ fn the_two_arms_read_differently() {
           import anthill.prelude.{Int64, External}
           sort Sink2
             entity sink2(n: Int64)
-            operation emit2(s: Sink2, x: Int64) -> Int64 effects External
+            operation emit2(s: Sink2, x: Int64) -> Int64 effects External = 0
           end
         end
     "#,

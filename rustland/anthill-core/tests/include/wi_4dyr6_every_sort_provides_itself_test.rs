@@ -533,10 +533,14 @@ fn a_clause_defined_operation_of_a_provided_sort_is_dispatched() {
 /// answer of a declaration does not move with what is loaded after it. `Held` has a
 /// constructor, and nothing provides a data sort. A rule body's gate is the one that
 /// asks more — a parameter or a provider — and `Lone` has neither.
+///
+/// `Held.open` is defined by a `@[simp]` equation rather than a body: a data sort's
+/// body-less member with no definition is refused at load (WI-20260909-M8QWJ), and a body
+/// would answer `lookup_spec_op_dispatch` before the declaring sort is read.
 #[test]
 fn the_gates_read_no_parameter_and_no_provider() {
     let kb = load_kb_with(
-        "namespace test.dyr6gate\n  import anthill.prelude.Int64\n  sort Lone\n    operation open(l: Lone) -> Int64\n    operation peek(l: Lone) -> Int64 = 1\n  end\n  sort Wide\n    sort T = ?\n    operation open(w: Wide) -> Int64\n    operation peek(w: Wide) -> Int64 = 1\n  end\n  sort Held\n    entity held(n: Int64)\n    operation open(h: Held) -> Int64\n    operation peek(h: Held) -> Int64 = 1\n  end\nend\n",
+        "namespace test.dyr6gate\n  import anthill.prelude.Int64\n  sort Lone\n    operation open(l: Lone) -> Int64\n    operation peek(l: Lone) -> Int64 = 1\n  end\n  sort Wide\n    sort T = ?\n    operation open(w: Wide) -> Int64\n    operation peek(w: Wide) -> Int64 = 1\n  end\n  sort Held\n    entity held(n: Int64)\n    operation open(h: Held) -> Int64\n    rule open(?h) <=> 0 @[simp]\n    operation peek(h: Held) -> Int64 = 1\n  end\nend\n",
     );
     let op = |name: &str| {
         kb.try_resolve_symbol(&format!("test.dyr6gate.{name}"))

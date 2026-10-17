@@ -367,13 +367,15 @@ end
 
 /// THE INTERPRETABILITY FILTER's own control — the one thing
 /// `carrier_override_suppliers` adds on top of the shared owner it delegates to.
-/// `Leaf.describe` is DECLARED with no body, so the interpreter cannot run it; a fact
-/// binds a runnable `otherDescribe`. Dropping the unrunnable member BEFORE the count
-/// leaves ONE supplier and the call answers 7.
+/// `Leaf.describe` has no body — only a `@[simp]` equation defines it, since WI-20260909-M8QWJ
+/// refuses a member of a sort with constructors that nothing defines — so the interpreter's
+/// dispatch cannot run it; a fact binds a runnable `otherDescribe`. Dropping the unrunnable
+/// member BEFORE the count leaves ONE supplier and the call answers 7.
 ///
-/// MEASURED both ways: with the filter removed this is not "7 from the other
-/// candidate" but `AmbiguousSpecOpDispatch` — a refusal caused entirely by a member
-/// nothing can call. What this does NOT pin is the filter's PLACEMENT: pushing it down
+/// MEASURED both ways, on the declared-only member this fixture had before
+/// WI-20260909-M8QWJ and again on the `@[simp]` one (2026-10-17): with the filter removed
+/// this row fails, where it is not "7 from the other candidate" — a refusal caused entirely
+/// by a member nothing can call. What this does NOT pin is the filter's PLACEMENT: pushing it down
 /// into `spec_op_suppliers_for_carrier` keeps the whole suite green, because the tree
 /// holds no cpp-mapped rival that would make the body-less path's coherence count
 /// diverge. That argument is stated at `carrier_override_suppliers` and guarded by
@@ -383,7 +385,8 @@ fn an_unrunnable_own_member_is_not_a_supplier() {
     let ns = "test.wi1010.unrunnable";
     let src = program(
         ns,
-        "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64\n",
+        "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64\n    \
+         rule describe(?x) <=> 3 @[simp]\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 7\n\n  \
          namespace Leaf\n    \
          provides Desc[T = Leaf, describe = otherDescribe]\n  end\n",

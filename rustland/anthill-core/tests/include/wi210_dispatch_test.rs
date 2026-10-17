@@ -182,12 +182,15 @@ fn lookup_spec_op_dispatch_rejects_op_with_body() {
 #[test]
 fn lookup_spec_op_dispatch_rejects_op_on_non_parametric_sort() {
     // Sort has no `sort X = ?` declaration; this op is just a
-    // free-standing operation, not a spec op.
+    // free-standing operation, not a spec op. Its `@[simp]` equation defines it
+    // (WI-20260909-M8QWJ refuses a body-less data-sort op with no definition) and
+    // leaves it body-less, so the body leg cannot answer for the sort leg.
     let src = r#"
         namespace wi210p2.no_params
           sort Wi210Plain
             entity wi210_e
             operation wi210_op(x: Wi210Plain) -> Wi210Plain
+            rule wi210_op(?x) <=> ?x @[simp]
           end
         end
     "#;

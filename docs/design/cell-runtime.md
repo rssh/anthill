@@ -2,7 +2,13 @@
 
 ## Status: Draft
 
-This is an **implementation design** doc, not a proposal. The user-facing interface is fixed by [proposal 037](../proposals/037-anthill-state-model.md) §"Cell[V]". This doc covers how that interface is realized in the Rust runtime, including identity, lifecycle, and the migration from v0.1's stop-gap to the target shape.
+This is an **implementation design** doc, not a proposal. The user-facing interface is fixed by [proposal 037](../proposals/037-anthill-state-model.md) (§2–§4 of its 2026-10-17 revision). This doc covers how that interface is realized in the Rust runtime, including identity, lifecycle, and the migration from v0.1's stop-gap to the target shape.
+
+> **Partly superseded by proposal 037, revised 2026-10-17.**
+> - **The arena is Cell's default implementation** (037 §4.2). Each cell is bound to the implementation that made it (037 §5.1), and `Cell.*` is to reach the arena through that binding rather than directly (037 §8).
+> - **Under `Branch`,** the undo of an abandoned alternative is the arena's own duty as that implementation (037 §6.2).
+> - **`register_undo` is not implemented.** §"v1 status" below said the arena "ships with `register_undo` integration from day one"; it did not, and no snapshot hook exists in the code.
+> - **This doc contradicts itself on `Cell[Cell[Int64]]`.** The worked examples accept it, while §"Failure modes" and §"Acceptance" call it a compile-time error. Neither the `acyclic_cell` rule nor `may_contain_cell` exists yet; WI-207 decides.
 
 ## Interface (recap from 037)
 
@@ -399,7 +405,7 @@ When a slot is reclaimed, its `value: Value` is dropped, which may transitively 
 
 ## Branch interaction
 
-Per proposal 037 §"Cell[V]" interpreter contract: **branch-local snapshot**. The arena is branch-local — mutations inside a `Branch` alt are reverted if the alt is abandoned (a sibling resumes); kept if the alt commits.
+Per proposal 037 §6.2 (revised 2026-10-17), an abandoned alternative's writes are undone by the implementation each resource is bound to, which for a cell is this arena. Mutations inside a `Branch` alt are reverted if the alt is abandoned (a sibling resumes), and kept if the alt commits. Not implemented (WI-070).
 
 The mechanism is **per-mutation undo logging**, not full-arena clone. Pays only for what you change.
 
@@ -481,8 +487,8 @@ In effect, "commit" for the cell_arena is `pop without replay`. Nothing special;
 
 ### v1 status
 
-- The cell_arena ships **with** `register_undo` integration from day one. Without it, the arena is unsound under any future Branch use; better to wire it up correctly while the implementation is fresh.
-- Branch itself is only partially wired today (per 037 Open Decision 3). Until the runtime grows full Branch support, `register_undo` is a no-op (the runtime never abandons; the bundle is one-shot CLI). The cell_arena's `register_undo` calls happen and silently accumulate, then go away with the runtime at process exit. No behavior change visible to current programs; full correctness when Branch lights up.
+- *Corrected 2026-10-17.* This section planned for the arena to ship with `register_undo` integration from day one, as calls that would silently accumulate until Branch lit up. It did not ship that way. Neither `register_undo` nor any snapshot hook exists in the code, and the arena writes slots without logging. 037 §6.2 now makes the undo the arena's duty as Cell's default implementation, to be delivered with Branch (WI-070).
+- Branch itself does not run yet: a handler's `Fail` and `Choice` are refused (WI-389), so no program can observe the missing undo today.
 
 ## Migration from v0.1
 
@@ -622,7 +628,7 @@ If/when GCCell lands, the cell_arena and gc_cell_arena coexist as siblings; neit
 
 ## Why this design and not alternatives
 
-**Why not extend the existing Modify handler with a uid-keyed sub-map?** The single shared HashMap mixes resources of different types. Each resource type wants its own state representation (per proposal 037 §3). Cell-specific arena is the cleanest realization; it also matches the existing pattern for Map / Substitution / Stream — same shape, three precedents to copy.
+**Why not extend the existing Modify handler with a uid-keyed sub-map?** The single shared HashMap mixes resources of different types. Each base sort has its own implementation, with its own state representation (proposal 037 §4.2). Cell-specific arena is the cleanest realization; it also matches the existing pattern for Map / Substitution / Stream — same shape, three precedents to copy.
 
 **Why not use Rust's `Rc<RefCell<Value>>` directly inside `Value::Cell`?** That would make every Value::Cell its own little piece of shared state, no central arena. Three downsides: (a) no slot reuse across arena lifetimes — each cell's allocation/free is a separate heap op; (b) no central registry for branch-snapshot accounting (every Cell would need its own undo wiring); (c) breaks consistency with the other arenas (Map/Substitution/Stream all use the slot-pool pattern). The arena pattern wins.
 

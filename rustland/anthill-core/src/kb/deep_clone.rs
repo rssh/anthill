@@ -1063,6 +1063,7 @@ impl KnowledgeBase {
             functor_spans: plain(&self.functor_spans),
             op_records: self.op_records.iter().map(|(op, record)| (plain(op), c.operation_record(record))).collect(),
             op_decl_sites: plain(&self.op_decl_sites),
+            op_bodies_refused: plain(&self.op_bodies_refused),
             decl_sites: plain(&self.decl_sites),
             scan_type_decls: plain(&self.scan_type_decls),
             last_load: plain(&self.last_load),

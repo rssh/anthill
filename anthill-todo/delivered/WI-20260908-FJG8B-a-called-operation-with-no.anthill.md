@@ -3,9 +3,9 @@
 - id: WI-20260908-FJG8B-a-called-operation-with-no
 - created: 2026-09-08T06:47:56Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-08T06:47:56Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-17T09:40:23Z
 
 - acceptance: cargo-test
 
@@ -37,4 +37,10 @@ SCOPE QUESTIONS THE TICKET MUST SETTLE, none of them obvious:
 ACCEPTANCE: a called operation with no body, no defining equation and no host binding is a LOAD ERROR naming the operation and the call site. CONTROLS, each of which must still hold: `examples/guardians` loads clean (its declarations are unbacked but UNCALLED, or bound by the harness); `cargo test -p anthill-core` green; and `fixtures/agent/declared_mint.anthill` becomes REFUSED, which is the positive measurement -- a test that only asserts the check exists is not evidence, drive the unbacked call and assert the refusal.
 
 FOUND BY: /code-review during WI-20260829-MCKTE, which sealed four producers of `Text[Trusted]` and then measured that a candidate can declare a fifth. No seal in a vocabulary reaches a name the candidate invents; this is the check that does.
+
+## Changes
+
+### 2026-10-17T09:40:19Z — feedback — user
+
+CLOSED BY WI-20260909-M8QWJ (2026-10-17), with the site the user chose there: the DECLARATION, not the call -- a body-less operation of a namespace or of a sort with constructors that nothing defines is refused where it is declared (it has one answer for every use), and a spec member is judged at its provision and at an unselectable call. guardians: declared_mint.anthill moved to fixtures/agent/rejected/ and a_candidate_may_not_declare_its_own_trusted_producer asserts the refusal (reds with the check backed out); the library's called body-less operations are claimed @[host_implemented] and mapped (Email.fetch/send, observe) with harness stand-ins, and choose_recipient got a body.
 

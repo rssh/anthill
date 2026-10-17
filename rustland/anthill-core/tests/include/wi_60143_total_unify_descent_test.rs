@@ -93,7 +93,7 @@
 use crate::common::try_load_kb_with;
 
 const PAIR: &str = "namespace test.wi60143\n\
-   \x20 import anthill.prelude.{Int64, String}\n\
+   \x20 import anthill.prelude.{Int64, String, todo}\n\
    \x20 sort Pair[A, B]\n\
    \x20   entity pair(a: A, b: B)\n\
    \x20 end\n";
@@ -120,7 +120,7 @@ fn loads(src: &str) {
 fn the_disagreeing_slot_first_still_pins_the_rest() {
     let msg = refusal(&format!(
         "{PAIR}\
-         \x20 operation take[X](p: Pair[A = Int64, B = X]) -> X\n\
+         \x20 operation take[X](p: Pair[A = Int64, B = X]) -> X = todo()\n\
          \x20 operation drive() -> String = take(pair(a: \"s\", b: 7))\n\
          end\n"
     ));
@@ -138,7 +138,7 @@ fn the_disagreeing_slot_first_still_pins_the_rest() {
 fn the_disagreeing_slot_second_pins_the_rest() {
     let msg = refusal(&format!(
         "{PAIR}\
-         \x20 operation take2[X](p: Pair[A = X, B = Int64]) -> X\n\
+         \x20 operation take2[X](p: Pair[A = X, B = Int64]) -> X = todo()\n\
          \x20 operation drive() -> String = take2(pair(a: 7, b: \"s\"))\n\
          end\n"
     ));
@@ -153,7 +153,7 @@ fn the_disagreeing_slot_second_pins_the_rest() {
 fn an_agreeing_call_still_loads() {
     loads(&format!(
         "{PAIR}\
-         \x20 operation take2[X](p: Pair[A = X, B = Int64]) -> X\n\
+         \x20 operation take2[X](p: Pair[A = X, B = Int64]) -> X = todo()\n\
          \x20 operation drive() -> String = take2(pair(a: \"s\", b: 7))\n\
          end\n"
     ));
@@ -167,9 +167,9 @@ fn an_agreeing_call_still_loads() {
 fn a_param_list_disagreement_is_refused_at_all() {
     let msg = refusal(
         "namespace test.wi60143.plist\n\
-         \x20 import anthill.prelude.{Int64, Bool, String}\n\
+         \x20 import anthill.prelude.{Int64, Bool, String, todo}\n\
          \x20 operation add2(a: Int64, b: Int64) -> Int64 = a + b\n\
-         \x20 operation myfold[Acc](f: (acc: Bool, x: Acc) -> Int64) -> Acc\n\
+         \x20 operation myfold[Acc](f: (acc: Bool, x: Acc) -> Int64) -> Acc = todo()\n\
          \x20 operation drive() -> String = myfold(add2)\n\
          end\n",
     );
@@ -186,8 +186,8 @@ fn a_param_list_disagreement_is_refused_at_all() {
 fn a_data_tuple_disagreement_is_refused_at_all() {
     let msg = refusal(
         "namespace test.wi60143.dtuple\n\
-         \x20 import anthill.prelude.{Int64, Bool, String}\n\
-         \x20 operation takeT[X](t: (a: Bool, b: X)) -> X\n\
+         \x20 import anthill.prelude.{Int64, Bool, String, todo}\n\
+         \x20 operation takeT[X](t: (a: Bool, b: X)) -> X = todo()\n\
          \x20 operation drive() -> String = takeT((a: 1, b: 2))\n\
          end\n",
     );
@@ -203,16 +203,16 @@ fn a_data_tuple_disagreement_is_refused_at_all() {
 fn an_agreeing_tuple_call_still_loads() {
     loads(
         "namespace test.wi60143.okplist\n\
-         \x20 import anthill.prelude.{Int64}\n\
+         \x20 import anthill.prelude.{Int64, todo}\n\
          \x20 operation add2(a: Int64, b: Int64) -> Int64 = a + b\n\
-         \x20 operation myfold[Acc](f: (acc: Int64, x: Acc) -> Int64) -> Acc\n\
+         \x20 operation myfold[Acc](f: (acc: Int64, x: Acc) -> Int64) -> Acc = todo()\n\
          \x20 operation drive() -> Int64 = myfold(add2)\n\
          end\n",
     );
     loads(
         "namespace test.wi60143.okdtuple\n\
-         \x20 import anthill.prelude.{Int64}\n\
-         \x20 operation takeT[X](t: (a: Int64, b: X)) -> X\n\
+         \x20 import anthill.prelude.{Int64, todo}\n\
+         \x20 operation takeT[X](t: (a: Int64, b: X)) -> X = todo()\n\
          \x20 operation drive() -> Int64 = takeT((a: 1, b: 2))\n\
          end\n",
     );

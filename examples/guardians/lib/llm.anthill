@@ -208,7 +208,10 @@ namespace guardians
     artifact "rustland/anthill-core/tests/guardians_test.rs"
     operation_map {
       prompt_with: "guardians_prompt_with",
-      join_texts:  "guardians_join_texts"
+      join_texts:  "guardians_join_texts",
+      -- WI-20260909-M8QWJ: `observe` (lib/tasks.anthill) is host-bound by design, and
+      -- a binding is now required of a namespace-level operation nothing defines.
+      observe:     "guardians_observe"
     }
   end
 end

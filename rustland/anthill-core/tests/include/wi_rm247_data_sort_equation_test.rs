@@ -329,16 +329,38 @@ fn a_clause_backed_operation_is_reached_from_a_rule_body() {
 }
 
 /// A host function registered for the operation runs it.
+///
+/// Since WI-20260909-M8QWJ the operation must say it is host-backed: unclaimed, it is
+/// refused at its declaration — the first half, moved from a load that passed. The second
+/// half backs it through the embedder's channel the load can see (WI-1122): the function is
+/// registered on the KB BEFORE the load, under the key a `language rust` binding block maps
+/// the operation to, and that function answers the call.
 #[test]
 fn a_host_backed_operation_runs() {
-    let mut interp = interp_for(&boxed(
-        "rm247host",
-        "    operation tag(b: Box[V]) -> Int64",
-        "  operation go() -> Int64 = Box.tag(Box.mk(4))",
-    ));
-    interp
-        .register_builtin("lib.rm247host.Box.tag", |_, _| Ok(Value::Int(9)))
-        .expect("the operation is declared");
+    assert_refused_naming(
+        &load_errors_of(&boxed(
+            "rm247hostbare",
+            "    operation tag(b: Box[V]) -> Int64",
+            "  operation go() -> Int64 = Box.tag(Box.mk(4))",
+        )),
+        &["operation `lib.rm247hostbare.Box.tag` has no definition", "@[host_implemented]"],
+        "a data sort's body-less operation nothing in the program backs",
+    );
+    let kb = crate::common::try_load_kb_prepared(
+        &boxed(
+            "rm247host",
+            "    operation tag(b: Box[V]) -> Int64 @[host_implemented]",
+            "  operation go() -> Int64 = Box.tag(Box.mk(4))\n  provides Box language rust\n    operation_map { tag: \"rm247_tag\" }\n  end",
+        ),
+        |kb| {
+            kb.register_host_fn("rm247_tag", 1, |_, _| Ok(Value::Int(9)))
+                .expect("register rm247_tag before the load");
+        },
+    )
+    .unwrap_or_else(|errs| panic!("the claimed and mapped operation loads: {errs:#?}"));
+    let mut interp = anthill_core::eval::Interpreter::new(kb);
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
     let answer = interp.call("test.rm247host.go", &[]);
     assert!(matches!(answer, Ok(Value::Int(9))), "{answer:?}");
 }

@@ -222,13 +222,14 @@ fn requires_premise_enables_ensures() {
 fn abstract_op_ensures_is_deferred_not_discharged() {
     // An abstract op (no body) `ensures` is a spec axiom that callers USE
     // (WI-539 Part 1), not proved here. Left Deferred / Pending — never silently
-    // Discharged (proposal 025: prove only in concrete form).
+    // Discharged (proposal 025: prove only in concrete form). `Thing` has no
+    // constructors: a body-less member of a sort WITH them no longer loads
+    // (WI-20260909-M8QWJ), so the abstract op lives on a spec sort.
     let mut kb = crate::common::load_kb_with(
         r#"
         namespace wi539c.abstr
           import anthill.prelude.PartialEq.{eq}
           sort Thing
-            entity thing(v: Int64)
             operation describe(t: Thing) -> Int64
               ensures eq(result, result)
             proof describe.ensures by derivation end

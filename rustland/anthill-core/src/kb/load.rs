@@ -1620,6 +1620,23 @@ pub enum LoadError {
         /// Where the operation is declared.
         span: Span,
     },
+    /// WI-20260909-M8QWJ — a body-less operation that nothing can ever run: no body, no
+    /// `@[host_implemented]` claim, no resolver builtin, no `@[simp]` defining equation,
+    /// no clause — and an owner no provider can supply it through (a namespace, or a sort
+    /// with constructors). Without this it loaded clean and every use of it failed when it
+    /// ran: `OperationBodyMissing` from a body, a silently DECIDED comparison or a silent
+    /// delay from a rule body.
+    OperationWithoutDefinition {
+        /// The operation, qualified.
+        op: String,
+        /// Why no provider can supply it.
+        owner: UnprovidableOwner,
+        /// Bodyless equations whose subject is the operation and that carry no
+        /// `@[simp]` tag — inert (§5.3), and the likeliest intended definition.
+        untagged_equations: usize,
+        /// Where the operation is declared.
+        span: Span,
+    },
     /// WI-20260922-BRT4Y — `@[host_implemented]` on an operation that carries a BODY. The
     /// attribute says body-less by design; the two are a contradiction the builtin map's
     /// precedence would otherwise resolve silently.
@@ -2883,6 +2900,7 @@ impl LoadError {
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::HostImplementedUnsupplied { span, .. }
             | LoadError::HostImplementedWithBody { span, .. }
+            | LoadError::OperationWithoutDefinition { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
@@ -3237,6 +3255,16 @@ impl LoadError {
                 "{}: {}",
                 loc.format_start(*span),
                 host_implemented_with_body_message(op)
+            ),
+            LoadError::OperationWithoutDefinition {
+                op,
+                owner,
+                untagged_equations,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                operation_without_definition_message(op, owner, *untagged_equations)
             ),
             LoadError::HostMappingUnclaimed {
                 op,
@@ -4695,6 +4723,18 @@ impl std::fmt::Display for LoadError {
                 f,
                 "{} at {}..{}",
                 host_implemented_with_body_message(op),
+                span.start,
+                span.end
+            ),
+            LoadError::OperationWithoutDefinition {
+                op,
+                owner,
+                untagged_equations,
+                span,
+            } => write!(
+                f,
+                "{} at {}..{}",
+                operation_without_definition_message(op, owner, *untagged_equations),
                 span.start,
                 span.end
             ),
@@ -14872,6 +14912,64 @@ fn host_implemented_unsupplied_message(op: &str, owner: &str, name: &str) -> Str
     )
 }
 
+/// WI-20260909-M8QWJ — why no provider can supply an operation
+/// [`LoadError::OperationWithoutDefinition`] refuses. A member of a sort that may be provided
+/// is not one of these: its carrier's provider supplies it, and that is judged at the
+/// provision (`check_provider_operations`) and at the call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnprovidableOwner {
+    /// Declared at namespace level, qualified name of the namespace. A provider supplies
+    /// a member of a sort it provides; a namespace has no carrier dimension (§8.7).
+    Namespace(String),
+    /// Declared at the top level of a file, in no namespace — the same standing as a
+    /// namespace's, named apart so the refusal does not print the global scope's name.
+    TopLevel,
+    /// A member of a sort with constructors, qualified name of the sort. Nothing
+    /// provides a data sort (§5.1), so its operations are its own.
+    DataSort(String),
+}
+
+/// WI-20260909-M8QWJ — the ONE wording of [`LoadError::OperationWithoutDefinition`].
+fn operation_without_definition_message(
+    op: &str,
+    owner: &UnprovidableOwner,
+    untagged_equations: usize,
+) -> String {
+    let why = match owner {
+        UnprovidableOwner::Namespace(ns) => format!(
+            "it is declared in namespace `{ns}`, and a provider supplies only a member of a \
+             sort it provides (kernel-language.md §8.7)"
+        ),
+        UnprovidableOwner::TopLevel => "it is declared at the top level, in no namespace, and \
+             a provider supplies only a member of a sort it provides (kernel-language.md §8.7)"
+            .to_string(),
+        UnprovidableOwner::DataSort(sort) => format!(
+            "it is a member of `{sort}`, a sort with constructors, which nothing provides \
+             (kernel-language.md §5.1)"
+        ),
+    };
+    let equations = match untagged_equations {
+        0 => String::new(),
+        n => format!(
+            " {n} equation{s} with `{op}` as {subject} {verb} no `@[simp]` tag, and an \
+             untagged equation is inert (kernel-language.md §5.3): tag {it} `@[simp]` to \
+             make {it} the definition.",
+            s = if n == 1 { "" } else { "s" },
+            subject = if n == 1 { "its subject" } else { "their subject" },
+            verb = if n == 1 { "carries" } else { "carry" },
+            it = if n == 1 { "it" } else { "them" },
+        ),
+    };
+    format!(
+        "operation `{op}` has no definition: no body, no `@[host_implemented]` claim, no \
+         builtin, no `@[simp]` equation and no clause defines it. Nothing can supply one \
+         either — {why}. A call of it fails when it runs.{equations} Give it a \
+         body (`operation … = …`; `= todo()` keeps the signature of one not written yet, \
+         and faults if it is called), or declare it `@[host_implemented]` and map it in a \
+         binding block's `operation_map`."
+    )
+}
+
 /// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostImplementedWithBody`].
 fn host_implemented_with_body_message(op: &str) -> String {
     format!(
@@ -15553,6 +15651,8 @@ fn load_phase_inner(
     // already-loaded files reads two declarations of every operation and refuses
     // the lot.
     kb.op_decl_sites.clear();
+    // WI-20260909-M8QWJ — its companion, for the same reason.
+    kb.op_bodies_refused.clear();
     // WI-20260922-BRT4Y — the first rule slot this phase can assert. The rule table only
     // grows, so a fact at or past it is this phase's: the drift check's scope for the
     // `OperationMapping` facts, which carry no declaration site of their own.
@@ -15798,6 +15898,12 @@ fn load_phase_inner(
     // Load-blocking.
     all_errors.extend(build_eq_dispatch_index(kb));
     mark!("build_eq_dispatch_index");
+    // WI-20260909-M8QWJ — a body-less operation nothing can ever run, at its declaration.
+    // After the host mappings and the `eq` dispatch index, two of the routes it reads, and
+    // above the `run_typer` gate for the reason the `@[host_implemented]` claim check is:
+    // it judges declarations and reads nothing the typer produces.
+    all_errors.extend(check_operations_have_a_definition(kb));
+    mark!("check_operations_have_a_definition");
     // WI-20261006-SZKV7 — before this load derives anything: a composite whose equality
     // no longer matches what the last load recorded is a load error. A VERDICT, not an
     // unwinding: the sources are in, and the eq-dispatch index built above already
@@ -18515,6 +18621,88 @@ fn check_host_implemented_claims(kb: &KnowledgeBase, phase_first_rule: usize) ->
             Some(s) => error.located_in_kb_source(kb, s.source),
             None => error,
         });
+    }
+    errors
+}
+
+/// WI-20260909-M8QWJ — refuse a body-less operation that NOTHING CAN EVER RUN
+/// ([`LoadError::OperationWithoutDefinition`]), at its declaration.
+///
+/// WHAT RUNS A BODY-LESS OPERATION, every route `Interpreter::unrunnable_target_error`'s
+/// callers try at run time, read here at load: a resolver builtin or a host mapping
+/// ([`op_is_executable`](super::typing::op_is_executable)), the `@[host_implemented]`
+/// claim (whose missing mapping [`check_host_implemented_claims`] refuses on its own), a
+/// `@[simp]` defining equation, clauses (a goal's definition — the call side is
+/// `clause_defined_own_operation`'s), the `eq` a carrier's equality dispatches to, and
+/// `Error.reify`'s frame — and a PROVIDER, for a member of a sort that may be provided.
+///
+/// WHY THE DECLARATION AND NOT THE CALL. Only the provider route depends on what is
+/// loaded beside the operation, and only a member of a sort that may be provided has it
+/// ([`spec_op_parent_sort`](super::typing::spec_op_parent_sort)): a namespace has no
+/// carrier dimension (§8.7) and nothing provides a sort with constructors (§5.1). For
+/// every other operation the question has one answer for every use, so the declaration
+/// is where it is decided — once, located, and for every use at once: a call in a body,
+/// a goal in a rule body (where the unreduced call was compared as DATA and decided, or
+/// delayed in silence), a function value, and a declaration nothing uses yet. A member of
+/// a sort that may be provided is judged where its carrier is known — at the provision
+/// (`check_provider_operations`) and at a call that names no carrier.
+///
+/// PER PHASE, like [`check_host_implemented_claims`]: it judges the operations THIS phase
+/// declared ([`KnowledgeBase::op_decl_sites_iter`]), so an earlier batch is not re-reported,
+/// and a definition only a LATER phase loads does not exist for this one. Runs after the
+/// host mappings and the `eq` dispatch index are built, which are two of its routes.
+fn check_operations_have_a_definition(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let mut sites: Vec<(Symbol, crate::span::SourceSpan)> = kb.op_decl_sites_iter().collect();
+    // SORTED, because `op_decl_sites` is a `HashMap`: two runs over one program must report
+    // in one order.
+    sites.sort_by_key(|(_, site)| (site.source.raw(), site.span.start, site.span.end));
+    // Built only if an operation survives the cheap legs, which in a program that loads is
+    // none of them.
+    let mut claimed: Option<std::collections::HashSet<Symbol>> = None;
+    let mut errors = Vec::new();
+    for (op, site) in sites {
+        let canon = kb.canonical_sym(op);
+        if kb.op_body_node(op).is_some()
+            || kb.op_bodies_refused.contains(&op)
+            || kb.is_builtin(op)
+            || kb.is_host_mapped_op(op)
+            || kb.has_clauses_under(canon)
+            || kb.has_clauses_under(op)
+            || kb.is_eq_dispatch_target(op)
+            || kb.is_reify_operation(canon)
+        {
+            continue;
+        }
+        let owner = match super::typing::impl_parent_sort_of_op(kb, op) {
+            // A member of a sort that may be provided: its carrier's provider supplies it.
+            Some(_) if super::typing::spec_op_parent_sort(kb, op).is_some() => continue,
+            Some(sort) => UnprovidableOwner::DataSort(kb.qualified_name_of(sort).to_string()),
+            None => match kb.declaring_scope_symbol(op).map(|s| kb.qualified_name_of(s)) {
+                Some(ns) if ns != crate::intern::GLOBAL_SCOPE_NAME => {
+                    UnprovidableOwner::Namespace(ns.to_string())
+                }
+                _ => UnprovidableOwner::TopLevel,
+            },
+        };
+        if claimed
+            .get_or_insert_with(|| super::op_info::host_implemented_operations(kb))
+            .contains(&canon)
+        {
+            continue;
+        }
+        let census = super::simp_rewrite::equation_clause_census(kb, canon);
+        if census.simp_tagged > 0 {
+            continue;
+        }
+        errors.push(
+            LoadError::OperationWithoutDefinition {
+                op: kb.qualified_name_of(op).to_string(),
+                owner,
+                untagged_equations: census.defining,
+                span: site.span,
+            }
+            .located_in_kb_source(kb, site.source),
+        );
     }
     errors
 }
@@ -40143,7 +40331,11 @@ impl<'a> Loader<'a> {
                 // error, and the typer would loudly reject the Bottom leaf as
                 // a post-elaboration form (a second, misleading error).
                 // `has_body` stays true: the source does have a body.
-                if !self.expr_body_bottom_recovery {
+                if self.expr_body_bottom_recovery {
+                    // WI-20260909-M8QWJ: defined in the source, refused here — not an
+                    // operation with no definition.
+                    self.kb.op_bodies_refused.insert(functor);
+                } else {
                     self.kb.set_op_body_node(functor, node);
                 }
                 true
@@ -43741,7 +43933,7 @@ mod wi1028_scope_id_spine_tests {
 namespace demo
   sort Colour
     entity Red(shade: Int64)
-    operation blend(a: Int64) -> Int64
+    operation blend(a: Int64) -> Int64 = 0
     rule bright(?s) :- Red(shade: ?s)
   end
   rule reddish(?s) :- Red(shade: ?s)
@@ -44128,8 +44320,9 @@ mod wi351_place_tests {
     use crate::parse;
 
     /// Load a self-contained snippet off the bare prelude. Mirrors
-    /// `wi355_arrow_param_names_lowered_to_named_tuple`: a bodyless op with
-    /// concrete (`Int64`/`Bool`) arrow params loads cleanly without the stdlib.
+    /// `wi355_arrow_param_names_lowered_to_named_tuple`: an op with concrete
+    /// (`Int64`/`Bool`) arrow params and a literal body loads cleanly without the
+    /// stdlib.
     fn load_op(src: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
         let parsed = parse::parse(src).expect("parse");
@@ -44144,7 +44337,8 @@ mod wi351_place_tests {
     /// masking, WI-314) is unchanged.
     #[test]
     fn callback_places_classified_by_kind() {
-        let kb = load_op("operation reduce(z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64\n");
+        let kb =
+            load_op("operation reduce(z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64 = 0\n");
 
         let place = |qn: &str| -> SymbolKind {
             let sym = kb
@@ -44185,13 +44379,13 @@ mod wi351_place_tests {
     #[test]
     fn single_param_callback_place() {
         // Named single param (WI-358): the place takes the declared name.
-        let kb = load_op("operation findp(p: (x: Int64) -> Bool) -> Bool\n");
+        let kb = load_op("operation findp(p: (x: Int64) -> Bool) -> Bool = true\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("findp.p.x"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("findp.p.result"), Some(SymbolKind::CallbackResult));
 
         // Unnamed single param: 1-based positional fallback.
-        let kb = load_op("operation g(p: (Int64) -> Bool) -> Bool\n");
+        let kb = load_op("operation g(p: (Int64) -> Bool) -> Bool = true\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("g.p._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("g.p.result"), Some(SymbolKind::CallbackResult));
@@ -44202,7 +44396,7 @@ mod wi351_place_tests {
     /// 0-based, and no spurious `_3` for a two-param arrow.
     #[test]
     fn unnamed_callback_params_are_one_based() {
-        let kb = load_op("operation app(f: (Int64, Int64) -> Int64) -> Int64\n");
+        let kb = load_op("operation app(f: (Int64, Int64) -> Int64) -> Int64 = 0\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("app.f._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("app.f._2"), Some(SymbolKind::CallbackParam));
@@ -44219,8 +44413,9 @@ mod wi351_place_tests {
     #[test]
     fn nested_callbacks_register_places_recursively() {
         // Param nesting: `f`'s first param `g` is itself a 2-arg callback.
-        let kb =
-            load_op("operation hof(f: (g: (Int64, Int64) -> Int64, y: Int64) -> Int64) -> Int64\n");
+        let kb = load_op(
+            "operation hof(f: (g: (Int64, Int64) -> Int64, y: Int64) -> Int64) -> Int64 = 0\n",
+        );
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("hof.f"), Some(SymbolKind::Param));
         assert_eq!(role("hof.f.g"), Some(SymbolKind::CallbackParam));
@@ -44232,7 +44427,7 @@ mod wi351_place_tests {
         assert_eq!(role("hof.f.g.result"), Some(SymbolKind::CallbackResult));
 
         // Result nesting: a curried op — `f`'s result is itself a callback.
-        let kb = load_op("operation curry(f: (Int64) -> (Int64) -> Bool) -> Bool\n");
+        let kb = load_op("operation curry(f: (Int64) -> (Int64) -> Bool) -> Bool = true\n");
         let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
         assert_eq!(role("curry.f._1"), Some(SymbolKind::CallbackParam));
         assert_eq!(role("curry.f.result"), Some(SymbolKind::CallbackResult));

@@ -2745,7 +2745,7 @@ namespace test.wi548_op_contract
   sort Tank
     entity tank(fuel: Int64)
     entity Full(t: Tank)
-    operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
+    operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t) = t
       @[Refuel, Profile: "cpp20-stl"]
   end
 end

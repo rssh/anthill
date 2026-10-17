@@ -22,8 +22,8 @@ use crate::common::load_errors_of_files as load_errors;
 fn projection_threads_element_concrete() {
     let ok = r#"
 namespace test.wi376.elem_ok
-  import anthill.prelude.{List, Int64}
-  operation peek(l: List) -> l.T
+  import anthill.prelude.{List, Int64, todo}
+  operation peek(l: List) -> l.T = todo()
   operation caller(xs: List[T = Int64]) -> Int64 = peek(xs)
 end
 "#;
@@ -39,8 +39,8 @@ end
 fn projection_wrong_element_is_rejected() {
     let wrong = r#"
 namespace test.wi376.elem_wrong
-  import anthill.prelude.{List, Int64, String}
-  operation peek(l: List) -> l.T
+  import anthill.prelude.{List, Int64, String, todo}
+  operation peek(l: List) -> l.T = todo()
   operation caller(xs: List[T = Int64]) -> String = peek(xs)
 end
 "#;
@@ -56,8 +56,8 @@ end
 fn projection_sort_captures_whole_type() {
     let ok = r#"
 namespace test.wi376.sort_ok
-  import anthill.prelude.{List, Int64}
-  operation echo(l: List) -> l.Self
+  import anthill.prelude.{List, Int64, todo}
+  operation echo(l: List) -> l.Self = todo()
   operation caller(xs: List[T = Int64]) -> List[T = Int64] = echo(xs)
 end
 "#;
@@ -68,8 +68,8 @@ end
 
     let wrong = r#"
 namespace test.wi376.sort_wrong
-  import anthill.prelude.{List, Int64, String}
-  operation echo(l: List) -> l.Self
+  import anthill.prelude.{List, Int64, String, todo}
+  operation echo(l: List) -> l.Self = todo()
   operation caller(xs: List[T = Int64]) -> List[T = String] = echo(xs)
 end
 "#;
@@ -107,9 +107,9 @@ end
 fn projection_threads_through_composition() {
     let ok = r#"
 namespace test.wi376.compose_ok
-  import anthill.prelude.{List, Stream, Int64}
-  operation to_stream(l: List) -> Stream[T = l.T, E = {}]
-  operation gather(s: Stream) -> List[T = s.T]
+  import anthill.prelude.{List, Stream, Int64, todo}
+  operation to_stream(l: List) -> Stream[T = l.T, E = {}] = todo()
+  operation gather(s: Stream) -> List[T = s.T] = todo()
   operation walk(xs: List[T = Int64]) -> List[T = Int64] = gather(to_stream(xs))
 end
 "#;
@@ -120,9 +120,9 @@ end
 
     let wrong = r#"
 namespace test.wi376.compose_wrong
-  import anthill.prelude.{List, Stream, Int64, String}
-  operation to_stream(l: List) -> Stream[T = l.T, E = {}]
-  operation gather(s: Stream) -> List[T = s.T]
+  import anthill.prelude.{List, Stream, Int64, String, todo}
+  operation to_stream(l: List) -> Stream[T = l.T, E = {}] = todo()
+  operation gather(s: Stream) -> List[T = s.T] = todo()
   operation walk(xs: List[T = Int64]) -> List[T = String] = gather(to_stream(xs))
 end
 "#;
@@ -146,8 +146,8 @@ fn projection_bare_receiver_stays_poly() {
     // The bare-receiver signature is well-formed on its own (l.T is a valid neutral).
     let ok = r#"
 namespace test.wi376.bare_poly
-  import anthill.prelude.List
-  operation peek(l: List) -> l.T
+  import anthill.prelude.{List, todo}
+  operation peek(l: List) -> l.T = todo()
 end
 "#;
     assert!(
@@ -160,8 +160,8 @@ end
     // Soundness preserved: the neutral does NOT satisfy a concrete Int64 demand.
     let wrong = r#"
 namespace test.wi376.bare_concrete
-  import anthill.prelude.{List, Int64}
-  operation peek(l: List) -> l.T
+  import anthill.prelude.{List, Int64, todo}
+  operation peek(l: List) -> l.T = todo()
   operation relay(l: List) -> Int64 = peek(l)
 end
 "#;
@@ -183,9 +183,10 @@ end
 fn modify_result_field_not_misclassified_as_projection() {
     let src = r#"
 namespace test.wi376.result_effect
-  import anthill.prelude.{Cell, Int64, Modify}
+  import anthill.prelude.{Cell, Int64, Modify, todo}
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
+    = todo()
   operation run() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
     = make_pair()
@@ -219,8 +220,8 @@ end
 fn effect_projection_threads_concrete() {
     let ok = r#"
 namespace test.wi396.eff_ok
-  import anthill.prelude.{List, Stream, Int64, Branch}
-  operation drain(s: Stream) -> List[T = s.T] effects s.E
+  import anthill.prelude.{List, Stream, Int64, Branch, todo}
+  operation drain(s: Stream) -> List[T = s.T] effects s.E = todo()
   operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] effects {Branch} = drain(es)
 end
 "#;
@@ -237,8 +238,8 @@ end
 fn effect_projection_wrong_effect_is_rejected() {
     let wrong = r#"
 namespace test.wi396.eff_wrong
-  import anthill.prelude.{List, Stream, Int64, Branch}
-  operation drain(s: Stream) -> List[T = s.T] effects s.E
+  import anthill.prelude.{List, Stream, Int64, Branch, todo}
+  operation drain(s: Stream) -> List[T = s.T] effects s.E = todo()
   operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] = drain(es)
 end
 "#;
@@ -258,7 +259,7 @@ fn effect_projection_written_row_projects() {
     let src = r#"
 namespace test.wi484.eff_written
   import anthill.prelude.{List, Int64}
-  operation bad(l: List) -> Int64 effects l.E
+  operation bad(l: List) -> Int64 effects l.E = 0
   operation caller(xs: List[T = Int64]) -> Int64 = bad(xs)
 end
 "#;
@@ -299,8 +300,8 @@ end
 fn effect_projection_in_written_row() {
     let ok = r#"
 namespace test.wi396.eff_row
-  import anthill.prelude.{List, Stream, Int64, Branch}
-  operation drain(s: Stream) -> List[T = s.T] effects {s.E}
+  import anthill.prelude.{List, Stream, Int64, Branch, todo}
+  operation drain(s: Stream) -> List[T = s.T] effects {s.E} = todo()
   operation run(es: Stream[T = Int64, E = {Branch}]) -> List[T = Int64] effects {Branch} = drain(es)
 end
 "#;
@@ -329,9 +330,9 @@ end
 fn projection_in_denoted_arrow_threads() {
     let ok = r#"
 namespace test.wi460.arrow_ok
-  import anthill.prelude.{Stream, Int64, Bool, Option, Cell, Modify}
+  import anthill.prelude.{Stream, Int64, Bool, Option, Cell, Modify, todo}
   operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
-    -> Option[T = s.T] effects {s.E, EffP}
+    -> Option[T = s.T] effects {s.E, EffP} = todo()
   operation use_find(es: Stream[T = Int64, E = {}], p: (x: Int64) -> Bool @ {})
     -> Option[T = Int64] = find2(es, p)
 end
@@ -351,9 +352,9 @@ end
 fn projection_in_denoted_arrow_wrong_element_rejected() {
     let wrong = r#"
 namespace test.wi460.arrow_wrong
-  import anthill.prelude.{Stream, Int64, String, Bool, Option, Cell, Modify}
+  import anthill.prelude.{Stream, Int64, String, Bool, Option, Cell, Modify, todo}
   operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
-    -> Option[T = s.T] effects {s.E, EffP}
+    -> Option[T = s.T] effects {s.E, EffP} = todo()
   operation use_find(es: Stream[T = Int64, E = {}], p: (x: Int64) -> Bool @ {})
     -> Option[T = String] = find2(es, p)
 end
@@ -378,8 +379,8 @@ end
 fn projection_in_denoted_parameterized_no_longer_bails() {
     let src = r#"
 namespace test.wi460.param
-  import anthill.prelude.{List, Stream, Int64, Cell, Modify}
-  operation src(l: List, c: Cell[V = Int64]) -> Stream[T = l.T, E = {Modify[c]}]
+  import anthill.prelude.{List, Stream, Int64, Cell, Modify, todo}
+  operation src(l: List, c: Cell[V = Int64]) -> Stream[T = l.T, E = {Modify[c]}] = todo()
   operation use_src(xs: List[T = Int64], c: Cell[V = Int64]) -> Int64 = src(xs, c)
 end
 "#;
@@ -464,8 +465,8 @@ end
 fn divergent_provider_member_grounds_concrete() {
     let ok = r#"
 namespace test.wi376.divergent_ok
-  import anthill.prelude.{List, Int64}
-  operation elemOf(l: List) -> l.Element
+  import anthill.prelude.{List, Int64, todo}
+  operation elemOf(l: List) -> l.Element = todo()
   operation caller(xs: List[T = Int64]) -> Int64 = elemOf(xs)
 end
 "#;
@@ -483,8 +484,8 @@ end
 fn divergent_provider_member_wrong_return_rejected() {
     let wrong = r#"
 namespace test.wi376.divergent_wrong
-  import anthill.prelude.{List, Int64, String}
-  operation elemOf(l: List) -> l.Element
+  import anthill.prelude.{List, Int64, String, todo}
+  operation elemOf(l: List) -> l.Element = todo()
   operation caller(xs: List[T = Int64]) -> String = elemOf(xs)
 end
 "#;

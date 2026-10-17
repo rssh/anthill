@@ -192,10 +192,15 @@ namespace test.wi759prim
     import anthill.prelude.{Int64, String}
     entity rec(name: String, age: Int64)
   end
-  operation name_of(r: Rec) -> FieldOf[T = Rec, Name = "name"]
-  operation age_of(r: Rec) -> FieldOf[T = Rec, Name = "age"]
-  operation use_name(r: Rec) -> String = name_of(r)
-  operation use_age(r: Rec) -> Int64 = age_of(r)
+  -- In a sort without constructors: a namespace operation nothing defines is refused at
+  -- load (WI-20260909-M8QWJ), and no body can be written against an unreduced `FieldOf`
+  -- return. The caller's call is a sibling call.
+  sort Ops
+    operation name_of(r: Rec) -> FieldOf[T = Rec, Name = "name"]
+    operation age_of(r: Rec) -> FieldOf[T = Rec, Name = "age"]
+    operation use_name(r: Rec) -> String = name_of(r)
+    operation use_age(r: Rec) -> Int64 = age_of(r)
+  end
 end
 "#;
     assert!(
@@ -217,8 +222,10 @@ namespace test.wi759primneg
     import anthill.prelude.{Int64, String}
     entity rec(name: String, age: Int64)
   end
-  operation name_of(r: Rec) -> FieldOf[T = Rec, Name = "name"]
-  operation wrong(r: Rec) -> Int64 = name_of(r)
+  sort Ops
+    operation name_of(r: Rec) -> FieldOf[T = Rec, Name = "name"]
+    operation wrong(r: Rec) -> Int64 = name_of(r)
+  end
 end
 "#;
     assert!(
@@ -239,8 +246,10 @@ namespace test.wi759miss
     import anthill.prelude.{Int64, String}
     entity rec(name: String, age: Int64)
   end
-  operation bogus(r: Rec) -> FieldOf[T = Rec, Name = "nosuch"]
-  operation use_bogus(r: Rec) -> String = bogus(r)
+  sort Ops
+    operation bogus(r: Rec) -> FieldOf[T = Rec, Name = "nosuch"]
+    operation use_bogus(r: Rec) -> String = bogus(r)
+  end
 end
 "#;
     let errs = match try_load_kb_with(src) {
@@ -265,12 +274,12 @@ end
 fn wi759_abstract_receiver_stays_symbolic_then_reduces() {
     let src = r#"
 namespace test.wi759abs
-  import anthill.prelude.{Int64, String, FieldOf}
+  import anthill.prelude.{Int64, String, FieldOf, todo}
   sort Rec
     import anthill.prelude.{Int64, String}
     entity rec(name: String, age: Int64)
   end
-  operation field_of_any[S](r: S) -> FieldOf[T = S, Name = "name"]
+  operation field_of_any[S](r: S) -> FieldOf[T = S, Name = "name"] = todo()
   operation wrap[S2](r: S2) -> FieldOf[T = S2, Name = "name"] = field_of_any(r)
   operation grounded(r: Rec) -> String = wrap(r)
 end
@@ -327,8 +336,17 @@ fn wi759_internal_field_visible_in_its_own_scope() {
 sort test.wi759intok.Box
   import anthill.prelude.{Int64, FieldOf}
   internal entity mk(v: Int64)
-  operation raw(b: Box) -> FieldOf[T = Box, Name = "v"]
+  -- `raw` must be a member of `Box` to see the internal field, and a sort with a
+  -- constructor gets no signature-only member (WI-20260909-M8QWJ); no body can be checked
+  -- against the unreduced `FieldOf` return, so it is host-backed — in a binding this
+  -- interpreter does not load, which is all the load asks.
+  operation raw(b: Box) -> FieldOf[T = Box, Name = "v"] @[host_implemented]
   operation peek(b: Box) -> Int64 = raw(b)
+end
+namespace test.wi759intok
+  provides Box language cpp
+    operation_map { raw: "($1).v" }
+  end
 end
 "#;
     assert!(
@@ -349,8 +367,13 @@ fn wi759_term_receiver_projects_to_term() {
 namespace test.wi759term
   import anthill.prelude.{FieldOf}
   import anthill.reflect.{Term}
-  operation any_field(t: Term) -> FieldOf[T = Term, Name = "whatever"]
-  operation use_it(t: Term) -> Term = any_field(t)
+  -- In a sort without constructors: a namespace operation nothing defines is refused at
+  -- load (WI-20260909-M8QWJ), and no body can be written against an unreduced `FieldOf`
+  -- return. The caller's call is a sibling call.
+  sort Ops
+    operation any_field(t: Term) -> FieldOf[T = Term, Name = "whatever"]
+    operation use_it(t: Term) -> Term = any_field(t)
+  end
 end
 "#;
     assert!(

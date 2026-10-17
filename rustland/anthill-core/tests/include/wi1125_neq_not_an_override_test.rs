@@ -480,7 +480,7 @@ const CONSUMER_SHAPES: &[(&str, &str)] = &[
         "guard",
         r#"
   operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
+    effects { Boom :- eq(c, Red) } = 0
 
   operation caller() -> Int64 =
     risky(Green)

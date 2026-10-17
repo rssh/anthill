@@ -233,9 +233,9 @@ namespace test.wi206k
   sort Plain
     entity plain(n: Int64)
   end
-  operation on_nonmono(s: NonMonotonicStore) -> Unit effects Modify[s]
-  operation on_wrap(w: Wrap) -> Unit effects Modify[w]
-  operation on_plain(p: Plain) -> Unit effects Modify[p]
+  operation on_nonmono(s: NonMonotonicStore) -> Unit effects Modify[s] = ()
+  operation on_wrap(w: Wrap) -> Unit effects Modify[w] = ()
+  operation on_plain(p: Plain) -> Unit effects Modify[p] = ()
 end
 "#;
     let errs = crate::common::load_errors_of(kernel);

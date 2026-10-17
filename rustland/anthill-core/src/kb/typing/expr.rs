@@ -1172,6 +1172,27 @@ pub(super) fn check_bare_ref(
                 actual: actual_txt,
             });
         }
+        // WI-20260909-M8QWJ — the zero-arg-call reading IS a call, so a nullary member no
+        // provider can be selected for is refused here as its parenthesized spelling is at
+        // `check_apply_iter` (MEASURED by review: `import MySpec.{ping}` and a bare `ping`
+        // loaded clean and died at eval where `MySpec.ping()` was refused). A bare name
+        // writes no bracket and no receiver.
+        if !env.in_rule_body() {
+            if let Some(Unselectable {
+                spec,
+                reached,
+                clauses,
+            }) = unselectable_spec_operation_call(kb, env, sym, false)
+            {
+                return Err(TypeError::CallOfUnselectableSpecOperation {
+                    span,
+                    op: sym,
+                    spec,
+                    reached,
+                    clauses,
+                });
+            }
+        }
         // WI-1063: this IS a call — the zero-arg-call reading of a bare operation name — so
         // its result opens the callee's existential return exactly as `mk()` does. Without it
         // the whole rule was bypassable by deleting two characters: `takes_pure(mk())` was

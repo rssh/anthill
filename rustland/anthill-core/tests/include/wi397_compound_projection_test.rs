@@ -17,6 +17,11 @@
 //! seam map (WI-397). The member projected here is a DIRECT type-param of the field's
 //! sort (`Inner[T = String].T`); projecting a member off a PROVIDED spec is a separate
 //! follow-on, and an ABSTRACT receiver stays the existing loud error.
+//!
+//! The projecting operation sits body-less in a sort without constructors (`Ops`), beside
+//! its caller: a body-less operation of a namespace has no definition and is refused
+//! (WI-20260909-M8QWJ), and a body would type the signature against its own BARE
+//! receiver, where `s.cell` is the abstract `P` and the projection is that loud error.
 
 use crate::common::load_errors_of_files as load_errors;
 
@@ -37,8 +42,10 @@ namespace test.wi397.ok
     sort P = ?
     entity wrap(cell: P)
   end
-  operation getT(s: Wrapper) -> s.cell.T
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = getT(w)
+  sort Ops
+    operation getT(s: Wrapper) -> s.cell.T
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = getT(w)
+  end
 end
 "#;
     assert!(
@@ -63,8 +70,10 @@ namespace test.wi397.wrong
     sort P = ?
     entity wrap(cell: P)
   end
-  operation getT(s: Wrapper) -> s.cell.T
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> Int64 = getT(w)
+  sort Ops
+    operation getT(s: Wrapper) -> s.cell.T
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> Int64 = getT(w)
+  end
 end
 "#;
     assert!(
@@ -88,8 +97,10 @@ namespace test.wi397.missing
     sort P = ?
     entity wrap(cell: P)
   end
-  operation getT(s: Wrapper) -> s.nope.T
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = getT(w)
+  sort Ops
+    operation getT(s: Wrapper) -> s.nope.T
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = getT(w)
+  end
 end
 "#;
     let errs = load_errors(&[bad]);
@@ -118,8 +129,10 @@ namespace test.wi397.multi_ok
     entity a(cell: P)
     entity b(cell: P)
   end
-  operation getT(s: Multi) -> s.cell.T
-  operation caller(w: Multi[P = Inner[T = String]]) -> String = getT(w)
+  sort Ops
+    operation getT(s: Multi) -> s.cell.T
+    operation caller(w: Multi[P = Inner[T = String]]) -> String = getT(w)
+  end
 end
 "#;
     assert!(
@@ -145,8 +158,10 @@ namespace test.wi397.multi_bad
     entity a(cell: P)
     entity b(cell: Int64)
   end
-  operation getT(s: Multi) -> s.cell.T
-  operation caller(w: Multi[P = Inner[T = String]]) -> String = getT(w)
+  sort Ops
+    operation getT(s: Multi) -> s.cell.T
+    operation caller(w: Multi[P = Inner[T = String]]) -> String = getT(w)
+  end
 end
 "#;
     let errs = load_errors(&[bad]);

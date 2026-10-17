@@ -309,6 +309,214 @@ pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -
         && !kb.is_eq_dispatch_target(op_sym)
 }
 
+/// WI-20260909-M8QWJ — a call of `op_sym`, in an operation body, that NOTHING CAN RUN
+/// although its operation may be provided: `Some(Unselectable)` when it is one.
+///
+/// `op_sym` is a member of a sort that may be provided ([`spec_op_parent_sort`]), and the
+/// call reaches, at the sort ITSELF, an operation with nothing of its own a call runs — no
+/// body, host mapping or builtin, not the `eq` a carrier's equality dispatches to, and not
+/// `Error.reify`'s frame. That is `op_sym` when it has no body; when it has one, it is a
+/// member of the same sort its body calls, at any depth ([`sibling_reached_unrunnable`]):
+/// a default body run at the sort itself dispatches its siblings to the sort's own members
+/// (MEASURED by review: `sort Util { operation helper(x: Int64) -> Int64; operation
+/// other(x: Int64) -> Int64 = helper(x) }` and `Util.other(1)` loaded and died at eval). A
+/// `@[simp]` equation does not count: the build frame tries the rewrite before this call is
+/// typed, so a call that reaches here is one no equation rewrote (MEASURED by review: with
+/// `rule ping() <=> 3 @[simp]` blocked by the sort's parameter and a provider,
+/// `MySpec.ping()` loaded and died at eval). A provider could still answer, through the
+/// carrier a call brings — and THIS call brings none:
+///
+///   * its signature names no carrier ([`signature_names_no_carrier`]): no argument,
+///     result or effect stands at the sort or at a parameter of it, so neither the typer
+///     nor a runtime value can say which provider is meant — and it is GROUND
+///     ([`signature_is_ground`]), so no parameter the first reader does not see can carry
+///     one either. A higher-kinded carrier is such a parameter: `sort Monad[M[T]]`'s
+///     `map(m: M[A], …)` stands at `M` in no form [`signature_names_no_carrier`] reads, and
+///     the value of `m` directs the dispatch (MEASURED: without this leg, every
+///     `Monad.map` over a `Result` was refused);
+///   * no requirement in scope reaches the sort — the enclosing operation's own
+///     `requires`, the enclosing frame's chain, or a requirement either of them requires
+///     in turn ([`requires_tree`]: `User requires Mid` and `Mid requires Deep` puts `Deep`
+///     in `User`'s reach) — and the enclosing sort neither is the sort (a sibling call
+///     runs at the instance its body was entered at, which this call's own caller decides)
+///     nor provides it;
+///   * the call writes no bracket and no receiver type (`selects`) — `Sp.op[…](…)`, or
+///     the dot on a type value `Desc[T = Leaf].label()`, whose bracket rides the call as
+///     its receiver type — either of which may name the carrier.
+///
+/// So the call runs at the sort itself and dies `OperationBodyMissing` — MEASURED for
+/// `sort MySpec { sort T = ?; operation ping() -> Int64 }` with `MySpec.ping()` in a body,
+/// with and without a provider `W provides MySpec[T = Int64]` that implements `ping`, and
+/// for the clause-defined twin `sort Util { sort T = ?; operation open(b: Int64) -> Int64;
+/// rule open(?v, ?v) :- true }` that [`clause_defined_own_operation`] leaves to the
+/// dispatch because the parameter could name a provider through a requirement.
+///
+/// THE ABSTRACT CASE IS NOT THIS ONE. `operation g[A](x: A) -> Int64 requires Sp[T = A] =
+/// Sp.name()` names no carrier either, and answers the provider its caller supplies —
+/// that is what a `requires` licenses (WI-325), and the requirement leg is what keeps it.
+pub(super) fn unselectable_spec_operation_call(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    op_sym: Symbol,
+    selects: bool,
+) -> Option<Unselectable> {
+    if selects {
+        return None;
+    }
+    let spec = spec_op_parent_sort(kb, op_sym)?;
+    if !signature_names_no_carrier(kb, op_sym, spec) || !signature_is_ground(kb, op_sym) {
+        return None;
+    }
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let reached = if kb.op_body_node(op_sym).is_some() {
+        sibling_reached_unrunnable(kb, op_sym, spec_canon, &mut SmallVec::new())?
+    } else if runs_nothing_of_its_own(kb, op_sym) {
+        op_sym
+    } else {
+        return None;
+    };
+    if env
+        .enclosing_sort()
+        .is_some_and(|enclosing| sort_provides(kb, enclosing, spec))
+    {
+        return None;
+    }
+    let in_scope: SmallVec<[Symbol; 4]> = env
+        .op_requires()
+        .iter()
+        .chain(env.enclosing_frame_chain().entries())
+        .map(|entry| entry.required_sort)
+        .collect();
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    if in_scope
+        .into_iter()
+        .any(|required| requirement_reaches(kb, required, spec_canon, &mut visited))
+    {
+        return None;
+    }
+    let reached_canon = kb.canonical_sym(reached);
+    Some(Unselectable {
+        spec,
+        reached,
+        clauses: kb.has_clauses_under(reached_canon) || kb.has_clauses_under(reached),
+    })
+}
+
+/// WI-20260909-M8QWJ — what [`unselectable_spec_operation_call`] found: the sort that may
+/// be provided, the operation the call reaches at that sort itself and that runs nothing
+/// (the called operation, or a member its body calls), and whether clauses are indexed
+/// under that operation, which changes the repair the refusal names.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Unselectable {
+    pub(super) spec: Symbol,
+    pub(super) reached: Symbol,
+    pub(super) clauses: bool,
+}
+
+/// WI-20260909-M8QWJ — `op` has nothing of its own a call runs: no body, no host mapping
+/// or builtin ([`op_is_executable`], spelled with the side tables — its body leg builds the
+/// whole operation record, and this runs on every call of a sort's member with no
+/// receiver), it is not the `eq` a carrier's equality dispatches to, and not
+/// `Error.reify`'s frame.
+fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
+    kb.op_body_node(op).is_none()
+        && !kb.is_builtin(op)
+        && !kb.is_host_mapped_op(op)
+        && !kb.is_eq_dispatch_target(op)
+        && !kb.is_reify_operation(kb.canonical_sym(op))
+}
+
+/// WI-20260909-M8QWJ — the first member of `spec_canon` that `op`'s BODY reaches through
+/// calls of the sort's members, at any depth, and that runs nothing at the sort itself:
+/// [`runs_nothing_of_its_own`], no `@[simp]` equation (the rewrite may have fired inside the
+/// body, which this walk does not see, so one counts as a definition here), and a signature
+/// naming no carrier and ground — a member a value or a type could direct to a provider is
+/// not this sort's to answer. A call carrying its dictionary (`ApplyWithin`) is not followed:
+/// the dictionary is the selection. `visited` ends a recursion between members.
+fn sibling_reached_unrunnable(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    spec_canon: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> Option<Symbol> {
+    let canon = kb.canonical_sym(op);
+    if visited.contains(&canon) {
+        return None;
+    }
+    visited.push(canon);
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(kb.op_body_node(op)?)];
+    while let Some(occ) = stack.pop() {
+        let Some(expr) = occ.as_expr() else {
+            continue;
+        };
+        let callee = match expr {
+            Expr::Apply { functor, .. } => Some(*functor),
+            Expr::VarRef { name } => Some(*name),
+            _ => None,
+        };
+        let sibling = callee.filter(|c| {
+            spec_op_parent_sort(kb, *c).is_some_and(|s| kb.canonical_sort_sym(s) == spec_canon)
+        });
+        if let Some(sibling) = sibling {
+            if kb.op_body_node(sibling).is_some() {
+                if let Some(found) = sibling_reached_unrunnable(kb, sibling, spec_canon, visited)
+                {
+                    return Some(found);
+                }
+            } else if runs_nothing_of_its_own(kb, sibling)
+                && crate::kb::simp_rewrite::equation_clause_census(kb, kb.canonical_sym(sibling))
+                    .simp_tagged
+                    == 0
+                && signature_names_no_carrier(kb, sibling, spec_canon)
+                && signature_is_ground(kb, sibling)
+            {
+                return Some(sibling);
+            }
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |child| stack.push(Rc::clone(child)));
+    }
+    None
+}
+
+/// WI-20260909-M8QWJ — is `spec_canon` the requirement `required`, or one it requires in
+/// turn, at any depth ([`requires_tree`])? `visited` holds the sorts already walked, so a
+/// requirement cycle ends.
+fn requirement_reaches(
+    kb: &mut KnowledgeBase,
+    required: Symbol,
+    spec_canon: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+) -> bool {
+    let required = kb.canonical_sort_sym(required);
+    if required == spec_canon {
+        return true;
+    }
+    if visited.contains(&required) {
+        return false;
+    }
+    visited.push(required);
+    fn in_tree(kb: &KnowledgeBase, nodes: &[RequiresNode], spec_canon: Symbol) -> bool {
+        nodes.iter().any(|node| {
+            kb.canonical_sort_sym(node.entry.required_sort) == spec_canon
+                || in_tree(kb, &node.sub_requires, spec_canon)
+        })
+    }
+    let tree = requires_tree(kb, required);
+    in_tree(kb, &tree, spec_canon)
+}
+
+/// WI-20260909-M8QWJ — every type `op_sym`'s declaration writes — each parameter's, the
+/// result and the effect row — is ground: no type variable and no sort parameter anywhere
+/// ([`type_is_ground`]). `false` for a symbol with no operation record.
+fn signature_is_ground(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op_sym) else {
+        return false;
+    };
+    rec.params.iter().all(|(_, ty)| type_is_ground(kb, ty))
+        && type_is_ground(kb, &rec.return_type)
+        && rec.effects.iter().all(|e| type_is_ground(kb, e))
+}
+
 /// How the goal of a clause-defined operation of `arity` parameters is spelled, read off
 /// the clauses written under it: with the result as one more column where a clause's head
 /// has one argument more than the operation declares, at the operation's own arity

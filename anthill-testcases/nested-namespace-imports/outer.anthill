@@ -7,18 +7,18 @@
 -- Nested namespaces should see these via the enclosing scope chain.
 
 namespace test.nested_imports
-  import anthill.prelude.{List, String, Bool}
+  import anthill.prelude.{List, String, Bool, todo}
 
   sort Path = String
 
   -- Outer-level operations: baseline — always works
-  operation outer_check(p: Path) -> Bool
+  operation outer_check(p: Path) -> Bool = true
 
   -- Nested namespace with a distinct name: imports from the
   -- enclosing scope (List, String, Bool, Path) should resolve.
   namespace PathOps
-    operation components(p: Path) -> List[T = String]
-    operation is_valid(p: Path) -> Bool
+    operation components(p: Path) -> List[T = String] = todo()
+    operation is_valid(p: Path) -> Bool = true
   end
 
 end

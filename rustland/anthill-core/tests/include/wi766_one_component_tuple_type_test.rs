@@ -49,9 +49,9 @@ fn load_errs(src: &str) -> Vec<String> {
 fn wi766_one_component_named_tuple_type_is_writable() {
     let src = r#"
 namespace test.wi766write
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
 
-  operation one() -> (a: Int64)
+  operation one() -> (a: Int64) = todo()
 end
 "#;
     assert!(

@@ -23,7 +23,10 @@ use smallvec::SmallVec;
 
 /// A parametric spec sort `Magma[T] requires Eq[T]` with a `@[simp]`
 /// identity, `fact Magma[T = Int64]`, and two call sites: one over `Int64`
-/// (provides Magma) and one over `Bool` (does not).
+/// (provides Magma) and one over `Bool` (does not). `Int64`'s own `op2` backs the
+/// provision (WI-20260909-M8QWJ holds a host carrier to every spec operation); it answers
+/// `b`, not op2_id's `?a`, so a dispatch to it cannot pass for the rule firing. The other
+/// two fixtures back theirs the same way.
 const SRC: &str = r#"
 namespace test.wi283guard
   import anthill.prelude.{Int64, Bool, Eq}
@@ -53,6 +56,7 @@ end
 namespace anthill.prelude.Int64
   import test.wi283guard.Magma
   provides Magma[T = Int64]
+  operation op2(a: Int64, b: Int64) -> Int64 = b
 end
 "#;
 
@@ -144,6 +148,7 @@ end
 namespace anthill.prelude.Int64
   import test.wi283carrier.Box
   provides Box[T = Int64]
+  operation wrap(tag: Int64, x: Int64) -> Int64 = tag
 end
 "#;
 
@@ -266,6 +271,7 @@ end
 namespace anthill.prelude.Int64
   import test.wi292nonsimp.Flippy
   provides Flippy[T = Int64]
+  operation flip(a: Int64, b: Int64) -> Int64 = a
 end
 "#;
 

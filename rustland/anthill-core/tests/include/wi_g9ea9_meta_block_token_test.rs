@@ -137,12 +137,13 @@ fn a_fact_block_is_its_clause_metadata() {
 
 #[test]
 fn operation_declaration_and_entry_blocks_reach_operation_info() {
+    // `S` has no constructor, so the body-less `entry` (its block after the type) loads:
+    // in a sort with one it is refused at its declaration (WI-20260909-M8QWJ).
     let kb = crate::common::load_kb_with(
         r#"
 namespace test.g9ea9.ops
   import anthill.prelude.Int64
   sort S
-    entity s
     operation single() -> Int64
       = 1 @[Marker]
     operation {
@@ -187,6 +188,9 @@ fn a_block_after_a_type_is_the_declarations() {
     // The four productions that end `type [block]`: each takes `@[…]` as its own block.
     // CONTROL rows: the bracket spelling after the same kind of type is the TYPE's
     // arguments and records no block — by design, not by accident of typing.
+    // The two body-less operations are members of a sort with no constructor: one in a
+    // namespace is refused at its declaration (WI-20260909-M8QWJ), and a body would put
+    // the block after the body rather than after the type.
     let (kb, rows) = declaration_blocks(
         r#"
 namespace test.g9ea9.decls
@@ -196,21 +200,23 @@ namespace test.g9ea9.decls
     entity carrier
     effects E = ? @[Serializable]
   end
-  operation f() -> Int64 @[Serializable]
+  sort Ops
+    operation f() -> Int64 @[Serializable]
+    operation g() -> List [Int64]
+  end
   const K: Int64 @[Serializable]
 
   sort Xs = List [Int64]
-  operation g() -> List [Int64]
   const Ks: List [Int64]
 end
 "#,
         &[
             "test.g9ea9.decls.Id",
             "test.g9ea9.decls.Carrier.E",
-            "test.g9ea9.decls.f",
+            "test.g9ea9.decls.Ops.f",
             "test.g9ea9.decls.K",
             "test.g9ea9.decls.Xs",
-            "test.g9ea9.decls.g",
+            "test.g9ea9.decls.Ops.g",
             "test.g9ea9.decls.Ks",
         ],
     );
@@ -223,7 +229,7 @@ end
             assert!(is_empty_meta(&kb, row[0]), "`[Int64]` in declaration {i} is no block");
         }
     }
-    let g = kb.try_resolve_symbol("test.g9ea9.decls.g").unwrap();
+    let g = kb.try_resolve_symbol("test.g9ea9.decls.Ops.g").unwrap();
     assert!(op_info::lookup_operation_info(&kb, g).unwrap().meta.is_none());
 }
 

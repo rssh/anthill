@@ -215,12 +215,12 @@ end
 fn wi728_membership_is_general_not_keyed_on_negate() {
     let accepted = r#"
 namespace test.wi728genok
-  import anthill.prelude.{Unit, Membership}
+  import anthill.prelude.{Unit, Membership, todo}
 
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Self) -> Slot[T = Membership[T = s.T]]
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = todo()
   end
 
   -- The declared return is the REDUCED `Unit`, so this conforms only if the reduction ran.
@@ -233,12 +233,12 @@ end
 
     let refused = r#"
 namespace test.wi728genbad
-  import anthill.prelude.{Unit, Int64, Membership}
+  import anthill.prelude.{Unit, Int64, Membership, todo}
 
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Self) -> Slot[T = Membership[T = s.T]]
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]] = todo()
   end
 
   operation useOpen(s: Slot[T = Int64]) -> Slot[T = Unit] = Slot.close(s)
@@ -496,12 +496,13 @@ end
 #[test]
 fn wi728_a_predicate_over_another_ctors_result_still_reduces() {
     // `Without` drops both columns, so its residual is `Unit` — which `Membership` accepts.
+    // `Slot` has no constructors: a body-less member of a sort with them no longer loads
+    // (WI-20260909-M8QWJ), and a body cannot forward the `...d` capture to a self-call.
     let accepted = r#"
 namespace test.wi728orderok
   import anthill.prelude.{Int64, String, Bool, Unit, Without, Membership}
   sort Slot
     sort T = ?
-    entity slot(value: T)
     operation closeAll[D](s: Self, ...d: D)
       -> Slot[T = Membership[T = Without[T = s.T, Drop = D]]]
   end

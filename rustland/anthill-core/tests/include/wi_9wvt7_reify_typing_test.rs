@@ -185,7 +185,7 @@ namespace test.wi9wvt7.perm
   operation acquires() -> Int64 effects {Permission[Llm]} = 1
 
   operation wrap[Rho, C](body: () -> Int64 @ {Permission[C], Rho}) -> Int64
-    effects {Rho}
+    effects {Rho} = 0
 
   operation caller() -> Int64 = wrap(lambda () -> acquires())
 end
@@ -341,18 +341,20 @@ end
 /// |---|---|---|
 /// | before (b)    | refused        | loads       |
 /// | after (b)     | loads          | loads       |
+/// | WI-20260909-M8QWJ | refused (call nothing can run) | refused (same) |
 ///
-/// The pre-existing `anthill.*` behaviour is the one this agrees with, so (b) removes an
+/// The pre-existing `anthill.*` behaviour is the one (b) agreed with, so (b) removed an
 /// inconsistency rather than opening a hole.
 ///
-/// NOT A CLAIM THAT THE PROGRAM IS SOUND. `ping` is body-less with no provider, so it
-/// cannot run: `anthill run` dies with "operation has no body". Detecting THAT is a
-/// separate, missing check — and `missing requires MySpec[T = …]`, the message (b) removes
-/// here, was never the right diagnostic for it: adding that clause to the enclosing sort
-/// would not make `ping` runnable, because there is still no implementation. FAILS when (b)
-/// is backed out — on the user-namespace half only.
+/// `ping` is body-less with no provider and the call names no carrier, so nothing can run
+/// it. That used to load in both namespaces and die at `anthill run` with "operation has no
+/// body"; WI-20260909-M8QWJ moved it from eval to LOAD (`CallOfUnselectableSpecOperation`),
+/// and the property this row pins survives the move: ONE verdict in both namespaces. It
+/// no longer measures (b) itself — the call check refuses this call before the WI-325 loop
+/// is reached, so (b) backed out changes neither half; (b)'s own rows above are what fail
+/// then.
 #[test]
-fn one_program_loads_the_same_in_both_namespaces() {
+fn one_program_has_one_verdict_in_both_namespaces() {
     let fixture = |ns: &str| {
         format!(
             r#"
@@ -370,12 +372,17 @@ end
 "#
         )
     };
-    expect_load(
-        &fixture("test.wi9wvt7.ns_user"),
-        "a receiverless spec-op call in a USER namespace",
-    );
-    expect_load(
-        &fixture("anthill.wi9wvt7.ns_stdlib"),
-        "the same call under the `anthill.*` prefix (unchanged by this ticket)",
-    );
+    for (ns, what) in [
+        ("test.wi9wvt7.ns_user", "a receiverless spec-op call in a USER namespace"),
+        (
+            "anthill.wi9wvt7.ns_stdlib",
+            "the same call under the `anthill.*` prefix",
+        ),
+    ] {
+        expect_reject(
+            &fixture(ns),
+            &["a call of `", "MySpec.ping` that nothing can run"],
+            what,
+        );
+    }
 }

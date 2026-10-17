@@ -1875,8 +1875,8 @@ mod wi341_alpha_tests {
         let src = r#"
 namespace anthill.test.wi341alpha
   import anthill.prelude.{Unit, Cell}
-  operation op1(f: (a: Cell) -> Unit @ Modify[a]) -> Unit
-  operation op2(g: (c: Cell) -> Unit @ Modify[c]) -> Unit
+  operation op1(f: (a: Cell) -> Unit @ Modify[a]) -> Unit = ()
+  operation op2(g: (c: Cell) -> Unit @ Modify[c]) -> Unit = ()
 end
 "#;
         let mut kb = load_stdlib(Some(src));
@@ -1903,8 +1903,8 @@ end
         let src = r#"
 namespace anthill.test.wi341alpha2
   import anthill.prelude.{Unit, Cell}
-  operation op3(f: (a: Cell, b: Cell) -> Unit @ Modify[a]) -> Unit
-  operation op4(g: (c: Cell, d: Cell) -> Unit @ Modify[d]) -> Unit
+  operation op3(f: (a: Cell, b: Cell) -> Unit @ Modify[a]) -> Unit = ()
+  operation op4(g: (c: Cell, d: Cell) -> Unit @ Modify[d]) -> Unit = ()
 end
 "#;
         let mut kb = load_stdlib(Some(src));
@@ -3842,10 +3842,10 @@ namespace test.wi958
 
   sort Plain
     entity plain(n: Int64)
-    operation describe(p: Plain) -> Int64
+    operation describe(p: Plain) -> Int64 = 0
   end
 
-  operation loose(n: Int64) -> Int64
+  operation loose(n: Int64) -> Int64 = 0
 end
 "#;
 
@@ -4066,7 +4066,7 @@ namespace test.wi956
   end
   entity Ord2(n: Int64)
 
-  operation loose(n: Int64) -> Int64
+  operation loose(n: Int64) -> Int64 = 0
 end
 "#;
 

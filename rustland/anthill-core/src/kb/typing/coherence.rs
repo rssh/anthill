@@ -1229,9 +1229,11 @@ pub(crate) fn check_use_site_requires_eq(
 /// loaded clean and then died at run time (`UnknownOperation`). See
 /// [`op_backed`].
 ///
-/// SCOPE: only provisions whose carrier is CONCRETE (has constructors —
-/// `sorts_with_constructors`) are checked; an abstract/value-less carrier
-/// (`Set`, `Map`) is skipped, since no runtime value can dispatch through it.
+/// SCOPE: the provisions whose provider a call can reach with nothing behind it —
+/// one with constructors (`sorts_with_constructors`), a host-realized carrier, and a
+/// witness provision ([`provider_owes_operations`], WI-20260909-M8QWJ). A
+/// sub-interface (`Ord provides WeakOrd[T = T]`, `NonMonotonicStore provides Store`)
+/// is skipped: its values are its providers', so a call reaches their members.
 ///
 /// WI-928 corrects one example this doc used to give: `Vec3` was named here as a
 /// value-less "namespace-level provision head", and it is nothing of the kind —
@@ -1346,13 +1348,15 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         if kb.is_unbacked_derived_provision(p.rid) {
             continue;
         }
-        // Abstract carrier (no constructors) → sub-interface, ops may stay
-        // primitives. Only concrete carriers are checked.
-        if !concrete.contains(&p.carrier) {
+        // WHO OWES THE OPERATIONS. A provider with constructors (the runtime witnesses), a
+        // host-realized carrier and a WITNESS provision (WI-20260909-M8QWJ) — see
+        // [`provider_owes_operations`]. Any other provider is a sub-interface whose ops may
+        // stay primitives for ITS providers to supply.
+        let host_realized = host_targets.contains(kb.qualified_name_of(p.carrier));
+        if !provider_owes_operations(kb, p, concrete.contains(&p.carrier), host_realized) {
             continue;
         }
         let carrier_qn = kb.qualified_name_of(p.carrier).to_string();
-        let host_realized = host_targets.contains(&carrier_qn);
         let Some(spec_ops) = own_ops.get(&p.spec) else {
             continue;
         };
@@ -1534,6 +1538,95 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 
     errors.extend(check_provision_binding_agreement(kb, &provisions));
     errors
+}
+
+/// WI-363 / WI-20260909-M8QWJ — must the PROVIDER of `p` back every operation of the spec
+/// it provides, or may they stay primitives for the provider's own providers to supply?
+///
+/// Three providers owe them, because a call can reach each with no one behind it:
+///
+///   * one WITH CONSTRUCTORS (`concrete`): a value of it is a runtime witness, and a call
+///     on that value dispatches to it (WI-363);
+///   * a HOST-REALIZED carrier (`host_realized`), unless the row forwards the carrier's
+///     own parameters: `Int64`, `Float`, … have no constructors, yet their values are as
+///     real as an entity's — `provides Additive[T = Int64]` with no `zero` loaded clean
+///     and `Additive.zero` at `Int64` died at eval. Its spec-level `operation_map` counts
+///     for it ([`op_backed`]'s `host_realized` leg);
+///   * a WITNESS provision ([`is_witness_provision`]): a provider that names, at the
+///     spec's carrier, a type other than itself — `sort Hi { provides Lo[T = Int64] }`
+///     makes `Hi` the provider of `Lo` at `Int64`, so `Lo.lo(1)` dispatches to `Hi`, and
+///     with no `lo` on `Hi` it loaded clean and died at eval. Nothing stands behind a
+///     witness: values of `Int64` are not values of `Hi`.
+///
+/// What is left is a SUB-INTERFACE: a provision at the provider's own parameters (`Ord
+/// provides WeakOrd[T = T]`), or at the provider itself (`NonMonotonicStore provides
+/// Store`, or `sort Mid { sort Out = ?  provides Stream[T = Out, E = {}] }` — `Stream`
+/// is self-representing, its carrier is `Mid`). Its values are its providers' values, so
+/// a call reaches THEIR members, and it may leave the operations to them.
+///
+/// A FORWARDING ROW IS A SUB-INTERFACE EVEN ON A HOST CARRIER, and that is a known gap,
+/// not the rule's intent: `Relation provides LogicalStream[T = T, E = E]` backs none of
+/// `LogicalStream`'s construction operations (`empty`, `pure`, `mplus`, `guard`,
+/// `interleave`), which no carrier implements, and `LogicalStream.guard(true)` dies at
+/// eval. Holding the row to them asks for host functions nobody has written — the same
+/// standing as `Set`'s symbolic algebra (kernel-language.md §8.3).
+fn provider_owes_operations(
+    kb: &KnowledgeBase,
+    p: &Provision,
+    concrete: bool,
+    host_realized: bool,
+) -> bool {
+    if concrete {
+        return true;
+    }
+    if same_sort_canonical(kb, p.carrier, p.spec) {
+        return false;
+    }
+    let bindings = spec_view_bindings_value(kb, &p.spec_view);
+    (host_realized && !is_param_forwarding(kb, p.carrier, p.spec, &bindings))
+        || is_witness_provision(kb, p, &bindings)
+}
+
+/// WI-20260909-M8QWJ — does `p` name its provider the WITNESS for another type? Read at the
+/// spec's CARRIER parameter ([`spec_carrier_param`], the reading
+/// `check_provision_names_carrier` holds a written provision to): the binding there is
+/// neither a parameter of the provider (a forwarding of the carrier — the provider's own
+/// providers stand behind it) nor the provider itself. A composite of the provider's
+/// parameter is such a type too: `sort Hi { sort T = ?  provides Lo[T = Box[T = T]] }`
+/// names `Hi` the provider at `Box[…]`, which no dispatch reaches through `Hi`'s own
+/// providers (MEASURED: `Lo.lo(box(…))` died at eval beside a `C provides Hi[T = C]` that
+/// implements `lo` over `Box[T = C]`).
+///
+/// A SELF-REPRESENTING spec (`Stream`, whose operations receive the spec itself) has the
+/// provider as its carrier, so no row of it is a witness. A spec whose operations name NONE
+/// of its parameters has no carrier parameter either, and is read at every binding: a row
+/// that names another type at any of them is a witness — `sort Hi { provides MySpec[T =
+/// Int64] }` over `sort MySpec { sort T = ?; operation ping() -> Int64 }` makes `Hi` the
+/// dictionary a `requires MySpec[T = A]` hands over at `Int64` (MEASURED by review: with no
+/// `ping` on `Hi`, `g[A](x: A) requires MySpec[T = A] = MySpec.ping()` loaded and `g(1)`
+/// died at eval).
+fn is_witness_provision(
+    kb: &KnowledgeBase,
+    p: &Provision,
+    bindings: &[(Symbol, Value)],
+) -> bool {
+    let names_another_type = |value: &Value| {
+        type_param_local_name(kb, value).is_none()
+            && !carrier_sort_of_value(kb, value)
+                .is_some_and(|s| same_sort_canonical(kb, s, p.carrier))
+    };
+    match spec_carrier_param(kb, p.spec) {
+        Some(carrier_param) => {
+            let carrier_short = short_name_of(kb.local_name_of(carrier_param));
+            // An unbound carrier is `check_provision_names_carrier`'s refusal, not this one's.
+            bindings
+                .iter()
+                .find(|(param, _)| short_name_of(kb.local_name_of(*param)) == carrier_short)
+                .is_some_and(|(_, at_carrier)| names_another_type(at_carrier))
+        }
+        None if spec_is_self_representing(kb, p.spec) => false,
+        None => bindings.iter().any(|(_, value)| names_another_type(value)),
+    }
 }
 
 /// Every `anthill.reflect.SortProvidesInfo` fact, as [`Provision`] rows.

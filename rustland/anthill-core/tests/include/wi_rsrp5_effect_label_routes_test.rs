@@ -328,7 +328,7 @@ namespace test.rsrp5.mac
     effects E = Error
     entity mh
     operation mac_of(o: NodeOccurrence) -> NodeOccurrence
-      effects {E}
+      effects {E} = o
   end
 end
 "#;
@@ -341,7 +341,7 @@ namespace test.rsrp5.mac2
   sort MacHost2
     entity mh2
     operation mac_of(o: NodeOccurrence) -> NodeOccurrence
-      effects {Error}
+      effects {Error} = o
   end
 end
 "#;

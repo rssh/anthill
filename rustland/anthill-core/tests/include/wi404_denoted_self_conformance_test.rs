@@ -36,12 +36,12 @@ use crate::common::load_errors_of_files as load_errors;
 // literal fills it), plus a producer op whose return carries the denoted `N = 3`.
 const VEC: &str = r#"
 namespace test.wi404.vec
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Vec
     sort T = ?
     sort N = ?
   end
-  operation mk() -> Vec[T = Int64, N = 3]
+  operation mk() -> Vec[T = Int64, N = 3] = todo()
 end
 "#;
 
@@ -100,14 +100,14 @@ end
 fn denoted_value_place_conforms_to_itself() {
     let vec = r#"
 namespace test.wi404.vpvec
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Vec
     sort T = ?
     sort N = ?
   end
   sort Producer
   end
-  operation mk(c: Producer) -> Vec[T = Int64, N = c]
+  operation mk(c: Producer) -> Vec[T = Int64, N = c] = todo()
 end
 "#;
     let consumer = r#"
@@ -131,14 +131,14 @@ end
 fn differing_denoted_value_place_rejected() {
     let vec = r#"
 namespace test.wi404.vpmvec
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Vec
     sort T = ?
     sort N = ?
   end
   sort Producer
   end
-  operation mk(c: Producer) -> Vec[T = Int64, N = c]
+  operation mk(c: Producer) -> Vec[T = Int64, N = c] = todo()
 end
 "#;
     let consumer = r#"
@@ -163,13 +163,13 @@ end
 fn denoted_bearing_alias_conforms_to_definition() {
     let vec = r#"
 namespace test.wi404.alvec
-  import anthill.prelude.{Int64}
+  import anthill.prelude.{Int64, todo}
   sort Vec
     sort T = ?
     sort N = ?
   end
   sort Vec3i = Vec[T = Int64, N = 3]
-  operation mk() -> Vec[T = Int64, N = 3]
+  operation mk() -> Vec[T = Int64, N = 3] = todo()
 end
 "#;
     let consumer = r#"
