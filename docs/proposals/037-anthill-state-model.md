@@ -51,7 +51,8 @@ What tells two resources of a sort apart is fixed by the sort, never by an imple
 Whether a write may be dropped from a row, and whether two places may be one resource, is read from 050.1's memory relations, as it is for every other operation. There is no identity kind.
 
 - **An allocating operation declares no memory clause, so its result is fresh,** connected with nothing. `Cell.new` is the case. A write to a cell that never escapes is local, and is dropped from the row (the masking of WI-314).
-- **A value that names something outside is connected to its sort's pool**, an ambient resource of the sort, one for each such sort: `ensures memory_maybe_connected(result, pool)`. Such a value is never fresh, and any two values of the sort may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
+- **A value that names something outside is connected to a pool**, `ensures memory_maybe_connected(result, pool)`, where `pool` is an ambient resource standing for that outside state. Such a value is never fresh, and any two values connected to one pool may be one resource. 050.1's decision D is the precedent: `operation kb() -> KB ensures memory_alias(result, kb)`.
+- **The pool belongs to what the values name, not to their sort.** `FileStore(root: "x", …)` and `IndexedFileStore(root: "x", …)` name one directory, so the three store backends share one pool.
 
 ### 3.3 The constructor says so
 
@@ -62,7 +63,7 @@ entity FileStore(root: String, convention: FileConvention)
   ensures memory_maybe_connected(result, pool)
 ```
 
-An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected. How a pool is spelled is open (§10).
+An entity declaration cannot carry `ensures` today. Proposal 072 adds it, together with `requires`, as constructor contracts. In a clause a constructor is a term, not a call, and a fact writes nothing, so the `ExtentBinding` facts that name stores are unaffected. Which sort owns the store family's pool, and how a pool is spelled, are open (§10).
 
 ### 3.4 At run time
 
@@ -111,7 +112,16 @@ An implementation lives as long as the resources bound to it. A call on a key th
 
 Installing an implementation decides what the resources made or mounted while it is in force are bound to.
 
-1. **Extent.** There is a whole-run default, chosen by the embedder at startup. Inside the program there are scopes, installed by an ordinary higher-order operation that works as the `Error.reify` frame does (027.4): it nests, and it unwinds on a raise.
+**The installation map.** The implementations in force are a persistent map from a base sort, keyed by its canonical symbol, to an implementation.
+- **The key is the sort, not a hash of a full type,** because an implementation serves every instantiation of its sort: one Cell implementation for every `V`.
+- **The map is read only when a resource is made or mounted,** to choose its binding. A call on an existing resource never reads it (§5.1).
+- **Because the map is persistent:**
+  - a scope is a new version of the map with one entry changed, and leaving the scope, normally or by a raise, returns to the previous version. There is no enter/pop pair to get wrong, the principle WI-20260823-SPGBP chose for scoped KB layers;
+  - an implementation installed over a version can capture the entry it replaces, and pass calls on to it (item 3);
+  - a Branch snapshot copies the activation stack, and the current version comes along at no cost;
+  - the bridge can hand the current version to a scratch interpreter as one shared reference (§5.4).
+
+1. **Extent.** There is a whole-run default version, chosen by the embedder at startup. Inside the program there are scopes, installed by an ordinary higher-order operation that works as the `Error.reify` frame does (027.4). Its frame sets the new version on entry, and its exit or unwind restores the previous one, so scopes nest.
 2. **A scope affects the allocations that run inside it**, not the code written inside it. A closure made inside a scope and called outside it allocates under its caller's implementation.
 3. **Wrapping.** An implementation may wrap another and pass calls on to it, which is how audit and logging are expressed. A wrapper sees only the resources bound to it. The registry must allow this: today `EffectRegistry::take_for_invoke` takes a handler out of its slot while it runs, so a handler cannot reach another.
 4. **Compiled code** fixes the default implementation at build time. Choosing another at run time is an interpreter feature.
@@ -126,7 +136,7 @@ A local allocation in pure-typed code follows the same rule as any other: the im
 
 A call from a rule body runs in a scratch interpreter, the SLD→eval bridge.
 - **A pure call**, one whose row after masking holds no `Modify`, runs with each sort's default, as today. Its private cells are its own.
-- **A call that modifies shared state** would inherit the installations of the querying interpreter. Under WI-20260926-7D48J's rule no such call runs in a rule body, so today every bridged call runs with the defaults.
+- **A call that modifies shared state** would inherit the installations of the querying interpreter: the current version of the installation map. Under WI-20260926-7D48J's rule no such call runs in a rule body, so today every bridged call runs with the defaults.
 
 With `Branch` implemented (§6.2), a rule-body call may need no child interpreter at all. That is a future question.
 
@@ -147,7 +157,7 @@ Each alternative starts from the state at the branch point. In `pick(c) = branch
 This differs from a raise. A caught raise is a computation that happened and failed; an abandoned alternative never happened, and alternatives must not depend on the order in which they are tried.
 
 - **The undo is done by the implementation each resource is bound to.** It keeps old values while a branch is open, and restores them when an alternative is abandoned: the `register_undo` design of 027 and `docs/design/cell-runtime.md`. Every implementation of a base sort owes this.
-- **State outside the process cannot be undone,** so `Branch` together with `External` is refused at load (054).
+- **State outside the process cannot be undone,** so `Branch` together with `External` is refused at load (054). Store writes declare `{Modify[store], Error}`, not `External`, so that refusal does not reach them yet. Today a Branch region calling `Store.flush` would be neither refused nor undoable (§10).
 - **SLD backtracking needs nothing,** since a rule body writes no shared state (§5.4).
 
 This is the contract WI-070 implements.
@@ -192,7 +202,7 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 **What changes:**
 - `ModifyRuntime` and the functor map are retired, and the m5 `Box` and `counter` fixtures become load errors;
 - every base operation goes to the implementation its resource is bound to, `Cell.*` included (the user's direction, WI-20260908-9WVT7 note F10). Stores keep finding theirs by mounted key;
-- the registry becomes one per base sort and lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h));
+- the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h));
 - every implementation gets mark and undo, for `Branch` (WI-070);
 - in the spec, §5.6 adopts 050.1 §6's text on resources and memory, and §5.7 takes the stack of §6.1, each written only after its wording is agreed;
 - proposal 072 adds a constructor's `ensures`.
@@ -205,7 +215,7 @@ From the 2026-05 draft, and from 027, 036 and 047 where they say the same:
 - `Modify[T]` read over a type. A target is a place (WI-20260823-39AD2);
 - `Cell.new` as allocation free of effects. It declares `Modify[result]` (027.1);
 - per-resource branch contracts (branch-local snapshot, frozen, sticky-by-physics), replaced by §6.2's single rule and 054's refusal;
-- the handler stack that picks "the topmost handler matching `Modify[T]`", replaced by §5.
+- the handler stack, where a call went to whichever handler was on top at that moment. §5 replaces it: a call goes to the implementation its resource is bound to, and the installation map is read only when a resource is made or mounted.
 
 Considered and not taken in the 2026-10-17 discussion:
 
@@ -217,7 +227,11 @@ Considered and not taken in the 2026-10-17 discussion:
 
 ## 10. Open questions
 
-- How a sort's pool is spelled. There is one for each sort whose values name outside state.
+- Which sort owns the store family's pool: `Store`, or the filesystem (`platform.anthill`'s `Filesystem`). Also, how a pool is spelled.
+- Store writes under `Branch`. They declare `Modify`, not `External`, and a write to disk cannot be undone. There are three options:
+  - the operations that write outside the process declare `External`, so 054's refusal covers them (recommended);
+  - a store implementation buffers writes until the branch commits;
+  - each base sort declares whether it can undo, and Branch over one that cannot is refused.
 - Implementations written in anthill (§4.3), and interceptors.
 - The name and signature of the scoped installing operation.
 - A transaction scope that rolls back on a raise (§6.1).
