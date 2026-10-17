@@ -23925,6 +23925,29 @@ struct Loader<'a> {
     // locally named `tuple`, so `rule r :- tuple(?a & ?b)` was refused while the
     // identical `ordinary(?a & ?b)` loaded — its ARGUMENT is data in both.
     in_body_goal_wrapper: bool,
+    // WI-20260824-JM6ZW — true while the rule-body walk lowers a child whose ROLE is not
+    // `ValueExpression` (design 055 §3: "a child whose role is head, callee, … member name
+    // … or `TypeExpr` does not" admit a type value), so the walk's type-value record is not
+    // made there. Two such children reach the walk:
+    //
+    //  * the spec slot of `require[Spec]`, which `build_require_spec_occurrence` hands over
+    //    whole when it is not applied — a requirement's spec, read by its head
+    //    (`rewrite_find_dictionary_goal`), not a value. MEASURED with the flag never set
+    //    there: 8 rows fail, among them
+    //    `wi_51w18_require_spec_type_args_test::the_bare_spelling_is_unchanged`,
+    //    `wi_96ztm_two_dictionaries_test::two_anchors_the_bracket_cannot_choose_between_are_refused`
+    //    and `wi_gfs6a_woven_call_waits_on_its_dictionary_test::a_dictionary_a_later_read_binds_answers`;
+    //  * a SEGMENT of a written dotted name — a child of the converter's `field_access`
+    //    chain, which in a rule body's data slot stays the chain the clause stores and is
+    //    read as a NAME where it is read (`dotted_citation_nullary_op`, §6.7). MEASURED
+    //    with the chain not setting it: `dotted_nullary_op_call_test::an_eq_operand_is_-
+    //    typed_and_run_as_the_call` — `0 = Box.zero` lost its citation reading to a
+    //    recorded `Box`.
+    //
+    // CONSUMED BY EACH `Fn` NODE, as `in_body_goal` is: the node reads it for itself and
+    // sets it for each of its own children, so it never reaches past one level — the
+    // arguments of a call inside a chain are values again.
+    in_non_value_role: bool,
     // WI-605: set by the bare-arrow diagnostic arm when it substitutes a
     // `Term::Bottom` recovery leaf into the body being converted. Cleared at
     // `convert_expr_term` entry; read by `load_operation` / `load_const` to
@@ -24450,6 +24473,7 @@ impl<'a> Loader<'a> {
             in_op_body_value: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
+            in_non_value_role: false,
             expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
@@ -26602,7 +26626,14 @@ impl<'a> Loader<'a> {
                 (true, Some(sym)) => {
                     NodeOccurrence::new_expr(Expr::Ref(sym), span, self.current_owner)
                 }
-                _ => self.build_body_atom_occurrence(parse_id),
+                _ => {
+                    // A requirement's spec, not a value: kept out of the walk's
+                    // type-value record ([`Self::in_non_value_role`]).
+                    let saved = std::mem::replace(&mut self.in_non_value_role, true);
+                    let occ = self.build_body_atom_occurrence(parse_id);
+                    self.in_non_value_role = saved;
+                    occ
+                }
             };
         }
         let Term::Fn {
@@ -32372,6 +32403,40 @@ impl<'a> Loader<'a> {
         })
     }
 
+    /// WI-20260824-JM6ZW (proposal 055 §1, design §7's `build_body_atom_occurrence` row) —
+    /// the rule-body walk's record of a BARE sort name in a DATA slot: the
+    /// `Expr::TypeValue` the operation-body walk builds for the same name
+    /// (`Self::push_leaf_occ`), by the same predicate ([`Self::bare_name_denotes_type`]).
+    /// The SORT half of that walk's rule, not all of it: a CONSTRUCTOR standing as the
+    /// entry of a bracket is a type value there and not here, which is the line the
+    /// operation-body walk itself draws for a rule's compound expression
+    /// (`lowering_rule_compound_expr`) — in a rule, a constructor is a term the clause
+    /// matches.
+    ///
+    /// THE FINDING THIS IS. With the typer's `Type`-hint chain retired, a bare sort in a
+    /// rule body — `is_modifiable(Cell)`, `facts_of(?kb, Color)` under `?x <=> …` — was
+    /// typed by nothing: this walk built it as the `Expr::Ref` a data slot holds, and only
+    /// the hint, firing off the callee's declared `Type`, had turned that into a type value.
+    /// Measured with a probe at the four retired arms over the whole workspace: every one
+    /// of their firings was a rule body.
+    ///
+    /// THE CLAUSE IS UNMOVED by it. The occurrence views as the term it was —
+    /// `occ_head` heads a bare `Expr::TypeValue` as `Ref(S)`, exactly as the `Expr::Ref`
+    /// it replaces — so a goal holding a sort still matches the fact that holds it.
+    ///
+    /// `None` in a GOAL slot (a bare name there is a subject — §8.3's expansion or the
+    /// relation itself) and in a child of another role — a `require[Spec]` spec, a segment
+    /// of a written dotted name ([`Self::in_non_value_role`]).
+    fn body_bare_type_value(&self, sym: Symbol) -> Option<Expr> {
+        let data_slot =
+            !self.in_body_goal && !self.in_body_goal_wrapper && !self.in_non_value_role;
+        (data_slot && self.bare_name_denotes_type(sym)).then(|| Expr::TypeValue {
+            head: sym,
+            pos_args: Vec::new(),
+            named_args: Vec::new(),
+        })
+    }
+
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
     /// maintain `term_depth`. Every recursive child re-enters through the wrapper.
     /// WI-20260902-CZJ2N — A BARE NAME OF A NULLARY OPERATION IS THAT OPERATION'S CALL,
@@ -32400,7 +32465,8 @@ impl<'a> Loader<'a> {
     ///   (`real_pose_at(?k, Leader, ?l)`) stays a `Ref`: §8.3 gives it a value reading
     ///   and the storage canon already merges its two spellings. A bare SORT stays a
     ///   `Ref` for the same reason [`KnowledgeBase::nullary_canon`] leaves it alone —
-    ///   `Ref(S)` is the type-level wildcard.
+    ///   `Ref(S)` is the type-level wildcard. (In a DATA slot it never gets here: it is
+    ///   the type value [`Self::body_bare_type_value`] records, which heads as that `Ref`.)
     /// * OPERATION BODIES ARE NOT THIS SITE. §5.4's eta reading is TYPE-DIRECTED — a
     ///   nullary op in an arrow-typed slot is the unapplied function value — and this
     ///   walk has no expected type to consult. `typing::check_bare_ref` owns that
@@ -32415,6 +32481,7 @@ impl<'a> Loader<'a> {
     /// citation to its symbol in a branch that never reaches the `Term::Ref` /
     /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
     /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
+
     fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
             return Expr::Apply {
@@ -32520,7 +32587,9 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
                 match self.data_slot_const_value(s, parse_id) {
                     Some(lit) => Expr::Const(lit),
-                    None => self.nullary_op_call_or_ref(s, parse_id),
+                    None => self
+                        .body_bare_type_value(s)
+                        .unwrap_or_else(|| self.nullary_op_call_or_ref(s, parse_id)),
                 }
             }
             Term::Ident(sym) => {
@@ -32556,7 +32625,9 @@ impl<'a> Loader<'a> {
                     // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
                     match self.data_slot_const_value(new_sym, parse_id) {
                         Some(lit) => Expr::Const(lit),
-                        None => self.nullary_op_call_or_ref(new_sym, parse_id),
+                        None => self
+                            .body_bare_type_value(new_sym)
+                            .unwrap_or_else(|| self.nullary_op_call_or_ref(new_sym, parse_id)),
                     }
                 } else {
                     Expr::Ident(new_sym)
@@ -32586,6 +32657,9 @@ impl<'a> Loader<'a> {
                 // decides which of this node's arguments are themselves goals.
                 let at_goal = std::mem::replace(&mut self.in_body_goal, false);
                 let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
+                // WI-20260824-JM6ZW — consumed like the two flags above; this node's
+                // children get it only if this node is a written dotted name (below).
+                let non_value = std::mem::replace(&mut self.in_non_value_role, false);
                 // WI-20261001-KDMQS — this node's const-fold state, read before anything
                 // below moves it for the children.
                 let node_fold = self.const_fold;
@@ -32725,12 +32799,44 @@ impl<'a> Loader<'a> {
                 } else {
                     new_functor
                 };
+                // WI-20260824-JM6ZW — A NESTED, BRACKETED SORT APPLICATION IN A DATA SLOT IS
+                // A TYPE VALUE, recorded as the `Expr::TypeValue` the operation-body walk
+                // builds for it (`build_load`'s `is_type_value`: the written bracket and
+                // the resolved head, `has_kind` as there). The applied twin of
+                // [`Self::body_bare_type_value`], and the same finding: only the retired
+                // `Type` hint had read `is_modifiable(Cell[V = Int64])` in a rule body as a
+                // type, by re-deciding this `Expr::Apply` from the callee's declared slot.
+                //
+                // ASKED BEFORE THE ENTITY ROUTE, as `build_load` asks it before `is_entity`:
+                // an eponymous `Box[T = Int64]` is a type application by its bracket
+                // (WI-927's surface gate), not a construction whose fields its type
+                // arguments would fill.
+                //
+                // Not a GOAL (`:- Modifiable[T = ?t]` and a negand are instance queries) and
+                // not a child of another role ([`Self::in_non_value_role`]). NOT gated on
+                // depth, as WI-710's check below is: a top-level body atom is a goal, which
+                // `at_goal` already says, and the one value that reaches this walk at the
+                // top is an equation's RHS — `rule ty() <=> Cell[V = Int64] @[simp]`, a value
+                // as its bare twin `<=> Cell` is (found by `/code-review`: the depth gate
+                // left the applied one an `Expr::Apply` nothing types). The clause is unmoved:
+                // the node heads as the `Fn{S, …}` its `Expr::Apply` did (`occ_head`).
+                let type_value = !at_goal
+                    && !is_wrapper
+                    && !non_value
+                    && self.parsed.terms.is_type_application(parse_id)
+                    && self.kb.has_kind(new_functor, SymbolKind::Sort);
+                // A WRITTEN DOTTED NAME — the converter's `field_access` chain, the provenance
+                // test `dotted_citation_name` makes — hands its segments the non-value role.
+                let name_chain = self.parsed.terms.is_minted(parse_id)
+                    && self.parsed.symbols.local_name(functor) == dt::FIELD_ACCESS;
                 // WI-20260902-2SZ88 — A PLAIN ENTITY CONSTRUCTOR IS BUILT HERE, NOT
                 // RE-DERIVED FROM ITS TERM. See [`Self::entity_ctor_expr`]. `None` means
                 // the lowering produced a shape that arm does not recognise, and the
                 // round-trip below still serves it.
-                let written_entity = self.kb.written_entity_field_names(new_functor).is_some();
-                let reflect_form = node_occurrence::is_reflect_form_functor(self.kb, new_functor);
+                let written_entity =
+                    !type_value && self.kb.written_entity_field_names(new_functor).is_some();
+                let reflect_form =
+                    !type_value && node_occurrence::is_reflect_form_functor(self.kb, new_functor);
                 let entity_native = if written_entity && !reflect_form {
                     self.entity_ctor_expr(parse_id, new_functor)
                 } else {
@@ -32847,9 +32953,11 @@ impl<'a> Loader<'a> {
                             None if is_wrapper => self.in_body_goal = true,
                             None => {}
                         }
+                        self.in_non_value_role = name_chain;
                         pos.push(self.build_body_atom_occurrence(pid));
                         self.in_body_goal = false;
                         self.in_body_goal_wrapper = false;
+                        self.in_non_value_role = false;
                     }
                     let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                     self.const_fold = node_fold.child(None);
@@ -32862,7 +32970,9 @@ impl<'a> Loader<'a> {
                             continue;
                         }
                         let key = self.reintern(sym);
+                        self.in_non_value_role = name_chain;
                         let child = self.build_body_atom_occurrence(pid);
+                        self.in_non_value_role = false;
                         named.push((key, child));
                     }
                     // WI-710: a NESTED, BRACKETED sort application in a rule body is a
@@ -32873,9 +32983,18 @@ impl<'a> Loader<'a> {
                     // instance-fact query), and `is_type_application` (a `(…)` call on a
                     // sort-named functor is a data CONSTRUCTOR — `Leaf(name: ?tip)`). Only
                     // names and counts are read, so a variable argument passes.
-                    if self.term_depth > 1
-                        && self.parsed.terms.is_type_application(parse_id)
-                        && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
+                    //
+                    // WI-20260824-JM6ZW: and every node the walk records as a type value,
+                    // which is what `has_kind` (not `kind_of`) and the `type_value` disjunct
+                    // make sure of — the gate that DECIDES which applications are type values
+                    // and the one that checks their arguments must agree, or a name the
+                    // classifier admits (a `namespace Box` declared before `sort Box`) has
+                    // its arguments read by nobody (WI-20260824-Q0093 found the same split in
+                    // the typer). Found by `/code-review`.
+                    if type_value
+                        || (self.term_depth > 1
+                            && self.parsed.terms.is_type_application(parse_id)
+                            && self.kb.has_kind(new_functor, SymbolKind::Sort))
                     {
                         let declared = self.kb.type_params_of_sort(new_functor);
                         let named_syms: SmallVec<[Symbol; 2]> =
@@ -32893,30 +33012,42 @@ impl<'a> Loader<'a> {
                             });
                         }
                     }
-                    Expr::Apply {
-                        // WI-20260829-W6JH0: a form-(3) receiver in a RULE BODY carries the
-                        // same claim it does in an operation body, and this walk is the other
-                        // producer of an `Expr::Apply` — so it reads the channel too. Without
-                        // this the claim vanished silently here while being honoured one
-                        // lowering over, which is exactly the split WI-839 wrote its sweep to
-                        // stop. (`type_args` beside it stays `Vec::new()`: that channel is
-                        // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
-                        // decision this ticket does not reopen.)
-                        //
-                        // WI-753: NOT for a reflect form. Its node is re-read at the tail
-                        // into the keyed occurrence, which has no receiver-type slot, so
-                        // consuming the bracket here would drop it in silence — and
-                        // `check_unconsumed_recv_types` refuses it, as it did when this
-                        // node took the round trip. Found by `/code-review`.
-                        recv_type: if reread_reflect_form {
-                            None
-                        } else {
-                            self.build_recv_type(parse_id, new_functor)
-                        },
-                        functor: new_functor,
-                        pos_args: pos,
-                        named_args: named,
-                        type_args: Vec::new(),
+                    if type_value {
+                        // The type arguments ride as this node's children, as they would
+                        // have on the `Expr::Apply`. No receiver channel is read: a type
+                        // application's bracket IS this node (`build_load`'s twin). Falls
+                        // through to the tail like every other node, for its `dot_chain`.
+                        Expr::TypeValue {
+                            head: new_functor,
+                            pos_args: pos,
+                            named_args: named,
+                        }
+                    } else {
+                        Expr::Apply {
+                            // WI-20260829-W6JH0: a form-(3) receiver in a RULE BODY carries the
+                            // same claim it does in an operation body, and this walk is the other
+                            // producer of an `Expr::Apply` — so it reads the channel too. Without
+                            // this the claim vanished silently here while being honoured one
+                            // lowering over, which is exactly the split WI-839 wrote its sweep to
+                            // stop. (`type_args` beside it stays `Vec::new()`: that channel is
+                            // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
+                            // decision this ticket does not reopen.)
+                            //
+                            // WI-753: NOT for a reflect form. Its node is re-read at the tail
+                            // into the keyed occurrence, which has no receiver-type slot, so
+                            // consuming the bracket here would drop it in silence — and
+                            // `check_unconsumed_recv_types` refuses it, as it did when this
+                            // node took the round trip. Found by `/code-review`.
+                            recv_type: if reread_reflect_form {
+                                None
+                            } else {
+                                self.build_recv_type(parse_id, new_functor)
+                            },
+                            functor: new_functor,
+                            pos_args: pos,
+                            named_args: named,
+                            type_args: Vec::new(),
+                        }
                     }
                 }
             }
@@ -33056,7 +33187,7 @@ impl<'a> Loader<'a> {
     /// MEASURED after the change: the full workspace suite passes, and the `kind_of`
     /// spelling backed in again fails exactly the one row above.
     fn bare_name_denotes_type(&self, sym: Symbol) -> bool {
-        self.kb.has_kind(sym, SymbolKind::Sort) && !self.kb.is_entity_constructor(sym)
+        self.kb.is_type_value_head(sym)
     }
 
     /// WI-487: convert an op-body logical variable (`Expr::Var(Global)`). A

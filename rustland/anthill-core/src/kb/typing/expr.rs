@@ -194,7 +194,6 @@ pub(super) enum TypeBuildFrame {
         /// The callee's declared parameters. Non-empty whenever `staged` is (staging is
         /// keyed off them), carried so the hint pass need not look the operation up twice.
         op_params: Vec<(Symbol, Value)>,
-        sort_app_hint: Option<Value>,
         /// What the no-typing readers already answered, to be completed with the staged
         /// results rather than recomputed.
         known: HashMap<Symbol, Value>,
@@ -1195,22 +1194,37 @@ pub(super) fn check_bare_ref(
     // A bare reference to a free-standing entity denotes the entity as a type,
     // not a construction — its type is the reflect `Type` sort, so it can be
     // passed to operations taking a `Type` (e.g. `facts_of(kb(), WorkItem)`).
+    //
+    // Unconditional on the position, so it is a classification by the resolved name
+    // and not by the expected sort — and it stays HERE, unrecorded on the node, for the
+    // reason `Loader::bare_name_denotes_type` gives (the constructor registry it would
+    // ask is incomplete mid-load). The node is left as written ON PURPOSE: rewritten
+    // into an `Expr::TypeValue`, `(Ep).em()` over an eponymous `Ep` would take the
+    // sort's companion dot (§5.4) where it is refused today
+    // (`wi_rxt6s_dotted_sort_type_value_test::an_eponymous_sort_by_a_path_is_refused_-
+    // as_its_bare_name_is`) — a language question, not this arm's to settle. What a
+    // diagnostic needs from it, the denoted type, [`denoted_type_value`] reads off the
+    // same predicate.
     if kb.is_free_standing_entity(sym) {
         let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
         return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
     }
-    // WI-206: the SORT peer of the arm above — a bare sort name in a slot that
-    // expects a `Type` denotes the sort as a type value (`is_modifiable(Cell)`,
-    // `sort_template(kb(), Color)`). Unlike an entity, a sort name has no other
-    // value reading to compete with, but it also has no value reading OUTSIDE a
-    // `Type` slot: gating on the expected type keeps a stray sort name in an
-    // ordinary value position the loud `UnresolvedName` it is today, rather than
-    // silently typing as a type value.
-    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort)
-        && expects_reflect_type(kb, expected)
-    {
-        let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
-        return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
+    // WI-20260824-JM6ZW — A SORT REACHING HERE WAS NOT CLASSIFIED, and that is the
+    // producer's omission to name, not a reading to supply. This was WI-206's arm: a
+    // bare sort name in a slot that expected a `Type` read as the sort's type value —
+    // the EXPECTED sort deciding the denotation, which proposal 055 §1 forbids ("expected
+    // types validate a classified expression; they do not classify it"). Every walk that
+    // builds an occurrence the typer reads records a sort written in a value position as
+    // an `Expr::TypeValue` where it is written — the operation-body walk in
+    // `Loader::push_leaf_occ`, the rule-body walk in its leaf arms — so a plain reference
+    // to a sort here means a walk missed one, whatever slot it stands in. Refused rather
+    // than read either way: reading it as a type would be the retry design §8 forbids,
+    // and `UnresolvedName` would name a name that resolved.
+    //
+    // The two names that carry `Sort` and are NOT classified by their walks stop above:
+    // an eponymous constructor at the constructor arm, a free-standing entity at its own.
+    if kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
+        return Err(TypeError::UnclassifiedTypeValue { span, sort: sym });
     }
     // WI-714 (proposal 052): a bare reference to a RULE — its head functor
     // (`SymbolKind::Goal`, an unlabeled rule) or a rule label (`SymbolKind::Rule`)

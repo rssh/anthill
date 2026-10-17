@@ -2015,6 +2015,7 @@ fn substitute_to_occurrence(
                 functor,
                 pos_count,
                 named_keys,
+                type_value,
             } => {
                 // Children are on top of `results` in source order
                 // (pos then named); peel them back off.
@@ -2023,12 +2024,20 @@ fn substitute_to_occurrence(
                 let mut children = results.split_off(start).into_iter();
                 let pos_args: Vec<_> = (&mut children).take(pos_count).collect();
                 let named_args: Vec<_> = named_keys.into_iter().zip(children).collect();
-                let expr = Expr::Apply {
-                    recv_type: None,
-                    functor,
-                    pos_args,
-                    named_args,
-                    type_args: Vec::new(),
+                let expr = if type_value {
+                    Expr::TypeValue {
+                        head: functor,
+                        pos_args,
+                        named_args,
+                    }
+                } else {
+                    Expr::Apply {
+                        recv_type: None,
+                        functor,
+                        pos_args,
+                        named_args,
+                        type_args: Vec::new(),
+                    }
                 };
                 results.push(NodeOccurrence::synthesized_expr(
                     expr,
@@ -2056,6 +2065,9 @@ enum SubstOp {
         functor: Symbol,
         pos_count: usize,
         named_keys: Vec<Symbol>,
+        /// WI-20260824-JM6ZW — build the `Expr::TypeValue` the application denotes rather
+        /// than an `Expr::Apply` (see the `Term::Fn` arm of [`subst_visit`]).
+        type_value: bool,
     },
 }
 
@@ -2083,10 +2095,19 @@ fn subst_visit(
                 named_args,
             } => {
                 let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
+                // WI-20260824-JM6ZW — A TERM CARRIES NO BRACKET, so the walks' surface test
+                // cannot be asked here; what can is whether the head has any OTHER reading.
+                // A sort that is not its own constructor has none — `Fn{Cell, V: …}` can
+                // only be `Cell[V = …]` — and is recorded as the type value the walks build
+                // for it. A head that also constructs (an eponymous sort) keeps the
+                // application it was. Without this, an equation with no written RHS that
+                // puts a sort in a value was typed by nothing once the `Type` hint was
+                // retired (found by `/code-review`).
                 work.push(SubstOp::BuildApply {
                     functor: *functor,
                     pos_count: pos_args.len(),
                     named_keys,
+                    type_value: kb.is_type_value_head(*functor),
                 });
                 // Push named (reversed) then pos (reversed) so pos pop first.
                 for &(_, c) in named_args.iter().rev() {
@@ -2104,7 +2125,7 @@ fn subst_visit(
             // `@[simp]` RHS stopped expanding (`try_expand_macro` matches `Expr::Apply`)
             // and a nullary op call in one stopped being a redex.
             //
-            // A bare CONSTRUCTOR or SORT keeps `Expr::Ref` — `is_nullary_operation`
+            // A bare CONSTRUCTOR keeps `Expr::Ref` — `is_nullary_operation`
             // reads the DECLARATION, which is the only thing left that separates the
             // two readings.
             Term::Ref(s) if super::op_info::is_nullary_operation(kb, *s) => {
@@ -2112,8 +2133,16 @@ fn subst_visit(
                     functor: *s,
                     pos_count: 0,
                     named_keys: Vec::new(),
+                    type_value: false,
                 });
             }
+            // WI-20260824-JM6ZW — and a bare SORT is the type value the walks record for
+            // it, by their predicate; it heads as the `Ref` it was (`occ_head`).
+            Term::Ref(s) if kb.is_type_value_head(*s) => results.push(synth(Expr::TypeValue {
+                head: *s,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            })),
             Term::Ref(s) => results.push(synth(Expr::Ref(*s))),
             Term::Ident(s) => results.push(synth(Expr::Ident(*s))),
             // An unbound RHS var or `⊥` yields `⊥`; a well-formed `@[simp]`
@@ -2987,6 +3016,67 @@ mod tests {
              Where the owners already AGREE the `Rc` is still shared, and harmlessly — a \
              Pattern node carries no typer `RefCell`s, and an annotated one rebuilds \
              anyway because its `type_ann` is an `Expr` the branch above re-parented.",
+        );
+    }
+
+    /// WI-20260824-JM6ZW — an equation with NO WRITTEN RHS builds its RHS from the term
+    /// (`substitute_to_occurrence`), and a sort in it is recorded as the type value the
+    /// walks record, now that no typer hint re-reads it: `Ref(Cell)` and `Fn{Cell, V: …}`
+    /// become `Expr::TypeValue` (the type argument too), while an EPONYMOUS sort's
+    /// application — which also constructs, and a term carries no bracket to tell — keeps
+    /// the `Expr::Apply` it was. FAILS with `is_type_value_head` backed out of the
+    /// builder's two arms; the eponymous control passes either way, by design.
+    #[test]
+    fn a_sort_in_a_term_built_rhs_is_recorded_as_a_type_value() {
+        let mut kb = crate::kb::test_support::load_stdlib(Some(
+            "namespace t.jm6zw\n  import anthill.prelude.{Int64}\n  sort Box\n    \
+             entity Box(value: Int64)\n  end\nend\n",
+        ));
+        let cell = kb.try_resolve_symbol("anthill.prelude.Cell").expect("Cell");
+        let int64 = kb.try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let bx = kb.try_resolve_symbol("t.jm6zw.Box").expect("Box");
+        let v = kb.intern("V");
+        let value = kb.intern("value");
+        let int_ref = kb.alloc(Term::Ref(int64));
+        let bare = kb.alloc(Term::Ref(cell));
+        let applied = kb.alloc(Term::Fn {
+            functor: cell,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(v, int_ref)]),
+        });
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let eponymous = kb.alloc(Term::Fn {
+            functor: bx,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(value, one)]),
+        });
+        let pass = simp_pass(&mut kb);
+        let from = NodeOccurrence::new_expr(Expr::Bottom, span(), None);
+        let subst = Substitution::new();
+        let build = |kb: &mut KnowledgeBase, t| substitute_to_occurrence(kb, t, &subst, &from, pass);
+
+        let b = build(&mut kb, bare);
+        assert!(
+            matches!(b.as_expr(), Some(Expr::TypeValue { head, pos_args, named_args })
+                if *head == cell && pos_args.is_empty() && named_args.is_empty()),
+            "a bare sort is a type value, got {:?}",
+            b.as_expr()
+        );
+        let a = build(&mut kb, applied);
+        let Some(Expr::TypeValue { head, named_args, .. }) = a.as_expr() else {
+            panic!("`Fn{{Cell, V: Int64}}` is a type value, got {:?}", a.as_expr());
+        };
+        assert_eq!(*head, cell);
+        assert!(
+            matches!(named_args[0].1.as_expr(), Some(Expr::TypeValue { head, .. }) if *head == int64),
+            "its type argument too, got {:?}",
+            named_args[0].1.as_expr()
+        );
+        let e = build(&mut kb, eponymous);
+        assert!(
+            matches!(e.as_expr(), Some(Expr::Apply { functor, .. }) if *functor == bx),
+            "an eponymous sort's application keeps its construction reading, got {:?}",
+            e.as_expr()
         );
     }
 }

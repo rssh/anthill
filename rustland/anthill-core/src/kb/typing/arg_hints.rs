@@ -671,17 +671,20 @@ pub(super) fn one_arg_hint(
     let seq_pt = pt_eliminated
         .as_ref()
         .filter(|t| !value_contains_projection(kb, t));
+    // NO `Type` HINT (WI-20260824-JM6ZW). A sort written as an argument is a type value
+    // because the LOADER recorded it so (`Expr::TypeValue`, proposal 055 §1), in an
+    // operation body and in a rule body alike; the declared `Type` of the slot VALIDATES
+    // that value in the argument check and decides nothing about what it is.
     let base = hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt, SlotOwner::Call(functor)));
     if base.is_some() {
         return base;
     }
-    // WI-20260828-5NSZY: the fifth kind, written after the chain rather than inside it
+    // WI-20260828-5NSZY: the last kind, written after the chain rather than inside it
     // because its gate needs `&mut kb` (it performs a unification to walk the parameter
-    // type through the constructor) while the four above read immutably. Last, so it
+    // type through the constructor) while the ones above read immutably. Last, so it
     // cannot pre-empt a hint any of them would have produced.
     // WI-20260828-5NSZY review: the PROJECTION-ELIMINATED type (`pt_hof`), not the raw `pt`.
     // Every other callback-shaped hint reads the eliminated one (WI-485), and this hint's
@@ -836,8 +839,8 @@ pub(super) fn function_value_param_slots(
 /// not [`is_hof_shaped`], and by a sequence literal's hint, which a projection the incomplete
 /// map leaves unread withholds ([`one_arg_hint`]). A staged argument is never hof-shaped, so an
 /// incomplete map can only make a staged literal type bottom-up — it cannot hint it wrongly.
-/// That is what lets a staged argument keep the `nested_call_arg_hint` / `type_slot_arg_hint`
-/// it would otherwise have received.
+/// That is what lets a staged argument keep the `nested_call_arg_hint` it would otherwise have
+/// received.
 ///
 /// `aliases`: the caller's `let` aliases ([`TypingEnv::receiver_aliases`]) — an argument path
 /// is read through them as the call reads it ([`call_arg_paths`]).
@@ -848,7 +851,6 @@ pub(super) fn apply_arg_hints(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     op_params: Option<&Vec<(Symbol, Value)>>,
-    sort_app_hint: &Option<Value>,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     known: &HashMap<Symbol, Value>,
@@ -947,11 +949,6 @@ pub(super) fn apply_arg_hints(
     };
     let mut pos_hints = Vec::with_capacity(pos_args.len());
     for (i, arg) in pos_args.iter().enumerate() {
-        // WI-707: inside a sort application every argument is a type.
-        if sort_app_hint.is_some() {
-            pos_hints.push(sort_app_hint.clone());
-            continue;
-        }
         let pt = pos_slots
             .get(i)
             .copied()
@@ -962,10 +959,6 @@ pub(super) fn apply_arg_hints(
     }
     let mut named_hints = Vec::with_capacity(named_args.len());
     for (name, arg) in named_args.iter() {
-        if sort_app_hint.is_some() {
-            named_hints.push(sort_app_hint.clone());
-            continue;
-        }
         // WI-426: match the named-arg label to its param by name.
         let pt = op_params
             .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
@@ -1108,37 +1101,6 @@ pub(super) fn nested_call_arg_hint(
     }
 }
 
-/// WI-206 / WI-707: the hint a parameter declared `Type` pushes down to an argument
-/// that NAMES A SORT — a bare reference (`is_modifiable(Cell)`, WI-206) or a sort
-/// APPLICATION (`is_modifiable(Cell[V = Int64])`, WI-707). Neither has a value
-/// reading of its own: [`check_bare_ref`] reads a sort name as the sort's `Type`
-/// value, and the Apply arms read a sort-headed application as a parameterized type,
-/// only in a slot that asks for a `Type` — this hint is what tells them the slot
-/// does. (An ENTITY reference needs no hint: it denotes its `Type` unconditionally.)
-///
-/// Confined to sort-naming arguments and to a `Type` param: no other argument shape
-/// changes reading under this hint, so a call / lambda argument keeps exactly the
-/// `hof_arg_hint` / `nested_call_arg_hint` it has today, and a sort name in any
-/// non-`Type` slot stays the loud `UnresolvedName` it is today.
-pub(super) fn type_slot_arg_hint(
-    kb: &KnowledgeBase,
-    arg: &Rc<NodeOccurrence>,
-    param_type: Option<&Value>,
-) -> Option<Value> {
-    let pt = param_type?;
-    // Cheapest gate first (see [`arg_names_sort`]): only an argument whose head names
-    // a SORT can change reading here, so an ordinary variable / literal / call
-    // argument never reaches the `Type` name-resolve below.
-    if !arg_names_sort(kb, arg) {
-        return None;
-    }
-    if expects_reflect_type(kb, Some(pt)) {
-        Some(pt.clone())
-    } else {
-        None
-    }
-}
-
 /// WI-20260826-JSFHG: the hint a slot declared with a VARIANT type — `Colour.red`,
 /// `Option.some[T = Int64]` — pushes down to a CONSTRUCTOR-application argument, so the
 /// application is classified at the constructor §8.2 says it belongs to rather than at
@@ -1146,11 +1108,11 @@ pub(super) fn type_slot_arg_hint(
 /// [`check_constructor_iter`] makes from its own `expected`, and it shares that decision's
 /// ONE predicate ([`type_head_names_an_entity`]) so the two cannot drift.
 ///
-/// THE FOURTH HINT KIND, and confined the way its three siblings are: gated on the slot
+/// A HINT KIND confined the way its siblings are: gated on the slot
 /// naming an entity AND on the argument being a TUPLE literal or a constructor application
 /// ([`arg_is_constructor_application`]) — the argument shapes whose classification this
 /// changes. Every other argument keeps exactly the `hof_arg_hint` /
-/// `nested_call_arg_hint` / `type_slot_arg_hint` it has today. A LIST/SET literal was a
+/// `nested_call_arg_hint` it has today. A LIST/SET literal was a
 /// third shape here and is now [`seq_slot_arg_hint`], its own kind: that gate asks about
 /// the ELEMENT type and admits a callable as well as an entity, which is a different
 /// question from §8.2's classification and did not belong in a function named for it.
@@ -1183,7 +1145,7 @@ pub(super) fn variant_slot_arg_hint(
     param_type: Option<&Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    // Cheapest gate first, mirroring [`type_slot_arg_hint`]: only these two argument
+    // Cheapest gate first: only these two argument
     // shapes can change reading here. The TUPLE test runs FIRST — see
     // [`arg_is_tuple_literal`] for why the constructor test would otherwise swallow it.
     // A LIST/SET literal has its own hint kind beside this one ([`seq_slot_arg_hint`]);
@@ -1215,9 +1177,8 @@ pub(super) fn variant_slot_arg_hint(
 ///
 /// ALL THREE BARE SPELLINGS, and `VarRef` is the one that actually arrives — measured, a
 /// bare `red` in an argument loads as `Expr::VarRef`, so a `Ref | Ident` arm alone left the
-/// gate answering `false` on the very shape it was added for. [`arg_names_sort`] lists the
-/// same three for the same reason; a bare name's Expr variant is not decided by whether it
-/// turns out to name a constructor.
+/// gate answering `false` on the very shape it was added for. A bare name's Expr variant
+/// is not decided by whether it turns out to name a constructor.
 pub(super) fn arg_is_constructor_application(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     match &arg.kind {
         NodeKind::Expr {
@@ -1247,25 +1208,9 @@ pub(super) fn arg_is_constructor_application(kb: &KnowledgeBase, arg: &Rc<NodeOc
     }
 }
 
-/// WI-206 / WI-707: whether an argument's HEAD names a sort — a bare reference
-/// (`Cell`) or an application (`Cell[V = Int64]`). These are the only argument shapes
-/// whose reading a `Type` slot changes, so this is the gate both the hint
-/// ([`type_slot_arg_hint`]) and the declared-type lookups that FEED it are keyed on.
-///
-/// O(1) — a pattern match plus a `kind_of` read — because it runs for every argument
-/// of every call and constructor the typer visits.
-pub(super) fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-    let head = leaf_var_ref(arg).or_else(|| match arg.as_expr() {
-        Some(Expr::Apply { functor, .. }) => Some(*functor),
-        _ => None,
-    });
-    head.is_some_and(|h| kb.kind_of(h) == Some(crate::intern::SymbolKind::Sort))
-}
-
 /// WI-20260828-8Q0Q5: is `arg` a BARE OPERATION NAME — the spelling that eta-lifts?
 ///
-/// The sibling of [`arg_names_sort`], and deliberately NARROWER than it in one place: an
-/// `Expr::Apply` is excluded. `inc` is a name the reader may lift to a function value;
+/// An `Expr::Apply` is excluded: `inc` is a name the reader may lift to a function value;
 /// `inc(x)` is a call and already carries its own type.
 pub(super) fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     leaf_var_ref(arg)
@@ -1276,9 +1221,9 @@ pub(super) fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurr
 /// operation-name argument, so the name eta-lifts against the DECLARED arrow and the
 /// arrow's EFFECT ROW binds.
 ///
-/// THE FIFTH HINT KIND. Without it the argument was typed with NO expected type at all:
+/// A HINT KIND OF ITS OWN. Without it the argument was typed with NO expected type at all:
 /// the surrounding arm looks `entity_field_types` up only when some argument is a call, a
-/// tuple, a sort name or a constructor application, and a bare name is none of those. So
+/// tuple or a constructor application, and a bare name is none of those. So
 /// [`check_bare_ref`] had no arrow to lift against, the operation's declared row never met
 /// the field's row PARAMETER, and the row escaped the construction unbound — surfacing at
 /// the constructing operation as `undeclared effect ?_`.

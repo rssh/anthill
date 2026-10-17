@@ -26,7 +26,8 @@
 //! CONTAINMENT, argued AND measured. Widening the `field_types` gate means more builds
 //! compute the table, so the four older hints could in principle newly fire. They cannot:
 //! each one's first statement is a gate on the ARGUMENT's shape — a call
-//! (`nested_call_arg_hint`), a sort name (`type_slot_arg_hint`), a constructor
+//! (`nested_call_arg_hint`), a sort name (`type_slot_arg_hint`, retired since by
+//! WI-20260824-JM6ZW), a constructor
 //! application (`variant_slot_arg_hint`, `variant_field_expected_from_ctor`) — and a bare
 //! name is none of those. Measured alongside: with the gate neutralised, the only verdict
 //! in this file that changes is the defect row's.

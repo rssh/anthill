@@ -242,6 +242,17 @@ The WI-709/WI-710 inventory remains the coverage checklist:
 | `convert_term` | fact/constraint terms | preserve `TypeValue`; validate declared fields where a signature exists |
 | `build_body_atom_occurrence` | rule-body occurrences | preserve `TypeValue`; validate typed/declared columns where available |
 
+The rule-body occurrence half of the last row is in place (WI-20260824-JM6ZW):
+the walk records a bare sort in a data slot and a nested bracketed sort
+application as the `TypeValue` the operation-body walk builds, by the same
+predicates, and the node heads as the term it replaced, so no clause moves. It
+was the condition for retiring the expectation hint, which was still reading
+those occurrences: measured, every one of the hint's firings across the
+workspace was a rule body. What a rule body does NOT do is check a destination —
+`?x <=> needs_int("s")` loads — so a type value there is validated nowhere yet,
+which belongs with the declared-column validation below. The fact and rule-head
+path (`convert_term`) is unchanged.
+
 The last two paths must distinguish denotation from validation. A declared
 `Type` field accepts the value. A declared `Term` field accepts the structural
 carrier as the raw-term substrate. Any other declared sort is a loud mismatch.
@@ -278,6 +289,14 @@ Required diagnostics are local to classification or ordinary validation:
   unresolved nested name;
 - forgotten constructor parentheses in a `Type`-accepting position: the error
   or trace must name the denoted sort so the implicit reading is visible;
+  *(WI-20260824-JM6ZW: the one name whose bare form denotes a type without a
+  recorded `TypeValue` — a free-standing entity, or an eponymous sort — is
+  named too: `use_leaf(Leaf)` is `expected Leaf, got Type (Leaf)`. The reverse
+  slip, a sort applied with parentheses where a type was meant, is the ordinary
+  construction refusal naming the bracket spelling: `Cell(Int64)` "`(…)`
+  constructs, and `Cell` is not its own constructor; a type application is
+  written with brackets, `Cell[…]`" — it loaded in a `Type` slot while the
+  expectation hint read it as a type.)*
 - structural type written without `type_value`: point to
   `type_value[<type>]()`;
 - a member the denoted sort does not declare: refuse about that sort, and
@@ -330,7 +349,11 @@ repository's code-review skill; if unavailable, report that it was not run.
 4. Decide and implement the dot receiver split.
 5. Add structural `type_value[…]()` cases and diagnostics.
 6. Remove `type_slot_arg_hint` as a classifier; expected `Type` remains an
-   ordinary validation/inference input only.
+   ordinary validation/inference input only. *(Done, WI-20260824-JM6ZW: the hint,
+   its gate, the sort-application hint and the two typer arms they fed are gone;
+   a sort reaching the typer unrecorded is the loud
+   `TypeError::UnclassifiedTypeValue`, never a retry as a type. It needed the
+   rule-body half of step 3's occurrence path first — see §7.)*
 7. Update the kernel specification and proposal 062's producer wording.
 
 Each step should be independently loud when an unhandled carrier or occurrence

@@ -348,14 +348,13 @@ impl Interpreter {
             } => {
                 // WI-707: a SORT-headed application is a parameterized TYPE VALUE,
                 // not a call — `Cell[V = Int64]` in `is_modifiable(Cell[V = Int64])`.
-                // The eval twin of the typer's sort-application arm, and the
-                // application peer of `reduce_var`'s bare-sort arm (WI-206).
-                // Unconditional on the functor's kind, as there: the typer has
-                // already settled the reading (it admits a sort-headed apply only
-                // where a `Type` is expected), and a sort names no operation, so
-                // such a node could only ever have died in dispatch as
-                // `UnknownOperation`. Sits ahead of the classification match — the
-                // typer classifies operation calls, never type applications.
+                // The application peer of `reduce_var`'s bare-sort arm (WI-206), and
+                // reached as that one is: typed source records the application as an
+                // `Expr::TypeValue` in both bodies (WI-20260824-JM6ZW retired the typer's
+                // expectation-gated twin of this arm), so what arrives here is an
+                // occurrence made from a term, or a KB loaded without the typer. A sort
+                // names no operation, so such a node could only ever have died in
+                // dispatch as `UnknownOperation`. Sits ahead of the classification match.
                 if self.kb.kind_of(*functor) == Some(crate::intern::SymbolKind::Sort) {
                     return self.start_sort_type(*functor, pos_args, named_args);
                 }
@@ -658,10 +657,13 @@ impl Interpreter {
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
         // WI-206: likewise a bare reference to a SORT (e.g. `Cell` in
-        // `is_modifiable(Cell)`) is the sort as a type value — the eval twin of
-        // `check_bare_ref`'s `Type`-slot arm. Unconditional here because the typer
-        // has already settled the reading: it admits a bare sort name ONLY where a
-        // `Type` is expected, so one in any other value position never reaches eval.
+        // `is_modifiable(Cell)`) is the sort as a type value. NOT reached from typed
+        // source: both bodies' walks record a sort written in a value position as an
+        // `Expr::TypeValue` (proposal 055 §1), and the typer refuses a plain reference to
+        // one (`TypeError::UnclassifiedTypeValue`, WI-20260824-JM6ZW). What reaches here
+        // is an occurrence made from a TERM — `materialize_from_handle` does not carry the
+        // classification (`Expr::TypeValue`'s doc) — and a KB loaded without the typer,
+        // for which the symbol is the only record there is.
         if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) {
             self.refuse_unbound_type_param(sym)?;
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));

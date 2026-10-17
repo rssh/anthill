@@ -758,8 +758,9 @@ pub(super) fn spec_typed_value_at_carrier_error(
 /// [`TypeError::TypeMismatch::denoted`]. `None` for every other expression, and for a
 /// check with no occurrence to ask.
 ///
-/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`]), never on "the type came out as
-/// `Type`": a `Type`-valued expression that is not a written type — a call returning one,
+/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`], and the free-standing entity's bare
+/// name, which `check_bare_ref` classifies without recording), never on "the type came out
+/// as `Type`": a `Type`-valued expression that is not a written type — a call returning one,
 /// a variable holding one — denotes nothing at this source position, and a message
 /// inventing a surface for it would name a sort the author did not write.
 ///
@@ -787,6 +788,21 @@ pub(super) fn denoted_type_value(
         node = match node.as_expr() {
             Some(Expr::TypeValue { .. }) => {
                 return Some(crate::persistence::print::TermPrinter::new(kb).print_occurrence(node))
+            }
+            // WI-20260824-JM6ZW — A FREE-STANDING ENTITY'S BARE NAME, the one type value
+            // no walk records (`check_bare_ref` says why its node stays as written). It
+            // is the case design §8 names: a forgotten-parentheses construction,
+            // `use_leaf(Leaf)` for `use_leaf(Leaf(name: …))`, refused `expected Leaf, got
+            // Type` with nothing saying the bare name had denoted the type `Leaf`.
+            //
+            // Asked by the SAME predicate the typing arm asks, so this names a denotation
+            // exactly where that arm made one. Keyed on the symbol, which is what makes
+            // that sound here: a local or a parameter spelled `Leaf` is a binder symbol
+            // of its own, never the entity's, so it cannot be read as the type.
+            Some(Expr::Ref(s)) | Some(Expr::Ident(s)) | Some(Expr::VarRef { name: s })
+                if kb.is_free_standing_entity(*s) =>
+            {
+                return Some(kb.local_name_of(*s).to_string())
             }
             Some(Expr::Let { body, .. }) | Some(Expr::Proof { body, .. }) => body,
             _ => return None,

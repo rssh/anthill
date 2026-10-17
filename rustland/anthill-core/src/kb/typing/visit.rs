@@ -537,24 +537,13 @@ pub(super) fn visit_type(
                 }
             }
             let functor = *functor;
-            // WI-707: a SORT-headed application in a slot that expects a `Type` is a
-            // parameterized TYPE — `is_modifiable(Cell[V = Int64])` — not a call. Its
-            // arguments are themselves TYPES, so every one takes the `Type` hint: that
-            // is what lets a bare sort name inside read as a type (`check_bare_ref`'s
-            // WI-206 arm) and a NESTED application recurse into this same arm
-            // (`Map[K = String, V = Cell[V = Int64]]`). The Build frame turns the node
-            // into the `Type` result; eval assembles the type term (`start_sort_type`).
-            // `None` for every ordinary call, which then takes the hints below unchanged.
-            let sort_app_hint: Option<Value> = if kb.kind_of(functor)
-                == Some(crate::intern::SymbolKind::Sort)
-                && expects_reflect_type(kb, expected.as_ref())
-            {
-                Some(Value::term(
-                    kb.make_sort_ref_by_name("anthill.prelude.Type"),
-                ))
-            } else {
-                None
-            };
+            // WI-20260824-JM6ZW — NO SORT-APPLICATION HINT. A sort-headed bracket
+            // application is an `Expr::TypeValue` by the time it is typed (proposal 055
+            // §1: both bodies' walks record it, from the resolved head and the written
+            // bracket), so a SORT-headed `Expr::Apply` is not a type application this arm
+            // could re-read from the expected sort: it goes to `check_apply_iter` like
+            // any other application, which refuses it as the call it is not.
+            //
             // WI-657(5): keep `pos_args`/`named_args` as the borrowed pattern slots for
             // every local read AND the reversed push_visit loops; clone ONCE into the
             // Build frame below. Previously they were cloned into locals here and cloned
@@ -590,26 +579,23 @@ pub(super) fn visit_type(
                         }
                     )
                 });
-            // WI-206 / WI-707: a sort-naming argument needs the callee's declared param
-            // type as its hint too (`type_slot_arg_hint`), so the param lookup must fire
-            // for it — `has_hof_arg` only covers Lambda/VarRef shapes and would miss a
-            // sort named as a plain `Expr::Ref`.
-            let has_sort_arg = pos_args
-                .iter()
-                .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| arg_names_sort(kb, a));
+            // WI-20260824-JM6ZW: a TYPE-VALUE argument no longer opens this lookup. It
+            // did (`has_sort_arg`) only to feed the `Type` hint, which is gone; the
+            // argument check reads the declared parameter on its own, so the lookup below
+            // answers only the HINT question and validation never depended on it.
+            //
             // WI-20260826-JSFHG: a CONSTRUCTOR argument needs the callee's declared param
             // type as its hint ([`variant_slot_arg_hint`]), so the param lookup must fire
             // for it too. `has_call_arg` sees only the `Expr::Apply` spelling; the
             // field-named build `takeRed(red(v: 1))` is an `Expr::Constructor` and matched
-            // NONE of the three gates, so its slot type was never looked up and the hint
+            // NONE of the gates, so its slot type was never looked up and the hint
             // was asked with `None`. The exact peer of `has_ctor_field` on the Constructor
-            // arm, and of what WI-206/707 added here for a sort-naming argument.
+            // arm.
             //
             // WHAT ELSE THIS UNGATES IS NOTHING, and the argument is worth stating because
             // widening a shared gate normally reaches every reader behind it: the calls
             // newly looking `op_info` up are exactly those with a constructor argument and
-            // NO hof / call / sort-naming one, and each of the three older hints requires
+            // NO hof / call one, and each of the older hints requires
             // the argument shape whose absence defines that case — so on such a call they
             // still answer `None` with a real `pt` in hand. Only `variant_slot_arg_hint`
             // can fire here that could not before. (`inst` likewise: `known` is empty
@@ -621,7 +607,7 @@ pub(super) fn visit_type(
             // WI-821: keep the WHOLE record — `known_arg_types_and_staged` reads
             // `type_params` besides `params`, and re-looking the record up there
             // would clone every field a second time per hof-bearing call.
-            let reads_params = has_hof_arg || has_call_arg || has_sort_arg || has_ctor_arg;
+            let reads_params = has_hof_arg || has_call_arg || has_ctor_arg;
             // WI-20261013-M32C2: WHAT THE CALLEE IS decides where its slots are read. A value
             // in scope — a parameter, a `let` — is a function value, whose slots are its
             // arrow's ([`function_value_param_slots`]); any other name is an operation, whose
@@ -676,7 +662,6 @@ pub(super) fn visit_type(
                     kb,
                     functor,
                     op_params.as_ref(),
-                    &sort_app_hint,
                     pos_args,
                     named_args,
                     &known_param_arg_types,
@@ -719,9 +704,6 @@ pub(super) fn visit_type(
                 let staged_hints: Vec<Option<Value>> = staged
                     .iter()
                     .map(|&unified| {
-                        if sort_app_hint.is_some() {
-                            return sort_app_hint.clone();
-                        }
                         let (arg, pt) = if unified < pos_args.len() {
                             // The parameter this positional argument FILLS (the ranking,
                             // WI-20260827-1F0QP), not the one at its slot.
@@ -771,7 +753,6 @@ pub(super) fn visit_type(
                     staged: staged.clone(),
                     // Non-empty whenever `staged` is — staging is keyed off the params.
                     op_params: op_params.clone().unwrap_or_default(),
-                    sort_app_hint,
                     known: known_param_arg_types,
                     site,
                     pos,
@@ -868,30 +849,26 @@ pub(super) fn visit_type(
             // Owned field-type list (Symbol + declared Value), looked up once when any
             // field needs a hint — used both for the nested-call hint and to find a
             // tuple-literal field's declared symbol for the WI-462 expected derivation.
-            // WI-707: likewise a sort-naming FIELD value (`ResourceRow(t: Cell)`) needs
-            // its declared field type as the hint — the bare form is neither a call nor
-            // a tuple, so without this the lookup is skipped and the sort name falls
-            // through to `UnresolvedName`.
-            let has_sort_field = pos_args
-                .iter()
-                .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| arg_names_sort(kb, a));
+            // A TYPE-VALUE field (`ResourceRow(t: Cell)`) does not open it: it did only to
+            // feed the `Type` hint (WI-707), which WI-20260824-JM6ZW removed, and the
+            // field check reads the declared field type on its own.
+            //
             // WI-20260826-JSFHG: a CONSTRUCTOR field value needs the declared field type
             // looked up too — `has_call_field` sees only the `Expr::Apply` spelling, so a
             // field-named build (`hold(v: red(v: 1))`) took no hint at all without this.
             // Same containment argument as `has_ctor_arg` on the Apply arm: the builds
-            // newly looking `field_types` up have no call / tuple / sort-naming field, and
+            // newly looking `field_types` up have no call / tuple field, and
             // each older hint here is gated on exactly one of those shapes.
             let has_ctor_field = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
                 .any(|a| arg_is_constructor_application(kb, a));
             // WI-20260828-8Q0Q5: a BARE OPERATION NAME field needs the declared field type
-            // too — it is the shape [`arrow_slot_arg_hint`] reads, and none of the four
-            // gates above sees it (a bare name is not a call, a tuple, a sort name or a
+            // too — it is the shape [`arrow_slot_arg_hint`] reads, and none of the
+            // gates above sees it (a bare name is not a call, a tuple or a
             // constructor application), so such a build took no hint at all. Same
             // containment argument as its siblings: the builds newly looking `field_types`
-            // up have none of those four shapes, and every older hint here is gated on
+            // up have none of those shapes, and every older hint here is gated on
             // exactly one of them, so none of them can fire on a build that only just
             // started computing the table.
             let has_op_name_field = pos_args
@@ -900,7 +877,6 @@ pub(super) fn visit_type(
                 .any(|a| arg_is_bare_operation_name(kb, a));
             let field_types: Option<Vec<(Symbol, Value)>> = if has_call_field
                 || has_tuple_field
-                || has_sort_field
                 || has_ctor_field
                 || has_op_name_field
             {
@@ -965,11 +941,7 @@ pub(super) fn visit_type(
                             }
                         }
                     }
-                    // WI-707: a `Type`-declared FIELD takes a sort name / sort
-                    // application too (`ResourceRow(t: Cell)`), not just a `Type`-declared
-                    // operation param — the two slots read a sort identically.
                     nested_call_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t))
-                        .or_else(|| type_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| variant_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             seq_slot_arg_hint(
@@ -1024,9 +996,7 @@ pub(super) fn visit_type(
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(s, _)| s == fname))
                         .map(|(_, t)| t.clone());
-                    // WI-707: as above — a `Type`-declared field accepts a sort.
                     nested_call_arg_hint(kb, arg, ft.as_ref())
-                        .or_else(|| type_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| variant_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             seq_slot_arg_hint(kb, arg, ft.as_ref(), SlotOwner::Construction(name))

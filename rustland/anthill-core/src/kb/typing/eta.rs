@@ -240,15 +240,6 @@ fn poly_type_body<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> 
     }
 }
 
-/// `expected` whose own head sort is likewise unresolvable.
-pub(super) fn expects_reflect_type(kb: &KnowledgeBase, expected: Option<&Value>) -> bool {
-    let Some(exp) = expected else { return false };
-    let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else {
-        return false;
-    };
-    extract_sort_ref_sym(kb, exp) == Some(type_sym)
-}
-
 /// WI-275: the type of an operation referenced as a first-class function value
 /// (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
 /// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional

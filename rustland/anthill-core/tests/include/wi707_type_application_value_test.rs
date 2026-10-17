@@ -9,10 +9,13 @@
 //! expressions, so the inner `Int64` died as `UnresolvedName`. The gap was shared by
 //! every `Type`-taking reflect op.
 //!
-//! Now a SORT-headed application in a slot that expects a `Type` reads as a
-//! parameterized TYPE: the typer hints each argument as a `Type` (which is what lets
-//! a nested application recurse) and types the node as `Type`; eval assembles the
-//! type term (`start_sort_type` / `finish_sort_type`).
+//! WI-707 made a SORT-headed application in a slot that expects a `Type` read as a
+//! parameterized TYPE by having the typer hint each argument as a `Type`. That
+//! expectation-directed reading is gone (WI-20260824-WAHB6 records the application as an
+//! `Expr::TypeValue` where it is written, in an operation body; WI-20260824-JM6ZW in a
+//! rule body, and retired the hint): the slot's `Type` now only VALIDATES the value. Eval
+//! assembles the type term as before (`start_sort_type` / `finish_sort_type`). These rows
+//! pass in both worlds — the answers did not move, the decision did.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::term::Term;
