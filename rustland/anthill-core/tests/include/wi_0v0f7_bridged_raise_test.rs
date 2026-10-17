@@ -467,37 +467,64 @@ end
         kb.try_resolve_symbol(qname)
             .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"))
     };
-    let entity = |functor| EvalError::Raised {
+    // Each payload as the runtime raises it: an application of the constructor, its first
+    // field written (the reader asks the constructor and that it is applied, not the field).
+    let nil = functor_of(&kb, "anthill.prelude.List.nil");
+    let nil_term = kb.make_name_term_from_sym(nil);
+    let entity = |functor, field| EvalError::Raised {
         payload: Value::Entity {
             functor,
             pos: Vec::new().into(),
-            named: Vec::new().into(),
+            named: vec![(
+                field,
+                Value::Entity {
+                    functor: nil,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                },
+            )]
+            .into(),
         },
     };
-    for (qname, disposition) in [
+    for (qname, field, disposition) in [
         (
             "anthill.prelude.RelationFloundered.relation_floundered",
+            "goals",
             BridgeDisposition::Schedule,
         ),
-        ("anthill.reflect.LoadFailed.load_failed", BridgeDisposition::Schedule),
+        ("anthill.reflect.LoadFailed.load_failed", "diagnostics", BridgeDisposition::Schedule),
         (
             "anthill.reflect.ResolveStreamFailure.evaluation_failure",
+            "goals",
             BridgeDisposition::Fault,
         ),
-        ("anthill.prelude.MatchFailed.match_failed", BridgeDisposition::Fault),
+        ("anthill.prelude.MatchFailed.match_failed", "scrutinee", BridgeDisposition::Fault),
     ] {
         let functor = functor_of(&kb, qname);
+        let field = kb.intern(field);
         assert_eq!(
-            entity(functor).bridge_disposition(&kb),
+            entity(functor, field).bridge_disposition(&kb),
             disposition,
             "`{qname}` on the entity carrier: a drain that did not decide and a load's verdict \
              are no failure of the callee, and every other payload is a fault"
         );
-        let term = kb.make_name_term_from_sym(functor);
+        let term = kb.alloc(anthill_core::kb::term::Term::Fn {
+            functor,
+            pos_args: Default::default(),
+            named_args: smallvec::smallvec![(field, nil_term)],
+        });
         assert_eq!(
             EvalError::Raised { payload: Value::term(term) }.bridge_disposition(&kb),
             disposition,
             "`{qname}` on the term carrier answers as on the entity"
+        );
+        // A BARE REFERENCE TO THE CONSTRUCTOR is no account — a symbol a program holds, a
+        // clause's bare name — and raised it is the program's own payload, a fault.
+        let bare = kb.make_name_term_from_sym(functor);
+        assert_eq!(
+            EvalError::Raised { payload: Value::term(bare) }.bridge_disposition(&kb),
+            BridgeDisposition::Fault,
+            "`{qname}` named bare is the program's payload"
         );
     }
 }

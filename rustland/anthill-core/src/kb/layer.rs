@@ -368,6 +368,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // An INTERNED symbol, cached: the interner above never rolls back, so neither does
         // what it minted.
         unrouted_read_sym: _,
+        // A rigid term per provider parameter, minted once for ranking provisions: the
+        // store above never rolls back and the counter never reissues its variable, so a
+        // rigid a layer minted stays a type no provision names after the discard.
+        ranking_rigids: _,
 
         // ── SCOPED: every field to the NEXT HEADER is in `kb_scoped_fields!` ─
         rules: _,

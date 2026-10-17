@@ -358,6 +358,13 @@ impl RuntimeAccount {
         RuntimeAccount::EvaluationFailure,
     ];
 
+    /// Why no program constructs one, said by every refusal of a construction made at run
+    /// time or read from outside the program: a reflect builder, a query pattern, a data
+    /// file.
+    pub const NOT_CONSTRUCTED: &'static str = "an account the runtime gives of something it \
+         could not do: a program matches one and raises a caught one again, and does not \
+         construct one";
+
     /// The constructor's qualified name, the one place each is spelled.
     pub fn qualified_name(self) -> &'static str {
         match self {
@@ -1985,6 +1992,13 @@ pub struct KnowledgeBase {
     /// changes once minted, so the cache cannot go stale.
     pub(crate) unrouted_read_sym: std::cell::Cell<Option<Symbol>>,
 
+    /// The rigid a provider's type parameter is read as when two provisions are ranked
+    /// (`typing::head_answers`), one per parameter, minted at the first comparison that
+    /// asks and kept. A rigid only has to be a type no provision names, so one serves
+    /// every comparison; minting one at each comparison grew the term store at every
+    /// dispatch that ranked candidates.
+    pub(crate) ranking_rigids: HashMap<Symbol, TermId>,
+
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
     /// (`typing::validate_rigid_projection_formations`). A projection stored
@@ -2836,6 +2850,7 @@ impl KnowledgeBase {
             unify_connective_sym: None,
             tuple_literal_sym: None,
             unrouted_read_sym: std::cell::Cell::new(None),
+            ranking_rigids: HashMap::new(),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),

@@ -3,8 +3,9 @@
 //! A. A provision matched only through the subtype relation is ranked with the rest, and a
 //!    provider's own row is local to its dictionary only where it meets the sub-goal as
 //!    itself (user, 2026-10-17); the bottom type's arm in the candidate matcher is gone. Since
-//!    the sixth review the rank is one order on the heads and locality is read by the half of
-//!    the dictionary a sub-goal fills (`wi_9wvt7_review6_test`).
+//!    the sixth review the rank is one order on the heads (`wi_9wvt7_review6_test`), and since
+//!    the seventh a provider's own row is local where no candidate is more specific, in both
+//!    halves of its dictionary (user, 2026-10-17; `wi_9wvt7_review7_test`).
 //! B. A payload the runtime raised keeps its cause across a catch and a raise again (user,
 //!    2026-10-17); since the sixth review the cause is the payload's constructor, which no
 //!    program constructs (`wi_9wvt7_review6_test`).

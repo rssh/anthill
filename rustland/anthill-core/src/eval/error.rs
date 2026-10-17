@@ -479,17 +479,43 @@ impl EvalError {
     }
 }
 
+/// Which of the runtime's accounts a raised `payload` is: an APPLICATION of one of their
+/// constructors, as the runtime raises each, its field written. A bare reference to the
+/// constructor names no account — a symbol a program holds (`lookup_symbol`'s answer, a
+/// clause's bare name) — and is none: raised, it is the program's own payload. Read through
+/// the carrier-neutral view, so a payload riding as a term answers as one riding as an
+/// entity.
+pub(crate) fn raised_runtime_account(
+    kb: &crate::kb::KnowledgeBase,
+    payload: &Value,
+) -> Option<crate::kb::RuntimeAccount> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    let value = payload.carried();
+    match value {
+        Value::Entity { .. } | Value::Term { .. } | Value::Node(_) => match value.head(kb) {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } if pos_arity + named_arity > 0 => kb.runtime_account_of(f),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless its
 /// payload is the runtime's account of a drain that did not decide or of a load that did not
 /// happen. No program constructs one of the runtime's accounts ([`crate::kb::RuntimeAccount`]),
 /// so the payload names its cause wherever it is raised, also where a boundary caught it and
 /// the program raised it again, in that operation or in a later goal of the rule.
 ///
-/// KEYED BY SYMBOL, never by name (WI-897), and read through [`crate::eval::value_functor`],
-/// so a payload riding as a term answers as one riding as an entity. An unresolved account
-/// matches no payload, which is the loud side: a fault.
+/// KEYED BY SYMBOL, never by name (WI-897), and read by [`raised_runtime_account`]. An
+/// unresolved account matches no payload, which is the loud side: a fault. A construction of
+/// one at run time is refused where it is built (`make_fn`, `replace_named_arg`), and one
+/// written in a query pattern or a data file where it is read.
 fn raised_disposition(kb: &crate::kb::KnowledgeBase, payload: &Value) -> BridgeDisposition {
-    match crate::eval::value_functor(kb, payload).and_then(|f| kb.runtime_account_of(f)) {
+    match raised_runtime_account(kb, payload) {
         // WI-737 — an eval-side relation drain that stayed undischarged. The sub-search did
         // not decide; that is [`BridgeDisposition::Schedule`]'s exact meaning, and calling
         // it a fault would report "the callee failed" for a goal nothing has answered yet.

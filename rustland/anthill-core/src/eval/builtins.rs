@@ -5321,6 +5321,28 @@ fn reflect_cons_to_vec<T>(
     Ok(out)
 }
 
+/// A reflect builder asked to build an application of one of the runtime's accounts
+/// ([`crate::kb::RuntimeAccount`]) refuses: the bridge reads a raise's cause off its
+/// payload's constructor, so a program that built one could pass its own raise off as the
+/// runtime's account of a search that did not decide.
+fn refuse_runtime_account(
+    interp: &Interpreter,
+    builder: &str,
+    functor: crate::intern::Symbol,
+) -> Result<(), EvalError> {
+    if interp.kb.runtime_account_of(functor).is_none() {
+        return Ok(());
+    }
+    Err(EvalError::TypeMismatch {
+        expected: "a functor a program may construct",
+        got: format!(
+            "`{}` (passed to `{builder}`), {}",
+            interp.kb.qualified_name_of(functor),
+            crate::kb::RuntimeAccount::NOT_CONSTRUCTED
+        ),
+    })
+}
+
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
 /// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
 /// is resolved through [`resolve_host_name`]. Companion to `fresh_var`: anthill
@@ -5337,6 +5359,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     let [name_arg, args_arg] = expect_args::<2>("make_fn", args)?;
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_fn", &name)?;
+    refuse_runtime_account(interp, "make_fn", functor)?;
 
     let elems: Vec<Value> = reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", Ok)?;
     let mut pos_vec: Vec<TermId> = Vec::with_capacity(elems.len());
@@ -5641,6 +5664,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
             )))
         }
     };
+    refuse_runtime_account(interp, "replace_named_arg", functor)?;
     for entry in named_args.iter_mut() {
         if interp.kb.local_name_of(entry.0) == name {
             entry.1 = new_val_tid;

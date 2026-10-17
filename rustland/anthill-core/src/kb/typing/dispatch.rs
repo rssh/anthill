@@ -436,8 +436,8 @@ pub(super) fn is_value_directed_provider(
 /// — equal candidates are one candidate — not here, since the duplicate name was the
 /// symptom and a program with a single implementation being refused was the defect.
 /// The one remaining way two candidates could share an `impl_sort` is differing in a
-/// TYPE-param binding, and that does not tie: the ground binding raises
-/// `head_specificity` and tier 2 picks it (MEASURED, in
+/// TYPE-param binding, and that does not tie: the ground binding is the more specific head
+/// and the order on heads picks it ([`more_specific`]; MEASURED, in
 /// `wi1032_provision_dedup_test::a_specificity_ordered_pair_still_takes_the_more_specific`).
 /// With no driver left, a dedup here would be untested code.
 pub(super) fn render_instance_tie(

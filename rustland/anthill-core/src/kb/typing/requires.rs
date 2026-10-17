@@ -306,6 +306,77 @@ pub fn flatten_requires_tree(nodes: &[RequiresNode]) -> Vec<RequiresEntry> {
     out
 }
 
+/// The requirement by which `spec`'s own contract asks for `spec` again at a LARGER type —
+/// a binding that strictly holds one of `spec`'s parameters (`Desc2 requires Desc2[T =
+/// List[T = T]]`, directly or through another spec's contract) — rendered as it would be
+/// written, or `None`. No resolution of such a spec ends: each answer of it asks again at a
+/// larger type, so it is refused where it is declared (user, 2026-10-17), and a goal of it
+/// is answered by no provision. Read off the cached requires tree, which is rooted at
+/// `spec`'s own parameters and records an entry for a spec already on its path.
+pub(crate) fn growing_self_requirement(kb: &mut KnowledgeBase, spec: Symbol) -> Option<String> {
+    let canon = kb.canonical_sort_sym(spec);
+    let params: Vec<Symbol> = kb.type_param_syms_of(canon).to_vec();
+    if params.is_empty() {
+        return None;
+    }
+    let tree = requires_tree(kb, canon);
+    let mut stack: Vec<&RequiresNode> = tree.iter().collect();
+    while let Some(node) = stack.pop() {
+        stack.extend(node.sub_requires.iter());
+        if kb.canonical_sort_sym(node.entry.required_sort) != canon {
+            continue;
+        }
+        let Some((_, bindings)) = unwrap_spec_view_value(kb, &node.entry.spec) else {
+            continue;
+        };
+        for (key, value) in &bindings {
+            if binding_grows_past(kb, value, &params) {
+                return Some(format!(
+                    "`requires {}[{} = {}]`",
+                    short_name_of(kb.qualified_name_of(canon)),
+                    kb.local_name_of(*key),
+                    format_value_for_goal(kb, value)
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Does the binding `value` STRICTLY hold one of `params` — mention it below its own head,
+/// as `List[T = T]` holds `T` — rather than being one of them, or holding none?
+fn binding_grows_past(kb: &mut KnowledgeBase, value: &Value, params: &[Symbol]) -> bool {
+    let Ok(root) = crate::kb::node_occurrence::value_to_term(kb, value) else {
+        return false;
+    };
+    let is_param = |kb: &KnowledgeBase, t: TermId| match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => params.iter().any(|p| kb.canonical_sym(*p) == kb.canonical_sym(*s)),
+        Term::Var(Var::Global(v)) => kb
+            .type_param_of_canonical_var(*v)
+            .is_some_and(|p| params.iter().any(|q| kb.canonical_sym(*q) == kb.canonical_sym(p))),
+        _ => false,
+    };
+    if is_param(kb, root) {
+        return false;
+    }
+    let mut stack = vec![root];
+    while let Some(t) = stack.pop() {
+        if is_param(kb, t) {
+            return true;
+        }
+        if let Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } = kb.get_term(t)
+        {
+            stack.extend(pos_args.iter().copied());
+            stack.extend(named_args.iter().map(|(_, v)| *v));
+        }
+    }
+    false
+}
+
 /// Collect the full transitive requires chain for a sort.
 /// Returns all (required_sort_sym, spec_term) pairs reachable from `sort_sym`.
 ///

@@ -11891,7 +11891,7 @@ impl KnowledgeBase {
         let (detail, repair) = match e {
             EvalError::Raised { payload } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
-                if crate::eval::value_functor(self, payload).and_then(|f| self.runtime_account_of(f))
+                if crate::eval::error::raised_runtime_account(self, payload)
                     == Some(super::RuntimeAccount::EvaluationFailure)
                 {
                     ""

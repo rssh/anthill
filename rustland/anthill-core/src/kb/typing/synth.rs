@@ -696,8 +696,6 @@ pub(super) fn resolve_within_provider(
     let mut stack: Vec<SortGoal> = Vec::new();
     let local = LocalProvider {
         sort: provider,
-        // A provision's load check asks the spec half (see above).
-        spec_half: true,
         slots: &[],
         source: SlotPinSource::Bracket,
         impl_subst: &[],
@@ -757,10 +755,6 @@ pub(super) enum FailedAt {
 #[derive(Clone, Copy)]
 pub(super) struct LocalProvider<'s> {
     pub(super) sort: Symbol,
-    /// The sub-goal fills the SPEC half of `sort`'s dictionary — the spec's own contract at
-    /// it — and not the provider half, the provision's own conditions: which decides how
-    /// `sort`'s own rows are local to it (`resolve_inner`).
-    pub(super) spec_half: bool,
     /// The enclosing level's own written slots (a bracket value's or a carrier's).
     slots: &'s [SlotSelection],
     source: SlotPinSource,
@@ -1004,6 +998,21 @@ pub(super) fn resolve_inner<'a>(
         }
     }
 
+    // A SPEC WHOSE CONTRACT ASKS FOR ITSELF AT A LARGER TYPE is answered by no provision:
+    // each answer would ask again at a larger type, a goal no stack holds twice, so the walk
+    // did not end. Its declaration is refused for it (`load_phase_inner`).
+    if let Some(requirement) = growing_self_requirement(kb, goal.spec_sort) {
+        return ResolutionResult::NoMatch {
+            goal_text: format_goal(kb, goal),
+            hint: format!(
+                "the contract of `{}` asks for it again at a larger type, {requirement}, so no \
+                 resolution of it ends",
+                kb.qualified_name_of(goal.spec_sort)
+            ),
+            spec: goal.spec_sort,
+            forwarded: false,
+        };
+    }
     if stack.iter().any(|g| goals_equal(kb, g, goal)) {
         let mut path: Vec<String> = stack.iter().map(|g| format_goal(kb, g)).collect();
         path.push(format_goal(kb, goal));
@@ -1074,17 +1083,12 @@ pub(super) fn resolve_inner<'a>(
     // candidate here and the search proceeds globally, rather than being narrowed to
     // an instance that does not fit.
     //
-    // LOCALITY IS READ BY THE HALF OF `W`'S DICTIONARY THE SUB-GOAL FILLS. In the SPEC half
-    // — the spec's own contract at `W` (`TOrd requires POrd[T = T]`) — `W`'s own row wins
-    // wherever it matches, a bundled witness used at a subtype included: under `AscW provides
-    // TOrd[T = Animal], POrd[T = Animal]`, used at a `Dog`, the contract's `POrd[T = Dog]` is
-    // `AscW`'s, whatever `Dog` provides itself (dropped there, `Dog`'s own `POrd` was mixed
-    // into `AscW`'s `TOrd` and the default `cmp` answered from it: MEASURED, a silent wrong
-    // value). In the PROVIDER half — the provision's own conditions, which ask about another
-    // type — `W`'s row wins only where no candidate is more specific ([`more_specific`]): a
-    // tie-break, never a win over a better rival. So under `Animal provides Desc[T = Animal]
-    // :- Desc[T = Dog]`, with `Dog` a subtype of `Animal`, the condition is `Dog`'s, where
-    // `Animal`'s own row answering it was a cycle that loaded and died at run time.
+    // `W`'S OWN ROW WINS ONLY WHERE NO CANDIDATE IS MORE SPECIFIC ([`more_specific`]), in
+    // either half of its dictionary (user, 2026-10-17): a tie-break, never a win over a better
+    // rival. So under `AscW provides TOrd[T = Animal], POrd[T = Animal]`, used at a `Dog` that
+    // provides its own `POrd`, the contract's `POrd[T = Dog]` is `Dog`'s; and under `Animal
+    // provides Desc[T = Animal] :- Desc[T = Dog]` the condition is `Dog`'s, where `Animal`'s own
+    // row answering it was a cycle that loaded and died at run time.
     if let Some(local) = local_provider {
         let w = local.sort;
         // Canonicalize `w` ONCE, not once per candidate per pass.
@@ -1095,17 +1099,13 @@ pub(super) fn resolve_inner<'a>(
                 c.impl_sort == w || kb.canonical_sort_sym(c.impl_sort) == w_canon
             })
             .collect();
-        let own: Vec<usize> = if local.spec_half {
-            own
-        } else {
-            own.into_iter()
-                .filter(|&i| {
-                    (0..candidates.len()).all(|j| {
-                        i == j || !more_specific(kb, &candidates[j], &candidates[i])
-                    })
-                })
-                .collect()
-        };
+        let own: Vec<usize> = own
+            .into_iter()
+            .filter(|&i| {
+                (0..candidates.len())
+                    .all(|j| i == j || !more_specific(kb, &candidates[j], &candidates[i]))
+            })
+            .collect();
         if !own.is_empty() {
             let mut index = 0;
             candidates.retain(|_| {
@@ -1130,7 +1130,8 @@ pub(super) fn resolve_inner<'a>(
             // `TypeValue` is the one spec no row may be written for (`HandWrittenTypeValue`),
             // so advising one sent the author to a second refusal. A `requires` in scope is
             // advice only where the goal holds a parameter a caller could say: at a ground
-            // type there is no caller to take it from, and such a clause holds nowhere.
+            // type there is no caller to take it from, and such a clause holds nowhere —
+            // for every spec, below as here.
             None if type_value_spec_sym(kb).is_some_and(|tv| {
                 kb.canonical_sort_sym(tv) == kb.canonical_sort_sym(goal.spec_sort)
             }) =>
@@ -1153,11 +1154,19 @@ pub(super) fn resolve_inner<'a>(
             }
             // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
             // provision, so advising it sent the author back to this same `NoMatch`.
-            None => format!(
-                "no impl provides {0}; declare `provides {0}[…]` on the carrier or on a \
-                 witness sort, or add `requires {0}[…]` in scope",
-                kb.qualified_name_of(goal.spec_sort)
-            ),
+            None => {
+                let ground = goal.bindings.iter().all(|(_, v)| type_is_ground(kb, v));
+                format!(
+                    "no impl provides {0}; declare `provides {0}[…]` on the carrier or on a \
+                     witness sort{1}",
+                    kb.qualified_name_of(goal.spec_sort),
+                    if ground {
+                        String::new()
+                    } else {
+                        format!(", or add `requires {}[…]` in scope", kb.qualified_name_of(goal.spec_sort))
+                    }
+                )
+            }
         };
         return ResolutionResult::NoMatch {
             goal_text: format_goal(kb, goal),
@@ -1172,16 +1181,21 @@ pub(super) fn resolve_inner<'a>(
     // a fallback, not a competitor" — and writing it as a fallback of this `match` is what
     // makes it unstateable the other way round. `rung` is [`DefaultRung::Withhold`] where
     // the goal fills a NAMED slot, which is not silence at all.
+    //
+    // The tie names the candidates it stands among — not one a more specific candidate
+    // outranks — save where ranking was not asked for at all; it is computed once, for
+    // the default and for the ambiguity alike.
+    let mut tied: Option<Vec<usize>> = None;
     let ranked = if rung == DefaultRung::Unranked {
         sole_provider(kb, &candidates)
     } else {
         pick_most_specific(kb, &candidates).or_else(|| {
-            (rung == DefaultRung::Consult)
-                .then(|| {
-                    let tied = maximal_candidates(kb, &candidates);
-                    default_among_candidates(kb, goal, &candidates, &tied)
-                })
-                .flatten()
+            let at_top = maximal_candidates(kb, &candidates);
+            let default = (rung == DefaultRung::Consult)
+                .then(|| default_among_candidates(kb, goal, &candidates, &at_top))
+                .flatten();
+            tied = Some(at_top);
+            default
         })
     };
     let chosen = match ranked {
@@ -1191,14 +1205,7 @@ pub(super) fn resolve_inner<'a>(
             // WI-843: `at_call_goal` is the SAME test step 0 used above, captured
             // before the push — a tie under a conditional witness's `:-` subgoal is
             // propagated verbatim to the caller, and no bracket there can reach it.
-            //
-            // The tie names the candidates it stands among — not one a more specific
-            // candidate outranks — save where ranking was not asked for at all.
-            let tied: Vec<usize> = if rung == DefaultRung::Unranked {
-                (0..candidates.len()).collect()
-            } else {
-                maximal_candidates(kb, &candidates)
-            };
+            let tied = tied.unwrap_or_else(|| (0..candidates.len()).collect());
             let candidates = tied.iter().map(|&i| candidates[i].impl_sort).collect();
             return ResolutionResult::Ambiguous {
                 goal_text: format_goal(kb, goal),
@@ -1264,8 +1271,6 @@ pub(super) fn resolve_inner<'a>(
     };
     let here = LocalProvider {
         sort: chosen_impl_sort,
-        // Each sub-goal below says which half it fills.
-        spec_half: false,
         slots: written_slots,
         source: written_source,
         impl_subst: &chosen_impl_subst,
@@ -1498,10 +1503,7 @@ pub(super) fn resolve_inner<'a>(
             sg,
             scope,
             stack,
-            Some(LocalProvider {
-                spec_half: i < provider_half_start,
-                ..here
-            }),
+            Some(here),
             sub_pin,
             sub_rung,
             // A nested frame's failure is reported by THIS frame, below.
@@ -2035,13 +2037,24 @@ pub(super) fn describe_resolution_failure(kb: &KnowledgeBase, result: &Resolutio
                 tie_candidate_names(kb, tie).join(", "),
             )
         }
+        // A failure forwarded from beneath the provision that answered the goal is about a
+        // goal the caller did not ask, and is named, as the provision's load check names it.
+        ResolutionResult::NoMatch {
+            goal_text,
+            hint,
+            forwarded: true,
+            ..
+        } => format!("a provision answers it, but `{goal_text}` beneath it does not hold: {hint}"),
         // The reader of NoMatch's purpose-built hint (eagerly formatted since
         // WI-821, previously consumed by nothing).
         ResolutionResult::NoMatch { hint, .. } => hint.clone(),
+        // Dropping a condition is the repair. A provision written for one of the goals beside
+        // the one on the cycle is not (MEASURED: `W provides Desc[T = B]` beside `B provides
+        // Desc[T = B] :- Desc[T = A]` and its mirror leaves the cycle refused as before).
         ResolutionResult::Cyclic { path, .. } => format!(
             "construction is cyclic: {}: each provision on it holds only where the next goal \
              does, so none holds, and no type written at a use changes that; drop one of these \
-             conditions, or provide one of the goals directly",
+             conditions",
             path.join(" -> ")
         ),
         ResolutionResult::Resolved(_) => String::new(),

@@ -31,6 +31,8 @@ const LIST_NIL: &str = "anthill.prelude.List.nil";
 #[derive(Debug, Clone)]
 pub enum SerError {
     Format(String),
+    /// A data file names a constructor of one of the runtime's accounts.
+    RuntimeAccount(String),
     MissingMeta(String),
     UnknownEntity(String),
     /// WI-912: a persisted name (`meta.entity`, or a variant key with no declared sort)
@@ -77,6 +79,11 @@ impl std::fmt::Display for SerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SerError::Format(msg) => write!(f, "format error: {msg}"),
+            SerError::RuntimeAccount(ctor) => write!(
+                f,
+                "`{ctor}` is {}; a data file does not hold one",
+                crate::kb::RuntimeAccount::NOT_CONSTRUCTED
+            ),
             SerError::MissingMeta(msg) => write!(f, "missing meta: {msg}"),
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
             SerError::AmbiguousName {
@@ -398,6 +405,16 @@ fn load_section(
     }
 }
 
+/// A data file holding one of the runtime's accounts is refused: the bridge reads a raise's
+/// cause off its payload's constructor, and a program does not construct one, by writing it
+/// or by reading it from outside ([`crate::kb::RuntimeAccount`]).
+fn refuse_runtime_account(kb: &KnowledgeBase, ctor: Symbol) -> Result<Symbol, SerError> {
+    match kb.runtime_account_of(ctor) {
+        Some(_) => Err(SerError::RuntimeAccount(kb.qualified_name_of(ctor).to_string())),
+        None => Ok(ctor),
+    }
+}
+
 /// Resolve a `meta.entity` name to its functor Symbol — by THE NAME LADDER AT
 /// `<global>` (WI-912), the question a host-supplied extent-owner name asks (WI-908).
 /// A data file is KB-external text written in no scope, so it gets the same reading and
@@ -408,7 +425,7 @@ fn load_section(
 /// rows onto a top-level `Rec` the file never named.
 fn resolve_entity_functor(kb: &KnowledgeBase, name: &str) -> Result<Symbol, SerError> {
     match kb.resolve_name_in_global(name) {
-        ResolveResult::Found(sym) => Ok(sym),
+        ResolveResult::Found(sym) => refuse_runtime_account(kb, sym),
         ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
             name: name.to_owned(),
             candidates: kb.candidate_names(&cands),
@@ -762,15 +779,16 @@ fn resolve_variant_sym(
     ty: Option<&Value>,
 ) -> Result<Symbol, SerError> {
     if let Some(sort) = ty.and_then(|t| type_head_and_inner(kb, t).0) {
-        return constructor_of_sort_named(kb, sort, key).ok_or_else(|| {
+        let ctor = constructor_of_sort_named(kb, sort, key).ok_or_else(|| {
             SerError::UnknownConstructor {
                 name: key.to_owned(),
                 sort: Some(kb.qualified_name_of(sort).to_string()),
             }
-        });
+        })?;
+        return refuse_runtime_account(kb, ctor);
     }
     match kb.resolve_name_in_global(key) {
-        ResolveResult::Found(sym) => Ok(sym),
+        ResolveResult::Found(sym) => refuse_runtime_account(kb, sym),
         ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
             name: key.to_owned(),
             candidates: kb.candidate_names(&cands),

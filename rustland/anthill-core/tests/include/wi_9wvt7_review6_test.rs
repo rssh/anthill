@@ -8,8 +8,9 @@
 //! D. `ModifyRuntime.get` and `set` take a place that is itself of a modifiable type, not one
 //!    that only holds a modifiable value (user, 2026-10-17); the refusal advises what repairs.
 //! E. Which provision a call gets: one order on the provisions' heads, a default only among the
-//!    tie, a provider's own row local by the half of its dictionary, the bottom type below every
-//!    spelling of a head, an arrow's parameter met as itself.
+//!    tie, the bottom type below every spelling of a head, an arrow's parameter met as itself. (A
+//!    provider's own row was local here by the half of its dictionary; since the seventh review it
+//!    is local where no candidate is more specific, in both halves — `wi_9wvt7_review7_test`.)
 //! F. The forward of a caller's parameter held inside a type: the requirement said as the call
 //!    states it, the caller's evidence read as a call reads it, a part's missing instance told.
 //! G. A structural former is the cause only where no provision answered at it and the scope
@@ -21,8 +22,6 @@
 //!   * the contract walked by the goals asked → [`a_contract_asking_for_a_spec_at_a_larger_type_is_refused_and_the_load_ends`];
 //!   * the typer's or the loader's construction refusal off → [`a_program_does_not_construct_a_runtime_account`];
 //!   * `ModifyRuntime`'s place read by `type_admits_modify` → [`a_place_that_only_holds_a_modifiable_value_is_refused_at_load`];
-//!   * a provider's own row in the spec half filtered as in the provider half →
-//!     [`a_bundled_witness_keeps_its_contract_half_at_a_subtype`];
 //!   * the default consulted among every candidate → [`a_default_arbitrates_only_the_tie`];
 //!   * an arrow's parameter matched one way → [`an_arrow_parameter_is_met_as_itself`];
 //!   * a variant read at its sort for every spec → [`a_variant_carrier_is_advised_as_the_call_states_it`];
@@ -288,9 +287,11 @@ fn an_operation_or_a_rule_under_the_induction_axiom_is_refused_where_it_is_writt
 }
 
 /// ANOTHER DECLARATION UNDER THE AXIOM'S NAME LOADS, AND THE FACTS ABOUT AN ENTITY OF THAT NAME
-/// ARE ITS DATA. `entity induction(depth: Int64)` beside `entity deduction`, matched by an
-/// operation and stated by a fact; a const and a nested sort of the name. The check by a
+/// ARE ITS DATA. `entity induction` beside `entity deduction`, matched by an operation and stated
+/// by a fact; a const and a nested sort of the name, each read by an operation. The check by a
 /// symbol's first-declared kind refused each, with no location, where each had loaded and run.
+/// (An entity of the name WITH FIELDS is refused since the seventh review:
+/// `wi_9wvt7_review7_test::an_entity_with_fields_under_the_induction_axioms_name_is_refused`.)
 ///
 /// FAILS with the refusal of every kind but a rule's (the reading before this review): every
 /// shape is refused.
@@ -300,31 +301,37 @@ fn another_declaration_under_the_induction_axioms_name_loads() {
 namespace test.r6.inde
   import anthill.prelude.{Int64}
   sort ProofMethod
-    entity induction(depth: Int64)
+    entity induction
     entity deduction
   end
   operation score(m: ProofMethod) -> Int64 =
     match m
-      case induction(d) -> d
+      case induction -> 5
       case deduction -> 2
-  operation go() -> Int64 = score(induction(depth: 5)) + score(deduction)
-  fact ProofMethod.induction(depth: 7)
+  operation go() -> Int64 = score(induction) + score(deduction)
+  fact used(ProofMethod.induction)
 end
 "#;
     assert_eq!(run_int64(entity, "test.r6.inde.go"), Ok(7));
-    for (shape, src) in [
+    for (shape, src, entry, answer) in [
         (
             "a const",
             "namespace test.r6.indc\n  import anthill.prelude.{Int64}\n  sort Colour\n    entity red\n    \
-             entity green\n    const induction: Int64 = 3\n  end\nend\n",
+             entity green\n    const induction: Int64 = 3\n  end\n  operation go() -> Int64 = \
+             Colour.induction + 1\nend\n",
+            "test.r6.indc.go",
+            4,
         ),
         (
             "a nested sort",
-            "namespace test.r6.indn\n  sort Colour\n    entity red\n    entity green\n    \
-             sort induction\n      entity proof\n    end\n  end\nend\n",
+            "namespace test.r6.indn\n  import anthill.prelude.{Int64}\n  sort Colour\n    entity red\n    \
+             entity green\n    sort induction\n      entity proof\n      operation four() -> Int64 = 4\n    \
+             end\n  end\n  operation go() -> Int64 = Colour.induction.four()\nend\n",
+            "test.r6.indn.go",
+            4,
         ),
     ] {
-        assert_eq!(load_errors_of(src), Vec::<String>::new(), "{shape}");
+        assert_eq!(run_int64(src, entry), Ok(answer), "{shape}");
     }
 }
 
@@ -530,50 +537,6 @@ fn a_variant_and_its_sort_rank_alike_in_both_spellings() {
     assert_eq!(run_int64(&condition, "test.r6.vcond.go"), Ok(1));
 }
 
-/// A BUNDLED WITNESS KEEPS ITS CONTRACT HALF AT A SUBTYPE. `AscW` provides `TOrd[T = Animal]` and
-/// `POrd[T = Animal]`, `TOrd requires POrd[T = T]`, `Dog` (a subtype of `Animal`) provides its own
-/// `POrd`: at a `Dog`, `AscW`'s `TOrd` dictionary took `Dog`'s `POrd` for its contract once a
-/// provider's own row was local only where met as itself, and `TOrd`'s default `cmp` answered
-/// from it — 20 where `AscW`'s ordering says 10, in silence. The provision's own conditions are the
-/// other half, where its own row yields to a more specific one (the refinement row of the fifth
-/// review, `a_refinements_condition_takes_the_refinements_provision`).
-///
-/// FAILS with locality by the subtype reach in both halves (the fifth review's): 20.
-#[test]
-fn a_bundled_witness_keeps_its_contract_half_at_a_subtype() {
-    let src = r#"
-namespace test.r6.bundle
-  import anthill.prelude.{Int64, Bool}
-  sort POrd
-    sort T = ?
-    operation lt(a: T, b: T) -> Bool
-  end
-  sort TOrd
-    sort T = ?
-    requires POrd[T = T]
-    operation cmp(a: T, b: T) -> Int64 = if POrd.lt(a, b) then 10 else 20
-  end
-  sort Animal
-    entity animal(n: Int64)
-  end
-  sort Dog
-    requires Animal
-    entity dog(n: Int64)
-    provides POrd[T = Dog]
-    operation lt(a: Dog, b: Dog) -> Bool = false
-  end
-  sort AscW
-    provides TOrd[T = Animal]
-    provides POrd[T = Animal]
-    operation lt(a: Animal, b: Animal) -> Bool = true
-  end
-  operation useT[X](a: X, b: X) -> Int64 requires TOrd[T = X] = TOrd.cmp(a, b)
-  operation go() -> Int64 = useT(dog(1), dog(2))
-end
-"#;
-    assert_eq!(run_int64(src, "test.r6.bundle.go"), Ok(10));
-}
-
 /// THE BOTTOM TYPE IS BELOW EVERY SPELLING OF A HEAD, and a provision met there with a condition
 /// on a parameter it left open is no candidate. `Counter.count([])` asks `Stamp[T = Nothing]`:
 /// beside `Leaf provides Stamp[T = Leaf]`, a rival written `Stamp[T = Box]` tied while the same
@@ -672,35 +635,38 @@ end
 
 /// AN ARROW'S PARAMETER IS MET AS ITSELF, ITS RESULT THROUGH THE SUBTYPE RELATION. A provision at
 /// `(Animal) -> Int64`, whose member hands the callback an `animal`, answered a callback taking a
-/// `Dog`, a `List[T = Dog]`, or — once the bottom type no longer stopped it — `Nothing`: each
-/// loaded and died at run time. A result below the provision's is still met
-/// (`a_raising_callback_meets_its_arrow_provision`). The callback at the provision's own
-/// parameter is the control and passes either way.
+/// `Dog` or — once the bottom type no longer stopped it — `Nothing`, and one at `(List[T =
+/// Animal]) -> Int64` a callback taking a `List[T = Dog]`: each loaded and died at run time. A
+/// result below the provision's is still met (`a_raising_callback_meets_its_arrow_provision`). The
+/// callbacks at the provisions' own parameters are the controls and pass either way.
 ///
 /// FAILS with the parameter matched one way: the three callbacks load.
 #[test]
 fn an_arrow_parameter_is_met_as_itself() {
-    let program = |callback: &str| {
+    let program = |param: &str, arg: &str, callback: &str| {
         format!(
-            "namespace test.r6.arrow\n  import anthill.prelude.{{Int64, String, List}}\n  sort Runner\n    \
+            "namespace test.r6.arrow\n  import anthill.prelude.{{Int64, String, List, Nothing}}\n  sort Runner\n    \
              sort F = ?\n    operation run(f: F) -> Int64\n  end\n  sort Animal\n    entity animal\n  \
              end\n  sort Dog\n    requires Animal\n    entity dog\n  end\n  sort AnimalRunner\n    \
-             provides Runner[F = (Animal) -> Int64]\n    operation run(f: (Animal) -> Int64) -> \
-             Int64 = f(animal)\n  end\n  operation go() -> Int64 = Runner.run({callback})\nend\n"
+             provides Runner[F = ({param}) -> Int64]\n    operation run(f: ({param}) -> Int64) -> \
+             Int64 = f({arg})\n  end\n  operation go() -> Int64 = Runner.run({callback})\nend\n"
         )
     };
-    for (shape, callback) in [
-        ("a Dog parameter", "lambda (d: Dog) -> 1"),
-        ("a List of Dog parameter", "lambda (d: List[T = Dog]) -> 1"),
-        ("a Nothing parameter", "lambda (d: Nothing) -> 1"),
+    let at_animal = |callback: &str| program("Animal", "animal", callback);
+    let at_animals = |callback: &str| program("List[T = Animal]", "[animal]", callback);
+    for (shape, src) in [
+        ("a Dog parameter", at_animal("lambda (d: Dog) -> 1")),
+        ("a Nothing parameter", at_animal("lambda (d: Nothing) -> 1")),
+        ("a List of Dog parameter at a List of Animal", at_animals("lambda (d: List[T = Dog]) -> 1")),
     ] {
         assert_refused_naming(
-            &load_errors_of(&program(callback)),
-            &["expected a requirement suppliable at this call site"],
+            &load_errors_of(&src),
+            &["no provision of `test.r6.arrow.Runner` answers at it"],
             shape,
         );
     }
-    assert_eq!(run_int64(&program("lambda (a: Animal) -> 5"), "test.r6.arrow.go"), Ok(5));
+    assert_eq!(run_int64(&at_animal("lambda (a: Animal) -> 5"), "test.r6.arrow.go"), Ok(5));
+    assert_eq!(run_int64(&at_animals("lambda (a: List[T = Animal]) -> 6"), "test.r6.arrow.go"), Ok(6));
 }
 
 // ── F. the forward's account ──────────────────────────────────────────────────────────────
@@ -745,15 +711,17 @@ fn the_callers_evidence_is_read_through_its_requirements_contracts() {
              sort T = ?\n    requires TypeValue[T = T]\n    operation describe(x: T) -> Int64\n  end\n  \
              operation tyOf[X](x: X) -> Int64 requires TypeValue[T = X] = 1\n  sort Holder\n    sort A \
              = ?\n    requires Desc[T = A]\n    operation probe[B](a: A, b: B) -> Int64{clause} = \
-             tyOf(pair(fst: a, snd: b))\n  end\nend\n"
+             tyOf(pair(fst: a, snd: b))\n  end\n  sort IntDesc\n    provides Desc[T = Int64]\n    \
+             operation describe(x: Int64) -> Int64 = 4\n  end\n  operation go() -> Int64 = \
+             Holder.probe(1, 2)\nend\n"
         )
     };
     let errs = load_errors_of(&program(""));
     assert_refused_naming(&errs, &["holds nothing for `B`", "requires anthill.reflect.TypeValue[T = B]` on"], "B");
     assert!(errs.iter().all(|e| !e.contains("holds nothing for `A`")), "{errs:#?}");
     assert_eq!(
-        load_errors_of(&program(" requires anthill.reflect.TypeValue[T = B]")),
-        Vec::<String>::new()
+        run_int64(&program(" requires anthill.reflect.TypeValue[T = B]"), "test.r6.chain.go"),
+        Ok(1)
     );
 }
 
@@ -773,7 +741,8 @@ fn a_parts_missing_instance_is_told_by_the_goal_it_failed_at() {
              sort T = ?\n    operation describe(x: T) -> Int64\n  end\n{extra}  sort Keyed\n    sort K = \
              ?\n    requires Desc[T = K]\n    entity keyed(k: K)\n  end\n  operation tyOf[B](x: B) -> \
              Int64 requires TypeValue[T = B] = 1\n  operation part[C](x: C, k: Keyed[K = Float]) -> \
-             Int64 requires TypeValue[T = C] = tyOf(pair(x, k))\nend\n"
+             Int64 requires TypeValue[T = C] = tyOf(pair(x, k))\n  operation go() -> Int64 = part(1, \
+             Keyed.keyed(k: 1.5))\nend\n"
         )
     };
     let errs = load_errors_of(&program(""));
@@ -786,7 +755,7 @@ fn a_parts_missing_instance_is_told_by_the_goal_it_failed_at() {
     let repaired = program(
         "  sort FloatDesc\n    provides Desc[T = Float]\n    operation describe(x: Float) -> Int64 = 2\n  end\n",
     );
-    assert_eq!(load_errors_of(&repaired), Vec::<String>::new());
+    assert_eq!(run_int64(&repaired, "test.r6.keyed.go"), Ok(1));
 }
 
 // ── G. the former's refusal, and a cycle's ────────────────────────────────────────────────

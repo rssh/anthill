@@ -6403,6 +6403,7 @@ pub fn scan_definitions_with_sources(
             for item in &file.items {
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
+                    query_runtime_account_errors(kb, file, fact.term, global, &mut errors);
                 }
             }
         }
@@ -6411,6 +6412,46 @@ pub fn scan_definitions_with_sources(
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
     errors
+}
+
+/// A query pattern that writes an application of one of the runtime's accounts constructs
+/// one, as a clause that writes it does ([`LoadError::RuntimeAccountInClause`]): the
+/// pattern's terms are handed to what the goal calls, and a raise of one would be read as
+/// the runtime's account. Its functor is resolved as [`convert_query_term`] resolves it.
+fn query_runtime_account_errors(
+    kb: &mut KnowledgeBase,
+    file: &ParsedFile,
+    root: TermId,
+    scope: ScopeId,
+    errors: &mut Vec<LoadError>,
+) {
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = file.terms.get(id)
+        else {
+            continue;
+        };
+        stack.extend(pos_args.iter().copied());
+        stack.extend(named_args.iter().map(|(_, v)| *v));
+        if pos_args.is_empty() && named_args.is_empty() {
+            continue;
+        }
+        let name = file.symbols.local_name(*functor).to_string();
+        let resolved = resolve_query_name(kb, &name, scope);
+        if kb.runtime_account_of(resolved).is_some() {
+            errors.push(
+                LoadError::RuntimeAccountInClause {
+                    ctor: kb.qualified_name_of(resolved).to_string(),
+                    span: file.terms.span(id),
+                }
+                .located_in(file),
+            );
+        }
+    }
 }
 
 /// A query pattern's parse-only BRACKETS, refused before [`convert_query_term`] meets
@@ -8102,9 +8143,6 @@ fn subject_introduces<'a>(
     Ok(name)
 }
 
-/// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
-/// so cross-scope resolution hides it (kernel-language.md §8.6). `public` /
-/// unspecified is the visible default and records nothing.
 /// The sentence of [`LoadError::RuntimeAccountInClause`], one owner for its two renderings.
 fn runtime_account_in_clause_msg(ctor: &str) -> String {
     format!(
@@ -8114,6 +8152,9 @@ fn runtime_account_in_clause_msg(ctor: &str) -> String {
     )
 }
 
+/// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
+/// so cross-scope resolution hides it (kernel-language.md §8.6). `public` /
+/// unspecified is the visible default and records nothing.
 fn record_internal(kb: &mut KnowledgeBase, sym: Symbol, vis: Option<Visibility>) {
     if vis == Some(Visibility::Internal) {
         kb.symbols.mark_internal(sym);
@@ -16147,6 +16188,34 @@ fn load_phase_inner(
         refused_sorts: &refused_sorts,
         rules: loaded_rules.clone(),
     };
+    // A SPEC WHOSE CONTRACT ASKS FOR ITSELF AT A LARGER TYPE is refused where it is declared
+    // (user, 2026-10-17): no resolution of it ends (`typing::growing_self_requirement`), and a
+    // goal of it is answered by no provision, so the load does too.
+    for &sort in &all_sorts {
+        if let Some(requirement) = super::typing::growing_self_requirement(kb, sort) {
+            let spec = kb.qualified_name_of(sort).to_string();
+            // At the spec's declaration, as this load's scan recorded it.
+            let site = kb.decl_sites.iter().find(|d| d.sym == sort).map(|d| d.site);
+            let error = LoadError::TypeMismatch {
+                origin: None,
+                entity_name: spec.clone(),
+                field_name: "requires".to_string(),
+                expected_type: format!(
+                    "a contract that asks for `{spec}` at no larger a type than its own parameters"
+                ),
+                actual_type: format!(
+                    "{requirement}, which asks for `{spec}` again at a larger type: each answer \
+                     of it asks again at a larger still, so no resolution of it ends. Ask for it \
+                     at the spec's own parameters, or drop the requirement"
+                ),
+                span: site.map(|s| s.span),
+            };
+            all_errors.push(match site {
+                Some(site) => error.located_in_kb_source(kb, site.source),
+                None => error,
+            });
+        }
+    }
     all_errors.extend(super::typing::type_check_sorts(kb, loaded));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
@@ -20450,6 +20519,90 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
         .is_some_and(|s| kb.sort_sym_is_bool(s))
 }
 
+/// A sort's derived induction axiom (`<Sort>.induction(?P)`) owns its name. An operation
+/// under it would be one predicate with the axiom, whose clause then answers a rule-body goal
+/// at it in the operation's place: under `operation induction(c: Colour) -> Bool = true`,
+/// `Colour.induction(red)` in a rule body answered nothing while the call answered `true`
+/// (MEASURED, also with the operation added by a later load to a sort an earlier one
+/// declared). A hand-written rule `induction`, an equation's among them, joins the axiom's
+/// relation, which then answers through the axiom's clause what the rule never said. An
+/// entity of the name with fields takes every goal at it: `ProofMethod.induction(ok)` was
+/// read as the entity's and answered nothing, and refused as a field mismatch in a rule body.
+/// Any other declaration of the name (an entity without fields, a const, a nested sort) is no
+/// predicate and is left alone, and so are the facts about an entity of the name, which are
+/// its data.
+///
+/// By symbol index, not `HashSet` order: two runs over one corpus report identically.
+fn check_induction_axiom_names(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let mut axioms: Vec<Symbol> = kb.induction_axioms.iter().copied().collect();
+    axioms.sort_by_key(|s| s.index());
+    // An equation is filed under its connective, and one without `@[simp]` under no functor
+    // at all: its left-hand side names what it defines, read in one walk of the rules.
+    let mut equations: HashMap<Symbol, super::RuleId> = HashMap::new();
+    for rid in kb.live_rule_ids_iter() {
+        if !kb.has_equational_head(rid) || kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
+            continue;
+        }
+        let lhs = kb.rule_head_value(rid).pos_arg(kb, 0).map(|lhs| lhs.head(kb));
+        if let Some(ViewHead::Functor { functor: Some(f), .. }) = lhs {
+            let f = kb.canonical_sym(f);
+            if kb.induction_axioms.contains(&f) {
+                equations.entry(f).or_insert(rid);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for axiom in axioms {
+        let rule_site = |rid: super::RuleId| kb.rule_head_span(rid).map(|s| render_decl_site(kb, s));
+        let (what, site, why) = if kb.has_kind(axiom, SymbolKind::Operation) {
+            let site = kb
+                .op_decl_sites
+                .get(&axiom)
+                .and_then(|v| v.first())
+                .or_else(|| kb.functor_spans.get(&axiom))
+                .map(|s| render_decl_site(kb, *s));
+            ("an operation", site, ANSWERS_IN_ITS_PLACE)
+        } else if kb.has_kind(axiom, SymbolKind::Entity) {
+            if kb.entity_field_names(axiom).is_none_or(|fields| fields.is_empty()) {
+                continue;
+            }
+            let site = kb
+                .decl_sites
+                .iter()
+                .find(|d| kb.canonical_sym(d.sym) == axiom)
+                .map(|d| render_decl_site(kb, d.site));
+            (
+                "an entity with fields",
+                site,
+                "a goal at the name is read as the entity's, and no goal reaches the axiom",
+            )
+        } else if let Some(rid) = kb
+            .rules_by_functor_iter(axiom)
+            .find(|rid| kb.clause_origin(*rid) == crate::kb::ClauseOrigin::Source)
+            .or_else(|| equations.get(&axiom).copied())
+        {
+            ("a rule", rule_site(rid), ANSWERS_IN_ITS_PLACE)
+        } else {
+            continue;
+        };
+        let name = kb.qualified_name_of(axiom);
+        let sort = name.strip_suffix(".induction").unwrap_or(name);
+        out.push(LoadError::Other {
+            message: format!(
+                "`{name}` names the induction axiom derived for `{sort}`, and {what} {} takes \
+                 the same name: {why}. Give the declaration another name",
+                site.map_or_else(|| "(at a site the loader did not record)".to_string(), |at| format!("declared at {at}")),
+            ),
+        });
+    }
+    out
+}
+
+/// What an operation or a rule under an induction axiom's name does to the goals at it
+/// ([`check_induction_axiom_names`]).
+const ANSWERS_IN_ITS_PLACE: &str =
+    "the axiom's clause would answer a rule-body goal at it in the declaration's place";
+
 /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION: a body OR clauses, never both.
 /// Load-blocking.
 ///
@@ -20519,55 +20672,6 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// `rule Error.reify(?f, ok(0)) :- true` turned the rule-body boundary into no solutions. A
 /// resolver builtin is not among them — its clauses are alternatives (WI-899) — and neither
 /// is a mapping in another language, which this runtime does not run.
-/// A sort's derived induction axiom (`<Sort>.induction(?P)`) owns its name. An operation
-/// under it would be one predicate with the axiom, whose clause then answers a rule-body goal
-/// at it in the operation's place: under `operation induction(c: Colour) -> Bool = true`,
-/// `Colour.induction(red)` in a rule body answered nothing while the call answered `true`
-/// (MEASURED, also with the operation added by a later load to a sort an earlier one
-/// declared). A hand-written rule `induction` joins the axiom's relation, which then answers
-/// through the axiom's clause what the rule never said. Any other declaration of the name (an
-/// entity, a const, a nested sort) is no predicate and is left alone, and so are the facts
-/// about an entity of the name, which are its data.
-///
-/// By symbol index, not `HashSet` order: two runs over one corpus report identically.
-fn check_induction_axiom_names(kb: &KnowledgeBase) -> Vec<LoadError> {
-    let mut axioms: Vec<Symbol> = kb.induction_axioms.iter().copied().collect();
-    axioms.sort_by_key(|s| s.index());
-    let mut out = Vec::new();
-    for axiom in axioms {
-        let (what, site) = if kb.has_kind(axiom, SymbolKind::Operation) {
-            let site = kb
-                .op_decl_sites
-                .get(&axiom)
-                .and_then(|v| v.first())
-                .or_else(|| kb.functor_spans.get(&axiom))
-                .map(|s| render_decl_site(kb, *s));
-            ("an operation", site)
-        } else if let Some(rid) = (!kb.has_kind(axiom, SymbolKind::Entity))
-            .then(|| {
-                kb.rules_by_functor_iter(axiom)
-                    .find(|rid| kb.clause_origin(*rid) == crate::kb::ClauseOrigin::Source)
-            })
-            .flatten()
-        {
-            ("a rule", kb.rule_head_span(rid).map(|s| render_decl_site(kb, s)))
-        } else {
-            continue;
-        };
-        let name = kb.qualified_name_of(axiom);
-        let sort = name.strip_suffix(".induction").unwrap_or(name);
-        out.push(LoadError::Other {
-            message: format!(
-                "`{name}` names the induction axiom derived for `{sort}`, and {what} {} takes \
-                 the same name: the axiom's clause would answer a rule-body goal at it in the \
-                 declaration's place. Give the declaration another name",
-                site.map_or_else(|| "(at a site the loader did not record)".to_string(), |at| format!("declared at {at}")),
-            ),
-        });
-    }
-    out
-}
-
 fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     let mut population: Vec<(Symbol, OperationDefinition)> = kb
         .op_bodies_iter()
@@ -20612,7 +20716,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
                 // The clauses the source wrote: one the loader derives is no definition an
                 // author gave, and the one that could stand under an operation's own functor
                 // — the induction axiom of a sort with an operation `induction` — is refused
-                // where it is derived (`emit_induction_rule`).
+                // after the load (`check_induction_axiom_names`).
                 if kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
                     continue;
                 }
@@ -38126,10 +38230,11 @@ impl<'a> Loader<'a> {
         // reuse that without inserting their qualified name into
         // `by_qualified_name` — making each subsequent <Sort>.induction
         // unreachable by qualified-name lookup.
-        // The axiom owns its name: an operation or a hand-written rule under it, in this load
-        // or a later one, is refused after the load (`check_induction_axiom_names`). Any
-        // other declaration of the name (an entity, a const, a nested sort) is no predicate,
-        // and the axiom's clause is filed under its symbol as before.
+        // The axiom owns its name: an operation, a hand-written rule or an entity with fields
+        // under it, in this load or a later one, is refused after the load
+        // (`check_induction_axiom_names`). Any other declaration of the name (an entity without
+        // fields, a const, a nested sort) is no predicate, and the axiom's clause is filed
+        // under its symbol as before.
         let induction_sym =
             if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
                 existing

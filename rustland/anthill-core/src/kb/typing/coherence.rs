@@ -521,6 +521,11 @@ fn provision_requirement_errors(
     let rows_read = rows.len();
     for row in rows {
         let spec_base = row.spec_base;
+        // A spec whose contract asks for itself at a larger type is refused where it is
+        // declared, and its contract is asked of no provision: no resolution of it ends.
+        if growing_self_requirement(kb, spec_base).is_some() {
+            continue;
+        }
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, Value); 2]> = SmallVec::new();
         // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
@@ -842,7 +847,11 @@ fn requirement_failure_of(
         ) => RequirementFailure::Below {
             provider: kb.qualified_name_of(*provider).to_string(),
             goal: goal_text.clone(),
-            detail: describe_resolution_failure(kb, failure),
+            // The goal beneath is named above, so a `NoMatch`'s own account is the detail.
+            detail: match failure {
+                ResolutionResult::NoMatch { hint, .. } => hint.clone(),
+                other => describe_resolution_failure(kb, other),
+            },
         },
         // The requirement named as the provision's own bindings wrote it: one written
         // through a type alias is led by the alias.

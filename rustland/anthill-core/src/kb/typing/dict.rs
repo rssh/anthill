@@ -1406,6 +1406,13 @@ fn build_dispatching_dict_from_chain(
                         // A CYCLE's account names its repair, and no slot breaks a cycle: one
                         // declared moves the cycle to the caller.
                         let cyclic = matches!(s3_failure, Some(ResolutionResult::Cyclic { .. }));
+                        // Nor does a slot answer a requirement that holds no parameter of
+                        // the scope: no caller can say it either, so the slot moves the
+                        // refusal to the caller, and the account's own repair stands.
+                        let no_caller_says_it = !construction.is_empty()
+                            && goal_from_requires_entry(kb, dep).is_some_and(|goal| {
+                                !goal.bindings.iter().any(|(_, v)| holds_scope_parameter(kb, v))
+                            });
                         let (construction, no_scope_route) = match member_clause {
                             _ if apart || cyclic => (construction, false),
                             Some(clause) => (
@@ -1413,7 +1420,7 @@ fn build_dispatching_dict_from_chain(
                                     sep = if construction.is_empty() { "" } else { " — " }),
                                 false,
                             ),
-                            None => (construction, true),
+                            None => (construction, !no_caller_says_it),
                         };
                         *slot = Some(Box::new(RequirementRefusal {
                             account_names_every_repair: apart || cyclic,
@@ -3881,9 +3888,19 @@ pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
 /// symbol table (`sort_has_constructors`). Found by /code-review on the typer's hot path.
 pub(super) fn unclassified_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
     let from_goal = goal_carrier_sort(kb, goal)?;
-    if carrier_is_an_instance(kb, from_goal, goal.spec_sort)
-        || spec_is_self_representing(kb, kb.canonical_sort_sym(goal.spec_sort))
-    {
+    if carrier_is_an_instance(kb, from_goal, goal.spec_sort) {
+        return None;
+    }
+    goal_pinned_carrier(kb, goal)
+}
+
+/// The carrier a spec-op call's goal pins, an instance or not: the sort at the spec's carrier
+/// parameter, for a spec that is not self-representing, where it passes
+/// [`statically_pinned_carrier`]'s filter — an abstract-spec value, or the spec itself, is
+/// some provider at run time and pins none ([`unclassified_goal_carrier`] says why both).
+pub(super) fn goal_pinned_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
+    let from_goal = goal_carrier_sort(kb, goal)?;
+    if spec_is_self_representing(kb, kb.canonical_sort_sym(goal.spec_sort)) {
         return None;
     }
     statically_pinned_carrier(

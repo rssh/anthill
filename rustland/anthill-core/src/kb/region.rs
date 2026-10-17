@@ -162,6 +162,12 @@ pub(crate) fn type_admits_modify<V: TermView>(kb: &KnowledgeBase, ty: &V, region
     admits_modify(kb, ty, regions, true, &mut HashSet::new(), None)
 }
 
+/// Is `s` a modifiable sort, or a variant of one: a variant's place is a place of its sort, and
+/// a `Modify` of one writes the sort's resource.
+fn is_modifiable_sort(kb: &KnowledgeBase, regions: &HashSet<Symbol>, s: Symbol) -> bool {
+    regions.contains(&s) || kb.sort_of_constructor(s).is_some_and(|sort| regions.contains(&sort))
+}
+
 /// Whether a value of type `ty` is ITSELF a place a `Modify` writes, as `ModifyRuntime.get`
 /// and `.set` read and write the very place they are handed: a modifiable sort
 /// ([`region_sorts`]) or a variant of one, or a type parameter or variable (it may be
@@ -174,9 +180,7 @@ pub(crate) fn type_is_modifiable_place<V: TermView>(
     ty: &V,
     regions: &HashSet<Symbol>,
 ) -> bool {
-    let modifiable = |s: Symbol| {
-        regions.contains(&s) || kb.sort_of_constructor(s).is_some_and(|sort| regions.contains(&sort))
-    };
+    let modifiable = |s: Symbol| is_modifiable_sort(kb, regions, s);
     match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => modifiable(s) || super::typing::is_sort_param_symbol(kb, s),
         TypeExtractor::Parameterized { base, .. } => modifiable(base),
@@ -226,9 +230,10 @@ fn admits_modify<V: TermView>(
     let var_admits = |id: u32| unknown && !free.is_some_and(|ids| ids.contains(&id));
     // The type of a function value, written as an application.
     let is_function = |s: Symbol| kb.qualified_name_of(s) == "anthill.prelude.Function";
+    let modifiable = |s: Symbol| is_modifiable_sort(kb, regions, s);
     match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => {
-            if regions.contains(&s) {
+            if modifiable(s) {
                 true
             } else if super::typing::is_sort_param_symbol(kb, s) {
                 param_var_id(kb, s).map_or(unknown, var_admits)
@@ -244,7 +249,7 @@ fn admits_modify<V: TermView>(
         TypeExtractor::FlexVar { id, .. } => var_admits(id),
         TypeExtractor::TypeVar(_) | TypeExtractor::Skolem { .. } => unknown,
         TypeExtractor::Parameterized { base, bindings } => {
-            if regions.contains(&base) {
+            if modifiable(base) {
                 return true;
             }
             if is_function(base) {

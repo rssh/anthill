@@ -1117,6 +1117,7 @@ impl KnowledgeBase {
             induction_axioms: plain(&self.induction_axioms),
             tuple_literal_sym: plain(&self.tuple_literal_sym),
             unrouted_read_sym: plain(&self.unrouted_read_sym),
+            ranking_rigids: plain(&self.ranking_rigids),
             rigid_projection_formations: plain(&self.rigid_projection_formations),
             existential_return_ops: plain(&self.existential_return_ops),
             field_wise_noneq_carriers: plain(&self.field_wise_noneq_carriers),

@@ -559,7 +559,7 @@ fn candidates_at(
             if !match_candidate_against_goal(
                 kb,
                 impl_sort,
-                true, // top-level spec-view binding — arm (2.5) may self-capture here
+                MatchAt::Top, // top-level spec-view binding — arm (2.5) may self-capture here
                 candidate_value,
                 &per_call_value,
                 &impl_param_set,
@@ -1083,6 +1083,29 @@ pub(super) fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> Small
     out
 }
 
+/// Where [`match_candidate_against_goal`] stands in the binding it started at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MatchAt {
+    /// The binding itself, a provision's carrier slot: arms (2a) and (2.5) read it.
+    Top,
+    /// A part of the binding.
+    Part,
+    /// Inside an arrow's parameter, which that arrow matches back the other way as a
+    /// whole: an arrow in here does not match its own parameters back again. Each one
+    /// did, and the work doubled at each arrow nested in a parameter.
+    InParameter,
+}
+
+impl MatchAt {
+    /// Where a part of a value read here stands.
+    fn part(self) -> MatchAt {
+        match self {
+            MatchAt::InParameter => MatchAt::InParameter,
+            MatchAt::Top | MatchAt::Part => MatchAt::Part,
+        }
+    }
+}
+
 /// Match a candidate-side value (potentially containing impl-param
 /// `Ref`s) against a per-call value. Captures impl-subst bindings on
 /// the way; returns false on shape mismatch. Recursive on parametric
@@ -1091,7 +1114,7 @@ pub(super) fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> Small
 pub(super) fn match_candidate_against_goal(
     kb: &mut KnowledgeBase,
     impl_sort: Symbol,
-    top_level: bool,
+    at: MatchAt,
     // The provision's side and the goal's, each on the carrier it rides: a call asks a spec
     // at types, and one that holds a value is an occurrence. Every arm below reads both
     // through the view.
@@ -1138,7 +1161,8 @@ pub(super) fn match_candidate_against_goal(
     // the callback an `animal`, answered a callback that reads a `Dog`'s field (MEASURED:
     // the run died "entity has no field"), and once the bottom type no longer stopped it, a
     // callback taking `Nothing`. So each parameter part is matched back the other way at
-    // the bindings the match made (the result part is the last).
+    // the bindings the match made (the result part is the last), as a whole: an arrow
+    // inside it is matched back with it ([`MatchAt::InParameter`]).
     if matches!(candidate_head, TypeHead::Arrow) {
         let Some(pairs) = arrow_part_pairs(kb, candidate_value, per_call_value) else {
             // The bottom type is below every arrow, and fixes none of its parts.
@@ -1148,11 +1172,13 @@ pub(super) fn match_candidate_against_goal(
             }
             return false;
         };
-        let parts_match = pairs.parts.iter().all(|(c_part, p_part)| {
+        let param_count = pairs.parts.len().saturating_sub(1);
+        let parts_match = pairs.parts.iter().enumerate().all(|(i, (c_part, p_part))| {
+            let part_at = if i < param_count { MatchAt::InParameter } else { at.part() };
             match_candidate_against_goal(
                 kb,
                 impl_sort,
-                false, // a part of the arrow — arms (2a) and (2.5) apply only at top level
+                part_at,
                 c_part,
                 p_part,
                 impl_params,
@@ -1164,22 +1190,23 @@ pub(super) fn match_candidate_against_goal(
         // Matched back with the roles swapped: the goal's parameter as the head, the
         // provision's at the bindings made as the goal — so a part is compared as deep as
         // the match itself reads it (`List[T = Dog]` against `List[T = Animal]`).
-        let params = &pairs.parts[..pairs.parts.len().saturating_sub(1)];
+        let params = &pairs.parts[..param_count];
         let params_as_themselves = parts_match
-            && params.iter().all(|(c_part, p_part)| {
-                let at_bindings = sigma_subst_type(kb, c_part, impl_subst);
-                match_candidate_against_goal(
-                    kb,
-                    impl_sort,
-                    false,
-                    p_part,
-                    &at_bindings,
-                    &[],
-                    &mut SmallVec::new(),
-                    &mut MatchNotes::default(),
-                    sigma,
-                )
-            });
+            && (at == MatchAt::InParameter
+                || params.iter().all(|(c_part, p_part)| {
+                    let at_bindings = sigma_subst_type(kb, c_part, impl_subst);
+                    match_candidate_against_goal(
+                        kb,
+                        impl_sort,
+                        MatchAt::InParameter,
+                        p_part,
+                        &at_bindings,
+                        &[],
+                        &mut SmallVec::new(),
+                        &mut MatchNotes::default(),
+                        sigma,
+                    )
+                }));
         let (c_row, p_row) = &pairs.rows;
         return params_as_themselves
             && match_candidate_rows(
@@ -1269,7 +1296,7 @@ pub(super) fn match_candidate_against_goal(
         // and is false for nearly every candidate head (`List[A]`, `Pair[A, B]` — data
         // sorts nothing provides), so the provision walk below runs only where it can
         // answer.
-        if top_level && spec_has_any_providers(kb, c_base) {
+        if at == MatchAt::Top && spec_has_any_providers(kb, c_base) {
             if let Some(viewed) = carrier_viewed_at(kb, per_call_value, c_base) {
                 // The view is keyed by `c_base`'s own parameters, as the candidate's
                 // bindings are: one sort on both sides, so the key rule is the same-base
@@ -1282,7 +1309,7 @@ pub(super) fn match_candidate_against_goal(
                     if !match_candidate_against_goal(
                         kb,
                         impl_sort,
-                        false,
+                        at.part(),
                         c_val,
                         &p_val,
                         impl_params,
@@ -1414,7 +1441,7 @@ pub(super) fn match_candidate_against_goal(
             if !match_candidate_against_goal(
                 kb,
                 impl_sort,
-                false, // nested sub-binding — arm (2.5) applies only at top level
+                at.part(), // nested sub-binding — arm (2.5) applies only at top level
                 c_val,
                 &p_val,
                 impl_params,
@@ -1439,17 +1466,17 @@ pub(super) fn match_candidate_against_goal(
     // sort's OWN type-params so the requires-chain resolves at the concrete element
     // (`Eq[Int64]` resolves; `Eq[Float]` — Float has no lawful Eq — correctly does
     // not). SOUND because the capture is gated on the candidate ref being the impl
-    // sort AND on `top_level`: the self-provides binding is the COMPARED-TYPE
+    // sort AND on `MatchAt::Top`: the self-provides binding is the COMPARED-TYPE
     // itself (a direct spec-view binding), never a nested sub-binding, so its
     // per-call params are exactly the params the requires-chain substitutes. The
-    // `top_level` gate blocks a bare `Ref(impl_sort)` reached through step (2)'s
+    // `MatchAt::Top` gate blocks a bare `Ref(impl_sort)` reached through step (2)'s
     // recursion — a provider whose compared-type is a DIFFERENT parameterized sort
     // that merely embeds `impl_sort` (`Set provides Eq[T = Pair[A = Set, …]]`) —
     // from capturing a NESTED instance's element into the outer impl's params
     // (code-review). A provider whose compared-type is a different parameterized
     // sort at top level (`EqList provides Eq[T = List[A]]`) is parametric, handled
     // by step (2), and never reaches here.
-    if top_level
+    if at == MatchAt::Top
         && extract_sort_ref_sym(kb, candidate_value)
             .is_some_and(|s| kb.canonical_sort_sym(s) == kb.canonical_sort_sym(impl_sort))
     {
@@ -1497,6 +1524,21 @@ pub(super) fn match_candidate_against_goal(
     }
     // (3) Concrete sort ref/identifier — use the existing shallow check.
     if dispatch_values_match(kb, per_call_value, candidate_value) {
+        // THE BOTTOM TYPE MEETS A BARE HEAD OF THE PROVIDER'S OWN SORT as it meets the
+        // application (arm 2): `Box` written bare is `Box` at its own parameters, and
+        // `Nothing` fixes none of them — so `Desc[T = Box]` and `Desc[T = Box[V = V]]`, one
+        // provision in two spellings, are alike no candidate where a condition asks about
+        // `V`. The derived rows of `PartialEq` and `Eq` are written with the bare head.
+        if matches!(type_head(kb, per_call_value), TypeHead::Nothing)
+            && extract_sort_ref_sym(kb, candidate_value)
+                .is_some_and(|s| same_sort_canonical(kb, s, impl_sort))
+        {
+            for p in impl_params {
+                if !notes.open_at_bottom.contains(p) {
+                    notes.open_at_bottom.push(*p);
+                }
+            }
+        }
         return true;
     }
     false
@@ -1604,7 +1646,7 @@ fn match_candidate_rows(
                     let met = match_candidate_against_goal(
                         kb,
                         impl_sort,
-                        false,
+                        MatchAt::Part,
                         c_label,
                         p_label,
                         impl_params,
@@ -2054,23 +2096,25 @@ pub(super) fn pick_most_specific(kb: &mut KnowledgeBase, candidates: &[Candidate
     if candidates.len() <= 1 {
         return candidates.first().map(|_| 0);
     }
+    let heads = ranked_heads(kb, candidates);
     let mut best = 0;
-    for i in 1..candidates.len() {
-        if more_specific(kb, &candidates[i], &candidates[best]) {
+    for i in 1..heads.len() {
+        if heads_more_specific(kb, &heads[i], &heads[best]) {
             best = i;
         }
     }
-    (0..candidates.len())
-        .all(|i| i == best || more_specific(kb, &candidates[best], &candidates[i]))
+    (0..heads.len())
+        .all(|i| i == best || heads_more_specific(kb, &heads[best], &heads[i]))
         .then_some(best)
 }
 
 /// The candidates no other is more specific than ([`more_specific`]): the tie a dispatch
 /// with no greatest candidate stands at, which a default arbitrates and an ambiguity names.
 pub(super) fn maximal_candidates(kb: &mut KnowledgeBase, candidates: &[Candidate]) -> Vec<usize> {
-    (0..candidates.len())
+    let heads = ranked_heads(kb, candidates);
+    (0..heads.len())
         .filter(|&i| {
-            (0..candidates.len()).all(|j| i == j || !more_specific(kb, &candidates[j], &candidates[i]))
+            (0..heads.len()).all(|j| i == j || !heads_more_specific(kb, &heads[j], &heads[i]))
         })
         .collect()
 }
@@ -2078,7 +2122,11 @@ pub(super) fn maximal_candidates(kb: &mut KnowledgeBase, candidates: &[Candidate
 /// Is `a` strictly more specific than `b`: `b`'s provision answers at `a`'s head and `a`'s
 /// does not answer at `b`'s ([`head_answers`]).
 pub(super) fn more_specific(kb: &mut KnowledgeBase, a: &Candidate, b: &Candidate) -> bool {
-    a.row != b.row && head_answers(kb, b.row, a.row) && !head_answers(kb, a.row, b.row)
+    if a.row == b.row {
+        return false;
+    }
+    let (a, b) = (ranked_head(kb, a.row), ranked_head(kb, b.row));
+    heads_more_specific(kb, &a, &b)
 }
 
 /// Does the provision `row` answer at the head of the provision `asked`: `asked`'s bindings
@@ -2087,40 +2135,73 @@ pub(super) fn more_specific(kb: &mut KnowledgeBase, a: &Candidate, b: &Candidate
 /// concrete head, WI-824). The match is [`candidates_at`]'s, binding by binding; a type
 /// parameter `asked` leaves unwritten is any, which a row that writes it does not answer at.
 pub(super) fn head_answers(kb: &mut KnowledgeBase, row: RuleId, asked: RuleId) -> bool {
-    let (Some(row), Some(asked)) = (
-        decode_provides_row(kb, row, |_| true),
-        decode_provides_row(kb, asked, |_| true),
-    ) else {
-        return false;
-    };
-    let type_param_names: Vec<String> = kb.type_params_of_sort(row.spec_base);
-    let rigids: Vec<(Symbol, Value)> = impl_param_symbols(kb, asked.provider)
-        .into_iter()
-        .map(|p| (p, Value::term(fresh_rigid_named(kb, p))))
-        .collect();
-    let written: Vec<(Symbol, Value)> = asked
+    match (ranked_head(kb, row), ranked_head(kb, asked)) {
+        (Some(row), Some(asked)) => head_answers_at(kb, &row, &asked),
+        _ => false,
+    }
+}
+
+/// A provision's head as the ranking reads it, decoded once for every comparison it is in:
+/// the bindings it writes for its spec's type parameters, those bindings as the goal another
+/// provision is asked at ([`head_answers`]), and its provider's own parameters.
+struct RankedHead {
+    row: RuleId,
+    provider: Symbol,
+    written: Vec<(Symbol, Value)>,
+    as_goal: SortGoal,
+    impl_params: SmallVec<[Symbol; 2]>,
+}
+
+fn ranked_head(kb: &mut KnowledgeBase, row: RuleId) -> Option<RankedHead> {
+    let decoded = decode_provides_row(kb, row, |_| true)?;
+    let type_param_names: Vec<String> = kb.type_params_of_sort(decoded.spec_base);
+    let written: Vec<(Symbol, Value)> = decoded
         .bindings(kb)
         .into_iter()
         .filter(|(k, _)| type_param_names.iter().any(|n| n == kb.local_name_of(*k)))
         .collect();
-    let goal_bindings: SmallVec<[(Symbol, Value); 2]> = written
-        .into_iter()
-        .map(|(k, v)| (k, sigma_subst_type(kb, &v, &rigids)))
+    let impl_params = impl_param_symbols(kb, decoded.provider);
+    let rigids: Vec<(Symbol, Value)> = impl_params
+        .iter()
+        .map(|&p| (p, Value::term(ranking_rigid(kb, p))))
         .collect();
-    let goal = SortGoal {
-        spec_sort: row.spec_base,
-        bindings: goal_bindings,
-        carrier: None,
+    let bindings = written
+        .iter()
+        .map(|(k, v)| (*k, sigma_subst_type(kb, v, &rigids)))
+        .collect();
+    Some(RankedHead {
+        row,
+        provider: decoded.provider,
+        written,
+        as_goal: SortGoal {
+            spec_sort: decoded.spec_base,
+            bindings,
+            carrier: None,
+        },
+        impl_params,
+    })
+}
+
+fn ranked_heads(kb: &mut KnowledgeBase, candidates: &[Candidate]) -> Vec<Option<RankedHead>> {
+    candidates.iter().map(|c| ranked_head(kb, c.row)).collect()
+}
+
+/// [`more_specific`] over two decoded heads; a row that does not decode answers nowhere.
+fn heads_more_specific(kb: &mut KnowledgeBase, a: &Option<RankedHead>, b: &Option<RankedHead>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return false;
     };
-    let impl_params = impl_param_symbols(kb, row.provider);
+    a.row != b.row && head_answers_at(kb, b, a) && !head_answers_at(kb, a, b)
+}
+
+/// [`head_answers`] over two decoded heads.
+fn head_answers_at(kb: &mut KnowledgeBase, row: &RankedHead, asked: &RankedHead) -> bool {
+    let goal = &asked.as_goal;
     let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
     let mut notes = MatchNotes::default();
-    for (key, candidate_value) in row.bindings(kb) {
-        let short = kb.local_name_of(key).to_string();
-        if !type_param_names.iter().any(|n| *n == short) {
-            continue;
-        }
-        let Some(asked_value) = goal_binding_value(kb, &goal, key).cloned() else {
+    for (key, candidate_value) in &row.written {
+        let Some(asked_value) = goal_binding_value(kb, goal, *key).cloned() else {
+            let short = kb.local_name_of(*key).to_string();
             if sort_param_is_effect_row(kb, goal.spec_sort, &short) {
                 continue;
             }
@@ -2129,10 +2210,10 @@ pub(super) fn head_answers(kb: &mut KnowledgeBase, row: RuleId, asked: RuleId) -
         if !match_candidate_against_goal(
             kb,
             row.provider,
-            true,
-            &candidate_value,
+            MatchAt::Top,
+            candidate_value,
             &asked_value,
-            &impl_params,
+            &row.impl_params,
             &mut impl_subst,
             &mut notes,
             None,
@@ -2141,6 +2222,17 @@ pub(super) fn head_answers(kb: &mut KnowledgeBase, row: RuleId, asked: RuleId) -
         }
     }
     true
+}
+
+/// The rigid [`head_answers`] reads the provider parameter `param` as, minted once
+/// ([`KnowledgeBase::ranking_rigids`]).
+fn ranking_rigid(kb: &mut KnowledgeBase, param: Symbol) -> TermId {
+    if let Some(&rigid) = kb.ranking_rigids.get(&param) {
+        return rigid;
+    }
+    let rigid = fresh_rigid_named(kb, param);
+    kb.ranking_rigids.insert(param, rigid);
+    rigid
 }
 
 /// Whether a condition of `impl_sort`'s provision at `spec`, or a `requires` of its own,

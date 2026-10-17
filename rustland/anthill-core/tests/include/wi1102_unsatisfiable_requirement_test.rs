@@ -930,10 +930,16 @@ fn the_refusal_advises_provides_and_never_the_retired_fact_spelling() {
          who cannot edit it, which is a repair only at the file's top level; got:\n{text}"
     );
     assert!(
-        text.contains("on the carrier or on a witness sort, or add `requires")
+        text.contains("on the carrier or on a witness sort;")
             && text.contains("or on a witness sort — or call an operation"),
         "BOTH sentences must offer the witness route (058) — the generic hint and the \
          carrier clause; got:\n{text}"
+    );
+    // The requirement is ground, so no caller could say it: a `requires` in scope would move
+    // the refusal to the caller (WI-20260908-9WVT7's seventh review).
+    assert!(
+        !text.contains("add `requires"),
+        "a ground requirement is advised no `requires` in scope; got:\n{text}"
     );
     assert!(
         !text.contains("`fact"),

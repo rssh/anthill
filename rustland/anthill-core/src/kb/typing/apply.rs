@@ -2218,7 +2218,7 @@ pub(super) fn check_apply_iter(
         // vacuous and the handler wrote the place all the same (MEASURED: `set(p, 5)` over
         // `p: Plain`, a sort with no `Modifiable`, loaded, and a nullary one was written in
         // silence), so the call is refused, as a written `effects Modify[p]` there is. An
-        // argument that names no place at all is the refusal above's.
+        // argument of `set` that names no place at all is the refusal above's.
         if let Some(refusal) = modify_runtime_at_unmodifiable_place(
             kb,
             fn_sym,
@@ -2832,37 +2832,44 @@ pub(super) fn check_apply_iter(
                 // from disagreeing; the equality is stronger than
                 // [`dictionary_covers_target`] and subsumes it here (a target that IS the
                 // spec op has the spec as its owner, which every layout covers).
-                let default_tree = default_tree.filter(|tree| {
-                    tree.impl_sort()
-                        .is_some_and(|provider| resolve_op_target(kb, provider, fn_sym) == fn_sym)
-                });
-                if default_tree.is_some() {
-                    // `fn_sym` as its OWN target: the default body is what runs, so the
-                    // classification names the spec op on both sides, exactly as the
-                    // Direct arm did — only the dictionary changes.
-                    classify_pin_or_apply_within(
-                        kb,
-                        occ,
-                        fn_sym,
-                        fn_sym,
-                        env.enclosing_sort(),
-                        default_tree,
-                        Some(&OpSupplyCtx {
-                            subst: &subst,
-                            caller_requires: env.enclosing_frame_chain(),
-                            param_rigids: env.param_rigids(),
-                            selected: &selections,
-                            enclosing_op: env.enclosing_op(),
-                            param_arg_types: &projection_receivers,
-                            held: &held_views,
-                        }),
-                    )?;
-                    return Ok(TypeResult {
-                        ty: resolved_ret,
-                        env: env.clone(),
-                        effects,
-                        node: Rc::clone(occ),
-                    });
+                // A PROVISION REACHED THROUGH THE SUBTYPE RELATION speaks for the call as one at
+                // the carrier itself does (§8.7: a witness sort's member beats the default):
+                // where the instance's provider writes the member, the member runs, entered with
+                // the instance; where it writes none, the default body runs with it
+                // ([`defaulted_call_target`]). Suppliers are found by the exact carrier, so such
+                // a member was found by nothing, and the default body ran in its place.
+                if let Some(tree) = default_tree {
+                    if let Some(target) = defaulted_call_target(kb, spec_sort, fn_sym, &tree) {
+                        if target != fn_sym {
+                            let derived = dispatched_impl_effects(
+                                kb, flow, target, &op, &call_view, &subst, span,
+                            )?;
+                            merge_effects_into(kb, &mut effects, &derived);
+                        }
+                        classify_pin_or_apply_within(
+                            kb,
+                            occ,
+                            fn_sym,
+                            target,
+                            env.enclosing_sort(),
+                            Some(tree),
+                            Some(&OpSupplyCtx {
+                                subst: &subst,
+                                caller_requires: env.enclosing_frame_chain(),
+                                param_rigids: env.param_rigids(),
+                                selected: &selections,
+                                enclosing_op: env.enclosing_op(),
+                                param_arg_types: &projection_receivers,
+                                held: &held_views,
+                            }),
+                        )?;
+                        return Ok(TypeResult {
+                            ty: resolved_ret,
+                            env: env.clone(),
+                            effects,
+                            node: Rc::clone(occ),
+                        });
+                    }
                 }
             }
 
@@ -2892,6 +2899,77 @@ pub(super) fn check_apply_iter(
                     )
                 }) {
                     return Err(refusal);
+                }
+                // A GROUND GOAL A PROVISION ANSWERS THROUGH THE SUBTYPE RELATION: the carrier
+                // provides nothing itself, so no carrier was classified, and the instance is
+                // the provision's (`TOrd.cmp(dog(1), dog(2))` under `AscW provides TOrd[T =
+                // Animal]`). It runs as at a classified carrier ([`defaulted_call_target`]).
+                // MEASURED before: `AscW`'s own `cmp` (30) was never reached, and the default
+                // body ran (20). Only at a carrier the goal pins ([`goal_pinned_carrier`]): a
+                // value of an abstract spec is some provider at run time, which chooses there.
+                let ground = goal_pinned_carrier(kb, &goal).is_some()
+                    && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
+                    && goal
+                        .bindings
+                        .iter()
+                        .all(|(_, v)| type_is_ground(kb, v) && !type_mentions_type_var(kb, v));
+                if ground {
+                    let dispatch_sigma = SigmaCtx {
+                        subst: &subst,
+                        param_rigids: env.param_rigids(),
+                    };
+                    let scope = ResolutionScope {
+                        available_requires: env.enclosing_requires(),
+                        sigma: Some(&dispatch_sigma),
+                        pin: pinned_selection_for(kb, &selections, spec_sort),
+                        sub_goal_requires: env.sub_goal_requires(),
+                    };
+                    // Another sort's provision: a sort answering for itself (`User.via` of a
+                    // sort that requires something, which provides no spec) is no instance a
+                    // provision chose, and its own frame is the call's dictionary.
+                    if let ResolutionResult::Resolved(
+                        tree @ (ResolvedRequiresNode::Conditional { .. }
+                        | ResolvedRequiresNode::Leaf { .. }),
+                    ) = resolve(kb, &goal, &scope)
+                    {
+                        let another = tree
+                            .impl_sort()
+                            .is_some_and(|p| !same_sort_canonical(kb, p, spec_sort));
+                        if let Some(target) = another
+                            .then(|| defaulted_call_target(kb, spec_sort, fn_sym, &tree))
+                            .flatten()
+                        {
+                            if target != fn_sym {
+                                let derived = dispatched_impl_effects(
+                                    kb, flow, target, &op, &call_view, &subst, span,
+                                )?;
+                                merge_effects_into(kb, &mut effects, &derived);
+                            }
+                            classify_pin_or_apply_within(
+                                kb,
+                                occ,
+                                fn_sym,
+                                target,
+                                env.enclosing_sort(),
+                                Some(tree),
+                                Some(&OpSupplyCtx {
+                                    subst: &subst,
+                                    caller_requires: env.enclosing_frame_chain(),
+                                    param_rigids: env.param_rigids(),
+                                    selected: &selections,
+                                    enclosing_op: env.enclosing_op(),
+                                    param_arg_types: &projection_receivers,
+                                    held: &held_views,
+                                }),
+                            )?;
+                            return Ok(TypeResult {
+                                ty: resolved_ret,
+                                env: env.clone(),
+                                effects,
+                                node: Rc::clone(occ),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -5431,6 +5509,28 @@ fn defaulted_call_at_non_instance(
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }
 
+/// What a call of a defaulted spec operation runs at the instance `tree`: the default body
+/// (`fn_sym` itself) where the instance's provider writes no member for it, and the
+/// provider's own member where it writes one, entered with the instance's dictionary,
+/// which must cover it. `None` for a member inherited from a third sort — a `FiniteCollection`
+/// instance at a carrier whose `filter` is `Iterable`'s (WI-1091) — which the instance says
+/// nothing about.
+fn defaulted_call_target(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    tree: &ResolvedRequiresNode,
+) -> Option<Symbol> {
+    let provider = tree.impl_sort()?;
+    let target = resolve_op_target(kb, provider, fn_sym);
+    if target == fn_sym {
+        return Some(fn_sym);
+    }
+    let own = impl_parent_of_op(kb, target).is_some_and(|owner| same_sort_canonical(kb, owner, provider));
+    (own && op_is_interpretable(kb, target) && dictionary_covers_target(kb, spec_sort, provider, target))
+        .then_some(target)
+}
+
 /// `ModifyRuntime.get` or `.set` handed a place that is no resource: they read and write the
 /// very place they are handed, so the place must itself be of a modifiable type
 /// ([`crate::kb::region::type_is_modifiable_place`]) — a type that only holds one (an empty
@@ -5449,15 +5549,18 @@ fn modify_runtime_at_unmodifiable_place(
     span: Option<Span>,
 ) -> Option<TypeError> {
     // By the qualified name, which is the canonical symbol's: no lookup per call.
-    if !matches!(
-        kb.qualified_name_of(fn_sym),
-        "anthill.prelude.ModifyRuntime.get" | "anthill.prelude.ModifyRuntime.set"
-    ) {
-        return None;
-    }
+    let is_set = match kb.qualified_name_of(fn_sym) {
+        "anthill.prelude.ModifyRuntime.set" => true,
+        "anthill.prelude.ModifyRuntime.get" => false,
+        _ => return None,
+    };
     // The place is the operation's first parameter, `target`.
     let (target, _) = params.first()?;
-    if placeless.contains_key(target) {
+    // A place written inline (`set((c, 2), 5)`, a literal) is refused for `set`, whose row
+    // writes `Modify[target]`, by the refusal of an argument that names no place
+    // (`unrekeyed_modify_argument`). `get` declares no `Modify`, so nothing else reads its
+    // inline place: it is judged here, as a named one is.
+    if is_set && placeless.contains_key(target) {
         return None;
     }
     let (_, _, ty) =
