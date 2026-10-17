@@ -211,7 +211,7 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 
 ## 8. Today, and what changes
 
-`docs/design/037-implementation.md` will give the plan. In summary:
+[`docs/design/037-implementation.md`](../design/037-implementation.md) gives the plan, with the decisions it still needs. In summary:
 
 **What exists:**
 - the Cell arena, with slot identity (WI-205);

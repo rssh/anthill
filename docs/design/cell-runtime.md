@@ -472,7 +472,7 @@ A subtlety: when an alt's body **succeeds** and yields a solution, what happens 
 - **Pure search** (Prolog `assert`/`assume` style — proposal 027 §"Sticky vs transactional"): mutations are **per-search-path**. Yielding a solution doesn't commit; mutations stay only for the duration of that solution being inspected, then unwind on backtrack-to-find-more-solutions.
 - **Speculative-then-keep** (rare; not the design's target): the first successful path's mutations are committed.
 
-The cell_arena's `register_undo` is agnostic — it logs mutations and replays them when the resolver decides to abandon. The resolver's policy on "when does abandon happen" determines the semantics. For v1 (matching proposal 037 §"Cell[V]" — branch-local snapshot), the pure-search stance is correct: mutations made under a Branch never escape that Branch's scope.
+The cell_arena's `register_undo` is agnostic — it logs mutations and replays them when the resolver decides to abandon. The resolver's policy on "when does abandon happen" determines the semantics. For v1 (037 §6.2: an abandoned alternative's writes are undone), the pure-search stance is correct: mutations made under a Branch never escape that Branch's scope.
 
 ### Branch commit
 
