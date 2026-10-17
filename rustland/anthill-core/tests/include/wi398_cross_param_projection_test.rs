@@ -15,6 +15,11 @@
 //! seam map (WI-398 = "`k : s.provider.K` depends on param `s`; cross-param + synthesis
 //! order"). As in WI-397 the member projected is a DIRECT type-param of the field's
 //! sort (`Inner[T = String].T`); a provided-spec member is the separate follow-on.
+//!
+//! As in WI-397's file, the projecting operation sits body-less in a sort without
+//! constructors (`Ops`), beside its caller: a body-less operation of a namespace has no
+//! definition and is refused (WI-20260909-M8QWJ), and a body would type the signature
+//! against its own BARE receiver, where `s.cell` is the abstract `P` — a loud error.
 
 use crate::common::load_errors_of_files as load_errors;
 
@@ -34,8 +39,10 @@ namespace test.wi398.ok
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper, k: s.cell.T) -> String
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(w, "abc")
+  sort Ops
+    operation check(s: Wrapper, k: s.cell.T) -> String
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(w, "abc")
+  end
 end
 "#;
     assert!(
@@ -61,8 +68,10 @@ namespace test.wi398.wrong
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper, k: s.cell.T) -> String
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(w, 42)
+  sort Ops
+    operation check(s: Wrapper, k: s.cell.T) -> String
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(w, 42)
+  end
 end
 "#;
     assert!(
@@ -87,8 +96,10 @@ namespace test.wi398.reorder
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check2(k: s.cell.T, s: Wrapper) -> String
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check2("abc", w)
+  sort Ops
+    operation check2(k: s.cell.T, s: Wrapper) -> String
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check2("abc", w)
+  end
 end
 "#;
     assert!(
@@ -160,12 +171,14 @@ namespace test.wi398.chain
     sort P = ?
     entity outer(p: P)
   end
-  operation chain(a: Outer, b: a.P, c: b.Q) -> String
-  operation caller(
-      a: Outer[P = Mid[Q = Inner[T = String]]],
-      b: Mid[Q = Inner[T = String]],
-      c: Inner[T = String]
-  ) -> String = chain(a, b, c)
+  sort Ops
+    operation chain(a: Outer, b: a.P, c: b.Q) -> String
+    operation caller(
+        a: Outer[P = Mid[Q = Inner[T = String]]],
+        b: Mid[Q = Inner[T = String]],
+        c: Inner[T = String]
+    ) -> String = chain(a, b, c)
+  end
 end
 "#;
     assert!(
@@ -194,12 +207,14 @@ namespace test.wi398.chain2
     sort P = ?
     entity outer(p: P)
   end
-  operation chain(a: Outer, b: a.P, c: b.Q) -> String
-  operation caller(
-      a: Outer[P = Mid[Q = Inner[T = String]]],
-      b: Mid[Q = Inner[T = Int64]],
-      c: Inner[T = Int64]
-  ) -> String = chain(a, b, c)
+  sort Ops
+    operation chain(a: Outer, b: a.P, c: b.Q) -> String
+    operation caller(
+        a: Outer[P = Mid[Q = Inner[T = String]]],
+        b: Mid[Q = Inner[T = Int64]],
+        c: Inner[T = Int64]
+    ) -> String = chain(a, b, c)
+  end
 end
 "#;
     assert!(
@@ -208,10 +223,11 @@ end
     );
 }
 
-/// Signature well-formedness must cover a body-less FREE operation (a namespace-level
-/// spec): the body-type-check pass skips it, so the dedicated `check_operation_signatures`
-/// pass over ALL operations is what catches its cyclic signature. (Regression guard for
-/// the all-operations signature pass.)
+/// Signature well-formedness must cover a body-less FREE operation: the body-type-check
+/// pass skips it, so the dedicated `check_operation_signatures` pass over ALL operations
+/// is what catches its cyclic signature. (Regression guard for the all-operations
+/// signature pass.) Since WI-20260909-M8QWJ the op is also refused for having no
+/// definition; the cycle is reported beside that refusal.
 #[test]
 fn cyclic_signature_in_bodyless_free_op_is_rejected() {
     let bad = r#"

@@ -155,6 +155,7 @@ kb_scoped_fields!(
     sort_base_subst,
     op_records,
     op_decl_sites,
+    op_bodies_refused,
     op_capture_params,
     decl_sites,
     // WI-20261009-4ZRTG — a layer's scan replaces the first and a layer never seals, so
@@ -419,6 +420,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         sort_base_subst: _,
         op_records: _,
         op_decl_sites: _,
+        op_bodies_refused: _,
         op_capture_params: _,
         decl_sites: _,
         scan_type_decls: _,
@@ -1046,7 +1048,7 @@ end
         let parsed = parse::parse(
             "namespace xqgew.layer\n  import anthill.prelude.{Int64}\n  sort Tagger\n    \
              sort C = ?\n    effects E = ?\n    operation tag(self: C) -> Int64 effects {E}\n  \
-             end\n  operation one(x: Tagger.C) -> Int64 effects {Tagger.E}\nend\n",
+             end\n  operation one(x: Tagger.C) -> Int64 effects {Tagger.E} = 0\nend\n",
         )
         .unwrap();
         if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {

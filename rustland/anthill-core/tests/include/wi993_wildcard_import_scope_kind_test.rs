@@ -139,7 +139,7 @@ fn wildcard_import_of_an_entity_names_the_entity_kind() {
     let src = r#"namespace wi993c.lib
   sort Host
     entity mk(x: Int64)
-    operation op1(x: Int64) -> Int64
+    operation op1(x: Int64) -> Int64 = 0
   end
 end
 
@@ -190,7 +190,7 @@ end
 fn a_plain_import_keeps_its_alias_and_stops_leaking_the_siblings() {
     let src = r#"namespace wi993e.lib
   sort Host
-    operation op1(x: Int64) -> Int64
+    operation op1(x: Int64) -> Int64 = 0
     operation op2(x: Int64) -> Int64
   end
 end
@@ -303,7 +303,7 @@ fn control_wildcard_of_a_variantless_sort_still_brings_its_operations() {
     load_kb_with(
         r#"namespace wi993f.lib
   sort Host
-    operation op1(x: Int64) -> Int64
+    operation op1(x: Int64) -> Int64 = 0
   end
 end
 

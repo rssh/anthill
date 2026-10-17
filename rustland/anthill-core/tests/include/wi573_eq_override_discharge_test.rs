@@ -115,7 +115,7 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
   end
 
   operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
+    effects { Boom :- eq(c, Red) } = 0
 "#;
 
 /// `Color` with NO override (`provides Eq` only) — the structural builtin IS this
@@ -142,7 +142,7 @@ const STRUCTURAL_EQ_PRELUDE: &str = r#"
   end
 
   operation risky(c: Color) -> Int64
-    effects { Boom :- eq(c, Red) }
+    effects { Boom :- eq(c, Red) } = 0
 "#;
 
 #[test]
@@ -291,7 +291,7 @@ namespace anthill.test.wi573suspend
   end
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
-    effects {{ Boom :- eq(c, Red) }}
+    effects {{ Boom :- eq(c, Red) }} = 0
 
   operation caller() -> Int64 =
     risky(Green)
@@ -342,7 +342,7 @@ namespace anthill.test.wi573symbolic
   end
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
-    effects {{ Boom :- eq(c, Red) }}
+    effects {{ Boom :- eq(c, Red) }} = 0
 
   operation caller(c: Color) -> Int64 =
     risky(c)
@@ -440,7 +440,7 @@ namespace anthill.test.wi573nestedelem
   end
 
   operation risky(o: Option[T = Color]) -> Int64
-    effects { Boom :- eq(o, some(Red)) }
+    effects { Boom :- eq(o, some(Red)) } = 0
 
   operation caller() -> Int64 =
     risky(some(Green))
@@ -492,7 +492,7 @@ namespace anthill.test.wi573nestedfield
   end
 
   operation risky(w: Wrap) -> Int64
-    effects { Boom :- eq(w, W(c: Red)) }
+    effects { Boom :- eq(w, W(c: Red)) } = 0
 
   operation caller() -> Int64 =
     risky(W(c: Green))
@@ -540,7 +540,7 @@ namespace anthill.test.wi573nestednative
   end
 
   operation risky(o: Option[T = Color]) -> Int64
-    effects { Boom :- eq(o, some(Red)) }
+    effects { Boom :- eq(o, some(Red)) } = 0
 
   operation caller() -> Int64 =
     risky(some(Green))

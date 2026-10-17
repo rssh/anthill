@@ -30,11 +30,12 @@ use crate::common::load_errors_of_files as load_errors;
 /// The shared WorkItemStore-shaped spec + carrier: `Store` has a SOLE type-param
 /// `State` (its carrier — the slot a `provides` binds); `WIS` is the concrete
 /// state shape an impl carries. (`peek` gives the spec a member op so it is a real
-/// interface.)
+/// interface; its default body lets a witness provide `Store` without a `peek` of its own,
+/// which WI-20260909-M8QWJ requires.)
 const STORE: &str = r#"
   sort Store
     sort State = ?
-    operation peek(s: State) -> Bool
+    operation peek(s: State) -> Bool = true
   end
   enum WIS
     entity wis(n: Int64)
@@ -56,7 +57,7 @@ fn bare_spec_member_param_infers_at_concrete_call() {
     // WI-20260921-3G1YT is why it must: a declared `requires` is owed by the caller
     // BECAUSE IT IS DECLARED, so a call that pins `P := WIS` must produce the evidence.
     // Before that ticket the refusal was withheld here for a second reason — `useSugar`
-    // and `useExplicit` are BODY-LESS, and the walk that decided the verdict answered
+    // and `useExplicit` were BODY-LESS, and the walk that decided the verdict answered
     // "reads nothing" for a callee with no body to walk. That is exactly the reading
     // WI-20260921-28TAT found wrong for `Error.reify`, and the walk is now gone.
     //
@@ -70,14 +71,14 @@ fn bare_spec_member_param_infers_at_concrete_call() {
     let sugar = with_store(
         "infer",
         &format!(
-            "{WITNESS}  operation useSugar(s: Store.State) -> Int64\n  \
+            "{WITNESS}  operation useSugar(s: Store.State) -> Int64 = 0\n  \
              operation callIt(x: WIS) -> Int64 = useSugar(x)\n"
         ),
     );
     let explicit = with_store(
         "infer_explicit",
         &format!(
-            "{WITNESS}  operation useExplicit[P](s: P) -> Int64 requires Store[State = P]\n  \
+            "{WITNESS}  operation useExplicit[P](s: P) -> Int64 requires Store[State = P] = 0\n  \
              operation callIt(x: WIS) -> Int64 = useExplicit(x)\n"
         ),
     );
@@ -112,8 +113,8 @@ fn two_refs_in_one_signature_share_one_carrier() {
 fn distinct_operations_get_distinct_carriers() {
     let src = with_store(
         "distinct",
-        "  operation first(s: Store.State) -> Int64\n  \
-         operation second(s: Store.State) -> Int64\n",
+        "  operation first(s: Store.State) -> Int64 = 0\n  \
+         operation second(s: Store.State) -> Int64 = 0\n",
     );
     assert!(
         load_errors(&[&src]).is_empty(),
@@ -201,7 +202,7 @@ fn no_carrier_in_scope_stays_generic() {
 /// a carrier — it stays the loud no-member error.
 #[test]
 fn undeclared_member_is_loud() {
-    let src = with_store("undeclared", "  operation bad(s: Store.Nope) -> Int64\n");
+    let src = with_store("undeclared", "  operation bad(s: Store.Nope) -> Int64 = 0\n");
     let errs = load_errors(&[&src]);
     assert!(
         errs.iter().any(|e| e.contains("Nope")),
@@ -218,7 +219,7 @@ fn data_sort_member_is_not_sugar() {
     let src = format!(
         "namespace test.wi201.datasort\n  import anthill.prelude.Int64\n\
          \x20 enum Box\n    sort T = ?\n    entity box(v: T)\n  end\n\
-         \x20 operation weird(x: Box.T) -> Int64\nend\n"
+         \x20 operation weird(x: Box.T) -> Int64 = 0\nend\n"
     );
     let errs = load_errors(&[&src]);
     assert!(

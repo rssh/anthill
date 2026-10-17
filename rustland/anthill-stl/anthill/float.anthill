@@ -16,9 +16,11 @@ namespace anthill.prelude
     -- `OperationBodyMissing` on a program that loaded clean — a host carrier was exempt
     -- from the load-time backing check WHOLESALE (`check_provider_operations`), which
     -- WI-880 narrowed to a per-operation question now that backing is knowable per
-    -- operation. `recip` is absent from this list ON PURPOSE: its equation in `stdlib/anthill/prelude/float.anthill` is
-    -- an exact definition and carries `@[simp]`, so it inlines instead of dispatching.
-    -- Every other declared operation is here.
+    -- operation. `recip` is absent from this list ON PURPOSE: its BODY in `stdlib/anthill/prelude/float.anthill`,
+    -- `div(1.0, a)`, is an exact definition, beside the `@[simp]` equation that inlines a
+    -- named call (WI-20260909-M8QWJ gave it the body: no dispatch through `Field` can run an
+    -- equation). So are `nonEqRefl`'s, `zero`'s and `one`'s. Every other declared
+    -- operation is here.
     operation_map {
       gt: "float_gt",
       gte: "float_gte",

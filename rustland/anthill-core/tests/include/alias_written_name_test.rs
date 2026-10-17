@@ -306,12 +306,12 @@ fn a_result_field_effect_is_checked_through_an_alias() {
                  sort Two = (a: Cell[V = Int64], b: Cell[V = Int64])\n";
     let taken = load_errors_of(&source(
         "awnfield",
-        &format!("{decls}  operation pair() -> Two\n    effects {{Modify[result.a], Modify[result.b]}}"),
+        &format!("{decls}  operation pair() -> Two\n    effects {{Modify[result.a], Modify[result.b]}} = pair()"),
     ));
     assert!(taken.is_empty(), "{taken:#?}");
     let refused = refusal(
         "awnfieldbad",
-        &format!("{decls}  operation pair() -> Two\n    effects Modify[result.nonexistent]"),
+        &format!("{decls}  operation pair() -> Two\n    effects Modify[result.nonexistent] = pair()"),
     );
     assert!(
         refused.contains("field projection") && refused.contains("nonexistent"),

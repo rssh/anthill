@@ -121,7 +121,7 @@ namespace test.wi620.logic
 
   operation f(xs: List[T = Int64]) -> Bool
     requires all_match(xs, lambda (x) -> is_pos(x))
-    ensures all_match(xs, lambda (x) -> is_pos(x))
+    ensures all_match(xs, lambda (x) -> is_pos(x)) = true
 
   rule all_pos(?xs) :- all_match(?xs, lambda (x) -> is_pos(x))
 end

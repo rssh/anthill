@@ -579,16 +579,30 @@ fn a_host_entry_is_told_the_operation_is_defined_by_clauses() {
 }
 
 /// The other side of that message: no clause, and it says so apart from what a call runs.
+///
+/// A namespace's operation with nothing is refused at its DECLARATION since
+/// WI-20260909-M8QWJ, which moved this row's program from the run-time message to a load
+/// error — one that still says no clause defines it. The run-time message is pinned on
+/// what still reaches it: a body-less member of a sort with no constructor, which a
+/// provider could supply and so loads, entered directly by a host.
 #[test]
 fn an_operation_with_nothing_is_told_it_has_no_clause() {
+    assert_refused_naming(
+        &load_errors_of(
+            "namespace test.cr6gdnone\n  import anthill.prelude.Int64\n  operation ping() -> Int64\nend\n",
+        ),
+        &["operation `test.cr6gdnone.ping` has no definition", "no clause defines it"],
+        "a namespace's operation with no body and no clause",
+    );
+
     let mut interp = interp_for(
-        "namespace test.cr6gdnone\n  import anthill.prelude.Int64\n  operation ping() -> Int64\nend\n",
+        "namespace test.cr6gdnone\n  import anthill.prelude.Int64\n  sort Spec\n    sort T = ?\n    operation ping() -> Int64\n  end\nend\n",
     );
     let err = interp
-        .call("test.cr6gdnone.ping", &[])
+        .call("test.cr6gdnone.Spec.ping", &[])
         .expect_err("nothing defines it");
     let msg = err.to_string();
-    assert!(msg.contains("operation has no body: test.cr6gdnone.ping"), "{msg}");
+    assert!(msg.contains("operation has no body: test.cr6gdnone.Spec.ping"), "{msg}");
     assert!(msg.contains("No clause is indexed under it either"), "{msg}");
     assert!(!msg.contains("defined by the clauses"), "{msg}");
 }

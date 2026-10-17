@@ -60,8 +60,14 @@ sort guardians.Email
                     external_addr}
   import guardians.TrustLevel.{Untrusted, Trusted}
 
+  -- HOST-BOUND, CLAIMED AND MAPPED (WI-20260909-M8QWJ). `Email` has no constructors,
+  -- so a provider could supply these two — but a call `Email.fetch(box)` names no
+  -- carrier of `Email` and no candidate holds a `requires Email`, so no provider could
+  -- ever be selected for it, and such a call is refused at load. A deployment binds
+  -- the mailbox; the binding block below names the functions, and the test harness
+  -- supplies stand-ins that raise.
   operation fetch(box: Mailbox) -> List[Message[Untrusted]]
-    effects {External, Error}
+    effects {External, Error} @[host_implemented]
 
   -- THE SINK, GATED ON ITS TARGET. `Permission[Outbox]` is demanded only when the
   -- recipient is outside the organisation: the argument is substituted into the
@@ -109,5 +115,15 @@ sort guardians.Email
      unless the organisation vouched for its content — both who vouched
      (`Permission[Vouch]`) and what was vouched for (`approved`). >}
   operation send(to: Address, body: Text[Trusted]) -> Unit
-    effects {External, Error, (Permission[Outbox] :- external_addr(to))}
+    effects {External, Error, (Permission[Outbox] :- external_addr(to))} @[host_implemented]
+end
+
+namespace guardians
+  provides Email language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map {
+      fetch: "guardians_fetch",
+      send:  "guardians_send"
+    }
+  end
 end

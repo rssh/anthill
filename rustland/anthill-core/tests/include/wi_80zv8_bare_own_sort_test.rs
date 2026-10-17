@@ -281,7 +281,7 @@ namespace wi80zv8b.recv
     sort U = ?
     entity box(v: T)
     operation keep(b: Self) -> Self = b
-    operation fresh() -> Self
+    operation fresh() -> Self = fresh()
     operation via(b: Self) -> Int64 =
       {call}
   end

@@ -123,7 +123,7 @@ use crate::wi1012_static_supplier_tie_test::refusal;
 const PRE: &str = "namespace test.wi1078.rows\n\
     \x20 import anthill.prelude.{Int64, Stream, Error, List, Function}\n\
     \x20 import anthill.prelude.List.{cons, nil}\n\
-    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n";
+    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n";
 
 fn rows(decl: &str) -> String {
     format!("{PRE}{decl}end\n")
@@ -206,7 +206,7 @@ fn the_four_return_spellings_agree() {
     // producer's to pick, whatever it picked.
     let msg = refusal(&rows(
         " operation mk_ints() -> List[T = ?A] = cons(1, nil())\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
          \x20 operation use_it() -> Int64 = want_ints(mk_ints())\n",
     ));
     assert!(
@@ -216,22 +216,23 @@ fn the_four_return_spellings_agree() {
     );
 }
 
-/// The same rule where the producer is BODY-LESS and the parameter is a DATA one rather than
-/// an effect row — the shape a spec declaration takes. Nothing packs a witness here, so this is
-/// the rule read as erasure: the caller may not assume the element type the signature never
-/// wrote down.
+/// The same rule where the producer packs no witness of its own and the parameter is a DATA
+/// one rather than an effect row — the shape a spec declaration takes. Its body is a self-call
+/// (since WI-20260909-M8QWJ a body-less namespace operation is refused at its declaration), so
+/// this is the rule read as erasure: the caller may not assume the element type the signature
+/// never wrote down.
 ///
 /// CONTROL: loads on main.
 #[test]
 fn a_named_variable_only_in_the_return_is_opened_for_a_data_parameter_too() {
     let msg = refusal(&rows(
-        " operation mk_list() -> List[T = ?A]\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+        " operation mk_list() -> List[T = ?A] = mk_list()\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
          \x20 operation use_it() -> Int64 = want_ints(mk_list())\n",
     ));
     assert!(
         msg.contains("want_ints.l") && msg.contains("List[T = ?A]"),
-        "a body-less declaration's unbound return variable is opened at the use too: {msg}",
+        "a witness-free producer's unbound return variable is opened at the use too: {msg}",
     );
 }
 
@@ -247,7 +248,7 @@ fn a_named_variable_only_in_the_return_is_opened_for_a_data_parameter_too() {
 #[test]
 fn a_signature_bound_variable_is_left_flexible() {
     crate::common::load_kb_with(&rows(
-        " operation midentity(a: Stream[T = ?A, E = ?E]) -> Stream[T = ?A, E = ?E]\n\
+        " operation midentity(a: Stream[T = ?A, E = ?E]) -> Stream[T = ?A, E = ?E] = midentity(a)\n\
          \x20 operation use_it(s: Stream[T = Int64, E = {}]) -> Int64 = \
          takes_pure(midentity(s))\n",
     ));
@@ -264,9 +265,9 @@ fn an_operation_type_parameter_is_not_opened() {
     crate::common::load_kb_with(
         "namespace test.wi1078.optp\n\
          \x20 import anthill.prelude.{Int64, String, List}\n\
-         \x20 operation mk3[A]() -> List[T = A]\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
-         \x20 operation want_strs(l: List[T = String]) -> Int64\n\
+         \x20 operation mk3[A]() -> List[T = A] = mk3()\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
+         \x20 operation want_strs(l: List[T = String]) -> Int64 = 0\n\
          \x20 operation use_i() -> Int64 = want_ints(mk3())\n\
          \x20 operation use_s() -> Int64 = want_strs(mk3())\n\
          end\n",
@@ -284,8 +285,8 @@ fn a_requires_bound_binds_its_variable() {
     crate::common::load_kb_with(
         "namespace test.wi1078.req\n\
          \x20 import anthill.prelude.{Int64, List, Eq}\n\
-         \x20 operation mk_eq() -> List[T = ?C] requires Eq[T = ?C]\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation mk_eq() -> List[T = ?C] requires Eq[T = ?C] = mk_eq()\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
          \x20 operation use_it() -> Int64 = want_ints(mk_eq())\n\
          end\n",
     );
@@ -315,9 +316,9 @@ fn the_enclosing_sorts_parameter_is_threaded_from_the_receiver() {
         \x20 sort Holder\n\
         \x20   sort T = ?\n\
         \x20   entity holder(v: T)\n\
-        \x20   operation to_pair(h: Self) -> Pair[A = T, B = T]\n\
+        \x20   operation to_pair(h: Self) -> Pair[A = T, B = T] = to_pair(h)\n\
         \x20 end\n\
-        \x20 operation want_ints(p: Pair[A = Int64, B = Int64]) -> Int64\n\
+        \x20 operation want_ints(p: Pair[A = Int64, B = Int64]) -> Int64 = 0\n\
         \x20 operation use_it(h: Holder[T = Int64]) -> Int64 = want_ints(Holder.to_pair(h))\n\
         end\n";
     crate::common::load_kb_with(SORTPARAM);
@@ -351,8 +352,8 @@ fn the_enclosing_sorts_parameter_is_threaded_from_the_receiver() {
 fn the_tie_survives_the_opening() {
     const TIED: &str = "namespace test.wi1078.tie\n\
         \x20 import anthill.prelude.{Int64, Pair}\n\
-        \x20 operation mk_same() -> Pair[A = ?t, B = ?t]\n\
-        \x20 operation needs_same(p: Pair[A = ?u, B = ?u]) -> Int64\n\
+        \x20 operation mk_same() -> Pair[A = ?t, B = ?t] = mk_same()\n\
+        \x20 operation needs_same(p: Pair[A = ?u, B = ?u]) -> Int64 = 0\n\
         \x20 operation use_it() -> Int64 = needs_same(mk_same())\n\
         end\n";
     crate::common::load_kb_with(TIED);
@@ -394,7 +395,7 @@ fn a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer() {
         \x20   operation widen_self(s: MyStream[T = Int64, E = {Error}]) \
          -> MyStream[T = Int64, E = ?E] = s\n\
         \x20 end\n\
-        \x20 operation takes_pure_s(s: MyStream[T = Int64, E = {}]) -> Int64\n\
+        \x20 operation takes_pure_s(s: MyStream[T = Int64, E = {}]) -> Int64 = 0\n\
         \x20 operation use_it(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure_s(MyStream.widen_self(s))\n\
         end\n";
@@ -437,7 +438,7 @@ fn refusal_of(src: &str) -> String {
 #[test]
 fn the_bare_nullary_name_and_the_eta_lift_open_it_too() {
     let bare = refusal(&rows(
-        " operation mk_bare() -> Stream[T = Int64, E = ?E]\n\
+        " operation mk_bare() -> Stream[T = Int64, E = ?E] = mk_bare()\n\
          \x20 operation use_it() -> Int64 = takes_pure(mk_bare)\n",
     ));
     assert!(
@@ -448,7 +449,7 @@ fn the_bare_nullary_name_and_the_eta_lift_open_it_too() {
         " operation widen_named(s: Stream[T = Int64, E = {Error}]) \
          -> Stream[T = Int64, E = ?E] = s\n\
          \x20 operation apply_it(f: Function[A = Stream[T = Int64, E = {Error}], \
-         B = Stream[T = Int64, E = {}]], s: Stream[T = Int64, E = {Error}]) -> Int64\n\
+         B = Stream[T = Int64, E = {}]], s: Stream[T = Int64, E = {Error}]) -> Int64 = 0\n\
          \x20 operation use_it(s: Stream[T = Int64, E = {Error}]) -> Int64 = \
          apply_it(widen_named, s)\n",
     ));
@@ -477,8 +478,8 @@ fn a_node_carried_parameter_binds_its_variable_too() {
         "namespace test.wi1078.nodetuple\n\
          \x20 import anthill.prelude.{Unit, Int64, Cell, Modify, List}\n\
          \x20 operation run(c: Cell[V = Int64], \
-         t: (f: (x: Int64) -> Unit @ {Modify[c]}, y: List[T = ?T])) -> List[T = ?T]\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         t: (f: (x: Int64) -> Unit @ {Modify[c]}, y: List[T = ?T])) -> List[T = ?T] = run(c, t)\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
          \x20 operation use_it(c: Cell[V = Int64], \
          t: (f: (x: Int64) -> Unit @ {Modify[c]}, y: List[T = Int64])) -> Int64 = \
          want_ints(run(c, t))\n\
@@ -489,8 +490,8 @@ fn a_node_carried_parameter_binds_its_variable_too() {
     crate::common::load_kb_with(
         "namespace test.wi1078.plaintuple\n\
          \x20 import anthill.prelude.{Int64, List}\n\
-         \x20 operation run2(t: (n: Int64, y: List[T = ?T])) -> List[T = ?T]\n\
-         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation run2(t: (n: Int64, y: List[T = ?T])) -> List[T = ?T] = run2(t)\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64 = 0\n\
          \x20 operation use_it(t: (n: Int64, y: List[T = Int64])) -> Int64 = want_ints(run2(t))\n\
          end\n",
     );

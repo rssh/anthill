@@ -24,6 +24,7 @@ namespace anthill.test.wi351
   import anthill.prelude.{List, Int64}
 
   operation reduce[S, T](xs: List[T = T], z: S, f: (a: S, t: T) -> S) -> S
+    = reduce(xs, z, f)
 end
 "#;
     let kb = load_with(source);

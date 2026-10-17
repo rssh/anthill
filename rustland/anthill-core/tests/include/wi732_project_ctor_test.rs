@@ -218,7 +218,7 @@ fn wi732_project_is_writable_and_stays_symbolic_while_abstract() {
 namespace test.wi732sym
 {REL}
   operation wrap[S, K](r: Relation[T = S])
-    -> Relation[T = Project[T = S, Keep = K], E = r.E]
+    -> Relation[T = Project[T = S, Keep = K], E = r.E] = wrap(r)
 end
 "#
     );

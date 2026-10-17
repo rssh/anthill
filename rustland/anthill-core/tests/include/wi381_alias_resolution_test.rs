@@ -30,7 +30,7 @@ fn alias_loads() {
 namespace test.wi381.loads
   import anthill.prelude.{List, Int64}
   sort IntList = List[T = Int64]
-  operation use_it(l: IntList) -> Int64
+  operation use_it(l: IntList) -> Int64 = 0
 end
 "#;
     let errs = load_errors(&[src]);
@@ -47,7 +47,7 @@ fn alias_projection_projects_resolved_member() {
 namespace test.wi381.proj
   import anthill.prelude.{List, Int64}
   sort IntList = List[T = Int64]
-  operation peek(l: IntList) -> l.T
+  operation peek(l: IntList) -> l.T = peek(l)
   operation caller(xs: IntList) -> Int64 = peek(xs)
 end
 "#;
@@ -66,7 +66,7 @@ fn alias_projection_wrong_member_rejected() {
 namespace test.wi381.proj_wrong
   import anthill.prelude.{List, Int64, String}
   sort IntList = List[T = Int64]
-  operation peek(l: IntList) -> l.T
+  operation peek(l: IntList) -> l.T = peek(l)
   operation caller(xs: IntList) -> String = peek(xs)
 end
 "#;
@@ -86,7 +86,7 @@ namespace test.wi381.chain
   import anthill.prelude.{List, Int64}
   sort Mid = List[T = Int64]
   sort Top = Mid
-  operation peek(l: Top) -> l.T
+  operation peek(l: Top) -> l.T = peek(l)
   operation caller(xs: Top) -> Int64 = peek(xs)
 end
 "#;

@@ -299,15 +299,15 @@ fn a_written_parameter_prints_as_before() {
 
 /// WHAT IS READ BACK OF A DECLARED ROW is the member as well — the reading the guardians
 /// checker reports its budget by (`spec_budget`: each of an operation's declared effects
-/// through `type_display_name_value`). No body is checked here, so the variable printed is
-/// the loader's own and not a rigid.
+/// through `type_display_name_value`). The row is read off the declaration, not off the
+/// body's check, so the variable printed is the loader's own and not a rigid.
 #[test]
 fn the_declared_row_reads_back_as_written() {
     let ns = "xqgew.readback";
     let kb = load_kb_with(&program(
         ns,
         &[TWO_SPECS],
-        "  operation one(x: Tagger.C) -> Int64 effects {Tagger.E, Error}",
+        "  operation one(x: Tagger.C) -> Int64 effects {Tagger.E, Error} = 0",
     ));
     let one = kb
         .try_resolve_symbol(&format!("{ns}.one"))

@@ -31,7 +31,7 @@ fn const_mapping_program(ns: &str, entry: &str) -> String {
         "\nnamespace {ns}\n  \
          sort Widget\n    import anthill.prelude.{{Int64}}\n    \
          entity widget(v: Int64)\n    \
-         operation squish(a: Widget, b: Widget) -> Int64\n    \
+         operation squish(a: Widget, b: Widget) -> Int64 = 0\n    \
          const answer: Int64\n  end\n  \
          provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
          const_map {{ {entry} }}\n  end\nend\n"

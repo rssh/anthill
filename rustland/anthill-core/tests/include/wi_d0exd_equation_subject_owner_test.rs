@@ -408,7 +408,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[
             "namespace an1\n  rule f(?x)\nend\n",
-            "namespace an2\n  operation f(b: Bool) -> Int64\nend\n",
+            "namespace an2\n  operation f(b: Bool) -> Int64 = 0\nend\n",
             "namespace an3\n  import an1.*\n  import an2.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &["ambiguous symbol 'f' in scope 'an3'"],

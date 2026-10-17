@@ -1,7 +1,5 @@
 -- Filesystem: file-based persistence backend
 namespace anthill.persistence.filesystem
-  import anthill.reflect.{Term}
-  import anthill.prelude.Meta.{Meta}
   import anthill.prelude.{Modifiable}
 
   -- ── NO STORE PROVISIONS IN THIS FILE (WI-931) ─────────────────────────────
@@ -98,15 +96,8 @@ namespace anthill.persistence.filesystem
                                               -- reads
   }
 
-  namespace Factory
-    operation create(conventions: FileConvention, root: String) -> FileStore
-  end
-
-  operation file_path(fact: Term, meta: Meta, conv: FileConvention) -> String
-
-  -- Status-dependent renaming (stage0 convention):
-  -- Draft    -> .anthill.draft
-  -- Rejected -> .anthill.rejected
-  -- other    -> .anthill
-  operation suffix(status: Term, conv: FileConvention) -> String
+  -- WI-20260909-M8QWJ: `Factory.create`, `file_path` and `suffix` (the stage0
+  -- convention's status-dependent renaming) were declared here with no body, no host
+  -- binding and no caller — the host computes paths itself. A namespace-level operation
+  -- that nothing defines is refused at load, since nothing could ever run it.
 end

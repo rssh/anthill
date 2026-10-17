@@ -37,8 +37,8 @@ namespace test.wi427.ok
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = ""
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = poly()
   operation caller() -> String = check(poly(), "abc")
 end
 "#;
@@ -65,8 +65,8 @@ namespace test.wi427.wrong
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation check(s: Wrapper[P = Inner[T = String]], k: s.cell.T) -> String = ""
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = poly()
   operation caller() -> String = check(poly(), 42)
 end
 "#;
@@ -98,7 +98,7 @@ namespace test.wi427.ctor
   sort Holder
     entity hold(w: Wrapper[P = Inner[T = String]])
   end
-  operation poly[X]() -> Wrapper[P = Inner[T = X]]
+  operation poly[X]() -> Wrapper[P = Inner[T = X]] = poly()
   operation caller() -> Holder = hold(poly())
 end
 "#;

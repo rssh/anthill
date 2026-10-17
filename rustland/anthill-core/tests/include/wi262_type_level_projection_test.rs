@@ -44,6 +44,7 @@ namespace wi262.resulttuple
   import anthill.prelude.{Cell, Int64}
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
+    = make_pair()
 end
 "#;
     let errs = load_errors(&[src]);
@@ -70,6 +71,7 @@ namespace wi262.entityparam
   end
   operation touch(c: Cellish) -> Int64
     effects Modify[c.backend]
+    = 0
 end
 "#;
     let errs = load_errors(&[src]);
@@ -87,6 +89,7 @@ namespace wi262.tupleparam
   import anthill.prelude.{Cell, Int64, Modify, EffectsRuntime}
   operation touch(c: (x: Cell[V = Int64], y: Cell[V = Int64])) -> Int64
     effects Modify[c.x]
+    = 0
 end
 "#;
     let errs = load_errors(&[src]);
@@ -112,6 +115,7 @@ namespace wi262.multi
   end
   operation touch(c: Mid) -> Int64
     effects Modify[c.inner.slot]
+    = 0
 end
 "#;
     let errs = load_errors(&[src]);
@@ -129,6 +133,7 @@ namespace wi262.positional
   import anthill.prelude.{Cell, Int64, Modify, EffectsRuntime}
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects Modify[result._1]
+    = make_pair()
 end
 "#;
     let errs = load_errors(&[src]);
@@ -146,7 +151,7 @@ fn sort_head_stays_qualified_name() {
     let src = r#"
 namespace wi262.sorthead
   import anthill.prelude.{Cell, Int64}
-  operation make() -> Cell[V = Int64]
+  operation make() -> Cell[V = Int64] = make()
 end
 "#;
     let errs = load_errors(&[src]);
@@ -239,6 +244,7 @@ namespace wi262.abstracthead
   import anthill.prelude.{Int64, Modify, EffectsRuntime}
   operation touch[T](c: T) -> Int64
     effects Modify[c.whatever]
+    = 0
 end
 "#;
     let errs = load_errors(&[src]);
@@ -273,6 +279,7 @@ namespace wi262.propagate
   end
   operation touch(c: Cellish) -> Int64
     effects Modify[c.backend]
+    = 0
   operation pure_caller(c: Cellish) -> Int64 = touch(c)
 end
 "#;

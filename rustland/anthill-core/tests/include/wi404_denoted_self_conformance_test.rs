@@ -41,7 +41,7 @@ namespace test.wi404.vec
     sort T = ?
     sort N = ?
   end
-  operation mk() -> Vec[T = Int64, N = 3]
+  operation mk() -> Vec[T = Int64, N = 3] = mk()
 end
 "#;
 
@@ -107,7 +107,7 @@ namespace test.wi404.vpvec
   end
   sort Producer
   end
-  operation mk(c: Producer) -> Vec[T = Int64, N = c]
+  operation mk(c: Producer) -> Vec[T = Int64, N = c] = mk(c)
 end
 "#;
     let consumer = r#"
@@ -138,7 +138,7 @@ namespace test.wi404.vpmvec
   end
   sort Producer
   end
-  operation mk(c: Producer) -> Vec[T = Int64, N = c]
+  operation mk(c: Producer) -> Vec[T = Int64, N = c] = mk(c)
 end
 "#;
     let consumer = r#"
@@ -169,7 +169,7 @@ namespace test.wi404.alvec
     sort N = ?
   end
   sort Vec3i = Vec[T = Int64, N = 3]
-  operation mk() -> Vec[T = Int64, N = 3]
+  operation mk() -> Vec[T = Int64, N = 3] = mk()
 end
 "#;
     let consumer = r#"

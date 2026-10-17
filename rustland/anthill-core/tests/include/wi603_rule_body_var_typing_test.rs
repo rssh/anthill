@@ -110,7 +110,7 @@ fn rule_body_op_call_args_typed_from_signature() {
     let src = r#"
         namespace test.wi603.opcall
           import anthill.prelude.{Bool, Int64}
-          operation f(x: Int64, y: Int64) -> Bool
+          operation f(x: Int64, y: Int64) -> Bool = true
           rule r(?x, ?y)
             :- f(?x, ?y)
         end

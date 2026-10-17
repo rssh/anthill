@@ -277,7 +277,11 @@ cheap: the evaluator suspends BECAUSE it needed a particular variable, and names
   each decided without a run-time value:
   1. the operation has no implementation of ANY kind — no body, no host mapping, no `@[simp]`
      defining equation, no relational rules — and is not a spec operation, so no provider could
-     supply it (FJG8B / M8QWJ). Decided by the operation alone;
+     supply it (FJG8B / M8QWJ). Decided by the operation alone — and so, DECIDED 2026-10-17 (the
+     user, with WI-20260909-M8QWJ), refused at the operation's DECLARATION rather than at each
+     site: nothing loaded later can supply it, every use fails alike, and the declaration is where
+     the defect is (kernel-language.md §5.4). What stays legal to declare is unchanged — a spec
+     operation, which a provider is meant to implement;
   2. a spec operation called at a carrier the typer resolves to a CONCRETE sort, which provides no
      instance supplying the member (KCNA0's `Desc.tag()` at `Blue`);
   3. a spec operation called at the spec ITSELF, which nothing provides.

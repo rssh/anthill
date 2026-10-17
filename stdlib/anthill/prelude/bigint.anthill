@@ -61,6 +61,15 @@ sort anthill.prelude.BigInt
     neg(a: BigInt) -> BigInt @[host_implemented]              -- - (prefix), unbounded
   }
 
+  -- WI-20260909-M8QWJ: the ADDITIVE AND MULTIPLICATIVE IDENTITIES. `BigInt` provides
+  -- `Additive` and `Multiplicative` (through `Numeric`), and no carrier implemented
+  -- `zero` or `one` — `arithmetic.anthill` recorded the census — so a generic sum
+  -- reaching `Additive.zero` at `BigInt` died at eval on a program that loaded clean.
+  -- `check_provider_operations` now holds a host carrier to every operation of a spec it
+  -- provides. BODIES, not host mappings: a literal needs no host function.
+  operation zero() -> BigInt = to_bigint(0)
+  operation one() -> BigInt = to_bigint(1)
+
   -- Conversion operations
   operation to_bigint(n: Int64) -> BigInt @[host_implemented]
   operation to_int(n: BigInt) -> Option[Int64] @[host_implemented]

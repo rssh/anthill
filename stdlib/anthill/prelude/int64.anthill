@@ -86,6 +86,15 @@ sort anthill.prelude.Int64
     mul(a: Int64, b: Int64) -> Int64 @[host_implemented]        -- *, checked
   }
 
+  -- WI-20260909-M8QWJ: the ADDITIVE AND MULTIPLICATIVE IDENTITIES. `Int64` provides
+  -- `Additive` and `Multiplicative` (through `Numeric`), and no carrier implemented
+  -- `zero` or `one` — `arithmetic.anthill` recorded the census — so a generic sum
+  -- reaching `Additive.zero` at `Int64` died at eval on a program that loaded clean.
+  -- `check_provider_operations` now holds a host carrier to every operation of a spec it
+  -- provides. BODIES, not host mappings: a literal needs no host function.
+  operation zero() -> Int64 = 0
+  operation one() -> Int64 = 1
+
   -- Operations beyond what Numeric provides
   operation {
     abs(a: Int64) -> Int64 @[host_implemented]                  -- |a|

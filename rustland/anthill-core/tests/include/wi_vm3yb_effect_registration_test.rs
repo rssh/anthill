@@ -81,7 +81,7 @@ fn an_unregistered_label_is_refused_naming_the_label_and_the_registration() {
           sort Unregistered end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects Unregistered
+            operation ping(x: W) -> Unit effects Unregistered = ()
           end
         end
     "#,
@@ -110,7 +110,7 @@ fn a_parameterized_label_is_judged_by_its_base_sort() {
           end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects Tag[T = Int64]
+            operation ping(x: W) -> Unit effects Tag[T = Int64] = ()
           end
         end
     "#,
@@ -165,7 +165,7 @@ fn a_lacks_atom_is_judged_on_its_label() {
           sort Boom end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects { -Boom }
+            operation ping(x: W) -> Unit effects { -Boom } = ()
           end
         end
     "#,
@@ -200,7 +200,7 @@ fn an_unimported_effect_registers_nothing_and_the_label_is_refused() {
           end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects Reg
+            operation ping(x: W) -> Unit effects Reg = ()
           end
         end
     "#,
@@ -230,7 +230,7 @@ fn an_alias_is_followed_to_its_target() {
           sort W
             sort Nope = Boom
             entity w
-            operation ping(x: W) -> Unit effects Nope
+            operation ping(x: W) -> Unit effects Nope = ()
           end
         end
     "#,
@@ -257,7 +257,7 @@ fn a_bound_effect_row_parameter_is_judged_on_its_binding() {
           sort W
             effects E = Boom
             entity w
-            operation ping(x: W) -> Unit effects E
+            operation ping(x: W) -> Unit effects E = ()
           end
         end
     "#,
@@ -286,7 +286,7 @@ fn the_repair_the_message_names_actually_loads() {
           sort W
             import vm3yb.nested_kind.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -314,7 +314,7 @@ fn the_repair_the_message_names_actually_loads() {
           sort W
             import vm3yb.nested_kind_fixed.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -349,7 +349,7 @@ fn the_repair_the_message_names_actually_loads() {
           sort W
             import vm3yb.nested_kind_outside.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
         namespace vm3yb.nested_kind_outside.Host.Beep
@@ -380,7 +380,7 @@ fn the_repair_the_message_names_actually_loads() {
           sort W
             import vm3yb.nested_kind_own_body.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -408,7 +408,7 @@ fn the_repair_the_message_names_actually_loads() {
           sort W
             import vm3yb.nested_kind_nested_block.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -451,7 +451,7 @@ fn a_namespace_block_provides_registers_the_kind() {
           end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -482,7 +482,7 @@ fn a_sort_level_provides_registers_the_kind() {
           sort W
             import vm3yb.provides_spelling.Host.{Beep}
             entity w
-            operation ping(x: W) -> Unit effects Beep
+            operation ping(x: W) -> Unit effects Beep = ()
           end
         end
     "#,
@@ -512,7 +512,7 @@ fn a_wildcard_registration_admits_every_application() {
           end
           sort W
             entity w
-            operation ping(x: W) -> Unit effects Tag[T = Int64]
+            operation ping(x: W) -> Unit effects Tag[T = Int64] = ()
           end
         end
     "#,
@@ -541,7 +541,7 @@ fn a_sorts_own_effect_row_parameter_is_not_a_label() {
           sort W
             effects E = ?
             entity w
-            operation ping(x: Self) -> Unit effects E
+            operation ping(x: Self) -> Unit effects E = ()
           end
         end
     "#,
@@ -603,9 +603,9 @@ fn the_prelude_effect_kinds_are_all_registered() {
             entity w
             operation ping(x: W) -> Unit
               effects {Modify[x], Error[Int64], Suspension, External,
-                       Clock, ConsoleOutput, ConsoleError, ConsoleInput}
+                       Clock, ConsoleOutput, ConsoleError, ConsoleInput} = ()
             operation pong(x: W) -> Unit
-              effects {Branch}
+              effects {Branch} = ()
           end
         end
     "#;

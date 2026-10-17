@@ -285,7 +285,7 @@ fn set_eq_compound_operand_loads_clean() {
         namespace mapeq.setcompound
           import anthill.prelude.{Bool, Int64, Set, Eq}
           import anthill.prelude.PartialEq.{eq}
-          operation build_set(x: Int64) -> Set[T = Int64]
+          operation build_set(x: Int64) -> Set[T = Int64] = build_set(x)
           operation same(x: Int64) -> Bool
           rule same(?x) :- eq(build_set(?x), build_set(?x))
         end

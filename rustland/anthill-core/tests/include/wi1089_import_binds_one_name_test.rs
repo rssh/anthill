@@ -43,8 +43,8 @@ const LIB: &str = r#"namespace wi1089.lib
     entity neighbour(v: Int64)
   end
   sort Host
-    operation op1(x: Int64) -> Int64
-    operation op2(x: Int64) -> Int64
+    operation op1(x: Int64) -> Int64 = x
+    operation op2(x: Int64) -> Int64 = x
   end
 end
 "#;

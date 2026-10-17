@@ -21,7 +21,7 @@ fn streamed(param: &str, op: &str) -> String {
     format!(
         "namespace test.wi1059.erow\n\
          \x20 import anthill.prelude.{{Int64, Stream}}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {{}}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {{}}]) -> Int64 = 0\n\
          \x20 operation {op}(s: {param}) -> Int64 = takes_pure(s)\n\
          end\n",
     )
@@ -80,7 +80,7 @@ fn an_op_type_param_row_is_rigid_in_the_body() {
 fn an_effectful_stream_cannot_reach_a_pure_slot() {
     let src = "namespace test.wi1059.exploit\n\
         \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-        \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+        \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
         \x20 operation feed(s: Stream[T = Int64]) -> Int64 = takes_pure(s)\n\
         \x20 operation caller(s: Stream[T = Int64, E = {Error}]) -> Int64 = feed(s)\n\
         end\n";
@@ -129,7 +129,7 @@ fn a_body_that_holds_for_every_row_still_loads() {
         crate::common::load_kb_with(&format!(
             "namespace test.wi1059.polymorphic\n\
              \x20 import anthill.prelude.{{Int64, Stream}}\n\
-             \x20 operation sink[X](s: Stream[T = X]) -> Int64\n\
+             \x20 operation sink[X](s: Stream[T = X]) -> Int64 = 0\n\
              \x20 operation {op}(s: {param}) -> Int64 = sink(s)\n\
              end\n",
         ));

@@ -153,10 +153,14 @@ fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
     )
 }
 
-/// Route 1 present but NOT runnable — declared only. The `Unique` arm's pin guard reads
-/// `op_has_runnable_body`, so this is the flavour the ticket predicted: no pin, and the
-/// concrete carrier goes to eval.
-const OWN_UNRUNNABLE: &str = "    operation describe(x: Leaf) -> Int64\n";
+/// Route 1 present but NOT runnable — no body, defined only by a `@[simp]` equation (since
+/// WI-20260909-M8QWJ a member of a sort with constructors that nothing defines is refused at
+/// its declaration). The `Unique` arm's pin guard reads `op_has_runnable_body`, so this is the
+/// flavour the ticket predicted: no pin, and the concrete carrier goes to eval. The rows
+/// using it pass with `carrier_override_suppliers`' interpretability filter removed too
+/// (MEASURED 2026-10-17): they read the unfiltered owner, which counts the member either way.
+const OWN_UNRUNNABLE: &str =
+    "    operation describe(x: Leaf) -> Int64\n    rule describe(?x) <=> 3 @[simp]\n";
 /// Route 1 present AND runnable — the `Unique` arm PINS it, silently.
 const OWN_RUNNABLE: &str = "    operation describe(x: Leaf) -> Int64 = 7\n";
 /// [`OWN_RUNNABLE`] with the carrier's OWN provision of the spec beside it. One

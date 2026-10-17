@@ -41,8 +41,11 @@ namespace guardians
   -- Still host-bound: its job is to PARSE the reply into the closed `Feature`
   -- vocabulary, refusing anything outside it at the boundary. Doing that in
   -- anthill needs string machinery this example lacks, so the check lives in the
-  -- host binding — the largest remaining fiction here.
+  -- host binding — the largest remaining fiction here. CLAIMED AND MAPPED
+  -- (WI-20260909-M8QWJ): a namespace-level operation nothing defines is refused at
+  -- load, so the binding is written (`provides guardians language rust`,
+  -- lib/llm.anthill) and the test harness supplies a stand-in that raises.
   operation observe(llm: Llm.C, m: Message[Untrusted])
       -> List[T = Observed]
-    effects {Llm.E, Error}
+    effects {Llm.E, Error} @[host_implemented]
 end

@@ -296,9 +296,13 @@ end
 /// A sort's OWN member called on its own value is not an instance question: a `Box` is a
 /// `Box`. The rule-body pass reads the self-receiver as the carrier, and `sort_provides(Box,
 /// Box)` is false, so without its reflexive exemption this RULE is refused "`Box` provides
-/// no `Box` — … `provides Box[T = Box]`", a repair that is not one (measured). The program
-/// is broken for a different reason — `get` has no implementation — which is not this
-/// check's to report. The operation-body spelling never reaches the question.
+/// no `Box` — … `provides Box[T = Box]`", a repair that is not one (measured). The
+/// operation-body spelling never reaches the question.
+///
+/// `get` is defined by a `@[simp]` equation, not a body: a body-less member of a data sort
+/// with no definition is a load error since WI-20260909-M8QWJ, and a BODY would make `Box`
+/// a sort with no abstract member (`spec_has_an_abstract_member`), which lets the call off
+/// before the reflexive exemption is read. The equation keeps `get` abstract there.
 #[test]
 fn a_sorts_own_member_on_its_own_value_is_not_asked_for_an_instance() {
     let src = r#"
@@ -308,6 +312,7 @@ namespace test.wi883.refl
     sort T = ?
     entity box(v: T)
     operation get(b: Self) -> Int64
+    rule get(?b) <=> 0 @[simp]
     operation twice(b: Self) -> Int64 = get(b) + get(b)
   end
   rule twiced(?x) :- ?x = Box.twice(Box.box(1))

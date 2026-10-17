@@ -10,16 +10,16 @@ sort IntAdd {
   sort T = Int64
   entity value(x: Int64)
   requires Monoid[T = Int64, combine = add, identity = zero]
-  operation add(a: Int64, b: Int64) -> Int64
-  operation zero() -> Int64
+  operation add(a: Int64, b: Int64) -> Int64 = 0
+  operation zero() -> Int64 = 0
 }
 
 sort IntMul {
   sort T = Int64
   entity value(x: Int64)
   requires Monoid[T = Int64, combine = multiply, identity = one]
-  operation multiply(a: Int64, b: Int64) -> Int64
-  operation one() -> Int64
+  operation multiply(a: Int64, b: Int64) -> Int64 = 0
+  operation one() -> Int64 = 0
 }
 
 -- Auto-bind test: sort with same-named operations as spec,
@@ -28,8 +28,8 @@ sort AutoBindTest {
   sort T = Int64
   entity data(x: Int64)
   requires Monoid[T = Int64]
-  operation combine(a: Int64, b: Int64) -> Int64
-  operation identity() -> Int64
+  operation combine(a: Int64, b: Int64) -> Int64 = 0
+  operation identity() -> Int64 = 0
 }
 
 }

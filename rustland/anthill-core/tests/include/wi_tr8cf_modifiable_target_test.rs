@@ -235,10 +235,11 @@ namespace tr8cf.fields
     sort T = ?
     entity box(v: T)
   end
-  -- Body-less: the subject is the declaration, and a body allocating the whole tuple
-  -- would owe `Modify[result]`, which a field's label does not cover.
-  operation on_first() -> (a: Int64, b: Cell[V = Int64]) effects Modify[result._1]
-  operation on_second() -> (a: Int64, b: Cell[V = Int64]) effects Modify[result._2]
+  -- A self-call, not an allocating body: the subject is the declaration, and a body
+  -- allocating the whole tuple would owe `Modify[result]`, which a field's label does
+  -- not cover.
+  operation on_first() -> (a: Int64, b: Cell[V = Int64]) effects Modify[result._1] = on_first()
+  operation on_second() -> (a: Int64, b: Cell[V = Int64]) effects Modify[result._2] = on_second()
   operation on_either(s: Two) -> Unit effects Modify[s.x] = ()
   operation on_int_box(b: Box[T = Int64]) -> Unit effects Modify[b.v] = ()
   operation on_cell_box(b: Box[T = Cell[V = Int64]]) -> Unit effects Modify[b.v] = ()

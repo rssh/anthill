@@ -79,7 +79,7 @@ sort demo.Svc
   import demo.{{Cap, cleared}}
   operation send(to: String, body: String) -> Unit
     requires cleared(body)
-    effects {{Error, Permission[Cap]}}
+    effects {{Error, Permission[Cap]}} = ()
   operation ignore(x: Unit) -> Unit = x
 end
 

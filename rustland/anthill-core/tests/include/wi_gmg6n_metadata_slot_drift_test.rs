@@ -62,7 +62,7 @@ sort probe.Thing
   entity mk
 
   operation act(self: Thing) -> Thing
-    effects {External, Error}
+    effects {External, Error} = act(self)
 end
 
 namespace probe

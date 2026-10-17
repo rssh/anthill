@@ -669,7 +669,7 @@ fn nine_bindings_of_one_forwarder_all_derive() {
     const N: usize = 9;
     let mut src = String::from(
         "namespace wi1111.breadth\n  import anthill.prelude.{Int64}\n  \
-         sort Low\n    sort T = ?\n    operation probe(a: T) -> Int64\n  end\n  \
+         sort Low\n    sort T = ?\n    operation probe(a: T) -> Int64 = 0\n  end\n  \
          sort High\n    sort T = ?\n    provides Low[T = T]\n  end\n",
     );
     for i in 0..N {

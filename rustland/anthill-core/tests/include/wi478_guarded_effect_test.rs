@@ -24,7 +24,7 @@ fn load_result(source: &str) -> Result<(), Vec<String>> {
 fn ground_label_guarded_effect_loads() {
     // `Boom` is a bare effect sort → the guarded atom lowers to the hash-consed
     // term `guarded(Boom, [eq(b, 0)])`. `risky2` uses the parenthesized conjunctive
-    // guard `( Boom :- eq(b, 0), eq(a, 0) )`. Both are bodyless declarations (the
+    // guard `( Boom :- eq(b, 0), eq(a, 0) )`. Both have the trivial body `()` (the
     // guarded effect is declared, not performed — over-declaration is fine), so a
     // clean load proves grammar → loader → representation end to end.
     let src = r#"
@@ -41,10 +41,10 @@ namespace anthill.test.wi478ground
   end
 
   operation risky(b: Int64) -> Unit
-    effects { Boom :- eq(b, 0) }
+    effects { Boom :- eq(b, 0) } = ()
 
   operation risky2(a: Int64, b: Int64) -> Unit
-    effects { ( Boom :- eq(b, 0), eq(a, 0) ) }
+    effects { ( Boom :- eq(b, 0), eq(a, 0) ) } = ()
 end
 "#;
     let res = load_result(src);
@@ -68,7 +68,7 @@ namespace anthill.test.wi478node
   import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
-    effects { Modify[c] :- eq(b, 0) }
+    effects { Modify[c] :- eq(b, 0) } = ()
 end
 "#;
     let res = load_result(src);
@@ -99,7 +99,7 @@ namespace anthill.test.wi478call
   end
 
   operation risky(b: Int64) -> Unit
-    effects { Boom :- eq(b, 0) }
+    effects { Boom :- eq(b, 0) } = ()
 
   operation caller(b: Int64) -> Unit =
     risky(b)
@@ -131,7 +131,7 @@ namespace anthill.test.wi478call2
   end
 
   operation risky(b: Int64) -> Unit
-    effects { Boom :- eq(b, 0) }
+    effects { Boom :- eq(b, 0) } = ()
 
   operation caller(b: Int64) -> Unit
     effects Boom =

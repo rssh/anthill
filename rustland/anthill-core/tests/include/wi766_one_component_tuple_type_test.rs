@@ -51,7 +51,7 @@ fn wi766_one_component_named_tuple_type_is_writable() {
 namespace test.wi766write
   import anthill.prelude.{Int64}
 
-  operation one() -> (a: Int64)
+  operation one() -> (a: Int64) = one()
 end
 "#;
     assert!(

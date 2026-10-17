@@ -87,7 +87,7 @@ use crate::wi1012_static_supplier_tie_test::refusal;
 /// `exploit` hands the result to a slot that demands the empty row.
 const WIDEN: &str = "namespace test.wi1063.widen\n\
     \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+    \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
     \x20 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s\n\
     \x20 operation exploit(s: Stream[T = Int64, E = {Error}]) -> Int64 = takes_pure(widen(s))\n\
     end\n";
@@ -105,7 +105,7 @@ const LAUNDER: &str = "namespace test.wi1063.launder\n\
     \x20   entity memStore\n\
     \x20 end\n\
     \x20 operation openOne(m: MemStore) -> C ensures KVStore[C] = m\n\
-    \x20 operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String\n\
+    \x20 operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String = \"\"\n\
     \x20 operation launder(m: MemStore) -> String = needs_int_key(openOne(m))\n\
     end\n";
 
@@ -169,7 +169,7 @@ fn an_ensures_existentials_members_are_opened_too() {
 fn the_ensures_carrier_is_still_abstract_at_the_consumer() {
     let msg = refusal(&LAUNDER.replace(
         " operation launder(m: MemStore) -> String = needs_int_key(openOne(m))\n",
-        " operation needs_mem(m: MemStore) -> String\n\
+        " operation needs_mem(m: MemStore) -> String = \"\"\n\
          \x20 operation nolaunder(m: MemStore) -> String = needs_mem(openOne(m))\n",
     ));
     assert!(
@@ -196,9 +196,9 @@ fn two_openings_of_one_operation_are_unrelated() {
     let msg = refusal(
         "namespace test.wi1063.fresh\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk(n: Int64) -> Stream[T = Int64]\n\
+         \x20 operation mk(n: Int64) -> Stream[T = Int64] = mk(n)\n\
          \x20 operation takes_same[E](x: Stream[T = Int64, E = E], y: Stream[T = Int64, E = E]) \
-         -> Int64\n\
+         -> Int64 = 0\n\
          \x20 operation two(a: Int64, b: Int64) -> Int64 = takes_same(mk(a), mk(b))\n\
          end\n",
     );
@@ -222,8 +222,8 @@ fn a_row_polymorphic_consumer_accepts_a_skolem() {
     crate::common::load_kb_with(
         "namespace test.wi1063.rowpoly\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk(n: Int64) -> Stream[T = Int64]\n\
-         \x20 operation f[E](s: Stream[T = Int64, E = E]) -> Int64\n\
+         \x20 operation mk(n: Int64) -> Stream[T = Int64] = mk(n)\n\
+         \x20 operation f[E](s: Stream[T = Int64, E = E]) -> Int64 = 0\n\
          \x20 operation ok(a: Int64) -> Int64 = f(mk(a))\n\
          end\n",
     );
@@ -261,17 +261,17 @@ fn a_self_sort_return_is_not_opened_but_a_foreign_one_on_a_member_is() {
          \x20   entity Wrap(v: T)\n\
          \x20   operation dup(w: Self) -> List[T = Self] = cons(head: w, tail: nil)\n\
          \x20 end\n\
-         \x20 operation takes_ints(l: List[T = Wrap[T = Int64]]) -> Int64\n\
+         \x20 operation takes_ints(l: List[T = Wrap[T = Int64]]) -> Int64 = 0\n\
          \x20 operation use_it(w: Wrap[T = Int64]) -> Int64 = takes_ints(Wrap.dup(w))\n\
          end\n",
     );
     let member = refusal(
         "namespace test.wi1063.memberret\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 sort Box\n\
          \x20   entity box(n: Int64)\n\
-         \x20   operation open_stream(b: Box) -> Stream[T = Int64]\n\
+         \x20   operation open_stream(b: Box) -> Stream[T = Int64] = open_stream(b)\n\
          \x20 end\n\
          \x20 operation use_it(b: Box) -> Int64 = takes_pure(Box.open_stream(b))\n\
          end\n",
@@ -311,7 +311,7 @@ fn every_spelling_of_an_unbound_return_slot_opens() {
     let anon = refusal(
         "namespace test.wi1063.anon\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation widen_q(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64, E = ?] \
          = s\n\
          \x20 operation exploit_q(s: Stream[T = Int64, E = {Error}]) -> Int64 = \
@@ -326,8 +326,8 @@ fn every_spelling_of_an_unbound_return_slot_opens() {
     let named = refusal(
         "namespace test.wi1063.named\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation mk_named() -> Stream[T = Int64, E = ?A]\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation mk_named() -> Stream[T = Int64, E = ?A] = mk_named()\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation ok() -> Int64 = takes_pure(mk_named())\n\
          end\n",
     );
@@ -353,7 +353,7 @@ fn every_spelling_of_an_unbound_return_slot_opens() {
 #[test]
 fn an_escaping_skolem_is_refused() {
     let msg = refusal(&LAUNDER.replace(
-        " operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String\n\
+        " operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String = \"\"\n\
          \x20 operation launder(m: MemStore) -> String = needs_int_key(openOne(m))\n",
         " operation escape(m: MemStore) -> KVStore[K = String, V = String] = openOne(m)\n",
     ));
@@ -376,7 +376,7 @@ fn an_escaping_skolem_is_refused() {
 fn the_wi401_escape_gate_still_fires() {
     let msg = refusal(&LAUNDER.replace(
         " operation openOne(m: MemStore) -> C ensures KVStore[C] = m\n\
-         \x20 operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String\n\
+         \x20 operation needs_int_key(s: KVStore[K = Int64, V = String]) -> String = \"\"\n\
          \x20 operation launder(m: MemStore) -> String = needs_int_key(openOne(m))\n",
         " operation seal(m: MemStore) -> KVStore = m\n",
     ));
@@ -427,7 +427,7 @@ fn the_skolem_survives_a_let_binding() {
     let msg = refusal(
         "namespace test.wi1063.vialet\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s\n\
          \x20 operation via_let(s: Stream[T = Int64, E = {Error}]) -> Int64 =\n\
          \x20   let w = widen(s)\n\
@@ -461,8 +461,8 @@ fn a_bare_nullary_operation_name_opens_too() {
     let leak = refusal(
         "namespace test.wi1063.bareref\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
-         \x20 operation mk() -> Stream[T = Int64]\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
+         \x20 operation mk() -> Stream[T = Int64] = mk()\n\
          \x20 operation use_bare() -> Int64 = takes_pure(mk)\n\
          end\n",
     );
@@ -474,8 +474,8 @@ fn a_bare_nullary_operation_name_opens_too() {
     let elem = refusal(
         "namespace test.wi1063.barerefelem\n\
          \x20 import anthill.prelude.{Int64, String, Stream}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
-         \x20 operation mk_str() -> Stream[T = String]\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
+         \x20 operation mk_str() -> Stream[T = String] = mk_str()\n\
          \x20 operation use_bare() -> Int64 = takes_pure(mk_str)\n\
          end\n",
     );
@@ -514,7 +514,7 @@ fn the_eta_reading_opens_the_return_too() {
     let leak = refusal(
         "namespace test.wi1063.eta\n\
          \x20 import anthill.prelude.{Int64, Stream, Error}\n\
-         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: Stream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation widen(s: Stream[T = Int64, E = {Error}]) -> Stream[T = Int64] = s\n\
          \x20 operation apply_it(f: (s: Stream[T = Int64, E = {Error}]) -> \
          Stream[T = Int64, E = {}], s: Stream[T = Int64, E = {Error}]) -> Int64 = \
@@ -554,8 +554,8 @@ fn an_unwritten_parameter_still_binds_from_the_argument() {
     crate::common::load_kb_with(
         "namespace test.wi1063.paramside\n\
          \x20 import anthill.prelude.{Int64, Stream}\n\
-         \x20 operation takes_any(s: Stream) -> Int64\n\
-         \x20 operation mk_int() -> Stream[T = Int64, E = {}]\n\
+         \x20 operation takes_any(s: Stream) -> Int64 = 0\n\
+         \x20 operation mk_int() -> Stream[T = Int64, E = {}] = mk_int()\n\
          \x20 operation ok() -> Int64 = takes_any(mk_int())\n\
          end\n",
     );

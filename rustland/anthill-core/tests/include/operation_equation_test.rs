@@ -85,13 +85,19 @@ fn equation_rule_has_correct_shape() {
 
 #[test]
 fn no_body_no_equation_rule() {
+    // The body-less operation is a member of a sort without constructors (a spec):
+    // since WI-20260909-M8QWJ a namespace-level one is refused at load.
     let src = r#"
         namespace test.op_eq.no_body
           import anthill.prelude.{Int64}
-          operation plain(x: Int64) -> Int64
+          sort Spec
+            operation plain(x: Int64) -> Int64
+          end
         end
     "#;
     let kb = load_with(src);
+    kb.try_resolve_symbol("test.op_eq.no_body.Spec.plain")
+        .expect("the body-less operation should be declared");
     let eq_sym = kb
         .try_resolve_symbol("anthill.prelude.PartialEq.eq")
         .or_else(|| kb.try_resolve_symbol("eq"))
@@ -103,7 +109,9 @@ fn no_body_no_equation_rule() {
         .map(|&r| printer.print_term(kb.rule_head(r)))
         .collect();
     assert!(
-        !heads.iter().any(|h| h.contains("test.op_eq.no_body.plain")),
+        !heads
+            .iter()
+            .any(|h| h.contains("test.op_eq.no_body.Spec.plain")),
         "found unexpected eq rule for body-less operation: {heads:?}"
     );
 }

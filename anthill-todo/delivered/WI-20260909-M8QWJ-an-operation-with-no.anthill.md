@@ -3,9 +3,9 @@
 - id: WI-20260909-M8QWJ-an-operation-with-no
 - created: 2026-09-09T08:10:48Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-09T08:10:48Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-17T09:40:16Z
 
 - acceptance: cargo-test
 
@@ -73,4 +73,8 @@ FOUND WITH WI-20261003-4DYR6 (2026-10-13, measured on 34b21d28 with that change;
 ### 2026-10-13T18:11:45Z — feedback — claude
 
 ONE MORE SHAPE, measured on f4827d68 while WI-20261013-0GYW1's programs were run: (e) A PROVIDER THAT DECLARES THE PROVISION AND SUPPLIES NO MEMBER. sort Lo { sort T = ?  operation lo(x: T) -> Int64 }, sort Hi { provides Lo[T = Int64] } - no lo anywhere - and Lo.lo(1): loads, and dies when the call runs, 'operation has no body: Lo.lo'. The provision lookup takes Hi for the provider of Lo at Int64 and nothing asks whether Hi can answer. The same for a sort with a parameter providing at a COMPOSITE of it, which is no parameter forwarding and so no conversion (provision_is_conversion): sort Hi { sort T = ?  provides Lo[T = Box[T = T]] }, and at (T, Int64), and at (T) -> Int64 - each beside sort C { provides Hi[T = C]  operation lo(x: Box[T = C]) -> Int64 = 5 } loads, the call Lo.lo(box(v: c(n: 1))) dies the same way, and Lo.lo[Lo = C](...) is refused 'C does not provide Lo'. CONTROL: provides Lo[T = T], the forwarding, answers 5 through C. To this ticket's question 2: a provision whose provider backs none of the spec's operations and forwards no parameter is a row that can run nothing.
+
+### 2026-10-17T09:40:14Z — feedback — user
+
+DELIVERED 2026-10-17 (claude). DECISIONS (user): refuse at the DECLARATION for an owner nothing can provide (namespace, sort with constructors) -- an error, not a warning; the provision check widened to witness provisions AND host carriers, with the stdlib repaired; a spec call no provider can be selected for refused at the CALL. SITES: check_operations_have_a_definition (kb/load.rs, per phase, after the host mappings and eq index); provider_owes_operations / is_witness_provision (kb/typing/coherence.rs); unselectable_spec_operation_call + sibling_reached_unrunnable (kb/typing/call_class.rs), asked at check_apply_iter and at the bare zero-arg-call reading (expr.rs). STDLIB: Pair.fst/snd bodies; Int64/BigInt/Float zero/one; Float.recip a body beside its @[simp] equation (C++ still inlines it); Float.nonEqRefl a body; 15 unused declarations deleted (realization/platform, persistence/filesystem, reflect.occurrences_of). OperationBodyMissing's bridge disposition stays Schedule: MEASURED as Fault it breaks §8.3's UNREDUCED contract (wi_cynpe). Spec: kernel-language §5.4. ROWS: wi_m8qwj_unrunnable_operation_test (22), each check backed out alone reds its own rows and no control. ~300 fixtures migrated. FOLLOW-UPS FILED: WI-20261017-CK7PP (the dictionary model at the call: result-only carrier, concrete carrier lacking the member, unprovided interface), WI-20261017-D36RN (Relation backs 1 of LogicalStream's 6), WI-20261017-JRHZ0 (self-recursive stubs hang; a todo() proposal), WI-20261017-8QY61 (FieldOf/Project/Concat return not reduced for the body check), WI-20261017-090MT (ill-formed signature projection checked only with a body), WI-20261017-AT8V3 (SortedSet provides Set at the factor domain). Gate: 10,012 passed, 0 failed; families green; scaland 693+45+1.
 

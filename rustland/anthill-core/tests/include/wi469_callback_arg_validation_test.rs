@@ -30,7 +30,7 @@ fn nonprojection_param_mismatch_rejected() {
     let src = r#"
 namespace test.wi469.nonproj
   import anthill.prelude.{Stream, Option, Bool, Int64, String}
-  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP}
+  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP} = find2(s, pred)
   operation badcb(x: String) -> Bool = true
   operation use_bad(es: Stream[T = Int64, E = {}]) -> Option[T = Int64] = find2[EffP = {}](es, badcb)
 end
@@ -51,7 +51,7 @@ fn projection_param_mismatch_rejected() {
     let src = r#"
 namespace test.wi469.proj
   import anthill.prelude.{Stream, Option, Bool, Int64, String}
-  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T] effects {s.E, EffP}
+  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T] effects {s.E, EffP} = find2(s, pred)
   operation badcb(x: String) -> Bool = true
   operation use_bad(es: Stream[T = Int64, E = {}]) -> Option[T = Int64] = find2[EffP = {}](es, badcb)
 end
@@ -70,7 +70,7 @@ fn result_mismatch_rejected() {
     let src = r#"
 namespace test.wi469.result
   import anthill.prelude.{Stream, Option, Bool, Int64, String}
-  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP}
+  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP} = find2(s, pred)
   operation badret(x: Int64) -> String = "hi"
   operation use_badret(es: Stream[T = Int64, E = {}]) -> Option[T = Int64] = find2[EffP = {}](es, badret)
 end
@@ -90,7 +90,7 @@ fn valid_callback_accepted() {
     let src = r#"
 namespace test.wi469.good
   import anthill.prelude.{Stream, Option, Bool, Int64, String}
-  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP}
+  operation find2[EffP](s: Stream, pred: (x: Int64) -> Bool @ {EffP, -Modify[x]}) -> Option[T = Int64] effects {s.E, EffP} = find2(s, pred)
   operation goodcb(x: Int64) -> Bool = true
   operation use_good(es: Stream[T = Int64, E = {}]) -> Option[T = Int64] = find2[EffP = {}](es, goodcb)
 end
@@ -109,7 +109,7 @@ fn valid_projection_callback_accepted() {
     let src = r#"
 namespace test.wi469.goodproj
   import anthill.prelude.{Stream, Option, Bool, Int64, String}
-  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T] effects {s.E, EffP}
+  operation find2[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T] effects {s.E, EffP} = find2(s, pred)
   operation goodcb(x: Int64) -> Bool = true
   operation use_good(es: Stream[T = Int64, E = {}]) -> Option[T = Int64] = find2[EffP = {}](es, goodcb)
 end

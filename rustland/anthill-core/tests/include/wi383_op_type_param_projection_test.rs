@@ -49,7 +49,7 @@ fn with_resource(ns: &str, rest: &str) -> String {
 fn op_type_param_projection_forms_via_op_requires() {
     let errs = load_errors(&[&with_resource(
         "forms",
-        "  operation getV[T](target: T) -> T.V requires Resource[C = T]",
+        "  operation getV[T](target: T) -> T.V requires Resource[C = T] = getV(target)",
     )]);
     assert!(
         errs.is_empty(),
@@ -64,7 +64,7 @@ fn op_type_param_projection_forms_via_op_requires() {
 fn op_type_param_projection_undeclared_member_is_loud() {
     let errs = load_errors(&[&with_resource(
         "undeclared",
-        "  operation getW[T](target: T) -> T.W requires Resource[C = T]",
+        "  operation getW[T](target: T) -> T.W requires Resource[C = T] = getW(target)",
     )]);
     assert!(
         errs.iter().any(|e| e.contains("W")),
@@ -81,7 +81,7 @@ fn op_type_param_projection_via_multi_goal_requires() {
     let errs = load_errors(&[&with_resource(
         "multigoal",
         "  sort Other\n    sort C = ?\n    operation ping(c: C) -> C\n  end\n\
-         \x20 operation getV[T](target: T) -> T.V requires Resource[C = T], Other[C = T]",
+         \x20 operation getV[T](target: T) -> T.V requires Resource[C = T], Other[C = T] = getV(target)",
     )]);
     assert!(
         errs.is_empty(),
@@ -96,7 +96,7 @@ fn op_type_param_projection_via_multi_goal_requires() {
 fn op_type_param_projection_grounds_at_concrete_call() {
     let errs = load_errors(&[&with_resource(
         "grounds",
-        "  operation getV[T](target: T) -> T.V requires Resource[C = T]\n\
+        "  operation getV[T](target: T) -> T.V requires Resource[C = T] = getV(target)\n\
          \x20 operation useGood(c: CounterState) -> Int64 = getV(c)",
     )]);
     assert!(
@@ -117,7 +117,7 @@ fn self_carrier_grounds_via_declared_member() {
     sort V = Int64
     entity Counter(n: Int64)
   end
-  operation getV[T](target: T) -> T.V
+  operation getV[T](target: T) -> T.V = getV(target)
   operation useGood(c: CounterState) -> Int64 = getV(c)
 end
 "#;
@@ -138,7 +138,7 @@ fn self_carrier_rejects_wrong_type() {
     sort V = Int64
     entity Counter(n: Int64)
   end
-  operation getV[T](target: T) -> T.V
+  operation getV[T](target: T) -> T.V = getV(target)
   operation useBad(c: CounterState) -> String = getV(c)
 end
 "#;
@@ -161,7 +161,7 @@ fn self_carrier_abstract_member_does_not_ground() {
     sort V = ?
     entity Mk(n: Int64)
   end
-  operation getV[T](target: T) -> T.V
+  operation getV[T](target: T) -> T.V = getV(target)
   operation useInt(c: Opaque) -> Int64 = getV(c)
 end
 "#;
@@ -188,7 +188,7 @@ fn self_carrier_name_collision_does_not_ground() {
   sort Carrier
     entity Velem(n: Int64)
   end
-  operation getV[T](target: T) -> T.Velem
+  operation getV[T](target: T) -> T.Velem = getV(target)
   operation useStr(c: Carrier) -> String = getV(c)
 end
 "#;
@@ -280,7 +280,7 @@ fn op_type_param_projection_grounds_via_licensing_spec_not_provides_order() {
     operation peek(c: Dual) -> Dual = c
     operation ping(c: Dual) -> Dual = c
   end
-  operation getV[T](target: T) -> T.V requires Resource[C = T]
+  operation getV[T](target: T) -> T.V requires Resource[C = T] = getV(target)
   operation useDual(c: Dual) -> Int64 = getV(c)
 end
 "#;
@@ -314,7 +314,7 @@ fn op_type_param_projection_unlicensed_carrier_does_not_ground() {
     entity Mk(n: Int64)
     operation ping(c: OnlyFoo) -> OnlyFoo = c
   end
-  operation getV[T](target: T) -> T.V requires Resource[C = T]
+  operation getV[T](target: T) -> T.V requires Resource[C = T] = getV(target)
   operation useStr(c: OnlyFoo) -> String = getV(c)
 end
 "#;
@@ -331,7 +331,7 @@ end
 fn op_type_param_projection_grounding_rejects_wrong_type() {
     let errs = load_errors(&[&with_resource(
         "grounds_bad",
-        "  operation getV[T](target: T) -> T.V requires Resource[C = T]\n\
+        "  operation getV[T](target: T) -> T.V requires Resource[C = T] = getV(target)\n\
          \x20 operation useBad(c: CounterState) -> String = getV(c)",
     )]);
     assert!(

@@ -44,7 +44,7 @@ const SOURCE: &str = r#"
 namespace wi984
   sort Tank
     entity Full(litres: Int64)
-    operation fill(t: Tank) -> Tank
+    operation fill(t: Tank) -> Tank = fill(t)
   end
 end
 "#;

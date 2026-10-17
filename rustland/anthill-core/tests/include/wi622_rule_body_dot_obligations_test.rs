@@ -79,7 +79,7 @@ const GADGET: &str = r#"
   import anthill.prelude.{Int64, Option}
   sort Gadget
     entity gadget(id: Int64)
-    operation make[T](g: Gadget) -> Option[T = T]
+    operation make[T](g: Gadget) -> Option[T = T] = make(g)
   end
   sort GHolder
     entity gholder(g: Gadget)

@@ -23,6 +23,7 @@ namespace anthill.test.wi261.single
 
   operation fresh_counter() -> Cell[V = Int64]
     effects Modify[result]
+    = fresh_counter()
 end
 "#;
     let mut kb = load_stdlib_kb();
@@ -41,6 +42,7 @@ namespace anthill.test.wi261.with_params
 
   operation init_counter(initial: Int64) -> Cell[V = Int64]
     effects Modify[result]
+    = init_counter(initial)
 end
 "#;
     let mut kb = load_stdlib_kb();
@@ -60,6 +62,7 @@ namespace anthill.test.wi261.tuple
 
   operation make_pair() -> (a: Cell[V = Int64], b: Cell[V = Int64])
     effects {Modify[result.a], Modify[result.b]}
+    = make_pair()
 end
 "#;
     let mut kb = load_stdlib_kb();

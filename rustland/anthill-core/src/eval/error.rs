@@ -332,10 +332,11 @@ pub enum BridgeDisposition {
     /// it: delay the goal and claim nothing.
     ///
     /// The bridge's pre-existing reading, kept for the population it was written for —
-    /// a bridge-mode suspend (an undecided semantic compare), a capability the scratch
-    /// interpreter does not have (`anthill.reflect.*` lives in a downstream crate, so a
-    /// body reaching one is `OperationBodyMissing` here and runnable elsewhere), and
-    /// the two RAISES that are not domain errors at all (see [`Self::Fault`]).
+    /// a bridge-mode suspend (an undecided semantic compare), an UNREDUCED call (a spec
+    /// operation at a carrier no provider supplies, `OperationBodyMissing` — an operation
+    /// that nothing could EVER run is refused at load since WI-20260909-M8QWJ), a const
+    /// value this build does not carry, and the two RAISES that are not domain errors at
+    /// all (see [`Self::Fault`]).
     Schedule,
     /// A search BELOW was cut short, so this answer set is INCOMPLETE — but nothing
     /// here has a sentence worth printing.
@@ -384,23 +385,31 @@ impl EvalError {
             // still cross (WI-628).
             EvalError::Suspended { truncated: false, .. } => BridgeDisposition::Schedule,
             EvalError::Suspended { truncated: true, .. } => BridgeDisposition::Truncation,
-            // A CAPABILITY GAP IN THE SCRATCH INTERPRETER, not a defect in the program —
-            // THAT WAS THE READING while anthill-stl's reflect builtins were registered
-            // only by the CLI's runtime, so a body dispatching to one was body-less HERE
-            // and runnable in the very next process. WI-20260923-9R5HN made them
-            // `HOST_FNS` rows every bridge interpreter registers, so that population is
-            // gone; the classification is left as it was, since changing it moves the
-            // answer of every goal that reaches it.
+            // AN OPERATION NOTHING RAN, reached at run time: the UNREDUCED population
+            // (kernel-language.md §8.3) — a body-less spec operation at a carrier no
+            // provider supplies, which the resolver PARKS as undecided so that a failing
+            // sibling still refutes the clause.
             //
-            // WHAT STILL LANDS HERE IS A DEFECT, delayed in silence: an operation an
-            // author declared and defined nowhere (WI-1092's population). This used to
-            // say the typer refuses the call; MEASURED 2026-09-24, it does not —
-            // `operation undef(n: Int64) -> Int64` with `wrap(n) = undef(n)` loads clean,
-            // and `wrap(1) = 1` in a rule suspends here with no warning. Refusing that
-            // population at LOAD, and then this arm, is WI-20260909-M8QWJ.
+            // IT WAS READ AS A CAPABILITY GAP IN THE SCRATCH INTERPRETER while anthill-stl's
+            // reflect builtins were registered only by the CLI's runtime; WI-20260923-9R5HN
+            // made them `HOST_FNS` rows every bridge interpreter registers. What then still
+            // landed here beside the UNREDUCED rows was a DEFECT delayed in silence — an
+            // operation declared and defined nowhere (`operation undef(n: Int64) -> Int64`,
+            // `wrap(n) = undef(n)`, `wrap(1) = 1` suspended with no warning; MEASURED
+            // 2026-09-24). WI-20260909-M8QWJ refuses what of that population a load can
+            // decide — at the declaration, the provision or the call — and what still arrives
+            // is a dispatch only the run decides (a carrier reached by value, a dictionary a
+            // caller built), plus whatever those three checks do not yet see.
+            //
+            // AND IT STAYS `Schedule`, MEASURED under the same ticket: as a `Fault` the
+            // answer set is marked incomplete, and `wi_cynpe_waiting_goals_test`'s
+            // `?s <=> "km", Conv.tag(?s, ?r), 1 = 2` — `Conv` provided at no `String` —
+            // stopped being a definite refutation. That is the UNREDUCED contract broken,
+            // not a defect reported.
             EvalError::OperationBodyMissing { .. } => BridgeDisposition::Schedule,
             // Proposal 039 / WI-084: the const type-checks and only its runtime VALUE
-            // is absent from this build. The same spec-only-vs-codegen axis as above.
+            // is absent from this build — a spec-only build of a program a codegen'd one
+            // carries the value for.
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──

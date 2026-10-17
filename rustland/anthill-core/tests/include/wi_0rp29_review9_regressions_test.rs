@@ -1539,8 +1539,10 @@ end
 /// elimination writes `q`'s own `List[T = B]` into the declared return before σ walks it, and
 /// read as the return's own that variable was opened: "xs.annotation: expected List[T = Int64],
 /// got List[T = ?T]" (MEASURED: this pass's /simplify, its first reading of what the arguments
-/// put there; the tree before it loaded this). The callee is a bodyless spec operation, so
-/// nothing runs: the verdict measured is the call's result type meeting the annotation.
+/// put there; the tree before it loaded this). The callee is a bodyless spec operation
+/// realized only in C++ (a body-less one with no implementation is refused at the call since
+/// WI-20260909-M8QWJ), so nothing runs: the verdict measured is the call's result type
+/// meeting the annotation.
 /// FAILS under ledger part 128 — as measured on the named form; on the one-expression form it
 /// has now it was re-measured under part 107's back-out, where it fails too, and part 128's
 /// own back-out (122's first cut) was not rebuilt.
@@ -1556,7 +1558,10 @@ namespace wi0rp29r9.reduced_projection
     operation mk(x: Int64) -> Pair[A = List[T = B], B = Int64] = pair(l: [], r: x)
   end
   sort Getter
-    operation getl(p: Pair) -> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]
+    operation getl(p: Pair) -> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"] @[host_implemented]
+  end
+  provides Getter language cpp
+    operation_map { getl: "getter_getl($1)" }
   end
   operation go() -> Int64 =
     let xs: List[T = Int64] = Getter.getl(Pair.mk(1))

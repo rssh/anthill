@@ -398,6 +398,21 @@ pub enum TypeError {
         op: Symbol,
         arity: usize,
     },
+    /// WI-20260909-M8QWJ: a call, in an operation body, of a member of a sort that may be
+    /// provided, where nothing can select a provider: the operation's signature names no
+    /// carrier ([`signature_names_no_carrier`]), no requirement in scope supplies the sort,
+    /// and the call writes no bracket — so it runs at the sort itself, and there it reaches
+    /// `reached` (the operation called, or a member its body calls), which has no body, host
+    /// mapping or builtin. It loaded clean and died `OperationBodyMissing` at the call.
+    /// `clauses` is whether clauses are indexed under `reached`, which changes the repair the
+    /// refusal names.
+    CallOfUnselectableSpecOperation {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        reached: Symbol,
+        clauses: bool,
+    },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
     /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
@@ -1527,6 +1542,44 @@ impl TypeError {
                      (`{short}(…).takeN(n)`)"
                 )
             }
+            TypeError::CallOfUnselectableSpecOperation {
+                op,
+                spec,
+                reached,
+                clauses,
+                ..
+            } => {
+                let qn = kb.qualified_name_of(*op);
+                let spec_qn = kb.qualified_name_of(*spec);
+                let short = short_name_of(qn);
+                let what = if reached == op {
+                    "it".to_string()
+                } else {
+                    format!(
+                        "its body calls `{}` at that same sort, which",
+                        kb.qualified_name_of(*reached)
+                    )
+                };
+                let own = if *clauses {
+                    format!(
+                        "{what} is defined by clauses alone, and clauses answer a goal, not a call"
+                    )
+                } else if reached == op {
+                    "it has no body, host mapping or builtin".to_string()
+                } else {
+                    format!("{what} has no body, host mapping or builtin")
+                };
+                format!(
+                    "a call of `{qn}` that nothing can run: `{spec_qn}` may be provided, but \
+                     no provider can be selected here — no argument, result or effect of \
+                     `{short}` stands at `{spec_qn}` or at a parameter of it, and no \
+                     `requires {spec_qn}[…]` is in scope — so the call reaches `{qn}` \
+                     itself, and {own}. Add `requires {spec_qn}[…]` to the enclosing \
+                     operation, so that its callers supply the provider, or give `{body}` \
+                     a body",
+                    body = short_name_of(kb.qualified_name_of(*reached)),
+                )
+            }
             TypeError::AmbiguousRequirementKey {
                 op, name, slots, ..
             } => {
@@ -2099,6 +2152,7 @@ impl TypeError {
             | TypeError::ReceiverBracketConflict { span, .. }
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::CallOfClauseDefinedOperation { span, .. }
+            | TypeError::CallOfUnselectableSpecOperation { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2391,7 +2445,8 @@ impl TypeError {
             },
             // One string for both faces, as the selection refusals below have it: the
             // message carries the whole repair.
-            TypeError::CallOfClauseDefinedOperation { op, .. } => LoadError::TypeMismatch {
+            TypeError::CallOfClauseDefinedOperation { op, .. }
+            | TypeError::CallOfUnselectableSpecOperation { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "call".to_string(),

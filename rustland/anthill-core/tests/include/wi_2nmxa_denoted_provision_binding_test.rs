@@ -824,8 +824,8 @@ fn a_denial_is_not_evaded_by_a_type_that_holds_a_value() {
             ns,
             "  import anthill.prelude.{Permission}",
             &format!(
-                "  operation guarded[Rho](f: () -> Unit @ {{Rho, -Permission[Cap]}}) -> Unit\n  \
-                 operation mints() -> Unit\n    effects {{Permission[{capability}]}}\n  \
+                "  operation guarded[Rho](f: () -> Unit @ {{Rho, -Permission[Cap]}}) -> Unit = ()\n  \
+                 operation mints() -> Unit\n    effects {{Permission[{capability}]}}\n    = ()\n  \
                  operation call() -> Unit = guarded[Rho = {{Permission[{capability}]}}](mints)"
             ),
         )

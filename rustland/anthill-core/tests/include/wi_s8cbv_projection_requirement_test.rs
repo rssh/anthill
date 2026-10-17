@@ -58,7 +58,7 @@
 //!     [`a_caller_requirement_at_a_different_receiver_does_not_cover_this_call`].
 //!
 //! [`a_constant_requirement_does_not_track_the_argument`],
-//! [`without_the_requirement_the_body_has_no_dictionary_at_all`] and
+//! [`without_the_requirement_nothing_can_run_the_call`] and
 //! [`a_dotted_name_whose_head_is_no_value_place_is_still_unresolved`] pass under ALL SEVEN
 //! by design — the first two describe the fixture (they are what the acceptance's numbers
 //! are read against) and the third is the arm the rung declines.
@@ -93,8 +93,9 @@ use anthill_core::eval::Value;
 /// carrier whose element type a projection names.
 ///
 /// `Desc.tag()` is NULLARY and BODY-LESS on purpose — see the file header. Nullary so no
-/// argument can value-direct it, body-less so an absent dictionary is observable as `[]`
-/// rather than as a default.
+/// argument can value-direct it, body-less so an absent dictionary is observable — as a
+/// refused call in an operation body, as an UNDECIDED row in a rule body — rather than as
+/// a default.
 fn fixture(ns: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
@@ -202,22 +203,25 @@ fn a_constant_requirement_does_not_track_the_argument() {
 }
 
 #[test]
-fn without_the_requirement_the_body_has_no_dictionary_at_all() {
+fn without_the_requirement_nothing_can_run_the_call() {
     // THE OTHER HALF OF THE CONTROL, and the reason the spec op is BODY-LESS: with no
-    // `requires`, `Desc.tag()` has no instance and no default, so the call answers
-    // NOTHING. That `[]` is what says every number above arrived through the
-    // requirement channel rather than through the spec's own body.
+    // `requires`, `Desc.tag()` has no instance and no default, so nothing can run the
+    // call. That is what says every number above arrived through the requirement channel
+    // rather than through the spec's own body. The program used to load and answer
+    // NOTHING (`[]`); WI-20260909-M8QWJ moved that from eval to LOAD, refusing the call.
     //
     // PASSES EITHER WAY BY DESIGN — it describes the fixture, not this ticket's change.
     const NO_REQ: &str = "  operation pick(x: Box) -> Int64 = Desc.tag()\n";
-    assert_eq!(
-        answer("test.s8cbv.none.r", NO_REQ, "pick(box(v: red()), ?r)"),
-        None,
-    );
-    assert_eq!(
-        answer("test.s8cbv.none.b", NO_REQ, "pick(box(v: blue()), ?r)"),
-        None,
-    );
+    for (ns, query) in [
+        ("test.s8cbv.none.r", "pick(box(v: red()), ?r)"),
+        ("test.s8cbv.none.b", "pick(box(v: blue()), ?r)"),
+    ] {
+        let errs = refusal(&fixture(ns, &format!("{NO_REQ}  rule answer(?r) :- {query}\n")));
+        assert!(
+            errs.contains(&format!("a call of `{ns}.Desc.tag` that nothing can run")),
+            "got:\n{errs}"
+        );
+    }
 }
 
 fn refusal(src: &str) -> String {
@@ -465,7 +469,7 @@ fn a_rule_body_require_may_project_off_a_typed_head_parameter() {
 #[test]
 fn a_rule_with_no_require_has_no_dictionary_at_all() {
     // THE CONTROL THE NUMBERS ABOVE ARE READ AGAINST, and the rule-body twin of
-    // [`without_the_requirement_the_body_has_no_dictionary_at_all`]. `Desc.tag()` is
+    // [`without_the_requirement_nothing_can_run_the_call`]. `Desc.tag()` is
     // body-less, so with no `require` in the clause there is no instance and no default:
     // the call is UNREDUCED (proposal 068 §2) and the clause's one row is UNDECIDED, naming
     // that cause. Every `7` / `9` above therefore arrived through the dictionary rather than

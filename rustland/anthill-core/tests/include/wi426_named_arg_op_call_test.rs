@@ -91,8 +91,13 @@ namespace test.wi426.proj
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper, k: s.cell.T) -> String
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(s: w, k: "abc")
+  -- In a sort without constructors: a namespace operation nothing defines is refused at
+  -- load (WI-20260909-M8QWJ), and with a body the signature's projection through the bare
+  -- `Wrapper` is itself checked and refused. The caller's call is a sibling call.
+  sort Ops
+    operation check(s: Wrapper, k: s.cell.T) -> String
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(s: w, k: "abc")
+  end
 end
 "#;
     assert!(
@@ -117,13 +122,16 @@ namespace test.wi426.proj_wrong
     sort P = ?
     entity wrap(cell: P)
   end
-  operation check(s: Wrapper, k: s.cell.T) -> String
-  operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(s: w, k: 42)
+  sort Ops
+    operation check(s: Wrapper, k: s.cell.T) -> String
+    operation caller(w: Wrapper[P = Inner[T = String]]) -> String = check(s: w, k: 42)
+  end
 end
 "#;
+    let errs = load_errors(src);
     assert!(
-        !load_errors(src).is_empty(),
-        "k : s.cell.T is String, so k: 42 (by name) must be rejected",
+        errs.iter().any(|e| e.contains("check.k")),
+        "k : s.cell.T is String, so k: 42 (by name) must be rejected AT `k`; got: {errs:?}",
     );
 }
 

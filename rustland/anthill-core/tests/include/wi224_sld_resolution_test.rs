@@ -468,7 +468,7 @@ fn cyclic_when_conditional_subgoal_recurses() {
         namespace test.wi224.cyc
           sort CycSpec
             sort T = ?
-            operation cyc_op(x: T) -> T
+            operation cyc_op(x: T) -> T = x
           end
           sort CarA entity car_a end
           sort CarB entity car_b end

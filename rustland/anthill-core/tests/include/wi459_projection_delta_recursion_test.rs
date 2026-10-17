@@ -70,7 +70,7 @@ namespace test.wi459.counte
     sort T = ?
     effects E = ?
   end
-  operation sfdE(s: Src) -> Option[Pair[A = s.T, B = Src[T = s.T, E = s.E]]] effects s.E
+  operation sfdE(s: Src) -> Option[Pair[A = s.T, B = Src[T = s.T, E = s.E]]] effects s.E = sfdE(s)
   operation countE(s: Src) -> Int64 effects s.E
     = match sfdE(s)
         case none -> 0

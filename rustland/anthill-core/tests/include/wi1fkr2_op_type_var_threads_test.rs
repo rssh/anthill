@@ -148,7 +148,7 @@ end
 fn threads_a_label_through_a_label_preserving_library_operation() {
     loads_clean(&label_program(
         "flow_ok",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l]
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)",
     ));
 }
@@ -166,9 +166,9 @@ fn threads_a_label_through_a_label_preserving_library_operation() {
 fn a_threaded_label_is_still_enforced_at_the_sink() {
     let err = sole_error(&label_program(
         "flow_leak",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l]
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
-  operation send(body: Text[L = Public]) -> Unit
+  operation send(body: Text[L = Public]) -> Unit = ()
   operation leak(t: Text[L = Untrusted]) -> Unit = send(summarize(t))",
     ));
     assert!(
@@ -179,9 +179,9 @@ fn a_threaded_label_is_still_enforced_at_the_sink() {
     );
     loads_clean(&label_program(
         "flow_pub",
-        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l]
+        "  operation upcase(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
   operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = upcase(t)
-  operation send(body: Text[L = Public]) -> Unit
+  operation send(body: Text[L = Public]) -> Unit = ()
   operation ok(t: Text[L = Public]) -> Unit = send(summarize(t))",
     ));
 }
@@ -190,14 +190,18 @@ fn a_threaded_label_is_still_enforced_at_the_sink() {
 /// two flows through a BODY-LESS label-preserving middle, which never reaches the body check
 /// at all. So "the label is enforced at the sink" is pinned independently of anything this
 /// ticket changed — if the arm above ever went green by weakening the label rather than by
-/// threading it, this row would say so.
+/// threading it, this row would say so. The middle is a member of a sort without
+/// constructors: since WI-20260909-M8QWJ a body-less NAMESPACE operation is refused at its
+/// declaration, and a spec's member is where a body-less operation still loads.
 #[test]
 fn control_a_label_is_enforced_through_a_body_less_middle() {
     let err = sole_error(&label_program(
         "flow_spec_leak",
-        "  operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
-  operation send(body: Text[L = Public]) -> Unit
-  operation leak(t: Text[L = Untrusted]) -> Unit = send(summarize(t))",
+        "  sort Lib
+    operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
+  end
+  operation send(body: Text[L = Public]) -> Unit = ()
+  operation leak(t: Text[L = Untrusted]) -> Unit = send(Lib.summarize(t))",
     ));
     assert!(
         err.contains("type mismatch in send.body (op-arg)")
@@ -207,9 +211,11 @@ fn control_a_label_is_enforced_through_a_body_less_middle() {
     );
     loads_clean(&label_program(
         "flow_spec_pub",
-        "  operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
-  operation send(body: Text[L = Public]) -> Unit
-  operation ok(t: Text[L = Public]) -> Unit = send(summarize(t))",
+        "  sort Lib
+    operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
+  end
+  operation send(body: Text[L = Public]) -> Unit = ()
+  operation ok(t: Text[L = Public]) -> Unit = send(Lib.summarize(t))",
     ));
 }
 
@@ -246,7 +252,7 @@ fn refuses_a_body_that_pins_the_callers_own_variable() {
     let err = sole_error(
         "namespace tv_pin
   import anthill.prelude.{Int64}
-  operation sink(n: Int64) -> Int64
+  operation sink(n: Int64) -> Int64 = 0
   operation leaky(x: ?t) -> Int64 = sink(x)
 end
 ",
@@ -283,15 +289,19 @@ end
 
 /// THE TICKET'S OWN CONTROL, and the row that makes the two failures mean something: the
 /// IDENTICAL delegation with a GROUND caller. So the failure was about the caller's
-/// polymorphism — not about delegation, not arity, not the sort. Passes either way.
+/// polymorphism — not about delegation, not arity, not the sort. Passes either way. The
+/// callee stays body-less as a member of a sort without constructors (WI-20260909-M8QWJ
+/// refuses a body-less namespace operation), so no body check of its own is in play.
 #[test]
 fn control_a_ground_caller_delegates_the_same_way() {
     let src = format!(
         "{}namespace tv_ground
   import anthill.prelude.{{Int64}}
   import tv_ground.{{Box}}
-  operation id(b: Box[?t]) -> Box[?t]
-  operation via_ground(b: Box[T = Int64]) -> Box[T = Int64] = id(b)
+  sort Lib
+    operation id(b: Box[?t]) -> Box[?t]
+  end
+  operation via_ground(b: Box[T = Int64]) -> Box[T = Int64] = Lib.id(b)
 end
 ",
         box_sort("tv_ground")
@@ -331,8 +341,8 @@ fn control_an_anonymous_slot_still_takes_the_projection() {
     let src = format!(
         "{}namespace tv_anon
   import tv_anon.{{Box}}
-  operation peel(b: Box) -> b.T
-  operation peel_anon(b: Box[T = ?]) -> b.T
+  operation peel(b: Box) -> b.T = b.v
+  operation peel_anon(b: Box[T = ?]) -> b.T = b.v
   operation via(b: Box) -> b.T = peel(b)
   operation via_anon(b: Box[T = ?]) -> b.T = peel_anon(b)
 end

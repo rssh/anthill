@@ -331,7 +331,6 @@ end
 namespace anthill.prelude.Int64
   import test.wi582domain.Summable
   provides Summable[T = Int64]
-  operation zero() -> Int64 = 0
 end
 "#
         )

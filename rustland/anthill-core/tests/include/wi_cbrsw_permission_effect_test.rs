@@ -414,12 +414,12 @@ fn denial(lacked: &str, row: &str, arg: &str) -> String {
         "{CAPS}\nnamespace cbrsw\n  \
          import anthill.prelude.{{Permission, Unit}}\n  \
          import cbrsw.{{Model, GptModel, Fs, AdminFs, Oracle, SubOracle}}\n  \
-         operation guarded[Rho](f: () -> Unit @ {{Rho, -{lacked}}}) -> Unit\n  \
+         operation guarded[Rho](f: () -> Unit @ {{Rho, -{lacked}}}) -> Unit = ()\n  \
          operation mints_model() -> Unit\n    effects {{Permission[Model]}} =\n      \
          let o = Oracle.acquire()\n      ()\n  \
          operation mints_sub() -> Unit\n    effects {{Permission[GptModel]}} =\n      \
          let o = SubOracle.acquire()\n      ()\n  \
-         operation mints_fs() -> Unit\n    effects {{Permission[Fs]}}\n  \
+         operation mints_fs() -> Unit\n    effects {{Permission[Fs]}} = ()\n  \
          operation call() -> Unit = guarded[Rho = {row}]({arg})\nend\n"
     )
 }

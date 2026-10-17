@@ -238,10 +238,6 @@ namespace anthill.reflect
   -- declared `NodeOccurrence` result without manufacturing a value.
   operation reject(message: String, at: NodeOccurrence) -> anthill.prelude.Nothing @[host_implemented]
 
-  -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
-  -- Returns all NodeOccurrences registered under this owner during loading.
-  operation occurrences_of(owner: Symbol) -> List[NodeOccurrence]
-
   -- Operation body occurrence (None if declaration only); lives in the loader side-table, not a fact field.
   operation operation_body(op: Symbol) -> Option[T = NodeOccurrence]
 

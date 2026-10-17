@@ -45,7 +45,7 @@ const RISKY_PRELUDE: &str = r#"
   end
 
   operation risky(b: Int64) -> Int64
-    effects { Boom :- eq(b, 0) }
+    effects { Boom :- eq(b, 0) } = 0
 "#;
 
 #[test]
@@ -187,7 +187,7 @@ namespace anthill.test.wi067dup
   end
 
   operation risky2(b: Int64) -> Int64
-    effects { Boom, Boom :- eq(b, 0) }
+    effects { Boom, Boom :- eq(b, 0) } = 0
 
   operation caller() -> Int64 =
     risky2(5)
@@ -218,7 +218,7 @@ namespace anthill.test.wi067dup2
   end
 
   operation risky2(b: Int64) -> Int64
-    effects { Boom, Boom :- eq(b, 0) }
+    effects { Boom, Boom :- eq(b, 0) } = 0
 
   operation caller() -> Int64
     effects Boom =
@@ -272,7 +272,7 @@ namespace anthill.test.wi067mod
   import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
-    effects { Modify[c] :- eq(b, 0) }
+    effects { Modify[c] :- eq(b, 0) } = ()
 
   operation caller(c: Cell) -> Unit =
     maybe_modify(c, 5)
@@ -293,7 +293,7 @@ namespace anthill.test.wi067mod2
   import anthill.prelude.PartialEq.{eq}
 
   operation maybe_modify(c: Cell, b: Int64) -> Unit
-    effects { Modify[c] :- eq(b, 0) }
+    effects { Modify[c] :- eq(b, 0) } = ()
 
   operation caller(c: Cell, b: Int64) -> Unit =
     maybe_modify(c, b)

@@ -121,7 +121,7 @@ const STREAM: &str = "namespace test.wi1082.stream\n\
     \x20   entity raising\n\
     \x20   BODY\n\
     \x20 end\n\
-    \x20 operation takes_pure(s: MyStream[T = Int64, E = {}]) -> Int64\n\
+    \x20 operation takes_pure(s: MyStream[T = Int64, E = {}]) -> Int64 = 0\n\
     \x20 USE\n\
     end\n";
 
@@ -166,7 +166,7 @@ fn the_headline_a_self_sort_return_no_longer_launders() {
          \x20   entity mystream\n\
          \x20 end\n\
          \x20 operation widen(s: MyStream[T = Int64, E = {Error}]) -> MyStream[T = Int64] = s\n\
-         \x20 operation takes_pure(s: MyStream[T = Int64, E = {}]) -> Int64\n\
+         \x20 operation takes_pure(s: MyStream[T = Int64, E = {}]) -> Int64 = 0\n\
          \x20 operation use(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure(widen(s))\n\
          end\n",
@@ -265,7 +265,7 @@ fn a_destructured_field_carries_the_instances_element() {
         \x20   entity leaf(v: T)\n\
         \x20   entity node(next: Self)\n\
         \x20 end\n\
-        \x20 operation want(b: Box[T = DEMAND]) -> Int64\n\
+        \x20 operation want(b: Box[T = DEMAND]) -> Int64 = 0\n\
         \x20 operation use(b: Box[T = Int64]) -> Int64 =\n\
         \x20   match b\n\
         \x20     case leaf(v) -> 0\n\
@@ -359,8 +359,8 @@ fn a_foreign_return_still_opens_per_call() {
          \x20   sort T = ?\n\
          \x20   entity box(n: Int64)\n\
          \x20 end\n\
-         \x20 operation mk(n: Int64) -> Box\n\
-         \x20 operation takes_int_box(b: Box[T = Int64]) -> Int64\n\
+         \x20 operation mk(n: Int64) -> Box = mk(n)\n\
+         \x20 operation takes_int_box(b: Box[T = Int64]) -> Int64 = 0\n\
          \x20 operation use(n: Int64) -> Int64 = takes_int_box(mk(n))\n\
          end\n",
     );
@@ -405,7 +405,9 @@ fn an_elided_self_return_still_threads_the_element() {
 /// instead of pinned — and BODYLESS is the point: a member with a body is caught by the return
 /// check ([`the_headline_a_self_sort_return_no_longer_launders`]), so the population that
 /// survived is exactly the one with no body to check — spec operations, host-mapped members,
-/// declaration-only members.
+/// declaration-only members. (Since WI-20260909-M8QWJ a declaration-only member of a sort with
+/// constructors is refused at its declaration, so both members here are self-calls: a body
+/// that returns its own call's type gives the return check nothing to catch.)
 ///
 /// THE SECOND HALF is the worse form, where nothing is even about effects: `Box.pick(b: Box[T =
 /// Int64]) -> Box` leaves `U` elided on both sides, so the result satisfied a `U = String`
@@ -415,7 +417,7 @@ fn an_elided_self_return_still_threads_the_element() {
 #[test]
 fn a_bodyless_member_cannot_launder_either() {
     let effects = errors_of(&stream(
-        "operation widen(s: MyStream[T = Int64, E = E]) -> Self",
+        "operation widen(s: MyStream[T = Int64, E = E]) -> Self = widen(s)",
         "operation use(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure(MyStream.widen(s))",
     ));
@@ -432,9 +434,9 @@ fn a_bodyless_member_cannot_launder_either() {
          \x20   sort T = ?\n\
          \x20   sort U = ?\n\
          \x20   entity box(n: Int64)\n\
-         \x20   operation pick(b: Box[T = Int64, U = U]) -> Self\n\
+         \x20   operation pick(b: Box[T = Int64, U = U]) -> Self = pick(b)\n\
          \x20 end\n\
-         \x20 operation want_str(b: Box[T = Int64, U = String]) -> Int64\n\
+         \x20 operation want_str(b: Box[T = Int64, U = String]) -> Int64 = 0\n\
          \x20 operation both(b: Box[T = Int64, U = Int64]) -> Int64 = want_str(Box.pick(b))\n\
          end\n",
     );
@@ -523,7 +525,7 @@ fn a_self_returning_member_result_shares_the_receivers_parameter() {
     );
     let free = SRC
         .replace("MEMBER", "")
-        .replace("FREE", "operation pick(p: DataProvider) -> DataProvider")
+        .replace("FREE", "operation pick(p: DataProvider) -> DataProvider = pick(p)")
         .replace("CALL", "pick(p)");
     assert!(
         !errors_of(&free).is_empty(),

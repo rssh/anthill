@@ -209,8 +209,13 @@ namespace guardians
   -- `it@othercorp.com`. THE EMPTY ROW IS THE CLAIM, and it is stronger than the
   -- `-Model` this used to carry: `{}` admits no `External`, no `Permission[Llm]`
   -- to mint a model, and no `Permission[Vouch]` to build the prompt one needs.
+  --
+  -- THE MAILBOX'S OWNER, and a body rather than a declaration (WI-20260909-M8QWJ):
+  -- a namespace-level operation nothing defines is refused at load, and the choice
+  -- needs nothing a body cannot read. A computed recipient is still not one the
+  -- sink's guard can clear (rejected/computed_recipient.anthill).
   operation choose_recipient(r: Report, box: Mailbox) -> Address
-    effects {}
+    effects {} = box.owner
 
   -- THE RUNNER, AND WHERE THE TASK'S VOUCHING AUTHORITY ENTERS — ONCE.
   -- `Triage.run` takes a `Text[Trusted]` it cannot make; this is what makes one and

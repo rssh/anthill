@@ -458,12 +458,16 @@ fn a_family_beside_a_carrier_is_an_ambiguity() {
 /// two conflicting provisions (one in the body, one in the entry). It never reads the
 /// sugar, so the ambiguity check has nothing to say, and it runs. It writes no `peek`:
 /// one member cannot fit the spec's `peek` at both `WIS` and `WIS2`, which the member-fit
-/// check would refuse, and a spec member without a body is not owed by its provider.
+/// check would refuse. So the spec's `peek` has a default here: a provision at a type
+/// other than the provider is owed every member a body (WI-20260909-M8QWJ).
 #[test]
 fn the_carrier_written_directly_is_not_ambiguous() {
     let ns = "wizbwmc.ctl";
     let body = format!("{PROVIDES_WIS}\n    operation count(s: WIS) -> Int64 = s.n");
+    let bodyless_peek = "    operation peek(s: State) -> Bool\n";
     let src = program(ns, "", &body, "    provides Store[State = WIS2]");
+    assert_eq!(src.matches(bodyless_peek).count(), 1, "the fixture's spec member");
+    let src = src.replace(bodyless_peek, "    operation peek(s: State) -> Bool = true\n");
     assert_eq!(run(ns, &src), 7);
 }
 

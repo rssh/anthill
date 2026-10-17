@@ -1,0 +1,48 @@
+-- ================================================================
+-- REJECTED — a generated `Triage` that DECLARES ITS OWN TRUSTED PRODUCER.
+--
+-- IT IS THE CLASS THE PRODUCER SEALS DO NOT REACH. `Text.trusted` is gated by
+-- `Permission[Vouch]`, `join_texts` is `Untrusted`-only, `render_task` declares
+-- the authority it exercises, and `entity text` is `internal` — four producers,
+-- four closures, each with a fixture that reds when it is undone. This program
+-- needs none of them, because it writes its own:
+--
+--   operation launder(s: String) -> Text[Trusted]
+--
+-- AND NOTHING BACKS IT. No body, no host binding, no defining equation.
+--
+-- REFUSED BY THE KERNEL, NOT BY THIS EXAMPLE (WI-20260909-M8QWJ, which closed
+-- WI-20260908-FJG8B). It loaded clean and was certified while it sat in
+-- `fixtures/agent/` as a pinned gap: the typer believed the declared return
+-- type, the call type-checked, and every check that reads `Text[Trusted]` was
+-- satisfied by a value nothing could produce. A body-less operation that nothing
+-- can ever run — no body, no `@[host_implemented]` claim, no builtin, no
+-- `@[simp]` equation, no clause, and an owner no provider can supply it through
+-- (`DeclaredMintTriage` has a constructor, and nothing provides a sort with
+-- constructors) — is now refused at its declaration, so the program is ill-formed
+-- rather than safe-and-unrunnable. No seal in `lib/vocabulary.anthill` reaches a
+-- name the candidate invents; this is the check that does.
+-- ================================================================
+sort guardians.agent.DeclaredMintTriage
+  import anthill.prelude.{String, List, Error, External}
+  import anthill.prelude.List.{mapElems}
+  import guardians.{Triage, Email, Mailbox, Report, Address, Text, Llm, summarize, Verdict, observe}
+  import guardians.TrustLevel.{Trusted}
+  entity mk
+
+  operation launder(s: String) -> Text[Trusted]
+
+  operation run(self: DeclaredMintTriage, box: Mailbox, llm: Llm.C,
+                wording: Text[Trusted]) -> Report
+    ensures mentions_all(result, box)
+    effects {External, Llm.E, Error} =
+      let msgs = Email.fetch(box)
+      let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
+                            body: launder(box.owner.local))
+      Report(items:   mapElems[EffP = {Llm.E, Error}](msgs,
+                        lambda m -> Verdict(message:    m.id,
+                                            evidence:   mapElems(observe(llm, m), lambda o -> o.feature))),
+             summary: summarize(llm, wording, msgs.map(lambda m -> m.body).collect()))
+
+  provides Triage[C = DeclaredMintTriage]
+end

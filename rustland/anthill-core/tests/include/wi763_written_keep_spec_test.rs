@@ -25,6 +25,12 @@ use anthill_core::parse;
 use crate::common::{parse_errs, try_load_kb_with};
 
 /// The relation the projections below keep from: schema `(name: String, age: Int64)`.
+///
+/// Each fixture's projecting operation and its caller sit in `sort Ops`, a sort without
+/// constructors (WI-20260909-M8QWJ): a namespace-level operation with nothing defining it is
+/// refused at its declaration, and a body cannot be written here — the operation's own
+/// return check compares the UNREDUCED `Project[…]` with the body's value. Inside `Ops` the
+/// operation stays a signature, and the caller's call is a sibling call.
 const REL: &str = r#"
   import anthill.prelude.{String, Int64, Relation, Project}
 
@@ -62,10 +68,12 @@ fn wi763_written_keep_spec_reduces_to_the_projected_schema() {
         r#"
 namespace test.wi763write
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]
-  operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> (person: String, years: Int64) =
-    kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]
+    operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> (person: String, years: Int64) =
+      kept(r)
+  end
 end
 "#
     );
@@ -91,10 +99,12 @@ fn wi763_written_keep_spec_rejects_the_wrong_component_type() {
         r#"
 namespace test.wi763writeneg
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]
-  operation wrong(r: Relation[T = (name: String, age: Int64)]) -> (person: Int64, years: Int64) =
-    kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (person: "name", years: "age")]
+    operation wrong(r: Relation[T = (name: String, age: Int64)]) -> (person: Int64, years: Int64) =
+      kept(r)
+  end
 end
 "#
     );
@@ -126,9 +136,11 @@ fn wi763_single_component_keep_spec_reduces_to_a_one_column_schema() {
         r#"
 namespace test.wi763one
 {REL}
-  operation kept_one(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (who: "name")]
-  operation use_one(r: Relation[T = (name: String, age: Int64)]) -> (who: String) = kept_one(r)
+  sort Ops
+    operation kept_one(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (who: "name")]
+    operation use_one(r: Relation[T = (name: String, age: Int64)]) -> (who: String) = kept_one(r)
+  end
 end
 "#
     );
@@ -153,9 +165,11 @@ fn wi763_written_keep_spec_naming_no_column_is_loud() {
         r#"
 namespace test.wi763nocol
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (person: "nosuchcolumn")]
-  operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (person: "nosuchcolumn")]
+    operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  end
 end
 "#
     );
@@ -181,10 +195,12 @@ fn wi763_non_denoted_keep_component_is_loud() {
         r#"
 namespace test.wi763nondenoted
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (person: String, years: "age")]
-  operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> (person: String, years: Int64) =
-    kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (person: String, years: "age")]
+    operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> (person: String, years: Int64) =
+      kept(r)
+  end
 end
 "#
     );
@@ -205,9 +221,11 @@ fn wi763_non_tuple_keep_is_loud() {
         r#"
 namespace test.wi763nontuple
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = String]
-  operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = String]
+    operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  end
 end
 "#
     );
@@ -255,9 +273,11 @@ fn wi763_duplicate_result_key_in_a_written_keep_spec_is_loud() {
         r#"
 namespace test.wi763dup
 {REL}
-  operation kept(r: Relation[T = (name: String, age: Int64)])
-    -> Project[T = (name: String, age: Int64), Keep = (a: "name", a: "age")]
-  operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  sort Ops
+    operation kept(r: Relation[T = (name: String, age: Int64)])
+      -> Project[T = (name: String, age: Int64), Keep = (a: "name", a: "age")]
+    operation use_kept(r: Relation[T = (name: String, age: Int64)]) -> String = kept(r)
+  end
 end
 "#
     );
@@ -338,9 +358,9 @@ fn wi763_tuple_type_components_survive_comments_and_arrows() {
 namespace test.wi763walk
   import anthill.prelude.{Int64, String}
   operation pair() -> (Int64, -- a comment between components
-                       String)
+                       String) = pair()
   operation use_pair() -> (Int64, String) = pair()
-  operation with_fn() -> ((Int64) -> String, Int64)
+  operation with_fn() -> ((Int64) -> String, Int64) = with_fn()
   operation use_with_fn() -> ((Int64) -> String, Int64) = with_fn()
 end
 "#;
@@ -361,7 +381,7 @@ fn wi763_arrow_parameters_survive_comments() {
 namespace test.wi763arrowcomment
   import anthill.prelude.{Int64, String}
   operation takes_fn(f: (Int64, -- a comment between parameters
-                          String) -> Int64) -> Int64
+                          String) -> Int64) -> Int64 = 0
 end
 "#;
     assert!(

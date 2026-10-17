@@ -667,6 +667,23 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
     })
     .expect("register guardians_prompt_with");
 
+    // THE DEPLOYMENT'S OPERATIONS, STOOD IN FOR (WI-20260909-M8QWJ). `Email.fetch`,
+    // `Email.send` and `observe` are host-bound by design — a deployment binds the mailbox
+    // and the reply parser — and the load now refuses a body-less operation nothing can
+    // run, so the library claims them `@[host_implemented]` and maps them. Nothing in
+    // this suite runs a `Triage` through them, so each stand-in RAISES the `Error` its
+    // row declares rather than inventing mail: a test that reaches one learns that it
+    // did, by name.
+    for (key, arity) in [("guardians_fetch", 1), ("guardians_send", 2), ("guardians_observe", 2)] {
+        kb.register_host_fn(key, arity, move |_interp, _args| {
+            Err(anthill_core::eval::EvalError::Raised {
+                payload: Value::Str(format!("{key}: no deployment is bound in this harness")),
+                origin: anthill_core::eval::RaiseOrigin::Program,
+            })
+        })
+        .unwrap_or_else(|e| panic!("register {key}: {e:?}"));
+    }
+
     // The harness. `render_task` would read the trusted declarations through
     // reflect; rendering a DECLARATION as anthill text is the one piece reflect
     // does not expose (TermPrinter prints terms, rules and facts, and is
@@ -1912,47 +1929,27 @@ fn the_runner_holds_the_vouching_authority_and_hands_the_result_down() {
 }
 
 #[test]
-fn a_candidate_may_declare_its_own_trusted_producer() {
-    // A PINNED GAP, and it LOADS — the shelf `conceal.anthill` sits on. It is the
-    // class the four producer seals do not reach: `Text.trusted` is gated,
+fn a_candidate_may_not_declare_its_own_trusted_producer() {
+    // THE CLASS THE FOUR PRODUCER SEALS DO NOT REACH: `Text.trusted` is gated,
     // `join_texts` is `Untrusted`-only, `render_task` declares its authority, and
-    // `entity text` is `internal` — and this candidate needs none of them, because
-    // it declares `operation launder(s: String) -> Text[Trusted]` itself.
+    // `entity text` is `internal` — and this candidate needs none of them, because it
+    // declares `operation launder(s: String) -> Text[Trusted]` itself, with nothing
+    // behind it.
     //
-    // THE FIX IS NOT IN THIS EXAMPLE, and that is the finding. Body-less-and-called
-    // is the NORMAL shape here: twenty-one operations in `lib/` are declared with no
-    // body, every accepted fixture calls some of them, and the harness binds five
-    // names while a real deployment would bind the rest. A spec DECLARES and a
-    // deployment BINDS, so nothing at load separates a declaration awaiting its
-    // binding from one asserting a type its author cannot produce — and no seal in
-    // the vocabulary reaches a name the candidate invents.
+    // IT WAS A PINNED GAP, ACCEPTED, and the fix was never this example's: no seal in
+    // the vocabulary reaches a name the candidate invents. WI-20260909-M8QWJ refuses a
+    // body-less operation nothing can ever run at its declaration (closing
+    // WI-20260908-FJG8B, which this row was filed against), so the program is
+    // ill-formed and the fixture moved to `rejected/`. The library's own body-less
+    // operations that agents call — `Email.fetch`/`send`, `observe` — are claimed
+    // `@[host_implemented]` and mapped to the harness's stand-ins, and
+    // `choose_recipient` got the body it always could have had.
     //
-    // WHAT REACHES IT is a KERNEL check that a called body-less operation has some
-    // implementation by the end of the load. WI-1122 put the host-fn table on the KB
-    // BEFORE `load_all` so that late registration could be refused, so the
-    // information exists. Under such a check this program is ill-formed and stops
-    // loading — the right outcome, and this row is what notices. FILED AS
-    // WI-20260908-FJG8B; when it lands, delete the fixture and this test rather than
-    // repairing either.
-    //
-    // THE PREVIOUS DESIGN REFUSED IT BY ACCIDENT: `requires releasable(body)` on
-    // `Email.send` failed because `releasable(launder(…))` is nobody's row — the
-    // sink catching an ill-formed program while checking content, not the lattice
-    // working.
-    //
-    // WHY IT IS INERT: nothing runs a `Triage`. The pipeline generates and CHECKS;
-    // `run_triage` is `run`'s only caller and only a test drives it. So the missing
-    // implementation is never reached and no bytes move — an accident of the
-    // pipeline, not a property of the check.
-    //
-    // WHAT FAILS WHEN THE GAP CLOSES: this row. Written as an ACCEPTANCE so that a
-    // sink-side obligation, or a load-side check that a called body-less operation
-    // has a binding, reds it and forces the decision instead of passing silently.
-    let errs = errors_for("declared_mint");
-    assert!(
-        errs.is_empty(),
-        "the declared-producer gap is pinned as ACCEPTED; if this reds, it closed: {errs:#?}"
-    );
+    // THE CONTROL is every accepted fixture that calls those library operations and
+    // still loads (`good`, `conceal`, `internal_send`): backing them, not exempting
+    // agents, is what keeps the example loading. Back out the kernel check and this row
+    // reds — the candidate loads clean again.
+    assert_refused("declared_mint", "operation `guardians.agent.DeclaredMintTriage.launder` has no definition");
 }
 
 #[test]

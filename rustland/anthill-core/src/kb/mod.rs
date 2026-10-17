@@ -1252,6 +1252,13 @@ pub struct KnowledgeBase {
     /// presented, whether they sit in one file or in two files with identical text.
     pub(crate) op_decl_sites: HashMap<Symbol, Vec<crate::span::SourceSpan>>,
 
+    /// WI-20260909-M8QWJ — the operations THIS load phase declared WITH a body the loader
+    /// refused and did not store (a bare `->` in it, WI-605's recovery). The source does
+    /// define them, so `load::check_operations_have_a_definition` must not add "has no
+    /// definition" to the refusal the body already drew. Per phase, cleared beside
+    /// [`Self::op_decl_sites`] for its reason.
+    pub(crate) op_bodies_refused: HashSet<Symbol>,
+
     /// WI-999 (proposal 059 R4 clause 3) — EVERY NAMED DECLARATION THIS SCAN WROTE,
     /// as written: the scope it declares into, its local name, the symbol it landed
     /// on and its site. `load::check_name_captures` reads it to ask, per declaration,
@@ -2729,6 +2736,7 @@ impl KnowledgeBase {
             functor_spans: HashMap::new(),
             op_records: HashMap::new(),
             op_decl_sites: HashMap::new(),
+            op_bodies_refused: HashSet::new(),
             decl_sites: Vec::new(),
             scan_type_decls: Vec::new(),
             last_load: load::LastLoad::default(),

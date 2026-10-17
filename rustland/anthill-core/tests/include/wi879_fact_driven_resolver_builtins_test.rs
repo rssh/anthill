@@ -297,7 +297,9 @@ fn the_mirror_declines_three_members_it_must_not_tag() {
 /// neighbouring reading answering by accident.
 ///
 /// CONTROL, RUN: the `unmapped` arm is the same program with the `operation_map` clause
-/// replaced by a `carrier` one — no mapping, no mirror, and the goal answers `[]`. It is
+/// replaced by a `carrier` one — no mapping, no mirror, and the goal answers `lt`'s anthill
+/// body, `false` (it answered `[]` while a body-less `lt` with no mapping still loaded;
+/// WI-20260909-M8QWJ refuses that at load). It is
 /// the control the stdlib carriers cannot be: their members are mapped in files this test
 /// does not write. This test also fails on the OTHER half's back-out (restore the
 /// numeric-only comparison and the mapped arm goes to `[]` too), which is what "exercises
@@ -307,8 +309,10 @@ fn the_mirror_declines_three_members_it_must_not_tag() {
 fn a_new_carriers_binding_block_is_enough() {
     // WI-20260922-BRT4Y: the CLAIM travels with the mapping. `lt` is `@[host_implemented]`
     // in the mapped arm; the control arm drops the mapping, and a claim no binding
-    // supplies is a load error, so it drops the claim with it — the program is otherwise
-    // the same, which is what keeps the arm a control.
+    // supplies is a load error, so it drops the claim with it — and, since
+    // WI-20260909-M8QWJ, a member with neither is a load error too, so the control gives
+    // `lt` an anthill body in the claim's place. The program is otherwise the same, which
+    // is what keeps the arm a control.
     let program = |entry: &str, claim: &str| {
         format!(
             r#"namespace wi879.newc
@@ -346,10 +350,10 @@ end
          then withholds an answer for two entities — one row, `definite = false`",
     );
     assert_eq!(
-        rows("carrier { Tick: \"i64\" }", ""),
-        "[]",
+        rows("carrier { Tick: \"i64\" }", " = false"),
+        "false",
         "CONTROL: the same program with no `operation_map` derives no tag, so the \
-         three-place goal has no clauses and answers nothing",
+         three-place goal runs `lt`'s anthill body rather than the comparison primitive",
     );
 }
 

@@ -633,7 +633,7 @@ namespace {ns}
   sort Producer
     provides Modifiable[T = Self]
     operation eff_stream(p: Producer) -> Strm[T = Int64, E = {{Modify[p]}}]
-    operation relay(s: Strm) -> Strm[T = s.T, E = {{s.E, Error[EmptyStream]}}]
+    operation relay(s: Strm) -> Strm[T = s.T, E = {{s.E, Error[EmptyStream]}}] = relay(s)
   end
   operation use(p: Producer) -> Bool effects {{{declared}}} =
     Strm.obs(Producer.relay(Producer.eff_stream(p)))
@@ -1659,7 +1659,7 @@ namespace {ns}
   end
   sort Producer
     operation foo_stream(p: Producer) -> Strm[T = Int64, E = {{Error[Foo]}}]
-    operation relay(s: Strm) -> Strm[T = s.T, E = {{s.E, Error[EmptyStream]}}]
+    operation relay(s: Strm) -> Strm[T = s.T, E = {{s.E, Error[EmptyStream]}}] = relay(s)
   end
   operation take(s: Strm[T = Int64, E = {row}]) -> Bool effects {row} =
     Strm.obs(s)
@@ -2082,7 +2082,7 @@ namespace {ns}
     entity foo
   end
   sort Boom
-    operation boom(x: Int64) -> Bool effects {{Error[Foo]}}
+    operation boom(x: Int64) -> Bool effects {{Error[Foo]}} = true
   end
   sort Strm
     sort T = ?
