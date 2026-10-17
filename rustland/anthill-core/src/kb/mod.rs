@@ -49,7 +49,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::intern::{ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
+use crate::intern::{Decl, ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
 use crate::parse::desugar_target as dt;
 use crate::span::{SourceRegistry, SourceSpan};
 use discrim::SubstTree;
@@ -686,7 +686,7 @@ pub enum SortKind {
 #[derive(Default, Debug, Clone)]
 pub(crate) struct SortOpsTable {
     /// impl sort symbol → (op short-name symbol → target op symbol).
-    by_impl: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    by_impl: HashMap<Decl, HashMap<Symbol, Symbol>>,
     /// WI-616 — semantic-equality dispatch index: value-head functor →
     /// the carrier's `eq` override op. Built by `load::build_eq_dispatch_index`
     /// for every sort with exactly one `eq` supplier — its own member
@@ -1071,9 +1071,9 @@ pub struct KnowledgeBase {
 
     // Entity-of indexes: entity → parent sort (1-level, non-transitive).
     // Materialized indexes for EntityOf(entity, parent) facts.
-    sort_entities: HashMap<Symbol, Vec<Symbol>>, // sort → its entity constructors (WI-697 finished: by SYMBOL)
-    entity_parent: HashMap<Symbol, Symbol>, // entity ctor SYMBOL → its parent sort NAME (WI-697, both halves)
-    sort_info: HashMap<Symbol, SortKind>,
+    sort_entities: HashMap<Decl, Vec<Symbol>>, // sort → its entity constructors (WI-697 finished: by SYMBOL)
+    entity_parent: HashMap<Decl, Symbol>, // entity ctor SYMBOL → its parent sort NAME (WI-697, both halves)
+    sort_info: HashMap<Decl, SortKind>,
 
     // Discrimination tree index for structural term matching
     discrim: SubstTree<RuleId>,
@@ -1131,11 +1131,11 @@ pub struct KnowledgeBase {
 
     // Entity field registry: functor symbol → ordered field names.
     // Populated during load_entity, used by convert_term for partial named-arg expansion.
-    pub(crate) entity_fields: HashMap<Symbol, Vec<Symbol>>,
+    pub(crate) entity_fields: HashMap<Decl, Vec<Symbol>>,
 
     // Set of functor symbols that are constructors (entities with a parent sort).
     // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
-    constructor_symbols: HashSet<Symbol>,
+    constructor_symbols: HashSet<Decl>,
     /// WI-20260904-B8ESG — `(functor, where)` per head-ARGUMENT compound the loader met,
     /// drained by the post-load undefined-name check. See
     /// [`Self::record_head_argument_site`].
@@ -1180,7 +1180,7 @@ pub struct KnowledgeBase {
     // Base substitution for each sort: maps all params + operations to themselves.
     // Computed by resolve_instantiations() after loading.
     // Key: sort functor symbol. Value: list of (slot_name, Ref(slot_name)) pairs.
-    sort_base_subst: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+    sort_base_subst: HashMap<Decl, Vec<(Symbol, TermId)>>,
 
     // Well-known sort terms (cached for future layers)
     #[allow(dead_code)]
@@ -1190,7 +1190,7 @@ pub struct KnowledgeBase {
 
     // Guards — integrity constraints checked on assert
     guards: Vec<Guard>,
-    guards_by_sort: HashMap<Symbol, Vec<usize>>,
+    guards_by_sort: HashMap<Decl, Vec<usize>>,
 
     /// WI-251 — span side-table keyed by stored term TermId. Populated
     /// by `load.rs::create_occurrence_ex` for every expression /
@@ -1510,7 +1510,7 @@ pub struct KnowledgeBase {
     /// writes an unwritten parameter of such a sort as a rule-scoped variable. It is KB
     /// state and not a per-batch map because that sort may have been derived in an EARLIER
     /// LOAD BATCH. Whether a sort HAS a domain is [`Self::sort_domains`]' question, not this.
-    pub(crate) domain_params: HashMap<Symbol, Vec<fill_derive::DomainParam>>,
+    pub(crate) domain_params: HashMap<Decl, Vec<fill_derive::DomainParam>>,
 
     /// WI-20260925-SHED7 (proposal 060 §2.3, 067) — every sort's `SortDomain`, keyed by
     /// [`Self::canonical_sort_sym`]: the relation its `fill` runs and the layout of the
@@ -1522,7 +1522,7 @@ pub struct KnowledgeBase {
     /// dictionary one level at a time from a TYPE against it (`apply_domain` with no
     /// caller), and the provision rows `kb::sort_domain_derive` asserts carry its conditions
     /// in its order — so a dictionary built by any of the three is read the same way.
-    pub(crate) sort_domains: HashMap<Symbol, fill_derive::SortDomainEntry>,
+    pub(crate) sort_domains: HashMap<Decl, fill_derive::SortDomainEntry>,
 
     /// WI-20260925-SHED7 — each `fill` relation the table above names, mapped back to its
     /// (canonical) sort. The typed-head sweep reads it to leave a sort's own `fill` clauses
@@ -2026,7 +2026,7 @@ pub struct KnowledgeBase {
 
     // Entity field type registry: functor symbol → [(field_name, type_term)].
     // Populated during load_entity, used by type_check_sorts.
-    entity_field_types: HashMap<Symbol, Vec<(Symbol, crate::eval::value::Value)>>,
+    entity_field_types: HashMap<Decl, Vec<(Symbol, crate::eval::value::Value)>>,
 
     // WI-835 — every PARAMETERIZED TYPE INSTANTIATION the author WRITES: see
     // [`ParameterizedSite`] for what one is and which lowerings record them.
@@ -3355,12 +3355,12 @@ impl KnowledgeBase {
     /// [`Self::sort_domains`] is the one table that says so.
     pub fn has_sort_domain(&self, sort: Symbol) -> bool {
         self.sort_domains
-            .contains_key(&self.canonical_sort_sym(sort))
+            .contains_key(&Decl::of(self.canonical_sort_sym(sort)))
     }
 
     /// WI-20260925-SHED7 — `sort`'s `SortDomain` entry, or `None` when it has no domain.
     pub(crate) fn sort_domain(&self, sort: Symbol) -> Option<&fill_derive::SortDomainEntry> {
-        self.sort_domains.get(&self.canonical_sort_sym(sort))
+        self.sort_domains.get(&Decl::of(self.canonical_sort_sym(sort)))
     }
 
     /// WI-20260925-SHED7 — record `sort`'s `SortDomain`, and its `fill` relation's way back
@@ -3368,7 +3368,7 @@ impl KnowledgeBase {
     pub(crate) fn record_sort_domain(&mut self, sort: Symbol, entry: fill_derive::SortDomainEntry) {
         let canon = self.canonical_sort_sym(sort);
         self.fill_relations.insert(entry.fill, canon);
-        self.sort_domains.insert(canon, entry);
+        self.sort_domains.insert(Decl::of(canon), entry);
     }
 
     /// WI-20260925-SHED7 — the sort whose `fill` relation `rel` is, or `None` for any other
@@ -3382,7 +3382,7 @@ impl KnowledgeBase {
     /// because the caller is mid-derivation and needs `&mut self` to build terms with them.
     pub(crate) fn domain_params_of(&self, sort: Symbol) -> Option<Vec<fill_derive::DomainParam>> {
         self.domain_params
-            .get(&self.canonical_sort_sym(sort))
+            .get(&Decl::of(self.canonical_sort_sym(sort)))
             .cloned()
     }
 
@@ -3395,7 +3395,7 @@ impl KnowledgeBase {
         params: Vec<fill_derive::DomainParam>,
     ) {
         let canon = self.canonical_sort_sym(sort);
-        self.domain_params.insert(canon, params);
+        self.domain_params.insert(Decl::of(canon), params);
     }
 
     /// WI-743 — undo [`Self::record_domain_params`] for a sort whose derivation turned
@@ -3404,7 +3404,7 @@ impl KnowledgeBase {
     /// decline has to be taken back out, and a bound naming it is no longer expanded.
     pub(crate) fn forget_domain_params(&mut self, sort: Symbol) {
         let canon = self.canonical_sort_sym(sort);
-        self.domain_params.remove(&canon);
+        self.domain_params.remove(&Decl::of(canon));
     }
 
     /// WI-20260911-WT8WG — record that `sort` has a domain but no `<Sort>.domain` value
@@ -4320,6 +4320,9 @@ impl KnowledgeBase {
     /// the answer exists. Pass 1 marks every constructor ([`Self::mark_constructor_symbol`])
     /// and defines it in its sort's scope before any type is lowered.
     pub fn type_arg_owner(&self, head: Symbol) -> Option<Symbol> {
+        // The owner is a DECLARATION: a constructor's type face owns what its
+        // constructor's declaration owns (WI-20260902-JB6RS).
+        let head = head.plain();
         if self.has_kind(head, crate::intern::SymbolKind::Sort) {
             Some(head)
         } else if self.is_constructor_symbol(head) {
@@ -4679,7 +4682,7 @@ impl KnowledgeBase {
             self.terms.incref(t);
         }
         for &s in &trigger_sorts {
-            self.guards_by_sort.entry(s).or_default().push(id.index());
+            self.guards_by_sort.entry(Decl::of(s)).or_default().push(id.index());
         }
         self.guards.push(Guard {
             id,
@@ -4782,7 +4785,7 @@ impl KnowledgeBase {
         // Not a constructor at all — a plain sort name heading a fact answers as
         // itself. (A constructor never reaches here: the relation above is total.)
         self.has_kind(functor, crate::intern::SymbolKind::Sort)
-            .then_some(functor)
+            .then_some(functor.plain())
     }
 
     fn view_to_trigger_sort(&mut self, view: &crate::eval::value::Value) -> Option<Symbol> {
@@ -4843,7 +4846,7 @@ impl KnowledgeBase {
     ) -> Option<RuleId> {
         let guard_indices: Vec<usize> = self
             .guards_by_sort
-            .get(&trigger_sort)
+            .get(&Decl::of(trigger_sort))
             .cloned()
             .unwrap_or_default();
 
@@ -6932,7 +6935,7 @@ impl KnowledgeBase {
     /// `Fn{c}`→`Ref(c)` canon is gated on `is_constructor_symbol`, so the two
     /// could differ and `sort_kind` would silently answer `None`.
     pub fn register_sort(&mut self, sort: Symbol, kind: SortKind) {
-        self.sort_info.insert(sort, kind);
+        self.sort_info.insert(Decl::of(sort), kind);
     }
 
     /// Record the REFLEXIVE case of belongs-to: `sym` IS its own sort (§6.3's
@@ -6948,11 +6951,14 @@ impl KnowledgeBase {
     /// as a type, which is exactly the consequence WI-926 predicted when it
     /// declined to mark the eponymous constructor.
     pub fn register_self_sort(&mut self, sym: Symbol) {
-        let children = self.sort_entities.entry(sym).or_default();
+        // Unconditional: the relation's VALUES are plain symbols too, and a face stored
+        // here would make every later read miss in silence. A cold path, once per sort.
+        assert!(!sym.is_type_face(), "register_self_sort({sym:?}): a type face is not a declaration");
+        let children = self.sort_entities.entry(Decl::of(sym)).or_default();
         if !children.contains(&sym) {
             children.push(sym);
         }
-        self.entity_parent.insert(sym, sym);
+        self.entity_parent.insert(Decl::of(sym), sym);
     }
 
     /// Register an entity-of relationship: entity is a constructor of parent sort.
@@ -6993,17 +6999,23 @@ impl KnowledgeBase {
         };
         let entity_sym = functor_of(self, entity);
         let parent_sym = functor_of(self, parent);
+        // Unconditional, as in `register_self_sort`: a face stored as a VALUE here would
+        // make `constructors_of_sort` answer nothing for that sort, with no error.
+        assert!(
+            !entity_sym.is_type_face() && !parent_sym.is_type_face(),
+            "register_entity_of({entity_sym:?}, {parent_sym:?}): the relation is between declarations, never a type face"
+        );
         // WI-719: `register_entity_of` runs TWICE for each prelude constructor
         // (`some`/`none`/`nil`/`cons`) — once at `register_prelude` bootstrap,
         // once when option/list.anthill's sort body loads — and the two calls can
         // pass DIFFERENT TermId spellings of the same constructor. Deduping keeps
         // `sort_children` from double-counting one constructor.
-        let children = self.sort_entities.entry(parent_sym).or_default();
+        let children = self.sort_entities.entry(Decl::of(parent_sym)).or_default();
         if !children.contains(&entity_sym) {
             children.push(entity_sym);
         }
-        self.constructor_symbols.insert(entity_sym);
-        self.entity_parent.insert(entity_sym, parent_sym);
+        self.constructor_symbols.insert(Decl::of(entity_sym));
+        self.entity_parent.insert(Decl::of(entity_sym), parent_sym);
     }
 
     /// Check if `sub` is an entity of `sup` (1-level entity → parent sort). The
@@ -7050,15 +7062,19 @@ impl KnowledgeBase {
         };
         // The stored parent is a NAME; `sup` may arrive in any carrier, so compare
         // the two as SYMBOLS rather than structurally.
-        let Some(&parent_sym) = self.entity_parent.get(&sub_sym) else {
+        let Some(&parent_sym) = self.entity_parent.get(&Decl::of(sub_sym)) else {
             return false;
         };
         match term_view::TermView::head(sup, self) {
+            // AGAINST THE DECLARATIONS (WI-20260902-JB6RS): `sup` may name the parent by
+            // its type face, and a constructor's instance is an entity of its OWN type —
+            // `red` of `red†` as `Foo` of `Foo†`. Before the faces both held because the
+            // two were one term (the structural arm above); this keeps the answer.
             term_view::ViewHead::Functor {
                 functor: Some(s),
                 pos_arity: 0,
                 named_arity: 0,
-            } => s == parent_sym,
+            } => s.plain() == parent_sym || s.plain() == sub_sym.plain(),
             _ => false,
         }
     }
@@ -7075,7 +7091,7 @@ impl KnowledgeBase {
     /// [`Self::strict_parent_sort`] is the STRICT (irreflexive) view, for
     /// walkers that climb the chain.
     pub fn sort_of_constructor(&self, functor: Symbol) -> Option<Symbol> {
-        self.entity_parent.get(&functor).copied()
+        self.entity_parent.get(&Decl::of(functor)).copied()
     }
 
     /// The STRICT parent sort of a constructor — [`Self::sort_of_constructor`]
@@ -7102,9 +7118,11 @@ impl KnowledgeBase {
     /// under"; anything else wants [`Self::sort_of_constructor`].
     pub fn strict_parent_sort(&self, functor: Symbol) -> Option<Symbol> {
         self.entity_parent
-            .get(&functor)
+            .get(&Decl::of(functor))
             .copied()
-            .filter(|&p| p != functor)
+            // Against the DECLARATION: an eponymous `Foo` is its own parent, and its type
+            // face `Foo†` must not read that as a strict parent (WI-20260902-JB6RS).
+            .filter(|&p| p != functor.plain())
     }
 
     /// All entity-constructor functor symbols whose parent sort is `sort_sym`
@@ -7115,14 +7133,15 @@ impl KnowledgeBase {
     /// `entity_parent` key as `Fn{remap_name(..)}`). Used by the projection
     /// eliminator to resolve a field-access receiver's field type.
     pub fn constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
+        let sort_sym = sort_sym.plain();
         let mut out = Vec::new();
         // WI-697: the key IS the constructor symbol, and the value is now the
         // parent's NAME, so this is a direct symbol compare. (Symbol keys are
         // unique, so — unlike the former dual-keyed TermId scan — no
         // per-constructor duplicate is produced.)
-        for (&entity_sym, &parent_sym) in &self.entity_parent {
+        for (&entity, &parent_sym) in &self.entity_parent {
             if parent_sym == sort_sym {
-                out.push(entity_sym);
+                out.push(entity.sym());
             }
         }
         out
@@ -7140,6 +7159,8 @@ impl KnowledgeBase {
     /// normal multi-variant sort — whose own symbol carries no
     /// `entity_field_types` — is unaffected.
     pub fn field_constructors_of_sort(&self, sort_sym: Symbol) -> Vec<Symbol> {
+        // Constructors are plain symbols; the sort may be named by its type face.
+        let sort_sym = sort_sym.plain();
         let mut out = self.constructors_of_sort(sort_sym);
         if self.entity_field_types(sort_sym).is_some() && !out.contains(&sort_sym) {
             out.push(sort_sym);
@@ -7761,7 +7782,7 @@ impl KnowledgeBase {
     /// this lookup). Direct table read, no string concatenation.
     pub fn sort_ops_lookup(&self, impl_sort: Symbol, op_short: Symbol) -> Option<Symbol> {
         let key = self.canonical_sort_sym(impl_sort);
-        self.sort_ops.by_impl.get(&key)?.get(&op_short).copied()
+        self.sort_ops.by_impl.get(&Decl::of(key))?.get(&op_short).copied()
     }
 
     /// WI-577 — every target op sort `impl_sort` provides in its `sort_ops`
@@ -7775,7 +7796,7 @@ impl KnowledgeBase {
         let key = self.canonical_sort_sym(impl_sort);
         self.sort_ops
             .by_impl
-            .get(&key)
+            .get(&Decl::of(key))
             .map(|m| m.values().copied().collect())
             .unwrap_or_default()
     }
@@ -7786,7 +7807,7 @@ impl KnowledgeBase {
         let key = self.canonical_sort_sym(impl_sort);
         self.sort_ops
             .by_impl
-            .entry(key)
+            .entry(Decl::of(key))
             .or_default()
             .insert(op_short, target);
     }
@@ -7931,13 +7952,25 @@ impl KnowledgeBase {
     /// *producer* (resolve the functor before it is stored/queried), never
     /// papered over by a `canonical_sym` call at the consumer — see WI-581
     /// and the `push_value_head_entry` guardrail.
+    ///
+    /// THE FACE IS KEPT (WI-20260902-JB6RS). The map holds declarations, so it answers
+    /// the PLAIN copy; a constructor's type face is a different identity over the same
+    /// declaration, and canonicalizing it must not turn the type back into the
+    /// constructor — a fact headed by `Foo†` is filed under `Foo†`, and the WI-581
+    /// guardrail compares a head with its canonical image.
     pub(crate) fn canonical_sym(&self, sym: Symbol) -> Symbol {
         let qn = self.qualified_name_of(sym);
-        self.symbols
+        let canon = self
+            .symbols
             .by_qualified_name
             .get(qn)
             .copied()
-            .unwrap_or(sym)
+            .unwrap_or(sym.plain());
+        if sym.is_type_face() {
+            canon.type_face()
+        } else {
+            canon
+        }
     }
 
     /// Sort-specific alias of [`Self::canonical_sym`]. Used as the `sort_ops`
@@ -7947,34 +7980,40 @@ impl KnowledgeBase {
     /// identities that may be interned under different copies. WI-581
     /// generalized the body to [`Self::canonical_sym`], since the same
     /// by-QN canonicalization now also serves rule head functors.
+    ///
+    /// A SORT IS A DECLARATION, so this answers the PLAIN symbol (WI-20260902-JB6RS):
+    /// the type `Foo†` and the constructor `Foo` are one sort — the one `Foo` declares —
+    /// and every table and comparison keyed through here (`sort_ops`, the provider
+    /// index, `same_sort_canonical`) reads them as one, exactly as it did while they
+    /// were one symbol.
     pub(crate) fn canonical_sort_sym(&self, sym: Symbol) -> Symbol {
-        self.canonical_sym(sym)
+        self.canonical_sym(sym).plain()
     }
 
     /// Get sort kind info.
     pub fn sort_kind(&self, sort: Symbol) -> Option<SortKind> {
-        self.sort_info.get(&sort).copied()
+        self.sort_info.get(&Decl::of(sort)).copied()
     }
 
     /// Iterate sort_info entries (sort name → kind).
-    pub fn sort_info_iter(&self) -> impl Iterator<Item = (&Symbol, &SortKind)> {
-        self.sort_info.iter()
+    pub fn sort_info_iter(&self) -> impl Iterator<Item = (Symbol, &SortKind)> {
+        self.sort_info.iter().map(|(d, k)| (d.sym(), k))
     }
 
     /// Get the base substitution for a sort (maps all slots to themselves).
     pub fn sort_base_subst(&self, sym: Symbol) -> Option<&[(Symbol, TermId)]> {
-        self.sort_base_subst.get(&sym).map(|v| v.as_slice())
+        self.sort_base_subst.get(&Decl::of(sym)).map(|v| v.as_slice())
     }
 
     /// Set the base substitution for a sort.
     pub fn set_sort_base_subst(&mut self, sym: Symbol, subst: Vec<(Symbol, TermId)>) {
-        self.sort_base_subst.insert(sym, subst);
+        self.sort_base_subst.insert(Decl::of(sym), subst);
     }
 
     /// Get immediate entity children of a sort.
     pub fn sort_children(&self, sort: Symbol) -> &[Symbol] {
         self.sort_entities
-            .get(&sort)
+            .get(&Decl::of(sort))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -11811,12 +11850,12 @@ impl KnowledgeBase {
     /// No check here because there is no span or error channel at this layer to report
     /// against; the constraint belongs to whoever writes the vector.
     pub fn register_entity_fields(&mut self, functor: Symbol, fields: Vec<Symbol>) {
-        self.entity_fields.insert(functor, fields);
+        self.entity_fields.insert(Decl::of(functor), fields);
     }
 
     /// Look up the ordered field names for an entity functor.
     pub fn entity_field_names(&self, functor: Symbol) -> Option<&[Symbol]> {
-        self.entity_fields.get(&functor).map(|v| v.as_slice())
+        self.entity_fields.get(&Decl::of(functor)).map(|v| v.as_slice())
     }
 
     /// WI-20260911-073GH — [`Self::entity_field_names`] FOR A FUNCTOR AS WRITTEN IN
@@ -11887,7 +11926,7 @@ impl KnowledgeBase {
         functor: Symbol,
         fields: Vec<(Symbol, crate::eval::value::Value)>,
     ) {
-        self.entity_field_types.insert(functor, fields);
+        self.entity_field_types.insert(Decl::of(functor), fields);
     }
 
     /// Look up the field types for an entity functor (carrier-agnostic `Value`).
@@ -11895,12 +11934,12 @@ impl KnowledgeBase {
         &self,
         functor: Symbol,
     ) -> Option<&[(Symbol, crate::eval::value::Value)]> {
-        self.entity_field_types.get(&functor).map(|v| v.as_slice())
+        self.entity_field_types.get(&Decl::of(functor)).map(|v| v.as_slice())
     }
 
     /// Iterate all functor symbols that have registered field types.
-    pub fn entity_field_type_functors(&self) -> impl Iterator<Item = &Symbol> {
-        self.entity_field_types.keys()
+    pub fn entity_field_type_functors(&self) -> impl Iterator<Item = Symbol> + '_ {
+        self.entity_field_types.keys().map(|d| d.sym())
     }
 
     /// WI-835 — record one written parameterized type instantiation, for the
@@ -11989,7 +12028,7 @@ impl KnowledgeBase {
     /// Check if a functor symbol is a constructor (entity with a parent sort).
     /// O(1) lookup via pre-built index populated by register_entity_of.
     pub fn is_constructor_symbol(&self, functor: Symbol) -> bool {
-        self.constructor_symbols.contains(&functor)
+        self.constructor_symbols.contains(&Decl::of(functor))
     }
 
     /// WI-20260823-4GBQV — does `sym` name an AMBIENT RESOURCE: a NULLARY
@@ -12076,7 +12115,7 @@ impl KnowledgeBase {
     /// The parent/field indexes (`entity_parent`, `sort_entities`) are still
     /// populated later by `register_entity_of` when the sort body loads.
     pub fn mark_constructor_symbol(&mut self, functor: Symbol) {
-        self.constructor_symbols.insert(functor);
+        self.constructor_symbols.insert(Decl::of(functor));
     }
 
     /// WI-352 — whether `sym` is an operation's reserved `result` binder
@@ -12103,6 +12142,32 @@ impl KnowledgeBase {
     /// `kind_of`: WI-20260824-Q0093's namespace-before-sort row.
     pub fn is_type_value_head(&self, sym: Symbol) -> bool {
         self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym)
+    }
+
+    /// WI-20260902-JB6RS — the TYPE FACE of `sym`'s declaration, when that declaration
+    /// is of kind `Entity`; the declaration's own symbol otherwise.
+    ///
+    /// `Entity` IS "has a constructor of its name" for every declaration the loader makes:
+    /// scan pass 1 stamps it on all three shapes below, and `register_prelude` defines
+    /// its constructors with it. It is read rather than `is_constructor_symbol` because
+    /// the kind is stamped before any term is built, where that registry fills during
+    /// the load (order-dependent, see [`Self::nullary_canon`]). A hand-built KB that
+    /// registers a constructor without the kind gets no face for it.
+    ///
+    /// The guarded way to a face, and the only one outside `intern`: a constructor — a
+    /// sort-nested `entity red`, an eponymous `sort Foo … entity Foo(…) … end`, a
+    /// free-standing `entity Foo(…)` — is a sort in its own right (§6.3) and so has two
+    /// readings, its instance and its type, and only such a declaration gets a second
+    /// identity. A sort with no constructor of its name (`Int64`, `Cell`) has exactly one
+    /// face, which is why this never puts the bit on one (kernel-language.md §4.4).
+    /// Idempotent: a face maps to itself.
+    pub fn type_face_of(&self, sym: Symbol) -> Symbol {
+        let decl = sym.plain();
+        if self.has_kind(decl, SymbolKind::Entity) {
+            decl.type_face()
+        } else {
+            decl
+        }
     }
 
     /// A free-standing entity: declared at namespace level (registered fields)
@@ -15999,7 +16064,7 @@ mod wi518_occurrence_guard_resolution_tests {
         // the guard to the asserted fact's sort by hand (the per-assert lookup keys
         // on `guards_by_sort`).
         kb.guards_by_sort
-            .entry(trigger_sort)
+            .entry(Decl::of(trigger_sort))
             .or_default()
             .push(cid.index());
 
@@ -16360,5 +16425,115 @@ mod wi913_host_name_ladder_tests {
              field or `internal` — the host-name positions lost it silently: \
              {unexplained:?}",
         );
+    }
+}
+
+/// WI-20260902-JB6RS step 1 — a constructor's TYPE FACE answers every question about its
+/// DECLARATION exactly as the constructor does; only term identity tells them apart.
+#[cfg(test)]
+mod jb6rs_type_face_reads_the_declaration_tests {
+    //! Nothing in the loader mints a face yet, so the fixture mints them through the one
+    //! guarded entry point, [`KnowledgeBase::type_face_of`], over the three shapes a
+    //! constructor is declared in: sort-nested (`Colour.red`, `Colour.green`), eponymous
+    //! (`sort Foo … entity Foo(…) … end`) and free-standing (`entity Bar(…)`).
+    //!
+    //! BACKED OUT, each half alone:
+    //!  * `Decl::of` keeping the bit (`Decl(sym)`): every declaration-keyed read misses
+    //!    for a face — the field, parent, children and kind rows fail.
+    //!  * `strict_parent_sort` comparing against `functor` unmasked: the eponymous
+    //!    `Foo†` reports `Foo` as a strict parent of itself.
+    //!  * `canonical_sym` dropping the face: its row fails; `canonical_sort_sym`
+    //!    returning the face: the row after it fails.
+    //! The plain-sort rows pass either way, BY DESIGN: a sort with no constructor of its
+    //! name never gets a face, and that is what they pin.
+    use super::*;
+    use crate::kb::term::Term;
+
+    const SRC: &str = "namespace jb6rs.faces
+  import anthill.prelude.Int64
+  enum Colour
+    entity red
+    entity green(v: Int64)
+  end
+  sort Foo
+    sort X = ?
+    entity Foo(a: X)
+  end
+  entity Bar(n: Int64)
+end
+";
+
+    fn field_names(kb: &KnowledgeBase, s: Symbol) -> Option<Vec<Symbol>> {
+        kb.entity_field_types(s).map(|v| v.iter().map(|(f, _)| *f).collect())
+    }
+
+    fn sorted(mut v: Vec<Symbol>) -> Vec<Symbol> {
+        v.sort_by_key(|s| s.to_bits());
+        v
+    }
+
+    #[test]
+    fn a_type_face_answers_what_its_declaration_answers() {
+        let mut kb = crate::kb::test_support::load_stdlib(Some(SRC));
+        let sym = |kb: &KnowledgeBase, qn: &str| {
+            kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn} resolves"))
+        };
+        let colour = sym(&kb, "jb6rs.faces.Colour");
+        for qn in [
+            "jb6rs.faces.Colour.red",
+            "jb6rs.faces.Colour.green",
+            "jb6rs.faces.Foo",
+            "jb6rs.faces.Bar",
+        ] {
+            let c = sym(&kb, qn);
+            let face = kb.type_face_of(c);
+            assert!(face.is_type_face() && face != c, "{qn}: a constructor has a type face");
+            assert_eq!(kb.type_face_of(face), face, "{qn}: idempotent");
+
+            assert_eq!(kb.sort_kind(face), kb.sort_kind(c), "{qn}: sort_kind");
+            assert_eq!(kb.sort_of_constructor(face), kb.sort_of_constructor(c), "{qn}: parent");
+            assert_eq!(kb.strict_parent_sort(face), kb.strict_parent_sort(c), "{qn}: strict parent");
+            assert_eq!(field_names(&kb, face), field_names(&kb, c), "{qn}: field types");
+            assert_eq!(kb.entity_field_names(face), kb.entity_field_names(c), "{qn}: field names");
+            assert_eq!(kb.is_constructor_symbol(face), kb.is_constructor_symbol(c), "{qn}: constructor");
+            assert_eq!(kb.type_arg_owner(face), kb.type_arg_owner(c), "{qn}: type-arg owner");
+            assert_eq!(kb.sort_of_head(face), kb.sort_of_head(c), "{qn}: trigger sort");
+            assert_eq!(kb.sort_children(face), kb.sort_children(c), "{qn}: children");
+            assert_eq!(
+                sorted(kb.field_constructors_of_sort(face)),
+                sorted(kb.field_constructors_of_sort(c)),
+                "{qn}: field constructors"
+            );
+            assert_eq!(kb.type_param_syms_of(face), kb.type_param_syms_of(c), "{qn}: type params");
+            assert_eq!(kb.canonical_sym(face), face, "{qn}: canonicalizing keeps the face");
+            assert_eq!(kb.canonical_sort_sym(face), c, "{qn}: the sort is the declaration");
+
+            // And the relation a type term reaches through its head.
+            let face_t = kb.alloc(Term::Ref(face));
+            let c_t = kb.alloc(Term::Ref(c));
+            let parent = kb.sort_of_constructor(c).expect("a constructor has a parent");
+            let parent_t = kb.alloc(Term::Ref(parent));
+            assert_eq!(kb.is_entity_of(face_t, parent_t), kb.is_entity_of(c_t, parent_t), "{qn}: entity-of");
+            // An instance is an entity of its OWN type, nested or not — `red` of `red†`
+            // as `Foo` of `Foo†` (BACKED OUT: drop the `sub_sym` arm in
+            // `is_entity_of_view`, and the nested rows fail while `Foo` and `Bar` pass
+            // through their self-parent).
+            assert!(kb.is_entity_of(c_t, face_t), "{qn}: an instance is of its own type");
+        }
+
+        // The eponymous constructor is its own parent, and so is not a strict child of
+        // itself through either face.
+        let foo = sym(&kb, "jb6rs.faces.Foo");
+        assert_eq!(kb.strict_parent_sort(kb.type_face_of(foo)), None);
+        // The nested one names its enum, through either face.
+        let red = sym(&kb, "jb6rs.faces.Colour.red");
+        assert_eq!(kb.sort_of_constructor(kb.type_face_of(red)), Some(colour));
+        assert_eq!(kb.constructors_of_sort(colour).len(), 2);
+
+        // A sort with no constructor of its name has ONE face.
+        for qn in ["jb6rs.faces.Colour", "anthill.prelude.Int64"] {
+            let s = sym(&kb, qn);
+            assert_eq!(kb.type_face_of(s), s, "{qn}: no constructor, no second face");
+        }
     }
 }

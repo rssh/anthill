@@ -284,7 +284,7 @@ pub fn positions_typed_at_a_spec_over_a_parameter(kb: &mut KnowledgeBase) -> Vec
     for (op, params) in crate::kb::op_info::all_operation_params(kb) {
         positions.extend(params.into_iter().map(|(name, ty)| (op, name, ty)));
     }
-    for ctor in kb.entity_field_type_functors().copied().collect::<Vec<_>>() {
+    for ctor in kb.entity_field_type_functors().collect::<Vec<_>>() {
         for (field, ty) in kb.entity_field_types(ctor).unwrap_or(&[]) {
             positions.push((ctor, *field, ty.clone()));
         }

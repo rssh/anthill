@@ -217,7 +217,7 @@ fn resolver_field_wise_eq_agrees() {
     // entity registry (WI-632 retired `resolve_entity_functor`; this test just
     // needs the unique `point` ctor of its own fixture).
     let ctor = {
-        let funcs: Vec<_> = kb.entity_field_type_functors().copied().collect();
+        let funcs: Vec<_> = kb.entity_field_type_functors().collect();
         funcs
             .into_iter()
             .find(|&f| kb.local_name_of(f) == "point")

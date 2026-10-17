@@ -88,6 +88,33 @@ impl Symbol {
     }
 }
 
+/// A symbol AS A DECLARATION — the key of a table that records something about the
+/// declaration itself (its fields, its constructors, its parent sort, its domain, its
+/// dispatch rows), as opposed to a TERM's identity (WI-20260902-JB6RS).
+///
+/// Built only by [`Decl::of`], which drops the type face, so a constructor's type face
+/// and the constructor reach ONE entry: the type `Foo†` has the fields, the parent sort
+/// and the domain `Foo` has, which is what one declaration means. And a face cannot be
+/// filed as a declaration of its own, because no key of this type carries the bit — the
+/// illegal state is not representable, rather than checked at each insert.
+///
+/// A table keyed by IDENTITY (the clauses under a functor, the discrimination tree) keys
+/// by [`Symbol`] and keeps the bit: facts headed by `Foo†` are not facts headed by `Foo`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Decl(Symbol);
+
+impl Decl {
+    /// The declaration `sym` belongs to — `sym` itself, its type face masked off.
+    pub fn of(sym: Symbol) -> Self {
+        Decl(sym.plain())
+    }
+
+    /// The declaration's own (plain) symbol.
+    pub fn sym(self) -> Symbol {
+        self.0
+    }
+}
+
 /// `Symbol(5)` for a constructor or any other name, `Symbol(5†)` for a type face —
 /// so a test failure that compares the two says which is which.
 impl std::fmt::Debug for Symbol {

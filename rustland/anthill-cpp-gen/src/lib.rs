@@ -2981,7 +2981,7 @@ fn classify_namespace(
     let mut flat: Vec<Symbol> = Vec::new();
     let mut by_parent: HashMap<String, Vec<Symbol>> = HashMap::new();
 
-    for sym in kb.entity_field_type_functors().copied() {
+    for sym in kb.entity_field_type_functors() {
         let qn = kb.qualified_name_of(sym);
         if !qn.starts_with(&prefix) {
             continue;
@@ -3247,7 +3247,6 @@ fn constructors_of(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
     let prefix = format!("{sort_qn}.");
     let mut out: Vec<Symbol> = kb
         .entity_field_type_functors()
-        .copied()
         .filter(|sym| {
             let qn = kb.qualified_name_of(*sym);
             qn.starts_with(&prefix) && !qn[prefix.len()..].contains('.')
