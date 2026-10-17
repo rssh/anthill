@@ -12081,6 +12081,22 @@ impl KnowledgeBase {
         self.kind_of(sym) == Some(crate::intern::SymbolKind::OpResult)
     }
 
+    /// Proposal 055 §2 — does `sym`, written in a value position, denote a TYPE VALUE
+    /// whatever surface it was written in: a SORT that is not its own constructor (§6.3).
+    /// Such a name has no construction reading, so a bare `Cell` is a type, and an
+    /// application `Cell[…]` — or, from a term that carries no surface, `Fn{Cell, …}` —
+    /// is a type application. An eponymous sort or a free-standing entity answers `false`:
+    /// its bare name and its applications are read by the surface (WI-927).
+    ///
+    /// ONE PREDICATE for the producers that record the classification without a bracket to
+    /// read — the walks' bare names (`Loader::bare_name_denotes_type`) and the `@[simp]`
+    /// RHS built from a term (`simp_rewrite::substitute_to_occurrence`) — and for the
+    /// refusal of such a sort applied as a call (WI-20260824-JM6ZW). `has_kind`, not
+    /// `kind_of`: WI-20260824-Q0093's namespace-before-sort row.
+    pub fn is_type_value_head(&self, sym: Symbol) -> bool {
+        self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym)
+    }
+
     /// A free-standing entity: declared at namespace level (registered fields)
     /// with no parent sort, so it is not a constructor. A bare reference to one
     /// denotes the entity as a type rather than a construction.

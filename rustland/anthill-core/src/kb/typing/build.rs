@@ -30,10 +30,11 @@ pub(super) fn build_type(
                 r.node.set_inferred_type(r.ty.clone());
             }
         }
-        // Proposal 055 §2 — drain a classified nominal type value. Reproduces exactly
-        // what the WI-707 arm of `TypeBuildFrame::Apply` did for a sort-headed
-        // application, MINUS its `expects_reflect_type` firing condition: the node is
-        // already known to be a type value, so there is nothing left to decide here.
+        // Proposal 055 §2 — drain a classified nominal type value. The node is already
+        // known to be a type value, so there is nothing left to decide here; what this
+        // frame does is VALIDATE its arguments. It is the ONE place a type value is typed:
+        // the expectation-gated twin the `Apply` frame had (WI-707) is gone with the hint
+        // that fed it (WI-20260824-JM6ZW).
         TypeBuildFrame::TypeValue {
             occ,
             head,
@@ -127,7 +128,6 @@ pub(super) fn build_type(
             fuel,
             staged,
             op_params,
-            sort_app_hint,
             mut known,
             site,
             pos,
@@ -172,7 +172,6 @@ pub(super) fn build_type(
                 kb,
                 fn_sym,
                 Some(&op_params),
-                &sort_app_hint,
                 &pos_args,
                 &named_args,
                 &known,
@@ -274,46 +273,6 @@ pub(super) fn build_type(
             // unconditional (a typer-inserted `some(...)` coercion below must
             // propagate even with no `@[simp]` rules); `reassemble`'s ptr-eq
             // short-circuit keeps the unchanged case allocation-free.
-            // WI-707: a SORT-headed application in a `Type` slot IS a type
-            // (`Cell[V = Int64]`) — its result is the reflect `Type` sort, and there is
-            // no operation to dispatch. Sits ahead of `@[simp]` firing and the spec-op
-            // redirect below: a type application is not a redex, and it names no
-            // receiver to dispatch on. Its arguments were hinted as types by the Visit
-            // arm, so an ill-typed one (`Cell[V = 3]`) still surfaces here, from the
-            // shared `collect_arg_errors`.
-            if kb.kind_of(fn_sym) == Some(crate::intern::SymbolKind::Sort)
-                && expects_reflect_type(kb, expected.as_ref())
-            {
-                if let Err(e) = collect_arg_errors(pos_results.iter().chain(named_results.iter())) {
-                    results.push(Err(e));
-                    return;
-                }
-                // WI-709: the type ARGUMENTS must fit the sort's declared params, by the
-                // same rule the loader applies to the type written in TYPE position — so
-                // `Cell[W = Int64]` (an undeclared `W`) and `Cell[Int64, String]` (an
-                // over-applied positional) are rejected here rather than building a type
-                // term that carries a parameter the sort never declared. Eval's
-                // `finish_sort_type` keeps its own guard as a backstop for
-                // programmatically-built calls; for loaded source it is now unreachable.
-                let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
-                let declared = kb.type_params_of_sort(fn_sym);
-                if let Err(problem) =
-                    kb.check_sort_type_args(fn_sym, &declared, &named_keys, pos_args.len())
-                {
-                    results.push(Err(TypeError::InvalidTypeArgument {
-                        span: Some(occ.span.span),
-                        sort: fn_sym,
-                        problem,
-                    }));
-                    return;
-                }
-                let child_refs: Vec<&Result<TypeResult, TypeError>> =
-                    pos_results.iter().chain(named_results.iter()).collect();
-                let node = reassemble_children(&occ, &child_refs);
-                let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
-                results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), node)));
-                return;
-            }
             let node = {
                 // Surface an ill-typed child first — we need `Ok` children to
                 // read their `.node` (check_apply_iter aggregates the same).

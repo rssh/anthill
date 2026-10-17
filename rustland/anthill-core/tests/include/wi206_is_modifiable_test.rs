@@ -148,15 +148,15 @@ end
 /// loud, arguably clearer"). The test asserts the two tokens that separate the readings:
 /// the destination sort and `Type`.
 ///
-/// STILL OWED, and owned: §8 requires the diagnostic to NAME THE DENOTED SORT
-/// (`expected Int64, got Type (Cell)`) so a forgotten-parentheses constructor stays
-/// short to trace. That is WI-20260824-JM6ZW's item, with its own control; this row
-/// deliberately does not assert `Cell` yet, because asserting it here would make this
-/// test the measurement of a change it is not paired with.
+/// AND IT NAMES THE DENOTED SORT (§8, `expected Int64, got Type (Cell)`), so a
+/// forgotten-parentheses construction stays short to trace — the suffix is
+/// WI-20260824-Q0093's `denoted`, and WI-20260824-JM6ZW, which owned the item, asserts it
+/// here; its own forgotten-parentheses row covers the free-standing entity, the one
+/// type value no walk records.
 ///
-/// BACK-OUT: with the classification removed, the load still fails — as an unresolved
-/// name — so `contains("got Type")` is the half that inverts and `Err(..)` is the half
-/// that holds either way.
+/// BACK-OUT: with the classification removed, the load still fails — as an unclassified
+/// sort (WI-20260824-JM6ZW) — so `contains("got Type (Cell)")` is the half that inverts
+/// and `Err(..)` is the half that holds either way.
 #[test]
 fn a_sort_name_in_a_non_type_slot_is_still_an_error() {
     let src = r#"
@@ -172,9 +172,9 @@ end
     };
     assert!(
         errs.iter()
-            .any(|e| e.contains("expected Int64") && e.contains("got Type")),
-        "expected the ordinary destination mismatch proposal 055 §2 specifies \
-         (`expected Int64, got Type`), got {errs:?}"
+            .any(|e| e.contains("expected Int64") && e.contains("got Type (Cell)")),
+        "expected the ordinary destination mismatch proposal 055 §2 specifies, naming the \
+         denoted sort (`expected Int64, got Type (Cell)`), got {errs:?}"
     );
 }
 

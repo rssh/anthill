@@ -860,6 +860,16 @@ pub enum TypeError {
     BottomExpr {
         span: Option<Span>,
     },
+    /// WI-20260824-JM6ZW (proposal 055 §1, `docs/design/055-implementation.md` §8) — a
+    /// bare reference to a SORT reached the typer as a plain reference, not as the
+    /// `Expr::TypeValue` every producer of an occurrence records it as. A loader defect,
+    /// not a user error: it names the producer's omission rather than re-deciding the
+    /// denotation from the expected sort, which is the classifier this ticket retired —
+    /// "resolve the symbol once and classify loudly", never a retry as a type.
+    UnclassifiedTypeValue {
+        span: Option<Span>,
+        sort: Symbol,
+    },
     /// WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`
     /// whose `member` resolves to no operation declared on the receiver's
     /// least sort (the dot-dispatch default fallback found nothing).
@@ -963,6 +973,31 @@ pub enum TypeError {
         // WI-510: construction site — see `TypeMismatch::site`.
         site: &'static std::panic::Location<'static>,
     },
+}
+
+/// WI-20260824-JM6ZW — what [`TypeError::UnknownApplyFunctor`] adds after its terse
+/// `unknown functor` when the functor is a SORT that is not its own constructor (§6.3):
+/// that a sort applied as a call constructs (the surface gate, proposal 055 §2) and this
+/// one constructs nothing, and how a type is written. `None` for every other functor.
+///
+/// SURFACE-NEUTRAL ON PURPOSE. The node may not have been written with parentheses — a
+/// paren-less `Outer[T = Int64].Inner` stays the zero-argument call `Inner()`, and a node
+/// made from a term carries no surface at all — so this says what the node IS, an
+/// application of a sort, and never that the author wrote one. Found by `/code-review` on
+/// a first cut that said "applied with parentheses".
+///
+/// A REFUSAL THIS TICKET MADE VISIBLE. The retired `Type` hint read `Cell(Int64)` in a
+/// `Type`-declared slot as the type application `Cell[Int64]` — the expected sort deciding
+/// the reading over the written surface — so `is_modifiable(Cell(Int64))` loaded.
+fn sort_applied_as_call(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
+    kb.is_type_value_head(name).then(|| {
+        let n = kb.local_name_of(name);
+        format!(
+            "unknown functor — `{n}` names a sort, and a sort applied as a call is a \
+             construction, which `{n}` is not (it is not its own constructor); a type is \
+             written with brackets, `{n}[…]`"
+        )
+    })
 }
 
 /// `(declaring scope, name)` of an `internal` member, as both renderings of
@@ -1376,9 +1411,10 @@ impl TypeError {
             TypeError::NoConstructor { name, .. } => {
                 format!("no constructor: {}", kb.local_name_of(*name))
             }
-            TypeError::UnknownApplyFunctor { name, .. } => {
-                format!("unknown apply functor: {}", kb.local_name_of(*name))
-            }
+            TypeError::UnknownApplyFunctor { name, .. } => match sort_applied_as_call(kb, *name) {
+                Some(advice) => format!("unknown apply functor: {}: {advice}", kb.local_name_of(*name)),
+                None => format!("unknown apply functor: {}", kb.local_name_of(*name)),
+            },
             TypeError::UndefinedDataFunctor { name, .. } => {
                 crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
             }
@@ -1903,6 +1939,12 @@ impl TypeError {
             TypeError::BottomExpr { .. } => {
                 "bottom or post-elaboration expression in surface IR".to_string()
             }
+            TypeError::UnclassifiedTypeValue { sort, .. } => format!(
+                "the sort `{}` reached the typer as a plain reference: a sort written in a \
+                 value position is a type value, recorded where it is written (proposal 055 \
+                 §1), and the producer of this occurrence did not record it",
+                kb.qualified_name_of(*sort)
+            ),
             TypeError::DotDispatchNoMatch {
                 member,
                 receiver_sort,
@@ -2082,7 +2124,8 @@ impl TypeError {
             | TypeError::ForbiddenInternalMember { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
             | TypeError::MacroRejected { span, .. }
-            | TypeError::BottomExpr { span } => *span,
+            | TypeError::BottomExpr { span }
+            | TypeError::UnclassifiedTypeValue { span, .. } => *span,
             TypeError::Other { span, .. } => *span,
             TypeError::NoParentSort { .. } => None,
             TypeError::Multiple { errors } => errors.iter().find_map(|e| e.span(_kb)),
@@ -2197,6 +2240,8 @@ impl TypeError {
                         crate::kb::load::no_declaration_census(),
                         crate::kb::load::undefined_name_repair(kb.local_name_of(*name)),
                     )
+                } else if let Some(advice) = sort_applied_as_call(kb, *name) {
+                    advice
                 } else {
                     "unknown functor".to_string()
                 },
@@ -2713,6 +2758,21 @@ impl TypeError {
                 field_name: "expr".to_string(),
                 expected_type: "surface expression".to_string(),
                 actual_type: "bottom / post-elaboration form".to_string(),
+                span: self.span(kb),
+            },
+            // A DEFECT OF THE WALK THAT BUILT THE NODE, carried as `TypeMismatch` as the
+            // typer's other invariant (`BottomExpr`) is: it is the variant that keeps the
+            // span, which `LoadError::Other` does not. The `actual` says whose defect it is,
+            // so the line cannot be read as the program's own mismatch.
+            TypeError::UnclassifiedTypeValue { sort, .. } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*sort).to_string(),
+                field_name: "reference".to_string(),
+                expected_type: "a type value recorded where the sort is written (proposal 055 §1)"
+                    .to_string(),
+                actual_type: "a plain reference to the sort — a defect in the walk that built \
+                              this occurrence, not an error in the program"
+                    .to_string(),
                 span: self.span(kb),
             },
             TypeError::DotDispatchNoMatch {

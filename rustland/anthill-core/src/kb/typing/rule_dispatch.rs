@@ -734,7 +734,6 @@ fn data_slot_arg_hints(
         kb,
         *functor,
         op_params.as_ref(),
-        &None,
         pos_args,
         named_args,
         &HashMap::new(),
