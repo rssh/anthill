@@ -3775,7 +3775,14 @@ impl KnowledgeBase {
     /// `provides`-clause provider into a wildcard, and `anthill.prelude.FiniteCollection`
     /// stops covering its own `requires`.
     ///
-    /// SO THE LINE IS TYPE-HOOD, not constructor-hood. A name with a TYPE reading keeps
+    /// AND THEN IT WAS GONE (WI-20260902-JB6RS). Once dispatch read the wildcard off the
+    /// symbol's ROLE in either spelling (WI-20260829-7QVD5), removing the gate loaded the
+    /// stdlib; what it was then measured holding up was the value/type split — a
+    /// constructor's type and its instance one term — which the constructor's TYPE FACE
+    /// carries now, as a symbol of its own. The two paragraphs below are the gate's
+    /// history; the rule is [`Self::nullary_name_canons_to_ref`]'s.
+    ///
+    /// SO THE LINE WAS TYPE-HOOD, not constructor-hood. A name with a TYPE reading kept
     /// both spellings and the SLOT decides which it is (which is what §8.6 means by "the
     /// position decides", and what WI-391 recovers from the symbol's kind); a name with
     /// no type reading — a predicate, an operation, an equation functor, a namespace, a
@@ -3827,8 +3834,8 @@ impl KnowledgeBase {
     }
 
     /// [`Self::nullary_canon`]'s TEST, without a term to apply it to — "does a nullary
-    /// application of `functor` spell the same thing as the bare name". The whole of the
-    /// rule is right above: the line is TYPE-HOOD.
+    /// application of `functor` spell the same thing as the bare name". It does, for every
+    /// name but three reflect forms (WI-20260902-JB6RS).
     ///
     /// WI-20260904-J0RM4 — split out because the transient query carrier has to make the
     /// same decision and has no `Term` to hand this (`load::nullary_query_canon` builds
@@ -3836,27 +3843,30 @@ impl KnowledgeBase {
     /// carriers deciding this by two tests is exactly how one spelling stops matching the
     /// other, which is what the canon exists to prevent.
     pub(crate) fn nullary_name_canons_to_ref(&self, functor: Symbol) -> bool {
-        // A constructor's TYPE FACE has one reading — the type — so its nullary
-        // application and its bare name are one term (`Foo[]` is `Foo†`), whatever the
-        // declaration's kinds say about the plain face (WI-20260902-JB6RS). And the PLAIN
-        // symbol of an entity has one reading too, its instance: an eponymous or
-        // free-standing entity carries `Sort`, but its type is the face, so `Baz()` and
-        // a bare `Baz` are one term (kernel-language.md §4.4). Only a sort with no
-        // constructor of its name keeps its two nullary spellings apart — and the
-        // three free-standing REFLECT FORMS, the syntax vocabulary a term encodes a
-        // collection literal in: `()` is the node `TupleLiteral()`, which the typer reads
-        // as the empty tuple and does not read in its bare name (measured: `u(v: (), …)` at
-        // a `Unit` field stopped being refused, `ListLiteral()` printed as a bare name). By
-        // QUALIFIED name, so a user's own `entity ListLiteral` is an ordinary entity.
+        // EVERY NAME'S NULLARY APPLICATION IS ITS BARE NAME, one term (kernel-language.md
+        // §6, WI-20260902-JB6RS): `()` picks no reading, the context does (§4.4). A
+        // constructor's instance and its TYPE (`Foo[]`, the face) are two terms because
+        // they are two symbols, not two spellings; and a sort with no constructor of its
+        // name has one reading, which the wildcard is read off by ROLE
+        // (WI-20260829-7QVD5). This gate used to exempt every `Sort`-kinded name, and
+        // was measured holding up the value/type split, which the faces now carry.
+        //
+        // The one exception is the three free-standing REFLECT FORMS, the syntax
+        // vocabulary a term encodes a collection literal in: `()` is the node
+        // `TupleLiteral()`, which the typer reads as the empty tuple and does not read in
+        // its bare name (measured: `u(v: (), …)` at a `Unit` field stopped being refused,
+        // `ListLiteral()` printed as a bare name). By QUALIFIED name, so a user's own
+        // `entity ListLiteral` is an ordinary entity.
         functor.is_type_face()
-            || !self.has_kind(functor, SymbolKind::Sort)
-            || (self.has_kind(functor, SymbolKind::Entity) && {
-                use crate::parse::desugar_target as dt;
-                let qn = self.qualified_name_of(functor);
-                ![dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL]
-                    .iter()
-                    .any(|form| qn == dt::qualified(form))
-            })
+            || !(self.has_kind(functor, SymbolKind::Sort)
+                && self.has_kind(functor, SymbolKind::Entity)
+                && {
+                    use crate::parse::desugar_target as dt;
+                    let qn = self.qualified_name_of(functor);
+                    [dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL]
+                        .iter()
+                        .any(|form| qn == dt::qualified(form))
+                })
     }
 
     /// Allocate a term (hash-consed, refcounted). Applies [`Self::nullary_canon`].
@@ -12224,6 +12234,17 @@ impl KnowledgeBase {
             || (self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym))
     }
 
+    /// WI-20260902-JB6RS — does `sym` name ONLY a type: a constructor's type face, or a
+    /// sort with no constructor or operation of its name? Such a name has no reading as an
+    /// application, so `S(…)` is refused where it is written and an application headed by
+    /// it is written `S[…]` (kernel-language.md §4.4). A PREDICATE of a sort's name cannot
+    /// be declared (a body-less `rule S(?x)` beside `sort S` is refused), and a rule head
+    /// that resolves to the sort mints none — it applies the sort, and is refused here.
+    pub fn names_only_a_type(&self, sym: Symbol) -> bool {
+        sym.is_type_face()
+            || (self.is_type_value_head(sym) && !self.has_kind(sym, SymbolKind::Operation))
+    }
+
     /// WI-20260902-JB6RS — the symbol a TYPE CONTEXT names `sym` by: its type face for a
     /// declaration whose type contexts mint one, `sym` unchanged otherwise (a sort with no
     /// constructor of its name, a face already). Every producer of a type term goes
@@ -12926,6 +12947,9 @@ impl TermSource for KnowledgeBase {
     }
     fn qualified_name(&self, sym: Symbol) -> &str {
         self.qualified_name_of(sym)
+    }
+    fn heads_only_a_type(&self, _id: TermId, sym: Symbol) -> bool {
+        self.names_only_a_type(sym)
     }
 }
 

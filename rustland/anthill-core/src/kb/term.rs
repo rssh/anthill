@@ -542,4 +542,15 @@ pub trait TermSource {
     fn qualified_name(&self, sym: Symbol) -> &str {
         self.sym_name(sym)
     }
+    /// Is the application `id`, headed by `sym`, a TYPE whatever slot it stands in — headed
+    /// by a constructor's type face, or by a sort with no constructor, predicate or
+    /// operation of its name (WI-20260902-JB6RS, kernel-language.md §4.4)? Such an
+    /// application is written with the bracket, since its parenthesized spelling is
+    /// refused. A view with a kind table asks it ([`crate::kb::KnowledgeBase`]); one with
+    /// none answers from what it has — the face here, the written bracket on the parse
+    /// side.
+    fn heads_only_a_type(&self, id: TermId, sym: Symbol) -> bool {
+        let _ = id;
+        sym.is_type_face()
+    }
 }

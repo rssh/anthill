@@ -1985,15 +1985,17 @@ namespace test.not_sat
     entity red
     entity green
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
-        // Build the goal: Color(entity: red).
+        // Build the goal: Paint(entity: red) — a sort applied with parentheses is refused
+        // (WI-20260902-JB6RS), so the fact is over an entity.
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_sat.Color")
-            .expect("Color sort symbol");
+            .try_resolve_symbol("test.not_sat.Paint")
+            .expect("Paint symbol");
         let red_sym = interp
             .kb()
             .try_resolve_symbol("test.not_sat.Color.red")
@@ -2024,14 +2026,15 @@ namespace test.not_unsat
     entity red
     entity green
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_unsat.Color")
-            .expect("Color sort symbol");
+            .try_resolve_symbol("test.not_unsat.Paint")
+            .expect("Paint symbol");
         let green_sym = interp
             .kb()
             .try_resolve_symbol("test.not_unsat.Color.green")
@@ -2108,14 +2111,15 @@ namespace test.not_flounder
   sort Color
     entity red
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_flounder.Color")
-            .expect("Color sort");
+            .try_resolve_symbol("test.not_flounder.Paint")
+            .expect("Paint symbol");
         let entity_field = interp.kb_mut().intern("entity");
         let v_sym = interp.kb_mut().intern("v");
         let vid = interp.kb_mut().fresh_var(v_sym);

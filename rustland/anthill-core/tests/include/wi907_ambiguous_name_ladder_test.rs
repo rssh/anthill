@@ -51,23 +51,19 @@ use crate::common::{load_kb_with, mount_extent, query_pattern_functor};
 /// remaining tier name carries clauses at all, so the two are interchangeable now and the
 /// split is kept only so each row keeps a name of its own. The resident-fact half belongs
 /// to WI-908's own rows.
+///
+/// ENTITIES, not sorts, since WI-20260902-JB6RS: a query applies the name (`cons(?h,
+/// ?t)`), and a sort with no constructor of its name cannot be applied — that is refused
+/// before the ladder is asked anything.
 const DECLS: &str = r#"
 namespace wi907.alpha
-  sort cons
-    entity si907a(v: anthill.prelude.Int64)
-  end
-  sort nil
-    entity sv907a(v: anthill.prelude.Int64)
-  end
+  entity cons(h: anthill.prelude.Int64, t: anthill.prelude.Int64)
+  entity nil(v: anthill.prelude.Int64)
 end
 
 namespace wi907.beta
-  sort cons
-    entity si907b(v: anthill.prelude.Int64)
-  end
-  sort nil
-    entity sv907b(v: anthill.prelude.Int64)
-  end
+  entity cons(h: anthill.prelude.Int64, t: anthill.prelude.Int64)
+  entity nil(v: anthill.prelude.Int64)
 end
 "#;
 

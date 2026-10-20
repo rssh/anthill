@@ -367,7 +367,7 @@ fn a_rigid_inside_an_application_is_refused_and_the_printed_repair_answers() {
         &format!("operation f[C](x: C) -> Type {clause} = tyOf(some(x))"),
     );
     assert_eq!(load_errors(&repaired), Vec::<String>::new());
-    assert_eq!(eval_type(&repaired, "test.xsvcs.nested.viaF"), "Option(T: Int64)");
+    assert_eq!(eval_type(&repaired, "test.xsvcs.nested.viaF"), "Option[T = Int64]");
 }
 
 /// And over a spec of the program's own, provided at `Box` on the condition of its element

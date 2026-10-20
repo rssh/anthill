@@ -132,9 +132,8 @@ end
 /// the clause, the rule body or the query, or the query's entity desugar run over a
 /// bracket — the spelling assertions fail (the positional and the named stay two terms;
 /// `Zork` loads). The `Int64[]` assertions pass either way BY DESIGN: a sort's nullary
-/// `Fn{Int64}` and its `Ref(Int64)` are still two terms until the gate in `alloc` goes,
-/// but the matcher reads them as one head, so the empty bracket is found by the bare name
-/// already — the rows pin that it stays so.
+/// `Fn{Int64}` and its `Ref(Int64)` are one term since the gate in `alloc` went (step 6),
+/// and before it the matcher read them as one head — the rows pin that it stays so.
 #[test]
 fn a_constructors_bracket_binds_its_sorts_parameters() {
     let mut kb = load_kb_with(BRACKETS);
@@ -670,4 +669,135 @@ fn a_data_field_refuses_a_type_and_a_foreign_instance() {
         errs.iter().any(|e| e.contains("TypeBox.t") && e.contains("TYPE is written `Alpha[]`")),
         "an instance where a type is declared is told how the type is written: {errs:?}"
     );
+}
+
+const SORT_APPS: &str = r#"
+namespace test.jb6rs.sortapp
+  import anthill.prelude.{Int64, Eq, List}
+  sort Shape
+    entity circle(r: Int64)
+  end
+  fact holds(Shape[])
+  fact Eq[T = Int64]
+  fact listy(List[T = Int64])
+  rule bareFindsBracket(1) :- holds(Shape)
+  rule bracketFindsBracket(1) :- holds(Shape[])
+  rule eqByBracket(?q) :- Eq[T = ?q]
+end
+"#;
+
+/// A sort with no constructor of its name has ONE reading, its type: its bare name and its
+/// empty bracket are one term (`Shape` is `Shape[]`, the canon in `alloc` exempting no sort
+/// since step 6), and its PARENTHESIZED spelling names nothing to apply — `Shape()` and
+/// `Eq(T: ?q)` are refused in a clause and in a query, where they used to be the type
+/// silently (`Eq(T: ?q)` answered from `fact Eq[T = Int64]`). A sort that is also an
+/// operation is applied as the operation. And its type, printed as data, takes the bracket
+/// — `List[T = Int64]` — which reloads as itself where `List(T: Int64)` would be refused.
+///
+/// BACKED OUT, each alone (measured), this row fails: the canon keeping a sort's nullary
+/// `Fn` (and five rows that pin the one term: `map_arena`, `execute`, `wi1028`,
+/// `term_view`, `wi_n3w68`); the clause refusal (and `wi_s8jyf`, `wi_q0093`), the rule-body
+/// walk's, or the query's; the query's quoted-field gate; `names_only_a_type` counting an
+/// operation's name (the `Both` control is refused); the printer's type arm, or the parse
+/// side's written bracket. The clause refusal's `Off` gate fails `wi_5g28a` (an operation
+/// body's application is the typer's to refuse, and was reported twice). The single
+/// report passes either way BY DESIGN — measured, no rule-body argument reached the
+/// refusal twice, so the record that would have deduplicated it was not kept.
+#[test]
+fn a_sort_has_one_reading_and_names_nothing_to_apply() {
+    use anthill_core::persistence::print;
+    let mut kb = load_kb_with(SORT_APPS);
+    let answers = |kb: &mut anthill_core::kb::KnowledgeBase, rule: &str| {
+        query_unary(kb, &format!("test.jb6rs.sortapp.{rule}")).len()
+    };
+    assert_eq!(answers(&mut kb, "bareFindsBracket"), 1, "`Shape` is `Shape[]`");
+    assert_eq!(answers(&mut kb, "bracketFindsBracket"), 1);
+    assert_eq!(answers(&mut kb, "eqByBracket"), 1, "the bracket goal answers from the fact");
+    let shape = kb
+        .try_resolve_symbol("test.jb6rs.sortapp.Shape")
+        .expect("Shape resolves");
+    let applied = kb.alloc(Term::Fn {
+        functor: shape,
+        pos_args: Default::default(),
+        named_args: Default::default(),
+    });
+    assert_eq!(applied, kb.alloc(Term::Ref(shape)), "one term in the store");
+
+    let refused = |decl: &str| {
+        load_errors_of(&format!(
+            "namespace test.jb6rs.sortapp2\n  import anthill.prelude.{{Int64, Eq}}\n  \
+             sort Shape\n    entity circle(r: Int64)\n  end\n  fact holds(Shape[])\n  \
+             fact Eq[T = Int64]\n  {decl}\nend\n"
+        ))
+    };
+    for (decl, sort) in [
+        ("rule viaParens(?q) :- Eq(T: ?q)", "Eq"),
+        ("rule shapeNullary(1) :- holds(Shape())", "Shape"),
+        ("fact holds2(Shape())", "Shape"),
+    ] {
+        let errs = refused(decl);
+        assert_eq!(
+            errs.iter().filter(|e| e.contains(&format!("`{sort}(…)` is an application"))).count(),
+            1,
+            "`{decl}` is refused, once: {errs:?}"
+        );
+    }
+    // Inside a field declared `Term` the pattern is QUOTED, as written, in the fact and in
+    // the query that searches for it alike.
+    let mut quoted = load_kb_with(
+        "namespace test.jb6rs.quoted\n  import anthill.prelude.{Int64, Eq}\n  \
+         import anthill.reflect.{Term}\n  entity holdsQ(pattern: Term)\n  \
+         fact holdsQ(pattern: Eq(T: 1))\nend\n",
+    );
+    let quoted_query =
+        anthill_core::parse::parse("fact test.jb6rs.quoted.holdsQ(pattern: anthill.prelude.Eq(T: 1))")
+            .expect("parses");
+    let quoted_scan: Vec<String> = anthill_core::kb::load::scan_query_definitions(&mut quoted, &[&quoted_query])
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert!(quoted_scan.is_empty(), "a quoted field is not judged in a query: {quoted_scan:?}");
+    let config = ResolveConfig {
+        max_solutions: 4,
+        ..ResolveConfig::default()
+    };
+    let by_bracket = query_pattern_term(&mut kb, "anthill.prelude.Eq[T = ?q]");
+    assert_eq!(kb.resolve(&[by_bracket], &config).len(), 1, "the query's bracket answers");
+    // The query's own scan refuses its parentheses (the CLI's `--pattern` path).
+    let parsed = anthill_core::parse::parse("fact anthill.prelude.Eq(T: ?q)").expect("parses");
+    let scanned: Vec<String> = anthill_core::kb::load::scan_query_definitions(&mut kb, &[&parsed])
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert!(
+        scanned.iter().any(|e| e.contains("`Eq(…)` is an application")),
+        "the query's parentheses are refused: {scanned:?}"
+    );
+    // A sort that is also an operation is applied as the operation: not refused.
+    let mut with_op = load_kb_with(
+        "namespace test.jb6rs.sortop\n  import anthill.prelude.Int64\n  sort Both\n    \
+         entity mk(x: Int64)\n  end\n  operation Both(n: Int64) -> Int64 = n\n  \
+         rule viaOp(?v) :- ?v <=> Both(3)\nend\n",
+    );
+    assert_eq!(query_unary(&mut with_op, "test.jb6rs.sortop.viaOp").len(), 1, "the operation answers");
+
+    // The type, printed as data, takes the bracket and reloads as itself.
+    let listy = kb
+        .try_resolve_symbol("test.jb6rs.sortapp.listy")
+        .expect("listy resolves");
+    let rid = kb.rules_by_functor(listy)[0];
+    let printed = print::print_fact(&kb, kb.rule_head(rid), None);
+    assert!(printed.contains("List[T = Int64]"), "printed with the bracket: {printed}");
+    // The parse side, with no kind table, prints a WRITTEN bracket as one.
+    let parsed = anthill_core::parse::parse("fact holds(Eq[T = Int64])").expect("parses");
+    let fact = parsed
+        .items
+        .iter()
+        .find_map(|item| match item {
+            anthill_core::parse::ir::Item::Fact(fact) => Some(fact.term),
+            _ => None,
+        })
+        .expect("a fact");
+    let printed = print::print_fact(&parsed, fact, None);
+    assert!(printed.contains("Eq[T = Int64]"), "the parse side keeps the bracket: {printed}");
 }

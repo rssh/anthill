@@ -130,10 +130,10 @@ namespace test.n31xx.one
   operation ask_str() -> Type = tyOf("s")
 end
 "#;
-    assert_eq!(eval_type(src, "test.n31xx.one.ask_int"), "Cell(V: Int64)");
+    assert_eq!(eval_type(src, "test.n31xx.one.ask_int"), "Cell[V = Int64]");
     // The SECOND instantiation is not decoration: a single row cannot tell a correct
     // answer from a first binding that leaked.
-    assert_eq!(eval_type(src, "test.n31xx.one.ask_str"), "Cell(V: String)");
+    assert_eq!(eval_type(src, "test.n31xx.one.ask_str"), "Cell[V = String]");
 }
 
 /// …and THROUGH TWO GENERIC LEVELS, which is where the rule earns its keep: the middle
@@ -153,7 +153,7 @@ namespace test.n31xx.two
   operation ask() -> Type = mid(5)
 end
 "#;
-    assert_eq!(eval_type(src, "test.n31xx.two.ask"), "Cell(V: Int64)");
+    assert_eq!(eval_type(src, "test.n31xx.two.ask"), "Cell[V = Int64]");
 }
 
 /// …AND A MIDDLE LEVEL THAT DROPS THE CLAUSE IS REFUSED AT THE CALL — the FORWARD half
@@ -709,7 +709,7 @@ end
     // lookup that ignored the parameter would answer `Pair2(A: Int64, B: Int64)`.
     assert_eq!(
         eval_type(src, "test.n31xx.lower.two_slots"),
-        "Pair2(A: Int64, B: Bool)"
+        "Pair2[A = Int64, B = Bool]"
     );
 }
 
@@ -731,7 +731,7 @@ namespace test.n31xx.leaf
 end
 "#;
     assert_eq!(eval_type(src, "test.n31xx.leaf.ask_bare"), "Int64");
-    assert_eq!(eval_type(src, "test.n31xx.leaf.ask_nested"), "Cell(V: Int64)");
+    assert_eq!(eval_type(src, "test.n31xx.leaf.ask_nested"), "Cell[V = Int64]");
 }
 
 // ── 065 §3, THE OPERATION-LEVEL SUBSET RULE ──────────────────────────────────────────
@@ -798,7 +798,7 @@ end
         .replace("@OPCLAUSE@", "");
     assert_eq!(
         eval_type(&instance, "test.n31xx.sub.ask"),
-        "Box(V: Boom)",
+        "Box[V = Boom]",
         "a clause over the provider's OWN parameter rides the instance and is permitted"
     );
 }
@@ -841,7 +841,7 @@ namespace test.n31xx.concrete
   operation ty() -> Type = Cell[V = Int64]
 end
 "#;
-    assert_eq!(eval_type(src, "test.n31xx.concrete.ty"), "Cell(V: Int64)");
+    assert_eq!(eval_type(src, "test.n31xx.concrete.ty"), "Cell[V = Int64]");
 }
 
 /// 065 §6's NINETEENTH CENSUS SITE, and the reason the rule is judged on the tree the
@@ -884,7 +884,7 @@ end
     );
     assert_eq!(
         eval_type(src, "test.n31xx.simp.ask_ty"),
-        "Cell(V: String)",
+        "Cell[V = String]",
         "the control: a genuine value read in the same file, under its clause"
     );
 }
@@ -1091,7 +1091,7 @@ namespace test.n31xx.formerok
 end
 "#;
     assert_eq!(load_errors(src), Vec::<String>::new(), "the control must load");
-    assert_eq!(eval_type(src, "test.n31xx.formerok.ask"), "Cell(V: Int64)");
+    assert_eq!(eval_type(src, "test.n31xx.formerok.ask"), "Cell[V = Int64]");
 }
 
 /// A BODY-LESS CALLEE IS HELD TO THE REFUSAL TOO (user, 2026-10-16).

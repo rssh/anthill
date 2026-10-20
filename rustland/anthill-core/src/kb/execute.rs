@@ -318,11 +318,12 @@ impl Value {
             // WI-20260902-CZJ2N — A 0-FIELD ENTITY IS THE ONE CASE WHERE THIS IS
             // CONSERVATIVE RATHER THAN EXACT, and it is stated because an earlier cut of
             // this ticket made the arm `pos.is_empty() && named.is_empty()` and that was
-            // WRONG. Whether a nullary entity lowers to a leaf depends on the FUNCTOR'S
-            // KIND: the canon stores `Fn{f, [], []}` as `Term::Ref(f)` — a leaf — unless
-            // `f` carries `SymbolKind::Sort`, which a free-standing or eponymous entity
-            // does (WI-926), and there it stays a `Term::Fn`. This signature has no
-            // `KnowledgeBase` to ask, so the honest answer is the conservative one.
+            // WRONG. Whether a nullary entity lowers to a leaf depends on the FUNCTOR: the
+            // canon stores `Fn{f, [], []}` as `Term::Ref(f)` — a leaf — for every name
+            // since WI-20260902-JB6RS but the three collection-literal reflect forms, whose
+            // empty application stays a `Term::Fn` (`()` is `TupleLiteral()`). This
+            // signature has no `KnowledgeBase` to ask, so the honest answer is the
+            // conservative one.
             //
             // WHAT `false` COSTS: `KnowledgeBase::fn_value` builds a `Value::Entity`
             // rather than a hash-consed `Term::Fn` for a parent whose child is a
@@ -1254,11 +1255,13 @@ mod tests {
     /// WI-20260902-CZJ2N — THE ONE CASE `leaf_lowering_agrees_with_alloc` excludes, driven
     /// so the exclusion is a measurement and not a hole.
     ///
-    /// A 0-field `Value::Entity` lowers to a LEAF (`Term::Ref`) when its functor has no
-    /// TYPE reading and to an APPLICATION (`Term::Fn`) when it does — the nullary canon's
-    /// own exemption. `Value::lowers_to_leaf_term` cannot tell the two apart (no
-    /// `KnowledgeBase` in scope) and answers `false` for both, which is conservative in
-    /// the safe direction: it costs `fn_value` a carrier choice, never correctness.
+    /// A 0-field `Value::Entity` lowers to a LEAF (`Term::Ref`) whatever its functor's kind
+    /// — a sort's nullary application has been its bare name since WI-20260902-JB6RS — but
+    /// for the canon's one exception, the three collection-literal reflect forms, whose
+    /// empty application stays an APPLICATION (`()` is `TupleLiteral()`).
+    /// `Value::lowers_to_leaf_term` cannot tell them apart (no `KnowledgeBase` in scope) and
+    /// answers `false` for all, which is conservative in the safe direction: it costs
+    /// `fn_value` a carrier choice, never correctness.
     #[test]
     fn a_nullary_entity_lowers_by_its_functors_kind() {
         use crate::intern::SymbolKind;
@@ -1267,10 +1270,21 @@ mod tests {
         let g = kb.global_scope();
         let plain = kb.define_symbol("plainlk", "plainlk", SymbolKind::Entity, g);
         let sorted = kb.define_symbol("SortedLk", "SortedLk", SymbolKind::Sort, g);
+        // The reflect form, declared as the stdlib declares it: a free-standing entity, so
+        // `Sort` and `Entity`, under its qualified name.
+        let tuple_form = kb.define_symbol(
+            "TupleLiteral",
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::TUPLE_LITERAL),
+            SymbolKind::Sort,
+            g,
+        );
+        kb.symbols.add_kind(tuple_form, SymbolKind::Entity);
 
-        for (label, functor, want_leaf) in
-            [("no type reading", plain, true), ("a SORT", sorted, false)]
-        {
+        for (label, functor, want_leaf) in [
+            ("no type reading", plain, true),
+            ("a SORT", sorted, true),
+            ("a collection-literal form", tuple_form, false),
+        ] {
             let v = Value::Entity {
                 functor,
                 pos: Rc::from(Vec::<Value>::new()),

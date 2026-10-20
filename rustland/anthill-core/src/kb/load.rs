@@ -784,6 +784,17 @@ pub enum LoadError {
         /// Where the term is written.
         span: Span,
     },
+    /// WI-20260902-JB6RS — `S(…)` written where `S` names only a type: a sort with no
+    /// constructor, predicate or operation of its name (kernel-language.md §4.4, "only a
+    /// BARE name falls back"). An application needs something to apply; the type is
+    /// `S[…]`. It used to be the type silently, `Eq(T: ?q)` answering from `fact Eq[T =
+    /// Int64]`, because the two surfaces built one term.
+    SortAppliedAsData {
+        /// The sort, by its short name.
+        sort: String,
+        /// Where the application is written.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -2903,6 +2914,7 @@ impl LoadError {
             | LoadError::OperationWithoutDefinition { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
+            | LoadError::SortAppliedAsData { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
@@ -3230,6 +3242,9 @@ impl LoadError {
                     loc.format_start(*span),
                     undefined_head_argument_message(functor)
                 )
+            }
+            LoadError::SortAppliedAsData { sort, span } => {
+                format!("{}: {}", loc.format_start(*span), sort_applied_as_data_message(sort))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!(
@@ -4813,6 +4828,13 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::SortAppliedAsData { sort, span } => write!(
+                f,
+                "{} at {}..{}",
+                sort_applied_as_data_message(sort),
+                span.start,
+                span.end
+            ),
             LoadError::ConstantInGoalPosition { literal, span } => {
                 write!(
                     f,
@@ -6422,7 +6444,7 @@ pub fn scan_definitions_with_sources(
             for item in &file.items {
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
-                    query_runtime_account_errors(kb, file, fact.term, global, &mut errors);
+                    query_application_errors(kb, file, fact.term, global, &mut errors);
                 }
             }
         }
@@ -6433,19 +6455,25 @@ pub fn scan_definitions_with_sources(
     errors
 }
 
-/// A query pattern that writes an application of one of the runtime's accounts constructs
-/// one, as a clause that writes it does ([`LoadError::RuntimeAccountInClause`]): the
-/// pattern's terms are handed to what the goal calls, and a raise of one would be read as
-/// the runtime's account. Its functor is resolved as [`convert_query_term`] resolves it.
-fn query_runtime_account_errors(
+/// The APPLICATIONS a query pattern writes, judged as the clause that writes them is,
+/// each functor resolved once, as [`convert_query_term`] resolves it:
+///
+/// * one of the runtime's accounts constructs one ([`LoadError::RuntimeAccountInClause`]):
+///   the pattern's terms are handed to what the goal calls, and a raise of one would be
+///   read as the runtime's account;
+/// * `S(…)` where `S` names only a type is refused ([`LoadError::SortAppliedAsData`],
+///   WI-20260902-JB6RS): `Eq(T: ?q)` is no spelling of `Eq[T = ?q]`. Not inside a field
+///   declared `anthill.reflect.Term`, a QUOTED pattern the clause keeps as written too, and
+///   not a bracket or a node the converter minted.
+fn query_application_errors(
     kb: &mut KnowledgeBase,
     file: &ParsedFile,
     root: TermId,
     scope: ScopeId,
     errors: &mut Vec<LoadError>,
 ) {
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
+    let mut stack = vec![(root, false)];
+    while let Some((id, quoted)) = stack.pop() {
         let Term::Fn {
             functor,
             pos_args,
@@ -6454,17 +6482,43 @@ fn query_runtime_account_errors(
         else {
             continue;
         };
-        stack.extend(pos_args.iter().copied());
-        stack.extend(named_args.iter().map(|(_, v)| *v));
-        if pos_args.is_empty() && named_args.is_empty() {
-            continue;
-        }
         let name = file.symbols.local_name(*functor).to_string();
         let resolved = resolve_query_name(kb, &name, scope);
-        if kb.runtime_account_of(resolved).is_some() {
+        // A child is QUOTED under a field the resolved functor declares `Term`, or under
+        // a quoted parent.
+        let fields = kb.written_entity_field_names(resolved).map(|f| f.to_vec());
+        let quoted_field = |kb: &KnowledgeBase, field: Option<Symbol>| {
+            field
+                .and_then(|f| declared_field_type(kb, resolved, f))
+                .is_some_and(|ty| super::typing::is_reflect_term_type(kb, &ty))
+        };
+        for (i, &child) in pos_args.iter().enumerate() {
+            let field = fields.as_ref().and_then(|f| f.get(i).copied());
+            stack.push((child, quoted || quoted_field(kb, field)));
+        }
+        for &(key, child) in named_args.iter() {
+            let field = kb.intern(file.symbols.local_name(key));
+            stack.push((child, quoted || quoted_field(kb, Some(field))));
+        }
+        if !pos_args.is_empty() || !named_args.is_empty() {
+            if kb.runtime_account_of(resolved).is_some() {
+                errors.push(
+                    LoadError::RuntimeAccountInClause {
+                        ctor: kb.qualified_name_of(resolved).to_string(),
+                        span: file.terms.span(id),
+                    }
+                    .located_in(file),
+                );
+            }
+        }
+        if !quoted
+            && !file.terms.is_type_application(id)
+            && !file.terms.is_minted(id)
+            && kb.names_only_a_type(resolved)
+        {
             errors.push(
-                LoadError::RuntimeAccountInClause {
-                    ctor: kb.qualified_name_of(resolved).to_string(),
+                LoadError::SortAppliedAsData {
+                    sort: kb.local_name_of(resolved).to_string(),
                     span: file.terms.span(id),
                 }
                 .located_in(file),
@@ -15092,6 +15146,15 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
+/// WI-20260902-JB6RS — the ONE wording of [`LoadError::SortAppliedAsData`].
+pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
+    format!(
+        "`{sort}(…)` is an application, and `{sort}` names no constructor, predicate or \
+         operation to apply — it is a sort, and its type is written `{sort}[…]` \
+         (kernel-language.md §4.4)"
+    )
+}
+
 /// WI-20260902-JB6RS — the ONE wording of [`LoadError::IncompleteConstruction`] and of the
 /// typer's error it renders.
 pub(crate) fn incomplete_construction_message(ctor: &str, missing: &[String]) -> String {
@@ -19269,28 +19332,13 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             pos_args,
             named_args,
         } => {
-            // The NULLARY application is the bare reference's other spelling
-            // (WI-20260902-CZJ2N), so it takes the same arm rather than falling through
-            // as a var-free compound.
-            //
-            // AND IT MUST COME BACK AS ITSELF WHEN NOTHING EXPANDS. An earlier cut minted
-            // `Term::Ref(functor)` and recursed unconditionally, so a sort with NO
-            // parameters had its bound REWRITTEN from `Fn{S}` to `Ref(S)` — which flips
-            // `changed` and really replaces the stored bound. The two are one spelling for
-            // THIS question and not for every question: `type_head`'s own doc keeps them
-            // apart, `Fn{S}` being the concrete spec identity the loader builds
-            // deliberately and `Ref(S)` the spelling it gives a dispatch wildcard.
-            // So a WI-582 spec bound stored as `Fn{Eq}` silently became a wildcard.
-            // Found by `/code-review`.
+            // A NULLARY application is stored as its bare name since WI-20260902-JB6RS —
+            // `alloc` makes `Fn{S}` the `Ref(S)` the arm above reads — save the three
+            // collection-literal reflect forms, which declare no parameter to expand, so it
+            // comes back as itself. (It used to be a sort's concrete spec identity, kept
+            // apart from the wildcard `Ref(S)`; the wildcard is read off the role now.)
             if pos_args.is_empty() && named_args.is_empty() {
-                if kb
-                    .domain_params_of(kb.canonical_sort_sym(functor))
-                    .is_none_or(|ps| ps.is_empty())
-                {
-                    return t;
-                }
-                let bare = kb.alloc(Term::Ref(functor));
-                return expand_unwritten_type_params(kb, bare);
+                return t;
             }
             // A PARTIALLY written application keeps what was written and fills the rest:
             // `Map[K = Int64]` on a two-parameter `Map` gets `V = ?v`. Written arguments
@@ -28071,6 +28119,26 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260902-JB6RS — refuse `S(…)` WRITTEN where `S` names only a type
+    /// ([`KnowledgeBase::names_only_a_type`]): only a BARE name falls back to another
+    /// reading (kernel-language.md §4.4), and an application needs something to apply.
+    /// A bracket is the type; a node the converter MINTED is its own encoding. In a CLAUSE
+    /// only (`const_fold` is `Off` outside one): an operation body's application is the
+    /// typer's to refuse, and it does, naming the bracket (`sort_applied_as_call`).
+    fn refuse_sort_applied_as_data(&mut self, parse_id: TermId, functor: Symbol) {
+        if self.const_fold == ConstFold::Off
+            || self.parsed.terms.is_type_application(parse_id)
+            || self.parsed.terms.is_minted(parse_id)
+            || !self.kb.names_only_a_type(functor)
+        {
+            return;
+        }
+        self.errors.push(LoadError::SortAppliedAsData {
+            sort: self.kb.local_name_of(functor).to_string(),
+            span: self.parsed.terms.span(parse_id),
+        });
+    }
+
     /// WI-20260902-JB6RS — a bare resolved name that is neither a const nor an alias, as a
     /// clause holds it. In a DATA slot a constructor is its INSTANCE (kernel-language.md
     /// §4.4): a fieldless one the bare name it already is, one that takes fields its
@@ -28979,6 +29047,7 @@ impl<'a> Loader<'a> {
                 // this, and it is what still validates a bracket's arguments; skipping the
                 // field reading here removes the second, wrong reading, not the checking.
                 let is_type_app = self.parsed.terms.is_type_application(parse_id);
+                self.refuse_sort_applied_as_data(parse_id, new_functor);
                 if is_type_app && self.in_rule_head_bound {
                     let written_name = self.parsed.symbols.local_name(functor).to_owned();
                     if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&written_name)
@@ -33833,6 +33902,7 @@ impl<'a> Loader<'a> {
                 // bracket is a type value or a goal's own (`:- Modifiable[T = Foo]`); the
                 // clause converter's twin, restored by the wrapper.
                 self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
+                self.refuse_sort_applied_as_data(parse_id, new_functor);
                 // A WRITTEN DOTTED NAME — the converter's `field_access` chain, the provenance
                 // test `dotted_citation_name` makes — hands its segments the non-value role.
                 let name_chain = self.parsed.terms.is_minted(parse_id)
@@ -44753,44 +44823,38 @@ end
             "and a namespace never does"
         );
 
-        // THE TRIPWIRE FIRED, AND THIS IS THE NEW READING — WI-20260902-CZJ2N.
+        // THE TRIPWIRE FIRED TWICE. WI-20260902-CZJ2N made the canon `!has_kind(owner,
+        // Sort)`, so the encoding and the predicate stopped being one function: a
+        // `Sort`-kinded constructor owner (`CtorSort`) kept the `Fn` spelling while
+        // `is_sort_scope` said no — which is why WI-1029 folded `is_sort_scope` off the
+        // shape and onto the owner. WI-20260902-JB6RS then removed the `Sort` exemption,
+        // and every owner's name term is the bare `Ref`:
         //
-        // The doc above says this row exists so that "a future change to the WI-511
-        // canon … breaks here loudly instead of silently flipping". It did. The canon
-        // is no longer `is_constructor_symbol`, it is `!has_kind(owner, Sort)`, so the
-        // encoding and the predicate are no longer the same function:
+        //   | owner           | Sort? | ctor? | name term | `is_sort_scope` |
+        //   |-----------------|-------|-------|-----------|-----------------|
+        //   | `PlainSort`     | yes   | no    | `Ref`     | true            |
+        //   | `CtorSort`      | yes   | YES   | `Ref`     | false           |
+        //   | `SomeNamespace` | no    | no    | `Ref`     | false           |
         //
-        //   | owner       | Sort? | ctor? | name term | old `via_term` | `is_sort_scope` |
-        //   |-------------|-------|-------|-----------|----------------|-----------------|
-        //   | `PlainSort` | yes   | no    | `Fn`      | true           | true            |
-        //   | `CtorSort`  | yes   | YES   | `Fn`      | **true**       | **false**       |
-        //   | `SomeNamespace` | no | no   | `Ref`     | false          | false           |
-        //
-        // `CtorSort` is the row that split: it is `Sort`-kinded, so the canon exempts
-        // it and its name term stays `Fn` where WI-511 rewrote it to `Ref`. The
-        // ENCODING now says "has a type reading"; the PREDICATE says "opens a sort
-        // body". Those were only ever accidentally equal, and this is the accident
-        // ending — which is precisely why WI-1029 folded `is_sort_scope` off the shape
-        // and onto the owner. Nothing about the predicate's answers moved.
-        //
-        // Pinned as the NEW relation rather than deleted, so the next canon change
-        // breaks here too.
-        for (owner, keeps_fn_spelling) in [(plain, true), (ctor, true), (ns, false)] {
+        // Nothing about the predicate's answers moved. Pinned as the relation, so the next
+        // canon change breaks here too.
+        // WI-20260902-JB6RS: the canon exempts no sort any more, so every owner's name
+        // term is the bare `Ref` — and `is_sort_scope` reads the owner, as it must.
+        for (owner, keeps_fn_spelling) in [(plain, false), (ctor, false), (ns, false)] {
             let term = kb.make_name_term_from_sym(owner);
             assert_eq!(
                 matches!(kb.get_term(term), Term::Fn { .. }),
                 keeps_fn_spelling,
-                "the nullary canon exempts exactly the `SymbolKind::Sort` owners: {}",
+                "the nullary canon exempts no owner: {}",
                 kb.qualified_name_of(owner)
             );
         }
         let ctor_term = kb.make_name_term_from_sym(ctor);
         assert!(
-            matches!(kb.get_term(ctor_term), Term::Fn { .. })
+            !matches!(kb.get_term(ctor_term), Term::Fn { .. })
                 && !is_sort_scope(&kb, kb.symbols.scope_id(ctor)),
-            "and the encoding no longer decides the predicate — `CtorSort` keeps the \
-             `Fn` spelling while `is_sort_scope` says no, which the WI-511 canon could \
-             not have produced"
+            "and the encoding does not decide the predicate — `CtorSort`'s name term is \
+             the `Ref` every owner's is, and `is_sort_scope` says no"
         );
     }
 

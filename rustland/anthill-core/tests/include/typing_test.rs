@@ -7390,8 +7390,8 @@ fn wi031_stdlib_load_then_typecheck_then_verify_typing_facts() {
     ] {
         let sort_term = kb.resolve_qualified_name_term(qn);
         let sort_functor = match kb.get_term(sort_term) {
-            Term::Fn { functor, .. } => *functor,
-            _ => panic!("{qn} did not resolve to Fn term"),
+            Term::Fn { functor, .. } | Term::Ref(functor) => *functor,
+            _ => panic!("{qn} did not resolve to a name term"),
         };
         let found = kb.rules_by_functor(sort_info_sym).iter().any(|rid| {
             let head = kb.fact_term(*rid);

@@ -516,7 +516,8 @@ end
                     anthill_core::kb::term::Term::Fn { pos_args, .. }
                         if pos_args.first().is_some_and(|p|
                             matches!(kb.get_term(*p),
-                                anthill_core::kb::term::Term::Fn { functor, .. } if *functor == bar))))
+                                anthill_core::kb::term::Term::Fn { functor, .. }
+                                | anthill_core::kb::term::Term::Ref(functor) if *functor == bar))))
         });
     assert!(
         bar_alias.is_some(),

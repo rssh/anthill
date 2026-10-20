@@ -1250,15 +1250,16 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 pos_args,
                 named_args,
             } => {
-                // WI-20260902-JB6RS — a constructor's TYPE FACE heads a type, and a type
-                // written as DATA takes the bracket (kernel §4.4): `Foo[X = Int64]`, the
-                // parameterized-type surface the type writer already prints. Written
-                // `Foo(X: …)` it would reload as an instance.
-                if functor.is_type_face() {
-                    // Never nullary in the store: `alloc` keeps a face's bare spelling.
+                // WI-20260902-JB6RS — a constructor's TYPE FACE heads a type, and so does a
+                // sort with no constructor of its name; a type written as DATA takes the
+                // bracket (kernel §4.4): `Foo[X = Int64]`, `List[T = Int64]`, the
+                // parameterized-type surface the type writer already prints. Written with
+                // parentheses, a face's would reload as an instance and a sort's is refused.
+                if self.view.heads_only_a_type(id, *functor) {
+                    // Never nullary in the store: `alloc` keeps the bare spelling.
                     debug_assert!(
                         !pos_args.is_empty() || !named_args.is_empty(),
-                        "a nullary application of a type face is stored as its `Ref`"
+                        "a nullary application of a type head is stored as its `Ref`"
                     );
                     self.write_type_term(id, buf);
                     return;

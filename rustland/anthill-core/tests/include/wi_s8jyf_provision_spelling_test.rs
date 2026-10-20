@@ -289,10 +289,12 @@ namespace s8jyf.parens
 end
 "#
     );
-    assert_eq!(
-        provisions_of(&src, "s8jyf.parens.Sp"),
-        Vec::<String>::new(),
-        "a parenthesised head is a construction/assertion, never a provision"
+    // Since WI-20260902-JB6RS it is not even a fact: `Sp` names no constructor, predicate
+    // or operation, so `Sp(…)` is refused where it is written — and so records nothing.
+    let errs = errors(&src);
+    assert!(
+        errs.iter().any(|e| e.contains("`Sp(…)` is an application")),
+        "a parenthesised head over a spec is refused, never a provision: {errs:?}"
     );
 }
 

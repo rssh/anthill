@@ -60,7 +60,7 @@ fn eval_type(src: &str) -> String {
 #[test]
 fn member_type_value_dictionary_is_supplied() {
     let src=program("operation only(x: X.C, z: X.E) -> Type requires TypeValue[T = X.E] = Pair[A = Int64, B = X.E]\noperation main() -> Type = only(b(7),5)");
-    assert_eq!(eval_type(&src), "Pair(A: Int64, B: Int64)");
+    assert_eq!(eval_type(&src), "Pair[A = Int64, B = Int64]");
 }
 #[test]
 fn two_members_of_one_name_have_distinct_type_value_slots() {
@@ -81,7 +81,7 @@ fn two_members_of_one_name_have_distinct_type_value_slots() {
  operation main() -> Type = only(b(7),d(),5,"s")
 "#,
     );
-    assert_eq!(eval_type(&src), "Pair(A: Int64, B: String)");
+    assert_eq!(eval_type(&src), "Pair[A = Int64, B = String]");
 }
 #[test]
 fn member_requirement_covers_a_construction() {

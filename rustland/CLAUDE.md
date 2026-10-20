@@ -411,9 +411,9 @@ Integration tests in `anthill-core/tests/` follow:
   that named no scope reach 22 readers before anything noticed (WI-1028).
   A site that must PUT the scope where a term goes derives one there
   (`make_name_term_from_sym(scope.owner())`) — but must not then match on its SHAPE:
-  that derivation applies the WI-511 canon (`Ref` for a constructor owner, `Fn`
-  otherwise), so a `Term::Fn` test on the result is an unnamed `is_constructor_symbol`
-  read. To ask a question ABOUT the scope, ask the owner — `load::is_sort_scope` was
+  that derivation applies the nullary canon, which makes it the bare `Ref` for every
+  owner since WI-20260902-JB6RS (it was `Fn` for a sort owner), so a `Term::Fn` test on
+  the result answers nothing. To ask a question ABOUT the scope, ask the owner — `load::is_sort_scope` was
   the last predicate doing it the other way and WI-1029 retired it. The same canon
   read from the other side is at `KnowledgeBase::resolve_qualified_name_term`.
 - `assert_rule_debruijn_with_nodes` for rules (converts vars; term bodies first go through `term_body_to_nodes`), `assert_fact` for ground facts (arity 0).

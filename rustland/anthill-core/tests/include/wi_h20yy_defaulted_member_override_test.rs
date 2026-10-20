@@ -123,19 +123,19 @@ fn eval_type(op: &str) -> String {
 /// Before: `Box(V: Boom)`, the spec's default body, silently.
 #[test]
 fn a_providers_override_is_reached_through_an_op_scoped_slot() {
-    assert_eq!(eval_type("h_override"), "Option(T: Boom)");
+    assert_eq!(eval_type("h_override"), "Option[T = Boom]");
 }
 
 /// …through TWO generic levels.
 #[test]
 fn the_override_reaches_through_two_generic_levels() {
-    assert_eq!(eval_type("h_override_2lvl"), "Option(T: Boom)");
+    assert_eq!(eval_type("h_override_2lvl"), "Option[T = Boom]");
 }
 
 /// …and through the SORT-level spelling of the same slot.
 #[test]
 fn a_providers_override_is_reached_through_a_sort_level_slot() {
-    assert_eq!(eval_type("h_sort_override"), "Option(T: Boom)");
+    assert_eq!(eval_type("h_sort_override"), "Option[T = Boom]");
 }
 
 /// THE CONTROL THAT MUST STAY GREEN — R541X's headline row

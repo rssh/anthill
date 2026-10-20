@@ -834,12 +834,11 @@ fn check_one_default(kb: &KnowledgeBase, rows: &[DefaultRow]) -> Vec<LoadError> 
             );
             LoadError::AmbiguousDefaultProvider {
                 spec: kb.qualified_name_of(a.spec).to_string(),
-                // AS RENDERED, not by term identity: `Ref(S)` and the nullary `Fn{S}` are
-                // two spellings of one carrier and both occur (measured), so identity
-                // would call one carrier two and print the OVERLAPPING wording over a
-                // message naming the same carrier twice. Deciding on the rendered form
-                // makes the arm and the text agree by construction — if the message shows
-                // one carrier, the arm is the one-carrier arm.
+                // AS RENDERED, not by term identity: `Ref(S)` and the nullary `Fn{S}` were
+                // two spellings of one carrier and both occurred (measured; one term since
+                // WI-20260902-JB6RS), and deciding on the rendered form still makes the arm
+                // and the text agree by construction — if the message shows one carrier,
+                // the arm is the one-carrier arm.
                 collision: DefaultCollision::of(a, b, ca == cb),
                 carrier: ca,
                 providers: vec![render(a), render(b)],
