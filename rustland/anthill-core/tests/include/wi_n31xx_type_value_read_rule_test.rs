@@ -263,7 +263,7 @@ namespace test.n31xx.userclass
     operation stamp() -> Int64
   end
 
-  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp()
+  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp[T = B]()
 
   rule names(?x, ?n) :- ?n = stampOf(?x)
 end
@@ -416,7 +416,7 @@ namespace test.n31xx.pinned
     sort GM = ?
     sort GN = ?
     requires Tag[M = GM, N = GN]
-    operation probe(x: GM) -> Int64 = Tag.code()
+    operation probe(x: GM) -> Int64 = Tag.code[M = GM, N = GN]()
   end
 
   rule ra(?n) :- Ghost.probe(alpha(), ?n)
@@ -619,7 +619,7 @@ namespace test.n31xx.othersp
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
   operation mid[U](y: U) -> Type = tyOf(y)
   operation ask() -> Type = mid(5)
 end
@@ -975,7 +975,7 @@ namespace test.n31xx.formertt
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf((1, 2))
 end
@@ -1057,7 +1057,7 @@ namespace test.n31xx.plainsort
     entity plain(n: Int64)
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf(plain(1))
 end
@@ -1178,7 +1178,7 @@ namespace test.n31xx.within
   import anthill.prelude.Option.{some}
   import anthill.reflect.{TypeValue}
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask() -> Type = tyOf(some((1, 2)))
 end
@@ -1285,7 +1285,7 @@ namespace test.n31xx.libopen
   import anthill.prelude.Option.{none}
   import anthill.reflect.{TypeValue}
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask() -> Type = tyOf(none())
 end
@@ -1304,7 +1304,7 @@ namespace test.n31xx.libspec
     operation area(s: T) -> Int64
   end
 
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
 
   operation ask(s: Shape) -> Type = tyOf(s)
 end
@@ -1374,7 +1374,7 @@ namespace test.n31xx.construct
     sort T = ?
     requires TypeValue[T = T]
     entity box(v: T)
-    operation tyOf(b: Self) -> Type = TypeValue.type_value()
+    operation tyOf(b: Self) -> Type = TypeValue.type_value[T = T]()
   end
 
   operation inside() -> Type = Box.tyOf(box(some((1, 2))))
@@ -1412,10 +1412,12 @@ end
 /// THE SEARCH'S OWN ACCOUNT ADVISES NO `TypeValue` ROW EITHER. A provision whose contract asks
 /// for `TypeValue` where none holds — `W provides Desc[T = Option[T = (Int64, Int64)]]`, `Desc`
 /// requiring `TypeValue[T = T]` — is refused saying the instances are derived, where it was
-/// told to declare `provides TypeValue[…]` on the carrier, which is refused at load.
+/// told to declare `provides TypeValue[…]` on the carrier, which is refused at load, and then
+/// to add `requires TypeValue[…]` in scope, which a ground goal has no caller to take from:
+/// written on `W`, the provision loaded and could never answer.
 ///
 /// BACK-OUT: the `TypeValue` arm of the resolver's no-provider hint taken out, and this fails
-/// on the row advice.
+/// on the row advice; its `requires` tail given at a ground goal again, and it fails on that.
 #[test]
 fn a_provision_contract_at_no_type_value_names_no_row() {
     let errs = load_errors(
@@ -1448,15 +1450,13 @@ end
     assert!(
         contract.contains(
             "no impl provides anthill.reflect.TypeValue: its instances are derived, for a sort \
-             that is no spec, a parametric one's only where each type argument has one, and none \
-             may be written"
+             that is no spec, a parametric one's only where each type argument has one, and a \
+             tuple or an arrow has none; none may be written"
         ),
         "the account says why: {contract}"
     );
-    assert!(
-        !contract.contains("declare `provides anthill.reflect.TypeValue"),
-        "and advises no row: {contract}"
-    );
+    // Nor a `requires` in scope: the goal is ground, and there is no caller to take it from.
+    assert_names_no_row_advice("a provision's contract", contract);
 }
 
 /// A SPEC OF THE PROGRAM'S OWN WHOSE CONTRACT HOLDS NOWHERE AT THE CALL is not advised a row
@@ -1493,9 +1493,10 @@ end
     assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
     assert!(
         errs[0].contains(
-            "a row of `test.n31xx.contract2.Desc` at these bindings would be refused for its own \
-             contract, `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: Int64, _2: \
-             Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none may be written"
+            "no row of `test.n31xx.contract2.Desc` at these bindings can answer, its own \
+             contract asking `anthill.reflect.TypeValue[T = anthill.prelude.Option[T = (_1: \
+             Int64, _2: Int64)]]`: no row of `anthill.reflect.TypeValue` answers here, and none \
+             may be written"
         ),
         "the contract and its repair: {:?}",
         errs[0]
@@ -1519,7 +1520,7 @@ namespace test.n31xx.withinuser
     operation valueOf() -> Type
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf(some((1, 2)))
 end
@@ -1571,7 +1572,7 @@ namespace test.n31xx.formerprov
     operation valueOf() -> Type = Int64
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
 
   operation ask() -> Type = tyOf((a: 1, b: "x"))
 end

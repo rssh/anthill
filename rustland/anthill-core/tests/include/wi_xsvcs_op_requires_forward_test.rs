@@ -137,7 +137,7 @@ namespace test.xsvcs.fwd
     operation valueOf() -> Type = Boom
   end
 
-  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()
   operation mid[U](y: U) -> Type = tyOf(y)
   operation direct() -> Type = tyOf(boom(why: "x"))
   operation viaMid() -> Type = mid(boom(why: "x"))
@@ -222,7 +222,7 @@ fn the_printed_repair_loads_and_answers() {
 #[test]
 fn the_same_forward_is_refused_whichever_body_the_callee_has() {
     let never_read = FORWARD.replace(
-        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
+        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()",
         "operation tyOf[B](x: B) -> Type requires TT[T = B] = Boom",
     );
     assert_ne!(never_read, FORWARD, "the fixture edit must have applied");
@@ -257,7 +257,7 @@ fn the_same_forward_is_refused_whichever_body_the_callee_has() {
 #[test]
 fn deleting_the_clause_the_body_never_uses_is_the_repair() {
     let repaired = FORWARD.replace(
-        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
+        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf[T = B]()",
         "operation tyOf[B](x: B) -> Type = Boom",
     );
     assert_ne!(repaired, FORWARD, "the fixture edit must have applied");
@@ -324,10 +324,6 @@ end
     );
 }
 
-/// THE STDLIB STILL LOADS — asserted rather than assumed, because the population this
-/// rule had to avoid lives there. `load_stdlib_kb` panics on any load error, so this is
-/// a real assertion and not a smoke test; the census counted 57 unfilled op slots across
-/// the workspace and this rule touches only the 4 that name a caller rigid.
 /// A RIGID INSIDE A SORT APPLICATION IS FORWARDED TOO. `tyOf(some(x))` over `x: C` hands
 /// `Option[T = C]` to an operation that demands evidence about it, and `Option`'s instance
 /// holds only where `C`'s does, which `f` holds none of. It loaded clean, and reached from a
@@ -343,7 +339,7 @@ namespace test.xsvcs.nested
   import anthill.prelude.{Int64, Option, Type}
   import anthill.prelude.Option.{some}
   import anthill.reflect.{TypeValue}
-  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value()
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
   operation f[C](x: C) -> Type = tyOf(some(x))
   operation viaF() -> Type = f(1)
 end
@@ -442,6 +438,12 @@ fn a_rigid_inside_an_application_of_a_programs_spec_is_refused_too() {
     );
 }
 
+/// THE STDLIB STILL LOADS — asserted rather than assumed, because the population this
+/// rule had to avoid lives there. `load_stdlib_kb` panics on any load error, so this is
+/// a real assertion and not a smoke test; the census counted 57 unfilled op slots across
+/// the workspace and this rule touches only the ones that name a caller rigid.
+///
+/// PASSES EITHER WAY BY DESIGN: the control the module doc names.
 #[test]
 fn the_stdlib_still_loads() {
     let kb = load_stdlib_kb();

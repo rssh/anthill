@@ -1915,6 +1915,7 @@ pub(super) fn check_one_spec_op_requirement(
         spec_op_sym: functor,
         spec_sort_sym: spec_sort,
         abstract_params,
+        site: RequiresSite::Clause,
     });
 }
 

@@ -638,7 +638,6 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
         let reply = chat_completion(&endpoint, &model, &prompt)
             .map_err(|msg| anthill_core::eval::EvalError::Raised {
                 payload: Value::Str(msg),
-                origin: anthill_core::eval::RaiseOrigin::Program,
             })?;
         text_value(interp.kb(), &reply)
     })
@@ -678,7 +677,6 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
         kb.register_host_fn(key, arity, move |_interp, _args| {
             Err(anthill_core::eval::EvalError::Raised {
                 payload: Value::Str(format!("{key}: no deployment is bound in this harness")),
-                origin: anthill_core::eval::RaiseOrigin::Program,
             })
         })
         .unwrap_or_else(|e| panic!("register {key}: {e:?}"));

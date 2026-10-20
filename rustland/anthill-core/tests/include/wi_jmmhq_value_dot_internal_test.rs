@@ -216,7 +216,7 @@ fn a_specs_internal_operation_is_reached_inside_the_spec() {
         &spec(
             "jmmhqspecin",
             "    operation viaTwig(t: Twig) -> Int64 = t.label()\n    operation viaParam[X](x: X) -> Int64 requires Desc[T = X] = x.label()",
-            "  operation go() -> Int64 = Desc.viaTwig(Twig.twig()) + Desc.viaParam(Twig.twig())",
+            "  operation go() -> Int64 = Desc.viaTwig[T = Twig](Twig.twig()) + Desc.viaParam(Twig.twig())",
         ),
         "test.jmmhqspecin.go",
         10,

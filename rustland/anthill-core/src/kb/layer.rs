@@ -228,6 +228,8 @@ kb_scoped_fields!(
     or_connective_sym,
     and_connective_sym,
     reify_operation_sym,
+    runtime_account_syms,
+    induction_axioms,
     tuple_literal_sym,
     has_dot_applies,
     simp_gate_cache,
@@ -366,6 +368,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // An INTERNED symbol, cached: the interner above never rolls back, so neither does
         // what it minted.
         unrouted_read_sym: _,
+        // A rigid term per provider parameter, minted once for ranking provisions: the
+        // store above never rolls back and the counter never reissues its variable, so a
+        // rigid a layer minted stays a type no provision names after the discard.
+        ranking_rigids: _,
 
         // ── SCOPED: every field to the NEXT HEADER is in `kb_scoped_fields!` ─
         rules: _,
@@ -488,6 +494,8 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         or_connective_sym: _,
         and_connective_sym: _,
         reify_operation_sym: _,
+        runtime_account_syms: _,
+        induction_axioms: _,
         tuple_literal_sym: _,
         has_dot_applies: _,
         simp_gate_cache: _,

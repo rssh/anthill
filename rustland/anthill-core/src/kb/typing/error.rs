@@ -95,6 +95,20 @@ impl RequirementUse {
     }
 }
 
+/// Where a `requires` that covers a spec operation's call is written, for the refusal that
+/// asks for one ([`TypeError::MissingRequiresForSpecOp`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiresSite {
+    /// In an operation's body: the operation's own `requires`, or its sort's where it is a
+    /// member of one.
+    Operation {
+        op: Symbol,
+        sort: Option<Symbol>,
+    },
+    /// In a rule's body: a `requires(…)` goal of the clause.
+    Clause,
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeError {
     /// Canonical type mismatch from `assert_compatible`. `context` is where
@@ -413,6 +427,17 @@ pub enum TypeError {
         reached: Symbol,
         clauses: bool,
     },
+    /// A call, in an operation body, of a member of a sort that may be provided, with no
+    /// receiver, that fixes none of the sort's parameters — by its bracket, its arguments or
+    /// the type expected of its result — and that no single provision answers. A `requires`
+    /// in scope does not stand in: it supplies the evidence for the instance a call names.
+    /// `suggestion` is the call with the bracket written.
+    CallNamesNoInstance {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        suggestion: String,
+    },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
     /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
@@ -646,6 +671,9 @@ pub enum TypeError {
         spec_op_sym: Symbol,
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
+        /// Where the covering clause is written: the calling operation's own `requires`, or
+        /// its sort's, or a `requires(…)` goal in the clause a rule body calls from.
+        site: RequiresSite,
     },
     /// Proposal 066 (WI-20260919-1Z3E7) — [`Self::MissingRequiresForSpecOp`] where the
     /// carrier DOES hold the evidence, as a condition of one of its provisions, and the
@@ -1204,6 +1232,11 @@ pub enum TypeErrorContext {
         /// reader to guess.
         source: ElementTypeSource,
     },
+    /// A construction of `ctor` that the program may not write: one of the runtime's
+    /// accounts ([`crate::kb::RuntimeAccount`]), which a program reads and does not build.
+    Construction {
+        ctor: Symbol,
+    },
 }
 
 /// WI-20261012-80259 — which pattern [`TypeErrorContext::PatternPosition`] is about. A
@@ -1275,6 +1308,7 @@ impl TypeErrorContext {
             TypeErrorContext::BooleanPosition { construct, .. } => (*construct).to_string(),
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
             // (the `source` rides in `kind_tag`)
+            TypeErrorContext::Construction { ctor } => kb.local_name_of(*ctor).to_string(),
         }
     }
 
@@ -1307,6 +1341,7 @@ impl TypeErrorContext {
                 source: ElementTypeSource::Siblings,
                 ..
             } => "collection-element-join",
+            TypeErrorContext::Construction { .. } => "construction",
         }
     }
 
@@ -1336,6 +1371,7 @@ impl TypeErrorContext {
             // from one. The 0-based `index` is kept in the variant so the value is the
             // element's position in `pos_args` and needs no reader to undo the display.
             TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
+            TypeErrorContext::Construction { .. } => "construction".to_string(),
         }
     }
 }
@@ -1569,17 +1605,38 @@ impl TypeError {
                 } else {
                     format!("{what} has no body, host mapping or builtin")
                 };
+                let params = kb
+                    .type_params_of_sort(*spec)
+                    .iter()
+                    .map(|p| format!("{p} = …"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!(
                     "a call of `{qn}` that nothing can run: `{spec_qn}` may be provided, but \
                      no provider can be selected here — no argument, result or effect of \
-                     `{short}` stands at `{spec_qn}` or at a parameter of it, and no \
-                     `requires {spec_qn}[…]` is in scope — so the call reaches `{qn}` \
-                     itself, and {own}. Add `requires {spec_qn}[…]` to the enclosing \
-                     operation, so that its callers supply the provider, or give `{body}` \
-                     a body",
+                     `{short}` stands at `{spec_qn}` or at a parameter of it, the call writes \
+                     no bracket, and no `requires {spec_qn}[…]` is in scope — so the call \
+                     reaches `{qn}` itself, and {own}. Name the instance in the call's \
+                     bracket, `{qn}[{params}](…)`, with a `requires {spec_qn}[…]` on the \
+                     enclosing operation where the bracket names a parameter of it, or give \
+                     `{body}` a body",
                     body = short_name_of(kb.qualified_name_of(*reached)),
                 )
             }
+            TypeError::CallNamesNoInstance {
+                op,
+                spec,
+                suggestion,
+                ..
+            } => format!(
+                "a call of `{}` that names no instance of `{}`: nothing at the call — its \
+                 bracket, its arguments, the type expected of its result — fixes a parameter \
+                 of `{1}`, and no single provision answers it. A `requires` in scope supplies \
+                 the evidence for the instance a call names, and does not say which instance \
+                 that is. Write the instance in the call's bracket: `{suggestion}`",
+                kb.qualified_name_of(*op),
+                kb.qualified_name_of(*spec),
+            ),
             TypeError::AmbiguousRequirementKey {
                 op, name, slots, ..
             } => {
@@ -1837,20 +1894,14 @@ impl TypeError {
                 spec_op_sym,
                 spec_sort_sym,
                 abstract_params,
+                site,
                 ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
-                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
-                let spec_short = short_name_of(spec_qn);
-                let params_list: Vec<String> = abstract_params
-                    .iter()
-                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
-                    .collect();
+                let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
                 format!(
-                    "spec op `{}` called at abstract type — add `requires {}[{}]` to the enclosing sort, or specialize to a concrete carrier",
-                    op_qn,
-                    spec_short,
-                    params_list.join(", "),
+                    "spec op `{op_qn}` called at abstract type — {}, or specialize to a concrete carrier",
+                    missing_requires_repair(kb, &clause, *site),
                 )
             }
             TypeError::ProvisionConditionOutOfScope {
@@ -2153,6 +2204,7 @@ impl TypeError {
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::CallOfUnselectableSpecOperation { span, .. }
+            | TypeError::CallNamesNoInstance { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2446,7 +2498,8 @@ impl TypeError {
             // One string for both faces, as the selection refusals below have it: the
             // message carries the whole repair.
             TypeError::CallOfClauseDefinedOperation { op, .. }
-            | TypeError::CallOfUnselectableSpecOperation { op, .. } => LoadError::TypeMismatch {
+            | TypeError::CallOfUnselectableSpecOperation { op, .. }
+            | TypeError::CallNamesNoInstance { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "call".to_string(),
@@ -2615,20 +2668,13 @@ impl TypeError {
                 spec_op_sym,
                 spec_sort_sym,
                 abstract_params,
+                site,
                 ..
             } => {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
-                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
-                let spec_short = short_name_of(spec_qn);
-                let params_list: Vec<String> = abstract_params
-                    .iter()
-                    .map(|p| format!("{0} = …", kb.local_name_of(*p)))
-                    .collect();
-                let suggestion = format!(
-                    "missing `requires {}[{}]` on enclosing sort",
-                    spec_short,
-                    params_list.join(", "),
-                );
+                let spec_short = short_name_of(kb.qualified_name_of(*spec_sort_sym));
+                let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
+                let suggestion = format!("missing {}", missing_requires_place(kb, &clause, *site));
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: op_qn.to_string(),
@@ -3157,5 +3203,50 @@ pub(crate) fn unnamed_requirement_line_error(
         expected_type: "a requirement this line states, or a name of its own".to_string(),
         actual_type: detail,
         span,
+    }
+}
+
+/// The clause [`TypeError::MissingRequiresForSpecOp`] asks for, `Spec[T = …]`: the spec's
+/// short name and the parameters the call left abstract.
+fn missing_requires_clause(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    abstract_params: &[Symbol],
+) -> String {
+    let params: Vec<String> = abstract_params
+        .iter()
+        .map(|p| format!("{} = …", kb.local_name_of(*p)))
+        .collect();
+    format!("{}[{}]", short_name_of(kb.qualified_name_of(spec)), params.join(", "))
+}
+
+/// Where that clause goes, as a repair: on the calling operation or its sort, or in the
+/// clause of a rule body.
+fn missing_requires_repair(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+    match site {
+        RequiresSite::Operation { op, sort: Some(sort) } => format!(
+            "add `requires {clause}` to `{}` or to its sort `{}`",
+            kb.qualified_name_of(op),
+            kb.qualified_name_of(sort)
+        ),
+        RequiresSite::Operation { op, sort: None } => {
+            format!("add `requires {clause}` to `{}`", kb.qualified_name_of(op))
+        }
+        RequiresSite::Clause => format!("write `requires({clause})` in the rule's body"),
+    }
+}
+
+/// The same place, as what is missing from it.
+fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+    match site {
+        RequiresSite::Operation { op, sort: Some(sort) } => format!(
+            "`requires {clause}` on `{}` or on its sort `{}`",
+            kb.qualified_name_of(op),
+            kb.qualified_name_of(sort)
+        ),
+        RequiresSite::Operation { op, sort: None } => {
+            format!("`requires {clause}` on `{}`", kb.qualified_name_of(op))
+        }
+        RequiresSite::Clause => format!("`requires({clause})` in the rule's body"),
     }
 }

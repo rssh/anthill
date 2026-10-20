@@ -1240,6 +1240,25 @@ pub(super) fn check_constructor_iter(
     // Surface any sub-expression failure before continuing.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
 
+    // A RUNTIME ACCOUNT IS READ, NOT BUILT: the bridge reads a raise's cause off its
+    // payload's constructor, so a program that built one could pass its own raise off as
+    // the runtime's account of a search that did not decide. A rule body's own term is the
+    // loader's to refuse (`LoadError::RuntimeAccountInClause`).
+    if env.written_as_an_operation_body() && kb.runtime_account_of(ctor_sym).is_some() {
+        return Err(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Construction { ctor: ctor_sym },
+            expected: "a value the program may construct".to_string(),
+            actual: format!(
+                "a construction of `{}`, an account the runtime gives of something it could \
+                 not do: a program matches one and raises a caught one again, and does not \
+                 construct one",
+                kb.qualified_name_of(ctor_sym)
+            ),
+        });
+    }
+
     // A LITERAL'S CONSTRUCTOR NAMED DIRECTLY — `ListLiteral[…](1, 2)` — belongs to no sort
     // that declares a parameter, so a bracket written on it binds nothing: every entry is
     // refused, by the reader every constructor's bracket goes through, before the three

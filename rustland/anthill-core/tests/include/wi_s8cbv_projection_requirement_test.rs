@@ -150,7 +150,7 @@ fn answer(ns: &str, decl: &str, query: &str) -> Option<i64> {
 
 /// `pick`'s requirement is written at the PROJECTION `x.E`, so it names a different
 /// `Desc` instance per call. One declaration, two call sites, two answers.
-const PROJ: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n";
+const PROJ: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n";
 
 #[test]
 fn a_projection_requirement_tracks_its_own_argument() {
@@ -189,7 +189,7 @@ fn a_constant_requirement_does_not_track_the_argument() {
     // It is here to bound what the acceptance is allowed to claim, not to detect a
     // regression in the projection path.
     const CONST_REQ: &str =
-        "  operation pick(x: Box) -> Int64 requires Desc[T = Red] = Desc.tag()\n";
+        "  operation pick(x: Box) -> Int64 requires Desc[T = Red] = Desc.tag[T = Red]()\n";
     assert_eq!(
         answer("test.s8cbv.const.r", CONST_REQ, "pick(box(v: red()), ?r)"),
         Some(7),
@@ -243,7 +243,7 @@ fn a_dotted_name_whose_head_is_no_value_place_is_still_unresolved() {
     // (dropping the value-head gate) is caught.
     let errs = refusal(&fixture(
         "test.s8cbv.neg",
-        "  operation z(x: Box) -> Int64 requires Desc[T = Zork.E] = Desc.tag()\n",
+        "  operation z(x: Box) -> Int64 requires Desc[T = Zork.E] = Desc.tag[T = Zork.E]()\n",
     ));
     assert!(errs.contains("unresolved name 'Zork.E'"), "got:\n{errs}");
 }
@@ -259,7 +259,7 @@ fn a_compound_receiver_is_refused_by_name_rather_than_mis_lowered() {
     // instead — still a refusal, but one that says the author misspelled something.
     let errs = refusal(&fixture(
         "test.s8cbv.compound",
-        "  operation z2(x: Box) -> Int64 requires Desc[T = x.v.E] = Desc.tag()\n",
+        "  operation z2(x: Box) -> Int64 requires Desc[T = x.v.E] = Desc.tag[T = x.v.E]()\n",
     ));
     assert!(errs.contains("COMPOUND receiver"), "got:\n{errs}");
 }
@@ -273,7 +273,7 @@ fn a_projection_requirement_forwards_when_the_caller_declares_it() {
     // BACK-OUT of the `caller_covers` gate in `build_op_scoped_dicts`: this row is
     // REFUSED at load — the gate is what separates it from the row below, and without it
     // the refusal swallows the working program too.
-    const FWD: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+    const FWD: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
                        operation outer(b: Box) -> Int64 requires Desc[T = b.E] = pick(b)\n";
     assert_eq!(
         answer("test.s8cbv.fwd", FWD, "outer(box(v: red()), ?r)"),
@@ -293,7 +293,7 @@ fn a_projection_the_caller_cannot_ground_is_refused_at_load_not_at_eval() {
     // type-checked. Loud and located beats clean-then-abort.
     //
     // BACK-OUT of the refusal: this row does not merely fail, it ABORTS the test binary.
-    const BARE: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+    const BARE: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
                         operation outer(b: Box) -> Int64 = pick(b)\n";
     let errs = refusal(&fixture("test.s8cbv.bare", BARE));
     assert!(
@@ -316,7 +316,7 @@ fn a_call_that_grounds_the_projection_itself_needs_no_caller_requirement() {
     // program is REFUSED. Without this row the δ backs out with zero failures and reads
     // like dead code.
     const GROUNDED: &str =
-        "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+        "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
          operation outer() -> Int64 = pick(box(v: red()))\n";
     assert_eq!(
         answer("test.s8cbv.grounded", GROUNDED, "outer(?r)"),
@@ -341,7 +341,7 @@ fn a_caller_requirement_at_a_different_receiver_does_not_cover_this_call() {
     // [`a_projection_requirement_forwards_when_the_caller_declares_it`] — the program
     // that SHOULD forward — is refused instead. The re-key is what makes the comparison
     // mean anything in either direction.
-    const CROSS: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+    const CROSS: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
                          operation outer(b: Box, c: Box) -> Int64 requires Desc[T = c.E] = pick(b)\n";
     let errs = refusal(&fixture("test.s8cbv.cross", CROSS));
     assert!(
@@ -356,7 +356,7 @@ fn the_same_call_with_the_requirement_at_the_matching_receiver_answers() {
     // identical two-parameter clause loads and answers `7` — `b`'s instance, not `c`'s.
     // Same shape, same arity, same call; only the receiver in the caller's bracket
     // differs, and that is exactly what the exact comparison reads.
-    const MATCHED: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag()\n  \
+    const MATCHED: &str = "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
                            operation outer(b: Box, c: Box) -> Int64 requires Desc[T = b.E] = pick(b)\n";
     assert_eq!(
         answer(

@@ -1765,14 +1765,38 @@ pub(super) fn spec_resolves_at_bindings(
         bindings,
         carrier: None,
     };
-    // WI-841: no call site, hence no selection — a DECLARATION is being validated.
+    matches!(resolve_at_declaration(kb, &goal), ResolutionResult::Resolved(_))
+}
+
+/// `spec` resolved at `ty` bound to its first declared parameter, as a declaration is
+/// validated ([`spec_resolves_at_bindings`]). The parameter is read off the declaration
+/// rather than spelled, the same way `eq_derive::spec_view` builds the views the derived
+/// rows are recorded under: the two must agree or the goal matches no provision. `None`
+/// where the spec declares no parameter, so there is nothing to bind `ty` to.
+pub(super) fn resolve_spec_at(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    ty: &Value,
+) -> Option<ResolutionResult> {
+    let param = kb.type_params_of_sort(spec).into_iter().next()?;
+    let key = kb.intern(&param);
+    let goal = SortGoal {
+        spec_sort: spec,
+        bindings: smallvec::smallvec![(key, ty.clone())],
+        carrier: None,
+    };
+    Some(resolve_at_declaration(kb, &goal))
+}
+
+/// WI-841: no call site, hence no selection — a DECLARATION is being validated.
+fn resolve_at_declaration(kb: &mut KnowledgeBase, goal: &SortGoal) -> ResolutionResult {
     let scope = ResolutionScope {
         available_requires: &[],
         sigma: None,
         pin: None,
         sub_goal_requires: &[],
     };
-    matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
+    resolve(kb, goal, &scope)
 }
 
 /// The declared field types a fact of `ctor_sym` is held to, or `None` when there is

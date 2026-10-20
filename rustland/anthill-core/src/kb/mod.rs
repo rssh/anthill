@@ -334,6 +334,51 @@ pub enum ClauseOrigin {
     Derived,
 }
 
+/// The runtime's accounts of what it could not do, raised on the `Error` channel: a
+/// program matches them and raises a caught one again, and does not construct one — a
+/// construction of one in a program is refused at load (kernel-language.md §5.3). So the
+/// constructor IS the cause, wherever the payload is raised.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RuntimeAccount {
+    /// A relation drain stayed undischarged (`Interpreter::raise_relation_floundered`): the
+    /// search did not decide, which is no failure of the callee.
+    RelationFloundered,
+    /// A scoped load reported its diagnostics (`Interpreter::raise_load_failed`): a verdict
+    /// the operation was asked for.
+    LoadFailed,
+    /// A resolver search behind a stream faulted (`Interpreter::fault_stream`): the account
+    /// of a search the runtime could not finish.
+    EvaluationFailure,
+}
+
+impl RuntimeAccount {
+    pub const ALL: [RuntimeAccount; 3] = [
+        RuntimeAccount::RelationFloundered,
+        RuntimeAccount::LoadFailed,
+        RuntimeAccount::EvaluationFailure,
+    ];
+
+    /// Why no program constructs one, said by every refusal of a construction made at run
+    /// time or read from outside the program: a reflect builder, a query pattern, a data
+    /// file.
+    pub const NOT_CONSTRUCTED: &'static str = "an account the runtime gives of something it \
+         could not do: a program matches one and raises a caught one again, and does not \
+         construct one";
+
+    /// The constructor's qualified name, the one place each is spelled.
+    pub fn qualified_name(self) -> &'static str {
+        match self {
+            RuntimeAccount::RelationFloundered => {
+                "anthill.prelude.RelationFloundered.relation_floundered"
+            }
+            RuntimeAccount::LoadFailed => "anthill.reflect.LoadFailed.load_failed",
+            RuntimeAccount::EvaluationFailure => {
+                "anthill.reflect.ResolveStreamFailure.evaluation_failure"
+            }
+        }
+    }
+}
+
 // ── Rule entry ──────────────────────────────────────────────────
 
 /// A provider proof has its own dictionary slot; the carrier slot is a type.
@@ -1918,6 +1963,18 @@ pub struct KnowledgeBase {
     /// resolver's per-goal gates. `None` before the prelude loads, when no symbol is it.
     reify_operation_sym: Option<Symbol>,
 
+    /// The runtime's three accounts of what it could not do ([`RuntimeAccount`]), in
+    /// [`RuntimeAccount::ALL`]'s order, cached where the connectives are: the bridge reads one
+    /// per raise that escapes it, and the typer one per construction. `None` before the
+    /// library loads.
+    runtime_account_syms: [Option<Symbol>; 3],
+
+    /// The symbol of each sort's derived induction axiom (`<Sort>.induction`), canonical, as
+    /// `emit_induction_rule` files it: the name the axiom owns, which the load refuses to an
+    /// operation or a hand-written rule in any later load as in its own
+    /// (`check_induction_axiom_names`).
+    pub(crate) induction_axioms: HashSet<Symbol>,
+
     /// WI-657(6): the resolved `anthill.reflect.TupleLiteral` entity symbol, cached
     /// so the typer's `is_tuple_lit` (run per constructor argument during inference)
     /// compares a `Symbol` instead of the 27-char `qualified_name_of(..) ==
@@ -1934,6 +1991,13 @@ pub struct KnowledgeBase {
     /// slot rather than hashing the name. An INTERNED name, not a resolved one: it never
     /// changes once minted, so the cache cannot go stale.
     pub(crate) unrouted_read_sym: std::cell::Cell<Option<Symbol>>,
+
+    /// The rigid a provider's type parameter is read as when two provisions are ranked
+    /// (`typing::head_answers`), one per parameter, minted at the first comparison that
+    /// asks and kept. A rigid only has to be a type no provision names, so one serves
+    /// every comparison; minting one at each comparison grew the term store at every
+    /// dispatch that ranked candidates.
+    pub(crate) ranking_rigids: HashMap<Symbol, TermId>,
 
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
@@ -2781,9 +2845,12 @@ impl KnowledgeBase {
             or_connective_sym: None,
             and_connective_sym: None,
             reify_operation_sym: None,
+            runtime_account_syms: [None; 3],
+            induction_axioms: HashSet::new(),
             unify_connective_sym: None,
             tuple_literal_sym: None,
             unrouted_read_sym: std::cell::Cell::new(None),
+            ranking_rigids: HashMap::new(),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),
@@ -4872,8 +4939,8 @@ impl KnowledgeBase {
                     self.retract(rule_id);
                     return None;
                 }
-                // WI-628: the guard's search truncated at the depth limit — we
-                // cannot CONFIRM this fact preserves the invariant. An integrity
+                // WI-628: the guard's search truncated at the depth limit, or a goal of it
+                // faulted — we cannot CONFIRM this fact preserves the invariant. An integrity
                 // guard must never admit a fact it cannot verify, so REJECT
                 // (retract) rather than decide from an incomplete search. The
                 // load-time path surfaces this loudly as `ConstraintUndecidable`;
@@ -4884,9 +4951,9 @@ impl KnowledgeBase {
                 Ok(GuardStatus::Undecidable(reason)) => {
                     let label = self.guards[idx].label.clone();
                     eprintln!(
-                        "anthill: integrity constraint{} undecidable within the resolver \
-                         depth budget ({}) — fact rejected (an integrity guard must not \
-                         admit a fact it cannot verify)",
+                        "anthill: integrity constraint{} is not decided ({}) — fact \
+                         rejected (an integrity guard must not admit a fact it cannot \
+                         verify)",
                         load::label_suffix(&label),
                         reason,
                     );
@@ -10058,6 +10125,8 @@ impl KnowledgeBase {
         self.or_connective_sym = self.try_resolve_symbol("anthill.kernel.or");
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
         self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
+        self.runtime_account_syms =
+            RuntimeAccount::ALL.map(|account| self.try_resolve_symbol(account.qualified_name()));
     }
 
     /// WI-646 — the candidate equational rule ids for `@[simp]`/`@[unfold]` firing:
@@ -12582,6 +12651,15 @@ impl KnowledgeBase {
     /// per-goal gates.
     pub(crate) fn is_reify_operation(&self, f: Symbol) -> bool {
         self.reify_operation_sym == Some(f)
+    }
+
+    /// Which of the runtime's accounts the constructor `f` is, if it is one of them.
+    pub fn runtime_account_of(&self, f: Symbol) -> Option<RuntimeAccount> {
+        let f = self.canonical_sym(f);
+        RuntimeAccount::ALL
+            .into_iter()
+            .zip(self.runtime_account_syms)
+            .find_map(|(account, sym)| (sym == Some(f)).then_some(account))
     }
 
     /// WI-1122 — register a host function this EMBEDDER supplies, under the `key` its

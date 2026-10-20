@@ -27,7 +27,7 @@ use crate::kb::KnowledgeBase;
 use crate::parse::desugar_target as dt;
 
 pub use error::{
-    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError, RaiseOrigin,
+    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError,
 };
 pub use eval::value_functor;
 pub use frame::{ActivationStack, Frame};
@@ -434,9 +434,9 @@ pub struct Interpreter {
     /// `requirements` that `expand_dispatching_dict` just built, where every other kind
     /// gets them pushed onto a `Frame`. That is right for every builtin that existed
     /// before — an arithmetic primitive reads its operands and nothing else — and wrong
-    /// for one whose ANSWER IS ITS EVIDENCE. `TypeValue.type_value()` is nullary, so no
-    /// argument and no receiver names the type it must return; only the dictionary that
-    /// selected the call does.
+    /// for one whose ANSWER IS ITS EVIDENCE. `TypeValue.type_value[X]()` takes no argument,
+    /// so nothing but the dictionary of the instance its bracket names carries the type it
+    /// must return.
     ///
     /// Set and RESTORED around the builtin call, so it is a parameter in everything but
     /// spelling — a builtin that calls back into anthill (legal since
@@ -2294,15 +2294,7 @@ impl Interpreter {
         fault: crate::kb::resolve::SearchFault,
     ) -> EvalError {
         handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
-        // Marked as the runtime's, so a report can tell it from a program's own raise of
-        // `evaluation_failure` — whatever an installed `Error` handler did with it on the way.
-        match self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at) {
-            EvalError::Raised { payload, .. } => EvalError::Raised {
-                payload,
-                origin: error::RaiseOrigin::SearchFault,
-            },
-            other => other,
-        }
+        self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
     }
 
     /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a

@@ -330,7 +330,7 @@ namespace wi5g28a.gate
     sort E = ?
     entity wrap(inner: E)
     provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
       operation tag(x: Self) -> Int64 = 9
     end
   end

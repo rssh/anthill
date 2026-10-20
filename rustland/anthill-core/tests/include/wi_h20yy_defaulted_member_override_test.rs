@@ -4,7 +4,9 @@
 //! `TypeTerm` declares `valueOf() -> Type = T` — a DEFAULT body. `Box` provides
 //! `TypeTerm[T = Box[V = V]]` and OVERRIDES `valueOf` as `Option[T = V]`. A caller that
 //! holds the slot (`tagOfP[P] requires TypeTerm[T = P]`) and writes `TypeTerm.valueOf()`
-//! ran the SPEC'S DEFAULT and never saw the override — silently, no diagnostic.
+//! ran the SPEC'S DEFAULT and never saw the override — silently, no diagnostic. Since
+//! 2026-10-17 the call names the instance in its bracket, `TypeTerm.valueOf[T = P]()`, and
+//! the bare call beside the clause is refused at load.
 //!
 //! MEASURED before the fix, on the `Box` row: `Box(V: Boom)` (the default's `T`) where
 //! the override says `Option(T: Boom)`. The body-less twin — `TypeTermB.valueOfB` with
@@ -84,7 +86,7 @@ namespace test.h20yy
 
   -- The OPERATION-level slot spelling.
   operation tagOfP[P](x: P) -> Type requires TypeValue[T = P], TypeTerm[T = P] =
-    TypeTerm.valueOf()
+    TypeTerm.valueOf[T = P]()
   operation outerP[Q](y: Q) -> Type requires TypeValue[T = Q], TypeTerm[T = Q] = tagOfP(y)
 
   -- The SORT-level slot spelling, read at the receiver's instance.
@@ -95,7 +97,7 @@ namespace test.h20yy
     entity shold(e: E)
     requires TypeValue[T = E]
     requires TypeTerm[T = E]
-    operation f() -> Type = TypeTerm.valueOf()
+    operation f() -> Type = TypeTerm.valueOf[T = E]()
   end
 
   operation h_override() -> Type = tagOfP(box(boom("x")))

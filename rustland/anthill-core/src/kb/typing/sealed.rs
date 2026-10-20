@@ -705,9 +705,12 @@ pub(super) fn provisions_that_change_a_sealed_dispatch(
             }
         }
         let candidates = collect_provides_candidates(kb, &goal, None);
-        let answer = |kb: &KnowledgeBase, among: &[Candidate]| -> Option<Symbol> {
+        let answer = |kb: &mut KnowledgeBase, among: &[Candidate]| -> Option<Symbol> {
             pick_most_specific(kb, among)
-                .or_else(|| default_among_candidates(kb, &goal, among))
+                .or_else(|| {
+                    let tied = maximal_candidates(kb, among);
+                    default_among_candidates(kb, &goal, among, &tied)
+                })
                 .map(|i| kb.canonical_sort_sym(among[i].impl_sort))
         };
         let now = answer(kb, &candidates);

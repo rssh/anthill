@@ -70,6 +70,8 @@ use anthill_core::eval::effects::{EffectHandler, HandlerAction};
 use anthill_core::eval::{EvalError, Value};
 use anthill_core::kb::term_view::TermView;
 
+use crate::common::fault_messages;
+
 const PROGRAM: &str = r#"
 namespace test.clock
   import anthill.prelude.{Int64, String, Error, Result, List}
@@ -167,11 +169,7 @@ fn a_drained_relation_names_the_declined_effect() {
 /// not one a reify repairs.
 #[test]
 fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
-    use anthill_core::kb::resolve::ResolveConfig;
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    let goal = crate::common::query_pattern_term(&mut kb, "test.clock.countFromRule(?n)");
-    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    let messages: Vec<&str> = stats.errors.iter().map(|e| e.message.as_str()).collect();
+    let messages = fault_messages(PROGRAM, "test.clock.countFromRule(?n)");
     assert!(
         messages.iter().any(|m| m.contains("`test.clock.stampCount` could not be evaluated")
             && m.contains("it performs `anthill.prelude.Time.Clock`")),
@@ -181,15 +179,6 @@ fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
         messages.iter().all(|m| !m.contains("Error.reify")),
         "no reify is advised for it: {messages:?}"
     );
-}
-
-/// The faults resolving `goal` over a load of `src` recorded, by message.
-fn fault_messages(src: &str, goal: &str) -> Vec<String> {
-    use anthill_core::kb::resolve::ResolveConfig;
-    let mut kb = crate::common::load_kb_with(src);
-    let goal = crate::common::query_pattern_term(&mut kb, goal);
-    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    stats.errors.iter().map(|e| e.message.clone()).collect()
 }
 
 /// And through a rule-body `Error.reify` typed at another payload, the drain's failure gets no
@@ -218,37 +207,6 @@ fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
         messages.iter().all(|m| !m.contains("a boundary typed at this payload catches it")
             && !m.contains("Handle it inside the operation")),
         "no boundary is advised for it: {messages:?}"
-    );
-}
-
-/// A PROGRAM'S OWN RAISE OF THAT CONSTRUCTOR KEEPS THE ADVICE: `Error.raise(evaluation_failure(…))`
-/// in an operation a rule reads is a raise of the program's, which a boundary around the call
-/// catches. The drain's is marked as the runtime's on the raise (`RaiseOrigin::SearchFault`),
-/// where it was recognised by its constructor, which any program can build.
-///
-/// BACK-OUT: the report keyed by the payload's constructor again, and this fails, the advice
-/// gone; the two drain rows above pass under it.
-#[test]
-fn a_programs_own_evaluation_failure_keeps_the_reify_advice() {
-    let messages = fault_messages(
-        r#"
-namespace test.clockfake
-  import anthill.prelude.{Int64, String, Error, List, Option}
-  import anthill.prelude.List.{nil}
-  import anthill.prelude.Option.{none}
-  import anthill.reflect.{ResolveStreamFailure}
-  import anthill.reflect.ResolveStreamFailure.{evaluation_failure}
-  operation fake() -> Int64 effects {Error[ResolveStreamFailure]} =
-    Error.raise(evaluation_failure(goals: nil(), reason: "made up by the program", at: none()))
-  rule viaFake(?r) :- ?r <=> fake()
-end
-"#,
-        "test.clockfake.viaFake(?r)",
-    );
-    assert!(
-        messages.iter().any(|m| m.contains("raised evaluation_failure")
-            && m.contains("Handle it inside the operation — `Error.reify`")),
-        "a raise of the program's is told the repair: {messages:?}"
     );
 }
 

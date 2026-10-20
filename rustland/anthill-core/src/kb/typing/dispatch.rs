@@ -436,8 +436,8 @@ pub(super) fn is_value_directed_provider(
 /// — equal candidates are one candidate — not here, since the duplicate name was the
 /// symptom and a program with a single implementation being refused was the defect.
 /// The one remaining way two candidates could share an `impl_sort` is differing in a
-/// TYPE-param binding, and that does not tie: the ground binding raises
-/// `head_specificity` and tier 2 picks it (MEASURED, in
+/// TYPE-param binding, and that does not tie: the ground binding is the more specific head
+/// and the order on heads picks it ([`more_specific`]; MEASURED, in
 /// `wi1032_provision_dedup_test::a_specificity_ordered_pair_still_takes_the_more_specific`).
 /// With no driver left, a dedup here would be untested code.
 pub(super) fn render_instance_tie(
@@ -638,7 +638,9 @@ pub(crate) fn supplier_tie_repair(
 /// ABSTRACT-receiver call this cannot pin"*), which reads the carrier off the RUNTIME
 /// VALUE — the only correct source when the argument decides it.
 ///
-/// MEASURED, on the first cut of [`carrier_from_declared_slot`], which lacked this gate:
+/// MEASURED, on the first cut of the declared-slot carrier source (a `requires` in scope
+/// read as the call's carrier, since retired: a call names its instance in its bracket),
+/// which lacked this gate:
 ///
 /// ```text
 /// operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)
@@ -664,8 +666,8 @@ pub(crate) fn supplier_tie_repair(
 /// call site, and reading the first as the second is what produced the wrong answer.
 ///
 /// WI-20260919-H20YY — EXTRACTED because a SECOND route asks it. The defaulted block's
-/// slot DEFERRAL (the `requires Spec[T = P]` half, over a type PARAMETER, which pins no
-/// static carrier for [`carrier_from_declared_slot`] to find) must answer the same
+/// slot DEFERRAL (a call over a type PARAMETER, which pins no static carrier) must
+/// answer the same
 /// question in the same words: it too would otherwise pre-empt value-directed dispatch on
 /// an abstract argument. Two copies of a gate whose failure mode is a silent wrong answer
 /// is exactly the drift this tree keeps paying for.
@@ -698,63 +700,26 @@ pub(super) fn call_names_no_carrier(
     !declares_a_carrier_param
 }
 
-/// WI-20260917-NR6FJ DEFECT B — THE DECLARED SLOT AS A CARRIER SOURCE, third beside the
-/// self-receiver and the carrier param, and read only when neither of those pinned one.
+/// THE CARRIER A RECEIVER-LESS CALL NAMES, third beside the self-receiver and the carrier
+/// param, and read only where the call has neither ([`call_names_no_carrier`]): what the
+/// call's own bracket, or the type expected of its result, bound the spec's carrier
+/// parameter to, where that is a type headed by a sort. `Desc.twice[T = Int64]()` is at
+/// `Int64` and `Desc.twice[T = Option[T = E]]()` at `Option`; the block then hands a default
+/// body the instance it runs at. Unread, the call fell through to a plain apply of the
+/// default with no instance at all, and a sibling member it called died "operation has no
+/// body".
 ///
-/// A `requires` is an IMPLICIT PARAMETER — `SupplySource`'s own reading, "the A
-/// dictionary is PASSED IN, an inbound slot the caller fills". So in
+/// A `requires` IN SCOPE IS NO SOURCE. It supplies the evidence for the instance a call
+/// names and says nothing of which instance that is: `viaop() requires Desc[T = Rich] =
+/// Desc.tag()` was read off the clause and ran at `Rich`, and now fixes no parameter of
+/// `Desc` and is refused, naming the bracket `Desc.tag[T = Rich]()`.
 ///
-/// ```text
-/// operation viaop() -> Int64 requires Desc[T = Rich] = Desc.tag()
-/// ```
-///
-/// the author has already said WHICH `Desc` dictionary is in scope, and `Desc.tag()`
-/// must read it. [`statically_pinned_carrier`] answers `None` here — `tag` is nullary,
-/// so there is no receiver and no carrier-param argument to pin from — and before this
-/// the defaulted block therefore declined and the SPEC'S OWN `= 1` ran in place of
-/// `Rich`'s `= 7`.
-///
-/// MEASURED, and the measurement is what makes this a defect rather than a policy: the
-/// only difference between answering 7 and answering 1 was whether the spec op happened
-/// to carry a default body. Body-less, the identical program dispatches through the slot
-/// and answers 7 ([`lookup_spec_op_dispatch`] admits it); defaulted, it folded. One
-/// declaration, two meanings, decided by something the caller cannot see.
-///
-/// A FALLBACK AND NOT A PRIORITY, and [`call_names_no_carrier`] is what enforces it. When
-/// the call has ANY carrier source of its own — a self-receiver or a carrier-param
-/// argument — this declines outright, whether or not that source pinned a carrier
-/// statically. For `describe(x: T)` called at a `Plain` inside an operation whose slot
-/// names `Rich`, the value being described is the carrier, and when its type is abstract
-/// the carrier is eval's to read at run time. So this widens the block strictly into
-/// ground where NO call-site carrier exists at all; no call that pins today, and no call
-/// that eval pins tomorrow, changes its answer.
-///
-/// TWO SLOTS THAT DISAGREE PIN NOTHING. `requires Desc[T = Rich], Desc[T = Other]`
-/// leaves the block where it was (running the default) rather than taking the first
-/// written: picking by chain order would be exactly the silent route-order choice the
-/// surrounding refusals exist to prevent (WI-1010). It is `None` and not a refusal
-/// because this function's contract is "which carrier, if any" — the arbitration a tie
-/// deserves belongs to [`arbitrate_defaulted_supplier_tie`] below, which sees the
-/// suppliers. No corpus program writes two such slots.
-///
-/// THE BINDING FILTER IS [`provision_binding_at_param`]'s and is load-bearing: it admits
-/// only a SORT-like base, so `requires Desc[T = U]` over a type PARAMETER pins nothing
-/// here — there IS no static carrier to name, since which provider `U` stands for is
-/// settled per call.
-///
-/// WI-20260919-H20YY — AND THAT HALF IS NOT THIS FUNCTION'S TO ANSWER, where this
-/// paragraph used to claim it "already works … through the SLD bridge". MEASURED FALSE:
-/// `tagOfP[P](x: P) requires TypeTerm[T = P] = TypeTerm.valueOf()` over a `Box` that
-/// OVERRIDES the defaulted `valueOf` ran the SPEC'S DEFAULT and answered `Box(V: Boom)`
-/// where the override says `Option(T: Boom)` — silently, because a carrier this declines
-/// to pin left the defaulted block with no route at all and the call became a plain apply
-/// of the default. Nothing consulted the dictionary. The parametric half is served beside
-/// this one, by the slot DEFERRAL in the WI-444 block ([`defer_defaulted_call_to_slot`]):
-/// over a type parameter the answer is not a carrier but the frame's slot at run time,
-/// which is the dictionary-passing reading 058 gives a spec op.
-pub(super) fn carrier_from_declared_slot(
-    kb: &KnowledgeBase,
-    env: &TypingEnv,
+/// A TYPE PARAMETER IS NOT A CARRIER ([`genuine_concrete_sort`]): over `Desc.tag[T = P]()`
+/// which provider `P` stands for is settled per call, and the slot deferral
+/// ([`defer_defaulted_call_to_slot`]) serves it.
+pub(super) fn carrier_the_call_binds(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
     spec_sort: Symbol,
     self_receiver: &ReceiverCarrier,
     // The carrier param the CALL SITE classified, not the spec's own — see
@@ -772,72 +737,21 @@ pub(super) fn carrier_from_declared_slot(
         return None;
     }
     let canon_spec = kb.canonical_sort_sym(spec_sort);
-    // The enclosing OPERATION's chain — the sort's slots then its own (WI-822 LEG 1) —
-    // because an operation body DOES inherit its sort's `requires`. (A rule body does
-    // not; that is `check_rule_body_requirements`' documented rule and 060 §8.9 row I1,
-    // deliberately untouched here.)
-    //
-    // CHEAPEST GATE FIRST, which is the typer's habit and here it is load-bearing for
-    // cost: this runs on every defaulted-spec-op call whose arguments pinned nothing, and
-    // the enclosing chain is EMPTY for almost all of them. A symbol compare over an empty
-    // slice leaves immediately; `spec_carrier_param_or_sole` below walks the spec's
-    // operations and must not be paid by a call with no slot at all. The surrounding
-    // block already reaches `type_params_of_sort` four times per call (see the WI-1042
-    // note at its head) — this must not be a fifth for the common case.
-    let entries = env.enclosing_frame_chain().entries();
-    if !entries
-        .iter()
-        .any(|e| kb.canonical_sort_sym(e.required_sort) == canon_spec)
-    {
-        return None;
-    }
-    // WI-1102's two-rung ladder, not `spec_carrier_param` alone: a NULLARY spec op is
-    // precisely the shape with no self-receiver to read the carrier off, and it is also
-    // the shape this function exists for. WI-20260916-8WRJC took the same rung for the
-    // same reason one lookup over.
-    let spec_carrier_param = spec_carrier_param_or_sole(kb, canon_spec)?;
-    let mut found: Option<Symbol> = None;
-    for entry in entries {
-        if kb.canonical_sort_sym(entry.required_sort) != canon_spec {
-            continue;
-        }
-        let Some((_, base)) = provision_binding_at_param(kb, spec_carrier_param, &entry.spec)
-        else {
-            continue;
-        };
-        // WI-20260919-H20YY — A TYPE PARAMETER IS NOT A CARRIER, and the shared filter
-        // above does not say so. [`provision_binding_at_param`] admits any base of
-        // `SymbolKind::Sort`, and a type parameter IS one: it is DECLARED `sort T = ?`,
-        // so `requires TypeTerm[T = P]` pinned `P` itself as the carrier sort. Nothing
-        // downstream then matched — `carrier_override_suppliers` finds no supplier at a
-        // parameter — so the block ran the spec's DEFAULT body and a provider's override
-        // was never reached. MEASURED: `tagOfP(box(…))` answered `Box(V: Boom)` where
-        // `Box`'s override says `Option(T: Boom)`.
-        //
-        // This restores what this function's own doc always claimed ("`requires Desc[T =
-        // U]` over a type PARAMETER pins nothing here"); the claim was true of the
-        // intent and false of the code. [`genuine_concrete_sort`] is the predicate that
-        // means it — "not a sort-type-param, and a name that really plays the sort role"
-        // — and it is the same question its two existing readers ask: *may I treat this
-        // as a carrier now*.
-        //
-        // `return None` AND NOT `continue`, so a parametric slot cannot be passed over in
-        // favour of a concrete sibling: `requires Desc[T = Rich], Desc[T = U]` must pin
-        // nothing, exactly as the disagreement clause above requires, rather than
-        // silently taking the one that happens to be written concretely. Over a
-        // parameter there is no static carrier to find, and the honest answer for the
-        // whole question is "not statically pinned" — which is what hands the call to the
-        // slot deferral ([`defer_defaulted_call_to_slot`]), where it belongs.
-        let Some(base) = genuine_concrete_sort(kb, base) else {
-            return None;
-        };
-        let base = kb.canonical_sort_sym(base);
-        match found {
-            Some(prev) if prev != base => return None,
-            _ => found = Some(base),
-        }
-    }
-    found.map(GoalCarrier::bare)
+    // A SORT NOTHING PROVIDES has no carrier to dispatch to: its own operation runs, at the
+    // instance the bracket names (`User.via[T = String](…)` over a `sort User { sort T = ? }`
+    // with operations of its own). Read as a carrier, the bracket's `String` was asked for an
+    // instance of `User` and refused.
+    provides_rows_of_spec(kb, canon_spec).next()?;
+    // WI-1102's two-rung ladder: a NULLARY spec op has no receiver to read the carrier off.
+    let carrier_param = spec_carrier_param_or_sole(kb, canon_spec)?;
+    let goal = sort_goal_from_subst(kb, subst, canon_spec, None);
+    let bound = goal_binding_value(kb, &goal, carrier_param)?;
+    let base = match type_head(kb, bound) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
+        _ => return None,
+    };
+    let base = genuine_concrete_sort(kb, base)?;
+    (!carrier_is_abstract_spec(kb, base)).then(|| GoalCarrier::bare(kb.canonical_sort_sym(base)))
 }
 
 /// WI-1027 — the carrier a spec-op call pins STATICALLY, whichever of the two receiver

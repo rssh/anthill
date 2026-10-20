@@ -144,13 +144,13 @@ namespace test.r541x
     entity shold(e: E)
     requires TypeValue[T = E]
     requires TypeTerm[T = E]
-    operation f() -> Type = TypeTerm.valueOf()
+    operation f() -> Type = TypeTerm.valueOf[T = E]()
   end
 
   operation tagOfP[P](x: P) -> Type requires TypeValue[T = P], TypeTerm[T = P] =
-    TypeTerm.valueOf()
+    TypeTerm.valueOf[T = P]()
   operation outer[Q](y: Q) -> Type requires TypeValue[T = Q], TypeTerm[T = Q] = tagOfP(y)
-  operation tagOfB[P](x: P) -> Type requires TypeTermB[T = P] = TypeTermB.valueOfB()
+  operation tagOfB[P](x: P) -> Type requires TypeTermB[T = P] = TypeTermB.valueOfB[T = P]()
 
   operation g[P](x: P) -> Type requires TypeValue[T = P] = Err2.tagOf(x)
   operation g2[Q](y: Q) -> Type requires TypeValue[T = Q] = g(y)
@@ -286,41 +286,45 @@ fn a_witnesss_own_param_answers_through_its_instance() {
 
 // ── (D) ──────────────────────────────────────────────────────────────────────────────
 
-/// TWO CLAUSES OVER ONE SPEC, NOW REFUSED AT LOAD — WI-20260919-N31XX's lowering.
+/// TWO CLAUSES OVER ONE SPEC: THE CALL NAMES WHICH, OR IS REFUSED.
 ///
 /// `twoReq[P, Q] requires TypeTerm[T = P], TypeTerm[T = Q]` calling `TypeTerm.valueOf()`
-/// names no carrier, so nothing picks which clause the call runs under. Before 065 this
-/// LOADED and the body's read of `T` was a located run-time fault
-/// (`EvalError::UnboundTypeParam` naming `TypeTerm.T`), which is what this row used to
-/// assert. Now `TypeTerm` declares `requires TypeValue[T = T]` for its member to read
-/// `T`, and building that evidence at this call needs a `T` the call leaves
-/// unconstrained — so the program is refused at LOAD, naming the call.
-///
-/// THAT IS THE PROPOSAL WORKING, not a regression: 065's opening claim is that it makes
-/// the unreachable cases UNWRITABLE rather than merely loud. The ambiguity was always
-/// there; it is now reported where the author can act on it instead of when the body runs.
+/// names no instance, and a clause in scope does not stand in for one (user, 2026-10-17):
+/// the call is refused at load, advising the bracket. Before 065 it loaded and the read of
+/// `T` was a run-time fault; under 065 it was refused for the `TypeValue` evidence no clause
+/// pinned. With the bracket written, `TypeTerm.valueOf[T = Q]()`, the call runs at `Q`'s
+/// instance and answers `Boom`.
 ///
 /// ITS OWN FIXTURE, for the reason [`an_ungrounded_receiver_is_now_refused_at_load`]
 /// gives: a load refusal is fatal to the whole file.
 #[test]
 fn two_clauses_over_one_spec_are_refused_at_load() {
-    let src = SRC.replace(
-        "  operation tagOfB[P]",
-        "  operation twoReq[P, Q](x: P, y: Q) -> Type\n    requires TypeValue[T = P], \
-         TypeValue[T = Q], TypeTerm[T = P], TypeTerm[T = Q] =\n    TypeTerm.valueOf()\n\n\
-           operation d1() -> Type = twoReq(boom(\"x\"), boom(\"y\"))\n\n  operation tagOfB[P]",
-    );
-    assert_ne!(src, SRC, "the anchor must still be in SRC");
-    let errs = match crate::common::try_load_kb_with(&src) {
-        Ok(_) => panic!("two clauses over one spec must not load: nothing picks one"),
-        Err(e) => e,
+    let with_call = |call: &str| {
+        SRC.replace(
+            "  operation tagOfB[P]",
+            &format!(
+                "  operation twoReq[P, Q](x: P, y: Q) -> Type\n    requires TypeValue[T = P], \
+                 TypeValue[T = Q], TypeTerm[T = P], TypeTerm[T = Q] =\n    {call}\n\n  \
+                 operation d1() -> Type = twoReq(boom(\"x\"), boom(\"y\"))\n\n  operation tagOfB[P]"
+            ),
+        )
     };
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
-            && e.contains("test.r541x.TypeTerm.T")
-            && e.contains("unconstrained at this call site")),
-        "the refusal must name the evidence and the parameter no clause pins; got {errs:?}"
+    let src = with_call("TypeTerm.valueOf()");
+    assert_ne!(src, SRC, "the anchor must still be in SRC");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &[
+            "a call of `test.r541x.TypeTerm.valueOf` that names no instance of `test.r541x.TypeTerm`",
+            "`test.r541x.TypeTerm.valueOf[T = …]()`",
+        ],
+        "two clauses and a call that names neither",
     );
+    let mut i = interp_for(&with_call("TypeTerm.valueOf[T = Q]()"));
+    let v = i.call("test.r541x.d1", &[]).expect("the bracketed call runs");
+    let Value::Term { id, .. } = v else {
+        panic!("a Type term, got {v:?}")
+    };
+    assert_eq!(TermPrinter::new(i.kb()).print_term(id), "Boom");
 }
 
 /// (D)'s CHANNEL half, NOW REFUSED AT LOAD — WI-20260919-N31XX (proposal 065).

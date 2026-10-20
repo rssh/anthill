@@ -465,6 +465,18 @@ mod wi_9wvt7_spliced_literal_test;
 #[path = "include/wi_9wvt7_bridged_scoped_kb_test.rs"]
 mod wi_9wvt7_bridged_scoped_kb_test;
 
+#[path = "include/wi_9wvt7_review5_test.rs"]
+mod wi_9wvt7_review5_test;
+#[path = "include/wi_9wvt7_review6_test.rs"]
+mod wi_9wvt7_review6_test;
+#[path = "include/wi_9wvt7_review7_test.rs"]
+mod wi_9wvt7_review7_test;
+#[path = "include/wi_9wvt7_qualified_constructor_test.rs"]
+mod wi_9wvt7_qualified_constructor_test;
+#[path = "include/wi_9wvt7_type_value_bracket_test.rs"]
+mod wi_9wvt7_type_value_bracket_test;
+#[path = "include/wi_9wvt7_value_position_alias_test.rs"]
+mod wi_9wvt7_value_position_alias_test;
 #[path = "include/wi_9wvt7_clock_handler_test.rs"]
 mod wi_9wvt7_clock_handler_test;
 

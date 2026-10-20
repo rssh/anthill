@@ -1101,9 +1101,28 @@ fn parts_verdict<A: TermView, B: TermView>(
             let Some(pairs) = arrow_part_pairs(kb, a, b) else {
                 return Some(SigmaVerdict::Refutes);
             };
+            // EACH PART IS MET AS ITSELF, the result too (§5.2: two arrows are one binding
+            // where their parameter lists relate as two lists do and their results are the
+            // same; a result below is a provision's to answer, not a binding's). A leaf pair
+            // matched through the subtype relation in either direction let `requires
+            // Runner[F = (Animal) -> Int64]` cover a call at a callback reading a `Dog`'s
+            // field, and `requires Runner[F = (Int64) -> Dog]` one returning any `Animal`:
+            // both loaded and died (MEASURED). A ground part on both sides is one type.
             let mut whole = SigmaVerdict::Precise;
             for (part_a, part_b) in &pairs.parts {
-                whole = whole.and(|| part_verdict(kb, sigma, part_a, part_b));
+                whole = whole.and(|| {
+                    let verdict = part_verdict(kb, sigma, part_a, part_b);
+                    let both_ground = type_is_ground(kb, part_a) && type_is_ground(kb, part_b);
+                    if verdict != SigmaVerdict::Refutes
+                        && both_ground
+                        && !(dispatch_values_match(kb, part_a, part_b)
+                            && dispatch_values_match(kb, part_b, part_a))
+                    {
+                        SigmaVerdict::Refutes
+                    } else {
+                        verdict
+                    }
+                });
             }
             let (row_a, row_b) = &pairs.rows;
             Some(whole.and(|| rows_verdict(kb, sigma, row_a, row_b)))

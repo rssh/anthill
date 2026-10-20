@@ -230,11 +230,16 @@ fn missing_requires_format_names_spec_and_param() {
     let t_sym = kb.intern("T");
     let mut abstract_params = smallvec::SmallVec::<[anthill_core::intern::Symbol; 2]>::new();
     abstract_params.push(t_sym);
+    let caller = kb.intern("test.wi325.caller");
     let err = TypeError::MissingRequiresForSpecOp {
         span: None,
         spec_op_sym: op_sym,
         spec_sort_sym: spec_sym,
         abstract_params,
+        site: anthill_core::kb::typing::RequiresSite::Operation {
+            op: caller,
+            sort: None,
+        },
     };
     let formatted = err.format(&kb);
     assert!(

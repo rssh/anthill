@@ -287,10 +287,12 @@ pub fn default_modify_handler() -> EffectHandler {
             };
         }
 
-        // Fallback: one slot per constructor, for a resource a constructor names. One built
-        // with fields would share that slot with every other value of its constructor —
+        // Fallback: one slot per constructor, for a resource a constructor names; a value no
+        // constructor names (a tuple, a function value) is no resource at all. One built with
+        // fields would share that slot with every other value of its constructor —
         // `box(id: 1)` and `box(id: 2)` one place, where two places are two resources — so
         // it is refused until the handler keeps the values of one constructor apart (WI-200).
+        let key = resource_key(interp, target)?;
         if matches!(
             target.head(interp.kb()),
             ViewHead::Functor { pos_arity, named_arity, .. } if pos_arity + named_arity > 0
@@ -299,7 +301,6 @@ pub fn default_modify_handler() -> EffectHandler {
                 resource: super::render_raised_payload(interp.kb(), target),
             });
         }
-        let key = resource_key(interp, Some(target))?;
         match op_name {
             "get" => cells
                 .borrow()
@@ -330,12 +331,7 @@ pub fn default_modify_handler() -> EffectHandler {
     })
 }
 
-fn resource_key(interp: &Interpreter, arg: Option<&Value>) -> Result<Symbol, EvalError> {
-    let v = arg.ok_or_else(|| EvalError::ArityMismatch {
-        op: "Modify",
-        expected: 1,
-        got: 0,
-    })?;
+fn resource_key(interp: &Interpreter, v: &Value) -> Result<Symbol, EvalError> {
     crate::eval::eval::value_functor(interp.kb(), v).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Entity, Cell, or nullary Term (resource identifier)",
         got: v.type_name().to_string(),
@@ -655,10 +651,7 @@ impl Interpreter {
         // then, rather than being silently dropped.
         match action? {
             HandlerAction::Pure(v) => Ok(v),
-            HandlerAction::Throw(payload) => Err(EvalError::Raised {
-                payload,
-                origin: super::RaiseOrigin::Program,
-            }),
+            HandlerAction::Throw(payload) => Err(EvalError::Raised { payload }),
             // Fail / Choice / Suspend manipulate the continuation and need
             // the Branch / suspend-resume substrate (WI-075). Until then,
             // hitting one is a runtime-internal not-implemented state — fail
@@ -715,10 +708,7 @@ impl Interpreter {
                 )),
             }
         } else {
-            EvalError::Raised {
-                payload,
-                origin: super::RaiseOrigin::Program,
-            }
+            EvalError::Raised { payload }
         }
     }
 
@@ -815,7 +805,7 @@ impl Interpreter {
             Err(e) => return e,
         };
         self.raise_error_payload(
-            "anthill.prelude.RelationFloundered.relation_floundered",
+            crate::kb::RuntimeAccount::RelationFloundered.qualified_name(),
             "relation_floundered",
             vec![("goals", goals)],
         )
@@ -841,7 +831,7 @@ impl Interpreter {
             Err(e) => return e,
         };
         self.raise_error_payload(
-            "anthill.reflect.LoadFailed.load_failed",
+            crate::kb::RuntimeAccount::LoadFailed.qualified_name(),
             "load_failed",
             vec![("diagnostics", list)],
         )
@@ -910,7 +900,7 @@ impl Interpreter {
             },
         };
         self.raise_error_payload(
-            "anthill.reflect.ResolveStreamFailure.evaluation_failure",
+            crate::kb::RuntimeAccount::EvaluationFailure.qualified_name(),
             "evaluation_failure",
             vec![("goals", goals), ("reason", Value::Str(reason)), ("at", at)],
         )

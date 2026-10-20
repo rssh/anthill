@@ -45,7 +45,6 @@
 use anthill_core::eval::{BridgeDisposition, EvalError, Value};
 use anthill_core::kb::extent::ExtentReadError;
 use anthill_core::kb::proof_verify::{verify_proofs, ProofVerdict};
-use anthill_core::kb::resolve::ResolveConfig;
 
 /// The fixture the ticket was measured on. `match n case k | k > 0 -> k` is
 /// GUARD-EXHAUSTIBLE — it loads clean (a `sort` scrutinee's arms are not checked for
@@ -63,13 +62,7 @@ namespace bru.guard
 end
 "#;
 
-fn resolve(src: &str, pattern: &str) -> (Vec<anthill_core::kb::resolve::Solution>, Vec<String>) {
-    let mut kb = crate::common::load_kb_with(src);
-    let goal = crate::common::query_pattern_term(&mut kb, pattern);
-    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    let msgs = stats.errors.iter().map(|e| e.message.clone()).collect();
-    (sols, msgs)
-}
+use crate::common::resolve_with_messages as resolve;
 
 // ── THE ACCEPTANCE ────────────────────────────────────────────────────────────
 
@@ -447,6 +440,12 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // of the callee. Testing the CHANNEL instead of the CAUSE sweeps them in, which is
     // what the reverted first attempt did.
     //
+    // THE CAUSE IS THE PAYLOAD'S CONSTRUCTOR, because no program constructs one of the
+    // runtime's accounts — a construction of one is refused at load (user, 2026-10-17;
+    // `wi_9wvt7_review6_test` drives the refusal) — so the constructor says who raised it
+    // wherever it is raised again. Read through the carrier-neutral head: a payload riding
+    // as a TERM answers as the entity does (the reader before matched `Value::Entity` only).
+    //
     // DRIVEN AT THE PREDICATE, not through a fixture: reaching either raise from a
     // bridged rule body needs a program that is itself about something else, and a row
     // whose fixture stops loading for an unrelated reason would go quietly green.
@@ -455,8 +454,8 @@ fn the_raise_partition_is_by_cause_not_by_channel() {
     // predicate over a genuine raise, so the two together say the partition is on the
     // right seam rather than that the channel was left off. Back out the cause read
     // (`matches!(e, EvalError::Raised { .. }) => Fault`) and THIS row fails while that
-    // one keeps passing.
-    let kb = crate::common::load_kb_with(
+    // one keeps passing; read the entity carrier alone and the term rows fail.
+    let mut kb = crate::common::load_kb_with(
         r#"
 namespace bru.part
   import anthill.prelude.{Int64}
@@ -464,34 +463,68 @@ namespace bru.part
 end
 "#,
     );
-    let raise_of = |qname: &str| {
-        let functor = kb
-            .try_resolve_symbol(qname)
-            .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"));
-        EvalError::Raised {
-            payload: Value::Entity {
-                functor,
-                pos: Vec::new().into(),
-                named: Vec::new().into(),
-            },
-            origin: anthill_core::eval::RaiseOrigin::Program,
-        }
+    let functor_of = |kb: &anthill_core::kb::KnowledgeBase, qname: &str| {
+        kb.try_resolve_symbol(qname)
+            .unwrap_or_else(|| panic!("`{qname}` must be in the loaded prelude"))
     };
-    for qname in [
-        "anthill.prelude.RelationFloundered.relation_floundered",
-        "anthill.reflect.LoadFailed.load_failed",
-    ] {
-        assert_eq!(
-            raise_of(qname).bridge_disposition(&kb),
+    // Each payload as the runtime raises it: an application of the constructor, its first
+    // field written (the reader asks the constructor and that it is applied, not the field).
+    let nil = functor_of(&kb, "anthill.prelude.List.nil");
+    let nil_term = kb.make_name_term_from_sym(nil);
+    let entity = |functor, field| EvalError::Raised {
+        payload: Value::Entity {
+            functor,
+            pos: Vec::new().into(),
+            named: vec![(
+                field,
+                Value::Entity {
+                    functor: nil,
+                    pos: Vec::new().into(),
+                    named: Vec::new().into(),
+                },
+            )]
+            .into(),
+        },
+    };
+    for (qname, field, disposition) in [
+        (
+            "anthill.prelude.RelationFloundered.relation_floundered",
+            "goals",
             BridgeDisposition::Schedule,
-            "`{qname}` is not a domain failure of the callee — it must reach the bridge \
-             as Schedule, so the goal delays with nothing said"
+        ),
+        ("anthill.reflect.LoadFailed.load_failed", "diagnostics", BridgeDisposition::Schedule),
+        (
+            "anthill.reflect.ResolveStreamFailure.evaluation_failure",
+            "goals",
+            BridgeDisposition::Fault,
+        ),
+        ("anthill.prelude.MatchFailed.match_failed", "scrutinee", BridgeDisposition::Fault),
+    ] {
+        let functor = functor_of(&kb, qname);
+        let field = kb.intern(field);
+        assert_eq!(
+            entity(functor, field).bridge_disposition(&kb),
+            disposition,
+            "`{qname}` on the entity carrier: a drain that did not decide and a load's verdict \
+             are no failure of the callee, and every other payload is a fault"
+        );
+        let term = kb.alloc(anthill_core::kb::term::Term::Fn {
+            functor,
+            pos_args: Default::default(),
+            named_args: smallvec::smallvec![(field, nil_term)],
+        });
+        assert_eq!(
+            EvalError::Raised { payload: Value::term(term) }.bridge_disposition(&kb),
+            disposition,
+            "`{qname}` on the term carrier answers as on the entity"
+        );
+        // A BARE REFERENCE TO THE CONSTRUCTOR is no account — a symbol a program holds, a
+        // clause's bare name — and raised it is the program's own payload, a fault.
+        let bare = kb.make_name_term_from_sym(functor);
+        assert_eq!(
+            EvalError::Raised { payload: Value::term(bare) }.bridge_disposition(&kb),
+            BridgeDisposition::Fault,
+            "`{qname}` named bare is the program's payload"
         );
     }
-    assert_eq!(
-        raise_of("anthill.prelude.MatchFailed.match_failed").bridge_disposition(&kb),
-        BridgeDisposition::Fault,
-        "and every OTHER payload is a fault — a host raise rides a row it never appears \
-         in, which is exactly the case the acceptance measures"
-    );
 }

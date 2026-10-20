@@ -5321,6 +5321,28 @@ fn reflect_cons_to_vec<T>(
     Ok(out)
 }
 
+/// A reflect builder asked to build an application of one of the runtime's accounts
+/// ([`crate::kb::RuntimeAccount`]) refuses: the bridge reads a raise's cause off its
+/// payload's constructor, so a program that built one could pass its own raise off as the
+/// runtime's account of a search that did not decide.
+fn refuse_runtime_account(
+    interp: &Interpreter,
+    builder: &str,
+    functor: crate::intern::Symbol,
+) -> Result<(), EvalError> {
+    if interp.kb.runtime_account_of(functor).is_none() {
+        return Ok(());
+    }
+    Err(EvalError::TypeMismatch {
+        expected: "a functor a program may construct",
+        got: format!(
+            "`{}` (passed to `{builder}`), {}",
+            interp.kb.qualified_name_of(functor),
+            crate::kb::RuntimeAccount::NOT_CONSTRUCTED
+        ),
+    })
+}
+
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
 /// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
 /// is resolved through [`resolve_host_name`]. Companion to `fresh_var`: anthill
@@ -5337,6 +5359,7 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     let [name_arg, args_arg] = expect_args::<2>("make_fn", args)?;
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_fn", &name)?;
+    refuse_runtime_account(interp, "make_fn", functor)?;
 
     let elems: Vec<Value> = reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", Ok)?;
     let mut pos_vec: Vec<TermId> = Vec::with_capacity(elems.len());
@@ -5641,6 +5664,7 @@ fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result
             )))
         }
     };
+    refuse_runtime_account(interp, "replace_named_arg", functor)?;
     for entry in named_args.iter_mut() {
         if interp.kb.local_name_of(entry.0) == name {
             entry.1 = new_val_tid;
@@ -6056,8 +6080,9 @@ fn type_value_of_self(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let dict = interp.builtin_dispatch_dict.clone().ok_or_else(|| {
         EvalError::Internal(
             "TypeValue.type_value: no dispatching dictionary. The call reached this builtin \
-             without going through a requirement slot, so nothing names the type it is \
-             about — `type_value()` is nullary and the dictionary is its only evidence."
+             without its instance's dictionary, so nothing names the type it is about — \
+             `type_value[X]()` takes no argument, and the dictionary of `TypeValue[T = X]` \
+             is its answer."
                 .into(),
         )
     })?;
@@ -6088,10 +6113,10 @@ fn type_of_dictionary(
         // because `TermPrinter` renders both as `Int64`.
         return Ok(interp.kb_mut().make_sort_ref(head));
     }
-    // The head's own type parameters, in DECLARATION order — the order
-    // `type_value_derive` emits the conditions in, so condition `i` is the evidence for
-    // parameter `i`.
-    let params: Vec<crate::intern::Symbol> = interp.kb().type_param_syms_of(head).to_vec();
+    // The head's own type parameters, by their declared names in DECLARATION order — the
+    // order `type_value_derive` emits the conditions in, so condition `i` is the evidence
+    // for parameter `i`.
+    let params: Vec<String> = interp.kb().type_params_of_sort(head);
     // THE CONDITIONS DO NOT START AT SUB 0. A provision's dictionary chain is the
     // carrier's OWN sort-level `requires` first and the provision's conditions after
     // (`provider_dict_chain`), so a carrier that writes `requires` — `Map requires Eq[T =
@@ -6108,8 +6133,9 @@ fn type_of_dictionary(
             params.len(),
         )));
     }
-    let mut named: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> = Vec::with_capacity(arity);
-    for (i, p) in params.into_iter().enumerate() {
+    let mut bindings: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> =
+        Vec::with_capacity(params.len());
+    for (i, name) in params.iter().enumerate() {
         // Total by construction: `Dictionary::from_value` validated the whole tree, and
         // `i < arity`. A `None` here would be that invariant broken, so it is loud.
         let sub = dict.sub(base + i).ok_or_else(|| {
@@ -6117,14 +6143,17 @@ fn type_of_dictionary(
                 "type_value_of_self: dictionary sub {i} missing below arity {arity}"
             ))
         })?;
-        named.push((p, type_of_dictionary(interp, &sub)?));
+        let ty = type_of_dictionary(interp, &sub)?;
+        bindings.push((interp.kb_mut().intern(name), ty));
     }
+    // BUILT AS A TYPE WRITTEN IN VALUE POSITION IS (`Interpreter::finish_sort_type`): each
+    // argument keyed by its parameter's declared name, through the one canonical builder,
+    // which also orders the arguments. Assembled by hand and keyed by the parameter's
+    // qualified symbol, `type_value[T = Option[T = E]]()` at `E = Int64` was a term that
+    // printed `Option(T: Int64)` and was not equal to the written `Option[T = Int64]`.
     let kb = interp.kb_mut();
-    Ok(kb.alloc(crate::kb::term::Term::Fn {
-        functor: head,
-        pos_args: smallvec::SmallVec::new(),
-        named_args: named.into_iter().collect(),
-    }))
+    let base_ref = kb.make_sort_ref(head);
+    Ok(kb.make_parameterized_type(base_ref, &bindings))
 }
 
 /// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.

@@ -1151,7 +1151,7 @@ pub(super) fn member_param_spelling(kb: &KnowledgeBase, name: Symbol) -> Option<
 /// One sentence for three refusals. Two of them would advise a clause over the
 /// parameter, and a clause written over the member spelling is not read as covering it
 /// (MEASURED: `requires Tag[T = Tagger.C]` on `f(x: Tagger.C)` is refused as the missing
-/// clause is; WI-20261006-P962X) — `CallerRigidCarrier::repair` and the no-route account
+/// clause is; WI-20261006-P962X) — `DeclareOn::repair` and the no-route account
 /// of a sort's requirement, whose member branches go once that lands. The third would
 /// advise a slot declared on the parameter, which a member has no binder for whatever a
 /// clause covers (`UntiedForward::render`).

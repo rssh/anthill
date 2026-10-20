@@ -117,10 +117,12 @@ end
 fn two_ambient_slots_are_distinct_places() {
     let src = r#"
 namespace test.wi4gbqv.two_slots
-  import anthill.prelude.{Int64, Unit, Modify}
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
   import ModifyRuntime.{set}
 
+  -- A place `ModifyRuntime.set` writes is one of a modifiable type.
   sort Cells
+    provides Modifiable[T = Self]
     entity a
     entity b
   end

@@ -521,6 +521,11 @@ fn provision_requirement_errors(
     let rows_read = rows.len();
     for row in rows {
         let spec_base = row.spec_base;
+        // A spec whose contract asks for itself at a larger type is refused where it is
+        // declared, and its contract is asked of no provision: no resolution of it ends.
+        if growing_self_requirement(kb, spec_base).is_some() {
+            continue;
+        }
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, Value); 2]> = SmallVec::new();
         // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
@@ -842,7 +847,11 @@ fn requirement_failure_of(
         ) => RequirementFailure::Below {
             provider: kb.qualified_name_of(*provider).to_string(),
             goal: goal_text.clone(),
-            detail: describe_resolution_failure(kb, failure),
+            // The goal beneath is named above, so a `NoMatch`'s own account is the detail.
+            detail: match failure {
+                ResolutionResult::NoMatch { hint, .. } => hint.clone(),
+                other => describe_resolution_failure(kb, other),
+            },
         },
         // The requirement named as the provision's own bindings wrote it: one written
         // through a type alias is led by the alias.
@@ -963,18 +972,7 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
 /// it answers `false` and stays the structural-reading gap WI-644's enumeration leaves
 /// open (`check_use_site_requires_eq`'s non-scope item 2, and §8.3).
 fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: &Value) -> bool {
-    // The spec's own carrier parameter (`NonEq[T = …]`) — read off the declaration rather
-    // than spelled, the same way `eq_derive::spec_view` builds the views these rows are
-    // recorded under. The two must agree or the goal matches no provision.
-    let param = {
-        let name = kb
-            .type_params_of_sort(noneq_sym)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "T".to_string());
-        kb.intern(&name)
-    };
-    spec_resolves_at_bindings(kb, noneq_sym, smallvec::smallvec![(param, ty.clone())])
+    matches!(resolve_spec_at(kb, noneq_sym, ty), Some(ResolutionResult::Resolved(_)))
 }
 
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a

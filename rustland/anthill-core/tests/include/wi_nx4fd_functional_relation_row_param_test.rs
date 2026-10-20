@@ -499,7 +499,7 @@ namespace nx4fd_disc
     sort GM = ?
     sort GN = ?
     requires Marked[M = GM, N = GN]
-    operation probe(x: GM) -> Int64 = Marked.code()
+    operation probe(x: GM) -> Int64 = Marked.code[M = GM, N = GN]()
   end
 
   fact mark(1)

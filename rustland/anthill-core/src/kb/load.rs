@@ -510,7 +510,7 @@ pub enum ClauseSlots {
 }
 
 impl ClauseSlots {
-    /// The slot of one clause, if it sits at either.
+    /// The slots a set of clauses sits at: some at arity + 1, some at the own arity.
     fn of(at_arity_plus_one: bool, at_own_arity: bool) -> Option<Self> {
         match (at_arity_plus_one, at_own_arity) {
             (true, true) => Some(ClauseSlots::Both),
@@ -520,8 +520,13 @@ impl ClauseSlots {
         }
     }
 
-    fn join(self, other: Self) -> Self {
-        if self == other { self } else { ClauseSlots::Both }
+    /// Where the clauses sit, as both refusals say it.
+    fn phrase(self) -> &'static str {
+        match self {
+            ClauseSlots::Both => "at its arity + 1 and, as it returns `Bool`, at its own arity",
+            ClauseSlots::OwnArity => "at its own arity, as it returns `Bool`",
+            ClauseSlots::ArityPlusOne => "at its arity + 1",
+        }
     }
 }
 
@@ -2219,6 +2224,15 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
+    /// One of the runtime's accounts ([`crate::kb::RuntimeAccount`]) written in a clause: a
+    /// fact, a rule head or a goal. A clause's term is a value wherever it binds a variable,
+    /// and a program does not construct the runtime's accounts — the bridge reads a raise's
+    /// cause off its payload's constructor (kernel-language.md §5.3).
+    RuntimeAccountInClause {
+        /// The constructor, qualified.
+        ctor: String,
+        span: Span,
+    },
     /// WI-797 / proposal 057 §"Mounts": a source-file `fact` or `rule` whose head
     /// functor is owned by a mounted [`ExtentSource`](crate::kb::extent) (`kb.extents`).
     /// The extent virtualizes that functor's reads through its store, so a resident
@@ -2866,6 +2880,7 @@ impl LoadError {
             | LoadError::PatternAnnotatedTwice { span }
             | LoadError::LetAnnotationOnNonPattern { span }
             | LoadError::BareArrowInLogicPosition { span, .. }
+            | LoadError::RuntimeAccountInClause { span, .. }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
             | LoadError::UnresolvedTypeName { span, .. }
@@ -3761,6 +3776,9 @@ impl LoadError {
                     loc.format_start(*span),
                     bare_arrow_logic_msg(position, unresolved)
                 )
+            }
+            LoadError::RuntimeAccountInClause { ctor, span } => {
+                format!("{}: {}", loc.format_start(*span), runtime_account_in_clause_msg(ctor))
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 format!("{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span), label_suffix(label))
@@ -5196,6 +5214,15 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::RuntimeAccountInClause { ctor, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    runtime_account_in_clause_msg(ctor),
+                    span.start,
+                    span.end
+                )
+            }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 write!(
                     f,
@@ -6376,6 +6403,7 @@ pub fn scan_definitions_with_sources(
             for item in &file.items {
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
+                    query_runtime_account_errors(kb, file, fact.term, global, &mut errors);
                 }
             }
         }
@@ -6384,6 +6412,46 @@ pub fn scan_definitions_with_sources(
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
     errors
+}
+
+/// A query pattern that writes an application of one of the runtime's accounts constructs
+/// one, as a clause that writes it does ([`LoadError::RuntimeAccountInClause`]): the
+/// pattern's terms are handed to what the goal calls, and a raise of one would be read as
+/// the runtime's account. Its functor is resolved as [`convert_query_term`] resolves it.
+fn query_runtime_account_errors(
+    kb: &mut KnowledgeBase,
+    file: &ParsedFile,
+    root: TermId,
+    scope: ScopeId,
+    errors: &mut Vec<LoadError>,
+) {
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = file.terms.get(id)
+        else {
+            continue;
+        };
+        stack.extend(pos_args.iter().copied());
+        stack.extend(named_args.iter().map(|(_, v)| *v));
+        if pos_args.is_empty() && named_args.is_empty() {
+            continue;
+        }
+        let name = file.symbols.local_name(*functor).to_string();
+        let resolved = resolve_query_name(kb, &name, scope);
+        if kb.runtime_account_of(resolved).is_some() {
+            errors.push(
+                LoadError::RuntimeAccountInClause {
+                    ctor: kb.qualified_name_of(resolved).to_string(),
+                    span: file.terms.span(id),
+                }
+                .located_in(file),
+            );
+        }
+    }
 }
 
 /// A query pattern's parse-only BRACKETS, refused before [`convert_query_term`] meets
@@ -8075,6 +8143,15 @@ fn subject_introduces<'a>(
     Ok(name)
 }
 
+/// The sentence of [`LoadError::RuntimeAccountInClause`], one owner for its two renderings.
+fn runtime_account_in_clause_msg(ctor: &str) -> String {
+    format!(
+        "`{ctor}` is an account the runtime gives of something it could not do, and a clause \
+         that writes it constructs one wherever it binds a variable: a program matches one in \
+         an operation's pattern and raises a caught one again, and does not construct one"
+    )
+}
+
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
 /// so cross-scope resolution hides it (kernel-language.md §8.6). `public` /
 /// unspecified is the visible default and records nothing.
@@ -8287,11 +8364,7 @@ fn body_and_clauses_message(
             Some(at) => format!(", declared at {at},"),
             None => String::new(),
         };
-        let slot = match slots {
-            ClauseSlots::Both => "at its arity + 1 and, as it returns `Bool`, at its own arity",
-            ClauseSlots::OwnArity => "at its own arity, as it returns `Bool`",
-            ClauseSlots::ArityPlusOne => "at its arity + 1",
-        };
+        let slot = slots.phrase();
         return format!(
             "operation '{op}'{declared} is implemented by {implemented_by}, and has {count} \
              hand-written clause{plural} {slot}: {rendered}. A clause there is a second \
@@ -8303,13 +8376,13 @@ fn body_and_clauses_message(
         );
     }
     format!(
-        "operation '{op}' has BOTH a body and {} hand-written clause{}: the body is \
+        "operation '{op}' has BOTH a body and {} hand-written clause{} {}: the body is \
          declared at {}, and {rendered}. One operation, ONE definition — a \
          clause under a bodied operation's functor, labelled or not (a label names the \
          clause, not what its head is about), is a second DEFINITION of it, not a \
          second view of it. They cannot both answer: design §3.3 gives the \
          clauses precedence, which SUPPRESSES the body's derived relational view — \
-         measured, the arity+1 goal stops answering a definite value and answers a \
+         measured, the goal there stops answering a definite value and answers a \
          residual instead, so the clauses take a working reading away rather than \
          adding one. Keep ONE. Either delete the clauses and let the body's derived \
          view serve the relational goal (WI-938), or drop the `=` body and let the \
@@ -8320,6 +8393,7 @@ fn body_and_clauses_message(
          what this refusal is about.",
         count,
         plural,
+        slots.phrase(),
         decl_site.as_deref().unwrap_or("<unknown>"),
     )
 }
@@ -16114,6 +16188,34 @@ fn load_phase_inner(
         refused_sorts: &refused_sorts,
         rules: loaded_rules.clone(),
     };
+    // A SPEC WHOSE CONTRACT ASKS FOR ITSELF AT A LARGER TYPE is refused where it is declared
+    // (user, 2026-10-17): no resolution of it ends (`typing::growing_self_requirement`), and a
+    // goal of it is answered by no provision, so the load does too.
+    for &sort in &all_sorts {
+        if let Some(requirement) = super::typing::growing_self_requirement(kb, sort) {
+            let spec = kb.qualified_name_of(sort).to_string();
+            // At the spec's declaration, as this load's scan recorded it.
+            let site = kb.decl_sites.iter().find(|d| d.sym == sort).map(|d| d.site);
+            let error = LoadError::TypeMismatch {
+                origin: None,
+                entity_name: spec.clone(),
+                field_name: "requires".to_string(),
+                expected_type: format!(
+                    "a contract that asks for `{spec}` at no larger a type than its own parameters"
+                ),
+                actual_type: format!(
+                    "{requirement}, which asks for `{spec}` again at a larger type: each answer \
+                     of it asks again at a larger still, so no resolution of it ends. Ask for it \
+                     at the spec's own parameters, or drop the requirement"
+                ),
+                span: site.map(|s| s.span),
+            };
+            all_errors.push(match site {
+                Some(site) => error.located_in_kb_source(kb, site.source),
+                None => error,
+            });
+        }
+    }
     all_errors.extend(super::typing::type_check_sorts(kb, loaded));
     mark!(&format!("type_check_sorts ({} sorts)", all_sorts.len()));
     // WI-231: the typer tagged each spec-op call site's occurrence
@@ -16125,8 +16227,8 @@ fn load_phase_inner(
     // tags (typer-detected abstract spec-op calls without a covering
     // `requires`); merged into the load-time error list.
     let req_errors = super::req_insertion::run(kb);
-    for err in req_errors {
-        all_errors.push(err.to_load_error(kb));
+    for (err, source) in req_errors {
+        all_errors.push(err.to_load_error(kb).located_in_kb_source(kb, source));
     }
     mark!("req_insertion::run");
     // WI-343: provider-side requires coverage. For each `fact Spec[X]`,
@@ -16405,6 +16507,7 @@ fn load_phase_inner(
     // before `resolve_instantiations`) because it reads the RULE index, and a rule
     // head only lands on the operation's functor once every name is resolved.
     all_errors.extend(check_operation_body_and_clauses(kb));
+    all_errors.extend(check_induction_axiom_names(kb));
     mark!("check_operation_body_and_clauses");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
@@ -20416,6 +20519,90 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
         .is_some_and(|s| kb.sort_sym_is_bool(s))
 }
 
+/// A sort's derived induction axiom (`<Sort>.induction(?P)`) owns its name. An operation
+/// under it would be one predicate with the axiom, whose clause then answers a rule-body goal
+/// at it in the operation's place: under `operation induction(c: Colour) -> Bool = true`,
+/// `Colour.induction(red)` in a rule body answered nothing while the call answered `true`
+/// (MEASURED, also with the operation added by a later load to a sort an earlier one
+/// declared). A hand-written rule `induction`, an equation's among them, joins the axiom's
+/// relation, which then answers through the axiom's clause what the rule never said. An
+/// entity of the name with fields takes every goal at it: `ProofMethod.induction(ok)` was
+/// read as the entity's and answered nothing, and refused as a field mismatch in a rule body.
+/// Any other declaration of the name (an entity without fields, a const, a nested sort) is no
+/// predicate and is left alone, and so are the facts about an entity of the name, which are
+/// its data.
+///
+/// By symbol index, not `HashSet` order: two runs over one corpus report identically.
+fn check_induction_axiom_names(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let mut axioms: Vec<Symbol> = kb.induction_axioms.iter().copied().collect();
+    axioms.sort_by_key(|s| s.index());
+    // An equation is filed under its connective, and one without `@[simp]` under no functor
+    // at all: its left-hand side names what it defines, read in one walk of the rules.
+    let mut equations: HashMap<Symbol, super::RuleId> = HashMap::new();
+    for rid in kb.live_rule_ids_iter() {
+        if !kb.has_equational_head(rid) || kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
+            continue;
+        }
+        let lhs = kb.rule_head_value(rid).pos_arg(kb, 0).map(|lhs| lhs.head(kb));
+        if let Some(ViewHead::Functor { functor: Some(f), .. }) = lhs {
+            let f = kb.canonical_sym(f);
+            if kb.induction_axioms.contains(&f) {
+                equations.entry(f).or_insert(rid);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for axiom in axioms {
+        let rule_site = |rid: super::RuleId| kb.rule_head_span(rid).map(|s| render_decl_site(kb, s));
+        let (what, site, why) = if kb.has_kind(axiom, SymbolKind::Operation) {
+            let site = kb
+                .op_decl_sites
+                .get(&axiom)
+                .and_then(|v| v.first())
+                .or_else(|| kb.functor_spans.get(&axiom))
+                .map(|s| render_decl_site(kb, *s));
+            ("an operation", site, ANSWERS_IN_ITS_PLACE)
+        } else if kb.has_kind(axiom, SymbolKind::Entity) {
+            if kb.entity_field_names(axiom).is_none_or(|fields| fields.is_empty()) {
+                continue;
+            }
+            let site = kb
+                .decl_sites
+                .iter()
+                .find(|d| kb.canonical_sym(d.sym) == axiom)
+                .map(|d| render_decl_site(kb, d.site));
+            (
+                "an entity with fields",
+                site,
+                "a goal at the name is read as the entity's, and no goal reaches the axiom",
+            )
+        } else if let Some(rid) = kb
+            .rules_by_functor_iter(axiom)
+            .find(|rid| kb.clause_origin(*rid) == crate::kb::ClauseOrigin::Source)
+            .or_else(|| equations.get(&axiom).copied())
+        {
+            ("a rule", rule_site(rid), ANSWERS_IN_ITS_PLACE)
+        } else {
+            continue;
+        };
+        let name = kb.qualified_name_of(axiom);
+        let sort = name.strip_suffix(".induction").unwrap_or(name);
+        out.push(LoadError::Other {
+            message: format!(
+                "`{name}` names the induction axiom derived for `{sort}`, and {what} {} takes \
+                 the same name: {why}. Give the declaration another name",
+                site.map_or_else(|| "(at a site the loader did not record)".to_string(), |at| format!("declared at {at}")),
+            ),
+        });
+    }
+    out
+}
+
+/// What an operation or a rule under an induction axiom's name does to the goals at it
+/// ([`check_induction_axiom_names`]).
+const ANSWERS_IN_ITS_PLACE: &str =
+    "the axiom's clause would answer a rule-body goal at it in the declaration's place";
+
 /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION: a body OR clauses, never both.
 /// Load-blocking.
 ///
@@ -20510,7 +20697,8 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     population.retain(|(sym, _)| seen.insert(kb.canonical_sym(*sym)));
     // By symbol index, not `HashMap` order: two runs over one corpus must report
     // identically.
-    let mut hits: Vec<(Symbol, OperationDefinition, ClauseSlots, Vec<SourceSpan>)> = population
+    type Hit = (Symbol, OperationDefinition, ClauseSlots, Vec<Option<SourceSpan>>);
+    let mut hits: Vec<Hit> = population
         .into_iter()
         .filter_map(|(sym, definition)| {
             // WHICH ARITIES THE DERIVED VIEW OCCUPIES, and there are TWO — an
@@ -20522,26 +20710,30 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
             //     sits at the operation's own arity ([`bare_bodied_bool_relation`]).
             let params = super::op_info::lookup_operation_info(kb, sym)?.params.len();
             let bool_view = would_derive_bool_relation(kb, sym);
-            let mut slots: Option<ClauseSlots> = None;
-            let mut sites: Vec<SourceSpan> = Vec::new();
+            let (mut at_plus_one, mut at_own) = (false, false);
+            let mut sites: Vec<Option<SourceSpan>> = Vec::new();
             for rid in kb.rules_by_functor_iter(sym) {
+                // The clauses the source wrote: one the loader derives is no definition an
+                // author gave, and the one that could stand under an operation's own functor
+                // — the induction axiom of a sort with an operation `induction` — is refused
+                // after the load (`check_induction_axiom_names`).
+                if kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
+                    continue;
+                }
                 let Some(n) = head_arg_count(kb, rid) else {
                     continue;
                 };
-                let Some(here) = ClauseSlots::of(n == params + 1, bool_view && n == params) else {
+                let (plus_one, own) = (n == params + 1, bool_view && n == params);
+                if !(plus_one || own) {
                     continue;
-                };
-                // A clause whose span the loader did not record would make the refusal
-                // name fewer places than it counted, so it is not counted either.
-                // Unreachable today — every source clause carries a head span — and kept
-                // total.
-                let Some(span) = kb.rule_head_span(rid) else {
-                    continue;
-                };
-                slots = Some(slots.map_or(here, |s| s.join(here)));
-                sites.push(span);
+                }
+                at_plus_one |= plus_one;
+                at_own |= own;
+                // Every source clause carries its head's span; one that did not is still
+                // counted, and named as unrecorded rather than left out.
+                sites.push(kb.rule_head_span(rid));
             }
-            slots.map(|slots| (sym, definition, slots, sites))
+            ClauseSlots::of(at_plus_one, at_own).map(|slots| (sym, definition, slots, sites))
         })
         .collect();
     if hits.is_empty() {
@@ -20560,7 +20752,15 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
                     .and_then(|v| v.first())
                     .or_else(|| kb.functor_spans.get(&op))
                     .map(|s| render_decl_site(kb, *s)),
-                clause_sites: sites.iter().map(|s| render_decl_site(kb, *s)).collect(),
+                clause_sites: sites
+                    .iter()
+                    .map(|s| {
+                        s.map_or_else(
+                            || "a site the loader did not record".to_string(),
+                            |s| render_decl_site(kb, s),
+                        )
+                    })
+                    .collect(),
             }
         })
         .collect()
@@ -22141,6 +22341,139 @@ fn query_data_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -
     }
 }
 
+/// The query twin of `Loader::data_slot_alias_type`: in a data slot, a type alias is the
+/// type it stands for, as the fact holding it was stored. A query is written outside every
+/// sort, so an alias naming a sort's own parameter is read as written.
+fn query_data_slot_alias(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    fold: ConstFold,
+) -> Option<Rc<NodeOccurrence>> {
+    if fold != ConstFold::Data || !kb.is_type_value_head(sym) {
+        return None;
+    }
+    let ty = value_alias_term(kb, sym, false, false)?;
+    Some(type_value_occurrence(kb, ty, node_occurrence::empty_span(), None))
+}
+
+/// The occurrence of the type value whose clause-canon term is `ty`, as the walks build the
+/// same type written in value position: a sort, a type parameter or a constructor is an
+/// [`Expr::TypeValue`] by its head, a sort application one with its arguments as children,
+/// a value in a type its constant, and a tuple, an arrow or a row the type itself, typed
+/// `Type` (`Loader::entry_type_value_occ`). For a type alias read as a value
+/// ([`super::typing::value_alias`]): the alias's type has no written node of its own.
+fn type_value_occurrence(
+    kb: &mut KnowledgeBase,
+    ty: TermId,
+    site: SourceSpan,
+    owner: Option<Symbol>,
+) -> Rc<NodeOccurrence> {
+    let expr = match kb.get_term(ty).clone() {
+        Term::Ref(head)
+            if kb.has_kind(head, SymbolKind::Sort)
+                || super::typing::is_sort_param_symbol(kb, head)
+                || kb.is_constructor_symbol(head) =>
+        {
+            Expr::TypeValue {
+                head,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            }
+        }
+        Term::Ref(name) => Expr::Ref(name),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && kb.has_kind(functor, SymbolKind::Sort) => Expr::TypeValue {
+            head: functor,
+            pos_args: Vec::new(),
+            named_args: named_args
+                .iter()
+                .map(|(key, value)| (*key, type_value_occurrence(kb, *value, site, owner)))
+                .collect(),
+        },
+        Term::Const(lit) => Expr::Const(lit),
+        _ => {
+            let occ = NodeOccurrence::new_expr(Expr::Spliced(Value::term(ty)), site, owner);
+            if let Some(type_ty) = kb.try_make_sort_ref_by_name("anthill.prelude.Type") {
+                occ.set_inferred_type(Value::term(type_ty));
+            }
+            return occ;
+        }
+    };
+    NodeOccurrence::new_expr(expr, site, owner)
+}
+
+/// The parameter each of `count` positional arguments of the type application `sort[…]`
+/// takes — the next declared parameter no key in `named_keys` took — by its declared name;
+/// `None` where one takes none (an over-applied bracket, which the fit check reports).
+fn positional_type_keys(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    named_keys: &[Symbol],
+    count: usize,
+) -> Option<Vec<Symbol>> {
+    let owner = kb.type_arg_owner(sort).unwrap_or(sort);
+    let declared = kb.type_params_of_sort(owner);
+    let slots = KnowledgeBase::positional_param_slots(
+        &declared,
+        |d| named_keys.iter().any(|k| kb.local_name_of(*k) == d),
+        count,
+    );
+    slots
+        .into_iter()
+        .map(|slot| slot.map(|i| kb.intern(&declared[i])))
+        .collect()
+}
+
+/// The arguments of a type application in a clause's term or a query's, as the one term its
+/// type is: a positional bound to the parameter it takes, and the arguments in the order an
+/// operation body's value of the type has them (`KnowledgeBase::make_parameterized_type`).
+/// The inputs `Pair[Int64, String]`, `Pair[A = Int64, B = String]` and `Pair[B = String, A =
+/// Int64]` are normalized to one term, so a fact holding one is found by a goal or a query
+/// writing another. Called once the arguments are known to fit the sort.
+fn normalize_type_args<C>(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    pos: &mut Vec<C>,
+    named: &mut Vec<(Symbol, C)>,
+) {
+    if !pos.is_empty() {
+        let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
+        if let Some(bound) = positional_type_keys(kb, sort, &keys, pos.len()) {
+            named.extend(bound.into_iter().zip(pos.drain(..)));
+        }
+    }
+    kb.canonicalize_record_named_args(sort, named);
+}
+
+/// [`super::typing::value_alias`] as the term of the type the alias stands for, or `None` for
+/// a name read as written. A tuple, an arrow or a row only where `structural` says the
+/// position holds one: an operation body does, as a bracket's entry writes it; a clause's
+/// data slot and a query's do not, since a tuple written there is a tuple of values and no
+/// type, so an alias of one is read as written there.
+fn value_alias_term(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    within_declaring_scope: bool,
+    structural: bool,
+) -> Option<TermId> {
+    match super::typing::value_alias(kb, sym, within_declaring_scope)? {
+        super::typing::ValueAlias::Sort { base, fixed } if fixed.is_empty() => {
+            Some(kb.make_sort_ref(base))
+        }
+        // As the alias's definition is recorded, its bindings in their order: a data slot
+        // holds the term as written.
+        super::typing::ValueAlias::Sort { base, fixed } => Some(kb.alloc(Term::Fn {
+            functor: base,
+            pos_args: SmallVec::new(),
+            named_args: fixed,
+        })),
+        super::typing::ValueAlias::Structural(ty) => structural.then_some(ty),
+    }
+}
+
 /// WI-20261001-KDMQS — a query child's const-fold state: `ConstFold::child`, except that a
 /// field declared `anthill.reflect.Term` holds a QUOTED pattern, the twin of
 /// `Loader::convert_arg_value`'s rule.
@@ -22215,7 +22548,9 @@ fn convert_query_term_expecting(
                 if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
                     let symbol = resolve_query_name(kb, &name, scope);
                     if kb.has_kind(symbol, SymbolKind::Sort) && !kb.is_entity_constructor(symbol) {
-                        return expr_node(Expr::Ref(symbol));
+                        // A type alias, as its bare spelling is (`query_data_slot_alias`).
+                        return query_data_slot_alias(kb, symbol, fold)
+                            .unwrap_or_else(|| expr_node(Expr::Ref(symbol)));
                     }
                 }
                 if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
@@ -22224,6 +22559,13 @@ fn convert_query_term_expecting(
                     if let Some(lit) = query_data_slot_const(kb, c, fold) {
                         return expr_node(Expr::Const(lit));
                     }
+                }
+                // A constructor named by its qualified name is the reference its
+                // one-segment name is (the `Term::Ident` arm below).
+                if let Some(ctor) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                    .and_then(|name| ctor_named(kb, &name, scope))
+                {
+                    return expr_node(Expr::Ref(ctor));
                 }
             }
             let functor_name = parse_symbols.local_name(functor);
@@ -22389,6 +22731,45 @@ fn convert_query_term_expecting(
                 );
             }
 
+            // A TYPE APPLICATION in a data slot is the term the fact holding it was stored as
+            // (`Loader::convert_term_inner`): a type alias's head is the sort the alias stands
+            // for, with the bindings it fixes, and the application is the one term its type
+            // is ([`normalize_type_args`]). A query has no error channel, so arguments that
+            // do not fit the sort are left as written.
+            let mut kb_functor = kb_functor;
+            if fold == ConstFold::Data
+                && parse_terms.is_type_application(parse_id)
+                && kb.has_kind(kb_functor, SymbolKind::Sort)
+            {
+                if let Some(super::typing::ValueAlias::Sort { base, fixed }) =
+                    super::typing::value_alias(kb, kb_functor, false)
+                {
+                    let mut given: SmallVec<[(Symbol, Rc<NodeOccurrence>); 2]> = SmallVec::new();
+                    for (key, value) in fixed {
+                        let written = new_named
+                            .iter()
+                            .any(|(k, _)| kb.local_name_of(*k) == kb.local_name_of(key));
+                        if !written {
+                            let child =
+                                type_value_occurrence(kb, value, node_occurrence::empty_span(), None);
+                            given.push((key, child));
+                        }
+                    }
+                    new_named.insert_many(0, given);
+                    kb_functor = base;
+                }
+                let declared = kb.type_params_of_sort(kb_functor);
+                let named_syms: Vec<Symbol> = new_named.iter().map(|(k, _)| *k).collect();
+                if kb
+                    .check_sort_type_args(kb_functor, &declared, &named_syms, new_pos.len())
+                    .is_ok()
+                {
+                    let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = new_named.drain(..).collect();
+                    normalize_type_args(kb, kb_functor, &mut new_pos, &mut named);
+                    new_named.extend(named);
+                }
+            }
+
             nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec())
         }
         Term::Ident(sym) => {
@@ -22396,7 +22777,10 @@ fn convert_query_term_expecting(
             match resolve_name_in_kb(kb, name, scope) {
                 ResolveResult::Found(resolved) => match query_data_slot_const(kb, resolved, fold) {
                     Some(lit) => Expr::Const(lit),
-                    None => Expr::Ref(resolved),
+                    None => match query_data_slot_alias(kb, resolved, fold) {
+                        Some(occ) => return occ,
+                        None => Expr::Ref(resolved),
+                    },
                 },
                 ResolveResult::Ambiguous(..) | ResolveResult::NotFound => {
                     Expr::Ident(kb.intern(name))
@@ -22408,7 +22792,10 @@ fn convert_query_term_expecting(
             let resolved = resolve_query_name(kb, name, scope);
             match query_data_slot_const(kb, resolved, fold) {
                 Some(lit) => Expr::Const(lit),
-                None => Expr::Ref(resolved),
+                None => match query_data_slot_alias(kb, resolved, fold) {
+                    Some(occ) => return occ,
+                    None => Expr::Ref(resolved),
+                },
             }
         }
         Term::Bottom => Expr::Bottom,
@@ -22582,6 +22969,17 @@ fn const_fold_goal_slots(
 fn const_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
     match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) if kb.kind_of(sym) == Some(SymbolKind::Const) => Some(sym),
+        _ => None,
+    }
+}
+
+/// The entity constructor a one-segment or dotted `name` denotes at `scope`, or `None` when it
+/// denotes anything else or nothing. A name and its qualified spelling are one reference to
+/// the constructor's symbol, so a dotted chain naming one is read as the one-segment name is.
+/// Quiet, for [`const_named`]'s reason.
+fn ctor_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
+    match resolve_name_in_kb(kb, name, scope) {
+        ResolveResult::Found(sym) if kb.is_entity_constructor(sym) => Some(sym),
         _ => None,
     }
 }
@@ -24130,6 +24528,10 @@ struct Loader<'a> {
     // an op body the primitives stay the default. (`and` is value-only — handled by the
     // general fallback — and `neg`→`Numeric.neg` is not position-directed.)
     in_op_body_value: bool,
+    /// While an operation's body is lowered a second time, as a term, for its defining
+    /// equation (`load_operation`): the same text `convert_expr_term` built, which the typer
+    /// checks as the operation body it is, so a clause-term reading does not apply to it.
+    lowering_op_body_term: bool,
     // WI-1046: true while building a rule-body occurrence that sits in a GOAL position
     // — a top-level body atom, or a goal slot of a connective above it
     // (`KnowledgeBase::goal_arg_slots`). The MIRROR of `in_op_body_value`, and the half
@@ -24697,6 +25099,7 @@ impl<'a> Loader<'a> {
             alias_nodes: false,
             written_binder_anns: HashMap::new(),
             in_op_body_value: false,
+            lowering_op_body_term: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_non_value_role: false,
@@ -27488,6 +27891,23 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// The type a type alias stands for, where this walk is in a clause DATA slot — the
+    /// twin of [`Self::data_slot_const_value`]: a type held in a data slot is a value, and an
+    /// alias in a name is read through wherever it is used (§5.1), so `fact held(t: IntOpt)`
+    /// over `sort IntOpt = Option[T = Int64]` holds `Option[T = Int64]`, and a goal or a
+    /// query writing either finds it. A rule head's bound is a type, read through by its
+    /// own reader (`rule_head_bound_read_through_aliases`).
+    fn data_slot_alias_type(&mut self, sym: Symbol) -> Option<TermId> {
+        if self.const_fold != ConstFold::Data
+            || self.in_rule_head_bound
+            || !self.bare_name_denotes_type(sym)
+        {
+            return None;
+        }
+        let within = self.within_declaring_scope_of(sym);
+        value_alias_term(self.kb, sym, within, false)
+    }
+
     /// WI-20261001-KDMQS — the `const` a converter-minted dotted chain (`Float.infinity`)
     /// names, when this walk is in a clause DATA slot. §6.7 leaves a dotted chain standing
     /// in a data slot so that the fact and the query spelling it build one term, and they
@@ -27503,6 +27923,32 @@ impl<'a> Loader<'a> {
         }
         let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
         const_named(self.kb, &name, self.current_scope)
+    }
+
+    /// The entity constructor a converter-minted dotted chain (`Colour.red`) names, when this
+    /// walk is in a clause DATA slot: a constructor's qualified name is the reference its
+    /// one-segment name is, so `fact holds(Colour.red)` holds `red`'s symbol, and a goal or a
+    /// query writing `red`, `Colour.red` or the whole qualified name finds it. Rooted at no
+    /// binding, as [`Self::data_slot_dotted_const`] is.
+    fn data_slot_dotted_ctor(&self, parse_id: TermId) -> Option<Symbol> {
+        if self.const_fold != ConstFold::Data {
+            return None;
+        }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        ctor_named(self.kb, &name, self.current_scope)
+    }
+
+    /// The term a clause holds for a resolved name `sym`: a const in a data slot its value, a
+    /// type alias there the type it stands for, anything else its reference. One reading for
+    /// the one-segment name and a constructor's qualified one.
+    fn resolved_name_term(&mut self, sym: Symbol, parse_id: TermId, span: Span) -> Term {
+        match self.data_slot_const_value(sym, parse_id) {
+            Some(lit) => Term::Const(lit),
+            None => match self.data_slot_alias_type(sym) {
+                Some(ty) => self.kb.get_term(ty).clone(),
+                None => self.bare_contract_spec(sym, span),
+            },
+        }
     }
 
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
@@ -27712,6 +28158,14 @@ impl<'a> Loader<'a> {
                         self.term_map.insert(parse_id.raw(), kb_id);
                         return kb_id;
                     }
+                }
+                // A constructor's qualified name is the term its one-segment name is.
+                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    let span = self.parsed.terms.span(parse_id);
+                    let term = self.resolved_name_term(ctor, parse_id, span);
+                    let kb_id = self.kb.alloc(term);
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
                 }
                 // Every child of this node is a DATA slot unless the node is a connective
                 // in goal position, whose goal slots the positional loop below sets per
@@ -27927,6 +28381,21 @@ impl<'a> Loader<'a> {
                 }
 
                 let mut new_functor = self.remap_functor(functor, parse_id);
+                // A WRITTEN application of one of the runtime's accounts in a clause's own
+                // term: a clause term binds the variables it meets, so here it is a
+                // construction. The text written as an operation body is (an operation's
+                // body, a const's value, a rule body's compound expression) is the typer's
+                // to refuse, where a pattern is told apart from a construction.
+                if !self.in_op_body_value
+                    && !self.lowering_op_body_term
+                    && !self.parsed.terms.is_minted(parse_id)
+                    && self.kb.runtime_account_of(new_functor).is_some()
+                {
+                    self.errors.push(LoadError::RuntimeAccountInClause {
+                        ctor: self.kb.qualified_name_of(new_functor).to_string(),
+                        span: self.parsed.terms.span(parse_id),
+                    });
+                }
 
                 // WI-20260911-073GH — DOES THIS WRITTEN FUNCTOR DENOTE AN ENTITY?
                 // Read ONCE here and used by every entity-shaped reading below (the
@@ -28641,6 +29110,42 @@ impl<'a> Loader<'a> {
                 // WI-927: reads the `is_type_app` binding above rather than re-asking
                 // parse — this gate and the field reading it excludes must agree on what
                 // counts as a bracket, and one binding is what makes that structural.
+                //
+                // A TYPE ALIAS'S APPLICATION is the sort the alias stands for, the bindings
+                // it fixes before the written ones, as in a type position (§5.1) — wherever
+                // a nested type application is read here but a quoted `Term` field and a
+                // rule head's bound, which has its own reader. In a data slot the term is
+                // otherwise as written (§5.4): `IntPair[B = String]` over `sort IntPair =
+                // Pair[A = Int64]` is the term `Pair[A = Int64, B = String]` is. An
+                // operation's equation reads its body through this walk as well as the
+                // occurrence walk does, which refuses the same rebinding at the same place
+                // (one report: `dedup_load_errors`).
+                if self.term_depth > 1
+                    && is_type_app
+                    && !self.in_rule_head_bound
+                    && !self.in_quoted_term
+                    && self.kb.has_kind(new_functor, SymbolKind::Sort)
+                {
+                    if let Some(super::typing::ValueAlias::Sort { base, fixed }) =
+                        self.value_alias_here(new_functor)
+                    {
+                        let written: SmallVec<[Symbol; 2]> =
+                            new_named.iter().map(|(k, _)| *k).collect();
+                        let site =
+                            SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
+                        self.refuse_type_alias_rebinding(new_functor, &fixed, &written, site);
+                        let given: SmallVec<[(Symbol, TermId); 2]> = fixed
+                            .into_iter()
+                            .filter(|(key, _)| {
+                                !written.iter().any(|k| {
+                                    self.kb.local_name_of(*k) == self.kb.local_name_of(*key)
+                                })
+                            })
+                            .collect();
+                        new_named.insert_many(0, given);
+                        new_functor = base;
+                    }
+                }
                 if self.term_depth > 1
                     && is_type_app
                     && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
@@ -28659,6 +29164,17 @@ impl<'a> Loader<'a> {
                             detail,
                             span: Some(self.parsed.terms.span(parse_id)),
                         });
+                    } else if node_fold == ConstFold::Data
+                        && !self.in_rule_head_bound
+                        && !self.in_quoted_term
+                    {
+                        // In a clause's data slot the application is the one term its type
+                        // is ([`normalize_type_args`]).
+                        let mut pos: Vec<TermId> = new_pos.drain(..).collect();
+                        let mut named: Vec<(Symbol, TermId)> = new_named.drain(..).collect();
+                        normalize_type_args(self.kb, new_functor, &mut pos, &mut named);
+                        new_pos.extend(pos);
+                        new_named.extend(named);
                     }
                 } else if self.term_depth == 1
                     && self.in_op_contract_clause
@@ -28756,10 +29272,14 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let new_sym = self.remap_symbol_strict(sym, span);
-                // WI-20261001-KDMQS — a const in a clause data slot is its value.
+                // WI-20261001-KDMQS — a const in a clause data slot is its value, and a
+                // type alias the type it stands for.
                 match self.data_slot_const_value(new_sym, parse_id) {
                     Some(lit) => Term::Const(lit),
-                    None => self.bare_contract_spec(new_sym, span),
+                    None => match self.data_slot_alias_type(new_sym) {
+                        Some(ty) => self.kb.get_term(ty).clone(),
+                        None => self.bare_contract_spec(new_sym, span),
+                    },
                 }
             }
             Term::Bottom => Term::Bottom,
@@ -28775,12 +29295,10 @@ impl<'a> Loader<'a> {
                     let span = self.parsed.terms.span(parse_id);
                     let new_sym = self.remap_symbol(sym, span);
                     // Promote to Ref if the symbol resolved to a defined name — or, for a
-                    // const in a clause data slot, to its value (WI-20261001-KDMQS).
+                    // const in a clause data slot, to its value (WI-20261001-KDMQS), and for a
+                    // type alias there to the type it stands for.
                     if self.kb.symbols.is_resolved(new_sym) {
-                        match self.data_slot_const_value(new_sym, parse_id) {
-                            Some(lit) => Term::Const(lit),
-                            None => self.bare_contract_spec(new_sym, span),
-                        }
+                        self.resolved_name_term(new_sym, parse_id, span)
                     } else {
                         Term::Ident(new_sym)
                     }
@@ -29450,6 +29968,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_sort_ref(parse_id, whole, results) {
                                     return;
                                 }
+                                if self.try_qualified_ctor_ref(parse_id, whole, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -30071,6 +30592,28 @@ impl<'a> Loader<'a> {
         true
     }
 
+    /// AN ENTITY CONSTRUCTOR NAMED BY A DOTTED PATH with no trailing `(…)` — `Colour.red`,
+    /// `Colour.method.proof` — is the reference its one-segment name lowers to: a name and
+    /// its qualified spelling are one reference to the constructor's symbol. Left a chain,
+    /// it was typed as a call of reflect's `field_access` with the constructor's value
+    /// where the field's name goes (`field_access.field: expected String, got Colour`), or,
+    /// past a nested sort, as a name nothing declares; the applied `Colour.red()` and the
+    /// one-segment `red` were the entity. After the sort's rung, which takes a free-standing
+    /// entity's name first, as the one-segment spelling's reading does.
+    fn try_qualified_ctor_ref(
+        &mut self,
+        parse_id: TermId,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let Some(sym) = whole.filter(|sym| self.kb.is_entity_constructor(*sym)) else {
+            return false;
+        };
+        self.push_name_ref(parse_id, sym, results);
+        true
+    }
+
     /// The reference to `sym` a one-segment name lowers to (`load_var_ref`), with its
     /// leaf occurrence, standing for the whole node at `parse_id`.
     fn push_name_ref(&mut self, parse_id: TermId, sym: Symbol, results: &mut Vec<TermId>) {
@@ -30300,15 +30843,9 @@ impl<'a> Loader<'a> {
             let occ = match head.filter(|s| {
                 self.bare_name_denotes_type(*s) || (entry && self.kb.is_constructor_symbol(*s))
             }) {
-                Some(head) => node_occurrence::NodeOccurrence::new_expr(
-                    Expr::TypeValue {
-                        head,
-                        pos_args: Vec::new(),
-                        named_args: Vec::new(),
-                    },
-                    span,
-                    None,
-                ),
+                Some(head) => {
+                    self.bare_type_value_occ(head, span, None, !self.lowering_rule_compound_expr)
+                }
                 None => leaf,
             };
             self.expr_occ_results.push(occ);
@@ -30883,11 +31420,21 @@ impl<'a> Loader<'a> {
                         // bracket IS this node, so a second bracket on it would be a
                         // surface nothing produces — left unconsumed, the end-of-file
                         // sweep reports it rather than this arm dropping it silently.
+                        //
+                        // A type alias's head is the sort it stands for, and the bindings
+                        // it fixes are further children, after the written ones.
+                        let mut named_keys = occ_named_keys;
+                        let (head, fixed) =
+                            self.applied_value_alias(kb_functor, &named_keys, span, None);
+                        for (key, child) in fixed {
+                            self.expr_occ_results.push(child);
+                            named_keys.push(key);
+                        }
                         node_occurrence::BuildFrame::TypeValue {
                             span,
-                            head: kb_functor,
+                            head,
                             pos_count,
-                            named_keys: occ_named_keys,
+                            named_keys,
                         }
                     } else if is_entity {
                         node_occurrence::BuildFrame::Constructor {
@@ -32657,14 +33204,83 @@ impl<'a> Loader<'a> {
     /// `None` in a GOAL slot (a bare name there is a subject — §8.3's expansion or the
     /// relation itself) and in a child of another role — a `require[Spec]` spec, a segment
     /// of a written dotted name ([`Self::in_non_value_role`]).
-    fn body_bare_type_value(&self, sym: Symbol) -> Option<Expr> {
+    ///
+    /// A type ALIAS is the type it stands for ([`Self::bare_type_value_occ`]), as the
+    /// clause's own term holds it (`Self::data_slot_alias_type`).
+    fn body_bare_type_value(&mut self, sym: Symbol, site: SourceSpan) -> Option<Expr> {
         let data_slot =
             !self.in_body_goal && !self.in_body_goal_wrapper && !self.in_non_value_role;
-        (data_slot && self.bare_name_denotes_type(sym)).then(|| Expr::TypeValue {
-            head: sym,
-            pos_args: Vec::new(),
-            named_args: Vec::new(),
-        })
+        if !(data_slot && self.bare_name_denotes_type(sym)) {
+            return None;
+        }
+        let owner = self.current_owner;
+        self.bare_type_value_occ(sym, site, owner, false).as_expr().cloned()
+    }
+
+    /// [`super::typing::value_alias`] of `sym` as this walk reads it: inside the sort that
+    /// declares it, or outside.
+    fn value_alias_here(&mut self, sym: Symbol) -> Option<super::typing::ValueAlias> {
+        let within = self.within_declaring_scope_of(sym);
+        super::typing::value_alias(self.kb, sym, within)
+    }
+
+    /// The type value the bare name `head`, classified as one, denotes: its own
+    /// [`Expr::TypeValue`], or, where it names a type alias, the type the alias stands for —
+    /// `IntOpt` over `sort IntOpt = Option[T = Int64]` is the node `Option[T = Int64]`
+    /// written there is (§5.1: an alias in a name is read through wherever it is used).
+    /// Without it the value was the alias's own name, which no type equals. An alias of a
+    /// tuple, an arrow or a row is that type where `structural` (an operation body), and
+    /// read as written in a rule body ([`value_alias_term`]).
+    fn bare_type_value_occ(
+        &mut self,
+        head: Symbol,
+        site: SourceSpan,
+        owner: Option<Symbol>,
+        structural: bool,
+    ) -> Rc<NodeOccurrence> {
+        let within = self.within_declaring_scope_of(head);
+        match value_alias_term(self.kb, head, within, structural) {
+            Some(ty) => type_value_occurrence(self.kb, ty, site, owner),
+            None => NodeOccurrence::new_expr(
+                Expr::TypeValue {
+                    head,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                },
+                site,
+                owner,
+            ),
+        }
+    }
+
+    /// A type application in VALUE position whose head is a type alias: the sort the alias
+    /// stands for, and the bindings it fixes as further children — `IntPair[B = String]`
+    /// over `sort IntPair = Pair[A = Int64]` is `Pair[A = Int64, B = String]`, and a
+    /// positional takes the next parameter the alias leaves open. Binding again what the
+    /// alias fixes is refused, naming both, as in a type position. Any other head comes
+    /// back as it is, with nothing to add.
+    fn applied_value_alias(
+        &mut self,
+        written: Symbol,
+        written_keys: &[Symbol],
+        site: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> (Symbol, Vec<(Symbol, Rc<NodeOccurrence>)>) {
+        let Some(super::typing::ValueAlias::Sort { base, fixed }) = self.value_alias_here(written)
+        else {
+            return (written, Vec::new());
+        };
+        self.refuse_type_alias_rebinding(written, &fixed, written_keys, site);
+        let mut added = Vec::with_capacity(fixed.len());
+        for (key, value) in fixed {
+            let written_again = written_keys
+                .iter()
+                .any(|k| self.kb.local_name_of(*k) == self.kb.local_name_of(key));
+            if !written_again {
+                added.push((key, type_value_occurrence(self.kb, value, site, owner)));
+            }
+        }
+        (base, added)
     }
 
     /// The walk itself — see [`Self::build_body_atom_occurrence`], which wraps it to
@@ -32711,6 +33327,19 @@ impl<'a> Loader<'a> {
     /// citation to its symbol in a branch that never reaches the `Term::Ref` /
     /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
     /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
+
+    /// The expression a rule body's walk reads a resolved name `sym` as, outside a goal: a
+    /// const in a data slot its value, a type its type value, a nullary operation its call,
+    /// anything else its reference. One reading for the one-segment name and a constructor's
+    /// qualified one.
+    fn body_resolved_name_expr(&mut self, sym: Symbol, parse_id: TermId, span: SourceSpan) -> Expr {
+        match self.data_slot_const_value(sym, parse_id) {
+            Some(lit) => Expr::Const(lit),
+            None => self
+                .body_bare_type_value(sym, span)
+                .unwrap_or_else(|| self.nullary_op_call_or_ref(sym, parse_id)),
+        }
+    }
 
     fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
@@ -32815,12 +33444,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
-                match self.data_slot_const_value(s, parse_id) {
-                    Some(lit) => Expr::Const(lit),
-                    None => self
-                        .body_bare_type_value(s)
-                        .unwrap_or_else(|| self.nullary_op_call_or_ref(s, parse_id)),
-                }
+                self.body_resolved_name_expr(s, parse_id, span)
             }
             Term::Ident(sym) => {
                 // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
@@ -32853,12 +33477,7 @@ impl<'a> Loader<'a> {
                     }
                     // WI-20261001-KDMQS — and a const in a DATA slot is its value, the
                     // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
-                    match self.data_slot_const_value(new_sym, parse_id) {
-                        Some(lit) => Expr::Const(lit),
-                        None => self
-                            .body_bare_type_value(new_sym)
-                            .unwrap_or_else(|| self.nullary_op_call_or_ref(new_sym, parse_id)),
-                    }
+                    self.body_resolved_name_expr(new_sym, parse_id, span)
                 } else {
                     Expr::Ident(new_sym)
                 }
@@ -32913,6 +33532,11 @@ impl<'a> Loader<'a> {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
                         return NodeOccurrence::new_expr(Expr::Const(lit), span, None);
                     }
+                }
+                // A constructor's qualified name is the reference its one-segment name is.
+                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    let expr = self.body_resolved_name_expr(ctor, parse_id, span);
+                    return NodeOccurrence::new_expr(expr, span, None);
                 }
                 // Every child is a DATA slot unless this node is a connective in goal
                 // position (its goal slots are set per child in the positional loop). The
@@ -33221,6 +33845,19 @@ impl<'a> Loader<'a> {
                     // classifier admits (a `namespace Box` declared before `sort Box`) has
                     // its arguments read by nobody (WI-20260824-Q0093 found the same split in
                     // the typer). Found by `/code-review`.
+                    // A type ALIAS's application is the sort it stands for, the bindings it
+                    // fixes before the written ones, as the clause's term holds it
+                    // ([`Self::applied_value_alias`]).
+                    let new_functor = if type_value {
+                        let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
+                        let owner = self.current_owner;
+                        let (head, fixed) =
+                            self.applied_value_alias(new_functor, &keys, span, owner);
+                        named.splice(0..0, fixed);
+                        head
+                    } else {
+                        new_functor
+                    };
                     if type_value
                         || (self.term_depth > 1
                             && self.parsed.terms.is_type_application(parse_id)
@@ -33240,6 +33877,10 @@ impl<'a> Loader<'a> {
                                 detail,
                                 span: Some(span.span),
                             });
+                        } else if type_value {
+                            // The node is matched as the clause's term, which is the one
+                            // term its type is ([`normalize_type_args`]).
+                            normalize_type_args(self.kb, new_functor, &mut pos, &mut named);
                         }
                     }
                     if type_value {
@@ -37672,6 +38313,11 @@ impl<'a> Loader<'a> {
         // reuse that without inserting their qualified name into
         // `by_qualified_name` — making each subsequent <Sort>.induction
         // unreachable by qualified-name lookup.
+        // The axiom owns its name: an operation, a hand-written rule or an entity with fields
+        // under it, in this load or a later one, is refused after the load
+        // (`check_induction_axiom_names`). Any other declaration of the name (an entity without
+        // fields, a const, a nested sort) is no predicate, and the axiom's clause is filed
+        // under its symbol as before.
         let induction_sym =
             if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
                 existing
@@ -37684,6 +38330,8 @@ impl<'a> Loader<'a> {
                 )
             };
 
+        let canonical = self.kb.canonical_sym(induction_sym);
+        self.kb.induction_axioms.insert(canonical);
         let head = self.kb.alloc(Term::Fn {
             functor: induction_sym,
             pos_args: SmallVec::from_slice(&[p_term]),
@@ -40457,7 +41105,9 @@ impl<'a> Loader<'a> {
         // equation keeps the resolver primitives for those three names. That predates
         // this ticket and is untouched by it.
         let prev_scope = std::mem::replace(&mut self.current_scope, op_scope);
+        let prev_lowering = std::mem::replace(&mut self.lowering_op_body_term, true);
         let body_kb = self.convert_term(body_parse_id);
+        self.lowering_op_body_term = prev_lowering;
         self.current_scope = prev_scope;
 
         let mut param_vars: Vec<(Symbol, VarId)> = Vec::new();

@@ -313,7 +313,10 @@ end
 /// about the FACT-head walk (`convert_term`); a rule-body value slot is the OCCURRENCE
 /// walk, where proposal 052 §6.7 / WI-714 already read a dotted citation as the name it
 /// spells. Both readings are UNMOVED by this ticket: with the change backed out this
-/// fixture binds the identical shape.
+/// fixture binds the identical shape. Since WI-20260908-9WVT7 a constructor's qualified name
+/// is the constructor in all three walks, as its one-segment name is
+/// (`wi_9wvt7_qualified_constructor_test`), so the fact holds `acct`'s reference too where it
+/// held the chain; the three still agree, which is what this row asks.
 #[test]
 fn a_data_slot_keeps_the_dotted_reference_on_both_sides_of_a_match() {
     const SRC: &str = "\

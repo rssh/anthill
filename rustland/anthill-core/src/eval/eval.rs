@@ -2823,8 +2823,8 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&target).cloned() {
             // WI-20260919-HXGXF — HAND THE BUILTIN ITS DISPATCHING DICTIONARY. A builtin
             // gets no `Frame`, so the `requirements` `expand_dispatching_dict` just built
-            // for it would otherwise be dropped here. `TypeValue.type_value()` is nullary
-            // and its whole answer lives in that dictionary. Saved and RESTORED, not
+            // for it would otherwise be dropped here. `TypeValue.type_value[X]()` takes no
+            // argument and its whole answer lives in that dictionary. Saved and RESTORED, not
             // assigned: a builtin may call back into anthill, and the dispatch that
             // returns must see its own again.
             let saved_dict = self.builtin_dispatch_dict.take();
@@ -4336,7 +4336,7 @@ impl Interpreter {
         e: EvalError,
         floor: usize,
     ) -> Result<Value, EvalError> {
-        let EvalError::Raised { payload, .. } = &e else {
+        let EvalError::Raised { payload } = &e else {
             return Err(e);
         };
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {

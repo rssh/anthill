@@ -479,7 +479,7 @@ fn an_operation_that_names_no_carrier_of_a_provided_sort_keeps_its_equation() {
 #[test]
 fn a_requirement_directs_an_operation_that_names_no_carrier_to_its_provider() {
     assert_runs(
-        "namespace test.dyr6slot\n  import anthill.prelude.Int64\n  sort Sp\n    sort T = ?\n    operation name() -> Int64\n    operation tag(x: T) -> Int64\n    rule name() <=> 1 @[simp]\n  end\n  sort W\n    entity w(n: Int64)\n    provides Sp[T = W]\n    operation name() -> Int64 = 42\n    operation tag(x: W) -> Int64 = 5\n  end\n  operation g[A](x: A) -> Int64 requires Sp[T = A] = Sp.name()\n  operation go() -> Int64 = g(w(n: 1))\nend\n",
+        "namespace test.dyr6slot\n  import anthill.prelude.Int64\n  sort Sp\n    sort T = ?\n    operation name() -> Int64\n    operation tag(x: T) -> Int64\n    rule name() <=> 1 @[simp]\n  end\n  sort W\n    entity w(n: Int64)\n    provides Sp[T = W]\n    operation name() -> Int64 = 42\n    operation tag(x: W) -> Int64 = 5\n  end\n  operation g[A](x: A) -> Int64 requires Sp[T = A] = Sp.name[T = A]()\n  operation go() -> Int64 = g(w(n: 1))\nend\n",
         "test.dyr6slot.go",
         42,
     );

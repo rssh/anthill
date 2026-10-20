@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anthill_core::eval::{value_functor, EvalError, Interpreter, RaiseOrigin, Value};
+use anthill_core::eval::{value_functor, EvalError, Interpreter, Value};
 use anthill_core::kb::KnowledgeBase;
 
 mod fake;
@@ -207,7 +207,6 @@ fn checked_handle(entry: &str) -> Result<&str, String> {
 fn raised(message: String) -> EvalError {
     EvalError::Raised {
         payload: Value::Str(message),
-        origin: RaiseOrigin::Program,
     }
 }
 

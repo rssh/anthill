@@ -2654,6 +2654,27 @@ pub fn query_pattern_functor(
     }
 }
 
+/// Load `src` and resolve the query `pattern` over it: the solutions, and the messages of
+/// the faults the search recorded (`ResolveStats::errors`) — what a bridged operation that
+/// raised, or asked a handler for an effect, reports to the rule that read it.
+#[allow(dead_code)]
+pub fn resolve_with_messages(
+    src: &str,
+    pattern: &str,
+) -> (Vec<anthill_core::kb::resolve::Solution>, Vec<String>) {
+    let mut kb = load_kb_with(src);
+    let goal = query_pattern_term(&mut kb, pattern);
+    let (sols, stats) =
+        kb.resolve_with_stats(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    (sols, stats.errors.iter().map(|e| e.message.clone()).collect())
+}
+
+/// [`resolve_with_messages`]' fault messages alone.
+#[allow(dead_code)]
+pub fn fault_messages(src: &str, pattern: &str) -> Vec<String> {
+    resolve_with_messages(src, pattern).1
+}
+
 /// The WHOLE pattern a query converts to, by the same shipped path
 /// [`query_pattern_functor`] reads its head off (WI-917 lifted this out of it): a test
 /// asking about a NESTED position — a disjunction branch, a data slot — cannot ask it of

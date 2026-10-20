@@ -2323,7 +2323,7 @@ namespace wi0rp29cb9.recv_requires
     provides Desc[T = Int64]
     operation tag() -> Int64 = 7
   end
-  operation pick(k: Option[T = Int64]) -> Int64 requires Desc[T = k.T] = Desc.tag()
+  operation pick(k: Option[T = Int64]) -> Int64 requires Desc[T = k.T] = Desc.tag[T = k.T]()
   operation go() -> Int64 = pick(5)
 end
 "#;
@@ -2548,7 +2548,7 @@ namespace wi0rp29cb9.recv_rule
     provides Desc[T = Int64]
     operation tag() -> Int64 = 7
   end
-  operation pick(k: Option[T = Int64]) -> Int64 requires Desc[T = k.T] = Desc.tag()
+  operation pick(k: Option[T = Int64]) -> Int64 requires Desc[T = k.T] = Desc.tag[T = k.T]()
   rule answer(?r) :- pick(5, ?r)
 end
 "#;
