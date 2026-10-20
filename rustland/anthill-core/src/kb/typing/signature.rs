@@ -3672,6 +3672,26 @@ pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol)
     }
 }
 
+/// Does `e` DENY its label — an `absent` wrapper (`-E`) on the way down to it, the wrappers
+/// [`peel_effect_atom`] peels? An absence constrains a row; it is no effect the operation
+/// incurs, and a reader judging what a call incurs reads past it, not through it.
+pub(super) fn effect_atom_is_absence(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> bool {
+    let mut cur = e.clone();
+    loop {
+        match cur.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)) {
+            Some("anthill.prelude.EffectExpression.absent") => return true,
+            Some(
+                "anthill.prelude.EffectExpression.guarded"
+                | "anthill.prelude.EffectExpression.present",
+            ) => match named_child_value(kb, &cur, label_key) {
+                Some(inner) => cur = inner,
+                None => return false,
+            },
+            _ => return false,
+        }
+    }
+}
+
 /// WI-20260823-39AD2 — A `Modify` TARGET IS A PLACE, NEVER A TYPE.
 ///
 /// kernel-language.md §5.6 settles what `Modify[X]` denotes: `Env` is a partial map

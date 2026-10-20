@@ -282,14 +282,15 @@ pub(super) fn stable_receiver_path(
 /// override's ([`dispatched_impl_effects`]) cannot disagree about which shapes count.
 enum ArgPlace {
     /// A variable: it re-keys a projection's receiver, a `denoted` and a return type; and the
-    /// EFFECT re-key too, unless it names a nullary constructor — a label no declaration can
-    /// spell (`placeable: false`, WI-20260823-4GBQV).
+    /// EFFECT re-key too, unless the name holds no place — a constructor, a nullary operation,
+    /// a `const` — a label no declaration can spell (`placeable: false`, WI-20260823-4GBQV,
+    /// [`names_no_place`]).
     Var { sym: Symbol, placeable: bool },
     /// A field path's head (`c.rep` ⟹ `c`, WI-506) or a nullary-constructor place: the EFFECT
     /// re-key only ([`arg_place_head`]).
     Head(Symbol),
     /// Names no place: nothing is re-keyed onto it, and a `Modify` over its parameter is
-    /// refused where it is incurred ([`unrekeyed_modify_argument`]).
+    /// refused where it is incurred ([`placeless_modify`]).
     Placeless,
 }
 
@@ -306,18 +307,20 @@ pub(super) struct ArgPlaces {
     pub(super) heads: HashMap<Symbol, Symbol>,
     /// An argument naming no place (WI-20260823-4GBQV) — a literal included, so NOT rare:
     /// `Cell.set(k, 1)` records the `1`. A `Modify` over its parameter is refused where it is
-    /// incurred ([`unrekeyed_modify_argument`]); the effect re-key skips it.
+    /// incurred ([`placeless_modify`]); the effect re-key skips it.
     pub(super) placeless: HashMap<Symbol, Rc<NodeOccurrence>>,
 }
 
 impl ArgPlaces {
-    /// Classify `occ`, the argument bound to `param`.
+    /// Classify `occ`, the argument bound to `param` as the call's typing left it
+    /// ([`typed_arg`]).
     pub(super) fn record(
         &mut self,
         kb: &mut KnowledgeBase,
         param: Symbol,
         occ: &Rc<NodeOccurrence>,
     ) {
+        let occ = through_option_coercion(kb, occ);
         match arg_place(kb, occ) {
             ArgPlace::Var { sym, placeable } => {
                 self.vars.insert(param, sym);
@@ -353,18 +356,83 @@ impl ArgPlaces {
     }
 }
 
+/// The argument a call's typing left for a parameter, for [`ArgPlaces::record`]: the TYPED node
+/// where the argument synthesized — a `@[simp]` rewrite applied (`same(c)` is `c`), a dot call
+/// dispatched (`h.fresh()` is the call `Holder.fresh(h)`) — else the written one. Classified as
+/// written, an argument a rewrite turned into a place was refused as the call it no longer is,
+/// while its type was read off the rewrite; and a zero-argument method call, read as a field
+/// path, re-keyed the callee's `Modify` onto its receiver — loading under `effects Modify[h]`, a
+/// write the program never makes, and refused, unlocated, under `effects {}` (MEASURED).
+pub(super) fn typed_arg<'a>(
+    written: &'a Rc<NodeOccurrence>,
+    typed: Option<&'a TypeResult>,
+) -> &'a Rc<NodeOccurrence> {
+    typed.map_or(written, |r| &r.node)
+}
+
+/// The argument under the typer's own `some(…)` coercion (WI-408) — a node a pass built, with no
+/// text of its own, over the argument as its one `value`. The typed body stores the wrap, so a
+/// body typed AGAIN — at a later load, `KB.loaded` among them — hands it to the classifier, and
+/// `poke(x)` at an `Option`-typed `Modify` parameter was refused as "the constructor
+/// `Option.some(…)`": a later load refusing what an earlier one accepted, reported in the
+/// earlier file (MEASURED). Only the typer's wrap: an author's `some(x)`, and one a rewrite's
+/// text spells, is a construction and names no place.
+fn through_option_coercion<'a>(
+    kb: &KnowledgeBase,
+    occ: &'a Rc<NodeOccurrence>,
+) -> &'a Rc<NodeOccurrence> {
+    match &occ.kind {
+        NodeKind::Expr {
+            expr:
+                Expr::Constructor {
+                    name,
+                    pos_args,
+                    named_args,
+                    ..
+                },
+            origin:
+                crate::kb::node_occurrence::OccurrenceOrigin::Synthesized {
+                    written_in: None, ..
+                },
+            ..
+        } if pos_args.is_empty()
+            && kb.qualified_name_of(*name) == "anthill.prelude.Option.some" =>
+        {
+            match named_args.as_slice() {
+                [(label, value)] if kb.local_name_of(*label) == "value" => value,
+                _ => occ,
+            }
+        }
+        _ => occ,
+    }
+}
+
 /// The [`ArgPlace`] of the argument `occ`.
 fn arg_place(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> ArgPlace {
     match extract_var_ref_sym_node(occ) {
         Some(sym) => ArgPlace::Var {
             sym,
-            placeable: !kb.is_unplaceable_constructor(sym),
+            placeable: !names_no_place(kb, sym),
         },
         None => match arg_place_head(kb, occ) {
             Some(head) => ArgPlace::Head(head),
             None => ArgPlace::Placeless,
         },
     }
+}
+
+/// Is `sym`, read as a name where a place is wanted, one that holds no place? Every
+/// constructor ([`KnowledgeBase::is_unplaceable_constructor`]), a nullary operation — its bare
+/// name is the call (§5.4), whose result is a fresh value — and a `const`, a constant. Stated
+/// negatively for the reason that predicate gives: a binder carries no declared kind and stays
+/// admitted. Read as a place, `touch(mk)` re-keyed the callee's `Modify[target]` onto `mk`
+/// and was refused, unlocated, as undeclared, while the one declaration of it, `Modify[mk]`,
+/// is refused as an ambient place (MEASURED); [`stable_receiver_path`] already declined a
+/// nullary operation at a path's head.
+fn names_no_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    kb.is_unplaceable_constructor(sym)
+        || crate::kb::op_info::is_nullary_operation(kb, sym)
+        || kb.has_kind(sym, crate::intern::SymbolKind::Const)
 }
 
 /// WI-20260823-4GBQV — the PLACE an ARGUMENT names, for the effect re-key: the head
@@ -392,12 +460,12 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
         // `Modify[T = wrap]` / `Modify[T = Slot]`: labels whose only lawful declaration is
         // a load error, leaving the program unwritable and the diagnostic pointing at
         // neither problem. A head this predicate rejects falls through to
-        // [`unrekeyed_modify_argument`], which names the caller's own expression.
+        // [`placeless_modify`], which names the caller's own expression.
         //
         // The gate is the NEGATIVE test and not "does this name a place" — see
         // [`KnowledgeBase::is_unplaceable_constructor`] for why a binder with no declared
         // kind must stay admitted.
-        if kb.is_unplaceable_constructor(head) {
+        if names_no_place(kb, head) {
             return None;
         }
         return Some(head);
@@ -409,8 +477,10 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
     None
 }
 
-/// WI-20260823-4GBQV — a call whose argument for a MODIFIED parameter names no PLACE,
-/// reported against the CALLER's own expression.
+/// WI-20260823-4GBQV — a `Modify` the callee declares over a parameter whose argument names no
+/// PLACE: the parameter, the target as the callee wrote it, and the argument, when `atom` is
+/// one. Its refusal ([`placeless_modify_refusal`]) is reported against the CALLER's own
+/// expression.
 ///
 /// THE DEFECT THIS REPLACES. `Cell.set` declares `effects Modify[c]`; the re-key rewrites
 /// `c` to whatever the argument names. When the argument names nothing —
@@ -421,15 +491,19 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
 /// the message then read `expected declared: [Modify[T = c]], got undeclared effect:
 /// Modify[T = c]` — the same rendering on both sides of a mismatch.
 ///
-/// THE CONDITION IS THE EFFECT, NOT A PROXY FOR IT: a `Modify` in the atoms that SURVIVED
-/// re-keying and guard discharge, whose target still names one of the CALLEE's own
-/// parameters. That is what a leak IS — the re-key rewrites exactly the parameters whose
-/// arguments named a place, so a callee parameter still standing here got none. Asking
-/// instead "does the callee DECLARE a `Modify` over a parameter whose argument named no
-/// place" is the same verdict on the bare atoms and the WRONG one on a guarded atom
-/// (`{Modify[c] :- g}`): a guard refuted at this call site drops the atom, so it is never
-/// incurred, and refusing it would refuse a correct program. Measured both ways —
-/// `touch(mk(), false)` under a refuted guard loads, `touch(mk(), true)` is refused.
+/// THE CONDITION IS THE EFFECT, NOT A PROXY FOR IT: the callers ask this of each atom the call
+/// INCURS — one the guard discharge kept — so a guarded atom (`{Modify[c] :- g}`) whose guard
+/// this call refutes is never judged, and refusing it would refuse a correct program.
+/// Measured both ways — `touch(mk(), false)` under a refuted guard loads, `touch(mk(), true)`
+/// is refused. An absence (`-Modify[c]`) is no effect the call incurs: it says the callee does
+/// NOT modify `c`. Read through its wrapper, `readOnly(mk())` over `effects -Modify[c]` was
+/// refused naming a `Modify[c]` nothing declared (MEASURED).
+///
+/// ASKED OF THE CALLEE'S OWN ATOM, BEFORE THE RE-KEY. After it the atom names the caller's
+/// vocabulary, which a self-recursive call shares with the callee's parameters: in
+/// `swap(b, mk(), false)` the callee's `Modify[a]` is re-keyed onto the caller's `b`, and read
+/// there it was the callee's own `Modify[b]` — whose guard the call refutes — so the call was
+/// refused naming it (MEASURED).
 ///
 /// WHY A REFUSAL AND NOT A COARSENING. There is no place to coarsen ONTO: `Env` maps
 /// resource NAMES to terms (kernel-language.md §5.6), and `mk()`'s result is a fresh
@@ -439,138 +513,181 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
 ///
 /// REPORTS ONLY WHERE IT CAN POINT. `placeless` carries the argument occurrence per
 /// parameter, recorded where the two re-key maps DECLINE, so it is the complement of what
-/// they hold rather than a second opinion about which shapes count. A surviving callee
-/// parameter with no entry there was given no argument at all — an arity fault another
-/// pass reports — and this one stays quiet rather than adding a second message about a
-/// call the author has not finished writing.
-pub(super) fn unrekeyed_modify_argument(
+/// they hold rather than a second opinion about which shapes count. A parameter with no
+/// entry there was given no argument at all — an arity fault another pass reports — and
+/// this one stays quiet rather than adding a second message about a call the author has
+/// not finished writing.
+pub(super) fn placeless_modify(
     kb: &mut KnowledgeBase,
-    op: &OperationInfoFull,
-    fn_sym: Symbol,
-    incurred: &[Value],
+    params: &[(Symbol, Value)],
+    atom: &Value,
     placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
-    span: Option<Span>,
-) -> Option<TypeError> {
+) -> Option<PlacelessModify> {
     let modify = kb.try_resolve_symbol("anthill.prelude.Modify");
     modify?;
     let t = kb.intern("T");
     let label_key = kb.intern("label");
-    for e in incurred {
-        // Peel here and NOT at the caller: discharge has already run, so a `guarded`
-        // wrapper still standing is an atom that IS incurred, and its label is the one to
-        // judge. (An `absent` atom is a constraint and carries no `Modify` target of the
-        // callee's, so peeling it changes nothing.)
-        let label = peel_effect_atom(kb, e, label_key);
-        if !effect_is_modify(kb, &label, modify) {
-            continue;
-        }
-        let Some(target) = label.named_arg(kb, t).or_else(|| label.pos_arg(kb, 0)) else {
-            continue;
-        };
-        let Some(param) = denoted_place_head_sym(kb, &target) else {
-            continue; // not a place at all — `check_modify_targets` owns that refusal.
-        };
-        if !op.params.iter().any(|(p, _)| *p == param) {
-            continue; // re-keyed onto the caller's own vocabulary, or `result`. Fine.
-        }
-        let Some(arg) = placeless.get(&param) else {
-            continue; // no argument to point at — see the doc.
-        };
-        let reason = placeless_arg_reason(kb, arg);
-        return Some(TypeError::Other {
-            site: TypeError::here(),
-            span,
-            context: TypeErrorContext::OperationArgument {
-                op_name: fn_sym,
-                param,
-            },
-            expected: format!(
-                "an argument naming a PLACE, because `{}` declares `Modify[{}]` over this \
-                 parameter",
-                kb.qualified_name_of(fn_sym),
-                kb.local_name_of(param),
-            ),
-            actual: format!("{reason}, so it names no resource."),
-        });
+    if effect_atom_is_absence(kb, atom, label_key) {
+        return None;
     }
-    None
+    let label = peel_effect_atom(kb, atom, label_key);
+    if !effect_is_modify(kb, &label, modify) {
+        return None;
+    }
+    let target = label
+        .named_arg(kb, t)
+        .or_else(|| label.pos_arg(kb, 0))?
+        .to_value();
+    // `None`: not a place at all — `check_modify_targets` owns that refusal.
+    let param = denoted_place_head_sym(kb, &target)?;
+    if !params.iter().any(|(p, _)| *p == param) {
+        return None;
+    }
+    let arg = Rc::clone(placeless.get(&param)?);
+    Some(PlacelessModify { param, target, arg })
 }
 
-/// WI-20260823-4GBQV — how to NAME the caller's own argument in [`unrekeyed_modify_-
-/// argument`]'s message, and WHY it names no resource. There is no expression printer at
-/// this layer, so the shape plus the head name is as close to the author's text as this
-/// site can get — and it is the half that matters, since the whole defect was naming the
-/// CALLEE's parameter instead.
+/// A `Modify` the callee declares over a parameter whose argument names no place
+/// ([`placeless_modify`]).
+pub(super) struct PlacelessModify {
+    param: Symbol,
+    /// The target as the callee wrote it — `c`, or a field path off it (`d.contents`).
+    target: Value,
+    /// The caller's own expression for `param`.
+    arg: Rc<NodeOccurrence>,
+}
+
+/// The refusal of a call that incurs `leak`, against the caller's own argument.
+pub(super) fn placeless_modify_refusal(
+    kb: &KnowledgeBase,
+    fn_sym: Symbol,
+    leak: &PlacelessModify,
+    span: Option<Span>,
+) -> TypeError {
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationArgument {
+            op_name: fn_sym,
+            param: leak.param,
+        },
+        // The target as written: a field path's declaration named its head alone, quoting
+        // `Modify[d]` for `Modify[d.contents]`.
+        expected: format!(
+            "an argument naming a PLACE, because `{}` declares `Modify[{}]` over this \
+             parameter",
+            kb.qualified_name_of(fn_sym),
+            type_display_name_value(kb, &leak.target),
+        ),
+        actual: placeless_arg_reason(kb, fn_sym, &leak.arg),
+    }
+}
+
+/// WI-20260823-4GBQV — how to NAME the caller's own argument in [`placeless_modify_refusal`],
+/// and WHY it names no resource: the shape, the name the author wrote at its head, and one of
+/// three reasons, each with its own repair.
 ///
-/// TWO REASONS, because they are two different mistakes with two different repairs. A
-/// CALL or a construction produces a FRESH value per evaluation, which no name denotes —
-/// bind it. A bare NAME that is not a place is a CONSTRUCTOR the declaration side would
-/// refuse in the same slot (a field-bearing one, or an eponymous one that is its own sort,
-/// WI-926) — there is nothing to bind, the name simply is not a resource. Telling an
-/// author to `let`-bind `wrap` would send them to a line whose repair does not load.
-fn placeless_arg_reason(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
-    const FRESH: &str = "produces a fresh value rather than naming a slot, so the effect \
-                         has nothing to be re-keyed onto. Bind it first (`let x = …`) and \
-                         pass `x`, or pass a parameter or a field path off one";
-    let named = |what: &str, sym: Symbol| {
+/// * A CONSTANT — a nullary constructor, bare or applied (§4.4: `Foo` is `Foo()`), a `const`,
+///   a type: the same value at every evaluation, which no resource is. A resource is threaded
+///   as a parameter.
+/// * A VALUE NO NAME DENOTES — a call (a nullary operation named bare among them, §5.4), a
+///   construction (a constructor taking fields, bare or applied, is its application), a
+///   literal, a field path off one of these: bind it (`let x = …`) and pass the name.
+/// * A CHOICE — an `if`, a `match`, a `let` — whose value may be a place: the call written in
+///   each branch names that branch's own place. Bound by a `let` instead, the binder aliases
+///   the place, and the effect check does not follow the alias yet (WI-20261015-809JN): the
+///   advice loaded with nothing declared.
+///
+/// The name is the qualified one, through [`KnowledgeBase::qualified_name_of`]; the three
+/// collection-literal forms are named by the literal, which is what the author wrote.
+fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurrence>) -> String {
+    use crate::intern::SymbolKind;
+    const PLACES: &str = "kernel-language.md §5.6 admits a parameter, `result`, or a field path \
+                          off one, and a resource is threaded as a parameter";
+    const BIND: &str = "Bind it first (`let x = …`) and pass `x`, or pass a parameter or a \
+                        field path off one";
+    let constant = |what: String| format!("{what} — a constant, so it names no resource: {PLACES}");
+    let unnamed =
+        |what: String| format!("{what}, a value no name denotes, so it names no resource. {BIND}");
+    let choice = |what: &str| {
         format!(
-            "the name `{}`, which is {} and not a place — kernel-language.md §5.6 admits a \
-             parameter, `result`, or a field path off one, and a resource is threaded as a \
-             parameter. The same name \
-             is refused in a `Modify` target where it is declared, so no row could name \
-             this effect either",
-            kb.qualified_name_of(sym),
-            what,
+            "{what}, which names no resource itself. Call `{}` in each branch instead, so that \
+             each call names its own place",
+            kb.local_name_of(callee)
         )
     };
-    let bare = |sym: Symbol| {
-        if kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
-            named("its own sort (an eponymous constructor)", sym)
-        } else if kb.entity_field_names(sym).is_some_and(|f| !f.is_empty()) {
-            named("a constructor taking fields", sym)
-        } else if kb.has_kind(sym, crate::intern::SymbolKind::Entity) {
-            // WI-20260902-JB6RS: no ambient places — the repair is the parameter.
-            named("a nullary constructor — a constant, whose type a `Modify` target names", sym)
+    let qn = |sym: Symbol| kb.qualified_name_of(sym).to_owned();
+    // A constructor applied to nothing, or named bare: one term (§6). A constant where it takes
+    // no field, a construction with every field left out where it takes some — and the three
+    // literal forms, whose nullary application is the empty literal and not their name.
+    let constructed = |head: Symbol| match collection_literal(kb, head) {
+        Some(lit) => unnamed(format!("the empty {} `{}`", lit.noun, lit.empty)),
+        None if kb.entity_field_names(head).is_some_and(|f| !f.is_empty()) => {
+            unnamed(format!("the constructor `{}(…)`", qn(head)))
+        }
+        None => constant(format!("the name `{}`, a nullary constructor", qn(head))),
+    };
+    let named = |sym: Symbol| {
+        if kb.has_kind(sym, SymbolKind::Entity) {
+            constructed(sym)
+        } else if crate::kb::op_info::is_nullary_operation(kb, sym) {
+            unnamed(format!("the call `{}` (a zero-argument operation named bare)", qn(sym)))
+        } else if kb.has_kind(sym, SymbolKind::Const) {
+            constant(format!("the name `{}`, a `const`", qn(sym)))
         } else {
-            named("not a value place", sym)
+            format!("the name `{}`, which is no place, so it names no resource: {PLACES}", qn(sym))
         }
     };
+    if let Some(sym) = leaf_var_ref(occ) {
+        return named(sym);
+    }
     match occ.as_expr() {
-        Some(Expr::Ref(s)) | Some(Expr::Ident(s)) => bare(*s),
-        Some(Expr::VarRef { name }) => bare(*name),
-        Some(Expr::Apply { functor, .. }) => {
-            format!(
-                "the call `{}(…)`, which {FRESH}",
-                kb.qualified_name_of(*functor)
-            )
-        }
-        // A NULLARY constructor applied (`counter()`) is the constant its bare name is, not
-        // a fresh value: it is told as the bare name is (WI-20260902-JB6RS) — in both
-        // spellings the loader gives it, a `Constructor` once the name is known to be an
-        // entity and an `Apply` before.
-        Some(Expr::Constructor {
-            name,
-            pos_args,
-            named_args,
-            ..
-        }) if pos_args.is_empty() && named_args.is_empty() => bare(*name),
-        Some(Expr::Apply {
-            functor,
-            pos_args,
-            named_args,
-            ..
-        }) if pos_args.is_empty()
+        // The applied spelling of a bare constructor. An operation body builds it as a
+        // `Constructor`; an `Apply` arrives from what no loader converts — a macro's
+        // `make_apply` splice, and the sort-receiver dot rewrite of a name that is both an
+        // entity and an operation of one sort (`t.mk()`, `t = Box[V = Int64]`). Placed
+        // before the arms for a call and a construction, which would take it.
+        Some(
+            Expr::Constructor {
+                name: head,
+                pos_args,
+                named_args,
+                ..
+            }
+            | Expr::Apply {
+                functor: head,
+                pos_args,
+                named_args,
+                ..
+            },
+        ) if pos_args.is_empty()
             && named_args.is_empty()
-            && kb.has_kind(*functor, crate::intern::SymbolKind::Entity) =>
+            && kb.has_kind(*head, SymbolKind::Entity) =>
         {
-            bare(*functor)
+            constructed(*head)
         }
+        // A construction with arguments: by the literal for the three collection forms.
+        Some(Expr::Constructor { name: head, .. } | Expr::Apply { functor: head, .. })
+            if kb.has_kind(*head, SymbolKind::Entity) =>
+        {
+            match collection_literal(kb, *head) {
+                Some(lit) => unnamed(format!("the {} `{}`", lit.noun, lit.written)),
+                None => unnamed(format!("the constructor `{}(…)`", qn(*head))),
+            }
+        }
+        Some(Expr::Apply { functor, .. }) => unnamed(format!("the call `{}(…)`", qn(*functor))),
         Some(Expr::Constructor { name, .. }) => {
-            format!(
-                "the constructor `{}(…)`, which {FRESH}",
-                kb.qualified_name_of(*name)
-            )
+            unnamed(format!("the constructor `{}(…)`", qn(*name)))
         }
+        Some(Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        }) => constant(format!(
+            "the type `{}{}`",
+            qn(*head),
+            if pos_args.is_empty() && named_args.is_empty() { "" } else { "[…]" }
+        )),
         // Empty argument lists make it a FIELD ACCESS, not a call — and reaching here at
         // all means its receiver is the unstable half: [`stable_receiver_path`] takes
         // every `.field` chain whose head is a name, so what is left is a projection off
@@ -580,23 +697,52 @@ fn placeless_arg_reason(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String 
             pos_args,
             named_args,
             ..
-        }) if pos_args.is_empty() && named_args.is_empty() => {
-            format!(
-                "the field path `.{}`, whose receiver {FRESH}",
-                kb.local_name_of(*name)
-            )
-        }
+        }) if pos_args.is_empty() && named_args.is_empty() => format!(
+            "the field path `.{field}`, whose receiver is a value no name denotes, so it names \
+             no resource. Bind the receiver first (`let x = …`) and pass `x.{field}`",
+            field = kb.local_name_of(*name)
+        ),
         Some(Expr::DotApply { name, .. }) => {
-            format!("the call `.{}(…)`, which {FRESH}", kb.local_name_of(*name))
+            unnamed(format!("the call `.{}(…)`", kb.local_name_of(*name)))
         }
-        Some(Expr::HoApply { .. }) => format!("an applied function value, which {FRESH}"),
-        Some(Expr::Const(_)) => format!("a literal, which {FRESH}"),
-        Some(Expr::Match { .. }) => format!("a `match` expression, which {FRESH}"),
-        Some(Expr::If { .. }) => format!("an `if` expression, which {FRESH}"),
-        Some(Expr::Let { .. }) => format!("a `let` expression, which {FRESH}"),
+        Some(Expr::HoApply { .. }) => unnamed("an applied function value".to_owned()),
+        Some(Expr::Const(_)) => unnamed("a literal".to_owned()),
+        Some(Expr::Match { .. }) => choice("a `match` expression"),
+        Some(Expr::If { .. }) => choice("an `if` expression"),
+        Some(Expr::Let { .. }) => choice("a `let` expression"),
         // Loud rather than silent: an unnamed shape still reports, and says so.
-        _ => format!("this argument expression, which {FRESH}"),
+        _ => unnamed("this argument expression".to_owned()),
     }
+}
+
+/// One of the three collection-literal forms a term encodes a literal in, as the author wrote
+/// it ([`collection_literal`]).
+struct CollectionLiteral {
+    noun: &'static str,
+    empty: &'static str,
+    written: &'static str,
+}
+
+/// `head` as a collection literal — `[…]`, `{…}`, `(…)` — when it is one of the three reflect
+/// forms, by the qualified name the canon reads ([`KnowledgeBase::nullary_name_canons_to_ref`]);
+/// a user's own `entity ListLiteral` is an ordinary entity.
+fn collection_literal(kb: &KnowledgeBase, head: Symbol) -> Option<CollectionLiteral> {
+    if kb.nullary_name_canons_to_ref(head) {
+        return None;
+    }
+    let qn = kb.qualified_name_of(head);
+    [
+        (dt::LIST_LITERAL, "list", "[]", "[…]"),
+        (dt::SET_LITERAL, "set", "{}", "{…}"),
+        (dt::TUPLE_LITERAL, "tuple", "()", "(…)"),
+    ]
+    .into_iter()
+    .find(|(form, ..)| qn == dt::qualified(form))
+    .map(|(_, noun, empty, written)| CollectionLiteral {
+        noun,
+        empty,
+        written,
+    })
 }
 
 /// WI-20260823-4GBQV — the SYMBOL at the HEAD of a `denoted` place (`denoted(Ref(c))` ⟹
@@ -643,7 +789,7 @@ pub(super) fn place_head_sym(kb: &KnowledgeBase, inner: &Value) -> Option<Symbol
 /// which reads `Ident` and `VarRef` too; this read a `Ref` alone. The `var_ref` arm is that
 /// twin's `Expr::VarRef` in its term spelling ([`KnowledgeBase::make_var_ref_term`], the
 /// shape WI-552 emits for a binder). A head this declines is SKIPPED by
-/// [`unrekeyed_modify_argument`] — "not a place at all" — so a gap here is a silent pass,
+/// [`placeless_modify`] — "not a place at all" — so a gap here is a silent pass,
 /// not a refusal. MEASURED unreachable before the arms: a probe on the declined shapes and
 /// on the consumer's skip fired zero times across the workspace suite.
 pub(super) fn term_place_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {

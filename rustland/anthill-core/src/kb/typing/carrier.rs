@@ -3462,7 +3462,7 @@ pub(super) fn dispatched_impl_effects_of(
         // The arg bound to the spec op's param[i] (the caller names and orders spec-op
         // params, not impl params): the positional one that fills it by the call's
         // WI-20260827-1F0QP ranking, else the one named with its label.
-        let Some((_, arg_occ)) = call.arg(kb, spec_params, i) else {
+        let Some((u, arg_occ)) = call.arg(kb, spec_params, i) else {
             continue;
         };
         let passed = call.passed(kb, spec_params, i);
@@ -3472,8 +3472,9 @@ pub(super) fn dispatched_impl_effects_of(
         // (WI-506: `Modify[c.rep]` is covered by `Modify[c]`) and skips an argument that names
         // no place (WI-20260823-4GBQV), which is refused where its `Modify` is incurred, as the
         // call's own. Keyed on variables alone, an override's `Modify[<its own param>]` leaked
-        // to the caller of `ModifyRuntime.set(h.cell, 1)` (MEASURED).
-        places.record(kb, *impl_param_sym, arg_occ);
+        // to the caller of `ModifyRuntime.set(h.cell, 1)` (MEASURED). The argument as the call's
+        // typing left it, as at the call's own site ([`typed_arg`]).
+        places.record(kb, *impl_param_sym, typed_arg(arg_occ, call.result(u)));
         // The type the override RECEIVES — a `some(…)`-wrapped argument's option — as
         // [`override_at_call`] and the fallback read it.
         if let Some(t) = passed {
@@ -3519,6 +3520,9 @@ pub(super) fn dispatched_impl_effects_of(
     let own_sigma =
         override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, &reading, span)?;
     let mut out: Vec<Value> = Vec::new();
+    // The first `Modify` the call incurs over a parameter whose argument names no place, read
+    // off the override's own atom as the call's own is ([`placeless_modify`]).
+    let mut leak: Option<PlacelessModify> = None;
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
         // (`Stream.isEmpty effects s.E`) that a blanket ref-substitution leaves
@@ -3570,6 +3574,7 @@ pub(super) fn dispatched_impl_effects_of(
             None => sub,
         };
         let walked = walk_type_deep_value(kb, subst, &sub);
+        let before = out.len();
         if !effect_is_unresolved_var(kb, &walked) {
             // WI-20260824-VT8CF — DISCHARGE HERE TOO, through the same owner the
             // op's-own-effect loop uses. σ is built over the IMPL's parameters, because
@@ -3587,16 +3592,15 @@ pub(super) fn dispatched_impl_effects_of(
                 &mut out,
             );
         }
+        if leak.is_none() && !places.placeless.is_empty() && out.len() > before {
+            leak = placeless_modify(kb, &impl_op.params, e, &places.placeless);
+        }
     }
     // WI-20260929-0RP29: a `Modify` over a parameter whose argument names no place is refused
-    // here as the call's own is (`unrekeyed_modify_argument`), not left naming the override's
+    // here as the call's own is ([`placeless_modify_refusal`]), not left naming the override's
     // parameter in the caller's row (`Modify[T = b]`, which no caller can declare).
-    if !places.placeless.is_empty() {
-        if let Some(err) =
-            unrekeyed_modify_argument(kb, &impl_op, impl_op_sym, &out, &places.placeless, span)
-        {
-            return Err(err);
-        }
+    if let Some(leak) = leak {
+        return Err(placeless_modify_refusal(kb, impl_op_sym, &leak, span));
     }
     Ok(out)
 }

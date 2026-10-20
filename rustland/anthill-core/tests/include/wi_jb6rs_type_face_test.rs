@@ -107,6 +107,48 @@ fn a_bracket_in_an_operation_body_is_the_type() {
     );
 }
 
+/// A bracket is the type in a rule's COMPOUND expression too, as the rule body's own walk
+/// reads it: `if ?b then counter[] else counter[]` in a `@[simp]` right-hand side, at `->
+/// CounterState`, is refused as the type it is, as the same rule without the `if` is. It was
+/// built as the application `counter()` — the compound walk excluded a constructor's bracket
+/// from the type values — so it loaded and evaluated to the instance (MEASURED, by the review of
+/// the arm reorder in `placeless_arg_reason`, 2026-10-20). The applied `counter()` there is the
+/// instance, and runs.
+///
+/// BACK-OUT: the compound exclusion restored in `build_load`'s `is_type_value` fails this row.
+#[test]
+fn a_bracket_in_a_rules_compound_expression_is_the_type() {
+    let src = |ns: &str, rhs: &str| {
+        format!(
+            r#"
+namespace test.jb6rs.compound.{ns}
+  import anthill.prelude.{{Bool}}
+  sort CounterState
+    entity counter
+  end
+  operation pick(b: Bool) -> CounterState
+  rule pick(?b) <=> {rhs} @[simp]
+  operation use() -> CounterState = pick(true)
+  operation inst() -> CounterState = counter
+end
+"#
+        )
+    };
+    for (ns, rhs) in [("cond", "(if ?b then counter[] else counter[])"), ("plain", "counter[]")] {
+        let errs = load_errors_of(&src(ns, rhs));
+        assert!(
+            errs.iter().any(|e| e.contains("expected CounterState, got Type (counter)")),
+            "{ns}: the bracket is the type; got: {errs:#?}"
+        );
+    }
+    let applied = src("applied", "(if ?b then counter() else counter())");
+    assert_eq!(load_errors_of(&applied), Vec::<String>::new(), "the applied constructor is the instance");
+    let mut interp = interp_for(&applied);
+    let picked = interp.call("test.jb6rs.compound.applied.use", &[]).expect("use runs");
+    let instance = interp.call("test.jb6rs.compound.applied.inst", &[]).expect("inst runs");
+    assert_eq!(format!("{picked:?}"), format!("{instance:?}"), "`counter()` is the instance");
+}
+
 const BRACKETS: &str = r#"
 namespace test.jb6rs.brackets
   import anthill.prelude.{Int64, String}

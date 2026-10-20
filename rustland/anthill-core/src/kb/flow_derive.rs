@@ -586,12 +586,19 @@ impl<'a> Deriver<'a> {
     /// apply). NOT a bare operation or const: in a value slot a bare nullary
     /// operation is its call (§5.4), whose result is not followed — so `f(op)`
     /// reads as `f(op())` does — and a const may hold anything.
+    ///
+    /// A bare name rides every spelling an operation body gives it — `VarRef`, the one the
+    /// body's own lowering writes, among them — and a constructor is asked by `has_kind`,
+    /// which an eponymous one (its own sort, `kind_of` = `Sort`) answers too. Read off
+    /// `Ref`/`Ident` by `kind_of` alone, a body ending in the bare `tok` was taken to return
+    /// a value a callback wrote, and was refused `undeclared effect: Modify[T = result]`
+    /// where the same body ending `tok()` loaded (MEASURED).
     fn holds_no_value(&self, occ: &Rc<NodeOccurrence>) -> bool {
-        let is_entity = |s: Symbol| self.kb.kind_of(s) == Some(SymbolKind::Entity);
+        let is_entity = |s: Symbol| self.kb.has_kind(s, SymbolKind::Entity);
         match occ.as_expr() {
             Some(Expr::Const(_) | Expr::Bottom) => true,
             Some(Expr::TupleLit { positional, named }) => positional.is_empty() && named.is_empty(),
-            Some(Expr::Ref(s) | Expr::Ident(s)) => is_entity(*s),
+            Some(Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s }) => is_entity(*s),
             Some(Expr::Constructor {
                 pos_args,
                 named_args,

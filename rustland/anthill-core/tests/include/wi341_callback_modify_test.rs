@@ -323,3 +323,54 @@ end
 "#;
     load_result(src).expect("a written fresh value that does not escape owes no declaration");
 }
+
+/// A CONSTRUCTOR applied to nothing holds no value a callback wrote, in every spelling an
+/// operation body gives it — `tok`, `tok()`, `Tok.tok`, an eponymous `Tok` — at the body's
+/// tail and as a callback's argument. `holds_no_value` read a bare name off `Ref`/`Ident` by
+/// `kind_of`; a body writes a bare name as `VarRef`, and an eponymous constructor's kind is its
+/// sort's. So the bare tail was refused `undeclared effect: Modify[T = result]` where `tok()`
+/// loaded, and `f(tok)` charged the callback's `Modify` to the unrelated input `c` (MEASURED).
+///
+/// BACK-OUT: the `VarRef` spelling dropped from `holds_no_value` fails the bare, the eponymous
+/// and the callback-argument rows; reading the kind by `kind_of` again fails the eponymous one.
+/// `tok()` passes either way by design: an applied constructor is a `Constructor` node.
+#[test]
+fn a_bare_constructor_holds_no_value_in_every_spelling() {
+    for (ns, sort_body, tail) in [
+        ("bare", "entity tok", "tok"),
+        ("applied", "entity tok", "tok()"),
+        ("qualified", "entity tok", "Tok.tok"),
+        ("eponymous", "entity Tok", "Tok"),
+    ] {
+        let src = format!(
+            r#"
+namespace anthill.test.wi341noval.{ns}
+  import anthill.prelude.{{Int64, Unit, Cell, Modify, Modifiable}}
+  sort Tok
+    provides Modifiable[T = Self]
+    {sort_body}
+  end
+  operation use_fresh(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Tok =
+    let c = mk()
+    let _ = f(c)
+    {tail}
+end
+"#
+        );
+        if let Err(errs) = load_result(&src) {
+            panic!("{ns}: a constructor at the tail holds no written value; got: {errs:#?}");
+        }
+    }
+    let src = r#"
+namespace anthill.test.wi341noval.cbarg
+  import anthill.prelude.{Int64, Unit, Cell, Modify, Modifiable}
+  sort Tok
+    provides Modifiable[T = Self]
+    entity tok
+  end
+  operation feed_tok(c: Cell[V = Int64], f: (a: Tok) -> Unit @ Modify[a]) -> Unit =
+    f(tok)
+end
+"#;
+    load_result(src).expect("a constructor handed to a callback is no input of the caller's");
+}
