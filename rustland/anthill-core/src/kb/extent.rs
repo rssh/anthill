@@ -999,10 +999,10 @@ impl KnowledgeBase {
             let elements = self.strict_list_elements(&covers_value)?;
             let mut covers = Vec::with_capacity(elements.len());
             for element in elements {
-                // A `covers` entry is a functor NAME as written (`WorkItem`), which
-                // `value_functor` reads through the WI-511 Ref/Fn canon so both
-                // spellings land on one symbol.
-                let sym = crate::eval::eval::value_functor(self, &element)
+                // A `covers` entry names an entity — as written (`WorkItem`) or as its
+                // type (`WorkItem[]`, whose head is the type face) — and both spellings,
+                // and the WI-511 Ref/Fn pair, land on the one declaration.
+                let sym = crate::eval::eval::type_value_decl(self, &element)
                     .ok_or(ExtentBindingError::UnreadableCover)?;
                 covers.push(sym);
             }

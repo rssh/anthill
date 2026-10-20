@@ -211,12 +211,13 @@ impl KbBridge {
     /// The already-resolved functor symbol of a by-reference `Type` argument
     /// (WI-632). A `sort`/`entity` reflect op takes the sort BY REFERENCE — the
     /// `Type` carrier wraps a `Value` resolved to its qualified functor at the
-    /// caller's write site — so extraction is a pure `value_functor` read (the
-    /// `facts_of` precedent). Panics loudly on a non-reference: these
+    /// caller's write site — so extraction is a pure `type_value_decl` read (the
+    /// `facts_of` precedent), the declaration even where the type carries an entity's
+    /// type face. Panics loudly on a non-reference: these
     /// `Vec`-returning surfaces have no error channel. `op` names the caller for
     /// the diagnostic.
     fn ref_functor(&self, sort: &Type, op: &str) -> anthill_core::intern::Symbol {
-        anthill_core::eval::value_functor(&self.kb.borrow(), sort.value()).unwrap_or_else(|| {
+        anthill_core::eval::type_value_decl(&self.kb.borrow(), sort.value()).unwrap_or_else(|| {
             panic!(
                 "KB.{op}: argument is not an entity/sort reference (expected a \
                  Ref / Fn / Entity carrier that names a functor)"
@@ -312,7 +313,7 @@ impl KbBridge {
                 // WI-632: `sort` is a by-reference `Term` (a `Ref` resolved at the
                 // caller's write site); extract its already-qualified functor via
                 // the shared `value_functor` — no name-string resolution.
-                let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+                let functor = anthill_core::eval::type_value_decl(&self.kb.borrow(), sort.value())
                     .ok_or_else(|| ResolveStreamFailure::MalformedQuery {
                         detail: "KB.sort_query: `sort` is not a sort reference (expected a \
                                  Ref / Fn / Entity carrier that names a functor)"
@@ -1054,7 +1055,7 @@ impl KB for KbBridge {
         // than returning an empty list a caller would misread as "none
         // asserted". The trait fixes the return as `Vec<Term>`, so a panic is
         // the only loud channel.
-        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+        let functor = anthill_core::eval::type_value_decl(&self.kb.borrow(), sort.value())
             .unwrap_or_else(|| {
                 panic!(
                     "KB.facts_of: `sort` is not an entity reference (expected a \
@@ -1078,7 +1079,7 @@ impl KB for KbBridge {
         // reference from the row's content here. `read_stored_facts` returns the
         // owner-minted opaque reference alongside the visible row, uniformly for
         // resident and mounted extents.
-        let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
+        let functor = anthill_core::eval::type_value_decl(&self.kb.borrow(), sort.value())
             .unwrap_or_else(|| {
                 panic!(
                     "KB.stored_facts_of: `sort` is not an entity reference (expected a \
@@ -1116,7 +1117,7 @@ impl KB for KbBridge {
     /// the fact (which is then retracted) — the spec's "violated constraint → none".
     fn assert(&mut self, term: Term, sort: Type) -> Option<StoredRef<Term>> {
         let head = term.into_value();
-        let arg_sort_sym = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value());
+        let arg_sort_sym = anthill_core::eval::type_value_decl(&self.kb.borrow(), sort.value());
         let mut kb = self.kb.borrow_mut();
         kb.assert_checked_persistent(head, arg_sort_sym)
             .unwrap_or_else(|e| panic!("KB.assert: {e}"))

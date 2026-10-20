@@ -3200,7 +3200,9 @@ fn collect_type_refs<V: TermView>(
     in_band: &std::collections::HashSet<Symbol>,
     out: &mut std::collections::HashSet<Symbol>,
 ) {
-    if let Some(sym) = extract_sort_ref_sym(kb, ty) {
+    // The band holds DECLARATIONS; a type names a constructor by its type face
+    // (WI-20260902-JB6RS), so every head is asked about as the declaration it is.
+    if let Some(sym) = extract_sort_ref_sym(kb, ty).map(Symbol::plain) {
         if in_band.contains(&sym) {
             out.insert(sym);
         }
@@ -3208,6 +3210,7 @@ fn collect_type_refs<V: TermView>(
     }
     match ty.head(kb) {
         ViewHead::Ident(s) => {
+            let s = s.plain();
             if in_band.contains(&s) {
                 out.insert(s);
             }
@@ -3218,7 +3221,7 @@ fn collect_type_refs<V: TermView>(
             let keys = ty.named_keys(kb);
             if pos_arity == 0 && keys.is_empty() {
                 // A bare name: its own constructor applied to nothing.
-                if let Some(s) = functor.filter(|s| in_band.contains(s)) {
+                if let Some(s) = functor.map(Symbol::plain).filter(|s| in_band.contains(s)) {
                     out.insert(s);
                 }
                 return;

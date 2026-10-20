@@ -4273,10 +4273,11 @@ pub(super) fn check_unnamed_requirement_lines(kb: &mut KnowledgeBase) -> Vec<Typ
     let mut sorts: Vec<Symbol> = Vec::new();
     let mut ops: Vec<Symbol> = Vec::new();
     for (owner, slots) in &kb.named_requirement_slots {
-        if crate::kb::op_info::lookup_operation_info(kb, *owner).is_some() {
-            ops.push(*owner);
+        let owner = owner.sym();
+        if crate::kb::op_info::lookup_operation_info(kb, owner).is_some() {
+            ops.push(owner);
         } else if slots.len() >= 2 {
-            sorts.push(*owner);
+            sorts.push(owner);
         }
     }
     if !sorts.is_empty() {

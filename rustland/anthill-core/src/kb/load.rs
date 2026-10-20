@@ -21932,7 +21932,11 @@ pub(crate) fn find_operation_in_sort(
                 // WI-984 — the operation's scope is OWNED BY `sort_sym`. Was a term
                 // fetch that matched `Term::Fn` only, so a sort whose eponymous
                 // constructor makes it a `Term::Ref` (WI-511) answered `false` here.
-                let op_scope_matches = kb.declaring_scope_symbol(op_s) == Some(sort_sym);
+                //
+                // Against the DECLARATION (WI-20260902-JB6RS): a receiver's type names an
+                // eponymous or free-standing sort by its type face, and the operation's
+                // scope is owned by the plain symbol.
+                let op_scope_matches = kb.declaring_scope_symbol(op_s) == Some(sort_sym.plain());
 
                 if op_scope_matches {
                     let op_name = kb.local_name_of(op_s);

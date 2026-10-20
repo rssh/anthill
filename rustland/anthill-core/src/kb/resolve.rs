@@ -7500,8 +7500,12 @@ impl KnowledgeBase {
         match sort_sym {
             Some(sym) => {
                 // Canonical nullary-Fn shape — matches the form used by
-                // load.rs for sort references.
-                let ref_term = self.make_name_term_from_sym(sym);
+                // load.rs for sort references. The answer is the sort's NAME, so an
+                // entity's type face (`Vec3[]`, a carrier binding `T = Vec3`) answers its
+                // declaration (WI-20260902-JB6RS): the joins in `reflect/typing.anthill`
+                // normalize both sides through this builtin, and a face here would split
+                // one sort into two names.
+                let ref_term = self.make_name_term_from_sym(sym.plain());
                 self.finish_result(target, ref_term)
             }
             None => BuiltinResult::Failure,

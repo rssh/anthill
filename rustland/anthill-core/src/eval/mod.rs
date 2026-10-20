@@ -29,7 +29,7 @@ use crate::parse::desugar_target as dt;
 pub use error::{
     macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError,
 };
-pub use eval::value_functor;
+pub use eval::{type_value_decl, value_functor};
 pub use frame::{ActivationStack, Frame};
 pub use value::Value;
 

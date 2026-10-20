@@ -196,11 +196,11 @@ fn str_arg(kb: &crate::kb::KnowledgeBase, v: Value) -> Result<String, EvalError>
 /// The already-resolved functor symbol of a by-reference sort/entity argument
 /// (WI-632). A `sort`/`entity` reflect op takes the sort BY REFERENCE — a
 /// `Value::Term(Ref)` / `Value::Entity` resolved to its qualified functor at the
-/// caller's write site — so extraction is a pure `value_functor` read (the
-/// `facts_of` precedent), loud on a non-reference. The interpreter twin of the
-/// bridge's `value_functor(&kb, type.value())`.
+/// caller's write site — so extraction is a pure `type_value_decl` read (the
+/// `facts_of` precedent: the declaration, even where the type carries an entity's type
+/// face), loud on a non-reference. The interpreter twin of the bridge's `ref_functor`.
 fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalError> {
-    crate::eval::value_functor(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
+    crate::eval::type_value_decl(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Type (entity/sort reference)",
         got: sort.type_name().to_string(),
     })

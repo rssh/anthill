@@ -1456,7 +1456,10 @@ pub struct KnowledgeBase {
     /// WI-841 records the slot's SPEC base beside the position, written where both are
     /// in hand (the loader): selection needs to know a slot's spec to pin a provider
     /// for it, and the readers of the position check the entry they find against it.
-    pub(crate) named_requirement_slots: HashMap<Symbol, Vec<NamedRequirementSlot>>,
+    ///
+    /// Keyed by the owner's DECLARATION (WI-20260902-JB6RS): an eponymous sort's type
+    /// face, which a carrier read off a type names it by, reaches its slots.
+    pub(crate) named_requirement_slots: HashMap<Decl, Vec<NamedRequirementSlot>>,
 
     /// WI-20261013-50ZMN — the sort each of a SORT's named `requires` lines requires, as
     /// the line wrote it: `Semi → [(Plus, Mon), (Times, Mon)]`. Written by scan
@@ -1469,7 +1472,7 @@ pub struct KnowledgeBase {
     /// [`Self::named_requirement_slots`] says the same of a name and cannot serve: it is
     /// written where the line is LOADED, since a slot's place is read off the facts.
     /// The sort is kept as resolved; a reader takes it through a type alias.
-    pub(crate) requirement_sorts: HashMap<Symbol, Vec<(Symbol, Symbol)>>,
+    pub(crate) requirement_sorts: HashMap<Decl, Vec<(Symbol, Symbol)>>,
 
     /// WI-954 — A TYPE PARAMETER'S CANONICAL LOGICAL VARIABLE, PUBLISHED BY THE
     /// LOADER: the parameter's own symbol → the hash-consed `Term::Var(Var::Global)`
@@ -2658,7 +2661,8 @@ impl TypeArgProblem {
         } else {
             format!("declares type parameter(s) {}", declared.join(", "))
         };
-        let declares = if owner == head {
+        // `head` may be a constructor's type face, its owner never is.
+        let declares = if owner == head.plain() {
             format!("it {declares}")
         } else {
             format!("its sort `{}` {declares}", kb.qualified_name_of(owner))
@@ -3250,7 +3254,7 @@ impl KnowledgeBase {
         of_base: Option<usize>,
     ) {
         self.named_requirement_slots
-            .entry(owner)
+            .entry(Decl::of(owner))
             .or_default()
             .push(NamedRequirementSlot {
                 binder,
@@ -3282,14 +3286,14 @@ impl KnowledgeBase {
     /// have keeps the position it was recorded at, and its readers' own check of the
     /// entry they find refuses it.
     pub(crate) fn settle_named_requirement_slots(&mut self) {
-        let owners: Vec<Symbol> = self
+        let owners: Vec<Decl> = self
             .named_requirement_slots
             .iter()
             .filter(|(_, slots)| slots.iter().any(|slot| slot.of_base.is_some()))
             .map(|(owner, _)| *owner)
             .collect();
         for owner in owners {
-            let chain = crate::kb::typing::direct_requires(self, owner);
+            let chain = crate::kb::typing::direct_requires(self, owner.sym());
             let Some(slots) = self.named_requirement_slots.get_mut(&owner) else {
                 continue;
             };
@@ -3305,7 +3309,7 @@ impl KnowledgeBase {
     /// on `sort` ([`Self::requirement_sorts`]). The first record of a name stands: a
     /// later load's scan of the same file writes the same line again.
     pub(crate) fn note_requirement_sort(&mut self, owner: Symbol, binder: Symbol, sort: Symbol) {
-        let names = self.requirement_sorts.entry(owner).or_default();
+        let names = self.requirement_sorts.entry(Decl::of(owner)).or_default();
         if !names.iter().any(|(name, _)| *name == binder) {
             names.push((binder, sort));
         }
@@ -3315,7 +3319,7 @@ impl KnowledgeBase {
     /// ([`Self::requirement_sorts`]).
     pub(crate) fn requirement_sort_named(&self, owner: Symbol, binder: &str) -> Option<Symbol> {
         self.requirement_sorts
-            .get(&owner)?
+            .get(&Decl::of(owner))?
             .iter()
             .find(|(name, _)| self.local_name_of(*name) == binder)
             .map(|(_, sort)| *sort)
@@ -3325,7 +3329,7 @@ impl KnowledgeBase {
     /// overwhelmingly common all-anonymous owner.
     pub fn named_requirement_slots(&self, owner: Symbol) -> &[NamedRequirementSlot] {
         self.named_requirement_slots
-            .get(&owner)
+            .get(&Decl::of(owner))
             .map_or(&[], Vec::as_slice)
     }
 
@@ -4805,7 +4809,7 @@ impl KnowledgeBase {
             // runtime name-string resolution.
             let sym = TermView::named_arg(view, self, syms.sort)
                 .map(|c| c.to_value())
-                .and_then(|v| crate::eval::eval::value_functor(self, &v));
+                .and_then(|v| crate::eval::eval::type_value_decl(self, &v));
             if let Some(sym) = sym {
                 if !out.contains(&sym) {
                     out.push(sym);
@@ -7262,6 +7266,11 @@ impl KnowledgeBase {
     /// it is written in the SAME pass-1 scan (`register_entity_field_names_scan`),
     /// so this arm keeps the load-order independence the child scan was chosen for.
     pub fn sort_has_constructors(&self, sort_sym: Symbol) -> bool {
+        // A question about the DECLARATION, so a type face answers it as its constructor
+        // does (WI-20260902-JB6RS): an eponymous `Foo†` as the sort `Foo`, and a nested
+        // `red†` as `red` — true, by the arm below, where the face itself constructs
+        // nothing and has no children.
+        let sort_sym = sort_sym.plain();
         if self.is_entity_constructor(sort_sym) {
             return true;
         }
@@ -12191,15 +12200,17 @@ impl KnowledgeBase {
     /// through here — [`Self::make_sort_ref`] and the loader's type-context lowerings —
     /// so which declarations mint a face is decided in ONE place.
     ///
-    /// STAGED: nested constructors (`Entity`, no `Sort` kind) mint one now. An eponymous
-    /// or free-standing entity — which also carries `Sort`, and whose bare name a data
-    /// position still reads as its type (§8.3, until the reading flips) — is the next
-    /// population; widening it here is that step.
+    /// EVERY constructor: a nested one (`Entity`), and an eponymous or free-standing entity,
+    /// which carries `Sort` as well. Until the reading of a bare name flips, an eponymous or
+    /// free-standing entity's bare name in a data position keeps the reading it had: in an
+    /// operation body it is the type, built here too (`reduce_var`, through
+    /// [`Self::make_sort_ref`]); in a clause it is the name as written, the plain symbol, so
+    /// `fact p(Foo)` is not found by `:- p(Foo[])`.
     pub fn type_context_face(&self, sym: Symbol) -> Symbol {
         if sym.is_type_face() {
             return sym;
         }
-        if self.has_kind(sym, SymbolKind::Entity) && !self.has_kind(sym, SymbolKind::Sort) {
+        if self.has_kind(sym, SymbolKind::Entity) {
             sym.type_face()
         } else {
             sym
@@ -16511,8 +16522,8 @@ mod wi913_host_name_ladder_tests {
 /// DECLARATION exactly as the constructor does; only term identity tells them apart.
 #[cfg(test)]
 mod jb6rs_type_face_reads_the_declaration_tests {
-    //! Nothing in the loader mints a face yet, so the fixture mints them through the one
-    //! guarded entry point, [`KnowledgeBase::type_face_of`], over the three shapes a
+    //! The fixture mints the faces through the guarded entry point,
+    //! [`KnowledgeBase::type_face_of`], over the three shapes a
     //! constructor is declared in: sort-nested (`Colour.red`, `Colour.green`), eponymous
     //! (`sort Foo … entity Foo(…) … end`) and free-standing (`entity Bar(…)`).
     //!
@@ -16523,19 +16534,23 @@ mod jb6rs_type_face_reads_the_declaration_tests {
     //!    `Foo†` reports `Foo` as a strict parent of itself.
     //!  * `canonical_sym` dropping the face: its row fails; `canonical_sort_sym`
     //!    returning the face: the row after it fails.
+    //!  * `named_requirement_slots` or `requirement_sort_named` missing for a face (as
+    //!    when their tables were keyed by `Symbol`): `Foo`'s named-slot rows fail;
+    //!    `sort_has_constructors` reading the face itself: `red`'s data-sort row fails.
     //! The plain-sort rows pass either way, BY DESIGN: a sort with no constructor of its
     //! name never gets a face, and that is what they pin.
     use super::*;
     use crate::kb::term::Term;
 
     const SRC: &str = "namespace jb6rs.faces
-  import anthill.prelude.Int64
+  import anthill.prelude.{Int64, Ord}
   enum Colour
     entity red
     entity green(v: Int64)
   end
   sort Foo
     sort X = ?
+    requires O: Ord[X]
     entity Foo(a: X)
   end
   entity Bar(n: Int64)
@@ -16580,6 +16595,16 @@ end
             assert_eq!(kb.type_arg_owner(face), kb.type_arg_owner(c), "{qn}: type-arg owner");
             assert_eq!(kb.sort_of_head(face), kb.sort_of_head(c), "{qn}: trigger sort");
             assert_eq!(kb.sort_children(face), kb.sort_children(c), "{qn}: children");
+            assert_eq!(kb.sort_has_constructors(face), kb.sort_has_constructors(c), "{qn}: a data sort");
+            let binders = |kb: &KnowledgeBase, s: Symbol| {
+                kb.named_requirement_slots(s).iter().map(|slot| slot.binder).collect::<Vec<_>>()
+            };
+            assert_eq!(binders(&kb, face), binders(&kb, c), "{qn}: named requirement slots");
+            assert_eq!(
+                kb.requirement_sort_named(face, "O"),
+                kb.requirement_sort_named(c, "O"),
+                "{qn}: the sort a named requirement requires"
+            );
             assert_eq!(
                 sorted(kb.field_constructors_of_sort(face)),
                 sorted(kb.field_constructors_of_sort(c)),
@@ -16606,6 +16631,8 @@ end
         // itself through either face.
         let foo = sym(&kb, "jb6rs.faces.Foo");
         assert_eq!(kb.strict_parent_sort(kb.type_face_of(foo)), None);
+        // What makes the named-slot rows above a measurement and not `[] == []`.
+        assert!(!kb.named_requirement_slots(foo).is_empty(), "the fixture's `Foo` names a requirement slot");
         // The nested one names its enum, through either face.
         let red = sym(&kb, "jb6rs.faces.Colour.red");
         assert_eq!(kb.sort_of_constructor(kb.type_face_of(red)), Some(colour));

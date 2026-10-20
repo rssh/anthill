@@ -97,7 +97,7 @@ fn call_bool(i: &mut Interpreter, op: &str) -> bool {
 }
 
 /// Every `SortProvidesInfo` fact, rendered. `TermPrinter` prints SHORT names, so a
-/// row reads `SortProvidesInfo(sort_ref: Vec3, spec: SortView(NonEq, T: Vec3))`.
+/// row reads `SortProvidesInfo(sort_ref: Vec3, spec: SortView(NonEq, T: Vec3[]))`.
 fn provides_rows(kb: &mut KnowledgeBase) -> Vec<String> {
     kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
         .expect("SortProvidesInfo");
@@ -106,7 +106,9 @@ fn provides_rows(kb: &mut KnowledgeBase) -> Vec<String> {
 
 /// The rendered `NonEq` row for one carrier — a whole-string match, so a substring
 /// that also appears in a neighbouring carrier's row cannot stand in for it.
-const VEC3_NONEQ: &str = "SortProvidesInfo(sort_ref: Vec3, spec: SortView(NonEq, T: Vec3))";
+// `T: Vec3[]`: the binding is a TYPE, and an eponymous sort's type is its constructor's type
+// face, written as data with the bracket (WI-20260902-JB6RS).
+const VEC3_NONEQ: &str = "SortProvidesInfo(sort_ref: Vec3, spec: SortView(NonEq, T: Vec3[]))";
 
 /// THE HEADLINE. Two phases over the full closure, and the second phase is DRIVEN:
 /// the derived-`NonEq` carrier's field-wise equality actually runs and answers IEEE.
@@ -217,6 +219,7 @@ fn derived_noneq_rows_survive_the_next_phase_unchanged() {
         .collect();
     assert_eq!(
         fresh,
+        // `Reading` has no constructor of its name, so its type has one face and prints bare.
         vec![&"SortProvidesInfo(sort_ref: Reading, spec: SortView(NonEq, T: Reading))".to_string()],
         "phase 2 must derive exactly its own new composite's NonEq"
     );

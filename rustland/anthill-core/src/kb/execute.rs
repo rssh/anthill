@@ -941,7 +941,7 @@ impl KnowledgeBase {
                     entity: "sort_query",
                     field: "sort",
                 })?;
-            let sort_sym = crate::eval::eval::value_functor(self, &sort_v).ok_or_else(|| {
+            let sort_sym = crate::eval::eval::type_value_decl(self, &sort_v).ok_or_else(|| {
                 LowerError::NotASortReference {
                     got: sort_v.type_name().to_string(),
                 }

@@ -651,9 +651,11 @@ impl Interpreter {
             return Ok(StepOutcome::Deliver(v));
         }
         // A bare reference to a free-standing entity (e.g. `WorkItem` in
-        // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
+        // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call — and the
+        // type is the term every type producer builds, its type face (WI-20260902-JB6RS):
+        // `WorkItem` and `WorkItem[]` are one type here.
         if self.kb.is_free_standing_entity(sym) {
-            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
+            let tid = self.kb.make_sort_ref(sym);
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
         // WI-206: likewise a bare reference to a SORT (e.g. `Cell` in
@@ -666,7 +668,7 @@ impl Interpreter {
         // for which the symbol is the only record there is.
         if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) {
             self.refuse_unbound_type_param(sym)?;
-            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
+            let tid = self.kb.make_sort_ref(sym);
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
         // WI-365: a bare reference to a NULLARY constructor — an enum variant
@@ -5319,6 +5321,18 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         | Value::Var(_)
         | Value::Relation { .. } => None,
     }
+}
+
+/// WI-20260902-JB6RS — the DECLARATION a by-reference type argument names: the
+/// [`value_functor`] of a `Type` value, read as the sort or entity it denotes. An
+/// entity's type is written with its type face (`WorkItem[]`, [`KnowledgeBase::make_sort_ref`]),
+/// and a reader keyed by declaration — `rules_by_functor`, an extent's `covers`, a sort
+/// query's trigger sort — wants the declaration the face stands for: `value_functor`
+/// hands the face on, and a lookup by it finds nothing, in silence. Not for an INSTANCE's
+/// head, where no face occurs, nor for a reader that must tell a type from an instance
+/// (`match`, the dispatch carrier), which keeps `value_functor`.
+pub fn type_value_decl(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    value_functor(kb, value).map(Symbol::plain)
 }
 
 /// The supplier-set reader a value-directed dispatch is asked WITH — the one thing
