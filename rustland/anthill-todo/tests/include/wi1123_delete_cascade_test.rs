@@ -73,7 +73,7 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 "#;
 
 fn per_file_project(tmp: &tempfile::TempDir) -> std::path::PathBuf {
@@ -293,8 +293,8 @@ fn delete_names_the_items_that_still_depend_on_it() {
 /// A binding that does not name `Feedback` in its `covers:` is refused AT STARTUP,
 /// by name, with the fix.
 ///
-/// MEASURED, and the reason this guard exists: with `covers: [WorkItem, Tag,
-/// StoreFormat]` the tool used to work until the first `delete`, which then died
+/// MEASURED, and the reason this guard exists: with `covers: [WorkItem[], Tag[],
+/// StoreFormat[]]` the tool used to work until the first `delete`, which then died
 /// with `retract: FactRef does not belong to the supplied store` — true and loud
 /// and diagnosing nothing, since the reader is looking at `delete` and the fault is
 /// four lines of `project.anthill`. The old `delete` never touched `Feedback`, so
@@ -309,7 +309,7 @@ fn a_binding_that_omits_feedback_is_refused_with_the_fix() {
     let proj = setup_project(&tmp, "");
     fs::write(
         proj.join("anthill-todo/project.anthill"),
-        ITEM_PER_FILE_BINDING.replace("[WorkItem, Feedback, Tag, StoreFormat]", "[WorkItem, Tag]"),
+        ITEM_PER_FILE_BINDING.replace("[WorkItem[], Feedback[], Tag[], StoreFormat[]]", "[WorkItem[], Tag[]]"),
     )
     .expect("write project config");
 
@@ -341,7 +341,7 @@ fn a_binding_that_omits_feedback_is_refused_with_the_fix() {
     // Driven, not read: doing what the message says makes the project work.
     fs::write(
         proj.join("anthill-todo/project.anthill"),
-        ITEM_PER_FILE_BINDING.replace("[WorkItem, Feedback, Tag, StoreFormat]", "[WorkItem, Feedback, Tag]"),
+        ITEM_PER_FILE_BINDING.replace("[WorkItem[], Feedback[], Tag[], StoreFormat[]]", "[WorkItem[], Feedback[], Tag[]]"),
     )
     .expect("write project config");
     assert!(

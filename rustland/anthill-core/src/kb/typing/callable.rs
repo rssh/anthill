@@ -789,21 +789,6 @@ pub(super) fn denoted_type_value(
             Some(Expr::TypeValue { .. }) => {
                 return Some(crate::persistence::print::TermPrinter::new(kb).print_occurrence(node))
             }
-            // WI-20260824-JM6ZW — A FREE-STANDING ENTITY'S BARE NAME, the one type value
-            // no walk records (`check_bare_ref` says why its node stays as written). It
-            // is the case design §8 names: a forgotten-parentheses construction,
-            // `use_leaf(Leaf)` for `use_leaf(Leaf(name: …))`, refused `expected Leaf, got
-            // Type` with nothing saying the bare name had denoted the type `Leaf`.
-            //
-            // Asked by the SAME predicate the typing arm asks, so this names a denotation
-            // exactly where that arm made one. Keyed on the symbol, which is what makes
-            // that sound here: a local or a parameter spelled `Leaf` is a binder symbol
-            // of its own, never the entity's, so it cannot be read as the type.
-            Some(Expr::Ref(s)) | Some(Expr::Ident(s)) | Some(Expr::VarRef { name: s })
-                if kb.is_free_standing_entity(*s) =>
-            {
-                return Some(kb.local_name_of(*s).to_string())
-            }
             Some(Expr::Let { body, .. }) | Some(Expr::Proof { body, .. }) => body,
             _ => return None,
         };

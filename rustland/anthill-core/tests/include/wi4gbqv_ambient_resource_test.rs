@@ -378,9 +378,11 @@ end
         "the re-key must not mint `Modify[T = wrap]`, which no declaration can spell; \
          got: {errs:#?}"
     );
+    // Since WI-20260902-JB6RS the bare `wrap` is the construction `wrap()` (a constructor's
+    // bare name is its instance, kernel-language.md §4.4), refused for the field it lacks
+    // before anything asks whether it is a place — and that refusal names `wrap` too.
     assert!(
-        errs.iter()
-            .any(|e| e.contains("names no resource") && e.contains("wrap")),
+        errs.iter().any(|e| e.contains("`wrap` is constructed without its field `rep`")),
         "expected the refusal to name the caller's own `wrap`; got: {errs:#?}"
     );
 }

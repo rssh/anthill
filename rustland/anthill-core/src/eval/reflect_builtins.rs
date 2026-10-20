@@ -845,7 +845,7 @@ pub(super) fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     // resolver's `kind` builtin, so the two cannot answer differently.
     let kind_str = interp
         .kb()
-        .kind_of(sym)
+        .reflect_kind(sym)
         .map_or("Unresolved", SymbolKind::reflect_name);
     Ok(Value::Str(kind_str.into()))
 }

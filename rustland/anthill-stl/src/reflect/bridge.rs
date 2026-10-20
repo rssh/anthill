@@ -1041,9 +1041,9 @@ impl KB for KbBridge {
     }
 
     fn facts_of(&self, sort: Type) -> Vec<Term> {
-        // The entity is passed by reference (`facts_of(kb(), WorkItem)`); the
-        // `Type` carrier wraps that referencing `Value`. Extract its functor via
-        // the shared `value_functor` (core's single source — same reader the
+        // The entity is passed as its type (`facts_of(kb(), WorkItem[])`); the
+        // `Type` carrier wraps that `Value`. Extract the declaration it names via
+        // the shared `type_value_decl` (core's single source — same reader the
         // interpreter `kb_facts_of` uses), then enumerate every asserted fact with
         // that head functor. Carrier-agnostic: `rule_head_value` returns the head
         // `Value` directly, so a value-fact head (e.g. an `OperationInfo` carrying

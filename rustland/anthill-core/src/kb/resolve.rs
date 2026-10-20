@@ -10491,7 +10491,7 @@ impl KnowledgeBase {
         // eval-side `kind` (`eval::reflect_builtins::kind_op`) cannot answer
         // differently — they each carried their own exhaustive copy, and a new kind
         // meant editing both.
-        let kind_str = match self.symbols.get(sym).primary_kind() {
+        let kind_str = match self.reflect_kind(sym) {
             Some(kind) => kind.reflect_name(),
             _ => return BuiltinResult::Failure,
         };

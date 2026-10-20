@@ -603,6 +603,17 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// WI-20260902-JB6RS — a construction in an operation body that leaves out a field its
+    /// entity declares, other than an `Option` ([`super::typing::TypeError::IncompleteConstruction`]).
+    /// Its own class, not a field's type mismatch: no value was given to mismatch, and a
+    /// bare constructor written for its type (`WorkItem` for `WorkItem[]`) meets it.
+    IncompleteConstruction {
+        /// The constructor, by its short name.
+        ctor: String,
+        /// The fields left out, in declaration order, by their short names.
+        missing: Vec<String>,
+        span: Option<Span>,
+    },
     TypeMismatch {
         entity_name: String,
         field_name: String,
@@ -2911,6 +2922,7 @@ impl LoadError {
             | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
+            | LoadError::IncompleteConstruction { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
@@ -3070,6 +3082,14 @@ impl LoadError {
                     candidates
                 )
             }
+            LoadError::IncompleteConstruction { ctor, missing, span } => match span {
+                Some(sp) => format!(
+                    "{}: {}",
+                    loc.format_start(*sp),
+                    incomplete_construction_message(ctor, missing)
+                ),
+                None => incomplete_construction_message(ctor, missing),
+            },
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -4548,6 +4568,16 @@ impl std::fmt::Display for LoadError {
                     candidates
                 )
             }
+            LoadError::IncompleteConstruction { ctor, missing, span } => match span {
+                Some(sp) => write!(
+                    f,
+                    "{} at {}..{}",
+                    incomplete_construction_message(ctor, missing),
+                    sp.start,
+                    sp.end
+                ),
+                None => write!(f, "{}", incomplete_construction_message(ctor, missing)),
+            },
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -15062,6 +15092,19 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
+/// WI-20260902-JB6RS — the ONE wording of [`LoadError::IncompleteConstruction`] and of the
+/// typer's error it renders.
+pub(crate) fn incomplete_construction_message(ctor: &str, missing: &[String]) -> String {
+    let fields: Vec<String> = missing.iter().map(|f| format!("`{f}`")).collect();
+    format!(
+        "`{ctor}` is constructed without {} {}; a construction supplies every field that is \
+         not an `Option`, and a bare `{ctor}` is that construction with no field — the \
+         entity's TYPE is written `{ctor}[]` (kernel-language.md §4.4)",
+        if fields.len() == 1 { "its field" } else { "its fields" },
+        fields.join(", "),
+    )
+}
+
 /// WI-20260904-B8ESG — the ONE wording of [`LoadError::UndefinedHeadArgument`], the
 /// HEAD-ARGUMENT member of the family [`no_declaration_census`] and
 /// [`undefined_name_repair`] serve. Same census, same repair, DIFFERENT consequence, so a
@@ -22269,10 +22312,26 @@ pub fn convert_query_term(
     // WI-20260902-CZJ2N — §8.3'S EXPANSION AT THE QUERY PATTERN, the fifth logical
     // position. `anthill query 'account'` searches for the same all-fields-fresh pattern
     // `account()` searches for, so a query cannot be written that the fact head cannot
-    // answer. AT THE ENTRY POINT and not inside `convert_query_term_expecting`, for the
-    // reason the 719FJ collapse above is: an ARGUMENT of a pattern is a data slot whose
-    // spelling is its identity, and the fact this searches for was built by the loader's
-    // own data-slot walk, which is untouched.
+    // answer. AT THE ENTRY POINT: an ARGUMENT of the pattern is a data slot, which the
+    // walk reads by its context where it converts it (`query_data_slot_name`,
+    // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
+    expand_bare_entity_query_name(kb, occ)
+}
+
+/// WI-20260902-JB6RS — a bare constructor name in a query's DATA slot is its INSTANCE
+/// (kernel-language.md §4.4), the clause converter's `bare_name_term` on the transient
+/// carrier: one that takes fields is the all-fields-fresh pattern, as at the pattern's
+/// own position. Called for the arguments of a node that is NOT a bracket — a bracket's
+/// bindings are a type context, read by [`query_type_context_binding`] — and only where
+/// the argument converted as DATA (a connective's goal slot is a goal).
+fn query_data_slot_name(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+    fold: ConstFold,
+) -> Rc<NodeOccurrence> {
+    if fold != ConstFold::Data {
+        return occ;
+    }
     expand_bare_entity_query_name(kb, occ)
 }
 
@@ -22581,7 +22640,8 @@ fn convert_query_term_expecting(
                 let items: Vec<Rc<NodeOccurrence>> = pos_args
                     .iter()
                     .map(|&id| {
-                        convert_query_term_expecting(
+                        let child = fold.child(None);
+                        let occ = convert_query_term_expecting(
                             kb,
                             parse_terms,
                             parse_symbols,
@@ -22589,8 +22649,9 @@ fn convert_query_term_expecting(
                             scope,
                             var_map,
                             elem_expected.clone(),
-                            fold.child(None),
-                        )
+                            child,
+                        );
+                        query_data_slot_name(kb, occ, child)
                     })
                     .collect();
                 return build_query_list(kb, &items);
@@ -22645,6 +22706,9 @@ fn convert_query_term_expecting(
                     })
                     .and_then(|f| declared_field_type(kb, kb_functor, f))
             };
+            // WI-20260902-JB6RS — a bracket's arguments are its bindings, a type context;
+            // any other node's are data slots, where a bare constructor is its instance.
+            let bracket = parse_terms.is_type_application(parse_id);
             let mut new_pos: Vec<Rc<NodeOccurrence>> = pos_args
                 .iter()
                 .enumerate()
@@ -22656,7 +22720,7 @@ fn convert_query_term_expecting(
                         goal_slots.iter().find(|s| s.index == i),
                         exp.as_ref(),
                     );
-                    convert_query_term_expecting(
+                    let occ = convert_query_term_expecting(
                         kb,
                         parse_terms,
                         parse_symbols,
@@ -22665,7 +22729,12 @@ fn convert_query_term_expecting(
                         var_map,
                         exp,
                         child,
-                    )
+                    );
+                    if bracket {
+                        occ
+                    } else {
+                        query_data_slot_name(kb, occ, child)
+                    }
                 })
                 .collect();
             let mut new_named: SmallVec<[(Symbol, Rc<NodeOccurrence>); 2]> = named_args
@@ -22675,19 +22744,17 @@ fn convert_query_term_expecting(
                     let kb_sym = kb.intern(n);
                     let exp = declared_field_type(kb, kb_functor, kb_sym);
                     let child = query_child_fold(kb, fold, None, exp.as_ref());
-                    (
-                        kb_sym,
-                        convert_query_term_expecting(
-                            kb,
-                            parse_terms,
-                            parse_symbols,
-                            id,
-                            scope,
-                            var_map,
-                            exp,
-                            child,
-                        ),
-                    )
+                    let occ = convert_query_term_expecting(
+                        kb,
+                        parse_terms,
+                        parse_symbols,
+                        id,
+                        scope,
+                        var_map,
+                        exp,
+                        child,
+                    );
+                    (kb_sym, if bracket { occ } else { query_data_slot_name(kb, occ, child) })
                 })
                 .collect();
 
@@ -24653,6 +24720,12 @@ struct Loader<'a> {
     // points (`load_fact`, `load_rule_inner`, `load_constraint`) set `Goal`, and each walk
     // moves it per child.
     const_fold: ConstFold,
+    // WI-20260902-JB6RS — the term being converted is a BINDING of a bracket, a type
+    // context (kernel-language.md §4.4): a bare constructor name there is its TYPE, and in
+    // every other data slot of a clause its INSTANCE. Set by each application node for its
+    // own children — the clause converter's `Term::Fn` arm and the rule-body walk's — and
+    // restored by the two wrappers, as `const_fold` is.
+    in_type_binding: bool,
     // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
     // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
     // another term's argument. It tells the two readings of one syntax apart: a
@@ -25158,6 +25231,7 @@ impl<'a> Loader<'a> {
             clause_head: None,
             in_quoted_term: false,
             const_fold: ConstFold::Off,
+            in_type_binding: false,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -27992,9 +28066,30 @@ impl<'a> Loader<'a> {
             Some(lit) => Term::Const(lit),
             None => match self.data_slot_alias_type(sym) {
                 Some(ty) => self.kb.get_term(ty).clone(),
-                None => self.bare_contract_spec(sym, span),
+                None => self.bare_name_term(sym, span),
             },
         }
+    }
+
+    /// WI-20260902-JB6RS — a bare resolved name that is neither a const nor an alias, as a
+    /// clause holds it. In a DATA slot a constructor is its INSTANCE (kernel-language.md
+    /// §4.4): a fieldless one the bare name it already is, one that takes fields its
+    /// application with every field fresh — `p(account)` is `p(account())`, the pattern a
+    /// logical position reads it as (§8.3). Under a bracket the name is the type, which
+    /// the bracket's own arm builds from the name; and a rule head's bound and a quoted
+    /// `Term` are not data slots. Anything else is the name.
+    fn bare_name_term(&mut self, sym: Symbol, span: Span) -> Term {
+        let instance = self.const_fold == ConstFold::Data
+            && !self.in_type_binding
+            && !self.in_rule_head_bound
+            && !self.in_quoted_term
+            && !sym.is_type_face();
+        if instance && self.kb.entity_field_names(sym).is_some() {
+            let bare = self.kb.alloc(Term::Ref(sym));
+            let expanded = entity_slots::expand_bare_entity_term(self.kb, bare, self.in_value_position);
+            return self.kb.get_term(expanded).clone();
+        }
+        self.bare_contract_spec(sym, span)
     }
 
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
@@ -28087,10 +28182,12 @@ impl<'a> Loader<'a> {
     fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
+        let saved_type_binding = self.in_type_binding;
         self.term_depth = saved + 1;
         let converted = self.convert_term_inner(parse_id, expected);
         self.term_depth = saved;
         self.const_fold = saved_fold;
+        self.in_type_binding = saved_type_binding;
         converted
     }
 
@@ -28217,6 +28314,10 @@ impl<'a> Loader<'a> {
                 // in goal position, whose goal slots the positional loop below sets per
                 // child. `convert_term_with_expected` restores the caller's state.
                 self.const_fold = node_fold.child(None);
+                // WI-20260902-JB6RS — and its children are a bracket's bindings, a type
+                // context, exactly when it is a bracket. Set HERE, below the two names a
+                // dotted chain can be, which are read in the context the chain stands in.
+                self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
                 // WI-582: a `typed_var(?x, type: T)` marker — the converter's
                 // lowering of a `?x: T` rule-pattern arg. STRIP it: convert the
                 // inner variable so the head term stays structurally the bare
@@ -28452,8 +28553,13 @@ impl<'a> Loader<'a> {
                 // from the plain schema read: a name that resolved to NOTHING is not an
                 // entity application, whatever schema its bare intern carries. See there
                 // for the rule and the two-file measurement.
-                let written_entity_functor =
-                    self.kb.written_entity_field_names(new_functor).is_some();
+                //
+                // NOT A BRACKET (WI-20260902-JB6RS): `Item[]` is the entity's TYPE, whose
+                // bindings are its sort's parameters, not its fields — filled as an
+                // application, `Item[]` over `entity Item(n: Int64)` stored `Item†(n: ?)`,
+                // which the typer read as an `Item`. The query walk's gate is the same.
+                let written_entity_functor = self.kb.written_entity_field_names(new_functor).is_some()
+                    && !self.parsed.terms.is_type_application(parse_id);
 
                 // WI-20260904-B8ESG — RECORD THIS HEAD-ARGUMENT SITE, for the post-load
                 // undefined-name check. Each gate is an exemption the census named rather
@@ -29349,7 +29455,7 @@ impl<'a> Loader<'a> {
                     Some(lit) => Term::Const(lit),
                     None => match self.data_slot_alias_type(new_sym) {
                         Some(ty) => self.kb.get_term(ty).clone(),
-                        None => self.bare_contract_spec(new_sym, span),
+                        None => self.bare_name_term(new_sym, span),
                     },
                 }
             }
@@ -32305,10 +32411,12 @@ impl<'a> Loader<'a> {
         // WI-20261001-KDMQS — restored like `term_depth`, for the reason
         // `convert_term_with_expected` gives.
         let saved_fold = self.const_fold;
+        let saved_type_binding = self.in_type_binding;
         self.term_depth = saved + 1;
         let occ = self.build_body_atom_occurrence_inner(parse_id);
         self.term_depth = saved;
         self.const_fold = saved_fold;
+        self.in_type_binding = saved_type_binding;
         occ
     }
 
@@ -33358,15 +33466,46 @@ impl<'a> Loader<'a> {
     ///
     /// `rule f(1) :- account` searches for the same all-fields-fresh pattern
     /// `:- account()` searches for. Returns `None` when this is not that case, so the
-    /// caller keeps its ordinary reading — the gate is `at_goal && !is_wrapper` at the
-    /// call site (a DATA slot keeps `Ref(WorkItem)` as the sort-as-value, which is what
-    /// `facts_of(kb(), WorkItem)` reads) plus "has a declared field schema" here.
+    /// caller keeps its ordinary reading — the gate is the caller's (a goal, or a data
+    /// slot outside a bracket, [`Self::body_data_slot_name`]) plus "has a declared field
+    /// schema" here.
     ///
     /// Built through [`Self::expand_bare_entity_subject`] and the same materializer the
     /// `Fn` arm uses for an applied entity atom, rather than by assembling an
     /// `Expr::Constructor` by hand: the goal must be the SAME shape the fact head
     /// stores or it matches nothing, and that function is the one place the shape is
     /// decided.
+    /// WI-20260902-JB6RS — a bare constructor name in a rule-body DATA slot, read by its
+    /// context (kernel-language.md §4.4): as a bracket's binding its TYPE, the type value
+    /// headed by its type face (`Box[V = red]` binds `red†`, as the clause holding it does);
+    /// anywhere else its INSTANCE — for one that takes fields the all-fields-fresh pattern
+    /// [`Self::bare_entity_goal_occurrence`] builds, as the clause converter's
+    /// `bare_name_term` does. `None` for any other name, for a fieldless constructor's
+    /// instance (the bare reference already is it), and in a goal, whose own expansion is
+    /// §8.3's.
+    fn body_data_slot_name(
+        &mut self,
+        sym: Symbol,
+        parse_id: TermId,
+        span: SourceSpan,
+    ) -> Option<Rc<NodeOccurrence>> {
+        // `const_fold` is `Data` exactly in a clause's data slot, and `Off` inside a quoted
+        // `Term` field (`entity_ctor_children`), whose pattern the clause converter keeps as
+        // written too (`bare_name_term`) — or the goal and the fact it searches for differ.
+        let data_slot = !self.in_body_goal
+            && !self.in_body_goal_wrapper
+            && !self.in_non_value_role
+            && self.const_fold == ConstFold::Data;
+        if !data_slot || sym.is_type_face() || !self.kb.has_kind(sym, SymbolKind::Entity) {
+            return None;
+        }
+        if self.in_type_binding {
+            let owner = self.current_owner;
+            return Some(self.bare_type_value_occ(sym, span, owner, false));
+        }
+        self.bare_entity_goal_occurrence(sym, parse_id)
+    }
+
     fn bare_entity_goal_occurrence(
         &mut self,
         sym: Symbol,
@@ -33442,6 +33581,9 @@ impl<'a> Loader<'a> {
                         return occ;
                     }
                 }
+                if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
+                    return occ;
+                }
                 // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
                 self.body_resolved_name_expr(s, parse_id, span)
             }
@@ -33465,14 +33607,15 @@ impl<'a> Loader<'a> {
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
                 if self.kb.symbols.is_resolved(new_sym) {
-                    // WI-20260902-CZJ2N: §8.3's expansion, in GOAL position only. A DATA
-                    // slot keeps the bare `Ref` — a term's spelling is its identity there
-                    // (WI-756), and `Ref(WorkItem)` is the sort-as-value a reflect call
-                    // reads.
+                    // WI-20260902-CZJ2N: §8.3's expansion in GOAL position; a DATA slot
+                    // reads the name by its context just below (WI-20260902-JB6RS).
                     if self.in_body_goal && !self.in_body_goal_wrapper {
                         if let Some(occ) = self.bare_entity_goal_occurrence(new_sym, parse_id) {
                             return occ;
                         }
+                    }
+                    if let Some(occ) = self.body_data_slot_name(new_sym, parse_id, span) {
+                        return occ;
                     }
                     // WI-20261001-KDMQS — and a const in a DATA slot is its value, the
                     // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
@@ -33534,6 +33677,9 @@ impl<'a> Loader<'a> {
                 }
                 // A constructor's qualified name is the reference its one-segment name is.
                 if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    if let Some(occ) = self.body_data_slot_name(ctor, parse_id, span) {
+                        return occ;
+                    }
                     let expr = self.body_resolved_name_expr(ctor, parse_id, span);
                     return NodeOccurrence::new_expr(expr, span, None);
                 }
@@ -33683,6 +33829,10 @@ impl<'a> Loader<'a> {
                     && self.parsed.terms.is_type_application(parse_id)
                     && (self.kb.has_kind(new_functor, SymbolKind::Sort)
                         || self.kb.has_kind(new_functor, SymbolKind::Entity));
+                // WI-20260902-JB6RS — a bracket's bindings are a type context, whether the
+                // bracket is a type value or a goal's own (`:- Modifiable[T = Foo]`); the
+                // clause converter's twin, restored by the wrapper.
+                self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
                 // A WRITTEN DOTTED NAME — the converter's `field_access` chain, the provenance
                 // test `dotted_citation_name` makes — hands its segments the non-value role.
                 let name_chain = self.parsed.terms.is_minted(parse_id)

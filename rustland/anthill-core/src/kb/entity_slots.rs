@@ -219,10 +219,12 @@ pub(crate) fn complete_named_slots<C: SlotCarrier>(
 /// `account/0` atom that `:- account()` could not see and no other spelling reached
 /// either.
 ///
-/// AT THE LOGICAL-POSITION ENTRY POINTS, NOT IN `convert_term_inner`. That arm serves
-/// DATA slots too, where `Ref(WorkItem)` must stay the sort-as-value (`facts_of(kb(),
-/// WorkItem)`, `typing::check_bare_ref`'s free-standing-entity arm), and `expected: None`
-/// cannot tell a goal from a data slot of unknown type. `Loader::convert_subject_term`
+/// AT THE LOGICAL-POSITION ENTRY POINTS, NOT IN `convert_term_inner`, which never knew
+/// a goal from a data slot of unknown type. A DATA slot expands the name too since
+/// WI-20260902-JB6RS (a constructor's bare name is its instance in every data context,
+/// kernel-language.md §4.4), at its own sites: `Loader::bare_name_term`,
+/// `Loader::body_data_slot_name` and the query's `query_data_slot_name`, each also
+/// reading a bracket's binding as the type. `Loader::convert_subject_term`
 /// is the funnel for three of the five positions (rule head, fact head, proof step);
 /// `load::convert_query_term` and the rule-body GOAL arm of
 /// `build_body_atom_occurrence_inner` are the other two, and each reaches this. (A
@@ -247,6 +249,12 @@ pub(crate) fn bare_entity_slots<C: SlotCarrier>(
     functor: Symbol,
     value_position: bool,
 ) -> Option<SmallVec<[(Symbol, C::Node); 2]>> {
+    // A constructor's TYPE FACE names its type, which has no fields to fill: `Foo[]`
+    // stays the type (WI-20260902-JB6RS). The field schema is the declaration's, so it
+    // answers for the face too, and would expand it.
+    if functor.is_type_face() {
+        return None;
+    }
     kb.entity_field_names(functor)?;
     let mut named: SmallVec<[(Symbol, C::Node); 2]> = SmallVec::new();
     complete_named_slots::<C>(kb, functor, 0, value_position, &mut named);

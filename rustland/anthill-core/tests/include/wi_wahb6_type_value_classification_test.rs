@@ -225,7 +225,7 @@ namespace test.wahb6c
   end
 
   operation build() -> Leaf = Leaf(name: "tip")
-  operation as_type() -> Type = Leaf
+  operation as_type() -> Type = Leaf[]
 end
 "#;
     let mut interp = interp_for(src);
@@ -237,16 +237,24 @@ end
         !matches!(built, Value::Term { .. }),
         "`Leaf(name: …)` must construct a value, not denote a type; got {built:?}",
     );
-    // The BARE surface of the same symbol still reaches its construction reading first
-    // (it is a nullary-fieldless constructor test in `check_bare_ref`), which is exactly
-    // what `bare_name_denotes_type` steps aside for. What it must NOT do is fail to load.
-    let kb = interp.kb();
-    let sym = kb
-        .try_resolve_symbol("test.wahb6c.as_type")
-        .expect("as_type resolves");
+    // The constructor's TYPE is its bracket, `Leaf[]` — its bare name is its instance, an
+    // incomplete construction here (kernel-language.md §4.4, WI-20260902-JB6RS; until then
+    // this row pinned only that `-> Type = Leaf` LOADED). The type is a value naming the
+    // constructor by its type face, never the instance.
+    let leaf = interp
+        .kb()
+        .try_resolve_symbol("test.wahb6c.Leaf")
+        .expect("Leaf resolves");
+    let ty = interp
+        .call("test.wahb6c.as_type", &[])
+        .unwrap_or_else(|e| panic!("as_type: {e:?}"));
+    let Value::Term { id, .. } = ty else {
+        panic!("`Leaf[]` must be a Term-carried type, got {ty:?}")
+    };
     assert!(
-        kb.op_body_node(sym).is_some(),
-        "as_type must have a stored body",
+        matches!(interp.kb().get_term(id), Term::Ref(s) if s.is_type_face() && s.plain() == leaf),
+        "`Leaf[]` is the type `Leaf†`: {:?}",
+        interp.kb().get_term(id)
     );
 }
 

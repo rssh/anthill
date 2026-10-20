@@ -3838,8 +3838,25 @@ impl KnowledgeBase {
     pub(crate) fn nullary_name_canons_to_ref(&self, functor: Symbol) -> bool {
         // A constructor's TYPE FACE has one reading — the type — so its nullary
         // application and its bare name are one term (`Foo[]` is `Foo†`), whatever the
-        // declaration's kinds say about the plain face (WI-20260902-JB6RS).
-        functor.is_type_face() || !self.has_kind(functor, SymbolKind::Sort)
+        // declaration's kinds say about the plain face (WI-20260902-JB6RS). And the PLAIN
+        // symbol of an entity has one reading too, its instance: an eponymous or
+        // free-standing entity carries `Sort`, but its type is the face, so `Baz()` and
+        // a bare `Baz` are one term (kernel-language.md §4.4). Only a sort with no
+        // constructor of its name keeps its two nullary spellings apart — and the
+        // three free-standing REFLECT FORMS, the syntax vocabulary a term encodes a
+        // collection literal in: `()` is the node `TupleLiteral()`, which the typer reads
+        // as the empty tuple and does not read in its bare name (measured: `u(v: (), …)` at
+        // a `Unit` field stopped being refused, `ListLiteral()` printed as a bare name). By
+        // QUALIFIED name, so a user's own `entity ListLiteral` is an ordinary entity.
+        functor.is_type_face()
+            || !self.has_kind(functor, SymbolKind::Sort)
+            || (self.has_kind(functor, SymbolKind::Entity) && {
+                use crate::parse::desugar_target as dt;
+                let qn = self.qualified_name_of(functor);
+                ![dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL]
+                    .iter()
+                    .any(|form| qn == dt::qualified(form))
+            })
     }
 
     /// Allocate a term (hash-consed, refcounted). Applies [`Self::nullary_canon`].
@@ -4049,6 +4066,19 @@ impl KnowledgeBase {
     /// an X".
     pub fn kind_of(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
         self.symbols.get(sym).primary_kind()
+    }
+
+    /// The kind the reflect `kind` operation reports for `sym` — its builtin twin in the
+    /// resolver reads the same (WI-898). A constructor's TYPE FACE is a type, so it reports
+    /// `Sort` whatever kinds its declaration carries (WI-20260902-JB6RS): `kind(red[])` is
+    /// a sort, `kind(red)` the entity. Any other symbol reports its primary kind, the
+    /// keyword its declaration opened with — the table does not see the face, so
+    /// [`Self::kind_of`] answers for the declaration.
+    pub fn reflect_kind(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
+        if sym.is_type_face() {
+            return Some(crate::intern::SymbolKind::Sort);
+        }
+        self.kind_of(sym)
     }
 
     /// Does `sym` play role `kind`? The membership question — insensitive to
@@ -12201,10 +12231,8 @@ impl KnowledgeBase {
     /// so which declarations mint a face is decided in ONE place.
     ///
     /// EVERY constructor: a nested one (`Entity`), and an eponymous or free-standing entity,
-    /// which carries `Sort` as well. Until the reading of a bare name flips, an eponymous or
-    /// free-standing entity's bare name in a data position keeps the reading it had: in an
-    /// operation body it is the type, built here too (`reduce_var`, through
-    /// [`Self::make_sort_ref`]); in a clause it is the name as written, the plain symbol, so
+    /// which carries `Sort` as well. A constructor's BARE name in a data context is its
+    /// instance, not this (kernel-language.md §4.4): its type there is written `Foo[]`, so
     /// `fact p(Foo)` is not found by `:- p(Foo[])`.
     pub fn type_context_face(&self, sym: Symbol) -> Symbol {
         if sym.is_type_face() {

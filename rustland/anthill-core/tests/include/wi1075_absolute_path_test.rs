@@ -585,21 +585,33 @@ fn wi1075_rung_two_census_stays_zero() {
     // supplied by `try_load_kb_with_files`. Loading them all into one KB instead would
     // collide on the examples that declare the same namespaces, and loading a file alone
     // would report imports the census does not care about.
+    //
+    // `anthill-todo/` is loaded AS ITS BINARY LOADS IT: beside the bundle, with each
+    // headerless data file wrapped in `namespace anthill.stage0` (`anthill-todo`'s
+    // `assign_default_namespace`). Its project file names the stage0 entities the bundle
+    // declares (`covers: [WorkItem[], …]`); loaded raw at the global scope, those names
+    // resolved to nothing — which the bare `WorkItem` hid, an unresolved bare name in a
+    // data slot being judged by nobody, and the bracket does not, a compound head
+    // argument being checked (WI-20260902-JB6RS).
     let projects = [
-        root.join("examples/github-todo"),
-        root.join("examples/sql-store"),
-        root.join("examples/webots-modelling"),
-        root.join("examples/classic-mini"),
-        root.join("anthill-testcases/ring-polynom"),
-        root.join("anthill-todo"),
+        vec![root.join("examples/github-todo")],
+        vec![root.join("examples/sql-store")],
+        vec![root.join("examples/webots-modelling")],
+        vec![root.join("examples/classic-mini")],
+        vec![root.join("anthill-testcases/ring-polynom")],
+        vec![root.join("anthill-todo"), root.join("rustland/anthill-todo/anthill")],
     ];
     // The stdlib + `anthill-stl` themselves: they load under EVERY project below, so a
     // path of theirs would be counted many times over — but the census asks "is the
     // count zero", and a stdlib site would show up under the first project just as well.
     let mut censused = 0usize;
     load::reset_absolute_fallthrough_hits();
-    for dir in &projects {
-        let files = crate::common::collect_anthill_files(dir);
+    for dirs in &projects {
+        let dir = &dirs[0];
+        let files: Vec<_> = dirs
+            .iter()
+            .flat_map(|d| crate::common::collect_anthill_files(d))
+            .collect();
         assert!(
             !files.is_empty(),
             "the census must actually READ {} — an empty corpus is a zero for the wrong \
@@ -610,7 +622,14 @@ fn wi1075_rung_two_census_stays_zero() {
         let sources: Vec<String> = files
             .iter()
             .map(|p| {
-                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+                let text = std::fs::read_to_string(p)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+                let headerless = !text.lines().any(|l| l.trim_start().starts_with("namespace "));
+                if dirs.len() > 1 && p.starts_with(dir) && headerless {
+                    format!("namespace anthill.stage0\n{text}\nend\n")
+                } else {
+                    text
+                }
             })
             .collect();
         let refs: Vec<&str> = sources.iter().map(String::as_str).collect();

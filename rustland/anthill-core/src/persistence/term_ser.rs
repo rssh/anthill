@@ -11,7 +11,7 @@ use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
-use crate::intern::{positional_label, Contested, ResolveResult, Symbol};
+use crate::intern::{positional_label, Contested, ResolveResult, Symbol, SymbolKind};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::ClauseKind;
 use crate::kb::term_view::{TermView, ViewHead};
@@ -675,6 +675,20 @@ fn string_to_term_typed(
     // fall through to the global entity heuristic below, which would mis-type it).
     if let Some(t) = ty {
         if let (Some(sort), _) = type_head_and_inner(kb, t) {
+            // WI-20260902-JB6RS — under a field declared `Type` the string is a TYPE's name,
+            // and reads back as the type it names, built as every type producer builds it
+            // (an entity's by its type face): the writer spells a constructor's type by its
+            // qualified name. A name that denotes no sort stays the literal it is.
+            if kb.local_name_of(sort) == "Type"
+                && kb.try_resolve_symbol("anthill.prelude.Type") == Some(sort.plain())
+            {
+                return match type_named(kb, s) {
+                    Some(named) => Ok(kb.make_sort_ref(named)),
+                    None => Err(SerError::InvalidValue(format!(
+                        "`{s}` under a field declared `Type` names no sort or entity"
+                    ))),
+                };
+            }
             if let Some(vsym) = constructor_of_sort_named(kb, sort, s) {
                 return Ok(kb.alloc(Term::Ref(vsym)));
             }
@@ -690,6 +704,14 @@ fn string_to_term_typed(
         }
     }
     Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))))
+}
+
+/// The sort or entity a persisted `Type` value names, by the qualified name the writer
+/// gives every type. `None` for a name that is no type — refused by the caller, not read
+/// as a string: a `Type` field holds a type.
+fn type_named(kb: &KnowledgeBase, s: &str) -> Option<Symbol> {
+    let sym = kb.try_resolve_symbol(s)?;
+    (kb.has_kind(sym, SymbolKind::Sort) || kb.has_kind(sym, SymbolKind::Entity)).then_some(sym)
 }
 
 /// Head sort symbol + first type-argument of a declared type, read through the view on
@@ -962,6 +984,17 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
         }
         Term::Fn { functor, pos_args, named_args } => {
             let functor = *functor;
+            // WI-20260902-JB6RS — a TYPE with bindings (`Foo[X = Int64]`, headed by a
+            // constructor's type face) has no form in this flattened format: written as
+            // the entity object an instance is, it would reload as an instance. Refused,
+            // as `some(none())` is below, rather than round-tripped to the wrong value.
+            if functor.is_type_face() {
+                return Err(SerError::InvalidValue(format!(
+                    "the type `{}[…]` cannot be represented in the flattened persistence \
+                     format, which holds a type only by its name",
+                    kb.qualified_name_of(functor)
+                )));
+            }
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
             let name = kb.local_name_of(functor);
@@ -1087,6 +1120,17 @@ fn term_to_value(kb: &KnowledgeBase, term: TermId) -> Result<serde_json::Value, 
             // restored by the type-directed deserializer's backfill (see
             // `value_to_term_typed`). Any other nullary entity (`Open`, an enum
             // variant) stays its short-name string and is rebuilt type-directedly.
+            // WI-20260902-JB6RS — a TYPE is its name, QUALIFIED: it is read back under a field
+            // declared `Type`, where no sort scopes a short name (`string_to_term_typed`).
+            // A constructor's type (`WorkItem[]`, the face) and a sort with no constructor of
+            // its name (`Int64`); asked FIRST, since the face of `Option.none` is the type
+            // `none[]` and not the absent value. Any other reference is an instance — a
+            // nullary variant, written by its short name and rebuilt type-directedly.
+            if sym.is_type_face()
+                || (kb.has_kind(*sym, SymbolKind::Sort) && !kb.is_entity_constructor(*sym))
+            {
+                return Ok(serde_json::Value::String(kb.qualified_name_of(*sym).to_string()));
+            }
             if is_prelude(kb, *sym, OPTION_NONE) {
                 return Ok(serde_json::Value::Null);
             }

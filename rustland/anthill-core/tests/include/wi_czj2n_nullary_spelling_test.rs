@@ -253,11 +253,12 @@ fn a_nullary_simp_head_defines_in_both_spellings() {
 ///   * the goal arm → `bare_goal`
 ///   * the query converter → `bare_query_pattern`
 ///
-/// AND THE DATA-SLOT CONTROL IS THE POINT OF THE SPLIT: `?t <=> account` still binds the
-/// REFERENCE, because a data slot holds a term whose spelling is its identity (WI-756)
-/// and `Ref(WorkItem)` is the sort-as-value `facts_of(kb(), WorkItem)` reads. It passes
-/// either way BY DESIGN — it is what says the expansion is position-directed and not a
-/// blanket rewrite of every bare entity name.
+/// THE DATA SLOT WAS THE OTHER HALF OF A SPLIT, and is no longer: `?t <=> account` bound
+/// the REFERENCE, which was the sort-as-value `facts_of(kb(), WorkItem)` read. Since
+/// WI-20260902-JB6RS a bare constructor is its instance in every data context
+/// (kernel-language.md §4.4), so the data slot binds the same pattern, and the entity's
+/// type is written `WorkItem[]`. Its row moved with that ticket and fails when the
+/// clause converter's data-slot reading (`Loader::bare_name_term`) is backed out.
 #[test]
 fn a_bare_fielded_entity_in_a_logical_position_is_the_pattern() {
     const SRC: &str = "\
@@ -282,11 +283,13 @@ end
         "…as the applied spelling already did — the control"
     );
 
-    // THE CONTROL for position-directedness: a DATA slot keeps the reference.
+    // A DATA slot reads it the same way since WI-20260902-JB6RS: a bare constructor in a
+    // data context is its instance (kernel-language.md §4.4), so `?t <=> account` binds
+    // the all-fields-fresh pattern, not the name. The entity's TYPE is `account[]`.
     let bound = only_value(&mut kb, "zzczj.f.data_slot");
     assert!(
-        bound.is_some_and(|v| kb.value_symbol(&v).is_some()),
-        "a bare entity in a DATA slot still binds the NAME, not a fresh pattern"
+        bound.is_some_and(|v| kb.value_symbol(&v).is_none()),
+        "a bare entity in a DATA slot binds the pattern, not the name"
     );
 
     // THE FACT HEAD: `fact account` is the universal claim, so a specific goal finds it.

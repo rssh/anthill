@@ -220,6 +220,12 @@ explicit `TypeValue`, and every later lowering path consumes that decision:
   counts as its sort here (kernel §6.3: a standalone `entity` is a
   single-constructor sort) — these are the same names
   `facts_of(kb(), WorkItem)` accepts today;
+  *(AMENDED FOR CONSTRUCTORS by WI-20260902-JB6RS, user 2026-10-17: a name that
+  is a constructor — a standalone entity among them — has a data reading, and in a
+  data context that reading comes first, so bare `WorkItem` is its instance
+  `WorkItem()`. Its type as a value is written `WorkItem[]`. This bullet now
+  covers only a sort with no constructor of its name (`Cell`, `Int64`), whose bare
+  name has no data reading. Kernel §4.4, "A name has a reading in each context".)*
 - the name resolves to an in-scope **type parameter** → a type value carrying
   that parameter — *well-formed only under `requires TypeValue[T = …]` for a rigid
   one, and read through that requirement ([065](065-type-value-requirement.md))*; proposal 062's `is_entity_of(Trust, TrustLevel)` therefore
@@ -306,6 +312,12 @@ commit messages:
   constructor arguments; shape cannot distinguish a sort-headed constructor
   call (`sort Leaf { entity Leaf(…) }`) from a type application — only the
   recorded parse surface can, and the parse IR records it.
+  *(AMENDED by WI-20260902-JB6RS, 2026-10-17: the parse IR recording it was not
+  enough, because the stored TERM lost it. `Leaf[V = Int64]` and an instance
+  `Leaf(V: …)` were one term whenever a field and a parameter shared a label, and
+  always at zero arguments, so `held(Foo[X = Int64])` was found by
+  `held(Foo(X: ?v))` (measured). The term now keeps the decision: a type written
+  as data and an instance are never one term. Kernel §4.4.)*
 
 **Grammar recheck (empirical, 2026-07-14; audited 2026-08-23).** Bare and
 applied nominal types already parse at every current value-expression

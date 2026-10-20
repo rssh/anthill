@@ -5695,8 +5695,8 @@ fn int_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// anthill-todo workitem set (~hundreds of facts).
 fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, sort_arg] = expect_args::<2>("KB.facts_of", args)?;
-    // The entity is passed by reference (e.g. `facts_of(kb(), WorkItem)`),
-    // resolved to its qualified functor symbol via the caller's import.
+    // The entity is passed as its type (e.g. `facts_of(kb(), WorkItem[])`),
+    // resolved to the declaration it names via the caller's import.
     let functor_sym = crate::eval::eval::type_value_decl(&interp.kb, &sort_arg)
         .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
 

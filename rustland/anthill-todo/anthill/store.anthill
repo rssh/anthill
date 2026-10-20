@@ -269,7 +269,7 @@ namespace anthill.todo.store
     =
       let prefix = identity_prefix(created,
         digestBase32(digest_input(author, created, description, attempt), 5))
-      match occupant_of(facts_of(kb(), WorkItem), prefix)
+      match occupant_of(facts_of(kb(), WorkItem[]), prefix)
         case none() -> compose_id(prefix, slug(description, 30))
         case some(t) ->
           if is_same_item(t, created, description) then
@@ -377,7 +377,7 @@ namespace anthill.todo.store
     -- skipped. (WI-515: the synthetic entity-declaration fact this
     -- filter also used to exclude is no longer asserted.)
     --
-    -- Read-only impl bodies route through `facts_of(kb(), WorkItem)`
+    -- Read-only impl bodies route through `facts_of(kb(), WorkItem[])`
     -- rather than `retrieve(backend, …)`: the eager drains
     -- (FiniteCollection.collect / Stream.head) are not yet wired to the
     -- LogicalStream Rust builtin (only splitFirst is), so a retrieve-based
@@ -470,7 +470,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_) ->
-          match find_term_by_id(facts_of(kb(), WorkItem), id)
+          match find_term_by_id(facts_of(kb(), WorkItem[]), id)
             case none() -> none()
             case some(t) -> term_as_entity(t)
 
@@ -483,7 +483,7 @@ namespace anthill.todo.store
           match term_functor_name(st)
             case some(name) ->
               terms_to_workitems(
-                filter_by_status(facts_of(kb(), WorkItem), name))
+                filter_by_status(facts_of(kb(), WorkItem[]), name))
             case none() -> nil()
 
     operation all(s: Cell[V = WIS]) -> List[T = WorkItem]
@@ -491,7 +491,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_) ->
-          terms_to_workitems(facts_of(kb(), WorkItem))
+          terms_to_workitems(facts_of(kb(), WorkItem[]))
 
     -- Buffering primitives. persist/retract stage into the backend's
     -- pending buffer; flush_backend writes them (per-file atomic
@@ -536,7 +536,7 @@ namespace anthill.todo.store
     operation forget_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
-      match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
+      match find_stored_by_id(stored_facts_of(kb(), WorkItem[]), target)
         case none() -> ()
         case some(row) -> retract_row(s, row)
 
@@ -554,9 +554,9 @@ namespace anthill.todo.store
     operation forget_satellites_buffer(s: Cell[V = WIS], target: String) -> Unit
       effects {Modify[s], Error}
     =
-      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Feedback), target))
-      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Tag), target))
-      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), MirrorEntry), target))
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Feedback[]), target))
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), Tag[]), target))
+      let _ = retract_rows(s, stored_rows_naming(stored_facts_of(kb(), MirrorEntry[]), target))
       ()
 
     -- The stored rows whose `workitem` field is the string `target`.
@@ -638,7 +638,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(b) ->
-          match find_stored_by_id(stored_facts_of(kb(), WorkItem), target)
+          match find_stored_by_id(stored_facts_of(kb(), WorkItem[]), target)
             case none() -> ()
             case some(row) ->
               match row
@@ -685,7 +685,7 @@ namespace anthill.todo.store
     =
       match Cell.get(s)
         case wis(_) ->
-          match find_tag_term(facts_of(kb(), Tag), id, name)
+          match find_tag_term(facts_of(kb(), Tag[]), id, name)
             case none() -> false
             case some(_) -> true
 
@@ -716,7 +716,7 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_) -> collect_tagged(facts_of(kb(), Tag), name)
+        case wis(_) -> collect_tagged(facts_of(kb(), Tag[]), name)
 
     -- The mirror of tagged_id_of: the tag NAME when the fact's workitem
     -- matches `id`.
@@ -745,13 +745,13 @@ namespace anthill.todo.store
       effects Error
     =
       match Cell.get(s)
-        case wis(_) -> collect_item_tags(facts_of(kb(), Tag), id)
+        case wis(_) -> collect_item_tags(facts_of(kb(), Tag[]), id)
 
     operation raw_term_of(s: Cell[V = WIS], id: String) -> Option[T = Term]
       effects Error
     =
       match Cell.get(s)
-        case wis(_) -> find_term_by_id(facts_of(kb(), WorkItem), id)
+        case wis(_) -> find_term_by_id(facts_of(kb(), WorkItem[]), id)
 
     operation tag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}
@@ -776,7 +776,7 @@ namespace anthill.todo.store
     operation untag_item(s: Cell[V = WIS], id: String, name: String) -> Unit
       effects {Modify[s], Error}
     =
-      match find_stored_tag(stored_facts_of(kb(), Tag), id, name)
+      match find_stored_tag(stored_facts_of(kb(), Tag[]), id, name)
         case none() -> ()
         case some(row) ->
           let _ = retract_row(s, row)

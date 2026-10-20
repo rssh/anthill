@@ -120,6 +120,7 @@ namespace test.wi204_let_ctor_env_let
     =
       let w = WorkItem(
         id: "WI-test",
+        created: "2026-01-01",
         description: none(),
         context: none(),
         acceptance: nil(),

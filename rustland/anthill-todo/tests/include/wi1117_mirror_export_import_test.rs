@@ -75,7 +75,7 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], MirrorEntry[], StoreFormat[]])
 
 fact Mirror(
   target: FakeForge(dir: "mirror"),
@@ -663,7 +663,7 @@ fn the_control_a_nonsense_environment_override_is_still_refused() {
 #[test]
 fn a_mirrored_project_must_cover_the_link() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let proj = project_with(&tmp, &MIRRORED_PROJECT.replace(", MirrorEntry,", ","));
+    let proj = project_with(&tmp, &MIRRORED_PROJECT.replace(", MirrorEntry[],", ","));
 
     let out = run_in(&proj, &["status"]);
     assert!(!out.status.success(), "refused at startup, before any command");
@@ -680,7 +680,7 @@ fn a_mirrored_project_must_cover_the_link() {
 fn the_control_an_unmirrored_project_need_not_cover_the_link() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let without_mirror = &MIRRORED_PROJECT[..MIRRORED_PROJECT.find("fact Mirror(").expect("split")];
-    let proj = project_with(&tmp, &without_mirror.replace(", MirrorEntry,", ","));
+    let proj = project_with(&tmp, &without_mirror.replace(", MirrorEntry[],", ","));
 
     let id = add(&proj, "no mirror, no link");
     ok(&proj, &["delete", &id]);

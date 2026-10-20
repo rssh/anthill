@@ -151,7 +151,7 @@ namespace guardians
   -- candidate can write one; the containment rule refuses a source-written
   -- clause at `anthill.reflect.SortProvidesInfo` before this question is asked.
   operation provision_carrier(layer: KB, spec: Symbol) -> Option[T = Symbol] =
-    match find(facts_of(layer, SortProvidesInfo),
+    match find(facts_of(layer, SortProvidesInfo[]),
                lambda row -> is_own_provision(layer, row, spec))
       case none() -> none()
       case some(row) -> carrier_of_row(layer, row)

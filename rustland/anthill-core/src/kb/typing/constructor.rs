@@ -1348,6 +1348,40 @@ pub(super) fn check_constructor_iter(
         }
     };
 
+    // WI-20260902-JB6RS — A CONSTRUCTION IN AN OPERATION BODY SUPPLIES EVERY FIELD that is
+    // not an `Option`, which an omitted field reads as `none`. MEASURED before: `Leaf()` over
+    // `entity Leaf(name: String)` loaded clean, and reading `.name` off the value was an
+    // internal evaluator error. A constructor's bare name is this construction with no
+    // field (kernel-language.md §4.4), so a forgotten type bracket meets it too. A rule
+    // body's construction is a PATTERN, where an omitted field is a fresh variable.
+    // Reported WITH the supplied fields' own mismatches, below, not instead of them.
+    let mut incomplete: Option<TypeError> = None;
+    if !env.in_rule_body() {
+        // A positional argument takes the next field no name took, in declaration order
+        // (WI-433's rank among the not-named), so `two(1, a: 2)` gives `b`.
+        let mut positional_left = pos_args.len();
+        let mut missing: Vec<Symbol> = Vec::new();
+        for (field, ty) in &field_types {
+            if named_args.iter().any(|(given, _)| given == field) {
+                continue;
+            }
+            if positional_left > 0 {
+                positional_left -= 1;
+                continue;
+            }
+            if !is_option_type(kb, ty) {
+                missing.push(*field);
+            }
+        }
+        if !missing.is_empty() {
+            incomplete = Some(TypeError::IncompleteConstruction {
+                span,
+                ctor: ctor_sym,
+                missing,
+            });
+        }
+    }
+
     let mut subst = Substitution::new();
     let mut effects = Vec::new();
 
@@ -1502,6 +1536,7 @@ pub(super) fn check_constructor_iter(
             }
         }
     }
+    field_type_errors.extend(incomplete);
     if !field_type_errors.is_empty() {
         return Err(aggregate_errors(field_type_errors));
     }

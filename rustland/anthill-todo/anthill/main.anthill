@@ -713,7 +713,7 @@ namespace anthill.todo
     -- the test has to be "does this row carry a string here at all", and only
     -- `term_field` can ask that.
     operation items_missing_created() -> List[String] =
-      undated_ids(facts_of(kb(), WorkItem))
+      undated_ids(facts_of(kb(), WorkItem[]))
 
     operation undated_ids(ts: List[T = Term]) -> List[String] =
       match ts
@@ -1148,7 +1148,7 @@ namespace anthill.todo
     operation print_feedback_w(id: String) -> Unit
       effects {ConsoleOutput, Error}
     =
-      print_fb_items(facts_of(kb(), Feedback), id)
+      print_fb_items(facts_of(kb(), Feedback[]), id)
 
     operation print_fb_items(ts: List[T = Term], id: String) -> Unit
       effects ConsoleOutput
@@ -1474,7 +1474,7 @@ namespace anthill.todo
     -- gives O(1) `Map.contains` instead of an O(F) linear scan per row
     -- on a List[String]. WI-183.
     operation feedback_set() -> Map[String, Bool] =
-      let fb_facts = facts_of(kb(), Feedback)
+      let fb_facts = facts_of(kb(), Feedback[])
       collect_feedback_set(fb_facts, empty())
 
     operation collect_feedback_set(facts: List[Term],
@@ -1858,7 +1858,7 @@ namespace anthill.todo
     -- ladder has no use for, since it compares ids — and the ladder runs ahead of
     -- every command that names an item, on a tracker four figures of items deep.
     operation all_ids() -> List[String] =
-      ids_of_terms(facts_of(kb(), WorkItem))
+      ids_of_terms(facts_of(kb(), WorkItem[]))
 
     operation ids_of_terms(ts: List[T = Term]) -> List[String] =
       match ts
@@ -2943,7 +2943,7 @@ namespace anthill.todo
       effects ConsoleError
     =
       match raw
-        case nil() -> project_acceptance(facts_of(kb(), Project))
+        case nil() -> project_acceptance(facts_of(kb(), Project[]))
         case cons(_, _) -> some(tools_to_acceptance(raw))
 
     -- A project-wide default is meaningful only with one source of truth.
@@ -3951,7 +3951,7 @@ namespace anthill.todo
     -- consulted in the un-forced case, and threading a three-state answer
     -- through one boolean is what makes that easy to get backwards.
     operation resolved_target(forced: Bool, on: Bool) -> MirrorTarget =
-      match facts_of(kb(), Mirror)
+      match facts_of(kb(), Mirror[])
         case nil() -> mirror_absent()
         case cons(m, rest) ->
           match rest
@@ -4100,7 +4100,7 @@ namespace anthill.todo
         case some(why) -> report_target_fault(target, why)
         case none() ->
           let items = WorkItemStore.all(s)
-          let links = links_for(facts_of(kb(), MirrorEntry), target, empty())
+          let links = links_for(facts_of(kb(), MirrorEntry[]), target, empty())
           -- THE LISTING IS ONLY PAID WHEN IT CAN CHANGE AN ANSWER. It exists for
           -- ADOPTION — an item whose link is missing but whose entry is already
           -- there under the `<id>: ` title prefix — so a tracker whose items all
@@ -4292,8 +4292,8 @@ namespace anthill.todo
       match target_fault(target)
         case some(why) -> report_target_fault(target, why)
         case none() ->
-          let seen = ingested_keys(facts_of(kb(), Feedback), empty())
-          import_links(f, target, mirror_rows(facts_of(kb(), MirrorEntry), target),
+          let seen = ingested_keys(facts_of(kb(), Feedback[]), empty())
+          import_links(f, target, mirror_rows(facts_of(kb(), MirrorEntry[]), target),
                        seen, s, 0)
 
     -- The `MirrorEntry` rows naming this target, as (workitem, entry) pairs.
@@ -4444,7 +4444,7 @@ namespace anthill.todo
     operation version_check() -> Int64
       effects ConsoleError
     =
-      check_store_versions(facts_of(kb(), StoreFormat), false)
+      check_store_versions(facts_of(kb(), StoreFormat[]), false)
 
     -- `saw` records whether any StoreFormat stamp was seen, so an EMPTY fact
     -- list (a project with no `fact StoreFormat` at all — the entity is bundled
@@ -4489,7 +4489,7 @@ namespace anthill.todo
     operation cmd_migrate(s: Cell[State]) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[s], Error}
     =
-      match first_stamp_version(facts_of(kb(), StoreFormat))
+      match first_stamp_version(facts_of(kb(), StoreFormat[]))
         case none() ->
           -- QUALIFIED, like the other 43 spec-op call sites. A BARE call to a
           -- body-less spec operation does not resolve through an existentially

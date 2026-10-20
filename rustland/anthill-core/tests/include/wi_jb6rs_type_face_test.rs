@@ -236,33 +236,26 @@ namespace test.jb6rs.bytype
     entity red
     entity green(v: Int64)
   end
-  operation itemModifiable() -> Bool = is_modifiable(Item)
   operation itemTypeModifiable() -> Bool = is_modifiable(Item[])
   operation variantModifiable() -> Bool = is_modifiable(red[])
-  operation byName() -> Int64 = List.length(facts_of(kb(), Item))
   operation byType() -> Int64 = List.length(facts_of(kb(), Item[]))
   operation storedByType() -> Int64 = List.length(stored_facts_of(kb(), Item[]))
-  operation bareType() -> Type = Item
   operation bracketType() -> Type = Item[]
   rule faceNamesItsSort(1) :- extract_sort_ref(Foo[X = Int64], ?n), SortInfo(name: ?n)
 end
 "#;
 
 /// A reader handed an entity's TYPE reads the declaration it names, so the face a type
-/// carries reaches the entity's rows: `facts_of(kb(), Item[])` lists the `Item` facts as
-/// `facts_of(kb(), Item)` does, and `stored_facts_of` alike; `extract_sort_ref` answers
-/// the sort's NAME, so a carrier written `Foo[X = Int64]` joins `SortInfo(name: Foo)`. And
-/// an operation body's bare `Item`, still read as the type until the reading of a bare
-/// name flips, is the term `Item[]` is — one type, one term. `is_modifiable` asks of a
-/// type, and an entity's — its own sort's, or a nested variant's — is one.
+/// carries reaches the entity's rows: `facts_of(kb(), Item[])` lists the `Item` facts, and
+/// `stored_facts_of` alike; `extract_sort_ref` answers the sort's NAME, so a carrier
+/// written `Foo[X = Int64]` joins `SortInfo(name: Foo)`. `Item[]` in an operation body is
+/// the term every type producer builds. `is_modifiable` asks of a type, and an entity's —
+/// its own sort's, or a nested variant's — is one.
 ///
 /// BACKED OUT, each alone (measured): `type_value_decl` answering the face
-/// (`value_functor`) — `byType` and `storedByType` answer 0, in silence, and with the bare
-/// name below also faced, so does `byName`; `extract_sort_ref` keeping the face —
-/// `faceNamesItsSort` answers 0; the bare free-standing name built as the plain
-/// `Ref(Item)` in `reduce_var` — `bareType` and `bracketType` are two terms;
-/// `is_modifiable`'s sort test comparing the face against its own owner — the three
-/// `is_modifiable` calls are refused as data.
+/// (`value_functor`) — `byType` and `storedByType` answer 0, in silence; `extract_sort_ref`
+/// keeping the face — `faceNamesItsSort` answers 0; `is_modifiable`'s sort test comparing
+/// the face against its own owner — the two `is_modifiable` calls are refused as data.
 #[test]
 fn a_reader_handed_an_entitys_type_reads_its_declaration() {
     let mut interp = interp_for(BY_TYPE);
@@ -273,31 +266,408 @@ fn a_reader_handed_an_entitys_type_reads_its_declaration() {
         Value::Int(n) => n,
         other => panic!("{op}: expected an Int64, got {other:?}"),
     };
-    assert_eq!(count(&mut interp, "byName"), 2, "the bare name lists the facts");
     assert_eq!(count(&mut interp, "byType"), 2, "`Item[]` lists the facts");
     assert_eq!(count(&mut interp, "storedByType"), 2, "and `stored_facts_of` alike");
-    for op in ["itemModifiable", "itemTypeModifiable", "variantModifiable"] {
+    for op in ["itemTypeModifiable", "variantModifiable"] {
         match interp.call(&format!("test.jb6rs.bytype.{op}"), &[]) {
             Ok(Value::Bool(false)) => {}
             other => panic!("{op}: `is_modifiable` reads an entity's type, which holds no cell: {other:?}"),
         }
     }
-    let term_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp
-        .call(&format!("test.jb6rs.bytype.{op}"), &[])
-        .unwrap_or_else(|e| panic!("{op} runs: {e:?}"))
-    {
-        Value::Term { id, .. } => id,
-        other => panic!("{op}: expected the type as a term, got {other:?}"),
-    };
-    assert_eq!(
-        term_of(&mut interp, "bareType"),
-        term_of(&mut interp, "bracketType"),
-        "an operation body's bare `Item` is the type `Item[]` is"
-    );
+    let item = interp
+        .kb()
+        .try_resolve_symbol("test.jb6rs.bytype.Item")
+        .expect("Item resolves");
+    let the_type = interp.kb_mut().make_sort_ref(item);
+    match interp.call("test.jb6rs.bytype.bracketType", &[]).expect("bracketType runs") {
+        Value::Term { id, .. } => assert_eq!(id, the_type, "`Item[]` is the type every producer builds"),
+        other => panic!("expected the type as a term, got {other:?}"),
+    }
     let mut kb = load_kb_with(BY_TYPE);
     assert_eq!(
         query_unary(&mut kb, "test.jb6rs.bytype.faceNamesItsSort").len(),
         1,
         "`extract_sort_ref(Foo[X = Int64])` names the sort `SortInfo` records"
+    );
+}
+
+const READING: &str = r#"
+namespace test.jb6rs.reading
+  import anthill.prelude.{Int64, Type, Option}
+  import anthill.reflect.{Term}
+  enum Colour
+    entity red
+    entity green(v: Int64)
+  end
+  sort Box
+    sort V = ?
+    entity box(v: V)
+  end
+  entity account(id: Int64, name: Int64)
+  entity Baz
+  entity Item(n: Int64)
+  entity TypeBox(t: Type)
+  entity holdsQ(pattern: Term)
+  sort Solo
+    entity Solo
+  end
+  entity Cfg(x: Option[T = Int64])
+  entity ListLiteral
+  fact holdsQ(pattern: account)
+  fact p(account(id: 1, name: 2))
+  fact heldAcct(account)
+  fact boxed(Box[V = red])
+  fact boxedItem(Box[V = Item])
+  fact heldT(Item[])
+  fact TypeBox(t: Item[])
+  rule bareFindsInstance(1) :- p(account)
+  rule bindsInstance(?t) :- ?t <=> account
+  rule bareBindingInBody(1) :- boxed(Box[V = red])
+  rule fieldedBindingIsTheType(1) :- boxedItem(Box[V = Item[]])
+  rule quotedMatches(1) :- holdsQ(pattern: account)
+  rule bareIsNotTheType(1) :- heldT(Item)
+  rule bracketIsTheType(1) :- heldT(Item[])
+  rule typedFieldHoldsTheType(1) :- TypeBox(t: Item[])
+  operation bazInstance() -> Baz = Baz
+  operation bazApplied() -> Baz = Baz()
+  operation bazType() -> Type = Baz[]
+  operation soloInstance() -> Solo = Solo
+  operation cfgInstance() -> Cfg = Cfg
+end
+"#;
+
+/// A BARE constructor name in a DATA context is its INSTANCE (kernel-language.md §4.4): in
+/// a clause's data slot `p(account)` is `p(account())`, the pattern with every field
+/// fresh — so `?t <=> account` binds that pattern, which a ground `account(…)` unifies —
+/// and in an operation body `Baz` is `Baz()`. Its TYPE is written `Item[]`, and the two
+/// never meet: `heldT(Item[])` is not found by `heldT(Item)`. A bracket's BINDING is a
+/// type context in a rule body as in a clause, so `:- boxed(Box[V = red])` finds the fact
+/// that wrote it so. And an entity's type in a `Type` field is a type, with no field filled
+/// (an instance there, `TypeBox(t: Item(n: ?))`, the typer refuses).
+///
+/// BACKED OUT, each part alone (measured), this row fails — at the assertion the part is
+/// for — under every one of them:
+///  * the canon making an entity's nullary application its bare name, or its reflect-form
+///    exemption read by last segment (`is_reflect_form_functor`): the store rows;
+///  * the clause converter's data-slot reading (`Loader::bare_name_term`), or its bracket
+///    gate: `heldAcct`, `fieldedBindingIsTheType` (and `wi_vnwaw`'s data-slot row);
+///  * the rule-body walk's data-slot reading (`body_data_slot_name`): its instance arm —
+///    `bindsInstance` (and `wi_czj2n` F, `wi_vnwaw`); its type arm — `bareBindingInBody`;
+///    its quoted-field gate — `quotedMatches`;
+///  * the query walk's (`query_data_slot_name`), or its bracket gate: the query rows;
+///  * the typer's and eval's bare constructor arms asking `is_constructor_symbol`, eval's
+///    sort arm reading an eponymous entity as its type, its nullary gate counting fields
+///    rather than non-`Option` fields: the operation-body rows;
+///  * the clause bracket's entity fill: the module does not load (`TypeBox(t: Item[])` is
+///    "expected Type, got Item").
+/// `bareFindsInstance` passes either way BY DESIGN — the goal is matched by head, and the
+/// reference heads as the application does — and is the control that the fact is found.
+#[test]
+fn a_bare_constructor_in_a_data_context_is_its_instance() {
+    let mut kb = load_kb_with(READING);
+    let answers = |kb: &mut anthill_core::kb::KnowledgeBase, rule: &str| {
+        query_unary(kb, &format!("test.jb6rs.reading.{rule}")).len()
+    };
+    assert_eq!(answers(&mut kb, "bareFindsInstance"), 1, "`p(account)` is `p(account())`");
+    assert_eq!(answers(&mut kb, "bareBindingInBody"), 1, "a body's bracket binding is the type");
+    assert_eq!(answers(&mut kb, "bareIsNotTheType"), 0, "the bare name is not the type");
+    assert_eq!(answers(&mut kb, "bracketIsTheType"), 1, "`Item[]` is");
+    assert_eq!(answers(&mut kb, "typedFieldHoldsTheType"), 1, "a `Type` field holds the type");
+    assert_eq!(
+        answers(&mut kb, "fieldedBindingIsTheType"),
+        1,
+        "a fielded entity as a clause's bracket binding is its type, not its pattern"
+    );
+    assert_eq!(
+        answers(&mut kb, "quotedMatches"),
+        1,
+        "a quoted `Term` field keeps the name as written in the goal as in the fact"
+    );
+    let config = ResolveConfig {
+        max_solutions: 4,
+        ..ResolveConfig::default()
+    };
+    let ground = query_pattern_term(
+        &mut kb,
+        "test.jb6rs.reading.bindsInstance(test.jb6rs.reading.account(id: 3, name: 4))",
+    );
+    assert_eq!(
+        kb.resolve(&[ground], &config).len(),
+        1,
+        "`?t <=> account` binds the all-fields-fresh pattern, which a ground account unifies"
+    );
+    for (pattern, want, what) in [
+        (
+            "test.jb6rs.reading.heldAcct(test.jb6rs.reading.account(id: 9, name: 9))",
+            1,
+            "a fact's `heldAcct(account)` holds the pattern, which any account unifies",
+        ),
+        (
+            "test.jb6rs.reading.p(test.jb6rs.reading.account)",
+            1,
+            "a query's `p(account)` is `p(account())`",
+        ),
+        (
+            "test.jb6rs.reading.boxedItem(test.jb6rs.reading.Box[V = test.jb6rs.reading.Item])",
+            1,
+            "a query's bracket binding is the type",
+        ),
+    ] {
+        let goal = query_pattern_term(&mut kb, pattern);
+        assert_eq!(kb.resolve(&[goal], &config).len(), want, "{what}");
+    }
+    // A fieldless constructor's two spellings are ONE TERM — the canon in the store.
+    let baz_sym = kb
+        .try_resolve_symbol("test.jb6rs.reading.Baz")
+        .expect("Baz resolves");
+    let applied = kb.alloc(Term::Fn {
+        functor: baz_sym,
+        pos_args: Default::default(),
+        named_args: Default::default(),
+    });
+    assert_eq!(applied, kb.alloc(Term::Ref(baz_sym)), "`Baz()` and `Baz` are one term");
+    // A user's own entity named like a reflect form is an ordinary entity.
+    let own = kb
+        .try_resolve_symbol("test.jb6rs.reading.ListLiteral")
+        .expect("the user's ListLiteral resolves");
+    let own_applied = kb.alloc(Term::Fn {
+        functor: own,
+        pos_args: Default::default(),
+        named_args: Default::default(),
+    });
+    assert_eq!(own_applied, kb.alloc(Term::Ref(own)), "a user's `ListLiteral()` is its bare name");
+
+    let mut interp = interp_for(READING);
+    let baz = interp
+        .kb()
+        .try_resolve_symbol("test.jb6rs.reading.Baz")
+        .expect("Baz resolves");
+    let head_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
+        let v = interp
+            .call(&format!("test.jb6rs.reading.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op} runs: {e:?}"));
+        anthill_core::eval::value_functor(interp.kb(), &v).unwrap_or_else(|| panic!("{op}: {v:?}"))
+    };
+    assert_eq!(head_of(&mut interp, "bazInstance"), baz, "an operation body's `Baz` is the instance");
+    assert_eq!(head_of(&mut interp, "bazApplied"), baz, "as `Baz()` is");
+    let ty = head_of(&mut interp, "bazType");
+    assert!(ty.is_type_face() && ty.plain() == baz, "`Baz[]` is the type: {ty:?}");
+    let solo = interp
+        .kb()
+        .try_resolve_symbol("test.jb6rs.reading.Solo")
+        .expect("Solo resolves");
+    assert_eq!(head_of(&mut interp, "soloInstance"), solo, "an eponymous entity's bare name is its instance");
+    let cfg = interp
+        .kb()
+        .try_resolve_symbol("test.jb6rs.reading.Cfg")
+        .expect("Cfg resolves");
+    assert_eq!(
+        head_of(&mut interp, "cfgInstance"),
+        cfg,
+        "an entity whose every field is an `Option` is built bare, its fields `none`"
+    );
+}
+
+/// The bare name of a constructor that takes fields, in an operation body, is an
+/// INCOMPLETE construction, refused as `Item()` is — it is no longer the type, which is
+/// `Item[]`. The step that made the type the bracket's moved every `facts_of(kb(), X)` of
+/// this repository to `X[]`; this is what an unmoved one meets.
+///
+/// BACKED OUT, each alone (measured), this row fails: the refusal itself; its own load
+/// error class (rendered as a field's type mismatch); the typer's bare constructor arm
+/// asking `is_constructor_symbol`. A positional argument read as covering the field at its
+/// own index fails the mixed control here and thirteen rows of `wi_t2470` / `wi_1f0qp`;
+/// the refusal returned alone, ahead of the supplied fields' own mismatches, fails
+/// `wi_akkwf`'s marker-call row.
+#[test]
+fn a_bare_fielded_entity_in_an_operation_body_is_refused() {
+    let errs = load_errors_of(
+        "namespace test.jb6rs.refused\n  import anthill.prelude.{Int64, Type}\n  \
+         entity Item(n: Int64)\n  operation ty() -> Type = Item\nend\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("`Item` is constructed without its field `n`")),
+        "the bare `Item` is refused as the construction it is: {errs:?}"
+    );
+    let unrendered = crate::common::unrendered_load_errors_of(
+        "namespace test.jb6rs.refused\n  import anthill.prelude.{Int64, Type}\n  \
+         entity Item(n: Int64)\n  operation ty() -> Type = Item\nend\n",
+    );
+    assert!(
+        unrendered.iter().any(|e| matches!(
+            e.peel(),
+            anthill_core::kb::load::LoadError::IncompleteConstruction { ctor, missing, .. }
+                if ctor == "Item" && missing == &["n".to_string()]
+        )),
+        "its own class, naming the constructor and the field: {unrendered:?}"
+    );
+    let applied = load_errors_of(
+        "namespace test.jb6rs.refused\n  import anthill.prelude.{Int64, Type}\n  \
+         entity Item(n: Int64)\n  operation ty() -> Type = Item()\nend\n",
+    );
+    assert_eq!(errs, applied, "as its applied spelling is, with the same diagnostic");
+    // The control: a positional argument takes the field no name took, so a MIXED
+    // construction supplies every field and loads.
+    load_kb_with(
+        "namespace test.jb6rs.mixed\n  import anthill.prelude.Int64\n  \
+         entity two(a: Int64, b: Int64)\n  operation mk() -> two = two(1, a: 2)\nend\n",
+    );
+}
+
+/// `kind` reports a constructor's TYPE as a sort and its instance as the entity, in the
+/// interpreter's operation and in the resolver's builtin, which read one table
+/// (`KnowledgeBase::reflect_kind`). The typed surface hands `kind` a `Symbol`, and refuses
+/// a `Type` there; a face reaches it from a host call and from an untyped goal.
+///
+/// BACKED OUT (`reflect_kind` answering `kind_of`, which does not see the face): both
+/// type rows report `Entity`. The instance rows pass either way BY DESIGN.
+#[test]
+fn kind_reports_a_type_face_as_a_sort() {
+    let mut interp = interp_for(SRC);
+    let red = interp
+        .kb()
+        .try_resolve_symbol("test.jb6rs.face.Colour.red")
+        .expect("red resolves");
+    let the_type = interp.kb_mut().make_sort_ref(red);
+    let the_instance = interp.kb_mut().alloc(Term::Ref(red));
+    let kind_of = |interp: &mut anthill_core::eval::Interpreter, t| match interp
+        .call("anthill.reflect.kind", &[Value::term(t)])
+        .expect("kind runs")
+    {
+        Value::Str(s) => s,
+        other => panic!("kind answers a String, got {other:?}"),
+    };
+    assert_eq!(kind_of(&mut interp, the_type), "Sort", "the type `red[]` is a sort");
+    assert_eq!(kind_of(&mut interp, the_instance), "Entity", "the instance `red` is the entity");
+
+    let mut kb = load_kb_with(SRC);
+    let config = ResolveConfig {
+        max_solutions: 4,
+        ..ResolveConfig::default()
+    };
+    for (pattern, want) in [
+        ("anthill.reflect.kind(test.jb6rs.face.Colour.red[], \"Sort\")", 1),
+        ("anthill.reflect.kind(test.jb6rs.face.Colour.red[], \"Entity\")", 0),
+        ("anthill.reflect.kind(test.jb6rs.face.Colour.red, \"Entity\")", 1),
+    ] {
+        let goal = query_pattern_term(&mut kb, pattern);
+        assert_eq!(kb.resolve(&[goal], &config).len(), want, "the resolver's builtin: {pattern}");
+    }
+}
+
+const STORED_DECLS: &str = r#"
+  import anthill.prelude.{Int64, Type, List, Option}
+  entity Item(n: Int64)
+  entity Bare
+  sort Foo
+    sort X = ?
+    entity Foo(X: X)
+  end
+  entity TypeHolder(t: Type, ts: List[T = Type])
+  entity BoundHolder(t: Type)
+"#;
+
+/// A type written as data survives the JSON store: the writer spells an entity's type by
+/// its qualified name, and the reader, under a field declared `Type`, builds the type that
+/// name denotes — so the reloaded fact is found by the bracket and is the fact it was. A
+/// sort's type (`Int64`) is read back the same way. A type WITH bindings has no flat form
+/// and is refused at the writer, loudly, rather than written as the instance it would
+/// reload as.
+///
+/// A string naming no type under such a field is refused, not read as a string.
+///
+/// BACKED OUT, each alone (measured), this row fails: the reader's `Type` arm, or its
+/// refusal of a name that is no type; the writer's arm qualifying a type, or asking
+/// `Option.none` before it (`none[]` became JSON `null`), or its refusal of a type with
+/// bindings; the clause bracket's entity fill (the fixture does not load); the fact-field
+/// check's type-face arm; and `bare_entity_slots`' face guard, which keeps the reload's
+/// `Item[]` from being expanded into a pattern.
+#[test]
+fn a_type_in_the_json_store_reads_back_as_the_type() {
+    use anthill_core::persistence::term_ser;
+    let mut kb = load_kb_with(&format!(
+        "namespace test.jb6rs.stored{STORED_DECLS}  fact TypeHolder(t: Item[], ts: [Bare[], Int64, Option.none[]])\nend\n"
+    ));
+    let holder = kb
+        .try_resolve_symbol("test.jb6rs.stored.TypeHolder")
+        .expect("TypeHolder resolves");
+    let rids = kb.rules_by_functor(holder);
+    let json = term_ser::serialize_json(&kb, "test.jb6rs.stored.TypeHolder", &rids).expect("serializes");
+    assert!(
+        json.contains("\"test.jb6rs.stored.Item\""),
+        "the type is written by its qualified name: {json}"
+    );
+    let mut reloaded = load_kb_with(&format!("namespace test.jb6rs.stored{STORED_DECLS}end\n"));
+    let domain = reloaded.intern("test.jb6rs.stored");
+    term_ser::load_json(&mut reloaded, &json, domain).expect("loads back");
+    let config = ResolveConfig {
+        max_solutions: 4,
+        ..ResolveConfig::default()
+    };
+    let goal = query_pattern_term(
+        &mut reloaded,
+        "test.jb6rs.stored.TypeHolder(t: test.jb6rs.stored.Item[], \
+         ts: [test.jb6rs.stored.Bare[], anthill.prelude.Int64, anthill.prelude.Option.none[]])",
+    );
+    assert_eq!(reloaded.resolve(&[goal], &config).len(), 1, "the reloaded fact is the one written: {json}");
+
+    let unknown = term_ser::load_json(
+        &mut reloaded,
+        r#"{ "meta": { "entity": "test.jb6rs.stored.TypeHolder" },
+             "data": { "t": "no.such.Sort", "ts": [] } }"#,
+        domain,
+    );
+    assert!(
+        matches!(&unknown, Err(errs) if errs.iter().any(|e| format!("{e:?}").contains("names no sort"))),
+        "a `Type` field naming no type is refused, not read as a string: {unknown:?}"
+    );
+
+    let mut bound = load_kb_with(&format!(
+        "namespace test.jb6rs.boundstored{STORED_DECLS}  fact BoundHolder(t: Foo[X = Int64])\nend\n"
+    ));
+    let holder = bound
+        .try_resolve_symbol("test.jb6rs.boundstored.BoundHolder")
+        .expect("BoundHolder resolves");
+    let rids = bound.rules_by_functor(holder);
+    let refused = term_ser::serialize_json(&bound, "test.jb6rs.boundstored.BoundHolder", &rids);
+    assert!(
+        matches!(&refused, Err(e) if format!("{e:?}").contains("cannot be represented")),
+        "a type with bindings is refused at the writer: {refused:?}"
+    );
+}
+
+/// A field declared at a DATA sort holds its instances, and the typer refuses anything
+/// else there, in a fact as in a body: an instance of another sort — a free-standing
+/// entity's `Alpha()` too, the one term with its bare name since the two spellings were
+/// made one — and a TYPE written as data (`red[]`). A `Type` field holds the type.
+///
+/// BACKED OUT, each alone (measured): the fact-field check's `Ref` arm asking
+/// `is_constructor_symbol` — `c: Alpha()` loads (and `wi830`'s role row with it); its
+/// type-face arm — `c: red[]` loads; its advice where a type is declared — the message
+/// does not say `Alpha[]`.
+#[test]
+fn a_data_field_refuses_a_type_and_a_foreign_instance() {
+    let errs = load_errors_of(
+        "namespace test.jb6rs.fields\n  import anthill.prelude.Type\n  enum Colour\n    \
+         entity red\n    entity green\n  end\n  entity Alpha\n  entity Holder(c: Colour)\n  \
+         entity TypeBox(t: Type)\n  fact Holder(c: Alpha())\n  fact Holder(c: red[])\n  \
+         fact TypeBox(t: red[])\n  fact TypeBox(t: Alpha())\nend\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("Holder.c") && e.contains("got Alpha")),
+        "an instance of another sort: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("Holder.c") && e.contains("got Type (red[])")),
+        "a type written as data: {errs:?}"
+    );
+    assert_eq!(
+        errs.iter().filter(|e| e.contains("TypeBox")).count(),
+        1,
+        "a `Type` field holds the type, and refuses only the instance: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("TypeBox.t") && e.contains("TYPE is written `Alpha[]`")),
+        "an instance where a type is declared is told how the type is written: {errs:?}"
     );
 }

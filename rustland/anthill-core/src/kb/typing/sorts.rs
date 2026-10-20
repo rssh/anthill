@@ -1508,6 +1508,27 @@ fn check_value_against_sort_ref(
                 })
             }
         }
+        // WI-20260902-JB6RS — A TYPE WRITTEN AS DATA (`red[]`, `Foo[X = Int64]`, headed by
+        // a constructor's type face) is no instance of a data sort, so a field declared at
+        // one refuses it as it refuses an instance of another sort. Asked before the arms
+        // below, which would read the face's DECLARATION and find the field's own sort
+        // (`Foo[]` in a `Foo` field). A sort with no constructor — `Type`, `Term`,
+        // `Symbol`, a spec — is not judged here.
+        Term::Ref(face) | Term::Fn { functor: face, .. } if face.is_type_face() => {
+            if !kb.sort_has_constructors(declared_sym) {
+                return None;
+            }
+            Some(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::EntityField {
+                    entity: entity_sym,
+                    field: field_sym,
+                },
+                expected: declared_type_display(kb, declared_type),
+                actual: format!("Type ({}[])", kb.local_name_of(*face)),
+            })
+        }
         // WI-946: the value's sort is the TOTAL belongs-to (`sort_of_constructor`).
         // The strict view answered `None` for an eponymous / free-standing carrier,
         // and `check_value_sort_membership`'s `parent?` turned that into a SILENT
@@ -1524,8 +1545,12 @@ fn check_value_against_sort_ref(
             entity_sym,
             field_sym,
             span,
-        ),
-        Term::Ref(val_sym) if kb.is_constructor_symbol(*val_sym) => check_value_sort_membership(
+        )
+        .map(|e| instance_where_a_type_is_declared(kb, declared_sym, *val_functor, e)),
+        // A free-standing entity too (`is_entity_constructor`): its nullary instance is the
+        // `Ref` since its two spellings are one term (WI-20260902-JB6RS), and asked by
+        // `is_constructor_symbol` it fell to the silent `None` below — `role: Alpha()` loaded.
+        Term::Ref(val_sym) if kb.is_entity_constructor(*val_sym) => check_value_sort_membership(
             kb,
             kb.sort_of_constructor(*val_sym),
             declared_sym,
@@ -1533,8 +1558,42 @@ fn check_value_against_sort_ref(
             entity_sym,
             field_sym,
             span,
-        ),
+        )
+        .map(|e| instance_where_a_type_is_declared(kb, declared_sym, *val_sym, e)),
         _ => None,
+    }
+}
+
+/// WI-20260902-JB6RS — an INSTANCE in a field declared `Type` is what an entity's bare name
+/// writes there since a constructor's bare name is its instance (`covers: [WorkItem]`), so
+/// its refusal says how the type is written: `WorkItem[]`.
+fn instance_where_a_type_is_declared(
+    kb: &KnowledgeBase,
+    declared_sym: Symbol,
+    ctor: Symbol,
+    error: TypeError,
+) -> TypeError {
+    if kb.qualified_name_of(declared_sym) != "anthill.prelude.Type" {
+        return error;
+    }
+    match error {
+        TypeError::Other {
+            site,
+            span,
+            context,
+            expected,
+            actual,
+        } => TypeError::Other {
+            site,
+            span,
+            context,
+            expected,
+            actual: format!(
+                "{actual} — an instance; the entity's TYPE is written `{}[]` (kernel-language.md §4.4)",
+                kb.local_name_of(ctor)
+            ),
+        },
+        other => other,
     }
 }
 

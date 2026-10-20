@@ -163,6 +163,17 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// WI-20260902-JB6RS — a construction in an operation body that leaves out a field
+    /// its entity declares, other than an `Option` (which an omitted field reads as
+    /// `none`). It loaded, and the value built had no such field: reading it was an
+    /// internal error at run time. A constructor's BARE name is this construction with no
+    /// field (kernel-language.md §4.4), so this is also what a forgotten type bracket
+    /// (`WorkItem` for `WorkItem[]`) meets.
+    IncompleteConstruction {
+        span: Option<Span>,
+        ctor: Symbol,
+        missing: Vec<Symbol>,
+    },
     /// `check_apply_iter` was handed a functor symbol that is neither
     /// a known operation, a constructor, nor a var-bound arrow type.
     UnknownApplyFunctor {
@@ -1462,6 +1473,9 @@ impl TypeError {
             TypeError::NoConstructor { name, .. } => {
                 format!("no constructor: {}", kb.local_name_of(*name))
             }
+            TypeError::IncompleteConstruction { ctor, missing, .. } => {
+                incomplete_construction_message(kb, *ctor, missing)
+            }
             TypeError::UnknownApplyFunctor { name, .. } => match sort_applied_as_call(kb, *name) {
                 Some(advice) => format!("unknown apply functor: {}: {advice}", kb.local_name_of(*name)),
                 None => format!("unknown apply functor: {}", kb.local_name_of(*name)),
@@ -2184,6 +2198,7 @@ impl TypeError {
             TypeError::TypeMismatch { span, .. }
             | TypeError::UnresolvedName { span, .. }
             | TypeError::NoConstructor { span, .. }
+            | TypeError::IncompleteConstruction { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
             | TypeError::UndefinedDataFunctor { span, .. }
             | TypeError::BareMemberCall { span, .. }
@@ -2320,6 +2335,13 @@ impl TypeError {
                 actual_type: "unknown".to_string(),
                 span: self.span(kb),
             },
+            TypeError::IncompleteConstruction { ctor, missing, .. } => {
+                LoadError::IncompleteConstruction {
+                    ctor: kb.local_name_of(*ctor).to_string(),
+                    missing: missing.iter().map(|f| kb.local_name_of(*f).to_string()).collect(),
+                    span: self.span(kb),
+                }
+            }
             // WI-20260901-92VA4 — SAYS WHAT THE RULE BODY SAYS. The phrase "unknown
             // functor" is kept verbatim and in place: ~15 assertions match on it, and
             // `wi557::genuinely_unknown_bare_functor_stays_terse` uses it to separate this
@@ -3249,4 +3271,10 @@ fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) 
         }
         RequiresSite::Clause => format!("`requires({clause})` in the rule's body"),
     }
+}
+
+/// [`TypeError::IncompleteConstruction`]'s words: the load error's, read off the symbols.
+fn incomplete_construction_message(kb: &KnowledgeBase, ctor: Symbol, missing: &[Symbol]) -> String {
+    let missing: Vec<String> = missing.iter().map(|f| kb.local_name_of(*f).to_string()).collect();
+    crate::kb::load::incomplete_construction_message(kb.local_name_of(ctor), &missing)
 }
