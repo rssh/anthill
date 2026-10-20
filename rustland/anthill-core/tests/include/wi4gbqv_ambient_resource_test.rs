@@ -350,7 +350,9 @@ end
 /// `names_modify_place` was one predicate it did. `stable_receiver_path` answers the
 /// §4.1 ALIAS-STABILITY question and takes any bare name, constructors included — so a
 /// paren-less field-bearing constructor re-keyed `ModifyRuntime.set`'s `Modify[target]`
-/// onto `wrap`, producing `undeclared effect: Modify[T = wrap]`. The only declaration
+/// onto `wrap`, producing `undeclared effect: Modify[T = wrap]`. `touch` stands for that
+/// callee since WI-200 retired `ModifyRuntime`: generic in its target, as `set` was, and
+/// writing nothing, since a row is an upper bound. The only declaration
 /// that would satisfy it, `effects Modify[wrap]`, is itself a load error
 /// (`a_constructor_with_fields_is_not_a_place`), so the program was unwritable and
 /// neither message said so.
@@ -363,13 +365,13 @@ fn a_parenless_fieldful_constructor_does_not_mint_an_undeclarable_label() {
     let src = r#"
 namespace test.wi4gbqv.parenless_fieldful
   import anthill.prelude.{Int64, Unit, Modify}
-  import ModifyRuntime.{set}
 
   sort Wrapper
     entity wrap(rep: Int64)
   end
 
-  operation write(n: Int64) -> Unit effects {} = set(wrap, n)
+  operation touch[T](target: T, n: Int64) -> Unit effects Modify[target] = ()
+  operation write(n: Int64) -> Unit effects {} = touch(wrap, n)
 end
 "#;
     let errs = load_result(src).expect_err("a constructor function names no place");
@@ -388,7 +390,7 @@ end
 }
 
 /// The EPONYMOUS twin of the row above — the WI-926 exclusion reaching the CALL, not only
-/// the declaration. `set(Slot, n)` used to re-key onto `Slot` and demand
+/// the declaration. `set(Slot, n)` (`touch` here, as above) used to re-key onto `Slot` and demand
 /// `effects Modify[Slot]`, which `an_eponymous_nullary_constructor_stays_a_type` refuses:
 /// the two sides of one ticket disagreeing, in the exact population the ticket's CARE note
 /// singled out.
@@ -397,13 +399,13 @@ fn a_parenless_eponymous_constructor_does_not_mint_an_undeclarable_label() {
     let src = r#"
 namespace test.wi4gbqv.parenless_eponymous
   import anthill.prelude.{Int64, Unit, Modify}
-  import ModifyRuntime.{set}
 
   sort Slot
     entity Slot
   end
 
-  operation write(n: Int64) -> Unit effects {} = set(Slot, n)
+  operation touch[T](target: T, n: Int64) -> Unit effects Modify[target] = ()
+  operation write(n: Int64) -> Unit effects {} = touch(Slot, n)
 end
 "#;
     let errs = load_result(src).expect_err("an eponymous constructor is its sort, not a place");

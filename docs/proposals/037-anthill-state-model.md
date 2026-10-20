@@ -222,7 +222,7 @@ These invariants keep signatures fit for a time-travel implementation, so that o
 - a flat registry that interprets `Pure` and `Throw` (WI-389).
 
 **What changes:**
-- `ModifyRuntime` and the functor map are retired, and the m5 `Box` and `counter` fixtures become load errors;
+- `ModifyRuntime` and the functor map are retired, and the m5 `Box` and `counter` fixtures become load errors (done, WI-200, 2026-10-20);
 - every base operation goes to the implementation its resource is bound to, `Cell.*` included (the user's direction, WI-20260908-9WVT7 note F10). Stores keep finding theirs by mounted key;
 - for the base sorts, the flat registry is replaced by the installation map (§5.2), which lets an implementation wrap another, and the scoped installing operation is added (WI-078 (h)). The registry keeps the effects this proposal does not cover, `Console`, `Clock` and `Error`, until WI-078 decides their scoping (user, 2026-10-17);
 - every implementation gets mark and undo, for `Branch` (WI-070);

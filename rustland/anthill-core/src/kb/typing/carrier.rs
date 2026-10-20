@@ -2850,10 +2850,10 @@ fn carrier_param_leaf_binding<V: TermView>(
 /// WI-383 B — the LATE, GROUND-valued companion to [`bind_spec_params_from_carrier_param`].
 /// Binds a spec value-param that is STILL FREE after the argument loops to its GROUND
 /// provider-fact value (`fact Box[T = IntCell, V = Int64]` ⟹ `Box.V := Int64`). This is the
-/// entity-resource Modify tie: `ModifyRuntime.get(target: T) -> V` consumed on a resource
-/// whose provider fact pins `V` to a concrete sort. `V` appears only in the RETURN, so no
-/// argument ever threads it; left free, the value-untied return is filled from the caller's
-/// `expected`, accepting ANY declared return (the soundness hole the Modify model names).
+/// carrier-param read tie: a spec's `rd(target: T) -> V` consumed on a carrier whose provider
+/// fact pins `V` to a concrete sort (`wi383_op_type_param_projection_test`). `V` appears only
+/// in the RETURN, so no argument ever threads it; left free, the value-untied return is filled
+/// from the caller's `expected`, accepting ANY declared return.
 ///
 /// Why it is a SEPARATE late pass, not folded into the early
 /// [`bind_spec_params_from_carrier_param`]:
@@ -3480,7 +3480,7 @@ pub(super) fn dispatched_impl_effects_of(
         // (WI-506: `Modify[c.rep]` is covered by `Modify[c]`) and skips an argument that names
         // no place (WI-20260823-4GBQV), which is refused where its `Modify` is incurred, as the
         // call's own. Keyed on variables alone, an override's `Modify[<its own param>]` leaked
-        // to the caller of `ModifyRuntime.set(h.cell, 1)` (MEASURED). The argument as the call's
+        // to the caller of a spec operation called on `h.cell` (MEASURED). The argument as the call's
         // typing left it, as at the call's own site ([`typed_arg`]).
         places.record(kb, *impl_param_sym, typed_arg(arg_occ, call.result(u)));
         // The type the override RECEIVES — a `some(…)`-wrapped argument's option — as

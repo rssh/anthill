@@ -389,11 +389,10 @@ pub(super) fn check_apply_iter(
         // inference-expanded list and `written_params` its clone, so ONE index serves both.
         let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
         let self_recv_spec = self_receiver_spec_sort(kb, &op, fn_sym);
-        // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` /
-        // `ModifyRuntime.get(target: T)` shape — receiver typed by the spec's own carrier
-        // param, not the spec sort) so the LATE ground-value bind below can reuse its
-        // `view` without re-scanning the provider facts. Only when there is no
-        // self-receiver (the two shapes are mutually exclusive).
+        // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` shape —
+        // receiver typed by the spec's own carrier param, not the spec sort) so the LATE
+        // ground-value bind below can reuse its `view` without re-scanning the provider
+        // facts. Only when there is no self-receiver (the two shapes are mutually exclusive).
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
@@ -2223,26 +2222,6 @@ pub(super) fn check_apply_iter(
         // false)` under a refuted `{Modify[c] :- eq(flag, true)}` loads clean).
         if let Some(leak) = leak {
             return Err(placeless_modify_refusal(kb, fn_sym, &leak, span));
-        }
-        // A `Modify` fires only on a place of a modifiable type (proposal 037 Rule 8), and the
-        // standard handler's `ModifyRuntime.get` and `set` read and write the very place they
-        // are handed. At a place whose type admits none the arising `Modify[p]` is dropped as
-        // vacuous and the handler wrote the place all the same (MEASURED: `set(p, 5)` over
-        // `p: Plain`, a sort with no `Modifiable`, loaded, and a nullary one was written in
-        // silence), so the call is refused, as a written `effects Modify[p]` there is. An
-        // argument of `set` that names no place at all is the refusal above's.
-        if let Some(refusal) = modify_runtime_at_unmodifiable_place(
-            kb,
-            fn_sym,
-            &op.params,
-            &pos_call_params,
-            pos_results,
-            named_args,
-            named_results,
-            &places.placeless,
-            span,
-        ) {
-            return Err(refusal);
         }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
@@ -5543,67 +5522,6 @@ fn defaulted_call_target(
     let own = impl_parent_of_op(kb, target).is_some_and(|owner| same_sort_canonical(kb, owner, provider));
     (own && op_is_interpretable(kb, target) && dictionary_covers_target(kb, spec_sort, provider, target))
         .then_some(target)
-}
-
-/// `ModifyRuntime.get` or `.set` handed a place that is no resource: they read and write the
-/// very place they are handed, so the place must itself be of a modifiable type
-/// ([`crate::kb::region::type_is_modifiable_place`]) — a type that only holds one (an empty
-/// `List[T = Cell]`, whose every `nil` is one slot of the standard handler's) is refused as a
-/// type that holds nothing is. A type parameter is accepted: a later call instantiates it.
-#[allow(clippy::too_many_arguments)]
-fn modify_runtime_at_unmodifiable_place(
-    kb: &KnowledgeBase,
-    fn_sym: Symbol,
-    params: &[(Symbol, Value)],
-    pos_call_params: &[Option<usize>],
-    pos_results: &[Result<TypeResult, TypeError>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    named_results: &[Result<TypeResult, TypeError>],
-    placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
-    span: Option<Span>,
-) -> Option<TypeError> {
-    // By the qualified name, which is the canonical symbol's: no lookup per call.
-    let is_set = match kb.qualified_name_of(fn_sym) {
-        "anthill.prelude.ModifyRuntime.set" => true,
-        "anthill.prelude.ModifyRuntime.get" => false,
-        _ => return None,
-    };
-    // The place is the operation's first parameter, `target`.
-    let (target, _) = params.first()?;
-    // A place written inline (`set((c, 2), 5)`, a literal) is refused for `set`, whose row
-    // writes `Modify[target]`, by the refusal of an argument that names no place
-    // (`placeless_modify`). `get` declares no `Modify`, so nothing else reads its
-    // inline place: it is judged here, as a named one is.
-    if is_set && placeless.contains_key(target) {
-        return None;
-    }
-    let (_, _, ty) =
-        supplied_arg_pairs(kb, params, pos_call_params, pos_results, named_args, named_results)
-            .into_iter()
-            .find(|(p, _, _)| p == target)?;
-    let regions = remembered_region_sorts(kb);
-    if crate::kb::region::type_is_modifiable_place(kb, &ty, &regions) {
-        return None;
-    }
-    Some(TypeError::Other {
-        site: TypeError::here(),
-        span,
-        context: TypeErrorContext::OperationArgument {
-            op_name: fn_sym,
-            param: *target,
-        },
-        expected: "a place of a modifiable type: a `Cell`, a sort that provides `Modifiable` or \
-                   `provides` a sort that does, or a type parameter (proposal 037 Rule 8, \
-                   kernel-language.md §5.6)"
-            .to_string(),
-        actual: format!(
-            "a place of type `{}`, which is no place the `Modify` handler keeps: `get` and `set` \
-             read and write the place itself, not what it holds. Make the place a `Cell`; a sort \
-             of the program's own whose constructors take no fields may instead declare \
-             `provides Modifiable[T = Self]`",
-            type_display_name_value(kb, &ty)
-        ),
-    })
 }
 
 /// Each argument a call supplies that was typed, with the parameter it fills: `(parameter,

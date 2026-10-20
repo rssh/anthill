@@ -11915,8 +11915,7 @@ impl KnowledgeBase {
             // interpreter's registry is empty, so the operation asking a handler stopped.
             // Where the operation's own row cannot hold that effect the report says so, since
             // "it performs" would contradict the row the typer checked. More than one route
-            // gets there — a write through `ModifyRuntime` to a cell the operation keeps to
-            // itself, a const whose host value source asks the handler, a lambda a rule
+            // gets there — a const whose host value source asks the handler, a lambda a rule
             // passes where the parameter's row is closed — so it names none of them.
             EvalError::UnhandledEffect { name } => {
                 let hidden = self

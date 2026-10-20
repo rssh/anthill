@@ -239,10 +239,6 @@ pub(crate) struct ProvidesIndex {
     /// where the `Option` this index used to be dropped it with everything else, and a
     /// load is what declares the operations an entry is read from.
     pub(super) witness_carriers: std::cell::RefCell<HashMap<Symbol, Rc<[Symbol]>>>,
-    /// The region set ([`crate::kb::region::region_sorts`]) once a typing pass or a call
-    /// has asked for it. A function of the `Modifiable` provision rows and of the keys,
-    /// so forgotten with `witness_carriers`, at the same events.
-    pub(super) region_sorts: std::cell::RefCell<Option<Rc<HashSet<Symbol>>>>,
 }
 
 impl ProvidesIndex {
@@ -261,7 +257,6 @@ impl ProvidesIndex {
             carrier_edges,
             conditions_by_carrier,
             witness_carriers,
-            region_sorts,
         } = self;
         ProvidesIndex {
             keyed_at: plain(keyed_at),
@@ -276,9 +271,6 @@ impl ProvidesIndex {
                     .map(|(carrier, witnesses)| (plain(carrier), copier.symbols(witnesses)))
                     .collect(),
             ),
-            region_sorts: std::cell::RefCell::new(
-                region_sorts.borrow().as_ref().map(|set| Rc::new(plain(&**set))),
-            ),
         }
     }
 }
@@ -287,7 +279,6 @@ impl ProvidesIndex {
     /// Forget the witness-carrier memo — see the field for the events that owe this.
     fn forget_witness_carriers(&self) {
         self.witness_carriers.borrow_mut().clear();
-        *self.region_sorts.borrow_mut() = None;
     }
 
     /// The index a walk of the two relations AS THEY STAND files, keyed by the name
@@ -903,17 +894,6 @@ pub(super) fn remembered_witness_carriers(
 /// Remember `carriers` as `spec_sort`'s witness carriers.
 pub(super) fn remember_witness_carriers(kb: &KnowledgeBase, spec_sort: Symbol, carriers: Rc<[Symbol]>) {
     keyed(kb).witness_carriers.borrow_mut().insert(spec_sort, carriers);
-}
-
-/// The region set remembered since the last event that forgets it ([`ProvidesIndex`]'s
-/// `region_sorts`), computed and remembered where there is none.
-pub(crate) fn remembered_region_sorts(kb: &KnowledgeBase) -> Rc<HashSet<Symbol>> {
-    if let Some(set) = keyed(kb).region_sorts.borrow().as_ref() {
-        return Rc::clone(set);
-    }
-    let set = Rc::new(crate::kb::region::region_sorts(kb));
-    *keyed(kb).region_sorts.borrow_mut() = Some(Rc::clone(&set));
-    set
 }
 
 /// WI-20260923-32XFQ — ONE `anthill.reflect.SortProvidesInfo` fact, decoded: THE row reader

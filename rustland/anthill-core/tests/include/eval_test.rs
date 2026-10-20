@@ -5,7 +5,7 @@
 //! Test names retain the `m1_` / `m2_` / ... prefixes for filtering.
 
 use crate::common::{
-    buffered_console, interp_for, load_kb_with, register_modify_handler, scalar_bool, scalar_int,
+    buffered_console, interp_for, load_kb_with, scalar_bool, scalar_int,
     scalar_str, scripted_console_input,
 };
 use anthill_core::eval::stream::StreamSource;
@@ -2836,8 +2836,22 @@ end
 }
 
 // ─── from eval_m5_modify_test.rs ───
+//
+// WI-200 retired `ModifyRuntime` and the standard `Modify` handler it routed to (proposal 037
+// §3.5, §4.1): a base sort's runtime is its own operations, and a sort with no operations of its
+// own has nothing that writes it. The handler's own rows — a nullary resource written and read,
+// a read before any write, two resources kept apart, a resource with fields refused, a
+// self-reference refused as a cycle, a host round trip — went with it. The two rows below
+// replace them: the program they ran is refused at load, and no standard handler answers
+// `Modify`. The three after those are about the registry and use `Clock`.
+
+/// THE M5 SHAPE IS REFUSED AT LOAD: `CounterState` has no operations of its own, so nothing
+/// writes it, and the generic `get`/`set` it was written through name nothing.
+///
+/// BACK-OUT: `ModifyRuntime` and its binding block restored, and the program loads (measured
+/// with the CLI built at the parent commit), so this fails.
 #[test]
-fn m5_modify_counter_write_then_read() {
+fn m5_modify_through_the_retired_runtime_is_refused_at_load() {
     let src = r#"
 namespace test.m5_counter
   import anthill.prelude.{Int64, Unit, Modify, Modifiable}
@@ -2848,246 +2862,99 @@ namespace test.m5_counter
     entity counter
   end
 
-  -- WI-20260823-39AD2: the resource is a PARAMETER, so `Modify[c]` names a place
-  -- and the call's `ModifyRuntime.set` row re-keys `Modify[target]` onto it. The
-  -- AMBIENT spelling this fixture used to have is writable again as of
-  -- WI-20260823-4GBQV, and drives the arena beside this one in
-  -- `m5_modify_an_ambient_resource_write_then_read` — but over `Modify[counter]`,
-  -- the ambient SLOT, never the `Modify[T = CounterState]` over the sort that
-  -- WI-20260823-39AD2 refused. Kept as the PARAMETER control: the two spellings
-  -- reach one arena and neither may regress into the other.
-  operation the_counter() -> CounterState = counter()
   operation write(c: CounterState, n: Int64) -> Unit effects Modify[c] = set(c, n)
   operation read(c: CounterState) -> Int64 = get(c)
 end
 "#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-
-    let counter = interp
-        .call("test.m5_counter.the_counter", &[])
-        .expect("construct the resource handle");
-    interp
-        .call("test.m5_counter.write", &[counter.clone(), Value::Int(42)])
-        .expect("write");
-    let got = interp
-        .call("test.m5_counter.read", &[counter.clone()])
-        .expect("read");
-    assert_eq!(
-        got.literal_int64(interp.kb()),
-        Some(42),
-        "read returns last-set value"
-    );
-
-    interp
-        .call("test.m5_counter.write", &[counter.clone(), Value::Int(7)])
-        .expect("overwrite");
-    let got = interp
-        .call("test.m5_counter.read", &[counter])
-        .expect("read again");
-    assert_eq!(
-        got.literal_int64(interp.kb()),
-        Some(7),
-        "subsequent read sees the overwrite"
-    );
-}
-
-// WI-20260902-JB6RS — `m5_modify_an_ambient_resource_write_then_read` stood here: it drove
-// a write and a read of an AMBIENT slot (`Modify[counter]` over a nullary constructor,
-// WI-20260823-4GBQV) through the arena `m5_modify_counter_write_then_read` uses. Ambient
-// places are retired (user, 2026-10-20), so the program it ran no longer loads; its
-// refusal is pinned in `wi4gbqv_ambient_resource_test`, and the parameter spelling above
-// is the capability that remains.
-
-#[test]
-fn m5_modify_get_before_set_errors() {
-    let src = r#"
-namespace test.m5_unset
-  import anthill.prelude.{Int64, Modifiable}
-  import ModifyRuntime.{get}
-
-  sort CounterState
-    provides Modifiable[T = Self]
-    entity counter
-  end
-
-  operation read() -> Int64 = get(counter())
-end
-"#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-
-    // The program's error, not the evaluator's: it was `Internal("Modify.get: no value
-    // set …")`, which reads as an evaluator bug.
-    let err = interp.call("test.m5_unset.read", &[]).unwrap_err();
-    match err {
-        EvalError::ResourceUnset { resource } => assert_eq!(resource, "counter"),
-        other => panic!("expected ResourceUnset, got {other:?}"),
-    }
-}
-
-#[test]
-fn m5_modify_two_resources_are_independent() {
-    // Two distinct resource entities should not share state.
-    let src = r#"
-namespace test.m5_independent
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{get, set}
-
-  sort Cells
-    provides Modifiable[T = Self]
-    entity a
-    entity b
-  end
-
-  -- WI-20260823-39AD2: `Modify[r]` names the PARAMETER, and the two calls pass
-  -- DIFFERENT resource handles — which is the independence this test asserts,
-  -- stated in the effect rows too. The old spelling gave both ops the SAME label
-  -- (`Modify[T = Cells]`, over the shared sort), which is exactly the conflation
-  -- kernel-language.md §5.6 forbids: two places of one type are two resources.
-  operation the_a() -> Cells = a()
-  operation the_b() -> Cells = b()
-  operation put(r: Cells, n: Int64) -> Unit effects Modify[r] = set(r, n)
-  operation fetch(r: Cells) -> Int64 = get(r)
-end
-"#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-    let ra = interp.call("test.m5_independent.the_a", &[]).unwrap();
-    let rb = interp.call("test.m5_independent.the_b", &[]).unwrap();
-    interp
-        .call("test.m5_independent.put", &[ra.clone(), Value::Int(1)])
-        .unwrap();
-    interp
-        .call("test.m5_independent.put", &[rb.clone(), Value::Int(99)])
-        .unwrap();
-    let a = interp.call("test.m5_independent.fetch", &[ra]).unwrap();
-    let b = interp.call("test.m5_independent.fetch", &[rb]).unwrap();
-    assert_eq!(a.literal_int64(interp.kb()), Some(1));
-    assert_eq!(b.literal_int64(interp.kb()), Some(99));
-}
-
-/// TWO RESOURCES OF ONE CONSTRUCTOR ARE REFUSED, NOT SHARED. The standard handler holds one
-/// slot per constructor, so `box(id: 1)` and `box(id: 2)` were one place: written 10 and 20,
-/// the first read 20. Until the handler keeps them apart (WI-200) one built with fields
-/// is an error naming it. The nullary row above is the control and passes either way, by
-/// design.
-///
-/// BACK-OUT: the refusal in `default_modify_handler` taken out, and this fails, the write
-/// answering.
-#[test]
-fn m5_modify_a_resource_with_fields_is_refused() {
-    let src = r#"
-namespace test.m5_fields
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{set}
-
-  sort Box
-    provides Modifiable[T = Self]
-    entity box(id: Int64)
-  end
-
-  operation mk(n: Int64) -> Box = box(id: n)
-  operation put(r: Box, n: Int64) -> Unit effects Modify[r] = set(r, n)
-end
-"#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-    let one = interp.call("test.m5_fields.mk", &[Value::Int(1)]).unwrap();
-    match interp.call("test.m5_fields.put", &[one, Value::Int(10)]) {
-        Err(EvalError::ResourceWithFields { resource }) => assert_eq!(resource, "box(id: 1)"),
-        other => panic!("a resource with fields is refused, got {other:?}"),
-    }
-}
-
-#[test]
-fn m5_modify_self_referential_set_errors_with_cyclic_reference() {
-    // `set(counter, counter)` would store the resource-identifier entity
-    // as its own value — the simplest self-cycle. The handler's bounded
-    // structural walk catches this.
-    let src = r#"
-namespace test.m5_cycle
-  import anthill.prelude.{Unit, Modify, Modifiable}
-  import ModifyRuntime.{set}
-
-  sort CycleState
-    provides Modifiable[T = Self]
-    entity counter
-  end
-
-  operation the_counter() -> CycleState = counter()
-  operation bad(c: CycleState) -> Unit effects Modify[c] = set(c, c)
-end
-"#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-    let c = interp.call("test.m5_cycle.the_counter", &[]).unwrap();
-    let err = interp.call("test.m5_cycle.bad", &[c]).unwrap_err();
+    let errs = crate::common::load_errors_of(src);
     assert!(
-        matches!(err, EvalError::CyclicReference),
-        "expected CyclicReference, got {err:?}",
+        errs.iter().any(|e| e.contains("unresolved import 'ModifyRuntime'")),
+        "`ModifyRuntime` names nothing: {errs:#?}"
+    );
+}
+
+/// THE STANDARD HANDLERS ARE FIVE, AND NONE IS `Modify`'s: three `Console`, `Error` and
+/// `Clock`. A program that prints and reads the clock runs under them, with the console
+/// buffered.
+///
+/// BACK-OUT: a `Modify` entry put back in `register_standard_effect_handlers`, and the count
+/// half fails (measured). The run half is a control and passes either way, by design.
+#[test]
+fn the_standard_handlers_are_five_and_none_is_modifys() {
+    let src = r#"
+namespace test.m5_standard
+  import anthill.prelude.{Console, Unit, String}
+  import anthill.prelude.Console.{println, ConsoleOutput}
+  import anthill.prelude.Time.{now, Clock}
+
+  operation stampLine(c: Console) -> Unit effects {ConsoleOutput, Clock} = println(c, now())
+end
+"#;
+    let mut interp = interp_for(src);
+    interp
+        .register_standard_effect_handlers()
+        .expect("register the standard effect handlers");
+    let standard = [
+        "anthill.prelude.Console.ConsoleOutput",
+        "anthill.prelude.Console.ConsoleError",
+        "anthill.prelude.Console.ConsoleInput",
+        "anthill.prelude.Error",
+        "anthill.prelude.Time.Clock",
+    ];
+    for name in standard {
+        assert!(interp.take_effect_handler(name).is_some(), "{name} is registered");
+    }
+    assert!(
+        interp.take_effect_handler("anthill.prelude.Modify").is_none(),
+        "no handler answers `Modify`"
+    );
+
+    interp
+        .register_standard_effect_handlers()
+        .expect("register the standard effect handlers again");
+    let (buf, h) = buffered_console();
+    interp
+        .register_effect_handler("anthill.prelude.Console.ConsoleOutput", h)
+        .unwrap();
+    let console_val = crate::common::symbol_term(&mut interp, "anthill.prelude.Console.console");
+    interp
+        .call("test.m5_standard.stampLine", &[console_val])
+        .expect("prints the clock");
+    let line = buf.borrow().clone();
+    assert!(
+        line.len() == "2000-01-01T00:00:00Z\n".len() && line.ends_with("Z\n"),
+        "a timestamp line: {line:?}"
     );
 }
 
 #[test]
-fn m5_modify_rust_side_roundtrip() {
-    // Drive Modify directly through the handler from Rust — no anthill
-    // program involved. Confirms the arena is usable by host-side code
-    // (e.g. for seeding initial state before an anthill entry point).
-    let mut interp = interp_for("namespace test.m5_rs end\n");
-    register_modify_handler(&mut interp);
-
-    // Minimal Entity-shaped target: a nullary constructor the anthill
-    // side hasn't declared. We intern the symbol directly.
-    let target_sym = interp.kb_mut().intern("rs_counter");
-    let target = Value::Entity {
-        functor: target_sym,
-        pos: Vec::new().into(),
-        named: Vec::new().into(),
-    };
-
-    let set_sym = interp.kb_mut().intern("set");
-    interp
-        .invoke_effect_handler(
-            "anthill.prelude.Modify",
-            set_sym,
-            &[target.clone(), Value::Int(100)],
-        )
-        .expect("set ok");
-    let get_sym = interp.kb_mut().intern("get");
-    let got = interp
-        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
-        .expect("get ok");
-    assert_eq!(got.literal_int64(interp.kb()), Some(100));
-}
-
-#[test]
-fn m5_modify_handler_taken_is_none() {
+fn m5_handler_taken_is_none() {
     // take_effect_handler pulls the handler out; subsequent invoke should
-    // surface a clean "no handler" error rather than panicking.
+    // surface a clean "no handler" error rather than panicking. On `Clock`,
+    // which a real operation (`Time.now`) dispatches to, since WI-200 retired
+    // the `Modify` handler this row used.
     let mut interp = interp_for("namespace test.m5_take end\n");
-    register_modify_handler(&mut interp);
-    let taken = interp.take_effect_handler("anthill.prelude.Modify");
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Time.Clock",
+            anthill_core::eval::effects::system_clock_handler(),
+        )
+        .expect("register the Clock handler");
+    let taken = interp.take_effect_handler("anthill.prelude.Time.Clock");
     assert!(
         taken.is_some(),
         "take returns the previously-registered handler"
     );
 
-    let target_sym = interp.kb_mut().intern("x");
-    let target = Value::Entity {
-        functor: target_sym,
-        pos: Vec::new().into(),
-        named: Vec::new().into(),
-    };
-    let get_sym = interp.kb_mut().intern("get");
+    let now_sym = interp.kb_mut().intern("now");
     let err = interp
-        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[target])
+        .invoke_effect_handler("anthill.prelude.Time.Clock", now_sym, &[])
         .unwrap_err();
     // WI-20260911-0V0F7 — `UnhandledEffect`, not `Internal`; see
     // `m5_unhandled_effect_errors_cleanly` for why the classification moved.
     assert!(
-        matches!(&err, EvalError::UnhandledEffect { name, .. } if name == "anthill.prelude.Modify"),
-        "expected UnhandledEffect for Modify, got {err:?}",
+        matches!(&err, EvalError::UnhandledEffect { name, .. } if name == "anthill.prelude.Time.Clock"),
+        "expected UnhandledEffect for Clock, got {err:?}",
     );
 }
 
@@ -3105,7 +2972,7 @@ fn wi389_throw_action_surfaces_as_raised() {
     let payload_for_handler = payload.clone();
     interp
         .register_effect_handler(
-            "anthill.prelude.Modify",
+            "anthill.prelude.Time.Clock",
             Box::new(move |_interp, _op_sym, _args| {
                 Ok(HandlerAction::Throw(payload_for_handler.clone()))
             }),
@@ -3114,7 +2981,7 @@ fn wi389_throw_action_surfaces_as_raised() {
 
     let op_sym = interp.kb_mut().intern("raise");
     let err = interp
-        .invoke_effect_handler("anthill.prelude.Modify", op_sym, &[])
+        .invoke_effect_handler("anthill.prelude.Time.Clock", op_sym, &[])
         .unwrap_err();
     match err {
         EvalError::Raised { payload: got, .. } => {
@@ -3138,7 +3005,7 @@ fn wi389_fail_action_surfaces_its_reason() {
     let mut interp = interp_for("namespace test.wi389_fail end\n");
     interp
         .register_effect_handler(
-            "anthill.prelude.Modify",
+            "anthill.prelude.Time.Clock",
             Box::new(|_interp, _op_sym, _args| {
                 Ok(HandlerAction::Fail(Value::Str(
                     "no candidate matched".into(),
@@ -3149,7 +3016,7 @@ fn wi389_fail_action_surfaces_its_reason() {
 
     let op_sym = interp.kb_mut().intern("fail");
     let err = interp
-        .invoke_effect_handler("anthill.prelude.Modify", op_sym, &[])
+        .invoke_effect_handler("anthill.prelude.Time.Clock", op_sym, &[])
         .unwrap_err();
     match &err {
         EvalError::UnsupportedHandlerAction { action, detail, .. } => {

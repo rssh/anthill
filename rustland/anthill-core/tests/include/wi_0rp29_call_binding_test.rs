@@ -585,30 +585,43 @@ fn a_callback_row_naming_another_parameter_is_rekeyed_control() {
     );
 }
 
-/// `ModifyRuntime.set(h.cell, 1)` — a spec op dispatched to `Cell.set`, whose effect is
-/// `Modify[c]` on its own parameter — from `viaSpec`, declaring `declared`.
+/// `Writes.put(h.slot, 1)` — a spec op typed by its carrier parameter, dispatched to
+/// `Slot.put`, whose effect is `Modify[p]` on its own parameter — from `viaSpec`, declaring
+/// `declared`. The spec and the override are the program's own; the stdlib pair this row was
+/// written over, `ModifyRuntime.set` dispatched to `Cell.set`, was retired by WI-200.
 fn dispatched_head_program(ns: &str, declared: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Unit, Cell, Modify, ModifyRuntime}}
+  import anthill.prelude.{{Int64, Unit, Modify, Modifiable}}
 
-  sort Holder
-    entity holder(cell: Cell[V = Int64])
+  sort Writes
+    sort T = ?
+    operation put(target: T, v: Int64) -> Unit effects Modify[target]
   end
 
-  operation viaSpec(h: Holder) -> Unit{declared} = ModifyRuntime.set(h.cell, 1)
+  sort Slot
+    provides Modifiable[T = Self]
+    provides Writes[T = Self]
+    entity slot(id: Int64)
+    operation put(p: Self, v: Int64) -> Unit effects Modify[p] = ()
+  end
+
+  sort Holder
+    entity holder(slot: Slot)
+  end
+
+  operation viaSpec(h: Holder) -> Unit{declared} = Writes.put(h.slot, 1)
 end
 "#
     )
 }
 
 /// A DISPATCHED OVERRIDE'S EFFECT RE-KEYS A FIELD PATH TO ITS HEAD, as the call's own effects do
-/// (WI-506: `Modify[h.cell]` is covered by `Modify[h]`): declaring `Modify[h]` loads. The
-/// override's effect was re-keyed to variable arguments only, and `Cell.set`'s own `c` leaked:
-/// "undeclared effect: Modify[T = c]", while `Cell.set(h.cell, 1)` loaded. A LOAD VERDICT: what
-/// is measured is the row the caller must declare, and `ModifyRuntime.set` needs the `Modify`
-/// handler this file's harness does not install.
+/// (WI-506: `Modify[h.slot]` is covered by `Modify[h]`): declaring `Modify[h]` loads. The
+/// override's effect was re-keyed to variable arguments only, and the override's own parameter
+/// leaked: "undeclared effect: Modify[T = c]" over `Cell.set`'s `c`, while `Cell.set(h.cell, 1)`
+/// loaded. A LOAD VERDICT: what is measured is the row the caller must declare.
 #[test]
 fn a_dispatched_overrides_effect_rekeys_a_field_path_to_its_head() {
     let errs = load_errors(&dispatched_head_program(
@@ -837,7 +850,7 @@ end
 /// Unit @ Modify[p])` called with `h.cell` admits the lambda's `Modify[h]`, as the call's own
 /// `Modify[p]` becomes `Modify[h]` (WI-506). Re-keyed through variables alone, the row kept
 /// `apply`'s `p`, and no callback over a field path could be passed. Runs — the lambda sets the
-/// cell to 5 — with the `Modify` handler installed.
+/// cell to 5.
 #[test]
 fn a_callback_row_over_a_field_path_is_rekeyed_to_its_head() {
     let ns = "wi0rp29cb.cbhead";
@@ -859,17 +872,7 @@ namespace {ns}
 end
 "#
     );
-    assert_eq!(run_with_modify(&src, &format!("{ns}.go")), 5);
-}
-
-/// `go` run with the `Modify` handler installed, to the `Int64` it answers.
-fn run_with_modify(src: &str, entry: &str) -> i64 {
-    let mut interp = crate::common::interp_for(src);
-    crate::common::register_modify_handler(&mut interp);
-    match interp.call(entry, &[]) {
-        Ok(anthill_core::eval::Value::Int(v)) => v,
-        other => panic!("`{entry}` did not run to an Int64: {other:?}"),
-    }
+    assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(5));
 }
 
 /// … AND BESIDE A PROJECTION IN THE CALLBACK'S TYPE: `apply(b: Box, p: Cell, f: (u: b.T) -> Unit @
@@ -903,7 +906,7 @@ namespace {ns}
 end
 "#
     );
-    assert_eq!(run_with_modify(&src, &format!("{ns}.go")), 5);
+    assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(5));
 }
 
 // ── a mixed call's arguments, by the parameter they bind ─────────────────────

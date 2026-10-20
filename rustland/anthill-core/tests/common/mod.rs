@@ -1307,19 +1307,6 @@ pub fn scripted_console_input(
     (queue, handler)
 }
 
-/// Register the default `Modify` arena-backed handler on the interpreter.
-/// Shared across Modify-focused tests that don't want to depend on the
-/// stdio-binding side effects of `register_standard_effect_handlers`.
-#[allow(dead_code)]
-pub fn register_modify_handler(interp: &mut Interpreter) {
-    interp
-        .register_effect_handler(
-            "anthill.prelude.Modify",
-            anthill_core::eval::effects::default_modify_handler(),
-        )
-        .expect("register Modify handler");
-}
-
 /// The library KB (stdlib + the Rust host bindings, [`collect_stdlib_and_rust_bindings`])
 /// the re-type suites build on: parse + `load_all` (which bootstraps — WI-967), with NO user
 /// source. It was the stdlib ALONE until WI-20260922-BRT4Y, which made that load a refusal. WI-732 lifted this here

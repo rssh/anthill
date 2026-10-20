@@ -3412,7 +3412,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             //     the exact relation for place-vs-place and the WRONG one for
             //     place-vs-resource-TYPE: `Modify[c]` with `c: Cell` refines
             //     `Modify[T = Cell]` (`Cell.set` over `ModifyRuntime.set`, in the
-            //     stdlib), and nothing on this pass relates a place to a type.
+            //     stdlib then), and nothing on this pass relates a place to a type.
             //
             // WI-20260823-39AD2 REMOVED THE SECOND ARM OF THIS GATE, and the removal
             // is not "the relation was built" — the relation was found to be
@@ -3705,7 +3705,7 @@ pub(super) fn peel_effect_atom_noting_absence(
 ///
 /// WHY A REFUSAL AND NOT A COMPARISON. `Modify[<type>]` is unsatisfiable BY
 /// CONSTRUCTION, so there is nothing for a later pass to relate it to: σ binds a type
-/// parameter to a TYPE (`provides ModifyRuntime[T = Cell]` binds `T` to the sort),
+/// parameter to a TYPE (`provides Sp[T = Cell]` binds `T` to the sort),
 /// never to a place, so no instantiation of `Modify[T]` ever becomes a resource name.
 /// Left admissible it does not merely go unchecked — it DISABLES checking, in two
 /// different directions depending on whether the provision grounds it:

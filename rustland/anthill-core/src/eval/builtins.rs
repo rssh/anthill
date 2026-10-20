@@ -45,14 +45,15 @@ use crate::parse::desugar_target as dt;
 /// Register the standard-library builtins: every host implementation this runtime
 /// realizes, read from the loaded binding blocks' `operation_map` / `const_map` clauses.
 ///
-/// WI-20260922-BRT4Y — THERE IS NO HARDCODED HALF ANY MORE. The last 46 registrations by
-/// qualified name — `PartialEq.eq`/`neq`, `anthill.kernel.struct_eq`, `Map.*`,
-/// `Relation.*`, `LogicalStream.splitFirst`, `Time.now`, `Console.*`, `ModifyRuntime.*`,
-/// `Error.raise`, `Cell.*`, `TypeValue.type_value`, `Dictionary.*` and `OpRef.*` — are
-/// [`HOST_FNS`] entries named by binding blocks in `rustland/anthill-stl/anthill/`, where
-/// WI-880 and WI-931 had moved everything else. They answered correctly from an operation
-/// body and were INVISIBLE to every reader of "is this operation host-backed": those
-/// readers count an `operation_map` entry, not a hardcoded registration (WI-884's split).
+/// WI-20260922-BRT4Y — THERE IS NO HARDCODED HALF ANY MORE. The last registrations by
+/// qualified name (46 then, 44 since WI-200 retired `ModifyRuntime`) — `PartialEq.eq`/`neq`,
+/// `anthill.kernel.struct_eq`, `Map.*`, `Relation.*`, `LogicalStream.splitFirst`,
+/// `Time.now`, `Console.*`, `Error.raise`, `Cell.*`, `TypeValue.type_value`,
+/// `Dictionary.*` and `OpRef.*` — are [`HOST_FNS`] entries named by binding blocks in
+/// `rustland/anthill-stl/anthill/`, where WI-880 and WI-931 had moved everything else.
+/// They answered correctly from an operation body and were INVISIBLE to every reader of
+/// "is this operation host-backed": those readers count an `operation_map` entry, not a
+/// hardcoded registration (WI-884's split).
 ///
 /// And each was registered only IF ITS NAME RESOLVED, so a KB loaded without the
 /// declaring file silently lost it. The stdlib now declares every one of them
@@ -352,8 +353,6 @@ const HOST_FNS: &[(
     ("console_eprint", 2, console_eprint),
     ("console_eprintln", 2, console_eprintln),
     ("console_read_line", 1, console_read_line),
-    ("modify_runtime_get", 1, modify_get),
-    ("modify_runtime_set", 2, modify_set),
     ("error_raise", 1, error_raise),
     // WI-20261017-JRHZ0 — the hole (`rustland/anthill-stl/anthill/prelude.anthill`).
     ("prelude_todo", 0, prelude_todo),
@@ -6779,21 +6778,9 @@ effect_dispatcher!(
     "now",
     "anthill.prelude.Time.Clock"
 );
-effect_dispatcher!(
-    modify_get,
-    "anthill.prelude.ModifyRuntime.get",
-    "get",
-    "anthill.prelude.Modify"
-);
-effect_dispatcher!(
-    modify_set,
-    "anthill.prelude.ModifyRuntime.set",
-    "set",
-    "anthill.prelude.Modify"
-);
 
 // `Error.raise` deliberately does NOT use the generic dispatcher. An unhandled
-// Console/Modify/Clock effect is `EvalError::UnhandledEffect`, but an
+// Console/Clock effect is `EvalError::UnhandledEffect`, but an
 // unhandled `Error` DEFAULTS to Throw — [`Interpreter::raise_error`]'s
 // no-handler arm is `Raised { payload }` (WI-467: the payload is never lost),
 // the same channel a native builtin's declared `effects Error` takes. The
@@ -7194,8 +7181,8 @@ fn persistence_flush(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
 /// in the cell arena, seeded with `initial`, and returns a refcounted
 /// handle. Each call yields a distinct cell — identity is the slot
 /// index, not any value-level structure (per `docs/design/cell-runtime.md`
-/// §"Identity scheme"). Cycle prevention is the typer's job; runtime
-/// has no walk to do here.
+/// §"Identity scheme"). The runtime walks nothing for cycles: the design
+/// doc's §"Cycle handling" puts that in the typer, where it is not written.
 fn cell_new(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [initial] = expect_args::<1>("Cell.new", args)?;
     let handle = interp.alloc_cell(initial);
@@ -7203,8 +7190,8 @@ fn cell_new(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 }
 
 /// `anthill.prelude.Cell.get(c) -> V`. Reads the current value held in
-/// the cell. Type-pure: no `Modify` effect (reading is observation, per
-/// proposal 037 §"Read operations").
+/// the cell. Type-pure: no `Modify` effect (reading is silent, proposal
+/// 037 Rule 3).
 fn cell_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [c] = expect_args::<1>("Cell.get", args)?;
     match c {
@@ -7214,10 +7201,9 @@ fn cell_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
 }
 
 /// `anthill.prelude.Cell.set(c, v) -> Unit`. Replaces the cell's value
-/// with `v`. O(1): a single slot write — no cycle walk (the typer
-/// guarantees `v` cannot reach `c`'s Cell type, see design doc).
-/// Returns `Unit` per the five forward-compat invariants in proposal 037
-/// §"With time-travel" — `set` MUST NOT return the prior value.
+/// with `v`. O(1): a single slot write — no cycle walk (see `cell_new`).
+/// Returns `Unit`, keeping the signature fit for time travel (proposal 037
+/// §6.4) — `set` MUST NOT return the prior value.
 fn cell_set(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [c, new_val] = expect_args::<2>("Cell.set", args)?;
     match c {

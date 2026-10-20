@@ -9,8 +9,8 @@
 //! B. A payload the runtime raised keeps its cause across a catch and a raise again (user,
 //!    2026-10-17); since the sixth review the cause is the payload's constructor, which no
 //!    program constructs (`wi_9wvt7_review6_test`).
-//! C. `ModifyRuntime.get`/`set` at a place of a type no `Modify` fires on is refused at load
-//!    (user, 2026-10-17).
+//! C. (Retired with `ModifyRuntime`, WI-200: `ModifyRuntime.get`/`set` at a place of a type no
+//!    `Modify` fires on was refused at load, user 2026-10-17.)
 //! D. The refusals' accounts: a library spec failing at another spec's goal, a former at a
 //!    construction, a cycle at a call, a contract read through the program's specs.
 //! E. The forward of a caller's parameter held inside a type it builds.
@@ -36,10 +36,6 @@
 //!     `wi_0v0f7_bridged_raise_test::the_raise_partition_is_by_cause_not_by_channel`;
 //!   * the advice read off anything but the payload's constructor →
 //!     [`a_drain_failure_raised_again_gets_no_boundary_advice`];
-//!   * the `ModifyRuntime` place check off →
-//!     [`modify_runtime_at_a_place_no_modify_fires_on_is_refused_at_load`];
-//!   * the handler asking for fields before a constructor →
-//!     [`the_standard_handler_takes_no_tuple_for_a_resource`];
 //!   * the library spec's repair chosen by the requirement's spec alone →
 //!     [`a_library_requirement_failing_at_another_spec_is_told_that_spec`];
 //!   * a construction's former refusal taken whatever the cause →
@@ -67,8 +63,7 @@
 //!   * the row atoms recognised by a name's last segment →
 //!     [`an_effect_named_like_a_row_atom_is_its_own_effect`].
 //!
-//! PASSES EITHER WAY, BY DESIGN: the controls inside the rows — a `Modifiable` place written and
-//! read, the direct drain beside the one raised again, the operation named otherwise, the sort
+//! PASSES EITHER WAY, BY DESIGN: the controls inside the rows — the direct drain beside the one raised again, the operation named otherwise, the sort
 //! named `absent` that provides `Effect` (the twin that does not is what the reading moves) —
 //! and every repair a refusal advises, run: `Desc[T = Float]` provided for `Keyed`, `StrApply`
 //! for the conditional former, the slot declared for the held one, the boundary's `requires`,
@@ -267,110 +262,6 @@ end
             messages.iter().all(|m| !m.contains("Handle it inside the operation")),
             "{goal}: no boundary is advised: {messages:?}"
         );
-    }
-}
-
-// ── C. a place `ModifyRuntime` reads and writes ──────────────────────────────────────────
-
-/// `ModifyRuntime.get`/`set` AT A PLACE NO `Modify` FIRES ON IS REFUSED AT LOAD, as a written
-/// `effects Modify[p]` there is. The arising `Modify[p]` was dropped as vacuous and the handler
-/// wrote the place all the same: a nullary `red` in silence, `plain(n: 3)` refused at run time
-/// naming WI-200, a tuple and a function value too. A sort that provides `Modifiable` is the
-/// control and passes either way.
-#[test]
-fn modify_runtime_at_a_place_no_modify_fires_on_is_refused_at_load() {
-    let program = |decls: &str, body: &str| {
-        format!(
-            r#"
-namespace test.r5.place
-  import anthill.prelude.{{Int64, Unit, Modify, Modifiable}}
-  import anthill.prelude.ModifyRuntime.{{set, get}}
-{decls}
-  operation inc(x: Int64) -> Int64 = x + 1
-  operation go() -> Int64 =
-{body}
-end
-"#
-        )
-    };
-    for (shape, decls, body, place) in [
-        (
-            "a sort with fields",
-            "  sort Plain\n    entity plain(n: Int64)\n  end\n  \
-             operation put(p: Plain, n: Int64) -> Unit = set(p, n)\n",
-            "    let _ = put(plain(n: 3), 5)\n    0\n",
-            "Plain",
-        ),
-        (
-            "a nullary constructor",
-            "  sort Colour\n    entity red\n  end\n  \
-             operation put(c: Colour, n: Int64) -> Unit = set(c, n)\n",
-            "    let _ = put(red, 6)\n    0\n",
-            "Colour",
-        ),
-        ("a tuple", "", "    let t = (1, 2)\n    let _ = set(t, 5)\n    0\n", "(_1: Int64, _2: Int64)"),
-        (
-            "a function value",
-            "",
-            "    let f: (Int64) -> Int64 = inc\n    let _ = set(f, 5)\n    0\n",
-            "Int64 -> Int64",
-        ),
-    ] {
-        let errs = load_errors_of(&program(decls, body));
-        assert_refused_naming(
-            &errs,
-            &["expected a place of a modifiable type", &format!("got a place of type `{place}`")],
-            shape,
-        );
-    }
-    let control = r#"
-namespace test.r5.place
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import anthill.prelude.ModifyRuntime.{set, get}
-  sort Counter
-    provides Modifiable[T = Self]
-    entity counter
-  end
-  -- The place is a binding, not the constant: ambient places are retired
-  -- (WI-20260902-JB6RS), so `Modify[counter]` and `set(counter, 6)` name none.
-  operation go() -> Int64 =
-    let c = counter
-    let _ = set(c, 6)
-    get(c)
-end
-"#;
-    let mut interp = crate::common::interp_for(control);
-    interp
-        .register_standard_effect_handlers()
-        .expect("the standard handlers");
-    let v = interp.call("test.r5.place.go", &[]).expect("a Modifiable place is written and read");
-    assert_eq!(
-        anthill_core::kb::term_view::TermView::literal_int64(&v, interp.kb()),
-        Some(6)
-    );
-}
-
-/// THE STANDARD HANDLER TAKES NO VALUE A CONSTRUCTOR DOES NOT NAME FOR A RESOURCE: a tuple a
-/// host call hands it is the type mismatch, not a resource with fields refused for want of
-/// WI-200, which no keying of one constructor's values would repair.
-#[test]
-fn the_standard_handler_takes_no_tuple_for_a_resource() {
-    use anthill_core::eval::{EvalError, Value};
-    let mut interp = crate::common::interp_for("namespace test.r5.handler\nend\n");
-    interp
-        .register_standard_effect_handlers()
-        .expect("the standard handlers");
-    let set = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.ModifyRuntime.set")
-        .expect("ModifyRuntime.set");
-    let tuple = Value::Tuple {
-        pos: vec![Value::Int(1), Value::Int(2)].into(),
-        named: Vec::new().into(),
-    };
-    match interp.invoke_effect_handler("anthill.prelude.Modify", set, &[tuple, Value::Int(5)]) {
-        Err(EvalError::TypeMismatch { got, .. }) => assert_eq!(got, "Tuple"),
-        other => panic!("a tuple is no resource, got {other:?}"),
     }
 }
 

@@ -23,13 +23,13 @@ pub use logical_stream::LogicalStream;
 pub use meta::Meta;
 pub use stream::Stream;
 
-/// Marker trait paralleling `fact Modifiable[T = X]` in
+/// Marker trait paralleling `provides Modifiable[T = X]` in
 /// `stdlib/anthill/prelude/effects.anthill` (and per proposal 037 Rule 8).
-/// Anthill-side facts assert which types admit `Modify[T]`; this Rust
-/// stub exists so the codegen-emitted `use crate::prelude::Modifiable;`
+/// Anthill-side provisions say which types admit a `Modify` over a place of
+/// that type; this Rust stub exists so the codegen-emitted `use crate::prelude::Modifiable;`
 /// (in `filesystem.rs`, `cell.rs`, etc.) resolves. The Rust trait has no
-/// methods — runtime dispatch lives in `anthill-core`'s effect-handler /
-/// cell-arena machinery, not in trait impls.
+/// methods — a base sort's state operations are its host implementation
+/// (`anthill-core`'s cell arena for `Cell`), not trait impls.
 pub trait Modifiable {}
 
 /// Opaque host carrier for the kernel `Type` sort (WI-542). The generated

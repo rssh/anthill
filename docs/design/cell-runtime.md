@@ -515,7 +515,7 @@ Migration steps:
 7. **Diagnostics** — TermPrinter for Value::Cell (handle id, current value rendered).
 8. **Update wi205_cell_test.rs** — same surface tests still pass under the new representation.
 
-The Modify handler stays in place for non-Cell Modify users (Modify.get/set on plain entities; existing tests in `eval_m5_modify_test.rs`). Cell is a new dispatch path alongside, not a replacement of the Modify handler.
+The Modify handler stays in place for non-Cell Modify users (Modify.get/set on plain entities; existing tests in `eval_m5_modify_test.rs`). Cell is a new dispatch path alongside, not a replacement of the Modify handler. *(Superseded 2026-10-20: WI-200 retired `ModifyRuntime` and that handler, proposal 037 §3.5 and §4.1.)*
 
 ## Failure modes — what crashes vs what errors
 

@@ -1,17 +1,17 @@
--- Cell: typed mutable reference. The standard small-state sort per
--- proposal 037 §"Cell[V]". A Cell[V] holds a single V; get reads the
+-- Cell: typed mutable reference. The standard small-state sort, a base
+-- modifiable sort (proposal 037 §2). A Cell[V] holds a single V; get reads the
 -- current contents, set replaces them, new allocates a fresh handle
 -- with an initial value. Modify[c] is the effect mutations carry; the
--- fact `Modifiable[T = Cell[V]]` admits Modify[c] in operation rows.
+-- `provides Modifiable[T = Self]` below admits Modify[c] in operation rows.
 sort anthill.prelude.Cell
-  import anthill.prelude.{Unit, Modifiable, Modify, ModifyRuntime}
+  import anthill.prelude.{Unit, Modifiable, Modify}
 
   sort V = ?
 
   -- Construction. Allocates a fresh cell handle initialized to `v`.
-  -- Identity is the arena slot (opaque-handle scheme per WI-205):
-  -- each call returns a distinct cell, and recursive allocations do
-  -- not alias. See docs/design/cell-runtime.md §"Identity scheme".
+  -- Each call makes a new resource (proposal 037 §3.2): a distinct cell,
+  -- and recursive allocations do not alias. See
+  -- docs/design/cell-runtime.md §"Identity scheme".
   -- `effects Modify[result]` marks it as initializing the fresh region it
   -- returns (proposal 045 §5.5) — the "not pure / not CSE-able" marker, so
   -- distinct `new()` calls are never merged. The effect is masked at an
@@ -31,10 +31,4 @@ sort anthill.prelude.Cell
 
   -- Cell satisfies Modifiable for any V.
   provides Modifiable[T = Self]
-
-  -- Cell is a ModifyRuntime carrier for any V: the resource-identity type is
-  -- `Cell` and the stored-value type is the cell's own `V`, so the generic
-  -- `ModifyRuntime.get`/`set` operate on a `Cell[V]` with value type `V`
-  -- (threaded from the cell, the List-provides-Stream-style carrier binding).
-  provides ModifyRuntime[T = Self, V = V]
 end

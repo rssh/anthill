@@ -97,7 +97,6 @@ fn matching_enclosing_cell_executes_write_and_join() {
 "#
         ));
         let mut interp = interp_for(&src);
-        crate::common::register_modify_handler(&mut interp);
         let result = interp.call("enclosing.main", &[]);
         assert!(matches!(result, Ok(Value::Int(505))), "{body}: {result:?}");
     }
@@ -115,7 +114,6 @@ fn callback_own_binders_still_align_and_execute() {
 "#,
     );
     let mut interp = interp_for(&src);
-    crate::common::register_modify_handler(&mut interp);
     let result = interp.call("enclosing.main", &[]);
     assert!(matches!(result, Ok(Value::Int(505))), "{result:?}");
 }

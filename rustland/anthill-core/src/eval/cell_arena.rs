@@ -1,5 +1,6 @@
-//! Cell arena — refcounted storage for first-class `Cell` values
-//! (proposal 037 §`Cell[V]` + design doc `docs/design/cell-runtime.md`).
+//! Cell arena — refcounted storage for first-class `Cell` values, the
+//! default implementation of `Cell` (proposal 037 §4.2; design doc
+//! `docs/design/cell-runtime.md`).
 //!
 //! Mirrors `MapArena` / `SubstArena` / `StreamArena`: an arena slot owns
 //! the held `Value`; `CellHandle` is an arena slot index with
@@ -8,9 +9,8 @@
 //! [`CellArenaRef::write`].
 //!
 //! Identity is the slot index: every `Cell.new` allocates a fresh slot,
-//! so two cells with the same initial value are still distinct. This is
-//! the opaque-handle scheme from proposal 037 §"Resource type plug-in"
-//! (and matches Rust `Cell::new` / OCaml `ref` / Haskell `IORef`).
+//! so two cells with the same initial value are still distinct
+//! (matches Rust `Cell::new` / OCaml `ref` / Haskell `IORef`).
 
 use std::cell::RefCell;
 use std::rc::Rc;

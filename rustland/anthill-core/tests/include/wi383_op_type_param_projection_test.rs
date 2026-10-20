@@ -200,7 +200,7 @@ end
 }
 
 /// PROVIDER-FACT BIND (WI-383 scope 3, the Modify driver): a spec op whose receiver is
-/// typed by the spec's CARRIER type-param (`rd(target: T)`, like `ModifyRuntime.get`)
+/// typed by the spec's CARRIER type-param (`rd(target: T)`, as the retired `ModifyRuntime.get` was)
 /// ties its independent value param `V` to the carrier's GROUND provider-fact binding
 /// (`fact Box[T = IntCell, V = Int64]`). So `Box.rd(c)` on an `IntCell` is `Int64`, and a
 /// `-> Int64` read conforms. (The REF shape `fact Box[T=Cell, V=V]` already worked via

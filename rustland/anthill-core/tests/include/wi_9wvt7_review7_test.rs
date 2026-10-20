@@ -6,8 +6,8 @@
 //! C. A direct call of a defaulted spec member dispatches as a generic call does.
 //! D. A `requires` in scope covers a call at an arrow only where the two are one binding: the
 //!    parameters and the result the same (§5.2); a provision answers a result below its own.
-//! E. `ModifyRuntime.get` at an argument that names no place is refused at load, as its `let`
-//!    twin is.
+//! E. (Retired with `ModifyRuntime`, WI-200: `ModifyRuntime.get` at an argument that names no
+//!    place was refused at load, as its `let` twin is.)
 //! F. The bottom type meets a bare parametric head as it meets the written one.
 //! G. A spec whose contract asks for itself at a larger type is refused at its declaration.
 //! H. Ranking provisions interns nothing per comparison, and an arrow nested in a parameter costs
@@ -30,8 +30,6 @@
 //!     [`a_direct_call_of_a_defaulted_member_dispatches_as_a_generic_one`];
 //!   * an arrow's part met through the subtype relation in both directions by the cover →
 //!     [`a_requirement_in_scope_covers_an_arrow_only_at_its_own_binding`];
-//!   * the place check skipped for an argument written inline at `get` →
-//!     [`get_at_no_place_is_refused_at_load`];
 //!   * the bottom type at a bare head noting nothing open →
 //!     [`the_bottom_type_meets_a_bare_head_as_the_written_one`];
 //!   * the growing contract left to the call →
@@ -55,7 +53,7 @@
 //!
 //! PASSES EITHER WAY, BY DESIGN: the controls inside the rows — an account matched and raised
 //! again, a data file of the program's own sort, a variant place declared, a cover at the call's
-//! own arrow, `get` at a cell, the repaired programs, run.
+//! own arrow, the repaired programs, run.
 
 use anthill_core::kb::load;
 use anthill_core::kb::resolve::ResolveConfig;
@@ -63,19 +61,9 @@ use anthill_core::parse;
 use anthill_core::persistence::term_ser;
 
 use crate::common::{
-    assert_refused_naming, fault_messages, interp_for, load_errors_of, load_kb_with,
-    query_pattern_term, register_modify_handler, run_int64,
+    assert_refused_naming, fault_messages, load_errors_of, load_kb_with,
+    query_pattern_term, run_int64,
 };
-
-/// `entry` run with the `Modify` handler a program's places need.
-fn run_with_modify(src: &str, entry: &str) -> Result<i64, String> {
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-    match interp.call(entry, &[]) {
-        Ok(anthill_core::eval::Value::Int(n)) => Ok(n),
-        other => Err(format!("`{entry}` did not answer an Int64: {other:?}")),
-    }
-}
 
 /// `load_errors_of(src)` on a thread, failed when it does not finish: the defects these rows
 /// exist for are loads that never end, which would stall the whole test binary.
@@ -196,10 +184,14 @@ fn a_data_file_does_not_hold_an_account() {
 
 // ── B. a variant's place ──────────────────────────────────────────────────────────────────
 
-/// A VARIANT'S PLACE IS A PLACE OF ITS SORT. `set(p, n)` at `p: Plain.plain`, `Plain` providing
-/// `Modifiable`: the place was admitted, and the `Modify[p]` it raises was dropped as being over a
-/// type no `Modify` fires on, so an operation declared pure wrote the place and read it back
-/// (42), and declaring the effect was refused. Declared, it loads and runs.
+/// A VARIANT'S PLACE IS A PLACE OF ITS SORT. A `Modify[target]` call at `p: Plain.plain`,
+/// `Plain` providing `Modifiable`: the place was admitted, and the `Modify[p]` it raises was
+/// dropped as being over a type no `Modify` fires on, so an operation declared pure wrote the
+/// place and read it back (42, through `ModifyRuntime`), and declaring the effect was refused.
+/// Declared, it loads. The writer is `touch` since WI-200 retired `ModifyRuntime`: generic in
+/// its target, as `set` was, and writing nothing, since a row is an upper bound. So the run
+/// that follows reads nothing back: it answers its own literal, and is only the control that
+/// the declared program executes.
 ///
 /// FAILS with the variant read as its own sort: the pure one loads and the declared one is
 /// refused.
@@ -207,12 +199,11 @@ fn a_data_file_does_not_hold_an_account() {
 fn a_variants_place_is_a_place_of_its_sort() {
     let program = |row: &str, caller: &str| {
         format!(
-            "namespace test.r7.place\n  import anthill.prelude.{{Int64, Unit, Modify, Modifiable}}\n  import \
-             anthill.prelude.ModifyRuntime.{{set, get}}\n  sort Plain\n    provides Modifiable[T = Self]\n    \
-             entity plain\n    entity other\n  end\n  operation putVariant(p: Plain.plain, n: Int64) -> Unit \
-             effects {row} = set(p, n)\n  operation readVariant(p: Plain.plain) -> Int64 = get(p)\n  \
-             operation run() -> Int64 effects {caller} =\n    let p: Plain.plain = plain\n    \
-             let _ = putVariant(p, 42)\n    readVariant(p)\nend\n"
+            "namespace test.r7.place\n  import anthill.prelude.{{Int64, Unit, Modify, Modifiable}}\n  sort Plain\n    \
+             provides Modifiable[T = Self]\n    entity plain\n    entity other\n  end\n  operation touch[T](target: \
+             T, n: Int64) -> Unit effects Modify[target] = ()\n  operation putVariant(p: Plain.plain, n: Int64) -> \
+             Unit effects {row} = touch(p, n)\n  operation run() -> Int64 effects {caller} =\n    \
+             let p: Plain.plain = plain\n    let _ = putVariant(p, 42)\n    42\nend\n"
         )
     };
     assert_refused_naming(
@@ -222,7 +213,7 @@ fn a_variants_place_is_a_place_of_its_sort() {
     );
     // The caller's place is a binding: ambient places are retired (WI-20260902-JB6RS), so
     // `run` declares nothing — the write is to its own local.
-    assert_eq!(run_with_modify(&program("Modify[p]", "{}"), "test.r7.place.run"), Ok(42));
+    assert_eq!(run_int64(&program("Modify[p]", "{}"), "test.r7.place.run"), Ok(42));
 }
 
 // ── C. a direct call of a defaulted member ────────────────────────────────────────────────
@@ -359,32 +350,6 @@ fn a_requirement_in_scope_covers_an_arrow_only_at_its_own_binding() {
                           provides Runner[F = (Int64) -> Animal]\n    operation run(f: (Int64) -> Animal) -> Int64 = \
                           f(4).n\n  end\n  operation go() -> Int64 = Runner.run(lambda (k: Int64) -> dog(n: k))\nend\n";
     assert_eq!(run_int64(provided_below, "test.r7.below.go"), Ok(4));
-}
-
-// ── E. `get` at no place ──────────────────────────────────────────────────────────────────
-
-/// `get` AT AN ARGUMENT THAT NAMES NO PLACE IS REFUSED AT LOAD, as its `let` twin is. A tuple
-/// holding a cell, an entity holding one and an integer written inline loaded and died at run
-/// time; the refusal of a placeless argument was `set`'s alone.
-///
-/// FAILS with the place check skipped for an argument written inline: the three load.
-#[test]
-fn get_at_no_place_is_refused_at_load() {
-    let program = |arg: &str| {
-        format!(
-            "namespace test.r7.get\n  import anthill.prelude.{{Int64, Cell}}\n  import \
-             anthill.prelude.ModifyRuntime.{{get}}\n  sort W\n    entity w(c: Cell[V = Int64])\n  end\n  \
-             operation go() -> Int64 = get({arg})\nend\n"
-        )
-    };
-    for arg in ["(Cell.new(1), 2)", "w(c: Cell.new(1))", "5"] {
-        assert_refused_naming(
-            &load_errors_of(&program(arg)),
-            &["expected a place of a modifiable type"],
-            arg,
-        );
-    }
-    assert_eq!(run_with_modify(&program("Cell.new(1)"), "test.r7.get.go"), Ok(1));
 }
 
 // ── F. the bottom type at a bare head ─────────────────────────────────────────────────────

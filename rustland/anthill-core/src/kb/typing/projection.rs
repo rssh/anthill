@@ -795,7 +795,7 @@ fn collection_literal(kb: &KnowledgeBase, head: Symbol) -> Option<CollectionLite
 /// twin of [`denoted_name`], which reads the STRING a denoted carries.
 ///
 /// THE HEAD AND NOT THE WHOLE PATH, because that is the resource: `Modify[c]` covers
-/// `Modify[c.rep]` (WI-506 / proposal 037's effect-row convention), so the parameter a
+/// `Modify[c.rep]` (WI-506 / proposal 037 §6.3), so the parameter a
 /// field path is rooted at is the one an argument re-keys. Reading only the bare `Ref`
 /// left `poke(d: Box) effects Modify[d.contents]` leaking `Modify[T = d.contents]` — the
 /// callee's own parameter, through a spelling one segment longer than the check looked.
