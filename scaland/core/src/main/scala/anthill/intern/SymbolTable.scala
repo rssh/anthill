@@ -273,12 +273,15 @@ class SymbolTable:
     * `ScopeIdentityTest` asserts all of it — the mint's location and the cross-table
     * hand-off as compile errors, the range refusal at runtime, and the residual hole. */
   def scopeOf(sym: TermSymbol): ScopeId =
-    val raw = TermSymbol.raw(sym)
+    // A constructor's TYPE FACE owns its declaration's scope: the scope is keyed on the
+    // PLAIN owner, so `symbolOf` answers the declaration (WI-20261020-80VNX).
+    val owner = sym.plain
+    val raw = owner.index
     if raw < 0 || raw >= defs.length then
       throw new IllegalArgumentException(
         s"scopeOf: symbol #$raw is past this symbol table's ${defs.length} entries — " +
         "a symbol only means anything in the table that issued it")
-    sym
+    owner
 
   /** The symbol that names `scope`. Total by construction — see [[scopeOf]]. A method on
     * the table rather than an extension on the type (WI-1004): the projection is only
@@ -314,12 +317,14 @@ class SymbolTable:
         sym
 
   /** Add a role without minting another identity. Unresolved symbols cannot have roles. */
-  def addKind(sym: TermSymbol, kind: SymbolKind): Unit = get(sym) match
-    case SymbolDef.Resolved(short, qualified, kinds, scope) =>
-      if !kinds.contains(kind) then
-        defs(sym.raw) = SymbolDef.Resolved(short, qualified, kinds :+ kind, scope)
-    case SymbolDef.Unresolved(name) =>
-      throw IllegalArgumentException(s"Cannot add a kind to unresolved symbol '$name'")
+  def addKind(sym: TermSymbol, kind: SymbolKind): Unit =
+    refuseTypeFace(sym, "addKind")
+    get(sym) match
+      case SymbolDef.Resolved(short, qualified, kinds, scope) =>
+        if !kinds.contains(kind) then
+          defs(sym.index) = SymbolDef.Resolved(short, qualified, kinds :+ kind, scope)
+      case SymbolDef.Unresolved(name) =>
+        throw IllegalArgumentException(s"Cannot add a kind to unresolved symbol '$name'")
 
   /** Mark a name as exposed from a scope to its enclosing scope via the
     * variant-exposure parent link (populated from entity variants only). */
@@ -344,6 +349,7 @@ class SymbolTable:
     * within one file, exactly as the old one-slot map made it — while doubling would grow
     * the list on every re-scan of the same file. */
   def addImport(scopeId: ScopeId, shortName: String, sym: TermSymbol, origin: ImportOrigin): Unit =
+    refuseTypeFace(sym, "addImport")
     val writes = scopeEntry(scopeId).imports.getOrElseUpdate(shortName, ArrayBuffer.empty)
     writes.filterInPlace(_ != (origin, sym))
     writes += ((origin, sym))
@@ -650,7 +656,7 @@ class SymbolTable:
 
   /** Get the display name of a symbol. */
   def name(sym: TermSymbol): String =
-    defs(sym.raw) match
+    defs(sym.index) match
       case SymbolDef.Unresolved(n)         => n
       case SymbolDef.Resolved(shortName, _, _, _) => shortName
 
@@ -658,12 +664,21 @@ class SymbolTable:
   def resolve(sym: TermSymbol): String = name(sym)
 
   /** Get the full SymbolDef. */
-  def get(sym: TermSymbol): SymbolDef[ScopeId] = defs(sym.raw)
+  def get(sym: TermSymbol): SymbolDef[ScopeId] = defs(sym.index)
 
   /** Check if a symbol is resolved. */
   def isResolved(sym: TermSymbol): Boolean =
-    defs(sym.raw) match
+    defs(sym.index) match
       case _: SymbolDef.Resolved[?] => true
       case _                     => false
 
   def size: Int = defs.length
+
+  /** The table holds DECLARATIONS, and a constructor's type face is not one: a write
+    * keyed on a face is a caller confusing the type with its declaration
+    * (WI-20261020-80VNX; rustland refuses it at the same writes). Reads mask the face —
+    * [[TermSymbol.index]] — so a face answers what its declaration answers. */
+  private def refuseTypeFace(sym: TermSymbol, what: String): Unit =
+    if sym.isTypeFace then
+      throw IllegalArgumentException(
+        s"$what(#${sym.index}†): a type face is not a declaration")

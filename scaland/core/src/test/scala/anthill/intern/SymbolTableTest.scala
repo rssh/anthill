@@ -111,3 +111,48 @@ class SymbolTableTest extends munit.FunSuite:
       case ResolveResult.Found(found) => assertEquals(TermSymbol.raw(found), TermSymbol.raw(localFoo))
       case other => fail(s"expected Found (local), got $other")
   }
+
+  /** WI-20261020-80VNX (rustland's `intern::tests`, WI-20260902-JB6RS step 0) — a
+    * constructor's TYPE FACE is another identity over the same declaration: the table
+    * answers it as it answers the declaration, and nothing else does.
+    *
+    * BACKED OUT (`TermSymbol.index` returning the whole value, i.e. not masking): the table
+    * reads index past the end of `defs` and throw, and the `scopeOf` row fails the same
+    * way. The identity block passes either way, BY DESIGN — the bit is what makes the two
+    * unequal, masked or not. */
+  test("a type face is another identity over the same declaration") {
+    val st = SymbolTable()
+    val scope = scopeOf(st, "shapes")
+    val c = st.define("Foo", "shapes.Foo", SymbolKind.Sort, scope)
+    st.addKind(c, SymbolKind.Entity)
+    val face = c.typeFace
+
+    assertEquals(face.index, c.index, "one table slot")
+    assertEquals(st.name(face), "Foo")
+    st.get(face) match
+      case SymbolDef.Resolved(_, qualified, _, _) => assertEquals(qualified, "shapes.Foo")
+      case other => fail(s"a face reads its declaration: $other")
+    assertEquals(st.get(face).kindsSet, Set(SymbolKind.Sort, SymbolKind.Entity))
+    assert(st.isResolved(face))
+    assertEquals(st.scopeOf(face), st.scopeOf(c), "a face owns its declaration's scope")
+    assertEquals(st.symbolOf(st.scopeOf(face)), c, "and the owner is the plain symbol")
+
+    assertNotEquals(face, c)
+    assertEquals(Set(c, face).size, 2, "the two hash apart")
+    assert(face.isTypeFace && !c.isTypeFace)
+    assertEquals(face.plain, c)
+    assertEquals(c.plain, c, "plain is identity on a plain symbol")
+    assertEquals(TermSymbol.fromRaw(face.raw), face, "the raw value round-trips the face")
+    assertEquals(TermSymbol.fromRaw(face.index), c, "a slot is the plain symbol")
+  }
+
+  /** The table holds declarations only: a write keyed on a face is a caller confusing the
+    * type with its declaration, refused loudly. */
+  test("the table refuses a type face") {
+    val st = SymbolTable()
+    val c = st.define("Foo", "Foo", SymbolKind.Sort, scopeOf(st, "ns"))
+    val refused = intercept[IllegalArgumentException](st.addKind(c.typeFace, SymbolKind.Entity))
+    assert(refused.getMessage.contains("a type face is not a declaration"), refused.getMessage)
+    intercept[IllegalArgumentException](
+      st.addImport(scopeOf(st, "other"), "Foo", c.typeFace, ImportOrigin.Builtin))
+  }

@@ -123,12 +123,12 @@ object ScalaProfile:
     kb: KnowledgeBase, tid: TermId, language: String, profile: String
   ): Map[String, String] =
     val elems = kb.getTerm(tid) match
-      case fn: Term.Fn if kb.resolveSym(fn.functor) == "ListLiteral" => fn.posArgs
+      case fn: Term.Fn if Facts.instanceNamed(kb, fn.functor, "ListLiteral") => fn.posArgs
       // WI-20260902-CZJ2N: an EMPTY `[]` is a nullary application and is stored bare, so
       // `type_map { }` arrives as `Term.Ref(ListLiteral)`. Read as "not a list literal"
       // it refused a profile that legitimately maps nothing — which is exactly what
       // `scalarless` / `unitless` are.
-      case Term.Ref(sym) if kb.resolveSym(sym) == "ListLiteral" => IArray.empty[TermId]
+      case Term.Ref(sym) if Facts.instanceNamed(kb, sym, "ListLiteral") => IArray.empty[TermId]
       case _ => malformed(language, profile, "type_map", "not a list literal")
     var acc = Map.empty[String, String]
     var i = 0
@@ -147,7 +147,7 @@ object ScalaProfile:
   ): (String, String) =
     def bad(what: String): Nothing = malformed(language, profile, "type_map", what)
     kb.getTerm(tid) match
-      case fn: Term.Fn if kb.resolveSym(fn.functor) == "TypeMapping" =>
+      case fn: Term.Fn if Facts.instanceNamed(kb, fn.functor, "TypeMapping") =>
         // FOUR OF `TypeMapping`'S SIX FIELDS MUST BE ABSENT for an entry this reader can
         // honour, and they fail the same two ways, so there is one reader of "an
         // Option-typed field that must not be written" and two messages for it. A junk

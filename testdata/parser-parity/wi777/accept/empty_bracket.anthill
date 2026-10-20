@@ -1,0 +1,10 @@
+namespace parity.jb6rs.empty
+  -- WI-20260902-JB6RS (scaland: WI-20261020-80VNX): a bracket may be EMPTY. In a data
+  -- position `Foo[]` is the type `Foo` written as data, where a constructor's bare name
+  -- is its instance (kernel-language.md §4.4); in a type position it is `Foo` itself;
+  -- and before a call it binds nothing.
+  fact held(Foo[])
+  rule found(1) :- held(Foo[])
+  operation f(x: Foo[]) -> Foo[] = x
+  operation g() -> Foo = Foo[](a: 1)
+end

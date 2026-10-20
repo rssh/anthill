@@ -37,6 +37,20 @@ open class SimpleTermStore:
     * SPARSE, hence a `HashMap` and not a parallel buffer: markers are a handful of nodes
     * per file where `spans` below is total. */
   private val markers = HashMap.empty[TermId, ExprMarker]
+  /** WI-20261020-80VNX (rustland's `is_type_application`, WI-20260902-JB6RS) — the
+    * `Term.Fn` nodes WRITTEN WITH THE BRACKET, `Foo[…]`. A bracket is a TYPE in every
+    * context (kernel-language.md §4.4), and its lowering is the same `Term.Fn` the
+    * application `Foo(…)` lowers to, so the surface is carried, as `minted` carries its
+    * own, for the loader to name the type by the constructor's type face. Sparse. */
+  private val typeApplications = scala.collection.mutable.HashSet.empty[TermId]
+  /** WI-20261020-80VNX — the `Term.Ref` nodes of a name written in a TYPE position and
+    * lowered to a term (`AnthillParser.typeExprToRef`): a bracket's binding, an arrow's or
+    * a tuple's component, an effect label — and so a `red[]` written there, which is the
+    * bare `red` in a type. A type position is a type context (§4.4), so the loader names
+    * a constructor written there by its TYPE face, where the same name in a data slot is
+    * its instance. Carried for the reason `typeApplications` is: the lowering is the
+    * `Term.Ref` a data-slot name lowers to. Sparse. */
+  private val typeNames = scala.collection.mutable.HashSet.empty[TermId]
   /** WI-957: the source text each term was built from, parallel to `terms`.
     *
     * A parse-time term is the ONE IR shape with no node of its own to carry a span
@@ -131,6 +145,24 @@ open class SimpleTermStore:
     id
 
   def isMinted(id: TermId): Boolean = minted.contains(id)
+
+  /** Allocate a node WRITTEN WITH THE BRACKET — see `typeApplications`. */
+  final def allocTypeApplicationAt(term: Term.Fn, span: Span): TermId =
+    val id = allocAt(term, span)
+    typeApplications += id
+    id
+
+  /** Was `id` written with the bracket, `Foo[…]`: a type, never an application? */
+  def isTypeApplication(id: TermId): Boolean = typeApplications.contains(id)
+
+  /** Allocate a name written in a TYPE position — see `typeNames`. */
+  final def allocTypeNameAt(term: Term.Ref, span: Span): TermId =
+    val id = allocAt(term, span)
+    typeNames += id
+    id
+
+  /** Is `id` a name written in a type position, read as a type? */
+  def isTypeName(id: TermId): Boolean = typeNames.contains(id)
 
   /** Which parse-time marker `id` is, or `None` for an ordinary term (WI-1009). THE
     * question `Loader.reallocTerm` asks before it resolves a functor by name. */

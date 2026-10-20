@@ -179,7 +179,11 @@ object Builtins:
             // `sort_ref`). Pre-WI-172 the eager applySubst-each + bindCompressed silently
             // overwrote the `Term.Ref` form when later discrim-tree matches re-bound the
             // same var; lazy walking surfaces the inconsistency.
-            bindResult(kb, resultArg, kb.makeNameTermFromSym(functor), subst)
+            //
+            // The sort's NAME — a constructor's TYPE FACE (`Foo[X = Int64]`) answers its
+            // declaration's, so the joins in `reflect/typing.anthill` normalize a face as
+            // they normalize a spelling (WI-20261020-80VNX; rustland JB6RS step 4).
+            bindResult(kb, resultArg, kb.makeNameTermFromSym(functor.plain), subst)
           case _ => BuiltinResult.Delay
       case None => BuiltinResult.Failure
 
@@ -203,8 +207,9 @@ object Builtins:
       case Some((symArg, resultArg)) =>
         nameArgSymbol(kb, symArg) match
           case Some(functor) =>
-            // Display only: reflection reports the first declaration's keyword.
-            kb.symbols.get(functor).primaryKind match
+            // Display only: reflection reports the first declaration's keyword — and a
+            // constructor's TYPE is a sort (`KnowledgeBase.reflectKind`).
+            kb.reflectKind(functor) match
               case Some(kind) =>
                 val strTerm = kb.alloc(Term.Const(Literal.StringLit(kind.toString.toLowerCase)))
                 bindResult(kb, resultArg, strTerm, subst)

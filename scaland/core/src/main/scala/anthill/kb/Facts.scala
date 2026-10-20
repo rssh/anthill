@@ -96,15 +96,23 @@ object Facts:
     */
   def optionArg(kb: KnowledgeBase, tid: TermId): OptionArg =
     kb.getTerm(tid) match
-      case fn: Term.Fn if kb.resolveSym(fn.functor) == "some" =>
+      case fn: Term.Fn if instanceNamed(kb, fn.functor, "some") =>
         if fn.posArgs.length == 1 then OptionArg.Wrapped(fn.posArgs(0))
         else if fn.posArgs.isEmpty && fn.namedArgs.length == 1 then
           OptionArg.Wrapped(fn.namedArgs(0)._2)
         else OptionArg.NotAnOption
-      case fn: Term.Fn if kb.resolveSym(fn.functor) == "none" && fn.arity == 0 =>
+      case fn: Term.Fn if instanceNamed(kb, fn.functor, "none") && fn.arity == 0 =>
         OptionArg.Absent
-      case Term.Ident(s) if kb.resolveSym(s) == "none" => OptionArg.Absent
-      case Term.Ref(s) if kb.resolveSym(s) == "none"   => OptionArg.Absent
+      case Term.Ident(s) if instanceNamed(kb, s, "none") => OptionArg.Absent
+      case Term.Ref(s) if instanceNamed(kb, s, "none")   => OptionArg.Absent
       case _ => OptionArg.NotAnOption
+
+  /** Does `sym` head an INSTANCE of the constructor called `name`? A constructor's TYPE
+    * FACE answers the declaration's name (`none[]` is called `none`), and is the type,
+    * not the value: `none[]` is no absent option, nor `some[T = String]` a wrapped one
+    * (WI-20261020-80VNX; rustland's JSON store refuses the same, "`none[]` is no null").
+    * Shared with the profile readers that also match a constructor by name. */
+  def instanceNamed(kb: KnowledgeBase, sym: anthill.intern.TermSymbol, name: String): Boolean =
+    !sym.isTypeFace && kb.resolveSym(sym) == name
 
 end Facts

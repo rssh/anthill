@@ -77,6 +77,11 @@ fn wi777_rust_parser_pins_the_shared_parity_corpus() {
     //         because the corpus's only trailing-comma case was a tuple TYPE.
     //       - Scaland, the `(x,)` refusal dropped: `one_positional_tuple_value` is
     //         ACCEPTED — silently, as grouping — and the reject half fails.
+    //   * WI-20261020-80VNX, Scaland: `instArgsList` (the bracket in a term) or
+    //     `parameterizedType` (in a type) back at `rep(1)` fails `empty_bracket` — measured,
+    //     each alone. Rustland's half is JB6RS's `application` at `commaSep`, pinned by
+    //     tree-sitter's own corpus row (`test/corpus/empty_bracket.txt`); it was not
+    //     regenerated at `commaSep1` to measure it here.
     //   * `one_positional_arrow`, `one_denoted_tuple_type`, `two_named_tuple_trailing_comma`
     //     and the two older reject cases pass under every back-out above, and guard the
     //     unchanged language around the fixes.

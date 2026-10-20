@@ -714,9 +714,11 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       case other =>
         Left(SmtGenError(s"v0: unhandled term in expression: $other"))
 
-  /** True if the symbol resolves to an entity declaration. */
+  /** True if an application of the symbol is an entity — its declaration's instance. A
+    * constructor's TYPE FACE answers the declaration's fields but builds the type
+    * `Foo[…]`, never an instance (WI-20261020-80VNX; rustland's `is_known_entity`). */
   def isKnownEntity(sym: TermSymbol): Boolean =
-    kb.entityFieldNames(sym).isDefined
+    !sym.isTypeFace && kb.entityFieldNames(sym).isDefined
 
   /** Classify the rule's head shape. Mirrors rustland's `classify_head`.
     *

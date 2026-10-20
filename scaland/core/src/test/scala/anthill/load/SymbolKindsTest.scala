@@ -23,29 +23,40 @@ class SymbolKindsTest extends munit.FunSuite:
       assertEquals(kb.symbols.get(first).primaryKind, Some(roles.head))
   }
 
-  test("a sort role added after Entity preserves the type's two nullary forms") {
+  test("a sort role added after Entity keeps the one symbol and its one nullary term") {
+    // It asserted the two nullary forms until the canon stopped exempting a sort
+    // (WI-20261020-80VNX): the role set is what accumulates, and `E()` is `E`.
     val kb = KnowledgeBase()
     val sym = kb.symbols.define("E", "E", SymbolKind.Entity, kb.globalScope)
-    kb.symbols.define("E", "E", SymbolKind.Sort, kb.globalScope)
-    assert(kb.alloc(Term.Ref(sym)) != kb.alloc(Term.Fn(sym, IArray.empty, IArray.empty)))
+    assertEquals(kb.symbols.define("E", "E", SymbolKind.Sort, kb.globalScope), sym)
+    assertEquals(kb.symbols.get(sym).kindsSet, Set(SymbolKind.Entity, SymbolKind.Sort))
+    assertEquals(kb.alloc(Term.Ref(sym)), kb.alloc(Term.Fn(sym, IArray.empty, IArray.empty)))
     // CONTROL: constructor-only names still have a single nullary form.
     val variant = kb.symbols.define("V", "V", SymbolKind.Entity, kb.globalScope)
     assertEquals(kb.alloc(Term.Ref(variant)), kb.alloc(Term.Fn(variant, IArray.empty, IArray.empty)))
   }
 
-  test("free-standing entity has a type reading; explicit sort keeps its nested constructor") {
+  /** §6.3 (WI-926): the two spellings of one declaration are ONE symbol with both roles —
+    * `entity Short` and the long form `sort Long … entity Long … end` alike — and the long
+    * form defines no nested `Long.Long`. A constructor named otherwise keeps its own nested
+    * symbol, a constructor and nothing else. */
+  test("a free-standing and an eponymous entity are one symbol with both roles") {
     val kb = LoadFixture.loaded("""namespace n3
       |  entity Short
       |  sort Long
       |    entity Long
       |  end
+      |  sort Other
+      |    entity variant
+      |  end
       |end""".stripMargin, "entity-kinds.anthill")
     val short = kb.symbols.byQualifiedName("n3.Short")
     val long = kb.symbols.byQualifiedName("n3.Long")
-    val nested = kb.symbols.byQualifiedName("n3.Long.Long")
-    assertEquals(kb.symbols.get(short).kindsSet, Set(SymbolKind.Entity, SymbolKind.Sort))
+    val nested = kb.symbols.byQualifiedName("n3.Other.variant")
     for sym <- Seq(short, long) do
-      assert(kb.alloc(Term.Ref(sym)) != kb.alloc(Term.Fn(sym, IArray.empty, IArray.empty)))
+      assertEquals(kb.symbols.get(sym).kindsSet, Set(SymbolKind.Entity, SymbolKind.Sort))
+      assertEquals(kb.alloc(Term.Ref(sym)), kb.alloc(Term.Fn(sym, IArray.empty, IArray.empty)))
+    assert(!kb.symbols.byQualifiedName.contains("n3.Long.Long"), "no nested `Long.Long`")
     assertEquals(kb.symbols.get(nested).exclusiveKind, Some(SymbolKind.Entity))
     assertEquals(kb.alloc(Term.Ref(nested)), kb.alloc(Term.Fn(nested, IArray.empty, IArray.empty)))
   }
