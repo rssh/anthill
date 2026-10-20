@@ -347,7 +347,10 @@ fn the_enclosing_sorts_parameter_is_threaded_from_the_receiver() {
 /// The second half is the control that keeps the first from being vacuous: `Pair[A = ?t, B =
 /// ?s]` writes two DIFFERENT variables, and that call must be refused. It loads on main (where
 /// neither variable is opened and both stay flexible), so it also shows the tie is now really
-/// enforced rather than satisfied by everything unifying with everything.
+/// enforced rather than satisfied by everything unifying with everything. The refusal is the
+/// join of `needs_same`'s `?u`, as `needs_same[U](p: Pair[A = U, B = U])`'s is of `U`: a
+/// variable written in a parameter type is a type parameter of the operation's record
+/// (WI-20260911-VNQTR), and the arguments that bind it are joined.
 #[test]
 fn the_tie_survives_the_opening() {
     const TIED: &str = "namespace test.wi1078.tie\n\
@@ -359,7 +362,7 @@ fn the_tie_survives_the_opening() {
     crate::common::load_kb_with(TIED);
     let untied = refusal(&TIED.replace("B = ?t]", "B = ?s]").replace("tie\n", "untie\n"));
     assert!(
-        untied.contains("needs_same.p"),
+        untied.contains("no common type for type parameter `?u` of `needs_same`: ?t (p), ?s (p)"),
         "two DIFFERENT return variables do not agree, and the consumer that demands agreement \
          must say so — otherwise the first half measures nothing: {untied}",
     );

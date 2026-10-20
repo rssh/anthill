@@ -1993,7 +1993,7 @@ impl TypeError {
             // WI-20260919-N31XX — 065's message verbatim: the parameter, the read, and
             // the clause to add, on the operation that must carry it.
             TypeError::TypeValueReadUnbacked { param, op, .. } => {
-                let p = short_name_of(kb.local_name_of(*param));
+                let p = type_param_display_name(kb, *param);
                 format!(
                     "`{p}` is read as a VALUE here, and nothing in scope requires \
                      `TypeValue[T = {p}]` — so the signature of `{}` promises nothing \
@@ -2724,7 +2724,7 @@ impl TypeError {
             // WI-20260919-N31XX — the operation is the entity (it is the signature that
             // must change) and `requires` the field, as the sibling above has it.
             TypeError::TypeValueReadUnbacked { param, op, .. } => {
-                let p = short_name_of(kb.local_name_of(*param));
+                let p = type_param_display_name(kb, *param);
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: kb.qualified_name_of(*op).to_string(),
@@ -3065,39 +3065,57 @@ impl TypeError {
 }
 
 /// WI-20261006-XQGEW — the tail a bracket refusal owes where the operation has parameters
-/// the member sugar minted, which a call's bracket does not name: for a KEY, the members
-/// it reads as (`[E = …]` over a signature naming `Tagger.E`); for a positional left
-/// over, all of them. Empty where the operation has none such, which is every bracket
-/// refusal there was before.
+/// no call's bracket names — the member sugar's, and (WI-20260911-VNQTR) the variables its
+/// signature writes: for a KEY, those it reads as (`[E = …]` over a signature naming
+/// `Tagger.E`, `[c = …]` over one writing `?c`); for a positional left over, all of them.
+/// Empty where the operation has none such, which is every bracket refusal there was before.
 ///
-/// Said because the key and the count are what an author writes who takes the member for
-/// a parameter of the bracket — the reading the list gave until a member's name was its
-/// own — and "unknown type-param 'E'" beside a signature that says `Tagger.E` explains
-/// nothing.
+/// Said because the key and the count are what an author writes who takes such a parameter
+/// for one of the bracket's — the reading the list gave until its name was its own — and
+/// "unknown type-param 'E'" beside a signature that says `Tagger.E` explains nothing.
 fn members_no_bracket_names(kb: &KnowledgeBase, op: Symbol, key: Option<Symbol>) -> String {
     let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) else {
         return String::new();
     };
-    let members: Vec<String> = info
+    let named: Vec<(String, bool)> = info
         .type_params
         .iter()
-        .filter_map(|(name, _)| Some((*name, member_param_spelling(kb, *name)?)))
-        // A key reads as a member by the member's own name (`[E = …]`) or by its whole
-        // spelling (`[Tagger.E = …]`), which is what the signature says.
-        .filter(|(name, spelling)| {
+        .filter_map(|(name, _)| {
+            let (spelling, member) = match kb.minted_param(*name)? {
+                MintedParam::Member { .. } => (member_param_spelling(kb, *name)?, true),
+                MintedParam::Inline => (type_param_display_name(kb, *name), false),
+                MintedParam::UnwrittenSlot { .. } => return None,
+            };
+            // A key reads as one by its own name (`[E = …]`, `[c = …]`) or by its whole
+            // spelling (`[Tagger.E = …]`), which is what the signature says.
             key.is_none_or(|key| {
                 let key = kb.local_name_of(key);
                 key == kb.local_name_of(*name) || key == spelling
             })
+            .then_some((spelling, member))
         })
-        .map(|(_, spelling)| format!("`{spelling}`"))
         .collect();
-    match members.as_slice() {
+    let spelled = |named: &[(String, bool)]| {
+        named
+            .iter()
+            .map(|(s, _)| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match named.as_slice() {
         [] => String::new(),
-        [one] => format!(" — {one} is a member's parameter, which no bracket names"),
-        several => format!(
+        [(one, true)] => format!(" — `{one}` is a member's parameter, which no bracket names"),
+        [(one, false)] => {
+            format!(" — `{one}` is a variable the signature writes, which no bracket names")
+        }
+        several if several.iter().all(|(_, member)| *member) => format!(
             " — {} are members' parameters, which no bracket names",
-            several.join(", ")
+            spelled(several)
+        ),
+        several => format!(
+            " — {} are parameters the signature writes as members or as variables, which no \
+             bracket names",
+            spelled(several)
         ),
     }
 }
@@ -3126,9 +3144,17 @@ fn unconstrained_type_param_text(
 ) -> (String, String) {
     let param = type_param_display_name(kb, type_param);
     let op_short = short_name_of(kb.qualified_name_of(op));
-    let advice = match kb.member_param_head(type_param) {
-        None => format!("use `{op_short}[{param} = …](…)`"),
-        Some(head) => format!(
+    let advice = match kb.minted_param(type_param) {
+        // A variable the signature writes inline has no bracket either (WI-20260911-VNQTR).
+        Some(MintedParam::Inline) => format!(
+            "no bracket names a variable the signature writes: at a call `{param}` is fixed by \
+             an argument typed by it or by the type the result is expected at, and this call \
+             fixes it by neither. Where neither can, write the parameter in `{op_short}`'s own \
+             bracket, which a call can bind"
+        ),
+        // An unwritten slot's unknown is a body's, never a parameter on a record.
+        None | Some(MintedParam::UnwrittenSlot { .. }) => format!("use `{op_short}[{param} = …](…)`"),
+        Some(MintedParam::Member { head }) => format!(
             "no bracket names a member's parameter: at a call `{param}` is fixed by the \
              provision of `{}` at a carrier the call passes, by an argument typed by it, or \
              by the type the result is expected at, and this call fixes it by none of them. \

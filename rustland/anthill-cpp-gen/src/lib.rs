@@ -57,7 +57,7 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::typing::{
     extract_sort_ref_sym, extract_type, type_holds_a_value, TypeExtractor,
 };
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, MintedParam};
 use anthill_core::parse::desugar_target as dt;
 
 // ── Templates ────────────────────────────────────────────────────────
@@ -2230,15 +2230,28 @@ fn operations_in_sort(
         // effect-only `EffP`, since C++ erases the effect row — is dropped
         // rather than emitted as a dead template parameter. A monomorphic op
         // pushes nothing.
+        //
+        // A VARIABLE THE SIGNATURE WRITES IN A PARAMETER TYPE (`b: ?U`) IS ONE OF THEM, and
+        // is keyed as written, `?U` ([`type_param_frame_key`]): its name reads as `U`, which
+        // is also a bracket's `[U]` and the enclosing sort's `T`, and keyed so it took their
+        // place in the frame — every `U` lowered to the variable's template parameter, which
+        // no call can deduce (MEASURED, g++).
         let op_type_params: Vec<String> = rec
             .type_params
             .iter()
-            .map(|(sym, _)| kb.local_name_of(*sym).to_string())
+            .map(|(sym, _)| type_param_frame_key(kb, *sym))
             .collect();
         let mut op_param_decls: Vec<(String, String)> = Vec::new();
         let mut _op_guard = None;
         if !op_type_params.is_empty() {
             let mut op_taken = sort_param_cpp.clone();
+            // A template parameter named like a value parameter is shadowed by it — `x x` is
+            // refused by the compiler — so the value parameters' names are taken too.
+            op_taken.extend(
+                rec.params
+                    .iter()
+                    .map(|(name, _)| cpp_identifier(kb.local_name_of(*name))),
+            );
             let (decls, frame) = template_param_decls(kb, op_sym, &op_type_params, &mut op_taken)?;
             // (cpp_name, decl) pairs in declaration order, captured before the
             // frame is moved into the type-param stack.
@@ -4039,6 +4052,19 @@ const CPP_KEYWORDS: &[&str] = &[
 /// Pick a unique C++ identifier for a type parameter. Keeps the source
 /// name when it's safe; otherwise appends `0..N` until a free slot is
 /// found. `taken` is updated with the chosen name.
+/// The key a type parameter is held under in a frame of [`CodegenContext::lookup_type_param`]:
+/// the name a bracket or a sort declares it by, and a variable an operation's signature
+/// writes in a parameter type as written, `?U` — its name reads as `U`, a bracket's and the
+/// enclosing sort's spelling too, and it is neither ([`MintedParam::Inline`]).
+fn type_param_frame_key(kb: &KnowledgeBase, name: Symbol) -> String {
+    let local = kb.local_name_of(name);
+    if kb.minted_param(name) == Some(MintedParam::Inline) {
+        format!("?{local}")
+    } else {
+        local.to_string()
+    }
+}
+
 fn canonicalise_param_name(
     source_name: &str,
     taken: &mut std::collections::HashSet<String>,
@@ -5084,7 +5110,7 @@ fn lower_type(
     match ty.head(kb) {
         ViewHead::Var(Var::Global(vid)) => {
             let name = kb.local_name_of(vid.name()).to_string();
-            if let Some(cpp) = ctx.lookup_type_param(&name) {
+            if let Some(cpp) = ctx.lookup_type_param(&type_param_frame_key(kb, vid.name())) {
                 return Ok(cpp);
             }
             return Err(CppCodegenError {

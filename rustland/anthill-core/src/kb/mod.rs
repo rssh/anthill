@@ -1038,6 +1038,22 @@ pub(crate) enum ReifyCarrier {
     Transient,
 }
 
+/// What a type parameter's name that was minted for it alone stands for
+/// ([`KnowledgeBase::minted_param`]). Such a name reads as written and is no other symbol's
+/// equal; a name with no entry is a parameter a bracket or a sort declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintedParam {
+    /// The parameter the member sugar mints for `head.Member` in a signature (`llm:
+    /// Llm.C`), `head` being the spec or the alias the member was reached through.
+    Member { head: Symbol },
+    /// A variable an operation's signature writes in a parameter type (`via(b: Box[?t])`).
+    Inline,
+    /// The unknown a body check opens for a slot its signature leaves unwritten inside a
+    /// parameter's type (`xs: List[T = Box]`'s `Box.V`): no clause can name it. `slot` is
+    /// the sort's parameter the slot is (`Box.V`).
+    UnwrittenSlot { slot: Symbol },
+}
+
 /// WI-20260924-SNJPR — one type alias the scan declared, awaiting its head
 /// ([`KnowledgeBase::alias_heads`]).
 #[derive(Clone, Debug)]
@@ -1527,21 +1543,30 @@ pub struct KnowledgeBase {
     /// that into the DECLARATION, which is what says whether the parameter is a named
     /// requirement slot and so where the frame holds its dictionary.
     type_param_canonical_vids: HashMap<VarId, Symbol>,
-    /// WI-20261006-XQGEW — the NAMES of the type parameters the member sugar mints for
-    /// `Spec.Member` in a signature (`llm: Llm.C`, `effects {Llm.E}`), each with the head
-    /// it was written with: the spec, or the alias the member was reached through.
+    /// WI-20261006-XQGEW, WI-20260911-VNQTR — the NAMES minted for type parameters that have
+    /// none a bracket could write, each with what it stands for ([`MintedParam`]): the
+    /// parameter the member sugar mints for `Spec.Member` in a signature, a variable a
+    /// signature writes in a parameter type (§5.4), and the unknown a body check opens for a
+    /// slot its signature leaves unwritten inside a parameter's type.
     ///
-    /// SUCH A NAME IS A SYMBOL OF ITS OWN ([`Self::mint_member_param_name`]) that reads as
-    /// the bare member. The parameter has no name a program could write, and named by the
-    /// interned `E` it was the same symbol as the enclosing sort's `E`, a bracket's, and
-    /// another spec's member — which a call's bracket matches by identity, and every
-    /// message printed alike.
+    /// SUCH A NAME IS A SYMBOL OF ITS OWN that reads as written. Named by the interned
+    /// spelling, a member's `E` was the same symbol as the enclosing sort's `E`, a
+    /// bracket's and another spec's member, and a variable `?t` was a bracket `[t]`'s —
+    /// which a call's bracket matches by identity, every message printed alike, and a
+    /// clause list keyed by name dropped one of `[U]` and `?U`.
     ///
     /// KEYED BY THE NAME, NOT BY A VARIABLE, because the spelling is the parameter's and
     /// a parameter has many variables: the loader's, the rigid a body check makes of it,
     /// the copy an operation used as a value is instantiated at. Each carries the name
     /// (`VarId::name`), so one write here answers for all of them.
-    member_param_heads: HashMap<Symbol, Symbol>,
+    minted_params: HashMap<Symbol, MintedParam>,
+
+    /// The one name per slot an unwritten slot's unknown is opened under
+    /// ([`Self::unwritten_slot_name`]), keyed by the sort's parameter the slot is. A body
+    /// check opens such a slot every time it runs, and a name per opening would grow the
+    /// symbol table for as long as the KB lives; the unknown's identity is its variable, and
+    /// the name only says what it is.
+    unwritten_slot_names: HashMap<Symbol, Symbol>,
 
     /// WI-743, WI-20260925-SHED7 — every sort with constructors whose domain the loader
     /// derives (or found written), keyed by [`Self::canonical_sort_sym`], mapped to its
@@ -2834,7 +2859,8 @@ impl KnowledgeBase {
             requirement_sorts: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
             type_param_canonical_vids: HashMap::new(),
-            member_param_heads: HashMap::new(),
+            minted_params: HashMap::new(),
+            unwritten_slot_names: HashMap::new(),
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
             fill_relations: HashMap::new(),
@@ -3421,22 +3447,55 @@ impl KnowledgeBase {
         self.type_param_canonical_vids.get(&vid).copied()
     }
 
-    /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
-    /// `head.member`: a fresh symbol that reads as `member` and is no other symbol's
-    /// equal, with `head` recorded for it. THE ONE WRITER of
-    /// [`Self::member_param_heads`], so a member's name cannot be made without what it
-    /// was written with.
-    pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
-        let name = self.symbols.intern_unique(member);
-        self.member_param_heads.insert(name, head);
+    /// A fresh symbol that reads as `spelled`, recorded as standing for `what`. THE ONE
+    /// WRITER of [`Self::minted_params`], so such a name cannot be made without what it
+    /// stands for.
+    fn mint_param_name(&mut self, spelled: &str, what: MintedParam) -> Symbol {
+        let name = self.symbols.intern_unique(spelled);
+        self.minted_params.insert(name, what);
         name
     }
 
+    /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
+    /// `head.member`, reading as `member`.
+    pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
+        self.mint_param_name(member, MintedParam::Member { head })
+    }
+
+    /// WI-20260911-VNQTR — the name of a type parameter an operation's signature writes
+    /// inline as `?written`, reading as `written`.
+    pub(crate) fn mint_inline_param_name(&mut self, written: &str) -> Symbol {
+        self.mint_param_name(written, MintedParam::Inline)
+    }
+
+    /// WI-20260911-VNQTR — the name of the unknown a body check opens for a slot its
+    /// signature leaves unwritten inside a parameter's type, where the slot is the sort's
+    /// parameter `slot`: reading as its short name (`V`), one per slot
+    /// ([`Self::unwritten_slot_names`]).
+    pub(crate) fn unwritten_slot_name(&mut self, slot: Symbol) -> Symbol {
+        if let Some(name) = self.unwritten_slot_names.get(&slot) {
+            return *name;
+        }
+        let short = crate::kb::typing::short_name_of(self.local_name_of(slot)).to_owned();
+        let name = self.mint_param_name(&short, MintedParam::UnwrittenSlot { slot });
+        self.unwritten_slot_names.insert(slot, name);
+        name
+    }
+
+    /// What `name` stands for, where it was minted for a type parameter alone; `None` for
+    /// every other symbol — a parameter a bracket or a sort declares, an inference
+    /// variable's name.
+    pub fn minted_param(&self, name: Symbol) -> Option<MintedParam> {
+        self.minted_params.get(&name).copied()
+    }
+
     /// WI-20261006-XQGEW — the head `name` was written with, where `name` is the name of
-    /// a member's parameter; `None` for every other symbol — a parameter written in a
-    /// bracket, a sort's own, an inference variable's name.
+    /// a member's parameter ([`MintedParam::Member`]).
     pub(crate) fn member_param_head(&self, name: Symbol) -> Option<Symbol> {
-        self.member_param_heads.get(&name).copied()
+        match self.minted_param(name) {
+            Some(MintedParam::Member { head }) => Some(head),
+            _ => None,
+        }
     }
 
     /// WI-743, WI-20260925-SHED7 — does this sort HAVE A DOMAIN: a `SortDomain` whose

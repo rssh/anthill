@@ -100,8 +100,9 @@ pub struct TypingEnv {
     ///
     /// "THE OPERATION'S" IS THREE SPELLINGS, NOT ONE (WI-1FKR2). Its own `[A]`
     /// brackets, and the logical variables it WROTE INLINE in a parameter type
-    /// (`via(b: Box[?t]) -> Box[?t]`) — §5.4 quantifies both the same way, so
-    /// [`inline_signature_type_params`] adds the second to the op half. Still TWO
+    /// (`via(b: Box[?t]) -> Box[?t]`) — §5.4 quantifies both the same way, so the
+    /// operation's record lists the second after the first (WI-20260911-VNQTR), and
+    /// [`alias_opened_type_params`] adds a named slot an alias opens. Still TWO
     /// SCOPES: an inline variable is per-call and caller-instantiated, which is
     /// what the op half means and what the sort prefix is not. Nothing about
     /// `sort_rigid_len` or either view below changes; what changes is that

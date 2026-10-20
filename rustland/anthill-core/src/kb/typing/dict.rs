@@ -698,6 +698,9 @@ pub(crate) struct UnsuppliableRequirement {
     pub(crate) callee_op: Symbol,
     /// Its parent sort: the owner of the `requires` chain this dictionary would fill.
     pub(crate) callee_sort: Symbol,
+    /// How the operation was used there — called, or named as a function value — which
+    /// the diagnostic says.
+    pub(crate) usage: RequirementUse,
     pub(crate) refusal: Box<RequirementRefusal>,
 }
 
@@ -749,7 +752,7 @@ pub(super) fn report_unsuppliable_requirements(
             span: entry.span,
             op: entry.callee_op,
             callee_sort: entry.callee_sort,
-            usage: RequirementUse::Call,
+            usage: entry.usage,
             refusal: entry.refusal,
         });
         sources.push(Some(entry.source));
@@ -1738,6 +1741,7 @@ pub(super) fn stamp_op_scoped_dicts(
         park,
         param_arg_types,
         held,
+        usage,
     )
     // WI-1091: a TIE in the op half is a load refusal, as the sort half's is.
     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
@@ -1952,6 +1956,8 @@ pub(super) fn build_op_scoped_dicts(
     // [`scope_contract_covers_dep`], so a dep discharged on one cannot be refused on the
     // other.
     held: &[HeldSpecView],
+    // How the callee is used at `park`'s site, which a parked refusal says.
+    usage: RequirementUse,
 ) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
@@ -2467,6 +2473,7 @@ pub(super) fn build_op_scoped_dicts(
             if park.is_some_and(|s| s.enclosing_op.is_none())
                 && !spec_is_a_marker(kb, dep.required_sort)
                 && !dep_completes_to_a_unique_provider(kb, &dep, callee_op)
+                && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 let dep_text = render_requires_entry(kb, &dep);
@@ -2578,27 +2585,68 @@ pub(super) fn build_op_scoped_dicts(
                                             (requirement, construction)
                                         }
                                         CallerRigidCarrier::LacksEvidence {
-                                            carrier,
-                                            within,
+                                            first,
                                             requirement,
-                                            clauses,
-                                            declare_on,
+                                            repair,
                                         } => {
-                                            let construction = format!(
-                                                "{}, a type parameter of the CALLING \
-                                     operation `{}`, which declares no `requires` that \
-                                     covers it — the caller's frame is the only thing that \
-                                     could ever fill this slot, and it holds nothing for \
-                                     `{carrier}`. {}, or call `{}` with a type whose provision \
-                                     is known here",
-                                                match &within {
-                                                    Some(within) => {
-                                                        format!("its carrier `{within}` holds `{carrier}`")
+                                            let caller = kb.qualified_name_of(enclosing_op).to_owned();
+                                            let carrier = &first.spelling;
+                                            let at = match &first.within {
+                                                Some(within) => {
+                                                    format!("its carrier `{within}` holds `{carrier}`")
+                                                }
+                                                None => format!("its carrier is `{carrier}`"),
+                                            };
+                                            // What the carrier is to the caller: a type
+                                            // parameter of its, a slot its signature leaves
+                                            // unwritten in a parameter's type, which §5.4
+                                            // quantifies alike, or an unknown it leaves with
+                                            // no name a clause could write.
+                                            let what = match &first.kind {
+                                                MetKind::Param { .. } => format!(
+                                                    "a type parameter of the CALLING operation `{caller}`, \
+                                                     which declares no `requires` that covers it"
+                                                ),
+                                                MetKind::SlotOf { param } => format!(
+                                                    "a slot the signature of the CALLING operation \
+                                                     `{caller}` leaves unwritten in the type of its \
+                                                     parameter `{param}`, and `{caller}` declares no \
+                                                     `requires` that covers it"
+                                                ),
+                                                MetKind::Unnamed => format!(
+                                                    "an unknown the signature of the CALLING operation \
+                                                     `{caller}` leaves without a name (a slot written \
+                                                     `?` or left out inside a parameter's type, or one a \
+                                                     type alias leaves open), so no clause can name it"
+                                                ),
+                                            };
+                                            let repair = match repair {
+                                                ForwardRepair::Declare {
+                                                    clauses,
+                                                    declare_on,
+                                                } => declare_on.repair(kb, &clauses),
+                                                ForwardRepair::NameTheSlot => {
+                                                    match backed_spec_op(kb, enclosing_op) {
+                                                        Some(spec_op) => format!(
+                                                            "Write a variable in that slot of the \
+                                                             signature, on `{}` and `{caller}` alike, \
+                                                             and declare the requirement over it on \
+                                                             both",
+                                                            kb.qualified_name_of(spec_op),
+                                                        ),
+                                                        None => format!(
+                                                            "Write a variable in that slot of the \
+                                                             signature and declare the requirement \
+                                                             over it on `{caller}`"
+                                                        ),
                                                     }
-                                                    None => format!("its carrier is `{carrier}`"),
-                                                },
-                                                kb.qualified_name_of(enclosing_op),
-                                                declare_on.repair(kb, &clauses),
+                                                }
+                                            };
+                                            let construction = format!(
+                                                "{at}, {what} — the caller's frame is the only thing \
+                                                 that could ever fill this slot, and it holds nothing \
+                                                 for `{carrier}`. {repair}, or call `{}` with a type \
+                                                 whose provision is known here",
                                                 kb.qualified_name_of(callee_op),
                                             );
                                             (requirement, construction)
@@ -2660,7 +2708,9 @@ pub(super) fn build_op_scoped_dicts(
                             // is headed by — the library spec's own repair, the row that sort
                             // has, or the row it lacks ([`open_slot_refusal`]).
                             (None, Some(nomatch @ ResolutionResult::NoMatch { .. }))
-                                if former.is_none() && dep_states_an_open_type(kb, &dep) =>
+                                if former.is_none()
+                                    && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
+                                    && dep_states_an_open_type(kb, &dep) =>
                             {
                                 Some(open_slot_refusal(kb, &dep, nomatch))
                             }
@@ -2676,6 +2726,7 @@ pub(super) fn build_op_scoped_dicts(
                             // answers through it, as it did.
                             (None, Some(ResolutionResult::NoMatch { .. }))
                                 if former.is_none()
+                                    && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
                                     && library_instances(kb, dep.required_sort).is_some() =>
                             {
                                 let unconstrained = unconstrained_elements(kb, &dep, &disambig);
@@ -2705,6 +2756,7 @@ pub(super) fn build_op_scoped_dicts(
                         // not write it, so naming the parent would attribute the
                         // requirement to a declaration that has none.
                         callee_sort: callee_op,
+                        usage,
                         refusal: Box::new(refusal),
                     });
                 }
@@ -2713,6 +2765,73 @@ pub(super) fn build_op_scoped_dicts(
         out.push(projected);
     }
     Ok(out)
+}
+
+/// WI-20260911-VNQTR — is `dep` a requirement of an operation used as a FUNCTION VALUE, an
+/// element of it still open at the reference, and every element one the arguments carry —
+/// every type parameter of the operation's, or of its sort's, that a binding names standing
+/// in the type of one of its parameters?
+///
+/// Then the element is no element nothing pins, and the arms that say so are not taken for
+/// it — the two open-element arms of an operation body's park, and a constant's raise. A
+/// function value's instance may be fixed after its reference — by a sibling argument of the
+/// call it is passed to (`appOpt(some(tyOf), "s")`), by the construction it stands in
+/// (`apply(h(f: tyOf))`), by the type the call's result is expected at (`const k: (x: Int64)
+/// -> Type = idf(tyOf)`) — and the slot its arguments carry is resolved where the value is
+/// applied, from them (§8.7). Refused at the reference, each of those, which ran, was refused
+/// (MEASURED). An element no parameter carries is fixed by nothing a call of the value could
+/// pass, and is refused as a call's is: `tv[V](n: Int64) requires TypeValue[T = V]` lifted
+/// against `(n: Int64) -> Type` loaded and died.
+fn read_where_applied(
+    kb: &mut KnowledgeBase,
+    usage: RequirementUse,
+    callee_op: Symbol,
+    dep: &RequiresEntry,
+    ctx: &SigmaCtx,
+) -> bool {
+    if usage != RequirementUse::FunctionValue {
+        return false;
+    }
+    if unconstrained_elements(kb, dep, ctx).is_empty() && !dep_states_an_open_type(kb, dep) {
+        return false;
+    }
+    let (Some(info), Some(goal)) = (
+        crate::kb::op_info::lookup_operation_info(kb, callee_op),
+        goal_from_requires_entry(kb, dep),
+    ) else {
+        return false;
+    };
+    let mut named: Vec<VarId> = Vec::new();
+    for (_, binding) in &goal.bindings {
+        type_params_named(kb, binding, &mut named);
+    }
+    if named.is_empty() {
+        return false;
+    }
+    let mut carried: Vec<VarId> = Vec::new();
+    for (_, ty) in &info.params {
+        type_params_named(kb, ty, &mut carried);
+    }
+    named.iter().all(|p| carried.contains(p))
+}
+
+/// Every type parameter `ty` names, by its variable ([`declared_type_param_vid`], which
+/// reads a parameter's variable and a reference to it alike), pushed onto `out`.
+fn type_params_named(kb: &KnowledgeBase, ty: &Value, out: &mut Vec<VarId>) {
+    if let Some(vid) = declared_type_param_vid(kb, ty) {
+        if !out.contains(&vid) {
+            out.push(vid);
+        }
+        return;
+    }
+    if let ViewHead::Functor { pos_arity, .. } = ty.head(kb) {
+        for child in view_pos_children(kb, ty, pos_arity) {
+            type_params_named(kb, &child, out);
+        }
+        for (_, child) in view_named_children(kb, ty) {
+            type_params_named(kb, &child, out);
+        }
+    }
 }
 
 /// WI-20261005-KSSA4 — the refusal a call owes where one of the callee's type parameters
@@ -3460,12 +3579,12 @@ fn library_contract_unheld(
 /// pinned one, which [`unprovided_provision`] answers with its carrier.
 fn no_provision_agrees_with_pins(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Option<String> {
     let goal = goal_from_requires_entry(kb, dep)?;
-    let pinned: Vec<(String, Value)> = goal
-        .bindings
-        .iter()
-        .filter(|(_, v)| type_is_ground(kb, v))
-        .map(|(k, v)| (kb.local_name_of(*k).to_string(), v.clone()))
-        .collect();
+    let mut pinned: Vec<(String, Value)> = Vec::new();
+    for (k, v) in &goal.bindings {
+        if binding_is_pinned(kb, goal.spec_sort, v) {
+            pinned.push((kb.local_name_of(*k).to_string(), v.clone()));
+        }
+    }
     let tparams = kb.type_params_of_sort(goal.spec_sort);
     if pinned.is_empty() || tparams.iter().all(|tp| pinned.iter().any(|(k, _)| k == tp)) {
         return None;
@@ -3677,7 +3796,7 @@ fn sort_carrier_providing_nothing(kb: &KnowledgeBase, dep: &RequiresEntry) -> Op
 /// goal names in its spec's carrier parameter, or `None` when some parameter is still
 /// open or the carrier is not a sort. Shared with [`unprovided_spec_at_carrier`] so the
 /// two refusals cannot disagree about which carrier a call named.
-fn pinned_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
+fn pinned_goal_carrier(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
     if !goal_pins_every_param(kb, goal) {
         return None;
     }
@@ -3687,14 +3806,61 @@ fn pinned_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
 /// Condition 1 of [`unprovided_provision`]: the spec declares type parameters and the goal
 /// binds each of them to a fully concrete type. Such a goal, rendered, is a `provides`
 /// clause as it would be written ([`UnprovidedProvision::provision_in_full`]).
-fn goal_pins_every_param(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
+fn goal_pins_every_param(kb: &mut KnowledgeBase, goal: &SortGoal) -> bool {
     let tparams = kb.type_params_of_sort(goal.spec_sort);
     !tparams.is_empty()
         && tparams.iter().all(|tp| {
             goal.bindings
                 .iter()
-                .any(|(k, v)| kb.local_name_of(*k) == tp && type_is_ground(kb, v))
+                .any(|(k, v)| kb.local_name_of(*k) == tp && binding_is_pinned(kb, goal.spec_sort, v))
         })
+}
+
+/// Does a call pin this binding of a goal of `spec` — a fully concrete type? A slot of the
+/// caller's (`xs.T` over `xs: List`) is a projection, which counts as ground, and for a spec
+/// of the program's it is a type like any other, at which a row answers or not. For the
+/// library's specs ([`library_instances`]) an instance is derived argument by argument, and a
+/// slot where the type otherwise has one is the CALLER's unknown, which the forward reads
+/// ([`caller_rigid_carrier`]): taken for pinned, `tyOf(xs)` was refused as a call at a type
+/// no row of `TypeValue` may be written for, while `requires TypeValue[T = xs.T]` on the
+/// caller repairs it (WI-20260911-VNQTR, MEASURED). A type that has no instance whatever its
+/// slots stand for — a spec, `Shape[T = s.T]` — is pinned, and its own refusal says so.
+fn binding_is_pinned(kb: &mut KnowledgeBase, spec: Symbol, v: &Value) -> bool {
+    if !type_is_ground(kb, v) {
+        return false;
+    }
+    if library_instances(kb, spec).is_none() || !value_contains_expr_carried(kb, v) {
+        return true;
+    }
+    !type_value_spec_sym(kb).is_some_and(|tv| instance_once_slots_known(kb, tv, v))
+}
+
+/// Does `TypeValue` answer at `ty` once each slot of the caller's in it is known — asked at
+/// `Int64` standing for every slot, a type that has one? A slot is the caller's unknown, and
+/// the caller's evidence about it answers a type whose instance needs only that; a type that
+/// has none whatever its slots stand for is the type's own refusal, which no clause over a
+/// slot repairs.
+///
+/// A SPEC IS SUCH A TYPE: a sort with no constructors that declares an operation of its own
+/// with no body has no values, a provider's being no value of it (§8.2), so a clause over its
+/// slot could never be read, and the refusal says the spec has no `TypeValue` rather than
+/// advise one (`wi_9wvt7_review5_test`; the derivation leaves out a spec only where a
+/// provision names it).
+fn instance_once_slots_known(kb: &mut KnowledgeBase, type_value: Symbol, ty: &Value) -> bool {
+    let base = match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, .. } => Some(base),
+        TypeExtractor::SortRef(base) => Some(base),
+        _ => None,
+    };
+    if base.is_some_and(|base| !kb.sort_has_constructors(base) && spec_has_an_abstract_member(kb, base)) {
+        return false;
+    }
+    let known = Value::term(kb.make_sort_ref_by_name("anthill.prelude.Int64"));
+    let at_known = rewrite_type_leaves(kb, ty, &|kb, leaf| {
+        matches!(extract_type(kb, leaf), TypeExtractor::ExprCarried { .. }).then(|| known.clone())
+    })
+    .unwrap_or_else(|| ty.clone());
+    type_value_failure_at(kb, type_value, &at_known).is_none()
 }
 
 /// Condition 2 of [`unprovided_provision`] ALONE: the sort a goal names in its spec's
@@ -4416,30 +4582,17 @@ fn is_structural_former(kb: &KnowledgeBase, ty: &Value) -> bool {
     matches!(type_head(kb, ty), TypeHead::Arrow | TypeHead::NamedTuple)
 }
 
-/// WI-20260920-XSVCS — a dep whose carrier is the CALLER's own type parameter, written
-/// as the caller would have to declare it. `requirement` is the whole requirement in the
-/// caller's spelling: what the refusal says cannot be supplied.
+/// WI-20260920-XSVCS — a dep whose carrier is the CALLER's own unknown, written as the
+/// caller would have to declare it. `requirement` is the whole requirement in the caller's
+/// spelling: what the refusal says cannot be supplied.
 enum CallerRigidCarrier {
-    /// The caller lacks evidence for `carrier`, the first such parameter, spelled as the
-    /// CALLER wrote it (`U`, `T`) — never the callee's formal, which is a name from a
-    /// declaration the author does not own.
+    /// The caller lacks evidence for `first`, the first of its unknowns the requirement names
+    /// that it holds none for, spelled as the CALLER writes it (`U`, `T`, `?t`, `xs.T`) —
+    /// never the callee's formal, which is a name from a declaration the author does not own.
     LacksEvidence {
-        carrier: String,
-        /// Where the carrier stands inside a sort application the call passes — `Option[T =
-        /// C]` for `tyOf(some(x))` over `x: C` — that application in the caller's spelling;
-        /// `None` where a binding is the carrier itself.
-        within: Option<String>,
+        first: MetParam,
         requirement: String,
-        /// What to declare, each ready to be pasted after `requires`: the whole
-        /// requirement, and not just the carrier binding, for [`RequirementRefusal::render`]'s
-        /// own measured reason one arm over — a multi-parameter spec written with a binding
-        /// omitted fills the rest from its own parameters, which §5.2 legislates as a second
-        /// load error, advice that trades one refusal for another. For the library's
-        /// specs at a carrier inside an application it is `TypeValue` at each parameter the
-        /// caller holds none for: their instances are derived per type argument, so the
-        /// evidence the caller lacks is that.
-        clauses: Vec<String>,
-        declare_on: DeclareOn,
+        repair: ForwardRepair,
     },
     /// For the library's specs, a part of the requirement no instance answers at
     /// whatever the caller supplies (a spec, a type with no `TypeValue`): no clause is the
@@ -4453,37 +4606,99 @@ enum CallerRigidCarrier {
     },
 }
 
-/// WHERE the clauses go — the calling OPERATION when the carrier is one of its `[…]`
-/// brackets, the enclosing SORT when it is one of the sort's parameters, and the operation
-/// when they name parameters of both. The distinction is not cosmetic: an operation cannot
+/// What a [`CallerRigidCarrier::LacksEvidence`] refusal advises.
+enum ForwardRepair {
+    /// What to declare, each ready to be pasted after `requires`: the whole requirement,
+    /// and not just the carrier binding, for [`RequirementRefusal::render`]'s own measured
+    /// reason one arm over — a multi-parameter spec written with a binding omitted fills the
+    /// rest from its own parameters, which §5.2 legislates as a second load error, advice that
+    /// trades one refusal for another. For the library's specs at a carrier inside an
+    /// application it is `TypeValue` at each unknown the caller holds none for: their
+    /// instances are derived per type argument, so the evidence the caller lacks is that.
+    Declare {
+        clauses: Vec<String>,
+        declare_on: DeclareOn,
+    },
+    /// The unknown is one the caller's signature leaves without a name a clause could write
+    /// (WI-20260911-VNQTR, [`MetKind::Unnamed`]): no clause is printed, and the repair names
+    /// the slot first.
+    NameTheSlot,
+}
+
+/// WHERE the clauses go — the calling OPERATION when the carrier is one of its own
+/// parameters (a `[…]` bracket's, or a variable its signature writes inline), the enclosing
+/// SORT when it is one of the sort's parameters, and the operation when they name
+/// parameters of both. The distinction is not cosmetic: an operation cannot
 /// declare its sort's parameter out from under it, and the corpus has one of each
 /// (`test.xsvcs.fwd.mid`'s `U`, `test.wi416.Coll`'s `T`).
+///
+/// AN OPERATION THAT BACKS A SPEC OPERATION for its sort's provision is the third: a member
+/// restates its spec operation's `requires` and adds none (§8.7), so a clause written on it
+/// alone is refused as a strengthening, and the advice named nothing that loads (MEASURED,
+/// WI-20260911-VNQTR). The clause goes on the spec operation, over that operation's own
+/// parameters, and is restated on the member.
 #[derive(Clone, Copy)]
 enum DeclareOn {
     Operation(Symbol),
     Sort(Symbol),
+    SpecOperation { spec_op: Symbol, member: Symbol },
 }
 
 impl DeclareOn {
+    /// The calling operation's place for a clause over its own unknowns.
+    fn operation(kb: &KnowledgeBase, caller_op: Symbol) -> DeclareOn {
+        match backed_spec_op(kb, caller_op) {
+            Some(spec_op) => DeclareOn::SpecOperation {
+                spec_op,
+                member: caller_op,
+            },
+            None => DeclareOn::Operation(caller_op),
+        }
+    }
+
     /// WI-P962X: clauses over signature members forward just as named parameters do. On a
     /// sort each clause is a declaration of its own; an operation's takes a list.
     fn repair(self, kb: &KnowledgeBase, clauses: &[String]) -> String {
-        let (on, declare) = match self {
-            DeclareOn::Sort(on) => (
-                on,
+        let list = format!("`requires {}`", clauses.join(", "));
+        match self {
+            DeclareOn::Sort(on) => format!(
+                "Declare {} on `{}` so the evidence is passed in",
                 clauses
                     .iter()
                     .map(|c| format!("`requires {c}`"))
                     .collect::<Vec<_>>()
                     .join(" and "),
+                kb.qualified_name_of(on)
             ),
-            DeclareOn::Operation(on) => (on, format!("`requires {}`", clauses.join(", "))),
-        };
-        format!(
-            "Declare {declare} on `{}` so the evidence is passed in",
-            kb.qualified_name_of(on)
-        )
+            DeclareOn::Operation(on) => format!(
+                "Declare {list} on `{}` so the evidence is passed in",
+                kb.qualified_name_of(on)
+            ),
+            DeclareOn::SpecOperation { spec_op, member } => format!(
+                "Declare {list} on `{spec}`, the spec operation `{member}` backs, over its own \
+                 parameters, and restate it on `{member}` — a member restates its spec \
+                 operation's `requires` and adds none — so the evidence is passed in",
+                spec = kb.qualified_name_of(spec_op),
+                member = kb.qualified_name_of(member),
+            ),
+        }
     }
+}
+
+/// The spec operation `op` backs for its sort's provision: the operation of `op`'s short
+/// name a spec the sort provides declares, which `op` answers for the sort (§8.7); `None`
+/// for any other operation.
+fn backed_spec_op(kb: &KnowledgeBase, op: Symbol) -> Option<Symbol> {
+    let sort = impl_parent_sort_of_op(kb, op)?;
+    let short = short_name_of(kb.qualified_name_of(op)).to_owned();
+    let specs: Vec<Symbol> = provides_rows_of_provider(kb, sort)
+        .map(|row| row.spec_base)
+        .collect();
+    specs.into_iter().find_map(|spec| {
+        let spec_op = kb.try_resolve_symbol(&format!("{}.{short}", kb.qualified_name_of(spec)))?;
+        (spec_op != op && kb.kind_of(spec_op) == Some(crate::intern::SymbolKind::Operation))
+            .then_some(spec_op)
+    })
 }
 
 /// WI-20260920-XSVCS — is this unfilled op slot's carrier a type parameter of the
@@ -4548,11 +4763,15 @@ fn caller_rigid_carrier(
     caller_requires: &DictChain,
 ) -> Option<CallerRigidCarrier> {
     let goal = goal_from_requires_entry(kb, dep)?;
-    let params = caller_param_rigids(kb, caller_op, ctx.param_rigids);
     let library = library_instances(kb, dep.required_sort);
-    // `TypeValue`, where the spec is one of the library's, whose instances it derives.
-    let library_type_value = library.and_then(|_| type_value_spec_sym(kb));
-    // Each parameter of the caller's a binding names, in binding order, with the application
+    let cx = CallerScope {
+        ctx,
+        params: caller_param_rigids(kb, caller_op, ctx.param_rigids),
+        value_params: caller_value_params(kb, caller_op),
+        // `TypeValue`, where the spec is one of the library's, whose instances it derives.
+        library_type_value: library.and_then(|_| type_value_spec_sym(kb)),
+    };
+    // Each unknown of the caller's a binding names, in binding order, with the application
     // it stands in where it stands in one.
     let mut met: Vec<MetParam> = Vec::new();
     // A part of an application that no instance of the library's spec answers at, whatever
@@ -4561,54 +4780,23 @@ fn caller_rigid_carrier(
     let mut bindings: Vec<String> = Vec::new();
     for (k, v) in &goal.bindings {
         // EVERY BINDING MUST BE WRITEABLE BY THE CALLER, or there is no clause to print
-        // and this function answers `None`. A parameter the CALLER declares (rendered as the
-        // caller's own name), a GROUND type (rendered as itself), and a sort applied to
-        // these qualify, and nothing else does: `format_term_for_goal`'s fallback prints an
-        // unrecognized term as `<term#N>`, and an element that is merely OPEN prints the
-        // CALLEE's parameter (`anthill.prelude.List.T`) — the first does not parse and the
-        // second is the wrong clause, and the message's whole contract is that what it
-        // prints can be pasted.
+        // and this function answers `None` ([`caller_part`]). An unknown of the CALLER's
+        // (rendered as the caller names it), a GROUND type (rendered as itself), and a sort
+        // applied to these qualify, and nothing else does: `format_term_for_goal`'s fallback
+        // prints an unrecognized term as `<term#N>`, and an element that is merely OPEN
+        // prints the CALLEE's parameter (`anthill.prelude.List.T`) — the first does not
+        // parse and the second is the wrong clause, and the message's whole contract is that
+        // what it prints can be pasted.
         //
         // A REFUSAL WITHHELD, never a wrong value: such a call keeps exactly the
         // behaviour it has today, eval's own `not bound` raise included.
-        let rendered = match sigma_class_terminal(kb, ctx, v) {
-            // A binding that terminates at a RIGID is an enclosing-scope parameter
-            // ([`sigma_class_terminal`]'s second component) — but only one the caller
-            // DECLARES can be named, a WI-424 body skolem having no written name.
-            Some((cls, true)) => {
-                let (_, name, owner) = params.iter().find(|(r, _, _)| *r == cls)?;
-                met.push(MetParam {
-                    name: *name,
-                    owner: *owner,
-                    rigid: cls,
-                    within: None,
-                });
-                type_param_display_name(kb, *name)
+        let before = met.len();
+        let (rendered, whole) = caller_part(kb, &cx, v, &mut met, &mut no_instance)?;
+        if !whole {
+            for m in &mut met[before..] {
+                m.within = Some(rendered.clone());
             }
-            // Concrete: no σ-class, and it renders as the sort it names.
-            None if type_is_ground(kb, v) => format_value_for_goal(kb, v),
-            // A sort applied to what the caller can write, holding a parameter of the
-            // caller's (`tyOf(some(x))` over `x: C`): that parameter is still the one the
-            // caller holds no evidence for, inside the application.
-            None => {
-                let before = met.len();
-                let rendered = caller_writeable_application(
-                    kb,
-                    ctx,
-                    &params,
-                    v,
-                    library_type_value,
-                    &mut met,
-                    &mut no_instance,
-                )?;
-                for m in &mut met[before..] {
-                    m.within = Some(rendered.clone());
-                }
-                rendered
-            }
-            // Open (the WI-415/418 gap), or a carrier this function cannot name.
-            Some((_, false)) => return None,
-        };
+        }
         bindings.push(format!("{} = {}", kb.local_name_of(*k), rendered));
     }
     let requirement = format!(
@@ -4617,7 +4805,7 @@ fn caller_rigid_carrier(
         bindings.join(", ")
     );
     // The library's specs inside an application: their instances are derived per type
-    // argument, so the evidence the caller lacks is `TypeValue` at each parameter it holds
+    // argument, so the evidence the caller lacks is `TypeValue` at each unknown it holds
     // none for — and where a part has no instance at all, or a structural former stands
     // among the parts (the former refusal's, which names it), no evidence of the caller's
     // would answer.
@@ -4626,7 +4814,7 @@ fn caller_rigid_carrier(
         return None;
     }
     // A part without an instance: no evidence of the caller's answers there. The library's
-    // specs have one binding, so every parameter met stands in the one application.
+    // specs have one binding, so every unknown met stands in the one application.
     if let (Some(part), Some(library)) = (no_instance, library) {
         let carrier = met.first()?.within.clone().unwrap_or_else(|| requirement.clone());
         return Some(CallerRigidCarrier::NoInstance {
@@ -4636,28 +4824,38 @@ fn caller_rigid_carrier(
             library,
         });
     }
-    let lacking: Vec<&MetParam> = if per_parameter {
-        met.iter()
-            .filter(|m| !caller_holds_type_value(kb, caller_requires, ctx, m.rigid))
-            .collect()
-    } else {
-        met.iter().collect()
-    };
-    // Every parameter covered: the requirement failed for a reason this arm does not read.
-    let first = *lacking.first()?;
-    let clauses: Vec<String> = match library_type_value.filter(|_| per_parameter) {
+    let any_member = met
+        .iter()
+        .any(|m| matches!(m.kind, MetKind::Param { member: true, .. }));
+    let mut lacking: Vec<MetParam> = Vec::new();
+    for m in met {
+        if !(per_parameter && caller_holds_type_value(kb, caller_requires, ctx, m.at.clone())) {
+            lacking.push(m);
+        }
+    }
+    // Every unknown covered: the requirement failed for a reason this arm does not read.
+    // One no clause can name is said first: its slot must be named before any clause can be
+    // declared over it.
+    let first = lacking
+        .iter()
+        .position(|m| matches!(m.kind, MetKind::Unnamed))
+        .or_else(|| (!lacking.is_empty()).then_some(0))?;
+    if matches!(lacking[first].kind, MetKind::Unnamed) {
+        return Some(CallerRigidCarrier::LacksEvidence {
+            first: lacking.swap_remove(first),
+            requirement,
+            repair: ForwardRepair::NameTheSlot,
+        });
+    }
+    let clauses: Vec<String> = match cx.library_type_value.filter(|_| per_parameter) {
         Some(tv) => {
-            let mut seen: HashSet<Symbol> = HashSet::new();
+            // One clause per unknown, by how it is written: the key is no identity, since
+            // two unknowns may share one.
+            let mut seen: HashSet<&str> = HashSet::new();
             lacking
                 .iter()
-                .filter(|m| seen.insert(m.name))
-                .map(|m| {
-                    format!(
-                        "{}[T = {}]",
-                        kb.qualified_name_of(tv),
-                        type_param_display_name(kb, m.name)
-                    )
-                })
+                .filter(|m| seen.insert(&m.spelling))
+                .map(|m| format!("{}[T = {}]", kb.qualified_name_of(tv), m.spelling))
                 .collect()
         }
         None => vec![requirement.clone()],
@@ -4665,44 +4863,221 @@ fn caller_rigid_carrier(
     // A member is the calling operation's own, and a clause that names its bracket's
     // parameter goes on that operation whatever declares the carrier; so do clauses over
     // parameters of two declarations, since an operation's clause may name its sort's
-    // parameters and a sort's may not name the operation's.
-    let declare_on = if met.iter().any(|m| kb.member_param_head(m.name).is_some())
-        || lacking.iter().any(|m| m.owner != first.owner)
-        || first.owner == caller_op
-    {
-        DeclareOn::Operation(caller_op)
-    } else {
-        DeclareOn::Sort(first.owner)
+    // parameters and a sort's may not name the operation's; and a slot of a parameter's
+    // type is the operation's, whose parameter it is a slot of.
+    let owner = |m: &MetParam| match m.kind {
+        MetKind::Param { owner, .. } => owner,
+        MetKind::SlotOf { .. } | MetKind::Unnamed => caller_op,
     };
+    let first_owner = owner(&lacking[0]);
+    let declare_on = if any_member
+        || lacking.iter().any(|m| owner(m) != first_owner)
+        || first_owner == caller_op
+    {
+        DeclareOn::operation(kb, caller_op)
+    } else {
+        DeclareOn::Sort(first_owner)
+    };
+    // A SLOT OF A MEMBER'S PARAMETER is named first: a clause at its path on the spec
+    // operation is not read where the spec operation is dispatched to, and only a variable
+    // written in that slot, on both, carries it (MEASURED).
+    if let (DeclareOn::SpecOperation { .. }, MetKind::SlotOf { .. }) = (declare_on, &lacking[0].kind) {
+        return Some(CallerRigidCarrier::LacksEvidence {
+            first: lacking.swap_remove(0),
+            requirement,
+            repair: ForwardRepair::NameTheSlot,
+        });
+    }
     Some(CallerRigidCarrier::LacksEvidence {
-        carrier: type_param_display_name(kb, first.name),
-        within: first.within.clone(),
+        first: lacking.swap_remove(0),
         requirement,
-        clauses,
-        declare_on,
+        repair: ForwardRepair::Declare {
+            clauses,
+            declare_on,
+        },
     })
 }
 
-/// A parameter of the caller's that a binding of a requirement names
-/// ([`caller_rigid_carrier`]): its name and the declaration that owns it, the rigid its body
-/// skolemized it to, and the application of the binding it stands in, rendered, where it
-/// stands in one.
+/// What [`caller_rigid_carrier`] reads each part of a binding against, once per call.
+struct CallerScope<'c, 's> {
+    ctx: &'c SigmaCtx<'s>,
+    /// The type parameters the calling operation and its sort declare.
+    params: Vec<CallerParam>,
+    /// The calling operation's value parameters: a slot their types leave unwritten is
+    /// an unknown of the caller's too ([`unwritten_slot`]).
+    value_params: Vec<Symbol>,
+    /// `TypeValue`, where the requirement's spec is one of the library's.
+    library_type_value: Option<Symbol>,
+}
+
+/// An unknown of the caller's a binding of a requirement names ([`caller_rigid_carrier`]),
+/// and the application of the binding it stands in, rendered, where it stands in one.
 struct MetParam {
-    name: Symbol,
-    owner: Symbol,
-    rigid: VarId,
+    /// How a clause of the caller's names it — `U`, `?t`, `Tagger.C`, `xs.T` — or, where
+    /// no clause can, how the body prints it (`?V`).
+    spelling: String,
+    /// The type a `TypeValue` the caller holds would be at: the parameter's rigid, or the
+    /// slot's path.
+    at: Value,
+    kind: MetKind,
     within: Option<String>,
 }
 
-/// Does the caller's scope answer `TypeValue` at the parameter `rigid`: a `requires
-/// TypeValue[T = P]` of the calling operation or its sort, or a requirement whose contract
-/// holds one (`requires Desc[T = P]` under `Desc requires TypeValue[T = T]`) — asked of the
-/// resolver with the caller's chain for its scope, so the cover is the one a call reads.
+/// What a [`MetParam`] is to the caller.
+#[derive(Clone)]
+enum MetKind {
+    /// A type parameter `owner` declares — the calling operation or its sort —, `member`
+    /// where the member sugar minted it (`Tagger.C`).
+    Param { owner: Symbol, member: bool },
+    /// A slot of the type of the parameter `param` the caller's signature leaves unwritten
+    /// (`relayA(xs: List)`, `xs: List[T = ?]`), as the body is checked at it: the projection
+    /// off the parameter ([`UnwrittenFill::Projection`]). §5.4 quantifies it as it does a
+    /// variable written there, and a clause names it by its path: `requires TypeValue[T =
+    /// xs.T]`.
+    SlotOf { param: String },
+    /// An unknown the caller's signature leaves without a name it could write: a slot
+    /// unwritten inside a parameter's type ([`MintedParam::UnwrittenSlot`]), or one an alias
+    /// leaves open (a parameter of the body, `param_rigids`, that is not on the record).
+    Unnamed,
+}
+
+/// One part of a binding in the caller's spelling, every unknown of the caller's it holds
+/// pushed onto `met`, beside whether the part IS what it names rather than an application
+/// holding it. `None` where the part is nothing the caller can write — an element merely
+/// open, a rigid no declaration of the caller's has — and so no clause can be printed.
+///
+/// ONE READER FOR A WHOLE BINDING AND FOR EACH PART OF AN APPLICATION, which is what makes
+/// a slot read alike wherever it stands. A slot is a projection, which counts as ground, so
+/// a reading that asked groundness first took `List[T = xs.T]` for a concrete type and the
+/// slot inside it was never met: `tyOf(xs)` over `xs: List` was told no row may be written
+/// while `requires TypeValue[T = xs.T]` repairs it, and whether the slot was named depended
+/// on whether a rigid stood beside it (MEASURED).
+fn caller_part(
+    kb: &mut KnowledgeBase,
+    cx: &CallerScope,
+    a: &Value,
+    met: &mut Vec<MetParam>,
+    no_instance: &mut Option<NoInstance>,
+) -> Option<(String, bool)> {
+    if let Some(slot) = unwritten_slot(kb, cx, a) {
+        let spelling = slot.spelling.clone();
+        met.push(slot);
+        return Some((spelling, true));
+    }
+    match sigma_class_terminal(kb, cx.ctx, a) {
+        // A binding that terminates at a RIGID is an enclosing-scope unknown
+        // ([`sigma_class_terminal`]'s second component) — but only one the caller's
+        // signature has can be named.
+        Some((cls, true)) => meet_rigid(kb, cx, cls, met).map(|spelling| (spelling, true)),
+        // Open (the WI-415/418 gap), or a carrier this function cannot name.
+        Some((_, false)) => None,
+        // Concrete: no σ-class, no slot of the caller's inside, and it renders as the type it
+        // names.
+        // A slot inside a type that has no instance whatever it stands for (a spec) is no
+        // unknown the caller could supply: the type is the part no instance answers at.
+        None if type_is_ground(kb, a)
+            && (!value_contains_expr_carried(kb, a)
+                || cx
+                    .library_type_value
+                    .is_some_and(|tv| !instance_once_slots_known(kb, tv, a))) =>
+        {
+            let rendered = format_value_for_goal(kb, a);
+            if let (Some(tv), None) = (cx.library_type_value, no_instance.as_ref()) {
+                if let Some(failure) = type_value_failure_at(kb, tv, a) {
+                    *no_instance = Some(NoInstance {
+                        part: rendered.clone(),
+                        failure: Some(failure),
+                    });
+                }
+            }
+            Some((rendered, true))
+        }
+        // A sort applied to what the caller can write, holding an unknown of the caller's
+        // (`tyOf(some(x))` over `x: C`): that unknown is still the one the caller holds no
+        // evidence for, inside the application.
+        None => caller_writeable_application(kb, cx, a, met, no_instance).map(|r| (r, false)),
+    }
+}
+
+/// The [`MetKind::SlotOf`] `v` is, where it is the projection of a slot off one of the
+/// calling operation's parameters; `None` for every other type. A path through a field
+/// (`h.s.E`) is not read: the slots a signature leaves unwritten are its parameters' own.
+fn unwritten_slot(kb: &KnowledgeBase, cx: &CallerScope, v: &Value) -> Option<MetParam> {
+    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, v) else {
+        return None;
+    };
+    let receiver = ref_or_nullary_name_view(kb, &value)?;
+    cx.value_params.contains(&receiver).then(|| {
+        let param = kb.local_name_of(receiver).to_owned();
+        MetParam {
+            spelling: format!("{param}.{}", short_name_of(kb.local_name_of(member))),
+            at: v.clone(),
+            kind: MetKind::SlotOf { param },
+            within: None,
+        }
+    })
+}
+
+/// A binding that terminates at the rigid `cls`, recorded in `met`: a parameter of the
+/// caller's, or an unknown its signature leaves without a name it could write
+/// ([`MetKind::Unnamed`]). `None` for any other rigid, an existential a call's result
+/// opened among them: the caller's signature has no slot for it.
+fn meet_rigid(
+    kb: &mut KnowledgeBase,
+    cx: &CallerScope,
+    cls: VarId,
+    met: &mut Vec<MetParam>,
+) -> Option<String> {
+    let (kind, spelling) = match cx.params.iter().find(|p| p.rigid == cls) {
+        Some(param) => (
+            MetKind::Param {
+                owner: param.owner,
+                member: kb.member_param_head(param.name).is_some(),
+            },
+            type_param_display_name(kb, param.name),
+        ),
+        None => {
+            let of_the_body = cx.ctx.param_rigids.iter().any(|(_, r)| {
+                matches!(kb.get_term(*r), Term::Var(Var::Rigid(v)) if *v == cls)
+            });
+            // A slot left out inside a parameter's type is spelled as the slot it is, `Box.V`:
+            // as `?V` it read as a variable the signature may write itself, and the refusal
+            // said a clause the author had written was missing (MEASURED). A slot an alias
+            // opens, by the alias's variable.
+            let spelling = match kb.minted_param(cls.name()) {
+                Some(MintedParam::UnwrittenSlot { slot }) => {
+                    let qualified = kb.qualified_name_of(slot);
+                    let mut segments = qualified.rsplit('.');
+                    match (segments.next(), segments.next()) {
+                        (Some(param), Some(sort)) => format!("{sort}.{param}"),
+                        _ => qualified.to_owned(),
+                    }
+                }
+                _ if of_the_body => type_var_display_name(kb, cls),
+                _ => return None,
+            };
+            (MetKind::Unnamed, spelling)
+        }
+    };
+    met.push(MetParam {
+        spelling: spelling.clone(),
+        at: Value::term(kb.alloc(Term::Var(Var::Rigid(cls)))),
+        kind,
+        within: None,
+    });
+    Some(spelling)
+}
+
+/// Does the caller's scope answer `TypeValue` at `at` — a parameter's rigid, or a slot's
+/// path: a `requires TypeValue[T = P]` of the calling operation or its sort, or a
+/// requirement whose contract holds one (`requires Desc[T = P]` under `Desc requires
+/// TypeValue[T = T]`) — asked of the resolver with the caller's chain for its scope, so the
+/// cover is the one a call reads.
 fn caller_holds_type_value(
     kb: &mut KnowledgeBase,
     caller_requires: &DictChain,
     ctx: &SigmaCtx,
-    rigid: VarId,
+    at: Value,
 ) -> bool {
     let Some(tv) = type_value_spec_sym(kb) else {
         return false;
@@ -4711,7 +5086,6 @@ fn caller_holds_type_value(
         return false;
     };
     let key = kb.intern(&param);
-    let at = Value::term(kb.alloc(Term::Var(Var::Rigid(rigid))));
     let goal = SortGoal {
         spec_sort: tv,
         bindings: smallvec::smallvec![(key, at)],
@@ -4730,18 +5104,15 @@ fn caller_holds_type_value(
 }
 
 /// A type argument of a call that is a sort applied to what the caller can write, rendered
-/// in the caller's spelling — a parameter the caller declares, a ground type, or such an
-/// application again — with each parameter met pushed onto `met`. For the library's
-/// specs (`library_type_value` is `TypeValue`, which derives their instances) a parametric
+/// in the caller's spelling — each part read by [`caller_part`]. For the library's specs
+/// (`library_type_value` is `TypeValue`, which derives their instances) a parametric
 /// variant is read at its sort, and a part no instance answers at whatever the caller
 /// supplies — a spec, a ground type with no `TypeValue` — is recorded in `no_instance`, the
 /// first one met. `None` for anything else, a binding nothing here may name.
 fn caller_writeable_application(
     kb: &mut KnowledgeBase,
-    ctx: &SigmaCtx,
-    params: &[(VarId, Symbol, Symbol)],
+    cx: &CallerScope,
     v: &Value,
-    library_type_value: Option<Symbol>,
     met: &mut Vec<MetParam>,
     no_instance: &mut Option<NoInstance>,
 ) -> Option<String> {
@@ -4749,42 +5120,20 @@ fn caller_writeable_application(
     let bound;
     let v = match v.head(kb) {
         ViewHead::Var(Var::Global(vid)) => {
-            bound = ctx.subst.resolve_as_value(vid)?.clone();
+            bound = cx.ctx.subst.resolve_as_value(vid)?.clone();
             &bound
         }
         _ => v,
     };
     // A TUPLE, for a spec of the program's: a row can be written at one through a sort that
-    // names it, and the caller's parameter in it is still the one it holds no evidence for
+    // names it, and the caller's unknown in it is still the one it holds no evidence for
     // (`Reader.probe((x, 1))` over `x: C`). Its parts are read as an application's. The
     // library's specs have no instance at a former, which the former refusal says.
-    if library_type_value.is_none() {
+    if cx.library_type_value.is_none() {
         if let TypeExtractor::NamedTuple(fields) = extract_type(kb, v) {
             let mut parts: Vec<String> = Vec::with_capacity(fields.len());
             for (label, a) in &fields {
-                let rendered = match sigma_class_terminal(kb, ctx, a) {
-                    Some((cls, true)) => {
-                        let (_, name, owner) = params.iter().find(|(r, _, _)| *r == cls)?;
-                        met.push(MetParam {
-                            name: *name,
-                            owner: *owner,
-                            rigid: cls,
-                            within: None,
-                        });
-                        type_param_display_name(kb, *name)
-                    }
-                    Some((_, false)) => return None,
-                    None if type_is_ground(kb, a) => format_value_for_goal(kb, a),
-                    None => caller_writeable_application(
-                        kb,
-                        ctx,
-                        params,
-                        a,
-                        library_type_value,
-                        met,
-                        no_instance,
-                    )?,
-                };
+                let (rendered, _) = caller_part(kb, cx, a, met, no_instance)?;
                 let label = kb.local_name_of(*label);
                 parts.push(if crate::intern::positional_label_index(label).is_some() {
                     rendered
@@ -4803,7 +5152,9 @@ fn caller_writeable_application(
     // requirement is said as the call states it: a scope clause covers a goal at the type it
     // names, and one at the variant's sort does not cover the variant (the clause advised so
     // brought the same refusal back).
-    let at_its_sort = library_type_value.and_then(|_| variant_at_its_sort(kb, base, &bindings));
+    let at_its_sort = cx
+        .library_type_value
+        .and_then(|_| variant_at_its_sort(kb, base, &bindings));
     let (base, bindings) = match at_its_sort {
         Some(at_sort) => match extract_type(kb, &at_sort) {
             TypeExtractor::Parameterized { base, bindings } => (base, bindings),
@@ -4813,45 +5164,12 @@ fn caller_writeable_application(
     };
     let mut parts: Vec<String> = Vec::with_capacity(bindings.len());
     for (k, a) in &bindings {
-        let rendered = match sigma_class_terminal(kb, ctx, a) {
-            Some((cls, true)) => {
-                let (_, name, owner) = params.iter().find(|(r, _, _)| *r == cls)?;
-                met.push(MetParam {
-                    name: *name,
-                    owner: *owner,
-                    rigid: cls,
-                    within: None,
-                });
-                type_param_display_name(kb, *name)
-            }
-            Some((_, false)) => return None,
-            None if type_is_ground(kb, a) => {
-                let rendered = format_value_for_goal(kb, a);
-                if let (Some(tv), None) = (library_type_value, no_instance.as_ref()) {
-                    if let Some(failure) = type_value_failure_at(kb, tv, a) {
-                        *no_instance = Some(NoInstance {
-                            part: rendered.clone(),
-                            failure: Some(failure),
-                        });
-                    }
-                }
-                rendered
-            }
-            None => caller_writeable_application(
-                kb,
-                ctx,
-                params,
-                a,
-                library_type_value,
-                met,
-                no_instance,
-            )?,
-        };
+        let (rendered, _) = caller_part(kb, cx, a, met, no_instance)?;
         parts.push(format!("{} = {rendered}", kb.local_name_of(*k)));
     }
     let rendered = format!("{}[{}]", kb.qualified_name_of(base), parts.join(", "));
     // A spec is no sort a `TypeValue` is derived for, whatever its arguments.
-    if let (Some(tv), None) = (library_type_value, no_instance.as_ref()) {
+    if let (Some(tv), None) = (cx.library_type_value, no_instance.as_ref()) {
         if !carrier_has_provision_row(kb, base, tv) {
             *no_instance = Some(NoInstance {
                 part: rendered.clone(),
@@ -4890,21 +5208,40 @@ fn dep_member_param(kb: &KnowledgeBase, dep: &RequiresEntry, ctx: &SigmaCtx) -> 
     })
 }
 
-/// WI-20260920-XSVCS — the caller's declared type parameters as `(the rigid its body
-/// skolemized the parameter to, the name the author wrote, the declaration that owns
-/// it)`.
+/// A type parameter of the caller's ([`caller_param_rigids`]).
+struct CallerParam {
+    /// The rigid the caller's body skolemized the parameter to.
+    rigid: VarId,
+    /// The parameter's key, which [`type_param_display_name`] renders as a clause of the
+    /// caller's names it: a bracket's or the sort's parameter by its name (`U`), a member's
+    /// as written (`Tagger.C`), a variable the signature writes inline as written (`?t`).
+    name: Symbol,
+    /// The declaration that owns it: the calling operation, or its sort.
+    owner: Symbol,
+}
+
+/// WI-20260920-XSVCS — the caller's type parameters, each with the rigid its body
+/// skolemized the parameter to and the declaration that owns it ([`CallerParam`]).
 ///
 /// THE NAME IS THE PARAMETER'S KEY, rendered by its reader (`type_param_display_name`):
 /// one the member sugar minted was written `Tagger.C` (WI-20261006-XQGEW), and by the
 /// bare `C` its key reads as, the clause the message printed was `requires Tag[T = C]`,
 /// naming nothing in the caller's scope (MEASURED, `f(x: Tagger.C) = g(x)` over
-/// `g[P](y: P) requires Tag[T = P]`).
+/// `g[P](y: P) requires Tag[T = P]`). A variable the signature writes inline is printed as
+/// one, `?t` (WI-20260911-VNQTR): by the bare key the clause read `requires TypeValue[T =
+/// t]`.
 ///
-/// BOTH FAMILIES, because `ctx.param_rigids` is the concatenation of exactly those two
-/// (see [`TypingEnv::param_rigids`]) and the corpus has a live instance of each. Reading
-/// only the operation's brackets would answer `None` for `test.wi416.Coll.contains`,
-/// whose carrier is its SORT's `T`, and the diagnostic would silently fall back to
-/// printing the callee's formal.
+/// THE OPERATION'S LIST AND ITS SORT'S: the record lists the operation's brackets, the
+/// parameters its member sugar mints and the variables it writes inline in a parameter
+/// type — the parameters §5.4 quantifies. Reading only the operation's brackets would
+/// answer `None` for `test.wi416.Coll.contains`, whose carrier is its SORT's `T`, and the
+/// diagnostic would silently fall back to printing the callee's formal. Reading the record
+/// before it listed the inline family withheld the refusal from an inline variable, and
+/// the call loaded and died at run time where no value carried the type (MEASURED: `mid(y:
+/// List[T = ?t]) -> Type = tyOf(y)` over `tyOf[B](x: B) requires TypeValue[T = B]`, given a
+/// `nil` typed `List[T = Int64]`, raised `UnpinnedRequirement`). A slot an alias's
+/// definition leaves open is none of them: the declaration writes no variable for it, and
+/// a clause cannot name it.
 ///
 /// KEYED BY THE RIGID, not by symbol: [`sigma_class_terminal`] hands back a canonical
 /// variable that has already been through [`canonical_global_var`], so the lookup must
@@ -4914,12 +5251,17 @@ fn caller_param_rigids(
     kb: &KnowledgeBase,
     caller_op: Symbol,
     param_rigids: &[(VarId, TermId)],
-) -> Vec<(VarId, Symbol, Symbol)> {
-    let mut declared: Vec<(Symbol, VarId, Symbol)> = Vec::new();
+) -> Vec<CallerParam> {
+    let param = |name: Symbol, v: VarId, owner: Symbol| CallerParam {
+        rigid: canonical_global_var(kb, v, param_rigids),
+        name,
+        owner,
+    };
+    let mut params: Vec<CallerParam> = Vec::new();
     if let Some(info) = lookup_operation_info_full(kb, caller_op) {
         for (name, var) in &info.type_params {
             if let Var::Global(v) = var {
-                declared.push((*name, *v, caller_op));
+                params.push(param(*name, *v, caller_op));
             }
         }
     }
@@ -4930,14 +5272,23 @@ fn caller_param_rigids(
     if let Some(parent) = impl_parent_sort_of_op(kb, caller_op) {
         for (name, term) in sort_type_params_as_pairs(kb, parent).iter() {
             if let Some((v, _)) = elem_var_step(kb, &TermIdView(*term)) {
-                declared.push((*name, v, parent));
+                params.push(param(*name, v, parent));
             }
         }
     }
-    declared
-        .into_iter()
-        .map(|(name, v, owner)| (canonical_global_var(kb, v, param_rigids), name, owner))
-        .collect()
+    params
+}
+
+/// The names of the calling operation's value parameters ([`CallerScope::value_params`]),
+/// off its cached signature where there is one: a full record is built only where there is
+/// none.
+fn caller_value_params(kb: &KnowledgeBase, caller_op: Symbol) -> Vec<Symbol> {
+    match kb.op_record(caller_op).and_then(|r| r.signature.as_ref()) {
+        Some(signature) => signature.params.iter().map(|(name, _)| *name).collect(),
+        None => crate::kb::op_info::lookup_operation_info(kb, caller_op)
+            .map(|info| info.params.iter().map(|(name, _)| *name).collect())
+            .unwrap_or_default(),
+    }
 }
 
 /// WI-415: substitute the per-call type bindings into a `requires`-entry spec

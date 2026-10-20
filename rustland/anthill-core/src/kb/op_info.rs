@@ -47,13 +47,15 @@ pub struct OpInfoRecord {
     /// — the fact is then a *value fact* and these labels ride in its value
     /// effects list, not a side-table.
     pub effects: Vec<Value>,
-    /// Operation-level type parameters: the ones `operation foo[A, B](...)` writes,
-    /// then the ones the member sugar mints for a `Spec.Member` in the signature
-    /// (WI-20261006-XQGEW). Each entry: `(name_symbol, the parameter's own logical
-    /// variable)`. The typer matches call-site bindings against the WRITTEN ones
-    /// ([`bracket_type_params`]) to seed its substitution; a member's name is a
-    /// symbol of its own that reads as the bare member and is no key's equal
-    /// (`KnowledgeBase::mint_member_param_name`).
+    /// Operation-level type parameters, three families in this order: the ones
+    /// `operation foo[A, B](...)` writes in its bracket, the ones the member sugar mints for
+    /// a `Spec.Member` in the signature (WI-20261006-XQGEW), and the variables the signature
+    /// writes in a parameter type (`via(b: Box[?t])`, WI-20260911-VNQTR, in the order they
+    /// are first written). Each entry: `(name_symbol, the parameter's own logical
+    /// variable)`. The typer matches call-site bindings against the bracket's
+    /// ([`bracket_type_params`]) to seed its substitution; the name of a parameter of the
+    /// other two families is a symbol of its own that reads as written and is no key's
+    /// equal ([`KnowledgeBase::minted_param`]).
     ///
     /// WI-849: a `Var`, not the `TermId` of a `Term::Var` — the entries ARE
     /// variables (the loader mints each one via `fresh_var`, `kb/load.rs`
@@ -506,13 +508,14 @@ pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) 
 }
 
 /// WI-20261006-XQGEW — of the type parameters an operation's record lists, the ones its
-/// declaration WRITES IN ITS BRACKET: every entry but a member's.
+/// declaration WRITES IN ITS BRACKET: every entry but a member's and a variable's.
 ///
-/// `OperationInfo.type_params` holds two families, in this order: the parameters the
-/// bracket declares, then the ones the member sugar mints for `Spec.Member` in the
-/// signature (`load`'s `load_operation`, §5.4). The second has no name a program could
-/// write, and is told from the first by its own — a symbol minted for it alone
-/// ([`KnowledgeBase::member_param_head`]).
+/// `OperationInfo.type_params` holds three families, in this order: the parameters the
+/// bracket declares, the ones the member sugar mints for `Spec.Member` in the signature,
+/// and the variables the signature writes in a parameter type (`via(b: Box[?t])`,
+/// WI-20260911-VNQTR) — `load`'s `load_operation`, §5.4. The second and third have no
+/// name a bracket could write, and each is told from the first by its own, a symbol
+/// minted for it alone ([`KnowledgeBase::minted_param`]).
 ///
 /// THE ONE OWNER of the split, for the two readers that ask "did the bracket declare
 /// it": what a call's bracket may bind (`typing`'s `call_bracket_scopes`), and
@@ -526,8 +529,9 @@ pub(crate) fn bracket_type_params<'a>(
     type_params
         .iter()
         .copied()
-        .filter(|(name, _)| kb.member_param_head(*name).is_none())
+        .filter(|(name, _)| kb.minted_param(*name).is_none())
 }
+
 /// WI-20260902-CZJ2N — is `sym` an OPERATION taking no arguments, i.e. a name whose
 /// bare spelling IS a call?
 ///

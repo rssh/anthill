@@ -292,6 +292,8 @@ pub(super) fn rigidify_unwritten_sort_params(
             && position.is_said_to_be_nothing(kb, base, *param)
         {
             Value::term(kb.make_nothing_type())
+        } else if matches!((fill, position), (UnwrittenFill::Anonymous, SlotPosition::Body)) {
+            unwritten_signature_slot(kb, *param)
         } else {
             fill.mint(kb, *param, span)
         };
@@ -311,6 +313,17 @@ pub(super) fn rigidify_unwritten_sort_params(
     }
     let base_ref = kb.make_sort_ref(base);
     Some(parameterized_value(kb, base_ref, &bindings, span, owner))
+}
+
+/// WI-20260911-VNQTR — [`UnwrittenFill::Anonymous`]'s rigid for a slot the operation's own
+/// signature leaves unwritten INSIDE a parameter's type (`xs: List[T = Box]`'s `Box.V`),
+/// under a name that says so ([`KnowledgeBase::unwritten_slot_name`]): no clause can name
+/// the slot, and a forward of it is refused advising a variable for it. Printed as before,
+/// `?V`; a rigid's identity is its `VarId`.
+fn unwritten_signature_slot(kb: &mut KnowledgeBase, param: Symbol) -> Value {
+    let name = kb.unwritten_slot_name(param);
+    let fresh = kb.fresh_var(name);
+    Value::term(kb.alloc(Term::Var(Var::Rigid(fresh))))
 }
 
 /// WI-1063 — OPEN one call's existential return: mint a FRESH anonymous rigid for every
@@ -1236,11 +1249,11 @@ fn param_is_covariant(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> bool {
 /// [`UnwrittenFill::mint`]). Two independent `?`s in one return would then share one ρ — the
 /// exact tie the map's own doc says must never be invented.
 pub(super) fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
-    matches!(kb.local_name_of(name), "_" | "?" | "?_")
+    crate::kb::term::is_anonymous_var_spelling(kb.local_name_of(name))
 }
 
 /// WI-1FKR2 — the canonical type-param vars of EVERY sort lexically enclosing `op_sym`, not
-/// only its immediate parent. Feeds [`inline_signature_type_params`]' exclusion set, which
+/// only its immediate parent. Feeds [`alias_opened_type_params`]' exclusion set, which
 /// must never mistake an OUTER instance's parameter for one of this operation's own: the two
 /// halves of [`TypingEnv::param_rigids`] mean different things, and an outer parameter placed
 /// in the op half would drop out of [`TypingEnv::enclosing_instance_param_rigids`].
@@ -1281,25 +1294,20 @@ fn enclosing_sort_param_vars(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<u32> {
     out
 }
 
-/// WI-1FKR2 — THE THIRD FAMILY OF TYPE PARAMETERS AN OPERATION BODY IS CHECKED UNDER: the
-/// logical variables the author WROTE INLINE in the signature (`operation via(b: Box[?t]) ->
-/// Box[?t]`), which no `[A]` bracket and no enclosing sort declares. §5.4 "Which variables the
-/// ∀ quantifies" states they are quantified — "an operation that writes no brackets at all
-/// still generalizes" — and [`signature_bound_vars`] is that set; this is the part of it the
-/// two families the caller already rigidifies (`rec.type_params`, the enclosing sort's) do not
-/// cover, returned in the `(name, var)` shape [`rigidify_op_type_params`] takes.
+/// WI-1FKR2 — the named variables an operation body is checked under that its record does
+/// not list: a slot an ALIAS's definition leaves open (`sort LT = List[T = ?a]`), which
+/// reaches a parameter type without being written in the declaration and is opened anew at
+/// each use. §5.4 quantifies it as it does the record's own type parameters — "an operation
+/// that writes no brackets at all still generalizes", and [`signature_bound_vars`] is that
+/// set — and the record lists every variable the declaration writes (`load`'s
+/// `mint_inline_type_params`, WI-20260911-VNQTR), so this is the part left over, in the
+/// `(name, var)` shape [`rigidify_op_type_params`] takes.
 ///
-/// WITHOUT IT NO GENERIC OPERATION CAN BE IMPLEMENTED IN TERMS OF ANOTHER, and the two ways
-/// it failed are one root. An inline variable stayed a FLEXIBLE `Var::Global` in the body,
-/// which (a) made [`SlotPosition::written_slot_is_unwritten`]'s body answer —
+/// WITHOUT IT AN ALIAS'S TIE WOULD BE LOST in the body. Left a FLEXIBLE `Var::Global`, the
+/// variable made [`SlotPosition::written_slot_is_unwritten`]'s body answer —
 /// [`value_is_flex_var`], whose whole justification is that by then "nothing else is left
-/// flexible" — read the author's own `?t` as an UNWRITTEN slot and overwrite it with
-/// [`UnwrittenFill::Projection`]'s `b.T`, so the parameter and the return stopped naming one
-/// variable (`expected Box[T = ?t], got Box[T = b.T]`); and (b) left the bare form `-> ?t` as
-/// two distinct flex Globals at the top level, where [`types_compatible`] has no variable arm
-/// at all and the identical rendering was the whole diagnostic (`expected ?t, got ?t`).
-/// Skolemizing restores that justification's premise rather than adding a case to either
-/// reader.
+/// flexible" — read it as an UNWRITTEN slot and fill each occurrence with a projection of
+/// its own, so two places the alias ties stopped naming one variable.
 ///
 /// ANONYMOUS VARIABLES ARE EXCLUDED, and that is the same call [`unbound_return_vars`] makes
 /// for the same reason: `?` names nothing and ties nothing, so it IS the unwritten slot
@@ -1320,27 +1328,11 @@ fn enclosing_sort_param_vars(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<u32> {
 /// nothing. Found by `/code-review`, which built the case: `f(x: Int64) -> Int64 requires
 /// p(x, ?v) = x`.
 ///
-/// NOTHING IS LOST, measured both ways. A type precondition's variable that this op could
-/// actually be checked against also appears in a PARAMETER (`cmp(a: ?t, b: ?t) requires
-/// Ord[T = ?t]`), so the parameter walk already has it; a variable reaching `requires` and the
-/// RETURN alone (`mk() -> ?t requires Ord[T = ?t] = 1`) is refused identically with and
-/// without this source — before because [`types_compatible`] refuses every variable pair,
-/// after because a rigid equals only itself. Should a driver appear, the repair is the
-/// per-conjunct split §5.4 already names (`is_value_precondition_clause`), not the whole field.
-///
 /// A RETURN-ONLY variable is not here either — [`signature_bound_vars`] never walks the
 /// return — which is the WI-1063 polarity split kept intact: that one is the existential
 /// [`open_existential_return`] opens per call, and skolemizing it in the body is the wrong
 /// quantifier the note on `OpInfo.return_type` records as measured and rejected.
-///
-/// HOW MUCH THIS REACHES, measured rather than estimated: instrumented over all 194 corpus
-/// `.anthill` files, exactly TWO operations come back with a non-empty list — the ticket's own
-/// `tv1.via_bare` and `tv2.via`, one variable each, both through a PARAMETER. Every other
-/// inline-variable signature in the corpus (`LogicalStream.mplus` / `interleave`, guardians'
-/// `bodies_of` / `join_texts` / `prompt_with`) is BODY-LESS, and a body-less operation never
-/// reaches this pass at all. That is the whole blast radius, and it agrees with the corpus
-/// load diff: two files change, both the ticket's.
-pub(super) fn inline_signature_type_params(
+pub(super) fn alias_opened_type_params(
     kb: &KnowledgeBase,
     op_sym: Symbol,
     params: &[(Symbol, Value)],
@@ -1375,6 +1367,29 @@ pub(super) fn inline_signature_type_params(
         .collect()
 }
 
+/// WI-20260911-VNQTR — the path a variable an alias opens is read by in the body: the
+/// projection off the first parameter at the top of whose type it stands (`y.T` for `y: LT`
+/// over `sort LT = List[T = ?a]`), built as [`UnwrittenFill::Projection`] builds a slot the
+/// signature leaves out. `None` where it stands only inside an argument, which no path names.
+pub(super) fn top_level_slot_path(
+    kb: &mut KnowledgeBase,
+    params: &[(Symbol, Value)],
+    var: VarId,
+    span: crate::span::SourceSpan,
+) -> Option<Value> {
+    params.iter().find_map(|(param, ty)| {
+        let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
+            return None;
+        };
+        let (slot, _) = bindings
+            .iter()
+            .find(|(_, v)| resolved_var(kb, v) == Some(var))?;
+        let short = short_name_of(kb.local_name_of(*slot)).to_owned();
+        let member = kb.intern(&short);
+        Some(build_projection_off(kb, ValuePath::var(*param), member, span))
+    })
+}
+
 pub(super) fn rigidify_op_type_params(
     kb: &mut KnowledgeBase,
     type_params: &[(Symbol, Var)],
@@ -1397,13 +1412,14 @@ pub(super) fn rigidify_op_type_params(
 /// a rigid's identity is its fresh `VarId`, never its name (unification compares VarIds;
 /// `SubjectKey` keys on `v.raw()`), so the rename cannot affect any judgement.
 ///
-/// WI-20261006-XQGEW — A MEMBER'S NAME IS KEPT AS IT IS, not re-interned by its text: it
-/// is a symbol of its own that says which member the parameter is
-/// ([`KnowledgeBase::member_param_head`]), and its rigid is that member in the body. The
-/// rigid is what a body's diagnostics show, and under the interned `E` it was `?E` —
-/// `effects {Tagger.E}` reported as `[?E]`.
+/// WI-20261006-XQGEW — A MINTED NAME IS KEPT AS IT IS, not re-interned by its text: it is a
+/// symbol of its own that says what the parameter is ([`KnowledgeBase::minted_param`]), and
+/// its rigid is that parameter in the body. The rigid is what a body's diagnostics show:
+/// under the interned `E` a member's was `?E` — `effects {Tagger.E}` reported as `[?E]` —
+/// and a variable the signature writes inline (WI-20260911-VNQTR) was a bracket's `t`, so a
+/// clause printed from it named nothing.
 pub(super) fn fresh_rigid_named(kb: &mut KnowledgeBase, param: Symbol) -> TermId {
-    let name_sym = if kb.member_param_head(param).is_some() {
+    let name_sym = if kb.minted_param(param).is_some() {
         param
     } else {
         let name = short_name_of(kb.local_name_of(param)).to_owned();
@@ -1738,9 +1754,21 @@ pub(super) fn lower_rigid_read_to_slot(
     occ: &Rc<NodeOccurrence>,
     head: Symbol,
 ) -> Option<Rc<NodeOccurrence>> {
+    let param = value_read_param(kb, head, env.enclosing_frame_chain())?;
+    lower_param_read_to_slot(kb, env, occ, param)
+}
+
+/// [`lower_rigid_read_to_slot`] for a read of the parameter whose variable is `param`: the
+/// variable a written `B` resolves to, or the one a body's `?t` is, where the signature
+/// writes `?t` inline (WI-20260911-VNQTR, [`inline_param_read`]).
+pub(super) fn lower_param_read_to_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    param: VarId,
+) -> Option<Rc<NodeOccurrence>> {
     let enclosing_op = env.enclosing_op()?;
     let chain = env.enclosing_frame_chain();
-    let param = value_read_param(kb, head, chain)?;
     let slot = type_value_slot(chain, kb, param)?;
     // BOTH HALVES OF THE CHAIN ARE LOWERED, and what made the sort half reachable was
     // one line elsewhere rather than anything here.
@@ -1791,7 +1819,10 @@ pub(super) fn lower_rigid_read_to_slot(
             (Some(kb.intern(&name)), value)
         })
         .collect();
-    let pass = crate::kb::simp_rewrite::simp_pass(kb);
+    // A PASS OF ITS OWN, so the node says what it stands for: a read that a rewrite then moves
+    // into a type position denotes the parameter it reads there
+    // ([`crate::kb::node_occurrence::TYPE_VALUE_READ_PASS`]).
+    let pass = kb.register_pass(crate::kb::node_occurrence::TYPE_VALUE_READ_PASS);
     let node = NodeOccurrence::synthesized_expr(
         Expr::Apply {
             recv_type: None,
@@ -1823,6 +1854,18 @@ pub(super) fn lower_rigid_read_to_slot(
         },
     );
     Some(node)
+}
+
+/// WI-20260911-VNQTR — is the body variable `var` a VALUE read of a parameter the enclosing
+/// operation's signature writes inline: `?t` in `m(y: ?t) -> Type = Cell[V = ?t]`? §5.4
+/// makes `?t` a type parameter of `m` as `[U]` would be, so its read is `U`'s — a dispatch
+/// through the `requires TypeValue[T = ?t]` slot, and refused where none backs it. Its
+/// variable is the one the signature's is, and the body's rigid bridge holds it.
+pub(super) fn inline_param_read(kb: &KnowledgeBase, var: &Var, param_rigids: &[(VarId, TermId)]) -> Option<VarId> {
+    let Var::Global(vid) = var else { return None };
+    (kb.minted_param(vid.name()) == Some(MintedParam::Inline)
+        && param_rigids.iter().any(|(g, _)| g == vid))
+    .then_some(*vid)
 }
 
 /// The type parameter a value read denotes: `B` as written, or the slot dispatch
@@ -1922,12 +1965,20 @@ pub(super) fn rigid_value_reads(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
 ) -> (Vec<(VarId, Symbol, Option<Span>)>, Option<OpenStructuralEntry>) {
     let mut out = Vec::new();
     let mut open_entry: Option<OpenStructuralEntry> = None;
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
+        // A parameter the signature writes inline is read as a variable, `?t`, where a
+        // bracket's is read by its name (WI-20260911-VNQTR, [`inline_param_read`]).
+        if let Expr::Var(var) = expr {
+            if let Some(vid) = inline_param_read(kb, var, param_rigids) {
+                out.push((vid, vid.name(), Some(node.span.span)));
+            }
+        }
         if let Expr::TypeValue {
             head,
             pos_args,

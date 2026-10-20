@@ -99,8 +99,9 @@ fn eval_type(src: &str, op: &str) -> String {
 /// names "the clause to add", and a test that writes its own well-formed clause measures
 /// the CHECK and not the MESSAGE — it stays green while the printed advice drifts into
 /// something that does not parse, or names the callee's formal, or points at the wrong
-/// declaration. Here the rows below paste exactly what an author would paste.
-fn printed_repair(err: &str) -> (String, String) {
+/// declaration. Here the rows below paste exactly what an author would paste. Shared with
+/// `wi_vnqtr_inline_param_forward_test`, whose rows read the same message.
+pub(crate) fn printed_repair(err: &str) -> (String, String) {
     let (_, rest) = err.split_once("Declare `").unwrap_or_else(|| {
         panic!("the refusal must print a repair beginning ``Declare `requires …```; got {err:?}")
     });

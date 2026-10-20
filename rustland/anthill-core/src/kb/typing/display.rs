@@ -1180,16 +1180,24 @@ pub(super) fn member_param_bracket_spelling(kb: &KnowledgeBase, name: Symbol) ->
 /// `format_term_for_goal` — so a parameter is not `Tagger.E` in one refusal and `?E` in
 /// the next.
 pub(super) fn type_var_display_name(kb: &KnowledgeBase, vid: VarId) -> String {
-    member_param_spelling(kb, vid.name())
-        .unwrap_or_else(|| format!("?{}", kb.local_name_of(vid.name())))
+    member_param_spelling(kb, vid.name()).unwrap_or_else(|| variable_spelling(kb, vid.name()))
+}
+
+/// A variable named `name`, as a program writes it: `?` and the name.
+fn variable_spelling(kb: &KnowledgeBase, name: Symbol) -> String {
+    format!("?{}", kb.local_name_of(name))
 }
 
 /// The name a type PARAMETER is called by where a message names the parameter rather
 /// than prints a type — "no common type for type parameter `…`", "a type for '…'", the
-/// clause a caller is told to declare: the member it is ([`member_param_spelling`]), else
-/// the short name its declaration wrote. `name` is the parameter's key in its
-/// operation's list, or its variable's.
+/// clause a caller is told to declare: the member it is ([`member_param_spelling`]), a
+/// variable the signature writes inline as written (`?t`), else the short name its
+/// declaration wrote. `name` is the parameter's key in its operation's list, or its
+/// variable's.
 pub(super) fn type_param_display_name(kb: &KnowledgeBase, name: Symbol) -> String {
+    if kb.minted_param(name) == Some(MintedParam::Inline) {
+        return variable_spelling(kb, name);
+    }
     member_param_spelling(kb, name)
         .unwrap_or_else(|| short_name_of(kb.local_name_of(name)).to_string())
 }

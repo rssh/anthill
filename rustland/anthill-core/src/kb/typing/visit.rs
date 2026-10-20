@@ -872,14 +872,21 @@ pub(super) fn visit_type(
             // up have none of those shapes, and every older hint here is gated on
             // exactly one of them, so none of them can fire on a build that only just
             // started computing the table.
-            let has_op_name_field = pos_args
+            //
+            // AND A LAMBDA (WI-20260911-VNQTR), which [`arrow_field_expected_from_ctor`]
+            // types at the construction's instance as it does an operation name. The
+            // positional chain reads its field off this table, so without it the hint
+            // reached a lambda written by name and not one written by position, and the
+            // positional spelling's verdict turned on whether a sibling was a call
+            // (MEASURED).
+            let has_fn_value_field = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
-                .any(|a| arg_is_bare_operation_name(kb, a));
+                .any(|a| arg_is_function_value_literal(kb, a));
             let field_types: Option<Vec<(Symbol, Value)>> = if has_call_field
                 || has_tuple_field
                 || has_ctor_field
-                || has_op_name_field
+                || has_fn_value_field
             {
                 kb.entity_field_types(name).map(|ft| ft.to_vec())
             } else {
@@ -952,11 +959,11 @@ pub(super) fn visit_type(
                                 SlotOwner::Construction(name),
                             )
                         })
-                        .or_else(|| arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             let fs = field.as_ref().map(|(s, _)| *s)?;
                             arrow_field_expected_from_ctor(kb, name, fs, instance, arg)
                         })
+                        .or_else(|| arrow_slot_arg_hint(kb, arg, field.as_ref().map(|(_, t)| t)))
                         .or_else(|| {
                             let (_, ft) = field.as_ref()?;
                             ctor_arg_unlocks_a_field_hint(kb, arg, ft).then(|| ft.clone())
@@ -1002,10 +1009,10 @@ pub(super) fn visit_type(
                         .or_else(|| {
                             seq_slot_arg_hint(kb, arg, ft.as_ref(), SlotOwner::Construction(name))
                         })
-                        .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             arrow_field_expected_from_ctor(kb, name, *fname, instance, arg)
                         })
+                        .or_else(|| arrow_slot_arg_hint(kb, arg, ft.as_ref()))
                         .or_else(|| {
                             let ft = ft.as_ref()?;
                             ctor_arg_unlocks_a_field_hint(kb, arg, ft).then(|| ft.clone())
@@ -1212,6 +1219,19 @@ pub(super) fn visit_type(
                 Var::DeBruijn(idx) => env.lookup_debruijn(*idx),
                 _ => None,
             };
+            // WI-20260911-VNQTR — a parameter the signature writes inline (`m(y: ?t)`), read
+            // as a VALUE (`= Cell[V = ?t]`), is read as a bracket's `U` is: through the
+            // `requires TypeValue[T = ?t]` slot ([`lower_param_read_to_slot`]). With no slot
+            // the read is left as it is, and `check_operation_bodies` refuses it.
+            if bound.is_none() {
+                if let Some(param) = inline_param_read(kb, var, env.param_rigids()) {
+                    if let Some(lowered) = lower_param_read_to_slot(kb, &env, &occ, param) {
+                        let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+                        results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), lowered)));
+                        return;
+                    }
+                }
+            }
             // WI-20260904-50B2K part (c), step 2 — THE SAME ELIMINATION AS
             // `check_bare_ref`'s, through the one owner. `?g` and `g` name one binding; a ∀
             // that leaves only one of them gives one program two verdicts.

@@ -109,26 +109,50 @@ pub(super) fn check_operation_bodies(
         let mut param_rigids: Vec<(VarId, TermId)> = Vec::new();
         let mut sort_rigid_len = 0usize;
         let mut rigidify_subst = Substitution::new();
-        // WI-1FKR2: the THIRD family — a logical variable the author wrote INLINE in the
-        // signature (`via(b: Box[?t]) -> Box[?t]`), which §5.4 quantifies exactly as it does
-        // an `[A]` binder. Computed before `rec` is consumed below; empty for every operation
-        // that writes none, which is almost all of them.
-        let inline_type_params = inline_signature_type_params(
+        // WI-1FKR2: a named variable that reaches a parameter type without being written in
+        // the declaration — a slot an ALIAS's definition leaves open (`sort LT = List[T =
+        // ?a]`), opened anew at each use — which §5.4 quantifies as it does the record's own
+        // (the record lists the variables the declaration writes, WI-20260911-VNQTR).
+        // Computed before `rec` is consumed below; empty for almost every operation.
+        //
+        // ONE AT THE TOP OF A PARAMETER'S TYPE IS READ BY ITS PATH (WI-20260911-VNQTR), as a
+        // slot the signature leaves out is ([`UnwrittenFill::Projection`]): `y: LT` is checked
+        // as `y: List[T = y.T]`, and every other place the variable stands takes the same
+        // projection, so a tie the alias writes stays one (`Pair[A = ?a, B = ?a]` is `Pair[A =
+        // p.A, B = p.A]`). Opened to a rigid of its own, no clause could name it: the
+        // refusal of its forward advised writing a variable the alias does not take, and
+        // `requires TypeValue[T = y.T]` did not cover it (MEASURED). One that stands only
+        // inside an argument has no path, and keeps its rigid.
+        let alias_params = alias_opened_type_params(
             kb,
             rec.op_sym,
             &rec.params,
             &rec.type_params,
             &parent_sort_params,
         );
-        // WI-1FKR2: the op's OWN half is its declared brackets PLUS its inline variables —
-        // both are per-call and caller-instantiated, so both sit after the enclosing sort's
-        // prefix in `param_rigids` (see that field's doc: the sort view means "THIS
-        // instance's params", which an inline variable is not). Joined HERE so the gate
+        let mut by_path: Vec<(VarId, Value)> = Vec::new();
+        let mut alias_rigid_params: Vec<(Symbol, Var)> = Vec::new();
+        for (name, var) in alias_params {
+            let at_path = match var {
+                Var::Global(vid) => top_level_slot_path(kb, &rec.params, vid, body_node.span),
+                _ => None,
+            };
+            match (var, at_path) {
+                (Var::Global(vid), Some(path)) => by_path.push((vid, path)),
+                _ => alias_rigid_params.push((name, var)),
+            }
+        }
+        // WI-1FKR2: the op's OWN half is its declared type parameters PLUS an alias's slots
+        // that stand inside an argument — all per-call and caller-instantiated, so all sit
+        // after the enclosing sort's prefix in `param_rigids` (see that field's doc: the sort
+        // view means "THIS instance's params", which these are not). Joined HERE so the gate
         // below stays one test over the op's half and one over the sort's.
         let mut op_own_params = rec.type_params.clone();
-        op_own_params.extend(inline_type_params);
-        let (params, return_type, declared_effects) =
-            if op_own_params.is_empty() && parent_sort_params.is_empty() {
+        op_own_params.extend(alias_rigid_params);
+        let (params, return_type, declared_effects) = if op_own_params.is_empty()
+            && parent_sort_params.is_empty()
+            && by_path.is_empty()
+        {
                 (rec.params, rec.return_type, rec.effects)
             } else {
                 let mut all_params = op_own_params;
@@ -138,7 +162,10 @@ pub(super) fn check_operation_bodies(
                 // (its other consumers want the param as a TERM, under `&KnowledgeBase`
                 // where they could not re-alloc).
                 all_params.extend(param_pairs_as_vars(kb, &parent_sort_params));
-                let rigidify = rigidify_op_type_params(kb, &all_params);
+                let mut rigidify = rigidify_op_type_params(kb, &all_params);
+                for (vid, path) in &by_path {
+                    rigidify.bind_value(kb, *vid, path.clone());
+                }
                 // EVERY param the rigidifier was given gets its bridge ([`rigid_bridge`]):
                 // what the record holds is what a written occurrence resolves to
                 // ([`type_param_global_var`], WI-943).
@@ -616,7 +643,12 @@ pub(super) fn check_operation_bodies(
                 // reporting every read of the same parameter would be one fix told many
                 // times.
                 let (reads, open_entry) =
-                    rigid_value_reads(kb, &result.node, result.env.enclosing_frame_chain());
+                    rigid_value_reads(
+                        kb,
+                        &result.node,
+                        result.env.enclosing_frame_chain(),
+                        result.env.param_rigids(),
+                    );
                 if !reads.is_empty() {
                     let backed = type_value_backed_params(kb, op.op_sym);
                     if let Some((_, param, span)) =

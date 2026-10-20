@@ -164,8 +164,9 @@ pub fn build_dep_projection(
     // binding-aware. The slot's runtime requirement value bundles its
     // own direct sub-requires in the same order, so a single
     // `requirement_at_sort` projects them. A dep reachable only past a
-    // second level is not found here and falls through to Strategy 3's
-    // SLD construction.
+    // second level is not found here: Strategy 3 constructs it where a
+    // provision answers, and Strategy 2c, behind it, reads it deeper in the
+    // slot's chain.
     //
     // WI-841: skipped wholesale for a PINNED dep. Loop-invariant, so it is the
     // iteration SOURCE that says so — a test inside would read as "this can go true
@@ -258,6 +259,39 @@ pub fn build_dep_projection(
             emit_tree_as_projection(kb, caller_requires, &tree, syms)
         }
         failure => {
+            // WI-20260911-VNQTR — Strategy 2c: a cover DEEPER in a caller slot's chain.
+            // `requires Ord[T = U]` holds a `PartialEq[T = U]` three levels down (`Ord` →
+            // `WeakOrd` → `Eq` → `PartialEq`), which Strategy 2's one level does not reach and
+            // this construction cannot build at a parameter of the caller's, so `same(a, b)`
+            // over `same[B] requires PartialEq[T = B]` was refused under it while
+            // `PartialEq.eq(a, b)` written in the same body loaded (MEASURED). The search is
+            // the resolver's for a sub-goal ([`scope_chain_cover`]: under the call's σ,
+            // shallowest first, to any depth), and its path is the projection, as `FromScope`
+            // emits it.
+            //
+            // ONLY WHERE NOTHING ELSE ANSWERS, as 2b: after every one-level strategy, so a
+            // nearer cover keeps its place, and after this construction, so a dep at a type a
+            // provision answers keeps the dictionary it was built — and pays nothing for a
+            // search that cannot find a cover there. Never for a pinned dep, whose call named
+            // its provider.
+            if !pinned {
+                if let Some(ctx) = disambig {
+                    let deep = ResolutionScope {
+                        available_requires: caller_requires,
+                        sigma: Some(ctx),
+                        pin: None,
+                        sub_goal_requires: &[],
+                    };
+                    if let Some((scope_index, projection)) = scope_chain_cover(kb, &deep, &goal) {
+                        let cover = ResolvedRequiresNode::FromScope {
+                            scope_index,
+                            spec_sort: goal.spec_sort,
+                            projection,
+                        };
+                        return emit_tree_as_projection(kb, caller_requires, &cover, syms);
+                    }
+                }
+            }
             if let Some(out) = s3_failure_out {
                 *out = Some(failure);
             }

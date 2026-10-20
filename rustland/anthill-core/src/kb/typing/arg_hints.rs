@@ -1208,6 +1208,19 @@ pub(super) fn arg_is_constructor_application(kb: &KnowledgeBase, arg: &Rc<NodeOc
     }
 }
 
+/// WI-20260911-VNQTR — is `arg` a function value WRITTEN AS ONE — a lambda, or a bare
+/// operation name, which eta-lifts — the two shapes a function-typed field types at the
+/// instance its construction states ([`arrow_field_expected_from_ctor`])?
+pub(super) fn arg_is_function_value_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    matches!(
+        &arg.kind,
+        NodeKind::Expr {
+            expr: Expr::Lambda { .. },
+            ..
+        }
+    ) || arg_is_bare_operation_name(kb, arg)
+}
+
 /// WI-20260828-8Q0Q5: is `arg` a BARE OPERATION NAME — the spelling that eta-lifts?
 ///
 /// An `Expr::Apply` is excluded: `inc` is a name the reader may lift to a function value;
@@ -1301,9 +1314,11 @@ fn ctor_field_expected(
     expected: &Option<Value>,
 ) -> Option<Value> {
     let exp = expected.as_ref()?;
-    let field_types = kb.entity_field_types(ctor_sym)?.to_vec();
-    let (_, field_decl) = field_types.iter().find(|(s, _)| *s == field_sym)?;
-    let field_decl = field_decl.clone();
+    let (_, field_decl) = kb
+        .entity_field_types(ctor_sym)?
+        .iter()
+        .find(|(s, _)| *s == field_sym)?
+        .clone();
     // WI-20260828-5NSZY: the TOTAL belongs-to. WI-946 left `strict_parent_sort` here alone
     // among the belongs-to readers, recording that converting was "the right move the moment
     // a failing test exists" — for an EPONYMOUS parametric sort (`sort Wrap { sort T = ?;
@@ -1409,6 +1424,16 @@ pub(super) fn seq_field_expected_from_ctor(
 /// application was given none unless its parameter type named an ENTITY
 /// ([`variant_slot_arg_hint`]'s gate) — `Option[T = …]` names a SORT. See
 /// [`ctor_arg_unlocks_a_field_hint`], which supplies it.
+///
+/// AND A LAMBDA, AHEAD OF THE DECLARED FIELD TYPE (WI-20260911-VNQTR). A function value in a
+/// field is typed at the instance the construction states, as a callback is at the callee's
+/// σ: `h[A = Int64](f: tyOf)` and `h(f: lambda (x) -> tyOf(x))` expected at `H[A = Int64]`
+/// give `tyOf` an `Int64` to read. At the declared `(x: A) -> Type` the lambda's `x` was
+/// nothing and `tyOf(x)` was refused "unconstrained", and the operation's dictionary was
+/// minted at no type (MEASURED). The declared type stays the answer where the instance says
+/// nothing ([`arrow_slot_arg_hint`]). Those two shapes and no other: a bare name of a local
+/// or a parameter is a value with a type of its own, and the walk asked for every one of
+/// them cost a construction-heavy load a tenth of its time (MEASURED).
 pub(super) fn arrow_field_expected_from_ctor(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
@@ -1416,7 +1441,7 @@ pub(super) fn arrow_field_expected_from_ctor(
     expected: &Option<Value>,
     arg: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
-    if !arg_is_bare_operation_name(kb, arg) {
+    if !arg_is_function_value_literal(kb, arg) {
         return None;
     }
     let walked = ctor_field_expected(kb, ctor_sym, field_sym, expected)?;

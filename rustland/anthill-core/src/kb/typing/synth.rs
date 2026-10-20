@@ -629,6 +629,16 @@ pub(super) fn scope_chain_cover(
             .entry(sort)
             .or_insert_with(|| transitive_required_sorts(kb, sort).contains(&goal.spec_sort))
     };
+    // A NODE MET BEFORE IS NOT READ AGAIN where nothing beneath it reads its path: the
+    // composed requirement decides what it covers and what it holds, so a second path to it
+    // finds nothing the first did not — and a lattice of specs each requiring the next two
+    // has a path count exponential in its depth, which the walk paid in full on every miss
+    // (MEASURED, WI-20260911-VNQTR: +1.7 ms a call at depth 8). Breadth first, the first
+    // path met is the shallowest. Only where the sort is on no cycle: the per-path rule below
+    // keeps a node on its own path from being expanded, so on a cycle two paths to one node
+    // may expand it differently.
+    let mut on_a_cycle: HashMap<Symbol, bool> = HashMap::new();
+    let mut met: Vec<(Symbol, Value)> = Vec::new();
     // One frontier per depth, across every entry, so depth — not entry order — decides.
     let mut frontier: Vec<(usize, RequiresEntry, SmallVec<[usize; 2]>, Vec<Symbol>)> = Vec::new();
     for (i, entry) in scope
@@ -662,6 +672,19 @@ pub(super) fn scope_chain_cover(
                     supply: sub.supply,
                     binder: sub.binder,
                 };
+                let cyclic = *on_a_cycle.entry(composed.required_sort).or_insert_with(|| {
+                    transitive_required_sorts(kb, composed.required_sort)
+                        .contains(&composed.required_sort)
+                });
+                if !cyclic {
+                    if met.iter().any(|(sort, spec)| {
+                        *sort == composed.required_sort
+                            && views_structurally_equal(kb, spec, &composed.spec)
+                    }) {
+                        continue;
+                    }
+                    met.push((composed.required_sort, composed.spec.clone()));
+                }
                 let mut sub_path = path.clone();
                 sub_path.push(k);
                 if is_goal_spec && requires_entry_covers_goal(kb, &composed, goal, scope.sigma) {
@@ -2277,7 +2300,14 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
         // wrote `w: Tag.T` (MEASURED: "the enclosing scope's `requires …Tag[T = ?]` covers
         // only as a wildcard"). By its spelling, as an element still open is shown by
         // its parameter's name where it is spelled as a reference (`Out = …Tagger.Out`).
-        ViewHead::Var(Var::Global(vid)) if kb.member_param_head(vid.name()).is_some() => {
+        // Nor a variable the signature writes inline (WI-20260911-VNQTR), whose clause
+        // names it `?t`.
+        ViewHead::Var(Var::Global(vid))
+            if matches!(
+                kb.minted_param(vid.name()),
+                Some(MintedParam::Member { .. } | MintedParam::Inline)
+            ) =>
+        {
             type_var_display_name(kb, vid)
         }
         ViewHead::Var(_) => "?".to_owned(),

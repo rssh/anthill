@@ -83,12 +83,17 @@ fn non_generic_entity_keeps_no_prefix() {
 #[test]
 fn generic_traits_class_emits_template_prefix() {
     // The traits class for a generic sort emits `template<typename T>`
-    // and substitutes `?T` in operation parameter / return types.
+    // and substitutes the sort's `T` in operation parameter / return types.
+    //
+    // A VARIABLE `?T` IN THE SIGNATURE IS NOT THE SORT'S `T` (§5.4, proposal 070): it is
+    // the operation's own type parameter, so `pass2` is a template of its own. This row
+    // wrote `pass(x: ?T)` and read the class's `T` back by the coincidence of the name.
     let source = r#"
         namespace test.gen_id
           sort Identity
             sort T = ?
-            operation pass(x: ?T) -> ?T = x
+            operation pass(x: T) -> T = x
+            operation pass2(x: ?T) -> ?T = x
           end
         end
     "#;
@@ -102,6 +107,44 @@ fn generic_traits_class_emits_template_prefix() {
     assert!(
         cpp.contains("static T pass(T x)"),
         "operation signature should use template parameter T:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("template<typename T0>\n    static T0 pass2(T0 x)"),
+        "a variable written in the signature is the operation's own template parameter:\n{cpp}"
+    );
+}
+
+/// WI-20260911-VNQTR — a variable a signature writes in a parameter type is a template
+/// parameter of the operation's own, apart from a bracket's or the sort's parameter of the
+/// same name and from a value parameter of its name. Held in the frame by its name, `?U`
+/// took the bracket `U`'s place and `?T` the sort's `T` — every `U` lowered to the
+/// variable's parameter, which no call can deduce — and `keep(x: ?x)` named its template
+/// parameter like its value parameter, which C++ refuses (MEASURED, g++).
+#[test]
+fn an_inline_variable_is_a_template_parameter_of_its_own() {
+    let source = r#"
+        namespace test.gen_inline
+          sort Identity
+            sort T = ?
+            operation pass4[U](a: U, b: ?U) -> U = a
+            operation mix(a: T, b: ?T) -> T = a
+            operation keep(x: ?x) -> ?x = x
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.gen_inline.Identity").expect("emit Identity");
+    assert!(
+        cpp.contains("template<typename U, typename U0>\n    static U pass4(U a, U0 b)"),
+        "a bracket and a variable of one name are two template parameters:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("template<typename T0>\n    static T mix(T a, T0 b)"),
+        "the sort's `T` stays the class's beside a variable `?T`:\n{cpp}"
+    );
+    assert!(
+        cpp.contains("template<typename x0>\n    static x0 keep(x0 x)"),
+        "a template parameter is not named like a value parameter:\n{cpp}"
     );
 }
 

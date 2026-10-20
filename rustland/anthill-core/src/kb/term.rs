@@ -75,6 +75,14 @@ impl Hash for VarId {
     }
 }
 
+/// Is `name` the name of an ANONYMOUS variable — one written `?`, which names nothing and
+/// ties nothing? The parser names it `_`; `?` and `?_` are the spellings a minted unknown
+/// carries. One test for the loader, which reads a parsed variable's name, and the typer
+/// (`anonymous_var_name`), which reads a KB variable's.
+pub(crate) fn is_anonymous_var_spelling(name: &str) -> bool {
+    matches!(name, "_" | "?" | "?_")
+}
+
 /// Variable representation: a de Bruijn index (stored terms),
 /// a global id (during resolution), or a rigid id (introduced when
 /// opening a `forall_impl` binder).

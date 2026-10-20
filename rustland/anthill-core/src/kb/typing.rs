@@ -47,7 +47,7 @@ use super::resolve::PositionalPlan;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
-use super::{KnowledgeBase, RuleId, SortKind};
+use super::{KnowledgeBase, MintedParam, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
 use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
 use crate::parse::desugar_target as dt;

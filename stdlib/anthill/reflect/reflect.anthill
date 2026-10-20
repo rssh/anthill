@@ -1041,9 +1041,9 @@ namespace anthill.reflect
     effects      : List[Term],                      -- effect type expressions
     requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
     ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
-    -- The operation's OWN type parameters, as the logical variables the loader
-    -- minted for them (`op_info::type_param_entries` decodes each back to its
-    -- surface name).
+    -- The operation's own type parameters, its bracket's, then the member sugar's, then
+    -- the variables its parameter types write, as the logical variables the loader
+    -- minted for them (`op_info::type_param_entries` decodes each back to its name).
     --
     -- EMITTED LONG BEFORE IT WAS DECLARED (WI-20260823-GMG6N), and that gap made every
     -- `OperationInfo` fact unreachable from anthill. The loader wrote an eight-slot

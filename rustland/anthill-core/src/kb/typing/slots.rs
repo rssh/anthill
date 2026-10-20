@@ -1752,10 +1752,12 @@ pub struct UntiedForward {
     /// The same, as the advice calls it: the last segment of a declared parameter's
     /// qualified name (`P`), or the rendering itself where the parameter has none.
     short: String,
-    /// WI-20261006-XQGEW — the parameter's own name where it is one the member sugar
-    /// minted (`Tagger.C`). It has no declaration to put a slot on, and the advice for it
-    /// is another.
-    member: Option<Symbol>,
+    /// The parameter's own name and what it stands for, where the name was minted for it
+    /// ([`KnowledgeBase::minted_param`]): a member's parameter (`Tagger.C`,
+    /// WI-20261006-XQGEW) or a variable the signature writes inline (`?p`,
+    /// WI-20260911-VNQTR). Neither has a declaration to put a slot on, and the advice for
+    /// each is another.
+    minted: Option<(Symbol, MintedParam)>,
     /// The requirement the frame DOES hold for the parameter, rendered, when there is one
     /// and it does not answer this goal (`requires OE: WeakOrd[E]` asked for
     /// `WeakOrd[T = F]`). `None` is the frame holding nothing for it at all.
@@ -1791,9 +1793,9 @@ impl UntiedForward {
                 (rendered.clone(), rendered)
             }
         };
-        let member = match kb.get_term(bound) {
+        let minted = match kb.get_term(bound) {
             Term::Var(Var::Rigid(vid) | Var::Global(vid)) => {
-                kb.member_param_head(vid.name()).map(|_| vid.name())
+                kb.minted_param(vid.name()).map(|what| (vid.name(), what))
             }
             _ => None,
         };
@@ -1802,7 +1804,7 @@ impl UntiedForward {
             binder,
             param,
             short,
-            member,
+            minted,
             held: held
                 .slots
                 .first()
@@ -1841,13 +1843,20 @@ impl UntiedForward {
         // clause this advises for a declared one, `requires Tagger.C: …`, is not a binder
         // a program can write. What can be written is the parameter itself, in the
         // operation's bracket ([`member_param_bracket_spelling`]), and the slot on that.
-        let repair = match self.member.and_then(|name| member_param_bracket_spelling(kb, name)) {
-            Some(bracket) => format!(
+        let bracket = self.minted.and_then(|(name, _)| member_param_bracket_spelling(kb, name));
+        let repair = match (bracket, self.minted) {
+            (Some(bracket), _) => format!(
                 "`{short}` is a member's parameter and has no declaration to put a slot on: \
                  write it in the enclosing operation's bracket — {bracket} — and declare the \
                  slot on it (`requires P: <the spec above>`)",
             ),
-            None => format!(
+            (None, Some((_, MintedParam::Inline))) => format!(
+                "`{short}` is a variable the signature writes and has no declaration to put a \
+                 slot on: write it in the enclosing operation's bracket instead — a parameter \
+                 `P` where the signature has `{short}` — and declare the slot on it (`requires \
+                 P: <the spec above>`)",
+            ),
+            _ => format!(
                 "declare a requirement slot for `{short}` on the enclosing SORT or OPERATION, \
                  wherever `{short}` is declared (`requires {short}: <the spec above>`)"
             ),
@@ -4422,10 +4431,11 @@ fn slot_key_at(kb: &mut KnowledgeBase, frame: &CalleeFrame, i: usize) -> Selecte
 /// is typed, [`member_slots_at_spec_op`] where it is chosen as the call runs.
 ///
 /// The two operations are one signature. A member's type parameters are the spec
-/// operation's by position ([`paired_type_params`]) — the names it gives its requirements
-/// among them, a name being a type parameter — and a requirement it states is one the
-/// spec operation states: `check_override_refinement` holds it to both, and admits a
-/// member's `requires` only as the spec operation wrote it.
+/// operation's paired with them ([`paired_type_params`]: a declared one by position, a
+/// variable the signature writes by where it stands) — the names it gives its requirements
+/// among them, a name being a type parameter — and a requirement it states is one the spec
+/// operation states: `check_override_refinement` holds it to both, and admits a member's
+/// `requires` only as the spec operation wrote it.
 ///
 /// AN ENTRY IS PAIRED THROUGH ITS REQUIREMENT, and not by its place in the frame or by
 /// its name, which is the member's own. The requirements are compared as declared
@@ -4452,22 +4462,27 @@ impl MemberEntries {
         }
         // Both were read as operations to get here: the member's frame holds entries of
         // its own, and the call was typed against the spec operation's signature.
-        let type_params = |kb: &KnowledgeBase, op: Symbol| {
-            lookup_operation_info_full(kb, op)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "`{}` is dispatched as an operation and has no operation record",
-                        kb.qualified_name_of(op)
-                    )
-                })
-                .type_params
+        let record = |kb: &KnowledgeBase, op: Symbol| {
+            crate::kb::op_info::lookup_operation_info(kb, op).unwrap_or_else(|| {
+                panic!(
+                    "`{}` is dispatched as an operation and has no operation record",
+                    kb.qualified_name_of(op)
+                )
+            })
         };
-        let (member_params, spec_params) = (type_params(kb, member), type_params(kb, spec_op));
+        let (member_info, spec_info) = (record(kb, member), record(kb, spec_op));
+        let pairs = paired_type_params(
+            kb,
+            TypeParamSignature::of(&member_info),
+            TypeParamSignature::of(&spec_info),
+        );
+        let spec_params = &spec_info.type_params;
         let global = |v: &Var| match v {
             Var::Global(vid) => Some(*vid),
             _ => None,
         };
-        let params: Vec<(VarId, VarId)> = paired_type_params(&member_params, &spec_params)
+        let params: Vec<(VarId, VarId)> = pairs
+            .iter()
             .filter_map(|((_, m), (_, s))| Some((global(m)?, global(s)?)))
             .collect();
         // An entry over the spec operation's parameter variables: the member's parameters
@@ -4483,9 +4498,8 @@ impl MemberEntries {
         // the member's own: a type parameter, paired by position with the rest. So a
         // member's `mine` is read as the spec operation's `other` where the two stand at
         // one position; a name with no pair is left as written, and pairs with nothing.
-        let names_at_spec: Vec<(Symbol, Symbol)> = paired_type_params(&member_params, &spec_params)
-            .map(|((m, _), (s, _))| (*m, *s))
-            .collect();
+        let names_at_spec: Vec<(Symbol, Symbol)> =
+            pairs.iter().map(|((m, _), (s, _))| (*m, *s)).collect();
         let over_spec_vars = |kb: &mut KnowledgeBase, entry: &RequiresEntry, of_member: bool| {
             let spec = rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
                 let vid = clause_named_type_param(kb, leaf)?;
