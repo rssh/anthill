@@ -10897,7 +10897,11 @@ impl KnowledgeBase {
         // discrimination (`rules_by_functor`, discrim top-edge). The deep wrapper has
         // no reader either: `type_head` reads it as `Parameterized { base: sort_ref }`,
         // not as a bare sort — this comment claimed otherwise until WI-20260923-N3W68.
-        self.alloc(Term::Ref(sort_sym))
+        //
+        // A TYPE, so a constructor is named by its type face (WI-20260902-JB6RS):
+        // `make_sort_ref(red)` is the variant type `red†`, never the instance `red`.
+        let ty = self.type_context_face(sort_sym);
+        self.alloc(Term::Ref(ty))
     }
 
     /// WI-20260829-K0E8T — [`Self::make_sort_ref`]'s READ-ONLY half: the `TermId` of an
@@ -10913,7 +10917,7 @@ impl KnowledgeBase {
     /// change when that canon moves. One caller today: [`crate::kb::typing`]'s
     /// `WitnessActual::value`, which says at its site why not increffing is sound there.
     pub fn find_sort_ref(&self, sort_sym: Symbol) -> Option<TermId> {
-        self.terms.find(&Term::Ref(sort_sym))
+        self.terms.find(&Term::Ref(self.type_context_face(sort_sym)))
     }
 
     // ── WI-342: Value-carried (occurrence) type builders ───────────────
@@ -12107,57 +12111,13 @@ impl KnowledgeBase {
         !functor.is_type_face() && self.constructor_symbols.contains(&Decl::of(functor))
     }
 
-    /// WI-20260823-4GBQV — does `sym` name an AMBIENT RESOURCE: a NULLARY
-    /// CONSTRUCTOR, which is a CONSTANT of its sort and therefore a value, and so a
-    /// PLACE the effect row can name (`Modify[counter]`, `Env(counter)`)?
-    ///
-    /// `prelude/effects.anthill`'s runtime note describes exactly this slot — "one arena
-    /// keyed by the target's FUNCTOR SYMBOL: `set(store, v)` and `set(counter, v)` share
-    /// the same handler but live in separate slots" — and until this predicate existed
-    /// the idiom was not writable: the name classified as a TYPE and
-    /// [`typing::check_modify_targets`] refused it.
-    ///
-    /// ONE PREDICATE, TWO SITES, and they must not each write their own: the loader's
-    /// single-segment value-in-type arm (`load::type_expr_to_child`) decides whether
-    /// `Modify[counter]` LOWERS to a denoted place, and the typer's argument re-key
-    /// (`typing::arg_place_head`) decides whether `set(counter(), n)` RE-KEYS the
-    /// callee's `Modify[<param>]` onto it. Either one alone repairs nothing — a label
-    /// that lowers but never re-keys is an undeclared effect at every call, and a
-    /// re-key onto a name the declaration cannot spell is a label no author can declare.
-    ///
-    /// NULLARY, because arity is what separates a value from a function: `entity counter`
-    /// IS a value of `CounterState` (and `counter()` allocs to the same bare `Ref` —
-    /// [`Self::alloc`]'s WI-511 canon), while `entity wrap(rep: …)` is a constructor
-    /// FUNCTION, naming no slot until applied.
-    ///
-    /// NOT EPONYMOUS, because an eponymous constructor IS its sort — WI-926: one symbol,
-    /// no nested `Slot.Slot` — so `Modify[Slot]` cannot be read as the constructor
-    /// WITHOUT also reading it as the sort, and admitting it would silently un-refuse the
-    /// type target WI-20260823-39AD2 exists to refuse. MEASURED rather than assumed: the
-    /// tree holds 200 eponymous constructor sites (3 of them in loadable `.anthill`
-    /// sources — `geometry.anthill`'s `Vec3` and two cli fixtures), of which exactly two
-    /// are NULLARY, both test fixtures (`parse_test.rs`'s `Error`,
-    /// `wi933_carrierless_provision_test.rs`'s `Wi933Unit`). So the exclusion costs
-    /// nothing in use and closes the whole population by construction.
-    ///
-    /// Reads the ENTITY registry keyed by the RESOLVED symbol. `register_entity_fields`
-    /// also writes a second entry under the bare interned short name, which an
-    /// UNRESOLVED symbol would answer from — the short-name identity WI-926 had to
-    /// remove from a widened predicate — so the `has_kind` gate is load-bearing, not
-    /// belt-and-braces.
-    pub fn is_ambient_resource_name(&self, sym: Symbol) -> bool {
-        let info = self.symbols.get(sym);
-        info.has_kind(crate::intern::SymbolKind::Entity)
-            && !info.has_kind(crate::intern::SymbolKind::Sort)
-            && matches!(self.entity_field_names(sym), Some([]))
-    }
 
-    /// WI-20260823-4GBQV — is `sym` a CONSTRUCTOR that a `Modify` TARGET REFUSES: a
-    /// field-bearing one (a function, naming no slot until applied) or an EPONYMOUS one
-    /// (its own sort, WI-926)?
+    /// WI-20260823-4GBQV — is `sym` a CONSTRUCTOR that a `Modify` TARGET REFUSES? Since
+    /// WI-20260902-JB6RS, every one: a field-bearing one (a function, naming no slot until
+    /// applied), an EPONYMOUS one (its own sort, WI-926), and a nullary one, which 4GBQV
+    /// read as an ambient place and which is its type now (no ambient places).
     ///
-    /// THE NEGATIVE OF [`Self::is_ambient_resource_name`] OVER CONSTRUCTORS, and it has to
-    /// be stated negatively rather than as "does this name a place". The typer asks this
+    /// It is stated negatively rather than as "does this name a place". The typer asks this
     /// of an ARGUMENT, whose symbol is very often a binder the symbol table carries no
     /// declared kind for — a `match`-bound pattern variable, a lambda binder, a
     /// `with_fresh_vars` rename. Asking those "are you a value place?" answers NO, so the
@@ -12174,10 +12134,12 @@ impl KnowledgeBase {
     /// message said so. Found by `/code-review` probing the loader's admission set against
     /// the typer's; no fixture reached it.
     pub fn is_unplaceable_constructor(&self, sym: Symbol) -> bool {
+        // EVERY constructor, since WI-20260902-JB6RS retired the ambient resource: a
+        // nullary one used to be the exception, read as a place where its type was
+        // expected.
         self.symbols
             .get(sym)
             .has_kind(crate::intern::SymbolKind::Entity)
-            && !self.is_ambient_resource_name(sym)
     }
 
     /// WI-720: mark a functor SYMBOL as a constructor, WITHOUT the parent-sort /
@@ -12221,6 +12183,27 @@ impl KnowledgeBase {
         // (WI-20260902-JB6RS).
         sym.is_type_face()
             || (self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym))
+    }
+
+    /// WI-20260902-JB6RS — the symbol a TYPE CONTEXT names `sym` by: its type face for a
+    /// declaration whose type contexts mint one, `sym` unchanged otherwise (a sort with no
+    /// constructor of its name, a face already). Every producer of a type term goes
+    /// through here — [`Self::make_sort_ref`] and the loader's type-context lowerings —
+    /// so which declarations mint a face is decided in ONE place.
+    ///
+    /// STAGED: nested constructors (`Entity`, no `Sort` kind) mint one now. An eponymous
+    /// or free-standing entity — which also carries `Sort`, and whose bare name a data
+    /// position still reads as its type (§8.3, until the reading flips) — is the next
+    /// population; widening it here is that step.
+    pub fn type_context_face(&self, sym: Symbol) -> Symbol {
+        if sym.is_type_face() {
+            return sym;
+        }
+        if self.has_kind(sym, SymbolKind::Entity) && !self.has_kind(sym, SymbolKind::Sort) {
+            sym.type_face()
+        } else {
+            sym
+        }
     }
 
     /// WI-20260902-JB6RS — the TYPE FACE of `sym`'s declaration, when that declaration

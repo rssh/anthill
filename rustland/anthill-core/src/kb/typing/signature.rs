@@ -3538,9 +3538,10 @@ pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol)
 /// pass stops it at the declaration, where the author can read the message.
 ///
 /// WHAT COUNTS AS A PLACE is [`TypeHead::Denoted`], which the LOADER decides — a
-/// parameter, `result`, a field path off one, a value-producing zero-arg operation
-/// (WI-313), and a NULLARY CONSTRUCTOR naming an ambient resource
-/// (WI-20260823-4GBQV, `load::type_expr_to_child_modify_target`). This pass does not
+/// parameter, `result`, a field path off one, and a value-producing zero-arg operation
+/// (WI-313). A NULLARY CONSTRUCTOR was admitted too, as an ambient resource
+/// (WI-20260823-4GBQV); WI-20260902-JB6RS retired it — it is the constructor's type
+/// here, as in every bracket. This pass does not
 /// re-derive that list; adding a spelling there admits it here, which is the point of
 /// keeping the classification in one place.
 ///
@@ -3620,7 +3621,7 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
                         return_type: return_type.as_ref(),
                     };
                     match place_not_modifiable(kb, Some(fact), &label_value, &keys, &mut regions) {
-                        Some(detail) => (detail, MODIFIABLE_RULE),
+                        Some(found) => found,
                         None => continue,
                     }
                 }
@@ -3660,11 +3661,18 @@ pub fn check_modify_targets(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::Load
 /// The rule a `Modify` over a TYPE (or over nothing) breaks, as [`check_modify_targets`]
 /// states it.
 const PLACE_RULE: &str = "a `Modify` target is a PLACE: anything that DENOTES a value, i.e. \
-    a parameter, `result`, a field path off one, a value-producing zero-arg operation, or a \
-    NULLARY CONSTRUCTOR naming an ambient resource (kernel-language.md §5.6 — `Env` maps \
-    resource NAMES). A type there names no resource, and no instantiation can make it one: a \
+    a parameter, `result`, or a field path off one (kernel-language.md §5.6 — `Env` maps \
+    resource NAMES, and a resource is threaded as a parameter). A constructor, nullary or \
+    not, is a type in this bracket as in every other (§4.4). A type there names no resource, and no instantiation can make it one: a \
     provision binds a type parameter to a TYPE, never to a place. Name the place that is \
     mutated (e.g. `Modify[target]`).";
+
+/// The rule a `Modify` over an AMBIENT place breaks (WI-20260902-JB6RS) — a zero-argument
+/// operation's result, or a constructor's constant reached through a path.
+const AMBIENT_RULE: &str = "a `Modify` target is a place the CALLER can hand over: a \
+    parameter, `result`, or a field path off one (kernel-language.md §5.6). There are no \
+    ambient places — a call is no place to re-key onto, so nothing could write this one. \
+    Thread the resource as a parameter, and name the parameter (e.g. `Modify[target]`).";
 
 /// The rule a `Modify` over a place of a non-modifiable type breaks (WI-20260823-TR8CF).
 const MODIFIABLE_RULE: &str = "a `Modify` fires only on a place of a modifiable type: a sort \
@@ -3689,6 +3697,12 @@ enum PlaceType {
     /// Not knowable here — a path through a type that is not a concrete data shape, a
     /// callback's binder, a body local. Not refused for being unknown.
     Unknown,
+    /// An AMBIENT place — one no handle is threaded to: the result of a zero-argument
+    /// operation, or a constructor's constant. Refused (WI-20260902-JB6RS; user,
+    /// 2026-10-20): a declaration may name it, but no call can write it, since a call is
+    /// no place to re-key onto, so every resource is threaded as a parameter. `what` says
+    /// which kind the head is, for the message.
+    Ambient { head: Symbol, what: &'static str },
 }
 
 /// WI-20260823-TR8CF — why the place `label` targets admits no `Modify`, or `None` when
@@ -3702,7 +3716,7 @@ fn place_not_modifiable(
     label: &Value,
     keys: &ModifyTargetKeys,
     regions: &mut Option<HashSet<Symbol>>,
-) -> Option<String> {
+) -> Option<(String, &'static str)> {
     match modify_place_type(kb, fact, label, keys) {
         Ok(PlaceType::Known(types)) => {
             let regions = regions.get_or_insert_with(|| crate::kb::region::region_sorts(kb));
@@ -3713,23 +3727,33 @@ fn place_not_modifiable(
                 return None;
             }
             let shown: Vec<String> = types.iter().map(|t| type_display_name_value(kb, t)).collect();
-            Some(format!(
-                "over a place of type `{}`, which is not `Modifiable`",
-                shown.join("` or `")
+            Some((
+                format!("over a place of type `{}`, which is not `Modifiable`", shown.join("` or `")),
+                MODIFIABLE_RULE,
             ))
         }
         Ok(PlaceType::Unknown) => None,
-        Err(why) => Some(format!(
-            "over a place whose type this check cannot read ({why}) — a defect of the check, \
-             not of the program"
+        Ok(PlaceType::Ambient { head, what }) => Some((
+            format!(
+                "over {what} `{}`, an AMBIENT place, which no call can write",
+                kb.qualified_name_of(head)
+            ),
+            AMBIENT_RULE,
+        )),
+        Err(why) => Some((
+            format!(
+                "over a place whose type this check cannot read ({why}) — a defect of the \
+                 check, not of the program"
+            ),
+            MODIFIABLE_RULE,
         )),
     }
 }
 
 /// WI-20260823-TR8CF — the declared type of the place a `Modify` target names: a
-/// parameter's, `result`'s (the return type), a value-producing zero-arg operation's
-/// (its return type, WI-313), a nullary constructor's (its sort, WI-20260823-4GBQV),
-/// then each field of a path (`c.rep`) in turn. On an operation's own row the parameter
+/// parameter's, `result`'s (the return type), then each field of a path (`c.rep`) in
+/// turn. A zero-argument operation's result and a constructor's constant are AMBIENT
+/// places and answer [`PlaceType::Ambient`] (WI-20260902-JB6RS). On an operation's own row the parameter
 /// and the result are read off `fact`; elsewhere — a row written as a type argument —
 /// off the signature of the operation that declares the place. `Err` for a shape this
 /// does not read, so it is reported and not admitted.
@@ -3791,16 +3815,14 @@ fn modify_place_type(
             };
             vec![declared.ok_or_else(|| format!("`{head_name}` is not among its operation's parameters"))?]
         }
-        Some(crate::intern::SymbolKind::Operation) => vec![kb
-            .op_record(head)
-            .and_then(|r| r.signature.as_ref())
-            .map(|sig| sig.return_type.clone())
-            .ok_or_else(|| format!("the operation `{head_name}` records no return type"))?],
+        // AMBIENT: the result of a zero-argument operation (WI-313's `Modify[op]`) and a
+        // constructor's constant (WI-20260823-4GBQV's `Modify[counter]`, retired at the
+        // loader). Either is declarable, and neither is writable — no call re-keys onto it.
+        Some(crate::intern::SymbolKind::Operation) => {
+            return Ok(PlaceType::Ambient { head, what: "the zero-argument operation" })
+        }
         Some(crate::intern::SymbolKind::Entity) => {
-            let sort = kb
-                .sort_of_constructor(head)
-                .ok_or_else(|| format!("the constructor `{head_name}` has no sort"))?;
-            vec![Value::term(kb.make_name_term_from_sym(sort))]
+            return Ok(PlaceType::Ambient { head, what: "the constructor" })
         }
         // A callback's binder or result, or a body local: its type is on no signature
         // this reads.
@@ -4655,8 +4677,8 @@ pub(crate) fn check_written_row_bindings(
                     // it cannot declare. The place's type is read off the signature of the
                     // operation that declares it.
                     ModifyTarget::Place => {
-                        if let Some(detail) = place_not_modifiable(kb, None, &label, &keys, &mut regions) {
-                            push(format!("{detail} — {MODIFIABLE_RULE}"));
+                        if let Some((detail, rule)) = place_not_modifiable(kb, None, &label, &keys, &mut regions) {
+                            push(format!("{detail} — {rule}"));
                             continue;
                         }
                         None
@@ -4669,10 +4691,11 @@ pub(crate) fn check_written_row_bindings(
                         "{which} — a `Modify` target is a PLACE, not a type \
                          (kernel-language.md §5.6). A row TYPE-ARGUMENT is not a \
                          signature, so the places a SIGNATURE offers are not available \
-                         here: there is no parameter to name, and no `result`. What IS \
-                         available is an ambient resource — a NULLARY CONSTRUCTOR that \
-                         denotes one (`Modify[clock]` over an `entity clock`), which is \
-                         the §5.6 form written for exactly this position."
+                         here: there is no parameter to name, and no `result`, so this \
+                         row can name no place at all — a resource is threaded as a \
+                         parameter, and only a signature has one. A nullary constructor is \
+                         its type here and a zero-argument operation an ambient place, and \
+                         neither is one (kernel-language.md §5.6, WI-20260902-JB6RS)."
                     ));
                     continue;
                 }

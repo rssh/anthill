@@ -441,9 +441,12 @@ namespace test.r6.asnull
     entity plain
   end
   operation put(p: Plain, n: Int64) -> Unit effects Modify[p] = set(p, n)
-  operation go() -> Int64 effects Modify[plain] =
-    let _ = put(plain, 6)
-    get(plain)
+  -- The place is a binding, not the constant: ambient places are retired
+  -- (WI-20260902-JB6RS), so `Modify[plain]` and `put(plain, 6)` name none.
+  operation go() -> Int64 =
+    let p = plain
+    let _ = put(p, 6)
+    get(p)
 end
 "#;
     assert_eq!(run_with_handlers(as_nullary, "test.r6.asnull.go"), Ok(6));

@@ -212,6 +212,7 @@ hidden-row report (D4 is the spec's twin of this comment).
     `operation touch(target: CounterState) -> Unit effects Modify[target]`, whose body writes
     nothing: a row is an upper bound. The typing subject is unchanged. Pool sorts depend on it
     (`file_storage` is such a place, 037 §3.2).
+    *(AMENDED by WI-20260902-JB6RS, user 2026-10-20: ambient places are retired, so these rows are refusals now — `Modify[counter]` is the constructor's type, `set(counter(), n)` names no place, and a zero-argument operation's result is refused as an ambient place. The pool sorts this bullet cites lose the row form; see the note in 037 §3.2 and WI-20261017-J4WGC.)*
   - `wi_brt4y_host_implemented_test.rs:389–390`: two rows of `MIGRATED`, which becomes 44.
   - `scaland/core/src/test/scala/anthill/codegen/scala/BootstrapTest.scala:3484`: `ModifyRuntime.scala`
     leaves the emitted list, which becomes nine sorts.

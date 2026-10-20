@@ -2892,81 +2892,12 @@ end
     );
 }
 
-/// WI-20260823-4GBQV — THE AMBIENT-RESOURCE IDIOM, END TO END: a nullary constructor
-/// NAMES a slot, the declaration spells it, and the arena holds the value.
-///
-/// This is the shape `prelude/effects.anthill`'s runtime note has always described —
-/// "one arena keyed by the target's FUNCTOR SYMBOL: `set(store, v)` and `set(counter, v)`
-/// share the same handler but live in separate slots" — and until this ticket it was not
-/// writable at all. Both halves failed: `Modify[counter]` classified as a TYPE, so
-/// `check_modify_targets` refused the declaration; and `set(counter(), n)` passes an
-/// APPLICATION, which the effect re-key did not read, so the callee's `Modify[target]`
-/// leaked into the caller's row.
-///
-/// DRIVES THE CAPABILITY, not the load. `write` then `read` through the SAME arena
-/// `m5_modify_counter_write_then_read` uses, so a green row here means the ambient
-/// spelling reaches the same slots the parameter spelling does.
-///
-/// BACK-OUT (repo rule "assert the CONTROL too"), and the two halves fail DIFFERENTLY,
-/// which is why one test cannot stand for both:
-///   * back out the LOADER half (`type_expr_to_child_modify_target` delegating
-///     unconditionally) ⇒ `check_modify_targets` refuses `Modify[counter]` at the
-///     declaration.
-///   * back out the TYPER half (`arg_place_head` dropping its
-///     `nullary_constructor_arg` leg) ⇒ the declaration loads and the CALL is refused,
-///     by [`unrekeyed_modify_argument`] naming `counter(…)` — the leak the un-re-keyed
-///     row used to produce (`undeclared effect: Modify[T = target]`, naming
-///     `ModifyRuntime.set`'s own parameter) needs that refusal backed out too, since the
-///     same ticket closed both. MEASURED under each back-out, not predicted: this arm's
-///     mode was the leak until the refusal landed above it.
-/// `m5_modify_counter_write_then_read` passes under BOTH back-outs, by design: it is the
-/// PARAMETER spelling, and it is what says this test measures the ambient one and not the
-/// arena.
-#[test]
-fn m5_modify_an_ambient_resource_write_then_read() {
-    let src = r#"
-namespace test.m5_ambient
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{get, set}
-
-  sort CounterState
-    provides Modifiable[T = Self]
-    entity counter
-  end
-
-  -- `counter` is a NULLARY constructor: a constant of `CounterState`, so it NAMES
-  -- the slot `Env(counter)`. No parameter, no handle threaded through the caller.
-  operation write(n: Int64) -> Unit effects Modify[counter] = set(counter(), n)
-  operation read() -> Int64 = get(counter())
-end
-"#;
-    let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
-
-    interp
-        .call("test.m5_ambient.write", &[Value::Int(42)])
-        .expect("ambient write");
-    let got = interp
-        .call("test.m5_ambient.read", &[])
-        .expect("ambient read");
-    assert_eq!(
-        got.literal_int64(interp.kb()),
-        Some(42),
-        "the ambient slot holds the value"
-    );
-
-    interp
-        .call("test.m5_ambient.write", &[Value::Int(7)])
-        .expect("ambient overwrite");
-    let got = interp
-        .call("test.m5_ambient.read", &[])
-        .expect("ambient read again");
-    assert_eq!(
-        got.literal_int64(interp.kb()),
-        Some(7),
-        "the ambient slot was overwritten"
-    );
-}
+// WI-20260902-JB6RS — `m5_modify_an_ambient_resource_write_then_read` stood here: it drove
+// a write and a read of an AMBIENT slot (`Modify[counter]` over a nullary constructor,
+// WI-20260823-4GBQV) through the arena `m5_modify_counter_write_then_read` uses. Ambient
+// places are retired (user, 2026-10-20), so the program it ran no longer loads; its
+// refusal is pinned in `wi4gbqv_ambient_resource_test`, and the parameter spelling above
+// is the capability that remains.
 
 #[test]
 fn m5_modify_get_before_set_errors() {

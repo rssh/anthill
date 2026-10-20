@@ -1,6 +1,13 @@
 //! WI-9PGCM — an operation's `requires` over a TYPE-LEVEL variable is an
 //! obligation the call site can discharge.
 //!
+//! THE LABELS ARE TYPES, and the facts about them are written over types —
+//! `fact flows_to(Public[], Public[])` (WI-20260902-JB6RS, user 2026-10-17). `Text[L =
+//! Untrusted]` binds `L` to the TYPE `Untrusted`, a constructor's type face (kernel
+//! §4.4), while a bare `Untrusted` in a fact's data slot is the INSTANCE; this file used
+//! to write the facts bare, which worked while a constructor's type and its instance
+//! were one term. The prose below keeps the bare spelling it was written in.
+//!
 //! `send(body: Text[L = ?l]) requires flows_to(?l, Public)` names `?l`, which is
 //! bound in the PARAMETER TYPE and is not among the operation's value parameters.
 //! WI-539's call-site check proves a value precondition under σ (param symbol ↦
@@ -132,19 +139,19 @@ namespace {ns}
   import {ns}.Text
   import {ns}.Text.{{mk}}
 
-  fact flows_to(Public, Public)
-  fact flows_to(Untrusted, Untrusted)
-  -- ABSENT, and the point of the whole file: flows_to(Untrusted, Public)
+  fact flows_to(Public[], Public[])
+  fact flows_to(Untrusted[], Untrusted[])
+  -- ABSENT, and the point of the whole file: flows_to(Untrusted[], Public[])
 
   operation fetch() -> Text[L = Untrusted] = todo()
   operation banner() -> Text[L = Public] = todo()
 
   operation send(body: Text[L = ?l]) -> Unit
-    requires flows_to(?l, Public)
+    requires flows_to(?l, Public[])
     = ()
 
   -- MIXED: ONE atom naming both a type-level variable and a value parameter.
-  fact allowed(Public, 1)
+  fact allowed(Public[], 1)
   operation gate(body: Text[L = ?l], n: Int64) -> Unit
     requires allowed(?l, n)
     = ()
@@ -173,12 +180,12 @@ fn untrusted_label_into_public_only_sink_is_refused() {
         taint_prelude("test.wi9pgcm.leak")
     );
     let errs = load_result(&src).expect_err(
-        "`send(fetch())` carries `Untrusted` into a sink requiring `flows_to(?l, Public)`; \
+        "`send(fetch())` carries `Untrusted` into a sink requiring `flows_to(?l, Public[])`; \
          with the lattice edge absent the precondition cannot be proved and the call must \
          be refused",
     );
     assert!(
-        is_unsatisfied_precondition(&errs, "flows_to(Untrusted, Public)"),
+        is_unsatisfied_precondition(&errs, "flows_to(Untrusted[], Public[])"),
         "expected the call-site precondition diagnostic for the grounded goal; got: {errs:#?}"
     );
 }
@@ -219,7 +226,7 @@ fn public_label_into_public_only_sink_loads() {
     let res = load_result(&src);
     assert!(
         res.is_ok(),
-        "`send(banner())` grounds the precondition to `flows_to(Public, Public)`, which is \
+        "`send(banner())` grounds the precondition to `flows_to(Public[], Public[])`, which is \
          a fact — the call must load clean. got: {:#?}",
         res.err()
     );
@@ -246,7 +253,7 @@ fn existential_witness_does_not_discharge_the_obligation() {
          an existential witness for `?l` is not a proof about the argument",
     );
     assert!(
-        is_unsatisfied_precondition(&errs, "flows_to(Untrusted, Public)"),
+        is_unsatisfied_precondition(&errs, "flows_to(Untrusted[], Public[])"),
         "the obligation must be judged at the argument's binding, not at whatever \
          binding happens to have a fact; got: {errs:#?}"
     );
@@ -270,11 +277,11 @@ fn rigid_label_obligation_is_decided_and_refused() {
         taint_prelude("test.wi9pgcm.poly")
     );
     let errs = load_result(&src).expect_err(
-        "`?m` is universally quantified in the body, so `flows_to(?m, Public)` holds \
+        "`?m` is universally quantified in the body, so `flows_to(?m, Public[])` holds \
          for no instantiation; the wrapper must be refused rather than launder it",
     );
     assert!(
-        errs.iter().any(|e| e.contains("flows_to(?m, Public)")),
+        errs.iter().any(|e| e.contains("flows_to(?m, Public[])")),
         "the diagnostic must name the goal in the spelling the author wrote — `?m`, \
          the source form, not the `!m` a rigid prints as; got: {errs:#?}"
     );
@@ -305,7 +312,7 @@ fn declaring_the_clause_discharges_it_from_gamma() {
     // at `send.requires`, which is that same "never read" made visible.
     let src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
-         requires flows_to(?m, Public)\n    = send(t)\nend\n",
+         requires flows_to(?m, Public[])\n    = send(t)\nend\n",
         taint_prelude("test.wi9pgcm.declared")
     );
     let res = load_result(&src);
@@ -379,7 +386,7 @@ fn the_wrapper_no_longer_swallows_the_obligation() {
          obligation; the wrapper itself is the load error",
     );
     assert!(
-        errs.iter().any(|e| e.contains("flows_to(?m, Public)")),
+        errs.iter().any(|e| e.contains("flows_to(?m, Public[])")),
         "the diagnostic names the obligation the wrapper dropped; got: {errs:#?}"
     );
 }
@@ -399,7 +406,7 @@ fn a_declared_wrapper_gates_its_own_callers() {
     // (`send.requires`, inside the body, rather than `relay.requires` at the call).
     let ok_src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
-         requires flows_to(?m, Public)\n    = send(t)\n\
+         requires flows_to(?m, Public[])\n    = send(t)\n\
          \n  operation ok() -> Unit =\n    relay(banner())\nend\n",
         taint_prelude("test.wi9pgcm.gateok")
     );
@@ -413,14 +420,14 @@ fn a_declared_wrapper_gates_its_own_callers() {
 
     let bad_src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
-         requires flows_to(?m, Public)\n    = send(t)\n\
+         requires flows_to(?m, Public[])\n    = send(t)\n\
          \n  operation leak() -> Unit =\n    relay(fetch())\nend\n",
         taint_prelude("test.wi9pgcm.gatebad")
     );
     let errs =
         load_result(&bad_src).expect_err("the declared contract must refuse an Untrusted argument");
     assert!(
-        is_unsatisfied_precondition(&errs, "flows_to(Untrusted, Public)"),
+        is_unsatisfied_precondition(&errs, "flows_to(Untrusted[], Public[])"),
         "the obligation is now decided at the WRAPPER's call site, with both halves \
          judged; got: {errs:#?}"
     );
@@ -441,7 +448,7 @@ fn the_obligation_propagates_through_two_wrappers() {
     // FAILS when the gate split is backed out (both wrappers load).
     let src = format!(
         "{}\n  operation relay(t: Text[L = ?m]) -> Unit\n    \
-         requires flows_to(?m, Public)\n    = send(t)\n\
+         requires flows_to(?m, Public[])\n    = send(t)\n\
          \n  operation relay2(t: Text[L = ?n]) -> Unit =\n    relay(t)\nend\n",
         taint_prelude("test.wi9pgcm.twohop")
     );
@@ -450,7 +457,7 @@ fn the_obligation_propagates_through_two_wrappers() {
          stops there and must be refused",
     );
     assert!(
-        errs.iter().any(|e| e.contains("flows_to(?n, Public)")),
+        errs.iter().any(|e| e.contains("flows_to(?n, Public[])")),
         "named in the SECOND wrapper's own variable — the obligation is restated in \
          the vocabulary of the signature that owes it; got: {errs:#?}"
     );
@@ -494,7 +501,7 @@ fn an_obligation_no_signature_binds_is_refused() {
     // it returned the BYTE-IDENTICAL error, which is a loop.
     let repaired = format!(
         "{}\n  operation pick() -> Text[L = ?k]\n\
-         \n  operation f() -> Unit\n    requires flows_to(?k, Public)\n    \
+         \n  operation f() -> Unit\n    requires flows_to(?k, Public[])\n    \
          = send(pick())\nend\n",
         taint_prelude("test.wi9pgcm.residue2")
     );
@@ -623,7 +630,7 @@ fn mixed_conjunct_decided_and_unprovable_is_refused() {
          fact covers; the call must be refused",
     );
     assert!(
-        is_unsatisfied_precondition(&errs, "allowed(Untrusted, 1)"),
+        is_unsatisfied_precondition(&errs, "allowed(Untrusted[], 1)"),
         "the diagnostic must show the atom with BOTH halves as judged; got: {errs:#?}"
     );
 }
@@ -691,7 +698,7 @@ fn mixed_conjunct_declared_discharges_and_still_gates() {
     let errs = load_result(&bad_src)
         .expect_err("the propagated mixed clause must refuse an Untrusted argument");
     assert!(
-        is_unsatisfied_precondition(&errs, "allowed(Untrusted, 1)"),
+        is_unsatisfied_precondition(&errs, "allowed(Untrusted[], 1)"),
         "both operands judged at the wrapper's call site; got: {errs:#?}"
     );
 }

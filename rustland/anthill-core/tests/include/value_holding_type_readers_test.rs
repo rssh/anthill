@@ -340,7 +340,7 @@ const LABELS: &str = "  sort Level\n    entity Public\n    entity Untrusted\n  e
 #[test]
 fn a_precondition_at_a_type_holding_a_value_is_judged() {
     let decls = format!(
-        "{LABELS}  fact allowed(Public)\n  \
+        "{LABELS}  fact allowed(Public[])\n  \
          operation fetch() -> Text[L = Tag[N = 3]] = text(s: \"x\")\n  \
          operation banner() -> Text[L = Public] = text(s: \"y\")\n  \
          operation send(body: Text[L = ?l]) -> Int64 requires allowed(?l) = 1\n"
@@ -365,7 +365,7 @@ fn a_precondition_at_a_callable_label_naming_a_place_is_judged() {
     let refused = refusal(
         "vhplace",
         &format!(
-            "  import anthill.prelude.{{Cell, Unit}}\n{LABELS}  fact allowed(Public)\n  \
+            "  import anthill.prelude.{{Cell, Unit}}\n{LABELS}  fact allowed(Public[])\n  \
              operation send(body: Text[L = ?l]) -> Int64 requires allowed(?l) = 1\n  \
              operation relay(c: Cell[V = Int64], t: Text[L = (x: Int64) -> Unit @ Modify[c]]) -> Int64 =\n    \
              send(t)"
@@ -383,7 +383,7 @@ fn a_precondition_at_a_callable_label_naming_a_place_is_judged() {
 #[test]
 fn a_wrapper_is_told_to_declare_a_precondition_at_a_type_holding_a_value() {
     let decls = format!(
-        "{LABELS}  sort T3 = Tag[N = 3]\n  fact pair_ok(Public, Public)\n  \
+        "{LABELS}  sort T3 = Tag[N = 3]\n  fact pair_ok(Public[], Public[])\n  \
          operation fetch() -> Text[L = Tag[N = 3]] = text(s: \"x\")\n  \
          operation send2(a: Text[L = ?l], b: Text[L = ?k]) -> Int64 requires pair_ok(?l, ?k) = 1\n"
     );

@@ -2010,8 +2010,10 @@ end
             .unwrap_or_else(|| panic!("no `{name}` binding among the result bindings"))
     }
 
+    /// By DECLARATION: a type names a constructor by its type face (`cat†`), and the
+    /// question here is which sort the type is (WI-20260902-JB6RS).
     fn is_sort(kb: &KnowledgeBase, v: &Value, want: Symbol) -> bool {
-        extract_sort_ref_sym(kb, v) == Some(want)
+        extract_sort_ref_sym(kb, v).map(Symbol::plain) == Some(want.plain())
     }
     fn is_nothing(kb: &KnowledgeBase, v: &Value) -> bool {
         type_dispatch_name_view(kb, v) == Some("nothing")

@@ -1833,10 +1833,13 @@ module.exports = grammar({
     // reduce the name and read `[…]` as a trailing `meta_block`. Since
     // WI-20260915-G9EA9 a block opens with `@[`, and generation reports no conflict
     // without it.
+    // WI-20260902-JB6RS — the bracket may be EMPTY: `Foo[]` is the type `Foo` written as
+    // data, where a constructor's bare name is its instance (kernel-language.md §4.4).
+    // In a type position it is `Foo` itself.
     application: $ => seq(
       field('name', choice($.name, $.absolute_name)),
       '[',
-      commaSep1($.sort_binding),
+      commaSep($.sort_binding),
       ']',
     ),
 
