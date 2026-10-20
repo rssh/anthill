@@ -1,10 +1,10 @@
 # 071: `TypePattern[T]` — a boundary catches by a type pattern, and a raise carries its type
 
-## Status: Draft (2026-10-16). Decided in discussion on WI-20260908-9WVT7's third review: `ErrorTag` is retired; the boundary's evidence is a new spec named `TypePattern`, with one operation `admits(t: Type) -> Bool`; `TypeValue provides TypePattern[T = T]` (a provision, not a refinement); a raise carries the `TypeValue` of its payload's static type. Taken as this proposal's reading, from the same discussion: dispatch is by type pattern, and how a platform computes it is that platform's own (§3); neither spec takes a program-written row.
+## Status: Draft (2026-10-16). Decided in discussion on WI-20260908-9WVT7's third review: `ErrorTag` is retired; the boundary's evidence is a new spec named `TypePattern`, with one operation `admits(t: Type) -> Bool`; `TypeValue provides TypePattern[T = T]` (a provision, not a refinement); a raise carries the `TypeValue` of its payload's static type. Taken as this proposal's reading, from the same discussion: dispatch is by type pattern, and how a platform computes it is that platform's own (§3); neither spec takes a program-written row. Stage (a) is done (2026-10-17): 065 and 027.4 carry status lines naming what this proposal amends, and WI-20260911-3MV2C a note that stage (d) delivers it. Stage (b) is done (2026-10-20): `TypePattern`, its one row with `admits` in the `where` block, and the test `anthill.reflect.type_admits` (`kb/typing/type_pattern.rs`); a written `provides TypePattern[…]` is refused at load. The row is written on a sort of its own, `anthill.reflect.TypeValuePattern`, and not on `TypeValue` as §1.2 first wrote it (user, 2026-10-20): `TypeValue` is provided by every sort, so a member in a `where` block of its provision was read as an operation every sort has, and the row's condition `TypeValue[T = T]`, naming the sort it is written on, was stored as `TypeValue` with `T` left out. It is still one row over `TypeValue`'s family. With it came three repairs, each to a rule an existing section states: a type argument written `?` in an operation body is left out where the type value is typed; a sort's own operation named `type_value` no longer answers `TypeValue.type_value`; and a call at a type with an open slot is refused at load. Decided with the user for the test (2026-10-20): `anthill.reflect.type_admits` is a public reflect operation; an argument left out on either side admits; a sort that refines the pattern's through `requires` is each instance its clauses give it, its own arguments put for the parameters a clause names; an arrow is compared as the `Function` it is; and the refusal of a call at an open slot is the rule until stage (e) builds pattern evidence there. Nothing reads `TypePattern` yet; stages (c)–(e) are not implemented.
 
-## Amends: [065](065-type-value-requirement.md) §2 (`TypeValue` gains a provision of `TypePattern`; its rule that every instance is derived now covers both specs), [027.4](027.4-error-effect-reify.md) (the boundary's evidence, and the tag continuum's choice: point 3, a ground type term on the raise and a pattern on the boundary). In `docs/kernel-language.md`: the `ErrorTag` paragraph of §8.7, the sentence of §5.4's structural-former paragraph that names `ErrorTag`, and the data of `stdlib/anthill/prelude/effects.anthill`'s `reify` comment.
+## Amends: [065](065-type-value-requirement.md) §2 (`TypePattern` has one row, over `TypeValue`'s instances; its rule that every instance is derived now covers both specs), [027.4](027.4-error-effect-reify.md) (the boundary's evidence, and the tag continuum's choice: point 3, a ground type term on the raise and a pattern on the boundary). In `docs/kernel-language.md`: the `ErrorTag` paragraph of §8.7, the sentence of §5.4's structural-former paragraph that names `ErrorTag`, and the data of `stdlib/anthill/prelude/effects.anthill`'s `reify` comment.
 
-## Relates to: [066](066-provision-member-blocks.md) (a provision's `where` block, which is what lets `TypeValue`'s row read `T` as a value), [070](070-self-and-fresh-bare-sorts.md) (the open slot, `kernel-language.md` §5.4), WI-20260911-3MV2C (a boundary blind to type arguments — delivered by stage (d)), WI-20261015-D2KZ5 (what an unwritten `T1` binds — open question 1), WI-20260921-28TAT (which introduced `ErrorTag`), WI-20260908-9WVT7 (whose review found that a written `ErrorTag` row stops the boundary: finding F1).
+## Relates to: [066](066-provision-member-blocks.md) (a provision's `where` block, which is what lets `TypePattern`'s one row read `T` as a value), [070](070-self-and-fresh-bare-sorts.md) (the open slot, `kernel-language.md` §5.4), WI-20260911-3MV2C (a boundary blind to type arguments — delivered by stage (d)), WI-20261015-D2KZ5 (what an unwritten `T1` binds — open question 1), WI-20260921-28TAT (which introduced `ErrorTag`), WI-20260908-9WVT7 (whose review found that a written `ErrorTag` row stops the boundary: finding F1).
 
 ## Tracked by: tickets tagged `proposal-071`, one per stage (§4): WI-20261016-Y1EZJ (a), WI-20261016-SQZPQ (b), WI-20261016-YM8HD (c), WI-20261016-5CDN5 (d), WI-20261016-BDVYW (e).
 
@@ -31,19 +31,20 @@ end
 
 `TypePattern[T = Boom[Reason = ?]]` admits `Boom[Reason = String]` and `Boom[Reason = Int64]`; `TypePattern[T = Boom[Reason = String]]` admits the first alone; a pattern at a sort admits its subsorts (`sort FileNotFound requires IoError`: a pattern at `IoError` admits `FileNotFound`).
 
-### 1.2 `TypeValue` provides it
+### 1.2 Its one row, over `TypeValue`'s family
 
 ```anthill
-sort anthill.reflect.TypeValue
+sort anthill.reflect.TypeValuePattern     -- a sort of its own
   sort T = ?
-  operation type_value() -> Type
   provides TypePattern[T = T] :- TypeValue[T = T] where
-    operation admits(t: Type) -> Bool = …   -- `t` is a subtype of `T`, `T` read as a value (§1.5)
+    operation admits(t: Type) -> Bool = type_admits(T, t)   -- `t` is a subtype of `T`, `T` read as a value (§1.5)
   end
 end
 ```
 
 One derived family, as today, and one row over it: a type with no open slot is a pattern that admits its subtypes. The member reads `T` as a value under the row's own condition, which 066's `where` block puts in its scope. Measured on a program-level stand-in (`sort Mark { sort T = ? ; provides Tag[T = T] :- TypeValue[T = T] where operation tag() -> Type = T end }`): a generic caller dispatching through the slot answers `Boom`; the same member outside the block is refused, nothing putting `TypeValue[T = T]` in its scope, and with its own `requires TypeValue[T = T]` it is refused as strengthening the spec's precondition.
+
+The row is not written on `TypeValue` itself (user, 2026-10-20). Every sort provides `TypeValue`, so a member in a `where` block of `TypeValue`'s provision was read as an operation of every sort: measured, `Club.check(1)` over `sort Club { …; operation admits(t: Type) -> Bool = false; operation check(n: Int64) -> Bool = admits[T = Int64](Int64) }` answered `true`, `TypeValue.admits` running in `Club`'s place. And the condition `TypeValue[T = T]`, naming the sort it is written on, is stored as `TypeValue` with `T` left out, so no goal of `TypePattern` resolved until a reader was patched, and a patch in one reader left `f[P, Q](t) requires TypeValue[T = P] = TypeValue.admits[T = Q](t)` answering with `P`'s evidence.
 
 Neither spec takes a program-written row: a written `provides TypeValue[…]` is refused today (065 §2), and a written `provides TypePattern[…]` is refused the same way. A forged `admits` would make a boundary typed at `Boom` deliver an `Other` inside `Result[E = Boom, …]`, or let a `Boom` escape an operation whose row no longer holds `Error[Boom]`.
 
@@ -72,7 +73,7 @@ A raise reaching a boundary is caught when the boundary's `TypePattern[T = T1].a
 
 ### 1.6 Pattern evidence at an open slot
 
-`TypeValue`'s row answers every pattern without an open slot. A pattern with one (`Boom[Reason = ?]`) is built by the typer from `T1`'s term at the call: an open slot is a wildcard, a rigid parameter `P` inside it takes the caller's evidence for `P`, and a sort application takes its derived instance. It is not found by instance search: a goal with an unbound slot matches every instance.
+`TypePattern`'s one row answers every pattern without an open slot. A pattern with one (`Boom[Reason = ?]`) is built by the typer from `T1`'s term at the call: an open slot is a wildcard, a rigid parameter `P` inside it takes the caller's evidence for `P`, and a sort application takes its derived instance. It is not found by instance search: a goal with an unbound slot matches every instance.
 
 ## 2. What does not change
 
@@ -90,7 +91,7 @@ The semantics is §1: catch by type pattern, with the raised type travelling. A 
 Each stage leaves the whole suite green, and its rows say which back-out fails them.
 
 - **(a)** This proposal; status lines on 065 and 027.4; a note on WI-20260911-3MV2C that stage (d) delivers it.
-- **(b)** `TypePattern` and `TypeValue provides TypePattern[T = T]`, with `admits` over the one predicate of §1.5 (its run-time half). Nothing reads it yet: behaviour-neutral elsewhere.
+- **(b)** `TypePattern` and its one row, `TypeValuePattern provides TypePattern[T = T] :- TypeValue[T = T]`, with `admits` over the one predicate of §1.5 (its run-time half). Nothing reads it yet: behaviour-neutral elsewhere.
 - **(c)** `reify … requires TypePattern[T = T1]`, and the boundary calls `admits` — with the raised value's head sort as its type until (d), so every verdict is unchanged. `ErrorTag` is retired with it: the spec, `Error`'s row, `is_error_tag_spec` and every gate that reads it, `ErrorLayer`'s positional sub read, and WI-20260908-9WVT7's finding F1.
 - **(d)** `raise … requires TypeValue[T = T]`: the raised error carries its type, and the boundary admits by full type. Generic raisers state the clause; host raisers supply their payload sort's evidence; a raise at a former is refused at load, and the three test files' tuple rows move from the reify to the raise. Delivers 3MV2C.
 - **(e)** The typer's discharge reads the same predicate, and the typer builds pattern evidence at an open slot (§1.6): `caughtWide` loads and catches both labels.
@@ -99,7 +100,7 @@ Each stage leaves the whole suite green, and its rows say which back-out fails t
 
 ## 5. Acceptance
 
-- `admits`: a pattern at `Boom[Reason = ?]` admits both instantiations; `TypeValue[T = Boom[Reason = String]]`'s row admits that one alone; a pattern at `IoError` admits `FileNotFound`.
+- `admits`: a pattern at `Boom[Reason = ?]` admits both instantiations; a pattern at `Boom[Reason = String]` admits that one alone; a pattern at `IoError` admits `FileNotFound`.
 - 3MV2C's rows: nested boundaries at `Box[V = Int64]` (inner) and `Box[V = String]` (outer) answer through the outer one for a `Box[V = String]` raise and the inner one for a `Box[V = Int64]` raise; the two-distinct-sorts row passes either way.
 - `narrowR(1)` answers `"outer"` (today `"inner"`); `caughtWide` loads, and catches `boom("s")` and `boom(5)` (today refused).
 - A written `provides TypePattern[…]` is refused at load; `ErrorTag` no longer exists.

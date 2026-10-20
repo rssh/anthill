@@ -1075,7 +1075,8 @@ impl KnowledgeBase {
             requirement_sorts: plain(&self.requirement_sorts),
             type_param_canonical_var: plain(&self.type_param_canonical_var),
             type_param_canonical_vids: plain(&self.type_param_canonical_vids),
-            member_param_heads: plain(&self.member_param_heads),
+            minted_params: plain(&self.minted_params),
+            unwritten_slot_names: plain(&self.unwritten_slot_names),
             domain_params: plain(&self.domain_params),
             sort_domains: plain(&self.sort_domains),
             fill_relations: plain(&self.fill_relations),
@@ -1166,7 +1167,21 @@ impl KnowledgeBase {
             host_const_mappings: plain(&self.host_const_mappings),
             default_providers: plain(&self.default_providers),
             provides_clause_seen: plain(&self.provides_clause_seen),
-            provides_clause_counts: self.provides_clause_counts.iter().map(|(key, clauses)| (plain(key), clauses.iter().map(|clause| c.value_vec(clause)).collect())).collect(),
+            provides_clause_counts: self
+                .provides_clause_counts
+                .iter()
+                .map(|(key, clauses)| {
+                    let clauses = clauses
+                        .iter()
+                        .map(|clause| crate::kb::ProvisionClause {
+                            conditions: c.value_vec(&clause.conditions),
+                            spec_view: c.value(&clause.spec_view),
+                            site: plain(&clause.site),
+                        })
+                        .collect();
+                    (plain(key), clauses)
+                })
+                .collect(),
         };
         c.finish()?;
         Ok(copy)

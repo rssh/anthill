@@ -2762,18 +2762,173 @@ fn render_op_signature(
     )
 }
 
-/// A member's type parameters beside those of the spec operation it implements: the two
-/// at each position, each as the bare name its bracket wrote and as its variable.
+/// The part of an operation's record [`paired_type_params`] reads.
+#[derive(Clone, Copy)]
+pub(super) struct TypeParamSignature<'a> {
+    pub(super) type_params: &'a [(Symbol, Var)],
+    pub(super) params: &'a [(Symbol, Value)],
+    pub(super) return_type: &'a Value,
+}
+
+impl<'a> TypeParamSignature<'a> {
+    pub(super) fn of(info: &'a crate::kb::op_info::OpInfoRecord) -> Self {
+        Self {
+            type_params: &info.type_params,
+            params: &info.params,
+            return_type: &info.return_type,
+        }
+    }
+}
+
+/// A member's type parameters beside those of the spec operation it implements, each as
+/// its name and its variable.
 ///
-/// None where the two operations declare different numbers of them: pairing by position
-/// across two arities pairs parameters that have nothing to do with each other. A named
-/// requirement's name is a type parameter and is in the lists.
-pub(super) fn paired_type_params<'a>(
-    member: &'a [(Symbol, Var)],
-    spec_op: &'a [(Symbol, Var)],
-) -> impl Iterator<Item = (&'a (Symbol, Var), &'a (Symbol, Var))> {
-    let same_arity = member.len() == spec_op.len();
-    member.iter().zip(spec_op.iter()).filter(move |_| same_arity)
+/// THE DECLARED ONES BY POSITION — a bracket's and the member sugar's, a named
+/// requirement's name among them — where the two operations declare as many: a member
+/// restates the spec operation's bracket under names of its own. Across two counts none is
+/// paired that way, since a position across two lists pairs parameters that have nothing
+/// to do with each other.
+///
+/// A VARIABLE A SIGNATURE WRITES IN A PARAMETER TYPE HAS NO POSITION OF ITS OWN. Its place
+/// on the record is where it was first written, which two spellings of one type need not
+/// share (`Pair[B = ?p, A = ?q]` is `Pair[A = ?q, B = ?p]`), and the record lists it after
+/// the declared families, so a position across the two lists paired a member's `?a` with a
+/// spec operation's bracket, a strengthening `requires` read as a restatement, and the
+/// member answered at another parameter's type (MEASURED). It is paired with the spec
+/// operation's parameter that stands where it stands — at one place of one parameter's
+/// type, or of the result — read off the two signatures side by side, and so is a declared
+/// parameter the positions left unpaired. One that stands opposite two different
+/// parameters of the spec operation is paired with neither: the two signatures say
+/// different things of it, and either pairing would read the member's requirement over it
+/// as one the spec operation states of a parameter it is not.
+pub(super) fn paired_type_params(
+    kb: &KnowledgeBase,
+    member: TypeParamSignature<'_>,
+    spec_op: TypeParamSignature<'_>,
+) -> Vec<((Symbol, Var), (Symbol, Var))> {
+    let declared = |sig: &TypeParamSignature| -> Vec<(Symbol, Var)> {
+        sig.type_params
+            .iter()
+            .copied()
+            .filter(|(name, _)| kb.minted_param(*name) != Some(MintedParam::Inline))
+            .collect()
+    };
+    let (member_declared, spec_declared) = (declared(&member), declared(&spec_op));
+    let mut pairs: Vec<((Symbol, Var), (Symbol, Var))> = Vec::new();
+    if member_declared.len() == spec_declared.len() {
+        pairs.extend(member_declared.into_iter().zip(spec_declared));
+    }
+    let global = |v: &Var| match v {
+        Var::Global(vid) => Some(*vid),
+        _ => None,
+    };
+    let unpaired: Vec<VarId> = member
+        .type_params
+        .iter()
+        .filter(|(_, v)| !pairs.iter().any(|((_, m), _)| m == v))
+        .filter_map(|(_, v)| global(v))
+        .collect();
+    if unpaired.is_empty() {
+        return pairs;
+    }
+    let spec_vars: Vec<VarId> = spec_op.type_params.iter().filter_map(|(_, v)| global(v)).collect();
+    let mut opposite: Vec<(VarId, VarId)> = Vec::new();
+    if member.params.len() == spec_op.params.len() {
+        for ((_, m), (_, s)) in member.params.iter().zip(spec_op.params) {
+            params_standing_opposite(kb, m, s, &unpaired, &spec_vars, &mut opposite);
+        }
+    }
+    params_standing_opposite(
+        kb,
+        member.return_type,
+        spec_op.return_type,
+        &unpaired,
+        &spec_vars,
+        &mut opposite,
+    );
+    for (name, var) in member.type_params {
+        let Some(vid) = global(var).filter(|vid| unpaired.contains(vid)) else {
+            continue;
+        };
+        let mut partners = opposite.iter().filter(|(m, _)| *m == vid).map(|(_, s)| *s);
+        let Some(partner) = partners.next() else {
+            continue;
+        };
+        if partners.any(|other| other != partner) {
+            continue;
+        }
+        if let Some(spec_param) = spec_op.type_params.iter().find(|(_, v)| global(v) == Some(partner)) {
+            pairs.push(((*name, *var), *spec_param));
+        }
+    }
+    pairs
+}
+
+/// Each place where a parameter of `member_open` stands in `m` opposite a parameter of
+/// `spec`'s in `s`, pushed onto `out`. The two types are read as types and walked side by
+/// side: two applications of one sort by their arguments, matched by key as two instances of
+/// one sort are (`Pair[B = ?p, A = ?q]` beside `Pair[A = ?a, B = ?b]` pairs `?q` with `?a`);
+/// two arrows by parameter and result; two tuples by label. Where they part — another sort, a
+/// type opposite a parameter, another shape — there is nothing beneath to pair.
+fn params_standing_opposite(
+    kb: &KnowledgeBase,
+    m: &Value,
+    s: &Value,
+    member_open: &[VarId],
+    spec: &[VarId],
+    out: &mut Vec<(VarId, VarId)>,
+) {
+    let (mv, sv) = (declared_type_param_vid(kb, m), declared_type_param_vid(kb, s));
+    if mv.is_some() || sv.is_some() {
+        if let (Some(mv), Some(sv)) = (mv, sv) {
+            if member_open.contains(&mv) && spec.contains(&sv) {
+                out.push((mv, sv));
+            }
+        }
+        return;
+    }
+    if let (Some((m_base, m_pos, m_named)), Some((s_base, s_pos, s_named))) =
+        (parameterized_parts(kb, m), parameterized_parts(kb, s))
+    {
+        let key_match = BindingKeyMatch::for_bases(kb, m_base, s_base);
+        if key_match != BindingKeyMatch::Label || m_pos.len() != s_pos.len() {
+            return;
+        }
+        for (a, b) in m_pos.iter().zip(&s_pos) {
+            params_standing_opposite(kb, a, b, member_open, spec, out);
+        }
+        for (key, a) in &m_named {
+            if let Some(b) = binding_for_param(kb, &s_named, *key, key_match) {
+                params_standing_opposite(kb, a, b, member_open, spec, out);
+            }
+        }
+        return;
+    }
+    match (extract_type(kb, m), extract_type(kb, s)) {
+        (
+            TypeExtractor::Arrow {
+                param: m_param,
+                result: m_result,
+                ..
+            },
+            TypeExtractor::Arrow {
+                param: s_param,
+                result: s_result,
+                ..
+            },
+        ) => {
+            params_standing_opposite(kb, &m_param, &s_param, member_open, spec, out);
+            params_standing_opposite(kb, &m_result, &s_result, member_open, spec, out);
+        }
+        (TypeExtractor::NamedTuple(m_fields), TypeExtractor::NamedTuple(s_fields)) => {
+            for (label, a) in &m_fields {
+                if let Some((_, b)) = s_fields.iter().find(|(l, _)| l == label) {
+                    params_standing_opposite(kb, a, b, member_open, spec, out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// WI-347 — operation-override refinement check. A carrier's own operation
@@ -2842,6 +2997,12 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         // first member it compares ([`ProvisionMembers`]).
         let provision = ProvisionMembers::new(p.spec, p.carrier, &p.sigma, p.witness);
         for &spec_op in spec_ops {
+            // An operation answered from its dictionary is answered by no carrier's member
+            // ([`answered_by_its_dictionary`]): a sort's own `type_value` overrides nothing
+            // of `TypeValue`'s, and is held to no contract of it.
+            if answered_by_its_dictionary(kb, spec_op) {
+                continue;
+            }
             let sn = short(kb, spec_op);
             // The carrier's own op of the same short name is its override/impl.
             let Some(&impl_op) = carrier_ops.iter().find(|&&o| short(kb, o) == sn) else {
@@ -3043,62 +3204,73 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // wrong answer. That is why this ships keyed on the symbol spelling rather than
             // growing a `Var`-aware rewrite for a shape nothing produces.
             //
-            // AN ARITY MISMATCH ALIGNS NOTHING, for the reason the VALUE-parameter guard
-            // above gives at length: a positional `zip` across two different arities pairs
-            // unrelated parameters. There is no `continue` here to match the value side's,
-            // because differing TYPE arity is not itself a signature refusal today; the
-            // conservative answer is to align nothing and let the clause comparison fall
-            // where it falls.
+            // WHICH PARAMETERS ARE PAIRED is [`paired_type_params`]'s: the declared ones by
+            // position where the two operations declare as many, a variable the signature
+            // writes by where it stands. A parameter left unpaired aligns with nothing, and
+            // the clause comparison falls where it falls: a restatement over it is refused
+            // as an addition, which is a FALSE REFUSAL the author can see, never a silent
+            // wrong answer.
             //
             // ONE WALK, TWO SPELLINGS, like `param_align` above — the `TermId`-valued map
             // the hash-consed clause rewrite takes and the `Symbol → Symbol` map the
             // occurrence rewrite takes, built from the same pairs so they cannot disagree.
-            let type_param_pairs: Vec<(Symbol, Symbol)> = {
-                let mut pairs = Vec::new();
-                let impl_scope = kb.symbols.scope_id(impl_op);
-                let spec_scope = kb.symbols.scope_id(spec_op);
-                for ((ip, _), (sp, _)) in
-                    paired_type_params(&impl_info.type_params, &spec_info.type_params)
-                {
-                    // `None` is not a skipped case worth reporting: `type_param_sym`
-                    // reads the set `add_type_param` filled, so a parameter it does not
-                    // know is one no clause reference could have resolved to either.
-                    if let (Some(i), Some(s)) = (
-                        kb.symbols.type_param_sym(impl_scope, kb.local_name_of(*ip)),
-                        kb.symbols.type_param_sym(spec_scope, kb.local_name_of(*sp)),
-                    ) {
-                        if i != s {
-                            pairs.push((i, s));
-                        }
-                    }
-                }
-                pairs
+            //
+            // EACH SIDE IN ITS OWN SPELLING. A clause names a parameter the bracket declares
+            // by its op-scoped symbol, and any other — the member sugar's, a variable the
+            // signature writes inline — as its variable; so the member's reference is
+            // rewritten to how the SPEC OPERATION's clause names the parameter it is paired
+            // with, which for a bracket written opposite a variable is the other spelling
+            // (`d[U](… y: U) requires TypeValue[T = U]` restating `d(… y: ?t) requires
+            // TypeValue[T = ?t]`). The `Symbol → Symbol` map holds the bracket pairs alone:
+            // a variable is no symbol the occurrence rewrite keys on.
+            let pairs = paired_type_params(
+                kb,
+                TypeParamSignature::of(&impl_info),
+                TypeParamSignature::of(&spec_info),
+            );
+            let impl_scope = kb.symbols.scope_id(impl_op);
+            let spec_scope = kb.symbols.scope_id(spec_op);
+            // `None` for a parameter no bracket declares, and not a skipped case worth
+            // reporting for one it does: `type_param_sym` reads the set `add_type_param`
+            // filled, so a parameter it does not know is one no clause reference could have
+            // resolved to either.
+            let bracket_sym = |kb: &KnowledgeBase, scope, name: Symbol| {
+                (kb.minted_param(name).is_none())
+                    .then(|| kb.symbols.type_param_sym(scope, kb.local_name_of(name)))
+                    .flatten()
             };
-            let type_param_align: Vec<(Symbol, TermId)> = type_param_pairs
-                .iter()
-                .map(|(i, s)| {
-                    let t = kb.alloc(Term::Ref(*s));
-                    (*i, t)
-                })
-                .collect();
+            let mut type_param_pairs: Vec<(Symbol, Symbol)> = Vec::new();
+            let mut type_param_align: Vec<(Symbol, TermId)> = Vec::new();
             // WI-20261005-KSSA4 — AND AS VARIABLES, for the clause that spells a type
             // parameter as one: the member sugar's. `run(self: C, t: Tagger.C)` is
             // `run[P](self: C, t: P) requires Tagger[C = P]` with `P` a variable no
-            // name in the operation's scope denotes, so the symbol alignment above has
-            // nothing to key on and a member restating the signature verbatim read as
-            // adding a clause — "it strengthens the precondition" (MEASURED). The same
-            // positions, the same arity rule.
-            let type_param_var_align: Vec<(Var, TermId)> = {
-                let mut pairs = Vec::new();
-                for ((_, iv), (_, sv)) in
-                    paired_type_params(&impl_info.type_params, &spec_info.type_params)
-                {
-                    if iv != sv {
-                        pairs.push((*iv, kb.alloc(Term::Var(*sv))));
+            // name in the operation's scope denotes, so the symbol alignment has nothing
+            // to key on and a member restating the signature verbatim read as adding a
+            // clause — "it strengthens the precondition" (MEASURED).
+            let mut type_param_var_align: Vec<(Var, TermId)> = Vec::new();
+            for ((ip, iv), (sp, sv)) in &pairs {
+                let i = bracket_sym(kb, impl_scope, *ip);
+                let s = bracket_sym(kb, spec_scope, *sp);
+                let spec_var = kb.alloc(Term::Var(*sv));
+                let spec_spelling = match s {
+                    Some(s) => kb.alloc(Term::Ref(s)),
+                    None => spec_var,
+                };
+                if let Some(i) = i {
+                    if let Some(s) = s.filter(|s| *s != i) {
+                        type_param_pairs.push((i, s));
+                    }
+                    if Some(i) != s {
+                        type_param_align.push((i, spec_spelling));
                     }
                 }
-                pairs
-            };
+                // A bracket's variable is how a row tail spells it, on either side; any other
+                // parameter's is the one spelling its clauses have.
+                let var_target = if i.is_some() { spec_var } else { spec_spelling };
+                if iv != sv {
+                    type_param_var_align.push((*iv, var_target));
+                }
+            }
 
             let full_align: Vec<(Symbol, TermId)> = {
                 let mut a = param_align.clone();

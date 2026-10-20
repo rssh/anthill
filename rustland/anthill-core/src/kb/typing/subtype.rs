@@ -560,46 +560,55 @@ pub(super) enum Variance {
 /// no join where `Option[T = cat]` and `Option[T = dog]` join at `Option[T = Animal]`
 /// (MEASURED).
 pub(super) fn declared_variance(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Variance {
-    let sort = kb.type_arg_owner(sort).unwrap_or(sort);
-    let cov = matches_variance_fact(kb, "anthill.reflect.typing.Covariant", sort, param);
-    let con = matches_variance_fact(kb, "anthill.reflect.typing.Contravariant", sort, param);
-    match (cov, con) {
-        (true, true) => Variance::Bivariant,
-        (true, false) => Variance::Covariant,
-        (false, true) => Variance::Contravariant,
-        (false, false) => Variance::Invariant,
-    }
+    declared_variances(kb, sort, &[param])[0]
 }
 
-/// Whether a `Covariant`/`Contravariant` fact (named by `fact_qn`) is asserted for
-/// `(sort, param)`. Walks `rules_by_functor` and matches the `sort` by canonical
-/// identity and the `param` by short-name label. The `entity Covariant(sort: Symbol, param: Symbol)`
-/// declaration also shows up under this functor, but its arg values are the field
-/// metadata type (`Symbol`), so it never matches a real `(sort, param)` lookup.
-fn matches_variance_fact(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol, param: Symbol) -> bool {
+/// [`declared_variance`] of each of `params` of `sort`, in order, reading each relation's
+/// facts once — for a reader that asks every parameter of one sort (a type pattern's
+/// arguments, `typing::type_pattern`), where asking them one at a time read every fact of
+/// both relations per parameter.
+pub(super) fn declared_variances(kb: &KnowledgeBase, sort: Symbol, params: &[Symbol]) -> Vec<Variance> {
+    let sort = kb.type_arg_owner(sort).unwrap_or(sort);
+    let cov = variance_fact_params(kb, "anthill.reflect.typing.Covariant", sort);
+    let con = variance_fact_params(kb, "anthill.reflect.typing.Contravariant", sort);
+    params
+        .iter()
+        .map(|&param| {
+            let declared = |facts: &[Symbol]| facts.iter().any(|&p| same_label(kb, p, param));
+            match (declared(&cov), declared(&con)) {
+                (true, true) => Variance::Bivariant,
+                (true, false) => Variance::Covariant,
+                (false, true) => Variance::Contravariant,
+                (false, false) => Variance::Invariant,
+            }
+        })
+        .collect()
+}
+
+/// The parameters a `Covariant`/`Contravariant` fact (named by `fact_qn`) is asserted for at
+/// `sort`. Walks `rules_by_functor` and matches the `sort` by canonical identity; the caller
+/// matches each `param` by short-name label. The `entity Covariant(sort: Symbol, param:
+/// Symbol)` declaration also shows up under this functor, but its arg values are the field
+/// metadata type (`Symbol`), so it never matches a real sort.
+fn variance_fact_params(kb: &KnowledgeBase, fact_qn: &str, sort: Symbol) -> Vec<Symbol> {
     let Some(functor) = kb.try_resolve_symbol(fact_qn) else {
-        return false;
+        return Vec::new();
     };
-    kb.rules_by_functor_iter(functor).any(|rid| {
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            return false;
-        };
-        let sort_ok = get_named_arg(kb, &named, "sort")
-            .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
-            .is_some_and(|s| same_sort_canonical(kb, s, sort));
-        // WI-764: the param label is compared ONLY for a fact whose sort already matched.
-        // `same_label` is a within-one-sort matcher — comparing this fact's param against
-        // an unrelated sort's is exactly the cross-sort misuse its `debug_assert` exists to
-        // catch. Previously both sides were computed eagerly and `&&`-ed, so every variance
-        // fact's param was label-compared regardless of sort; harmless while every stdlib
-        // variance fact keys its param BARE, but WI-764 newly routes QUALIFIED param
-        // symbols in here (a canonical `Relation.T` now reaches `declared_variance`), so
-        // the short-circuit stops being cosmetic.
-        sort_ok
-            && get_named_arg(kb, &named, "param")
-                .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
-                .is_some_and(|p| same_label(kb, p, param))
-    })
+    kb.rules_by_functor_iter(functor)
+        .filter_map(|rid| {
+            let named = kb.fact_head_named_args(rid)?;
+            let fact_sort = get_named_arg(kb, &named, "sort")
+                .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))?;
+            // WI-764: the param label is compared ONLY for a fact whose sort already
+            // matched. `same_label` is a within-one-sort matcher — comparing this fact's
+            // param against an unrelated sort's is exactly the cross-sort misuse its
+            // `debug_assert` exists to catch, and a canonical `Relation.T` reaches here.
+            if !same_sort_canonical(kb, fact_sort, sort) {
+                return None;
+            }
+            get_named_arg(kb, &named, "param").and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
+        })
+        .collect()
 }
 
 /// Check one parameterized binding by the parameter's DECLARED variance

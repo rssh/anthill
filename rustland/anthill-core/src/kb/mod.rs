@@ -1038,6 +1038,22 @@ pub(crate) enum ReifyCarrier {
     Transient,
 }
 
+/// What a type parameter's name that was minted for it alone stands for
+/// ([`KnowledgeBase::minted_param`]). Such a name reads as written and is no other symbol's
+/// equal; a name with no entry is a parameter a bracket or a sort declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintedParam {
+    /// The parameter the member sugar mints for `head.Member` in a signature (`llm:
+    /// Llm.C`), `head` being the spec or the alias the member was reached through.
+    Member { head: Symbol },
+    /// A variable an operation's signature writes in a parameter type (`via(b: Box[?t])`).
+    Inline,
+    /// The unknown a body check opens for a slot its signature leaves unwritten inside a
+    /// parameter's type (`xs: List[T = Box]`'s `Box.V`): no clause can name it. `slot` is
+    /// the sort's parameter the slot is (`Box.V`).
+    UnwrittenSlot { slot: Symbol },
+}
+
 /// WI-20260924-SNJPR — one type alias the scan declared, awaiting its head
 /// ([`KnowledgeBase::alias_heads`]).
 #[derive(Clone, Debug)]
@@ -1530,21 +1546,30 @@ pub struct KnowledgeBase {
     /// that into the DECLARATION, which is what says whether the parameter is a named
     /// requirement slot and so where the frame holds its dictionary.
     type_param_canonical_vids: HashMap<VarId, Symbol>,
-    /// WI-20261006-XQGEW — the NAMES of the type parameters the member sugar mints for
-    /// `Spec.Member` in a signature (`llm: Llm.C`, `effects {Llm.E}`), each with the head
-    /// it was written with: the spec, or the alias the member was reached through.
+    /// WI-20261006-XQGEW, WI-20260911-VNQTR — the NAMES minted for type parameters that have
+    /// none a bracket could write, each with what it stands for ([`MintedParam`]): the
+    /// parameter the member sugar mints for `Spec.Member` in a signature, a variable a
+    /// signature writes in a parameter type (§5.4), and the unknown a body check opens for a
+    /// slot its signature leaves unwritten inside a parameter's type.
     ///
-    /// SUCH A NAME IS A SYMBOL OF ITS OWN ([`Self::mint_member_param_name`]) that reads as
-    /// the bare member. The parameter has no name a program could write, and named by the
-    /// interned `E` it was the same symbol as the enclosing sort's `E`, a bracket's, and
-    /// another spec's member — which a call's bracket matches by identity, and every
-    /// message printed alike.
+    /// SUCH A NAME IS A SYMBOL OF ITS OWN that reads as written. Named by the interned
+    /// spelling, a member's `E` was the same symbol as the enclosing sort's `E`, a
+    /// bracket's and another spec's member, and a variable `?t` was a bracket `[t]`'s —
+    /// which a call's bracket matches by identity, every message printed alike, and a
+    /// clause list keyed by name dropped one of `[U]` and `?U`.
     ///
     /// KEYED BY THE NAME, NOT BY A VARIABLE, because the spelling is the parameter's and
     /// a parameter has many variables: the loader's, the rigid a body check makes of it,
     /// the copy an operation used as a value is instantiated at. Each carries the name
     /// (`VarId::name`), so one write here answers for all of them.
-    member_param_heads: HashMap<Symbol, Symbol>,
+    minted_params: HashMap<Symbol, MintedParam>,
+
+    /// The one name per slot an unwritten slot's unknown is opened under
+    /// ([`Self::unwritten_slot_name`]), keyed by the sort's parameter the slot is. A body
+    /// check opens such a slot every time it runs, and a name per opening would grow the
+    /// symbol table for as long as the KB lives; the unknown's identity is its variable, and
+    /// the name only says what it is.
+    unwritten_slot_names: HashMap<Symbol, Symbol>,
 
     /// WI-743, WI-20260925-SHED7 — every sort with constructors whose domain the loader
     /// derives (or found written), keyed by [`Self::canonical_sort_sym`], mapped to its
@@ -2562,8 +2587,20 @@ pub struct KnowledgeBase {
     /// which the fact store keeps once. Nor can a count or a source location: re-loading
     /// the same files (the idempotency the witness tests pin) re-parses them with new
     /// source ids, and would turn every spec into two alternatives. Two clauses with
-    /// the same carrier, spec and conditions ARE one provision.
-    provides_clause_counts: HashMap<(Symbol, Symbol), Vec<Vec<crate::eval::value::Value>>>,
+    /// the same carrier, spec and conditions ARE one provision. A record also keeps what
+    /// a later load's clause is judged by behind a seal ([`ProvisionClause`]).
+    provides_clause_counts: HashMap<(Symbol, Symbol), Vec<ProvisionClause>>,
+}
+
+/// One recorded `provides` clause ([`KnowledgeBase::record_provides_clause`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ProvisionClause {
+    /// The lowered conditions: with the key, the clause's identity.
+    pub(crate) conditions: Vec<crate::eval::value::Value>,
+    /// The view it provides, as its provision row holds it.
+    pub(crate) spec_view: crate::eval::value::Value,
+    /// Where it was written. A derived clause has no site.
+    pub(crate) site: Option<crate::span::SourceSpan>,
 }
 
 /// WI-20260901-EA6KS — the per-load bookkeeping that belongs to the LOAD CHECKS, taken
@@ -2643,6 +2680,11 @@ pub enum TypeArgProblem {
     /// a `Sort` head ([`KnowledgeBase::check_sort_type_args`]), so a consumer reading a
     /// term built there must not depend on a bindings list being duplicate-free.
     DuplicateParam { param: String },
+    /// A `?_` given to a type an operation body builds, written again elsewhere in the
+    /// operation (`Duo[L = ?_, R = ?_]`, or `Boom[Reason = ?_]` twice): one variable over
+    /// the declaration, tying the places, which a value of a type cannot hold. A `?`, or a
+    /// `?_` written once, leaves its slot open there (§8.1).
+    VariableArgument,
 }
 
 impl TypeArgProblem {
@@ -2679,6 +2721,11 @@ impl TypeArgProblem {
             TypeArgProblem::ExcessPositional { given, free } => format!(
                 "`{sort}` is over-applied: {given} positional type argument(s) but only \
                  {free} declared type parameter(s) left to bind — {declares}"
+            ),
+            TypeArgProblem::VariableArgument => format!(
+                "`{sort}` is given `?_`, in a type an operation body builds, and the operation \
+                 writes that `?_` again: it is one variable tying the places, and a value of a \
+                 type holds no variable — write `?` for each slot left open, or the type"
             ),
         }
     }
@@ -2816,7 +2863,8 @@ impl KnowledgeBase {
             requirement_sorts: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
             type_param_canonical_vids: HashMap::new(),
-            member_param_heads: HashMap::new(),
+            minted_params: HashMap::new(),
+            unwritten_slot_names: HashMap::new(),
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
             fill_relations: HashMap::new(),
@@ -3403,22 +3451,55 @@ impl KnowledgeBase {
         self.type_param_canonical_vids.get(&vid).copied()
     }
 
-    /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
-    /// `head.member`: a fresh symbol that reads as `member` and is no other symbol's
-    /// equal, with `head` recorded for it. THE ONE WRITER of
-    /// [`Self::member_param_heads`], so a member's name cannot be made without what it
-    /// was written with.
-    pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
-        let name = self.symbols.intern_unique(member);
-        self.member_param_heads.insert(name, head);
+    /// A fresh symbol that reads as `spelled`, recorded as standing for `what`. THE ONE
+    /// WRITER of [`Self::minted_params`], so such a name cannot be made without what it
+    /// stands for.
+    fn mint_param_name(&mut self, spelled: &str, what: MintedParam) -> Symbol {
+        let name = self.symbols.intern_unique(spelled);
+        self.minted_params.insert(name, what);
         name
     }
 
+    /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
+    /// `head.member`, reading as `member`.
+    pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
+        self.mint_param_name(member, MintedParam::Member { head })
+    }
+
+    /// WI-20260911-VNQTR — the name of a type parameter an operation's signature writes
+    /// inline as `?written`, reading as `written`.
+    pub(crate) fn mint_inline_param_name(&mut self, written: &str) -> Symbol {
+        self.mint_param_name(written, MintedParam::Inline)
+    }
+
+    /// WI-20260911-VNQTR — the name of the unknown a body check opens for a slot its
+    /// signature leaves unwritten inside a parameter's type, where the slot is the sort's
+    /// parameter `slot`: reading as its short name (`V`), one per slot
+    /// ([`Self::unwritten_slot_names`]).
+    pub(crate) fn unwritten_slot_name(&mut self, slot: Symbol) -> Symbol {
+        if let Some(name) = self.unwritten_slot_names.get(&slot) {
+            return *name;
+        }
+        let short = crate::kb::typing::short_name_of(self.local_name_of(slot)).to_owned();
+        let name = self.mint_param_name(&short, MintedParam::UnwrittenSlot { slot });
+        self.unwritten_slot_names.insert(slot, name);
+        name
+    }
+
+    /// What `name` stands for, where it was minted for a type parameter alone; `None` for
+    /// every other symbol — a parameter a bracket or a sort declares, an inference
+    /// variable's name.
+    pub fn minted_param(&self, name: Symbol) -> Option<MintedParam> {
+        self.minted_params.get(&name).copied()
+    }
+
     /// WI-20261006-XQGEW — the head `name` was written with, where `name` is the name of
-    /// a member's parameter; `None` for every other symbol — a parameter written in a
-    /// bracket, a sort's own, an inference variable's name.
+    /// a member's parameter ([`MintedParam::Member`]).
     pub(crate) fn member_param_head(&self, name: Symbol) -> Option<Symbol> {
-        self.member_param_heads.get(&name).copied()
+        match self.minted_param(name) {
+            Some(MintedParam::Member { head }) => Some(head),
+            _ => None,
+        }
     }
 
     /// WI-743, WI-20260925-SHED7 — does this sort HAVE A DOMAIN: a `SortDomain` whose
@@ -7961,12 +8042,16 @@ impl KnowledgeBase {
     /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
     /// file. Both openers of a provision ask here; see the field's comment for why the
     /// counter cannot live on the per-file `Loader`.
-    /// Proposal 066 §7.5 — record one written `provides spec` clause of `carrier`.
+    /// Proposal 066 §7.5 — record one `provides spec` clause of `carrier`, written or
+    /// derived: `spec_view` is the view the provision row holds, `site` where it was
+    /// written.
     pub(crate) fn record_provides_clause(
         &mut self,
         carrier: Symbol,
         spec: Symbol,
+        spec_view: crate::eval::value::Value,
         conditions: Vec<crate::eval::value::Value>,
+        site: Option<crate::span::SourceSpan>,
     ) {
         let key = (
             self.canonical_sort_sym(carrier),
@@ -7974,15 +8059,46 @@ impl KnowledgeBase {
         );
         let known = self.provides_clause_counts.get(&key).is_some_and(|seen| {
             seen.iter().any(|c| {
-                c.len() == conditions.len()
-                    && c.iter()
+                c.conditions.len() == conditions.len()
+                    && c.conditions
+                        .iter()
                         .zip(&conditions)
                         .all(|(a, b)| crate::kb::term_view::views_structurally_equal(self, a, b))
             })
         });
         if !known {
-            self.provides_clause_counts.entry(key).or_default().push(conditions);
+            self.provides_clause_counts.entry(key).or_default().push(ProvisionClause {
+                conditions,
+                spec_view,
+                site,
+            });
         }
+    }
+
+    /// Every recorded `provides` clause with its (carrier, spec) key, canonical, and its
+    /// place among that key's clauses: the keys in symbol order, each key's clauses as
+    /// recorded — an order a refusal that names them can be reported in
+    /// (`typing::sealed`).
+    pub(crate) fn provision_clauses(&self) -> Vec<(Symbol, Symbol, usize, &ProvisionClause)> {
+        let mut keys: Vec<(Symbol, Symbol)> = self.provides_clause_counts.keys().copied().collect();
+        keys.sort_by_key(|(carrier, spec)| (carrier.index(), spec.index()));
+        keys.into_iter()
+            .flat_map(|key| {
+                self.provides_clause_counts[&key]
+                    .iter()
+                    .enumerate()
+                    .map(move |(place, clause)| (key.0, key.1, place, clause))
+            })
+            .collect()
+    }
+
+    /// How many clauses are recorded for each (carrier, spec): what a seal keeps, to tell
+    /// a later load's clause from a sealed one's.
+    pub(crate) fn provision_clause_counts(&self) -> HashMap<(Symbol, Symbol), usize> {
+        self.provides_clause_counts
+            .iter()
+            .map(|(key, clauses)| (*key, clauses.len()))
+            .collect()
     }
 
     /// WI-20260919-9KYPA — the PROBE face of
@@ -8026,7 +8142,7 @@ impl KnowledgeBase {
         );
         self.provides_clause_counts
             .get(&key)
-            .is_some_and(|clauses| clauses.iter().any(|c| c.is_empty()))
+            .is_some_and(|clauses| clauses.iter().any(|c| c.conditions.is_empty()))
     }
 
     pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {

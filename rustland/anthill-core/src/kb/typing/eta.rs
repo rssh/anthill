@@ -595,7 +595,8 @@ fn eta_op_scoped_dicts(
     // ref (e.g. member's `l: List`) on the op side stays open while the concrete
     // expected param pins the element (`List.T := Int`) — mirroring the direct
     // call's arg-first unify order.
-    let exp_param = arrow_parts(kb, expected).and_then(|(p, _, _)| p);
+    let exp_parts = arrow_parts(kb, expected);
+    let exp_param = exp_parts.as_ref().and_then(|(p, _, _)| p.clone());
     // WI-1083: read THROUGH a ∀ to its body, un-freshened — see [`poly_type_body`] for
     // why this one reader must see the operation's own variables rather than an
     // instantiation. Without it `arrow_parts` answers `None` for every
@@ -603,7 +604,8 @@ fn eta_op_scoped_dicts(
     // happen, and the dictionary build is handed an empty σ.
     let fn_body = poly_type_body(kb, fn_ty);
     let fn_arrow = fn_body.as_ref().unwrap_or(fn_ty);
-    let fn_param = arrow_parts(kb, fn_arrow).and_then(|(p, _, _)| p);
+    let fn_parts = arrow_parts(kb, fn_arrow);
+    let fn_param = fn_parts.as_ref().and_then(|(p, _, _)| p.clone());
     // AS PARAMETER LISTS, which is how the conformance check that admitted this reference
     // relates the two ([`arrow_params_compatible`]). An operation of several parameters
     // lifts to `(_1: A, _2: B) -> R`, and the expected arrow may label its own — `(p: A,
@@ -615,6 +617,19 @@ fn eta_op_scoped_dicts(
         (exp_param, fn_param, arrow_arity(kb, fn_arrow, arity_key))
     {
         unify_arrow_params(kb, &mut subst, &ep, &fp, arity);
+    }
+    // AND THE RESULT (WI-20260911-VNQTR). A parameter only the result names is fixed by
+    // nothing above, and the call at the same expected type reads it off the type its result
+    // is expected at: `mkP[X](x: Int64) -> Pair[A = Type, B = Option[T = X]]` lifted against
+    // `(x: Int64) -> Pair[A = Type, B = Option[T = String]]` is at `X = String`, and its
+    // dictionary was minted at no type (MEASURED: the value loaded and died, "`__req_typevalue`
+    // not bound"). Best effort, as the parameters are: a result the expected one only admits
+    // pins nothing, and the trial is dropped.
+    if let (Some((_, exp_ret, _)), Some((_, fn_ret, _))) = (&exp_parts, &fn_parts) {
+        let mut pinned = subst.clone();
+        if unify_types(kb, &mut pinned, exp_ret, fn_ret) {
+            subst = pinned;
+        }
     }
     // WI-841: an ETA'd op reference (`f` passed as a value) carries no call-site
     // BRACKET — there is no call here to write one on.
@@ -667,22 +682,34 @@ fn eta_op_scoped_dicts(
         env.enclosing_frame_chain(),
         env.param_rigids(),
         &selected,
-        // WI-1102 parks nothing on the ETA path. An `OpRef` is not an application: the
-        // dictionary rides on the VALUE and the slot is read wherever that value is
-        // finally applied, which may be a frame this site cannot see. Withholding keeps
-        // today's behaviour (eval's own `not bound` raise) rather than refusing a
-        // program on a read that may never happen — the bound is stated, not assumed.
-        None,
+        // A FUNCTION VALUE OWES WHAT A CALL OWES (WI-20260911-VNQTR), so what a call parks is
+        // parked here too: a forward of a parameter the caller holds no evidence for, a
+        // carrier no provision answers at. This site parked nothing, on the ground that the
+        // value might never be applied; a declared `requires` is owed because it is declared
+        // (WI-20260921-3G1YT), and the reference loaded and died where its call is refused
+        // (MEASURED: `m[U](y: U) = app1(tyOf, y)` over `tyOf[B] requires TypeValue[T = B]`,
+        // given `nil` typed `List[T = Int64]`, raised `UnpinnedRequirement`; `app1i(stampOf,
+        // ns(n: 1))` loaded at a carrier no provision answers). A reference in a
+        // construction's field is typed at the instance the construction states
+        // ([`arrow_field_expected_from_ctor`]), so what that instance fixes is pinned here
+        // too.
+        //
+        // AN ELEMENT STILL OPEN HERE IS ANOTHER MATTER: the instance of a function value may
+        // be fixed after its reference — by a sibling argument of the call it is passed to,
+        // by the construction it stands in — and one the operation's parameters carry is
+        // read where the value is applied (§8.7). Refused here, `apply(h(f: tyOf))` and
+        // `appOpt(some(tyOf), "s")`, which ran, were refused (MEASURED); see
+        // [`build_op_scoped_dicts`]' open-element arms.
+        OpSlotParkSite::for_call(kb, sym, env.enclosing_op(), span, occ.span.source),
         // WI-20260909-S8CBV: an ETA has NO ARGUMENTS, so there is no receiver whose type
         // could ground a projection — `?f = List.member` names the operation, it does not
         // call it. An empty map makes the δ a no-op here, and the refusal above cannot fire
         // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
         // is for every other dep this path cannot pin.
         &HashMap::new(),
-        // WI-20260921-3G1YT — no bracket route on the ETA path, for the same reason it
-        // parks nothing here: the slot is read wherever the `OpRef` VALUE is finally applied,
-        // which is a frame this site cannot see, so the scope it CAN see is not the one
-        // whose contracts would discharge the dep.
+        // WI-20260921-3G1YT — no bracket route on the ETA path: the route is a rule clause's
+        // `require[…]` ([`held_spec_views`]), and a function value has no arrow to lift
+        // against in a rule body, so none reaches here from one.
         &[],
         span,
         // The OPERATION owns an op-scoped clause, so it is what the refusal must name

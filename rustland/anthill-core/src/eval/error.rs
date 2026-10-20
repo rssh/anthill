@@ -312,6 +312,14 @@ pub enum EvalError {
     ReifyPayloadUnread {
         detail: String,
     },
+    /// Proposal 071 — `anthill.reflect.type_admits` (the test `TypePattern.admits` runs) was
+    /// asked about a pair its predicate does not judge (`kb::typing::type_pattern_admits`,
+    /// whose `form` lists what it does not). An answer there would be a guess. `detail` is
+    /// the predicate's. A PROGRAM limit, not an evaluator invariant, so not
+    /// [`Self::Internal`].
+    TypePatternUnjudged {
+        detail: String,
+    },
     Internal(String),
 }
 
@@ -474,6 +482,7 @@ impl EvalError {
             | EvalError::KbReadFailed(_)
             | EvalError::ScopedKbOutlivesCall { .. }
             | EvalError::ReifyPayloadUnread { .. }
+            | EvalError::TypePatternUnjudged { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -757,6 +766,7 @@ impl std::fmt::Display for EvalError {
                 }
             }
             EvalError::ReifyPayloadUnread { detail } => write!(f, "{detail}"),
+            EvalError::TypePatternUnjudged { detail } => write!(f, "type_admits: {detail}"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

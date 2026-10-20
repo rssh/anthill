@@ -3,9 +3,9 @@
 - id: WI-20261016-Y1EZJ-071-a-the-proposal-and-the
 - created: 2026-10-16T14:51:11Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-16T14:51:11Z
+- status_at: 2026-10-17T21:42:00Z
 
 - acceptance: review
 

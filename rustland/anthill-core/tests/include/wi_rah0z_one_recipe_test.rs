@@ -317,6 +317,12 @@ const PINNED: &[(&str, usize, &str)] = &[
         "what a proof record is NAMED, by a later load and in one call over the same files — \
          two loads and one call must leave one registry: the one call by name",
     ),
+    (
+        "include/wi_sqzpq_type_pattern_test.rs",
+        1,
+        "a later load types the library's bodies again when nothing is sealed: the row's \
+         lowered `T` read typed a second time, and run — on a KB nothing sealed, by name",
+    ),
 ];
 
 /// This file, skipped because it carries the recognised spellings as STRING LITERALS.

@@ -331,12 +331,13 @@ pub(super) fn find_spec_op_for_required_sort(
 /// the precise question, and it is the same list the σ-alignment below bridges through.
 ///
 /// "THE OPERATION'S OWN" INCLUDES A VARIABLE WRITTEN INLINE in a parameter type
-/// (WI-1FKR2) — `via(b: Box[?t])`'s `?t` is a type parameter by §5.4 and is in the list.
+/// (WI-1FKR2) — `via(b: Box[?t])`'s `?t` is a type parameter by §5.4 and is in the list,
+/// as it is on the operation's record (WI-20260911-VNQTR).
 /// That keeps this gate precise rather than widening it: such a variable IS a parameter a
 /// `requires` clause can name and a call can instantiate, which is the property the test
 /// is for. What is deliberately kept OUT, so the sentence above stays true, is a VALUE
 /// precondition's variable (`requires p(x, ?v)`) — it names no type — and
-/// [`inline_signature_type_params`] states at its own site why it does not read the
+/// [`alias_opened_type_params`] states at its own site why it does not read the
 /// `requires` field to get there.
 pub(super) fn constrained_param_receiver_type(
     kb: &KnowledgeBase,

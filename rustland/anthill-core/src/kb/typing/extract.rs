@@ -196,6 +196,16 @@ pub(crate) fn is_denoted_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     matches!(type_head(kb, ty), TypeHead::Denoted)
 }
 
+/// Is `ty` a PROJECTION at its root — a path's (`xs.T`) or a rigid's (`R.T`)? Every one has
+/// the one head, so it is related by its path and never by its head: asked by the dispatch
+/// matcher ([`dispatch_values_match`]).
+pub(crate) fn is_projection_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(
+        type_head(kb, ty),
+        TypeHead::ExprCarried | TypeHead::RigidProjection
+    )
+}
+
 /// WI-20260924-F3FYJ — the declared bottom SORT a bare reference names
 /// (`anthill.prelude.Nothing`), which [`type_head`] classifies as the bottom rather than as a
 /// sort reference; `None` for anything else — the meta-constructor spelling

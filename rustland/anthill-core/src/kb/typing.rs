@@ -23,8 +23,9 @@
 //!    `dep_projection`, `bridge`, `requires`.
 //!  * Instance synthesis and provisions — `synth`, `candidates`, `provides_index`,
 //!    `provision`, `carrier`, `coherence`.
-//!  * Type relations — `unify`, `subtype`, `effects`, `tuples` (under `tuple_align`),
-//!    `sort_alias`, `type_preds`, `extract`, `value_type`.
+//!  * Type relations — `unify`, `subtype`, `type_pattern` (what a type pattern admits),
+//!    `effects`, `tuples` (under `tuple_align`), `sort_alias`, `type_preds`, `extract`,
+//!    `value_type`.
 //!  * Declaration checks — `sorts` (`type_check_sorts`), `signature`, `elaborate`,
 //!    `op_bodies`.
 //!  * Rules — `rules`, `rule_requirements`, `anchor`, `rule_dispatch`, `rule_constraints`.
@@ -46,7 +47,7 @@ use super::resolve::PositionalPlan;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{views_structurally_equal, TermIdView, TermView, ViewHead, ViewItem};
-use super::{KnowledgeBase, RuleId, SortKind};
+use super::{KnowledgeBase, MintedParam, RuleId, SortKind};
 use crate::eval::value::{Dictionary, Value};
 use crate::intern::{is_positional_label_at, positional_label, ScopeId, Symbol};
 use crate::parse::desugar_target as dt;
@@ -129,6 +130,7 @@ mod subtype;
 mod synth;
 mod tuples;
 mod type_ctor;
+mod type_pattern;
 mod type_receiver;
 mod type_preds;
 mod unify;
@@ -188,6 +190,7 @@ pub use subtype::*;
 pub use synth::*;
 use tuples::*;
 use type_ctor::*;
+pub(crate) use type_pattern::*;
 use type_receiver::*;
 pub use type_preds::*;
 pub use unify::*;

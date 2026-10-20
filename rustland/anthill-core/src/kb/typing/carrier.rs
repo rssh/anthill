@@ -4533,7 +4533,16 @@ pub(super) fn resolve_at_goal(
                 // `build_sort_ops_table` already resolved impl-override
                 // vs spec-default for `(impl_sort, op_short)`; no
                 // string concatenation, no try/catch fallback here.
-                match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
+                //
+                // Except for an operation that answers from its dictionary
+                // ([`answered_by_its_dictionary`]): the spec's own, at every provider.
+                // Through the table, `sort Door { … operation type_value(n: Int64) -> String }`
+                // pinned `TypeValue.type_value[T = Door]()` to `Door`'s member, which died
+                // at the call "expected 1 args, got 0" (MEASURED).
+                let dictionary_answer = kb
+                    .sort_ops_lookup(goal.spec_sort, op_short_sym)
+                    .filter(|&op| answered_by_its_dictionary(kb, op));
+                match dictionary_answer.or_else(|| kb.sort_ops_lookup(*impl_sort, op_short_sym)) {
                     Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
                     None => (DispatchOutcome::NoMatch { unmet: None }, None),
                 }
@@ -4598,10 +4607,11 @@ pub(super) fn resolve_at_goal(
 /// agreement there, the one head every arrow has let a requirement at one arrow cover a
 /// call at any other.
 ///
-/// ONE EXCEPTION, and it is not a tightening of the structured arm: a VALUE in a type
+/// TWO EXCEPTIONS, and neither is a tightening of the structured arm: a VALUE in a type
 /// position (`denoted(value: 3)`) is related by value alone — `types_compatible` decides it and
 /// the coarse head never does, because every value-in-type shares the one head `Denoted`
-/// (WI-20260924-F3FYJ).
+/// (WI-20260924-F3FYJ); and a PROJECTION by its path alone, every projection sharing the one
+/// head `expr_carried` (WI-20260911-VNQTR).
 ///
 /// ON ANY CARRIER, read through the view: a per-call value that holds a value in a type
 /// position (`MappedStream[…, TransformEffects = {Modify[k]}]`) rides an occurrence, and is
@@ -4643,6 +4653,14 @@ pub(super) fn dispatch_values_match<P: TermView, C: TermView>(
     // head `Denoted` and `N = 4` would match `N = 3` (WI-20260924-F3FYJ, beside the
     // leaf arm it serves in `match_candidate_against_goal`).
     if is_denoted_type(kb, per_call_value) || is_denoted_type(kb, candidate_value) {
+        return false;
+    }
+    // Nor is a PROJECTION, which `types_compatible` relates by its path (WI-400's ζ: equal
+    // only to an identical neutral): every projection has the one head `expr_carried`, so the
+    // head below read `xs.T` as `ys.T`, and under `m(xs: List, ys: List) requires Big[T =
+    // xs.T]` a call at an element of `ys` was handed `xs`'s provider (MEASURED,
+    // WI-20260911-VNQTR: two parameters at two providers, the answer the first's).
+    if is_projection_type(kb, per_call_value) || is_projection_type(kb, candidate_value) {
         return false;
     }
     let per_call_sym = sort_sym_of_view(kb, per_call_value);

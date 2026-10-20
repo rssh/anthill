@@ -615,6 +615,16 @@ fn heads_reached(body: &Rc<NodeOccurrence>, heads: &HashMap<Symbol, Vec<RuleId>>
 /// it was — `ByLength provides Ord[T = String]` beside `String`'s own — is the language's
 /// named-instance feature and loads: a call selects it by name, and no sealed call does.
 ///
+/// A CLAUSE written into a sealed sort at the head of a provision it already makes, with
+/// other conditions, is that first case at one head. The two clauses write one row,
+/// which the fact store keeps once, so the walk over the rows asserted since the seal
+/// never meets it; what it adds is another group of conditions, or none, which makes the
+/// provision hold outright. Either changes when the provision answers, at goals the
+/// sealed bodies were typed against: measured, `namespace anthill.prelude.Pair provides
+/// Ord[Self]` loaded behind the library's seal and made every `Pair` ordered, and a
+/// second clause of a provision with a `where` block changed how its sealed members'
+/// bodies read their dictionary. So the clause records are read too ([`ProvisionClause`]).
+///
 /// NOT REACHED: a type no source declares is in no seal, so a provision whose head
 /// mentions one is taken for the program's.
 ///
@@ -784,6 +794,41 @@ pub(super) fn provisions_that_change_a_sealed_dispatch(
             kb.qualified_name_of(row.provider),
         );
         refuse(message, site, errors, sources);
+    }
+    let later: Vec<(Symbol, Symbol, Value, Option<crate::span::SourceSpan>)> = kb
+        .provision_clauses()
+        .into_iter()
+        .filter(|(carrier, spec, place, _)| *place >= kb.sealed.provision_clauses_held(*carrier, *spec))
+        .map(|(carrier, spec, _, clause)| (carrier, spec, clause.spec_view.clone(), clause.site))
+        .collect();
+    for (provider, spec, view, site) in later {
+        if !kb.sealed.holds_sort(provider) || !kb.sealed.holds_sort(spec) {
+            continue;
+        }
+        let Some(row) = provides_rows_of_provider_canon(kb, provider)
+            .filter(|q| clause_is_of_the_sealed_kb(kb, q.rid))
+            .find(|q| {
+                same_sort_canonical(kb, q.spec_base, spec)
+                    && crate::kb::term_view::views_structurally_equal(kb, &q.spec_view, &view)
+            })
+        else {
+            continue; // a head of its own, a row of its own: the walk above judged it
+        };
+        let goal = SortGoal {
+            spec_sort: row.spec_base,
+            bindings: row.bindings(kb),
+            carrier: None,
+        };
+        let message = format!(
+            "this clause of the provision of {} is written for '{}', which a sealed load \
+             declared and which provides it there under other conditions: a second clause \
+             changes when that provision holds, and the sealed load's bodies were typed \
+             against it as it was. Put the clause in the source that declares '{}'",
+            format_goal(kb, &goal),
+            kb.qualified_name_of(row.provider),
+            kb.qualified_name_of(row.provider),
+        );
+        refuse(message, site.or_else(|| kb.functor_span(row.provider)), errors, sources);
     }
 }
 

@@ -163,6 +163,39 @@ namespace anthill.reflect
     operation type_value() -> Type @[host_implemented]
   end
 
+  {< TypePattern[T]: the type `T`, which may have open slots, read as the types it admits.
+
+     `admits(t)` answers whether `t` fits the pattern: whether `t` is a subtype of an
+     instance of `T`. A pattern at `Boom[Reason = String]` admits that type and not
+     `Boom[Reason = Int64]`; a pattern at `Boom[Reason = ?]` admits both; a pattern at a
+     sort admits a sort that refines it (`sort FileNotFound requires IoError`: a pattern at
+     `IoError` admits `FileNotFound`). The test is `type_admits`.
+
+     Its one row is `TypeValuePattern`'s, over the instances of `TypeValue`, so it has an
+     instance where `T` has no open slot, and a call at a type with one is refused at load;
+     `type_admits` itself takes a pattern with open slots. A written `provides
+     TypePattern[…]` is a load error, as a written `provides TypeValue[…]` is. A forged
+     `admits` would make the answer a claim instead of a fact.
+
+     No argument or result of `admits` stands at `T`, so a call names its instance in its
+     bracket: `TypePattern.admits[T = X](t)`. >}
+  sort TypePattern
+    sort T = ?
+    operation admits(t: Type) -> Bool
+  end
+
+  {< TypeValuePattern: the one row of `TypePattern`. A type with no open slot is a pattern
+     that admits its subtypes: wherever `T` has a `TypeValue` instance, `admits` reads `T`
+     as a value under the row's own condition, which the `where` block puts in its scope,
+     and asks the one subtype test, `type_admits`. The row is written on a sort of its own
+     rather than on `TypeValue`, which every sort provides. >}
+  sort TypeValuePattern
+    sort T = ?
+    provides TypePattern[T = T] :- TypeValue[T = T] where
+      operation admits(t: Type) -> Bool = type_admits(T, t)
+    end
+  end
+
 
   {< Fillable[T]: a logical variable of type `T` can be FILLED with a value of `T`
      (proposal 067; WI-20260925-SHED7). The interface a solver requires, reached through
@@ -484,6 +517,22 @@ namespace anthill.reflect
   -- mutates a modifiable argument, and reflection-driven listings of the modifiable
   -- resources in scope.
   operation is_modifiable(t: Type) -> Bool @[host_implemented]
+
+  -- Whether the type `t` is a subtype of an instance of the type `pattern`: the test
+  -- `TypePattern.admits` runs. An open slot, a type argument left out, admits every type,
+  -- on either side. Two applications of one sort are compared argument by argument, by the
+  -- variance the `Covariant` and `Contravariant` facts of `anthill.reflect.typing` declare
+  -- for the parameter: covariant, the argument is admitted by the pattern's; contravariant,
+  -- the other way round; both, either; with no fact, the two are equal. A pattern at a sort
+  -- admits a sort that refines it through `requires`, as each instance its clauses give it,
+  -- and every pattern admits `Nothing`.
+  -- An arrow is the `Function` it is, and is compared as that application. No sort admits
+  -- a named tuple.
+  --
+  -- What it does not judge is an error, not an answer: two named tuples, two effect rows
+  -- that are not one row, an effect row beside any other type, a type variable, and a data
+  -- value.
+  operation type_admits(pattern: Type, t: Type) -> Bool @[host_implemented]
 
   -- Meta-level primitives: inspect a value's instantiation state. One name and
   -- one arity in both phases (WI-982).
@@ -993,9 +1042,9 @@ namespace anthill.reflect
     effects      : List[Term],                      -- effect type expressions
     requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
     ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
-    -- The operation's OWN type parameters, as the logical variables the loader
-    -- minted for them (`op_info::type_param_entries` decodes each back to its
-    -- surface name).
+    -- The operation's own type parameters, its bracket's, then the member sugar's, then
+    -- the variables its parameter types write, as the logical variables the loader
+    -- minted for them (`op_info::type_param_entries` decodes each back to its name).
     --
     -- EMITTED LONG BEFORE IT WAS DECLARED (WI-20260823-GMG6N), and that gap made every
     -- `OperationInfo` fact unreachable from anthill. The loader wrote an eight-slot

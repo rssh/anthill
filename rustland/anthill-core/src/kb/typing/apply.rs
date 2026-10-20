@@ -4657,6 +4657,7 @@ pub(super) fn check_apply_iter(
                                 source: occ.span.source,
                                 callee_op: fn_sym,
                                 callee_sort: parent_sym,
+                                usage: RequirementUse::Call,
                                 refusal,
                             });
                         }

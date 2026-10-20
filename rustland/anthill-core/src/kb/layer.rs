@@ -344,12 +344,17 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // Fresh-`VarId` counter. Rolling it back reissues ids that the layer's escaped
         // substitutions still use, so two distinct variables would collide.
         next_var: _,
-        // WI-20261006-XQGEW — what a member's parameter was WRITTEN AS, keyed by its name:
-        // a symbol minted for it alone, and `symbols`' definitions above are never rolled
-        // back. A type the layer made can be rendered after the discard, and a variable
-        // still carrying that name would then print by the bare member again.
+        // WI-20261006-XQGEW, WI-20260911-VNQTR — what a minted parameter name stands for (a
+        // member's parameter and what it was WRITTEN AS, a variable a signature writes
+        // inline, an unwritten slot's unknown), keyed by the name: a symbol minted for it
+        // alone, and `symbols`' definitions above are never rolled back. A type the layer
+        // made can be rendered after the discard, and a variable still carrying that name
+        // would then print by the bare spelling again.
         // `spgbp_a_layer_minted_member_still_prints_as_written_after_the_discard` drives it.
-        member_param_heads: _,
+        minted_params: _,
+        // …and the one name per spelling an unwritten slot's unknown is opened under, which
+        // is such a symbol too.
+        unwritten_slot_names: _,
         // `SourceId` is an index into this registry and rides inside every `SourceSpan`.
         // An interner by another name: truncating it makes a layer-minted span report a
         // different file, or none.
@@ -1046,7 +1051,7 @@ end
     /// that minted it, as the name it is keyed by does: a type made in the layer and kept
     /// past the discard still prints `Tagger.E`.
     ///
-    /// WHAT FAILS WHEN BACKED OUT: this fails if `member_param_heads` is added to the
+    /// WHAT FAILS WHEN BACKED OUT: this fails if `minted_params` is added to the
     /// scoped list — the variable still carries its name, the record of what that name
     /// was written with is rolled back, and the row reads `?E`.
     #[test]

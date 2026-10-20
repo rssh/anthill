@@ -3741,7 +3741,32 @@ pub(crate) fn type_denoted_by(kb: &mut KnowledgeBase, v: &Value) -> Option<TermI
 /// §4.5 value-in-type constant, a carried value that denotes one, and a TUPLE literal (the
 /// structural type, which has no nominal name to be classified by) — and nothing else an
 /// occurrence can be does.
+/// The pass a READ OF A TYPE PARAMETER AS A VALUE is lowered by — `K` in a body becoming
+/// the slot dispatch `TypeValue.type_value[T = K]()` that answers it, synthesized from the
+/// read (proposal 065 §1). [`type_denoted_by_occurrence`] reads such a node as the read.
+pub(crate) const TYPE_VALUE_READ_PASS: &str = "anthill.kb.passes.type_value_read";
+
 fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<TermId> {
+    // A LOWERED READ DENOTES THE PARAMETER IT READS. Typing lowers `K` read as a value to the
+    // dispatch that answers it, and a rewrite typed after its arguments may then move the
+    // argument into a TYPE position — `rule mkq(?k) <=> Map[K = ?k, V = Int64].empty()` over
+    // `mkq(K)` — where the dispatch is no type: `put(mkq(K), x, 1)` was refused under the
+    // clause that backs the read (`put.key: expected bottom`) and ran without one (MEASURED,
+    // a bracket's `K` and a signature's `?k` alike; WI-20260911-VNQTR). Moved into a VALUE
+    // position it stays the dispatch.
+    if let NodeKind::Expr {
+        origin: OccurrenceOrigin::Synthesized { from, by, .. },
+        ..
+    } = &occ.kind
+    {
+        let lowering = kb
+            .symbols
+            .lookup(TYPE_VALUE_READ_PASS)
+            .map(crate::kb::occurrence::PassId::from_symbol);
+        if lowering == Some(*by) {
+            return type_denoted_by_occurrence(kb, &Rc::clone(from));
+        }
+    }
     // A `Type` / `EffectExpression` occurrence IS a type, and WI-390 lowers its spine
     // faithfully. This is the one place the lowering gives something up: the type layer
     // READS that carrier, so keeping it would preserve a `denoted`'s span. It cannot be kept

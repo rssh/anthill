@@ -1951,9 +1951,27 @@ mod wi_hxgxf_type_value_derivation_test;
 
 #[path = "include/wi_n31xx_type_value_read_rule_test.rs"]
 mod wi_n31xx_type_value_read_rule_test;
+#[path = "include/wi_sqzpq_type_pattern_test.rs"]
+mod wi_sqzpq_type_pattern_test;
 
 #[path = "include/wi_xsvcs_op_requires_forward_test.rs"]
 mod wi_xsvcs_op_requires_forward_test;
+#[path = "include/wi_vnqtr_inline_param_forward_test.rs"]
+mod wi_vnqtr_inline_param_forward_test;
+#[path = "include/wi_vnqtr_inline_family_record_test.rs"]
+mod wi_vnqtr_inline_family_record_test;
+#[path = "include/wi_vnqtr_transitive_cover_test.rs"]
+mod wi_vnqtr_transitive_cover_test;
+#[path = "include/wi_vnqtr_unwritten_slot_forward_test.rs"]
+mod wi_vnqtr_unwritten_slot_forward_test;
+#[path = "include/wi_vnqtr_function_value_forward_test.rs"]
+mod wi_vnqtr_function_value_forward_test;
+#[path = "include/wi_vnqtr_member_pairing_test.rs"]
+mod wi_vnqtr_member_pairing_test;
+#[path = "include/wi_vnqtr_projection_paths_test.rs"]
+mod wi_vnqtr_projection_paths_test;
+#[path = "include/wi_vnqtr_simp_type_param_read_test.rs"]
+mod wi_vnqtr_simp_type_param_read_test;
 
 #[path = "include/wi_r10kc_spec_default_body_dictionary_test.rs"]
 mod wi_r10kc_spec_default_body_dictionary_test;

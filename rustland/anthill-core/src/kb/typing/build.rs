@@ -53,11 +53,12 @@ pub(super) fn build_type(
             // pump, whose leaves are these very nodes, so the pump was always the builder
             // 065 §1 says it is.
             //
-            // CLASSIFIED HERE AND NOT RE-VISITED. The synthesized call is nullary and its
-            // dispatch is already decided ([`type_value_slot`] says which slot), so
-            // pushing it back through `check_apply_iter` would ask a question that has no
-            // answer — `type_value()` names no carrier, which is the whole reason the
-            // slot is looked up rather than inferred. Its type is `Type` by declaration.
+            // CLASSIFIED HERE AND NOT RE-VISITED. The synthesized call's dispatch is
+            // already decided ([`type_value_slot`] says which slot), so this typing does not
+            // push it back through `check_apply_iter`. It carries the bracket an author
+            // writes, `TypeValue.type_value[T = B]()`, so a body typed a second time — by a
+            // later load, or by a rewrite — types it as that written call. Its type is
+            // `Type` by declaration.
             //
             // NO SLOT MEANS NO LOWERING, AND THAT IS HOW THE RULE IS ENFORCED. A read the
             // frame cannot back is left as the `Expr::TypeValue` it was;
@@ -97,8 +98,19 @@ pub(super) fn build_type(
             let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
             let owner = kb.type_arg_owner(head).unwrap_or(head);
             let declared = kb.type_params_of_sort(owner);
-            if let Err(problem) =
-                kb.check_sort_type_args(owner, &declared, &named_keys, pos_args.len())
+            // ONE FIT, the check's and the keys': [`KnowledgeBase::check_sort_type_args`]
+            // is this fit's `problem` at a `Sort` head, and the slots it found are what a
+            // positional `?` left out below is named by.
+            let written: Vec<Option<Symbol>> = named_keys
+                .iter()
+                .map(|k| Some(*k))
+                .chain(std::iter::repeat_n(None, pos_args.len()))
+                .collect();
+            let fit = kb.fit_type_args(&declared, &[], &written);
+            if let Some(problem) = fit
+                .problem
+                .clone()
+                .filter(|_| kb.has_kind(owner, crate::intern::SymbolKind::Sort))
             {
                 results.push(Err(TypeError::InvalidTypeArgument {
                     span: Some(occ.span.span),
@@ -107,9 +119,89 @@ pub(super) fn build_type(
                 }));
                 return;
             }
+            // AN ARGUMENT WRITTEN `?` IS A SLOT LEFT UNWRITTEN (§8.1), as in a type position:
+            // `Boom[Reason = ?]` and `Boom[?]` are `Boom` with `Reason` open. Left out HERE,
+            // where the type value is typed, so every reader of the typed body — eval, the
+            // printer, a specialization — reads one type. Evaluated, the `?` was a call of
+            // `_`: the program loaded clean and died "unknown operation: _" (MEASURED). A
+            // positional binds the next parameter no name took, so where one is left out
+            // each positional is named by the parameter it binds first, and none moves.
+            //
+            // A `?_` WRITTEN AGAIN IS REFUSED: the parser reads `?_` as one variable over the
+            // whole operation declaration — its signature and its body — and a bare `?` as a
+            // fresh one at each occurrence, both named `_`. Written twice, it ties the places,
+            // and a value of a type holds no variable; left out at each, the tie would be
+            // dropped in silence (MEASURED, with the mentions counted in one bracket alone:
+            // `Duo[L = Option[T = ?_], R = Option[T = ?_]]` built `Duo(L: Option, R:
+            // Option)`). So its mentions are counted over the operation
+            // ([`wildcard_mentions`]). A NAMED variable is no slot either way, and is left as
+            // written: it is the frame's variable of that name, read when the body runs
+            // (`operation wrap(t: Type) -> Type = Cell[V = ?t]` reads its parameter).
+            let args: Vec<&Rc<NodeOccurrence>> = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .collect();
+            let mut open: Vec<bool> = Vec::with_capacity(args.len());
+            for a in &args {
+                let v = Value::Node(Rc::clone(a));
+                let ViewHead::Var(Var::Global(x)) = v.head(kb) else {
+                    open.push(false);
+                    continue;
+                };
+                if !value_is_anonymous_wildcard(kb, &v) {
+                    open.push(false);
+                    continue;
+                }
+                if wildcard_mentions(kb, env.enclosing_op(), &args, x) == 1 {
+                    open.push(true);
+                    continue;
+                }
+                results.push(Err(TypeError::InvalidTypeArgument {
+                    span: Some(a.span.span),
+                    sort: head,
+                    problem: crate::kb::TypeArgProblem::VariableArgument,
+                }));
+                return;
+            }
+            let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+            if open.contains(&true) {
+                let typed: Vec<Rc<NodeOccurrence>> = arg_results
+                    .iter()
+                    .map(|r| Rc::clone(&r.as_ref().expect("an ill-typed argument returned above").node))
+                    .collect();
+                // A positional's slot is the fit's, which bound every positional or refused
+                // above — at a `Sort` head, the one a type value is built at.
+                let Some(slots) = fit.slots[named_keys.len()..]
+                    .iter()
+                    .copied()
+                    .collect::<Option<Vec<usize>>>()
+                else {
+                    results.push(Err(TypeError::InvalidTypeArgument {
+                        span: Some(occ.span.span),
+                        sort: head,
+                        problem: fit.problem.expect("a positional the fit bound to no slot is its problem"),
+                    }));
+                    return;
+                };
+                let keys: Vec<Symbol> = slots.iter().map(|&k| kb.intern(&declared[k])).collect();
+                let named_out: Vec<(Symbol, Rc<NodeOccurrence>)> = keys
+                    .into_iter()
+                    .chain(named_args.iter().map(|(key, _)| *key))
+                    .zip(typed)
+                    .zip(&open)
+                    .filter(|(_, open)| !**open)
+                    .map(|(kept, _)| kept)
+                    .collect();
+                let node = occ.rebuilt_expr(Expr::TypeValue {
+                    head,
+                    pos_args: Vec::new(),
+                    named_args: named_out,
+                });
+                results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), node)));
+                return;
+            }
             let child_refs: Vec<&Result<TypeResult, TypeError>> = arg_results.iter().collect();
             let node = reassemble_children(&occ, &child_refs);
-            let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
             results.push(Ok(TypeResult::pure(type_ty, unwrap_env(env), node)));
         }
         // WI-793: the staged projection-receiver arguments have been typed. Complete the
@@ -2660,3 +2752,60 @@ fn self_receiver_override_of_call(
     let op_short_sym = kb.intern(short_name_of(&op_qn));
     concrete_self_receiver_override(kb, carrier_sym, fn_sym, op_short_sym, op.params.len())
 }
+
+/// How many times the variable `x` — a `?_` written as a type argument of a type value — is
+/// written in the operation `op` the value is built in: in its signature's types, and in its
+/// body, a call's bracket and receiver type included. A `?_` is one variable over the
+/// declaration, and a bare `?` a fresh one at each occurrence, so `1` is a slot left open.
+/// Outside an operation the type value's own arguments are what is counted, and they are
+/// counted in any case, for a node a rewrite is building that the stored body does not hold.
+fn wildcard_mentions(
+    kb: &KnowledgeBase,
+    op: Option<Symbol>,
+    args: &[&Rc<NodeOccurrence>],
+    x: VarId,
+) -> usize {
+    let in_value = |v: &Value| usize::from(kb.collect_vars(v).contains(&x));
+    let in_args = args.iter().map(|a| in_value(&Value::Node(Rc::clone(a)))).sum::<usize>();
+    let Some(op) = op else {
+        return in_args;
+    };
+    let mut mentions = 0;
+    if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) {
+        mentions += info.params.iter().map(|(_, ty)| in_value(ty)).sum::<usize>();
+        mentions += in_value(&info.return_type);
+    }
+    let mut stack: Vec<Rc<NodeOccurrence>> = kb.op_body_node(op).into_iter().cloned().collect();
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else {
+            continue;
+        };
+        if let ViewHead::Var(Var::Global(v)) = Value::Node(Rc::clone(&node)).head(kb) {
+            mentions += usize::from(v == x);
+            continue;
+        }
+        match expr {
+            Expr::Apply {
+                type_args,
+                recv_type,
+                ..
+            }
+            | Expr::Constructor {
+                type_args,
+                recv_type,
+                ..
+            } => {
+                mentions += type_args.iter().map(|(_, v)| in_value(v)).sum::<usize>();
+                mentions += recv_type.iter().map(in_value).sum::<usize>();
+            }
+            Expr::ApplyWithin { type_args, .. } => {
+                mentions += type_args.iter().map(|(_, v)| in_value(v)).sum::<usize>();
+            }
+            _ => {}
+        }
+        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    // At least the type value's own: it is in the stored body unless a rewrite is building it.
+    mentions.max(in_args)
+}
+

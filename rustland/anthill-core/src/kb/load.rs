@@ -935,6 +935,19 @@ pub enum LoadError {
         /// The carrier the provision was written at, qualified.
         carrier: String,
     },
+    /// Proposal 071 §1.2 — a `provides anthill.reflect.TypePattern[…]` other than its one
+    /// row, `TypeValuePattern`'s `provides TypePattern[T = T] :- TypeValue[T = T]` at its own
+    /// `T` (`typing::written_type_pattern_provisions`). Refused wherever it is written, as
+    /// [`Self::HandWrittenTypeValue`] is: a sort's body, a `namespace <Carrier>` block —
+    /// `TypeValuePattern`'s own address among them — or a witness sort.
+    ///
+    /// The same soundness rule. A pattern says which types it admits, and a written
+    /// `admits` would make that a claim: a boundary typed at `Boom` delivering an `Other`
+    /// inside its `Result`, or letting a `Boom` escape a row that no longer holds it.
+    HandWrittenTypePattern {
+        /// The provider the row was written for, qualified.
+        provider: String,
+    },
     /// WI-20260831-V25N3 — an effect label written in a ROW TYPE-ARGUMENT
     /// (`s: Spec[E = {Beep}]`) that names no registered kind, or a `Modify` whose
     /// target is not a place. §5.5 judges a row element ONCE, AT ITS ORIGIN, so a
@@ -3356,6 +3369,10 @@ impl LoadError {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
             }
+            LoadError::HandWrittenTypePattern { provider } => {
+                format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
+                    provider)
+            }
             LoadError::NonEqKeyRequiresLawfulEq {
                 container,
                 param,
@@ -5472,6 +5489,14 @@ impl std::fmt::Display for LoadError {
                     "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
                      `TypeValue` instance is DERIVED and none may be written",
                     carrier,
+                )
+            }
+            LoadError::HandWrittenTypePattern { provider } => {
+                write!(
+                    f,
+                    "a `provides anthill.reflect.TypePattern[…]` is written for '{}', but \
+                     `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written",
+                    provider,
                 )
             }
         }
@@ -9025,6 +9050,11 @@ pub struct SealedDeclarations {
     /// than the load had) leaves it as it was: the rows of the files it does not seal
     /// are below its slot count too, and their goals name types no seal holds.
     checked: Option<CheckedProvisions>,
+    /// How many `provides` clauses were recorded for each (carrier, spec), canonical,
+    /// when a seal was last taken ([`KnowledgeBase::provision_clause_counts`]): a clause
+    /// past that count came later. Not the slot count above: two clauses of one spec at
+    /// one head write one row, and a later clause need assert none.
+    provision_clauses: HashMap<(Symbol, Symbol), usize>,
 }
 
 impl SealedDeclarations {
@@ -9065,6 +9095,12 @@ impl SealedDeclarations {
     /// The provisions a later load's check does not read again, if a seal holds any.
     pub(crate) fn checked_provisions(&self) -> Option<CheckedProvisions> {
         self.checked
+    }
+
+    /// How many of the clauses recorded for `carrier` and `spec` (canonical) were there
+    /// when a seal was last taken.
+    pub(crate) fn provision_clauses_held(&self, carrier: Symbol, spec: Symbol) -> usize {
+        self.provision_clauses.get(&(carrier, spec)).copied().unwrap_or(0)
     }
 
     /// How many operations, types and typed sources the seal holds — for a test that
@@ -9116,6 +9152,7 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
         .filter(|source| of_the_library(*source))
         .collect();
     let rule_slots = kb.rules.len();
+    let provision_clauses = kb.provision_clause_counts();
     // WI-20261011-A3NND — and the load's provisions are checked once, if the seal is of
     // ALL of it and its check held. Whichever door asked: the test suites' shared base
     // is the standard library loaded alone and sealed as "the first files of the load".
@@ -9124,6 +9161,7 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
     let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
     sealed.sorts.extend(sorts);
     sealed.rule_slots = rule_slots;
+    sealed.provision_clauses = provision_clauses;
     if checked.is_some() {
         sealed.checked = checked;
     }
@@ -16899,35 +16937,31 @@ fn chain_back_to(alias: Symbol, names: &HashMap<Symbol, Vec<Symbol>>) -> Option<
     None
 }
 
-/// Every leading part of every name written in `ty` — `WisStore` and `WisStore.State` of
-/// `WisStore.State`, `qa` and `qa.S2A` of `qa.S2A[B = NoSp]`, with `NoSp` — so a name
-/// reaching an alias by its qualified path is seen as naming it.
-fn collect_type_expr_heads(
-    parse_sym: &crate::intern::SymbolTable,
-    ty: &TypeExpr,
-    out: &mut Vec<String>,
-) {
-    let prefixes = |name: &Name, out: &mut Vec<String>| {
-        let mut joined = String::new();
-        for seg in &name.segments {
-            if !joined.is_empty() {
-                joined.push('.');
-            }
-            joined.push_str(parse_sym.local_name(*seg));
-            out.push(joined.clone());
+/// The type variables written in `ty`, by their terms, in source order: every `?t` at any
+/// depth of an application, a tuple, an arrow or an effect row. A value written in a type
+/// (`Vector[Int64, 3]`) holds none.
+fn collect_written_type_vars(ty: &TypeExpr, out: &mut Vec<TermId>) {
+    for_each_type_expr(ty, &mut |t| {
+        if let TypeExpr::Variable { term_id, .. } = t {
+            out.push(*term_id);
         }
-    };
+    });
+}
+
+/// Every type written in `ty`, `ty` first and then its parts in the order they are written
+/// — a binding's bound, a tuple's fields, an arrow's parameters, result and effects, an
+/// effect row's labels, a guarded label (not its guard).
+fn for_each_type_expr(ty: &TypeExpr, f: &mut impl FnMut(&TypeExpr)) {
+    f(ty);
     match ty {
-        TypeExpr::Simple(name) => prefixes(name, out),
-        TypeExpr::Parameterized { name, bindings } => {
-            prefixes(name, out);
+        TypeExpr::Parameterized { bindings, .. } => {
             for b in bindings {
-                collect_type_expr_heads(parse_sym, &b.bound, out);
+                for_each_type_expr(&b.bound, f);
             }
         }
         TypeExpr::Tuple(fields) => {
             for (_, t) in fields {
-                collect_type_expr_heads(parse_sym, t, out);
+                for_each_type_expr(t, f);
             }
         }
         TypeExpr::Arrow {
@@ -16936,22 +16970,45 @@ fn collect_type_expr_heads(
             effects,
         } => {
             for (_, t) in params {
-                collect_type_expr_heads(parse_sym, t, out);
+                for_each_type_expr(t, f);
             }
-            collect_type_expr_heads(parse_sym, return_type, out);
+            for_each_type_expr(return_type, f);
             for e in effects {
-                collect_type_expr_heads(parse_sym, e, out);
+                for_each_type_expr(e, f);
             }
         }
-        TypeExpr::EffectAbsent(inner) => collect_type_expr_heads(parse_sym, inner, out),
+        TypeExpr::EffectAbsent(inner) => for_each_type_expr(inner, f),
         TypeExpr::EffectRow(items) => {
             for t in items {
-                collect_type_expr_heads(parse_sym, t, out);
+                for_each_type_expr(t, f);
             }
         }
-        TypeExpr::EffectGuarded { label, .. } => collect_type_expr_heads(parse_sym, label, out),
-        TypeExpr::Variable { .. } | TypeExpr::Denoted(_) => {}
+        TypeExpr::EffectGuarded { label, .. } => for_each_type_expr(label, f),
+        TypeExpr::Simple(_) | TypeExpr::Variable { .. } | TypeExpr::Denoted(_) => {}
     }
+}
+
+/// Every leading part of every name written in `ty` — `WisStore` and `WisStore.State` of
+/// `WisStore.State`, `qa` and `qa.S2A` of `qa.S2A[B = NoSp]`, with `NoSp` — so a name
+/// reaching an alias by its qualified path is seen as naming it.
+fn collect_type_expr_heads(
+    parse_sym: &crate::intern::SymbolTable,
+    ty: &TypeExpr,
+    out: &mut Vec<String>,
+) {
+    for_each_type_expr(ty, &mut |t| {
+        let (TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. }) = t else {
+            return;
+        };
+        let mut joined = String::new();
+        for seg in &name.segments {
+            if !joined.is_empty() {
+                joined.push('.');
+            }
+            joined.push_str(parse_sym.local_name(*seg));
+            out.push(joined.clone());
+        }
+    });
 }
 
 impl ScopePass for AliasDeclarePass<'_, '_> {
@@ -40625,6 +40682,36 @@ impl<'a> Loader<'a> {
         self.current_owner = prev_owner;
     }
 
+    /// WI-20260911-VNQTR — the variables `o` writes in its parameter types, each minted
+    /// under a name of its own ([`KnowledgeBase::mint_inline_param_name`]) and seeded into
+    /// `var_map`, so every occurrence of it in the declaration converts to that variable.
+    /// An anonymous `?` is no parameter: it names nothing and ties nothing. Nor is a slot an
+    /// alias's definition leaves open: it reaches a parameter's type through the alias, as
+    /// a written type, and the declaration names no variable for it.
+    fn mint_inline_type_params(&mut self, o: &Operation) -> Vec<TermId> {
+        let mut written: Vec<TermId> = Vec::new();
+        for p in &o.params {
+            collect_written_type_vars(&p.ty, &mut written);
+        }
+        let mut minted = Vec::new();
+        for term_id in written {
+            let Term::Var(Var::Global(pvid)) = *self.parsed.terms.get(term_id) else {
+                unreachable!("the parser builds a type variable from a variable node alone")
+            };
+            let spelled = self.parsed.symbols.local_name(pvid.name()).to_owned();
+            if crate::kb::term::is_anonymous_var_spelling(&spelled)
+                || self.var_map.contains_key(&pvid.raw())
+            {
+                continue;
+            }
+            let name = self.kb.mint_inline_param_name(&spelled);
+            let vid = self.kb.fresh_var(name);
+            self.var_map.insert(pvid.raw(), vid);
+            minted.push(self.kb.alloc(Term::Var(Var::Global(vid))));
+        }
+        minted
+    }
+
     fn load_operation(&mut self, o: &Operation, domain: Symbol) {
         let op_sort = ClauseKind::Operation;
         let functor = self.remap_name(&o.name);
@@ -40758,6 +40845,13 @@ impl<'a> Loader<'a> {
             }
             type_param_var_terms.push(var_tid);
         }
+
+        // WI-20260911-VNQTR — the THIRD family: a variable the signature writes in a
+        // PARAMETER type (`via(b: Box[?t])`), which §5.4 quantifies as it does an `[A]`
+        // binder. Minted before any type of the signature is converted, so the return
+        // type, a `requires` clause and the body convert their `?t` to this one variable;
+        // listed on the record after the member parameters, below.
+        let inline_param_terms = self.mint_inline_type_params(o);
 
         // WI-341: the whole operation SIGNATURE flows through the Value path — a
         // denoted-bearing return type (an op returning a `Modify`-carrying
@@ -40950,6 +41044,8 @@ impl<'a> Loader<'a> {
                 None => clauses.push((*spec, fixed, vec![(*member, *var)])),
             }
         }
+        // The written inline variables follow the members (see `inline_param_terms`).
+        type_param_var_terms.extend(inline_param_terms);
         for (spec, fixed, members) in clauses {
             // WI-20260924-SNJPR — through an alias, the bindings it fixes join the
             // members', in the canonical order a written clause's arguments take, so the
@@ -42725,7 +42821,13 @@ impl<'a> Loader<'a> {
                     spec_view: spec_value.clone(),
                     span: SourceSpan::from_span(self.source_id, pc.span),
                 });
-            self.kb.record_provides_clause(domain, spec_sym, conditions);
+            self.kb.record_provides_clause(
+                domain,
+                spec_sym,
+                spec_value.clone(),
+                conditions,
+                Some(SourceSpan::from_span(self.source_id, pc.span)),
+            );
         }
         self.kb.assert_metadata_fact_carrier(
             provides_sym,
