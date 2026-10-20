@@ -2156,6 +2156,10 @@ pub(super) fn check_apply_iter(
         // argument names no place ([`placeless_modify`]) — read off the callee's OWN atom
         // (`proj_effects`, before the re-key) and only where the guard discharge below kept it.
         let mut leak: Option<PlacelessModify> = None;
+        let keys = if places.placeless.is_empty() { None } else { ModifyKeys::new(kb) };
+        // One element per declared atom, in order: the pairing below reads `pre_substituted`
+        // as the re-keyed twin of `proj_effects`.
+        debug_assert_eq!(pre_substituted.len(), proj_effects.len());
         for (e, own) in pre_substituted.iter().zip(&proj_effects) {
             // Deep-walk to propagate arg-unification bindings into nested effect
             // positions, then `walk_value_to_resolved` to SURFACE a top-level var
@@ -2198,8 +2202,7 @@ pub(super) fn check_apply_iter(
             // census that settles it, and the wrapper is total accordingly). The
             // pre-CTD6D `.flatten()` here declassified any other carrier back to a
             // plain atom, silently undoing this very flatten.
-            let before = substituted_op_effects.len();
-            push_effect_with_guard_discharge(
+            let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
                 &subst,
@@ -2208,11 +2211,8 @@ pub(super) fn check_apply_iter(
                 walked,
                 &mut substituted_op_effects,
             );
-            if leak.is_none()
-                && !places.placeless.is_empty()
-                && substituted_op_effects.len() > before
-            {
-                leak = placeless_modify(kb, &op.params, own, &places.placeless);
+            if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
+                leak = placeless_modify(kb, keys, &op.params, own, &places.placeless);
             }
         }
         // WI-20260823-4GBQV: a `Modify` over a parameter whose argument names no place has

@@ -3342,6 +3342,9 @@ pub(super) fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
 /// `has_guarded` is the caller's own "this op declares a guarded atom at all" answer,
 /// kept as a parameter rather than recomputed: both callers have already paid for it,
 /// and the guard-σ they pass is built only when it is true.
+///
+/// Returns whether the call INCURS the element — whether anything of it was kept — which is
+/// what a caller judging an incurred atom asks ([`placeless_modify`]).
 pub(super) fn push_effect_with_guard_discharge(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
@@ -3350,7 +3353,7 @@ pub(super) fn push_effect_with_guard_discharge(
     has_guarded: bool,
     walked: Value,
     out: &mut Vec<Value>,
-) {
+) -> bool {
     let (bare_row, walked) = if value_is_bare_row_expr(kb, &walked) {
         (true, wrap_bare_effect_expr_as_row(kb, &walked))
     } else {
@@ -3365,17 +3368,22 @@ pub(super) fn push_effect_with_guard_discharge(
         if has_guarded {
             drop_refuted_guarded_labels(kb, flow, subst, guard_sigma, &walked, &mut present);
         }
+        let kept = !present.is_empty();
         out.extend(present);
+        kept
     } else if has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
         // A STANDALONE guarded atom (how a partial primitive declares its single effect:
         // `div … effects { Error[…] :- eq(b, 0) }`). Refute σ(guard) from Γ; drop the
         // atom on a positive proof of ¬guard, else keep it conservatively present
         // (unchanged from WI-478).
-        if !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked) {
+        let kept = !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked);
+        if kept {
             out.push(walked);
         }
+        kept
     } else {
         out.push(walked);
+        true
     }
 }
 
@@ -3523,6 +3531,7 @@ pub(super) fn dispatched_impl_effects_of(
     // The first `Modify` the call incurs over a parameter whose argument names no place, read
     // off the override's own atom as the call's own is ([`placeless_modify`]).
     let mut leak: Option<PlacelessModify> = None;
+    let keys = if places.placeless.is_empty() { None } else { ModifyKeys::new(kb) };
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
         // (`Stream.isEmpty effects s.E`) that a blanket ref-substitution leaves
@@ -3574,7 +3583,6 @@ pub(super) fn dispatched_impl_effects_of(
             None => sub,
         };
         let walked = walk_type_deep_value(kb, subst, &sub);
-        let before = out.len();
         if !effect_is_unresolved_var(kb, &walked) {
             // WI-20260824-VT8CF — DISCHARGE HERE TOO, through the same owner the
             // op's-own-effect loop uses. σ is built over the IMPL's parameters, because
@@ -3582,7 +3590,7 @@ pub(super) fn dispatched_impl_effects_of(
             // `b` that the call's argument must be bound to; the caller names and orders the
             // SPEC op's params, which the loop above pairs through [`bound_arg`] — the
             // ranking ([`positional_param_indices`]) `build_call_guard_sigma` reads too.
-            push_effect_with_guard_discharge(
+            let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
                 subst,
@@ -3591,9 +3599,9 @@ pub(super) fn dispatched_impl_effects_of(
                 walked,
                 &mut out,
             );
-        }
-        if leak.is_none() && !places.placeless.is_empty() && out.len() > before {
-            leak = placeless_modify(kb, &impl_op.params, e, &places.placeless);
+            if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
+                leak = placeless_modify(kb, keys, &impl_op.params, e, &places.placeless);
+            }
         }
     }
     // WI-20260929-0RP29: a `Modify` over a parameter whose argument names no place is refused

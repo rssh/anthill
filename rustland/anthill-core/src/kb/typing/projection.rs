@@ -519,23 +519,17 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
 /// not finished writing.
 pub(super) fn placeless_modify(
     kb: &mut KnowledgeBase,
+    keys: &ModifyKeys,
     params: &[(Symbol, Value)],
     atom: &Value,
     placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
 ) -> Option<PlacelessModify> {
-    let modify = kb.try_resolve_symbol("anthill.prelude.Modify");
-    modify?;
-    let t = kb.intern("T");
-    let label_key = kb.intern("label");
-    if effect_atom_is_absence(kb, atom, label_key) {
-        return None;
-    }
-    let label = peel_effect_atom(kb, atom, label_key);
-    if !effect_is_modify(kb, &label, modify) {
+    let (label, denied) = peel_effect_atom_noting_absence(kb, atom, keys.label);
+    if denied || !effect_is_modify(kb, &label, Some(keys.modify)) {
         return None;
     }
     let target = label
-        .named_arg(kb, t)
+        .named_arg(kb, keys.t)
         .or_else(|| label.pos_arg(kb, 0))?
         .to_value();
     // `None`: not a place at all — `check_modify_targets` owns that refusal.
@@ -545,6 +539,24 @@ pub(super) fn placeless_modify(
     }
     let arg = Rc::clone(placeless.get(&param)?);
     Some(PlacelessModify { param, target, arg })
+}
+
+/// The symbols [`placeless_modify`] reads an atom by, resolved once per call — `None` from
+/// [`ModifyKeys::new`] on a KB with no `Modify` at all, where no atom is one.
+pub(super) struct ModifyKeys {
+    modify: Symbol,
+    t: Symbol,
+    label: Symbol,
+}
+
+impl ModifyKeys {
+    pub(super) fn new(kb: &mut KnowledgeBase) -> Option<Self> {
+        Some(ModifyKeys {
+            modify: kb.try_resolve_symbol("anthill.prelude.Modify")?,
+            t: kb.intern("T"),
+            label: kb.intern("label"),
+        })
+    }
 }
 
 /// A `Modify` the callee declares over a parameter whose argument names no place
@@ -593,10 +605,11 @@ pub(super) fn placeless_modify_refusal(
 /// * A VALUE NO NAME DENOTES — a call (a nullary operation named bare among them, §5.4), a
 ///   construction (a constructor taking fields, bare or applied, is its application), a
 ///   literal, a field path off one of these: bind it (`let x = …`) and pass the name.
-/// * A CHOICE — an `if`, a `match`, a `let` — whose value may be a place: the call written in
-///   each branch names that branch's own place. Bound by a `let` instead, the binder aliases
-///   the place, and the effect check does not follow the alias yet (WI-20261015-809JN): the
-///   advice loaded with nothing declared.
+/// * A CHOICE — an `if`, a `match` — whose value may be a place: the call written in each
+///   branch names that branch's own place. Bound by a `let` instead, the binder aliases the
+///   place, and the effect check does not follow the alias yet (WI-20261015-809JN): the advice
+///   loaded with nothing declared. A `let` expression, which has no branches, is told to pass
+///   the place it evaluates to.
 ///
 /// The name is the qualified one, through [`KnowledgeBase::qualified_name_of`]; the three
 /// collection-literal forms are named by the literal, which is what the author wrote.
@@ -617,6 +630,12 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
         )
     };
     let qn = |sym: Symbol| kb.qualified_name_of(sym).to_owned();
+    let field_path = |field: &str| {
+        format!(
+            "the field path `.{field}`, whose receiver is a value no name denotes, so it names \
+             no resource. Bind the receiver first (`let x = …`) and pass `x.{field}`"
+        )
+    };
     // A constructor applied to nothing, or named bare: one term (§6). A constant where it takes
     // no field, a construction with every field left out where it takes some — and the three
     // literal forms, whose nullary application is the empty literal and not their name.
@@ -666,6 +685,25 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
         {
             constructed(*head)
         }
+        // A field read off a value no name denotes, as the typer leaves it —
+        // `field_access(receiver, "field")`; the `DotApply` arms below are the written form,
+        // met where the argument did not type. [`stable_receiver_path`] takes every path whose
+        // head is a name, so this receiver is the unstable half. Read as a call, it was "the
+        // call `anthill.reflect.field_access(…)`" (MEASURED).
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) if named_args.is_empty()
+            && pos_args.len() == 2
+            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
+        {
+            match pos_args[1].as_expr() {
+                Some(Expr::Const(Literal::String(field))) => field_path(field),
+                _ => unnamed("a field read off a value no name denotes".to_owned()),
+            }
+        }
         // A construction with arguments: by the literal for the three collection forms.
         Some(Expr::Constructor { name: head, .. } | Expr::Apply { functor: head, .. })
             if kb.has_kind(*head, SymbolKind::Entity) =>
@@ -679,6 +717,8 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
         Some(Expr::Constructor { name, .. }) => {
             unnamed(format!("the constructor `{}(…)`", qn(*name)))
         }
+        // A constructor's type is written with its bracket, `counter[]` (§4.4): its name bare
+        // is the instance.
         Some(Expr::TypeValue {
             head,
             pos_args,
@@ -686,7 +726,13 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
         }) => constant(format!(
             "the type `{}{}`",
             qn(*head),
-            if pos_args.is_empty() && named_args.is_empty() { "" } else { "[…]" }
+            if !(pos_args.is_empty() && named_args.is_empty()) {
+                "[…]"
+            } else if head.is_type_face() {
+                "[]"
+            } else {
+                ""
+            }
         )),
         // Empty argument lists make it a FIELD ACCESS, not a call — and reaching here at
         // all means its receiver is the unstable half: [`stable_receiver_path`] takes
@@ -697,11 +743,7 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
             pos_args,
             named_args,
             ..
-        }) if pos_args.is_empty() && named_args.is_empty() => format!(
-            "the field path `.{field}`, whose receiver is a value no name denotes, so it names \
-             no resource. Bind the receiver first (`let x = …`) and pass `x.{field}`",
-            field = kb.local_name_of(*name)
-        ),
+        }) if pos_args.is_empty() && named_args.is_empty() => field_path(kb.local_name_of(*name)),
         Some(Expr::DotApply { name, .. }) => {
             unnamed(format!("the call `.{}(…)`", kb.local_name_of(*name)))
         }
@@ -709,7 +751,9 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
         Some(Expr::Const(_)) => unnamed("a literal".to_owned()),
         Some(Expr::Match { .. }) => choice("a `match` expression"),
         Some(Expr::If { .. }) => choice("an `if` expression"),
-        Some(Expr::Let { .. }) => choice("a `let` expression"),
+        Some(Expr::Let { .. }) => "a `let` expression, which names no resource itself. Pass the \
+                                   place it evaluates to, a parameter or a field path off one"
+            .to_owned(),
         // Loud rather than silent: an unnamed shape still reports, and says so.
         _ => unnamed("this argument expression".to_owned()),
     }

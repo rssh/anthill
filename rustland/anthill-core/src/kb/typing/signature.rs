@@ -3645,49 +3645,42 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 /// repeatedly, since nothing forbids nesting, and returns the element unchanged when it
 /// is already a label.
 pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> Value {
+    peel_effect_atom_noting_absence(kb, e, label_key).0
+}
+
+/// [`peel_effect_atom`], and whether an `absent` wrapper (`-E`) stood on the way down: such an
+/// element DENIES its label. An absence constrains a row; it is no effect the operation
+/// incurs, and a reader judging what a call incurs reads past it, not through it.
+pub(super) fn peel_effect_atom_noting_absence(
+    kb: &KnowledgeBase,
+    e: &Value,
+    label_key: Symbol,
+) -> (Value, bool) {
     let mut cur = e.clone();
+    let mut denied = false;
     // Bounded by the row's own depth; the loop terminates because each step descends
     // into a strictly smaller child.
     loop {
         // By the constructor's qualified name, as `row_atoms` reads them: a sort of the
         // program's own named `absent` is no wrapper (MEASURED: `effects {absent[label =
         // Int64]}` over a user effect `absent` was refused, its label read as the effect).
-        let is_wrapper = cur.head(kb).functor_sym().is_some_and(|f| {
+        let wrapper = cur.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)).filter(|qn| {
             matches!(
-                kb.qualified_name_of(f),
+                *qn,
                 "anthill.prelude.EffectExpression.guarded"
                     | "anthill.prelude.EffectExpression.absent"
                     | "anthill.prelude.EffectExpression.present"
             )
         });
-        if !is_wrapper {
-            return cur;
-        }
+        let Some(wrapper) = wrapper else {
+            return (cur, denied);
+        };
+        denied |= wrapper == "anthill.prelude.EffectExpression.absent";
         match named_child_value(kb, &cur, label_key) {
             Some(inner) => cur = inner,
             // A wrapper with no `label` child is malformed; return it so the caller
             // judges what it can see rather than silently dropping the atom.
-            None => return cur,
-        }
-    }
-}
-
-/// Does `e` DENY its label — an `absent` wrapper (`-E`) on the way down to it, the wrappers
-/// [`peel_effect_atom`] peels? An absence constrains a row; it is no effect the operation
-/// incurs, and a reader judging what a call incurs reads past it, not through it.
-pub(super) fn effect_atom_is_absence(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> bool {
-    let mut cur = e.clone();
-    loop {
-        match cur.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)) {
-            Some("anthill.prelude.EffectExpression.absent") => return true,
-            Some(
-                "anthill.prelude.EffectExpression.guarded"
-                | "anthill.prelude.EffectExpression.present",
-            ) => match named_child_value(kb, &cur, label_key) {
-                Some(inner) => cur = inner,
-                None => return false,
-            },
-            _ => return false,
+            None => return (cur, denied),
         }
     }
 }

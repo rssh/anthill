@@ -534,6 +534,8 @@ end
 // whole `wi_tests` binary: each turned red the rows its site names, and nothing else.
 // ---------------------------------------------------------------------------------------
 
+use crate::common::replace_in_fixture;
+
 /// The refusals of `touch` below, one per caller.
 fn refusals_of(src: &str) -> Vec<String> {
     load_result(src).expect_err("the fixture is refused on purpose")
@@ -586,7 +588,8 @@ end
         told_as(&errs, &["the name `test.wi4gbqv.bare_op.k0`, a `const` — a constant"]),
         "`touch(k0)` is refused at the call as a constant; got: {errs:#?}"
     );
-    let bound = src.replace(
+    let bound = replace_in_fixture(
+        src,
         "operation viaOp() -> Unit = touch(mk)\n  operation viaConst() -> Unit = touch(k0)",
         "operation viaOp() -> Unit =\n    let x = mk()\n    touch(x)",
     );
@@ -693,7 +696,8 @@ end
             && e.contains("Bind it first")
     };
     assert_eq!(errs.iter().filter(fresh).count(), 2, "both spellings are one construction; got: {errs:#?}");
-    let bound = src.replace(
+    let bound = replace_in_fixture(
+        src,
         "operation applied() -> Unit = touch(wrap())\n  operation bare() -> Unit = touch(wrap)",
         "operation applied() -> Unit =\n    let x = wrap()\n    touch(x)",
     );
@@ -734,7 +738,8 @@ end
 /// A TYPE in a value position is a constant. It fell to the last arm, "this argument
 /// expression, which produces a fresh value" (MEASURED).
 ///
-/// BACK-OUT: the `TypeValue` arm dropped fails this row.
+/// BACK-OUT: the `TypeValue` arm dropped fails this row, and so does a constructor's type
+/// printed without its bracket.
 #[test]
 fn a_type_value_is_a_constant() {
     let src = r#"
@@ -749,6 +754,7 @@ namespace test.wi4gbqv.typeval
   operation touchg[X](target: X) -> Unit effects Modify[target] = ()
   operation bareType() -> Unit = touchg(CounterState)
   operation appliedType() -> Unit = touchg(List[T = Int64])
+  operation faceType() -> Unit = touchg(counter[])
 end
 "#;
     let errs = refusals_of(src);
@@ -757,6 +763,12 @@ end
         "got: {errs:#?}"
     );
     assert!(told_as(&errs, &["the type `anthill.prelude.List[…]` — a constant"]), "got: {errs:#?}");
+    // A constructor's type is written with its bracket; bare, its name is the instance (§4.4).
+    // It was printed bare (MEASURED).
+    assert!(
+        told_as(&errs, &["the type `test.wi4gbqv.typeval.CounterState.counter[]` — a constant"]),
+        "got: {errs:#?}"
+    );
 }
 
 /// A CHOICE between places names none itself; the repair is the call in each branch, which
@@ -764,7 +776,8 @@ end
 /// `let`, whose binder aliases a place the effect check does not follow yet
 /// (WI-20261015-809JN): the advised program loaded with nothing declared (MEASURED).
 ///
-/// BACK-OUT: the `if`/`match` arms back on the fresh-value advice fails this row.
+/// BACK-OUT: the `if`/`match` arms back on the fresh-value advice fails this row, and so does
+/// the `let` arm told to call in each branch.
 #[test]
 fn a_choice_between_places_is_called_in_each_branch() {
     let src = r#"
@@ -781,10 +794,20 @@ end
         told_as(&errs, &["an `if` expression, which names no resource itself", "Call `touch` in each branch"]),
         "got: {errs:#?}"
     );
-    let branched = src.replace("touch(if b then x else y)", "if b then touch(x) else touch(y)");
+    let branched = replace_in_fixture(src, "touch(if b then x else y)", "if b then touch(x) else touch(y)");
     if let Err(errs) = load_result(&branched) {
         panic!("the advised call in each branch loads; got: {errs:#?}");
     }
+    // A `let` has no branches: it is told to pass the place it evaluates to. It was told to
+    // call `touch` in each branch (MEASURED).
+    let let_arg = replace_in_fixture(src, "touch(if b then x else y)", "touch(let z = x\n          z)");
+    assert!(
+        told_as(
+            &refusals_of(&let_arg),
+            &["a `let` expression, which names no resource itself. Pass the place it evaluates to"]
+        ),
+        "a `let` argument names no place of its own"
+    );
 }
 
 /// A nullary constructor APPLIED is the constant its bare name is (§4.4), in the spelling no
@@ -932,9 +955,11 @@ end
         "both callers are refused at the call; got: {errs:#?}"
     );
     assert!(!errs.iter().any(|e| e.contains("Modify[T = h]")), "nothing is charged to `h`; got: {errs:#?}");
-    let field = src
-        .replace("touch(h.fresh())\n  operation pure", "touch(h.rep)\n  operation pure")
-        .replace("operation pure(h: Holder) -> Unit effects {} = touch(h.fresh())\n", "");
+    let field = replace_in_fixture(
+        &replace_in_fixture(src, "touch(h.fresh())\n  operation pure", "touch(h.rep)\n  operation pure"),
+        "operation pure(h: Holder) -> Unit effects {} = touch(h.fresh())\n",
+        "",
+    );
     if let Err(errs) = load_result(&field) {
         panic!("a field path off `h` is a place under `h`; got: {errs:#?}");
     }
@@ -967,7 +992,7 @@ end
     if let Err(errs) = load_result(src) {
         panic!("`same(c)` is `c`, a parameter; got: {errs:#?}");
     }
-    let undeclared = src.replace("effects Modify[c] = touch(same(c))", "effects {} = touch(same(c))");
+    let undeclared = replace_in_fixture(src, "effects Modify[c] = touch(same(c))", "effects {} = touch(same(c))");
     let errs = refusals_of(&undeclared);
     assert!(
         errs.iter().any(|e| e.contains("undeclared effect: Modify[T = c]")),
@@ -1029,7 +1054,8 @@ end
     let mut kb = crate::common::load_kb_with(src);
     let again = type_check_sorts(&mut kb, Loaded::nothing());
     assert!(again.is_empty(), "typed again, the body is judged as it was; got: {again:#?}");
-    let written = src.replace("= poke(x)", "= poke(some(x))").replace(
+    let written = replace_in_fixture(
+        &replace_in_fixture(src, "= poke(x)", "= poke(some(x))"),
         "import anthill.prelude.{Int64, Unit, Bool, Modify, Modifiable, Option}",
         "import anthill.prelude.{Int64, Unit, Bool, Modify, Modifiable, Option}\n  import anthill.prelude.Option.{some}",
     );
@@ -1037,4 +1063,115 @@ end
         told_as(&refusals_of(&written), &["the constructor `anthill.prelude.Option.some(…)`"]),
         "an author's `some(x)` is a construction and names no place"
     );
+}
+
+/// A field path off a value no name denotes is told as the field path, in the form the typer
+/// leaves it (`field_access(receiver, "rep")`). Classified as typed, it was "the call
+/// `anthill.reflect.field_access(…)`", a name the author never wrote (MEASURED).
+///
+/// BACK-OUT: the `field_access` arm dropped fails this row.
+#[test]
+fn a_field_path_off_a_value_no_name_denotes_is_told_as_one() {
+    let src = r#"
+namespace test.wi4gbqv.fieldoff
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort Box
+    provides Modifiable[T = Self]
+    entity full(v: Int64)
+  end
+
+  sort Holder
+    entity holder(rep: Box)
+  end
+
+  operation mkh() -> Holder = holder(rep: full(v: 1))
+  operation touch(target: Box) -> Unit effects Modify[target] = ()
+  operation viaCall() -> Unit = touch(mkh().rep)
+  operation viaCtor() -> Unit = touch(holder(rep: full(v: 2)).rep)
+end
+"#;
+    let errs = refusals_of(src);
+    let told = |e: &&String| {
+        told_as(
+            &[(*e).clone()],
+            &["the field path `.rep`, whose receiver is a value no name denotes", "pass `x.rep`"],
+        )
+    };
+    assert_eq!(errs.iter().filter(told).count(), 2, "both receivers name nothing; got: {errs:#?}");
+    assert!(!errs.iter().any(|e| e.contains("field_access")), "got: {errs:#?}");
+}
+
+/// An argument passed BY NAME is classified as the call's typing left it too: `touch(target:
+/// same(c))` is `c`, and `touch(target: h.fresh())` the call `Holder.fresh(h)`.
+///
+/// BACK-OUT: the named loop's argument classified as written fails this row alone; the rows
+/// above pass the argument positionally.
+#[test]
+fn a_named_argument_is_classified_as_typed() {
+    let src = r#"
+namespace test.wi4gbqv.named
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  sort Holder
+    provides Modifiable[T = Self]
+    entity holder(rep: CounterState)
+    operation fresh(h: Holder) -> CounterState = counter
+  end
+
+  operation same(c: CounterState) -> CounterState
+  rule same(?c) <=> ?c @[simp]
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation viaRewrite(c: CounterState) -> Unit effects Modify[c] = touch(target: same(c))
+  operation viaDot(h: Holder) -> Unit effects {} = touch(target: h.fresh())
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        !errs.iter().any(|e| e.contains("same(…)") || e.contains("Modify[T = h]")),
+        "`same(c)` is `c`, and nothing is charged to `h`; got: {errs:#?}"
+    );
+    assert!(told_as(&errs, &["the call `test.wi4gbqv.named.Holder.fresh(…)`"]), "got: {errs:#?}");
+}
+
+/// A SELF-RECURSIVE call through a DISPATCHED override is judged on the override's own atom
+/// too: inside `MutBox.poke(a, other)`, `Box.poke(other, mb(fd: 1))` re-keys the override's
+/// `Modify[a]` onto the caller's `other`, and read after the re-key it was the override's own
+/// `Modify[other]` — which it does not declare — so the call was refused naming it. It is
+/// refused for the write it makes, to `other`, which the caller does not declare (MEASURED).
+///
+/// BACK-OUT: the override's atom judged after the re-key (`dispatched_impl_effects_of`) fails
+/// this row alone; [`a_self_recursive_call_is_judged_on_the_callees_own_atom`] drives the
+/// call's own site.
+#[test]
+fn a_self_recursive_dispatch_is_judged_on_the_overrides_own_atom() {
+    let src = r#"
+namespace test.wi4gbqv.ovrrec
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort Box
+    sort T = ?
+    effects Effect = ?
+    operation poke(a: Self, other: T) -> Int64 effects Effect
+  end
+
+  sort MutBox
+    provides Modifiable[T = Self]
+    entity mb(fd: Int64)
+    provides Box[T = MutBox]
+    operation poke(a: MutBox, other: MutBox) -> Int64 effects Modify[a] = Box.poke(other, mb(fd: 1))
+  end
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: Modify[T = other]")),
+        "the write to `other` is undeclared; got: {errs:#?}"
+    );
+    assert!(!errs.iter().any(|e| e.contains("declares `Modify[other]`")), "got: {errs:#?}");
 }
