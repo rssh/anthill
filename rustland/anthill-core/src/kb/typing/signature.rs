@@ -2842,6 +2842,12 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         // first member it compares ([`ProvisionMembers`]).
         let provision = ProvisionMembers::new(p.spec, p.carrier, &p.sigma, p.witness);
         for &spec_op in spec_ops {
+            // An operation answered from its dictionary is answered by no carrier's member
+            // ([`answered_by_its_dictionary`]): a sort's own `type_value` overrides nothing
+            // of `TypeValue`'s, and is held to no contract of it.
+            if answered_by_its_dictionary(kb, spec_op) {
+                continue;
+            }
             let sn = short(kb, spec_op);
             // The carrier's own op of the same short name is its override/impl.
             let Some(&impl_op) = carrier_ops.iter().find(|&&o| short(kb, o) == sn) else {

@@ -1241,6 +1241,89 @@ fn a_first_provision_written_into_a_sealed_sort_changes_who_answers() {
     );
 }
 
+const LIB_CLAUSES: &str = r#"
+namespace test.libq
+  import anthill.prelude.{Int64}
+  sort Tag
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+  sort Ready
+    sort T = ?
+  end
+  sort Steady
+    sort T = ?
+  end
+  sort Plain
+    entity plain
+    provides Ready[T = Plain]
+  end
+  sort Rough
+    entity rough
+    provides Steady[T = Rough]
+  end
+  sort Box
+    sort V = ?
+    entity box(v: V)
+    provides Tag[T = Box[V = V]] :- Ready[T = V]
+    operation tag(x: Box[V = V]) -> Int64 = 1
+  end
+  operation libTag() -> Int64 = Tag.tag(box(v: plain()))
+end
+"#;
+
+/// A clause of `Box`'s provision of `Tag` with no condition, and the call it lets
+/// through: `Tag` at a `Box` of a type that is not `Ready`.
+const A_CLAUSE_WITH_NO_CONDITION: &str = r#"
+namespace test.libq.Box
+  import test.libq.{Tag}
+  provides Tag[T = Box[V = V]]
+end
+namespace test.progq
+  import anthill.prelude.{Int64}
+  import test.libq.{Tag}
+  import test.libq.Box.{box}
+  import test.libq.Rough.{rough}
+  operation progTag() -> Int64 = Tag.tag(box(v: rough()))
+end
+"#;
+
+/// …and one with another condition, which `Rough` meets.
+const A_CLAUSE_WITH_ANOTHER_CONDITION: &str = r#"
+namespace test.libq.Box
+  import test.libq.{Tag, Steady}
+  provides Tag[T = Box[V = V]] :- Steady[T = V]
+end
+namespace test.progq
+  import anthill.prelude.{Int64}
+  import test.libq.{Tag}
+  import test.libq.Box.{box}
+  import test.libq.Rough.{rough}
+  operation progTag() -> Int64 = Tag.tag(box(v: rough()))
+end
+"#;
+
+/// A CLAUSE written into a sealed sort at the head of a provision it already makes, under
+/// other conditions. In one call it is an alternative clause, and the call the library's
+/// condition leaves out is answered. Behind the seal it writes the row the library's
+/// clause wrote, which the walk over the rows asserted since never meets: the clause
+/// records are what see it.
+/// BACK-OUT: with the clause records not read, both programs load clean in two calls
+/// (MEASURED).
+#[test]
+fn a_clause_written_into_a_sealed_provision_is_refused() {
+    for program in [A_CLAUSE_WITH_NO_CONDITION, A_CLAUSE_WITH_ANOTHER_CONDITION] {
+        let one = loaded(one_call(LIB_CLAUSES, program), "one call");
+        assert_eq!(values(one, &["test.progq.progTag"]), vec![1]);
+        let two = refused(two_calls(LIB_CLAUSES, program), "two calls");
+        assert!(
+            two.iter().any(|e| e.contains("is written for 'test.libq.Box', which a sealed load")
+                && e.contains("under other conditions")),
+            "got {two:?}"
+        );
+    }
+}
+
 const A_SECOND_WITNESS_WHERE_THE_LIBRARY_HAD_ONE: &str = r#"
 namespace test.progc
   import anthill.prelude.{Int64}

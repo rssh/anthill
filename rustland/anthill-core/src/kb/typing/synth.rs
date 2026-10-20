@@ -1127,8 +1127,11 @@ pub(super) fn resolve_inner<'a>(
                  the caller that writes it",
                 apart.account()
             ),
-            // `TypeValue` is the one spec no row may be written for (`HandWrittenTypeValue`),
-            // so advising one sent the author to a second refusal. A `requires` in scope is
+            // `TypeValue` is a spec no row may be written for (`HandWrittenTypeValue`), so
+            // advising one sent the author to a second refusal. `TypePattern` is the other
+            // (`HandWrittenTypePattern`), and a goal of it never reaches this arm: its one
+            // row, `TypeValuePattern`'s, is at its own `T` and matches every goal, so a goal
+            // that fails fails beneath it, the forwarded arm. A `requires` in scope is
             // advice only where the goal holds a parameter a caller could say: at a ground
             // type there is no caller to take it from, and such a clause holds nowhere —
             // for every spec, below as here.
@@ -1145,10 +1148,7 @@ pub(super) fn resolve_inner<'a>(
                     if ground {
                         String::new()
                     } else {
-                        format!(
-                            "; add `requires {}[…]` in scope to take it from the caller",
-                            kb.qualified_name_of(goal.spec_sort)
-                        )
+                        open_part_advice(kb, goal.spec_sort, "; ")
                     }
                 )
             }
@@ -1163,7 +1163,7 @@ pub(super) fn resolve_inner<'a>(
                     if ground {
                         String::new()
                     } else {
-                        format!(", or add `requires {}[…]` in scope", kb.qualified_name_of(goal.spec_sort))
+                        open_part_advice(kb, goal.spec_sort, ", or, ")
                     }
                 )
             }
@@ -2286,4 +2286,18 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
             other => type_display_name_value(kb, other),
         },
     }
+}
+
+/// The repair for a goal that is not ground, said for both things its open part can be. The
+/// resolver does not know which: a parameter of the caller, which a `requires` in scope takes
+/// from the caller, or a slot a type the call states leaves open (`TypeValue[T =
+/// Boom.Reason]` from `[T = Boom]`), which only writing that type in full supplies — a
+/// `requires` naming it names a parameter no caller has.
+fn open_part_advice(kb: &KnowledgeBase, spec: Symbol, lead: &str) -> String {
+    format!(
+        "{lead}where it holds a parameter of the caller, add `requires {0}[…]` in scope to take \
+         it from the caller, and where it holds a slot a type the call states leaves open, \
+         write every type argument of that type",
+        kb.qualified_name_of(spec)
+    )
 }

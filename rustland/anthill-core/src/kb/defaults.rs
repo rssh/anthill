@@ -686,7 +686,7 @@ fn declared_default_rows(kb: &KnowledgeBase) -> (Vec<(Symbol, Symbol)>, Vec<Load
             continue;
         };
         // `sort_ref_functor`, not the spec-view reader: both fields are plain SORT
-        // REFERENCES, the shape `matches_variance_fact` reads for the `fact Covariant(sort:
+        // REFERENCES, the shape `variance_fact_params` reads for the `fact Covariant(sort:
         // List, param: T)` precedent this entity copies. `provides_spec_base_sym` peels a
         // `SortView` wrapper a symbol field never carries and does NOT peel the
         // `sort_ref(name: …)` wrapper a written symbol can.

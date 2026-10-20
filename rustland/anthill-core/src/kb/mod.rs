@@ -2559,8 +2559,20 @@ pub struct KnowledgeBase {
     /// which the fact store keeps once. Nor can a count or a source location: re-loading
     /// the same files (the idempotency the witness tests pin) re-parses them with new
     /// source ids, and would turn every spec into two alternatives. Two clauses with
-    /// the same carrier, spec and conditions ARE one provision.
-    provides_clause_counts: HashMap<(Symbol, Symbol), Vec<Vec<crate::eval::value::Value>>>,
+    /// the same carrier, spec and conditions ARE one provision. A record also keeps what
+    /// a later load's clause is judged by behind a seal ([`ProvisionClause`]).
+    provides_clause_counts: HashMap<(Symbol, Symbol), Vec<ProvisionClause>>,
+}
+
+/// One recorded `provides` clause ([`KnowledgeBase::record_provides_clause`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ProvisionClause {
+    /// The lowered conditions: with the key, the clause's identity.
+    pub(crate) conditions: Vec<crate::eval::value::Value>,
+    /// The view it provides, as its provision row holds it.
+    pub(crate) spec_view: crate::eval::value::Value,
+    /// Where it was written. A derived clause has no site.
+    pub(crate) site: Option<crate::span::SourceSpan>,
 }
 
 /// WI-20260901-EA6KS — the per-load bookkeeping that belongs to the LOAD CHECKS, taken
@@ -2640,6 +2652,11 @@ pub enum TypeArgProblem {
     /// a `Sort` head ([`KnowledgeBase::check_sort_type_args`]), so a consumer reading a
     /// term built there must not depend on a bindings list being duplicate-free.
     DuplicateParam { param: String },
+    /// A `?_` given to a type an operation body builds, written again elsewhere in the
+    /// operation (`Duo[L = ?_, R = ?_]`, or `Boom[Reason = ?_]` twice): one variable over
+    /// the declaration, tying the places, which a value of a type cannot hold. A `?`, or a
+    /// `?_` written once, leaves its slot open there (§8.1).
+    VariableArgument,
 }
 
 impl TypeArgProblem {
@@ -2675,6 +2692,11 @@ impl TypeArgProblem {
             TypeArgProblem::ExcessPositional { given, free } => format!(
                 "`{sort}` is over-applied: {given} positional type argument(s) but only \
                  {free} declared type parameter(s) left to bind — {declares}"
+            ),
+            TypeArgProblem::VariableArgument => format!(
+                "`{sort}` is given `?_`, in a type an operation body builds, and the operation \
+                 writes that `?_` again: it is one variable tying the places, and a value of a \
+                 type holds no variable — write `?` for each slot left open, or the type"
             ),
         }
     }
@@ -7888,12 +7910,16 @@ impl KnowledgeBase {
     /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
     /// file. Both openers of a provision ask here; see the field's comment for why the
     /// counter cannot live on the per-file `Loader`.
-    /// Proposal 066 §7.5 — record one written `provides spec` clause of `carrier`.
+    /// Proposal 066 §7.5 — record one `provides spec` clause of `carrier`, written or
+    /// derived: `spec_view` is the view the provision row holds, `site` where it was
+    /// written.
     pub(crate) fn record_provides_clause(
         &mut self,
         carrier: Symbol,
         spec: Symbol,
+        spec_view: crate::eval::value::Value,
         conditions: Vec<crate::eval::value::Value>,
+        site: Option<crate::span::SourceSpan>,
     ) {
         let key = (
             self.canonical_sort_sym(carrier),
@@ -7901,15 +7927,46 @@ impl KnowledgeBase {
         );
         let known = self.provides_clause_counts.get(&key).is_some_and(|seen| {
             seen.iter().any(|c| {
-                c.len() == conditions.len()
-                    && c.iter()
+                c.conditions.len() == conditions.len()
+                    && c.conditions
+                        .iter()
                         .zip(&conditions)
                         .all(|(a, b)| crate::kb::term_view::views_structurally_equal(self, a, b))
             })
         });
         if !known {
-            self.provides_clause_counts.entry(key).or_default().push(conditions);
+            self.provides_clause_counts.entry(key).or_default().push(ProvisionClause {
+                conditions,
+                spec_view,
+                site,
+            });
         }
+    }
+
+    /// Every recorded `provides` clause with its (carrier, spec) key, canonical, and its
+    /// place among that key's clauses: the keys in symbol order, each key's clauses as
+    /// recorded — an order a refusal that names them can be reported in
+    /// (`typing::sealed`).
+    pub(crate) fn provision_clauses(&self) -> Vec<(Symbol, Symbol, usize, &ProvisionClause)> {
+        let mut keys: Vec<(Symbol, Symbol)> = self.provides_clause_counts.keys().copied().collect();
+        keys.sort_by_key(|(carrier, spec)| (carrier.index(), spec.index()));
+        keys.into_iter()
+            .flat_map(|key| {
+                self.provides_clause_counts[&key]
+                    .iter()
+                    .enumerate()
+                    .map(move |(place, clause)| (key.0, key.1, place, clause))
+            })
+            .collect()
+    }
+
+    /// How many clauses are recorded for each (carrier, spec): what a seal keeps, to tell
+    /// a later load's clause from a sealed one's.
+    pub(crate) fn provision_clause_counts(&self) -> HashMap<(Symbol, Symbol), usize> {
+        self.provides_clause_counts
+            .iter()
+            .map(|(key, clauses)| (*key, clauses.len()))
+            .collect()
     }
 
     /// WI-20260919-9KYPA — the PROBE face of
@@ -7953,7 +8010,7 @@ impl KnowledgeBase {
         );
         self.provides_clause_counts
             .get(&key)
-            .is_some_and(|clauses| clauses.iter().any(|c| c.is_empty()))
+            .is_some_and(|clauses| clauses.iter().any(|c| c.conditions.is_empty()))
     }
 
     pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {

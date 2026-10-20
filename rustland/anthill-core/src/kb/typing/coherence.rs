@@ -1370,6 +1370,12 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             continue;
         };
         for &spec_op in spec_ops {
+            // An operation answered from its dictionary is backed by no carrier's member
+            // ([`answered_by_its_dictionary`]), so a carrier's operation of its name is no
+            // member it lacks.
+            if answered_by_its_dictionary(kb, spec_op) {
+                continue;
+            }
             let op_short = kb
                 .qualified_name_of(spec_op)
                 .rsplit('.')

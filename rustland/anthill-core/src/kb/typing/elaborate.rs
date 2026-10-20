@@ -1768,6 +1768,29 @@ pub(super) fn lower_rigid_read_to_slot(
     // name is written.
     let op_qn = kb.qualified_name_of(spec_op_sym).to_owned();
     let op_short_sym = kb.intern(short_name_of(&op_qn));
+    // THE CALL AN AUTHOR WRITES, bracket and all: `TypeValue.type_value[T = B]()`, its
+    // bracket the binding of the clause that licenses the read. A call of `type_value`
+    // names its instance in its bracket, and a body typed a second time — a later load
+    // types every body when nothing is sealed, a `@[simp]` rewrite types what it rewrote —
+    // types this node as written. Bracket-less, it was refused there, "names no instance"
+    // (MEASURED: `TypeValuePattern.admits`'s `type_admits(T, t)`, typed again by an
+    // unsealed later load).
+    //
+    // KEYED AS A WRITTEN BRACKET IS: by the parameter's bare name, and the clause's type
+    // parameters alone. The clause holds its key as its spelling left it — bare where it
+    // was written `T = B`, `TypeValue.T` where it was written positionally, and beside an
+    // operation's binding where the sort's chain completed it (MEASURED: either typed
+    // again, "unknown type-param 'T'").
+    // `type_value_slot` found this entry by decoding its spec, so the decode answers.
+    let goal = goal_from_requires_entry(kb, &resolved_spec)?;
+    let type_args: Vec<(Option<Symbol>, Value)> = goal
+        .bindings
+        .into_iter()
+        .map(|(key, value)| {
+            let name = kb.local_name_of(key).to_owned();
+            (Some(kb.intern(&name)), value)
+        })
+        .collect();
     let pass = crate::kb::simp_rewrite::simp_pass(kb);
     let node = NodeOccurrence::synthesized_expr(
         Expr::Apply {
@@ -1775,7 +1798,7 @@ pub(super) fn lower_rigid_read_to_slot(
             functor: spec_op_sym,
             pos_args: Vec::new(),
             named_args: Vec::new(),
-            type_args: Vec::new(),
+            type_args,
         },
         Rc::clone(occ),
         pass,
@@ -1807,9 +1830,9 @@ pub(super) fn lower_rigid_read_to_slot(
 ///
 /// A reader that wants the TYPE a written type expression stands for meets its type
 /// parameters in both forms — typing lowers the reads a `requires TypeValue[…]` clause
-/// backs and leaves the others — and the lowered call says nothing of the parameter on
-/// its own: it is nullary, and its dispatch is a slot index. The node it was built from
-/// is the read the author wrote, so that is what is asked.
+/// backs and leaves the others — and the lowered call names the clause's binding in its
+/// bracket, not the parameter the author wrote. The node it was built from is the read
+/// the author wrote, so that is what is asked.
 pub(super) fn value_read_type_param(
     kb: &KnowledgeBase,
     chain: &DictChain,

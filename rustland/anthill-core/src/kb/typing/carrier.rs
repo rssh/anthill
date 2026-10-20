@@ -4533,7 +4533,16 @@ pub(super) fn resolve_at_goal(
                 // `build_sort_ops_table` already resolved impl-override
                 // vs spec-default for `(impl_sort, op_short)`; no
                 // string concatenation, no try/catch fallback here.
-                match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
+                //
+                // Except for an operation that answers from its dictionary
+                // ([`answered_by_its_dictionary`]): the spec's own, at every provider.
+                // Through the table, `sort Door { … operation type_value(n: Int64) -> String }`
+                // pinned `TypeValue.type_value[T = Door]()` to `Door`'s member, which died
+                // at the call "expected 1 args, got 0" (MEASURED).
+                let dictionary_answer = kb
+                    .sort_ops_lookup(goal.spec_sort, op_short_sym)
+                    .filter(|&op| answered_by_its_dictionary(kb, op));
+                match dictionary_answer.or_else(|| kb.sort_ops_lookup(*impl_sort, op_short_sym)) {
                     Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
                     None => (DispatchOutcome::NoMatch { unmet: None }, None),
                 }

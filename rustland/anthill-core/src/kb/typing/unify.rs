@@ -464,7 +464,7 @@ impl BindingKeyMatch {
 /// gate it already applies and enrolling only adds the identity-first pass. It lives in
 /// this module rather than in `kb::defaults` so it could.
 ///
-/// Related, kept in situ: `matches_variance_fact` bridges a variance fact's bare-written
+/// Related, kept in situ: `variance_fact_params` bridges a variance fact's bare-written
 /// `param` against either key spelling via sort-gated [`same_label`] (WI-764-annotated).
 /// It is a fact-arg matcher, not a bindings-list lookup, so it does not enroll — but a
 /// change to the key rule must visit it too, or variance lookup diverges from binding

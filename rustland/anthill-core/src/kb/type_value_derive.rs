@@ -134,6 +134,11 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         ) => x == y,
         _ => false,
     });
+    // `TypePattern` has one row, `TypeValuePattern`'s, and the rule that no instance is
+    // written covers it too (proposal 071 §1.2). Here, beside `TypeValue`'s, so a program
+    // that writes both is told of both in one load, and before the gate below, which
+    // decides only whether `TypeValue` rows are derived.
+    errors.extend(super::typing::written_type_pattern_provisions(kb));
     // THE DEMAND GATE. Deriving a row for every sort grows the provider relation by 77%
     // (219 → 387 provisions) and costs ~113ms per load — of which only ~5ms is this pass;
     // the rest is `type_check_sorts`, `check_provider_requires` and

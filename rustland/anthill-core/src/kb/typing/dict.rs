@@ -265,7 +265,7 @@ pub struct UnprovidedProvision {
     /// element of the spec: a refusal raised over a requirement with elements still open —
     /// the carrier having no provision to say them is the very reason they are.
     provision_in_full: Option<String>,
-    /// A requirement of the library's two specs in `spec`'s own contract that holds nowhere
+    /// A requirement of the library's specs in `spec`'s own contract that holds nowhere
     /// at these bindings, rendered: no row of `spec` here can answer, so no row is the
     /// repair ([`library_contract_unheld`]). `None` where none fails, or where the
     /// requirement leaves an element open.
@@ -369,6 +369,23 @@ pub(super) fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spe
 }
 
 impl RequirementRefusal {
+    /// A refusal whose account, `construction`, names its own repair — the shape the
+    /// condition, partly-pinned and open-slot accounts share.
+    fn carrying_its_repair(kb: &KnowledgeBase, dep: &RequiresEntry, construction: String) -> Self {
+        RequirementRefusal {
+            account_names_every_repair: false,
+            no_scope_route: false,
+            construction_carries_repair: true,
+            dep_text: render_requires_entry(kb, dep),
+            unconstrained: Vec::new(),
+            refused_covers: Vec::new(),
+            construction,
+            pinned: None,
+            unprovided: None,
+            untied: None,
+        }
+    }
+
     /// One renderer for both error faces ([`TypeError::format`] and
     /// [`TypeError::to_load_error`]): name the dep, the unconstrained
     /// element(s), the σ-refused covering entries (or the ambiguous provider
@@ -444,7 +461,7 @@ impl RequirementRefusal {
                 list.join(", "),
             ));
         }
-        // The library's two specs take no written row, and every element is pinned here, so
+        // The library's specs take no written row, and every element is pinned here, so
         // a `requires` in scope only hands the same refusal to the caller: their repair
         // replaces the search's account, whose advice is that `requires`, and every tail
         // below.
@@ -2514,18 +2531,7 @@ pub(super) fn build_op_scoped_dicts(
                             _ if former_cause => None,
                             Some(ResolutionResult::NoMatch { .. }) => {
                                 no_provision_agrees_with_pins(kb, &dep).map(|construction| {
-                                    RequirementRefusal {
-                                        account_names_every_repair: false,
-                                        no_scope_route: false,
-                                        construction_carries_repair: true,
-                                        dep_text: render_requires_entry(kb, &dep),
-                                        unconstrained: Vec::new(),
-                                        refused_covers: Vec::new(),
-                                        construction,
-                                        pinned: None,
-                                        unprovided: None,
-                                        untied: None,
-                                    }
+                                    RequirementRefusal::carrying_its_repair(kb, &dep, construction)
                                 })
                             }
                             _ => None,
@@ -2635,14 +2641,52 @@ pub(super) fn build_op_scoped_dicts(
                             (None, Some(nomatch @ ResolutionResult::NoMatch { .. }))
                                 if former.is_some() && !former_cause =>
                             {
-                                Some(RequirementRefusal {
+                                Some(RequirementRefusal::carrying_its_repair(
+                                    kb,
+                                    &dep,
+                                    describe_resolution_failure(kb, nomatch),
+                                ))
+                            }
+                            // A TYPE THAT LEAVES A SLOT OPEN (`[P = Boom]` over `sort Boom { sort
+                            // Reason = ? }`, or `[P = Boom[Reason = ?]]`), which no provision
+                            // answered: one that leaves the slot open answers it, and one at an
+                            // instance of the sort does not (§8.1). Silent, the slot stayed empty
+                            // and the callee's read died at run time, "requirement param not
+                            // bound in caller frame" (MEASURED, `requires TypeValue[T = P]`,
+                            // `requires TypePattern[T = P]` and a program's own spec alike).
+                            //
+                            // THE ACCOUNT IS THE ONE THE SLOT GETS LEFT OUT, inferred
+                            // (`tvOf(none())` asks `TypeValue[T = Option]`): of the sort the type
+                            // is headed by — the library spec's own repair, the row that sort
+                            // has, or the row it lacks ([`open_slot_refusal`]).
+                            (None, Some(nomatch @ ResolutionResult::NoMatch { .. }))
+                                if former.is_none() && dep_states_an_open_type(kb, &dep) =>
+                            {
+                                Some(open_slot_refusal(kb, &dep, nomatch))
+                            }
+                            // A PARAMETER OF THE CALLEE LEFT UNBOUND (`Holder.tv(0)` over `sort
+                            // Holder { sort V = ?  operation tv(n: Int64) -> Type requires
+                            // TypeValue[T = V] … }`), at a library spec: no type the call states,
+                            // and no slot of the frame filled at run time, every instance being
+                            // derived at a type — the program loaded clean and died, "requirement
+                            // param `__req_typevalue` not bound" (MEASURED). The unconstrained
+                            // element's account, as at a sort's own clause. A program's spec is
+                            // left to its provider facts, which may complete the element to one
+                            // provision (WI-1091): `Box.tagOf2(0)` with one provider of `Tag`
+                            // answers through it, as it did.
+                            (None, Some(ResolutionResult::NoMatch { .. }))
+                                if former.is_none()
+                                    && library_instances(kb, dep.required_sort).is_some() =>
+                            {
+                                let unconstrained = unconstrained_elements(kb, &dep, &disambig);
+                                (!unconstrained.is_empty()).then(|| RequirementRefusal {
                                     account_names_every_repair: false,
                                     no_scope_route: false,
-                                    construction_carries_repair: true,
+                                    construction_carries_repair: false,
                                     dep_text: render_requires_entry(kb, &dep),
-                                    unconstrained: Vec::new(),
+                                    unconstrained,
                                     refused_covers: Vec::new(),
-                                    construction: describe_resolution_failure(kb, nomatch),
+                                    construction: String::new(),
                                     pinned: None,
                                     unprovided: None,
                                     untied: None,
@@ -3269,6 +3313,56 @@ impl OpSlotParkSite {
     }
 }
 
+/// Does a binding of `dep` state a type with a slot left open — a sort application holding a
+/// variable? `[P = Boom]` over `sort Boom { sort Reason = ? }` is `Boom[Reason = ?]`, as
+/// `[P = Boom[Reason = ?]]` is. A parameter left unbound (`Holder.tv(0)` leaves `Holder.V`
+/// so) is no type the call states, and a rigid of the caller is no variable.
+fn dep_states_an_open_type(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
+    unwrap_spec_view_value(kb, &dep.spec).is_some_and(|(_, bindings)| {
+        bindings.iter().any(|(_, v)| {
+            matches!(type_head(kb, v), TypeHead::Parameterized { .. }) && !kb.collect_vars(v).is_empty()
+        })
+    })
+}
+
+/// The refusal of a requirement at a type that leaves a slot open, which no provision
+/// answered ([`build_op_scoped_dicts`]' open-slot arm). Its account is the one the
+/// requirement gets with the slot inferred and left out, of the sort the type is headed by:
+/// the library spec's own repair where no row of it may be written, the row that sort has
+/// and the bindings it does not answer at, or the row it lacks — the slot unwritten in it,
+/// since a provision that leaves the slot open answers it (§8.1). With no sort at the
+/// carrier, the search's account alone.
+fn open_slot_refusal(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    nomatch: &ResolutionResult,
+) -> RequirementRefusal {
+    let construction = describe_resolution_failure(kb, nomatch);
+    let carrier = goal_from_requires_entry(kb, dep).and_then(|goal| goal_carrier_sort(kb, &goal));
+    let Some(carrier) = carrier else {
+        return RequirementRefusal::carrying_its_repair(kb, dep, construction);
+    };
+    RequirementRefusal {
+        account_names_every_repair: false,
+        no_scope_route: false,
+        construction_carries_repair: false,
+        dep_text: render_requires_entry(kb, dep),
+        unconstrained: Vec::new(),
+        refused_covers: Vec::new(),
+        construction,
+        pinned: None,
+        unprovided: Some(UnprovidedProvision {
+            carrier,
+            spec: dep.required_sort,
+            has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+            provision_in_full: None,
+            contract_unheld: None,
+            failed_at: failed_spec(nomatch, dep.required_sort),
+        }),
+        untied: None,
+    }
+}
+
 /// WI-1102 (058 §3.10, the use-site discharge) — the carrier this call pinned and the
 /// provision it lacks, or `None` when this dep is not that signature.
 ///
@@ -3310,7 +3404,7 @@ fn unprovided_provision(
     })
 }
 
-/// The first requirement of the library's two specs in `goal`'s spec's own contract that no
+/// The first requirement of the library's specs in `goal`'s spec's own contract that no
 /// row answers at `goal`'s bindings, rendered — `Desc requires TypeValue[T = T]` at `Desc[T =
 /// Option[T = (Int64, Int64)]]` asks `TypeValue[T = Option[T = (Int64, Int64)]]`, which holds
 /// nowhere. The contract is read through the program's own specs it names (`Desc2 requires
@@ -3863,7 +3957,7 @@ pub(super) fn carrier_is_an_instance(kb: &KnowledgeBase, carrier: Symbol, spec: 
 /// hand it, and inside a member of a sort it answered that sort, through the dictionary its
 /// own frame was entered with (MEASURED).
 pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
-    if kb.builtin_of(op).is_some_and(|tag| tag.answers_from_its_dictionary()) {
+    if answered_by_its_dictionary(kb, op) {
         return false;
     }
     kb.is_builtin(op)
@@ -4029,9 +4123,9 @@ fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry) -> Option<FormerCarri
 /// Is the structural former `former`, which a binding of `dep` is or holds, what the
 /// requirement cannot be supplied for?
 ///
-/// * For the library's two specs, the only ones that read a former within a binding
+/// * For the library's specs, the only ones that read a former within a binding
 ///   ([`FormerCarrier::Within`]): where the search failed at one of them, since no instance
-///   of either is derived at a former, whatever the scope holds.
+///   of any of them is derived at a former, whatever the scope holds.
 /// * For a program's spec, whose binding IS the former ([`FormerCarrier::At`]): where no
 ///   provision answered AT
 ///   the former — a failure forwarded from a provision's own condition says one did, and the
@@ -4193,8 +4287,8 @@ enum FormerCarrier {
     /// A binding IS the former: `(a: Int64, b: String)`.
     At(String),
     /// A binding holds one among its type arguments: `Option[T = (a: Int64, b: String)]`.
-    /// Only for the two specs whose instances the library supplies ([`library_instances`]):
-    /// a sort's instance of either holds only where each type argument has one, so none
+    /// Only for the specs whose instances the library supplies ([`library_instances`]):
+    /// a sort's instance of any of them holds only where each type argument has one, so none
     /// reaches the type, and no row can stand in. For any other spec a row naming the
     /// whole type may answer, where the spec's own requirements hold at it, and
     /// [`unprovided_provision`] advises it.
@@ -4204,13 +4298,15 @@ enum FormerCarrier {
     },
 }
 
-/// The two specs whose instances only the library supplies: `TypeValue`, derived for
-/// every sort and refused when written, and `ErrorTag`, whose one reader, an `Error.reify`
+/// The specs whose instances only the library supplies: `TypeValue`, derived for every
+/// sort and refused when written; `TypePattern`, whose one row is `TypeValuePattern`'s and
+/// every other refused when written; and `ErrorTag`, whose one reader, an `Error.reify`
 /// boundary, takes the payload's sort from the `TypeValue` evidence of `Error`'s own
 /// provision and refuses to run without it.
 #[derive(Clone, Copy, Debug)]
 enum LibraryInstances {
     TypeValue,
+    TypePattern,
     ErrorTag,
 }
 
@@ -4225,6 +4321,13 @@ impl LibraryInstances {
                  sort only where each of its type arguments has one. Pass a value whose type \
                  is such a sort, every type argument of it written"
             }
+            LibraryInstances::TypePattern => {
+                "no row of `anthill.reflect.TypePattern` answers here, and none may be \
+                 written: its one row is `TypeValuePattern`'s, which answers wherever the type has \
+                 a `TypeValue`, one derived for a sort that is no spec, for a parametric sort \
+                 only where each of its type arguments has one. Name such a sort, every type \
+                 argument of it written"
+            }
             LibraryInstances::ErrorTag => {
                 "no row of `anthill.prelude.ErrorTag` answers here, and a written one is no \
                  repair: an `Error.reify` boundary reads `Error`'s own provision alone, which \
@@ -4237,8 +4340,10 @@ impl LibraryInstances {
     }
 
     /// The structural-former refusal's repair at a call of this spec's own member: the call
-    /// names a sort, since no row works. `ErrorTag` declares no member, so a call of one
-    /// is never refused here.
+    /// names a sort, since no row works. Only `TypeValue`'s member is refused here, where no
+    /// candidate answers: `ErrorTag` declares no member, and `TypePattern`'s one row, at its
+    /// own `T`, is a candidate at every goal, so a call of `TypePattern.admits` at a former
+    /// fails beneath it, at the row's condition.
     fn former_repair_at_call(self) -> &'static str {
         match self {
             LibraryInstances::TypeValue => {
@@ -4246,7 +4351,7 @@ impl LibraryInstances {
                  arguments: every `TypeValue` instance is derived, one for a sort, and none \
                  may be written"
             }
-            LibraryInstances::ErrorTag => self.former_repair(),
+            LibraryInstances::TypePattern | LibraryInstances::ErrorTag => self.former_repair(),
         }
     }
 
@@ -4256,6 +4361,10 @@ impl LibraryInstances {
             LibraryInstances::TypeValue => {
                 "Pass a value whose type is a sort with no tuple or arrow among its type \
                  arguments: every `TypeValue` instance is derived, and none may be written"
+            }
+            LibraryInstances::TypePattern => {
+                "Name a sort with no tuple or arrow among its type arguments: the one \
+                 `TypePattern` row is `TypeValuePattern`'s, and none may be written"
             }
             LibraryInstances::ErrorTag => {
                 "Raise, in the thunk, a value whose type is a sort with no tuple or arrow \
@@ -4271,6 +4380,11 @@ fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstance
     let canon = kb.canonical_sort_sym(spec);
     if type_value_spec_sym(kb).is_some_and(|tv| kb.canonical_sort_sym(tv) == canon) {
         Some(LibraryInstances::TypeValue)
+    } else if kb
+        .try_resolve_symbol("anthill.reflect.TypePattern")
+        .is_some_and(|tp| kb.canonical_sort_sym(tp) == canon)
+    {
+        Some(LibraryInstances::TypePattern)
     } else if is_error_tag_spec(kb, spec) {
         Some(LibraryInstances::ErrorTag)
     } else {
@@ -4280,7 +4394,7 @@ fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstance
 
 /// The repair the structural-former refusal names: a sort's row that names the former, as
 /// `control_a_former_carrier_with_a_provision_loads` writes one, or a value whose type is a
-/// sort. Not the row for the two specs whose instances come from the library
+/// sort. Not the row for the specs whose instances come from the library
 /// ([`library_instances`]), where it would be refused in turn or never read.
 fn former_repair(kb: &KnowledgeBase, spec: Symbol, former: &FormerCarrier) -> String {
     match former {
@@ -4320,14 +4434,14 @@ enum CallerRigidCarrier {
         /// requirement, and not just the carrier binding, for [`RequirementRefusal::render`]'s
         /// own measured reason one arm over — a multi-parameter spec written with a binding
         /// omitted fills the rest from its own parameters, which §5.2 legislates as a second
-        /// load error, advice that trades one refusal for another. For the library's two
+        /// load error, advice that trades one refusal for another. For the library's
         /// specs at a carrier inside an application it is `TypeValue` at each parameter the
         /// caller holds none for: their instances are derived per type argument, so the
         /// evidence the caller lacks is that.
         clauses: Vec<String>,
         declare_on: DeclareOn,
     },
-    /// For the library's two specs, a part of the requirement no instance answers at
+    /// For the library's specs, a part of the requirement no instance answers at
     /// whatever the caller supplies (a spec, a type with no `TypeValue`): no clause is the
     /// repair, and the refusal says why the part has none. `carrier` is the application the
     /// part stands in.
@@ -4436,7 +4550,7 @@ fn caller_rigid_carrier(
     let goal = goal_from_requires_entry(kb, dep)?;
     let params = caller_param_rigids(kb, caller_op, ctx.param_rigids);
     let library = library_instances(kb, dep.required_sort);
-    // `TypeValue`, where the spec is one of the library's two, whose instances it derives.
+    // `TypeValue`, where the spec is one of the library's, whose instances it derives.
     let library_type_value = library.and_then(|_| type_value_spec_sym(kb));
     // Each parameter of the caller's a binding names, in binding order, with the application
     // it stands in where it stands in one.
@@ -4502,7 +4616,7 @@ fn caller_rigid_carrier(
         kb.qualified_name_of(goal.spec_sort),
         bindings.join(", ")
     );
-    // The library's two specs inside an application: their instances are derived per type
+    // The library's specs inside an application: their instances are derived per type
     // argument, so the evidence the caller lacks is `TypeValue` at each parameter it holds
     // none for — and where a part has no instance at all, or a structural former stands
     // among the parts (the former refusal's, which names it), no evidence of the caller's
@@ -4512,7 +4626,7 @@ fn caller_rigid_carrier(
         return None;
     }
     // A part without an instance: no evidence of the caller's answers there. The library's
-    // two specs have one binding, so every parameter met stands in the one application.
+    // specs have one binding, so every parameter met stands in the one application.
     if let (Some(part), Some(library)) = (no_instance, library) {
         let carrier = met.first()?.within.clone().unwrap_or_else(|| requirement.clone());
         return Some(CallerRigidCarrier::NoInstance {
@@ -4617,7 +4731,7 @@ fn caller_holds_type_value(
 
 /// A type argument of a call that is a sort applied to what the caller can write, rendered
 /// in the caller's spelling — a parameter the caller declares, a ground type, or such an
-/// application again — with each parameter met pushed onto `met`. For the library's two
+/// application again — with each parameter met pushed onto `met`. For the library's
 /// specs (`library_type_value` is `TypeValue`, which derives their instances) a parametric
 /// variant is read at its sort, and a part no instance answers at whatever the caller
 /// supplies — a spec, a ground type with no `TypeValue` — is recorded in `no_instance`, the
@@ -4643,7 +4757,7 @@ fn caller_writeable_application(
     // A TUPLE, for a spec of the program's: a row can be written at one through a sort that
     // names it, and the caller's parameter in it is still the one it holds no evidence for
     // (`Reader.probe((x, 1))` over `x: C`). Its parts are read as an application's. The
-    // library's two specs have no instance at a former, which the former refusal says.
+    // library's specs have no instance at a former, which the former refusal says.
     if library_type_value.is_none() {
         if let TypeExtractor::NamedTuple(fields) = extract_type(kb, v) {
             let mut parts: Vec<String> = Vec::with_capacity(fields.len());
@@ -4684,7 +4798,7 @@ fn caller_writeable_application(
     let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, v) else {
         return None;
     };
-    // For the library's two specs a parametric variant (`Wrap.wrap[V = C]`) is its sort at
+    // For the library's specs a parametric variant (`Wrap.wrap[V = C]`) is its sort at
     // the same arguments, whose derived instance answers for it. For any other spec the
     // requirement is said as the call states it: a scope clause covers a goal at the type it
     // names, and one at the variant's sort does not cover the variant (the clause advised so

@@ -806,7 +806,18 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
 /// cannot drift. `spec_op` is expected to be a RESOLVED (canonical) symbol —
 /// the interpreter's `fn_sym` is, and the reflect callers pass symbols minted by
 /// `impl`/`op`/`lookup_symbol`, all resolved.
+///
+/// AN OPERATION WHOSE ANSWER IS ITS DICTIONARY (`TypeValue.type_value`,
+/// [`crate::kb::resolve::BuiltinTag::answers_from_its_dictionary`]) is its builtin at every
+/// provider. Its instances are the loader's, none may be written (065 §2), and a carrier's
+/// own operation of the same name is no member of one: taken here, `sort Boom { … operation
+/// type_value() -> Type = Other }` answered `TypeValue.type_value[T = Boom]()` with `Other`,
+/// and a `TypePattern` at `Boom` admitted what it named (MEASURED), and one of another
+/// signature died at the call.
 pub fn resolve_op_target(kb: &KnowledgeBase, impl_sym: Symbol, spec_op: Symbol) -> Symbol {
+    if answered_by_its_dictionary(kb, spec_op) {
+        return spec_op;
+    }
     let fn_qn = kb.qualified_name_of(spec_op);
     let Some((_, op_short)) = fn_qn.rsplit_once('.') else {
         return spec_op;
@@ -828,6 +839,17 @@ pub fn resolve_op_target(kb: &KnowledgeBase, impl_sym: Symbol, spec_op: Symbol) 
         instance_fact_op_binding(kb, impl_sym, spec, op_short)
     })
     .unwrap_or(spec_op)
+}
+
+/// Does `spec_op` answer from the dictionary of the instance its call is handed
+/// (`TypeValue.type_value`)? Then its builtin answers at every provider, and no carrier
+/// member of the same name does — so none overrides it or owes it a contract. The rule
+/// dispatch reads ([`resolve_op_target`], the typer's `resolve_at_goal`), the override and
+/// member checks read (`check_override_refinement`, `check_provider_operations`), and
+/// [`host_implements`] reads.
+pub(super) fn answered_by_its_dictionary(kb: &KnowledgeBase, spec_op: Symbol) -> bool {
+    kb.builtin_of(spec_op)
+        .is_some_and(|tag| tag.answers_from_its_dictionary())
 }
 
 /// WI-616 — the carrier sort's OWN member for a spec op's short name,

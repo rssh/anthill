@@ -1166,7 +1166,21 @@ impl KnowledgeBase {
             host_const_mappings: plain(&self.host_const_mappings),
             default_providers: plain(&self.default_providers),
             provides_clause_seen: plain(&self.provides_clause_seen),
-            provides_clause_counts: self.provides_clause_counts.iter().map(|(key, clauses)| (plain(key), clauses.iter().map(|clause| c.value_vec(clause)).collect())).collect(),
+            provides_clause_counts: self
+                .provides_clause_counts
+                .iter()
+                .map(|(key, clauses)| {
+                    let clauses = clauses
+                        .iter()
+                        .map(|clause| crate::kb::ProvisionClause {
+                            conditions: c.value_vec(&clause.conditions),
+                            spec_view: c.value(&clause.spec_view),
+                            site: plain(&clause.site),
+                        })
+                        .collect();
+                    (plain(key), clauses)
+                })
+                .collect(),
         };
         c.finish()?;
         Ok(copy)

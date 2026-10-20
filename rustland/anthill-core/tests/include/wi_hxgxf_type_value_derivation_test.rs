@@ -261,7 +261,9 @@ end
 /// prelude rather than from a user's rigid read: `Error.reify requires ErrorTag[T = T1]`
 /// with `Error provides ErrorTag[T = T] :- TypeValue[T = T]`. Every program that loads
 /// the prelude — which is every program — now carries a standing demand for `TypeValue`,
-/// so the derivation runs and the gate is permanently open.
+/// so the derivation runs and the gate is permanently open. Proposal 071 adds a second
+/// condition of the same shape, `TypeValuePattern provides TypePattern[T = T] :-
+/// TypeValue[T = T]`, which stays when its stage (c) retires `ErrorTag`.
 ///
 /// WHAT THIS ROW STILL GUARANTEES, and it is why it was kept rather than deleted: the
 /// gate is not DEAD. It is still the predicate that decides, and the assertion now names

@@ -518,7 +518,7 @@ fn record_derived_conditions(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symb
             );
         }
     }
-    kb.record_provides_clause(carrier, spec, lowered);
+    kb.record_provides_clause(carrier, spec, Value::term(provided), lowered, None);
 }
 
 /// `SortView(spec, <spec's carrier param> = binding)` — the view shape of a provision's

@@ -913,6 +913,19 @@ pub enum LoadError {
         /// The carrier the provision was written at, qualified.
         carrier: String,
     },
+    /// Proposal 071 §1.2 — a `provides anthill.reflect.TypePattern[…]` other than its one
+    /// row, `TypeValuePattern`'s `provides TypePattern[T = T] :- TypeValue[T = T]` at its own
+    /// `T` (`typing::written_type_pattern_provisions`). Refused wherever it is written, as
+    /// [`Self::HandWrittenTypeValue`] is: a sort's body, a `namespace <Carrier>` block —
+    /// `TypeValuePattern`'s own address among them — or a witness sort.
+    ///
+    /// The same soundness rule. A pattern says which types it admits, and a written
+    /// `admits` would make that a claim: a boundary typed at `Boom` delivering an `Other`
+    /// inside its `Result`, or letting a `Boom` escape a row that no longer holds it.
+    HandWrittenTypePattern {
+        /// The provider the row was written for, qualified.
+        provider: String,
+    },
     /// WI-20260831-V25N3 — an effect label written in a ROW TYPE-ARGUMENT
     /// (`s: Spec[E = {Beep}]`) that names no registered kind, or a `Modify` whose
     /// target is not a place. §5.5 judges a row element ONCE, AT ITS ORIGIN, so a
@@ -3332,6 +3345,10 @@ impl LoadError {
                 format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
                     carrier, carrier)
             }
+            LoadError::HandWrittenTypePattern { provider } => {
+                format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
+                    provider)
+            }
             LoadError::NonEqKeyRequiresLawfulEq {
                 container,
                 param,
@@ -5431,6 +5448,14 @@ impl std::fmt::Display for LoadError {
                     "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
                      `TypeValue` instance is DERIVED and none may be written",
                     carrier,
+                )
+            }
+            LoadError::HandWrittenTypePattern { provider } => {
+                write!(
+                    f,
+                    "a `provides anthill.reflect.TypePattern[…]` is written for '{}', but \
+                     `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written",
+                    provider,
                 )
             }
         }
@@ -8952,6 +8977,11 @@ pub struct SealedDeclarations {
     /// than the load had) leaves it as it was: the rows of the files it does not seal
     /// are below its slot count too, and their goals name types no seal holds.
     checked: Option<CheckedProvisions>,
+    /// How many `provides` clauses were recorded for each (carrier, spec), canonical,
+    /// when a seal was last taken ([`KnowledgeBase::provision_clause_counts`]): a clause
+    /// past that count came later. Not the slot count above: two clauses of one spec at
+    /// one head write one row, and a later clause need assert none.
+    provision_clauses: HashMap<(Symbol, Symbol), usize>,
 }
 
 impl SealedDeclarations {
@@ -8992,6 +9022,12 @@ impl SealedDeclarations {
     /// The provisions a later load's check does not read again, if a seal holds any.
     pub(crate) fn checked_provisions(&self) -> Option<CheckedProvisions> {
         self.checked
+    }
+
+    /// How many of the clauses recorded for `carrier` and `spec` (canonical) were there
+    /// when a seal was last taken.
+    pub(crate) fn provision_clauses_held(&self, carrier: Symbol, spec: Symbol) -> usize {
+        self.provision_clauses.get(&(carrier, spec)).copied().unwrap_or(0)
     }
 
     /// How many operations, types and typed sources the seal holds — for a test that
@@ -9043,6 +9079,7 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
         .filter(|source| of_the_library(*source))
         .collect();
     let rule_slots = kb.rules.len();
+    let provision_clauses = kb.provision_clause_counts();
     // WI-20261011-A3NND — and the load's provisions are checked once, if the seal is of
     // ALL of it and its check held. Whichever door asked: the test suites' shared base
     // is the standard library loaded alone and sealed as "the first files of the load".
@@ -9051,6 +9088,7 @@ fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(Sourc
     let sealed = std::sync::Arc::make_mut(&mut kb.sealed);
     sealed.sorts.extend(sorts);
     sealed.rule_slots = rule_slots;
+    sealed.provision_clauses = provision_clauses;
     if checked.is_some() {
         sealed.checked = checked;
     }
@@ -42555,7 +42593,13 @@ impl<'a> Loader<'a> {
                     spec_view: spec_value.clone(),
                     span: SourceSpan::from_span(self.source_id, pc.span),
                 });
-            self.kb.record_provides_clause(domain, spec_sym, conditions);
+            self.kb.record_provides_clause(
+                domain,
+                spec_sym,
+                spec_value.clone(),
+                conditions,
+                Some(SourceSpan::from_span(self.source_id, pc.span)),
+            );
         }
         self.kb.assert_metadata_fact_carrier(
             provides_sym,

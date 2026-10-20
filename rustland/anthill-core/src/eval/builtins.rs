@@ -275,6 +275,8 @@ const HOST_FNS: &[(
     ),
     ("reflect_reject", 2, reflect_reject),
     ("reflect_is_modifiable", 1, reflect_is_modifiable),
+    // Proposal 071 — the subtype test `TypePattern.admits` runs.
+    ("reflect_type_admits", 2, reflect_type_admits),
     // WI-20260914-Z73FX — visibility and a declaration's block, as the kernel reads
     // them: resolution's own `internal` filter, and the readers `@[simp]` goes through.
     ("reflect_visible_from", 2, reflect_visible_from),
@@ -5797,6 +5799,25 @@ fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Val
     Ok(Value::Bool(crate::kb::region::type_definitely_admits_modify(
         kb, &ty, &regions,
     )))
+}
+
+/// `anthill.reflect.type_admits(pattern: Type, t: Type) -> Bool` (proposal 071 §1.1,
+/// §1.5) — whether `t` is a subtype of an instance of `pattern`: the test
+/// `TypePattern.admits` runs, `TypeValuePattern`'s row asking it with its own `T` read as a
+/// value. The predicate is [`crate::kb::typing::type_pattern_admits`], one function for
+/// the run time and, at stage (e), for the typer's discharge of an `Error` label.
+///
+/// Only types are asked about, at every depth: a data value standing where a type is
+/// asked for (`boom(reason: "s")`, a free-standing entity's `Point(x: 3)`, a rule body's
+/// tuple literal) is not judged, and neither is any other form the predicate's `form`
+/// lists. A pair it does not judge is an error, not an answer.
+fn reflect_type_admits(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [pattern, t] = expect_args::<2>("type_admits", args)?;
+    crate::kb::typing::type_pattern_admits(&interp.kb, &pattern, &t)
+        .map(Value::Bool)
+        .map_err(|u| EvalError::TypePatternUnjudged {
+            detail: u.detail(&interp.kb),
+        })
 }
 
 /// WI-20260914-Z73FX — `anthill.reflect.visible_from(s: Symbol, scope: Symbol) -> Bool`,
