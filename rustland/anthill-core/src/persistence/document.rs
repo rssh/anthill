@@ -757,7 +757,8 @@ pub const ELEMENT_SEPARATOR: char = '=';
 
 /// A value longer than this in the attributes chapter is a diagnostic: a prose
 /// field wants declaring as a chapter (§4.2). Not a rule — length decides
-/// nothing about where a field lives.
+/// nothing about where a field lives. A LIST is measured element by element
+/// ([`check_long_values`]).
 pub const LONG_VALUE: usize = 255;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1082,6 +1083,7 @@ pub fn read_document(source: &str, mapping: &DocumentMapping) -> Result<Document
             })
         }
     };
+    check_long_values(&attributes, mapping.item_functor(), mapping, &mut faults);
     if let Some(item) = mapping.item_functor() {
         check_grouping(&attributes, item, mapping, &mut faults);
     }
@@ -1213,13 +1215,6 @@ fn read_attributes(
             continue;
         }
         let value = value.trim().to_string();
-        if value.len() > LONG_VALUE {
-            faults.push(DocumentFault::diagnostic(format!(
-                "line {line}: `{key}` carries {} characters in the attributes chapter — a \
-                 prose field wants declaring as a chapter",
-                value.len()
-            )));
-        }
         out.push(AttrLine {
             key,
             value,
@@ -1262,6 +1257,61 @@ fn check_grouping(
                 "line {}: `{}` is written against `{previous}`, which it is not declared to \
                  change with — adjacent, two independent edits collide for nothing",
                 line.line, line.key
+            )));
+        }
+    }
+}
+
+/// §7 — a value longer than [`LONG_VALUE`] in the attributes chapter is a
+/// diagnostic: a prose field wants declaring as a chapter.
+///
+/// IT MEASURES A DATUM, NOT A LINE. A field written as a LIST — a satellite list
+/// (`tags`) or a field declared `List` (`depends_on`, `Option[T = List[…]]`) — holds
+/// one datum per element, so it is measured element by element: six slug ids are
+/// 281 characters on one line and not a word of prose (measured on this
+/// repository's own tree, 2026-10-20, where `anthill-todo` reported its own
+/// `add-dependency` output on every command and `fsck` had nothing to repair).
+/// Read here and not in [`read_attributes`], because only the mapping says which
+/// fields are lists; a field the schema does not know is measured whole.
+fn check_long_values(
+    attributes: &[AttrLine],
+    item: Option<&str>,
+    mapping: &DocumentMapping,
+    faults: &mut Vec<DocumentFault>,
+) {
+    fn is_list(ty: &FieldType) -> bool {
+        match ty {
+            FieldType::List(_) => true,
+            FieldType::Option(inner) => is_list(inner),
+            _ => false,
+        }
+    }
+    for line in attributes {
+        let list = mapping.list_named(&line.key).is_some()
+            || item
+                .and_then(|i| mapping.schema.field_type(i, &line.key))
+                .is_some_and(|ty| is_list(&ty));
+        if list {
+            if let Some(longest) = line
+                .value
+                .split(", ")
+                .map(str::len)
+                .filter(|n| *n > LONG_VALUE)
+                .max()
+            {
+                faults.push(DocumentFault::diagnostic(format!(
+                    "line {}: `{}` carries an element of {longest} characters in the attributes \
+                     chapter — a prose field wants declaring as a chapter",
+                    line.line, line.key
+                )));
+            }
+        } else if line.value.len() > LONG_VALUE {
+            faults.push(DocumentFault::diagnostic(format!(
+                "line {}: `{}` carries {} characters in the attributes chapter — a prose field \
+                 wants declaring as a chapter",
+                line.line,
+                line.key,
+                line.value.len()
             )));
         }
     }
@@ -2685,6 +2735,63 @@ id should be minted from content, not from a counter.
 
 delivered.
 ";
+
+    /// §7's length diagnostic measures a DATUM: a long LIST of short elements — a
+    /// field declared `List` or a satellite list — is no prose and draws nothing, an
+    /// element over [`LONG_VALUE`] does, and a scalar is measured whole as before.
+    ///
+    /// BACKED OUT (the check measuring the whole line, in `read_attributes`): the two
+    /// list rows draw the diagnostic. The scalar row and the long-element row draw it
+    /// either way BY DESIGN — they are the controls that the diagnostic still fires.
+    #[test]
+    fn a_long_value_is_measured_per_datum() {
+        let ids: Vec<String> = (0..6)
+            .map(|i| format!("WI-20261013-WF14{i}-068-c1b-a-rule-variable-is-longer"))
+            .collect();
+        let with = |old: &str, new: &str| DOC.replace(old, new);
+        let long = |doc: &str| -> Vec<String> {
+            read_document(doc, &mapping())
+                .expect("reads")
+                .faults
+                .into_iter()
+                .map(|f| f.message)
+                .filter(|m| m.contains("a prose field wants declaring as a chapter"))
+                .collect()
+        };
+        let deps = format!("- depends_on: {}", ids.join(", "));
+        assert!(deps.len() > LONG_VALUE + 10, "the fixture is a long line");
+        assert_eq!(
+            long(&with("- depends_on: WI-1114", &deps)),
+            Vec::<String>::new(),
+            "a long `List` field"
+        );
+        let tags = format!("- tags: {}", ids.join(", "));
+        assert_eq!(
+            long(&with("- tags: wi437", &tags)),
+            Vec::<String>::new(),
+            "a long satellite list"
+        );
+
+        let element = "x".repeat(LONG_VALUE + 1);
+        let found = long(&with(
+            "- depends_on: WI-1114",
+            &format!("- depends_on: WI-1114, {element}"),
+        ));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("`depends_on` carries an element of 256 characters"),
+            "{found:?}"
+        );
+        let found = long(&with(
+            "- created: 2026-08-17T08:43:54Z",
+            &format!("- created: {element}"),
+        ));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("`created` carries 256 characters"),
+            "{found:?}"
+        );
+    }
 
     #[test]
     fn the_mapping_is_well_formed_and_names_its_item_functor() {

@@ -96,24 +96,21 @@ class TermViewTest extends munit.FunSuite:
     assertEquals(headOf(kb, plainFn).functorSym, Some(plainSym))
   }
 
-  test("a SORT name keeps both spellings — the one exception, and the STORE is where it lives") {
-    // §8.3 / WI-391 / WI-387: in a type position `Ref(S)` is the dispatch WILDCARD and a
-    // nullary `Fn(S)` the CONCRETE spec identity. Rustland measured what merging them
-    // costs — 792 symbols re-spelled and the standard library stops loading — so the
-    // canon exempts a `SymbolKind.Sort` name.
+  test("a SORT name has one nullary term too — the exemption is gone (WI-20261020-80VNX)") {
+    // THE ROW STEP 6 OF WI-20260902-JB6RS MOVED. It asserted the opposite: a
+    // `SymbolKind.Sort` name kept `Ref(S)` and `Fn(S)` apart, on rustland's WI-391 /
+    // WI-387 ground (the dispatch wildcard against the concrete spec identity). Rustland
+    // reads the wildcard off the symbol's ROLE since WI-20260829-7QVD5, and the
+    // value/type split the exemption was last measured holding up is carried by the
+    // type faces, so the canon exempts no sort (kernel-language.md §6).
     val kb = KnowledgeBase()
     val g = kb.globalScope
     val natSym = kb.symbols.define("Nat", "Nat", SymbolKind.Sort, g)
     val natFn = kb.alloc(Term.Fn(natSym, IArray.empty, IArray.empty))
     val natRef = kb.alloc(Term.Ref(natSym))
 
-    assert(natFn != natRef, "a SORT's two nullary spellings stay two terms")
-
-    // …but the VIEW merges them, exactly as rustland's does: every consumer that must
-    // keep them apart reads the TERM.
-    assertEquals(headOf(kb, natFn), ViewHead.nullary(natSym))
+    assertEquals(natFn, natRef, "a SORT's two nullary spellings are one term")
     assertEquals(headOf(kb, natRef), ViewHead.nullary(natSym))
-    assert(viewsStructurallyEqual(kb, natFn, natRef))
   }
 
   // ── Cross-carrier structural equality ─────────────────────────

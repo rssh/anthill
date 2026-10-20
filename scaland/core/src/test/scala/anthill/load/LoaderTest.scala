@@ -406,20 +406,34 @@ class LoaderTest extends munit.FunSuite:
 
   /** THE STORE IS WHERE IT LIVES, asserted directly so the row above cannot pass by some
     * later layer papering over two terms. */
-  test("WI-20260902-CZJ2N: `f()` and `f` are ONE TermId, unless `f` is a SORT") {
+  test("WI-20260902-CZJ2N: `f()` and `f` are ONE TermId, a SORT's too (WI-20261020-80VNX)") {
     val kb = KnowledgeBase()
     val g = kb.globalScope
     val pred = kb.symbols.define("holds", "holds", SymbolKind.Goal, g)
     assertEquals(
       kb.alloc(Term.Fn(pred, IArray.empty, IArray.empty)),
       kb.alloc(Term.Ref(pred)),
-      "a name with no TYPE reading has one nullary term")
+      "a predicate has one nullary term")
 
+    // A SORT no longer keeps both (rustland's JB6RS step 6): its type and an instance
+    // are kept apart by the constructor's type face, not by the parentheses.
     val sort = kb.symbols.define("Shape", "Shape", SymbolKind.Sort, g)
+    assertEquals(
+      kb.alloc(Term.Fn(sort, IArray.empty, IArray.empty)), kb.alloc(Term.Ref(sort)),
+      "a SORT's nullary application is its bare name")
+    // The one exception, by QUALIFIED name, of the free-standing entity the stdlib
+    // declares there: a reflect collection-literal form's empty application is the empty
+    // literal's node (`()` is `TupleLiteral()`) — and its NAME is still the bare name, and
+    // its TYPE face has one nullary term like any other.
+    val std = anthill.codegen.scala.StdlibFixture.kbWith()
+    val tuple = std.resolveSymbol("anthill.reflect.TupleLiteral")
     assert(
-      kb.alloc(Term.Fn(sort, IArray.empty, IArray.empty)) != kb.alloc(Term.Ref(sort)),
-      "a SORT keeps both — `Ref(S)` is the dispatch wildcard, `Fn(S)` the concrete " +
-        "spec identity (§8.3 / WI-391 / WI-387)")
+      std.alloc(Term.Fn(tuple, IArray.empty, IArray.empty)) != std.alloc(Term.Ref(tuple)),
+      "`TupleLiteral()` is the empty tuple, not the bare name")
+    assertEquals(std.makeNameTermFromSym(tuple), std.alloc(Term.Ref(tuple)), "the name is bare")
+    val face = std.typeFaceOf(tuple)
+    assertEquals(std.alloc(Term.Fn(face, IArray.empty, IArray.empty)), std.alloc(Term.Ref(face)),
+      "`TupleLiteral[]` is the bare type")
   }
 
   // WI-582: a typed rule pattern `?x: T` parses to a `typed_var(?x, type: T)`

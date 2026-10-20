@@ -668,9 +668,15 @@ private class AnthillParserImpl(
 
   private def simpleType[$: P]: P[TypeExpr] = P(refName).map(TypeExpr.Simple(_))
 
+  /** `Name[bindings]` in a type position. The bracket may be EMPTY (WI-20260902-JB6RS;
+    * scaland WI-20261020-80VNX): `Foo[]` is the type `Foo` written as data where a
+    * constructor's bare name is its instance (kernel-language.md §4.4), and in a type
+    * position it is `Foo` itself — so it is built as the bare name, and no
+    * `Parameterized` with nothing to bind reaches a reader. Rustland's grammar admits it
+    * in the one `application` node both positions share (tree-sitter `commaSep`). */
   private def parameterizedType[$: P]: P[TypeExpr] =
-    P(refName ~ "[" ~ sortBinding.rep(1, sep = ",") ~ "]").map { case (n, bs) =>
-      TypeExpr.Parameterized(n, bs.toIndexedSeq)
+    P(refName ~ "[" ~ sortBinding.rep(0, sep = ",") ~ "]").map { case (n, bs) =>
+      if bs.isEmpty then TypeExpr.Simple(n) else TypeExpr.Parameterized(n, bs.toIndexedSeq)
     }
 
   private def sortBinding[$: P]: P[SortBinding] =
@@ -1059,7 +1065,7 @@ private class AnthillParserImpl(
     * WI-20260829-BAD3V — optionally a call-site type-arg bracket before those args
     * (`.name[T = Int](args)`).
     *
-    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT. `instArgsList` takes no cut, so
+    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT. `dotInstArgsList` takes no cut, so
     * the first alternative backtracks cleanly to the second when the `(` is absent.
     *
     * It used to guard the META BLOCK too: while a block was a bare `[simp]`, a `[bindings]`
@@ -1077,7 +1083,7 @@ private class AnthillParserImpl(
   private def dotCallSuffix[$: P]
       : P[(IndexedSeq[SortBinding], Option[IndexedSeq[Either[TermId, (TermSymbol, TermId)]]])] =
     P(
-      (instArgsList ~ fnArgsList).map { case (b, a) => (b, Some(a)) } |
+      (dotInstArgsList ~ fnArgsList).map { case (b, a) => (b, Some(a)) } |
       fnArgsList.?.map(a => (IndexedSeq.empty, a))
     )
 
@@ -1302,7 +1308,9 @@ private class AnthillParserImpl(
         case NameSuffix.InstArgs(bindings) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
           val (posArgs, namedArgs) = lowerBindings(bindings, n.span)
-          terms.allocAt(Term.Fn(intern(funcStr), posArgs, namedArgs), n.span)
+          // A WRITTEN BRACKET is a type in every context (§4.4) — recorded, because its
+          // lowering is the same `Term.Fn` an application `Foo(X: Int64)` is.
+          terms.allocTypeApplicationAt(Term.Fn(intern(funcStr), posArgs, namedArgs), n.span)
 
         case NameSuffix.InstThenFn(bindings, args) =>
           val funcStr = n.segments.map(symbols.name).mkString(".")
@@ -1397,7 +1405,16 @@ private class AnthillParserImpl(
         IArray((intern("type"), typeExprToRef(ty, span)))), span)
     }
 
+  /** A name's bracket in a term: `Name[bindings]`, or `Name[bindings](args)`. It may be
+    * EMPTY, as in a type position (`parameterizedType`): `held(Foo[])` holds the TYPE
+    * `Foo`, where `held(Foo)` holds its instance (§4.4). */
   private def instArgsList[$: P]: P[IndexedSeq[SortBinding]] =
+    P("[" ~ sortBinding.rep(0, sep = ",") ~ "]").map(_.toIndexedSeq)
+
+  /** A DOTTED member's call-site bracket, `.name[bindings](args)` — never empty, as
+    * rustland's `dot_application` (`commaSep1`): it is the call's type arguments and
+    * nothing else, and an empty one would bind none. */
+  private def dotInstArgsList[$: P]: P[IndexedSeq[SortBinding]] =
     P("[" ~ sortBinding.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
   /** Lower a `[A = T, U, …]` binding list to its (positional, named) argument arrays.
@@ -1472,10 +1489,16 @@ private class AnthillParserImpl(
     // WI-957: a WRITTEN type name locates at the name it was written as; the
     // structural lowerings below (arrow, tuple, effect row) mint `TypeExtractor`
     // functors that appear nowhere in the source and take a derived span.
-    case TypeExpr.Simple(n) => terms.allocAt(Term.Ref(writtenSymbol(n)), n.span)
+    //
+    // AND IT IS A TYPE NAME (WI-20261020-80VNX): every caller lowers a type position —
+    // a bracket's binding, an arrow's or a tuple's component, an effect label — so the
+    // loader reads a constructor named here as its TYPE (`isTypeName`), `red` and the
+    // `red[]` that parses to it alike.
+    case TypeExpr.Simple(n) => terms.allocTypeNameAt(Term.Ref(writtenSymbol(n)), n.span)
     case TypeExpr.Parameterized(n, bindings) =>
       val (posArgs, namedArgs) = lowerBindings(bindings, n.span)
-      terms.allocAt(Term.Fn(writtenSymbol(n), posArgs, namedArgs), n.span)
+      // A bracket, as `fnOrInstOrIdent`'s: `Box[V = Foo[X = Int64]]`'s inner one is a type.
+      terms.allocTypeApplicationAt(Term.Fn(writtenSymbol(n), posArgs, namedArgs), n.span)
     case TypeExpr.Variable(tid, _) => tid
     // WI-288 / WI-361: arrow and tuple types lower to the structural
     // `TypeExtractor` entities (`anthill.prelude.TypeExtractor.Arrow` /
@@ -2578,6 +2601,13 @@ private class AnthillParserImpl(
     case Term.Bottom      => "⊥"
     case Term.Ref(s)      => symbols.name(s)
     case Term.Ident(s)    => symbols.name(s)
+    // A WRITTEN BRACKET is printed as one (WI-20261020-80VNX; rustland's printer, JB6RS
+    // step 6): `Foo[]` is a type, and `Foo()` would be another term — and, over a sort, a
+    // spelling the loader refuses.
+    case fn: Term.Fn if terms.isTypeApplication(tid) =>
+      val pos = fn.posArgs.map(renderTerm)
+      val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)} = ${renderTerm(v)}")
+      s"${symbols.name(fn.functor)}[${(pos ++ named).mkString(", ")}]"
     case fn: Term.Fn      =>
       val pos = fn.posArgs.map(renderTerm)
       val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)}: ${renderTerm(v)}")

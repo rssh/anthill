@@ -1,6 +1,6 @@
 package anthill.kb
 
-import anthill.intern.{GLOBAL_SCOPE_NAME, TermSymbol, SymbolTable, SymbolKind, SymbolDef}
+import anthill.intern.{GLOBAL_SCOPE_NAME, TermSymbol, SymbolTable, SymbolKind, SymbolDef, Decl}
 import anthill.term.{Term, TermId, TermStore, Var, VarId, Literal}
 import anthill.subst.Substitution
 import anthill.discrim.SubstTree
@@ -46,54 +46,100 @@ class KnowledgeBase:
   // gets said. Rustland's twin is `HashMap<Symbol, Vec<RuleId>>` (`kb/mod.rs`).
   private val byDomain_ = HashMap.empty[ScopeId, ArrayBuffer[RuleId]]
 
-  private val sortEntities_ = HashMap.empty[Int, ArrayBuffer[TermId]]
-  private val entityParent_ = HashMap.empty[Int, TermId]
-  private val sortInfo_ = HashMap.empty[Int, SortKind]
+  // The DECLARATION tables (WI-20261020-80VNX): keyed by `Decl`, which drops a type face,
+  // so a constructor's type `red[]` answers what `red`'s declaration answers. They were
+  // keyed by the name TERM's id, which a face — a different term — would have missed.
+  private val sortEntities_ = HashMap.empty[Decl, ArrayBuffer[TermId]]
+  private val entityParent_ = HashMap.empty[Decl, TermSymbol]
+  private val sortInfo_ = HashMap.empty[Decl, SortKind]
 
   private val discrim: SubstTree[RuleId] = SubstTree()
 
   private val builtins_ = HashMap.empty[Int, BuiltinTag]
-  private val entityFields_ = HashMap.empty[Int, IndexedSeq[TermSymbol]]
-  private val constructorSymbols_ = HashSet.empty[Int]
+  private val entityFields_ = HashMap.empty[Decl, IndexedSeq[TermSymbol]]
+  private val constructorSymbols_ = HashSet.empty[Decl]
   private var nextVar: Int = 0
-  private val sortBaseSubst_ = HashMap.empty[Int, IndexedSeq[(TermSymbol, TermId)]]
+  private val sortBaseSubst_ = HashMap.empty[Decl, IndexedSeq[(TermSymbol, TermId)]]
+  private val quotedFields_ = HashMap.empty[Decl, HashSet[TermSymbol]]
 
   // ── Term allocation ─────────────────────────────────────────
 
-  /** WI-20260902-CZJ2N — ONE STORAGE FORM FOR A NULLARY APPLICATION, wherever the name
-    * has no TYPE reading: `Term.Fn(f, [], [])` is stored as `Term.Ref(f)`, so
-    * `rule holds :- b(1)` and `rule holds() :- b(1)` are one term and one predicate, as
-    * §5.3/§8.6 already say in words.
+  /** WI-20260902-CZJ2N — ONE STORAGE FORM FOR A NULLARY APPLICATION: `Term.Fn(f, [], [])`
+    * is stored as `Term.Ref(f)`, so `rule holds :- b(1)` and `rule holds() :- b(1)` are one
+    * term and one predicate, as §5.3/§8.6 say in words.
     *
-    * Scaland had NO canon at all here (rustland's WI-511 rewrote the same shape for a
-    * registered constructor), so all five kinds the ticket names were split: a nullary
-    * PREDICATE, a nullary OPERATION, an EQUATION FUNCTOR, a namespace-level ENTITY and a
-    * sort-nested constructor. N3WGM gives free-standing entities their Sort role, so
-    * those now retain the two forms required by their type reading.
+    * FOR EVERY NAME (WI-20261020-80VNX; rustland's `nullary_name_canons_to_ref`, JB6RS
+    * step 6). This used to exempt a name with a TYPE reading, on rustland's WI-391 / WI-387
+    * ground that `Ref(S)` was the dispatch wildcard and a nullary `Fn(S)` the concrete spec
+    * identity; scaland has no dispatch, and rustland read the wildcard off the symbol's
+    * role instead (WI-20260829-7QVD5), so `Shape()` and `Shape` are one term now — the
+    * distinction the split was last measured holding up, a constructor's TYPE against its
+    * INSTANCE, is carried by the type faces ([[typeFaceOf]]), decided by the context and
+    * not by the parentheses (kernel-language.md §4.4, §6). It also retires the
+    * contradiction the JB6RS ticket measured here: the discrimination tree keyed `Ref(S)`
+    * and `Fn(S)` alike while `Substitution.unifyMatch` refused the pair, so a candidate the
+    * tree retrieved the unifier undid.
     *
-    * THE GATE IS TYPE-HOOD, not constructor-hood, and rustland's own note carries the
-    * measurement: removing it outright makes 792 symbols change spelling and the standard
-    * library stops loading, because §8.3 / WI-391 / WI-387 make `Ref(S)` the dispatch
-    * WILDCARD and a nullary `Fn(S)` the CONCRETE spec identity for a SORT. A name with a
-    * type reading keeps both spellings and the SLOT decides; everything else has one term.
-    *
-    * `SymbolKind.Sort` is stamped at declaration, before any term is converted — which is
-    * why this is not the load-order hazard [[functorViewHead]]'s note used to describe for
-    * `isConstructorSymbol`, whose registry fills DURING the load.
-    */
+    * ONE EXCEPTION, by QUALIFIED name: the three collection-literal forms of
+    * `anthill.reflect` are the vocabulary a term encodes a literal in, and their empty
+    * application is the empty literal's node — `()` is `TupleLiteral()` — which is not
+    * their bare name. A user's own entity spelled like one is an ordinary entity, and so
+    * is a form's TYPE FACE: `ListLiteral[]` is the type, one term with the bare face. */
   def alloc(term: Term): TermId = term match
-    case Term.Fn(functor, pos, named) if pos.isEmpty && named.isEmpty && !hasTypeReading(functor) =>
+    case Term.Fn(functor, pos, named) if pos.isEmpty && named.isEmpty &&
+        (functor.isTypeFace || !isReflectLiteralForm(functor)) =>
       terms.alloc(Term.Ref(functor))
     case _ => terms.alloc(term)
 
-  /** Does `sym` name something that can appear in a TYPE position, where §8.3 / WI-391
-    * give `Ref(S)` and `Fn(S)` different meanings? The one gate [[alloc]]'s nullary canon
-    * asks. */
-  private def hasTypeReading(sym: TermSymbol): Boolean =
-    // Membership: additional constructor/predicate roles do not erase a type reading.
-    symbols.get(sym).hasKind(SymbolKind.Sort)
+  /** Is `sym` one of the three collection-literal forms [[alloc]]'s canon exempts? By
+    * qualified name alone. Rustland also asks for the free-standing entity's two kinds,
+    * which its stdlib always declares there; scaland's `Prelude` registers the three as
+    * `Entity` only before any stdlib is loaded, so a kind test would make `()` the empty
+    * tuple in one KB and the bare name in another. */
+  private def isReflectLiteralForm(sym: TermSymbol): Boolean =
+    symbols.get(sym) match
+      case SymbolDef.Resolved(_, qualified, _, _) => KnowledgeBase.reflectLiteralForms.contains(qualified)
+      case SymbolDef.Unresolved(_) => false
+
+  /** WI-20261020-80VNX (rustland's `names_only_a_type`) — does `sym` name ONLY a type: a
+    * constructor's type face, or a sort with no constructor of its name? Such a name has
+    * no reading as an application, so `S(…)` is refused where it is written
+    * ([[anthill.load.LoadError.SortAppliedAsData]]) and its type is written `S[…]`
+    * (kernel-language.md §4.4). An eponymous or free-standing entity has a constructor of
+    * its name (`Entity`), and is applied as one.
+    *
+    * Rustland also excludes a sort that is an OPERATION, which its loader lets one name
+    * be. Scaland's does not: an operation at a sort's address is a duplicate declaration
+    * (`Loader.checkDeclarations`) and a body-less rule there is refused as adding nothing,
+    * so no symbol of a clean load is a sort and something else to apply (measured). */
+  def namesOnlyAType(sym: TermSymbol): Boolean =
+    sym.isTypeFace || {
+      val d = symbols.get(sym)
+      d.hasKind(SymbolKind.Sort) && !d.hasKind(SymbolKind.Entity)
+    }
+
+  /** The TYPE FACE of `sym`'s declaration — the symbol a TYPE CONTEXT names it by — when
+    * that declaration is of kind `Entity`; the declaration's own symbol otherwise
+    * (WI-20261020-80VNX; rustland's `type_face_of` / `type_context_face`).
+    *
+    * A constructor — a sort-nested `entity red`, an eponymous `sort Foo … entity Foo(…) …
+    * end`, a free-standing `entity Foo(…)` — is a sort in its own right (§6.3), so it has
+    * two readings, its instance and its type, and only such a declaration gets a second
+    * identity. A sort with no constructor of its name (`Int64`, `Cell`) has exactly one
+    * face, which is why this never puts the bit on one (kernel-language.md §4.4). The kind
+    * is read, not the constructor registry, because the kind is stamped in pass 1 before
+    * any term is built. THE way to a face outside `intern`; idempotent. */
+  def typeFaceOf(sym: TermSymbol): TermSymbol =
+    val decl = sym.plain
+    if symbols.get(decl).hasKind(SymbolKind.Entity) then decl.typeFace else decl
 
   def intern(s: String): TermSymbol = symbols.intern(s)
+
+  /** The kind reflection's `kind` reports for `sym`: the first declaration's keyword, and
+    * for a constructor's TYPE FACE `Sort` — `red[]` is a type, `red` the entity
+    * (WI-20261020-80VNX; rustland's `reflect_kind`). Display only, as `primaryKind` is. */
+  def reflectKind(sym: TermSymbol): Option[SymbolKind] =
+    if sym.isTypeFace then Some(SymbolKind.Sort) else symbols.get(sym).primaryKind
 
   def freshVar(name: TermSymbol): VarId =
     val id = nextVar
@@ -251,32 +297,61 @@ class KnowledgeBase:
   // ── Sort management ─────────────────────────────────────────
 
   def registerSort(sortTerm: TermId, kind: SortKind): Unit =
-    sortInfo_(TermId.raw(sortTerm)) = kind
+    sortInfo_(declarationOf(sortTerm, "registerSort")) = kind
 
   def registerEntityOf(entity: TermId, parent: TermId): Unit =
-    sortEntities_.getOrElseUpdate(TermId.raw(parent), ArrayBuffer.empty) += entity
-    entityParent_(TermId.raw(entity)) = parent
-    // WI-20260902-CZJ2N — READ THE FUNCTOR OFF EITHER SPELLING. A nullary entity term
-    // is stored as `Term.Ref` now (its symbol has no type reading), so the `Term.Fn`-only
-    // read stopped marking any 0-ary constructor at all — silently, since
-    // `isConstructorSymbol` answering `false` is a legal answer everywhere it is asked.
-    // Rustland keys this index by SYMBOL for the same reason (WI-697).
-    terms.get(entity) match
-      case Term.Fn(functor, _, _) => constructorSymbols_ += TermSymbol.raw(functor)
-      case Term.Ref(sym)          => constructorSymbols_ += TermSymbol.raw(sym)
-      case _                      =>
+    // WI-20260902-CZJ2N — READ THE FUNCTOR OFF EITHER SPELLING (`nullaryName`). A nullary
+    // entity term is stored as `Term.Ref`, so a `Term.Fn`-only read stopped marking any
+    // 0-ary constructor at all — silently, since `isConstructorSymbol` answering `false`
+    // is a legal answer everywhere it is asked. Rustland keys this index by SYMBOL for
+    // the same reason (WI-697).
+    val entityDecl = declarationOf(entity, "registerEntityOf")
+    val parentDecl = declarationOf(parent, "registerEntityOf")
+    sortEntities_.getOrElseUpdate(parentDecl, ArrayBuffer.empty) += entity
+    entityParent_(entityDecl) = parentDecl.symbol
+    constructorSymbols_ += entityDecl
 
+  /** Is `sub` an entity of the sort `sup`? Reflexive; otherwise both are NAMES and they are
+    * compared as DECLARATIONS (WI-20261020-80VNX): `sup` may name the parent by its type
+    * face, and a constructor's instance is an entity of its OWN type — `red` of `red[]`,
+    * as an eponymous `Foo` of `Foo[]` — which held while the two were one term. Mirrors
+    * rustland's `is_entity_of_view`. An APPLIED constructor is not a name and answers
+    * false here, as before. */
   def isEntityOf(sub: TermId, sup: TermId): Boolean =
-    TermId.raw(sub) == TermId.raw(sup) ||
-    entityParent_.get(TermId.raw(sub)).exists(p => TermId.raw(p) == TermId.raw(sup))
+    TermId.raw(sub) == TermId.raw(sup) || ((nullaryName(sub), nullaryName(sup)) match
+      case (Some(subSym), Some(supSym)) =>
+        // Of its own type only when `sub` names an ENTITY's declaration: two spellings of
+        // some other name are not an entity and its sort.
+        (symbols.get(subSym).hasKind(SymbolKind.Entity) && supSym.plain == subSym.plain) ||
+          entityParent_.get(Decl.of(subSym)).contains(supSym.plain)
+      case _ => false)
 
-  /** Get the parent sort of an entity (1-level, non-transitive). */
+  /** Get the parent sort of an entity (1-level, non-transitive), as its name term. */
   def entityParentSort(entity: TermId): Option[TermId] =
-    entityParent_.get(TermId.raw(entity))
+    nullaryName(entity).flatMap(s => entityParent_.get(Decl.of(s))).map(makeNameTermFromSym)
 
-  /** Check if a functor symbol is a constructor (entity with a parent sort). */
+  /** Is `functor` a constructor NESTED in a sort — the head of an instance? FALSE for a
+    * type face (WI-20261020-80VNX): an application of `red`'s face is the TYPE `red[…]`,
+    * never a construction. A caller asking about the DECLARATION says `.plain`. */
   def isConstructorSymbol(functor: TermSymbol): Boolean =
-    constructorSymbols_.contains(TermSymbol.raw(functor))
+    !functor.isTypeFace && constructorSymbols_.contains(Decl.of(functor))
+
+  /** The symbol a NAME term spells, or `None` for any other term (an application, a
+    * variable, a literal). A nullary `Term.Fn` is no name: [[alloc]] stores every name's
+    * nullary application bare, so the one that is left is a reflect form's empty-literal
+    * VALUE — `[]` — and not the name `ListLiteral`. */
+  private def nullaryName(term: TermId): Option[TermSymbol] = terms.get(term) match
+    case Term.Ref(s) => Some(s)
+    case Term.Ident(s) => Some(s)
+    case _ => None
+
+  /** The declaration a NAME term names, for a declaration-table WRITE: a type face is not
+    * a declaration, and a term that names nothing has no key — both refused loudly. */
+  private def declarationOf(term: TermId, what: String): Decl =
+    nullaryName(term) match
+      case Some(s) if !s.isTypeFace => Decl.of(s)
+      case other => throw IllegalArgumentException(
+        s"$what: ${terms.get(term)} names no declaration${if other.isDefined then " (a type face)" else ""}")
 
   // ── Query ───────────────────────────────────────────────────
 
@@ -285,7 +360,7 @@ class KnowledgeBase:
     bySort_.get(TermId.raw(sort)).foreach { ids =>
       for rid <- ids if !rules(rid.index).retracted do result += rid
     }
-    sortEntities_.get(TermId.raw(sort)).foreach { children =>
+    nullaryName(sort).flatMap(s => sortEntities_.get(Decl.of(s))).foreach { children =>
       for child <- children do
         bySort_.get(TermId.raw(child)).foreach { ids =>
           for rid <- ids if !rules(rid.index).retracted do result += rid
@@ -333,16 +408,19 @@ class KnowledgeBase:
 
   // ── Sort queries ─────────────────────────────────────────────
 
-  def sortKind(sortTerm: TermId): Option[SortKind] = sortInfo_.get(TermId.raw(sortTerm))
+  def sortKind(sortTerm: TermId): Option[SortKind] =
+    nullaryName(sortTerm).flatMap(s => sortInfo_.get(Decl.of(s)))
 
   def sortBaseSubst(sym: TermSymbol): Option[IndexedSeq[(TermSymbol, TermId)]] =
-    sortBaseSubst_.get(TermSymbol.raw(sym))
+    sortBaseSubst_.get(Decl.of(sym))
 
   def setSortBaseSubst(sym: TermSymbol, subst: IndexedSeq[(TermSymbol, TermId)]): Unit =
-    sortBaseSubst_(TermSymbol.raw(sym)) = subst
+    require(!sym.isTypeFace, "setSortBaseSubst: a type face is not a declaration")
+    sortBaseSubst_(Decl.of(sym)) = subst
 
   def sortChildren(sortTerm: TermId): IndexedSeq[TermId] =
-    sortEntities_.get(TermId.raw(sortTerm)).map(_.toIndexedSeq).getOrElse(IndexedSeq.empty)
+    nullaryName(sortTerm).flatMap(s => sortEntities_.get(Decl.of(s)))
+      .map(_.toIndexedSeq).getOrElse(IndexedSeq.empty)
 
   // ── Term matching ─────────────────────────────────────────────
 
@@ -556,7 +634,10 @@ class KnowledgeBase:
     * this bypass and WI-1023 had to teach its `Map` key path to tolerate the third
     * spelling it left in the store. */
   def makeNameTermFromSym(sym: TermSymbol): TermId =
-    alloc(Term.Fn(sym, IArray.empty, IArray.empty))
+    // The bare `Ref`, built as one: for a reflect collection-literal form the nullary
+    // APPLICATION is the empty literal (`[]`), which is not the form's name
+    // (WI-20261020-80VNX).
+    alloc(Term.Ref(sym))
 
   def makeNameTerm(name: String): TermId =
     makeNameTermFromSym(symbols.intern(name))
@@ -606,10 +687,25 @@ class KnowledgeBase:
   // ── Entity field registry ──────────────────────────────────
 
   def registerEntityFields(functor: TermSymbol, fields: IndexedSeq[TermSymbol]): Unit =
-    entityFields_(TermSymbol.raw(functor)) = fields
+    require(!functor.isTypeFace, "registerEntityFields: a type face is not a declaration")
+    entityFields_(Decl.of(functor)) = fields
 
+  /** WI-20261020-80VNX — record that `entity`'s field `field` is declared
+    * `anthill.reflect.Term`, so it holds a QUOTED pattern (see `Loader.QuotedFieldPass`). */
+  def registerQuotedField(entity: TermSymbol, field: TermSymbol): Unit =
+    require(!entity.isTypeFace, "registerQuotedField: a type face is not a declaration")
+    quotedFields_.getOrElseUpdate(Decl.of(entity), HashSet.empty) += field
+
+  /** Is `field` of an application of `functor` a QUOTED one? Never for a type face: the
+    * bindings of `Foo[…]` are type parameters, not fields. */
+  def isQuotedField(functor: TermSymbol, field: TermSymbol): Boolean =
+    !functor.isTypeFace && quotedFields_.get(Decl.of(functor)).exists(_.contains(field))
+
+  /** The field names `functor`'s DECLARATION registers — a type face's are its
+    * constructor's. Whether an application of `functor` CONSTRUCTS is a different question:
+    * a face's never does. */
   def entityFieldNames(functor: TermSymbol): Option[IndexedSeq[TermSymbol]] =
-    entityFields_.get(TermSymbol.raw(functor))
+    entityFields_.get(Decl.of(functor))
 
   // ── Builtin dispatch ────────────────────────────────────────
 
@@ -644,6 +740,12 @@ class KnowledgeBase:
       case _ if posArity == 2 && Seq("anthill.kernel.or", "anthill.kernel.and")
           .exists(name => tryResolveSymbol(name).contains(functor)) => Set(0, 1)
       case _ => Set.empty
+
+object KnowledgeBase:
+  /** The collection-literal forms of `anthill.reflect` whose empty application is a node
+    * of its own — see `alloc`. */
+  private val reflectLiteralForms: Set[String] = Set(
+    "anthill.reflect.TupleLiteral", "anthill.reflect.ListLiteral", "anthill.reflect.SetLiteral")
 
 // ── BuiltinTag ────────────────────────────────────────────────
 

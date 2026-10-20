@@ -54,13 +54,50 @@ def absolutePathTarget(name: String): Option[String] =
 
 // ── Symbol handle ───────────────────────────────────────────────
 
+/** A symbol: a slot of the [[SymbolTable]] that issued it, and ONE MORE BIT, the TYPE FACE
+  * of a constructor (WI-20260902-JB6RS; scaland WI-20261020-80VNX). A constructor is a sort
+  * in its own right (§6.3), so its one declaration has two readings — its INSTANCE, named
+  * by the plain symbol, and its TYPE, named by [[typeFace]] — and the two are different
+  * `TermSymbol` values: unequal, hashed apart, so a type term and an instance term are
+  * never one term (kernel-language.md §4.4, *A name has a reading in each context*).
+  *
+  * The TABLE does not see the bit. [[index]] is the slot with the face masked, every
+  * `SymbolTable` read goes through it, and every table write refuses a face: the table
+  * holds declarations, and a face is not one. [[raw]] is the whole identity, bit included —
+  * what a hash, an equality and an ordering key read. */
 opaque type TermSymbol = Int
 
 object TermSymbol:
+  /** The bit [[typeFace]] sets — the top one, so a plain symbol's value is its slot. */
+  private final val TypeFaceBit = 0x80000000
+
   def fromRaw(raw: Int): TermSymbol = raw
 
   extension (s: TermSymbol)
+    /** The whole identity, the face bit included. */
     def raw: Int = s
+    /** The table slot this symbol names: the same for a constructor and its type face. */
+    def index: Int = s & ~TypeFaceBit
+    /** The DECLARATION's symbol — the face dropped; identity on a plain symbol. */
+    def plain: TermSymbol = s & ~TypeFaceBit
+    def isTypeFace: Boolean = (s & TypeFaceBit) != 0
+    /** The constructor's TYPE face. Not a public mint: which declarations have a second
+      * face is the KB's to decide (`KnowledgeBase.typeFaceOf`, `typeContextFace`). */
+    private[anthill] def typeFace: TermSymbol = s | TypeFaceBit
+
+/** The key of a table that holds what a DECLARATION declares — its sort kind, its fields,
+  * its parent, its children (WI-20261020-80VNX; rustland's `intern::Decl`, JB6RS step 1).
+  * Built only by [[Decl.of]], which drops the type face, so no key can carry one and a
+  * constructor's type face answers every question about its declaration exactly as the
+  * constructor does. */
+opaque type Decl = Int
+
+object Decl:
+  def of(sym: TermSymbol): Decl = TermSymbol.raw(TermSymbol.plain(sym))
+
+  extension (d: Decl)
+    /** The declaration's own (plain) symbol. */
+    def symbol: TermSymbol = TermSymbol.fromRaw(d)
 
 // ── Symbol metadata ─────────────────────────────────────────────
 

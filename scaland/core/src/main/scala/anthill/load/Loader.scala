@@ -45,6 +45,13 @@ enum LoadError:
   case SealedDeclarations(name: String, first: Span, span: Span)
   case EqualityOfEarlierSort(name: String, span: Span)
   case ConstantInGoalPosition(literal: String, span: Span)
+  /** WI-20261020-80VNX (rustland's `SortAppliedAsData`, WI-20260902-JB6RS step 6) — `S(…)`
+    * WRITTEN in a clause where `S` names only a type ([[KnowledgeBase.namesOnlyAType]]).
+    * Only a BARE name falls back to another reading (kernel-language.md §4.4); an
+    * application needs a constructor, predicate or operation to apply, and the sort's type
+    * is written `S[…]`. It used to BE the type in silence: `Eq(T: ?q)` answered from
+    * `fact Eq[T = Int64]`, the two surfaces building one term. */
+  case SortAppliedAsData(sort: String, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -82,6 +89,11 @@ enum LoadError:
         "Only `true` and `false` read as goals (kernel-language.md §5.3); " +
         s"put data in an argument (`p($literal)`) or comparison (`?x = $literal`), " +
         "or write `false` for a goal that always fails.")
+    // Rustland's `sort_applied_as_data_message`, word for word.
+    case SortAppliedAsData(sort, span) =>
+      span.render(s"`$sort(…)` is an application, and `$sort` names no constructor, predicate or " +
+        s"operation to apply — it is a sort, and its type is written `$sort[…]` " +
+        "(kernel-language.md §4.4)")
     case Other(message, span) =>
       span.render(message)
 
@@ -136,6 +148,16 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(AliasCollectPass(kb, file.symbols, fileIdx, aliasSites, errors), file.items)
     reportRecursiveAliases(kb, aliasSites.toIndexedSeq, files, fileIds, errors)
+
+    // The entity fields that hold a QUOTED term — after pass 2, because a field's type is
+    // resolved where the entity is written, imports included; before any clause loads.
+    // A KB that declares no `anthill.reflect.Term` has no field to quote.
+    for reflectTerm <- kb.tryResolveSymbol("anthill.reflect.Term") do
+      val quoting = QuotingTypes(reflectTerm,
+        kb.tryResolveSymbol("anthill.prelude.List"), kb.tryResolveSymbol("anthill.prelude.Option"))
+      for (file, fid) <- files.zip(fileIds) do
+        kb.symbols.setAskingFile(Some(fid))
+        walkScopes(QuotedFieldPass(kb, file.symbols, quoting, errors), file.items)
 
     // Pass 3: register the functors that RULE HEADS introduce (WI-894/896/898), in
     // THREE phases — collect, freeze, mint. WI-20260821-SBZ2A ports WI-980 / 059 R6 and
@@ -701,29 +723,18 @@ object Loader:
           defineAbstractSort(kb, fileSym, prefix, scope, sort.name.segments, isParam)
 
         case Item.EntityItem(entity) =>
-          val (shortName, qualName, target) = declSite(kb, fileSym, entity.name.segments, prefix, scope)
-          val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, target)
-          // §6.3: a free-standing entity also names its type, like `sort E { entity E }`.
-          // Nested variants keep their constructor-only reading and their own identity.
-          if !isSortScope(kb, scope) then kb.symbols.addKind(sym, SymbolKind.Sort)
-          val entityTerm = kb.makeNameTermFromSym(sym)
-          kb.registerSort(entityTerm, SortKind.Constructor)
-          // WI-985: the entity→parent edge is a SORT-BODY edge and ONLY that. This used
-          // to record the enclosing scope whatever it was, so an `entity` written
-          // directly under a namespace — which §4 of the spec permits — got that
-          // NAMESPACE as its parent sort, and `is_entity_of` then answered true of a
-          // namespace. The stdlib depends on the opposite: `reflect/typing.anthill`'s
-          // `entity_of` rule guards `scope(?x, ?sort)` with the `is_entity_of` builtin
-          // precisely so a namespace-level entity yields NO parent, and rustland
-          // registers the edge only from inside its sort-body loop (`kb/load.rs`) —
-          // `load_entity` emits the metadata fact and no edge. An entity outside a sort
-          // body is still an entity and still a constructor; it just has no parent sort
-          // to name, so nothing is recorded rather than something false.
-          if isSortScope(kb, scope) then
-            kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
-          // Register entity fields
           val fields = entity.fields.map(f => fileSym.name(f.name)).map(kb.intern)
-          kb.registerEntityFields(sym, fields)
+          eponymousSortSymbol(kb, fileSym, entity.name.segments, scope) match
+            case Some(sortSym) =>
+              // §6.3 (WI-926): `sort Foo … entity Foo(…) … end` writes `Foo` ONCE and
+              // defines ONE symbol — the sort's, now playing `Entity` too, which is what
+              // a free-standing `entity Foo(…)` is from the other spelling. No nested
+              // `Foo.Foo` is defined, so no parent edge and no `entity_of` fact: it is
+              // not a constructor OF a sort, it is the sort (rustland's
+              // `eponymous_sort_symbol`, which marks no constructor either).
+              kb.symbols.addKind(sortSym, SymbolKind.Entity)
+              kb.registerEntityFields(sortSym, fields)
+            case None => defineEntity(entity, fields, scope, prefix)
 
         case Item.OperationItem(op) =>
           val (shortName, qualName, target) = declSite(kb, fileSym, op.name.segments, prefix, scope)
@@ -796,6 +807,33 @@ object Loader:
           }
 
         case _ => // Other items don't define symbols in pass 1
+
+    /** An entity that is not its sort's own name: a sort-nested constructor, or a
+      * free-standing entity. */
+    private def defineEntity(
+      entity: Entity, fields: IndexedSeq[TermSymbol], scope: kb.ScopeId, prefix: String
+    ): Unit =
+      val (shortName, qualName, target) = declSite(kb, fileSym, entity.name.segments, prefix, scope)
+      val sym = kb.symbols.define(shortName, qualName, SymbolKind.Entity, target)
+      // §6.3: a free-standing entity also names its type, like `sort E { entity E }`.
+      // Nested variants keep their constructor-only reading and their own identity.
+      if !isSortScope(kb, scope) then kb.symbols.addKind(sym, SymbolKind.Sort)
+      val entityTerm = kb.makeNameTermFromSym(sym)
+      kb.registerSort(entityTerm, SortKind.Constructor)
+      // WI-985: the entity→parent edge is a SORT-BODY edge and ONLY that. This used
+      // to record the enclosing scope whatever it was, so an `entity` written
+      // directly under a namespace — which §4 of the spec permits — got that
+      // NAMESPACE as its parent sort, and `is_entity_of` then answered true of a
+      // namespace. The stdlib depends on the opposite: `reflect/typing.anthill`'s
+      // `entity_of` rule guards `scope(?x, ?sort)` with the `is_entity_of` builtin
+      // precisely so a namespace-level entity yields NO parent, and rustland
+      // registers the edge only from inside its sort-body loop (`kb/load.rs`) —
+      // `load_entity` emits the metadata fact and no edge. An entity outside a sort
+      // body is still an entity and still a constructor; it just has no parent sort
+      // to name, so nothing is recorded rather than something false.
+      if isSortScope(kb, scope) then
+        kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
+      kb.registerEntityFields(sym, fields)
 
     private def defineRuleLabel(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
       rule.label.foreach { label =>
@@ -1050,6 +1088,57 @@ object Loader:
           val (_, qualName, _) = declSite(kb, fileSym, sort.name.segments, prefix, scope)
           for sym <- kb.symbols.byQualifiedName.get(qualName) do
             sites += AliasSite(sym, scope, fileIdx, sort.definition, sort.span)
+        case _ => ()
+
+  /** The declarations a QUOTING field type is written in, resolved once per load:
+    * `anthill.reflect.Term`, and the two containers whose element a quoted field may hold. */
+  private case class QuotingTypes(term: TermSymbol, list: Option[TermSymbol], option: Option[TermSymbol])
+
+  /** WI-20261020-80VNX — record each entity field whose declared type QUOTES
+    * ([[KnowledgeBase.isQuotedField]]): `anthill.reflect.Term`, or a `List` or `Option` of
+    * a quoting type, as rustland reads a list's elements and an option's payload at
+    * their element type (`convert_arg_value`'s `is_reflect_term_type`, through
+    * `elem_expected` / `some_payload_hint`). Such a field holds a QUOTED pattern (§4.2;
+    * §6.3, "a field declared `anthill.reflect.Term` holds a QUOTED term"), so a clause's
+    * argument there is judged as written and not read: `fact holdsQ(pattern: Eq(T: 1))`
+    * holds the pattern, and `Eq(…)`'s refusal as an application of a sort
+    * ([[LoadError.SortAppliedAsData]]) does not reach inside it. Scaland, with no typer,
+    * records it for itself: the declared type is resolved here, where the entity is
+    * written. Any other field type is a verdict — not quoted — and not a skip. */
+  private final class QuotedFieldPass(
+    val kb: KnowledgeBase,
+    val fileSym: SymbolTable,
+    quoting: QuotingTypes,
+    errors: ArrayBuffer[LoadError]
+  ) extends ScopePass:
+
+    // A scope that does not resolve is reported by the passes that load it; this one has
+    // nothing to add to that, so it follows the descent silently rather than reporting
+    // the miss a third time.
+    def enterScope(
+      decl: ScopeDecl, writtenName: String, qualName: String, prefix: String, enclosing: kb.ScopeId
+    ): Option[kb.ScopeId] =
+      kb.symbols.byQualifiedName.get(qualName).map(kb.symbols.scopeOf)
+
+    private def quotes(ty: TypeExpr, scope: kb.ScopeId): Boolean =
+      def names(n: Name): TermSymbol => Boolean = target =>
+        lookupWritten(kb, joinSegments(fileSym, n.segments), scope) == ResolveResult.Found(target)
+      ty match
+        case TypeExpr.Simple(n) => names(n)(quoting.term)
+        case TypeExpr.Parameterized(n, IndexedSeq(binding))
+            if quoting.list.exists(names(n)) || quoting.option.exists(names(n)) =>
+          quotes(binding.bound, scope)
+        case _ => false
+
+    def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
+      item match
+        case Item.EntityItem(entity) =>
+          val entitySym = eponymousSortSymbol(kb, fileSym, entity.name.segments, scope).orElse {
+            val (_, qualName, _) = declSite(kb, fileSym, entity.name.segments, prefix, scope)
+            lookupDefined(kb, qualName, entity.name.span, "its quoted fields cannot be recorded", errors)
+          }
+          for sym <- entitySym; field <- entity.fields if quotes(field.ty, scope) do
+            kb.registerQuotedField(sym, kb.intern(fileSym.name(field.name)))
         case _ => ()
 
   /** Every leading part of every name written in `ty` — `WisStore` and `WisStore.State`
@@ -2468,6 +2557,10 @@ object Loader:
             if !refuseBareLiteralHeads(rule) then
               loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
 
+        // An eponymous constructor IS its sort (§6.3): no parent, so no `entity_of` fact,
+        // exactly as pass 1 records no parent edge for it.
+        case Item.EntityItem(entity) if eponymousSortSymbol(kb, fileSym, entity.name.segments, scope).isDefined =>
+
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
           val qualName = makeQualified(prefix, shortName)
@@ -2902,7 +2995,11 @@ object Loader:
       * node — see the `Term.Fn` arm. */
     atGoal: Boolean = false,
     // Rustland admits an unresolved qualified subject, but not its data slots.
-    atHead: Boolean = false
+    atHead: Boolean = false,
+    /** WI-20261020-80VNX — is this node inside a field DECLARED `anthill.reflect.Term`
+      * ([[KnowledgeBase.isQuotedField]])? Such a field holds a quoted pattern, judged as
+      * written: `S(…)` is not refused there. Reaches every node below the field. */
+    quoted: Boolean = false
   ): TermId =
     // WI-1009: refuse a PARSE-TIME MARKER before anything below reads its functor name.
     // Asked of the term's PROVENANCE and not its spelling, which is the whole fix: four
@@ -2999,7 +3096,22 @@ object Loader:
         val name = fileSym.name(fn.functor)
         // ERF7T replaces the connective-only override with ordinary absolute lookup.
         // A missing target fails loudly; a same-spelled local operation cannot answer.
-        val kbFunctor = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
+        val resolved = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
+        // WI-20261020-80VNX — A WRITTEN BRACKET IS A TYPE, in a clause as in a signature
+        // (§4.4; rustland's `Loader::convert_term_inner`, JB6RS steps 3–4): `Foo[X = Int64]`
+        // and `red[]` are headed by the constructor's TYPE FACE, so a type written as data
+        // and an instance are never one term — `fact held(red[])` is not found by
+        // `:- held(red)` — and a name its bindings write is read in a type context, which
+        // the parser records on the name (`isTypeName`, the `Term.Ref` arm).
+        val isTypeApp = fileTerms.isTypeApplication(termId)
+        val kbFunctor = if isTypeApp then kb.typeFaceOf(resolved) else resolved
+        // WI-20261020-80VNX — AND ONLY A BARE NAME FALLS BACK (§4.4): `S(…)` written over a
+        // name that is only a type applies nothing, where it used to be the type in silence
+        // (`Eq(T: ?q)` answered from `fact Eq[T = Int64]`). A bracket is the type. Rustland's
+        // `refuse_sort_applied_as_data` also exempts a node its converter MINTED; no node
+        // scaland's parser mints is headed by a sort (measured: the gate failed no row).
+        if !quoted && !isTypeApp && kb.namesOnlyAType(kbFunctor) then
+          errors += LoadError.SortAppliedAsData(kb.resolveSym(kbFunctor), fileTerms.spanOf(termId))
         // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
         // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
         // the predicate `ns.flag`, where a data reading would negate a `field_access`
@@ -3010,17 +3122,28 @@ object Loader:
         // it spelling one term. Mirrors rustland's `goal_arg_slots` descent.
         val goalSlots =
           if atGoal then kb.goalArgSlots(kbFunctor, fn.posArgs.length) else Set.empty[Int]
+        // A field declared `Term` holds what is written in it, quoted — named, or by
+        // position against the declared field order.
+        def quotedField(field: Option[TermSymbol]): Boolean =
+          quoted || field.exists(kb.isQuotedField(kbFunctor, _))
+        val declaredFields = kb.entityFieldNames(kbFunctor)
         val kbPos = IArray.from(fn.posArgs.zipWithIndex.map((id, i) =>
-          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap, atGoal = goalSlots(i))))
+          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap, atGoal = goalSlots(i),
+            quoted = quotedField(declaredFields.flatMap(_.lift(i))))))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
-          (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap))
+          (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap,
+            quoted = quotedField(Some(kbKeySym))))
         })
         kb.alloc(Term.Fn(kbFunctor, kbPos, kbNamed))
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
-        kb.alloc(Term.Ref(kbSym))
+        // A name written in a TYPE position (§4.4; rustland's `type_context_binding` and
+        // its type lowerings, JB6RS steps 3–5) — a bracket's binding (`Box[V = red]` is
+        // `Box[V = red[]]`), an arrow's or tuple's component — is the TYPE: a constructor
+        // there is named by its type face, where in a data slot it is its instance.
+        kb.alloc(Term.Ref(if fileTerms.isTypeName(termId) then kb.typeFaceOf(kbSym) else kbSym))
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
@@ -3030,6 +3153,10 @@ object Loader:
         // `tgtA()` canonicalized to `Term.Ref`, so `rule ab(1) :- tgtA()` answered 0
         // against `rule tgtA :- …`. `Term.Ident` now means exactly one thing here — a
         // name nothing in scope answers.
+        //
+        // A bare constructor is its INSTANCE here, in a data slot and a logical position
+        // alike (§4.4, §8.3). A name in a type position never reaches this arm: the parser
+        // lowers it to `Term.Ref` (`typeExprToRef`), whose arm reads it as the type.
         if kb.symbols.isResolved(kbSym) then kb.alloc(Term.Ref(kbSym))
         else kb.alloc(Term.Ident(kbSym))
       case Term.Bottom => kb.alloc(Term.Bottom)
@@ -3153,6 +3280,23 @@ object Loader:
   private def isSortScope(kb: KnowledgeBase, scope: kb.ScopeId): Boolean =
     // Membership: a sort body remains a sort when the symbol acquires other roles.
     kb.symbols.get(kb.symbols.symbolOf(scope)).hasKind(SymbolKind.Sort)
+
+  /** §6.3 (WI-926) — the SORT an entity written as `segments` directly inside the body of
+    * `scope` IS, when it carries that sort's own name: `sort Foo … entity Foo(…) … end`
+    * writes `Foo` once and defines one symbol, so there is no nested `Foo.Foo`. `None` for
+    * every other entity — a variant named otherwise, a dotted name (filed at its prefix's
+    * address, WI-929 item 8), an entity outside a sort body. Mirrors rustland's
+    * `eponymous_sort_symbol`; asked by both passes that read an `entity`, so they cannot
+    * disagree about which symbol it is. */
+  private def eponymousSortSymbol(
+    kb: KnowledgeBase, fileSym: SymbolTable, segments: IndexedSeq[TermSymbol], scope: kb.ScopeId
+  ): Option[TermSymbol] =
+    if segments.length != 1 || !isSortScope(kb, scope) then None
+    else
+      val owner = kb.symbols.symbolOf(scope)
+      kb.symbols.get(owner) match
+        case SymbolDef.Resolved(short, _, _, _) if short == fileSym.name(segments.head) => Some(owner)
+        case _ => None
 
   // `private[load]` so `Prelude.defineIn` joins by the SAME rule (WI-990) rather than
   // re-spelling it — including the empty-prefix arm, which a bare `s"$prefix.$name"`

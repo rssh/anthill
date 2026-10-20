@@ -530,6 +530,22 @@ class ParseTest extends munit.FunSuite:
         assert(m.contains("`B = Int`"), m)
   }
 
+  /** WI-20261020-80VNX — the refusal quotes a WRITTEN BRACKET back with the bracket: the
+    * guard's `Foo[]` is the type, and `Foo()` would be another term. BACKED OUT
+    * (`renderTerm`'s bracket arm): the message reads `p(Foo())`. */
+  test("WI-850: the refusal renders a written bracket as one") {
+    val src =
+      """sort Demo
+        |  sort Term = ?
+        |  operation g[B = (Term) -> Term @ {E :- p(Foo[], Bar[X = 1])}](t: Term) -> Term
+        |end""".stripMargin
+    Parser.parse(src, "<op>") match
+      case Right(_) => fail("expected a refusal for the type-param default")
+      case Left(errs) =>
+        val m = errs.map(_.message).mkString("; ")
+        assert(m.contains("p(Foo[], Bar[X = 1])"), m)
+  }
+
   test("WI-850: a bare type-param list carries no refusal") {
     val (pf, op) = parseDemoOp("  operation g[A, B](t: Term) -> Int")
     assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)), IndexedSeq("A", "B"))
@@ -1963,4 +1979,37 @@ end
       s"expected a syntax error; got: ${msgs.mkString("; ")}")
     assert(!msgs.exists(_.contains("call-site type arguments")),
       s"it must not reach the refusal at all; got: ${msgs.mkString("; ")}")
+  }
+
+  /** WI-20261020-80VNX (rustland's corpus row `empty_bracket.txt`, WI-20260902-JB6RS) — a
+    * bracket may be EMPTY. In a data position `Foo[]` lowers to the application it
+    * spells, RECORDED as written with the bracket (`isTypeApplication`), which is what the
+    * loader names the constructor's TYPE by; the applied `Foo()` is not recorded. In a
+    * type position it is the bare `Foo`.
+    *
+    * BACKED OUT: `instArgsList` / `parameterizedType` at `rep(1)` — neither parses; the
+    * bracket allocated through `allocAt` — the recorded-surface assertion fails. */
+  test("WI-20261020-80VNX: an empty bracket is the type, in a data and a type position") {
+    val pf = Parser.parse(
+      """namespace n
+        |  fact held(Foo[], Foo())
+        |  operation f(x: Foo[]) -> Foo = x
+        |end""".stripMargin, "<empty-bracket>").toOption.getOrElse(fail("must parse"))
+    val ns = pf.items.collectFirst { case Item.NamespaceItem(ns) => ns }.get
+    val fact = ns.items.collectFirst { case Item.FactItem(f) => f }.get
+    val args = pf.terms.get(fact.term) match
+      case fn: Term.Fn => fn.posArgs
+      case other => fail(s"a fact application, got $other")
+    for (arg, bracketed) <- args.zip(Seq(true, false)) do
+      pf.terms.get(arg) match
+        case fn: Term.Fn =>
+          assertEquals(pf.symbols.name(fn.functor), "Foo")
+          assert(fn.posArgs.isEmpty && fn.namedArgs.isEmpty)
+          assertEquals(pf.terms.isTypeApplication(arg), bracketed,
+            s"only the bracket is recorded as written with one")
+        case other => fail(s"expected the nullary application, got $other")
+    val op = ns.items.collectFirst { case Item.OperationItem(o) => o }.get
+    op.params.head.ty match
+      case TypeExpr.Simple(n) => assertEquals(pf.symbols.name(n.last), "Foo")
+      case other => fail(s"`x: Foo[]` is the type `Foo`, got $other")
   }

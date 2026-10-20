@@ -123,9 +123,10 @@ object ViewHead:
   * OPERATION and a namespace-level ENTITY each with two shapes that do not unify.
   *
   * CZJ2N removed the split at the STORE ([[KnowledgeBase.alloc]]: every nullary `Fn`
-  * of a name with no type reading is stored as `Ref`) and removed the second HEAD
+  * is stored as `Ref` — a sort's too since WI-20261020-80VNX, the three reflect
+  * collection-literal forms excepted by qualified name) and removed the second HEAD
   * here, so a bare name and a nullary application are one term AND one head. The
-  * order-sensitivity goes with the gate: `SymbolKind.Sort` is stamped at declaration.
+  * order-sensitivity goes with the gate: what the canon reads is fixed at declaration.
   */
 private[kb] def functorViewHead(
   kb: KnowledgeBase,
