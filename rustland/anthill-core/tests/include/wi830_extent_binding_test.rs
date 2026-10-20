@@ -61,7 +61,7 @@ const SRC: &str = r#"namespace test.wi830b
   fact ExtentBinding(
     store: FileStore(root: "tracker", convention: flat()),
     role: mirror(),
-    covers: [Alpha831, Beta831])
+    covers: [Alpha831[], Beta831[]])
 end
 "#;
 
@@ -164,7 +164,7 @@ fn a_binding_covering_nothing_is_refused() {
 #[test]
 fn a_role_that_is_not_a_role_is_refused_at_load() {
     let errors = match crate::common::try_load_kb_with(&src_with(&format!(
-        "{STORE}, role: Alpha831(), covers: [Alpha831]"
+        "{STORE}, role: Alpha831(), covers: [Alpha831[]]"
     ))) {
         Err(errors) => errors,
         Ok(_) => panic!("a role that is not an ExtentRole must not load"),

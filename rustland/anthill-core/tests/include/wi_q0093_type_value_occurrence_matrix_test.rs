@@ -1155,9 +1155,11 @@ end
 /// DECLARATION form, which does mint a predicate, is refused outright when a sort holds
 /// the name, so it cannot build the pair either.)
 ///
-/// PASSES EITHER WAY BY DESIGN: it pins a reading neither spelling of the classifier
-/// moves. What it would catch is a future change that let a rule head add a kind to a sort
-/// symbol — which under `has_kind` would then decide this name's reading.
+/// It passed either way by design, pinning a reading neither spelling of the classifier
+/// moved. Since WI-20260902-JB6RS the fixture's head, `rule Both(?x)`, is refused — a sort
+/// with no constructor, predicate or operation of its name cannot be applied — so the row
+/// pins that refusal in both orders, which closes what it was watching for: a rule head
+/// adding a kind to a sort symbol.
 #[test]
 fn a_sort_sharing_its_name_with_a_rule_head_is_unmoved_by_the_widening() {
     let program = |decls: &str, ns: &str| {
@@ -1179,28 +1181,16 @@ end
         ("rule head written first", rule_first, "a"),
         ("sort written first", sort_first, "b"),
     ] {
+        // Since WI-20260902-JB6RS the pair cannot be built at all: a rule head that
+        // RESOLVES to the sort applies it, `Both(?x)`, and `Both` names no constructor,
+        // predicate or operation — so the head is refused where it is written, in either
+        // order, and no rule head can add a kind to the sort for the widening to read.
         let src = program(decls, ns);
-        let kb = load_kb_with(&src);
-        let sym = kb
-            .try_resolve_symbol(&format!("test.q0093rh{ns}.Both"))
-            .expect("Both resolves");
-        assert_eq!(
-            kb.kind_of(sym),
-            Some(SymbolKind::Sort),
-            "{what}: a rule head that RESOLVES mints no kind, in either order",
-        );
+        let errs = crate::common::load_errors_of(&src);
         assert!(
-            !kb.has_kind(sym, SymbolKind::Goal),
-            "{what}: …so the symbol carries no Goal kind for the widening to newly read",
+            errs.iter().any(|e| e.contains("`Both(…)` is an application")),
+            "{what}: the head applying the sort is refused: {errs:?}"
         );
-        let mut interp = interp_for(&src);
-        let v = interp
-            .call(&format!("test.q0093rh{ns}.f"), &[])
-            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
-        match interp.kb().get_term(term_id(&v, what)).clone() {
-            Term::Ref(s) => assert_eq!(interp.kb().local_name_of(s), "Both", "{what}"),
-            other => panic!("{what}: expected `Ref(Both)`, got {other:?}"),
-        }
     }
 }
 

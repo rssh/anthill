@@ -212,7 +212,7 @@ end
 "#;
     assert_eq!(
         answers(src, &["test.vnqtr.read.one", "test.vnqtr.read.two"]),
-        ["Cell(V: Int64)", "String"]
+        ["Cell[V = Int64]", "String"]
     );
     let unbacked = replace_in_fixture(
         src,
@@ -244,7 +244,7 @@ namespace test.vnqtr.member
   operation go() -> Type = Desc.d(leaf(n: 1), 5)
 end
 "#;
-    assert_eq!(answers(src, &["test.vnqtr.member.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(src, &["test.vnqtr.member.go"]), ["Cell[V = Int64]"]);
 }
 
 /// The diagnostics that name a caller's parameter print an inline one as written, so what

@@ -1239,7 +1239,7 @@ fn build_declared_store(
 /// Refuse a binding that omits a functor this tool retracts, at STARTUP and by name.
 ///
 /// WHY IT EXISTS (WI-1123). `delete` used to retract only `WorkItem`, so a binding
-/// naming `covers: [WorkItem, Tag]` looked like it worked — the omission cost the
+/// naming `covers: [WorkItem[], Tag[]]` looked like it worked — the omission cost the
 /// project nothing until it hit the one command that needed it. Now that `delete`
 /// takes an item's `Feedback` rows with it, that same binding dies mid-command with
 /// `retract: FactRef does not belong to the supplied store` — true, loud, and
@@ -1302,16 +1302,20 @@ fn check_covers_every_retracted_functor(
     let spell = |names: &[&str]| -> String {
         names.iter().copied().map(short_name).collect::<Vec<_>>().join(", ")
     };
+    // What to WRITE: an entity in `covers` is named as a type, `WorkItem[]` (§4.4).
+    let names_as_types = |names: &[&str]| -> String {
+        names.iter().copied().map(|n| format!("{}[]", short_name(n))).collect::<Vec<_>>().join(", ")
+    };
     Err(format!(
         "this project's extent binding does not cover {}. anthill-todo RETRACTS rows of \
          {} — `delete` removes a work item together with its feedback and tags — and a \
          retract needs the row's reference to belong to the store being asked, so an \
          uncovered functor fails at that command rather than here. Add {} to the \
          binding's `covers:` list in project.anthill (short names: that is what \
-         resolves there).",
+         resolves there; each with the bracket, its type).",
         spell(&missing),
         spell(&required),
-        spell(&missing),
+        names_as_types(&missing),
     ))
 }
 
@@ -3860,8 +3864,11 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
 ///
 /// `covers` is a parameter because the two callers know different things: `init` names
 /// every functor the bundle persists, while a migration carries across whatever the
-/// project already declared.
+/// project already declared. Each is an entity named as a TYPE, so it is written with
+/// the bracket (`WorkItem[]`): bare, in a fact, it would be the entity's instance
+/// (kernel-language.md §4.4, WI-20260902-JB6RS).
 fn item_per_file_binding(covers: &[&str]) -> String {
+    let covers: Vec<String> = covers.iter().map(|name| format!("{name}[]")).collect();
     format!(
         "fact anthill.persistence.ExtentBinding(\n  \
            store: anthill.persistence.filesystem.ItemPerFileStore(\n    \

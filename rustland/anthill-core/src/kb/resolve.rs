@@ -7500,8 +7500,12 @@ impl KnowledgeBase {
         match sort_sym {
             Some(sym) => {
                 // Canonical nullary-Fn shape — matches the form used by
-                // load.rs for sort references.
-                let ref_term = self.make_name_term_from_sym(sym);
+                // load.rs for sort references. The answer is the sort's NAME, so an
+                // entity's type face (`Vec3[]`, a carrier binding `T = Vec3`) answers its
+                // declaration (WI-20260902-JB6RS): the joins in `reflect/typing.anthill`
+                // normalize both sides through this builtin, and a face here would split
+                // one sort into two names.
+                let ref_term = self.make_name_term_from_sym(sym.plain());
                 self.finish_result(target, ref_term)
             }
             None => BuiltinResult::Failure,
@@ -7948,7 +7952,7 @@ impl KnowledgeBase {
         }
         match self.entity_field_names(functor) {
             Some(fields) => named.sort_by_key(|(s, _)| Self::declared_rank(fields, *s)),
-            None => named.sort_by_key(|(s, _)| s.index()),
+            None => named.sort_by_key(|(s, _)| s.to_bits()),
         }
     }
 
@@ -10487,7 +10491,7 @@ impl KnowledgeBase {
         // eval-side `kind` (`eval::reflect_builtins::kind_op`) cannot answer
         // differently — they each carried their own exhaustive copy, and a new kind
         // meant editing both.
-        let kind_str = match self.symbols.get(sym).primary_kind() {
+        let kind_str = match self.reflect_kind(sym) {
             Some(kind) => kind.reflect_name(),
             _ => return BuiltinResult::Failure,
         };
@@ -10671,8 +10675,10 @@ impl KnowledgeBase {
         // a nullary constructor read as `Ref(c)` from every carrier, so refusing
         // it would make `c` projectable or not depending on its arity.
         let functor = obj.head(self).functor_sym()?;
-        // Dispatch 1: entity field access — match the named arg by short name.
-        if self.entity_fields.contains_key(&functor) {
+        // Dispatch 1: entity field access — match the named arg by short name. An
+        // INSTANCE only: a constructor's type face (`Foo[]`) shares the declaration's
+        // fields but is a type, which has no field values (WI-20260902-JB6RS).
+        if !functor.is_type_face() && self.entity_fields.contains_key(&crate::intern::Decl::of(functor)) {
             // `to_value` keeps the child's carrier: a `Value::Node` field stays an
             // occurrence rather than being flattened into the store.
             //
@@ -10848,7 +10854,9 @@ impl KnowledgeBase {
     /// that is not an operation, or one that takes arguments.
     fn nullary_op_component(&self, recv: &Value, field_name: &str) -> Option<Symbol> {
         let functor = recv.head(self).functor_sym()?;
-        if self.entity_fields.contains_key(&functor) {
+        // An entity INSTANCE is data; a constructor's type face is a type, and its sort
+        // components are reachable from it as from any sort (WI-20260902-JB6RS).
+        if !functor.is_type_face() && self.entity_fields.contains_key(&crate::intern::Decl::of(functor)) {
             return None;
         }
         let op = self.sort_component(functor, field_name)?;
@@ -20112,5 +20120,33 @@ mod tests {
             "the unbound EffectExpr-spine var and the Denoted-leaf var must be \
              collected; the σ-bound spine var must not be"
         );
+    }
+
+    /// WI-20260902-JB6RS — a sort component is reached from a constructor's TYPE FACE as
+    /// from any sort; only an INSTANCE is data, whose components are its fields.
+    ///
+    /// BACKED OUT (drop `!functor.is_type_face() &&` in `nullary_op_component`): the
+    /// face row answers `None` — the type is refused as if it were entity data. The
+    /// instance row passes either way, BY DESIGN: that refusal is the one to keep.
+    #[test]
+    fn a_type_face_receiver_reaches_its_sorts_nullary_component() {
+        const SRC: &str = "namespace jb6rs.comp
+  import anthill.prelude.Int64
+  sort Foo
+    entity Foo(a: Int64)
+    operation zero() -> Foo = Foo(a: 0)
+  end
+end
+";
+        let mut kb = crate::kb::test_support::load_stdlib(Some(SRC));
+        let foo = kb.try_resolve_symbol("jb6rs.comp.Foo").expect("Foo resolves");
+        let zero = kb.try_resolve_symbol("jb6rs.comp.Foo.zero").expect("zero resolves");
+        let face = kb.type_face_of(foo);
+        assert!(face.is_type_face(), "premise: an eponymous entity has a type face");
+
+        let instance = crate::eval::value::Value::term(kb.alloc(Term::Ref(foo)));
+        assert_eq!(kb.nullary_op_component(&instance, "zero"), None, "an instance is data");
+        let ty = crate::eval::value::Value::term(kb.alloc(Term::Ref(face)));
+        assert_eq!(kb.nullary_op_component(&ty, "zero"), Some(zero), "the type reaches its component");
     }
 }

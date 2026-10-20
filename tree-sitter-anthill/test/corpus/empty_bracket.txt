@@ -1,0 +1,49 @@
+=====================================
+Empty bracket in a data position is a type application
+=====================================
+
+namespace n
+  fact held(Foo[])
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (fact_declaration
+      term: (fn_term
+        name: (name
+          (identifier))
+        (application
+          name: (name
+            (identifier)))))))
+
+=====================================
+Empty bracket in a type position
+=====================================
+
+sort S
+  operation f(x: Foo[]) -> Foo[] = x
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name
+      (identifier))
+    (operation_declaration
+      name: (name
+        (identifier))
+      (param
+        name: (identifier)
+        type: (application
+          name: (name
+            (identifier))))
+      return_type: (application
+        name: (name
+          (identifier)))
+      body: (name
+        (identifier)))))

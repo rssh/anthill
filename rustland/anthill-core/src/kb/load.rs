@@ -603,6 +603,17 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// WI-20260902-JB6RS — a construction in an operation body that leaves out a field its
+    /// entity declares, other than an `Option` ([`super::typing::TypeError::IncompleteConstruction`]).
+    /// Its own class, not a field's type mismatch: no value was given to mismatch, and a
+    /// bare constructor written for its type (`WorkItem` for `WorkItem[]`) meets it.
+    IncompleteConstruction {
+        /// The constructor, by its short name.
+        ctor: String,
+        /// The fields left out, in declaration order, by their short names.
+        missing: Vec<String>,
+        span: Option<Span>,
+    },
     TypeMismatch {
         entity_name: String,
         field_name: String,
@@ -771,6 +782,17 @@ pub enum LoadError {
         /// The term's functor, qualified.
         functor: String,
         /// Where the term is written.
+        span: Span,
+    },
+    /// WI-20260902-JB6RS — `S(…)` written where `S` names only a type: a sort with no
+    /// constructor, predicate or operation of its name (kernel-language.md §4.4, "only a
+    /// BARE name falls back"). An application needs something to apply; the type is
+    /// `S[…]`. It used to be the type silently, `Eq(T: ?q)` answering from `fact Eq[T =
+    /// Int64]`, because the two surfaces built one term.
+    SortAppliedAsData {
+        /// The sort, by its short name.
+        sort: String,
+        /// Where the application is written.
         span: Span,
     },
     /// WI-343: a carrier provides a spec whose own `requires` is not
@@ -2545,10 +2567,6 @@ pub enum CallTypeArgsPosition {
     /// is why the fix was the doc and not the gate — but a later reader relying on
     /// "a local, in an operation body" would be relying on something false.
     DotCall,
-    /// A constructor written with a bracket and no argument list in a value position
-    /// (`Opt.non[T = Int64]`): the surface is a type application's, and its entries reach
-    /// the loader as values. The applied spelling carries the bracket.
-    ConstructorWithoutArguments,
 }
 
 /// WI-839: the one wording of [`LoadError::CallTypeArgsNotSupportedHere`], shared by
@@ -2591,13 +2609,6 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              no channel for them, so the binding would be parsed and then silently \
              dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
              can carry one"
-        ),
-        CallTypeArgsPosition::ConstructorWithoutArguments => format!(
-            "the bracket on the constructor `{callee}[…]` is written with no argument \
-             list — a constructor's bracket binds the type parameters of its sort on a \
-             construction that has one, and without it the entries would be read as the \
-             constructor's fields. Write `{callee}[…]()`, or `{callee}[…](…)` with the \
-             fields"
         ),
     }
 }
@@ -2916,6 +2927,7 @@ impl LoadError {
             | LoadError::OperationWithoutDefinition { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
+            | LoadError::SortAppliedAsData { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
@@ -2935,6 +2947,7 @@ impl LoadError {
             | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
+            | LoadError::IncompleteConstruction { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
@@ -3094,6 +3107,14 @@ impl LoadError {
                     candidates
                 )
             }
+            LoadError::IncompleteConstruction { ctor, missing, span } => match span {
+                Some(sp) => format!(
+                    "{}: {}",
+                    loc.format_start(*sp),
+                    incomplete_construction_message(ctor, missing)
+                ),
+                None => incomplete_construction_message(ctor, missing),
+            },
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -3234,6 +3255,9 @@ impl LoadError {
                     loc.format_start(*span),
                     undefined_head_argument_message(functor)
                 )
+            }
+            LoadError::SortAppliedAsData { sort, span } => {
+                format!("{}: {}", loc.format_start(*span), sort_applied_as_data_message(sort))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!(
@@ -4576,6 +4600,16 @@ impl std::fmt::Display for LoadError {
                     candidates
                 )
             }
+            LoadError::IncompleteConstruction { ctor, missing, span } => match span {
+                Some(sp) => write!(
+                    f,
+                    "{} at {}..{}",
+                    incomplete_construction_message(ctor, missing),
+                    sp.start,
+                    sp.end
+                ),
+                None => write!(f, "{}", incomplete_construction_message(ctor, missing)),
+            },
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -4811,6 +4845,13 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::SortAppliedAsData { sort, span } => write!(
+                f,
+                "{} at {}..{}",
+                sort_applied_as_data_message(sort),
+                span.start,
+                span.end
+            ),
             LoadError::ConstantInGoalPosition { literal, span } => {
                 write!(
                     f,
@@ -6428,7 +6469,7 @@ pub fn scan_definitions_with_sources(
             for item in &file.items {
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
-                    query_runtime_account_errors(kb, file, fact.term, global, &mut errors);
+                    query_application_errors(kb, file, fact.term, global, &mut errors);
                 }
             }
         }
@@ -6439,19 +6480,25 @@ pub fn scan_definitions_with_sources(
     errors
 }
 
-/// A query pattern that writes an application of one of the runtime's accounts constructs
-/// one, as a clause that writes it does ([`LoadError::RuntimeAccountInClause`]): the
-/// pattern's terms are handed to what the goal calls, and a raise of one would be read as
-/// the runtime's account. Its functor is resolved as [`convert_query_term`] resolves it.
-fn query_runtime_account_errors(
+/// The APPLICATIONS a query pattern writes, judged as the clause that writes them is,
+/// each functor resolved once, as [`convert_query_term`] resolves it:
+///
+/// * one of the runtime's accounts constructs one ([`LoadError::RuntimeAccountInClause`]):
+///   the pattern's terms are handed to what the goal calls, and a raise of one would be
+///   read as the runtime's account;
+/// * `S(…)` where `S` names only a type is refused ([`LoadError::SortAppliedAsData`],
+///   WI-20260902-JB6RS): `Eq(T: ?q)` is no spelling of `Eq[T = ?q]`. Not inside a field
+///   declared `anthill.reflect.Term`, a QUOTED pattern the clause keeps as written too, and
+///   not a bracket or a node the converter minted.
+fn query_application_errors(
     kb: &mut KnowledgeBase,
     file: &ParsedFile,
     root: TermId,
     scope: ScopeId,
     errors: &mut Vec<LoadError>,
 ) {
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
+    let mut stack = vec![(root, false)];
+    while let Some((id, quoted)) = stack.pop() {
         let Term::Fn {
             functor,
             pos_args,
@@ -6460,17 +6507,43 @@ fn query_runtime_account_errors(
         else {
             continue;
         };
-        stack.extend(pos_args.iter().copied());
-        stack.extend(named_args.iter().map(|(_, v)| *v));
-        if pos_args.is_empty() && named_args.is_empty() {
-            continue;
-        }
         let name = file.symbols.local_name(*functor).to_string();
         let resolved = resolve_query_name(kb, &name, scope);
-        if kb.runtime_account_of(resolved).is_some() {
+        // A child is QUOTED under a field the resolved functor declares `Term`, or under
+        // a quoted parent.
+        let fields = kb.written_entity_field_names(resolved).map(|f| f.to_vec());
+        let quoted_field = |kb: &KnowledgeBase, field: Option<Symbol>| {
+            field
+                .and_then(|f| declared_field_type(kb, resolved, f))
+                .is_some_and(|ty| super::typing::is_reflect_term_type(kb, &ty))
+        };
+        for (i, &child) in pos_args.iter().enumerate() {
+            let field = fields.as_ref().and_then(|f| f.get(i).copied());
+            stack.push((child, quoted || quoted_field(kb, field)));
+        }
+        for &(key, child) in named_args.iter() {
+            let field = kb.intern(file.symbols.local_name(key));
+            stack.push((child, quoted || quoted_field(kb, Some(field))));
+        }
+        if !pos_args.is_empty() || !named_args.is_empty() {
+            if kb.runtime_account_of(resolved).is_some() {
+                errors.push(
+                    LoadError::RuntimeAccountInClause {
+                        ctor: kb.qualified_name_of(resolved).to_string(),
+                        span: file.terms.span(id),
+                    }
+                    .located_in(file),
+                );
+            }
+        }
+        if !quoted
+            && !file.terms.is_type_application(id)
+            && !file.terms.is_minted(id)
+            && kb.names_only_a_type(resolved)
+        {
             errors.push(
-                LoadError::RuntimeAccountInClause {
-                    ctor: kb.qualified_name_of(resolved).to_string(),
+                LoadError::SortAppliedAsData {
+                    sort: kb.local_name_of(resolved).to_string(),
                     span: file.terms.span(id),
                 }
                 .located_in(file),
@@ -12631,7 +12704,7 @@ fn find_in_nested_scope(
         }
         matches.push(*sym);
     }
-    matches.sort_by_key(|s| s.index());
+    matches.sort_by_key(|s| s.to_bits());
     matches.dedup();
     if matches.len() == 1 {
         Some(matches[0])
@@ -12867,7 +12940,7 @@ fn resolve_scan_alias_heads(kb: &mut KnowledgeBase) -> bool {
         .filter(|(sym, _)| !kb.alias_heads.contains_key(sym))
         .map(|(sym, d)| (*sym, d.clone()))
         .collect();
-    open.sort_by_key(|(sym, _)| sym.index());
+    open.sort_by_key(|(sym, _)| sym.to_bits());
     let mut progress = false;
     for (alias, decl) in open {
         let previous = kb.symbols.set_asking_file(Some(decl.source));
@@ -15108,6 +15181,28 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
          const or builtin is declared under that name, so nothing can ever unify with it \
          and no `@[simp]` rule can ever rewrite it. Fix the spelling, or import the \
          namespace that declares `{functor}`."
+    )
+}
+
+/// WI-20260902-JB6RS — the ONE wording of [`LoadError::SortAppliedAsData`].
+pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
+    format!(
+        "`{sort}(…)` is an application, and `{sort}` names no constructor, predicate or \
+         operation to apply — it is a sort, and its type is written `{sort}[…]` \
+         (kernel-language.md §4.4)"
+    )
+}
+
+/// WI-20260902-JB6RS — the ONE wording of [`LoadError::IncompleteConstruction`] and of the
+/// typer's error it renders.
+pub(crate) fn incomplete_construction_message(ctor: &str, missing: &[String]) -> String {
+    let fields: Vec<String> = missing.iter().map(|f| format!("`{f}`")).collect();
+    format!(
+        "`{ctor}` is constructed without {} {}; a construction supplies every field that is \
+         not an `Option`, and a bare `{ctor}` is that construction with no field — the \
+         entity's TYPE is written `{ctor}[]` (kernel-language.md §4.4)",
+        if fields.len() == 1 { "its field" } else { "its fields" },
+        fields.join(", "),
     )
 }
 
@@ -19294,28 +19389,13 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             pos_args,
             named_args,
         } => {
-            // The NULLARY application is the bare reference's other spelling
-            // (WI-20260902-CZJ2N), so it takes the same arm rather than falling through
-            // as a var-free compound.
-            //
-            // AND IT MUST COME BACK AS ITSELF WHEN NOTHING EXPANDS. An earlier cut minted
-            // `Term::Ref(functor)` and recursed unconditionally, so a sort with NO
-            // parameters had its bound REWRITTEN from `Fn{S}` to `Ref(S)` — which flips
-            // `changed` and really replaces the stored bound. The two are one spelling for
-            // THIS question and not for every question: `type_head`'s own doc keeps them
-            // apart, `Fn{S}` being the concrete spec identity the loader builds
-            // deliberately and `Ref(S)` the spelling it gives a dispatch wildcard.
-            // So a WI-582 spec bound stored as `Fn{Eq}` silently became a wildcard.
-            // Found by `/code-review`.
+            // A NULLARY application is stored as its bare name since WI-20260902-JB6RS —
+            // `alloc` makes `Fn{S}` the `Ref(S)` the arm above reads — save the three
+            // collection-literal reflect forms, which declare no parameter to expand, so it
+            // comes back as itself. (It used to be a sort's concrete spec identity, kept
+            // apart from the wildcard `Ref(S)`; the wildcard is read off the role now.)
             if pos_args.is_empty() && named_args.is_empty() {
-                if kb
-                    .domain_params_of(kb.canonical_sort_sym(functor))
-                    .is_none_or(|ps| ps.is_empty())
-                {
-                    return t;
-                }
-                let bare = kb.alloc(Term::Ref(functor));
-                return expand_unwritten_type_params(kb, bare);
+                return t;
             }
             // A PARTIALLY written application keeps what was written and fills the rest:
             // `Map[K = Int64]` on a two-parameter `Map` gets `V = ?v`. Written arguments
@@ -20442,7 +20522,7 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
     if dups.is_empty() {
         return Vec::new(); // the universal case: no fact walk at all
     }
-    dups.sort_by_key(|(s, _)| s.index());
+    dups.sort_by_key(|(s, _)| s.to_bits());
     let fact_counts = super::op_info::operation_info_fact_counts(kb);
     dups.into_iter()
         .map(|(op, sites)| LoadError::DuplicateOperationDeclaration {
@@ -20796,7 +20876,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
     if hits.is_empty() {
         return Vec::new(); // the universal case
     }
-    hits.sort_by_key(|(s, _, _, _)| s.index());
+    hits.sort_by_key(|(s, _, _, _)| s.to_bits());
     hits.into_iter()
         .map(|(op, definition, slots, sites)| {
             LoadError::OperationBodyAndClauses {
@@ -22000,7 +22080,11 @@ pub(crate) fn find_operation_in_sort(
                 // WI-984 — the operation's scope is OWNED BY `sort_sym`. Was a term
                 // fetch that matched `Term::Fn` only, so a sort whose eponymous
                 // constructor makes it a `Term::Ref` (WI-511) answered `false` here.
-                let op_scope_matches = kb.declaring_scope_symbol(op_s) == Some(sort_sym);
+                //
+                // Against the DECLARATION (WI-20260902-JB6RS): a receiver's type names an
+                // eponymous or free-standing sort by its type face, and the operation's
+                // scope is owned by the plain symbol.
+                let op_scope_matches = kb.declaring_scope_symbol(op_s) == Some(sort_sym.plain());
 
                 if op_scope_matches {
                     let op_name = kb.local_name_of(op_s);
@@ -22333,10 +22417,26 @@ pub fn convert_query_term(
     // WI-20260902-CZJ2N — §8.3'S EXPANSION AT THE QUERY PATTERN, the fifth logical
     // position. `anthill query 'account'` searches for the same all-fields-fresh pattern
     // `account()` searches for, so a query cannot be written that the fact head cannot
-    // answer. AT THE ENTRY POINT and not inside `convert_query_term_expecting`, for the
-    // reason the 719FJ collapse above is: an ARGUMENT of a pattern is a data slot whose
-    // spelling is its identity, and the fact this searches for was built by the loader's
-    // own data-slot walk, which is untouched.
+    // answer. AT THE ENTRY POINT: an ARGUMENT of the pattern is a data slot, which the
+    // walk reads by its context where it converts it (`query_data_slot_name`,
+    // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
+    expand_bare_entity_query_name(kb, occ)
+}
+
+/// WI-20260902-JB6RS — a bare constructor name in a query's DATA slot is its INSTANCE
+/// (kernel-language.md §4.4), the clause converter's `bare_name_term` on the transient
+/// carrier: one that takes fields is the all-fields-fresh pattern, as at the pattern's
+/// own position. Called for the arguments of a node that is NOT a bracket — a bracket's
+/// bindings are a type context, read by [`query_type_context_binding`] — and only where
+/// the argument converted as DATA (a connective's goal slot is a goal).
+fn query_data_slot_name(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+    fold: ConstFold,
+) -> Rc<NodeOccurrence> {
+    if fold != ConstFold::Data {
+        return occ;
+    }
     expand_bare_entity_query_name(kb, occ)
 }
 
@@ -22645,7 +22745,8 @@ fn convert_query_term_expecting(
                 let items: Vec<Rc<NodeOccurrence>> = pos_args
                     .iter()
                     .map(|&id| {
-                        convert_query_term_expecting(
+                        let child = fold.child(None);
+                        let occ = convert_query_term_expecting(
                             kb,
                             parse_terms,
                             parse_symbols,
@@ -22653,8 +22754,9 @@ fn convert_query_term_expecting(
                             scope,
                             var_map,
                             elem_expected.clone(),
-                            fold.child(None),
-                        )
+                            child,
+                        );
+                        query_data_slot_name(kb, occ, child)
                     })
                     .collect();
                 return build_query_list(kb, &items);
@@ -22681,7 +22783,13 @@ fn convert_query_term_expecting(
             // stopped matching the very fact it was written to find, and the control
             // `holdsG(gg(1))` — whose functor matches no entity anywhere — went on
             // matching. Two walks over one spelling must lower it the same way.
-            let written_entity_functor = kb.written_entity_field_names(kb_functor).is_some();
+            //
+            // And not over a BRACKET, whose arguments are type arguments and not fields
+            // (WI-20260902-JB6RS — the clause walk's `!is_type_app`): `both[Int64, String]`
+            // binds `both`'s sort's `L` and `R`, which the type-argument normalization below
+            // keys; desugared here it was `both(l: Int64, r: String)`, and found no type.
+            let written_entity_functor = kb.written_entity_field_names(kb_functor).is_some()
+                && !parse_terms.is_type_application(parse_id);
             let pos_plan = if !written_entity_functor {
                 None
             } else {
@@ -22703,6 +22811,9 @@ fn convert_query_term_expecting(
                     })
                     .and_then(|f| declared_field_type(kb, kb_functor, f))
             };
+            // WI-20260902-JB6RS — a bracket's arguments are its bindings, a type context;
+            // any other node's are data slots, where a bare constructor is its instance.
+            let bracket = parse_terms.is_type_application(parse_id);
             let mut new_pos: Vec<Rc<NodeOccurrence>> = pos_args
                 .iter()
                 .enumerate()
@@ -22714,7 +22825,7 @@ fn convert_query_term_expecting(
                         goal_slots.iter().find(|s| s.index == i),
                         exp.as_ref(),
                     );
-                    convert_query_term_expecting(
+                    let occ = convert_query_term_expecting(
                         kb,
                         parse_terms,
                         parse_symbols,
@@ -22723,7 +22834,12 @@ fn convert_query_term_expecting(
                         var_map,
                         exp,
                         child,
-                    )
+                    );
+                    if bracket {
+                        occ
+                    } else {
+                        query_data_slot_name(kb, occ, child)
+                    }
                 })
                 .collect();
             let mut new_named: SmallVec<[(Symbol, Rc<NodeOccurrence>); 2]> = named_args
@@ -22733,19 +22849,17 @@ fn convert_query_term_expecting(
                     let kb_sym = kb.intern(n);
                     let exp = declared_field_type(kb, kb_functor, kb_sym);
                     let child = query_child_fold(kb, fold, None, exp.as_ref());
-                    (
-                        kb_sym,
-                        convert_query_term_expecting(
-                            kb,
-                            parse_terms,
-                            parse_symbols,
-                            id,
-                            scope,
-                            var_map,
-                            exp,
-                            child,
-                        ),
-                    )
+                    let occ = convert_query_term_expecting(
+                        kb,
+                        parse_terms,
+                        parse_symbols,
+                        id,
+                        scope,
+                        var_map,
+                        exp,
+                        child,
+                    );
+                    (kb_sym, if bracket { occ } else { query_data_slot_name(kb, occ, child) })
                 })
                 .collect();
 
@@ -22815,15 +22929,42 @@ fn convert_query_term_expecting(
                     new_named.insert_many(0, given);
                     kb_functor = base;
                 }
-                let declared = kb.type_params_of_sort(kb_functor);
+            }
+            // A constructor's bracket binds its SORT's parameters, and is checked and
+            // normalized as that sort's application is (WI-20260902-JB6RS; the clause twin
+            // in `Loader::convert_term_inner`). A sort's own applies to itself.
+            let type_args_owner = if kb.has_kind(kb_functor, SymbolKind::Sort) {
+                Some(kb_functor)
+            } else if kb.is_constructor_symbol(kb_functor) {
+                kb.type_arg_owner(kb_functor)
+            } else {
+                None
+            };
+            if let (ConstFold::Data, true, Some(owner)) =
+                (fold, parse_terms.is_type_application(parse_id), type_args_owner)
+            {
+                let declared = kb.type_params_of_sort(owner);
                 let named_syms: Vec<Symbol> = new_named.iter().map(|(k, _)| *k).collect();
                 if kb
-                    .check_sort_type_args(kb_functor, &declared, &named_syms, new_pos.len())
+                    .check_sort_type_args(owner, &declared, &named_syms, new_pos.len())
                     .is_ok()
                 {
                     let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = new_named.drain(..).collect();
-                    normalize_type_args(kb, kb_functor, &mut new_pos, &mut named);
+                    normalize_type_args(kb, owner, &mut new_pos, &mut named);
                     new_named.extend(named);
+                }
+            }
+            // WI-20260902-JB6RS — A BRACKET IS A TYPE in a query as in a clause
+            // (`Loader::convert_term_inner`): headed by a constructor's type face, and a
+            // name written as one of its bindings read in a type context, so `hr(red[])`
+            // finds the fact `fact hr(red[])` holds.
+            if parse_terms.is_type_application(parse_id) {
+                kb_functor = kb.type_context_face(kb_functor);
+                for child in new_pos.iter_mut() {
+                    *child = query_type_context_binding(kb, child);
+                }
+                for (_, child) in new_named.iter_mut() {
+                    *child = query_type_context_binding(kb, child);
                 }
             }
 
@@ -22896,6 +23037,26 @@ fn convert_query_term_expecting(
         }
     };
     expr_node(expr)
+}
+
+/// WI-20260902-JB6RS — a query bracket's binding read in its TYPE context: a bare name
+/// whose declaration has a type face is that face, as [`Loader::type_context_binding`]
+/// reads a clause's. Anything else is left as converted.
+fn query_type_context_binding(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Rc<NodeOccurrence> {
+    match occ.as_expr() {
+        Some(Expr::Ref(s)) => {
+            let face = kb.type_context_face(*s);
+            if face == *s {
+                Rc::clone(occ)
+            } else {
+                NodeOccurrence::new_expr(Expr::Ref(face), occ.span, occ.owner)
+            }
+        }
+        _ => Rc::clone(occ),
+    }
 }
 
 /// [`KnowledgeBase::nullary_canon`] on the TRANSIENT carrier: an application of a name
@@ -24064,7 +24225,7 @@ fn dotted_by_provision(
         // Deduped at the SYMBOL: two `ScopeInclusion` entries can name one parent scope
         // (an edge that is both the enclosing link and a provision), and two provided
         // sorts can be one sort reached twice. Either way it is ONE answer.
-        hits.sort_by_key(|s| s.index());
+        hits.sort_by_key(|s| s.to_bits());
         hits.dedup();
         match hits.len() {
             0 => {}
@@ -24664,6 +24825,12 @@ struct Loader<'a> {
     // points (`load_fact`, `load_rule_inner`, `load_constraint`) set `Goal`, and each walk
     // moves it per child.
     const_fold: ConstFold,
+    // WI-20260902-JB6RS — the term being converted is a BINDING of a bracket, a type
+    // context (kernel-language.md §4.4): a bare constructor name there is its TYPE, and in
+    // every other data slot of a clause its INSTANCE. Set by each application node for its
+    // own children — the clause converter's `Term::Fn` arm and the rule-body walk's — and
+    // restored by the two wrappers, as `const_fold` is.
+    in_type_binding: bool,
     // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
     // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
     // another term's argument. It tells the two readings of one syntax apart: a
@@ -24887,9 +25054,9 @@ struct Loader<'a> {
     rule_head_bracket_bindings: HashSet<TermId>,
     /// The parse nodes written as an ENTRY of a bracket in a value definition — the
     /// children of a bracketed application the expression walk has visited. An entry of a
-    /// bracket is a type argument: a bracketed constructor standing there
-    /// (`Box[V = Opt.som[T = Int64]]`) is the constructor's type, not a construction
-    /// written without its argument list ([`Self::refuse_bracketed_constructor`]).
+    /// bracket is a type argument, so a BARE constructor standing there (`Box[V = Pair.left]`)
+    /// is the constructor's type (`Loader::push_leaf_occ`). A bracketed one is its type
+    /// wherever it stands (WI-20260902-JB6RS), so this set is read for the bare name only.
     bracket_entries: HashSet<TermId>,
 }
 
@@ -25169,6 +25336,7 @@ impl<'a> Loader<'a> {
             clause_head: None,
             in_quoted_term: false,
             const_fold: ConstFold::Off,
+            in_type_binding: false,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -25567,6 +25735,10 @@ impl<'a> Loader<'a> {
     /// Plain intern — no scope-aware resolution. Used for field names,
     /// param names, meta keys, variable names.
     fn reintern(&mut self, sym: Symbol) -> Symbol {
+        // The parse interner never mints a type face (WI-20260902-JB6RS): which face a
+        // name takes is decided where the KB resolves it, by its context, so a face
+        // reaching here would be keyed onto its constructor and silently lose the bit.
+        debug_assert!(!sym.is_type_face(), "reintern({sym:?}): a parse-side symbol is never a type face");
         if let Some(&mapped) = self.sym_map.get(&sym.index()) {
             return mapped;
         }
@@ -27999,9 +28171,50 @@ impl<'a> Loader<'a> {
             Some(lit) => Term::Const(lit),
             None => match self.data_slot_alias_type(sym) {
                 Some(ty) => self.kb.get_term(ty).clone(),
-                None => self.bare_contract_spec(sym, span),
+                None => self.bare_name_term(sym, span),
             },
         }
+    }
+
+    /// WI-20260902-JB6RS — refuse `S(…)` WRITTEN where `S` names only a type
+    /// ([`KnowledgeBase::names_only_a_type`]): only a BARE name falls back to another
+    /// reading (kernel-language.md §4.4), and an application needs something to apply.
+    /// A bracket is the type; a node the converter MINTED is its own encoding. In a CLAUSE
+    /// only (`const_fold` is `Off` outside one): an operation body's application is the
+    /// typer's to refuse, and it does, naming the bracket (`sort_applied_as_call`).
+    fn refuse_sort_applied_as_data(&mut self, parse_id: TermId, functor: Symbol) {
+        if self.const_fold == ConstFold::Off
+            || self.parsed.terms.is_type_application(parse_id)
+            || self.parsed.terms.is_minted(parse_id)
+            || !self.kb.names_only_a_type(functor)
+        {
+            return;
+        }
+        self.errors.push(LoadError::SortAppliedAsData {
+            sort: self.kb.local_name_of(functor).to_string(),
+            span: self.parsed.terms.span(parse_id),
+        });
+    }
+
+    /// WI-20260902-JB6RS — a bare resolved name that is neither a const nor an alias, as a
+    /// clause holds it. In a DATA slot a constructor is its INSTANCE (kernel-language.md
+    /// §4.4): a fieldless one the bare name it already is, one that takes fields its
+    /// application with every field fresh — `p(account)` is `p(account())`, the pattern a
+    /// logical position reads it as (§8.3). Under a bracket the name is the type, which
+    /// the bracket's own arm builds from the name; and a rule head's bound and a quoted
+    /// `Term` are not data slots. Anything else is the name.
+    fn bare_name_term(&mut self, sym: Symbol, span: Span) -> Term {
+        let instance = self.const_fold == ConstFold::Data
+            && !self.in_type_binding
+            && !self.in_rule_head_bound
+            && !self.in_quoted_term
+            && !sym.is_type_face();
+        if instance && self.kb.entity_field_names(sym).is_some() {
+            let bare = self.kb.alloc(Term::Ref(sym));
+            let expanded = entity_slots::expand_bare_entity_term(self.kb, bare, self.in_value_position);
+            return self.kb.get_term(expanded).clone();
+        }
+        self.bare_contract_spec(sym, span)
     }
 
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
@@ -28094,10 +28307,12 @@ impl<'a> Loader<'a> {
     fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
+        let saved_type_binding = self.in_type_binding;
         self.term_depth = saved + 1;
         let converted = self.convert_term_inner(parse_id, expected);
         self.term_depth = saved;
         self.const_fold = saved_fold;
+        self.in_type_binding = saved_type_binding;
         converted
     }
 
@@ -28224,6 +28439,10 @@ impl<'a> Loader<'a> {
                 // in goal position, whose goal slots the positional loop below sets per
                 // child. `convert_term_with_expected` restores the caller's state.
                 self.const_fold = node_fold.child(None);
+                // WI-20260902-JB6RS — and its children are a bracket's bindings, a type
+                // context, exactly when it is a bracket. Set HERE, below the two names a
+                // dotted chain can be, which are read in the context the chain stands in.
+                self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
                 // WI-582: a `typed_var(?x, type: T)` marker — the converter's
                 // lowering of a `?x: T` rule-pattern arg. STRIP it: convert the
                 // inner variable so the head term stays structurally the bare
@@ -28459,8 +28678,13 @@ impl<'a> Loader<'a> {
                 // from the plain schema read: a name that resolved to NOTHING is not an
                 // entity application, whatever schema its bare intern carries. See there
                 // for the rule and the two-file measurement.
-                let written_entity_functor =
-                    self.kb.written_entity_field_names(new_functor).is_some();
+                //
+                // NOT A BRACKET (WI-20260902-JB6RS): `Item[]` is the entity's TYPE, whose
+                // bindings are its sort's parameters, not its fields — filled as an
+                // application, `Item[]` over `entity Item(n: Int64)` stored `Item†(n: ?)`,
+                // which the typer read as an `Item`. The query walk's gate is the same.
+                let written_entity_functor = self.kb.written_entity_field_names(new_functor).is_some()
+                    && !self.parsed.terms.is_type_application(parse_id);
 
                 // WI-20260904-B8ESG — RECORD THIS HEAD-ARGUMENT SITE, for the post-load
                 // undefined-name check. Each gate is an exemption the census named rather
@@ -28880,6 +29104,7 @@ impl<'a> Loader<'a> {
                 // this, and it is what still validates a bracket's arguments; skipping the
                 // field reading here removes the second, wrong reading, not the checking.
                 let is_type_app = self.parsed.terms.is_type_application(parse_id);
+                self.refuse_sort_applied_as_data(parse_id, new_functor);
                 if is_type_app && self.in_rule_head_bound {
                     let written_name = self.parsed.symbols.local_name(functor).to_owned();
                     if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&written_name)
@@ -29199,20 +29424,28 @@ impl<'a> Loader<'a> {
                         new_functor = base;
                     }
                 }
-                if self.term_depth > 1
-                    && is_type_app
-                    && self.kb.kind_of(new_functor) == Some(SymbolKind::Sort)
-                {
-                    let declared = self.kb.type_params_of_sort(new_functor);
+                // WHOSE PARAMETERS the bracket binds: a sort's own, and a constructor's
+                // sort's — a constructor's type arguments are its sort's (§8.2), and since
+                // WI-20260902-JB6RS its bracket is its TYPE in a clause too (`Pair.left[R =
+                // String]`), so it is checked and normalized as that sort's application is.
+                let type_args_owner = if self.kb.kind_of(new_functor) == Some(SymbolKind::Sort) {
+                    Some(new_functor)
+                } else if self.kb.is_constructor_symbol(new_functor) {
+                    self.kb.type_arg_owner(new_functor)
+                } else {
+                    None
+                };
+                if let (true, true, Some(owner)) = (self.term_depth > 1, is_type_app, type_args_owner) {
+                    let declared = self.kb.type_params_of_sort(owner);
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
                     if let Err(problem) = self.kb.check_sort_type_args(
-                        new_functor,
+                        owner,
                         &declared,
                         &named_syms,
                         new_pos.len(),
                     ) {
-                        let detail = problem.describe(&self.kb, new_functor);
+                        let detail = problem.describe(&self.kb, owner);
                         self.errors.push(LoadError::InvalidTypeArgument {
                             detail,
                             span: Some(self.parsed.terms.span(parse_id)),
@@ -29225,7 +29458,7 @@ impl<'a> Loader<'a> {
                         // is ([`normalize_type_args`]).
                         let mut pos: Vec<TermId> = new_pos.drain(..).collect();
                         let mut named: Vec<(Symbol, TermId)> = new_named.drain(..).collect();
-                        normalize_type_args(self.kb, new_functor, &mut pos, &mut named);
+                        normalize_type_args(self.kb, owner, &mut pos, &mut named);
                         new_pos.extend(pos);
                         new_named.extend(named);
                     }
@@ -29291,6 +29524,23 @@ impl<'a> Loader<'a> {
                     }
                 }
 
+                // WI-20260902-JB6RS — A BRACKET IS A TYPE, in a clause as in a signature
+                // (kernel §4.4): `Foo[X = Int64]` and `Foo[]` are headed by the
+                // constructor's TYPE face, and a name written as one of its bindings is
+                // read in a type context too — `Text[L = Untrusted]` binds the type
+                // `Untrusted†`. Only the bracket's own bindings: a nested bracket has
+                // already done this for its own, being converted first, and a value a
+                // binding names (`Vector[Int64, N]`, `Modify[c]`) has no type face.
+                if is_type_app {
+                    new_functor = self.kb.type_context_face(new_functor);
+                    for child in new_pos.iter_mut() {
+                        *child = self.type_context_binding(*child);
+                    }
+                    for (_, child) in new_named.iter_mut() {
+                        *child = self.type_context_binding(*child);
+                    }
+                }
+
                 Term::Fn {
                     functor: new_functor,
                     pos_args: new_pos,
@@ -29331,7 +29581,7 @@ impl<'a> Loader<'a> {
                     Some(lit) => Term::Const(lit),
                     None => match self.data_slot_alias_type(new_sym) {
                         Some(ty) => self.kb.get_term(ty).clone(),
-                        None => self.bare_contract_spec(new_sym, span),
+                        None => self.bare_name_term(new_sym, span),
                     },
                 }
             }
@@ -31326,41 +31576,19 @@ impl<'a> Loader<'a> {
                 // not `Box[V = Int64]`, and the pair that WAHB6 requires to key alike
                 // would key alike only in one declaration order.
                 //
-                // A BRACKETED CONSTRUCTOR STANDING AS AN ENTRY OF ANOTHER BRACKET is a type
-                // value too — the constructor's type, `Pair.left[R = String]` in
-                // `Box[V = Pair.left[R = String]]` ([`Self::bracket_entries`]). An entry of a
-                // bracket is a type argument, so nothing else it could be is left; built as
-                // the application of the constructor it was a node eval had no reading for.
-                // Not in a rule's compound expression, as the refusal below is not.
+                // A BRACKETED CONSTRUCTOR is a type value — the constructor's TYPE, wherever
+                // it stands (WI-20260902-JB6RS, kernel §4.4): `red[]` in an argument,
+                // `Pair.left[R = String]` as an entry of `Box[V = …]`. A bracket is a type in
+                // every context, and its constructor is named by its type face (the frame
+                // below). It used to be one only as another bracket's entry, and refused
+                // elsewhere as a construction missing its argument list (WI-B6QYA) — the
+                // reading the bracket now has instead; a construction with type arguments is
+                // `red[…](…)`, which is not this node. Not in a rule's compound expression,
+                // where a constructor is a term the clause matches.
                 let is_type_value = !is_entity
                     && bracketed
                     && (self.kb.has_kind(kb_functor, SymbolKind::Sort)
-                        || (names_constructor
-                            && !self.lowering_rule_compound_expr
-                            && self.bracket_entries.contains(&outer_parse_id)));
-
-                // A CONSTRUCTOR WRITTEN WITH A BRACKET AND NO ARGUMENT LIST —
-                // `Opt.non[T = Int64]` — is refused in a value position: see
-                // [`Self::refuse_bracketed_constructor`].
-                //
-                // Not as an entry of an enclosing bracket, where it is the constructor's
-                // type and was classified so above, and not in a rule's compound
-                // expression, where a constructor is a term the clause matches and the
-                // node keeps the reading it has.
-                if bracketed
-                    && names_constructor
-                    && !is_type_value
-                    && !self.lowering_rule_compound_expr
-                {
-                    self.refuse_bracketed_constructor(
-                        outer_parse_id,
-                        parse_functor,
-                        kb_functor,
-                        total,
-                        results,
-                    );
-                    return;
-                }
+                        || (names_constructor && !self.lowering_rule_compound_expr));
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
                 // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
@@ -31485,7 +31713,9 @@ impl<'a> Loader<'a> {
                         }
                         node_occurrence::BuildFrame::TypeValue {
                             span,
-                            head,
+                            // A TYPE: a constructor's bracket is headed by its type face
+                            // (WI-20260902-JB6RS).
+                            head: self.kb.type_context_face(head),
                             pos_count,
                             named_keys,
                         }
@@ -31600,59 +31830,6 @@ impl<'a> Loader<'a> {
             pos_args: SmallVec::new(),
             named_args: SmallVec::from_slice(&[(s.k_name, name_ref), (s.k_args, args_list)]),
         })
-    }
-
-    /// REFUSE a constructor written with a bracket and no argument list in a value
-    /// position — `Opt.non[T = Int64]` — and build the bare construction in its place.
-    ///
-    /// THE SURFACE IS A TYPE APPLICATION'S, so the bracket's entries were lowered as the
-    /// node's children — as VALUES, which is not how a bracket's entries are read: a type
-    /// parameter of the enclosing operation written there is a name and not the
-    /// parameter, an alias is not what it stands for. The applied spelling,
-    /// `Opt.non[T = Int64]()`, carries the same bracket as written types, and is what the
-    /// refusal advises.
-    ///
-    /// BEFORE THIS the node was an application of the constructor to those entries, which
-    /// the typer read as a construction with the entries for fields: `Box.mk[Int64]` was a
-    /// box holding the type `Int64`, and a keyed entry — `Box.mk[V = Int64]`, or a key the
-    /// sort does not declare — named no field and was dropped.
-    fn refuse_bracketed_constructor(
-        &mut self,
-        parse_id: TermId,
-        written: Symbol,
-        constructor: Symbol,
-        entries: usize,
-        results: &mut Vec<TermId>,
-    ) {
-        self.errors.push(LoadError::CallTypeArgsNotSupportedHere {
-            callee: self.parsed.symbols.local_name(written).to_string(),
-            position: CallTypeArgsPosition::ConstructorWithoutArguments,
-            span: self.parsed.terms.span(parse_id),
-        });
-        results.truncate(results.len() - entries);
-        let name_ref = self.kb.alloc(Term::Ref(constructor));
-        let args_list = self.kb.build_list(&[]);
-        let kb_id = self.constructor_expr_term(name_ref, args_list);
-        self.create_occurrence(parse_id, kb_id);
-        results.push(kb_id);
-        if self.occ_suppress != 0 {
-            return;
-        }
-        let kept = self.expr_occ_results.len() - entries;
-        self.expr_occ_results.truncate(kept);
-        node_occurrence::build_frame(
-            self.kb,
-            node_occurrence::BuildFrame::Constructor {
-                span: self.source_span_of(parse_id),
-                name: constructor,
-                pos_count: 0,
-                named_keys: Vec::new(),
-                from_projection: false,
-                recv_type: None,
-                type_args: Vec::new(),
-            },
-            &mut self.expr_occ_results,
-        );
     }
 
     /// WI-271 / WI-342: lower the parse-side `[A = Int64, B = String]` call
@@ -32360,10 +32537,12 @@ impl<'a> Loader<'a> {
         // WI-20261001-KDMQS — restored like `term_depth`, for the reason
         // `convert_term_with_expected` gives.
         let saved_fold = self.const_fold;
+        let saved_type_binding = self.in_type_binding;
         self.term_depth = saved + 1;
         let occ = self.build_body_atom_occurrence_inner(parse_id);
         self.term_depth = saved;
         self.const_fold = saved_fold;
+        self.in_type_binding = saved_type_binding;
         occ
     }
 
@@ -33294,9 +33473,10 @@ impl<'a> Loader<'a> {
         let within = self.within_declaring_scope_of(head);
         match value_alias_term(self.kb, head, within, structural) {
             Some(ty) => type_value_occurrence(self.kb, ty, site, owner),
+            // A TYPE, so a constructor is named by its type face (WI-20260902-JB6RS).
             None => NodeOccurrence::new_expr(
                 Expr::TypeValue {
-                    head,
+                    head: self.kb.type_context_face(head),
                     pos_args: Vec::new(),
                     named_args: Vec::new(),
                 },
@@ -33412,15 +33592,46 @@ impl<'a> Loader<'a> {
     ///
     /// `rule f(1) :- account` searches for the same all-fields-fresh pattern
     /// `:- account()` searches for. Returns `None` when this is not that case, so the
-    /// caller keeps its ordinary reading — the gate is `at_goal && !is_wrapper` at the
-    /// call site (a DATA slot keeps `Ref(WorkItem)` as the sort-as-value, which is what
-    /// `facts_of(kb(), WorkItem)` reads) plus "has a declared field schema" here.
+    /// caller keeps its ordinary reading — the gate is the caller's (a goal, or a data
+    /// slot outside a bracket, [`Self::body_data_slot_name`]) plus "has a declared field
+    /// schema" here.
     ///
     /// Built through [`Self::expand_bare_entity_subject`] and the same materializer the
     /// `Fn` arm uses for an applied entity atom, rather than by assembling an
     /// `Expr::Constructor` by hand: the goal must be the SAME shape the fact head
     /// stores or it matches nothing, and that function is the one place the shape is
     /// decided.
+    /// WI-20260902-JB6RS — a bare constructor name in a rule-body DATA slot, read by its
+    /// context (kernel-language.md §4.4): as a bracket's binding its TYPE, the type value
+    /// headed by its type face (`Box[V = red]` binds `red†`, as the clause holding it does);
+    /// anywhere else its INSTANCE — for one that takes fields the all-fields-fresh pattern
+    /// [`Self::bare_entity_goal_occurrence`] builds, as the clause converter's
+    /// `bare_name_term` does. `None` for any other name, for a fieldless constructor's
+    /// instance (the bare reference already is it), and in a goal, whose own expansion is
+    /// §8.3's.
+    fn body_data_slot_name(
+        &mut self,
+        sym: Symbol,
+        parse_id: TermId,
+        span: SourceSpan,
+    ) -> Option<Rc<NodeOccurrence>> {
+        // `const_fold` is `Data` exactly in a clause's data slot, and `Off` inside a quoted
+        // `Term` field (`entity_ctor_children`), whose pattern the clause converter keeps as
+        // written too (`bare_name_term`) — or the goal and the fact it searches for differ.
+        let data_slot = !self.in_body_goal
+            && !self.in_body_goal_wrapper
+            && !self.in_non_value_role
+            && self.const_fold == ConstFold::Data;
+        if !data_slot || sym.is_type_face() || !self.kb.has_kind(sym, SymbolKind::Entity) {
+            return None;
+        }
+        if self.in_type_binding {
+            let owner = self.current_owner;
+            return Some(self.bare_type_value_occ(sym, span, owner, false));
+        }
+        self.bare_entity_goal_occurrence(sym, parse_id)
+    }
+
     fn bare_entity_goal_occurrence(
         &mut self,
         sym: Symbol,
@@ -33496,6 +33707,9 @@ impl<'a> Loader<'a> {
                         return occ;
                     }
                 }
+                if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
+                    return occ;
+                }
                 // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
                 self.body_resolved_name_expr(s, parse_id, span)
             }
@@ -33519,14 +33733,15 @@ impl<'a> Loader<'a> {
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
                 if self.kb.symbols.is_resolved(new_sym) {
-                    // WI-20260902-CZJ2N: §8.3's expansion, in GOAL position only. A DATA
-                    // slot keeps the bare `Ref` — a term's spelling is its identity there
-                    // (WI-756), and `Ref(WorkItem)` is the sort-as-value a reflect call
-                    // reads.
+                    // WI-20260902-CZJ2N: §8.3's expansion in GOAL position; a DATA slot
+                    // reads the name by its context just below (WI-20260902-JB6RS).
                     if self.in_body_goal && !self.in_body_goal_wrapper {
                         if let Some(occ) = self.bare_entity_goal_occurrence(new_sym, parse_id) {
                             return occ;
                         }
+                    }
+                    if let Some(occ) = self.body_data_slot_name(new_sym, parse_id, span) {
+                        return occ;
                     }
                     // WI-20261001-KDMQS — and a const in a DATA slot is its value, the
                     // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
@@ -33588,6 +33803,9 @@ impl<'a> Loader<'a> {
                 }
                 // A constructor's qualified name is the reference its one-segment name is.
                 if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
+                    if let Some(occ) = self.body_data_slot_name(ctor, parse_id, span) {
+                        return occ;
+                    }
                     let expr = self.body_resolved_name_expr(ctor, parse_id, span);
                     return NodeOccurrence::new_expr(expr, span, None);
                 }
@@ -33727,11 +33945,21 @@ impl<'a> Loader<'a> {
                 // as its bare twin `<=> Cell` is (found by `/code-review`: the depth gate
                 // left the applied one an `Expr::Apply` nothing types). The clause is unmoved:
                 // the node heads as the `Fn{S, …}` its `Expr::Apply` did (`occ_head`).
+                //
+                // A CONSTRUCTOR's bracket is a type value too, its TYPE (WI-20260902-JB6RS):
+                // `pairTy(Pair.both[L = Int64, R = String])` in a body matches the fact
+                // that holds that type, which the clause converter built as one.
                 let type_value = !at_goal
                     && !is_wrapper
                     && !non_value
                     && self.parsed.terms.is_type_application(parse_id)
-                    && self.kb.has_kind(new_functor, SymbolKind::Sort);
+                    && (self.kb.has_kind(new_functor, SymbolKind::Sort)
+                        || self.kb.has_kind(new_functor, SymbolKind::Entity));
+                // WI-20260902-JB6RS — a bracket's bindings are a type context, whether the
+                // bracket is a type value or a goal's own (`:- Modifiable[T = Foo]`); the
+                // clause converter's twin, restored by the wrapper.
+                self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
+                self.refuse_sort_applied_as_data(parse_id, new_functor);
                 // A WRITTEN DOTTED NAME — the converter's `field_access` chain, the provenance
                 // test `dotted_citation_name` makes — hands its segments the non-value role.
                 let name_chain = self.parsed.terms.is_minted(parse_id)
@@ -33916,16 +34144,22 @@ impl<'a> Loader<'a> {
                             && self.parsed.terms.is_type_application(parse_id)
                             && self.kb.has_kind(new_functor, SymbolKind::Sort))
                     {
-                        let declared = self.kb.type_params_of_sort(new_functor);
+                        // A constructor's bracket binds its SORT's parameters (§8.2).
+                        let owner = if self.kb.has_kind(new_functor, SymbolKind::Sort) {
+                            new_functor
+                        } else {
+                            self.kb.type_arg_owner(new_functor).unwrap_or(new_functor)
+                        };
+                        let declared = self.kb.type_params_of_sort(owner);
                         let named_syms: SmallVec<[Symbol; 2]> =
                             named.iter().map(|(s, _)| *s).collect();
                         if let Err(problem) = self.kb.check_sort_type_args(
-                            new_functor,
+                            owner,
                             &declared,
                             &named_syms,
                             pos.len(),
                         ) {
-                            let detail = problem.describe(&self.kb, new_functor);
+                            let detail = problem.describe(&self.kb, owner);
                             self.errors.push(LoadError::InvalidTypeArgument {
                                 detail,
                                 span: Some(span.span),
@@ -33933,7 +34167,7 @@ impl<'a> Loader<'a> {
                         } else if type_value {
                             // The node is matched as the clause's term, which is the one
                             // term its type is ([`normalize_type_args`]).
-                            normalize_type_args(self.kb, new_functor, &mut pos, &mut named);
+                            normalize_type_args(self.kb, owner, &mut pos, &mut named);
                         }
                     }
                     if type_value {
@@ -33942,7 +34176,9 @@ impl<'a> Loader<'a> {
                         // application's bracket IS this node (`build_load`'s twin). Falls
                         // through to the tail like every other node, for its `dot_chain`.
                         Expr::TypeValue {
-                            head: new_functor,
+                            // A TYPE: a constructor's bracket is headed by its type face
+                            // (WI-20260902-JB6RS).
+                            head: self.kb.type_context_face(new_functor),
                             pos_args: pos,
                             named_args: named,
                         }
@@ -34802,79 +35038,6 @@ impl<'a> Loader<'a> {
             .is_some_and(|k| k.is_value_place())
     }
 
-    /// WI-20260823-4GBQV — lower a binding written in `Modify`'s OWN TARGET SLOT, where
-    /// a bare name that names a NULLARY CONSTRUCTOR is an AMBIENT RESOURCE (a PLACE)
-    /// rather than a type. Everything else delegates to [`Self::type_expr_to_child`]
-    /// unchanged.
-    ///
-    /// SCOPED TO THIS ONE SLOT, and the scope is the whole design rather than caution.
-    /// kernel-language.md §5.6 says `Modify[X]`'s argument is a RESOURCE NAME — `Env` is
-    /// a partial map from names to terms — so this slot is the one place in the language
-    /// where a type-parameter position does not hold a type; [`typing::check_modify_-
-    /// targets`] already refuses a type written here for exactly that reason. Every OTHER
-    /// type slot keeps WI-313's rule that an entity name is a TYPE, and that rule is load
-    /// bearing: `Level.Untrusted` standing in `Text[L = Untrusted]` is how the taint
-    /// vocabulary carries a label as a type parameter, and reading it as a place breaks
-    /// the obligation `flows_to(?l, Public)` outright. MEASURED, not foreseen — the first
-    /// cut widened the general single-segment arm and 9 tests across three files fell
-    /// (`wi9pgcm_type_level_precondition_test`, `wi1fkr2_op_type_var_threads_test`,
-    /// `wi_rkmd4_type_var_param_slot_test`), every one of them on that idiom.
-    ///
-    /// SINGLE-SEGMENT ONLY, matching the arm it extends. A dotted `Modify[a.b]` is
-    /// already classified by [`Self::try_denoted_value_path`] / [`Self::try_expr_carried_-
-    /// projection`], and a field path off an ambient resource is a separate question this
-    /// ticket does not open.
-    fn type_expr_to_child_modify_target(
-        &mut self,
-        te: &TypeExpr,
-        span: SourceSpan,
-        owner: Option<Symbol>,
-    ) -> node_occurrence::TypeChild {
-        if let TypeExpr::Simple(name) = te {
-            if name.segments.len() == 1 {
-                let short = self.parsed.symbols.local_name(name.segments[0]).to_owned();
-                // NEVER AHEAD OF A BINDER THE DELEGATE OWNS. A callback arrow's own
-                // parameter (`f: (a: Cell) -> Unit @ Modify[a]`) lives in
-                // `arrow_binder_scope`, and a type parameter in the scope's type-param
-                // table; both are resolved INSIDE [`Self::type_expr_to_child`], after this
-                // helper would have run. Answering first therefore does not add a reading,
-                // it STEALS one: with an enclosing operation parameter — or any other
-                // name — spelled like the binder, `Modify[a]` silently re-points at the
-                // enclosing `a`, and the caller can then declare an effect that names a
-                // resource the callback never touches while the one it does touch goes
-                // undeclared. An unsound ACCEPT, caused by a name written elsewhere in the
-                // file. Found by `/code-review` on WI-341's own `each` fixture; pinned by
-                // `wi4gbqv…::an_arrow_binder_is_not_captured_by_an_enclosing_name`.
-                //
-                // So this helper adds the ambient reading ONLY where the delegate would
-                // otherwise have built a bare `make_sort_ref` — the type reading — which
-                // is exactly the case §5.6 says is wrong in this slot.
-                if !self.arrow_binder_scope.contains_key(short.as_str())
-                    && !self.kb.symbols.is_type_param(self.current_scope, &short)
-                {
-                    // `resolve_in_scope`, NOT `remap_name`: the latter REPORTS an
-                    // unresolved name, and this arm runs on labels whose binder it cannot
-                    // see. Before the guard above, `prelude/iterable.anthill`'s
-                    // `-Modify[x]` put four copies of "unresolved place `x`" on every
-                    // program that merely loads the prelude. Not-found delegates, silently.
-                    if let ResolveResult::Found(sym) =
-                        self.kb.symbols.resolve_in_scope(&short, self.current_scope)
-                    {
-                        // ONLY the ambient addition. The value-place and zero-arg-operation
-                        // members of §5.6's vocabulary are already read by the delegate,
-                        // in the right order relative to the binders above; re-deciding
-                        // them here would only reintroduce the theft this guard prevents.
-                        if self.kb.is_ambient_resource_name(sym) {
-                            return node_occurrence::TypeChild::Node(
-                                self.kb.make_denoted_occ_ref(sym, span, owner),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        self.type_expr_to_child(te, span, owner)
-    }
 
     /// WI-302 (proposal 027.1 per-projection): classify a MULTI-segment dotted name
     /// in a type-argument slot whose HEAD resolves (in scope) to a VALUE and whose
@@ -36281,11 +36444,10 @@ impl<'a> Loader<'a> {
         // Shared value-place set + a zero-arg `Operation` (the WI-313
         // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
         // the compound-path heads omit (a field off an op name is not a place).
-        // A NULLARY CONSTRUCTOR is deliberately NOT here — an entity name in a
-        // general type slot is a TYPE (WI-313, and `Level.Untrusted` standing in
-        // `Text[L = Untrusted]` is the live idiom that depends on it). The
-        // `Modify` TARGET slot alone reads it as an ambient PLACE; see
-        // [`Self::type_expr_to_child_modify_target`].
+        // A NULLARY CONSTRUCTOR is deliberately NOT here — a constructor name in a
+        // type slot is its TYPE (WI-313, kernel §4.4; `Level.Untrusted` standing in
+        // `Text[L = Untrusted]` is the live idiom that depends on it), in every slot,
+        // `Modify`'s target included since WI-20260902-JB6RS.
         let is_value = self.symbol_is_value_place(sort_sym)
             || self
                 .kb
@@ -36599,18 +36761,19 @@ impl<'a> Loader<'a> {
                     .iter()
                     .map(|(p, v)| (*p, node_occurrence::TypeChild::Interned(*v)))
                     .collect();
-                // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
-                // the loop, since it is a property of the head, not of a binding.
-                let modify_target =
-                    self.kb.try_resolve_symbol("anthill.prelude.Modify") == Some(sort_sym);
                 for (b, key) in bindings.iter().zip(keys) {
                     // Lowered whether or not it binds: what is wrong INSIDE an argument is
                     // reported even when the argument itself has no parameter to take.
-                    let bound_child = if modify_target {
-                        self.type_expr_to_child_modify_target(&b.bound, span, owner)
-                    } else {
-                        self.type_expr_to_child(&b.bound, span, owner)
-                    };
+                    //
+                    // `Modify`'s own target is lowered like every other type argument. It
+                    // used to read a NULLARY CONSTRUCTOR as an ambient PLACE there
+                    // (WI-20260823-4GBQV) — the one bracket in the language where a
+                    // constructor was not its type. Retired (WI-20260902-JB6RS; user,
+                    // 2026-10-20): `Modify[counter]` is the type `counter†`, refused as a
+                    // type by `check_modify_targets`. There are no ambient places: a
+                    // resource is threaded as a parameter (a zero-argument operation's
+                    // result is refused too, `PlaceType::Ambient`).
+                    let bound_child = self.type_expr_to_child(&b.bound, span, owner);
                     if let Some(key) = key {
                         child_bindings.push((key, bound_child));
                     }
@@ -37286,13 +37449,20 @@ impl<'a> Loader<'a> {
             // The node-carrier control: a sort that is no alias rides the node too,
             // standing for itself. A binding may also name an operation (`combine = add`)
             // or a type parameter, and those are left alone.
+            //
+            // THE NAME AS CONVERTED, not `make_sort_ref` (WI-20260902-JB6RS): that builds
+            // a TYPE, and names a constructor by its type face, while `written` is what
+            // the clause wrote — an instance in a goal's data slot (`requires eq(c,
+            // Red)`), a face where its context was a type. Which one was decided where
+            // the term was converted; re-spelling it here undid that, and `Red` became
+            // the type `Red[]` (measured: wi756's four rows).
             None if node_carrier_control()
                 && self.kb.has_kind(written, SymbolKind::Sort)
                 && !super::typing::is_sort_param_symbol(self.kb, written) =>
             {
-                self.kb.make_sort_ref(written)
+                self.kb.alloc(Term::Ref(written))
             }
-            None => return Value::term(self.kb.make_sort_ref(written)),
+            None => return Value::term(self.kb.alloc(Term::Ref(written))),
         };
         Value::Node(NodeOccurrence::new_type(
             node_occurrence::TypeNode::Aliased {
@@ -37338,7 +37508,7 @@ impl<'a> Loader<'a> {
         // type-param bindings against SortView's own field list — all unmatched,
         // collapsing to `usize::MAX` and a non-index order — breaking the WI-449
         // byte-identity. Index order is the right canonical key for this slot.
-        named.sort_by_key(|(s, _)| s.index());
+        named.sort_by_key(|(s, _)| s.to_bits());
         // A spec is ground iff every binding is ground; any non-`Term` binding
         // poisons the whole spec to a value carrier (no information lost).
         let any_value = pos.iter().any(|v| !matches!(v, Value::Term { .. }))
@@ -42757,6 +42927,24 @@ impl<'a> Loader<'a> {
     /// call with no provider ran. A bare alias that fixes nothing is the spec's `Ref`, the
     /// shape a bare `requires Store` has. Any other name, or one in any other position, is
     /// the `Ref` it always was.
+    /// WI-20260902-JB6RS — a bracket's binding read in its TYPE context: a bare name
+    /// whose declaration has a type face (a constructor) is that face; anything else —
+    /// a variable, a value, an application already headed by its own face — is left as
+    /// converted.
+    fn type_context_binding(&mut self, t: TermId) -> TermId {
+        match *self.kb.get_term(t) {
+            Term::Ref(s) => {
+                let face = self.kb.type_context_face(s);
+                if face == s {
+                    t
+                } else {
+                    self.kb.alloc(Term::Ref(face))
+                }
+            }
+            _ => t,
+        }
+    }
+
     fn bare_contract_spec(&mut self, sym: Symbol, span: Span) -> Term {
         if !self.in_op_contract_clause {
             return Term::Ref(sym);
@@ -44737,44 +44925,38 @@ end
             "and a namespace never does"
         );
 
-        // THE TRIPWIRE FIRED, AND THIS IS THE NEW READING — WI-20260902-CZJ2N.
+        // THE TRIPWIRE FIRED TWICE. WI-20260902-CZJ2N made the canon `!has_kind(owner,
+        // Sort)`, so the encoding and the predicate stopped being one function: a
+        // `Sort`-kinded constructor owner (`CtorSort`) kept the `Fn` spelling while
+        // `is_sort_scope` said no — which is why WI-1029 folded `is_sort_scope` off the
+        // shape and onto the owner. WI-20260902-JB6RS then removed the `Sort` exemption,
+        // and every owner's name term is the bare `Ref`:
         //
-        // The doc above says this row exists so that "a future change to the WI-511
-        // canon … breaks here loudly instead of silently flipping". It did. The canon
-        // is no longer `is_constructor_symbol`, it is `!has_kind(owner, Sort)`, so the
-        // encoding and the predicate are no longer the same function:
+        //   | owner           | Sort? | ctor? | name term | `is_sort_scope` |
+        //   |-----------------|-------|-------|-----------|-----------------|
+        //   | `PlainSort`     | yes   | no    | `Ref`     | true            |
+        //   | `CtorSort`      | yes   | YES   | `Ref`     | false           |
+        //   | `SomeNamespace` | no    | no    | `Ref`     | false           |
         //
-        //   | owner       | Sort? | ctor? | name term | old `via_term` | `is_sort_scope` |
-        //   |-------------|-------|-------|-----------|----------------|-----------------|
-        //   | `PlainSort` | yes   | no    | `Fn`      | true           | true            |
-        //   | `CtorSort`  | yes   | YES   | `Fn`      | **true**       | **false**       |
-        //   | `SomeNamespace` | no | no   | `Ref`     | false          | false           |
-        //
-        // `CtorSort` is the row that split: it is `Sort`-kinded, so the canon exempts
-        // it and its name term stays `Fn` where WI-511 rewrote it to `Ref`. The
-        // ENCODING now says "has a type reading"; the PREDICATE says "opens a sort
-        // body". Those were only ever accidentally equal, and this is the accident
-        // ending — which is precisely why WI-1029 folded `is_sort_scope` off the shape
-        // and onto the owner. Nothing about the predicate's answers moved.
-        //
-        // Pinned as the NEW relation rather than deleted, so the next canon change
-        // breaks here too.
-        for (owner, keeps_fn_spelling) in [(plain, true), (ctor, true), (ns, false)] {
+        // Nothing about the predicate's answers moved. Pinned as the relation, so the next
+        // canon change breaks here too.
+        // WI-20260902-JB6RS: the canon exempts no sort any more, so every owner's name
+        // term is the bare `Ref` — and `is_sort_scope` reads the owner, as it must.
+        for (owner, keeps_fn_spelling) in [(plain, false), (ctor, false), (ns, false)] {
             let term = kb.make_name_term_from_sym(owner);
             assert_eq!(
                 matches!(kb.get_term(term), Term::Fn { .. }),
                 keeps_fn_spelling,
-                "the nullary canon exempts exactly the `SymbolKind::Sort` owners: {}",
+                "the nullary canon exempts no owner: {}",
                 kb.qualified_name_of(owner)
             );
         }
         let ctor_term = kb.make_name_term_from_sym(ctor);
         assert!(
-            matches!(kb.get_term(ctor_term), Term::Fn { .. })
+            !matches!(kb.get_term(ctor_term), Term::Fn { .. })
                 && !is_sort_scope(&kb, kb.symbols.scope_id(ctor)),
-            "and the encoding no longer decides the predicate — `CtorSort` keeps the \
-             `Fn` spelling while `is_sort_scope` says no, which the WI-511 canon could \
-             not have produced"
+            "and the encoding does not decide the predicate — `CtorSort`'s name term is \
+             the `Ref` every owner's is, and `is_sort_scope` says no"
         );
     }
 

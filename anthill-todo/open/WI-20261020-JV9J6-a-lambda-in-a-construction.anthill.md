@@ -38,5 +38,5 @@ MECHANISM: a call pushes its parameter type into a construction argument only th
 
 FIX DIRECTION: count a lambda (`arg_is_function_value_literal`'s shapes) among the arguments whose field hint the parameter type unlocks, and count an instance the declared field leaves open (`A` in `(x: A) -> Type`, `T` in `some`'s field) as something unlocked. The gate's doc keeps a census of what newly receives a hint; measure it before and after, stdlib call sites included.
 
-ACCEPTANCE: the four refused programs load and answer — `Cell(V: Int64)` for `go`, the positional and the `Option` shapes, `7` for `runK` — each a row driving the call; the bracket, result, annotation and operation-name shapes unchanged; families green; full gate green.
+ACCEPTANCE: the four refused programs load and answer — `Cell[V = Int64]` for `go`, the positional and the `Option` shapes, `7` for `runK` — each a row driving the call; the bracket, result, annotation and operation-name shapes unchanged; families green; full gate green.
 

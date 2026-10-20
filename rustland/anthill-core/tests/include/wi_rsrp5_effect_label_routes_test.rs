@@ -349,20 +349,17 @@ end
     expect_loads("a macro with a literal `Error` row", &[literal]);
 }
 
-/// A PLACE IN A ROW BINDING IS LAWFUL, and this is the control that keeps the refusal
-/// above from being read as "a row binding may not mention `Modify`".
+/// A NULLARY CONSTRUCTOR IS NO PLACE IN A ROW BINDING — the row that used to say the
+/// opposite. Until WI-20260902-JB6RS it was lawful, as the "ambient resource" (§5.6, the
+/// one place-form available where there is no parameter list), and this was the control
+/// that kept the type-target refusal from reading as "a row binding may not mention
+/// `Modify`". Ambient places are retired (user, 2026-10-20): a constructor in a `Modify`
+/// bracket is its TYPE, as in every bracket, so a row binding names no place at all.
 ///
-/// §5.6 lists a NULLARY CONSTRUCTOR naming an ambient resource among the things that
-/// DENOTE a value, and that is the one place-form available where there is no parameter
-/// list — so `provides Spec[E = {Modify[clock2]}]` over an `entity clock2` must load, and
-/// does. It also dates the diagnostic: the first version of the type-target message said
-/// "a row binding cannot name one … there is no parameter list here for a place to live
-/// in", which this program contradicts, and the advice sent an author to give up on a
-/// construct that works. Found by /code-review, measured loading, message rewritten.
-///
-/// PASSES BOTH WAYS — a control for the refusal's WIDTH, not coverage of it.
+/// The refusal's width is still controlled: `a_registered_kind_in_a_row_type_argument_-
+/// still_loads` (V25N3) and the binding rows above load a row binding that names a kind.
 #[test]
-fn a_nullary_ambient_place_is_lawful_in_a_row_binding() {
+fn a_nullary_constructor_is_no_place_in_a_row_binding() {
     let place = r#"
 namespace test.rsrp5.pl
   import anthill.prelude.{Error, String, Modify, Modifiable, EffectsRuntime}
@@ -384,8 +381,9 @@ namespace test.rsrp5.pl
   end
 end
 "#;
-    expect_loads(
-        "a `Modify` over a nullary ambient constructor in a provides row binding",
+    expect_refused(
+        "a `Modify` over a nullary constructor in a provides row binding",
+        "whose target is a TYPE",
         &[SPEC, place],
     );
 }

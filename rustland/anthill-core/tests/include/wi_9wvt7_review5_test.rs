@@ -331,9 +331,12 @@ namespace test.r5.place
     provides Modifiable[T = Self]
     entity counter
   end
-  operation go() -> Int64 effects Modify[counter] =
-    let _ = set(counter, 6)
-    get(counter)
+  -- The place is a binding, not the constant: ambient places are retired
+  -- (WI-20260902-JB6RS), so `Modify[counter]` and `set(counter, 6)` name none.
+  operation go() -> Int64 =
+    let c = counter
+    let _ = set(c, 6)
+    get(c)
 end
 "#;
     let mut interp = crate::common::interp_for(control);

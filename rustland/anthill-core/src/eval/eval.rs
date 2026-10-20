@@ -650,12 +650,6 @@ impl Interpreter {
             let v = self.force_const(sym)?;
             return Ok(StepOutcome::Deliver(v));
         }
-        // A bare reference to a free-standing entity (e.g. `WorkItem` in
-        // `facts_of(kb(), WorkItem)`) is the entity as a type value, not a call.
-        if self.kb.is_free_standing_entity(sym) {
-            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
-            return Ok(StepOutcome::Deliver(Value::term(tid)));
-        }
         // WI-206: likewise a bare reference to a SORT (e.g. `Cell` in
         // `is_modifiable(Cell)`) is the sort as a type value. NOT reached from typed
         // source: both bodies' walks record a sort written in a value position as an
@@ -664,9 +658,13 @@ impl Interpreter {
         // is an occurrence made from a TERM — `materialize_from_handle` does not carry the
         // classification (`Expr::TypeValue`'s doc) — and a KB loaded without the typer,
         // for which the symbol is the only record there is.
-        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) {
+        // NOT a constructor (WI-20260902-JB6RS): an eponymous entity's primary kind is
+        // `Sort`, and its bare name is its instance, the arm below — as the typer reads it.
+        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort)
+            && !self.kb.is_entity_constructor(sym)
+        {
             self.refuse_unbound_type_param(sym)?;
-            let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
+            let tid = self.kb.make_sort_ref(sym);
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }
         // WI-365: a bare reference to a NULLARY constructor — an enum variant
@@ -687,11 +685,20 @@ impl Interpreter {
         // reliable here. Constructors WITH fields are never referenced bare in
         // value position (the typer requires the application form), so gate on
         // nullary.
-        if self.kb.is_constructor_symbol(sym)
-            && self
-                .kb
-                .entity_field_names(sym)
-                .map_or(true, |f| f.is_empty())
+        //
+        // A free-standing entity's bare name is its instance too (kernel-language.md §4.4,
+        // WI-20260902-JB6RS) — `is_entity_constructor`, which counts it; its TYPE is
+        // `WorkItem[]`, a type value the walks record where it is written.
+        //
+        // NULLARY means every field may be left out — none, or each an `Option`, read as
+        // `none` — which is the typer's rule for a construction (`IncompleteConstruction`):
+        // a bare name it accepts is one this builds.
+        if self.kb.is_entity_constructor(sym)
+            && self.kb.entity_field_types(sym).map_or(true, |fields| {
+                fields
+                    .iter()
+                    .all(|(_, ty)| crate::kb::typing::is_option_type(&self.kb, ty))
+            })
         {
             return self.start_constructor(sym, &[], &[]);
         }
@@ -5319,6 +5326,18 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         | Value::Var(_)
         | Value::Relation { .. } => None,
     }
+}
+
+/// WI-20260902-JB6RS — the DECLARATION a by-reference type argument names: the
+/// [`value_functor`] of a `Type` value, read as the sort or entity it denotes. An
+/// entity's type is written with its type face (`WorkItem[]`, [`KnowledgeBase::make_sort_ref`]),
+/// and a reader keyed by declaration — `rules_by_functor`, an extent's `covers`, a sort
+/// query's trigger sort — wants the declaration the face stands for: `value_functor`
+/// hands the face on, and a lookup by it finds nothing, in silence. Not for an INSTANCE's
+/// head, where no face occurs, nor for a reader that must tell a type from an instance
+/// (`match`, the dispatch carrier), which keeps `value_functor`.
+pub fn type_value_decl(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
+    value_functor(kb, value).map(Symbol::plain)
 }
 
 /// The supplier-set reader a value-directed dispatch is asked WITH — the one thing

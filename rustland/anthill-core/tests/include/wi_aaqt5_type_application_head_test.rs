@@ -480,7 +480,7 @@ fn a_sorts_requirement_reaches_its_constructors_argument() {
 #[test]
 fn a_constructors_declaring_scope_is_the_sort_it_is_filed_under() {
     let kb = crate::common::load_kb_with(&program("wiaaqt5.filed", ""));
-    let constructors: Vec<_> = kb.entity_field_type_functors().copied().collect();
+    let constructors: Vec<_> = kb.entity_field_type_functors().collect();
     let mut checked = 0;
     for ctor in constructors {
         let Some(sort) = kb.strict_parent_sort(ctor) else {

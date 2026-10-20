@@ -164,7 +164,7 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 ```
 
 **The status field is a DOTTED PATH** (WI-K63ZV): an item's state is the last change
@@ -181,7 +181,7 @@ fact anthill.persistence.ExtentBinding(
     convention: anthill.persistence.filesystem.FileConvention.single_file(
       file: "workitems.anthill")),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 ```
 
 `store` is a **`Term`, not a `Store`** — the binding names a backend to *build*, and

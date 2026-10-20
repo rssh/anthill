@@ -59,7 +59,7 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 "#;
 
 /// A project on the new layout, with no `workitems.anthill` at all — the rows live in

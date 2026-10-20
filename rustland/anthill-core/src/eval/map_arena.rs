@@ -110,14 +110,10 @@ impl MapKey {
     ///   head of each                   -> Functor { Shape, 0, 0 }   — IDENTICAL
     ///   `try_from_value` of each       -> `MapKey::Ref(Shape)`      — ONE key
     ///
-    /// So the widening this reader takes reaches a SORT too, and `Ref(S)` / `Fn{S,[],[]}`
-    /// stay two things only for a consumer that compares `TermId`s. Whether that is
-    /// right is **WI-20260902-JB6RS**, which owns the question for every structural
-    /// consumer at once (the discrimination tree, `views_structurally_equal` and the
-    /// resolver's unify read the same merged head) — §8.3 / WI-391 make `Ref(S)` the
-    /// dispatch wildcard and a nullary `Fn{S}` the concrete spec identity, and that
-    /// distinction is preserved nowhere a match is decided. Recorded here rather than
-    /// silently corrected, because this comment is where the next reader looks.
+    /// So the widening this reader takes reaches a SORT too. WI-20260902-JB6RS settled the
+    /// rest: the two spellings are ONE term now, at the store as at the head, the wildcard
+    /// being read off the symbol's role (WI-20260829-7QVD5), so no consumer can tell them
+    /// apart — the measurement above is history.
     ///
     /// A CONSTRUCTOR's two spellings joining one key is unchanged and still driven
     /// ([`MapKey`]'s `a_non_canonicalized_nullary_constructor_keys_as_its_name`).
@@ -640,11 +636,10 @@ mod tests {
             "an unresolved identifier is not the resolved name",
         );
 
-        // AND THE GATE: for a name with a TYPE reading the two spellings are not one
-        // name. `KnowledgeBase::nullary_canon` exempts a `SymbolKind::Sort` symbol,
-        // because for a sort `Ref(s)` vs `Fn{s}` IS WI-391's wildcard-vs-concrete type
-        // distinction. Asserted so the widening's boundary is driven rather than
-        // assumed.
+        // AND A SORT: its two spellings are one term since WI-20260902-JB6RS, which
+        // removed the gate that exempted a `SymbolKind::Sort` symbol (WI-391's
+        // wildcard-vs-concrete distinction, read off the role now). Asserted so the
+        // canon's reach is driven rather than assumed.
         //
         // WI-20260902-CZJ2N moved this gate from `is_constructor_symbol` to
         // `has_kind(Sort)`, so the symbol must be DEFINED with that kind: an
@@ -658,10 +653,9 @@ mod tests {
         );
         let sort_fn = kb.resolve_qualified_name_term("demo.Color");
         let sort_ref = kb.alloc(Term::Ref(sort));
-        assert_ne!(
+        assert_eq!(
             sort_fn, sort_ref,
-            "a sort's nullary application and its bare Ref are two TERMS — that is \
-             WI-391's wildcard-vs-concrete distinction, and it lives at the STORE"
+            "since WI-20260902-JB6RS a sort's nullary application IS its bare name, one term (kernel-language.md §6): the wildcard is read off the symbol's ROLE (WI-20260829-7QVD5), never off the store"
         );
         // …BUT THEY KEY ALIKE, and that is a narrowing WI-20260902-CZJ2N makes rather
         // than an oversight. The key is read off the HEAD, and `functor_view_head` has

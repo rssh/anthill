@@ -268,21 +268,12 @@ end
             .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
-    /// The two spellings of the bare sort `qn`: `Ref(S)` and the nullary `Fn{S}`.
-    fn both_spellings(kb: &mut KnowledgeBase, qn: &str) -> [(&'static str, TermId); 2] {
+    /// The bare sort `qn` as a term. It had two spellings, `Ref(S)` and the nullary
+    /// `Fn{S}`, which these rows read alike; since WI-20260902-JB6RS the store holds one —
+    /// the canon exempts no sort — so the rows drive the witness through that term.
+    fn the_carrier(kb: &mut KnowledgeBase, qn: &str) -> TermId {
         let s = sym(kb, qn);
-        let bare = kb.alloc(Term::Ref(s));
-        let nullary = kb.alloc(Term::Fn {
-            functor: s,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-        assert_ne!(
-            bare, nullary,
-            "premise: the storage canon exempts a sort name, so both spellings exist — \
-             else these rows compare one term with itself and measure nothing"
-        );
-        [("Ref", bare), ("nullary Fn", nullary)]
+        kb.alloc(Term::Ref(s))
     }
 
     /// `Wrap[S = inner]`, compared against the bare spec `Cap` — as a rule variable's
@@ -303,33 +294,30 @@ end
         })
     }
 
-    /// ROW 1 — the witness leg's goal carries `Wrap[S = Direct]` in both spellings of
-    /// `Direct`, and both resolve: through `WrapWitness`'s head, then its `requires
-    /// Cap[C = S]` at `S := Direct` against `Direct`'s own provision.
+    /// ROW 1 — the witness leg's goal carries `Wrap[S = Direct]`, and it resolves: through
+    /// `WrapWitness`'s head, then its `requires Cap[C = S]` at `S := Direct` against
+    /// `Direct`'s own provision. (It was driven in both spellings of `Direct`; one term
+    /// since WI-20260902-JB6RS.)
     #[test]
-    fn a_witness_goal_resolves_in_either_spelling_of_its_carrier() {
+    fn a_witness_goal_resolves_through_its_carrier() {
         let mut kb = load_stdlib(Some(SRC));
-        for (label, direct) in both_spellings(&mut kb, "q7vd5.Direct") {
-            assert!(
-                wrap_conforms(&mut kb, direct),
-                "`Wrap[S = Direct]` with `Direct` spelled {label} must conform to `Cap` \
-                 through the witness — a refusal here is a goal-side reader reading the \
-                 spelling"
-            );
-        }
+        let direct = the_carrier(&mut kb, "q7vd5.Direct");
+        assert!(
+            wrap_conforms(&mut kb, direct),
+            "`Wrap[S = Direct]` must conform to `Cap` through the witness"
+        );
     }
 
     /// ROW 2 — CONTROL, passes either way by design: the witness's condition stays
-    /// enforced in both spellings. `Opaque` provides no `Cap`.
+    /// enforced. `Opaque` provides no `Cap`.
     #[test]
-    fn an_unmet_witness_condition_is_refused_in_either_spelling() {
+    fn an_unmet_witness_condition_is_refused() {
         let mut kb = load_stdlib(Some(SRC));
-        for (label, opaque) in both_spellings(&mut kb, "q7vd5.Opaque") {
-            assert!(
-                !wrap_conforms(&mut kb, opaque),
-                "`Wrap[S = Opaque]` ({label}) must not conform: `Opaque` provides no `Cap`"
-            );
-        }
+        let opaque = the_carrier(&mut kb, "q7vd5.Opaque");
+        assert!(
+            !wrap_conforms(&mut kb, opaque),
+            "`Wrap[S = Opaque]` must not conform: `Opaque` provides no `Cap`"
+        );
     }
 }
 
@@ -2010,8 +1998,10 @@ end
             .unwrap_or_else(|| panic!("no `{name}` binding among the result bindings"))
     }
 
+    /// By DECLARATION: a type names a constructor by its type face (`cat†`), and the
+    /// question here is which sort the type is (WI-20260902-JB6RS).
     fn is_sort(kb: &KnowledgeBase, v: &Value, want: Symbol) -> bool {
-        extract_sort_ref_sym(kb, v) == Some(want)
+        extract_sort_ref_sym(kb, v).map(Symbol::plain) == Some(want.plain())
     }
     fn is_nothing(kb: &KnowledgeBase, v: &Value) -> bool {
         type_dispatch_name_view(kb, v) == Some("nothing")
@@ -5503,10 +5493,10 @@ end
                 let Some(sr) = crate::kb::op_info::head_field_term(&kb, head, "sort_ref") else {
                     return false;
                 };
-                let Term::Fn { functor, .. } = kb.get_term(sr) else {
+                let Some(functor) = crate::kb::term_view::TermView::head(&crate::kb::term_view::TermIdView(sr), &kb).functor_sym() else {
                     return false;
                 };
-                kb.canonical_sort_sym(*functor) == kb.canonical_sort_sym(carrier)
+                kb.canonical_sort_sym(functor) == kb.canonical_sort_sym(carrier)
             })
             .expect("the `requires Foo[T = Int64]` fact");
 
@@ -5625,13 +5615,11 @@ end
     /// inside its own sort's block). That is a legal source-level producer of this
     /// relation, and one of the four enumerated in the ticket.
     ///
-    /// `Carrier()` / `Bar()` WITH THE PARENTHESES, and that is not decoration. MEASURED:
-    /// spelled bare, the fields convert to `Term::Ref` and `collect_sort_requires` skips
-    /// the fact outright (`let Term::Fn { .. } = … else { continue }`) — the fixture then
-    /// fails for a reason that has nothing to do with the memo. A hand-written
-    /// `fact SortRequiresInfo` with a bare `sort_ref` is invisible to the requires chain;
-    /// the loader's own producer never hits it because `make_name_term_from_sym` builds
-    /// the application form.
+    /// `Carrier` / `Bar` BARE: two sorts with no constructor of their name, whose bare
+    /// names are their types (kernel-language.md §4.4). They were written `Carrier()` /
+    /// `Bar()` while `collect_sort_requires` skipped a `Term::Ref` `sort_ref` (it decodes
+    /// either spelling since WI-20260923-N3W68), and that spelling is refused since
+    /// WI-20260902-JB6RS — a sort names nothing to apply.
     ///
     /// CONTROL: back out BOTH PRE-TYPER `invalidate_requires_chain_cache()` calls in
     /// `load_phase_inner` — the pair around `derive_forwarded_provisions`; the third one,
@@ -5671,7 +5659,7 @@ end
 namespace test.wi1112c
   import anthill.reflect.{SortRequiresInfo}
   import test.wi1112.{Carrier, Bar}
-  fact SortRequiresInfo(sort_ref: Carrier(), spec: Bar())
+  fact SortRequiresInfo(sort_ref: Carrier, spec: Bar)
 end
 "#;
         let parsed = crate::parse::parse(src).expect("parse fixture");
@@ -6062,38 +6050,43 @@ mod czj2n_nullary_sort_type_head_test {
         let g = kb.global_scope();
         let s = kb.define_symbol("Shape", "Shape", SymbolKind::Sort, g);
 
-        let bare = kb.alloc(Term::Ref(s));
-        let concrete = kb.alloc(Term::Fn {
-            functor: s,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        });
-        assert_ne!(
-            bare, concrete,
-            "premise: the canon EXEMPTS a sort, so both spellings exist in the store"
-        );
+        // Since WI-20260902-JB6RS the STORE holds one spelling (the canon exempts no
+        // sort), so the nullary application is read where it can still be written: an
+        // OCCURRENCE, `Expr::Apply` with no arguments, through the same view.
+        let bare = Value::term(kb.alloc(Term::Ref(s)));
+        let concrete = Value::Node(crate::kb::node_occurrence::NodeOccurrence::new_expr(
+            crate::kb::node_occurrence::Expr::Apply {
+                recv_type: None,
+                functor: s,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            crate::kb::node_occurrence::empty_span(),
+            None,
+        ));
 
-        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+        for (label, t) in [("bare", &bare), ("concrete", &concrete)] {
             assert!(
-                matches!(type_head(&kb, &TermIdView(t)), TypeHead::SortRef(f) if f == s),
+                matches!(type_head(&kb, t), TypeHead::SortRef(f) if f == s),
                 "{label}: a nullary sort head is the sort reference"
             );
         }
 
         // THE CONTROL, and the reason the row above is not a loss: the WILDCARD test
         // decides by ROLE. A param is the wildcard however it is spelled…
-        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+        for (label, t) in [("bare", &bare), ("concrete", &concrete)] {
             assert_eq!(
-                impl_param_ref(&kb, &TermIdView(t), &[s]),
+                impl_param_ref(&kb, t, &[s]),
                 Some(s),
                 "{label}: a name that IS an impl param is the dispatch wildcard"
             );
         }
         // …and a sort that is NOT one is concrete however it is spelled, which is what
         // keeps a concrete provider's head out of the wildcard arm (wi210).
-        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+        for (label, t) in [("bare", &bare), ("concrete", &concrete)] {
             assert_eq!(
-                impl_param_ref(&kb, &TermIdView(t), &[]),
+                impl_param_ref(&kb, t, &[]),
                 None,
                 "{label}: a sort that is not an impl param is never the wildcard"
             );
@@ -7601,10 +7594,11 @@ end
         let mut kb = kb();
         let (sym, vid) = param(&kb, "n3w68u.Box.T");
         let leaf = kb.make_name_term_from_sym(sym);
+        // Since WI-20260902-JB6RS the nullary `Fn` spelling of a sort name is its `Ref`,
+        // one term; the readers below must chase THAT to the variable.
         assert!(
-            matches!(kb.get_term(leaf), Term::Fn { .. }),
-            "a Sort-kind name keeps the nullary `Fn` spelling under the CZJ2N canon — without \
-             it this row measures the `Ref` spelling: {:?}",
+            matches!(kb.get_term(leaf), Term::Ref(_)),
+            "a sort name's nullary application is its bare `Ref`: {:?}",
             kb.get_term(leaf)
         );
         // WHY THE CHECK MUST SEE IT: the σ walk chases this spelling to the variable.
@@ -7741,10 +7735,11 @@ mod wi_n3w68_nullary_meta_ctor_tests {
         let mut kb = load_stdlib(None);
         let nothing = kb.resolve_symbol("anthill.prelude.Nothing");
         let fn_spelling = kb.make_name_term_from_sym(nothing);
+        // Since WI-20260902-JB6RS a sort's nullary application is its bare name, one term,
+        // so both spellings below are that term; the row pins that it answers as before.
         assert!(
-            matches!(kb.get_term(fn_spelling), Term::Fn { .. }),
-            "`anthill.prelude.Nothing` is a Sort, so its nullary application keeps the `Fn` \
-             spelling — without it this row compares a term with itself: {:?}",
+            matches!(kb.get_term(fn_spelling), Term::Ref(_)),
+            "`anthill.prelude.Nothing`'s nullary application is its bare `Ref`: {:?}",
             kb.get_term(fn_spelling)
         );
         let ref_spelling = kb.alloc(Term::Ref(nothing));

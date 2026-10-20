@@ -2450,7 +2450,7 @@ fn fingerprint_into<V: TermView>(
                 out.push(StructToken::Opaque);
             }
             if !ordered_product {
-                keys.sort_by_key(|s| s.index());
+                keys.sort_by_key(|s| s.to_bits());
             }
             // A REPEATED LABEL DEFEATS KEY-ADDRESSED CHILDREN. `named_arg` resolves by
             // SYMBOL and returns the FIRST match, so `(d: 1, d: 2)` and `(d: 1, d: 3)`
@@ -3534,11 +3534,10 @@ mod nullary_head_tests {
     //! (`KnowledgeBase::nullary_canon`) and the second HEAD here
     //! (`functor_view_head`), so that row now asserts the opposite.
     //!
-    //! THE LINE THAT REMAINS is type-hood, and the third row is what pins it: a symbol
-    //! carrying `SymbolKind::Sort` keeps BOTH spellings, because §8.3 / WI-391 make
-    //! `Ref(S)` the dispatch WILDCARD and a nullary `Fn{S}` the concrete spec identity.
-    //! Backed out (drop the `has_kind(Sort)` test in `nullary_canon`), the stdlib does
-    //! not load.
+    //! THE LINE THAT REMAINED was type-hood: a symbol carrying `SymbolKind::Sort` kept
+    //! BOTH spellings, `Ref(S)` the dispatch WILDCARD and a nullary `Fn{S}` the concrete
+    //! spec identity (§8.3 / WI-391). WI-20260902-JB6RS removed it — the wildcard is read
+    //! off the role (WI-20260829-7QVD5) — and the third row now pins the one term.
     use super::*;
     use crate::intern::SymbolKind;
     use crate::span::{SourceId, SourceSpan};
@@ -3668,9 +3667,14 @@ mod nullary_head_tests {
     /// the other side (24 tests failed `expected Type, got WorkItem` when a
     /// free-standing entity's name term was re-spelled).
     ///
-    /// MEASURED: dropping the `has_kind(Sort)` test from `nullary_canon` makes 792
-    /// symbols change spelling and the STDLIB FAILS TO LOAD —
-    /// `anthill.prelude.FiniteCollection.collect` stops covering its own `requires`.
+    /// MEASURED: dropping the `has_kind(Sort)` test from `nullary_canon` made 792
+    /// symbols change spelling and the STDLIB FAILED TO LOAD —
+    /// `anthill.prelude.FiniteCollection.collect` stopped covering its own `requires`.
+    ///
+    /// AND THEN IT WAS DROPPED (WI-20260902-JB6RS): once dispatch read the wildcard off the
+    /// symbol's role (WI-20260829-7QVD5) the stdlib loaded without it, and the split the
+    /// test was measured holding up was the value/type one, which now lives between a
+    /// constructor's instance and its type face. The row pins the ONE term.
     #[test]
     fn a_nullary_sort_name_keeps_both_spellings() {
         let (mut kb, _, _, shape) = kb_with_symbols();
@@ -3680,10 +3684,9 @@ mod nullary_head_tests {
             pos_args: SmallVec::new(),
             named_args: SmallVec::new(),
         });
-        assert_ne!(
+        assert_eq!(
             shape_ref, shape_fn,
-            "a SORT keeps `Ref(S)` (the type-level wildcard) apart from `Fn{{S}}` \
-             (the concrete spec identity) — WI-391/WI-387"
+            "since WI-20260902-JB6RS a sort's nullary application IS its bare name, one term (kernel-language.md §6): the wildcard is read off the symbol's ROLE (WI-20260829-7QVD5), never off the store"
         );
         // AND THE SPLIT IS AT THE STORE ONLY — the VIEW merges them, which is stated
         // here because it is a real narrowing of where the distinction lives and it

@@ -477,11 +477,15 @@ fn the_bracket_leaves_the_arguments_typed_as_any_other() {
 
 // ── a bracket with no argument list ─────────────────────────────────────────
 
-/// A constructor written with a bracket and no argument list is refused in a value
-/// position, whatever the bracket says. Before, each of these loaded: the keyed entries
-/// dropped, the positional one read as the field.
+/// A constructor written with a bracket and no argument list is the constructor's TYPE in
+/// a value position, as a bracket is in every context (WI-20260902-JB6RS, kernel §4.4), so
+/// each of these — a type handed where a `Box` is expected — is refused as the type
+/// mismatch it is, naming the type. Before B6QYA each loaded (the keyed entries dropped,
+/// the positional one read as the field); B6QYA refused them as a construction missing
+/// its argument list, the reading the bracket no longer has. A key the sort does not
+/// declare is refused as a type argument, as on any type.
 #[test]
-fn a_bracket_with_no_argument_list_is_refused() {
+fn a_bracket_with_no_argument_list_is_the_constructors_type() {
     for (ns, ret, expr, written) in [
         ("b6barekey", "Int64", "Box.count(Box.mk[V = Int64])", "Box.mk"),
         ("b6barezork", "Int64", "Box.count(Box.mk[Zork = Int64])", "Box.mk"),
@@ -491,10 +495,10 @@ fn a_bracket_with_no_argument_list_is_refused() {
         ("b6barealias", "Int64", "Box.count(CB.hole[V = Int64])", "CB.hole"),
     ] {
         let rendered = refusal(ns, ret, expr);
+        let short = written.rsplit('.').next().unwrap_or(written);
         assert!(
-            rendered.contains(&format!(
-                "the bracket on the constructor `{written}[…]` is written with no argument list"
-            )) && rendered.contains(&format!("Write `{written}[…]()`")),
+            (rendered.contains("expected Box") && rendered.contains(&format!("got Type ({short}[")))
+                || (ns == "b6barezork" && rendered.contains("has no type parameter named 'Zork'")),
             "{ns}: {rendered}"
         );
     }
@@ -503,7 +507,8 @@ fn a_bracket_with_no_argument_list_is_refused() {
 /// An entry of a bracket is a type argument, and a bracketed constructor standing there is
 /// the constructor's type: `Box[V = Pair.left[R = String]]` is a type value, evaluated as
 /// one, and equal to itself written twice. Its own arguments are its sort's and are held
-/// to them. Standing alone, the same text is the refused construction.
+/// to them. Standing alone it is the constructor's type too, refused where a `Pair` is
+/// expected (WI-20260902-JB6RS).
 #[test]
 fn a_bracketed_constructor_in_a_bracket_is_its_type() {
     let kinds = "  operation kind(t: Type) -> Int64 = 6\n  operation same(t: Type, u: Type) -> Bool = anthill.prelude.PartialEq.eq(t, u)\n";
@@ -546,12 +551,13 @@ fn a_bracketed_constructor_in_a_bracket_is_its_type() {
     }
     let rendered = refusal("b6entryalone", "Int64", "Pair.tag(Pair.left[R = String])");
     assert!(
-        rendered.contains("the bracket on the constructor `Pair.left[…]` is written with no argument list"),
-        "{rendered}"
+        rendered.contains("got Type (left[R = String])"),
+        "standing alone the bracket is the type, refused where a `Pair` is expected: {rendered}"
     );
 }
 
-/// The spelling the refusal advises, written out: it loads, binds, and is refused where
+/// The CONSTRUCTION spelling, `ctor[…](…)` — the one B6QYA's refusal advised, and since
+/// WI-20260902-JB6RS the one way to construct with a bracket: it loads, binds, and is refused where
 /// the binding does not fit — with a field and without one, through an alias, and with a
 /// parameter of the enclosing operation in the bracket.
 #[test]

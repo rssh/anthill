@@ -290,26 +290,26 @@ end
     );
 }
 
-/// **THE DATA-SLOT CONTROL — GREEN BEFORE AND AFTER, AND THE POINT OF THE POSITION
-/// SPLIT.** §8.3's expansion is the one reading that could leak out of the goal
-/// position: `acct` in a DATA slot must stay the REFERENCE — the sort-as-value
-/// `facts_of(kb(), acct)` reads, and `typing::check_bare_ref`'s free-standing-entity arm
-/// — and if it expanded on ONE of the walks that spell a stored term, the fact and the
-/// goal that searches for it would stop being one term and the match would break in
+/// **THE DATA-SLOT CONTROL — THE THREE WALKS AGREE.** If a bare entity in a DATA slot
+/// expanded on ONE of the walks that spell a stored term and not on another, the fact and
+/// the goal that searches for it would stop being one term and the match would break in
 /// SILENCE (WI-756; the regression WI-20260825-P9Y67 measured from the other side). A
 /// fixture that drove only the goal position would pass with that broken, which is why
-/// this row exists.
+/// this row exists. It used to pin that the slot held the REFERENCE — the sort-as-value
+/// `facts_of(kb(), acct)` read. Since WI-20260902-JB6RS a constructor's bare name is its
+/// INSTANCE in every data context (kernel-language.md §4.4), so all three walks expand it,
+/// and the entity's type is `acct[]`.
 ///
 /// TWO ASSERTIONS, and the second is the one with content:
 ///  * the three walks still agree — the `fact`'s slot, the query pattern's, and the rule
 ///    body's (the walk this ticket edits) — so the stored term is still findable; and
-///  * the bound value carries NO ARGUMENTS, i.e. it is not `acct(n: ?fresh)`. That is
-///    the expansion's absence stated positively; a count-only row would be green with it
-///    running, since the expanded pattern also produces exactly one definite answer.
+///  * the bound value is the all-fields-fresh pattern `acct(n: ?fresh)`, one named field.
+///    A count-only row would be green either way, since the reference also produced
+///    exactly one definite answer; the shape is the reading.
 ///
-/// WHAT THE SLOT ACTUALLY BINDS, measured rather than assumed: the NAME, not the
-/// `field_access` chain — `Fn{acct, [], []}` for an entity and `Ref(f)` for a predicate,
-/// an operation or a namespace. 719FJ's own data-slot row (`fact holds(nsx.tgt)`) is
+/// WHAT THE SLOT BOUND before WI-20260902-JB6RS, measured rather than assumed: the NAME,
+/// not the `field_access` chain — `Fn{acct, [], []}` for an entity and `Ref(f)` for a
+/// predicate, an operation or a namespace (the last three still). 719FJ's own data-slot row (`fact holds(nsx.tgt)`) is
 /// about the FACT-head walk (`convert_term`); a rule-body value slot is the OCCURRENCE
 /// walk, where proposal 052 §6.7 / WI-714 already read a dotted citation as the name it
 /// spells. Both readings are UNMOVED by this ticket: with the change backed out this
@@ -359,10 +359,9 @@ rule slotVd(?t) :- ?t <=> zzvd.inner.acct
     };
     assert_eq!(
         (pos, named),
-        (0, 0),
-        "a bare fielded entity in a DATA slot is the REFERENCE, so it carries no field \
-         arguments — §8.3's all-fields-fresh expansion belongs to the LOGICAL positions \
-         only. Got {pos} positional / {named} named in {bound:?}"
+        (0, 1),
+        "a bare fielded entity in a DATA slot is its instance, the all-fields-fresh \
+         pattern. Got {pos} positional / {named} named in {bound:?}"
     );
 }
 

@@ -1416,7 +1416,7 @@ fn data_functor_error(
 /// is not a stable comparison key.
 fn sorted_labels(labels: impl Iterator<Item = Symbol>) -> Vec<Symbol> {
     let mut v: Vec<Symbol> = labels.collect();
-    v.sort_by_key(|s| s.index());
+    v.sort_by_key(|s| s.to_bits());
     v.dedup();
     v
 }

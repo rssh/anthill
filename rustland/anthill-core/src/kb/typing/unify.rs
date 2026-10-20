@@ -2042,8 +2042,8 @@ pub(super) fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) ->
                 _ => return ty,
             }
         }
-        // WI-361: a bare sort — `Ref(S)`, or the nullary `Fn{S}` a sort name keeps (CZJ2N);
-        // `extract_sort_ref_sym` reads both. Any other shape (a parameterized / arrow /
+        // WI-361: a bare sort — `Ref(S)` (its nullary `Fn{S}` is the same term since
+        // WI-20260902-JB6RS; `extract_sort_ref_sym` reads both spellings). Any other shape (a parameterized / arrow /
         // non-type term) is left unchanged.
         let sym = match extract_sort_ref_sym(kb, &TermIdView(ty)) {
             Some(s) => s,

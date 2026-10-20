@@ -67,10 +67,10 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         .into_iter()
         .map(|c| kb.canonical_sort_sym(c))
         .collect();
-    let mut sorts: Vec<Symbol> = kb.sort_domains.keys().copied().collect();
+    let mut sorts: Vec<Symbol> = kb.sort_domains.keys().map(|d| d.sym()).collect();
     // Registration order would be nicer than a hash walk; the symbol's index is the order
     // the sorts were interned in, which is stable for one program.
-    sorts.sort_by_key(|s| s.index());
+    sorts.sort_by_key(|s| s.to_bits());
     for s in sorts {
         if s == spec_canon || already.contains(&s) {
             continue;
@@ -100,10 +100,10 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         .sort_domains
         .iter()
         .filter(|(_, e)| !e.conditions.is_empty())
-        .map(|(&s, e)| (s, e.clone()))
+        .map(|(&s, e)| (s.sym(), e.clone()))
         .collect();
     // In the sorts' interning order, as the rows above, so the errors come out alike on every run.
-    entries.sort_by_key(|(s, _)| s.index());
+    entries.sort_by_key(|(s, _)| s.to_bits());
     for (s, e) in entries {
         let want = e.sub_offset + e.conditions.len();
         let got = super::typing::sort_domain_dict_len(kb, s);

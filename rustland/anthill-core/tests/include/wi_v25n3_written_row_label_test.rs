@@ -379,20 +379,15 @@ end
     );
 }
 
-/// A LAWFUL `Modify` PLACE IN A ROW TYPE-ARGUMENT STILL LOADS — the control that keeps
-/// the type-target refusal from being read as "a row type-argument may not mention
-/// `Modify`", and that dates the repair the diagnostic offers.
-///
-/// §5.6's one place-form available where there is no parameter list is a NULLARY
-/// CONSTRUCTOR naming an ambient resource, which is what the message tells the author to
-/// write. A MIXED TEST (see the header): its second half is source-1 coverage.
-/// MEASURED: the sort-nested `entity clock` under `fact Modifiable[T = Clock]` loads. The FREE-STANDING spelling does NOT (`entity clock` at namespace level is its
-/// own sort, WI-926, so `is_ambient_resource_name` excludes it as an EPONYMOUS
-/// constructor — WI-20260823-4GBQV's own rule), and that half is asserted too, because a
-/// message advising a form that does not work is the defect /code-review found in this
-/// diagnostic's RSRP5 ancestor.
+/// A ROW TYPE-ARGUMENT CAN NAME NO PLACE, through either constructor spelling — the
+/// row that used to say a sort-nested nullary constructor could (the "ambient resource",
+/// §5.6, the one place-form where there is no parameter list) and that the free-standing
+/// one could not. WI-20260902-JB6RS retired ambient places (user, 2026-10-20): a
+/// constructor in a `Modify` bracket is its TYPE, whichever way it is declared, so both
+/// halves are now the same refusal — and the diagnostic no longer advises a form that is
+/// gone, which is what /code-review found this row's RSRP5 ancestor doing.
 #[test]
-fn a_nullary_ambient_place_in_a_row_type_argument_still_loads() {
+fn no_constructor_is_a_place_in_a_row_type_argument() {
     let place = r#"
 namespace test.v25n3.pl
   import anthill.prelude.{Error, String, Modify, Modifiable, EffectsRuntime}
@@ -421,8 +416,9 @@ namespace test.v25n3.ep
     effects {Error} = out(v: p)
 end
 "#;
-    expect_loads(
-        "a `Modify` over a sort-nested nullary ambient constructor, in a row type-argument",
+    expect_refused(
+        "a `Modify` over a sort-nested nullary constructor, in a row type-argument",
+        &["whose target is a TYPE"],
         &[OUT, SPEC, place],
     );
     expect_refused(

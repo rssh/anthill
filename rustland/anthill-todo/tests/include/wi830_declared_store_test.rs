@@ -64,7 +64,7 @@ fact anthill.persistence.ExtentBinding(
     convention: anthill.persistence.filesystem.FileConvention.single_file(
       file: "workitems.anthill")),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 "#;
 
 /// The single-file binding spelled out — the text twin of `main.rs`'s `default_binding`,
@@ -82,7 +82,7 @@ fact anthill.persistence.ExtentBinding(
     convention: anthill.persistence.filesystem.FileConvention.single_file(
       file: "workitems.anthill")),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, MirrorEntry, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], MirrorEntry[], StoreFormat[]])
 "#;
 
 /// WHAT `init` GIVES A NEW PROJECT: the item-per-file layout, driven end to end.

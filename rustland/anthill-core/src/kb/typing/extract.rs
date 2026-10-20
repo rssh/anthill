@@ -25,7 +25,8 @@ use super::*;
 /// `Parameterized` base) are `Symbol`s.
 #[derive(Clone, Debug)]
 pub enum TypeExtractor {
-    /// A bare sort `S` — `Ref(S)`, or the nullary `Fn{S}` a sort name keeps (CZJ2N).
+    /// A bare sort `S` — `Ref(S)`; its nullary application `Fn{S}` is the same term since
+    /// WI-20260902-JB6RS, and a view carrier may still spell it so.
     SortRef(Symbol),
     /// A type variable — deep `type_var(name)`.
     TypeVar(Symbol),
@@ -298,10 +299,9 @@ pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         // is a real reclassification rather than a rename. This comment used to read "a
         // no-arg `Fn{S}` of an ordinary sort is malformed (a bare sort is `Ref(S)`,
         // never `Fn{S}`)", and `is_bare_ref` was `matches!(head, ViewHead::Ref(_))`;
-        // with that head retired, both spellings reach one arm. The shape has NOT gone
-        // away — a `SymbolKind::Sort` name is exactly what the storage canon EXEMPTS, so
-        // `sort_inst_to_value`'s concrete spec identity `Fn{S}` still exists in the
-        // store — it has stopped being `TypeHead::Error`.
+        // with that head retired, both spellings reach one arm. Since WI-20260902-JB6RS
+        // the shape is gone from the STORE — the canon exempts no sort, so `Fn{S}` is
+        // `Ref(S)` — and only a view carrier can still spell it.
         //
         // THAT IS THE RIGHT ANSWER, and it is not what keeps the dispatch distinction:
         // `Fn{S}` is a spec identity the loader BUILDS deliberately, so classifying it

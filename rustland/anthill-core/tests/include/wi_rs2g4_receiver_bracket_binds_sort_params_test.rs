@@ -461,7 +461,7 @@ fn eval_type(interp: &mut anthill_core::eval::Interpreter, op: &str) -> String {
 #[test]
 fn a_receiver_bracket_reaches_a_body_read_of_the_sorts_parameter() {
     let mut interp = interp_for(EVAL_SRC);
-    assert_eq!(eval_type(&mut interp, "w_recv_self"), "Box(T: Letter)");
+    assert_eq!(eval_type(&mut interp, "w_recv_self"), "Box[T = Letter]");
 }
 
 /// …AND THE CALLEE SPELLING, which dangled too even though the TYPER bound `T` for it.
@@ -469,7 +469,7 @@ fn a_receiver_bracket_reaches_a_body_read_of_the_sorts_parameter() {
 #[test]
 fn the_callee_spelling_reaches_the_same_body_read() {
     let mut interp = interp_for(EVAL_SRC);
-    assert_eq!(eval_type(&mut interp, "w_callee_self"), "Box(T: Letter)");
+    assert_eq!(eval_type(&mut interp, "w_callee_self"), "Box[T = Letter]");
 }
 
 /// BOTH PARAMETERS, at eval. The arity driver for the channel: a writer that filled only
@@ -479,7 +479,7 @@ fn both_parameters_reach_a_two_parameter_members_body() {
     let mut interp = interp_for(EVAL_SRC);
     assert_eq!(
         eval_type(&mut interp, "w_pair"),
-        "Pair2(A: Letter, B: Int64)"
+        "Pair2[A = Letter, B = Int64]"
     );
 }
 
@@ -490,7 +490,7 @@ fn both_parameters_reach_a_two_parameter_members_body() {
 #[test]
 fn a_bare_sibling_call_keeps_the_enclosing_instance() {
     let mut interp = interp_for(EVAL_SRC);
-    assert_eq!(eval_type(&mut interp, "w_sibling"), "Box(T: Letter)");
+    assert_eq!(eval_type(&mut interp, "w_sibling"), "Box[T = Letter]");
 }
 
 /// NESTED POSITION IS NOT A SECOND MECHANISM. `nestedSelf() -> List[T = List[T = T]]`
@@ -502,7 +502,7 @@ fn a_nested_body_read_substitutes_at_depth() {
     let mut interp = interp_for(EVAL_SRC);
     assert_eq!(
         eval_type(&mut interp, "w_nested"),
-        "List(T: List(T: List(T: Letter)))"
+        "List[T = List[T = List[T = Letter]]]"
     );
 }
 
@@ -520,7 +520,7 @@ fn the_two_channels_have_distinct_keys() {
     let mut interp = interp_for(EVAL_SRC);
     assert_eq!(
         eval_type(&mut interp, "w_dual"),
-        "Duo2(A: Letter, B: Int64)"
+        "Duo2[A = Letter, B = Int64]"
     );
 }
 
@@ -530,7 +530,7 @@ fn the_two_channels_have_distinct_keys() {
 #[test]
 fn the_wi708_operation_parameter_channel_is_unchanged() {
     let mut interp = interp_for(EVAL_SRC);
-    assert_eq!(eval_type(&mut interp, "w_ty"), "Box(T: Letter)");
+    assert_eq!(eval_type(&mut interp, "w_ty"), "Box[T = Letter]");
 }
 
 /// A BRACKET VALUE WITH AN UNWRITTEN SLOT LEAVES THE ELEMENT UNDETERMINED, AND A BODY
@@ -607,5 +607,5 @@ end
         Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
         other => panic!("{other:?}"),
     };
-    assert_eq!(got, "Box(T: List(T: Int64))");
+    assert_eq!(got, "Box[T = List[T = Int64]]");
 }

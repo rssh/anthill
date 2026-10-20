@@ -151,8 +151,10 @@ fn field(h: &mut Sha256, label: &[u8], value: &[u8]) {
 ///
 /// One pass over `visited` does both the rule_dep_hash content walk and
 /// the fact_dep_hash functor collection. Functor set is keyed by
-/// `Symbol::index()` (Symbol itself isn't Ord) — canonical sorted order
-/// for hash stability.
+/// `Symbol::to_bits()` (Symbol itself isn't Ord) — canonical sorted order
+/// for hash stability. The BITS, not `Symbol::index()`: a constructor's type
+/// face shares its slot but heads its own facts (WI-20260902-JB6RS), and
+/// `fact_dep_hash_from` tags a face's group so the two never hash alike.
 fn walk_visited(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> (String, BTreeSet<u32>) {
     let mut h = Sha256::new();
     let mut referenced: BTreeSet<u32> = BTreeSet::new();
@@ -243,8 +245,13 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
     let mut h = Sha256::new();
     let printer = TermPrinter::new(kb);
     for &raw in referenced {
-        let functor = Symbol::from_raw(raw);
+        // The whole symbol, face included (WI-20260902-JB6RS): a type face heads its
+        // own facts, and a masked slot would read the constructor's instead.
+        let functor = Symbol::from_bits(raw);
         h.update(kb.qualified_name_of(functor).as_bytes());
+        if functor.is_type_face() {
+            h.update(b"[]");
+        }
         h.update([ITEM_SEP]);
         for rid in kb.rules_by_functor_iter(functor) {
             if !kb.is_fact(rid) || !kb.is_loaded_rule(rid) {
@@ -349,7 +356,7 @@ fn fn_node(
 ) {
     h.update(tag);
     h.update(kb.qualified_name_of(functor).as_bytes());
-    out.insert(functor.index());
+    out.insert(functor.to_bits());
 }
 
 fn leaf_sym(kb: &KnowledgeBase, tag: &[u8], sym: Symbol, h: &mut Sha256) {

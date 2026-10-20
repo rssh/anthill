@@ -38,7 +38,7 @@ fn program(ns: &str, spec_op: &str, member: &str, call: &str) -> String {
 /// A member that requires evidence about ANOTHER parameter than the spec operation does is
 /// a strengthening, whatever the spellings: refused. Paired by position on the record, the
 /// member's `?a` (the type of `x`) was the spec's `?b` (the type of `y`), the clause read as
-/// a restatement, and `tyOf(x)` at `5` answered `Cell(V: String)` (MEASURED).
+/// a restatement, and `tyOf(x)` at `5` answered `Cell[V = String]` (MEASURED).
 #[test]
 fn a_strengthening_member_in_another_spelling_is_refused() {
     for (ns, spec_op, member) in [
@@ -73,21 +73,21 @@ fn a_restatement_in_another_spelling_answers() {
             "operation d[U](x: T, y: U) -> Type requires TypeValue[T = U]",
             "operation d(x: Leaf, y: ?t) -> Type requires TypeValue[T = ?t] = tyOf(y)",
             "Desc.d(leaf(n: 1), 5)",
-            "Cell(V: Int64)",
+            "Cell[V = Int64]",
         ),
         (
             "varbr",
             "operation d(x: T, y: ?t) -> Type requires TypeValue[T = ?t]",
             "operation d[U](x: Leaf, y: U) -> Type requires TypeValue[T = U] = tyOf(y)",
             "Desc.d(leaf(n: 1), \"s\")",
-            "Cell(V: String)",
+            "Cell[V = String]",
         ),
         (
             "mixed",
             "operation d(x: T, y: ?a, z: ?b) -> Type requires TypeValue[T = ?b]",
             "operation d[B](x: Leaf, y: ?a, z: B) -> Type requires TypeValue[T = B] = tyOf(z)",
             "Desc.d(leaf(n: 1), 5, \"s\")",
-            "Cell(V: String)",
+            "Cell[V = String]",
         ),
         (
             "keys",
@@ -117,5 +117,5 @@ fn a_member_writing_another_number_of_variables_restates_the_declared_ones() {
         "operation d[U](x: Leaf, y: U, b: Box[V = ?v]) -> Type requires TypeValue[T = U] = tyOf(y)",
         "Desc.d(leaf(n: 1), 5, box(v: \"s\"))",
     );
-    assert_eq!(answers(&src, &["test.vnqtr.pair.count.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&src, &["test.vnqtr.pair.count.go"]), ["Cell[V = Int64]"]);
 }

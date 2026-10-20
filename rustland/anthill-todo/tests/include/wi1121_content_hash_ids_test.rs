@@ -334,7 +334,7 @@ fact anthill.persistence.ExtentBinding(
     id_field: "id",
     ref_field: "workitem"),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])
 "#;
 
 /// A WORK ITEM SOMEBODY WROTE BY HAND, with no `created` — which is not an exotic

@@ -60,7 +60,7 @@ namespace test.bkb
   -- The repair: read what the scoped KB answers inside the call, and return that.
   operation seenCount(src: String) -> Int64 =
     match Error.reify(lambda () -> KB.loaded(cons(src, nil())))
-      case ok(k) -> KB.facts_of(k, Seen).length()
+      case ok(k) -> KB.facts_of(k, Seen[]).length()
       case err(_) -> 0
   rule countInside(?n) :- seenCount("namespace zz.c  import test.bkb.{Seen}  fact Seen(n: 44)  end", ?n)
   rule countThenBase(?n) :- countInside(?c), Seen(n: ?m), ?n <=> ?c * 100 + ?m
@@ -68,7 +68,7 @@ namespace test.bkb
   -- The repair in a lambda: the call that loads is an operand, the reading one its caller.
   operation mkReader(src: String) -> () -> Int64 =
     match Error.reify(lambda () -> KB.loaded(cons(src, nil())))
-      case ok(k) -> lambda () -> KB.facts_of(k, Seen).length()
+      case ok(k) -> lambda () -> KB.facts_of(k, Seen[]).length()
       case err(_) -> lambda () -> 0
   operation applyIt(f: () -> Int64) -> Int64 = f()
   rule nestedOperand(?n) :- applyIt(mkReader("namespace zz.f  import test.bkb.{Seen}  fact Seen(n: 47)  end"), ?n)
@@ -81,7 +81,7 @@ namespace test.bkb
   const ck: Result[E = LoadFailed, T = KB] = mkK()
   operation countVia() -> Int64 =
     match ck
-      case ok(k) -> KB.facts_of(k, Seen).length()
+      case ok(k) -> KB.facts_of(k, Seen[]).length()
       case err(_) -> 0
   rule viaConst(?n) :- countVia(?n)
   rule viaConstThenBase(?n) :- countVia(?c), Seen(n: ?m), ?n <=> ?c * 100 + ?m

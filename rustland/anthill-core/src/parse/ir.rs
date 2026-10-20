@@ -369,6 +369,12 @@ impl TermSource for ParsedFile {
     fn sym_name(&self, sym: Symbol) -> &str {
         self.symbols.local_name(sym)
     }
+    /// The parse side has no kind table, but it has the surface: an application WRITTEN
+    /// with the bracket is a type (WI-20260902-JB6RS), and printing it with parentheses
+    /// would give a spelling the loader refuses.
+    fn heads_only_a_type(&self, id: TermId, sym: Symbol) -> bool {
+        sym.is_type_face() || self.terms.is_type_application(id)
+    }
 }
 
 // ── Name (qualified, with span) ─────────────────────────────────

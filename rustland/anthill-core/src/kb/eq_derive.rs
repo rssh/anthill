@@ -1152,7 +1152,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
 pub(crate) fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     let mut sorts: Vec<Symbol> = Vec::new();
     let mut seen: HashSet<Symbol> = HashSet::new();
-    let ctor_functors: Vec<Symbol> = kb.entity_field_type_functors().copied().collect();
+    let ctor_functors: Vec<Symbol> = kb.entity_field_type_functors().collect();
     for ctor in ctor_functors {
         // A variant maps to its parent sort; a free-standing / eponymous entity IS
         // its own sort. WI-946: that reflexive case is what `sort_of_constructor`

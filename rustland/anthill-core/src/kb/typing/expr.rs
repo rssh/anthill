@@ -868,7 +868,12 @@ pub(super) fn check_bare_ref(
         .unwrap_or(ty);
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
-    if kb.is_constructor_symbol(sym) {
+    // A free-standing entity too (`is_entity_constructor`, not `is_constructor_symbol`):
+    // a constructor's bare name is its instance (kernel-language.md §4.4), `Baz` is
+    // `Baz()`, and one that takes fields is an incomplete construction, refused as its
+    // applied spelling is. Its TYPE is `Baz[]` (WI-20260902-JB6RS); until then a bare
+    // free-standing name was read as the type, by an arm of its own below.
+    if kb.is_entity_constructor(sym) {
         // WI-20260826-JSFHG: the caller's `expected` is THREADED, where this passed a hard
         // `None`. A 0-ary constructor reached bare took no checking direction at all, so
         // `takeRed(red)` classified at the parent while `takeRed(red())` — the same value,
@@ -1213,24 +1218,6 @@ pub(super) fn check_bare_ref(
         .unwrap_or(ret);
         return Ok(TypeResult::pure_value(ret, env.clone(), Rc::clone(occ)));
     }
-    // A bare reference to a free-standing entity denotes the entity as a type,
-    // not a construction — its type is the reflect `Type` sort, so it can be
-    // passed to operations taking a `Type` (e.g. `facts_of(kb(), WorkItem)`).
-    //
-    // Unconditional on the position, so it is a classification by the resolved name
-    // and not by the expected sort — and it stays HERE, unrecorded on the node, for the
-    // reason `Loader::bare_name_denotes_type` gives (the constructor registry it would
-    // ask is incomplete mid-load). The node is left as written ON PURPOSE: rewritten
-    // into an `Expr::TypeValue`, `(Ep).em()` over an eponymous `Ep` would take the
-    // sort's companion dot (§5.4) where it is refused today
-    // (`wi_rxt6s_dotted_sort_type_value_test::an_eponymous_sort_by_a_path_is_refused_-
-    // as_its_bare_name_is`) — a language question, not this arm's to settle. What a
-    // diagnostic needs from it, the denoted type, [`denoted_type_value`] reads off the
-    // same predicate.
-    if kb.is_free_standing_entity(sym) {
-        let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
-        return Ok(TypeResult::pure(type_ty, env.clone(), Rc::clone(occ)));
-    }
     // WI-20260824-JM6ZW — A SORT REACHING HERE WAS NOT CLASSIFIED, and that is the
     // producer's omission to name, not a reading to supply. This was WI-206's arm: a
     // bare sort name in a slot that expected a `Type` read as the sort's type value —
@@ -1243,8 +1230,8 @@ pub(super) fn check_bare_ref(
     // than read either way: reading it as a type would be the retry design §8 forbids,
     // and `UnresolvedName` would name a name that resolved.
     //
-    // The two names that carry `Sort` and are NOT classified by their walks stop above:
-    // an eponymous constructor at the constructor arm, a free-standing entity at its own.
+    // The two names that carry `Sort` and are NOT classified by their walks stop above, at
+    // the constructor arm: an eponymous constructor and a free-standing entity.
     if kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
         return Err(TypeError::UnclassifiedTypeValue { span, sort: sym });
     }

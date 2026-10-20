@@ -196,11 +196,11 @@ fn str_arg(kb: &crate::kb::KnowledgeBase, v: Value) -> Result<String, EvalError>
 /// The already-resolved functor symbol of a by-reference sort/entity argument
 /// (WI-632). A `sort`/`entity` reflect op takes the sort BY REFERENCE — a
 /// `Value::Term(Ref)` / `Value::Entity` resolved to its qualified functor at the
-/// caller's write site — so extraction is a pure `value_functor` read (the
-/// `facts_of` precedent), loud on a non-reference. The interpreter twin of the
-/// bridge's `value_functor(&kb, type.value())`.
+/// caller's write site — so extraction is a pure `type_value_decl` read (the
+/// `facts_of` precedent: the declaration, even where the type carries an entity's type
+/// face), loud on a non-reference. The interpreter twin of the bridge's `ref_functor`.
 fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalError> {
-    crate::eval::value_functor(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
+    crate::eval::type_value_decl(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Type (entity/sort reference)",
         got: sort.type_name().to_string(),
     })
@@ -277,7 +277,7 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
             Some(order) => {
                 named.sort_by_key(|(s, _)| order.iter().position(|f| f == s).unwrap_or(usize::MAX))
             }
-            None => named.sort_by_key(|(s, _)| s.index()),
+            None => named.sort_by_key(|(s, _)| s.to_bits()),
         }
     }
     Value::Entity {
@@ -845,7 +845,7 @@ pub(super) fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     // resolver's `kind` builtin, so the two cannot answer differently.
     let kind_str = interp
         .kb()
-        .kind_of(sym)
+        .reflect_kind(sym)
         .map_or("Unresolved", SymbolKind::reflect_name);
     Ok(Value::Str(kind_str.into()))
 }
@@ -1509,6 +1509,68 @@ end
         }
     }
 
+    /// WI-20260902-JB6RS — the round trip keeps a constructor's TYPE FACE: reify of the
+    /// type `red†` (or `Foo[X = Int64]`) reflects back to that type, never to the
+    /// constructor. The ticket measured the old loss: reify of the canon-exempt `Fn{S}`
+    /// gave `RefRepr(S)`, which reflected to `Ref(S)` — the concrete identity became the
+    /// wildcard.
+    ///
+    /// Passes with or without step 2's code, BY DESIGN: both realizations carry the
+    /// `Symbol` VALUE (`RefRepr.name` here is a `Ref(sym)` read back by content), so the
+    /// bit rides along. It fails if a realization re-resolved the name by its string.
+    #[test]
+    fn kb_reflect_keeps_a_type_face() {
+        let mut interp = load_stdlib_and_source(
+            r#"
+namespace test.reflect_face
+  import anthill.prelude.Int64
+  sort Color
+    entity red
+  end
+  sort Foo
+    sort X = ?
+    entity Foo(a: X)
+  end
+end
+"#,
+        );
+        let red = interp.kb().try_resolve_symbol("test.reflect_face.Color.red").expect("red");
+        let foo = interp.kb().try_resolve_symbol("test.reflect_face.Foo").expect("Foo");
+        let int64 = interp.kb().try_resolve_symbol("anthill.prelude.Int64").expect("Int64");
+        let red_face = interp.kb().type_face_of(red);
+        let foo_face = interp.kb().type_face_of(foo);
+        let x = interp.kb_mut().intern("X");
+        let int64_ref = interp.kb_mut().alloc(CoreTerm::Ref(int64));
+        let red_type = interp.kb_mut().alloc(CoreTerm::Ref(red_face));
+        let foo_type = interp.kb_mut().alloc(CoreTerm::Fn {
+            functor: foo_face,
+            pos_args: smallvec::SmallVec::new(),
+            named_args: smallvec::SmallVec::from_elem((x, int64_ref), 1),
+        });
+        let red_instance = interp.kb_mut().alloc(CoreTerm::Ref(red));
+        let mut round_trip = |tid: TermId| -> TermId {
+            let reified = interp
+                .call("anthill.reflect.KB.reify", &[Value::Unit, Value::term(tid)])
+                .expect("reify call");
+            match interp.call("anthill.reflect.KB.reflect", &[Value::Unit, reified]).expect("reflect call") {
+                Value::Term { id, .. } => id,
+                other => panic!("expected Value::Term, got {other:?}"),
+            }
+        };
+        assert_eq!(round_trip(red_type), red_type, "the type `red[]` comes back as itself");
+        assert_eq!(round_trip(red_instance), red_instance, "the instance `red` comes back as itself");
+        assert_ne!(red_type, red_instance, "premise: the type and the instance are two terms");
+        // An APPLIED type keeps its face as the functor. Not its labels: the repr has
+        // none (`FnRepr` carries the arguments only, and `reflect_walk` rebuilds them
+        // positionally), so the term that comes back is `Fn{Foo†; [Int64]}` — the same
+        // loss an instance `Foo(a: 1)` has, and not this ticket's.
+        let back = round_trip(foo_type);
+        match interp.kb().get_term(back) {
+            CoreTerm::Fn { functor, .. } => assert_eq!(*functor, foo_face, "the type face survives"),
+            other => panic!("expected an application, got {other:?}"),
+        }
+    }
+
     // `kb_nonvar_and_ground_classify_terms` (a `Ref` term is nonvar+ground, a
     // `Var` term is neither) is not deleted, it is the first two rows of the test
     // below — where they are labelled CONTROL, because those are exactly the two
@@ -1923,15 +1985,17 @@ namespace test.not_sat
     entity red
     entity green
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
-        // Build the goal: Color(entity: red).
+        // Build the goal: Paint(entity: red) — a sort applied with parentheses is refused
+        // (WI-20260902-JB6RS), so the fact is over an entity.
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_sat.Color")
-            .expect("Color sort symbol");
+            .try_resolve_symbol("test.not_sat.Paint")
+            .expect("Paint symbol");
         let red_sym = interp
             .kb()
             .try_resolve_symbol("test.not_sat.Color.red")
@@ -1962,14 +2026,15 @@ namespace test.not_unsat
     entity red
     entity green
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_unsat.Color")
-            .expect("Color sort symbol");
+            .try_resolve_symbol("test.not_unsat.Paint")
+            .expect("Paint symbol");
         let green_sym = interp
             .kb()
             .try_resolve_symbol("test.not_unsat.Color.green")
@@ -2046,14 +2111,15 @@ namespace test.not_flounder
   sort Color
     entity red
   end
-  fact Color(entity: red)
+  entity Paint(entity: Color)
+  fact Paint(entity: red)
 end
 "#,
         );
         let color_sym = interp
             .kb()
-            .try_resolve_symbol("test.not_flounder.Color")
-            .expect("Color sort");
+            .try_resolve_symbol("test.not_flounder.Paint")
+            .expect("Paint symbol");
         let entity_field = interp.kb_mut().intern("entity");
         let v_sym = interp.kb_mut().intern("v");
         let vid = interp.kb_mut().fresh_var(v_sym);

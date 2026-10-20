@@ -1946,10 +1946,14 @@ pub fn sort_alias_backing_var(
             let Term::Fn { pos_args, .. } = kb.get_term(head) else {
                 return None;
             };
-            let Term::Fn { functor, .. } = kb.get_term(*pos_args.first()?) else {
+            // The NAME through the view, either spelling: a sort's nullary application is
+            // its bare `Ref` since the two are one term (WI-20260902-JB6RS).
+            use anthill_core::kb::term_view::{TermIdView, TermView, ViewHead};
+            let ViewHead::Functor { functor: Some(name), .. } = TermIdView(*pos_args.first()?).head(kb)
+            else {
                 return None;
             };
-            if *functor != sort_sym {
+            if name != sort_sym {
                 return None;
             }
             match kb.get_term(*pos_args.get(1)?) {

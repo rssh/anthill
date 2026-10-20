@@ -1213,7 +1213,10 @@ fn position_constructor(
     let head = sort_functor_of_view(kb, &position)?;
     let mut own = sort_constructor_syms(kb, head);
     if own.is_empty() && kb.sort_of_constructor(head).is_some() {
-        own.push(head);
+        // The position's type is a constructor's own (variant) type, so its one
+        // constructor is that declaration — the plain symbol, not the type face the
+        // position names it by (WI-20260902-JB6RS).
+        own.push(head.plain());
     }
     resolve_pattern_ctor(kb, written, &own)
 }

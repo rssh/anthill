@@ -345,7 +345,7 @@ impl ProvidesIndex {
         }
         fn keys<'a, V>(a: &'a HashMap<Symbol, V>, b: &'a HashMap<Symbol, V>) -> Vec<Symbol> {
             let mut keys: Vec<Symbol> = a.keys().chain(b.keys()).copied().collect();
-            keys.sort_by_key(|s| s.index());
+            keys.sort_by_key(|s| s.to_bits());
             keys.dedup();
             keys
         }

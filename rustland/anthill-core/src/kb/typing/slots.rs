@@ -4282,10 +4282,11 @@ pub(super) fn check_unnamed_requirement_lines(kb: &mut KnowledgeBase) -> Vec<Typ
     let mut sorts: Vec<Symbol> = Vec::new();
     let mut ops: Vec<Symbol> = Vec::new();
     for (owner, slots) in &kb.named_requirement_slots {
-        if crate::kb::op_info::lookup_operation_info(kb, *owner).is_some() {
-            ops.push(*owner);
+        let owner = owner.sym();
+        if crate::kb::op_info::lookup_operation_info(kb, owner).is_some() {
+            ops.push(owner);
         } else if slots.len() >= 2 {
-            sorts.push(*owner);
+            sorts.push(owner);
         }
     }
     if !sorts.is_empty() {
@@ -4298,8 +4299,8 @@ pub(super) fn check_unnamed_requirement_lines(kb: &mut KnowledgeBase) -> Vec<Typ
     }
     // In symbol order: the record is a hash map, and a refusal's place among the load's
     // errors should not follow its iteration.
-    sorts.sort_by_key(|sym| sym.index());
-    ops.sort_by_key(|sym| sym.index());
+    sorts.sort_by_key(|sym| sym.to_bits());
+    ops.sort_by_key(|sym| sym.to_bits());
     ops.dedup();
     let mut errors: Vec<TypeError> = Vec::new();
     for sort in sorts {

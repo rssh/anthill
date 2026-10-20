@@ -243,14 +243,14 @@ fn two_generic_levels_ground_a_sort_param_read() {
 /// `Box(V: !P)`.
 #[test]
 fn a_nested_rigid_under_an_op_param_is_grounded() {
-    assert_eq!(eval_type("b1"), "Box(V: String)");
-    assert_eq!(eval_type("b1b"), "Box(V: String)");
+    assert_eq!(eval_type("b1"), "Box[V = String]");
+    assert_eq!(eval_type("b1b"), "Box[V = String]");
 }
 
 /// …and on the sort-parameter loop, which needs (A)'s rewrite there as well.
 #[test]
 fn a_nested_rigid_under_a_sort_param_is_grounded() {
-    assert_eq!(eval_type("b2"), "Box(V: String)");
+    assert_eq!(eval_type("b2"), "Box[V = String]");
 }
 
 // ── (C), asserted as (D)'s located fault ─────────────────────────────────────────────
@@ -273,7 +273,7 @@ fn a_nested_rigid_under_a_sort_param_is_grounded() {
 /// state this row asserted before.
 #[test]
 fn a_providers_own_param_answers_through_its_instance() {
-    assert_eq!(eval_type("c1"), "Box(V: Boom)");
+    assert_eq!(eval_type("c1"), "Box[V = Boom]");
 }
 
 /// …and the WITNESS idiom (`DESC_INSTANCES`), the same flip one shape over:
@@ -281,7 +281,7 @@ fn a_providers_own_param_answers_through_its_instance() {
 /// `CrateTT requires TypeValue[T = E]` is what its member reads.
 #[test]
 fn a_witnesss_own_param_answers_through_its_instance() {
-    assert_eq!(eval_type("c2"), "Crate(W: Boom)");
+    assert_eq!(eval_type("c2"), "Crate[W = Boom]");
 }
 
 // ── (D) ──────────────────────────────────────────────────────────────────────────────
@@ -372,14 +372,14 @@ fn an_ungrounded_receiver_is_now_refused_at_load() {
 /// The monomorphic site: the argument pins `Err2.T` to a ground type.
 #[test]
 fn control_the_monomorphic_site() {
-    assert_eq!(eval_type("k_mono"), "Box(V: String)");
+    assert_eq!(eval_type("k_mono"), "Box[V = String]");
 }
 
 /// The UNWITNESSED constructor: `none()` carries no `Int64` any value walk could recover —
 /// the answer can only come from the type, and it does.
 #[test]
 fn control_the_unwitnessed_constructor() {
-    assert_eq!(eval_type("k_none"), "Option(T: Int64)");
+    assert_eq!(eval_type("k_none"), "Option[T = Int64]");
 }
 
 /// WI-708's whole-entry OPERATION parameter, the row this ticket's (A) extends to the
@@ -393,11 +393,11 @@ fn control_wi708_whole_entry_op_param() {
 /// (C) cannot reach through a slot.
 #[test]
 fn control_rs2g4_receiver_bracket() {
-    assert_eq!(eval_type("k_recv"), "Box(V: Boom)");
+    assert_eq!(eval_type("k_recv"), "Box[V = Boom]");
 }
 
 /// The same type written as an EXPRESSION, which never went through the channel.
 #[test]
 fn control_the_expression_form() {
-    assert_eq!(eval_type("k_expr"), "Box(V: String)");
+    assert_eq!(eval_type("k_expr"), "Box[V = String]");
 }

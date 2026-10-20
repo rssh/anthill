@@ -107,7 +107,7 @@ namespace test.{ns}
   import test.{ns}.Outer.Inner
   entity P(t: Int64)
   operation which(t: Type) -> Int64 =
-    if t = Inner then 21 else if t = Far then 9 else if t = Pt then 5 else if t = Leaf then 6 else if t = FA then 7 else 0
+    if t = Inner then 21 else if t = Far then 9 else if t = Pt[] then 5 else if t = Leaf[] then 6 else if t = FA then 7 else 0
 {body}
 end
 "#
@@ -243,12 +243,15 @@ fn a_parenthesized_receiver_in_an_operation_body_is_the_sort() {
 
 /// A free-standing entity, an eponymous sort and an alias named by a path are what their
 /// bare names are: each is the type `which` knows by its imported name, and the alias, as
-/// a receiver, binds the parameters it fixes — in both bodies.
+/// a receiver, binds the parameters it fixes — in both bodies. The entity and the
+/// eponymous sort are constructors, so their TYPE is written with the bracket, by a path
+/// as by the bare name (`lib.ns.Pt[]`; kernel-language.md §4.4, WI-20260902-JB6RS); the
+/// alias names a sort with no constructor of its name, and is the type bare.
 #[test]
 fn an_entity_an_eponymous_sort_and_an_alias_keep_their_bare_reading() {
     for (ns, name, expected) in [
-        ("rxt6sentity", "Pt", 5),
-        ("rxt6sepon", "Leaf", 6),
+        ("rxt6sentity", "Pt[]", 5),
+        ("rxt6sepon", "Leaf[]", 6),
         ("rxt6salias", "FA", 7),
     ] {
         let body = format!(
@@ -428,7 +431,7 @@ fn the_imported_bare_names_are_unchanged() {
         ("rxt6sbarerule", "  rule r(?x) :- ?x <=> (Inner).deep()", 21),
         (
             "rxt6sbarekinds",
-            "  operation go() -> Int64 = which(Pt) + 100 * which(Leaf) + 10000 * which(FA)\n  rule r(?x) :- ?x <=> go()",
+            "  operation go() -> Int64 = which(Pt[]) + 100 * which(Leaf[]) + 10000 * which(FA)\n  rule r(?x) :- ?x <=> go()",
             70605,
         ),
     ] {

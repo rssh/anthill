@@ -201,7 +201,7 @@ fn a_declaration_that_is_not_a_type_parameter_denotes_no_parameter_variable() {
 #[test]
 fn every_declared_parameter_in_the_stdlib_publishes_its_own_variable() {
     let kb = crate::common::load_kb_with(SRC);
-    let sorts: Vec<Symbol> = kb.sort_info_iter().map(|(s, _)| *s).collect();
+    let sorts: Vec<Symbol> = kb.sort_info_iter().map(|(s, _)| s).collect();
     let mut seen: std::collections::HashMap<u32, Symbol> = std::collections::HashMap::new();
     let mut params = 0usize;
     for s in sorts {

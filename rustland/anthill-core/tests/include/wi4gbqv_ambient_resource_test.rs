@@ -1,53 +1,33 @@
-//! WI-20260823-4GBQV — A NULLARY CONSTRUCTOR NAMES AN AMBIENT RESOURCE.
+//! WI-20260823-4GBQV — A NULLARY CONSTRUCTOR NAMED AN AMBIENT RESOURCE; WI-20260902-JB6RS
+//! RETIRED IT (user, 2026-10-20: "drop ambient places").
 //!
-//! `prelude/effects.anthill`'s runtime note has always described the shape — "one arena
-//! keyed by the target's FUNCTOR SYMBOL: `set(store, v)` and `set(counter, v)` share the
-//! same handler but live in separate slots" — and it was not writable. Both halves
-//! failed, which is why one fix in one place repairs nothing:
+//! 4GBQV made `Modify[counter]` over `sort CounterState … entity counter … end` declare
+//! the slot `Env(counter)`, and `set(counter(), n)` re-key onto it — a resource no handle
+//! is threaded to. That made the `Modify` bracket the one place in the language where a
+//! constructor was read as its INSTANCE and not its TYPE. Under JB6RS a name in a bracket
+//! is read by one rule (kernel-language.md §4.4): a constructor is a sort in its own right
+//! (§6.3), so `Modify[counter]` is the type `counter†` and is refused as a type, like
+//! `Modify[Cell]`. With it goes the other ambient spelling, a zero-argument operation's
+//! result (`Modify[slot]` over `operation slot()`): declarable, but no call can write it,
+//! since a call is no place to re-key onto. A resource is threaded as a PARAMETER; the
+//! place is the parameter.
 //!
-//!   * THE DECLARATION. `Modify[counter]` classified as a TYPE, so `check_modify_targets`
-//!     refused it (`a `Modify` target is a PLACE`, WI-20260823-39AD2).
-//!   * THE CALL. `set(counter(), n)` passes an APPLICATION, a shape the effect re-key did
-//!     not read, so `ModifyRuntime.set`'s own `Modify[target]` survived into the caller's
-//!     row as an undeclared effect naming a parameter the author never wrote.
+//! What this file pins now:
+//!   * the retired forms are REFUSED, at the declaration and at the call, each with its
+//!     own reason — the type, the nullary constructor, the ambient operation;
+//!   * the refusals that predate the retirement still hold (an eponymous constructor, a
+//!     constructor with fields, a plain sort), and the binder-capture rows are unchanged;
+//!   * outside `Modify` a constructor in a type argument is still its TYPE — the label
+//!     idiom `Text[L = Untrusted]` — and the facts about labels are written over types,
+//!     `flows_to(Untrusted[], Public[])` (JB6RS, user 2026-10-17).
 //!
-//! WHAT DECIDES IT is [`KnowledgeBase::is_ambient_resource_name`], read by BOTH sides —
-//! the loader's `Modify`-target lowering and the typer's argument re-key. NULLARY, because
-//! arity is what separates a value from a function; NOT EPONYMOUS, because an eponymous
-//! constructor IS its sort (WI-926) and admitting it would silently un-refuse the type
-//! target WI-20260823-39AD2 exists to refuse.
-//!
-//! THE EPONYMOUS POPULATION, measured across the whole tree before the set was touched
-//! (the ticket asked for it either way): 200 eponymous constructor sites, of which 3 are
-//! in loadable `.anthill` sources — `stdlib/anthill/geometry.anthill`'s `Vec3` and two
-//! `anthill-cli` fixtures' `Person`. Exactly TWO of the 200 are NULLARY, both test
-//! fixtures (`parse_test.rs`'s `Error`, `wi933_carrierless_provision_test.rs`'s
-//! `Wi933Unit`), and neither is written in a `Modify` target. So the exclusion closes the
-//! whole population by construction and costs nothing in use —
-//! `an_eponymous_nullary_constructor_stays_a_type` is its trip-wire.
-//!
-//! SCOPED TO `Modify`'S OWN TARGET SLOT, and that scope is measured rather than cautious.
-//! The first cut widened the loader's general single-segment value-in-type arm; 9 tests
-//! across three files fell, every one of them on the LABEL-AS-TYPE-PARAMETER idiom
-//! (`Text[L = Untrusted]`, where `Untrusted` is a nullary entity standing for a type).
-//! `an_entity_in_an_ordinary_type_slot_is_still_a_type` is that idiom in miniature and is
-//! the control for the scope; kernel-language.md §5.6 is why the `Modify` slot alone
-//! differs — its argument is a resource NAME, not a type.
-//!
-//! WHICH ROWS FAIL ON A BACK-OUT (repo rule "assert the CONTROL too"). Three independent
-//! axes, each measured:
-//!   * THE LOADER (`type_expr_to_child_modify_target` delegating unconditionally) —
-//!     `an_ambient_slot_is_declarable`, `two_ambient_slots_are_distinct_places` and
-//!     `an_undeclared_ambient_write_is_still_refused` fall, and
-//!     `eval_test::m5_modify_an_ambient_resource_write_then_read` with them.
-//!   * THE TYPER (`arg_place_head` dropping its `nullary_constructor_arg` leg) — the same
-//!     rows fall, at the CALL instead of the declaration.
-//!   * THE EXCLUSIONS (`is_ambient_resource_name` dropping its `!has_kind(Sort)` or its
-//!     nullary test) — `an_eponymous_nullary_constructor_stays_a_type` /
-//!     `a_constructor_with_fields_is_not_a_place` fall, and nothing else does.
-//! `a_plain_sort_in_a_modify_target_is_still_refused` and
-//! `an_entity_in_an_ordinary_type_slot_is_still_a_type` pass under ALL THREE by design:
-//! they are what say this ticket widened one slot and not the language.
+//! WHICH ROWS FAIL ON A BACK-OUT: restoring the loader's ambient arm (a nullary
+//! constructor in `Modify`'s target lowered as a denoted place) fails
+//! `a_nullary_constructor_is_no_modify_target`; restoring the typer's nullary-constructor
+//! re-key fails `neither_spelling_of_a_nullary_constructor_is_a_place`; dropping the
+//! `PlaceType::Ambient` arm of `modify_place_type` fails
+//! `a_zero_argument_operation_is_no_modify_target`. The remaining rows pass either way BY
+//! DESIGN — they are what says the retirement removed one reading and not the checks.
 
 /// Load stdlib + user source together; surface load errors as strings.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
@@ -60,113 +40,90 @@ fn refused_as_type(errs: &[String], label: &str) -> bool {
         .any(|e| e.contains(&format!("declares effect `Modify[T = {label}]`")) && e.contains("whose target is a TYPE"))
 }
 
-/// THE ACCEPTANCE, load side: a nullary constructor names a slot, the declaration spells
-/// it, and the call re-keys onto it. Driven end-to-end (through the arena) by
-/// `eval_test::m5_modify_an_ambient_resource_write_then_read`.
+/// The DECLARATION: a nullary constructor in `Modify`'s target is the constructor's TYPE,
+/// refused as every type is there. This loaded until JB6RS, as the ambient slot.
 #[test]
-fn an_ambient_slot_is_declarable() {
+fn a_nullary_constructor_is_no_modify_target() {
     let src = r#"
-namespace test.wi4gbqv.ambient
+namespace test.wi4gbqv.retired
   import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{get, set}
 
   sort CounterState
     provides Modifiable[T = Self]
     entity counter
   end
 
-  operation write(n: Int64) -> Unit effects Modify[counter] = set(counter(), n)
-  operation read() -> Int64 = get(counter())
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation write() -> Unit effects Modify[counter] = ()
 end
 "#;
+    let errs = load_result(src).expect_err("`Modify[counter]` names a type, and must be refused");
+    assert!(refused_as_type(&errs, "counter"), "expected the TYPE refusal; got: {errs:#?}");
     assert!(
-        load_result(src).is_ok(),
-        "`Modify[counter]` over a nullary constructor is an ambient PLACE and must load"
+        !errs.iter().any(|e| e.contains("Modify[T = target]")),
+        "a parameter of the same sort is still a place; got: {errs:#?}"
     );
 }
 
-/// The PAREN-LESS spelling is the same place. Both allocate to one term (the WI-511
-/// `Fn{c,[],[]}`→`Ref(c)` canon), so the idiom must not depend on its parentheses — and
-/// the two arms reach it by DIFFERENT code paths (`Expr::Ref` via `stable_receiver_path`,
-/// `Expr::Constructor` via `nullary_constructor_arg`), which is why both are driven.
+/// The CALL: neither spelling of a nullary constructor is a place an effect re-keys onto,
+/// and both are told as the constant they are — `counter()` is not a fresh value.
 #[test]
-fn the_parenless_ambient_spelling_is_the_same_place() {
-    let src = r#"
-namespace test.wi4gbqv.parenless
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{set}
+fn neither_spelling_of_a_nullary_constructor_is_a_place() {
+    for (spelling, arg) in [("bare", "counter"), ("applied", "counter()")] {
+        let src = format!(
+            r#"
+namespace test.wi4gbqv.call_{spelling}
+  import anthill.prelude.{{Int64, Unit, Modify, Modifiable}}
 
   sort CounterState
     provides Modifiable[T = Self]
     entity counter
   end
 
-  operation write(n: Int64) -> Unit effects Modify[counter] = set(counter, n)
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation write() -> Unit = touch({arg})
 end
-"#;
-    assert!(
-        load_result(src).is_ok(),
-        "`set(counter, n)` must re-key exactly as `set(counter(), n)` does"
-    );
+"#
+        );
+        let errs = load_result(&src).expect_err("a nullary constructor is no place");
+        assert!(
+            errs.iter().any(|e| e.contains("expected an argument naming a PLACE")
+                && e.contains("a nullary constructor")),
+            "{spelling}: expected the call refused, naming the constant; got: {errs:#?}"
+        );
+    }
 }
 
-/// TWO AMBIENT SLOTS ARE TWO RESOURCES. Declaring one and writing the other is refused,
-/// and the diagnostic names BOTH — which is what says the re-key reached the argument's
-/// own constructor rather than coarsening every ambient write onto one label.
+/// The OTHER ambient spelling: a zero-argument operation's result is declarable but no
+/// call can write it, so the declaration is refused, naming the operation.
 #[test]
-fn two_ambient_slots_are_distinct_places() {
+fn a_zero_argument_operation_is_no_modify_target() {
     let src = r#"
-namespace test.wi4gbqv.two_slots
+namespace test.wi4gbqv.ambient_op
   import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{set}
-
-  -- A place `ModifyRuntime.set` writes is one of a modifiable type.
-  sort Cells
-    provides Modifiable[T = Self]
-    entity a
-    entity b
-  end
-
-  operation write(n: Int64) -> Unit effects Modify[a] = set(b(), n)
-end
-"#;
-    let errs = load_result(src).expect_err("declaring `Modify[a]` while writing `b` must fail");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("Modify[T = a]") && e.contains("undeclared effect: Modify[T = b]")),
-        "expected the declared `a` and the incurred `b` to be told apart; got: {errs:#?}"
-    );
-}
-
-/// THE ROW IS STILL ENFORCED over an ambient place. Without this the two rows above would
-/// be satisfied by "ambient writes incur nothing", which is not what they measure.
-#[test]
-fn an_undeclared_ambient_write_is_still_refused() {
-    let src = r#"
-namespace test.wi4gbqv.undeclared
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import ModifyRuntime.{set}
 
   sort CounterState
     provides Modifiable[T = Self]
     entity counter
   end
 
-  operation write(n: Int64) -> Unit effects {} = set(counter(), n)
+  operation slot() -> CounterState = counter()
+  operation write() -> Unit effects Modify[slot] = ()
 end
 "#;
-    let errs = load_result(src).expect_err("an undeclared ambient write must be refused");
+    let errs = load_result(src).expect_err("an ambient operation place must be refused");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("undeclared effect: Modify[T = counter]")),
-        "expected the re-keyed ambient label to be reported undeclared; got: {errs:#?}"
+        errs.iter().any(|e| e.contains("Modify[T = slot]")
+            && e.contains("the zero-argument operation `test.wi4gbqv.ambient_op.slot`")
+            && e.contains("AMBIENT place")),
+        "expected the ambient refusal naming `slot`; got: {errs:#?}"
     );
 }
 
-/// THE WI-926 TRAP, and the reason `is_ambient_resource_name` excludes a sort. An
-/// eponymous constructor IS its sort — one symbol, no nested `Slot.Slot` — so `Modify[Slot]`
-/// cannot be read as the constructor without also reading it as the sort. It stays a TYPE,
-/// which is the verdict WI-20260823-39AD2 established.
+/// THE WI-926 TRAP, unchanged in verdict: an eponymous constructor IS its sort, so
+/// `Modify[Slot]` is a TYPE, which is the verdict WI-20260823-39AD2 established. 4GBQV had
+/// to exclude it from the ambient reading by name; since JB6RS every constructor is its
+/// type in this bracket and the exclusion is the rule.
 #[test]
 fn an_eponymous_nullary_constructor_stays_a_type() {
     let src = r#"
@@ -232,8 +189,8 @@ end
     );
 }
 
-/// THE SCOPE CONTROL, and the row this ticket's first cut broke. Outside `Modify`'s target
-/// slot an entity name in a type argument is a TYPE (WI-313), and the taint vocabulary
+/// THE SCOPE CONTROL, and the row this ticket's first cut broke. An entity name in a type
+/// argument is a TYPE (WI-313; and in `Modify`'s too since JB6RS), and the taint vocabulary
 /// depends on it: `Untrusted` / `Public` are nullary entities carried as the type
 /// parameter `Text[L = …]`, which is what makes `flows_to(?l, Public)` a real obligation.
 /// Reading them as places instead makes the label unreadable and the obligation vacuous.
@@ -260,12 +217,12 @@ namespace test.wi4gbqv.scope
   import test.wi4gbqv.scope.Level.{Untrusted, Public}
   import test.wi4gbqv.scope.Text
 
-  fact flows_to(Public, Public)
-  -- ABSENT on purpose: flows_to(Untrusted, Public)
+  fact flows_to(Public[], Public[])
+  -- ABSENT on purpose: flows_to(Untrusted[], Public[])
 
   operation fetch() -> Text[L = Untrusted]
   operation send(body: Text[L = ?l]) -> Unit
-    requires flows_to(?l, Public)
+    requires flows_to(?l, Public[])
 
   operation leak() -> Unit = send(fetch())
 end
@@ -274,7 +231,7 @@ end
         .expect_err("`Untrusted` must still read as the TYPE the obligation is decided by");
     assert!(
         errs.iter().any(|e| e.contains("unsatisfied precondition")
-            && e.contains("flows_to(Untrusted, Public)")),
+            && e.contains("flows_to(Untrusted[], Public[])")),
         "expected the label to reach the obligation as a type; got: {errs:#?}"
     );
 }
@@ -421,9 +378,11 @@ end
         "the re-key must not mint `Modify[T = wrap]`, which no declaration can spell; \
          got: {errs:#?}"
     );
+    // Since WI-20260902-JB6RS the bare `wrap` is the construction `wrap()` (a constructor's
+    // bare name is its instance, kernel-language.md §4.4), refused for the field it lacks
+    // before anything asks whether it is a place — and that refusal names `wrap` too.
     assert!(
-        errs.iter()
-            .any(|e| e.contains("names no resource") && e.contains("wrap")),
+        errs.iter().any(|e| e.contains("`wrap` is constructed without its field `rep`")),
         "expected the refusal to name the caller's own `wrap`; got: {errs:#?}"
     );
 }

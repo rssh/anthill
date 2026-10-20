@@ -16,7 +16,7 @@
 //!   KB.constructors(kb(), Color) = ["red","green"]       0             1
 //!   KB.constructors(kb(), Color) = ["red"]               0             0
 //!   not(KB.constructors(kb(), Color) = ["red","green"])  1 (UNSOUND)   0
-//!   KB.fields(kb(), pt) <=> [x, y] / [y, x]              0 / 0         1 / 0
+//!   KB.fields(kb(), pt[]) <=> [x, y] / [y, x]            0 / 0         1 / 0
 //!   can_be_sort(as_term(Color))   (a bare Bool goal)     0             1
 //!   can_be_sort(as_term(7))                              0             0
 //!   not(can_be_sort(as_term(Color)))                     1 (UNSOUND)   0
@@ -100,8 +100,8 @@ namespace wi9r5hn.rb
   rule ctors(1)     :- KB.constructors(KB.kb(), Color) = ["red", "green"]
   rule ctors_no(1)  :- KB.constructors(KB.kb(), Color) = ["red"]
   rule ctors_neg(1) :- not(KB.constructors(KB.kb(), Color) = ["red", "green"])
-  rule fields(1)    :- KB.fields(KB.kb(), pt) <=> [FieldInfo(name: "x", type_name: ?), FieldInfo(name: "y", type_name: ?)]
-  rule fields_no(1) :- KB.fields(KB.kb(), pt) <=> [FieldInfo(name: "y", type_name: ?), FieldInfo(name: "x", type_name: ?)]
+  rule fields(1)    :- KB.fields(KB.kb(), pt[]) <=> [FieldInfo(name: "x", type_name: ?), FieldInfo(name: "y", type_name: ?)]
+  rule fields_no(1) :- KB.fields(KB.kb(), pt[]) <=> [FieldInfo(name: "y", type_name: ?), FieldInfo(name: "x", type_name: ?)]
 
   rule cbs(1)       :- can_be_sort(as_term(Color))
   rule cbs_lit(1)   :- can_be_sort(as_term(7))

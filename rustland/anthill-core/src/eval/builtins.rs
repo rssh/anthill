@@ -5697,9 +5697,9 @@ fn int_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// anthill-todo workitem set (~hundreds of facts).
 fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, sort_arg] = expect_args::<2>("KB.facts_of", args)?;
-    // The entity is passed by reference (e.g. `facts_of(kb(), WorkItem)`),
-    // resolved to its qualified functor symbol via the caller's import.
-    let functor_sym = crate::eval::eval::value_functor(&interp.kb, &sort_arg)
+    // The entity is passed as its type (e.g. `facts_of(kb(), WorkItem[])`),
+    // resolved to the declaration it names via the caller's import.
+    let functor_sym = crate::eval::eval::type_value_decl(&interp.kb, &sort_arg)
         .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
 
     // WI-348: carrier-agnostic — a fact head may be a value fact (e.g. an
@@ -5721,7 +5721,7 @@ fn kb_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 /// later pass `.reference` to retract/update without rediscovering identity.
 fn kb_stored_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, sort_arg] = expect_args::<2>("KB.stored_facts_of", args)?;
-    let functor_sym = crate::eval::eval::value_functor(&interp.kb, &sort_arg)
+    let functor_sym = crate::eval::eval::type_value_decl(&interp.kb, &sort_arg)
         .ok_or_else(|| type_mismatch("Type (entity reference)", &sort_arg, None))?;
     let rows = interp
         .kb
@@ -5783,9 +5783,12 @@ fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Val
     use crate::kb::typing::{extract_type, TypeExtractor};
     let [ty] = expect_args::<1>("is_modifiable", args)?;
     let kb = &interp.kb;
-    // A sort — a free-standing entity being its own — or an application of one.
+    // A sort — a free-standing entity being its own — or an application of one. A type
+    // written for an entity names it by its type face (WI-20260902-JB6RS), and a face is a
+    // type whichever constructor it is of, a nested variant included; the plain symbol of
+    // an entity that is its own sort still reads as before, from a term that wrote it so.
     let is_sort = |s: crate::intern::Symbol| {
-        kb.kind_of(s) == Some(crate::intern::SymbolKind::Sort) || kb.sort_of_constructor(s) == Some(s)
+        kb.is_type_value_head(s) || kb.sort_of_constructor(s) == Some(s)
     };
     let is_type = match extract_type(kb, &ty) {
         TypeExtractor::SortRef(s) | TypeExtractor::Parameterized { base: s, .. } => is_sort(s),

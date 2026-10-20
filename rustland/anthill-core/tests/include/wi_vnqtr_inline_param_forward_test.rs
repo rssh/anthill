@@ -131,7 +131,7 @@ fn the_printed_repair_loads_and_answers_where_the_forward_died() {
     );
     assert_eq!(
         answers(&repaired, &["test.vnqtr.repair.full", "test.vnqtr.repair.empty"]),
-        ["Cell(V: List(T: Int64))", "Cell(V: List(T: Int64))"]
+        ["Cell[V = List[T = Int64]]", "Cell[V = List[T = Int64]]"]
     );
 }
 
@@ -191,7 +191,7 @@ fn the_tickets_acceptance_holds_with_the_clause_written() {
     );
     assert_eq!(
         answers(&src, &["test.vnqtr.accept.i", "test.vnqtr.accept.b"]),
-        ["Cell(V: List(T: Int64))", "Cell(V: List(T: Int64))"]
+        ["Cell[V = List[T = Int64]]", "Cell[V = List[T = Int64]]"]
     );
 }
 
@@ -243,7 +243,7 @@ fn a_members_inline_variable_is_declared_on_the_member() {
     the_one_refusal(&src, &["`anthill.reflect.TypeValue[T = ?t]`"]);
     let repaired =
         with_printed_repair(&src, "operation m(b: Self, y: ?t) -> Type", "test.vnqtr.member.Box.m");
-    assert_eq!(answers(&repaired, &["test.vnqtr.member.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.member.go"]), ["Cell[V = Int64]"]);
 }
 
 /// A variable spelled like the sort's parameter is its own: `?T` in `sort Box[T]` is not
@@ -264,7 +264,7 @@ fn an_inline_variable_spelled_like_the_sorts_parameter_is_its_own() {
     assert_eq!(clause, "requires anthill.reflect.TypeValue[T = ?T]");
     assert_eq!(declaration, "test.vnqtr.coll.Box.m");
     let repaired = replace_in_fixture(&src, "requires TypeValue[T = T] = tyOf(y)", &format!("{clause} = tyOf(y)"));
-    assert_eq!(answers(&repaired, &["test.vnqtr.coll.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.coll.go"]), ["Cell[V = Int64]"]);
 }
 
 /// Two variables, one covered: the refusal names the one the caller holds nothing for, and
@@ -285,7 +285,7 @@ fn of_two_inline_variables_the_uncovered_one_is_named() {
         "requires TypeValue[T = ?s] = two(a, c)",
         "requires TypeValue[T = ?s], TypeValue[T = ?t] = two(a, c)",
     );
-    assert_eq!(answers(&repaired, &["test.vnqtr.two.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.two.go"]), ["Cell[V = Int64]"]);
 }
 
 /// EVERY PLACE A CALL IS WRITTEN IN A BODY gives the two spellings one verdict: a `let`, an
@@ -352,7 +352,7 @@ fn a_clause_whose_contract_holds_the_evidence_covers_an_inline_variable() {
     );
     assert_eq!(
         answers(&src, &["test.vnqtr.desc.one", "test.vnqtr.desc.empty"]),
-        ["Cell(V: Leaf)", "Cell(V: List(T: Leaf))"]
+        ["Cell[V = Leaf]", "Cell[V = List[T = Leaf]]"]
     );
 }
 
@@ -377,7 +377,7 @@ fn an_anonymous_variable_in_the_carrier_is_the_slot_it_stands_in() {
     );
     assert!(!e.contains("TypeValue[T = ?]"), "no clause names a `?`: {e}");
     let repaired = with_printed_repair(&src, "operation m(y: List[T = ?]) -> Type", "test.vnqtr.anon.m");
-    assert_eq!(answers(&repaired, &["test.vnqtr.anon.empty"]), ["Cell(V: List(T: Int64))"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.anon.empty"]), ["Cell[V = List[T = Int64]]"]);
 }
 
 /// A member that backs a spec operation for its provider restates the spec operation's
@@ -410,6 +410,6 @@ fn a_provider_members_forward_is_declared_on_the_spec_operation() {
         let on_member = replace_in_fixture(&src, &format!("{member_sig} = "), &format!("{member_sig} {clause} = "));
         assert_refused_naming(&load_errors_of(&on_member), &["strengthens the precondition"], "on the member alone");
         let on_both = replace_in_fixture(&on_member, &format!("{spec_sig}\n"), &format!("{spec_sig} {clause}\n"));
-        assert_eq!(answers(&on_both, &[&format!("test.vnqtr.{ns}.go")]), ["Cell(V: String)"], "{ns}: {e}");
+        assert_eq!(answers(&on_both, &[&format!("test.vnqtr.{ns}.go")]), ["Cell[V = String]"], "{ns}: {e}");
     }
 }

@@ -75,7 +75,7 @@ fn a_top_level_slot_is_named_by_its_path() {
         );
         assert_eq!(
             answers(&repaired, &[&format!("test.vnqtr.slot.{ns}.empty")]),
-            ["Cell(V: Int64)"],
+            ["Cell[V = Int64]"],
             "{ns}"
         );
     }
@@ -158,7 +158,7 @@ fn a_nested_slot_is_named_first() {
         );
         assert_eq!(
             answers(&named, &[&format!("test.vnqtr.slot.{ns}.one")]),
-            ["Cell(V: Int64)"],
+            ["Cell[V = Int64]"],
             "{ns}"
         );
     }
@@ -180,7 +180,7 @@ fn an_aliases_slot_at_the_top_is_named_by_its_path() {
         &["its carrier is `y.T`", "Declare `requires anthill.reflect.TypeValue[T = y.T]`"],
     );
     let repaired = with_printed_repair(&src, "operation m(y: LT) -> Type", "test.vnqtr.slot.alias.m");
-    assert_eq!(answers(&repaired, &["test.vnqtr.slot.alias.empty"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.slot.alias.empty"]), ["Cell[V = Int64]"]);
 }
 
 /// A slot an alias leaves open INSIDE an argument has no path, and is named first, as a
@@ -210,5 +210,5 @@ fn a_slot_named_by_a_variable_is_refused_as_its_parameter() {
         "operation relayV(xs: List[T = ?e]) -> Type",
         "test.vnqtr.slot.named.relayV",
     );
-    assert_eq!(answers(&repaired, &["test.vnqtr.slot.named.empty"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&repaired, &["test.vnqtr.slot.named.empty"]), ["Cell[V = Int64]"]);
 }

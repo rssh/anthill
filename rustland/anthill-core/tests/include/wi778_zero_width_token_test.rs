@@ -122,8 +122,12 @@ fn operation_param_without_a_type_is_loud() {
 }
 
 #[test]
-fn empty_type_param_and_binding_lists_are_loud() {
-    // Three distinct productions, one inherited guard.
+fn empty_type_param_lists_are_loud() {
+    // Two distinct productions, one inherited guard. A THIRD row asserted the same of an
+    // empty BINDING list (`List[]`), and that one is no longer a hole: since
+    // WI-20260902-JB6RS the bracket may be empty — `Foo[]` is the type `Foo` written as
+    // data, where a constructor's bare name is its instance (kernel-language.md §4.4) —
+    // so it is a production, pinned below, and not a missing token.
     assert_missing(
         "namespace t\n  sort S[]\n    entity e(a: Int64)\n  end\nend\n",
         "missing `sort_type_param`",
@@ -134,11 +138,13 @@ fn empty_type_param_and_binding_lists_are_loud() {
         "missing `operation_type_param`",
         "f[",
     );
-    assert_missing(
-        "namespace t\n  operation f(a: List[]) -> Int64\nend\n",
-        "missing `sort_binding`",
-        "List[",
-    );
+}
+
+/// WI-20260902-JB6RS — the empty binding list parses, in a type position as in a data one.
+#[test]
+fn an_empty_binding_list_parses() {
+    parses_clean("namespace t\n  operation f(a: List[]) -> Int64\nend\n");
+    parses_clean("namespace t\n  fact held(Foo[])\nend\n");
 }
 
 #[test]

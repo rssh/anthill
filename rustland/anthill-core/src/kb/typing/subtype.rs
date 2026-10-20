@@ -1322,7 +1322,10 @@ pub(super) fn variant_at_its_sort(
     base: Symbol,
     bindings: &[(Symbol, Value)],
 ) -> Option<Value> {
-    let sort = kb.type_arg_owner(base).filter(|sort| *sort != base)?;
+    // Against the DECLARATION: an eponymous `Box` owns its own arguments, and its type
+    // face `Box†` must not read that as another sort to widen to — that rebuilt `Box†`
+    // and widened it again without end (WI-20260902-JB6RS, measured: a stack overflow).
+    let sort = kb.type_arg_owner(base).filter(|sort| *sort != base.plain())?;
     let sort_ref = kb.make_sort_ref(sort);
     Some(parameterized_value(
         kb,

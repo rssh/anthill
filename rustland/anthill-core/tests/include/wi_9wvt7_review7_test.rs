@@ -211,8 +211,8 @@ fn a_variants_place_is_a_place_of_its_sort() {
              anthill.prelude.ModifyRuntime.{{set, get}}\n  sort Plain\n    provides Modifiable[T = Self]\n    \
              entity plain\n    entity other\n  end\n  operation putVariant(p: Plain.plain, n: Int64) -> Unit \
              effects {row} = set(p, n)\n  operation readVariant(p: Plain.plain) -> Int64 = get(p)\n  \
-             operation run() -> Int64 effects {caller} =\n    let _ = putVariant(plain, 42)\n    \
-             readVariant(plain)\nend\n"
+             operation run() -> Int64 effects {caller} =\n    let p: Plain.plain = plain\n    \
+             let _ = putVariant(p, 42)\n    readVariant(p)\nend\n"
         )
     };
     assert_refused_naming(
@@ -220,7 +220,9 @@ fn a_variants_place_is_a_place_of_its_sort() {
         &["undeclared effect: Modify[T = p]"],
         "the pure-looking writer",
     );
-    assert_eq!(run_with_modify(&program("Modify[p]", "Modify[plain]"), "test.r7.place.run"), Ok(42));
+    // The caller's place is a binding: ambient places are retired (WI-20260902-JB6RS), so
+    // `run` declares nothing — the write is to its own local.
+    assert_eq!(run_with_modify(&program("Modify[p]", "{}"), "test.r7.place.run"), Ok(42));
 }
 
 // ── C. a direct call of a defaulted member ────────────────────────────────────────────────

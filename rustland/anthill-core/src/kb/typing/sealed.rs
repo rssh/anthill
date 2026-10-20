@@ -581,7 +581,7 @@ fn heads_reached(body: &Rc<NodeOccurrence>, heads: &HashMap<Symbol, Vec<RuleId>>
         }
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
-    reached.sort_by_key(|s| s.index());
+    reached.sort_by_key(|s| s.to_bits());
     reached
 }
 

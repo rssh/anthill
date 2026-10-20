@@ -278,9 +278,11 @@ fn the_clause_a_rule_body_matches_is_unmoved() {
 }
 
 /// THE DIAGNOSTIC proposal 055 §2 names as the uniform rule's residual risk: a construction
-/// with its parentheses forgotten. A free-standing entity's bare name — and an eponymous
-/// sort's — denotes the TYPE, so `use_leaf(Leaf)` is refused, and now says which type it
-/// was handed rather than only `got Type`.
+/// with its parentheses forgotten. It was refused as a TYPE handed where a `Leaf` is
+/// expected (`got Type (Leaf)`), a free-standing entity's bare name and an eponymous sort's
+/// denoting the type. Since WI-20260902-JB6RS a constructor's bare name is its INSTANCE
+/// (kernel-language.md §4.4), so `use_leaf(Leaf)` is `use_leaf(Leaf())` — refused as the
+/// incomplete construction it is, naming the field it lacks and how the type is written.
 ///
 /// The SHADOWING half passes either way by design: a parameter or a `let` spelled `Leaf` is
 /// a binder of its own and denotes no type, so its mismatch carries no suffix.
@@ -305,11 +307,12 @@ end
     );
     let with = |needle: &str| errs.iter().filter(|e| e.contains(needle)).count();
     assert_eq!(
-        with("expected Leaf, got Type (Leaf)"),
+        with("`Leaf` is constructed without its field `name`"),
         2,
-        "the argument and the return each name the type `Leaf`: {errs:?}"
+        "the argument and the return each name the missing field: {errs:?}"
     );
-    assert_eq!(with("expected Ep, got Type (Ep)"), 1, "{errs:?}");
+    assert_eq!(with("TYPE is written `Leaf[]`"), 2, "and the type's spelling: {errs:?}");
+    assert_eq!(with("`Ep` is constructed without its field `name`"), 1, "{errs:?}");
     assert!(
         errs.iter()
             .any(|e| e.contains("expected Int64, got String") && !e.contains("(Leaf)")),

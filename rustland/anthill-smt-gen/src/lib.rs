@@ -1933,7 +1933,10 @@ impl<'kb> Emitter<'kb> {
 
     /// Does `sym` build a value — a constructor of a sort, or an entity?
     fn is_construction(&self, sym: Symbol) -> bool {
-        self.kb.entity_field_types(sym).is_some() || self.kb.is_constructor_symbol(sym)
+        // A constructor's type face shares its declaration's fields but builds no value
+        // (WI-20260902-JB6RS): a type in a data slot is not a construction.
+        !sym.is_type_face()
+            && (self.kb.entity_field_types(sym).is_some() || self.kb.is_constructor_symbol(sym))
     }
 
     /// The value `named` gives the field `field`, by the field's SHORT name: a head is
@@ -3067,7 +3070,8 @@ impl<'kb> Emitter<'kb> {
 
     /// True if the symbol resolves to an entity declaration.
     fn is_known_entity(&self, sym: anthill_core::intern::Symbol) -> bool {
-        self.kb.entity_field_types(sym).is_some()
+        // An instance's head, so never a type face (WI-20260902-JB6RS).
+        !sym.is_type_face() && self.kb.entity_field_types(sym).is_some()
     }
 
     /// Classify a rule's head for the `collect_rule` dispatcher. The

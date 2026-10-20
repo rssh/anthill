@@ -378,16 +378,11 @@ fn arg_place(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> ArgPlace {
 /// global constant — so widening it there would change the alias rule for a reader that
 /// never asked this question. One source, two questions; this one gets its own name.
 ///
-/// The two shapes, and both are the SAME nullary-name-of-a-value category the loader
-/// admits into a `Modify` target ([`KnowledgeBase::is_ambient_resource_name`]):
-///   * a stable path — a variable (`Cell.set(k, 1)`), or a field projection whose HEAD
-///     is one (`Cell.set(c.rep, 1)` ⟹ `c`, WI-506 coverage). Delegated, unchanged.
-///   * a nullary CONSTRUCTOR APPLICATION — `set(counter(), n)`. The paren-less spelling
-///     already arrives as `Expr::Ref`/`Ident` and rides the path above (WI-592 records
-///     `c ↦ Green` for exactly that); `counter()` parses as an `Expr::Apply` with empty
-///     argument lists, which no shape above matches. Both spellings denote one term
-///     (the WI-511 `Fn{c,[],[]}`→`Ref(c)` alloc canon), so admitting only one of them
-///     would make the idiom depend on its parentheses.
+/// One shape: a stable path — a variable (`Cell.set(k, 1)`), or a field projection whose
+/// HEAD is one (`Cell.set(c.rep, 1)` ⟹ `c`, WI-506 coverage). A nullary CONSTRUCTOR was a
+/// second one, in both spellings (`set(counter(), n)`, `set(counter, n)`), naming the
+/// ambient resource WI-20260823-4GBQV admitted into a `Modify` target; WI-20260902-JB6RS
+/// retired it, so it is refused in either spelling, as the declaration refuses it.
 pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
     if let Some(head) = stable_receiver_path(kb, occ).and_then(|p| p.into_iter().next()) {
         // GATED AGAINST WHAT THE DECLARATION REFUSES. `stable_receiver_path` answers a
@@ -407,7 +402,11 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
         }
         return Some(head);
     }
-    nullary_constructor_arg(kb, occ)
+    // A nullary constructor APPLICATION (`counter()`) is no place either: it named the
+    // ambient resource WI-20260823-4GBQV admitted, retired by WI-20260902-JB6RS —
+    // `Modify[counter]` is the constructor's type, so no declaration could name the
+    // effect re-keyed onto it.
+    None
 }
 
 /// WI-20260823-4GBQV — a call whose argument for a MODIFIED parameter names no PLACE,
@@ -512,13 +511,12 @@ pub(super) fn unrekeyed_modify_argument(
 fn placeless_arg_reason(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String {
     const FRESH: &str = "produces a fresh value rather than naming a slot, so the effect \
                          has nothing to be re-keyed onto. Bind it first (`let x = …`) and \
-                         pass `x`, or pass a parameter, a field path off one, or a nullary \
-                         constructor naming an ambient resource";
+                         pass `x`, or pass a parameter or a field path off one";
     let named = |what: &str, sym: Symbol| {
         format!(
             "the name `{}`, which is {} and not a place — kernel-language.md §5.6 admits a \
-             parameter, `result`, a field path off one, a value-producing zero-arg \
-             operation, or a NULLARY constructor naming an ambient resource. The same name \
+             parameter, `result`, or a field path off one, and a resource is threaded as a \
+             parameter. The same name \
              is refused in a `Modify` target where it is declared, so no row could name \
              this effect either",
             kb.qualified_name_of(sym),
@@ -526,13 +524,13 @@ fn placeless_arg_reason(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String 
         )
     };
     let bare = |sym: Symbol| {
-        if kb.is_ambient_resource_name(sym) {
-            // Not reachable through the place gate — kept loud rather than silent.
-            named("not admitted here", sym)
-        } else if kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
+        if kb.has_kind(sym, crate::intern::SymbolKind::Sort) {
             named("its own sort (an eponymous constructor)", sym)
         } else if kb.entity_field_names(sym).is_some_and(|f| !f.is_empty()) {
             named("a constructor taking fields", sym)
+        } else if kb.has_kind(sym, crate::intern::SymbolKind::Entity) {
+            // WI-20260902-JB6RS: no ambient places — the repair is the parameter.
+            named("a nullary constructor — a constant, whose type a `Modify` target names", sym)
         } else {
             named("not a value place", sym)
         }
@@ -545,6 +543,27 @@ fn placeless_arg_reason(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> String 
                 "the call `{}(…)`, which {FRESH}",
                 kb.qualified_name_of(*functor)
             )
+        }
+        // A NULLARY constructor applied (`counter()`) is the constant its bare name is, not
+        // a fresh value: it is told as the bare name is (WI-20260902-JB6RS) — in both
+        // spellings the loader gives it, a `Constructor` once the name is known to be an
+        // entity and an `Apply` before.
+        Some(Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        }) if pos_args.is_empty() && named_args.is_empty() => bare(*name),
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) if pos_args.is_empty()
+            && named_args.is_empty()
+            && kb.has_kind(*functor, crate::intern::SymbolKind::Entity) =>
+        {
+            bare(*functor)
         }
         Some(Expr::Constructor { name, .. }) => {
             format!(
@@ -656,39 +675,6 @@ fn occ_place_head_sym(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
     })
 }
 
-/// WI-20260823-4GBQV — the constructor symbol of a NULLARY constructor application
-/// (`counter()`), if that is what `occ` is. See [`arg_place_head`].
-///
-/// Gated on the SAME [`KnowledgeBase::is_ambient_resource_name`] the loader gates the
-/// declaration on, not on `is_constructor_symbol`: a re-key onto a name the declaration
-/// cannot spell produces a label no author can declare, which is the un-re-keyed leak in
-/// another spelling. The written argument list must be empty too — `wrap()` on a
-/// field-bearing entity is an arity error the caller reports, not a place.
-///
-/// BOTH APPLICATION VARIANTS, and reading only one is how this arrived not working: the
-/// loader classifies `counter()` as an [`Expr::Constructor`] once the name is a known
-/// entity and as an [`Expr::Apply`] where it is not yet resolved to one, so a match on
-/// `Apply` alone left the ticket's own spelling leaking `Modify[T = target]` while the
-/// paren-less `counter` (an `Expr::Ref`, the [`stable_receiver_path`] arm) worked.
-fn nullary_constructor_arg(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    let (functor, pos_args, named_args) = match occ.as_expr()? {
-        Expr::Apply {
-            functor,
-            pos_args,
-            named_args,
-            ..
-        } => (functor, pos_args, named_args),
-        Expr::Constructor {
-            name,
-            pos_args,
-            named_args,
-            ..
-        } => (name, pos_args, named_args),
-        _ => return None,
-    };
-    (pos_args.is_empty() && named_args.is_empty() && kb.is_ambient_resource_name(*functor))
-        .then_some(*functor)
-}
 
 /// WI-400 increment C (eager let-alias): rewrite a projection type's receiver to its
 /// CANONICAL path BEFORE elimination, when its head is a let-aliased variable — so `y.M`

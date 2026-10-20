@@ -81,7 +81,7 @@ fn a_function_value_forwarding_a_parameter_is_refused_and_repaired() {
         );
         assert_eq!(
             answers(&repaired, &[&format!("test.vnqtr.fv.{ns}.empty")]),
-            ["Cell(V: List(T: Int64))"],
+            ["Cell[V = List[T = Int64]]"],
             "{ns}"
         );
     }
@@ -144,7 +144,7 @@ fn a_construction_types_a_function_value_at_its_instance() {
                 "test.vnqtr.fv.ctor.lamExp"
             ]
         ),
-        ["Cell(V: Int64)", "Cell(V: Int64)", "Cell(V: Int64)", "Cell(V: Int64)"]
+        ["Cell[V = Int64]", "Cell[V = Int64]", "Cell[V = Int64]", "Cell[V = Int64]"]
     );
 }
 
@@ -171,7 +171,7 @@ fn a_function_value_at_a_stated_type_answers() {
         "  operation app3(f: (x: Int64) -> Type) -> Type = f(1)\n  operation go() -> Type = app3(tyOf)",
     );
     assert_eq!(load_errors_of(&src), Vec::<String>::new());
-    assert_eq!(answers(&src, &["test.vnqtr.fv.stated.go"]), ["Cell(V: Int64)"]);
+    assert_eq!(answers(&src, &["test.vnqtr.fv.stated.go"]), ["Cell[V = Int64]"]);
 }
 
 /// A function value whose instance is fixed AFTER its reference answers: by a sibling
@@ -207,7 +207,7 @@ fn a_function_value_whose_instance_is_fixed_later_answers() {
             &src,
             &["test.vnqtr.fv.later.inCtor", "test.vnqtr.fv.later.inOption", "test.vnqtr.fv.later.inList"]
         ),
-        ["Cell(V: Int64)", "Cell(V: String)", "Cell(V: Int64)"]
+        ["Cell[V = Int64]", "Cell[V = String]", "Cell[V = Int64]"]
     );
 }
 
@@ -268,6 +268,6 @@ fn a_lambda_by_position_is_typed_at_the_construction_s_instance() {
             &src,
             &["test.vnqtr.fv.pos.goNamed", "test.vnqtr.fv.pos.goPositional", "test.vnqtr.fv.pos.bracket"]
         ),
-        ["Cell(V: Int64)", "Cell(V: Int64)", "Cell(V: Int64)"]
+        ["Cell[V = Int64]", "Cell[V = Int64]", "Cell[V = Int64]"]
     );
 }

@@ -194,7 +194,7 @@ fn the_binding_rewrite_keeps_the_prose_around_it() {
     convention: anthill.persistence.filesystem.FileConvention.single_file(
       file: "workitems.anthill")),
   role: anthill.persistence.ExtentRole.mirror(),
-  covers: [WorkItem, Feedback, Tag, StoreFormat])"#
+  covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])"#
         ),
     )
     .expect("write config");
@@ -214,7 +214,7 @@ fn the_binding_rewrite_keeps_the_prose_around_it() {
     );
     // `covers` is carried across rather than re-derived — migration changes where
     // rows live, not which ones the store holds.
-    assert!(after.contains("covers: [WorkItem, Feedback, Tag, StoreFormat]"), "{after}");
+    assert!(after.contains("covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]]"), "{after}");
 }
 
 /// A project running on the DEFAULT binding has no text to splice, so one is
@@ -422,7 +422,7 @@ fn a_project_declaring_the_backend_before_migrating_is_told_what_to_do() {
              root: \".\",\n    status_field: \"last_status_change.status\",\n    id_field: \"id\",\n    \
              ref_field: \"workitem\"),\n  \
            role: anthill.persistence.ExtentRole.mirror(),\n  \
-           covers: [WorkItem, Feedback, Tag, StoreFormat])\n",
+           covers: [WorkItem[], Feedback[], Tag[], StoreFormat[]])\n",
     )
     .expect("write config");
 

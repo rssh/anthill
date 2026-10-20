@@ -683,7 +683,7 @@ fn what_the_test_does_not_judge_is_an_error() {
         case none() -> false
     operation entityValue(n: Int64) -> Bool =
       match term_as_sort(as_term(Point(x: 3)))
-        case some(t) -> type_admits(Point, t)
+        case some(t) -> type_admits(Point[], t)
         case none() -> false
     operation fieldNamedLikeParam(n: Int64) -> Bool =
       match term_as_sort(as_term(crate(V: 3)))
