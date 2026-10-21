@@ -302,6 +302,14 @@ impl std::fmt::Display for ClauseKind {
     }
 }
 
+/// WI-20260821-6WVJB — one 061 predicate declaration: the number of arguments its head
+/// writes, positional and named counted together, and where it is written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct PredicateDeclaration {
+    pub(crate) arity: usize,
+    pub(crate) site: crate::span::SourceSpan,
+}
+
 // ── Clause origin ───────────────────────────────────────────────
 
 /// WI-5XBBQ — WHO WROTE THIS CLAUSE: the source text, or the loader?
@@ -609,6 +617,28 @@ pub struct ProgramClauseMatch {
 /// One owner because the two indexes now have different key types (WI-815), so
 /// `assert_fact` and `assert_fact_value` would otherwise spell this — and its
 /// stale-entry subtlety — twice, as they already do for the removal half.
+/// WI-20260821-6WVJB — a clause head's FUNCTOR and how many ARGUMENTS it carries,
+/// positional and named counted together; a bare head is an application of arity 0.
+/// `None` when the head is not an application at all — a literal, a variable, `⊥`.
+///
+/// Read through `TermView`, so a value head answers as a term head does. The one reader
+/// the load's one-arity check and a run-time write's ([`KnowledgeBase::established_arity`])
+/// share, so the two cannot count a head differently.
+pub(crate) fn head_functor_and_arity<V: term_view::TermView + ?Sized>(
+    kb: &KnowledgeBase,
+    head: &V,
+) -> Option<(Symbol, usize)> {
+    match head.head(kb) {
+        term_view::ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity,
+        } => Some((f, pos_arity + named_arity)),
+        term_view::ViewHead::Ident(f) => Some((f, 0)),
+        _ => None,
+    }
+}
+
 fn live_dedup_hit<K: std::hash::Hash + Eq>(
     map: &HashMap<(K, ClauseKind, Symbol), RuleId>,
     rules: &[RuleEntry],
@@ -1319,6 +1349,17 @@ pub struct KnowledgeBase {
     /// definition" to the refusal the body already drew. Per phase, cleared beside
     /// [`Self::op_decl_sites`] for its reason.
     pub(crate) op_bodies_refused: HashSet<Symbol>,
+
+    /// WI-20260821-6WVJB — every 061 predicate DECLARATION (a body-less `rule p(…)`) with the
+    /// arity its head states and where it is written, keyed by the predicate's symbol.
+    /// `load::check_one_arity_per_name` holds a predicate's clauses to it: a declaration
+    /// states the arity, and a clause of another arity beside it is refused as two clauses
+    /// of different arities are.
+    ///
+    /// NOT PER PHASE, unlike [`Self::op_decl_sites`]: a later load's clause is held to an
+    /// earlier load's declaration, which a phase-cleared log would have forgotten. A load
+    /// presented again records the same row again, so a row is kept once.
+    pub(crate) predicate_declarations: HashMap<Symbol, Vec<PredicateDeclaration>>,
 
     /// WI-999 (proposal 059 R4 clause 3) — EVERY NAMED DECLARATION THIS SCAN WROTE,
     /// as written: the scope it declares into, its local name, the symbol it landed
@@ -2852,6 +2893,7 @@ impl KnowledgeBase {
             op_records: HashMap::new(),
             op_decl_sites: HashMap::new(),
             op_bodies_refused: HashSet::new(),
+            predicate_declarations: HashMap::new(),
             decl_sites: Vec::new(),
             scan_type_decls: Vec::new(),
             last_load: load::LastLoad::default(),
@@ -3612,6 +3654,39 @@ impl KnowledgeBase {
     /// both lines. Called once per `Item::Operation` the loader converts.
     pub(crate) fn record_op_decl_site(&mut self, op_sym: Symbol, site: crate::span::SourceSpan) {
         self.op_decl_sites.entry(op_sym).or_default().push(site);
+    }
+
+    /// WI-20260821-6WVJB — record a 061 predicate declaration: the arity its head states
+    /// and where it is written. See [`Self::predicate_declarations`].
+    pub(crate) fn record_predicate_declaration(&mut self, sym: Symbol, decl: PredicateDeclaration) {
+        let rows = self.predicate_declarations.entry(sym).or_default();
+        if !rows.contains(&decl) {
+            rows.push(decl);
+        }
+    }
+
+    /// WI-20260821-6WVJB — the declarations of `sym` ([`Self::predicate_declarations`]).
+    pub(crate) fn predicate_declarations_of(&self, sym: Symbol) -> &[PredicateDeclaration] {
+        self.predicate_declarations.get(&sym).map_or(&[], Vec::as_slice)
+    }
+
+    /// WI-20260821-6WVJB — the arity every clause of `functor` has, which a row written at
+    /// run time must have too: its declaration's, else its first live clause's. `None` for
+    /// a name the rule does not reach (an entity, a kernel meta-sort) and for one with
+    /// neither a declaration nor a clause, whose first row then sets it.
+    pub(crate) fn established_arity(&self, functor: Symbol) -> Option<usize> {
+        use crate::intern::SymbolKind;
+        if !(self.has_kind(functor, SymbolKind::Goal)
+            || self.has_kind(functor, SymbolKind::Operation))
+        {
+            return None;
+        }
+        if let Some(decl) = self.predicate_declarations_of(functor).first() {
+            return Some(decl.arity);
+        }
+        self.rules_by_functor_iter(functor)
+            .find_map(|rid| head_functor_and_arity(self, self.rule_head_value(rid)))
+            .map(|(_, n)| n)
     }
 
     /// WI-20260822-59CDQ — every operation THIS load phase declared, with the FIRST
@@ -5391,12 +5466,52 @@ impl KnowledgeBase {
         // allocates a fresh slot rather than returning the dead RuleId; callers
         // wanting to revive the fact go through `assert_rule` directly.
         // `live_dedup_hit` owns that rule for both indexes.
+        let term = self.predicate_head_in_key_order(term);
         if let Some(rid) =
             live_dedup_hit(&self.fact_dedup, &self.rules, &(term, clause_kind, domain))
         {
             return rid;
         }
         self.assert_rule(term, vec![], clause_kind, domain, meta)
+    }
+
+    /// WI-20260821-6WVJB — a predicate's or an operation's fact head with its NAMED
+    /// arguments in one order, so `fact r(a: 3, b: 4)` and `fact r(b: 4, a: 3)` are one
+    /// hash-consed term and dedup to one row, as two identical spellings do. Matching does
+    /// not need it — the tree walks named keys in one order whatever a head holds
+    /// (`discrim::walk_named_keys`) — the stored row does: without it the second spelling is
+    /// a second row of the same fact.
+    ///
+    /// Any other head is left as it is. An entity's or a record's arguments are already in
+    /// their declared order, and a sort-headed fact's bindings are not a predicate's keys.
+    fn predicate_head_in_key_order(&mut self, term: TermId) -> TermId {
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.get_term(term)
+        else {
+            return term;
+        };
+        let functor = *functor;
+        if named_args.len() < 2
+            || !(self.has_kind(functor, crate::intern::SymbolKind::Goal)
+                || self.has_kind(functor, crate::intern::SymbolKind::Operation))
+        {
+            return term;
+        }
+        let pos_args = pos_args.clone();
+        let written = named_args.clone();
+        let mut named = written.clone();
+        self.canonicalize_record_named_args(functor, &mut named);
+        if named == written {
+            return term;
+        }
+        self.alloc(Term::Fn {
+            functor,
+            pos_args,
+            named_args: named,
+        })
     }
 
     /// Assert a value fact — a fact whose head is carrier-agnostic and may

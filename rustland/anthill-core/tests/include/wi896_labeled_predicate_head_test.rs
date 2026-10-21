@@ -117,16 +117,18 @@ fn the_four_cases_are_decided_by_resolution_not_by_the_label() {
 /// the thing it protects against: minting `<ns>.or` re-points EVERY bare `or` in the
 /// scope, so the disjunction two lines down silently stops being disjunction.
 ///
-/// MEASURED both ways on this exact fixture. Pre-WI-896 `reach896` yields ZERO solutions
-/// — the `or` in its body resolves to the freshly-minted 1-ary `<ns>.or` Goal and no
-/// clause matches, with no diagnostic anywhere. Post-WI-896 it yields TWO, because `or`
+/// MEASURED both ways on this fixture as WI-896 wrote it, with the user's clause
+/// `rule or(?x) :- p896(?x)`. Pre-WI-896 `reach896` yields ZERO solutions — the `or` in
+/// its body resolves to the freshly-minted 1-ary `<ns>.or` Goal and no clause matches,
+/// with no diagnostic anywhere. Post-WI-896 it yields TWO, because `or`
 /// keeps meaning `anthill.kernel.or` in head position exactly as it already did in body
 /// position. That consistency is the argument: one spelling, one meaning, whichever side
 /// of the `:-` it is written on.
 ///
-/// WI-899 owns what becomes of the user's own `or` clause: at the native handler's
-/// arity it now contributes answers beside the native branches, and off that arity it
-/// remains an ordinary clause on the same resolved symbol.
+/// WI-899 owns what becomes of the user's own `or` clause: at `or`'s arity it is one more
+/// answer source of the same resolved symbol, which is where this one is written — it
+/// answers nothing for the goal below, so the disjunction's two answers are all there is.
+/// Off that arity it is refused: `or`'s clauses have one arity (WI-20260821-6WVJB).
 #[test]
 fn a_kernel_primitive_head_does_not_capture_the_scope() {
     const SRC: &str = r#"
@@ -136,7 +138,7 @@ namespace wi896.orcapture
   fact p896(1)
   fact q896(2)
   -- a user predicate head naming the kernel disjunction primitive
-  rule or(?x) :- p896(?x)
+  rule or(?a, ?b) :- p896(?a)
   -- …and a genuine disjunction in the SAME scope, two lines down
   rule reach896(?x) :- or(p896(?x), q896(?x))
 end

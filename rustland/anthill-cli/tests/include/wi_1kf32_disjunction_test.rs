@@ -639,11 +639,12 @@ end
     );
 }
 
-/// A CLAUSE OF ANOTHER ARITY IS NO RECURSION — `span/2` beside `span/3` is two
-/// predicates — and A VARIABLE PASSED THROUGH AN INLINED RULE IS STILL FREE where a head's
-/// number meets it. On the first cut `wide` was refused as recursive (the stack held
-/// names, not arities), and `wrapped` as "not known to be" the number, where the same
-/// call written in the proof read.
+/// A CALL OF ANOTHER PREDICATE IS NO RECURSION, and A VARIABLE PASSED THROUGH AN INLINED
+/// RULE IS STILL FREE where a head's number meets it. On the first cut `wide` was refused
+/// as recursive — then `span3` was a second clause of `span`, `span/2` beside `span/3`,
+/// and the stack held names, not arities — and `wrapped` as "not known to be" the number,
+/// where the same call written in the proof read. One name at two arities is refused at
+/// load since WI-20260821-6WVJB, so the three-argument relation has a name of its own.
 #[test]
 fn what_is_read_inlined_is_read_as_it_is_in_the_proof() {
     let out = dry_run(
@@ -652,8 +653,8 @@ fn what_is_read_inlined_is_read_as_it_is_in_the_proof() {
 namespace test.kf32.inlined
   import anthill.prelude.PartialOrd.{gte, lte}
 
-  rule span(?a, ?b, ?c) :- gte(?a, ?b + ?c)
-  rule span(?a, ?b) :- span(?a, ?b, 0.0)
+  rule span3(?a, ?b, ?c) :- gte(?a, ?b + ?c)
+  rule span(?a, ?b) :- span3(?a, ?b, 0.0)
   rule wide: gte(?x, ?y) :- span(?x, ?y)
   proof wide by z3 end
 

@@ -1993,6 +1993,8 @@ mod wi_wn9p8_forward_soundness_test;
 
 #[path = "include/wi_brt4y_host_implemented_test.rs"]
 mod wi_brt4y_host_implemented_test;
+#[path = "include/wi_6wvjb_one_arity_per_name_test.rs"]
+mod wi_6wvjb_one_arity_per_name_test;
 #[path = "include/wi_9r5hn_reflect_set_test.rs"]
 mod wi_9r5hn_reflect_set_test;
 

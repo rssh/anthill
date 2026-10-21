@@ -530,6 +530,19 @@ impl ClauseSlots {
     }
 }
 
+/// One arity of a name whose clauses have several ([`LoadError::ClausesOfDifferentArity`]):
+/// the declaration that states it, and the clauses written at it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArityGroup {
+    pub arity: usize,
+    /// Where a 061 declaration states this arity, rendered — `None` when none does.
+    pub declared_at: Option<String>,
+    /// How many clauses sit at this arity.
+    pub clauses: usize,
+    /// Where the first of them is, rendered — `None` when there are none.
+    pub first_clause_at: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     /// A name that resolves to nothing — a typo, or a reference to something
@@ -1639,6 +1652,24 @@ pub enum LoadError {
         /// One rendered location per clause under that functor, in load order.
         /// Always at least one — its non-emptiness IS the verdict.
         clause_sites: Vec<String>,
+    },
+    /// WI-20260821-6WVJB — ONE NAME, ONE ARITY. The clauses of one predicate, and the
+    /// clauses written under one operation, all have one arity — positional and named
+    /// arguments counted together — and a 061 declaration states it. Arity is not part of
+    /// a name: a bare name is a value (`apply1(twice, 3)`, a cited relation), and a value
+    /// position says no arity to pick by, so one name is one relation with one schema.
+    ///
+    /// Carries no `span` and is NOT wrapped in [`LoadError::Located`], for
+    /// [`Self::DuplicateOperationDeclaration`]'s reason: the clauses routinely sit in
+    /// different files, and in different loads.
+    ClausesOfDifferentArity {
+        /// The predicate's or operation's QUALIFIED name.
+        name: String,
+        /// What the name is — `"predicate"` or `"operation"` — for the message.
+        kind: &'static str,
+        /// One group per arity, in the order first met: a declaration before any clause,
+        /// then the clauses in load order. Always at least two.
+        arities: Vec<ArityGroup>,
     },
     /// WI-20260922-BRT4Y — an operation declared `@[host_implemented]` that no binding
     /// block in the loaded program realizes: no `operation_map` entry, in any language,
@@ -3976,6 +4007,11 @@ impl LoadError {
             LoadError::DuplicateConstDeclaration { name, sites } => {
                 duplicate_const_message(name, sites)
             }
+            LoadError::ClausesOfDifferentArity {
+                name,
+                kind,
+                arities,
+            } => different_arity_message(name, kind, arities),
             LoadError::OperationBodyAndClauses {
                 op,
                 definition,
@@ -4417,6 +4453,11 @@ impl std::fmt::Display for LoadError {
             LoadError::DuplicateConstDeclaration { name, sites } => {
                 write!(f, "{}", duplicate_const_message(name, sites))
             }
+            LoadError::ClausesOfDifferentArity {
+                name,
+                kind,
+                arities,
+            } => write!(f, "{}", different_arity_message(name, kind, arities)),
             LoadError::OperationBodyAndClauses {
                 op,
                 definition,
@@ -7598,10 +7639,12 @@ enum RuleReading {
     /// unlike 059 R1's duplicate type (WI-997) and WI-1049's duplicate operation, which
     /// are refused. The difference is what a merge DISCARDS: those declarations carry
     /// content (variants, a signature) and `SymbolTable::define`'s merge silently keeps
-    /// whichever came first. A predicate declaration carries nothing — no signature, no
-    /// arity claim (that is WI-20260821-6WVJB's question), no clause — so two of them
-    /// name the same symbol and lose nothing. 061's "written once, in one file" is
-    /// advice about where to put it; there is no second reading for a refusal to guard.
+    /// whichever came first. A predicate declaration carries nothing but the arity its
+    /// head states — no signature, no clause — so two of one arity name the same symbol
+    /// and lose nothing, and two of different arities are refused by
+    /// `check_one_arity_per_name` as two clauses of different arities are
+    /// (WI-20260821-6WVJB). 061's "written once, in one file" is advice about where to put
+    /// it; there is no second reading for a refusal to guard.
     Declaration,
     /// Anything with a body — and the shapes 061 leaves alone, which are the
     /// equality-family connective heads: `<=>` DEFINES (its clauses index under the
@@ -8413,6 +8456,37 @@ fn duplicate_const_message(name: &str, sites: &[String]) -> String {
          kept are whichever were written last. Rename one, or delete one. Same-named \
          consts of DIFFERENT sorts are fine — those are distinct symbols.",
         sites.len(),
+    )
+}
+
+/// WI-20260821-6WVJB — THE ONE-ARITY SENTENCE, one owner, for
+/// [`duplicate_type_message`]'s reason (two render paths). Each arity is told with what
+/// is written at it — the declaration that states it, then how many clauses sit there
+/// and where the first is — so the author sees which side is the odd one out.
+fn different_arity_message(name: &str, kind: &str, arities: &[ArityGroup]) -> String {
+    let rendered = arities
+        .iter()
+        .map(|g| {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(at) = &g.declared_at {
+                parts.push(format!("declared at {at}"));
+            }
+            match (g.clauses, &g.first_clause_at) {
+                (0, _) | (_, None) => {}
+                (1, Some(at)) => parts.push(format!("1 clause, at {at}")),
+                (n, Some(at)) => parts.push(format!("{n} clauses, the first at {at}")),
+            }
+            let noun = if g.arity == 1 { "argument" } else { "arguments" };
+            format!("{} {noun} ({})", g.arity, parts.join("; "))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{kind} '{name}' is written at more than one arity: {rendered}. The clauses of one \
+         {kind} all have one arity, positional and named arguments counted together, and a \
+         declaration states it. Arity is not part of a name: a bare `{name}` is a value with \
+         no arity to choose by, so these are not two {kind}s but one relation with no single \
+         schema. Give every clause the one arity, or give the others a name of their own."
     )
 }
 
@@ -16642,6 +16716,12 @@ fn load_phase_inner(
     all_errors.extend(check_operation_body_and_clauses(kb));
     all_errors.extend(check_induction_axiom_names(kb));
     mark!("check_operation_body_and_clauses");
+    // WI-20260821-6WVJB: one name, one arity. Beside WI-939's check and for its reason —
+    // it reads the RULE index, where a head lands on its predicate once every name is
+    // resolved.
+    let phase_first_source = kb.last_load.first_source;
+    all_errors.extend(check_one_arity_per_name(kb, phase_first_rule, phase_first_source));
+    mark!("check_one_arity_per_name");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -19116,8 +19196,9 @@ pub fn derive_sort_domains(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // cites), so a sort that also wrote the 2-ary form would hold TWO ARITIES
         // under one name — and a citation builds its query from the FIRST clause's
         // head shape (`eval::build_relation_value`), so which arity answered would
-        // depend on load order. One arity per predicate (WI-6WVJB) refuses that
-        // outright later; refusing it HERE names the 1-ary spelling to move to.
+        // depend on load order. One arity per predicate (`check_one_arity_per_name`,
+        // WI-20260821-6WVJB) refuses one name at two arities wherever it arises; refusing
+        // this one HERE, before the 1-ary clause is derived, names the spelling to move to.
         if let Some(sym) = hand_named.filter(|&sym| kb.has_kind(sym, SymbolKind::Goal)) {
             if kb
                 .rules_by_functor(sym)
@@ -20597,28 +20678,152 @@ pub(crate) fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
     }
 }
 
-/// WI-939 item 4 — how many ARGUMENTS this rule's head carries. `None` when the head
-/// is not an application at all — a literal, a variable, `⊥`.
+/// WI-939 item 4 — this rule's head FUNCTOR and how many ARGUMENTS it carries,
+/// positional and named counted together (`kb::head_functor_and_arity`). `None` when the
+/// head is not an application at all — a literal, a variable, `⊥`.
 ///
-/// WI-20260902-CZJ2N — THE NULLARY ARM IS `Term::Ref`, and it is not a courtesy: a
-/// nullary head is STORED bare (`KnowledgeBase::nullary_canon`), so the `Term::Fn`
-/// destructure alone answered `None` for `rule flag()` and the caller
+/// WI-20260902-CZJ2N — A BARE HEAD IS AN APPLICATION OF ARITY 0, and it is not a
+/// courtesy: a nullary head is STORED bare (`KnowledgeBase::nullary_canon`), so reading
+/// only an applied head answered `None` for `rule flag()` and the caller
 /// (`check_operation_body_and_clauses`) then never counted it. That SUPPRESSES a
 /// load-blocking refusal: a clause under a bodied nullary `Bool` operation is a second
 /// DEFINITION of it, the clauses take precedence, and the operation silently answers
-/// differently from its body. The doc used to say "`None` when the head is not an
-/// application at all (a bare marker)", which was the reading this ticket deletes —
-/// a bare head IS an application of arity 0.
-fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
-    match kb.terms.get(kb.rule_head(rid)) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => Some(pos_args.len() + named_args.len()),
-        Term::Ref(_) | Term::Ident(_) => Some(0),
-        _ => None,
+/// differently from its body.
+///
+/// Read through `TermView` (WI-20260821-6WVJB), so a VALUE head answers as a term head
+/// does; reading the term store panicked on one.
+fn clause_head_arity(kb: &KnowledgeBase, rid: super::RuleId) -> Option<(Symbol, usize)> {
+    super::head_functor_and_arity(kb, kb.rule_head_value(rid))
+}
+
+/// WI-20260821-6WVJB — ONE NAME, ONE ARITY: the clauses of a predicate, and the clauses
+/// written under an operation, all have one arity, and a 061 declaration states it
+/// ([`LoadError::ClausesOfDifferentArity`]).
+///
+/// WHO IS HELD TO IT: a name a program writes clauses under — a predicate or an
+/// operation. Not a kernel meta-sort the loader writes rows for: `Constraint` is a sort
+/// whose rows take a shape per constraint form (`head` and `guard`, `head` alone, `guard`
+/// alone), and no program writes or reads them (user, 2026-10-20). Not an entity, whose
+/// fact heads take the constructor's arity, every omitted field filled. WI-938's view at
+/// an operation's arity + 1 is a reading of a goal and stores no clause, so it is no
+/// arity here.
+///
+/// ARITY is the head's argument count, positional and named counted together (user,
+/// 2026-10-20): `fact r(1, 2)` beside `fact r(a: 3, b: 4)` is one arity.
+///
+/// WHICH NAMES ARE ASKED: each one this load gave a clause or a declaration, against
+/// every clause and declaration it has. So a later load's clause is held to an earlier
+/// load's, and a load that adds nothing to a name does not ask about it again — nor
+/// report again what an earlier, refused load left. A declaration is this load's when
+/// the source it is written in is: sources are registered per load, from
+/// `phase_first_source` on, where a load that asserts no clause leaves no mark in the
+/// rule table to tell it from the one before.
+///
+/// CORPUS COST ZERO, measured over every live clause, source and derived, of the stdlib,
+/// every example and the anthill-todo bundle: no predicate and no operation has clauses
+/// at two arities.
+fn check_one_arity_per_name(
+    kb: &KnowledgeBase,
+    phase_first_rule: usize,
+    phase_first_source: usize,
+) -> Vec<LoadError> {
+    let held =
+        |f: Symbol| kb.has_kind(f, SymbolKind::Goal) || kb.has_kind(f, SymbolKind::Operation);
+    let mut names: Vec<Symbol> = Vec::new();
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    for i in phase_first_rule..kb.rules.len() {
+        if kb.rules[i].retracted {
+            continue;
+        }
+        if let Some((f, _)) = clause_head_arity(kb, super::RuleId::from_index(i)) {
+            if held(f) && seen.insert(f) {
+                names.push(f);
+            }
+        }
     }
+    // By symbol index, not `HashMap` order: two runs over one corpus must report
+    // identically.
+    let mut declared: Vec<Symbol> = kb
+        .predicate_declarations
+        .iter()
+        .filter(|(f, rows)| {
+            !seen.contains(*f)
+                && rows
+                    .iter()
+                    .any(|d| d.site.source.index() >= phase_first_source)
+        })
+        .map(|(f, _)| *f)
+        .collect();
+    declared.sort_by_key(|s| s.to_bits());
+    names.extend(declared);
+
+    /// What is written at one arity of one name, before it is rendered.
+    struct Group {
+        arity: usize,
+        declared: Option<SourceSpan>,
+        clauses: usize,
+        /// The first clause's head span — itself `None` for a clause the loader derived.
+        first_clause: Option<Option<SourceSpan>>,
+    }
+    fn group_of(groups: &mut Vec<Group>, arity: usize) -> &mut Group {
+        let i = match groups.iter().position(|g| g.arity == arity) {
+            Some(i) => i,
+            None => {
+                groups.push(Group {
+                    arity,
+                    declared: None,
+                    clauses: 0,
+                    first_clause: None,
+                });
+                groups.len() - 1
+            }
+        };
+        &mut groups[i]
+    }
+    let mut errors = Vec::new();
+    for f in names {
+        // In the order first met: the declaration, then the clauses in load order.
+        let mut groups: Vec<Group> = Vec::new();
+        for decl in kb.predicate_declarations_of(f) {
+            group_of(&mut groups, decl.arity).declared.get_or_insert(decl.site);
+        }
+        for rid in kb.rules_by_functor_iter(f) {
+            let Some((_, n)) = clause_head_arity(kb, rid) else {
+                continue;
+            };
+            let g = group_of(&mut groups, n);
+            g.clauses += 1;
+            g.first_clause.get_or_insert(kb.rule_head_span(rid));
+        }
+        if groups.len() < 2 {
+            continue; // the universal case
+        }
+        // A source clause carries its head's span; one that does not is the loader's.
+        let render_clause = |site: Option<SourceSpan>| {
+            site.map_or_else(
+                || "a clause the loader derived".to_string(),
+                |s| render_decl_site(kb, s),
+            )
+        };
+        errors.push(LoadError::ClausesOfDifferentArity {
+            name: kb.qualified_name_of(f).to_string(),
+            kind: if kb.has_kind(f, SymbolKind::Goal) {
+                "predicate"
+            } else {
+                "operation"
+            },
+            arities: groups
+                .into_iter()
+                .map(|g| ArityGroup {
+                    arity: g.arity,
+                    declared_at: g.declared.map(|s| render_decl_site(kb, s)),
+                    clauses: g.clauses,
+                    first_clause_at: g.first_clause.map(render_clause),
+                })
+                .collect(),
+        });
+    }
+    errors
 }
 
 /// WI-939 item 4 — WOULD this bodied or host-implemented operation have a BOOL
@@ -20857,7 +21062,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
                 if kb.clause_origin(rid) != crate::kb::ClauseOrigin::Source {
                     continue;
                 }
-                let Some(n) = head_arg_count(kb, rid) else {
+                let Some((_, n)) = clause_head_arity(kb, rid) else {
                     continue;
                 };
                 let (plus_one, own) = (n == params + 1, bool_view && n == params);
@@ -39801,7 +40006,40 @@ impl<'a> Loader<'a> {
                                 // rule, and a description emitted beside one would bank
                                 // a fact about a declaration the loader just rejected.
                                 // Only this branch has a declaration that stands.
-                                None => self.emit_own_descriptions(sym, &r.descriptions, domain),
+                                None => {
+                                    // WI-20260821-6WVJB — the arity the declaration
+                                    // states, which every clause of the predicate is
+                                    // held to (`check_one_arity_per_name`). One head:
+                                    // a multi-head rule declares nothing.
+                                    let [RuleHead::Term(head)] = r.heads.as_slice() else {
+                                        unreachable!("a declaration has one head term");
+                                    };
+                                    let arity = match self.parsed.terms.get(*head) {
+                                        Term::Fn {
+                                            pos_args,
+                                            named_args,
+                                            ..
+                                        } => pos_args.len() + named_args.len(),
+                                        Term::Ident(_) => 0,
+                                        // `rule_reading` answered `Declaration` through
+                                        // `head_subject_name`, which reads a name off
+                                        // these two shapes only (a dotted chain is
+                                        // refused there as qualified).
+                                        other => unreachable!(
+                                            "a declaration's head introduced a name, so it \
+                                             is an application or a bare name: {other:?}"
+                                        ),
+                                    };
+                                    let site = SourceSpan::from_span(
+                                        self.source_id,
+                                        self.parsed.terms.span(*head),
+                                    );
+                                    self.kb.record_predicate_declaration(
+                                        sym,
+                                        crate::kb::PredicateDeclaration { arity, site },
+                                    );
+                                    self.emit_own_descriptions(sym, &r.descriptions, domain)
+                                }
                             }
                         }
                     }
@@ -45519,5 +45757,38 @@ mod wi819_diagnostic_tests {
                 "{label} renders with a collapsed-continuation run: {rendered:?}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod wi_6wvjb_one_arity_load_tests {
+    use super::*;
+
+    fn load(kb: &mut KnowledgeBase, src: &str) -> Vec<LoadError> {
+        let parsed = crate::parse::parse(src).expect("parse");
+        load_all(kb, &[&parsed], &NullResolver).err().unwrap_or_default()
+    }
+
+    /// WI-20260821-6WVJB — A LOAD ASKS ABOUT WHAT IT WROTE. A load refused for two
+    /// declarations of `t` leaves both in the KB; a later load that writes nothing about
+    /// `t` is not refused for them again, while one that writes a clause of `t` is.
+    ///
+    /// FAILS with the declared-name population widened back to every declared predicate:
+    /// the second load then reports the first load's `t`.
+    #[test]
+    fn a_later_load_does_not_report_an_earlier_loads_declarations() {
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let first = load(&mut kb, "namespace rl6\n  rule t(?x)\n  rule t(?x, ?y)\nend\n");
+        assert!(
+            matches!(first.as_slice(), [LoadError::ClausesOfDifferentArity { .. }]),
+            "the first load is refused for `t`: {first:?}"
+        );
+        let unrelated = load(&mut kb, "namespace rl6b\n  fact q(1)\nend\n");
+        assert!(unrelated.is_empty(), "nothing about `t` was written: {unrelated:?}");
+        let touching = load(&mut kb, "namespace rl6\n  fact t(1)\nend\n");
+        assert!(
+            matches!(touching.as_slice(), [LoadError::ClausesOfDifferentArity { .. }]),
+            "a clause of `t` is asked about `t`: {touching:?}"
+        );
     }
 }

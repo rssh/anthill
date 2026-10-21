@@ -3,9 +3,9 @@
 - id: WI-20260821-6WVJB-a-predicate-s-clauses-must-all
 - created: 2026-08-21T15:37:20Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T15:37:20Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-21T05:15:58Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -87,4 +87,27 @@ STALE TEXT TO UPDATE ON DELIVERY: docs/kernel-language.md §8.6 ("A declaration 
 CORRECTION to the previous entry: the stale sentence ("A declaration carries no arity claim ...") is in docs/kernel-language.md §5.3 Rule, near line 2545, not §8.6.
 
 ON DECISION ITEMS 3 AND 4, a suggested reading for the user to confirm, not a decision: arity is the declared column list -- positional and named columns counted together, a ...args capture counted as one column -- so a head with named slots and one with the same slots written positionally have one arity. WI-938's arity + 1 view stays legal under it: it is a reading of a GOAL against a bodied operation, not a second clause set of a predicate, and WI-939 item 4 already refuses a hand-written clause in that slot.
+
+### 2026-10-20T19:52:29Z — feedback — claude
+
+DECIDED (user, 2026-10-20), the four items:
+
+ 1. CONSTRAINT: outside the rule. The rule covers the names a program writes clauses under -- predicates and operations. `Constraint` is a kernel meta-sort (KERNEL_META_SORTS, symbol kind Sort) whose rows the loader writes for every `constraint` item, in three shapes: Constraint(head(..), guard(..)) for a guarded denial, Constraint(head(..)) for a bare one, Constraint(guard(<query>)) for a quantified one. No program in stdlib, examples or the CLIs queries them.
+ 2. ENFORCED as a load check over the clauses of each predicate and operation, a declaration counted as one of them.
+ 3. WI-938's arity + 1 view stays legal: it is a reading of a goal, no stored clause.
+ 4. ARITY IS THE ARGUMENT COUNT, positional and named counted together. `fact q(a: 1)` beside `fact q(a: 1, b: 2)` is refused; `fact r(1, 2)` beside `fact r(a: 3, b: 4)` stays legal. A `...args` capture never reaches a predicate: it is refused in a logical rule head (measured).
+
+ADDED TO THIS TICKET (user, same day): a predicate's NAMED-ARGUMENT ORDER is normalized in heads and goals. Measured on the tree: with `fact r(a: 3, b: 4)`, `rule s(?x, ?y) :- r(b: ?y, a: ?x)` answers nothing while the goal written `r(a: ?x, b: ?y)` answers (3, 4); `fact r(b: 4, a: 3)` is the mirror. Entities and records already get one key order (canonicalize_record_named_args); a predicate's head and goal keep their source order.
+
+FURTHER SHAPES THE CHECK COVERS, each loading clean today: clauses under one operation at two arities (`fact S.f(1, 2, 3)` beside `fact S.f(5)` for `operation f(x: Int64) -> Int64`); an imported predicate gaining a clause of another arity from the importing namespace (`namespace a { rule p(?x)  fact p(1) }  namespace b { import a.p  fact p(1, 2) }` -- `a.p` answers at both arities); a declaration beside a clause of another arity.
+
+CENSUS (2026-10-20, every live clause, source and derived, stdlib + every example + the anthill-todo bundle): no predicate and no operation has clauses at two arities. The only mixed name is `Constraint` (guardians: arities 1 and 2), which item 1 leaves outside.
+
+NOTE: the August probes in the description use `rule p(1)`, which has been a DECLARATION since 061 and stores no clause; the rows use `fact`.
+
+### 2026-10-21T05:15:57Z — feedback — claude
+
+DELIVERED 2026-10-21. One name, one arity: the clauses of a predicate and the clauses written under an operation all have one arity (positional and named counted together), a 061 declaration states it, and another arity is LoadError::ClausesOfDifferentArity naming each arity and where it is written (load::check_one_arity_per_name, beside WI-939's check), across loads too; a fact written at run time of another arity is refused by check_fact_mutation_target (KnowledgeBase::established_arity). The kernel's Constraint rows are outside it. Named arguments of a predicate's heads and goals match in any key order (discrim walks keys through KnowledgeBase::sort_named_keys_for_matching; a fact head is stored in key order, so the two spellings are one row); a named tuple keeps its order. Spec §5.3 rewritten (approved by the user 2026-10-21); proposals 061 and 069 updated. Rows: tests/include/wi_6wvjb_one_arity_per_name_test.rs (22) and kb::load::wi_6wvjb_one_arity_load_tests (1), each part backed out alone fails its rows. Seven existing rows rewritten (wi1058, wi896, wi899, kf2sd, cdhsq, 1kf32): their programs gave one name two arities. Full workspace 10,235 passed, 0 failed; families unmoved; scaland testFull 710 passed (unchanged, scaland mirrors neither the refusal family nor named-key canonicalization).
+
+OPEN, for the user: a LONE clause under an operation at an arity unrelated to its parameter count still loads (fact S.f(1, 2, 3) beside operation f(x: Int64) -> Int64); only a second arity is refused. Whether an operation's declaration fixes its clauses' arity (own arity for Bool, arity + 1 otherwise) is not decided. And the SMT generator's per-arity handling (span/2 beside span/3) is now unreachable and was left in place.
 

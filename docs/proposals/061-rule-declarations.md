@@ -63,9 +63,10 @@ because a proposal keeps its own record:
    Proposal 060's generated carrier-selecting `domain` goal is the safe relaxation;
    WI-742 must admit that guarded form at the refusal boundary, not delete the refusal.
 
-Open question 2 (arity) is **not** settled by this delivery: a declaration states its
-head's arity and enforces nothing, and one-arity-per-predicate remains
-WI-20260821-6WVJB, which depends on the operation-side decision in WI-20260821-ZW940.
+Open question 2 (arity) was settled after this delivery, by WI-20260821-6WVJB (2026-10-20):
+a declaration states its head's arity, and every clause of the predicate is held to it.
+The operation side (WI-20260821-ZW940) decided that arity does not distinguish operations,
+so the rule side follows it; see §"One arity per predicate".
 Open questions 3–5 are recorded in kernel-language.md §8.6 as stated rules.
 
 ## The problem
@@ -169,7 +170,7 @@ Requiring a declaration for every predicate would be a migration for no gain in 
 
 ## One arity per predicate
 
-**A predicate's clauses all have one arity** (decided 2026-08-21; WI-20260821-6WVJB). Today rules accept mixed arity and operations refuse it — measured, `rule p(1)` beside `rule p(1, 2)` loads and *dispatches* (`p(1)`→1, `p(1,2)`→1, `p(9)`→0), while `operation f(x)` beside `operation f(x, y)` is refused. The two halves should agree, and they agree on the operation's answer.
+**A predicate's clauses all have one arity** (decided 2026-08-21; delivered 2026-10-20 by WI-20260821-6WVJB, which counts positional and named arguments together, holds the clauses written under an operation to the same rule, and leaves the kernel's `Constraint` rows outside it — kernel-language.md §5.3). Today rules accept mixed arity and operations refuse it — measured, `rule p(1)` beside `rule p(1, 2)` loads and *dispatches* (`p(1)`→1, `p(1,2)`→1, `p(9)`→0), while `operation f(x)` beside `operation f(x, y)` is refused. The two halves should agree, and they agree on the operation's answer.
 
 **The deciding fact is the VALUE position.** A bare name is a value: `apply1(twice, 3)` loads with `twice` alone denoting the function, and 052 OQ2 wants bare `Queen.find` citable as a `Relation[T]`. Arity is visible at a call site and invisible at a value site, so overloading by arity leaves the bare name with nothing to pick by — which is what the duplicate-operation refusal means by *"a scope maps a name to one symbol"*.
 

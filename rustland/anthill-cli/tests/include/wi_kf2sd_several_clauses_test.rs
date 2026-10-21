@@ -348,11 +348,13 @@ end
     assert_eq!(errors(&out).len(), 1, "stderr:\n{}", out.stderr);
 }
 
-/// A CLAUSE OF ANOTHER ARITY IS NO CANDIDATE: `span/2` beside `span/3` is two
-/// predicates here. The first clause with a body was taken whichever the call was, so
-/// `three` was "rule call arity mismatch for '…span': expected 2, got 3".
+/// A CLAUSE OF ANOTHER ARITY WAS NO CANDIDATE: `span/2` beside `span/3` was two
+/// predicates here, and the first clause with a body had been taken whichever the call
+/// was ("rule call arity mismatch for '…span': expected 2, got 3"). Since
+/// WI-20260821-6WVJB one name's clauses have one arity, so the program is refused at load
+/// and no proof is read: the prover says so, naming both arities, and writes no document.
 #[test]
-fn a_clause_of_another_arity_answers_no_call() {
+fn a_clause_of_another_arity_is_refused_at_load() {
     let out = dry_run(
         "arity",
         r#"
@@ -364,28 +366,18 @@ namespace test.kf2sd.arity
 
   rule two: gte(?b, ?a) :- span(?a, ?b)
   proof two by z3 end
-
-  rule three: gte(?c, ?a) :- span(?a, ?b, ?c)
-  proof three by z3 end
 end
 "#,
     );
-    assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
-    assert_eq!(
-        assertions(&out, "test.kf2sd.arity.two"),
-        [
-            "(assert (>= var_1 var_0))",
-            "(assert (not (>= var_1 var_0)))"
-        ]
+    let said = errors(&out);
+    assert!(
+        said.iter().any(|e| e.contains(
+            "predicate 'test.kf2sd.arity.span' is written at more than one arity: 2 arguments"
+        ) && e.contains("3 arguments")),
+        "stderr:\n{}",
+        out.stderr
     );
-    assert_eq!(
-        assertions(&out, "test.kf2sd.arity.three"),
-        [
-            "(assert (>= var_0 var_1))",
-            "(assert (>= var_2 var_0))",
-            "(assert (not (>= var_2 var_1)))"
-        ]
-    );
+    assert!(!out.stdout.contains("--- test.kf2sd.arity.two ---"), "{}", out.stdout);
 }
 
 /// A CALL NO CLAUSE CAN ANSWER is a body that never holds, and is said so. It was

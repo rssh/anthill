@@ -7995,8 +7995,46 @@ impl KnowledgeBase {
     /// [`Self::canonicalize_record_named_args`]. Records, entities, and the
     /// reflect meta-constructors are NOT ordered products: their named args carry
     /// no source-order meaning and must be canonicalized for discrim matching.
+    ///
+    /// WI-657(6): an O(1) `Symbol` compare against the cached TupleLiteral symbol
+    /// ([`KnowledgeBase::tuple_literal_sym`]) — this sits on the discrimination tree's walk
+    /// (`discrim::walk_named_keys`) and the goal fingerprint. The loader stamps that same
+    /// `by_qualified_name` canonical symbol on a tuple constructor, so the compare is
+    /// exact; the qualified-name compare it replaced answers while the cache is unset
+    /// (before the first type-check, or without reflect), and a `debug_assert` holds the
+    /// two to one answer, so a non-canonical `TupleLiteral` interning is a loud test
+    /// failure rather than a silent mis-recognition.
     pub(crate) fn is_ordered_product_functor(&self, functor: Symbol) -> bool {
-        self.qualified_name_of(functor) == dt::qualified(dt::TUPLE_LITERAL)
+        match self.tuple_literal_sym {
+            Some(tl) => {
+                let by_sym = functor == tl;
+                debug_assert_eq!(
+                    by_sym,
+                    self.qualified_name_of(functor) == dt::qualified(dt::TUPLE_LITERAL),
+                    "WI-657(6): tuple_literal_sym Symbol-compare diverged from the \
+                     qualified-name compare for `{}`",
+                    self.qualified_name_of(functor),
+                );
+                by_sym
+            }
+            None => self.qualified_name_of(functor) == dt::qualified(dt::TUPLE_LITERAL),
+        }
+    }
+
+    /// WI-20260821-6WVJB — put a compound's NAMED keys in the order every matcher reads
+    /// them in: by symbol, so a head and a goal that write one key set in two orders are
+    /// one application — except an ORDERED PRODUCT ([`Self::is_ordered_product_functor`]),
+    /// whose order is its identity and is left as held. The one owner of that order, read
+    /// by the discrimination tree's walk and by the goal fingerprint, which must agree:
+    /// one decides what matches, the other what dedups.
+    pub(crate) fn sort_named_keys_for_matching(
+        &self,
+        functor: Option<Symbol>,
+        keys: &mut [Symbol],
+    ) {
+        if keys.len() > 1 && !functor.is_some_and(|f| self.is_ordered_product_functor(f)) {
+            keys.sort_unstable_by_key(|s| s.to_bits());
+        }
     }
 
     /// WI-851: the supplied named labels that name NO DECLARED FIELD of `functor` —

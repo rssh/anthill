@@ -2542,10 +2542,22 @@ declaration is precisely a thing that has one. So `{< … >}` on a body-less rul
 admitted and emits `DescriptionInfo` against the declared predicate (§4.1) — the one rule
 form that documents itself without a label.
 
-**A declaration carries no arity claim.** Clauses of one predicate may still differ in
-arity, exactly as today; whether they should is a separate question
-(WI-20260821-6WVJB / proposal 061 §"One arity per predicate"), and a declaration states
-its head's arity without enforcing it.
+A predicate has one arity. Its clauses, and the clauses written under an operation, all
+have the same number of arguments in the head, positional and named counted together,
+and a predicate's declaration states that number. A clause or a declaration of another
+arity is a load error that names each arity and where it is written, whether the two sit
+in one load or in two, and so is a fact of another arity written at run time. Arity is not part of a name: a bare name is a value (`apply1(twice, 3)`, a
+cited relation), and a value position has no arity to choose by. Same-named predicates in
+different scopes are different predicates. An operation's functional-relation view at its
+arity plus one (§5.2) stores no clause, so it is no second arity, and an entity's fact
+head has its constructor's arity, an omitted field filled. The kernel's `Constraint` rows
+are not a predicate: the loader writes one for each `constraint` item, in a shape that
+depends on the constraint's form.
+
+The named arguments of a head and of a goal are matched by key, not by the order they
+are written in: `r(b: ?y, a: ?x)` answers `fact r(a: 3, b: 4)`, and `fact r(b: 4, a: 3)`
+is the same fact. A named tuple keeps its order, since component order is part of a
+tuple's identity (§4.5).
 
 ```
 Rule ::= DescriptionBlock*

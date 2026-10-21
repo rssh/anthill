@@ -751,13 +751,14 @@ end
     );
 }
 
-/// PREDICATES OF ONE NAME AND TWO ARITIES ARE TWO RELATIONS. `span` has a clause of two
-/// arguments and one of three; the step's premise is the first and the parent's call
-/// the second, which no lemma is about: it is not stated, and the step's premise is not
-/// discharged by it. (Named by the predicate alone the two were one relation at two
+/// THE PARENT'S CALL IS NO LEMMA'S PREMISE. `span` has two arguments and `span3` three;
+/// the step's premise is the first and the parent's call the second, which no lemma is
+/// about: it is not stated, and the step's premise is not discharged by it. (The two
+/// were one name at two arities, `span/2` and `span/3`, until WI-20260821-6WVJB refused
+/// that shape at load; named by the predicate alone they had been one relation at two
 /// signatures, and the proof was refused where only the name collided.)
 #[test]
-fn predicates_of_one_name_and_two_arities_are_two_relations() {
+fn a_premise_and_a_call_of_another_predicate_are_two_relations() {
     let out = dry_run("arity", ARITIES);
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
     let doc = document(&out, "test.cdhsq.arity.three");
@@ -770,7 +771,7 @@ fn predicates_of_one_name_and_two_arities_are_two_relations() {
         "(assert (=> (test.cdhsq.arity.span/2 var_2 var_1) (>= var_2 (+ var_1 1.0))))",
     );
     assert!(
-        !doc.iter().any(|l| l.contains("span/3")),
+        !doc.iter().any(|l| l.contains("span3/3")),
         "the call of three arguments is no lemma's premise:\n{}",
         doc.join("\n")
     );
@@ -781,9 +782,9 @@ namespace test.cdhsq.arity
   import anthill.prelude.PartialOrd.{gte, lte}
 
   rule span(?a, ?b) :- gte(?a, ?b)
-  rule span(?a, ?b, ?c) :- gte(?a, ?b), gte(?b, ?c)
+  rule span3(?a, ?b, ?c) :- gte(?a, ?b), gte(?b, ?c)
 
-  rule three: gte(?x, ?y + 1.0) :- span(?x, ?y, ?z)
+  rule three: gte(?x, ?y + 1.0) :- span3(?x, ?y, ?z)
   proof three
     rule h1: gte(?x, ?y + 1.0) :- span(?x, ?y)
       by trust(reason: "a control")

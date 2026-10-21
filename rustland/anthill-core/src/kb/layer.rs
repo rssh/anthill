@@ -156,6 +156,7 @@ kb_scoped_fields!(
     op_records,
     op_decl_sites,
     op_bodies_refused,
+    predicate_declarations,
     op_capture_params,
     decl_sites,
     // WI-20261009-4ZRTG — a layer's scan replaces the first and a layer never seals, so
@@ -432,6 +433,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         op_records: _,
         op_decl_sites: _,
         op_bodies_refused: _,
+        predicate_declarations: _,
         op_capture_params: _,
         decl_sites: _,
         scan_type_decls: _,

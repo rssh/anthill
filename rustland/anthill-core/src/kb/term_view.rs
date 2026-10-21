@@ -2434,7 +2434,6 @@ fn fingerprint_into<V: TermView>(
             // two DIFFERENT tuples, distinct hash-consed terms — produced ONE key and
             // the second fact was discarded. MEASURED, and fixed here rather than in
             // the ticket that found it, because over-dedup drops a fact.
-            let ordered_product = functor.is_some_and(|f| kb.is_ordered_product_functor(f));
             let mut keys = view.named_keys(kb);
             // THE HEAD PROMISED `named_arity` KEYS; a view that supplies fewer has
             // dropped a child, and dropping it SILENTLY is what makes the key lossy.
@@ -2449,9 +2448,7 @@ fn fingerprint_into<V: TermView>(
             if keys.len() != named_arity {
                 out.push(StructToken::Opaque);
             }
-            if !ordered_product {
-                keys.sort_by_key(|s| s.to_bits());
-            }
+            kb.sort_named_keys_for_matching(functor, &mut keys);
             // A REPEATED LABEL DEFEATS KEY-ADDRESSED CHILDREN. `named_arg` resolves by
             // SYMBOL and returns the FIRST match, so `(d: 1, d: 2)` and `(d: 1, d: 3)`
             // both fingerprint as `d↦1, d↦1`. Distinctness is enforced at the

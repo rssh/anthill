@@ -5,8 +5,9 @@
 //! BACK-OUT MEASUREMENT: removing `Candidate::Builtin` and the combined choice
 //! point in `resolve.rs` makes the two exact-arity capability tests fail. The
 //! controls still pass: the native `push_choice` answers remain 1/2, and the
-//! clause-free fixture never manufactures 3. The off-arity control passes either
-//! way and protects WI-896's resolved-name behaviour.
+//! clause-free fixture never manufactures 3. The off-arity row passes either way and
+//! protects WI-896's resolved-name behaviour: since WI-20260821-6WVJB the clause is
+//! refused, and the refusal names the kernel's `or`, which is the symbol it resolved to.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::resolve::{ResolveConfig, Solution};
@@ -81,8 +82,12 @@ fn native_control_answers_and_written_clause_answers_coexist() {
     );
 }
 
+/// Off `or`'s arity the written clause is a clause of the kernel's `or` all the same — the
+/// head RESOLVED, nothing was minted — and so it is refused: `or` is defined by a clause of
+/// two arguments, and one name's clauses have one arity (WI-20260821-6WVJB). Before that
+/// it loaded and `or(?n)` answered 4.
 #[test]
-fn off_native_arity_clause_keeps_the_existing_symbol_and_answers() {
+fn off_native_arity_clause_keeps_the_existing_symbol_and_is_refused() {
     const SRC: &str = r#"
 namespace wi899.offarity
   import anthill.prelude.{Int64}
@@ -93,12 +98,17 @@ namespace wi899.offarity
   rule answer899(?n) :- or(?n)
 end
 "#;
-    let mut kb = crate::common::load_kb_with(SRC);
-    assert_eq!(
-        int_answers(&mut kb, "wi899.offarity.answer899"),
-        vec![4],
-        "off the native handler's arity, the resolved-symbol clause must remain the only answer source",
-    );
+    let errors = crate::common::unrendered_load_errors_of(SRC);
+    match errors.as_slice() {
+        [anthill_core::kb::load::LoadError::ClausesOfDifferentArity { name, arities, .. }] => {
+            assert_eq!(name, "anthill.kernel.or", "the head resolved to the kernel's `or`");
+            assert_eq!(
+                arities.iter().map(|g| g.arity).collect::<Vec<_>>(),
+                vec![2, 1]
+            );
+        }
+        other => panic!("expected the one-arity refusal alone, got {other:#?}"),
+    }
 }
 
 #[test]

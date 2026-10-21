@@ -187,7 +187,9 @@ fn a_subgoal_with_the_wrong_arity_is_refused_naming_the_rule() {
 /// THE CONTROL PAIR, and the reason the check above is a rule rather than a hole: the
 /// right arity loads, and so does a predicate whose clauses genuinely have DIFFERENT
 /// shapes (matching any one of them is enough — the check is a proof that NO clause can
-/// match, never a preference for one).
+/// match, never a preference for one). The shapes differ at ONE arity — two positional
+/// arguments, and two named ones — since a predicate's clauses all have one arity
+/// (WI-20260821-6WVJB); `multi1058(1)` beside `multi1058(1, 2)` is refused there.
 ///
 /// Passes with the subgoal reading backed out, by design — it is the negative control.
 #[test]
@@ -198,10 +200,10 @@ fn a_right_arity_subgoal_and_a_multi_shape_predicate_still_load() {
          \x20 rule q1058ok(?x) :- ?x = 1\n\
          \x20 rule good1058(?a) :- q1058ok(?a)\n\
          \n\
-         \x20 fact multi1058(1)\n\
          \x20 fact multi1058(1, 2)\n\
-         \x20 rule uses_one1058(?a) :- multi1058(?a)\n\
-         \x20 rule uses_two1058(?a, ?b) :- multi1058(?a, ?b)\n\
+         \x20 fact multi1058(a: 1, b: 2)\n\
+         \x20 rule uses_pos1058(?a, ?b) :- multi1058(?a, ?b)\n\
+         \x20 rule uses_named1058(?a, ?b) :- multi1058(a: ?a, b: ?b)\n\
          end\n",
     );
 }

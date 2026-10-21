@@ -1490,18 +1490,36 @@ pub enum BodiedRulePolicy {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct FactWriteShapeError {
-    functor: String,
-    rule: String,
+pub(crate) enum FactWriteShapeError {
+    /// The functor has a bodied rule, which a written row would sit beside as a fact.
+    BodiedRule { functor: String, rule: String },
+    /// WI-20260821-6WVJB — the row's arity is not the one the functor's clauses have, so
+    /// writing it would give one name a second arity, as the load refuses for a clause.
+    OtherArity {
+        functor: String,
+        row: usize,
+        established: usize,
+    },
 }
 
 impl std::fmt::Display for FactWriteShapeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "fact mutation refused: `{}` has bodied rule `{}`",
-            self.functor, self.rule
-        )
+        match self {
+            FactWriteShapeError::BodiedRule { functor, rule } => write!(
+                f,
+                "fact mutation refused: `{functor}` has bodied rule `{rule}`"
+            ),
+            FactWriteShapeError::OtherArity {
+                functor,
+                row,
+                established,
+            } => write!(
+                f,
+                "fact mutation refused: `{functor}` is written at {established} \
+                 argument(s), and a row of {row} would give it a second arity — the clauses \
+                 of one name all have one arity"
+            ),
+        }
     }
 }
 
@@ -1513,17 +1531,33 @@ impl KnowledgeBase {
         let Some(functor) = target.head(self).functor_sym() else {
             return Ok(());
         };
-        if !self.has_bodied_rule(functor) {
-            return Ok(());
+        if self.has_bodied_rule(functor) {
+            let rid = self
+                .rules_by_functor_iter(functor)
+                .find(|&rid| !self.is_fact(rid))
+                .expect("has_bodied_rule implies a bodied rule");
+            return Err(FactWriteShapeError::BodiedRule {
+                functor: self.local_name_of(functor).to_string(),
+                rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
+            });
         }
-        let rid = self
-            .rules_by_functor_iter(functor)
-            .find(|&rid| !self.is_fact(rid))
-            .expect("has_bodied_rule implies a bodied rule");
-        Err(FactWriteShapeError {
-            functor: self.local_name_of(functor).to_string(),
-            rule: crate::persistence::print::TermPrinter::new(self).print_rule(rid),
-        })
+        // WI-20260821-6WVJB — a row written at run time is held to the arity the load
+        // holds every clause to. A retracted or replaced row has it already.
+        if let (Some(established), Some(row)) =
+            (
+                self.established_arity(functor),
+                super::head_functor_and_arity(self, target).map(|(_, n)| n),
+            )
+        {
+            if row != established {
+                return Err(FactWriteShapeError::OtherArity {
+                    functor: self.qualified_name_of(functor).to_string(),
+                    row,
+                    established,
+                });
+            }
+        }
+        Ok(())
     }
 }
 

@@ -45,6 +45,24 @@ pub(crate) enum DiscrimKey {
     Bottom,
 }
 
+/// The order the tree walks a compound's NAMED arguments in
+/// ([`KnowledgeBase::sort_named_keys_for_matching`]) — by symbol, whatever order the term
+/// holds them in. A clause head and a goal that write one key set in two orders are one
+/// application (`r(a: 3, b: 4)` answers `r(b: ?y, a: ?x)`), so they descend one path; the
+/// paths a match records are keyed by the symbol ([`ArgPos::Named`]), never by where a
+/// key stood. Insert, remove and both query walks read this one order. A named tuple
+/// keeps the order it holds: `(x: 1, y: 2)` and `(y: 2, x: 1)` are two values and must
+/// not share a path.
+fn walk_named_keys<V: TermView + ?Sized>(
+    kb: &KnowledgeBase,
+    view: &V,
+    functor: Symbol,
+) -> Vec<Symbol> {
+    let mut keys = view.named_keys(kb);
+    kb.sort_named_keys_for_matching(Some(functor), &mut keys);
+    keys
+}
+
 // ── DiscrimNode — tree node ─────────────────────────────────────
 
 /// Children are `Arc<DiscrimNode>`, making the tree a PERSISTENT (path-copying)
@@ -314,7 +332,7 @@ impl<L: Clone> SubstTree<L> {
                 let arity = pos_arity + named_arity;
                 let n = make_mut_child(&mut node.concrete, DiscrimKey::Functor(functor));
                 let n = make_mut_child(&mut n.concrete, DiscrimKey::Arity(arity as u16));
-                Self::insert_walk_args(n, kb, view, pos_arity)
+                Self::insert_walk_args(n, kb, view, functor, pos_arity)
             }
             ViewHead::Const(lit) => make_mut_child(&mut node.concrete, DiscrimKey::Lit(lit)),
             ViewHead::Ident(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ident(sym)),
@@ -343,12 +361,13 @@ impl<L: Clone> SubstTree<L> {
     }
 
     /// Walk a compound's args in canonical order — positionals first, then
-    /// named in [`TermView::named_keys`] order — the same order the query
+    /// named in [`walk_named_keys`] order — the same order the query
     /// walk uses, so insert and lookup descend the tree in lockstep.
     fn insert_walk_args<'a, V: TermView>(
         node: &'a mut DiscrimNode<L>,
         kb: &KnowledgeBase,
         view: &V,
+        functor: Symbol,
         pos_arity: usize,
     ) -> &'a mut DiscrimNode<L> {
         let mut cur = node;
@@ -357,7 +376,7 @@ impl<L: Clone> SubstTree<L> {
             cur = make_mut_child(&mut cur.concrete, DiscrimKey::Positional);
             cur = Self::insert_walk(cur, kb, &arg);
         }
-        for sym in view.named_keys(kb) {
+        for sym in walk_named_keys(kb, view, functor) {
             let arg = view
                 .named_arg(kb, sym)
                 .expect("named_arg present during insert");
@@ -406,7 +425,7 @@ impl<L: Clone> SubstTree<L> {
                     let ak = DiscrimKey::Arity(arity as u16);
                     let prune_ar =
                         if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
-                            let arg_seq = Self::owned_arg_seq(kb, view, pos_arity);
+                            let arg_seq = Self::owned_arg_seq(kb, view, functor, pos_arity);
                             Self::remove_walk_args(ar_child, kb, &arg_seq, 0, leaf)
                         } else {
                             false
@@ -441,12 +460,13 @@ impl<L: Clone> SubstTree<L> {
     }
 
     /// The canonical arg sequence (positionals then named, in
-    /// [`TermView::named_keys`] order) as owned, borrow-free [`OwnedView`]
+    /// [`walk_named_keys`] order) as owned, borrow-free [`OwnedView`]
     /// descriptors, so a nested compound's args can be flattened with the
     /// remaining outer args.
     fn owned_arg_seq<V: TermView>(
         kb: &KnowledgeBase,
         view: &V,
+        functor: Symbol,
         pos_arity: usize,
     ) -> Vec<(DiscrimKey, OwnedView)> {
         let mut seq = Vec::new();
@@ -454,7 +474,7 @@ impl<L: Clone> SubstTree<L> {
             let item = view.pos_arg(kb, i).expect("pos_arg in range during remove");
             seq.push((DiscrimKey::Positional, OwnedView::from_item(&item)));
         }
-        for sym in view.named_keys(kb) {
+        for sym in walk_named_keys(kb, view, functor) {
             let item = view
                 .named_arg(kb, sym)
                 .expect("named_arg present during remove");
@@ -540,7 +560,7 @@ impl<L: Clone> SubstTree<L> {
                     let ak = DiscrimKey::Arity(arity as u16);
                     let prune_ar =
                         if let Some(ar_child) = get_mut_child(&mut fn_child.concrete, &ak) {
-                            let mut combined = Self::owned_arg_seq(kb, &view, pos_arity);
+                            let mut combined = Self::owned_arg_seq(kb, &view, functor, pos_arity);
                             combined.extend(arg_seq[idx + 1..].iter().cloned());
                             Self::remove_walk_args(ar_child, kb, &combined, 0, leaf)
                         } else {
@@ -784,7 +804,7 @@ impl<L: Clone> SubstTree<L> {
                 if let Some(fsym) = functor {
                     if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
                         if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                            let named_keys = query.named_keys(kb);
+                            let named_keys = walk_named_keys(kb, query, fsym);
                             let collect_leaves = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
                                 for leaf in &node.leaves {
                                     results.push((leaf.clone(), subst.clone()));
@@ -1002,7 +1022,7 @@ impl<L: Clone> SubstTree<L> {
                 if let Some(fsym) = functor {
                     if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
                         if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                            let inner_named_keys = arg.named_keys(kb);
+                            let inner_named_keys = walk_named_keys(kb, &arg, fsym);
                             let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
                                 Self::query_args(
                                     node, kb, outer, pos_idx, pos_total, named_keys, named_idx,

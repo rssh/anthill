@@ -803,30 +803,8 @@ pub(super) fn visit_type(
                 else {
                     return false;
                 };
-                // WI-657(6): O(1) Symbol compare against the cached TupleLiteral symbol.
-                // The loader stamps that same `by_qualified_name` canonical symbol on a
-                // tuple constructor (`remap_symbol` of the short `TupleLiteral` resolves to
-                // the single `define(.., "anthill.reflect.TupleLiteral", ..)` entry, which
-                // is what `try_resolve_symbol` caches), so `*name == tl` is exact. Fall back
-                // to the exact string compare only when the cache is unset (pre-type-check /
-                // reflect-less). A `debug_assert` cross-checks that the Symbol compare never
-                // diverges from the qualified-name compare it replaced — a non-canonical
-                // `TupleLiteral` interning reaching here becomes a LOUD test failure rather
-                // than a silent mis-recognition (CLAUDE.md: loud over silent).
-                match kb.tuple_literal_sym {
-                    Some(tl) => {
-                        let by_sym = *name == tl;
-                        debug_assert_eq!(
-                            by_sym,
-                            kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL),
-                            "WI-657(6): tuple_literal_sym Symbol-compare diverged from the \
-                             qualified-name compare for constructor `{}`",
-                            kb.qualified_name_of(*name),
-                        );
-                        by_sym
-                    }
-                    None => kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL),
-                }
+                // WI-657(6): the O(1) cached-symbol compare, with its cross-check.
+                kb.is_ordered_product_functor(*name)
             }
             let has_call_field = pos_args
                 .iter()

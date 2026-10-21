@@ -309,11 +309,10 @@ This is §1.2's rule for entity patterns read from the other side — an entity'
 filled because their author did not write the default; a rule's clause heads are not filled because
 they are its definition.
 
-The check applies only to declarations that carry at least one default, and that scope is
-deliberate. No declaration carries a default today, so no program that loads now is refused. A
-declaration WITHOUT a default still states its arity and enforces nothing (061); extending the check
-to every declaration is WI-20260821-6WVJB's decision (one arity per predicate, which itself waits on
-the operation-side WI-20260821-ZW940), and this rule is the case of it that defaults force.
+This needs no check of its own. Every predicate has one arity, which its declaration states
+(kernel-language.md §5.3, WI-20260821-6WVJB), so a short clause beside a defaulted declaration is
+already refused as a clause of another arity. What defaults add is the reading of a short GOAL,
+below.
 
 **Omission at a call, positional and named.** Because a defaulted predicate has exactly its
 declared arity, a short goal cannot be a call of some other-arity clause, so it is read as an
@@ -328,8 +327,10 @@ within(5, ?)           -- every limit
 
 The functional-relation view (an operation's arity + 1 goal, WI-938) cannot compete for such a
 goal: 061 refuses a rule declaration whose name another construct, an operation included, already
-declares. A predicate declared WITHOUT a default keeps today's meaning for a short positional goal
-— a call at that arity — until 6WVJB; at a citation its omitted columns are free, as now (WI-714).
+declares. A predicate declared WITHOUT a default has no short goal: its clauses all have the
+declared arity (kernel-language.md §5.3), so no clause matches a goal at a smaller one, and a
+rule-body subgoal of that arity is refused at load (WI-1058); at a citation its omitted columns are
+free, as now (WI-714).
 
 **Adding a default changes existing calls.** For an operation, an omitted argument was an error
 before its parameter had a default, so adding one only makes programs load. For a rule, an omitted
@@ -737,5 +738,5 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - A default is not an error-recovery fallback. It applies only to an omitted slot.
 - Constructor defaults do not change pattern omission, stored entity shape, or field subtyping.
 - A rule column's default is never written per clause, and never fills a clause head (rule clause or `fact`).
-- This proposal does not decide one arity per predicate in general (WI-20260821-6WVJB); it enforces
-  arity only for a declaration that carries a default.
+- This proposal adds no arity check: one arity per predicate is the general rule (kernel-language.md
+  §5.3), and the omission reading rests on it.
