@@ -215,14 +215,18 @@ end
 /// `effect_member_is_parametric` reads the row member's HEAD, so a concrete effect sort
 /// is not a parameter; without this pair the change reads as "the effect gate was
 /// deleted".
+///
+/// The effect is `Clock`: a bodied operation's `Error` row is admitted, since the bridge
+/// catches a raise as it does in a value slot (`error_row_relational_view_test`).
 #[test]
 fn a_concretely_effectful_bool_op_is_still_refused() {
     let src = r#"
 namespace dqd5w_eff
-  import anthill.prelude.{Bool, Int64, Error}
+  import anthill.prelude.{Bool, Int64}
+  import anthill.prelude.Time.{Clock}
 
   operation pure_flag(x: Int64) -> Bool = x === 1
-  operation loud_flag(x: Int64) -> Bool effects Error = x === 1
+  operation loud_flag(x: Int64) -> Bool effects Clock = x === 1
 
   fact mark(1)
   rule pure_fires(?m) :- mark(?m), pure_flag(1)
@@ -238,7 +242,7 @@ end
     assert_eq!(
         definite_unary(&mut kb, "dqd5w_eff.loud_fires").len(),
         0,
-        "a CONCRETE effect row (`Error`) must keep the operation out of the relational \
+        "a CONCRETE effect row (`Clock`) must keep the operation out of the relational \
          view — the DQD5W widening is for row PARAMETERS only"
     );
 }

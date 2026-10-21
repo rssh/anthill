@@ -32660,6 +32660,46 @@ impl<'a> Loader<'a> {
         Some(self.written_type_to_value(&te))
     }
 
+    /// A sort's bracket on a RELATION named in a rule body — the goal `Wrap[T = Int64].el(?x)`,
+    /// the value `?r <=> Wrap[T = Int64].el`, or either through an alias that fixes `T` — is
+    /// refused, and `true` says so. A relation named in a rule body is passed no type
+    /// argument, so the bracket was lowered onto the node and read by no one: the goal
+    /// answered at every instance (`"a"` beside `1` for `el(?x: T)`), and
+    /// `SortDomain[T = Colour].fill(?x)` answered nothing, since `fill` is a spec's rule with
+    /// no clause of its own. A citation from an operation body reads the bracket; a sort's
+    /// domain is its `domain` relation.
+    fn refuse_rule_goal_receiver(&mut self, parse_id: TermId, callee: Symbol, span: Span) -> bool {
+        if !self.kb.cites_a_relation(callee) || self.kb.has_kind(callee, SymbolKind::Operation) {
+            return false;
+        }
+        let written = self.read_parse_recv_type(parse_id).is_some();
+        if !written && self.alias_recv_type(parse_id, callee).is_none() {
+            return false;
+        }
+        if written {
+            self.consumed_recv_types.insert(parse_id);
+        }
+        let name = self.kb.qualified_name_of(callee).to_string();
+        let fill = self.kb.try_resolve_symbol("anthill.reflect.Fillable.fill");
+        let domain_hint = if fill.map(|f| self.kb.canonical_sym(f)) == Some(self.kb.canonical_sym(callee)) {
+            "; a sort's domain is its `domain` relation — `Colour.domain(?x)` for \
+             `SortDomain[T = Colour].fill(?x)`"
+        } else {
+            ""
+        };
+        self.errors.push(LoadError::InvalidTypeArgument {
+            detail: format!(
+                "a sort's type bracket on `{name}` in a rule body is not read — a relation named \
+                 in a rule body, as a goal or as a value, is passed no type argument, so the \
+                 binding would be dropped and the relation read at every instance. Cite the \
+                 relation from an operation body, where the bracket selects the instance, or \
+                 write it without the bracket{domain_hint}"
+            ),
+            span: Some(span),
+        });
+        true
+    }
+
     /// The receiver of a call to `callee`, named through a type alias, bare: the sort the
     /// alias stands for at the parameters it fixes. `None` for every other callee, and for
     /// an alias that fixes nothing.
@@ -34417,7 +34457,9 @@ impl<'a> Loader<'a> {
                             // consuming the bracket here would drop it in silence — and
                             // `check_unconsumed_recv_types` refuses it, as it did when this
                             // node took the round trip. Found by `/code-review`.
-                            recv_type: if reread_reflect_form {
+                            recv_type: if reread_reflect_form
+                                || self.refuse_rule_goal_receiver(parse_id, new_functor, span.span)
+                            {
                                 None
                             } else {
                                 self.build_recv_type(parse_id, new_functor)

@@ -12808,6 +12808,15 @@ impl KnowledgeBase {
     ///
     /// "Bodied" is [`Self::bridge_runs_anthill_code`]: `Error.reify`'s row `{Rho}` is its
     /// thunk's effects past the discharged `Error[T1]`, and the thunk is what the bridge runs.
+    ///
+    /// AN `Error` MEMBER IS ADMITTED FOR A BODIED OPERATION TOO, on the same argument: the
+    /// bridge runs the body, a raise inside it is caught and the call does not reduce, and
+    /// that is what the call answers in a value slot. Refused here, the goal had no reading,
+    /// so it had no clauses and FAILED: over `three() -> Int64 effects {Error} = 3`,
+    /// `three(?r)` answered nothing where `?r <=> three()` answers 3, and `not(three(3))`
+    /// held. A host function keeps the strict reading ([`Self::host_op_reducible_at_a_value`]),
+    /// and an effect other than `Error` stays refused: a body that performs one is declined
+    /// at the boundary by its typed row (WI-20260926-7D48J's row).
     pub(crate) fn effect_row_admits_relational_view(
         &self,
         f: Symbol,
@@ -12815,10 +12824,9 @@ impl KnowledgeBase {
     ) -> bool {
         sig.effects.is_empty()
             || (self.bridge_runs_anthill_code(f)
-                && sig
-                    .effects
-                    .iter()
-                    .all(|e| self.effect_member_is_parametric(e)))
+                && sig.effects.iter().all(|e| {
+                    self.effect_member_is_parametric(e) || self.effect_member_is_error(e)
+                }))
     }
 
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the

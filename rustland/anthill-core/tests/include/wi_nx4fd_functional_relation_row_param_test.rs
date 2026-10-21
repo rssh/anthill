@@ -346,9 +346,10 @@ fn carriers_own_operation_still_binds() {
 }
 
 /// CONTROL — the gate was WIDENED, not DELETED. A bodied operation declaring a
-/// CONCRETE effect (`Error`) keeps its zero at arity+1, beside a byte-identical pure
+/// CONCRETE effect (`Clock`) keeps its zero at arity+1, beside a byte-identical pure
 /// twin that binds. `effect_member_is_parametric` reads the row member's HEAD, so a
-/// concrete effect sort is not a parameter.
+/// concrete effect sort is not a parameter. (`Error` was the example here; a bodied
+/// operation's `Error` row is admitted now — `error_row_relational_view_test`.)
 ///
 /// The pure twin is what makes the refusal mean anything: one operation answering
 /// nothing is also what an un-drivable fixture answers.
@@ -356,10 +357,11 @@ fn carriers_own_operation_still_binds() {
 fn a_concretely_effectful_op_is_still_refused_at_arity_plus_one() {
     let src = r#"
 namespace nx4fd_eff
-  import anthill.prelude.{Bool, Int64, Error}
+  import anthill.prelude.{Bool, Int64}
+  import anthill.prelude.Time.{Clock}
 
   operation pure_twice(x: Int64) -> Int64 = x + x
-  operation loud_twice(x: Int64) -> Int64 effects Error = x + x
+  operation loud_twice(x: Int64) -> Int64 effects Clock = x + x
 
   fact mark(1)
   rule pure_r(?r) :- mark(?m), pure_twice(21, ?r)
@@ -376,7 +378,7 @@ end
     assert_eq!(
         definite_unary(&mut kb, "nx4fd_eff.loud_r").len(),
         0,
-        "a CONCRETE effect row (`Error`) must keep the operation out of the \
+        "a CONCRETE effect row (`Clock`) must keep the operation out of the \
          functional-relation view — the widening is for row PARAMETERS only"
     );
 }

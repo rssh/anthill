@@ -2196,3 +2196,11 @@ mod wi_tr8cf_modifiable_target_test;
 mod wi_p1pvt_field_path_existential_test;
 #[path = "include/wi_gjw9z_spec_call_charges_the_callers_row_test.rs"]
 mod wi_gjw9z_spec_call_charges_the_callers_row_test;
+#[path = "include/error_row_relational_view_test.rs"]
+mod error_row_relational_view_test;
+#[path = "include/relation_citation_reads_every_clause_test.rs"]
+mod relation_citation_reads_every_clause_test;
+#[path = "include/unresolved_annotation_reported_once_test.rs"]
+mod unresolved_annotation_reported_once_test;
+#[path = "include/rule_goal_sort_bracket_refused_test.rs"]
+mod rule_goal_sort_bracket_refused_test;

@@ -360,11 +360,34 @@ end
 /// And an EFFECTFUL Bool op keeps its own-arity clauses too: an effectful body is
 /// not a logical relation, so it is granted no derived view and a clause beside it
 /// takes nothing away. Same gate `bare_bodied_bool_relation` applies.
+///
+/// The effect is `Clock`: an `Error` row no longer keeps a bodied operation out of the
+/// view (`error_row_relational_view_test`), so it is refused as a pure one is — the row
+/// below.
 #[test]
 fn a_same_arity_clause_on_an_effectful_bool_op_is_legal() {
     crate::common::load_kb_with(
         r#"
 namespace wi939d.eff
+  import anthill.prelude.Time.{Clock}
+  sort Box
+    entity box(n: Int64)
+    operation risky(b: Box) -> Bool effects Clock = true
+    rule risky(box(n: 0)) :- true
+  end
+end
+"#,
+    );
+}
+
+/// A bodied Bool op whose row is `Error` has its derived view, so an own-arity clause
+/// beside it is a second definition, refused as on a pure one. FAILS with the `Error`
+/// member backed out of `effect_row_admits_relational_view` (the fixture loads clean).
+#[test]
+fn a_same_arity_clause_on_an_error_row_bool_op_is_refused() {
+    let errs = refusal(
+        r#"
+namespace wi939d.err
   import anthill.prelude.{Error}
   sort Box
     entity box(n: Int64)
@@ -374,6 +397,9 @@ namespace wi939d.eff
 end
 "#,
     );
+    for want in ["wi939d.err.Box.risky", "ONE definition"] {
+        assert!(errs.contains(want), "refusal must name {want:?}; got:\n{errs}");
+    }
 }
 
 /// A clause at a HOST-IMPLEMENTED operation's arity + 1 is a second definition of it: the

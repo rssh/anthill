@@ -475,8 +475,12 @@ fn an_alias_that_fixes_a_requirement_slot_selects_its_provider() {
 }
 
 /// A goal in a rule body is the same call: its argument is checked at the alias's
-/// parameters. The goals that answer are the fence here — they pass under every back-out,
-/// and say that a goal which carries a receiver is still resolved, and still negated.
+/// parameters. A RELATION named through the alias is refused, as `Box[V = Int64].holds(?x)`
+/// is (2026-10-21, `rule_goal_sort_bracket_refused_test`): a rule goal passes its callee
+/// nothing, so the alias's binding would be dropped. Before, `CA.holds(?x)` loaded and
+/// answered as `Box.holds(?x)` does, because `holds` reads no `V`. The goals on the
+/// unbracketed sort are the fence here — they pass under every back-out, and say that the
+/// goal is still resolved, and still negated.
 #[test]
 fn a_rule_body_goal_through_an_alias_is_checked_and_answers() {
     let rendered = refusal(
@@ -487,10 +491,18 @@ fn a_rule_body_goal_through_an_alias_is_checked_and_answers() {
         rendered.contains("same.x (op-arg): expected Int64, got String"),
         "{rendered}"
     );
+    let rendered = refusal(
+        "hzvqagoalrel",
+        "  rule r(?x: Int64) :- CA.holds(?x)\n  operation go() -> Int64 = 1",
+    );
+    assert!(
+        rendered.contains("type bracket on `test.hzvqagoalrel.Box.holds` in a rule body"),
+        "{rendered}"
+    );
     for (ns, goals, want) in [
-        ("hzvqagoal", "CA.holds(?x)", "1"),
-        ("hzvqagoalnot", "?x <=> 7, not(CA.holds(?x))", "1"),
-        ("hzvqagoalnotone", "?x <=> 1, not(CA.holds(?x))", "0"),
+        ("hzvqagoal", "Box.holds(?x)", "1"),
+        ("hzvqagoalnot", "?x <=> 7, not(Box.holds(?x))", "1"),
+        ("hzvqagoalnotone", "?x <=> 1, not(Box.holds(?x))", "0"),
     ] {
         let body = format!(
             "  rule r(?x: Int64) :- {goals}\n  operation go() -> Int64 effects {{Error}} = r.takeN(5).length()"

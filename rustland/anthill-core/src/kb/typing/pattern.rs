@@ -652,8 +652,8 @@ pub(super) fn bind_and_label_pattern(
             // Whoever owns a binder-annotation projection that cannot be discharged (no
             // caller does today — the lambda paths thread a context type instead) should
             // raise it where the projection is FORMED, not here.
-            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann.map(|ann| {
-                let v = pattern_annotation_value(kb, ann);
+            let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann.and_then(|ann| {
+                let v = pattern_annotation_value(kb, ann)?;
                 // WI-20261001-89WZR: and to the body's PARAMETERS, as the `let` site reads
                 // its whole-pattern annotation — so one binder's annotation naming a type
                 // parameter in scope can be compared with the context at all (below).
@@ -673,7 +673,7 @@ pub(super) fn bind_and_label_pattern(
                 } else {
                     v
                 };
-                (ann, v)
+                Some((ann, v))
             });
             if let (Some(ctx), Some((ann_occ, ann))) = (scrutinee_type.as_ref(), ann_ty.as_ref()) {
                 if let Some(err) =
