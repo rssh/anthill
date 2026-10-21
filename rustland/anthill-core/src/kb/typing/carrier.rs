@@ -3319,10 +3319,145 @@ pub(super) fn provider_spec_view_bindings(
 /// variable (a bare `?_`). Used to close a spec op's polymorphic effect
 /// row when it dispatches to a concrete carrier whose provider fact does
 /// not (yet) bind the effect parameter.
-pub(super) fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
-    match e {
-        Value::Term { id: t, .. } => matches!(kb.get_term(*t), Term::Var(_)),
-        _ => false,
+///
+/// WI-20260930-GJW9Z — NOT A RIGID THE BODY HOLDS. The rigid of one of the body's own type
+/// parameters (`held`, [`TypingEnv::param_rigids`]: its sort's and its operation's, skolemized
+/// by `check_operation_bodies`) is not unresolved: it is a row the CALLER holds abstractly, and
+/// a call that incurs it is charged it. Answering `true` for one, the close dropped it with the
+/// spec op's `?_`: `use[R](x: Car2[V = Int64, EC = R]) effects {}` loaded calling
+/// `Sp2.touch(x)`, where `Car2.touch(x)`, which takes no close, is refused "undeclared effect:
+/// ?R". A rigid the body does NOT hold — an existential opened at a call (WI-1063: `once(r) ->
+/// Relation` leaves the result's row unwritten), a const's unwritten slot — names a row no
+/// caller can declare, and is closed as before: read as held, `let r = once(has_zed)` then
+/// `r.isEmpty` was refused "undeclared effect: ?E" (`wi728`, `wi_2qz3f`, MEASURED). Whether a
+/// consumer of such a row should be charged it is WI-1063's question, not changed here. A
+/// flexible variable and a stored `DeBruijn` index answer `true` as before.
+///
+/// ON EVERY CARRIER ([`TermView::index_var`]): a variable riding an occurrence or a
+/// `Value::Var` is the same variable, and read on the term carrier alone it was kept where its
+/// term twin was closed.
+pub(super) fn effect_is_unresolved_var(
+    kb: &KnowledgeBase,
+    held: &[(VarId, TermId)],
+    e: &Value,
+) -> bool {
+    match e.index_var(kb) {
+        Some(Var::Rigid(r)) => !held
+            .iter()
+            .any(|(_, rigid)| matches!(kb.get_term(*rigid), Term::Var(Var::Rigid(h)) if *h == r)),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// WI-20260930-GJW9Z — true iff an effect is a row VARIABLE of any kind, a rigid included, on any
+/// carrier: what a call pinned to an override no longer charges of the spec op's own row
+/// ([`effects_of_pinned_call`]).
+fn effect_is_row_var(kb: &KnowledgeBase, e: &Value) -> bool {
+    e.index_var(kb).is_some()
+}
+
+/// WI-357 / WI-365 — the row a spec-op call at a concrete carrier is charged before any pin: the
+/// spec op's own effects with its unresolved row variables closed (a provision that leaves the
+/// row unwritten is pure there), beside the arguments' effects. The spec op's own effects, not
+/// the merged row, are closed: a polymorphic effect an ARGUMENT contributes is never the close's
+/// to erase.
+pub(super) fn closed_op_row(
+    kb: &KnowledgeBase,
+    held: &[(VarId, TermId)],
+    op_effects: &[Value],
+    arg_effects: &[Value],
+) -> Vec<Value> {
+    let closed: Vec<Value> = op_effects
+        .iter()
+        .filter(|e| !effect_is_unresolved_var(kb, held, e))
+        .cloned()
+        .collect();
+    merge_effects(kb, &closed, arg_effects)
+}
+
+/// What a call was charged when one of its pins is reached: the spec op's own effects at the
+/// call, the arguments' effects, and the row the call held so far.
+pub(super) struct RowAtPin<'a> {
+    pub(super) op_effects: &'a [Value],
+    pub(super) arg_effects: &'a [Value],
+    pub(super) before: Vec<Value>,
+}
+
+/// WI-20260930-GJW9Z (user decision 2026-10-20) — THE EFFECTS OF A CALL PINNED TO AN OVERRIDE:
+/// what the override declares, read at the call ([`dispatched_impl_effects_of`]), in place of
+/// the spec operation's own row VARIABLES — flexible or rigid — beside the spec op's own labels
+/// and the arguments' effects.
+///
+/// The override is what runs, and its body is checked against its own declaration, so its
+/// effects at the call are what the call incurs whether or not they refine the spec's (the
+/// declaration check fails open where it cannot decide, [`check_override_refinement`]). A rigid
+/// is dropped with the rest because a sibling call nothing else placed is placed at the caller's
+/// instance (§8.1), and the spec op's row then reads as the caller's: `peek(m)` in a member of
+/// `Box` declaring `effects Effect` was charged the caller's `Effect` beside `MutBox.peek`'s
+/// `Modify[m]`, where `MutBox.peek(m)` is charged `Modify[m]` alone. A row the caller holds and
+/// the override incurs comes back through the override: its `EC`, read at the receiver, is `R`.
+/// The spec op's LABELS are kept, which is the decision as taken: a label the override does not
+/// incur is still charged through the spec spelling.
+///
+/// ONLY AN OVERRIDE READ WHOLE REPLACES ANYTHING. Where the override's own row does not resolve
+/// at the call (a parameter nothing there fixes), or its declaration is not found, the row the
+/// call held is kept and the override's added to it, as before the pin: the call may be charged
+/// more than it incurs, never less.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn effects_of_pinned_call(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    impl_op_sym: Symbol,
+    impl_op: Option<&OperationInfoFull>,
+    spec_op: &OperationInfoFull,
+    call: &CallToOverride,
+    subst: &Substitution,
+    span: Option<Span>,
+    row: RowAtPin,
+) -> Result<Vec<Value>, TypeError> {
+    let looked_up;
+    let impl_op = match impl_op {
+        Some(info) => Some(info),
+        None => {
+            looked_up = lookup_operation_info_full(kb, impl_op_sym);
+            looked_up.as_ref()
+        }
+    };
+    let derived = match impl_op {
+        Some(info) => {
+            dispatched_impl_effects_of(kb, flow, impl_op_sym, info, spec_op, call, subst, span)?
+        }
+        None => DerivedRow::unread(),
+    };
+    let mut out: Vec<Value> = if derived.whole {
+        row.op_effects
+            .iter()
+            .filter(|e| !effect_is_row_var(kb, e))
+            .cloned()
+            .collect()
+    } else {
+        row.before
+    };
+    merge_effects_into(kb, &mut out, &derived.effects);
+    merge_effects_into(kb, &mut out, row.arg_effects);
+    Ok(out)
+}
+
+/// The override's effects at a call ([`dispatched_impl_effects_of`]), and whether they were read
+/// WHOLE — every one resolved at the call. One that walked to an unbound variable is dropped from
+/// `effects` (an unresolved row is pure there, as at the close) and makes the reading partial.
+pub(super) struct DerivedRow {
+    effects: Vec<Value>,
+    whole: bool,
+}
+
+impl DerivedRow {
+    fn unread() -> Self {
+        DerivedRow {
+            effects: Vec::new(),
+            whole: false,
+        }
     }
 }
 
@@ -3330,7 +3465,7 @@ pub(super) fn effect_is_unresolved_var(kb: &KnowledgeBase, e: &Value) -> bool {
 /// guarded atom whose σ(guard) refutes from Γ. The one owner of that decision.
 ///
 /// IT HAS TWO CALLERS AND USED TO HAVE ONE, which is the whole reason it is a function.
-/// The op's-own-effect loop in [`check_apply_iter`] discharged; [`dispatched_impl_effects`]
+/// The op's-own-effect loop in [`check_apply_iter`] discharged; [`dispatched_impl_effects_of`]
 /// — the row a DISPATCHED spec-op call takes instead — did not, so an impl's guarded
 /// effect came back conservatively present after the spec op's identical one had just
 /// been discharged. Invisible while `/` resolved to `Int64.div` (a concrete op, no
@@ -3402,7 +3537,9 @@ pub(super) fn push_effect_with_guard_discharge(
 /// CONCRETE effects: an impl whose own effect row is itself an unbound var is
 /// effectively pure here, so it contributes nothing — keeping the
 /// `List`-as-`Stream` pure path unchanged. Returns `[]` for a pure override
-/// (empty or wholly-unresolved effects).
+/// (empty or wholly-unresolved effects). WI-20260930-GJW9Z: and says whether every effect
+/// resolved ([`DerivedRow`]) — a pinned call replaces the spec op's row only with a whole one
+/// ([`effects_of_pinned_call`]).
 ///
 /// The map keys on the IMPL op's parameter names (the impl's effects reference
 /// the impl's own params, which may be renamed vs the spec op's). Parameters
@@ -3412,23 +3549,8 @@ pub(super) fn push_effect_with_guard_discharge(
 /// positional arg that fills it by the call's ranking (`pos_params`,
 /// [`positional_param_indices`] — in a MIXED call not the arg at index `i`), else the
 /// arg named with its label. The override's OWN type parameters are bound as the call binds
-/// them ([`override_at_call`]).
-pub(super) fn dispatched_impl_effects(
-    kb: &mut KnowledgeBase,
-    flow: &FlowEnv,
-    impl_op_sym: Symbol,
-    spec_op: &OperationInfoFull,
-    call: &CallToOverride,
-    subst: &Substitution,
-    span: Option<Span>,
-) -> Result<Vec<Value>, TypeError> {
-    let Some(impl_op) = lookup_operation_info_full(kb, impl_op_sym) else {
-        return Ok(Vec::new());
-    };
-    dispatched_impl_effects_of(kb, flow, impl_op_sym, &impl_op, spec_op, call, subst, span)
-}
-
-/// [`dispatched_impl_effects`] for a caller already holding the override's info.
+/// them ([`override_at_call`]), and so are its declaring sort's (WI-20260930-GJW9Z: `effects
+/// {EC}` is the receiver's row).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatched_impl_effects_of(
     kb: &mut KnowledgeBase,
@@ -3439,9 +3561,12 @@ pub(super) fn dispatched_impl_effects_of(
     call: &CallToOverride,
     subst: &Substitution,
     span: Option<Span>,
-) -> Result<Vec<Value>, TypeError> {
+) -> Result<DerivedRow, TypeError> {
     if impl_op.effects.is_empty() {
-        return Ok(Vec::new());
+        return Ok(DerivedRow {
+            effects: Vec::new(),
+            whole: true,
+        });
     }
     let spec_params = &spec_op.params;
     // WI-20260824-VT8CF — the impl's own guarded atoms, and the call σ to refute them
@@ -3519,6 +3644,7 @@ pub(super) fn dispatched_impl_effects_of(
     let own_sigma =
         override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, &reading, span)?;
     let mut out: Vec<Value> = Vec::new();
+    let mut whole = true;
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
         // (`Stream.isEmpty effects s.E`) that a blanket ref-substitution leaves
@@ -3557,7 +3683,9 @@ pub(super) fn dispatched_impl_effects_of(
                 &ctx,
                 None,
             ) {
-                Ok(reduced) if !effect_is_unresolved_var(kb, &reduced) => reduced,
+                Ok(reduced) if !effect_is_unresolved_var(kb, call.env.param_rigids(), &reduced) => {
+                    reduced
+                }
                 _ => substitute_ref_syms_value(kb, e, &places.vars),
             }
         } else if eff_rekey.is_empty() {
@@ -3565,12 +3693,15 @@ pub(super) fn dispatched_impl_effects_of(
         } else {
             substitute_ref_syms_value(kb, e, &eff_rekey)
         };
-        let sub = match &own_sigma {
-            Some(own) => walk_type_deep_value(kb, own, &sub),
-            None => sub,
+        let sub = if own_sigma.is_empty() {
+            sub
+        } else {
+            walk_type_deep_value(kb, &own_sigma, &sub)
         };
         let walked = walk_type_deep_value(kb, subst, &sub);
-        if !effect_is_unresolved_var(kb, &walked) {
+        if effect_is_unresolved_var(kb, call.env.param_rigids(), &walked) {
+            whole = false;
+        } else {
             // WI-20260824-VT8CF — DISCHARGE HERE TOO, through the same owner the
             // op's-own-effect loop uses. σ is built over the IMPL's parameters, because
             // it is the impl's guard (`Int64.div`'s `eq(b, 0)`) being refuted and its
@@ -3598,14 +3729,17 @@ pub(super) fn dispatched_impl_effects_of(
             return Err(err);
         }
     }
-    Ok(out)
+    Ok(DerivedRow {
+        effects: out,
+        whole,
+    })
 }
 
 /// WI-20260929-0RP29 — a call as the override it dispatches to receives it, by the SPEC
 /// operation's parameters: each argument and the type the override gets for it (the call's
 /// `some(…)` wrap applied, WI-408 — the call was elaborated against the spec's parameter), and
 /// the spec operation's type parameters the call's BRACKET wrote. One view for both paths that
-/// type an override at a call ([`dispatched_impl_effects`], the WI-606 fallback), so they read
+/// type an override at a call ([`dispatched_impl_effects_of`], the WI-606 fallback), so they read
 /// one call alike.
 pub(super) struct CallToOverride<'a> {
     /// The environment the call is written in — what is in scope at it.
@@ -3943,8 +4077,9 @@ pub(super) fn override_declared_at_call(
 }
 
 /// WI-20260929-0RP29 — the override's OWN type parameters as this call binds them, the way the
-/// qualified call `Car.op(…)` binds them — `None` when it declares none. One function for both
-/// paths that type an override at a call ([`dispatched_impl_effects`], the WI-606 fallback,
+/// qualified call `Car.op(…)` binds them — and, WI-20260930-GJW9Z, those of the sort that
+/// declares it which its effects name, as the arguments bind them. One function for both paths
+/// that type an override at a call ([`dispatched_impl_effects_of`], the WI-606 fallback,
 /// [`concrete_override_threaded`]), so they read one override at one call alike. In order:
 ///
 /// 1. THE BRACKET. The two declarations are related position by position, return included
@@ -3970,6 +4105,21 @@ pub(super) fn override_declared_at_call(
 /// 6. A parameter two of these bind two ways is the call's error, worded as the qualified
 ///    call's ([`conflicting_bindings_error`]).
 ///
+/// THE DECLARING SORT'S PARAMETERS ITS EFFECTS NAME are kept from step 3: an override's
+/// `effects {EC}` names its carrier's row, which its receiver
+/// binds (`Car2.touch(c: Self)` given `x: Car2[V = Int64, EC = R]` incurs `R`). Answered with its
+/// own parameters only — and nothing for an override declaring none — a call through the spec
+/// op was charged nothing of `EC`, which walked to an unbound variable and was dropped as one,
+/// where `Car2.touch(x)` is charged `R`. In step 3 every argument is met with the override's
+/// parameter at ITS position, so the receiver binds where the spec's receiver stands, not the
+/// first parameter the carrier types; a callback is read at the override's slot, never through
+/// the lambda's own binder (`wi_1tjqh`: met as passed, a `@ {EffQ}` slot took a lambda's write
+/// to its `k`, a label no caller can declare). Two arguments binding one such parameter two
+/// ways do not reach here: a member typing two parameters at one instance where its spec does
+/// not is refused where it is declared, and, under a defaulted spec op, at the call's argument
+/// check (`pick.s (op-arg)`, MEASURED both spellings). One the effects do not name is not asked
+/// for — nothing here would read it.
+///
 /// Read off the spec's parameters alone, a parameter only the receiver binds stayed free — an
 /// unbound row dropped, and a pure caller raised the override's error at run time (unsound,
 /// MEASURED) — and `a: Animal` widened `W` past its `cat`; read off the raw arguments alone, the
@@ -3984,7 +4134,7 @@ pub(super) fn override_at_call(
     call_subst: &Substitution,
     reading: &OverrideReading,
     span: Option<Span>,
-) -> Result<Option<Substitution>, TypeError> {
+) -> Result<Substitution, TypeError> {
     let own: SmallVec<[VarId; 2]> = impl_op
         .type_params
         .iter()
@@ -3993,8 +4143,19 @@ pub(super) fn override_at_call(
             _ => None,
         })
         .collect();
-    if own.is_empty() {
-        return Ok(None);
+    let declaring: SmallVec<[VarId; 4]> = match impl_parent_sort_of_op(kb, impl_op_sym) {
+        Some(sort) if !impl_op.effects.is_empty() => sort_type_params_as_pairs(kb, sort)
+            .iter()
+            .filter_map(|(_, var)| match kb.get_term(*var) {
+                Term::Var(Var::Global(vid)) => Some(*vid),
+                _ => None,
+            })
+            .filter(|&vid| impl_op.effects.iter().any(|e| occurs_in_view(kb, vid, e)))
+            .collect(),
+        _ => SmallVec::new(),
+    };
+    if own.is_empty() && declaring.is_empty() {
+        return Ok(Substitution::new());
     }
     let n = spec_op.params.len().min(impl_op.params.len());
     let var = |vid: VarId| Value::Var(Var::Global(vid));
@@ -4111,13 +4272,15 @@ pub(super) fn override_at_call(
     // 4. What is still free after the arguments, from the caller's expected type — as the
     //    qualified call fills it (WI-270: only a parameter the arguments left free, through the
     //    return; a contradicting claim is the use site's to refuse, so this binds nothing it
-    //    disagrees with).
-    if let Some(exp) = call.expected {
+    //    disagrees with). A declaring sort's parameter too (WI-20260930-GJW9Z): a result
+    //    carrier's `make() -> Self effects {EC}` has no argument to bind `EC`, and `let c:
+    //    Car[EC = R] = Mk.make()` is charged `R`, as `Car.make()` there is.
+    if let Some(exp) = call.expected.filter(|_| !own.is_empty() || !declaring.is_empty()) {
         let ret = mask_projections(kb, &impl_op.return_type);
         let ret = expand_sorts_deep(kb, &ret, SlotVar::Flexible);
         let mut probe = sigma.clone();
         unify_types(kb, &mut probe, &ret, exp);
-        for &w in &own {
+        for &w in own.iter().chain(declaring.iter()) {
             if sigma.resolve_as_value(w).is_some() {
                 continue;
             }
@@ -4169,13 +4332,13 @@ pub(super) fn override_at_call(
         ));
     }
     let mut kept = Substitution::new();
-    for vid in own {
+    for vid in own.into_iter().chain(declaring) {
         if let Some(v) = sigma.resolve_as_value(vid).cloned() {
             let v = walk_type_deep_value(kb, &sigma, &v);
             kept.bind_value(kb, vid, v);
         }
     }
-    Ok(Some(kept))
+    Ok(kept)
 }
 
 /// The name symbol carried by a type-parameter reference in any of the shapes a

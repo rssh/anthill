@@ -2190,3 +2190,5 @@ mod wi_qgvb1_requires_unwritten_slot_test;
 mod wi_tr8cf_modifiable_target_test;
 #[path = "include/wi_p1pvt_field_path_existential_test.rs"]
 mod wi_p1pvt_field_path_existential_test;
+#[path = "include/wi_gjw9z_spec_call_charges_the_callers_row_test.rs"]
+mod wi_gjw9z_spec_call_charges_the_callers_row_test;

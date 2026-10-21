@@ -279,7 +279,7 @@ pub(super) fn stable_receiver_path(
 
 /// WI-20260929-0RP29 — what an ARGUMENT is to the re-keys of the callee parameter it binds,
 /// read only through [`ArgPlaces::record`] — so the call's own maps and a dispatched
-/// override's ([`dispatched_impl_effects`]) cannot disagree about which shapes count.
+/// override's ([`dispatched_impl_effects_of`]) cannot disagree about which shapes count.
 enum ArgPlace {
     /// A variable: it re-keys a projection's receiver, a `denoted` and a return type; and the
     /// EFFECT re-key too, unless it names a nullary constructor — a label no declaration can
@@ -295,7 +295,7 @@ enum ArgPlace {
 
 /// A call's arguments by the callee parameter each binds, as [`arg_place`] classifies them —
 /// the one conversion `check_apply_iter`'s two loops and a dispatched override's copy
-/// ([`dispatched_impl_effects`]) fill, and the one EFFECT re-key ([`ArgPlaces::eff_rekey`])
+/// ([`dispatched_impl_effects_of`]) fill, and the one EFFECT re-key ([`ArgPlaces::eff_rekey`])
 /// both read.
 #[derive(Default)]
 pub(super) struct ArgPlaces {
