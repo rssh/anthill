@@ -31,6 +31,8 @@ generated and is woven through it, for a spec operation and for an ordinary oper
 own `requires`, at goal position and in a value slot of `<=>`. Where it does not reach
 yet — an operand of `=`, a member of a sort that `requires`, a call reached through another
 rule's goal — is measured in `060-implementation.md` §8.9.
+**The clause environment a condition is routed in is decided** (WI-20261013-GGXCX,
+2026-10-21; §5.1, and `068-implementation.md` §6.2 for the whole of it).
 **Consumers:** WI-1037; **WI-070** (`Branch` effect) and **WI-069** (`Suspension`
 snapshot/resume) — jointly 027.2's eval↔SLD switch.
 
@@ -414,6 +416,32 @@ an interpreter is already in hand.
 **This dissolves `requirement-dictionaries.md` §3.4's `[Open]` whole-rule-vs-positional
 question.** A body goal reading the variable before `find_dictionary` binds it sees an unbound
 var and delays. Ordering is a performance question, not a correctness one.
+
+### 5.1 The clause environment a condition is routed in (decided 2026-10-21)
+
+A condition is routed at a citation by the TYPE of its witness, so what types a witness
+decides what is routed (WI-20260925-0RRQP measured a witness typed as a per-call placeholder,
+routed to nothing). Decided with the user on WI-20261013-GGXCX, built by WI-20261013-WF14Z
+(`068-implementation.md` §6.2):
+
+- **A clause is typed as a whole**, as an operation body is: one substitution over its
+  variables, in any order of its goals, from every position that declares a type — the head's
+  bound (written or inferred, one type), a constructor's fields and result, an entity goal's
+  fields, an operation call's parameters and result, a rule goal's columns (the callee's,
+  written or inferred, opened fresh at each goal), a field read.
+- **The enclosing sort's parameters, a named requirement's slot included, are variables of the
+  clause that a citation fixes, and rigid in its body.** So a rule sees its sort's `requires`
+  (user, 2026-09-25): in `sort Box { sort T = ?; requires O: WeakOrd[T]; entity box(a: T, b:
+  T) }`, `rule order(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)` types
+  `?p` at `Box[T = t, O = o]` and its condition at `WeakOrd[T = t]`, which `o` answers.
+  `Box.order(mk()).head.c` over `mk() -> Box[T = Int64, O = Ascending]` then reads `O` off the
+  argument's type (`-4`; it is `-1`, `Int64`'s own, today). A body that fixes `T` is refused.
+- **A witness no position types stays open**, and its call is dispatched by the value at run
+  time (the WI-282 exemption); a citation routes nothing to its condition, which is derived
+  from the value, as before.
+- **A rule goal still passes its callee nothing** (060-implementation §8.9 row C6): the clause
+  typing reads the callee's column types, not its dictionaries. Rule→rule inheritance (§5,
+  above) stays absent.
 
 ---
 

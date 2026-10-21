@@ -2,7 +2,8 @@
 
 ## Status: Reviewed (2026-09-29; WI-20260926-ACG10, delivered). The proposal is
 [`../proposals/068-rule-body-operation-applications.md`](../proposals/068-rule-body-operation-applications.md);
-this document owns HOW. Decided with the user (2026-09-29): D1–D7 (§3).
+this document owns HOW. Decided with the user (2026-09-29): D1–D7 (§3); the clause environment,
+how far data is typed, the new load errors and equations in a fragment (2026-10-21, §6.2).
 
 ## 0. The sequence
 
@@ -337,7 +338,8 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
 Their tickets hold their design questions: 7D48J — the clause environment, how far data is typed
 (0RRQP's `<=>`-with-constructor tie), the typer's per-call classification as P7VP4's one input,
 the census's typing count, and Y6ZCD's single dispatch decision; DSEXA — `?d` as a blocker, the
-retired per-consumer reductions, the unfold threading dictionaries.
+retired per-consumer reductions, the unfold threading dictionaries. 7D48J's clause environment,
+data typing, load errors and equations are decided in §6.2.
 
 ### 6.1 D1a as delivered (WI-20261013-GFS6A, 2026-10-14)
 
@@ -379,6 +381,165 @@ driven by `wi_gfs6a_woven_call_waits_on_its_dictionary_test` (back-outs stated a
   (`op_dicts`) now ride to the bridge and supply the slots they can; a stamp that forwards a
   caller's slot the bridge has no frame for is read as unbound (`try_eval_requirement_chain_node`)
   and its slot derived, as before.
+
+### 6.2 C1a — the clause environment and how far data is typed (WI-20261013-GGXCX)
+
+Decided with the user 2026-10-21; no code. Measured on `bb99c630` with the CLI built from the
+tree. Amends 068 §1 ("the walk … never types those") and §3 ("fragments are typed with simp
+OFF"). Built by C1b (WI-20261013-WF14Z) and C1c (WI-20261013-R1W5A); C1d (WI-20261013-RYDNV)
+reads what they build.
+
+**Decision 1 — the clause environment.** A clause is typed as a whole, as an operation body
+is: one substitution over its variables, in any order of its goals. Every position that
+declares a type contributes to it:
+
+- the head's bound, written or inferred — one type (decided on WI-20260925-0RRQP);
+- a constructor's fields and result, and an entity goal's fields (built by 0RRQP);
+- an operation call's parameters and result, in a value slot and as the result column of
+  `f(args, ?r)`;
+- a rule goal's columns: the callee's, written or inferred — there is no difference between
+  written and inferred — opened fresh at each goal as at a citation. Relations are typed callee
+  before caller; a relation that calls itself reads its own columns as one type within its
+  clauses;
+- a field read: `?p.t` is at the field's type.
+
+The enclosing sort's parameters, a named requirement's slot included, are variables of the
+clause that a citation fixes (rigid in the body — decision 3). A variable no position types
+stays open, and a call at it is dispatched by the value at run time (068 §3, the WI-282
+exemption).
+
+Today only a constructor types a variable (goal order already makes no difference). Over
+`sort Cnt { entity cnt(n: Int64); operation bump(c: Cnt) -> Int64 = … }`, `mk4() -> Cnt =
+cnt(n: 4)`, `entity P(t: Int64)`:
+
+| clause | today | decided |
+|---|---|---|
+| `?c <=> cnt(n: 4), ?x <=> ?c.bump()`, and the two goals reversed | `5` | `5` |
+| `rule h1(?a: Int64, ?x) :- ?x <=> ?a.abs()`, called with `-3` | the term `-3.abs` | `3` |
+| `rule inner(?c: Cnt, ?x) :- ?x <=> ?c.bump()` | the term `cnt(n: 4).bump` | `5` |
+| `?c <=> Mk.mk4(), ?x <=> ?c.bump()`; `Mk.mk4(?c), ?x <=> ?c.bump()` | the term | `5` |
+| `gen(?c), ?x <=> ?c.bump()` over `rule gen(?c) :- ?c <=> cnt(n: 4)` | the term | `5` |
+| `rule r0(?p: P, ?x) :- ?x <=> (?p.t).abs()`, called with `P(t: -3)` | the term `P(t: -3).t.abs` | `3` |
+| 0RRQP's `Box.order(mk()).head.c`, `mk() -> Box[T = Int64, O = Ascending]` | `-1` | `-4`, `O` read off the argument's type |
+
+**Decision 2 — how far data is typed.**
+
+- *Every entity construction written in a rule or a fact is typed*: each argument checked
+  against its field, which gives it its expected type, and the construction's type given to
+  its position — a `<=>` side, a comparison operand, a goal's argument (relation or entity), a
+  call's argument, a field of another construction, an element of a tuple or collection
+  literal, a head's argument, a fact's argument. A mismatch is a load error naming the field.
+  068 §5 already says heads are "typed, never evaluated".
+- *Not constructions, and not typed as data*: a type written as a value (`holds(Box[String])`,
+  `domain_member(?x, Colour)`), a bracket entry (`require[Desc[T = p.E]]`), a discharge's
+  binders and antecedents, a slot declared `Term` (a quote, 068 §1.3). These are where the
+  2026-10-13 measurement's 21 extra failures came from (GGXCX's note of that day, (3b)).
+- *WI-1058's three reasons*, answered for a construction: the expectation comes from the field,
+  the column, the other side of `<=>` or the enclosing field, and unification carries it both
+  ways; a construction binds nothing, and a binder form inside one is a fragment typed whole;
+  typing records types and stamps and replaces no node of the stored data.
+- *A relation whose clauses give one column types with no join* (`fact holds(1)`, `fact
+  holds("a")`; or two rule clauses at `Int64` and `String`) is not refused. The column's type is
+  a rigid "some type", opened fresh at each rule goal and each citation, as 0RRQP opens what a
+  citation leaves unfixed — TypeScript's `unknown`: a value of it goes where any type is taken
+  and nowhere one type is asked. This is a relation's column only; an operation body's arms
+  with no common type stay refused.
+- *Narrowing.* In a clause a TEST narrows such a variable to `T`, wherever the test stands:
+  `domain(?v, T)` — the run-time type test, which decides every ground value of a sort, a
+  primitive and a parametric sort — `<=>` against a construction or a literal, and a head's
+  bound (the same test). A DEMAND — a call's argument, a dot, a field read — needs the
+  variable typed, by a test or by any other position. Narrowing to an arrow waits on
+  WI-20261021-VF8GT (a closure carries no type); narrowing in an operation body
+  (`holds.head.x`) is not part of C1.
+
+Over `entity pt(x: Int64, y: Int64)`, `sort Hold { entity holder(h: pt) }`, `fact holds(1)`,
+`fact holds("a")`, `fact holds(pt(x: 1, y: 2))`, `px(p: pt) -> Int64` (its `x`):
+
+| written | today | decided |
+|---|---|---|
+| `fact pt(x: "s", y: 2)`; the body goal `holder(h: pt(x: "s", y: 2))` | refused | refused |
+| `fact holder(h: pt(x: "s", y: 2))`; `rule hh(pt(x: "s", y: 2)) :- true` | loads | refused |
+| `?r <=> pt(x: "s", y: 2)`; `?r <=> pt(x: wrap(v: 1), y: 2)` | binds it | refused |
+| `holds(pt(x: "s", y: 2))` | loads, no answer | refused |
+| `holds(?r)` | the three values | the three values; `?r` at "some type" |
+| `holds(?v), ?r <=> U.ilen(?v)`, `ilen(n: Int64) -> Int64 = n` | loads; `1`, `"a"` and the `pt` — `ilen` hands back what it is given | refused, the demand un-narrowed |
+| `holds(?v), domain(?v, Int64), ?r <=> U.ilen(?v)` | `1` | `1` |
+| `holds(?v), ?v <=> pt(x: ?a, y: ?), ?r <=> U.px(?v)` | `1` | `1`, from the `pt` solution |
+
+**Decision 3 — the new load errors.**
+
+- *The enclosing sort's parameter is rigid in a clause's typing*, as in an operation body: a
+  citation fixes it, the body may not. `Self` is this instance (070), so in `sort Box3[T] {
+  entity b3(v: T) }` `rule prSelf(?x: Self) :- ?x <=> b3(v: 5)` is refused ("b3.v expected T,
+  got Int64"), while `rule prBare(?x: Box3) :- ?x <=> b3(v: 5)` — a bare sort is an open slot
+  — loads, a relation of `Box3[T = Int64]` values. `sort Sat[C]`'s `rule model(vs: C) :- vs <=>
+  [?p, ?q, ?r], …` is refused ("expected C, got List[T = Bit]"); its repair is SHED7's
+  `PersistentCollection[C = C].fromList([…])`. A variable the clause writes (`?x: Wrap[T =
+  ?t]`) or leaves unwritten stays flexible. Today all of these load: `Box3[T = Int64].prSelf`
+  answers `b3(v: 5)`, `Box3[T = Colour].prSelf` nothing, `Sat[C = Bag[T = Bit]].model` 0 models.
+- *By class, and the part that builds it*:
+
+  | class | example | part |
+  |---|---|---|
+  | a construction's argument against its field, in a body, a head or a fact | `?r <=> pt(x: "s", y: 2)` | C1b |
+  | a variable whose positions disagree | `pt(x: ?a, y: 2), U.slen(?a)`; `rule twoTypes(x: Bit, y: Bag[T = Bit]) :- x <=> y` | C1b |
+  | a head's bound against the body | `rule concrete(vs: Bag[T = Bit]) :- vs <=> [t(), f()]` | C1b |
+  | a rule goal's argument against the callee's column | `c("a")` over `rule c(?x: Int64) :- true` | C1b |
+  | a demand on an un-narrowed "some type" | `holds(?v), U.ilen(?v)` | C1b |
+  | a member missing on a typed receiver | `?c.nosuch()` | 0RRQP (constructors), C1b |
+  | the sort's parameter fixed by the body | `prSelf`, `Sat.model` | C1b |
+  | a call's argument list and types in a value slot | `Util.sub2(1, 5, 9)`; `List.length(vs)` over `vs: Bag[T = Bit]` | C1c |
+  | a function value no bare reference can supply | `app(dbl, 2)` | C1c |
+  | an effectful application, by its typed row | `now(?r)`, `hofWR` (7D48J's 2026-10-16 row) | C1c |
+
+- *The count is taken during the build*: each part counts its classes on §1.2's corpus and on
+  the suite with the check reporting and refusing nothing, records the count here, and builds
+  against it. C1c's starts from GGXCX's 2026-10-13 measurement: on the corpus 7 newly typed
+  sites and 0 reports; on the suite 29 + 21 rows, the shapes decision 2 excludes.
+
+**Decision 4 — equations are on in a fragment's typing**, as in an operation body. A fragment
+(an operation application or a binder form) is typed as an operation body is, equations
+included, and the stored fragment is the rewritten one, as an operation body's is. `@[simp]`
+still never fires inside §1.1's evaluation, and `ResolveConfig { simplify }` governs only the
+resolver's own run-time rewriting. Against 068 §3's grounds for turning them off: WI-1058's
+`holds(ite(true, 10, 20))` was a rewrite of data, which decision 2 never rewrites; "one call,
+one answer" holds, with the answer the operation-body twin gives; and the 2026-09-26 row (a
+`@[simp]` law whose right side leaves `conv(…)` unpinned) is a defect in typing the rewrite's
+result, which C1c owes — the rewritten node is typed, as the operation-body typer types it.
+Rejected: refusing at load a rule-body call to an operation whose only definition is its
+equation (the two texts would differ; `Float.recip`, `Relation.where` / `join` uncallable in a
+rule body; stricter than `simplify: true`), and the evaluator running a defining equation as a
+body (a backing kind at run time — WI-885's open question). Over `operation dbl(n: Int64) ->
+Int64`, `rule dbl(?n) <=> ?n + ?n @[simp]`, `app(f: (Int64) -> Int64, x: Int64) -> Int64 =
+f(x)`:
+
+| written | today | decided |
+|---|---|---|
+| `?x <=> dbl(2)` | conditional, residual `unify(?_, dbl(2))` | `4` |
+| `?x <=> app(lambda (y: Int64) -> dbl(y), 2)` | `4` | `4` |
+| the goal `dbl(2, ?x)` | no answer, silently | `4` |
+| `dbl(2) = 4` | holds | holds |
+| `?x <=> app(dbl, 2)` | residual, incomplete | refused, as in an operation body |
+| the operation-body twins | `4` | `4` |
+
+**The rows each part owes.**
+
+- *C1b (WF14Z)* — decision 1's table; decision 2's construction, "some type" and narrowing
+  rows; decision 3's C1b classes, each with its count. Flips in
+  `wi_0rrqp_clause_typed_through_constructor_test`: `a_body_that_fixes_a_sorts_parameter_is_read_as_before`
+  (refused), `a_constructor_that_does_not_fit_its_position_pins_nothing` (refused, `b: "s"`
+  against `Int64`), `a_slot_the_arguments_own_type_says_is_not_read` (`-4`), and
+  `a_column_nothing_types_is_read_at_any_type` (refused once a rule goal and a goal-position
+  call type their columns; 0RRQP's 51 rows are its measurement). SHED7's `Sat.model` refused,
+  with its repair loading.
+- *C1c (R1W5A)* — decision 4's table; its own rows (the three spellings of `Box.open`, the
+  argument list in a value slot, `()` left by an equation); the 2026-09-26 `twice` row answers
+  `14`; decision 3's C1c classes, each with its count. Controls, green before and after: the
+  rows the 2026-10-13 equations-off measurement reddened (`wi_rm247` ×2,
+  `kernel_mint_address`, `wi939`, `wi_p7vp4`, `wi_3hn0n` ×4).
+- *C1d (RYDNV)* — unchanged by C1a: the classification it makes the inference's one input is
+  read off the clause typing C1b and C1c build.
+- *VF8GT* — narrowing to an arrow; a tuple type written as a value in a data slot.
 
 ## 7. Testing
 
