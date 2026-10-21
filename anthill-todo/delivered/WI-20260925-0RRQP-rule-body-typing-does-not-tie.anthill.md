@@ -3,9 +3,9 @@
 - id: WI-20260925-0RRQP-rule-body-typing-does-not-tie
 - created: 2026-09-25T14:45:27Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-25T14:45:27Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-21T17:02:17Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
