@@ -485,7 +485,7 @@ fn denoted_value_is_decidable(
             // set the loader's `symbol_is_value_place` uses (no drift — the CallbackParam
             // own-param case `Modify[a]` is the one this gate must defer).
             Some(Expr::Ref(s)) | Some(Expr::Ident(s))
-                if defer_places && kb.kind_of(*s).is_some_and(|k| k.is_value_place()) =>
+                if defer_places && kb.kinds(*s).is_value_place() =>
             {
                 return false;
             }

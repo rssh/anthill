@@ -4220,29 +4220,29 @@ impl KnowledgeBase {
             .collect()
     }
 
-    /// The keyword `sym`'s declaration opened with — for DISPLAY (a diagnostic,
-    /// reflect's `kind` string). `None` for unresolved symbols.
+    /// The keyword `sym`'s declaration was first written with — for DISPLAY (a
+    /// diagnostic). `None` for unresolved symbols.
     ///
-    /// NOT a test for what the name may be used as. One name can play several
-    /// roles (§6.3: an eponymous constructor IS its sort, so `Project` is both a
-    /// `Sort` and an `Entity`), and this reports only the first-declared one — so
-    /// `kind_of(s) == Some(Sort)` answers "was it written with `sort`", which for
-    /// the two spellings of one §6.3 declaration gives two different answers. Ask
-    /// [`Self::has_kind`] instead whenever the question is "can this name serve as
-    /// an X".
-    pub fn kind_of(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
-        self.symbols.get(sym).primary_kind()
+    /// NOT a test for what the name may be used as, and the [`KindLabel`] it returns
+    /// cannot be compared with a kind (WI-974). One name can play several roles (§6.3:
+    /// an eponymous constructor IS its sort, so `Project` is both a `Sort` and an
+    /// `Entity`), and this reports only the first-written one. Ask [`Self::has_kind`]
+    /// whenever the question is "can this name serve as an X".
+    ///
+    /// [`KindLabel`]: crate::intern::KindLabel
+    pub fn kind_of(&self, sym: Symbol) -> Option<crate::intern::KindLabel> {
+        self.symbols.get(sym).written_kind()
     }
 
     /// The kind the reflect `kind` operation reports for `sym` — its builtin twin in the
     /// resolver reads the same (WI-898). A constructor's TYPE FACE is a type, so it reports
     /// `Sort` whatever kinds its declaration carries (WI-20260902-JB6RS): `kind(red[])` is
-    /// a sort, `kind(red)` the entity. Any other symbol reports its primary kind, the
-    /// keyword its declaration opened with — the table does not see the face, so
-    /// [`Self::kind_of`] answers for the declaration.
-    pub fn reflect_kind(&self, sym: Symbol) -> Option<crate::intern::SymbolKind> {
+    /// a sort, `kind(red)` the entity. Any other symbol reports the keyword its declaration
+    /// was first written with — the table does not see the face, so [`Self::kind_of`]
+    /// answers for the declaration.
+    pub fn reflect_kind(&self, sym: Symbol) -> Option<crate::intern::KindLabel> {
         if sym.is_type_face() {
-            return Some(crate::intern::SymbolKind::Sort);
+            return Some(crate::intern::KindLabel::TYPE_FACE);
         }
         self.kind_of(sym)
     }
@@ -4251,6 +4251,12 @@ impl KnowledgeBase {
     /// which keyword came first, and therefore to source order.
     pub fn has_kind(&self, sym: Symbol, kind: crate::intern::SymbolKind) -> bool {
         self.symbols.get(sym).has_kind(kind)
+    }
+
+    /// Every role `sym` plays — for a question about several at once
+    /// (`kinds(s).intersects(..)`). Empty for an unresolved symbol.
+    pub fn kinds(&self, sym: Symbol) -> crate::intern::KindSet {
+        self.symbols.get(sym).kinds()
     }
 
     /// The symbol that owns the lexical scope in which `sym` was declared
@@ -5783,7 +5789,7 @@ impl KnowledgeBase {
     /// (`goal_head_sym_arity`) and the scoping-marker exemption belong to the goal
     /// question and not to this one.
     pub fn symbol_declares_nothing(&self, sym: Symbol) -> bool {
-        self.kind_of(sym).is_none() && self.rules_by_functor_iter(sym).next().is_none()
+        self.kinds(sym).is_empty() && self.rules_by_functor_iter(sym).next().is_none()
     }
 
     /// The `(functor symbol, positional arity)` of a GOAL's head, or `None` for a head
@@ -12449,7 +12455,7 @@ impl KnowledgeBase {
     /// itself carry the truth, so this is exactly `kind == OpResult`. Keeps
     /// `Cell.new.result` masking (WI-314) unchanged.
     pub(crate) fn is_result_binder(&self, sym: Symbol) -> bool {
-        self.kind_of(sym) == Some(crate::intern::SymbolKind::OpResult)
+        self.kinds(sym).is_place(crate::intern::SymbolKind::OpResult)
     }
 
     /// Proposal 055 §2 — does `sym`, written in a value position, denote a TYPE VALUE
@@ -12572,7 +12578,7 @@ impl KnowledgeBase {
         if self.is_constructor_symbol(functor) {
             return true;
         }
-        self.kind_of(functor).is_some() && self.entity_field_names(functor).is_some()
+        !self.kinds(functor).is_empty() && self.entity_field_names(functor).is_some()
     }
 
     // ── Builtin dispatch ────────────────────────────────────────
@@ -16783,10 +16789,10 @@ mod wi913_host_name_ladder_tests {
                     unexplained.push(format!("{name} (ambiguous)"))
                 }
                 crate::intern::ResolveResult::NotFound => {
-                    let is_field = matches!(kb.kind_of(*expected), Some(SymbolKind::Field));
+                    let is_field = kb.has_kind(*expected, SymbolKind::Field);
                     let visible = kb.symbols.internal_visible_from(*expected, global);
                     if !is_field && visible {
-                        unexplained.push(format!("{name} kind={:?}", kb.kind_of(*expected)));
+                        unexplained.push(format!("{name} kinds={:?}", kb.kinds(*expected)));
                     }
                 }
             }

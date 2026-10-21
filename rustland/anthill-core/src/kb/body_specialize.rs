@@ -884,7 +884,7 @@ fn ctor_field_occs(
             Some(out)
         }
         // A nullary constructor stored as a bare ref (WI-436/WI-511) — no fields.
-        Expr::Ref(s) | Expr::Ident(s) if kb.kind_of(*s) == Some(SymbolKind::Entity) => {
+        Expr::Ref(s) | Expr::Ident(s) if kb.has_kind(*s, SymbolKind::Entity) => {
             Some(Vec::new())
         }
         _ => None,
@@ -957,7 +957,7 @@ fn occ_as_ctor(
             named_args,
             ..
         } if is_data(*functor) => Some((*functor, pos_args.clone(), named_args.clone())),
-        Expr::Ref(s) | Expr::Ident(s) if kb.kind_of(*s) == Some(SymbolKind::Entity) => {
+        Expr::Ref(s) | Expr::Ident(s) if kb.has_kind(*s, SymbolKind::Entity) => {
             Some((*s, Vec::new(), Vec::new()))
         }
         _ => None,
@@ -1002,7 +1002,7 @@ fn skeletonize(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Rc<NodeOccur
 fn occ_head_ctor(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
     match occ.as_expr()? {
         Expr::Constructor { name, .. } => Some(*name),
-        Expr::Ref(s) | Expr::Ident(s) if kb.kind_of(*s) == Some(SymbolKind::Entity) => Some(*s),
+        Expr::Ref(s) | Expr::Ident(s) if kb.has_kind(*s, SymbolKind::Entity) => Some(*s),
         _ => None,
     }
 }

@@ -129,8 +129,8 @@ pub(super) fn check_apply_iter(
     // arguments (`queens(board)`, `queryTwoParams(x: 3)`) is a `Relation[T]` value
     // with the supplied columns bound (subtracted from the free columns → narrows T).
     // A rule is never an operation, so without this it would fall through Path 1 →
-    // Path 3 and die as `UnknownApplyFunctor`. Eval re-derives via `kind_of(functor)`
-    // (its `Expr::Apply` rule arm), the applied peer of `check_bare_ref`'s rule arm;
+    // Path 3 and die as `UnknownApplyFunctor`. Eval re-derives it from the functor
+    // (its `Expr::Apply` rule arm, `cites_a_relation`), the applied peer of `check_bare_ref`'s rule arm;
     // the value is pure to construct, so the apply's effects are its arguments' —
     // running the relation carries `{Error}` through the `provides` edge, not here.
     //
@@ -3127,7 +3127,7 @@ pub(super) fn check_apply_iter(
                             let walked = walk_term_to_resolved(kb, &subst, *var);
                             let c = extract_sort_ref_sym(kb, &walked)?;
                             (!is_sort_param_symbol(kb, c)
-                                && kb.kind_of(c) == Some(crate::intern::SymbolKind::Sort))
+                                && kb.has_kind(c, crate::intern::SymbolKind::Sort))
                             .then_some(c)
                         })
                 })
@@ -5402,7 +5402,7 @@ pub(crate) fn short_name_of(qn: &str) -> &str {
 /// WI-958 — THE one reader of "which symbol declares this operation". Every other
 /// site that wants an op's owner goes through this, so the answer cannot be spelled
 /// two ways: [`spec_op_parent_sort`] layers the spec-sort gates on it, and callers
-/// wanting a member's SORT layer `kind_of(..) == Sort` (see `call_bracket_scopes`,
+/// wanting a member's SORT layer `has_kind(.., Sort)` (see `call_bracket_scopes`,
 /// `rigidify_op_type_params`, the WI-374 member tie) — because this deliberately
 /// returns the NAMESPACE for a free op, which declares no type parameters.
 ///

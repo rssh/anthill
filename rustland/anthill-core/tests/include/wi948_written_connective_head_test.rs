@@ -209,8 +209,8 @@ end
          that failed to run",
     );
     assert_eq!(
-        kb.kind_of(mine),
-        Some(SymbolKind::Goal),
+        kb.kinds(mine),
+        anthill_core::intern::KindSet::of(SymbolKind::Goal),
         "neighbour: a predicate head owns its clauses — the kind an equation subject \
          would NOT get",
     );

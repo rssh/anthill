@@ -272,7 +272,7 @@ fn every_operation_the_interpreter_registers_is_interpreter_mapped() {
     let kb = interp.kb();
     let mut invisible: Vec<&str> = registered
         .iter()
-        .filter(|s| kb.kind_of(**s) == Some(anthill_core::intern::SymbolKind::Operation))
+        .filter(|s| kb.has_kind(**s, anthill_core::intern::SymbolKind::Operation))
         .filter(|s| !kb.is_interpreter_mapped_op(**s))
         .map(|s| kb.qualified_name_of(*s))
         .collect();

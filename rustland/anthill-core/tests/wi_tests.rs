@@ -1261,6 +1261,9 @@ mod wi966_loader_verdict_test;
 #[path = "include/wi956_kind_gate_test.rs"]
 mod wi956_kind_gate_test;
 
+#[path = "include/wi974_kind_set_order_twin_test.rs"]
+mod wi974_kind_set_order_twin_test;
+
 #[path = "include/wi1010_defaulted_op_instance_fact_test.rs"]
 mod wi1010_defaulted_op_instance_fact_test;
 

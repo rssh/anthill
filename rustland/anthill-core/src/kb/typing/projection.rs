@@ -3231,10 +3231,24 @@ pub(super) fn resolve_rigid_projection(
     // WI-383: when the subject is an OPERATION type-parameter, the licensing bound is
     // the operation's OWN `requires Spec[C = T]` clause (on `OperationInfo.requires`),
     // NOT a sort-level `SortRequiresInfo` chain — so consult the op's requires there.
-    let chain = if kb.kind_of(decl_sort) == Some(crate::intern::SymbolKind::Operation) {
-        op_requires_entries(kb, decl_sort)
-    } else {
-        requires_chain(kb, decl_sort)
+    //
+    // WI-974: a sort and an operation of one name (WI-751) are one symbol with ONE scope, so
+    // either's bound may name a parameter declared there, and both chains are read. Whose
+    // parameter it IS, the scope cannot say — the operation's `[U]` is registered into it
+    // beside the sort's own — so the operation's own declaration list does
+    // ([`op_bracket_declares`]): one its bracket declares is the operation's, read as WI-383
+    // reads it. Asking for the keyword written first read the pair by source order.
+    let decl_is_op = kb.has_kind(decl_sort, crate::intern::SymbolKind::Operation);
+    let decl_is_sort = kb.has_kind(decl_sort, crate::intern::SymbolKind::Sort);
+    let op_param = decl_is_op && (!decl_is_sort || op_bracket_declares(kb, decl_sort, key));
+    let chain = match (decl_is_op, decl_is_sort) {
+        (true, false) => op_requires_entries(kb, decl_sort),
+        (true, true) => {
+            let mut both = op_requires_entries(kb, decl_sort);
+            both.extend(requires_chain(kb, decl_sort));
+            both
+        }
+        (false, _) => requires_chain(kb, decl_sort),
     };
     // WI-428/430: the carrier-precise candidate filter — the SAME `requires_entry_lends_-
     // member` predicate the `ExprCarried` neutral gate uses (one source of truth for which
@@ -3253,7 +3267,10 @@ pub(super) fn resolve_rigid_projection(
             // arm). It stays the rigid NEUTRAL here. A bound that DOES mention the subject
             // but fails to declare `member` is a typo (or a sort-type-param projection),
             // not self-carrier → keep the loud error.
-            let is_op = kb.kind_of(decl_sort) == Some(crate::intern::SymbolKind::Operation);
+            // An operation's own parameter only: any other of a same-named sort's scope is
+            // the sort's, bound by the sort's chain, and a miss there is the loud error below
+            // (WI-974).
+            let is_op = op_param;
             let mentions_subject = chain.iter().any(|e| spec_mentions_key(kb, &e.spec, key));
             if is_op && !mentions_subject {
                 Ok(ProjResult::Neutral)
@@ -3475,6 +3492,32 @@ fn sym_subject_key(kb: &KnowledgeBase, s: Symbol) -> SubjectKey {
         }
     }
     SubjectKey::Sym(s)
+}
+
+/// WI-974 — does the OPERATION `op`'s own bracket declare the type parameter `key`? Read off
+/// the operation's declaration list, which is the one place that can tell: a symbol that is
+/// a sort and an operation owns one scope, and the sort's `sort T = ?` and the operation's
+/// `[U]` both land in it. A parameter written by name (`U.Elem`) is a registration of its
+/// own, with no `SortAlias` to the record's variable, so it is matched BY NAME, as WI-383's
+/// grounding does ([`crate::kb::op_info::declared_type_param_var`]); one already walked to a
+/// variable is matched by that variable.
+fn op_bracket_declares(kb: &KnowledgeBase, op: Symbol, key: SubjectKey) -> bool {
+    match key {
+        SubjectKey::Sym(s) => {
+            crate::kb::op_info::declared_type_param_var(kb, op, kb.local_name_of(s)).is_some()
+        }
+        SubjectKey::Var(x) => {
+            let declares = |tps: &[(Symbol, Var)]| {
+                crate::kb::op_info::bracket_type_params(kb, tps)
+                    .any(|(_, v)| matches!(v, Var::Global(id) | Var::Rigid(id) if id.raw() == x))
+            };
+            match kb.op_record(op).and_then(|r| r.signature.as_ref()) {
+                Some(sig) => declares(&sig.type_params),
+                None => crate::kb::op_info::lookup_operation_info(kb, op)
+                    .is_some_and(|info| declares(&info.type_params)),
+            }
+        }
+    }
 }
 
 pub(super) fn subject_keys_equal(kb: &KnowledgeBase, a: SubjectKey, b: SubjectKey) -> bool {

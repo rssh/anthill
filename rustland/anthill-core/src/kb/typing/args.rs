@@ -3095,15 +3095,14 @@ fn binder_out_of_scope(kb: &KnowledgeBase, env: &TypingEnv, place: Symbol) -> bo
         return false;
     }
     // A per-site binder (a lambda's, a `let`'s, a pattern's) has no declaration to resolve to.
-    match kb.kind_of(place) {
-        None => true,
-        Some(kind) => matches!(
-            kind,
-            crate::intern::SymbolKind::Param
-                | crate::intern::SymbolKind::CallbackParam
-                | crate::intern::SymbolKind::LocalLet
-        ),
-    }
+    // A declared one is a binder only if it is no type as well — the value-place reading of
+    // `KindSet::is_place` (WI-974).
+    use crate::intern::SymbolKind;
+    let kinds = kb.kinds(place);
+    kinds.is_empty()
+        || kinds.is_place(SymbolKind::Param)
+        || kinds.is_place(SymbolKind::CallbackParam)
+        || kinds.is_place(SymbolKind::LocalLet)
 }
 
 /// A CALLBACK ARGUMENT AS ITS SLOT READS IT, before the two are unified (WI-20261013-1TJQH) —

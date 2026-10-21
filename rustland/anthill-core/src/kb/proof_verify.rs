@@ -518,7 +518,7 @@ fn contract_target(kb: &KnowledgeBase, rule_qn: &str) -> Option<(Symbol, Contrac
         // end in the keyword — leave it to the rule-derivation path).
         let op_sym = kb.try_resolve_symbol(op_qn)?;
         let clause = ContractClause::from_keyword(kw)?;
-        return (kb.kind_of(op_sym) == Some(SymbolKind::Operation)).then_some((op_sym, clause));
+        return kb.has_kind(op_sym, SymbolKind::Operation).then_some((op_sym, clause));
     }
     None
 }

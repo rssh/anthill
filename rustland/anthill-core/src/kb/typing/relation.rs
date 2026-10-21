@@ -437,8 +437,8 @@ pub(super) fn dotted_citation_nullary_op(
 /// parameter, and a ground head slot before a free var doesn't block positional
 /// binding (see [`resolve_relation_arg_columns`]).
 ///
-/// Eval re-derives the applied form via `kind_of(functor)` (its `Expr::Apply` rule
-/// arm), so no `CallClass` mark is written; the SAME [`resolve_relation_arg_columns`]
+/// Eval re-derives the applied form from the functor (its `Expr::Apply` rule arm,
+/// `cites_a_relation`), so no `CallClass` mark is written; the SAME [`resolve_relation_arg_columns`]
 /// binding plan over the SAME [`rule_head_var_slots`] enumeration drives the eval-side
 /// splicing, keeping the two in lockstep.
 pub(super) fn relation_reference_type_applied(

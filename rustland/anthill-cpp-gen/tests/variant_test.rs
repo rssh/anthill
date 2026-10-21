@@ -174,3 +174,33 @@ int main() {{
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// WI-974 — A SUM IS A SUM WHICHEVER OF ITS TWO ENTRIES IS WRITTEN FIRST. `namespace
+/// Shape` beside `sort Shape` is one symbol playing `{Namespace, Sort}` (proposal 059 R2's
+/// secondary entry). The header's sum band asked for the keyword written FIRST, so with the
+/// namespace above the sort the sum was dropped, and its constructors with it.
+///
+/// FAILS with the change backed out (measured, 2026-10-21): the namespace-first row — the
+/// sum was the namespace's only content, so the header was refused outright, "no entities,
+/// sum sorts, sort-with-operations, or constants to emit". The sort-first row passes either
+/// way, by design — it is what makes the failure one of order.
+#[test]
+fn a_sum_written_after_its_namespace_is_emitted() {
+    let the_sort = "          sort Shape\n            entity Circle(radius: Float)\n            entity Square(side: Float)\n          end\n";
+    let the_namespace = "          namespace Shape\n          end\n";
+    for (order, decls) in [
+        ("the namespace first", format!("{the_namespace}{the_sort}")),
+        ("the sort first", format!("{the_sort}{the_namespace}")),
+    ] {
+        let source = format!(
+            "        namespace test.wi974sum\n          import anthill.prelude.{{Float}}\n{decls}        end\n"
+        );
+        let mut kb = load_kb_with(&source);
+        let header =
+            emit_namespace_header(&mut kb, "test.wi974sum").expect("emit test.wi974sum header");
+        assert!(
+            header.contains("using Shape = std::variant<Circle, Square>;"),
+            "{order}: the sum is missing from the header:\n{header}"
+        );
+    }
+}

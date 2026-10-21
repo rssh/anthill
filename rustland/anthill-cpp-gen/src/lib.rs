@@ -1470,10 +1470,9 @@ fn carrier_bound_const_companions(
             parent.starts_with(&prefix)
                 && !parent[prefix.len()..].contains('.')
                 && ctx.carriers.lookup(&parent).is_some()
-                && matches!(
-                    kb.try_resolve_symbol(&parent).and_then(|s| kb.kind_of(s)),
-                    Some(SymbolKind::Sort)
-                )
+                && kb
+                    .try_resolve_symbol(&parent)
+                    .is_some_and(|s| kb.has_kind(s, SymbolKind::Sort))
         })
         .map(|(sym, _)| sym)
         .collect();
@@ -1521,10 +1520,9 @@ fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> S
     let Some(parent) = parent_qualified_name(kb, sym) else {
         return name;
     };
-    let parent_is_sort = matches!(
-        kb.try_resolve_symbol(&parent).and_then(|s| kb.kind_of(s)),
-        Some(SymbolKind::Sort)
-    );
+    let parent_is_sort = kb
+        .try_resolve_symbol(&parent)
+        .is_some_and(|s| kb.has_kind(s, SymbolKind::Sort));
 
     // (declaring namespace, identifier within that namespace)
     let (decl_ns, in_ns): (String, String) = if parent_is_sort {
@@ -3025,7 +3023,7 @@ fn classify_namespace(
         let Some(sort_sym) = kb.try_resolve_symbol(&parent_qn) else {
             continue;
         };
-        if !matches!(kb.kind_of(sort_sym), Some(SymbolKind::Sort)) {
+        if !kb.has_kind(sort_sym, SymbolKind::Sort) {
             continue;
         }
         ctors.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
@@ -3070,7 +3068,7 @@ fn classify_namespace(
     // OperationInfo, so the loop above misses it and its consts would silently
     // vanish from the header. Surface const-bearing sorts the same way (one
     // level deep, not carrier-bound, not already a sum) so a const-only sort
-    // emits as a struct of `static constexpr` members. The `kind == Sort`
+    // emits as a struct of `static constexpr` members. The `has_kind(Sort)`
     // filter below drops a const that is directly under the namespace
     // (`ns.X`, parent `ns`, already handled by the namespace-level scan) or in
     // a nested namespace (`ns.sub`, not a Sort). A sum sort that also carries a
@@ -3097,7 +3095,7 @@ fn classify_namespace(
     let mut traits: Vec<Symbol> = traits_qns
         .into_iter()
         .filter_map(|qn| kb.try_resolve_symbol(&qn))
-        .filter(|s| matches!(kb.kind_of(*s), Some(SymbolKind::Sort)))
+        .filter(|s| kb.has_kind(*s, SymbolKind::Sort))
         // WI-931 — THE THREE BANDS ARE DISJOINT, and that is this function's
         // contract rather than each consumer's chore. An EPONYMOUS sort
         // (`sort Vec3 { entity Vec3(x: Float, …); operation vec_add(…) = … }`) is
@@ -4352,7 +4350,7 @@ fn lower_symbol_ref(
     // WI-536: a reference to a term-level const resolves to its named constant (struct
     // member or namespace companion), not the bare short name (which would not be in
     // scope at the C++ use site).
-    if kb.kind_of(sym) == Some(SymbolKind::Const) {
+    if kb.has_kind(sym, SymbolKind::Const) {
         return Ok(const_ref_cpp(kb, ctx, sym));
     }
     if let Some(err) = unlowerable_operation(kb, ctx, sym) {
@@ -4428,7 +4426,7 @@ fn unlowerable_operation(
     ctx: &CodegenContext,
     op: Symbol,
 ) -> Option<CppCodegenError> {
-    if kb.kind_of(op) != Some(SymbolKind::Operation)
+    if !kb.has_kind(op, SymbolKind::Operation)
         || ctx.host_ops.lookup(op).is_some()
         || kb.op_body_node(op).is_some()
     {

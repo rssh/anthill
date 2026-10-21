@@ -77,7 +77,7 @@ end
         let sym = kb
             .try_resolve_symbol(qn)
             .unwrap_or_else(|| panic!("`{qn}` must be a defined symbol"));
-        assert_eq!(kb.kind_of(sym), Some(want), "`{qn}`: {why}");
+        assert_eq!(kb.kinds(sym), anthill_core::intern::KindSet::of(want), "`{qn}`: {why}");
     }
 }
 

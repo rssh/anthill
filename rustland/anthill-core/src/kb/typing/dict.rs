@@ -4696,7 +4696,7 @@ fn backed_spec_op(kb: &KnowledgeBase, op: Symbol) -> Option<Symbol> {
         .collect();
     specs.into_iter().find_map(|spec| {
         let spec_op = kb.try_resolve_symbol(&format!("{}.{short}", kb.qualified_name_of(spec)))?;
-        (spec_op != op && kb.kind_of(spec_op) == Some(crate::intern::SymbolKind::Operation))
+        (spec_op != op && kb.has_kind(spec_op, crate::intern::SymbolKind::Operation))
             .then_some(spec_op)
     })
 }

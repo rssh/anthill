@@ -56,9 +56,9 @@
 //! The five CONTROLS pass either way BY DESIGN. They are what fails if a gate
 //! over-fires: a `requires` on a sort, a variant-less sort import, a namespace, a
 //! `namespace` nested in a sort body, and §6.3's eponymous constructor — whose
-//! `primary_kind` is `Entity` even though it IS a sort, which is why the gate asks
-//! `has_kind`. MEASURED: rewriting the gate to `primary_kind` fails that one control
-//! and nothing else in this file.
+//! keyword written first (`primary_kind`, removed by WI-974) is `Entity` even though it
+//! IS a sort, which is why the gate asks `has_kind`. MEASURED: rewriting the gate to
+//! `primary_kind` failed that one control and nothing else in this file.
 
 use crate::common::{expect_load_errors, load_kb_with, try_load_kb_with};
 
@@ -400,6 +400,6 @@ end
         format!("{:?}", kb.kind_of(point)),
         "Some(Entity)",
         "the control only bites while `Entity` is the kind that LEADS here — if this \
-         changes, the fixture stops distinguishing `has_kind` from `primary_kind`"
+         changes, the fixture stops distinguishing `has_kind` from the keyword written first"
     );
 }

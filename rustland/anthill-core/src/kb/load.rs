@@ -574,11 +574,11 @@ pub enum LoadError {
     /// so this says which KIND the path actually named.
     WildcardImportOfNonScope {
         path: String,
-        /// The kind the path's symbol actually carries — `primary_kind`, the
-        /// keyword its declaration opened with, which is exactly the DISPLAY
-        /// reading that projection is for. `None` for a symbol interned without a
+        /// The kind the path's symbol is shown as — the keyword its declaration was
+        /// first written with (`SymbolDef::written_kind`), which is exactly the DISPLAY
+        /// reading that label is for. `None` for a symbol interned without a
         /// declaration.
-        kind: Option<SymbolKind>,
+        kind: Option<crate::intern::KindLabel>,
         span: Span,
     },
     /// WI-993 — `requires X` where `X` is not a SORT. The other half of WI-988, whose
@@ -599,7 +599,7 @@ pub enum LoadError {
         /// The QUALIFIED name it resolved to. The two differ whenever the clause was
         /// written short, and the qualified one is what says which declaration won.
         resolved: String,
-        kind: Option<SymbolKind>,
+        kind: Option<crate::intern::KindLabel>,
         span: Span,
     },
     /// A name reachable by two or more paths. Dispatch has no sound choice, so
@@ -2171,6 +2171,17 @@ pub enum LoadError {
         /// The joining head, so each independent contributor has its own location.
         span: Span,
     },
+    /// WI-974 — `requires Both[T = X]` where `Both` is a SORT and also an OPERATION of the
+    /// same name (WI-751's pair). A clause keeps no bracket for a sort with no constructor,
+    /// so the stored clause is `Both(T: X)` — an application of the operation, which is how
+    /// every reader of a `requires` clause then takes it (§4.4): a value precondition, never
+    /// the spec requirement that was written. Refused where the bracket is still visible,
+    /// rather than read as the call.
+    BracketRequirementOnAnOperationName {
+        /// The sort's name, as resolved.
+        name: String,
+        span: Span,
+    },
     /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
     /// `⊥` denial names no predicate, a multi-head rule names several, and a QUALIFIED
     /// or desugared head introduces no name at all. Under 061 such a rule asserts
@@ -2975,6 +2986,7 @@ impl LoadError {
             | LoadError::EquationSubjectNamesAPredicate { span, .. }
             | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
+            | LoadError::BracketRequirementOnAnOperationName { span, .. }
             | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -3765,6 +3777,9 @@ impl LoadError {
                     scope,
                     predicate
                 )
+            }
+            LoadError::BracketRequirementOnAnOperationName { name, span } => {
+                format!("{}: {}", loc.format_start(*span), bracket_requirement_message(name))
             }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 format!(
@@ -5231,6 +5246,13 @@ impl std::fmt::Display for LoadError {
                     name, scope, predicate, span.start, span.end
                 )
             }
+            LoadError::BracketRequirementOnAnOperationName { name, span } => write!(
+                f,
+                "{} (at {}..{})",
+                bracket_requirement_message(name),
+                span.start,
+                span.end
+            ),
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 write!(
                     f,
@@ -8846,7 +8868,7 @@ fn const_unavailable_message(name: &str, reason: &str) -> String {
 /// It names the KIND because "this import did nothing" (or, here, "did something
 /// else") is not a diagnosis a reader can act on — the repair depends entirely on
 /// what the path turned out to name, so both repairs are spelled out.
-fn wildcard_non_scope_message(path: &str, kind: Option<SymbolKind>) -> String {
+fn wildcard_non_scope_message(path: &str, kind: Option<crate::intern::KindLabel>) -> String {
     format!(
         "wildcard import '{path}.*': '{path}' is {}, which has no contents to \
          import — §8.6 gives the form one meaning, 'include {path} as a \
@@ -8861,7 +8883,7 @@ fn wildcard_non_scope_message(path: &str, kind: Option<SymbolKind>) -> String {
 /// rather than a parameter of [`wildcard_non_scope_message`]: the two clauses admit
 /// different sets (§5.2's sort alone here) and take different repairs, which is the
 /// whole content of the message.
-fn requires_non_sort_message(written: &str, resolved: &str, kind: Option<SymbolKind>) -> String {
+fn requires_non_sort_message(written: &str, resolved: &str, kind: Option<crate::intern::KindLabel>) -> String {
     let names = if written == resolved {
         format!("'{written}'")
     } else {
@@ -8880,7 +8902,7 @@ fn requires_non_sort_message(written: &str, resolved: &str, kind: Option<SymbolK
 /// argument at all (`s: g[3]`, `g` an operation). Names the KIND, as its two siblings
 /// above do and for their reason: what the head turned out to be is what tells the author
 /// which name they meant to write.
-fn type_args_on_non_type_message(head: &str, kind: Option<SymbolKind>) -> String {
+fn type_args_on_non_type_message(head: &str, kind: Option<crate::intern::KindLabel>) -> String {
     format!(
         "`{head}` takes no type arguments: it is {}, and a type argument binds a type \
          parameter of a sort — of the sort applied, or of the sort whose constructor is \
@@ -8898,7 +8920,7 @@ fn type_args_on_non_type_message(head: &str, kind: Option<SymbolKind>) -> String
 /// table, and every writer of those goes through `define`, which records a
 /// category), but it is a rendering rather than a decision: a sentence is cheaper
 /// than an `expect` that would abort a load to say a name has no kind.
-fn declaration_of_kind(kind: Option<SymbolKind>) -> String {
+fn declaration_of_kind(kind: Option<crate::intern::KindLabel>) -> String {
     kind.map_or("not a declaration at all".to_owned(), |k| {
         format!("a declaration of kind {}", k.reflect_name())
     })
@@ -11905,7 +11927,7 @@ impl ScopePass for ImportPass<'_> {
                             None => errors.push(LoadError::RequiresNamesNonSort {
                                 written: req_sort_name.clone(),
                                 resolved: kb.qualified_name_of(sym).to_string(),
-                                kind: kb.symbols.get(sym).primary_kind(),
+                                kind: kb.symbols.get(sym).written_kind(),
                                 span: r.span,
                             }),
                         }
@@ -13090,7 +13112,7 @@ fn run_deferred_alias_work(
                     LoadError::RequiresNamesNonSort {
                         written,
                         resolved: kb.qualified_name_of(head).to_string(),
-                        kind: kb.symbols.get(head).primary_kind(),
+                        kind: kb.symbols.get(head).written_kind(),
                         span,
                     },
                 )),
@@ -13432,7 +13454,7 @@ fn process_one_import(
                     // typo in a path that resolved perfectly well.
                     errors.push(LoadError::WildcardImportOfNonScope {
                         path: path.clone(),
-                        kind: kb.symbols.get(sym).primary_kind(),
+                        kind: kb.symbols.get(sym).written_kind(),
                         span: imp.span,
                     });
                 } else {
@@ -15258,6 +15280,16 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
+/// WI-974 — the ONE wording of [`LoadError::BracketRequirementOnAnOperationName`].
+fn bracket_requirement_message(name: &str) -> String {
+    format!(
+        "`requires {name}[…]` names a sort that is also an OPERATION of the same name, and a \
+         stored clause cannot keep the bracket that says which: it would be read as a call of \
+         the operation — a value precondition — not as the requirement written. Rename the \
+         sort or the operation."
+    )
+}
+
 /// WI-20260902-JB6RS — the ONE wording of [`LoadError::SortAppliedAsData`].
 pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
     format!(
@@ -15812,7 +15844,7 @@ fn const_node_is_pure(
 /// A callee in APPLY position is pure unless it is an operation with a non-empty
 /// declared effect row.
 fn const_callee_is_pure(kb: &KnowledgeBase, functor: Symbol) -> Result<(), String> {
-    if kb.kind_of(functor) == Some(crate::intern::SymbolKind::Operation) {
+    if kb.has_kind(functor, crate::intern::SymbolKind::Operation) {
         if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, functor) {
             if !info.effects.is_empty() {
                 return Err(format!(
@@ -15826,9 +15858,11 @@ fn const_callee_is_pure(kb: &KnowledgeBase, functor: Symbol) -> Result<(), Strin
 }
 
 /// A bare REFERENCE is pure unless it names a NULLARY operation with effects (a
-/// zero-arg effectful call). A multi-arg op ref is eta — a pure closure value.
+/// zero-arg effectful call). A multi-arg op ref is eta — a pure closure value. A sort
+/// that is also an operation is the TYPE when written bare (§4.4,
+/// [`KnowledgeBase::is_type_value_head`]), and a type is pure (WI-974).
 fn const_ref_is_pure(kb: &KnowledgeBase, sym: Symbol) -> Result<(), String> {
-    if kb.kind_of(sym) == Some(crate::intern::SymbolKind::Operation) {
+    if kb.has_kind(sym, crate::intern::SymbolKind::Operation) && !kb.is_type_value_head(sym) {
         if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, sym) {
             if info.params.is_empty() && !info.effects.is_empty() {
                 return Err(format!(
@@ -18766,7 +18800,7 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // operation`) consults the builtin map FIRST, so a mis-keyed registration wins
         // over the real thing.
         let sym = match kb.try_resolve_symbol(&op_qn) {
-            Some(s) if kb.kind_of(s) == Some(SymbolKind::Operation) => Some(s),
+            Some(s) if kb.has_kind(s, SymbolKind::Operation) => Some(s),
             found => {
                 errors.push(LoadError::Other {
                     message: match found {
@@ -19820,7 +19854,7 @@ pub fn build_host_const_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // `<ns>.<Sort>.<member>` names, so a bare resolve is too weak — `const_map`
         // over an entity would register a value source against the CONSTRUCTOR.
         let const_sym = match kb.try_resolve_symbol(&const_qn) {
-            Some(s) if kb.kind_of(s) == Some(SymbolKind::Const) => Some(s),
+            Some(s) if kb.has_kind(s, SymbolKind::Const) => Some(s),
             found => {
                 errors.push(LoadError::Other {
                     message: match found {
@@ -21640,14 +21674,14 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
 /// `test.sg.P`, `List` for `List[T = P]`, `EffectsRows` for every row — so two bindings
 /// that differ in the namespace of a sort, or anywhere below the head, were one.
 ///
-/// A binding whose value is an OPERATION is left out: those are the auto-bindings
+/// A binding of an OPERATION slot is left out: those are the auto-bindings
 /// `resolve_requires_bindings` completes a clause with, not the author's, and a name
 /// that carried them would be another name before that pass than after it.
 ///
 /// Read through the view, so the answer is the same on whichever carrier the spec rides:
 /// a binding written through a type alias is the type it stands for.
 fn spec_binding_texts<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String, String)> {
-    use crate::intern::SymbolKind;
+    let spec_qn = provides_spec_base_sym_view(kb, spec).map(|s| kb.qualified_name_of(s));
     let mut bindings: Vec<(String, String)> = spec
         .named_keys(kb)
         .into_iter()
@@ -21660,11 +21694,16 @@ fn spec_binding_texts<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String,
             // one too, WI-20260924-F3FYJ; an over-applied one too, WI-20260929-AAQT5 —
             // no binding rides a `SortView(base, …)` wrapper any more), whose head
             // `provides_spec_base_sym` reads. A bare op-valued binding stays its own
-            // functor, which is what the skip tests.
-            if let Some(vs) = provides_spec_base_sym_view(kb, &value) {
-                if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
-                    return None;
-                }
+            // functor, which is what the skip tests — through the typer's one
+            // discriminator of an op-valued binding, which this was a copy of, and at a
+            // slot that is no type parameter: a name can be a type and an operation at
+            // once, and the slot says which was bound (WI-974).
+            // The value test first: it is cheap, and few values name an operation, while
+            // the slot test resolves the key and reads the spec's aliases.
+            if super::typing::binding_op_symbol(kb, &value).is_some()
+                && !spec_qn.is_some_and(|qn| super::typing::is_type_param_binding(kb, k_sym, qn))
+            {
+                return None;
             }
             Some((
                 last_segment(kb.local_name_of(k_sym)).to_owned(),
@@ -22365,10 +22404,8 @@ fn wrap_places_as_var_ref(
 /// `Ref`. The `CallbackParam` / `CallbackResult` kinds are unambiguous (unlike
 /// `Field`, which also tags ordinary record fields), so matching on them is safe.
 fn is_callback_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
-    matches!(
-        kb.kind_of(sym),
-        Some(SymbolKind::CallbackParam | SymbolKind::CallbackResult)
-    )
+    let kinds = kb.kinds(sym);
+    kinds.is_place(SymbolKind::CallbackParam) || kinds.is_place(SymbolKind::CallbackResult)
 }
 
 /// WI-348 — build a carrier-agnostic cons/nil list of `Value`s, the value-fact
@@ -22694,7 +22731,7 @@ fn expand_bare_entity_query_name(
 /// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
 /// error channel. Its empty answer is then true: no stored clause holds that value.
 fn query_data_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
-    if fold != ConstFold::Data || kb.kind_of(sym) != Some(SymbolKind::Const) {
+    if fold != ConstFold::Data || !kb.has_kind(sym, SymbolKind::Const) {
         return None;
     }
     match kb.const_slot_value(sym) {
@@ -23391,7 +23428,7 @@ fn const_fold_goal_slots(
 /// its diagnostics) is made by the walk the caller is part of.
 fn const_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
     match resolve_name_in_kb(kb, name, scope) {
-        ResolveResult::Found(sym) if kb.kind_of(sym) == Some(SymbolKind::Const) => Some(sym),
+        ResolveResult::Found(sym) if kb.has_kind(sym, SymbolKind::Const) => Some(sym),
         _ => None,
     }
 }
@@ -24063,7 +24100,7 @@ fn resolve_dotted_in_kb_with(
     // (`type mismatch in name.apply` for the marked form, `… in data.Holder.user.name.
     // apply` for the unmarked one). "A path does not name a field" is a property of the
     // resolution, so it belongs where the resolution is decided.
-    let not_a_field = |sym: &Symbol| !matches!(kb.kind_of(*sym), Some(SymbolKind::Field));
+    let not_a_field = |sym: &Symbol| !kb.kinds(*sym).is_place(SymbolKind::Field);
     // BOTH GATES AS ONE PREDICATE, for the rung that has to apply them BEFORE counting
     // (WI-20260825-X9RRN). Rung 1 yields at most one symbol, so it can filter afterwards;
     // the provision rung yields a SET whose size is the answer, and an unusable candidate
@@ -24219,7 +24256,7 @@ fn dotted_join(
     full: impl FnOnce() -> String,
     aliases: AliasReading,
 ) -> Option<DottedJoin> {
-    let not_a_field = |sym: &Symbol| !matches!(kb.kind_of(*sym), Some(SymbolKind::Field));
+    let not_a_field = |sym: &Symbol| !kb.kinds(*sym).is_place(SymbolKind::Field);
     if let Some(member) = declared.filter(not_a_field) {
         return Some(DottedJoin {
             member,
@@ -24506,11 +24543,13 @@ fn dotted_absolute(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
 ///
 /// An AMBIGUOUS head is not a case here either (WI-917): [`resolve_dotted_in_kb`] returns
 /// the ambiguity before any reading is consulted, so this guard never sees one.
+///
+/// A NAMESPACE, whatever else the name is (WI-974): `namespace X` beside `sort X` is one
+/// symbol with one scope (059 R2's secondary entry), and it owns that scope's members
+/// whichever of the two was written first. Asking for the keyword written first made the
+/// same pair end the path in one order and fall through in the other.
 fn hidden_hit_ends_the_path(kb: &KnowledgeBase, head_sym: Option<Symbol>) -> bool {
-    matches!(
-        head_sym.and_then(|sym| kb.kind_of(sym)),
-        Some(SymbolKind::Namespace)
-    )
+    head_sym.is_some_and(|sym| kb.has_kind(sym, SymbolKind::Namespace))
 }
 
 // WI-233: per-item-kind aggregator (count, total time). Gated by
@@ -28314,7 +28353,7 @@ impl<'a> Loader<'a> {
     /// slot that asked for it, and the caller keeps the symbol: the load has failed, and
     /// the stored shape no longer matters.
     fn data_slot_const_value(&mut self, sym: Symbol, parse_id: TermId) -> Option<Literal> {
-        if self.const_fold != ConstFold::Data || self.kb.kind_of(sym) != Some(SymbolKind::Const) {
+        if self.const_fold != ConstFold::Data || !self.kb.has_kind(sym, SymbolKind::Const) {
             return None;
         }
         match self.kb.const_slot_value(sym) {
@@ -29644,7 +29683,7 @@ impl<'a> Loader<'a> {
                 // sort's — a constructor's type arguments are its sort's (§8.2), and since
                 // WI-20260902-JB6RS its bracket is its TYPE in a clause too (`Pair.left[R =
                 // String]`), so it is checked and normalized as that sort's application is.
-                let type_args_owner = if self.kb.kind_of(new_functor) == Some(SymbolKind::Sort) {
+                let type_args_owner = if self.kb.has_kind(new_functor, SymbolKind::Sort) {
                     Some(new_functor)
                 } else if self.kb.is_constructor_symbol(new_functor) {
                     self.kb.type_arg_owner(new_functor)
@@ -31063,7 +31102,7 @@ impl<'a> Loader<'a> {
         whole: Option<Symbol>,
         results: &mut Vec<TermId>,
     ) -> bool {
-        let Some(sym) = whole.filter(|sym| self.kb.kind_of(*sym) == Some(SymbolKind::Const))
+        let Some(sym) = whole.filter(|sym| self.kb.has_kind(*sym, SymbolKind::Const))
         else {
             return false;
         };
@@ -31193,7 +31232,7 @@ impl<'a> Loader<'a> {
     fn resolve_qualified_value_readonly(&self, name: &str) -> Option<Symbol> {
         self.resolve_qualified_readonly(name).filter(|sym| {
             self.is_paren_less_citation_target(*sym)
-                || self.kb.kind_of(*sym) == Some(SymbolKind::Const)
+                || self.kb.has_kind(*sym, SymbolKind::Const)
         })
     }
 
@@ -35243,18 +35282,16 @@ impl<'a> Loader<'a> {
     /// field path projected off an operation NAME is not a value place, so the
     /// compound heads here deliberately omit `Operation`.
     ///
-    /// Reads the DECLARED (first) category, not membership: this is an EXCLUSIVE
-    /// value-vs-type discriminator — its caller takes the type-projection branch
-    /// precisely when it answers false — and "any role is a value place" cannot
-    /// express exclusivity. A name that is both (`operation foo[T](T: Int64)`
-    /// declares `T` as a type param AND a value param, giving `{Sort, Param}`)
-    /// would otherwise flip this to true and silently reclassify the head.
+    /// An EXCLUSIVE value-vs-type discriminator — its caller takes the type-projection
+    /// branch precisely when it answers false — so "any role is a value place" is not
+    /// the question: a name that is both (`operation foo[T](T: Int64)` declares `T` as a
+    /// type param AND a value param, giving `{Sort, Param}`) would flip to true and
+    /// silently reclassify the head. It read the keyword written FIRST for that; since
+    /// WI-974 it says it — a value place and no type ([`KindSet::is_value_place`]).
+    ///
+    /// [`KindSet::is_value_place`]: crate::intern::KindSet::is_value_place
     fn symbol_is_value_place(&self, sym: Symbol) -> bool {
-        self.kb
-            .symbols
-            .get(sym)
-            .primary_kind()
-            .is_some_and(|k| k.is_value_place())
+        self.kb.kinds(sym).is_value_place()
     }
 
 
@@ -36095,7 +36132,7 @@ impl<'a> Loader<'a> {
             //
             // `has_kind`, NOT `kind_of` (found by `/code-review`). A symbol's categories
             // are a SET and `add_kind` accumulates them precisely so source order stops
-            // mattering (WI-926); `kind_of` is `primary_kind`, whose own doc says it is
+            // mattering (WI-926); `kind_of` was the set's head, whose own doc says it is
             // "the keyword the declaration opened with — for DISPLAY only … Not a test
             // for what the name can be used as". Asking it here made the FIRST keyword
             // decide, so one `Base` declaring both `operation Inner()` and `sort Inner`
@@ -36666,13 +36703,13 @@ impl<'a> Loader<'a> {
         // A NULLARY CONSTRUCTOR is deliberately NOT here — a constructor name in a
         // type slot is its TYPE (WI-313, kernel §4.4; `Level.Untrusted` standing in
         // `Text[L = Untrusted]` is the live idiom that depends on it), in every slot,
-        // `Modify`'s target included since WI-20260902-JB6RS.
+        // `Modify`'s target included since WI-20260902-JB6RS. Nor a SORT that is also an
+        // operation (WI-751's pair): a bare name in a type slot is the type when it is a
+        // sort and no constructor ([`KnowledgeBase::is_type_value_head`], §4.4), so
+        // `Modify[Both]` is a TYPE target as `Modify[Cell]` is (WI-974).
         let is_value = self.symbol_is_value_place(sort_sym)
-            || self
-                .kb
-                .symbols
-                .get(sort_sym)
-                .has_kind(SymbolKind::Operation);
+            || (self.kb.has_kind(sort_sym, SymbolKind::Operation)
+                && !self.kb.is_type_value_head(sort_sym));
         // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
         // `check_modify_targets`' own message both contradict ("a value-producing
         // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
@@ -37925,7 +37962,7 @@ impl<'a> Loader<'a> {
                 if let Some(sym) = self
                     .kb
                     .try_resolve_symbol(&const_qn)
-                    .filter(|&s| self.kb.kind_of(s) == Some(SymbolKind::Const))
+                    .filter(|&s| self.kb.has_kind(s, SymbolKind::Const))
                 {
                     let source = const_value::ConstSource::Host(key.clone());
                     self.kb.record_const_source(sym, source);
@@ -39984,14 +40021,18 @@ impl<'a> Loader<'a> {
                         // it walks, so a rule written above the operation would see a
                         // half-built table — the order dependence 061 exists to remove.
                         Some(sym) => {
-                            let clash = self
-                                .kb
-                                .symbols
-                                .get(sym)
+                            // Named by the keyword the author wrote there when that is one
+                            // of the roles a rule cannot declare (WI-974): each such role
+                            // is a declaration already at this address.
+                            let def = self.kb.symbols.get(sym);
+                            let undeclarable: Vec<SymbolKind> = def
                                 .kinds()
                                 .iter()
-                                .find(|k| !DECLARABLE_BY_A_RULE.contains(k))
-                                .copied();
+                                .filter(|k| !DECLARABLE_BY_A_RULE.contains(k))
+                                .collect();
+                            let clash = def.kind_label_among(crate::intern::KindSet::of_all(
+                                &undeclarable,
+                            ));
                             match clash {
                                 Some(kind) => {
                                     self.errors.push(LoadError::BodylessRuleDeclaresNothing {
@@ -41337,6 +41378,7 @@ impl<'a> Loader<'a> {
         // what lets the guard ask `is_type_param` directly instead of re-finding the
         // sort's body scope by name.
         self.check_op_type_param_shadowing(o, prev_scope, &op_qualified);
+        self.refuse_bracket_requirement_on_an_operation_name(o);
         self.refuse_reserved_self_params(o);
         self.record_op_named_slots(o, functor);
 
@@ -42285,6 +42327,29 @@ impl<'a> Loader<'a> {
     /// `Self`. The declarations [`reserved_self_name_errors`] reads do not include an
     /// operation's frame, and a parameter of this name would be silently unreachable:
     /// the type lowering reads `Self` before it resolves any name.
+    /// WI-974 — [`LoadError::BracketRequirementOnAnOperationName`]: a `requires` goal
+    /// WRITTEN as a bracket that every reader will take as a call. Asked here because the
+    /// parse term still says which was written, and of the converted clause with the same
+    /// predicate those readers use (`is_value_precondition_clause`), so the refusal is
+    /// exactly the case they misread.
+    fn refuse_bracket_requirement_on_an_operation_name(&mut self, o: &Operation) {
+        for goal in o.requires.iter().flatten() {
+            if !self.parsed.terms.is_type_application(*goal) {
+                continue;
+            }
+            let converted = self.convert_term(*goal);
+            let Some(base) = self.kb.head_functor(converted) else {
+                continue;
+            };
+            if super::typing::is_value_precondition_clause(self.kb, &Value::term(converted)) {
+                self.errors.push(LoadError::BracketRequirementOnAnOperationName {
+                    name: self.kb.qualified_name_of(base).to_owned(),
+                    span: self.parsed.terms.span(*goal),
+                });
+            }
+        }
+    }
+
     fn refuse_reserved_self_params(&mut self, o: &Operation) {
         let is_self = |loader: &Self, sym: Symbol| {
             loader.parsed.symbols.local_name(sym) == crate::intern::SELF_TYPE_NAME
@@ -42660,7 +42725,7 @@ impl<'a> Loader<'a> {
         else {
             return None;
         };
-        if self.kb.kind_of(op_sym) != Some(SymbolKind::Operation) {
+        if !self.kb.has_kind(op_sym, SymbolKind::Operation) {
             return None;
         }
         Some(format!("{}.{}", self.kb.qualified_name_of(op_sym), last))
@@ -45402,24 +45467,24 @@ mod wi351_place_tests {
         let kb =
             load_op("operation reduce(z: Int64, f: (a: Int64, t: Int64) -> Int64) -> Int64 = 0\n");
 
-        let place = |qn: &str| -> SymbolKind {
+        // The whole SET, so a place is asserted to play its one role and no other.
+        let place = |qn: &str| -> crate::intern::KindSet {
             let sym = kb
                 .try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("place `{qn}` should resolve"));
-            kb.kind_of(sym)
-                .unwrap_or_else(|| panic!("place `{qn}` should carry a kind"))
+            kb.kinds(sym)
         };
 
         // Op params → Param (an op param is its own input place).
-        assert_eq!(place("reduce.z"), SymbolKind::Param);
-        assert_eq!(place("reduce.f"), SymbolKind::Param);
+        assert_eq!(place("reduce.z"), crate::intern::KindSet::of(SymbolKind::Param));
+        assert_eq!(place("reduce.f"), crate::intern::KindSet::of(SymbolKind::Param));
         // Callback params (read off the arrow's named params, WI-355).
-        assert_eq!(place("reduce.f.a"), SymbolKind::CallbackParam);
-        assert_eq!(place("reduce.f.t"), SymbolKind::CallbackParam);
+        assert_eq!(place("reduce.f.a"), crate::intern::KindSet::of(SymbolKind::CallbackParam));
+        assert_eq!(place("reduce.f.t"), crate::intern::KindSet::of(SymbolKind::CallbackParam));
         // Callback result.
-        assert_eq!(place("reduce.f.result"), SymbolKind::CallbackResult);
+        assert_eq!(place("reduce.f.result"), crate::intern::KindSet::of(SymbolKind::CallbackResult));
         // The op's reserved result — the sole OpResult (proposal 041).
-        assert_eq!(place("reduce.result"), SymbolKind::OpResult);
+        assert_eq!(place("reduce.result"), crate::intern::KindSet::of(SymbolKind::OpResult));
 
         // `is_result_binder` is exactly the OpResult slice: only the op result
         // is a binder; inputs and callback places are not.
@@ -45442,15 +45507,15 @@ mod wi351_place_tests {
     fn single_param_callback_place() {
         // Named single param (WI-358): the place takes the declared name.
         let kb = load_op("operation findp(p: (x: Int64) -> Bool) -> Bool = true\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
-        assert_eq!(role("findp.p.x"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("findp.p.result"), Some(SymbolKind::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).map(|s| kb.kinds(s));
+        assert_eq!(role("findp.p.x"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("findp.p.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
 
         // Unnamed single param: 1-based positional fallback.
         let kb = load_op("operation g(p: (Int64) -> Bool) -> Bool = true\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
-        assert_eq!(role("g.p._1"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("g.p.result"), Some(SymbolKind::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).map(|s| kb.kinds(s));
+        assert_eq!(role("g.p._1"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("g.p.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
     }
 
     /// Unnamed callback params fall back to the **1-based** positional names
@@ -45459,10 +45524,10 @@ mod wi351_place_tests {
     #[test]
     fn unnamed_callback_params_are_one_based() {
         let kb = load_op("operation app(f: (Int64, Int64) -> Int64) -> Int64 = 0\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
-        assert_eq!(role("app.f._1"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("app.f._2"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("app.f.result"), Some(SymbolKind::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).map(|s| kb.kinds(s));
+        assert_eq!(role("app.f._1"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("app.f._2"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("app.f.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
         assert_eq!(role("app.f._0"), None, "naming is 1-based, not 0-based");
         assert_eq!(role("app.f._3"), None, "only two params");
     }
@@ -45478,26 +45543,26 @@ mod wi351_place_tests {
         let kb = load_op(
             "operation hof(f: (g: (Int64, Int64) -> Int64, y: Int64) -> Int64) -> Int64 = 0\n",
         );
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
-        assert_eq!(role("hof.f"), Some(SymbolKind::Param));
-        assert_eq!(role("hof.f.g"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("hof.f.y"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("hof.f.result"), Some(SymbolKind::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).map(|s| kb.kinds(s));
+        assert_eq!(role("hof.f"), Some(crate::intern::KindSet::of(SymbolKind::Param)));
+        assert_eq!(role("hof.f.g"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("hof.f.y"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("hof.f.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
         // The nested callback `g`'s own params/result, one level deeper.
-        assert_eq!(role("hof.f.g._1"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("hof.f.g._2"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("hof.f.g.result"), Some(SymbolKind::CallbackResult));
+        assert_eq!(role("hof.f.g._1"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("hof.f.g._2"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("hof.f.g.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
 
         // Result nesting: a curried op — `f`'s result is itself a callback.
         let kb = load_op("operation curry(f: (Int64) -> (Int64) -> Bool) -> Bool = true\n");
-        let role = |qn: &str| kb.try_resolve_symbol(qn).and_then(|s| kb.kind_of(s));
-        assert_eq!(role("curry.f._1"), Some(SymbolKind::CallbackParam));
-        assert_eq!(role("curry.f.result"), Some(SymbolKind::CallbackResult));
+        let role = |qn: &str| kb.try_resolve_symbol(qn).map(|s| kb.kinds(s));
+        assert_eq!(role("curry.f._1"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
+        assert_eq!(role("curry.f.result"), Some(crate::intern::KindSet::of(SymbolKind::CallbackResult)));
         // The result-callback's own param/result, two dots deep.
-        assert_eq!(role("curry.f.result._1"), Some(SymbolKind::CallbackParam));
+        assert_eq!(role("curry.f.result._1"), Some(crate::intern::KindSet::of(SymbolKind::CallbackParam)));
         assert_eq!(
             role("curry.f.result.result"),
-            Some(SymbolKind::CallbackResult)
+            Some(crate::intern::KindSet::of(SymbolKind::CallbackResult))
         );
     }
 }

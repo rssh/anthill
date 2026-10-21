@@ -4665,9 +4665,10 @@ Consequences worth stating, because they are what the rule buys:
   *is* a sort and *does* construct, so it records both: `{Sort, Entity}`, from
   either spelling. A single category could not say that — it kept whichever
   keyword was declared first, which made the answer depend on source order rather
-  than on meaning. Ask whether a name **plays** a role. The set's *order* is the
-  one further fact it carries: the head is the keyword actually written, which is
-  what a diagnostic and reflect's `kind` report.
+  than on meaning. Ask whether a name **plays** a role. Beside the set, the name
+  keeps one further fact, the keyword its first declaration was written with:
+  what a diagnostic and reflect's `kind` report, and nothing else; it decides no
+  reading (WI-974).
 - A **bare** `Project` still denotes the *type* (it is passable where a `Type` is
   expected); an **applied** `Project(name: …, language: …)` constructs. Position
   decides, as it already did for a free-standing entity.
