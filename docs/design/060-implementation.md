@@ -1849,10 +1849,37 @@ Five things come with it, because a variable reached through a constructor had n
   parameter was refused as "disjoint types for column" before this, and a pair typed by
   constructors would have been;
 - a parameter nothing in the clause says — `wrap(?y)` over a `?y` only a rule goal produces,
-  or `none` — is an open slot: the column read back at a written instance (`-> Wrap[T =
-  Colour] = tag.head.x`) is a load error, as a column typed by an entity field at its sort's
-  parameter already was. A head bound repairs it (`rule tag(?x: Wrap) :- …`): a bound's
-  unwritten slot is a variable the reader may fix.
+  or `none` — is a variable of the clause, and what a citation's arguments leave of it is an
+  unknown (user decision 2026-10-21): the column read back at a written instance (`-> Wrap[T
+  = Colour] = tag.head.x`) is a load error. The citation opens it, one rigid per variable
+  (`close_unfixed_clause_vars`), as a field read opens a declaration's existentials, and a
+  bound's written variable and unwritten slot are read the same way — they loaded, and `f`
+  answered whichever solution came first, `wrap(v: 1)` over a `holder` at `Int64` beside one
+  at `Colour`. Before, the four other spellings were refused only because their variable,
+  named like a written `?`, was opened by the first call that read the citation (`.head`);
+  the citation returned whole (`-> Relation[T = (x: Wrap[T = Colour]), …] = tag`) loaded over
+  every spelling. Fixed by an argument, the variable reaches the bound's domain check through
+  the citation's route, so `tag3(e)` with `e: List[T = Wrap[T = Colour]]` reads the one
+  solution at `Colour`. A later use does not fix it: that needs one substitution through the
+  operation body (WI-20261004-KEGNC).
+- once a clause is typed, inference and writing make no difference (user decision
+  2026-10-21): a written bound is unified with its variable's inferred type, at a citation
+  (`unified_column_types` in `relation_clause_columns`) and when the clause is typed, where a
+  column whose inferred type is a data sort with a variable in it is given that type as its
+  bound (`install_inferred_column_bounds`, before `install_typed_head_domain_goals`). The
+  bound brings the check a written one gets, so an instance an argument fixes through the
+  clause's own typing — `same(a: ?w, b: ?x)` tying two columns — drops the solutions at
+  another, where both were read. A value whose element nothing fixes (`?w <=> wrap(inner:
+  ?i)`, reached from a rule goal) answers conditionally (user, 2026-10-21: it loads). Not
+  installed: a type a spec heads (`Bag.first(?x, ?r)` reads `?x` as `Bag[E = e]`, which a
+  bound would read as a type the value has and refuse a provider's value). Read as before: a
+  body that fixes the enclosing sort's parameter, which WI-20261013-GGXCX decides. The
+  inferred type is keyed as the loader keys a written bound (`with_written_binding_keys`),
+  or a later load's sweep took its slots for unwritten and refused the load.
+- two stated limits, each a driven row: a column whose whole type is a variable is not
+  closed (closing it too refused 51 workspace rows, nearly all a column a goal-position call
+  fills, whose result the clause typing does not read); and a bound filled at the caller's
+  type parameter is checked only where the caller holds `SortDomain[T = A]`.
 
 Where it does not reach, each a row in that file:
 

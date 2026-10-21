@@ -37,9 +37,9 @@
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | the constructor's sort unified with its position (`constrain_constructed`) | the eleven routed rows, and `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_parameter_nothing_in_the_clause_says_is_an_open_slot`, `a_constructor_in_a_head_field_types_its_variables`, `a_dot_on_a_variable_typed_through_a_constructor_is_the_call`, `a_call_at_a_variable_the_clause_types_is_decided_at_load` |
+//! | the constructor's sort unified with its position (`constrain_constructed`) | the eleven routed rows, and `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_variable_the_citation_leaves_unfixed_is_an_unknown` (re-measured 2026-10-21, at its `wrap(?y)` and `none` spellings respectively), `a_constructor_in_a_head_field_types_its_variables`, `a_dot_on_a_variable_typed_through_a_constructor_is_the_call`, `a_call_at_a_variable_the_clause_types_is_decided_at_load` |
 //! | that unification made in place, not on a copy | `a_constructor_that_does_not_fit_its_position_pins_nothing` |
-//! | a constant constructor read as its sort (`constrain_constant_constructor`) | `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_parameter_nothing_in_the_clause_says_is_an_open_slot`, `a_constructor_in_a_head_field_types_its_variables`, and `wi_5g28a_paren_less_citation_test::a_bracketed_chain_followed_by_a_projection_is_a_citation` |
+//! | a constant constructor read as its sort (`constrain_constant_constructor`) | `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_variable_the_citation_leaves_unfixed_is_an_unknown`, `a_constructor_in_a_head_field_types_its_variables`, and `wi_5g28a_paren_less_citation_test::a_bracketed_chain_followed_by_a_projection_is_a_citation` |
 //! | the resolve to the end, made one step (`collect_rule_var_types`) | the eleven routed rows, `a_column_typed_by_a_constructor_is_checked_at_its_citation`, and the paren-less row above |
 //! | the citation's reading of the clause's typing (`ClauseTypes`) | the eleven routed rows |
 //! | the skip of a column the citation has no type for (`ClauseTypes::at_citation`) | `a_column_the_citation_gives_no_type_pins_nothing` |
@@ -47,6 +47,14 @@
 //! | the position handed to a head term's arguments (`collect_term_type_constraints`) | `a_constructor_in_a_head_field_types_its_variables` |
 //! | a head term's constant read as its sort (the same function's `Term::Ref` arm) | `a_constructor_in_a_head_field_types_its_variables`, by its second half |
 //! | the test that each parameter of the sort has a variable (`constrain_constructed`) | `wi1000_secondary_entry_content_test::a_dotted_declaration_name_is_not_the_entrys_content` and `wi_2kv4y_unfixed_carrier_test::a_sort_the_loader_has_refused_is_not_opened`, each by a panic |
+//! | a citation's unfixed clause variable opened as an unknown (`close_unfixed_clause_vars`; measured 2026-10-21) | `a_variable_the_citation_leaves_unfixed_is_an_unknown` (its three spellings with a bound's written variable or unwritten slot, which load; the other four are refused either way, at the first call that reads the citation), `the_citation_whole_is_refused_at_a_written_instance` |
+//! | the clause's inferred column type installed as its bound (`install_inferred_column_bounds`; measured 2026-10-21, each below alone over this file, `wi_5g28a_rule_dictionary_test` and `wi_x9pb4_require_dictionary_element_test`) | `an_inferred_column_is_checked_as_a_written_one`, `a_value_whose_element_nothing_fixes_answers_conditionally`, `a_free_part_at_a_fixed_instance_is_filled_from_its_domain` |
+//! | a written bound unified with its variable's inferred type at a citation (`unified_column_types` in `relation_clause_columns`) | `an_inferred_column_is_checked_as_a_written_one`, by `p2` |
+//! | a sort's parameter the body would fix read as before (`unified_column_types`' `return None`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Box3` |
+//! | the same for a parameter written by its name (`collect_param_refs`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Outer.Inner` |
+//! | a written variable kept as the representative of the body's (`unified_column_types`' `back`) | `a_variable_the_citation_leaves_unfixed_is_an_unknown`, by its refusal naming `?t` |
+//! | only a data sort's type installed (`sort_has_constructors`) | `a_variable_passed_to_a_spec_operation_gets_no_bound`, `wi_x9pb4_require_dictionary_element_test::a_self_representing_spec_receives_its_dictionary_too` |
+//! | an inferred type keyed as a written one (`with_written_binding_keys`) | `a_column_the_citation_gives_no_type_pins_nothing`, `a_rule_of_an_earlier_load_is_read_by_a_later_one`, each by the later load's refusal "expands only now" |
 //!
 //! THE ELEVEN ROUTED ROWS: `a_clause_typed_through_a_constructor_reads_its_sorts_requires`,
 //! `a_typed_clause_meets_one_bound_at_the_sorts_parameter`,
@@ -61,7 +69,11 @@
 //! `a_citation_outside_the_sort_reads_the_slot_its_argument_carries`.
 //!
 //! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
-//! and the three stated limits at the end of the file. Each says why at its site.
+//! `where_an_argument_fixes_it_the_other_instances_are_dropped`,
+//! `a_column_nothing_types_is_read_at_any_type`,
+//! `a_bound_at_the_callers_parameter_is_checked_through_its_domain_only`,
+//! `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, and the three stated limits at
+//! the end of the file. Each says why at its site.
 //!
 //! ## The second row
 //!
@@ -517,57 +529,356 @@ fn two_clauses_that_take_a_sort_apart_are_one_relation() {
     assert_eq!((at("empty"), at("full")), (0, 1), "the clause the list's own shape selects");
 }
 
-/// A PARAMETER NOTHING IN THE CLAUSE SAYS IS AN OPEN SLOT. `wrap(?y)` over a `?y` only a
-/// rule goal produces is a `Wrap` of an element the clause does not say, and so is `none`:
-/// read back from a citation at a written instance, each is refused as a column typed by
-/// an entity field at its sort's parameter is — `viaField`, which passes either way. The
-/// column had no type and was returned at any.
-///
-/// THE REPAIR, RUN: the head says the column is a `Wrap`, and a bound's unwritten slot is
-/// a variable the reader may fix.
+/// The two solutions `tag` has in every row below, at two instances of `Wrap`.
+const TWO_INSTANCES: &str = "  fact holder(h: wrap(1))\n  fact holder(h: wrap(red))\n";
+
+/// A VARIABLE OF THE CLAUSE THAT A CITATION LEAVES UNFIXED IS AN UNKNOWN (user decision
+/// 2026-10-21). `tag`'s solutions stand at two instances of `Wrap` — `wrap(1)` and
+/// `wrap(red)`, each `?t` read off its value — so what the citation's arguments do not fix
+/// is some `Wrap`: `tag.head.x` loads where nothing asks for its element and is refused
+/// returned as a `Wrap[T = Colour]`, in each way the clause can leave the element open. The
+/// bound's written variable and unwritten slot loaded, and `f` answered `wrap(v: 1)`
+/// whenever that solution came first (they come in no fixed order); the other spellings were
+/// refused only because the first call reading the citation (`.head`) opened a variable
+/// named like a written `?`. The last row is the head bound this file offered as the repair
+/// of the constructor's spelling.
 #[test]
-fn a_parameter_nothing_in_the_clause_says_is_an_open_slot() {
-    let returned = |ns: &str, rule: &str, ret: &str| {
-        wrap_errors(
-            ns,
-            &format!(
-                "  fact holder(h: wrap(red))\n  {rule}\n  \
-                 operation f() -> {ret} effects {{Error, Error[EmptyStream]}} = tag.head.x\n"
-            ),
-        )
+fn a_variable_the_citation_leaves_unfixed_is_an_unknown() {
+    let spellings = [
+        ("wi0rrqp.u1", "rule tag(?x: Wrap[T = ?t]) :- holder(h: ?x)", "Wrap"),
+        ("wi0rrqp.u2", "rule tag(?x: Wrap) :- holder(h: ?x)", "Wrap"),
+        ("wi0rrqp.u3", "rule tag(?x: Wrap[T = ?]) :- holder(h: ?x)", "Wrap"),
+        ("wi0rrqp.u4", "rule tag(?x) :- holder(h: ?x)", "Wrap"),
+        ("wi0rrqp.u5", "rule tag(?x) :- gen(?y), ?x <=> wrap(?y)", "Wrap"),
+        ("wi0rrqp.u6", "rule tag(?x) :- ?x <=> none", "Option"),
+        ("wi0rrqp.u7", "rule tag(?x: Wrap) :- gen(?y), ?x <=> wrap(?y)", "Wrap"),
+    ];
+    for (ns, rule, sort) in spellings {
+        let read_back = |ns: &str, ret: &str| {
+            program(
+                ns,
+                &format!(
+                    "{WRAP}{TWO_INSTANCES}  {rule}\n  \
+                     operation f() -> {ret} effects {{Error, Error[EmptyStream]}} = tag.head.x\n"
+                ),
+            )
+        };
+        let errs = crate::common::load_errors_of(&read_back(ns, &format!("{sort}[T = Colour]")));
+        assert_eq!(errs.len(), 1, "`{rule}`: one refusal, got {errs:?}");
+        crate::common::assert_refused_naming(
+            &errs,
+            &["f.return", &format!("expected {sort}[T = Colour], got {sort}[T = ?")],
+            &format!("`{rule}` read back as a `{sort}[T = Colour]`"),
+        );
+        // The bound's written variable is named as written, where the body's unification
+        // met it with a variable of its own (`holder`'s field).
+        if rule.contains("?t") {
+            crate::common::assert_refused_naming(
+                &errs,
+                &["got Wrap[T = ?t]"],
+                "the author's `?t`, not the body's variable",
+            );
+        }
+        let ns = format!("{ns}ok");
+        let mut interp = crate::common::interp_for(&read_back(&ns, sort));
+        let out = interp
+            .call(&format!("{ns}.f"), &[])
+            .unwrap_or_else(|e| panic!("`{rule}` read back as a `{sort}`: {e:?}"));
+        let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
+        let rendered = match &out {
+            Value::Node(occ) => printer.print_occurrence(occ),
+            Value::Term { id, .. } => printer.print_term(*id),
+            other => format!("{other:?}"),
+        };
+        assert!(
+            rendered.contains("wrap") || rendered.contains("none"),
+            "`{rule}` read back as a `{sort}`: one of its solutions, got `{rendered}`"
+        );
+    }
+}
+
+/// The citation itself, returned whole or passed at a written instance, is refused as its
+/// rows are: `.head` reads nothing the citation did not already say. Both loaded, and
+/// `r().head.x` was `wrap(v: 1)`. Passed at `Relation[T = (x: Wrap), …]` it loads and holds
+/// both solutions.
+#[test]
+fn the_citation_whole_is_refused_at_a_written_instance() {
+    let whole = |ns: &str, body: &str| {
+        wrap_errors(ns, &format!("{TWO_INSTANCES}  rule tag(?x) :- holder(h: ?x)\n{body}"))
     };
     crate::common::assert_refused_naming(
-        &returned("wi0rrqp.o1", "rule tag(?x) :- holder(h: ?x)", "Wrap[T = Colour]"),
-        &["expected Wrap[T = Colour], got Wrap[T = ?T]"],
-        "typed by a field at its sort's parameter",
+        &whole(
+            "wi0rrqp.w1",
+            "  operation r() -> Relation[T = (x: Wrap[T = Colour]), E = {Error}] = tag\n",
+        ),
+        &[
+            "r.return",
+            "expected Relation[T = (x: Wrap[T = Colour]), E = {Error}], got Relation[T = (x: Wrap[T = ?",
+        ],
+        "returned whole",
     );
     crate::common::assert_refused_naming(
-        &returned("wi0rrqp.o2", "rule tag(?x) :- gen(?y), ?x <=> wrap(?y)", "Wrap[T = Colour]"),
-        &["expected Wrap[T = Colour], got Wrap[T = ?T]"],
-        "typed by a constructor over an element only a rule goal produces",
+        &whole(
+            "wi0rrqp.w2",
+            "  operation take(r: Relation[T = (x: Wrap[T = Colour]), E = {Error}]) -> Int64 effects {Error} =\n    \
+             r.takeN(5).length()\n  \
+             operation f() -> Int64 effects {Error} = take(tag)\n",
+        ),
+        &["take.r", "expected Relation[T = (x: Wrap[T = Colour]), E = {Error}], got Relation[T = (x: Wrap[T = ?"],
+        "passed to a parameter at a written instance",
     );
-    crate::common::assert_refused_naming(
-        &returned("wi0rrqp.o3", "rule tag(?x) :- ?x <=> none", "Option[T = Int64]"),
-        &["expected Option[T = Int64], got Option[T = ?T]"],
-        "a constant constructor of a parametric sort",
-    );
-    let ns = "wi0rrqp.o4";
+    let ns = "wi0rrqp.w3";
     let src = program(
         ns,
         &format!(
-            "{WRAP}  rule tag(?x: Wrap) :- gen(?y), ?x <=> wrap(?y)\n  \
-             operation f() -> Wrap[T = Colour] effects {{Error, Error[EmptyStream]}} = tag.head.x\n"
+            "{WRAP}{TWO_INSTANCES}  rule tag(?x) :- holder(h: ?x)\n  \
+             operation take(r: Relation[T = (x: Wrap), E = {{Error}}]) -> Int64 effects {{Error}} =\n    \
+             r.takeN(5).length()\n  \
+             operation f() -> Int64 effects {{Error}} = take(tag)\n"
+        ),
+    );
+    assert_eq!(drive(&src, &format!("{ns}.f")), 2, "both solutions, at no written instance");
+}
+
+/// WHERE AN ARGUMENT FIXES IT, the citation reads the solutions at that instance, and the
+/// others are not its solutions: the typed head's domain check is handed the dictionary of
+/// `Wrap[T = Colour]` the citation built (060-implementation §7.3 S3a). `[]` holds no element,
+/// so no value fixes `?t` at run time; reached as a rule goal, where nothing hands the check
+/// a dictionary, the same rule answers both. PASSES EITHER WAY, BY DESIGN: the control that
+/// the unknown is minted only for what the citation leaves unfixed.
+#[test]
+fn where_an_argument_fixes_it_the_other_instances_are_dropped() {
+    let ns = "wi0rrqp.a1";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{TWO_INSTANCES}  rule tag3(?w: List[T = Wrap[T = ?t]], ?x: Wrap[T = ?t]) :- holder(h: ?x)\n  \
+             rule q(?n) :- tag3([], ?x), ?n <=> 1\n  \
+             operation f(e: List[T = Wrap[T = Colour]]) -> Int64 effects {{Error}} = tag3(e).takeN(5).length()\n  \
+             operation g() -> Int64 effects {{Error}} = f([])\n  \
+             operation viaGoal() -> Int64 effects {{Error}} = q.takeN(5).length()\n"
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let out = interp.call(&format!("{ns}.f"), &[]).expect("the bounded column is returned");
+    assert_eq!(call_int(&mut interp, &format!("{ns}.g")), 1, "the solution at `Colour`");
+    assert_eq!(call_int(&mut interp, &format!("{ns}.viaGoal")), 2, "both, through a rule goal");
+}
+
+/// STATED LIMIT, PASSES EITHER WAY: a column whose whole type is a variable — one nothing in
+/// the clause types, here a column only a rule goal fills — is not closed. `untyped.head.x`
+/// is read back as an `Int64`, and `f` answers a `wrap`. Closing such a column too refused
+/// 51 rows of the workspace (measured 2026-10-21), nearly all a column a call at goal position
+/// fills (`WeakOrd.compare(?x, ?y, ?c)`), whose result the clause's typing does not read yet.
+#[test]
+fn a_column_nothing_types_is_read_at_any_type() {
+    let ns = "wi0rrqp.l1";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{TWO_INSTANCES}  rule tag(?x) :- holder(h: ?x)\n  rule untyped(?x) :- tag(?x)\n  \
+             operation f() -> Int64 effects {{Error, Error[EmptyStream]}} = untyped.head.x\n"
+        ),
+    );
+    let mut interp = crate::common::interp_for(&src);
+    let out = interp.call(&format!("{ns}.f"), &[]).expect("a solution");
+    let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
     let rendered = match &out {
-        Value::Node(occ) => {
-            anthill_core::persistence::print::TermPrinter::new(interp.kb()).print_occurrence(occ)
-        }
+        Value::Node(occ) => printer.print_occurrence(occ),
+        Value::Term { id, .. } => printer.print_term(*id),
         other => format!("{other:?}"),
     };
-    assert!(rendered.contains("red"), "the first row, `wrap(red)`, got `{rendered}`");
+    assert!(rendered.contains("wrap"), "a `wrap` returned as an `Int64`, got `{rendered}`");
+}
+
+/// `Same` ties its two fields' types: a clause that builds `same(a: ?w, b: ?x)` says `?w` and
+/// `?x` are of one type, whatever the head writes.
+const SAME: &str = "  sort Same[T]\n    entity same(a: T, b: T)\n  end\n  import NS.Same.{same}\n";
+
+/// ONCE A CLAUSE IS TYPED, INFERENCE AND WRITING MAKE NO DIFFERENCE (user, 2026-10-21). Over
+/// `tag`'s two instances, the citation `p(wrap(red))` fixes `?x`'s element at `Colour`
+/// through `same`'s shared `T`, and reads the one solution there whether `?x`'s type is
+/// inferred (`p1`), written while `?w`'s is inferred (`p2`), or written for both (`p3`). The
+/// inferred column was read with no check — both solutions under a type that says `Colour`
+/// — and `p2`'s written `?e` was a variable the body's tie never reached, so `h2` was refused,
+/// 'expected Wrap[T = Colour], got Wrap[T = ?e]'. A rule of a sort with parameters reads the
+/// same at an expected type (`n4`): it read both.
+#[test]
+fn an_inferred_column_is_checked_as_a_written_one() {
+    let ns = "wi0rrqp.i1";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{TWO_INSTANCES}{SAME}  \
+             rule p1(?w, ?x) :- holder(h: ?x), ?z <=> same(a: ?w, b: ?x)\n  \
+             rule p2(?w, ?x: Wrap[T = ?e]) :- holder(h: ?x), ?z <=> same(a: ?w, b: ?x)\n  \
+             rule p3(?w: Wrap[T = ?e], ?x: Wrap[T = ?e]) :- holder(h: ?x), ?z <=> same(a: ?w, b: ?x)\n  \
+             operation n1() -> Int64 effects {{Error}} = p1(wrap(red)).takeN(5).length()\n  \
+             operation n2() -> Int64 effects {{Error}} = p2(wrap(red)).takeN(5).length()\n  \
+             operation n3() -> Int64 effects {{Error}} = p3(wrap(red)).takeN(5).length()\n  \
+             operation h2() -> Wrap[T = Colour] effects {{Error, Error[EmptyStream]}} = p2(wrap(red)).head.x\n  \
+             rule bx(?x) :- ?x <=> NS.Box2.b2(v: 5)\n  \
+             sort Box2[T]\n    entity b2(v: T)\n    rule pr(?x: Box2[T = T], ?y) :- bx(?x), holder(h: ?y)\n  end\n  \
+             operation n4() -> Int64 effects {{Error}} =\n    \
+             let r: Relation[T = (x: Box2[T = Int64], y: Wrap[T = Colour]), E = {{Error}}] = Box2[T = Int64].pr\n    \
+             r.takeN(5).length()\n"
+        ),
+    );
+    let mut interp = crate::common::interp_for(&src);
+    for entry in ["n1", "n2", "n3", "n4"] {
+        assert_eq!(call_int(&mut interp, &format!("{ns}.{entry}")), 1, "{entry}: the solution at `Colour`");
+    }
+}
+
+/// STATED LIMIT, PASSES EITHER WAY: a bound filled at the caller's own type parameter is
+/// checked only where the caller holds that parameter's `SortDomain`. `at[A = Colour]([])`
+/// reads both of `tag3`'s solutions; under `requires SortDomain[T = A]`, the one at `Colour`.
+#[test]
+fn a_bound_at_the_callers_parameter_is_checked_through_its_domain_only() {
+    let ns = "wi0rrqp.l2";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{TWO_INSTANCES}  \
+             rule tag3(?w: List[T = Wrap[T = ?t]], ?x: Wrap[T = ?t]) :- holder(h: ?x)\n  \
+             operation at[A](e: List[T = Wrap[T = A]]) -> Int64 effects {{Error}} = tag3(e).takeN(5).length()\n  \
+             operation atHeld[A](e: List[T = Wrap[T = A]]) -> Int64 effects {{Error}}\n    \
+             requires anthill.reflect.SortDomain[T = A] = tag3(e).takeN(5).length()\n  \
+             operation open() -> Int64 effects {{Error}} = at[A = Colour]([])\n  \
+             operation held() -> Int64 effects {{Error}} = atHeld[A = Colour]([])\n"
+        ),
+    );
+    let mut interp = crate::common::interp_for(&src);
+    assert_eq!(call_int(&mut interp, &format!("{ns}.open")), 2, "no SortDomain held: both");
+    assert_eq!(call_int(&mut interp, &format!("{ns}.held")), 1, "SortDomain held: the one at `Colour`");
+}
+
+/// A VALUE WITH A FREE PART, AT AN INSTANCE THE CITATION FIXES, STANDS FOR ITS INSTANCES
+/// (user, 2026-10-21: a typed expression is read at its type). `mk` builds `?x <=> wrap(v:
+/// ?y)` with `?y` free, and `mk(wrap(red))` fixes `?x`'s element at `Colour` through `same`:
+/// the column's check fills `?y` from `Colour`'s domain, `wrap(red)` and `wrap(green)`. With no
+/// check the citation read the one value `wrap(v: ?y)`.
+#[test]
+fn a_free_part_at_a_fixed_instance_is_filled_from_its_domain() {
+    let ns = "wi0rrqp.e1";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{SAME}  import NS.Colour.{{green}}\n  \
+             rule mk(?w, ?x) :- ?x <=> wrap(v: ?y), ?z <=> same(a: ?w, b: ?x)\n  \
+             operation n() -> Int64 effects {{Error}} = mk(wrap(red)).takeN(5).length()\n"
+        ),
+    );
+    assert_eq!(drive(&src, &format!("{ns}.n")), 2, "`wrap(red)` and `wrap(green)`");
+}
+
+/// A VALUE WHOSE ELEMENT NOTHING FIXES ANSWERS CONDITIONALLY (user, 2026-10-21: it loads).
+/// `gen` builds `?w <=> wrap(inner: ?i)`, a `Wrap[E = e]`, and `elemOfSum` reaches `gen` as a
+/// rule goal and never reads `?w`: nothing fixes `e`, so the column's check cannot fill `?i`
+/// and the answer `Sum` stands on it. It was definite while the column had no check.
+#[test]
+fn a_value_whose_element_nothing_fixes_answers_conditionally() {
+    let src = r#"
+namespace wi0rrqp.g1
+  import anthill.prelude.Int64
+  import anthill.realization.runtime.Dictionary
+  sort Zeroable
+    sort T = ?
+    operation zero() -> Int64
+    operation tag(x: T) -> Int64 = 0
+  end
+  sort Sum
+    import anthill.prelude.Int64
+    entity sum
+    provides Zeroable[T = Sum]
+    operation zero() -> Int64 = 3
+    operation tag(x: Sum) -> Int64 = 1
+  end
+  sort Wrap
+    import anthill.prelude.Int64
+    sort E = ?
+    entity wrap(inner: E)
+    provides Zeroable[T = Self] :- Zeroable[E] where
+      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
+      operation tag(x: Self) -> Int64 = 9
+    end
+  end
+  import wi0rrqp.g1.Sum.{sum}
+  import wi0rrqp.g1.Wrap.{wrap}
+  rule get(?x, ?d) :- ?d = require[Zeroable[?]], Zeroable.tag(?x, ?t)
+  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0), ?w <=> wrap(inner: ?i)
+  rule elemOfSum(?s) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let all = crate::common::query_unary(&mut kb, "wi0rrqp.g1.elemOfSum");
+    assert_eq!(all.len(), 1, "one answer, got {all:?}");
+    assert!(!all[0].1, "conditional on `?w`'s check, got {all:?}");
+}
+
+/// A VARIABLE PASSED TO A SPEC'S OPERATION GETS NO BOUND. `Bag.first(?x, ?r)` reads `?x` as
+/// `Bag[E = e]`, which says `?x`'s sort provides `Bag`; as a bound it is a type the value
+/// has, and `domain(?x, Bag[E = ?e])` refuses an `intBag(n: 1)` — no nominal spec is read as
+/// its providers there, as the written head `?x: Bag[E = ?e]` shows. Installed, `viaDict` and
+/// `answer` answered nothing.
+#[test]
+fn a_variable_passed_to_a_spec_operation_gets_no_bound() {
+    let src = r#"
+namespace wi0rrqp.b1
+  import anthill.prelude.{Int64}
+  sort Bag
+    sort E = ?
+    operation first(b: Self) -> Int64 = 0
+  end
+  sort IntBag
+    sort N = ?
+    entity intBag(n: N)
+    provides Bag[E = N]
+    operation first(b: Self) -> Int64 = 7
+  end
+  rule dict(?x, ?d) :- ?d = require[Bag[?]], Bag.first(?x, ?r)
+  rule answer(?d) :- dict(intBag(n: 1), ?d)
+  rule dict2(?x, ?r) :- Bag.first(?x, ?r)
+  rule viaDict(?r) :- dict2(intBag(n: 1), ?r)
+  rule written(?x: Bag[E = ?e], ?r) :- Bag.first(?x, ?r)
+  rule viaWritten(?r) :- written(intBag(n: 1), ?r)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let via = crate::common::query_unary(&mut kb, "wi0rrqp.b1.viaDict");
+    assert!(
+        via.len() == 1 && via[0].1 && crate::common::scalar_int(&kb, &via[0].0) == Some(7),
+        "`IntBag`'s `first`, got {via:?}"
+    );
+    assert_eq!(crate::common::query_unary(&mut kb, "wi0rrqp.b1.answer").len(), 1, "the dictionary");
+    assert!(
+        crate::common::query_unary(&mut kb, "wi0rrqp.b1.viaWritten").is_empty(),
+        "the written twin, refused by its check"
+    );
+}
+
+/// A BODY THAT FIXES A SORT'S PARAMETER IS READ AS BEFORE — a clause whose body disagrees
+/// with its head, which WI-20261013-GGXCX decides. `Box3`'s `pr` says `?x` is a `b3(v: 5)` at
+/// every `T`; read through the body, `T` was `Int64`, the column no longer named it, the
+/// expected type fixed nothing and `n5` was refused. `Outer.Inner`'s `r` writes the outer `T`
+/// by its name, and `f` was refused, 'expected Wrap[T = ?T], got Wrap[T = Int64]'. Each still
+/// reads both solutions where a written bound's would: the stated limit beside GGXCX.
+#[test]
+fn a_body_that_fixes_a_sorts_parameter_is_read_as_before() {
+    let ns = "wi0rrqp.c9";
+    let src = program(
+        ns,
+        &format!(
+            "{WRAP}{TWO_INSTANCES}  \
+             sort Box3[T]\n    entity b3(v: T)\n    rule pr(?x: Box3[T = T], ?y) :- ?x <=> b3(v: 5), holder(h: ?y)\n  end\n  \
+             operation n5() -> Int64 effects {{Error}} =\n    \
+             let r: Relation[T = (x: Box3[T = Int64], y: Wrap[T = Colour]), E = {{Error}}] = Box3[T = Int64].pr\n    \
+             r.takeN(5).length()\n  \
+             sort Outer[T]\n    entity outer(v: T)\n    sort Inner\n      \
+             rule r(?x: Wrap[T = T]) :- ?x <=> wrap(1)\n    end\n    \
+             operation f(o: Self) -> Wrap[T = T] effects {{Error, Error[EmptyStream]}} = Inner.r.head.x\n  end\n"
+        ),
+    );
+    assert_eq!(drive(&src, &format!("{ns}.n5")), 2, "both, as before");
 }
 
 /// A CONSTRUCTOR IN A FIELD OF THE HEAD types its variables at the field. `pinned`'s head

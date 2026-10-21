@@ -338,8 +338,12 @@ namespace wi5g28a.gate
   -- a dictionary DERIVED in one clause, from a ground anchor
   rule get(?x, ?d) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?t)
 
-  -- GENERATIVE: `?w` is free and `?d` is an ordinary argument; the element's is PROJECTED
-  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0), ?w <=> wrap(inner: ?i)
+  -- GENERATIVE: `?w` is free and `?d` is an ordinary argument; the element's is PROJECTED.
+  -- `?w` is left unbuilt: `?w <=> wrap(inner: ?i)` here is a `Wrap` whose element nothing
+  -- fixes, and its column's domain check (WI-20260925-0RRQP: an inferred column type is the
+  -- column's bound) cannot fill `?i`, so every row below would answer conditionally —
+  -- pinned there as `a_value_whose_element_nothing_fixes_answers_conditionally`.
+  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0)
 
   rule elemOfSum(?s) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
   rule elemOfProd(?s) :- get(wrap(inner: prod()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)

@@ -514,7 +514,150 @@ pub(super) fn type_rule_bodies(
                 stamp_rule_body_var_types(node, &var_types);
             }
         }
+        // A sealed load's clauses had theirs installed when that load typed them; the
+        // oracle's pass over them must change nothing a seal holds.
+        if which == RuleBodies::NotSealed {
+            install_inferred_column_bounds(kb, rid, &var_types);
+        }
     }
+}
+
+/// ONCE A CLAUSE IS TYPED, A HEAD COLUMN'S INFERRED TYPE IS ITS BOUND, as if written (user,
+/// 2026-10-21: inference and writing make no difference once typing is finished). So the
+/// column gets what a written bound gets — the domain check [`install_typed_head_domain_goals`]
+/// generates, which a citation hands the instance it fixed, and the anchor the requirement
+/// sweep reads. Over `fact holder(h: wrap(1))` and `fact holder(h: wrap(red))`, `rule p(?w,
+/// ?x) :- holder(h: ?x), ?z <=> same(a: ?w, b: ?x)` cited as `p(wrap(red))` read both
+/// solutions under a type that says `Colour`, where the clause with `?w` and `?x` written
+/// `Wrap[T = ?e]` read the one.
+///
+/// A column whose type is a variable, or names none, gets nothing: the first is one nothing
+/// in the clause types, and a concrete type the clause gives holds for every value it makes,
+/// so a check there would change no answer. A written bound is kept, read through the
+/// clause's typing ([`unified_column_types`]) so a tie the body makes reaches it. Not for an
+/// equation, a sort's own `fill`, or a clause the typed-head pass has already extended.
+fn install_inferred_column_bounds(
+    kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
+    var_types: &HashMap<u32, Value>,
+) {
+    // The typed-head pass's own population ([`install_typed_head_domain_goals`]), and not a
+    // sort's `fill` of any kind: a hand-written domain's clause is its own generator.
+    if kb.is_directional_equation(rid) || own_fill_kind(kb, rid).is_some() {
+        return;
+    }
+    let functor = kb.rule_head_value(rid).head(kb).functor_sym();
+    if functor.is_some_and(|f| kb.is_equality_connective_functor(f)) {
+        return;
+    }
+    let pass = typed_head_domain_pass(kb);
+    if kb.rule_body_nodes(rid).iter().any(|n| n.synthesized_by() == Some(pass)) {
+        return;
+    }
+    let slots = rule_head_var_slots(kb, rid);
+    // Nearly every clause stops here: no unwritten column of it has an inferred type with a
+    // variable in it, and reading through the bounds cannot put one there.
+    let has_bound = |d: u32| kb.rule_type_bounds(rid).iter().any(|(b, _)| *b == d);
+    if !slots.iter().any(|(_, _, d)| {
+        !has_bound(*d)
+            && var_types
+                .get(d)
+                .is_some_and(|t| resolved_var(kb, t).is_none() && type_mentions_flex_var(kb, t))
+    }) {
+        return;
+    }
+    let globals: Vec<VarId> = kb.rule_globals(rid).to_vec();
+    let frame: Vec<VarId> = globals.iter().rev().copied().collect();
+    let written: Vec<(u32, Value)> = kb
+        .rule_type_bounds(rid)
+        .to_vec()
+        .into_iter()
+        .map(|(d, b)| (d, crate::kb::node_occurrence::open_value_type(kb, &b, &frame).0))
+        .collect();
+    let Some(unified) = unified_column_types(kb, &written, var_types) else {
+        return;
+    };
+    let mut bounds: Vec<(u32, Value)> = written
+        .iter()
+        .map(|(d, _)| (*d, unified.get(d).cloned().expect("a written bound's slot is unified")))
+        .collect();
+    let mut added = false;
+    for &(_, _, d) in &slots {
+        if bounds.iter().any(|(seen, _)| *seen == d) {
+            continue;
+        }
+        let Some(ty) = unified.get(&d) else { continue };
+        if resolved_var(kb, ty).is_some() || !type_mentions_flex_var(kb, ty) {
+            continue;
+        }
+        // A DATA SORT's type only. A variable passed to a spec's operation
+        // (`Bag.first(?x, ?r)`) is read as the spec, `Bag[E = e]`, which says the value's
+        // sort PROVIDES it — and a bound is a type the value has: `domain(?x, Bag[E = ?e])`
+        // refuses an `intBag(n: 1)`, no nominal spec being read as its providers there.
+        if !sort_functor_of_view(kb, ty).is_some_and(|s| kb.sort_has_constructors(s)) {
+            continue;
+        }
+        bounds.push((d, ty.clone()));
+        added = true;
+    }
+    if !added {
+        return;
+    }
+    // Keyed as the loader keys a written bound, so a later load's sweep over the bounds
+    // (`expand_rule_head_bound_type_params`) reads every parameter as written: the clause's
+    // typing writes each slot, a bare sort's included (`Wrap` in a field type comes as
+    // `Wrap[T = t]`), but by another key.
+    let bounds: Vec<(u32, Value)> = bounds
+        .into_iter()
+        .map(|(d, ty)| {
+            let t = crate::kb::node_occurrence::value_to_term(kb, &ty)
+                .expect("a column's type is a type, which has a term");
+            let t = with_written_binding_keys(kb, t);
+            (d, Value::term(t))
+        })
+        .collect();
+    // The variables the inferred types bring are the clause's own from here on: frame slots,
+    // opened fresh per firing and per citation as a written bound's are. One named like an
+    // anonymous `?` — a constructor's per-application variable — is renamed after the
+    // parameter it stands in (`Wrap[T = t]` names it `T`), since such a name is read as a slot
+    // of its own wherever it is opened.
+    let mut brought: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, ty) in &bounds {
+        crate::kb::node_occurrence::collect_value_type(kb, ty, &mut brought, &mut seen);
+    }
+    brought.retain(|v| !globals.iter().any(|g| g.raw() == v.raw()));
+    let mut renaming = Substitution::new();
+    let mut extra: Vec<VarId> = Vec::with_capacity(brought.len());
+    for v in brought {
+        if anonymous_var_name(kb, v.name()) {
+            let name = bounds
+                .iter()
+                .find_map(|(_, ty)| {
+                    let t = crate::kb::node_occurrence::value_to_term(kb, ty).ok()?;
+                    binding_key_of_var(kb, t, v)
+                })
+                .map(|k| kb.local_name_of(k).to_string())
+                .unwrap_or_else(|| "t".to_string());
+            let name = kb.intern(&name);
+            let named = kb.fresh_var(name);
+            let term = kb.alloc(Term::Var(Var::Global(named)));
+            renaming.bind_term(kb, v, term);
+            extra.push(named);
+        } else {
+            extra.push(v);
+        }
+    }
+    let mut new_globals: Vec<VarId> = extra.clone();
+    new_globals.extend_from_slice(&globals);
+    let closed: Vec<(u32, Value)> = bounds
+        .into_iter()
+        .map(|(d, ty)| {
+            let ty = walk_type_deep_value(kb, &renaming, &ty);
+            (d, crate::kb::node_occurrence::close_value_type(kb, &ty, &new_globals).0)
+        })
+        .collect();
+    kb.extend_rule_frame_with_bounds(rid, &extra, closed);
 }
 
 /// The body of rule `rid` with its dots on a written type replaced by the calls their
@@ -746,12 +889,7 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
              typed-pattern refusal admitted a bound whose generated goal cannot run, \
              because nothing evaluates a matched equation's body (WI-20260820-8RJK8)",
         );
-        let own_fill = kb
-            .rule_head_value(rid)
-            .head(kb)
-            .functor_sym()
-            .and_then(|f| kb.fill_relation_sort(f))
-            .and_then(|s| kb.sort_domain(s).map(|e| e.kind));
+        let own_fill = own_fill_kind(kb, rid);
         if matches!(
             own_fill,
             Some(crate::kb::fill_derive::SortDomainKind::Derived | crate::kb::fill_derive::SortDomainKind::Primitive)
@@ -850,6 +988,70 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         }
         kb.prepend_generated_body_goals(rid, prepended);
         kb.append_generated_body_goals(rid, appended);
+    }
+}
+
+/// The kind of `fill` rule `rid` is, where its head is a sort's domain relation — the clauses
+/// the typed-head pass and [`install_inferred_column_bounds`] leave to the domain derivation.
+fn own_fill_kind(
+    kb: &KnowledgeBase,
+    rid: crate::kb::RuleId,
+) -> Option<crate::kb::fill_derive::SortDomainKind> {
+    kb.rule_head_value(rid)
+        .head(kb)
+        .functor_sym()
+        .and_then(|f| kb.fill_relation_sort(f))
+        .and_then(|s| kb.sort_domain(s).map(|e| e.kind))
+}
+
+/// The binding key under which `v` stands in `t` (`T` in `Wrap[T = v]`), at any depth.
+fn binding_key_of_var(kb: &KnowledgeBase, t: TermId, v: VarId) -> Option<Symbol> {
+    let Term::Fn { named_args, pos_args, .. } = kb.get_term(t) else {
+        return None;
+    };
+    for &(k, a) in named_args.iter() {
+        if matches!(kb.get_term(a), Term::Var(Var::Global(x)) if x.raw() == v.raw()) {
+            return Some(k);
+        }
+    }
+    named_args
+        .iter()
+        .map(|&(_, a)| a)
+        .chain(pos_args.iter().copied())
+        .find_map(|a| binding_key_of_var(kb, a, v))
+}
+
+/// `t` with each sort application keyed as a written one is: the clause's typing keys a
+/// binding by the parameter the sort declares, a written `Wrap[E = …]` by its short name
+/// ([`crate::kb::fill_derive::DomainParam`]'s `key`), and the loader's expansion of a bound
+/// reads the second — keyed by the first, `Wrap[E = e]` was taken to leave `E` out and came
+/// back `Wrap[E = e, E = e2]`.
+fn with_written_binding_keys(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(t).clone()
+    else {
+        return t;
+    };
+    let params = kb.domain_params_of(kb.canonical_sort_sym(functor)).unwrap_or_default();
+    let pos: SmallVec<[TermId; 4]> = pos_args.iter().map(|&a| with_written_binding_keys(kb, a)).collect();
+    let named: SmallVec<[(Symbol, TermId); 2]> = named_args
+        .iter()
+        .map(|&(k, a)| {
+            let key = params.iter().find(|p| p.decl == k).map_or(k, |p| p.key);
+            (key, with_written_binding_keys(kb, a))
+        })
+        .collect();
+    if pos == pos_args && named == named_args {
+        t
+    } else {
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: pos,
+            named_args: named,
+        })
     }
 }
 

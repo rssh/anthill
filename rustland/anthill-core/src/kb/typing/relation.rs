@@ -42,6 +42,7 @@ pub(super) fn relation_reference_type(
         site.expected,
         ty,
     )?;
+    let ty = close_unfixed_clause_vars(kb, &column_types, &[], &subst, ty);
     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
     // routed over the columns' own types at this citation. QUEUED, not computed — see
     // [`PendingCitationRoutes`].
@@ -634,8 +635,88 @@ pub(super) fn relation_reference_type_applied(
         site.expected,
         ty,
     )?;
+    let ty = close_unfixed_clause_vars(kb, &column_types, &bound, &subst, ty);
     queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst);
     Ok(ty)
+}
+
+/// A VARIABLE OF THE CLAUSE THAT A CITATION LEAVES UNFIXED IS AN UNKNOWN, opened to one rigid
+/// for this citation (user decision 2026-10-21, on WI-20260925-0RRQP). A relation's solutions
+/// may stand at different instances of a column's sort: over `fact holder(h: wrap(1))` and
+/// `fact holder(h: wrap(red))`, `rule tag(?x: Wrap[T = ?t]) :- holder(h: ?x)` has one at
+/// `Wrap[T = Int64]` and one at `Wrap[T = Colour]`, `?t` read off each value. So what the
+/// citation's arguments do not fix — and, for a relation of a sort with parameters, the
+/// bracket and the expected type, which [`settle_citation_type`] reads there and nowhere else
+/// — is no variable a later use may bind: `tag.head.x` is some `Wrap`, accepted where nothing
+/// asks for its element and refused as a `Wrap[T = Colour]`, as `g(w: Wrap) -> Wrap[T =
+/// Colour] = w` is. Left flexible, the return check bound `?t` and `f(0)` answered `wrap(v:
+/// 1)` — the solutions come in no fixed order — and `colourName(f(0).v)` raised
+/// `match_failed`. A citation's variable fixed by a later use would need one substitution
+/// threaded through the operation body (WI-20261004-KEGNC).
+///
+/// WHAT A FIXED VARIABLE IS TRUSTED FOR: the run time drops the solutions at another instance
+/// through the column's bound's domain check, handed the instance the citation fixed
+/// (060-implementation §7.3 S3a) — a written bound's, or the one the clause's typing installs
+/// for an inferred column (`install_inferred_column_bounds`). Not filled at the caller's own
+/// type parameter unless the caller holds its `SortDomain`: a stated limit of
+/// `wi_0rrqp_clause_typed_through_constructor_test`.
+///
+/// THE HOLDER'S EXISTENTIALS, opened as a field read opens a declaration's
+/// ([`open_existentials`]'s `brought`): the variables come from the clause's column types —
+/// fresh for this citation ([`relation_clause_columns`], [`open_citation_params`]) — and are
+/// neither the arguments' nor the caller's. A variable an argument bound walks to what the
+/// argument gave, the caller's own flexible variables among it, and is not touched. One rigid
+/// per variable, so a tie between two columns holds within the citation.
+///
+/// ONLY A VARIABLE INSIDE A COLUMN'S TYPE: a column whose whole type is a variable is one
+/// nothing in the clause types at all ([`join_column_types`]: the absence of a type, a
+/// recursive relation's column before its base clause is met), and stays as it was.
+///
+/// Before this, a clause variable carrying the name of an anonymous slot — a constructor's
+/// per-application variable for `sort T = ?` — was opened by the first call that read it
+/// (`.head`) and a written one was not, so `tag.head.x` was refused over `?x <=> wrap(?y)` and
+/// loaded over `?x: Wrap[T = ?t]`; and the citation returned whole, `-> Relation[T = (x:
+/// Wrap[T = Colour]), …] = tag`, loaded over either.
+fn close_unfixed_clause_vars(
+    kb: &mut KnowledgeBase,
+    column_types: &[(Symbol, Value)],
+    bound: &[Symbol],
+    subst: &Substitution,
+    ty: Value,
+) -> Value {
+    let mut clause_vars: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, t) in column_types {
+        crate::kb::node_occurrence::collect_value_type(kb, t, &mut clause_vars, &mut seen);
+    }
+    if clause_vars.is_empty() {
+        return ty;
+    }
+    let mut inside: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (name, t) in column_types {
+        if bound.contains(name) {
+            continue;
+        }
+        let t = walk_type_deep_value(kb, subst, t);
+        if resolved_var(kb, &t).is_some() {
+            continue;
+        }
+        crate::kb::node_occurrence::collect_value_type(kb, &t, &mut inside, &mut seen);
+    }
+    inside.retain(|v| clause_vars.iter().any(|c| c.raw() == v.raw()));
+    if inside.is_empty() {
+        return ty;
+    }
+    let mut opening = Substitution::new();
+    for v in inside {
+        let fresh = kb.fresh_var(v.name());
+        let rigid = kb.alloc(Term::Var(Var::Rigid(fresh)));
+        opening.bind_term(kb, v, rigid);
+    }
+    // `ty` arrives read through `subst` already: the applied citation's free columns were,
+    // and `settle_citation_type` reads it again wherever it bound more.
+    walk_type_deep_value(kb, &opening, &ty)
 }
 
 /// WI-20260911-5G28A S2 — a citation's EDGE CHECK, captured at the citation and run later.
@@ -2653,13 +2734,20 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
             })
             .collect()
     };
+    let unified = if type_bounds.is_empty() {
+        None
+    } else {
+        unified_column_types(kb, &type_bounds, &var_types)
+    };
     let slots = rule_head_var_slots(kb, rid);
     let mut columns: Vec<ClauseColumn> = Vec::with_capacity(slots.len());
     for (slot, name, d) in slots {
         // Split before the chain so the immutable read of `var_types` is finished
         // before the `&mut kb` arms below.
         let inferred = var_types.get(&d).cloned();
-        let ty = if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
+        let ty = if let Some(t) = unified.as_ref().and_then(|u| u.get(&d)) {
+            t.clone()
+        } else if let Some((_, t)) = type_bounds.iter().find(|(i, _)| *i == d) {
             t.clone()
         } else if let Some(t) = inferred {
             t
@@ -2670,6 +2758,109 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
         columns.push(ClauseColumn { slot, name, ty });
     }
     columns
+}
+
+/// ONE TYPE PER CLAUSE VARIABLE, WRITTEN OR INFERRED (user, 2026-10-21: once typing is
+/// finished, inference and writing make no difference). Each written bound — opened, so its
+/// variables are the frame's or this citation's — is unified with the type the clause's
+/// body gives its variable, and every type is read through what that bound: in `rule p(?w,
+/// ?x: Wrap[T = ?e]) :- holder(h: ?x), ?z <=> same(a: ?w, b: ?x)` the body ties `?w` to
+/// `?x` and the bound names `?x`'s element `?e`, so `?w` is a `Wrap[T = ?e]` too and an
+/// argument for `?w` fixes the `?e` the bound's domain check reads. Read apart, the bound's
+/// `?e` was a variable nothing in the body reached.
+///
+/// `None` where a bound and its variable's inferred type do not unify, or where the body
+/// would fix the enclosing sort's own parameter — the instance, which a clause holds at
+/// every value (`rule pr(?x: Box2[T = T]) :- ?x <=> b2(v: 5)` says `T` is `Int64`): a clause
+/// whose body disagrees with its head, which WI-20261013-GGXCX decides. Each is then read as
+/// before. A sort's parameter the body only names stays itself, so a citation's bracket
+/// still reads it ([`open_citation_params`]).
+pub(super) fn unified_column_types(
+    kb: &mut KnowledgeBase,
+    bounds: &[(u32, Value)],
+    var_types: &HashMap<u32, Value>,
+) -> Option<HashMap<u32, Value>> {
+    let mut sigma = Substitution::new();
+    for (d, bound) in bounds {
+        if let Some(inferred) = var_types.get(d) {
+            if !unify_types(kb, &mut sigma, bound, inferred) {
+                return None;
+            }
+        }
+    }
+    // THE WRITTEN VARIABLES STAY THEMSELVES: where the unification bound one to a variable
+    // of the body's, that variable reads as the written one, so a sort's parameter is still
+    // the parameter and a refusal names the author's `?t`. A sort's parameter first, since it
+    // must win a tie with another written variable.
+    let mut written: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, bound) in bounds {
+        crate::kb::node_occurrence::collect_value_type(kb, bound, &mut written, &mut seen);
+        // A sort's parameter written by its NAME (`Wrap[T = T]` in a sort nested in the one
+        // that declares `T`) is that parameter's variable, which the unification reaches
+        // through the name.
+        if let Ok(t) = crate::kb::node_occurrence::value_to_term(kb, bound) {
+            collect_param_refs(kb, t, &mut written);
+        }
+    }
+    written.sort_by_key(|v| !kb.is_canonical_type_param_var(*v));
+    let mut back = Substitution::new();
+    for w in written.clone() {
+        let param = kb.is_canonical_type_param_var(w);
+        let w_term = kb.alloc(Term::Var(Var::Global(w)));
+        let read = walk_type_deep_value(kb, &sigma, &Value::term(w_term));
+        let read = walk_type_deep_value(kb, &back, &read);
+        match resolved_var(kb, &read) {
+            Some(v) if v.raw() == w.raw() => {}
+            Some(v)
+                if !kb.is_canonical_type_param_var(v)
+                    && (param || !written.iter().any(|x| x.raw() == v.raw()))
+                    && back.resolve_as_value(v).is_none() =>
+            {
+                back.bind_term(kb, v, w_term)
+            }
+            // Two parameters the body makes one, or one it makes a type, disagree.
+            _ if param => return None,
+            _ => {}
+        }
+    }
+    let read = |kb: &mut KnowledgeBase, t: &Value| {
+        let t = walk_type_deep_value(kb, &sigma, t);
+        walk_type_deep_value(kb, &back, &t)
+    };
+    let mut out: HashMap<u32, Value> = HashMap::with_capacity(var_types.len() + bounds.len());
+    for (d, t) in var_types {
+        out.insert(*d, read(kb, t));
+    }
+    for (d, bound) in bounds {
+        out.insert(*d, read(kb, bound));
+    }
+    Some(out)
+}
+
+/// The canonical variable of every sort parameter `t` names by its symbol, into `out`.
+fn collect_param_refs(kb: &KnowledgeBase, t: TermId, out: &mut Vec<VarId>) {
+    match kb.get_term(t) {
+        Term::Ref(s) => {
+            if let Some(v) = kb.canonical_type_param_var(*s) {
+                if let Term::Var(Var::Global(vid)) = kb.get_term(v) {
+                    if !out.iter().any(|o| o.raw() == vid.raw()) {
+                        out.push(*vid);
+                    }
+                }
+            }
+        }
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            for a in pos_args.iter().copied().chain(named_args.iter().map(|(_, a)| *a)) {
+                collect_param_refs(kb, a, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// WI-714 — true iff any top-level rule-head slot is a COMPOUND term mentioning a
