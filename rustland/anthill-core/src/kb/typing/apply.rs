@@ -1184,7 +1184,7 @@ pub(super) fn check_apply_iter(
         }
         // WI-20260929-0RP29: the call as a dispatched override receives it — the arguments
         // wrapped as `some_wraps` says, the bracket — for both paths that type the override (the
-        // WI-606 fallback below, and the dispatch arms' `dispatched_impl_effects`).
+        // WI-606 fallback below, and the dispatch arms' `dispatched_impl_effects_of`).
         let call_view = CallToOverride {
             env,
             pos_args,
@@ -2373,12 +2373,12 @@ pub(super) fn check_apply_iter(
                     ) {
                         resolved_ret = result_type(kb, &subst, &proj_return_type);
                     }
-                    let closed_op_effects: Vec<Value> = substituted_op_effects
-                        .iter()
-                        .filter(|e| !effect_is_unresolved_var(kb, e))
-                        .cloned()
-                        .collect();
-                    effects = merge_effects(kb, &closed_op_effects, &arg_effects);
+                    effects = closed_op_row(
+                        kb,
+                        env.param_rigids(),
+                        &substituted_op_effects,
+                        &arg_effects,
+                    );
                 }
             }
         }
@@ -2568,9 +2568,21 @@ pub(super) fn check_apply_iter(
                 // fill — fall through and run the spec's default body.
                 if let Some(only) = chosen {
                     let impl_op = only.target;
-                    let derived =
-                        dispatched_impl_effects(kb, flow, impl_op, &op, &call_view, &subst, span)?;
-                    merge_effects_into(kb, &mut effects, &derived);
+                    effects = effects_of_pinned_call(
+                        kb,
+                        flow,
+                        impl_op,
+                        None,
+                        &op,
+                        &call_view,
+                        &subst,
+                        span,
+                        RowAtPin {
+                            op_effects: &substituted_op_effects,
+                            arg_effects: &arg_effects,
+                            before: effects,
+                        },
+                    )?;
                     // WI-1093: RESOLVE THE SPEC AT THE PINNED CARRIER and hand the tree to
                     // the shared tail, which emits it as the callee's `dispatch_dict`
                     // (WI-829 `emit_tree_as_projection`). Without it this arm passed `None`
@@ -2832,10 +2844,21 @@ pub(super) fn check_apply_iter(
                 if let Some(tree) = default_tree {
                     if let Some(target) = defaulted_call_target(kb, spec_sort, fn_sym, &tree) {
                         if target != fn_sym {
-                            let derived = dispatched_impl_effects(
-                                kb, flow, target, &op, &call_view, &subst, span,
+                            effects = effects_of_pinned_call(
+                                kb,
+                                flow,
+                                target,
+                                None,
+                                &op,
+                                &call_view,
+                                &subst,
+                                span,
+                                RowAtPin {
+                                    op_effects: &substituted_op_effects,
+                                    arg_effects: &arg_effects,
+                                    before: effects,
+                                },
                             )?;
-                            merge_effects_into(kb, &mut effects, &derived);
                         }
                         classify_pin_or_apply_within(
                             kb,
@@ -2931,10 +2954,21 @@ pub(super) fn check_apply_iter(
                             .flatten()
                         {
                             if target != fn_sym {
-                                let derived = dispatched_impl_effects(
-                                    kb, flow, target, &op, &call_view, &subst, span,
+                                effects = effects_of_pinned_call(
+                                    kb,
+                                    flow,
+                                    target,
+                                    None,
+                                    &op,
+                                    &call_view,
+                                    &subst,
+                                    span,
+                                    RowAtPin {
+                                        op_effects: &substituted_op_effects,
+                                        arg_effects: &arg_effects,
+                                        before: effects,
+                                    },
                                 )?;
-                                merge_effects_into(kb, &mut effects, &derived);
                             }
                             classify_pin_or_apply_within(
                                 kb,
@@ -3144,10 +3178,21 @@ pub(super) fn check_apply_iter(
                     // but NOT effects, so an effectful impl bound to a pure-declared spec
                     // op would otherwise mask its effect at the consumption site.
                     if impl_op != fn_sym {
-                        let derived = dispatched_impl_effects(
-                            kb, flow, impl_op, &op, &call_view, &subst, span,
+                        effects = effects_of_pinned_call(
+                            kb,
+                            flow,
+                            impl_op,
+                            None,
+                            &op,
+                            &call_view,
+                            &subst,
+                            span,
+                            RowAtPin {
+                                op_effects: &substituted_op_effects,
+                                arg_effects: &arg_effects,
+                                before: effects,
+                            },
                         )?;
-                        merge_effects_into(kb, &mut effects, &derived);
                     }
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
@@ -3247,12 +3292,12 @@ pub(super) fn check_apply_iter(
                 // condition exactly (effect-close ran iff the carrier bound a
                 // spec param) while letting the element bind move earlier.
                 if carrier_bound || late_bound {
-                    let closed_op_effects: Vec<Value> = substituted_op_effects
-                        .iter()
-                        .filter(|e| !effect_is_unresolved_var(kb, e))
-                        .cloned()
-                        .collect();
-                    effects = merge_effects(kb, &closed_op_effects, &arg_effects);
+                    effects = closed_op_row(
+                        kb,
+                        env.param_rigids(),
+                        &substituted_op_effects,
+                        &arg_effects,
+                    );
                 }
             }
 
@@ -3673,10 +3718,21 @@ pub(super) fn check_apply_iter(
                             )
                         })
                     {
-                        let derived = dispatched_impl_effects_of(
-                            kb, flow, impl_op, &impl_info, &op, &call_view, &subst, span,
+                        effects = effects_of_pinned_call(
+                            kb,
+                            flow,
+                            impl_op,
+                            Some(&impl_info),
+                            &op,
+                            &call_view,
+                            &subst,
+                            span,
+                            RowAtPin {
+                                op_effects: &substituted_op_effects,
+                                arg_effects: &arg_effects,
+                                before: effects,
+                            },
                         )?;
-                        merge_effects_into(kb, &mut effects, &derived);
                         classify_pin_or_apply_within(
                             kb,
                             occ,
@@ -4030,41 +4086,34 @@ pub(super) fn check_apply_iter(
                     // override (`impl_op_sym != fn_sym`) can carry an effect the
                     // spec signature didn't.
                     if impl_op_sym != fn_sym {
-                        let derived = dispatched_impl_effects(
+                        // The spec op's polymorphic effect row is GROUNDED by
+                        // this concrete dispatch: the impl's real effects in its
+                        // place, the UNTOUCHED `arg_effects` beside them. A pure impl
+                        // grounds the row to {}; a non-pure one contributes its
+                        // `Modify[b]`, so a pure consumer is rejected. The same at
+                        // every site that pins a call to an override
+                        // ([`effects_of_pinned_call`]); where the impl's row is not
+                        // read whole, the closed spec row below is kept beside it.
+                        effects = effects_of_pinned_call(
                             kb,
                             flow,
                             impl_op_sym,
+                            None,
                             &op,
                             &call_view,
                             &subst,
                             span,
+                            RowAtPin {
+                                op_effects: &substituted_op_effects,
+                                arg_effects: &arg_effects,
+                                before: closed_op_row(
+                                    kb,
+                                    env.param_rigids(),
+                                    &substituted_op_effects,
+                                    &[],
+                                ),
+                            },
                         )?;
-                        // The spec op's polymorphic effect row is GROUNDED by
-                        // this concrete dispatch. Drop the still-unresolved row
-                        // var from the SPEC OP's OWN effects only — the
-                        // pre-dispatch effect-close fires only for a type-param
-                        // carrier binding, so an effect-only spec (`Box`:
-                        // `effects Effect = ?`, no type-arg binding) still carries
-                        // its `?_` here — substitute the impl's real effects in
-                        // its place, then re-merge the UNTOUCHED `arg_effects`. We
-                        // filter `substituted_op_effects`, not the merged
-                        // `effects`, for the same reason the pre-dispatch close
-                        // does (line above): a genuinely-polymorphic effect a
-                        // receiver argument contributes must never be erased. A
-                        // pure impl grounds the row to {} (`derived` empty); a
-                        // non-pure one contributes its `Modify[b]`, so a pure
-                        // consumer is rejected.
-                        let mut closed_op_effects: Vec<Value> = substituted_op_effects
-                            .iter()
-                            .filter(|e| !effect_is_unresolved_var(kb, e))
-                            .cloned()
-                            .collect();
-                        // WI-657(8): fold the impl's `derived` effects then the untouched
-                        // `arg_effects` into the owned filtered row in place — one alloc,
-                        // not the two throwaway merge results (`op_and_impl`, then `effects`).
-                        merge_effects_into(kb, &mut closed_op_effects, &derived);
-                        merge_effects_into(kb, &mut closed_op_effects, &arg_effects);
-                        effects = closed_op_effects;
                     }
                     // WI-231: tag the call site. The requirement-
                     // insertion pass (`req_insertion::run`) reads the

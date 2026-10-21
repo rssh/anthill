@@ -24,7 +24,9 @@
 //! return from the impl's signature); this test pins the UNQUALIFIED form to the
 //! same behaviour.
 
-const SRC: &str = r#"
+/// Also read by `wi_gjw9z_spec_call_charges_the_callers_row_test`, which narrows `collect`'s
+/// declared row to pin the effect this call is charged.
+pub(crate) const SRC: &str = r#"
 namespace wi606.witness
   import anthill.prelude.{FiniteCollection, Stream, Option, Pair, List, Int64, EffectsRuntime}
   import anthill.prelude.Option.{some, none}

@@ -2430,7 +2430,7 @@ pub(super) fn concrete_self_receiver_override(
 /// indirect-provision carrier, so the impl's effects (which the runtime target
 /// actually incurs) replace them rather than being silently dropped; this keeps the
 /// call's effect row sound on EVERY downstream dispatch arm (incl. the WI-239 defer
-/// / NoMatch-covers early returns, which do not re-derive `dispatched_impl_effects`).
+/// / NoMatch-covers early returns, which do not re-derive `dispatched_impl_effects_of`).
 ///
 /// `None` — leaving the spec op's own (loudly-failing) elimination to stand — unless
 /// the call is a self-receiver spec op (`self_recv_spec`) on a GENUINE concrete
@@ -2458,10 +2458,11 @@ pub(super) fn concrete_self_receiver_override(
 /// * BY POSITION, EVERY ARGUMENT. The call's arguments arrive keyed by the SPEC op's
 ///   parameters (`param_to_arg_type`, `arg_syms`, whether passed by position or by name), and
 ///   the override's parameters align with those by position — the run-time binding, and how
-///   [`dispatched_impl_effects`] reads the same call. σ starts from the override's OWN type
-///   parameters as the call binds them ([`override_at_call`]: a
-///   bracket written at the call reaches an override parameter only the return names,
-///   WI-20260930-JPSDH, and a parameter two arguments bind takes the call's join), then unifies
+///   [`dispatched_impl_effects_of`] reads the same call. σ starts from the override's OWN type
+///   parameters as the call binds them, and the declaring sort's its effects name
+///   ([`override_at_call`]: a bracket written at the call reaches an override parameter only
+///   the return names, WI-20260930-JPSDH, and a parameter two arguments bind takes the call's
+///   join), then unifies
 ///   each argument with the override's parameter at its position, a FOREIGN sort's unwritten
 ///   slot expanded per occurrence at any depth on BOTH sides first (WI-374, as the qualified
 ///   call expands it: two bare `List`s are two lists, so are two `nil`s and the `List`s of `Pair[A
@@ -2491,7 +2492,7 @@ pub(super) fn concrete_self_receiver_override(
 ///   refused naming it and the bracket that fixes it.
 /// * A `denoted` naming an override parameter is re-keyed ONCE: by the elimination, which
 ///   re-keys the denoteds of a type holding a projection, or directly for a type holding none
-///   — [`dispatched_impl_effects`]' rule for the same override at the same call. The RETURN is
+///   — [`dispatched_impl_effects_of`]' rule for the same override at the same call. The RETURN is
 ///   re-keyed to the caller's arguments. The EFFECTS are re-keyed to the SPEC op's parameters,
 ///   so the call site's effect re-key (a field-path head, a placeless argument), keyed by the
 ///   spec's parameters, applies to them. A GUARD's binders are not renamed by a re-key
@@ -2549,9 +2550,10 @@ pub(super) fn concrete_override_threaded(
     let discharge = |kb: &mut KnowledgeBase, ty: &Value, denoted: &HashMap<Symbol, Symbol>| {
         override_declared_at_call(kb, ty, &reading, denoted, &ctx, span)
     };
-    // σ: the override's own type parameters as the call binds them ([`override_at_call`] — the
-    // bracket, the arguments' join, the arguments), then every argument against the override's
-    // parameter at its position, for the rest (its carrier's parameters through the receiver).
+    // σ: the override's own type parameters as the call binds them, and the declaring sort's its
+    // effects name ([`override_at_call`] — the bracket, the arguments' join, the arguments),
+    // then every argument against the override's parameter at its position, for the rest (the
+    // carrier's other parameters, through the receiver).
     // The parameter is the one the call's EFFECT re-key reads (a callback row naming a field
     // path's head, WI-506), eliminated first if it projects another (WI-398); a foreign sort's
     // unwritten slot is expanded per occurrence on both sides for σ (WI-374: two `nil`s are two
@@ -2560,8 +2562,7 @@ pub(super) fn concrete_override_threaded(
     // check passed a wrong argument, MEASURED). WI-20260904-60143: `unify_types` binds every
     // component that agreed and answers `false` for the rest — the validation judges that.
     let mut subst =
-        override_at_call(kb, impl_op, &impl_info, op, call, call_subst, &reading, span)?
-            .unwrap_or_default();
+        override_at_call(kb, impl_op, &impl_info, op, call, call_subst, &reading, span)?;
     let mut bound: Vec<(usize, Value, Value)> = Vec::with_capacity(passed.len());
     for (i, passed_ty) in passed {
         let Some(written) = discharge(kb, &impl_info.params[i].1, &impl_eff_rekey) else {
