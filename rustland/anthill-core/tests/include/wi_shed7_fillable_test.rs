@@ -879,3 +879,138 @@ end
     // CONTROL — passes either way, BY DESIGN: a TYPE with a domain fills, `1` is an `Int64`.
     assert_eq!(crate::common::one_definite_int(&mut kb, "shed7nodomain.good"), Some(1));
 }
+
+/// THE TYPED HEAD INTERNS NOTHING PER FIRING (code review, 2026-09-25). The bound the sweep
+/// splices into the clause — `List[T = ?t]` for `?w: List`, the sort's own `T` for
+/// `el(?x: T)`, the shared `?t` of a tie — is De Bruijn-closed against the rule's frame, and
+/// opening the clause opened it with the interning `term_from_debruijn`. A fresh variable
+/// never deduplicates, so every firing interned the variable and each node above it, for
+/// ever. It is opened off the store now, as an answer link is (WI-20260905-N20EZ).
+///
+/// Each typed rule is measured against its UNTYPED twin, so the query's own cost — its fresh
+/// variable and its goal term — cancels: a typed head may cost what its twin costs and no more.
+///
+/// FAILS WHEN BACKED OUT (the splice opened by `term_from_debruijn` again), MEASURED: `typed`
+/// 4 terms a query against its twin's 2, `elRed` / `elNil` / `elInts` 3 against 2, `tieq` 4
+/// against 2 — and over the whole `anthill-core` crate this row alone. The σ half of the
+/// change (a spliced spine read on every carrier) is driven by
+/// `wi_tcsgt_structural_bracket_entry_test::an_entry_under_a_rules_let_and_if_is_the_type`. A goal ARGUMENT holding a fresh variable (`same([?h], [red()])`) still interns
+/// when the head is matched, typed or not — the clause-head path, not the typed head — so no
+/// shape here passes one.
+#[test]
+fn a_typed_head_interns_nothing_per_firing() {
+    const GROWTH: &str = r#"
+namespace shed7growth
+  import anthill.prelude.{List, Int64}
+
+  sort Colour
+    entity red
+    entity green
+  end
+
+  sort Wrap[T]
+    entity wrap(v: T)
+    rule el(?x: T) :- true
+    rule elU(?x) :- true
+  end
+
+  rule typed(?w: List) :- ?w <=> []
+  rule typedU(?w) :- ?w <=> []
+  rule elRed(1)   :- Wrap.el(red())
+  rule elRedU(1)  :- Wrap.elU(red())
+  rule elNil(1)   :- Wrap.el([])
+  rule elNilU(1)  :- Wrap.elU([])
+  rule elInts(1)  :- Wrap.el([1, 2])
+  rule elIntsU(1) :- Wrap.elU([1, 2])
+  rule tie(?x: List[T = ?t], ?r: List[T = ?t]) :- ?x <=> [1], ?r <=> [2]
+  rule tieU(?x, ?r) :- ?x <=> [1], ?r <=> [2]
+  rule tieq(1)  :- tie([1], [2])
+  rule tieqU(1) :- tieU([1], [2])
+end
+"#;
+    let mut kb = crate::common::load_kb_with(GROWTH);
+    // Interned over four queries once the first query has interned the shared vocabulary —
+    // the TOTAL, so a leak of less than one term a query is not rounded away.
+    let mut per_query = |kb: &mut anthill_core::kb::KnowledgeBase, rule: &str| {
+        let qn = format!("shed7growth.{rule}");
+        let rows = crate::common::shown_rows(kb, &qn);
+        assert_eq!(rows.len(), 1, "`{rule}`: one row, {rows:?}");
+        assert!(rows[0].1, "`{rule}`: the row is definite");
+        let before = kb.term_store_len();
+        for _ in 0..4 {
+            crate::common::shown_rows(kb, &qn);
+        }
+        kb.term_store_len() - before
+    };
+    for (typed, untyped) in [
+        ("typed", "typedU"),
+        ("elRed", "elRedU"),
+        ("elNil", "elNilU"),
+        ("elInts", "elIntsU"),
+        ("tieq", "tieqU"),
+    ] {
+        let t = per_query(&mut kb, typed);
+        let u = per_query(&mut kb, untyped);
+        assert_eq!(t, u, "`{typed}` interns {t} terms over four queries, its untyped twin `{untyped}` {u}");
+    }
+}
+
+/// THE PARAMETER FORM OF A TYPE-VARIABLE BOUND IS THE SIGIL FORM. `x: C` in `sort S[C]` named
+/// `C` bare, and the loader's bare-name arm made it a SORT REFERENCE where the sigil spelling
+/// `?x: C` lowers it, through the type door, to the parameter's variable. The generated goal
+/// then checked the value against `C` itself — a sort no value has — and never against the
+/// caller's type: `S[C = Bit].par` floundered on `domain(?_, C)` where `S[C = Bit].sig`
+/// answers 2, and the solver written once over its collection, `Sat[C = List[T = Bit]]
+/// .model`, answered 0 where the same clause written at `List[T = Bit]` answers tiny-sat's 2.
+///
+/// FAILS WHEN BACKED OUT (the bare arm's `type_param_var` removed), MEASURED: `par`,
+/// `parPattern` and `model` raise `relation_floundered` or answer 0; `sig` and `unsat` pass
+/// either way, by design (the sigil form never took that arm, and an unsatisfiable formula
+/// is refuted before the bound is read).
+#[test]
+fn the_parameter_form_of_a_type_variable_bound_is_the_sigil_form() {
+    const PARAM: &str = r#"
+namespace shed7param
+  import anthill.prelude.{List, Int64, Error}
+
+  sort Bit
+    entity t
+    entity f
+  end
+  fact neg(t(), f())
+  fact neg(f(), t())
+  rule or2(?a, ?)  :- ?a <=> t()
+  rule or2(?a, ?b) :- ?a <=> f(), ?b <=> t()
+
+  sort S[C]
+    rule sig(?x: C) :- true
+    rule par(x: C) :- true
+    rule parPattern(x: C) :- x <=> [?y]
+  end
+
+  sort Sat[C]
+    rule model(vs: C)
+      :- vs <=> [?p, ?q, ?r],
+         neg(?p, ?np), neg(?q, ?nq), neg(?r, ?nr),
+         or2(?p, ?nq), or2(?q, ?r), or2(?np, ?nr)
+    rule unsat(vs: C)
+      :- vs <=> [?p, ?q, ?r], neg(?p, ?np), or2(?p, ?p), or2(?np, ?np)
+  end
+
+  sort Driver
+    operation sig() -> Int64 effects {Error} = S[C = Bit].sig.takeN(5).length()
+    operation par() -> Int64 effects {Error} = S[C = Bit].par.takeN(5).length()
+    operation parPattern() -> Int64 effects {Error} = S[C = List[T = Bit]].parPattern.takeN(5).length()
+    operation model() -> Int64 effects {Error} = Sat[C = List[T = Bit]].model.takeN(100).length()
+    operation unsat() -> Int64 effects {Error} = Sat[C = List[T = Bit]].unsat.takeN(100).length()
+  end
+end
+"#;
+    let mut interp = crate::common::interp_for(PARAM);
+    for (entry, want) in [("sig", 2), ("par", 2), ("parPattern", 2), ("model", 2), ("unsat", 0)] {
+        match interp.call(&format!("shed7param.Driver.{entry}"), &[]) {
+            Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}`"),
+            other => panic!("`{entry}`: expected {want}, got {other:?}"),
+        }
+    }
+}

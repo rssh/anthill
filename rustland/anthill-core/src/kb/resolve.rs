@@ -2141,6 +2141,16 @@ impl SearchStream {
         // the tail as a delay would — the turn still counts toward the residualization gate
         // below — without being walked or evaluated. Asked from scratch instead, it re-ran
         // its evaluation, which can include a bridge run, once per sibling that made progress.
+        // A WOKEN GOAL RESETS THE ROTATION COUNT: what woke it is a binding made since it
+        // suspended, which is progress. Counted as one more delay, a goal woken and suspended
+        // again on each of its variables in turn — the typed head's type test over a value
+        // filled cell by cell — reached the residualization gate before the generator that
+        // binds those variables was asked: `S[C = List[T = Bit]].sigPattern` floundered.
+        let delay_mode = if self.wake_bound_goal() {
+            delay_mode.reset()
+        } else {
+            delay_mode
+        };
         if let Some(step) = self.pass_over_waiting_goal(depth, &delay_mode) {
             return step;
         }
@@ -3734,6 +3744,31 @@ impl SearchStream {
                 consecutive_delays: new_consecutive,
             },
         };
+    }
+
+    /// 068 §2.2 — WAKE ON BIND: the first SUSPENDED goal behind `goals[0]` one of whose
+    /// blockers is now bound is moved to the front, so it is asked before every goal that is
+    /// ready — the goals added since it suspended included. On its turn instead, it waited
+    /// behind everything a generator pushed in front of it, and a check could reject only
+    /// what the generator had finished: `splitFirst(?r3) <=> none()` waiting on the tail of a
+    /// list the typed head's `fill` was building saw each list only once it was complete,
+    /// so the `fill` went on to every longer one and the search ended at the depth limit
+    /// (WI-20260925-SHED7). Woken, the check fails at the fourth cell and no longer list is
+    /// tried.
+    fn wake_bound_goal(&mut self) -> bool {
+        let frame = self.stack.last_mut().unwrap();
+        let woken = frame.goals.iter().skip(1).position(|g| match &g.wait {
+            Wait::Suspended { blockers, .. } => blockers
+                .iter()
+                .any(|b| frame.subst.resolve_as_value(*b).is_some()),
+            Wait::Ready | Wait::Parked => false,
+        });
+        let Some(i) = woken else {
+            return false;
+        };
+        let goal = frame.goals.remove(i + 1);
+        frame.goals.insert(0, goal);
+        true
     }
 
     /// WI-20260926-CYNPE (068 §2.2) — `goals[0]`'s turn when it is WAITING: `None` when it
@@ -12072,11 +12107,30 @@ impl KnowledgeBase {
         // (`Value::Node(Ref(green))`) reads as ground through the carrier-neutral
         // `value_deep_ground` (WI-685), so no collapse to a `Term` is needed here or
         // below.
+        // 068 §2 — AN ARGUMENT MAY HOLD THE RULE'S UNKNOWNS. Its unbound variables are
+        // handed to the interpreter as `bridge_unknowns`, and the run suspends where it would
+        // READ one (a pattern that tests it, a host function, a condition, a dispatch on its
+        // carrier) — so `List.splitFirst(cons(head: f(), tail: ?t))` answers `some(pair(f(),
+        // ?t))` instead of waiting for `?t`, and `List.contains([?h], t())` still waits for
+        // `?h`. Declining every argument with a variable anywhere in it made a check over a
+        // list being built wait for the whole list (WI-20260925-SHED7).
         let mut args: Vec<Value> = Vec::with_capacity(params.len());
+        let mut unknowns: Vec<VarId> = Vec::new();
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
             if !self.value_deep_ground(&a, subst) {
-                return None;
+                // Only the rule's flexible variables are unknowns a later binding answers. A
+                // RIGID one — a proof's eigenvariable — is bound by nothing, and a call over it
+                // stays the term it is (SYMBOLIC, kernel-language §8.3), as every call with an
+                // unbound argument did before.
+                if self.mentions_var(&a, &|v| !matches!(v, Var::Global(_))) {
+                    return None;
+                }
+                for v in self.collect_vars(&a) {
+                    if !unknowns.contains(&v) {
+                        unknowns.push(v);
+                    }
+                }
             }
             args.push(a);
         }
@@ -12102,11 +12156,14 @@ impl KnowledgeBase {
             Some(WovenDispatch::Stamped(stamps)) => (None, &[][..], Some(&stamps[..])),
             None => (None, &[][..], None),
         };
-        let Some(outcome) = self.run_in_bridge_interp(|interp| match stamped {
-            Some(stamps) => interp.call_op_bridged_stamped(op, &args, stamps),
-            None => interp.call_op_bridged(op, &args, dispatched_through, supplied_slots),
-        })
-        else {
+        let unknowns: Rc<[VarId]> = Rc::from(unknowns);
+        let Some(outcome) = self.run_in_bridge_interp(|interp| {
+            interp.bridge_unknowns = unknowns;
+            match stamped {
+                Some(stamps) => interp.call_op_bridged_stamped(op, &args, stamps),
+                None => interp.call_op_bridged(op, &args, dispatched_through, supplied_slots),
+            }
+        }) else {
             // WI-20260911-0V0F7 — THE RE-ENTRY CAP IS A TRUNCATION, and the `?` that
             // stood here swallowed it. `run_in_bridge_interp` answers `None` when the
             // eval↔SLD ping-pong hits [`BRIDGE_REENTRY_CAP`]: a branch was CUT SHORT, so

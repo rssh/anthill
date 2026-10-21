@@ -38,7 +38,14 @@ pub fn match_pattern(
     // never name a bindable runtime pattern, so they don't match — mirroring
     // the old term path, where an `Expr::Var` serialized to a `Term::Var`
     // that the `Term::Fn` matcher rejected.
-    match pattern.as_pattern()? {
+    let pat = pattern.as_pattern()?;
+    // 068 §2: a position that TESTS its value cannot test one of the caller's unknowns.
+    // Recorded, and the match fails, so the caller can wait rather than try the next arm.
+    if !matches!(pat, Pattern::Var { .. } | Pattern::Wildcard) && interp.is_unknown(scrutinee) {
+        interp.pattern_read_unknown.set(true);
+        return None;
+    }
+    match pat {
         Pattern::Var { name, .. } => {
             let mut b = SmallVec::new();
             b.push((*name, scrutinee.clone()));

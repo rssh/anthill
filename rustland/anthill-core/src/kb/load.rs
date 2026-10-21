@@ -27393,6 +27393,17 @@ impl<'a> Loader<'a> {
                         carrier_param: requirement.carrier_param,
                     });
                     requirement.instance
+                } else if !self.rule_param_vars.contains_key(name.as_str())
+                    && self.rule_head_tvar(&name).is_none()
+                    && self.kb.symbols.is_type_param(self.current_scope, &name)
+                {
+                    // A PARAMETER OF THE ENCLOSING SORT, named bare (`x: C` in `sort S[C]`),
+                    // is that parameter's variable, as the type door lowers `?x: C` and as
+                    // the applied arm lowers it inside `x: Box[T = C]`. As a sort reference
+                    // it named a sort no value has: the generated goal checked the value
+                    // against `C` itself, never the caller's type, and `S[C = Bit].par`
+                    // floundered on `domain(?_, C)` where `?x: C` answers (WI-20260925-SHED7).
+                    self.type_param_var(bound_sym, &name)
                 } else {
                     let named = self.kb.make_sort_ref(bound_sym);
                     let (bound, as_written) =

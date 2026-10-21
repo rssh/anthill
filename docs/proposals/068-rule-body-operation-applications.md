@@ -220,9 +220,15 @@ An application that was not evaluated is in one of two states. They are close �
 neither is compared — but they are not the same, and treating them as one costs both diagnosis and
 time (§2.2).
 
-- **SUSPENDED** — it cannot be evaluated YET. An argument it needs is an unbound variable, or its
-  dictionary is a flex `?d` that a later goal may bind. It carries its **blockers**: those variables.
-  Evaluating it again makes sense only after one of them is bound.
+- **SUSPENDED** — it cannot be evaluated YET. Its evaluation **reads** a value that is an unbound
+  variable — matches on it, compares it, computes with it, hands it to a host function, branches on
+  it, dispatches on its carrier, calls through it, or needs a dictionary its type would decide — or
+  its dictionary is a flex `?d` that a later goal may bind. It carries its **blockers**: those
+  variables. Evaluating it again makes sense only after one of them is bound. An unbound variable an
+  argument holds and the evaluation does not read does not suspend it:
+  `List.splitFirst(cons(head: f(), tail: ?t))` evaluates to `some(pair(f(), ?t))`. (Decided with
+  the user 2026-10-21, WI-20260925-SHED7: implemented first as "an argument holds an unbound variable
+  anywhere", which made a check over a list being built wait for the whole list.)
 - **UNREDUCED** — it can never be evaluated. No implementation is reachable for it: no body, no host
   mapping, no provider supplies it. It has no blockers, so nothing it could wait for exists, and it
   is never re-evaluated.
@@ -258,9 +264,14 @@ or derived by that goal (P7VP4's INFER decision). So:
 
 ### 2.2 What each state does
 
-**SUSPENDED** rotates behind its siblings, as a delayed goal does today. On its turn, if none of its
-blockers has been bound since it suspended, it is skipped WITHOUT being evaluated again; it
-residualizes, as today, when only waiting goals remain.
+**SUSPENDED** rotates behind its siblings. When one of its blockers is bound it is **woken**: it is
+asked next, before any goal that is ready — those added since it suspended included — and the
+binding counts as progress toward the residualization gate. While none of its blockers is bound it
+is skipped WITHOUT being evaluated again; it residualizes when only waiting goals remain. (Decided
+with the user 2026-10-21, WI-20260925-SHED7: asked on its turn, a check waiting on a variable a
+generator binds saw only what the generator had finished — `splitFirst(?r3) <=> none()` over a list
+the typed head's `fill` was building rejected each finished list and never cut a longer one, so the
+search ended at the depth limit.)
 
 Today there is no such check. `delay_goal` (`resolve.rs`) moves a delayed goal to the back and counts
 consecutive delays; every time a sibling makes progress the count resets and the goal is evaluated
@@ -367,7 +378,8 @@ At run time a fragment has four outcomes:
 
 - **evaluate** — what it needs is known: it runs through the operation-body evaluator (the SLD→eval
   bridge) and is replaced by its value;
-- **suspend** — it needs an unbound variable or a flex dictionary: SUSPENDED with its blockers (§2.2);
+- **suspend** — its evaluation reads an unbound variable, or needs a flex dictionary: SUSPENDED with
+  its blockers (§2.2);
 - **narrow** — its evaluation stops on a `match` whose scrutinee is an unbound variable: the resolver
   may case-split one alternative per arm (design §3.3, "abstract-interpretation-on-suspend"), which
   is how `append(?a, [3]) = [1, 3]` solves `?a = [1]`;

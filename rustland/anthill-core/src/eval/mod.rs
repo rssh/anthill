@@ -478,6 +478,17 @@ pub struct Interpreter {
     /// leaf-impl call would otherwise pay an env lookup to print nothing.
     pub(crate) trace_requirements: bool,
     pub(crate) config: EvalConfig,
+    /// 068 §2 — the rule world's UNKNOWNS a bridged call was handed: the unbound logic
+    /// variables of its arguments. Empty everywhere else, and then nothing below changes
+    /// anything. While it is not empty the evaluation SUSPENDS where it would READ one of
+    /// them — a pattern that tests it, a host function handed it, an `if` or a guard on it,
+    /// a dispatch on its carrier, a call through it — and runs everywhere it only passes
+    /// one along: `List.splitFirst(cons(head: f(), tail: ?t))` is `some(pair(f(), ?t))`. A
+    /// variable the body makes itself is not one of them.
+    pub(crate) bridge_unknowns: std::rc::Rc<[crate::kb::term::VarId]>,
+    /// Set by [`pattern::match_pattern`] when a position it would test held one of
+    /// `bridge_unknowns`, so its caller can tell "does not match" from "cannot tell yet".
+    pub(crate) pattern_read_unknown: std::cell::Cell<bool>,
     /// Monotonically increasing step counter, reset on each `call()`.
     /// `run()` increments it once per `step()` and compares against
     /// `config.step_cap`. Not a permanent counter — after a call returns
@@ -541,6 +552,8 @@ impl Interpreter {
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             trace_requirements: std::env::var_os("ANTHILL_TRACE_REQ").is_some(),
             config,
+            bridge_unknowns: std::rc::Rc::from([]),
+            pattern_read_unknown: std::cell::Cell::new(false),
             step_count: 0,
             recent_dispatches: std::collections::VecDeque::new(),
         }
@@ -800,7 +813,7 @@ impl Interpreter {
                     ),
                 ));
             }
-            return (builtin)(self, args);
+            return self.call_host(sym, &builtin, args);
         }
         // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
         // and `invoke_op_with_requirements` builds THAT frame from the provider's own
@@ -934,7 +947,21 @@ impl Interpreter {
             args
         };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            return (builtin)(self, args);
+            return self.call_host(sym, &builtin, args);
+        }
+        // 068 §2: an operation whose carrier the call would be dispatched by, reached with
+        // that carrier one of the caller's unknowns, cannot be chosen yet — run as it is, a
+        // defaulted spec operation answered with its default for a carrier nobody knows.
+        // Needed HERE only: inside the run a spec call's carrier comes through its
+        // requirement dictionary, and the clause's read of that dictionary waits on an
+        // unknown before the bridge runs (MEASURED, one provider and two).
+        if !self.bridge_unknowns.is_empty()
+            && eval::spec_call_reads(&self.kb, sym, args, &|v| self.is_unknown(v))
+        {
+            return Err(self.reads_unknown(&format!(
+                "dispatching `{}`",
+                self.kb.qualified_name_of(sym)
+            )));
         }
         use crate::kb::typing::BridgeRequirements;
         // WI-20260909-NAR1X — THE CALLER'S DICTIONARY, WHERE THE CALLER HAS ONE.
@@ -1137,6 +1164,51 @@ impl Interpreter {
         crate::kb::typing::dictionary_of_tree(&mut self.kb, tree)
     }
 
+    /// Is `v` itself one of the caller's unknowns ([`Self::bridge_unknowns`])?
+    pub(crate) fn is_unknown(&self, v: &Value) -> bool {
+        use crate::kb::term_view::TermView;
+        !self.bridge_unknowns.is_empty()
+            && matches!(
+                v.index_var(&self.kb),
+                Some(crate::kb::term::Var::Global(vid)) if self.bridge_unknowns.contains(&vid)
+            )
+    }
+
+    /// Does `v` hold one of the caller's unknowns anywhere in it?
+    pub(crate) fn mentions_unknown(&self, v: &Value) -> bool {
+        !self.bridge_unknowns.is_empty()
+            && self.kb.mentions_var(v, &|var| {
+                matches!(var, crate::kb::term::Var::Global(vid) if self.bridge_unknowns.contains(&vid))
+            })
+    }
+
+    /// Run a host function — the one door every host call goes through. 068 §2: a host
+    /// function reads whatever it is handed (`eq` over an unknown answered `false`,
+    /// arithmetic over one a type mismatch), so one handed any of the caller's unknowns
+    /// waits, as the bridge's whole call used to. Checked here and nowhere else, no route of
+    /// the dispatch — a direct target, an override, a spec implementation chosen by value, a
+    /// dictionary sibling, the bridge's own entry — can hand one an unknown.
+    pub(crate) fn call_host(
+        &mut self,
+        sym: Symbol,
+        builtin: &BuiltinFn,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
+        if args.iter().any(|a| self.mentions_unknown(a)) {
+            return Err(self.reads_unknown(&format!("host `{}`", self.kb.qualified_name_of(sym))));
+        }
+        (builtin)(self, args)
+    }
+
+    /// The suspension a read of one of the caller's unknowns raises: the call cannot be
+    /// evaluated YET, and the resolver delays it until a binding wakes it (068 §2.2).
+    pub(crate) fn reads_unknown(&self, what: &str) -> EvalError {
+        EvalError::Suspended {
+            detail: format!("bridge: {what} reads a variable the rule has not bound yet"),
+            truncated: false,
+        }
+    }
+
     /// WI-625 gap 1: is this interpreter running as the resolver's op-body
     /// bridge? When set, semantic comparisons that reach an undecided point
     /// suspend ([`EvalError::Suspended`]) instead of forcing a structural
@@ -1192,7 +1264,7 @@ impl Interpreter {
             }
         })?;
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            return (builtin)(self, args);
+            return self.call_host(sym, &builtin, args);
         }
         // Names model: `__req_self` → a self-referential placeholder for
         // the parent sort; `__req_<spec>` → each host-supplied chain
@@ -1351,7 +1423,7 @@ impl Interpreter {
                 let runnable = match impl_target {
                     Some(t) => {
                         if let Some(builtin) = self.builtins.get(&t).cloned() {
-                            return (builtin)(self, args);
+                            return self.call_host(t, &builtin, args);
                         }
                         self.cached_operation_body(t)
                             .map(|(body, params)| (t, body, params))

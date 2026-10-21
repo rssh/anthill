@@ -2605,33 +2605,32 @@ pub fn open_debruijn_node(
         // such a term — the head's stored type bound, De Bruijn-closed against this
         // rule's frame since this ticket — so without this arm `domain(?x, List[T = ?t])`
         // would carry the SAME `?t` into every firing of the rule and one caller's
-        // binding would refute the next caller's. The rewrite is `term_from_debruijn`,
-        // the same opener `Apply.type_args` just above uses for the same reason.
+        // binding would refute the next caller's.
         //
-        // ONLY THE `Value::Term` CARRIER, and the `is_some_and` is what keeps it honest:
-        // a term with no De Bruijn var rebuilds nothing and this returns `None`, so every
-        // other splice (WI-1040's dictionaries, WI-714's relation values) is byte-identical
-        // to before. A non-term `Value` splice has no interned term to open and is left
-        // alone rather than silently half-walked.
-        Expr::Spliced(crate::eval::value::Value::Term { id, .. })
-            if kb.term_mentions_debruijn(*id) =>
-        {
-            let opened = kb.term_from_debruijn(*id, fresh);
-            // EVERY INDEX MUST HAVE BEEN IN RANGE. `term_from_debruijn` keeps an index it
-            // cannot map as a `Var::DeBruijn`, silently — and `type_head` classifies that
-            // as `TypeHead::Error`, so an unopened index would ride into the goal and be
-            // read as a malformed type rather than as the variable it is. The frame this
-            // opens against is the rule's own (`with_fresh_vars` mints `arity` of them),
-            // so a leftover means the stored bound was closed against a DIFFERENT frame
-            // than the one being opened — the exact drift
+        // EVERY CARRIER, through the value rewrite the type channels share
+        // ([`map_value_type`]): a term, an occurrence, an entity spine. A term opens OFF
+        // THE STORE ([`OpenSplicedValue`] says why); a splice with no De Bruijn index in it
+        // is returned unchanged. The off-store opening is driven by
+        // `wi_shed7_fillable_test::a_typed_head_interns_nothing_per_firing`; the carriers
+        // other than a term are not — restricted to `Value::Term`, no row of `anthill-core`
+        // fails (MEASURED) — and are walked so that open, close and σ read a splice alike.
+        Expr::Spliced(v) => {
+            let (opened, changed) = map_value_type(&OpenSplicedValue(OpenTypeRewrite { fresh }), kb, v);
+            // EVERY INDEX MUST HAVE BEEN IN RANGE. The opening keeps an index the frame
+            // does not cover as a `Var::DeBruijn`, silently — and `type_head` classifies
+            // that as `TypeHead::Error`, so an unopened index would ride into the goal and
+            // be read as a malformed type rather than as the variable it is. The frame
+            // this opens against is the rule's own (`with_fresh_vars` mints `arity` of
+            // them), so a leftover means the stored bound was closed against a DIFFERENT
+            // frame than the one being opened — the exact drift
             // `load::expand_rule_head_bound_type_params`' own error guards from the other
             // side. Raised by `/code-review`.
             debug_assert!(
-                !kb.term_mentions_debruijn(opened),
-                "a spliced rule-head bound kept a De Bruijn index its frame does not \
-                 cover: the term was closed against a different frame than this opening",
+                !kb.mentions_debruijn(&opened),
+                "a spliced value kept a De Bruijn index its frame does not cover: it was \
+                 closed against a different frame than this opening",
             );
-            (opened != *id).then(|| Expr::Spliced(crate::eval::value::Value::term(opened)))
+            changed.then(|| Expr::Spliced(opened))
         }
         // WI-298: Apply.type_args is a TermId field that can carry DeBruijn
         // vars from the rule's shared space — open it via `term_from_debruijn`
@@ -2819,7 +2818,10 @@ pub fn node_to_debruijn(
         // `let t = Box[V = (?a) -> Int64]` — rides as its lowered type. Closed here as
         // [`open_debruijn_node`]'s arm for the same node opens it; left a global, the
         // variable was the one the loader minted in every firing of the rule.
-        Expr::Spliced(v @ crate::eval::value::Value::Term { .. }) => {
+        //
+        // On every carrier, as the opener walks it; no row reaches a splice other than a
+        // term here (restricted to `Value::Term`, no row of `anthill-core` fails — MEASURED).
+        Expr::Spliced(v) => {
             let (closed, changed) = close_value_type(kb, v, var_order);
             changed.then(|| Expr::Spliced(closed))
         }
@@ -3170,6 +3172,16 @@ trait TypeChildRewrite {
     fn var(&self, _kb: &mut KnowledgeBase, _v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
         (TypeChild::Node(Rc::clone(occ)), false)
     }
+    /// WI-20260925-SHED7 — rewrite a hash-consed term a VALUE carries ([`map_value_type`]'s
+    /// `Value::Term` arm). The answer is a value, so it may take another carrier.
+    ///
+    /// THE DEFAULT IS [`Self::term`]'S INTERNED ANSWER, and every rewriter whose value can
+    /// reach a `TypeChild` slot keeps it: that slot takes a `Term` or a `Node` and nothing
+    /// else (WI-20260904-RB0Z5). Only [`OpenSplicedValue`] overrides it.
+    fn value_term(&self, kb: &mut KnowledgeBase, t: TermId) -> (Value, bool) {
+        let (nt, ch) = self.term(kb, t);
+        (Value::term(nt), ch)
+    }
 }
 
 fn map_type_child<R: TypeChildRewrite>(
@@ -3347,10 +3359,7 @@ fn map_type_node<R: TypeChildRewrite>(
 /// carrier has no vars (no-op).
 fn map_value_type<R: TypeChildRewrite>(r: &R, kb: &mut KnowledgeBase, v: &Value) -> (Value, bool) {
     match v {
-        Value::Term { id: t, .. } => {
-            let (nt, ch) = r.term(kb, *t);
-            (Value::term(nt), ch)
-        }
+        Value::Term { id: t, .. } => r.value_term(kb, *t),
         Value::Node(occ) => {
             let nn = r.node(kb, occ);
             let ch = !Rc::ptr_eq(&nn, occ);
@@ -3625,6 +3634,39 @@ impl TypeChildRewrite for OpenTypeRewrite<'_> {
             _ => return (TypeChild::Interned(nt), true),
         };
         (kb.type_var_child(opened, occ.span, occ.owner), true)
+    }
+}
+
+/// WI-20260925-SHED7 — [`OpenTypeRewrite`] for a value spliced into a rule body
+/// (`Expr::Spliced`), which is read as a value and never put in a `TypeChild` slot. Its
+/// term leaf opens OFF THE STORE: a fresh variable never deduplicates, so the interned
+/// opening grew the hash-consed store at every firing of the rule — a typed head's spliced
+/// bound (`List[T = ?t]`, the sort's own `T`) interned the variable and each node above it
+/// (`rule typed(?w: List) :- ?w <=> []` 4 terms a query against its untyped twin's 2). The
+/// transient substitution answer links use (WI-20260905-N20EZ) rebuilds the spine as a
+/// `Value::Entity` over `Value::Var` leaves and shares every subterm with no index in it.
+struct OpenSplicedValue<'a>(OpenTypeRewrite<'a>);
+impl TypeChildRewrite for OpenSplicedValue<'_> {
+    fn term(&self, kb: &mut KnowledgeBase, t: TermId) -> (TermId, bool) {
+        self.0.term(kb, t)
+    }
+    fn node(&self, kb: &mut KnowledgeBase, n: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+        self.0.node(kb, n)
+    }
+    fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
+        self.0.var(kb, v, occ)
+    }
+    fn value_term(&self, kb: &mut KnowledgeBase, t: TermId) -> (Value, bool) {
+        if !kb.term_mentions_debruijn(t) {
+            return (Value::term(t), false);
+        }
+        let fresh = self.0.fresh;
+        let opened = kb.substitute_vars_transient(t, &mut |_, v| match v {
+            Var::DeBruijn(i) => fresh.get(*i as usize).map(|&vid| Value::Var(Var::Global(vid))),
+            _ => None,
+        });
+        let changed = !matches!(opened, Value::Term { id, .. } if id == t);
+        (opened, changed)
     }
 }
 
@@ -6387,21 +6429,22 @@ pub fn substitute_occurrence(
         // variables in it — every bound in the corpus before this ticket — returns `None`
         // here and rides on as the SAME `Rc`, which is what keeps the `Value::Term`
         // operand arm of `builtin_type_domain` byte-identical for them.
-        Expr::Spliced(v @ crate::eval::value::Value::Term { .. })
-            if !kb.collect_vars(v).is_empty() =>
-        {
-            let walked = kb.reify_value_transient(v, subst);
-            // Identity by the TERM id where the walk left the carrier alone, which is the
-            // no-op case this arm's `collect_vars` guard could not rule out (a variable
-            // that σ does not bind).
-            let moved = !matches!(
-                (&walked, v),
-                (
-                    crate::eval::value::Value::Term { id: a, .. },
-                    crate::eval::value::Value::Term { id: b, .. },
-                ) if a == b
-            );
-            moved.then(|| occ.rebuilt_expr(Expr::Spliced(walked)))
+        //
+        // EVERY CARRIER (WI-20260925-SHED7): the opener builds a spliced value off the
+        // store — an entity spine over variable leaves — so a σ reader that took only the
+        // `Value::Term` carrier left a bound `?a` inside `Box[V = (?a) -> Int64]` a
+        // wildcard (restricted to `Value::Term` again, exactly
+        // `wi_tcsgt_structural_bracket_entry_test::an_entry_under_a_rules_let_and_if_is_the_type`
+        // fails — MEASURED). `collect_vars` and the transient reify both read through the view.
+        Expr::Spliced(v) => {
+            // MOVED where σ binds a variable the value holds; otherwise the SAME `Rc` rides on.
+            kb.mentions_var(v, &|var| {
+                matches!(var, Var::Global(vid) if subst.resolve_as_value(vid).is_some())
+            })
+            .then(|| {
+                    let walked = kb.reify_value_transient(v, subst);
+                    occ.rebuilt_expr(Expr::Spliced(walked))
+                })
         }
         // WI-298: apply σ to `Apply`'s TYPE channels — the `type_args` bracket and
         // (WI-20260829-W6JH0) the form-(3) `recv_type` — so a Global appearing in one

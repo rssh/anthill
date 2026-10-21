@@ -757,7 +757,7 @@ fn buried_override_in_body_proof_stays_unproved() {
 }
 
 #[test]
-fn a_conclude_that_is_not_a_goal_shape_stays_unlowered_and_unproved() {
+fn a_conclude_that_is_not_a_goal_shape_stays_unlowered() {
     // The `None` arm of the lowering, DRIVEN. `conclude` takes a full `_term`,
     // which admits an args-bearing dot (`?c.same(Red)`) — and the goal is built
     // BEFORE the conclude's children are visited, so no dot dispatch has run on
@@ -779,7 +779,7 @@ namespace wi756.inbnongoal
     provides PartialEq[T = Color]
     provides Eq[T = Color]
     operation eq(a: Color, b: Color) -> Bool = true
-    operation same(a: Color, b: Color) -> Bool = true
+    operation same(a: Color, b: Color) -> Bool = SAME_BODY
   end
 
   operation caller(c: Color) -> Int64 =
@@ -787,9 +787,16 @@ namespace wi756.inbnongoal
     0
 end
 "#;
+    // DISCHARGED, since proposal 068 §2: `same` never reads `a`, so `?c.same(Red)` is `true`
+    // whatever `?c` is, and the bridge now runs a call with an unbound argument until it
+    // reads one. Before, the bridge declined any unbound argument and the conclusion stayed
+    // undischarged — the conservative outcome this row first pinned. What it is FOR is
+    // unchanged: the shape reaches the lowering's `None` arm at typing without a crash.
+    // (A `same` that reads `a` — a `match` on it — was decided before too: the resolver
+    // narrows `?c := Red`, MEASURED on the parent commit.)
     assert!(
-        !discharges_conclude(src, "wi756.inbnongoal"),
-        "a non-goal `conclude` must stay undischarged, not be proved"
+        discharges_conclude(&src.replace("SAME_BODY", "true"), "wi756.inbnongoal"),
+        "a `same` that does not read `?c` decides the conclusion"
     );
 }
 

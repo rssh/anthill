@@ -1907,6 +1907,8 @@ mod wi_5g28a_citation_bracket_test;
 mod wi_5g28a_sort_domain_test;
 #[path = "include/wi_shed7_fillable_test.rs"]
 mod wi_shed7_fillable_test;
+#[path = "include/wi_shed7_reads_wait_test.rs"]
+mod wi_shed7_reads_wait_test;
 #[path = "include/wi_p7vp4_rule_body_requirements_test.rs"]
 mod wi_p7vp4_rule_body_requirements_test;
 #[path = "include/wi_0rrqp_clause_typed_through_constructor_test.rs"]

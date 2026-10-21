@@ -244,6 +244,12 @@ fn a_carrier_with_no_supplier_still_runs_the_default() {
 /// Passes either way by design: backed out, the goal folds the default over an
 /// unbound argument and still fails to reduce. It is here so that any later widening
 /// of the bridge's ground gate has to come and state what this row became.
+///
+/// WHAT IT BECAME (proposal 068 §2, WI-20260925-SHED7): the bridge now runs a call with an
+/// unbound argument until the run READS one, and choosing `describe`'s carrier reads `?x`
+/// — so the call waits, at the bridge's entry, and the answer is still not a definite
+/// `1`. FAILS with that entry check backed out (`call_op_bridged`'s `spec_call_reads`):
+/// the default body runs for a carrier nobody knows and answers `1`.
 #[test]
 fn an_unbound_carrier_answers_nothing_rather_than_the_default() {
     let ns = "test.wi1037.unbound";

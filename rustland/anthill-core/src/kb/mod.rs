@@ -7831,6 +7831,27 @@ impl KnowledgeBase {
         }
     }
 
+    /// Does `view` — on any carrier — hold a variable `pred` answers for? Walked as
+    /// [`Self::collect_vars`] walks, and stops at the first: a yes-or-no question about a
+    /// value's variables allocates no list of them.
+    pub(crate) fn mentions_var<V: term_view::TermView>(
+        &self,
+        view: &V,
+        pred: &dyn Fn(Var) -> bool,
+    ) -> bool {
+        if let Some(v) = view.index_var(self) {
+            return pred(v);
+        }
+        self.structural_child_views(view)
+            .iter()
+            .any(|child| self.mentions_var(child, pred))
+    }
+
+    /// Does `view` — on any carrier — hold a `Var::DeBruijn` anywhere in it?
+    pub(crate) fn mentions_debruijn<V: term_view::TermView>(&self, view: &V) -> bool {
+        self.mentions_var(view, &|v| matches!(v, Var::DeBruijn(_)))
+    }
+
     /// WI-714 — whether `tid` contains ANY `Var::DeBruijn` (recursively). A rule
     /// head slot that is a bare `DeBruijn` is a free column; a slot that is a
     /// COMPOUND term MENTIONING a DeBruijn (`some(?x)`) cannot be spliced verbatim
@@ -7839,22 +7860,7 @@ impl KnowledgeBase {
     /// `build_relation_value` / `relation_clause_columns` reject it loudly. A fully
     /// GROUND compound (`pair(1, 2)`, no DeBruijn) is a legitimate filter and passes.
     pub(crate) fn term_mentions_debruijn(&self, tid: TermId) -> bool {
-        match self.get_term(tid) {
-            Term::Var(Var::DeBruijn(_)) => true,
-            Term::Fn {
-                pos_args,
-                named_args,
-                ..
-            } => {
-                let children: SmallVec<[TermId; 8]> = pos_args
-                    .iter()
-                    .copied()
-                    .chain(named_args.iter().map(|(_, a)| *a))
-                    .collect();
-                children.iter().any(|&a| self.term_mentions_debruijn(a))
-            }
-            _ => false,
-        }
+        self.mentions_debruijn(&tid)
     }
 
     /// The named args of a fact head when it is a ground `Term::Fn`, else `None`

@@ -63,3 +63,9 @@ for the denoted spine, and add `Var(VarId)` for a transient inference variable. 
 mint is `TypeChild::Var(kb.fresh_var(fresh))` with nothing interned. See DTY3B for what
 must be measured first — the `_ =>` arms, where a new variant goes wrong silently.
 
+## Changes
+
+### 2026-10-21T08:00:10Z — feedback — claude
+
+MEASURED 2026-10-21 (claude, while fixing SHED7's typed-head growth): a GOAL ARGUMENT holding a fresh variable interns at head matching — `q2(?h) :- same2([?h], [red()])` adds 2 terms per call beyond the query's own, typed head or not (`node_occurrence::value_to_term` from `with_fresh_vars`, converting the argument to a `TermId` for the match). User, 2026-10-21: the same as this ticket — a slot that takes only an interned term interns a fresh variable; no separate ticket.
+

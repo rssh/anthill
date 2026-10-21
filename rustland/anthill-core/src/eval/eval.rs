@@ -1086,7 +1086,7 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Forcing);
-            let v = (builtin)(self, &[])?;
+            let v = self.call_host(sym, &builtin, &[])?;
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
             return Ok(v);
@@ -2269,6 +2269,11 @@ impl Interpreter {
                     // from a frame that was never given requirements at all. That is the
                     // distinction that located three of this ticket's four missed
                     // producers.
+                    // 068 §2: with the caller's unknowns in the arguments, an absent slot
+                    // is one their types would have decided — a read that waits.
+                    if !self.bridge_unknowns.is_empty() {
+                        return self.reads_unknown("a requirement its arguments' types decide");
+                    }
                     let bound: Vec<&str> = top
                         .requirements
                         .iter()
@@ -2664,7 +2669,12 @@ impl Interpreter {
                 .stack
                 .top()
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
-            find_local(&self.kb, &top.locals, &target_name).and_then(|v| match v {
+            let local = find_local(&self.kb, &top.locals, &target_name);
+            // 068 §2: a call THROUGH a local that holds one of the caller's unknowns reads it.
+            if local.is_some_and(|v| self.is_unknown(v)) {
+                return Err(self.reads_unknown("a call through a function value"));
+            }
+            local.and_then(|v| match v {
                 Value::Closure(_) | Value::OpRef { .. } => Some(v.clone()),
                 // WI-20260903-FC2X4 — …AND A LAMBDA THE RESOLVER PROVED, which rides on
                 // the OCCURRENCE carrier. See [`Self::closure_of_applied_lambda_node`].
@@ -2839,7 +2849,7 @@ impl Interpreter {
                 find_requirement(&requirements, self.fields.req_self).cloned();
             let result = if self.profiling {
                 let t0 = std::time::Instant::now();
-                let r = (builtin)(self, &arg_values);
+                let r = self.call_host(target, &builtin, &arg_values);
                 let dt = t0.elapsed().as_nanos();
                 BUILTIN_PROF.with(|p| {
                     let mut m = p.borrow_mut();
@@ -2849,7 +2859,7 @@ impl Interpreter {
                 });
                 r
             } else {
-                (builtin)(self, &arg_values)
+                self.call_host(target, &builtin, &arg_values)
             };
             self.builtin_dispatch_dict = saved_dict;
             return Ok(StepOutcome::Deliver(result?));
@@ -2885,7 +2895,7 @@ impl Interpreter {
                     // must not leave a ring entry for a call that never happened.
                     if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
                         self.note_dispatch(impl_target);
-                        let result = (builtin)(self, &arg_values)?;
+                        let result = self.call_host(impl_target, &builtin, &arg_values)?;
                         return Ok(StepOutcome::Deliver(result));
                     }
                     if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target)
@@ -2944,7 +2954,7 @@ impl Interpreter {
                 // was written against.
                 if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
                     self.note_dispatch(impl_target);
-                    let result = (builtin)(self, &arg_values)?;
+                    let result = self.call_host(impl_target, &builtin, &arg_values)?;
                     return Ok(StepOutcome::Deliver(result));
                 }
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
@@ -2975,7 +2985,7 @@ impl Interpreter {
                 let saved_dict = self.builtin_dispatch_dict.take();
                 self.builtin_dispatch_dict =
                     find_requirement(&requirements, self.fields.req_self).cloned();
-                let result = (builtin)(self, &arg_values);
+                let result = self.call_host(impl_target, &builtin, &arg_values);
                 self.builtin_dispatch_dict = saved_dict;
                 return Ok(StepOutcome::Deliver(result?));
             }
@@ -4123,7 +4133,7 @@ impl Interpreter {
             (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in)
         });
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
-        let bindings = match match_pattern(self, &param_pattern, &arg) {
+        let bindings = match self.match_or_wait(&param_pattern, &arg, "a lambda parameter")? {
             Some(b) => b,
             // WI-610: route the match failure through the Error handler so an
             // installed `Error[MatchFailed]` handler catches it; occurrence is
@@ -4418,6 +4428,24 @@ impl Interpreter {
         crate::kb::typing::sort_sym_compatible(&self.kb, got, declared)
     }
 
+    /// [`match_pattern`] with 068 §2's third answer: a pattern that would TEST one of the
+    /// caller's unknowns ([`Interpreter::bridge_unknowns`]) neither matches nor fails — the
+    /// evaluation suspends, and the resolver asks again once the variable is bound. Read
+    /// as a failure, `match` went on to the next arm and `let` raised `match_failed`.
+    fn match_or_wait(
+        &self,
+        pattern: &Rc<NodeOccurrence>,
+        value: &Value,
+        what: &str,
+    ) -> Result<Option<super::pattern::Bindings>, EvalError> {
+        self.pattern_read_unknown.set(false);
+        match match_pattern(self, pattern, value) {
+            Some(b) => Ok(Some(b)),
+            None if self.pattern_read_unknown.get() => Err(self.reads_unknown(what)),
+            None => Ok(None),
+        }
+    }
+
     /// WI-20260907-0QV5A — the ARM SCAN of a `match`, shared by the two states
     /// that enter it: [`AwaitState::MatchDispatch`], when the scrutinee has just
     /// been computed, and [`AwaitState::MatchGuard`], when a guarded arm's guard
@@ -4455,7 +4483,9 @@ impl Interpreter {
                     continue;
                 }
             }
-            let Some(bindings) = match_pattern(self, &branches[i].pattern, &scrutinee) else {
+            let Some(bindings) =
+                self.match_or_wait(&branches[i].pattern, &scrutinee, "a `match` arm")?
+            else {
                 continue;
             };
             // The tail is split only on the GUARDED path, which is the only one
@@ -4559,6 +4589,9 @@ impl Interpreter {
                     let chosen = match cond {
                         Some(true) => then_branch,
                         Some(false) => else_branch,
+                        None if self.is_unknown(&v) => {
+                            return Err(self.reads_unknown("an `if` condition"))
+                        }
                         None => {
                             return Err(EvalError::TypeMismatch {
                                 expected: "Bool",
@@ -4578,7 +4611,7 @@ impl Interpreter {
                     // don't hold a `&self` while we mutate `top.locals`.
                     // WI-610: a `let` pattern that doesn't match routes through
                     // the Error handler (occurrence = the let pattern).
-                    let bindings = match match_pattern(self, &pattern, &v) {
+                    let bindings = match self.match_or_wait(&pattern, &v, "a `let` pattern")? {
                         Some(b) => b,
                         None => return Err(self.raise_match_failed(pattern.clone(), v.clone())),
                     };
@@ -4640,6 +4673,9 @@ impl Interpreter {
                         // (`node_occurrence.rs`'s `BuildFrame::Match`), and a rule
                         // body lowered by `convert_term` never visits the
                         // operation-expression typing path at all.
+                        None if self.is_unknown(&v) => {
+                            return Err(self.reads_unknown("a `match` guard"))
+                        }
                         None => {
                             return Err(EvalError::TypeMismatch {
                                 expected: "Bool",
@@ -5426,6 +5462,43 @@ pub(crate) fn spec_op_dispatch_by_value(
             },
         },
     }
+}
+
+/// Does the receiver choice of [`spec_call_runtime_carrier`] read an argument `unknown`
+/// answers for? The same choice, asked with a carrier reader that notes the read.
+pub(crate) fn spec_call_reads(
+    kb: &KnowledgeBase,
+    spec_op: Symbol,
+    arg_values: &[Value],
+    unknown: &dyn Fn(&Value) -> bool,
+) -> bool {
+    use crate::kb::typing::{
+        carrier_param_receiver_for_values, self_receiver_param_index, spec_op_parent_sort,
+    };
+    let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else {
+        return false;
+    };
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, spec_op) else {
+        return false;
+    };
+    let read = std::cell::Cell::new(false);
+    let carrier_of = |i: usize| -> Option<Symbol> {
+        let v = arg_values.get(i)?;
+        if unknown(v) {
+            read.set(true);
+            return None;
+        }
+        runtime_carrier_sort(kb, v)
+    };
+    match self_receiver_param_index(kb, &rec.params, spec_sort) {
+        Some(idx) => {
+            carrier_of(idx);
+        }
+        None => {
+            carrier_param_receiver_for_values(kb, &rec.params, spec_sort, &carrier_of);
+        }
+    }
+    read.get()
 }
 
 /// WI-350/WI-444 — the `(spec_sort, carrier_sort)` a spec-op call names at

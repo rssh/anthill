@@ -121,9 +121,12 @@ Element]`, reads a collection and builds none.)
    `anthill.prelude.PersistentCollection` (`collection.anthill`: `empty() -> C`,
    `insert(c: C, elem: Element) -> C`), but its two members are OPERATIONS, and a pattern must also
    take a value apart, which a function does not.
-2. **Free cells and labelling** (§4, 2–3): holding `fill` back until the constraints have run, and
-   where labelling runs — the drain, or a written goal. The resolver can delay a goal on a variable,
-   not attach one to run later.
+2. ~~**Free cells and labelling** (§4, 2–3)~~ — ANSWERED (user, 2026-10-21, WI-20260925-SHED7):
+   the cells stay free while the constraints run; labelling is the typed head's `fill`, which runs
+   after the body; and a constraint waiting on a cell is woken as soon as the `fill` binds it
+   (068 §2.2), so it prunes the `fill` at that binding. A solver that reads its cells through
+   `Stream.splitFirst` finishes in every mode at about the cost of the one that writes the list
+   pattern, because a call runs until it reads an unbound variable (068 §2).
 3. **The monoid's home, and `combine` at run time** (§2): the stdlib has no `Monoid` spec
    (`algebra.anthill` has `Ring` and `VectorSpace`) — `Fillable` declares `combine` and `empty`
    itself, or a `Monoid` spec is introduced and `Fillable` provides it; and how a combined
