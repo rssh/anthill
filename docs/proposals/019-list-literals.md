@@ -4,6 +4,13 @@
 **Depends on:** None (complementary to Proposal 020)
 **Affects:** Kernel Language Specification §4 (Terms), Grammar, Parse Converter
 
+> **Update (2026-10-21):** both translations this proposal sketched are withdrawn:
+> `[…]` is never built as another collection (`Collection.add`/`empty`), and a literal
+> in a pattern is never read through `Iteration.split`. It is the `List` literal in
+> every position, and a position that declares another collection refuses it as a
+> type mismatch (kernel-language.md §4.6). The `Collection`/`Iteration` desugaring
+> below is design history.
+
 > **Update (WI-1096):** "the typing process chooses the target from the expected
 > type" holds where a type is declared — and a position that declares NONE takes
 > `List`. The loader lowers `[…]` to the `cons`/`nil` spine unless a declared type
@@ -18,7 +25,7 @@
 > explicit `cons(?h, ?t)` constructor. A proper first-class, type-directed
 > collection *deconstruction* syntax (`[h | t]` as a pattern desugaring to
 > `Iteration.split` for any collection — the design this proposal sketched) is
-> tracked separately as **WI-561** (PreOpened). The `[h | t]` / `tail:` text
+> tracked separately as **WI-561**, rejected on 2026-10-21 (the update above). The `[h | t]` / `tail:` text
 > in the sections below is retained as design history, not current behavior.
 
 ## Motivation

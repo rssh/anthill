@@ -316,6 +316,8 @@ Both reduce to SLD resolution against the KB. There is no separate inference pas
   - What happens when no expected type is available (default to `List`? error?)
   - How effects propagate through literal desugaring (the `Effect` parameter of Collection/Iteration)
 
+  *Answered (2026-10-21):* `[…]` is the `List` literal in every position. It is never built as another collection and never read through `Iteration.split`; a position that declares another collection refuses it as a type mismatch, and a position with no expected type takes `List` (kernel-language.md §4.6).
+
 ### OQ4. Sort resolution for operations (partially resolved)
 
 Operation dispatch is a primary driver for typing. When an unresolved name `map(x, f)` appears, the system generates a constraint query:
