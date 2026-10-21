@@ -113,7 +113,6 @@ fn s7yf5_declared_callers_execute_effects() {
     ] {
         for provision in ["{BE}", "BE"] {
             let mut interp = interp_for(&cell_program(provision, "Modify[k]", body));
-            crate::common::register_modify_handler(&mut interp);
             let expected = if body.contains("twice") { 1010 } else { 505 };
             let result = interp.call("s7yf5.main", &[]);
             assert!(
@@ -175,7 +174,6 @@ end
 "#
     );
     let mut interp = interp_for(&src);
-    crate::common::register_modify_handler(&mut interp);
     let result = interp.call("s7yf5.main", &[]);
     assert!(matches!(result, Ok(Value::Int(101020))), "{result:?}");
 }

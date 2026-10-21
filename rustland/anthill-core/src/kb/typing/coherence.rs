@@ -1777,8 +1777,8 @@ fn provider_coherence_groups_with(
         // KIND 1 — INSTANCE FACT: the provision itself BINDS an op, and that
         // op-valued binding IS the dictionary entry. A type-only provision
         // (`provides Stream[T = X]`) supplies no dictionary and never participates
-        // as a fact, so existing `provides` / type-only `fact`s (e.g. `fact
-        // ModifyRuntime[T = Cell, V = V]`) are never over-rejected. Its dispatch
+        // as a fact, so existing `provides` / type-only `fact`s (e.g. Cell's
+        // `provides Modifiable[T = Self]`) are never over-rejected. Its dispatch
         // carrier is the provision's own `sort_ref`: the loader DERIVES a
         // namespace-level `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier
         // binding, so `sort_ref` already IS the carrier.

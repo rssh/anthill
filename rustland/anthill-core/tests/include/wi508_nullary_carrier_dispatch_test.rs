@@ -14,7 +14,7 @@
 //! A `requires`-covered call (a generic consumer over `requires
 //! MutableCollection`) keeps taking the existing Deferred / dict-threaded path.
 
-use crate::common::{interp_for, register_modify_handler};
+use crate::common::interp_for;
 use anthill_core::kb::term_view::TermView;
 
 // ── Acceptance: the stdlib MutableCollection.new() pinned by the return type ──
@@ -34,7 +34,6 @@ end
 #[test]
 fn wi508_abstract_new_from_return_type() {
     let mut interp = interp_for(SRC_STDLIB);
-    register_modify_handler(&mut interp);
     let s = interp.call("test.wi508.freshBare", &[]).expect("freshBare");
     assert_eq!(
         interp
@@ -174,7 +173,6 @@ fn wi508_concrete_new_element_said_at_the_name() {
         ("test.wi508g.recv", "let x = MutableStack[T = Int64].new()"),
     ] {
         let mut interp = interp_for(&concrete_program(ns, bound));
-        register_modify_handler(&mut interp);
         let r = interp
             .call(&format!("{ns}.useNew"), &[])
             .unwrap_or_else(|e| panic!("{bound}: {e:?}"));

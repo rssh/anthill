@@ -3,9 +3,9 @@
 - id: WI-20260821-ZW940-arity-should-distinguish
 - created: 2026-08-21T15:24:24Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T15:24:24Z
+- status: Rejected
+- status_agent: claude
+- status_at: 2026-10-20T19:30:34Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -74,6 +74,10 @@ dispatch -- drive each and assert its value, with a control showing a genuine du
 green as the control that arity-keyed selection already works. cargo-test green via
 rustland/scripts/test.sh.
 
+## Reason
+
+Decided 2026-10-20 (user): arity does not distinguish operations; identity is (scope, name) and the duplicate-operation refusal stays. Rejected on two measured grounds -- the expected type cannot pick an arity (Function[A, B, E] states none, §4.4), and an arity + 1 goal is both one operation's relational view and the other's Bool goal -- and because proposal 069's parameter defaults cover the optional-argument case while conflicting with overloading. The rule side is WI-20260821-6WVJB: one arity per predicate. No code change.
+
 ## Changes
 
 ### 2026-08-21T15:35:34Z — feedback — user
@@ -125,4 +129,25 @@ of identity, the `rule p/2` declaration spelling is dead — it would write down
 that identifies nothing — and so is the type-ascription spelling, which 060 §2 has already
 given a different meaning (a `domain` goal that ENUMERATES over T). What is left is a
 keyword or a modifier.
+
+### 2026-10-20T19:30:27Z — feedback — claude
+
+DECIDED (user, 2026-10-20): arity is NOT part of an operation's identity. The identity stays (scope, name); WI-1049's refusal of a second same-named operation in one scope stays as it is. The rule side follows the operation's answer in WI-20260821-6WVJB (one arity per predicate), as proposal 061 §"One arity per predicate" already records.
+
+WHY, compared on what each option adds to the language:
+ 1. Arity in identity, resolved by type in value position: no syntax, but a new expected-type selection rule, and every symbol-keyed map re-keyed (dispatch, requirement dictionary, provides map, 059 R4 capture, SymbolTable::define).
+ 2. Arity in identity, with an f/2 citation form at use sites: the same re-keying, plus grammar in tree-sitter and fastparse, plus a definition of /n under named arguments and ...args capture.
+ 3. One name, one arity, for operations and predicates alike: no syntax, no resolution rule, no re-keying. One check at clause indexing.
+
+Two facts rule out 1 and 2 independently of their size:
+ * The expected type does not carry arity. §4.4: a Function[A, B, E] states no arity, so in apply1(f, 3) against a Function slot the type cannot choose f/1 from f/2 -- the stdlib's usual callback type is exactly the case type-directed selection would have to serve.
+ * The ambiguity reaches rule bodies, not only value positions. With
+     operation f(x: Int64) -> Int64 = x
+     operation f(x: Int64, y: Int64) -> Bool = true
+     rule q(?r) :- f(1, ?r)
+   the goal f(1, ?r) is both f/1's functional-relation view at arity + 1 (WI-938) and f/2's Bool goal at its declared arity (WI-583). Options 1 and 2 would each need a tie-break for it.
+
+AND PROPOSAL 069 (draft, WI-20261003-QV5W5) settles the use case that opened this ticket: "an operation with an optional extra argument" is a parameter default, not a second declaration. It also conflicts with arity overloading outright -- with f(x) and f(x, y = 0), the call f(1) matches both (Scala forbids defaults on more than one overloaded alternative for this reason). The remaining case, a curried beside an uncurried spelling, is renamed.
+
+This ticket's ACCEPTANCE (f(x) beside f(x, y) loads, both dispatch) is the opposite of the decision, so it closes with no code change. WI-20260821-6WVJB no longer depends on it.
 

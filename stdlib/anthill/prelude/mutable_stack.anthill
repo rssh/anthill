@@ -9,8 +9,9 @@
 -- carrier (a bare `Cell[List[T]]` cannot: a provision's carrier is its
 -- enclosing sort, and Cell is generic).
 --
--- Mutation rides the existing Cell arena + Modify handler (proposal 037
--- §"Cell[V]"; docs/design/cell-runtime.md). The bodies FIELD-PROJECT the
+-- Mutation rides `Cell`'s operations, so each write reaches the implementation
+-- the backing cell is bound to (proposal 037 §5.1; docs/design/cell-runtime.md).
+-- The bodies FIELD-PROJECT the
 -- backing cell directly (`Cell.set(s.rep, …)` / `Cell.get(s.rep)`): the
 -- declared `Modify[s]` covers the incurred `Modify[s.rep]` (WI-506), and the
 -- desugared `field_access` node round-trips a re-type-check (WI-509), so a

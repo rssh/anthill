@@ -202,10 +202,8 @@ pub enum Value {
     /// Mutable typed cell — arena-refcounted handle into the
     /// per-interpreter CellArena. Identity is the slot index (allocation-
     /// time uid); each `Cell.new` returns a fresh handle. The held value
-    /// is mutated in place via `Cell.set`. Cycles are inexpressible:
-    /// the typer's `may_contain_cell` rule rejects `Cell[T]` whenever T
-    /// transitively contains Cell, so the runtime never has to detect
-    /// cycles. See proposal 037 §`Cell[V]` + `docs/design/cell-runtime.md`.
+    /// is mutated in place via `Cell.set`. See proposal 037 §2 +
+    /// `docs/design/cell-runtime.md`.
     Cell(CellHandle),
     /// WI-SPGBP — a first-class `anthill.reflect.KB` value: an owning reference to one
     /// DISCARDABLE LAYER over the interpreter's knowledge base, minted by

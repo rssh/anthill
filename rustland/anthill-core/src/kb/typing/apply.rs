@@ -389,11 +389,10 @@ pub(super) fn check_apply_iter(
         // inference-expanded list and `written_params` its clone, so ONE index serves both.
         let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
         let self_recv_spec = self_receiver_spec_sort(kb, &op, fn_sym);
-        // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` /
-        // `ModifyRuntime.get(target: T)` shape — receiver typed by the spec's own carrier
-        // param, not the spec sort) so the LATE ground-value bind below can reuse its
-        // `view` without re-scanning the provider facts. Only when there is no
-        // self-receiver (the two shapes are mutually exclusive).
+        // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` shape —
+        // receiver typed by the spec's own carrier param, not the spec sort) so the LATE
+        // ground-value bind below can reuse its `view` without re-scanning the provider
+        // facts. Only when there is no self-receiver (the two shapes are mutually exclusive).
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
@@ -667,7 +666,7 @@ pub(super) fn check_apply_iter(
         // classifies it ([`ArgPlaces`]) — a VARIABLE (read by the return-type and value-in-type
         // re-keys too), a field path's or a nullary constructor's HEAD (the EFFECT re-key only:
         // `Modify[c.rep]` is covered by `Modify[c]`, proposal 037), or NO PLACE, which the effect
-        // re-key skips and [`unrekeyed_modify_argument`] judges.
+        // re-key skips and [`placeless_modify`] judges.
         let mut places = ArgPlaces::default();
         // WI-376/398: only ops whose signature actually carries a projection pay for the
         // per-call elimination — the >99% that don't skip the param_to_arg_type clones
@@ -754,8 +753,8 @@ pub(super) fn check_apply_iter(
                 // WI-506 / WI-20260823-4GBQV: a variable re-keys everything; a field path's
                 // head or a nullary-constructor place only the effects; a placeless argument
                 // nothing, and the EFFECT re-key must not mint a label the DECLARATION cannot
-                // spell. [`ArgPlaces`] decides.
-                places.record(kb, *param_sym, arg_occ);
+                // spell. [`ArgPlaces`] decides, of the argument as the call's typing left it.
+                places.record(kb, *param_sym, typed_arg(arg_occ, pos_results[i].as_ref().ok()));
             }
             if let Ok(ref arg_result) = pos_results[i] {
                 // WI-341 Stage A: the param type is `Value` (`Value::TermView`),
@@ -829,7 +828,7 @@ pub(super) fn check_apply_iter(
                 match_named_arg_param(kb, &op.params, *arg_name).map(|(s, t)| (*s, t.clone()));
             if let Some((param_sym, _)) = &matched {
                 // See the positional loop.
-                places.record(kb, *param_sym, arg_occ);
+                places.record(kb, *param_sym, typed_arg(arg_occ, named_results[i].as_ref().ok()));
             }
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some((param_sym, param_type)) = &matched {
@@ -2152,7 +2151,15 @@ pub(super) fn check_apply_iter(
             HashMap::new()
         };
         let mut substituted_op_effects: Vec<Value> = Vec::new();
-        for e in &pre_substituted {
+        // WI-20260823-4GBQV: the first `Modify` this call incurs over a parameter whose
+        // argument names no place ([`placeless_modify`]) — read off the callee's OWN atom
+        // (`proj_effects`, before the re-key) and only where the guard discharge below kept it.
+        let mut leak: Option<PlacelessModify> = None;
+        let keys = if places.placeless.is_empty() { None } else { ModifyKeys::new(kb) };
+        // One element per declared atom, in order: the pairing below reads `pre_substituted`
+        // as the re-keyed twin of `proj_effects`.
+        debug_assert_eq!(pre_substituted.len(), proj_effects.len());
+        for (e, own) in pre_substituted.iter().zip(&proj_effects) {
             // Deep-walk to propagate arg-unification bindings into nested effect
             // positions, then `walk_value_to_resolved` to SURFACE a top-level var
             // bound to a `Value::Node` — the term-deep walk stops at non-`Term`
@@ -2194,7 +2201,7 @@ pub(super) fn check_apply_iter(
             // census that settles it, and the wrapper is total accordingly). The
             // pre-CTD6D `.flatten()` here declassified any other carrier back to a
             // plain atom, silently undoing this very flatten.
-            push_effect_with_guard_discharge(
+            let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
                 &subst,
@@ -2203,46 +2210,18 @@ pub(super) fn check_apply_iter(
                 walked,
                 &mut substituted_op_effects,
             );
-        }
-        // WI-20260823-4GBQV: a `Modify` that STILL names one of the CALLEE's own
-        // parameters got no argument to be re-keyed onto — refuse here, against the
-        // caller's own expression, rather than letting the callee's parameter name
-        // travel into the caller's row. AFTER the guard discharge above deliberately:
-        // an atom the guard drops was never incurred, so refusing it earlier would
-        // refuse a correct program (measured — `touch(mk(), false)` under a refuted
-        // `{Modify[c] :- eq(flag, true)}` loads clean, and did so under the earlier
-        // placement only because that one skipped guarded atoms outright).
-        if !places.placeless.is_empty() {
-            if let Some(err) = unrekeyed_modify_argument(
-                kb,
-                &op,
-                fn_sym,
-                &substituted_op_effects,
-                &places.placeless,
-                span,
-            ) {
-                return Err(err);
+            if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
+                leak = placeless_modify(kb, keys, &op.params, own, &places.placeless);
             }
         }
-        // A `Modify` fires only on a place of a modifiable type (proposal 037 Rule 8), and the
-        // standard handler's `ModifyRuntime.get` and `set` read and write the very place they
-        // are handed. At a place whose type admits none the arising `Modify[p]` is dropped as
-        // vacuous and the handler wrote the place all the same (MEASURED: `set(p, 5)` over
-        // `p: Plain`, a sort with no `Modifiable`, loaded, and a nullary one was written in
-        // silence), so the call is refused, as a written `effects Modify[p]` there is. An
-        // argument of `set` that names no place at all is the refusal above's.
-        if let Some(refusal) = modify_runtime_at_unmodifiable_place(
-            kb,
-            fn_sym,
-            &op.params,
-            &pos_call_params,
-            pos_results,
-            named_args,
-            named_results,
-            &places.placeless,
-            span,
-        ) {
-            return Err(refusal);
+        // WI-20260823-4GBQV: a `Modify` over a parameter whose argument names no place has
+        // nothing to be re-keyed onto — refuse here, against the caller's own expression,
+        // rather than letting the callee's parameter name travel into the caller's row.
+        // AFTER the guard discharge deliberately: an atom the guard drops was never incurred,
+        // so refusing it earlier would refuse a correct program (measured — `touch(mk(),
+        // false)` under a refuted `{Modify[c] :- eq(flag, true)}` loads clean).
+        if let Some(leak) = leak {
+            return Err(placeless_modify_refusal(kb, fn_sym, &leak, span));
         }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
@@ -5592,67 +5571,6 @@ fn defaulted_call_target(
     let own = impl_parent_of_op(kb, target).is_some_and(|owner| same_sort_canonical(kb, owner, provider));
     (own && op_is_interpretable(kb, target) && dictionary_covers_target(kb, spec_sort, provider, target))
         .then_some(target)
-}
-
-/// `ModifyRuntime.get` or `.set` handed a place that is no resource: they read and write the
-/// very place they are handed, so the place must itself be of a modifiable type
-/// ([`crate::kb::region::type_is_modifiable_place`]) — a type that only holds one (an empty
-/// `List[T = Cell]`, whose every `nil` is one slot of the standard handler's) is refused as a
-/// type that holds nothing is. A type parameter is accepted: a later call instantiates it.
-#[allow(clippy::too_many_arguments)]
-fn modify_runtime_at_unmodifiable_place(
-    kb: &KnowledgeBase,
-    fn_sym: Symbol,
-    params: &[(Symbol, Value)],
-    pos_call_params: &[Option<usize>],
-    pos_results: &[Result<TypeResult, TypeError>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    named_results: &[Result<TypeResult, TypeError>],
-    placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
-    span: Option<Span>,
-) -> Option<TypeError> {
-    // By the qualified name, which is the canonical symbol's: no lookup per call.
-    let is_set = match kb.qualified_name_of(fn_sym) {
-        "anthill.prelude.ModifyRuntime.set" => true,
-        "anthill.prelude.ModifyRuntime.get" => false,
-        _ => return None,
-    };
-    // The place is the operation's first parameter, `target`.
-    let (target, _) = params.first()?;
-    // A place written inline (`set((c, 2), 5)`, a literal) is refused for `set`, whose row
-    // writes `Modify[target]`, by the refusal of an argument that names no place
-    // (`unrekeyed_modify_argument`). `get` declares no `Modify`, so nothing else reads its
-    // inline place: it is judged here, as a named one is.
-    if is_set && placeless.contains_key(target) {
-        return None;
-    }
-    let (_, _, ty) =
-        supplied_arg_pairs(kb, params, pos_call_params, pos_results, named_args, named_results)
-            .into_iter()
-            .find(|(p, _, _)| p == target)?;
-    let regions = remembered_region_sorts(kb);
-    if crate::kb::region::type_is_modifiable_place(kb, &ty, &regions) {
-        return None;
-    }
-    Some(TypeError::Other {
-        site: TypeError::here(),
-        span,
-        context: TypeErrorContext::OperationArgument {
-            op_name: fn_sym,
-            param: *target,
-        },
-        expected: "a place of a modifiable type: a `Cell`, a sort that provides `Modifiable` or \
-                   `provides` a sort that does, or a type parameter (proposal 037 Rule 8, \
-                   kernel-language.md §5.6)"
-            .to_string(),
-        actual: format!(
-            "a place of type `{}`, which is no place the `Modify` handler keeps: `get` and `set` \
-             read and write the place itself, not what it holds. Make the place a `Cell`; a sort \
-             of the program's own whose constructors take no fields may instead declare \
-             `provides Modifiable[T = Self]`",
-            type_display_name_value(kb, &ty)
-        ),
-    })
 }
 
 /// Each argument a call supplies that was typed, with the parameter it fills: `(parameter,

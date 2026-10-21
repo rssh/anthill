@@ -16,9 +16,9 @@
 //!
 //! Admitting a carrier OBLIGES its paired readers (WI-1016's rule at
 //! `eval/pattern.rs`): `constructor_sub_values` must destructure it, or
-//! `MatchDispatch`'s pre-filter promises an arm that then declines; and
-//! `effects::detect_cycle` must walk it, or `Modify`'s guard reports no cycle for a
-//! key `resource_key` accepted. Both are driven here.
+//! `MatchDispatch`'s pre-filter promises an arm that then declines. That is driven
+//! here. The other paired reader, the standard `Modify` handler's cycle walk, was
+//! retired with the handler (WI-200), and its two rows with it.
 //!
 //! The whole answer table for `value_functor` lives in
 //! `wi1024_value_functor_test`; this file drives what WI-1025 CHANGED.
@@ -144,7 +144,7 @@ fn facts_of(interp: &mut Interpreter, sort: Value) -> Result<Value, String> {
         .map_err(|e| format!("{e:?}"))
 }
 
-// ── paired reader 1: the destructure must keep the pre-filter's promise ─────
+// ── the paired reader: the destructure must keep the pre-filter's promise ────
 
 /// `case Empty()` matches a nullary constructor on ALL THREE carriers of its name.
 ///
@@ -231,146 +231,4 @@ fn constructor_pattern(interp: &mut Interpreter, ctor: Symbol) -> Rc<NodeOccurre
         span(),
         None,
     )
-}
-
-// ── paired reader 2: the cycle guard must see through the same carrier ──────
-
-/// `Modify[<sym>].set(<the same sym, as an occurrence>)` is a cycle.
-///
-/// `resource_key` reads its key through `value_functor`, so once that accepts an
-/// occurrence, `detect_cycle`'s `_ => Ok(())` would report NO cycle for the one
-/// shape the guard exists to catch — the same hole `Value::SymbolRef` had before
-/// WI-1016 closed it.
-///
-/// CONTROL, MEASURED by dropping the `Value::Node` arm from `detect_cycle`: the
-/// direct row returns `Ok(Unit)` — a silent accept of a self-reference — and the
-/// nested row does too.
-#[test]
-fn the_cycle_guard_sees_a_self_reference_through_an_occurrence() {
-    let mut interp = crate::common::interp_for(SRC);
-    crate::common::register_modify_handler(&mut interp);
-    let sym = box_sym(&mut interp);
-    // The RESOURCE, on the carrier `resource_key` has always accepted.
-    let resource = Value::SymbolRef(sym);
-    let set = interp.kb_mut().intern("set");
-
-    let set_to = |interp: &mut Interpreter, v: Value| {
-        interp.invoke_effect_handler("anthill.prelude.Modify", set, &[resource.clone(), v])
-    };
-
-    // Direct: the new value IS the resource, spelled as an occurrence.
-    let direct = Value::Node(NodeOccurrence::new_expr(Expr::Ref(sym), span(), None));
-    // Nested: the reference is a CHILD, so the walk has to descend — the second
-    // half of the `Entity` arm, on this carrier.
-    let nested = Value::Node(NodeOccurrence::new_expr(
-        Expr::Apply {
-            recv_type: None,
-            functor: sym,
-            pos_args: vec![NodeOccurrence::new_expr(Expr::Ref(sym), span(), None)],
-            named_args: vec![],
-            type_args: vec![],
-        },
-        span(),
-        None,
-    ));
-    // Wrapped: an occurrence carrying the value — the carrier-algebra cancellation
-    // `Value::carried` performs, driven through a reader that would otherwise see
-    // `Expr::Spliced` and fall through.
-    let wrapped = Value::Node(NodeOccurrence::new_expr(
-        Expr::Spliced(Value::SymbolRef(sym)),
-        span(),
-        None,
-    ));
-
-    // Not merely `is_err()`: the verdict must be the CYCLE, or a row could pass on
-    // an unrelated failure.
-    let wrong: Vec<(&str, String)> = [("direct", direct), ("nested", nested), ("wrapped", wrapped)]
-        .into_iter()
-        .map(|(name, v)| (name, format!("{:?}", set_to(&mut interp, v))))
-        .filter(|(_, got)| !got.contains("CyclicReference"))
-        .collect();
-    assert!(
-        wrong.is_empty(),
-        "a self-reference through an occurrence is a cycle; got {wrong:?}",
-    );
-
-    // COUNTER-CONTROL, and it earned its place: the first draft of this test
-    // called a non-existent operation, so all the rows above "passed" on
-    // `UnknownOperation`. An unrelated occurrence value must still be ACCEPTED, or
-    // the rows measure a blanket refusal of the carrier rather than a cycle.
-    let unrelated = Value::Node(NodeOccurrence::new_expr(
-        Expr::Const(anthill_core::kb::term::Literal::Int(1)),
-        span(),
-        None,
-    ));
-    let got = set_to(&mut interp, unrelated);
-    assert!(
-        got.is_ok(),
-        "an unrelated occurrence value is not a cycle: {got:?}"
-    );
-}
-
-/// The child walk must not be gated on the HEAD — the sibling `Entity` / `Tuple`
-/// arms walk unconditionally and this one has to as well.
-///
-/// A `[…]` list-literal occurrence reads as its `ListLiteral(e…)` twin only when
-/// the reflect constructors are loaded; without them `occ_head` answers `Opaque`
-/// while `occ_pos_child` still hands back the elements. A first version of this arm
-/// collected children as `match value.head(kb) { Functor{pos_arity} => (0..pos_arity)…,
-/// _ => Vec::new() }` and so dropped every one of them — reinstating the silent
-/// `_ => Ok(())` the arm was added to remove, one level in.
-///
-/// CONTROL, MEASURED by restoring that head-gated collection: `Ok(Unit)` — the
-/// self-reference inside the literal is silently stored.
-#[test]
-fn the_cycle_walk_descends_a_head_that_presents_no_shape() {
-    let mut interp = crate::common::interp_for(SRC);
-    crate::common::register_modify_handler(&mut interp);
-    let sym = box_sym(&mut interp);
-    let v_param = interp.kb_mut().intern("V");
-    let set = interp.kb_mut().intern("set");
-
-    // A parameterized type whose BASE is itself an occurrence:
-    // `parameterized_base_functor` answers `None` for a `TypeChild::Node` base, so
-    // the head is `Opaque` — while the BINDINGS are still named children, and one
-    // of them references the resource.
-    let base = NodeOccurrence::new_type(
-        TypeNode::Denoted {
-            value: NodeOccurrence::new_expr(Expr::Ref(sym), span(), None),
-        },
-        span(),
-        None,
-    );
-    let binding = NodeOccurrence::new_expr(Expr::Ref(sym), span(), None);
-    let opaque_headed = Value::Node(NodeOccurrence::new_type(
-        TypeNode::Parameterized {
-            base: TypeChild::Node(base),
-            bindings: vec![(v_param, TypeChild::Node(binding))],
-        },
-        span(),
-        None,
-    ));
-
-    // PREMISE, asserted: the head really presents no shape, and the child really is
-    // reachable. Without both, the row proves nothing about the gate.
-    {
-        use anthill_core::kb::term_view::{TermView, ViewHead};
-        assert!(
-            matches!(opaque_headed.head(interp.kb()), ViewHead::Opaque),
-            "premise: a Node-based parameterized type heads Opaque",
-        );
-        let keys = opaque_headed.named_keys(interp.kb());
-        assert_eq!(keys.len(), 1, "premise: and it still has a named child");
-        assert!(opaque_headed.named_arg(interp.kb(), keys[0]).is_some());
-    }
-
-    let got = interp.invoke_effect_handler(
-        "anthill.prelude.Modify",
-        set,
-        &[Value::SymbolRef(sym), opaque_headed],
-    );
-    assert!(
-        format!("{got:?}").contains("CyclicReference"),
-        "a self-reference under an opaque-headed occurrence is still a cycle, got {got:?}",
-    );
 }

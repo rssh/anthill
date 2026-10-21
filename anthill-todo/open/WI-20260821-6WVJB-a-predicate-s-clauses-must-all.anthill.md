@@ -9,8 +9,6 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260821-ZW940-arity-should-distinguish
-
 ## Description
 
 A PREDICATE'S CLAUSES MUST ALL HAVE ONE ARITY. Rules accept mixed arity today and
@@ -71,4 +69,22 @@ arity are one predicate and both answer (`rule p(1)` + `rule p(7)`); a bodied op
 derived relational view at arity+1 still works (WI-938); and same-named predicates in
 DIFFERENT scopes are unaffected. Say at the site which rows fail on a back-out. cargo-test
 green via rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-10-20T19:31:03Z — feedback — claude
+
+UNBLOCKED 2026-10-20: WI-20260821-ZW940 is closed as decided (arity does not distinguish operations; identity is (scope, name)), so this ticket's rule is the language's answer for both halves and no longer waits on anything.
+
+ORDER AGAINST PROPOSAL 069 (WI-20261003-QV5W5): do this ticket first. 069 §"Omission at a call" enforces one arity only for a declaration carrying a default, and states that scope as the case of this ticket that defaults force. With this ticket delivered, 069 needs no arity rule of its own -- its gate ("carries at least one default") is this check with a condition added, and it should be dropped rather than implemented. QV5W5 now depends on this ticket.
+
+ON DECISION ITEM 1 (Constraint), an observation, not a decision: the three stored shapes are Constraint(head(...)), Constraint(head(...), guard(...)) and Constraint(guard(<LogicalQuery>)) (kb/load.rs, store_denial_constraint_fact and store_logical_query_constraint_fact). The two-argument denial differs from the one-argument one only by an optional guard column, so the mixed arity is an optional column, the shape 069 gives a default to.
+
+STALE TEXT TO UPDATE ON DELIVERY: docs/kernel-language.md §8.6 ("A declaration carries no arity claim. Clauses of one predicate may still differ in arity, exactly as today"); proposal 061 header ("one-arity-per-predicate remains WI-20260821-6WVJB"); proposal 069 lines ~312-316 and the Non-goals bullet ("does not decide one arity per predicate in general").
+
+### 2026-10-20T19:32:01Z — feedback — claude
+
+CORRECTION to the previous entry: the stale sentence ("A declaration carries no arity claim ...") is in docs/kernel-language.md §5.3 Rule, near line 2545, not §8.6.
+
+ON DECISION ITEMS 3 AND 4, a suggested reading for the user to confirm, not a decision: arity is the declared column list -- positional and named columns counted together, a ...args capture counted as one column -- so a head with named slots and one with the same slots written positionally have one arity. WI-938's arity + 1 view stays legal under it: it is a reading of a GOAL against a bodied operation, not a second clause set of a predicate, and WI-939 item 4 already refuses a hand-written clause in that slot.
 

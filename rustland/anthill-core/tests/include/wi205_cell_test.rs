@@ -11,7 +11,7 @@
 //! Cell.get(c)` claims any element type and then assumes one. Writing the element is the
 //! author saying what they meant; nothing about the Cell runtime changed.
 
-use crate::common::{interp_for, register_modify_handler};
+use crate::common::interp_for;
 use anthill_core::eval::Value;
 use anthill_core::kb::term_view::TermView;
 
@@ -26,7 +26,6 @@ namespace test.wi205_round_trip
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     let r = interp
         .call("test.wi205_round_trip.make_and_read", &[Value::Int(42)])
@@ -46,7 +45,6 @@ namespace test.wi205_overwrite
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     let cell = interp
         .call("test.wi205_overwrite.make", &[Value::Int(1)])
@@ -78,7 +76,6 @@ namespace test.wi205_distinct
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     let a = interp
         .call("test.wi205_distinct.make", &[Value::Int(1)])
@@ -123,7 +120,6 @@ namespace test.wi205_refcount
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     let before = interp.cell_arena_live_count();
     let cell = interp
@@ -153,7 +149,6 @@ namespace test.wi205_clone
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     let before = interp.cell_arena_live_count();
     let h1 = interp
@@ -195,7 +190,6 @@ namespace test.wi205_recursive
 end
 "#;
     let mut interp = interp_for(src);
-    register_modify_handler(&mut interp);
 
     // Each frame contributes Cell.get(c) - n; if no aliasing, this is 0
     // for every frame, so the sum is 0. With aliasing, the inner call
@@ -208,51 +202,6 @@ end
         r.literal_int64(interp.kb()),
         Some(0),
         "each recursion frame must read back its own cell value"
-    );
-}
-
-#[test]
-fn modify_set_get_on_cell_routes_through_arena() {
-    // WI-205 (a) per-resource Modify dispatch: calling Modify.set / .get
-    // directly on a Value::Cell handle (not via Cell.set/get) routes to
-    // the cell arena, identical to Cell.set/get. Distinct cells must
-    // remain independent — confirms the arena, not the functor-keyed
-    // fallback map, is what stores the value.
-    let mut interp = interp_for("namespace test.wi205_modify_cell end\n");
-    register_modify_handler(&mut interp);
-
-    let cell_a = interp.alloc_cell(Value::Int(1));
-    let cell_b = interp.alloc_cell(Value::Int(2));
-    let cell_a_value = Value::Cell(cell_a);
-    let cell_b_value = Value::Cell(cell_b);
-
-    let set_sym = interp.kb_mut().intern("set");
-    let get_sym = interp.kb_mut().intern("get");
-
-    interp
-        .invoke_effect_handler(
-            "anthill.prelude.Modify",
-            set_sym,
-            &[cell_a_value.clone(), Value::Int(100)],
-        )
-        .expect("Modify.set on Cell A");
-
-    let got_a = interp
-        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[cell_a_value])
-        .expect("Modify.get on Cell A");
-    assert_eq!(
-        got_a.literal_int64(interp.kb()),
-        Some(100),
-        "Cell A should hold the written value"
-    );
-
-    let got_b = interp
-        .invoke_effect_handler("anthill.prelude.Modify", get_sym, &[cell_b_value])
-        .expect("Modify.get on Cell B");
-    assert_eq!(
-        got_b.literal_int64(interp.kb()),
-        Some(2),
-        "Cell B should remain untouched — functor-keyed aliasing must not happen"
     );
 }
 
@@ -292,39 +241,11 @@ end
     );
 }
 
-/// The STANDARD handlers answer `ModifyRuntime` on a cell, as `anthill run` registers them:
-/// the write goes through the cell arena, as `Cell.set` does. `Modify` was registered by its
-/// short name, which resolves to nothing, so it was skipped and the write died "no handler
-/// registered for effect `anthill.prelude.Modify`".
-///
-/// BACK-OUT: the short name put back in `register_standard_effect_handlers`, and this fails
-/// at the registration, which names it.
-#[test]
-fn the_standard_handlers_answer_modify_runtime_on_a_cell() {
-    let src = r#"
-namespace test.wi205_runtime
-  import anthill.prelude.{Int64, Cell, ModifyRuntime}
-
-  operation viaRuntime(n: Int64) -> Int64 =
-    let c = Cell.new(n)
-    let _ = ModifyRuntime.set(c, n + 6)
-    Cell.get(c)
-end
-"#;
-    let mut interp = interp_for(src);
-    interp
-        .register_standard_effect_handlers()
-        .expect("register the standard handlers");
-    let v = interp
-        .call("test.wi205_runtime.viaRuntime", &[Value::Int(3)])
-        .expect("the standard Modify handler answers the write");
-    assert_eq!(v.literal_int64(interp.kb()), Some(9));
-}
-
-/// And a name the KB does not declare is an error, not a handler left out: over a KB loaded
-/// without the standard library the first of the six is named. Skipped, a misspelled entry
+/// A name the KB does not declare is an error, not a handler left out: over a KB loaded
+/// without the standard library the first of the five is named. Skipped, a misspelled entry
 /// passed every row and failed only where a program performed it, as `Modify`'s short name
-/// did.
+/// did while the standard handlers had a `Modify` entry (retired with `ModifyRuntime`,
+/// WI-200).
 ///
 /// BACK-OUT: the skip of an `UnknownOperation` put back, and this fails (`Ok`).
 #[test]
@@ -339,57 +260,33 @@ fn the_standard_handlers_refuse_an_undeclared_effect() {
     }
 }
 
-/// A RULE BODY DECLINES `ModifyRuntime` ON A CELL ITS CALLEE KEEPS TO ITSELF, AND SAYS WHY
-/// IN THE ROW'S TERMS. `localMod`'s row is pure — the cell never leaves it, so the typer drops
-/// its `Modify` — but the write asks the `Modify` handler, and a rule body's run has none. The
-/// call is declined as before, and the report says the row declares no `Modify`, where it said
-/// "it performs `anthill.prelude.Modify`", which contradicts the row the typer checked (user,
-/// 2026-10-16, for now; a run-time counterpart of the typer's masking is a separate item). The
-/// `Cell.set` twin answers 9.
+/// A RULE BODY RUNS A CALLEE THAT WRITES A CELL IT KEEPS TO ITSELF: `localCell`'s row is pure
+/// (the cell never leaves it, so the typer drops its `Modify`), and its `Cell.set` is a host
+/// function over the arena, which every interpreter has, the bridge's scratch one included.
+/// It answers 9.
 ///
-/// BACK-OUT: the report's row check (`declared_row_may_hold`) answering yes, and this fails on
-/// the old wording; an unhandled effect scheduled again, as it was, and it fails with no
-/// report. The `Cell.set` half passes either way, by design.
+/// Its twin through `ModifyRuntime.set` was declined here, since that write asked the `Modify`
+/// handler and a rule body's run has none; it went with `ModifyRuntime` (WI-200). The report
+/// that a pure row asked a handler is pinned with `Clock`
+/// (`wi_9wvt7_clock_handler_test`). This row passes with or without WI-200, by design.
 #[test]
-fn a_rule_body_declines_modify_runtime_on_a_callees_own_cell_naming_its_row() {
-    use anthill_core::kb::resolve::ResolveConfig;
+fn a_rule_body_runs_a_callees_own_cell() {
     let src = r#"
 namespace test.wi205_rulebody
-  import anthill.prelude.{Int64, Cell, ModifyRuntime}
+  import anthill.prelude.{Int64, Cell}
 
   operation localCell(n: Int64) -> Int64 =
     let c = Cell.new(n)
     let _ = Cell.set(c, n + 6)
     Cell.get(c)
 
-  operation localMod(n: Int64) -> Int64 =
-    let c = Cell.new(n)
-    let _ = ModifyRuntime.set(c, n + 6)
-    ModifyRuntime.get(c)
-
   rule viaCell(?r) :- localCell(3, ?r)
-  rule viaMod(?r) :- localMod(3, ?r)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let rows = crate::common::query_unary(&mut kb, "test.wi205_rulebody.viaCell");
     assert!(
         matches!(rows.as_slice(), [(v, true)] if v.literal_int64(&kb) == Some(9)),
-        "the Cell.set twin answers 9: {rows:?}"
-    );
-    let goal = crate::common::query_pattern_term(&mut kb, "test.wi205_rulebody.viaMod(?r)");
-    let (solutions, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    assert!(
-        solutions.iter().all(|s| !s.is_definite()),
-        "declined, so no definite answer"
-    );
-    let messages: Vec<&str> = stats.errors.iter().map(|e| e.message.as_str()).collect();
-    assert!(
-        messages.iter().any(|m| m.contains("its row declares no `anthill.prelude.Modify`")),
-        "the report names the row: {messages:?}"
-    );
-    assert!(
-        messages.iter().all(|m| !m.contains("it performs `anthill.prelude.Modify`")),
-        "and does not say the pure operation performs it: {messages:?}"
+        "localCell(3) answers 9 from a rule body: {rows:?}"
     );
 }

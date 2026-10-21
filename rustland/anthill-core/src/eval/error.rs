@@ -122,22 +122,6 @@ pub enum EvalError {
         detail: Option<String>,
         backtrace: std::backtrace::Backtrace,
     },
-    CyclicReference,
-    /// A `Modify` operation on a resource built by a constructor with fields, which the
-    /// standard handler (`effects::default_modify_handler`) cannot keep apart: it holds
-    /// one slot per constructor, so `box(id: 1)` and `box(id: 2)` would be one place.
-    /// Refused rather than shared until the handler keeps the values of one constructor apart
-    /// (WI-200).
-    /// `resource` is the value, rendered.
-    ResourceWithFields {
-        resource: String,
-    },
-    /// A `Modify` read of a resource nothing has set, under the standard handler. The
-    /// program's own error, not the evaluator's: no write reached that slot. `resource` is
-    /// the value, rendered.
-    ResourceUnset {
-        resource: String,
-    },
     /// Proposal 039 / WI-084: a `const`'s value was demanded while it is already
     /// being forced — a dependency cycle (`const A = B + 1; const B = A + 1`).
     /// The value cache's forcing sentinel detects this dynamically; `name` is the
@@ -470,9 +454,6 @@ impl EvalError {
             | EvalError::DepthExceeded { .. }
             | EvalError::StepsExhausted { .. }
             | EvalError::UnsupportedHandlerAction { .. }
-            | EvalError::CyclicReference
-            | EvalError::ResourceWithFields { .. }
-            | EvalError::ResourceUnset { .. }
             | EvalError::ConstCycle { .. }
             | EvalError::AmbiguousRequirement { .. }
             | EvalError::UnpinnedRequirement { .. }
@@ -669,17 +650,6 @@ impl std::fmt::Display for EvalError {
                 }
                 write!(f, "\nbacktrace:\n{backtrace}")
             }
-            EvalError::CyclicReference => write!(f, "cyclic reference detected"),
-            EvalError::ResourceWithFields { resource } => write!(
-                f,
-                "the standard `Modify` handler holds one slot per constructor, so it cannot keep \
-                 `{resource}` apart from another value of its constructor; a resource with \
-                 fields needs a handler that keeps the values of one constructor apart (WI-200)"
-            ),
-            EvalError::ResourceUnset { resource } => write!(
-                f,
-                "`{resource}` is read through `Modify` before anything set it"
-            ),
             EvalError::ConstCycle { name } => write!(
                 f,
                 "const `{name}` depends on itself (cycle detected while forcing its value)"

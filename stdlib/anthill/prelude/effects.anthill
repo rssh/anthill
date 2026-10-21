@@ -13,10 +13,9 @@
 -- `check_modify_targets` (kb/typing.rs); WI-20260823-39AD2 records why the
 -- refusal and not a comparison.
 --
--- The Modify marker carries only WHICH resource is mutated. Its runtime
--- operations live on a separate carrier sort `ModifyRuntime[T, V]` (below),
--- which adds the stored-VALUE type V — independent of the resource TYPE T,
--- which types the target place but is not itself the target.
+-- The Modify marker carries only WHICH resource is mutated. What writes a
+-- resource is its sort's own operations (`Cell.set`); a sort with no operations
+-- of its own has nothing that writes it (proposal 037 §3.5, §4.1).
 --
 -- Effect kinds are registered by `provides Effect[T = Kind]` — written in the
 -- kind's own body, or in a `namespace <Kind>` secondary entry (059) where the
@@ -38,28 +37,14 @@
 --   Error          — can fail with an untyped error
 --   Error[type]    — can fail with a typed error
 --
--- Runtime-handler semantics (Rust evaluator, M5):
---   A handler is registered per effect sort (`Modify`, `Error`, …), not
---   per instantiation. The `ModifyRuntime.get`/`set` operations route to the
---   default `Modify` handler, which holds one arena keyed by the target's
---   functor symbol — `set(store, v)` and `set(counter, v)` share the same
---   handler but live in separate slots within it. To give a specific resource
---   its own handler, replace the global Modify handler with a dispatcher that
---   switches on the target symbol.
---
 -- NO AMBIENT RESOURCES. A slot is named by a PARAMETER, `result`, or a field path
 -- off one, and a resource is threaded to the operation that writes it:
 --
---   sort CounterState
---     provides Modifiable[T = Self]
---     entity counter
---   end
---   operation write(c: CounterState, n: Int64) -> Unit effects Modify[c] = set(c, n)
+--   operation write(c: Cell[V = Int64], n: Int64) -> Unit effects Modify[c] = Cell.set(c, n)
 --
--- `Modify[counter]` over the nullary constructor, which WI-20260823-4GBQV read as
--- an ambient slot, is the constructor's TYPE, as a constructor is in every bracket,
--- and is refused; so is a zero-argument operation's result (`Modify[slot]`), which
--- no call can write. Kernel-language.md §5.6, WI-20260902-JB6RS.
+-- `Modify[counter]` over a nullary constructor `counter` is the constructor's type, as
+-- a constructor is in every bracket, and is refused; so is a zero-argument operation's
+-- result (`Modify[slot]`), which no call can write. Kernel-language.md §5.6.
 
 namespace anthill.prelude
 
@@ -73,13 +58,13 @@ namespace anthill.prelude
   }
 
   -- Modifiable: marks a type as admitting a `Modify` over a PLACE OF THAT TYPE in
-  -- effect rows — `fact Modifiable[T = Cell]` is what makes `Modify[c]` with
-  -- `c: Cell` admissible. (`Modifiable`'s parameter is a TYPE; a `Modify` target
+  -- effect rows — Cell's `provides Modifiable[T = Self]` is what makes `Modify[c]`
+  -- with `c: Cell` admissible. (`Modifiable`'s parameter is a TYPE; a `Modify` target
   -- never is — see the file header.)
-  -- Per proposal 037 Rule 8 (bidirectional Modify↔handler correspondence): only
-  -- types with a registered handler can be modified. A `fact Modifiable[T = X]` is
-  -- the typing-level token; the runtime must back it with a registered handler
-  -- before any `Modify` over a place of type X actually fires.
+  -- Proposal 037 Rule 8: a `Modify` applies only where the place's type admits it.
+  -- A base sort admits it through its `Modifiable` claim, a secondary sort through
+  -- containment. A base sort has a default implementation, its host realization,
+  -- which the load holds to the sort's `@[host_implemented]` declarations.
   --
   -- Enforced by `check_modify_targets` (WI-20260823-TR8CF): `Modify[pattern]` on a
   -- `pattern: String` parameter is a load error naming `Modifiable`. A type is
@@ -104,29 +89,6 @@ namespace anthill.prelude
     -- TODO: in modify should be expression, which modified.  We have no syntax for it.
     -- TODO: why Modify[?], not Modify[T]
     provides Effect[T = Modify[?]]
-  end
-
-  -- ModifyRuntime[T, V]: the runtime carrier for the Modify-effect operations.
-  -- It carries BOTH the resource-identity type T and the stored-value type V,
-  -- which are INDEPENDENT (a `CounterState` resource may hold an `Int64`). Keeping
-  -- them as separate parameters is what lets `get` return the value type rather
-  -- than the resource type: the old `Modify { get(target: T) -> T }` folded both
-  -- into one `T`, which only type-checked while arguments went unchecked and the
-  -- expected return masked the contradiction — surfaced and rejected once WI-379
-  -- made arguments authoritative.
-  --
-  -- V is currently inferred per call (from the value argument for `set`, from
-  -- the expected return for `get`) and is NOT yet tied to the resource, so a
-  -- wrong value-type read is not caught. Recording that tie on the resource
-  -- (`sort CounterState { sort V = Int64 }` + `get(target: T) -> T.V`) is the
-  -- sound destination — a structured-parameter / sort-carried-projection
-  -- feature tracked in WI-383.
-  sort ModifyRuntime
-    import anthill.prelude.{Unit}
-    sort T = ?
-    sort V = ?
-    operation get(target: T) -> V @[host_implemented]
-    operation set(target: T, value: V) -> Unit effects Modify[target] @[host_implemented]
   end
 
   -- ErrorTag[T]: the EVIDENCE a reify boundary discharges its payload sort with —

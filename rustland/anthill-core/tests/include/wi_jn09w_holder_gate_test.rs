@@ -61,7 +61,7 @@
 //! `Buf` on offer is the pinned type itself).
 
 use crate::common::{
-    assert_refused_naming, interp_for, load_errors_of, register_modify_handler, run_int64,
+    assert_refused_naming, interp_for, load_errors_of, run_int64,
 };
 use crate::wi_020th_two_hop_chain_test::{
     at_each_spelling, program as chain_program, shown_requirement, Spelling, CHAIN_CALL,
@@ -286,7 +286,6 @@ namespace wijn09w.stack
 end
 "#,
     );
-    register_modify_handler(&mut interp);
     let r = interp
         .call("wijn09w.stack.go", &[])
         .unwrap_or_else(|e| panic!("`size(MutableStack.new())` must run: {e:?}"));

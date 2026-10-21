@@ -1,11 +1,11 @@
--- Rust binding for the prelude's RUNTIME-EFFECT surface: `Console`, `Time`, `Cell`,
--- `ModifyRuntime` and `Error`. Proposal 038.
+-- Rust binding for the prelude's RUNTIME-EFFECT surface: `Console`, `Time`, `Cell`
+-- and `Error`. Proposal 038.
 --
 -- WI-20260922-BRT4Y: registered by hardcoded qualified name in `eval/builtins.rs` until
 -- this ticket, and invisible to every reader of "is this operation host-backed". They
 -- are one file because they are one kind of thing — each reaches state only the
--- interpreter holds: a registered effect HANDLER (`Console.*`, `Time.now`,
--- `ModifyRuntime.*`), the cell ARENA (`Cell.*`), the error channel (`Error.raise`).
+-- interpreter holds: a registered effect HANDLER (`Console.*`, `Time.now`), the cell
+-- ARENA (`Cell.*`), the error channel (`Error.raise`).
 --
 -- Being mapped does NOT make them callable from a rule body. The rule-body gate
 -- (`host_op_reducible_at_a_value`, kb/resolve.rs) also asks for an EMPTY effect row,
@@ -40,14 +40,6 @@ namespace anthill.prelude
       new: "cell_new",
       get: "cell_get",
       set: "cell_set"
-    }
-  end
-
-  provides ModifyRuntime language rust
-    artifact "rustland/anthill-core/src/eval/builtins.rs"
-    operation_map {
-      get: "modify_runtime_get",
-      set: "modify_runtime_set"
     }
   end
 

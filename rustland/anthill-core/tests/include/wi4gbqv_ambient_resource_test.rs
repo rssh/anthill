@@ -350,7 +350,9 @@ end
 /// `names_modify_place` was one predicate it did. `stable_receiver_path` answers the
 /// §4.1 ALIAS-STABILITY question and takes any bare name, constructors included — so a
 /// paren-less field-bearing constructor re-keyed `ModifyRuntime.set`'s `Modify[target]`
-/// onto `wrap`, producing `undeclared effect: Modify[T = wrap]`. The only declaration
+/// onto `wrap`, producing `undeclared effect: Modify[T = wrap]`. `touch` stands for that
+/// callee since WI-200 retired `ModifyRuntime`: generic in its target, as `set` was, and
+/// writing nothing, since a row is an upper bound. The only declaration
 /// that would satisfy it, `effects Modify[wrap]`, is itself a load error
 /// (`a_constructor_with_fields_is_not_a_place`), so the program was unwritable and
 /// neither message said so.
@@ -363,13 +365,13 @@ fn a_parenless_fieldful_constructor_does_not_mint_an_undeclarable_label() {
     let src = r#"
 namespace test.wi4gbqv.parenless_fieldful
   import anthill.prelude.{Int64, Unit, Modify}
-  import ModifyRuntime.{set}
 
   sort Wrapper
     entity wrap(rep: Int64)
   end
 
-  operation write(n: Int64) -> Unit effects {} = set(wrap, n)
+  operation touch[T](target: T, n: Int64) -> Unit effects Modify[target] = ()
+  operation write(n: Int64) -> Unit effects {} = touch(wrap, n)
 end
 "#;
     let errs = load_result(src).expect_err("a constructor function names no place");
@@ -388,7 +390,7 @@ end
 }
 
 /// The EPONYMOUS twin of the row above — the WI-926 exclusion reaching the CALL, not only
-/// the declaration. `set(Slot, n)` used to re-key onto `Slot` and demand
+/// the declaration. `set(Slot, n)` (`touch` here, as above) used to re-key onto `Slot` and demand
 /// `effects Modify[Slot]`, which `an_eponymous_nullary_constructor_stays_a_type` refuses:
 /// the two sides of one ticket disagreeing, in the exact population the ticket's CARE note
 /// singled out.
@@ -397,13 +399,13 @@ fn a_parenless_eponymous_constructor_does_not_mint_an_undeclarable_label() {
     let src = r#"
 namespace test.wi4gbqv.parenless_eponymous
   import anthill.prelude.{Int64, Unit, Modify}
-  import ModifyRuntime.{set}
 
   sort Slot
     entity Slot
   end
 
-  operation write(n: Int64) -> Unit effects {} = set(Slot, n)
+  operation touch[T](target: T, n: Int64) -> Unit effects Modify[target] = ()
+  operation write(n: Int64) -> Unit effects {} = touch(Slot, n)
 end
 "#;
     let errs = load_result(src).expect_err("an eponymous constructor is its sort, not a place");
@@ -455,6 +457,12 @@ end
         errs.iter()
             .any(|e| e.contains("names no resource") && e.contains("fresh")),
         "expected the refusal to name the caller's own `fresh(…)`; got: {errs:#?}"
+    );
+    // The declaration quoted as written: by its head alone it was `Modify[d]` (MEASURED;
+    // BACK-OUT: the head's local name printed again fails this assertion alone).
+    assert!(
+        errs.iter().any(|e| e.contains("declares `Modify[d.contents]` over this parameter")),
+        "expected the field-path declaration quoted whole; got: {errs:#?}"
     );
 }
 
@@ -519,4 +527,653 @@ end
         load_result(src).is_ok(),
         "a refuted guard drops the atom, so the placeless argument incurs nothing"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// THE CALL'S REFUSAL, ASKED OF THE CALLEE'S OWN ATOM AND TOLD BY THE ARGUMENT'S SHAPE.
+// Found by the review of the arm reorder in `placeless_arg_reason` (2026-10-20). Each row's
+// back-out is at its site, every one measured as a temporary switch in one build over the
+// whole `wi_tests` binary: each turned red the rows its site names, and nothing else.
+// ---------------------------------------------------------------------------------------
+
+use crate::common::replace_in_fixture;
+
+/// The refusals of `touch` below, one per caller.
+fn refusals_of(src: &str) -> Vec<String> {
+    load_result(src).expect_err("the fixture is refused on purpose")
+}
+
+/// Is one of `errs` the call's own refusal, telling the argument with every one of `parts`?
+fn told_as(errs: &[String], parts: &[&str]) -> bool {
+    errs.iter()
+        .any(|e| e.contains("expected an argument naming a PLACE") && parts.iter().all(|p| e.contains(p)))
+}
+
+/// A bare nullary OPERATION is its call (§5.4) and a `const` is a constant: neither holds a
+/// place, and each is refused at the call as what it is. Read as a place, `touch(mk)` re-keyed
+/// `Modify[target]` onto `mk` and was refused, with no location, as the undeclared `Modify[T =
+/// mk]` — whose one declaration is refused as an ambient place — and `touch(k0)` the same over
+/// `k0` (MEASURED). Bound first, the call loads.
+///
+/// BACK-OUT: `names_no_place` reduced to `is_unplaceable_constructor` fails this row.
+#[test]
+fn a_bare_nullary_operation_or_a_const_is_no_place() {
+    let src = r#"
+namespace test.wi4gbqv.bare_op
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort W
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation mk() -> W = counter
+  const k0: W = counter()
+  operation touch(target: W) -> Unit effects Modify[target] = ()
+  operation viaOp() -> Unit = touch(mk)
+  operation viaConst() -> Unit = touch(k0)
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        !errs.iter().any(|e| e.contains("Modify[T = mk]") || e.contains("Modify[T = k0]")),
+        "no label may be minted over a call or a constant; got: {errs:#?}"
+    );
+    assert!(
+        told_as(
+            &errs,
+            &["the call `test.wi4gbqv.bare_op.mk` (a zero-argument operation named bare)", "Bind it first"]
+        ),
+        "`touch(mk)` is refused at the call as the call it is; got: {errs:#?}"
+    );
+    assert!(
+        told_as(&errs, &["the name `test.wi4gbqv.bare_op.k0`, a `const` — a constant"]),
+        "`touch(k0)` is refused at the call as a constant; got: {errs:#?}"
+    );
+    let bound = replace_in_fixture(
+        src,
+        "operation viaOp() -> Unit = touch(mk)\n  operation viaConst() -> Unit = touch(k0)",
+        "operation viaOp() -> Unit =\n    let x = mk()\n    touch(x)",
+    );
+    if let Err(errs) = load_result(&bound) {
+        panic!("the call bound first loads; got: {errs:#?}");
+    }
+}
+
+/// An ABSENCE (`-Modify[c]`) says the callee does NOT modify `c`; it is no effect the call
+/// incurs, and an argument naming no place is fine there. Read through its wrapper, the call
+/// was refused naming a `Modify[c]` nothing declares (MEASURED).
+///
+/// BACK-OUT: the absence read through (`effect_atom_is_absence` not asked) fails this row.
+#[test]
+fn an_absence_is_no_modify_the_call_incurs() {
+    let src = r#"
+namespace test.wi4gbqv.absent
+  import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+
+  operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
+  operation readOnly(c: Cell[V = Int64]) -> Int64 effects -Modify[c] = 1
+  operation user() -> Int64 effects {} = readOnly(mk())
+end
+"#;
+    if let Err(errs) = load_result(src) {
+        panic!("a denial over `c` asks nothing of `c`'s argument; got: {errs:#?}");
+    }
+}
+
+/// A SELF-RECURSIVE call is judged on the callee's OWN atom, before the re-key: there the
+/// caller's variables are the callee's parameters. After it, `swap(b, mk(), false)`'s
+/// `Modify[a]`, re-keyed onto the caller's `b`, read as the callee's own `Modify[b]` — whose
+/// guard the call refutes — and the call was refused naming it. The unguarded twin is refused
+/// for what it does incur, `Modify[a]` re-keyed onto `b`, which `swap` does not declare — as
+/// the same call to a copy of `swap` is; it was refused claiming `swap` declares `Modify[b]`
+/// (MEASURED).
+///
+/// BACK-OUT: the atom judged after the re-key fails this row.
+#[test]
+fn a_self_recursive_call_is_judged_on_the_callees_own_atom() {
+    let guarded = r#"
+namespace test.wi4gbqv.selfrec
+  import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+  import anthill.prelude.PartialEq.{eq}
+
+  operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
+
+  operation swap(a: Cell[V = Int64], b: Cell[V = Int64], fb: Bool) -> Unit
+    effects { Modify[a], Modify[b] :- eq(fb, true) }
+  = if fb then Cell.set(b, 1) else swap(b, mk(), false)
+end
+"#;
+    if let Err(errs) = load_result(guarded) {
+        panic!("the refuted guard drops the callee's `Modify[b]`; got: {errs:#?}");
+    }
+    let unguarded = r#"
+namespace test.wi4gbqv.selfrec2
+  import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+
+  operation mk() -> Cell[V = Int64] effects Modify[result] = Cell.new(0)
+
+  operation swap(a: Cell[V = Int64], b: Cell[V = Int64], go: Bool) -> Unit
+    effects Modify[a]
+  = if go then Cell.set(a, 1) else swap(b, mk(), true)
+end
+"#;
+    let errs = refusals_of(unguarded);
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: Modify[T = b]")),
+        "the write the call does make, to the caller's `b`, is undeclared; got: {errs:#?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("declares `Modify[b]`")),
+        "`swap` declares no `Modify[b]`; got: {errs:#?}"
+    );
+}
+
+/// A constructor TAKING FIELDS, applied to none or named bare, is its application with every
+/// field left out (§4.4) — complete here, its one field an `Option` — a value no name denotes,
+/// and the repair is to bind it. Told as the bare name ("a constructor taking fields … no row
+/// could name this effect"), the refusal withheld that repair while `let x = wrap()` then
+/// `touch(x)` loaded; `wrap(rep: none())`, the same value, was told to bind it (MEASURED).
+///
+/// BACK-OUT: the nullary arm's test of the declared fields dropped fails this row.
+#[test]
+fn a_constructor_taking_fields_applied_to_none_is_a_value_no_name_denotes() {
+    let src = r#"
+namespace test.wi4gbqv.optfields
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable, Option}
+
+  sort Res
+    provides Modifiable[T = Self]
+    entity wrap(rep: Option[T = Int64])
+  end
+
+  operation touch(target: Res) -> Unit effects Modify[target] = ()
+  operation applied() -> Unit = touch(wrap())
+  operation bare() -> Unit = touch(wrap)
+end
+"#;
+    let errs = refusals_of(src);
+    let fresh = |e: &&String| {
+        e.contains("the constructor `test.wi4gbqv.optfields.Res.wrap(…)`, a value no name denotes")
+            && e.contains("Bind it first")
+    };
+    assert_eq!(errs.iter().filter(fresh).count(), 2, "both spellings are one construction; got: {errs:#?}");
+    let bound = replace_in_fixture(
+        src,
+        "operation applied() -> Unit = touch(wrap())\n  operation bare() -> Unit = touch(wrap)",
+        "operation applied() -> Unit =\n    let x = wrap()\n    touch(x)",
+    );
+    if let Err(errs) = load_result(&bound) {
+        panic!("the construction bound first loads; got: {errs:#?}");
+    }
+}
+
+/// An EMPTY LITERAL is named by the literal. Its node is a reflect form applied to nothing,
+/// which is not that form's name (§6), and it was told as "the name
+/// `anthill.reflect.ListLiteral`, which is its own sort"; a non-empty one as "the constructor
+/// `anthill.reflect.ListLiteral(…)`" (MEASURED).
+///
+/// BACK-OUT: the literal forms not asked of (`collection_literal`) fails this row.
+#[test]
+fn an_empty_literal_is_named_by_the_literal() {
+    let src = r#"
+namespace test.wi4gbqv.literals
+  import anthill.prelude.{Int64, Unit, Modify}
+
+  operation touchg[X](target: X) -> Unit effects Modify[target] = ()
+  operation emptyList() -> Unit = touchg([])
+  operation emptyTuple() -> Unit = touchg(())
+  operation emptySet() -> Unit = touchg({})
+  operation oneList() -> Unit = touchg([1])
+end
+"#;
+    let errs = refusals_of(src);
+    for told in ["the empty list `[]`", "the empty tuple `()`", "the empty set `{}`", "the list `[…]`"] {
+        assert!(told_as(&errs, &[told, "a value no name denotes"]), "{told}; got: {errs:#?}");
+    }
+    assert!(
+        !errs.iter().any(|e| e.contains("anthill.reflect.")),
+        "a literal is named as written, not by its reflect form; got: {errs:#?}"
+    );
+}
+
+/// A TYPE in a value position is a constant. It fell to the last arm, "this argument
+/// expression, which produces a fresh value" (MEASURED).
+///
+/// BACK-OUT: the `TypeValue` arm dropped fails this row, and so does a constructor's type
+/// printed without its bracket.
+#[test]
+fn a_type_value_is_a_constant() {
+    let src = r#"
+namespace test.wi4gbqv.typeval
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable, List}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation touchg[X](target: X) -> Unit effects Modify[target] = ()
+  operation bareType() -> Unit = touchg(CounterState)
+  operation appliedType() -> Unit = touchg(List[T = Int64])
+  operation faceType() -> Unit = touchg(counter[])
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        told_as(&errs, &["the type `test.wi4gbqv.typeval.CounterState` — a constant"]),
+        "got: {errs:#?}"
+    );
+    assert!(told_as(&errs, &["the type `anthill.prelude.List[…]` — a constant"]), "got: {errs:#?}");
+    // A constructor's type is written with its bracket; bare, its name is the instance (§4.4).
+    // It was printed bare (MEASURED).
+    assert!(
+        told_as(&errs, &["the type `test.wi4gbqv.typeval.CounterState.counter[]` — a constant"]),
+        "got: {errs:#?}"
+    );
+}
+
+/// A CHOICE between places names none itself; the repair is the call in each branch, which
+/// names each branch's own place and loads. Told as a fresh value, the refusal advised a
+/// `let`, whose binder aliases a place the effect check does not follow yet
+/// (WI-20261015-809JN): the advised program loaded with nothing declared (MEASURED).
+///
+/// BACK-OUT: the `if`/`match` arms back on the fresh-value advice fails this row, and so does
+/// the `let` arm told to call in each branch.
+#[test]
+fn a_choice_between_places_is_called_in_each_branch() {
+    let src = r#"
+namespace test.wi4gbqv.choice
+  import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}
+
+  operation touch(c: Cell[V = Int64]) -> Unit effects Modify[c] = Cell.set(c, 1)
+  operation pick(x: Cell[V = Int64], y: Cell[V = Int64], b: Bool) -> Unit effects {Modify[x], Modify[y]} =
+    touch(if b then x else y)
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        told_as(&errs, &["an `if` expression, which names no resource itself", "Call `touch` in each branch"]),
+        "got: {errs:#?}"
+    );
+    let branched = replace_in_fixture(src, "touch(if b then x else y)", "if b then touch(x) else touch(y)");
+    if let Err(errs) = load_result(&branched) {
+        panic!("the advised call in each branch loads; got: {errs:#?}");
+    }
+    // A `let` has no branches: it is told to pass the place it evaluates to. It was told to
+    // call `touch` in each branch (MEASURED).
+    let let_arg = replace_in_fixture(src, "touch(if b then x else y)", "touch(let z = x\n          z)");
+    assert!(
+        told_as(
+            &refusals_of(&let_arg),
+            &["a `let` expression, which names no resource itself. Pass the place it evaluates to"]
+        ),
+        "a `let` argument names no place of its own"
+    );
+}
+
+/// A nullary constructor APPLIED is the constant its bare name is (§4.4), in the spelling no
+/// loader converts as well: an `Apply`, from a macro's `make_apply` splice. The arm for a call
+/// stood before the arm written for it and took it — "the call `…counter(…)`, which produces a
+/// fresh value", while `rustc` reported the other arm unreachable (MEASURED).
+///
+/// BACK-OUT, over the whole `wi_tests` binary: the arm for a call put back before the nullary
+/// arm fails this row and [`a_construction_a_rewrite_leaves_an_application_is_a_constructor`],
+/// whose construction it takes for a call too, and nothing else.
+#[test]
+fn a_spliced_nullary_constructor_is_the_constant() {
+    let src = r#"
+namespace test.wi4gbqv.splice
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.reflect.{NodeOccurrence, make_apply}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation mkctr(x: NodeOccurrence) -> NodeOccurrence =
+    make_apply("test.wi4gbqv.splice.touch", cons(make_apply("test.wi4gbqv.splice.CounterState.counter", nil(), x), nil()), x)
+  operation poke(c: Int64) -> Unit
+  rule poke(?c) <=> mkctr(?c) @[simp]
+
+  operation w() -> Unit = poke(1)
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        told_as(&errs, &["the name `test.wi4gbqv.splice.CounterState.counter`, a nullary constructor — a constant"]),
+        "got: {errs:#?}"
+    );
+}
+
+/// A CONSTRUCTION a rewrite leaves an application is named a constructor: `wrap()` in a
+/// `@[simp]` right-hand side reaches the call as an `Apply` carrying its slots, and was "the
+/// call `…wrap(…)`" (MEASURED). The program is refused by the effectful-rewrite rule as well.
+///
+/// BACK-OUT: the arm for a construction with arguments dropped fails this row, and so does the
+/// arm for a call put back first ([`a_spliced_nullary_constructor_is_the_constant`]).
+#[test]
+fn a_construction_a_rewrite_leaves_an_application_is_a_constructor() {
+    let src = r#"
+namespace test.wi4gbqv.simpctor
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable, Option}
+  sort Res
+    provides Modifiable[T = Self]
+    entity wrap(rep: Option[T = Int64])
+  end
+  operation touch(target: Res) -> Unit effects Modify[target] = ()
+  operation doIt() -> Unit
+  rule doIt() <=> touch(wrap()) @[simp]
+  operation write() -> Unit = doIt()
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(told_as(&errs, &["the constructor `test.wi4gbqv.simpctor.Res.wrap(…)`"]), "got: {errs:#?}");
+}
+
+/// The refusal reads as one sentence, its advice last. A suffix ", so it names no resource."
+/// used to follow every reason, after the advice ("…or pass a parameter or a field path off one,
+/// so it names no resource.") and after the reason's own conclusion ("…so no row could name this
+/// effect either, so it names no resource."), and " and not a place" followed the constant's
+/// relative clause (MEASURED).
+///
+/// BACK-OUT: the suffix restored fails this row.
+#[test]
+fn the_refusal_reads_as_one_sentence() {
+    let src = r#"
+namespace test.wi4gbqv.sentence
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort W
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation mk() -> W = counter
+  operation touch(target: W) -> Unit effects Modify[target] = ()
+  operation viaCall() -> Unit = touch(mk())
+  operation viaConstant() -> Unit = touch(counter)
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        errs.iter().any(|e| e.ends_with(
+            "the call `test.wi4gbqv.sentence.mk(…)`, a value no name denotes, so it names no \
+             resource. Bind it first (`let x = …`) and pass `x`, or pass a parameter or a field \
+             path off one"
+        )),
+        "got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.ends_with(
+            "the name `test.wi4gbqv.sentence.W.counter`, a nullary constructor — a constant, so it \
+             names no resource: kernel-language.md §5.6 admits a parameter, `result`, or a field \
+             path off one, and a resource is threaded as a parameter"
+        )),
+        "got: {errs:#?}"
+    );
+}
+
+/// A ZERO-ARGUMENT DOT CALL is the call it dispatches to, `h.fresh()` the call `Holder.fresh(h)`,
+/// and is refused at the call as the written call is. Classified as written, it read as the
+/// field path `h.fresh` and re-keyed the callee's `Modify` onto the receiver `h`: under
+/// `effects Modify[h]` it loaded, declaring a write the program never makes, and under `effects
+/// {}` it was refused, unlocated, as the undeclared `Modify[T = h]` (MEASURED). A field path
+/// (`h.rep`) is still the place it names.
+///
+/// BACK-OUT: the written argument classified again (`typed_arg` not asked) fails this row and
+/// [`an_argument_a_rewrite_makes_a_place_is_that_place`].
+#[test]
+fn a_zero_argument_dot_call_is_the_call_it_dispatches_to() {
+    let src = r#"
+namespace test.wi4gbqv.dotcall
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort Box
+    provides Modifiable[T = Self]
+    entity full(v: Int64)
+  end
+
+  sort Holder
+    provides Modifiable[T = Self]
+    entity holder(rep: Box)
+    operation fresh(h: Holder) -> Box = full(v: 1)
+  end
+
+  operation touch(target: Box) -> Unit effects Modify[target] = ()
+  operation declared(h: Holder) -> Unit effects Modify[h] = touch(h.fresh())
+  operation pure(h: Holder) -> Unit effects {} = touch(h.fresh())
+end
+"#;
+    let errs = refusals_of(src);
+    assert_eq!(
+        errs.iter()
+            .filter(|e| told_as(&[(*e).clone()], &["the call `test.wi4gbqv.dotcall.Holder.fresh(…)`"]))
+            .count(),
+        2,
+        "both callers are refused at the call; got: {errs:#?}"
+    );
+    assert!(!errs.iter().any(|e| e.contains("Modify[T = h]")), "nothing is charged to `h`; got: {errs:#?}");
+    let field = replace_in_fixture(
+        &replace_in_fixture(src, "touch(h.fresh())\n  operation pure", "touch(h.rep)\n  operation pure"),
+        "operation pure(h: Holder) -> Unit effects {} = touch(h.fresh())\n",
+        "",
+    );
+    if let Err(errs) = load_result(&field) {
+        panic!("a field path off `h` is a place under `h`; got: {errs:#?}");
+    }
+}
+
+/// An argument a `@[simp]` rewrite turns into a place IS that place: `same(c)` under `rule
+/// same(?c) <=> ?c` is `c`, at a call's own site and at a dispatched override's. Classified as
+/// written, it was refused as "the call `…same(…)`, which produces a fresh value" while its type
+/// was read off the rewrite; and with nothing declared the refusal named that call, where the
+/// write the program makes — to `c` — is what goes undeclared (MEASURED).
+///
+/// BACK-OUT: as [`a_zero_argument_dot_call_is_the_call_it_dispatches_to`]'s.
+#[test]
+fn an_argument_a_rewrite_makes_a_place_is_that_place() {
+    let src = r#"
+namespace test.wi4gbqv.rewritten
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation same(c: CounterState) -> CounterState
+  rule same(?c) <=> ?c @[simp]
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation write(c: CounterState) -> Unit effects Modify[c] = touch(same(c))
+end
+"#;
+    if let Err(errs) = load_result(src) {
+        panic!("`same(c)` is `c`, a parameter; got: {errs:#?}");
+    }
+    let undeclared = replace_in_fixture(src, "effects Modify[c] = touch(same(c))", "effects {} = touch(same(c))");
+    let errs = refusals_of(&undeclared);
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: Modify[T = c]")),
+        "the write to `c` is what goes undeclared; got: {errs:#?}"
+    );
+    let dispatched = r#"
+namespace test.wi4gbqv.rewritten_override
+  import anthill.prelude.{Int64, Modify, EffectsRuntime, Modifiable}
+
+  sort Box
+    effects Effect = ?
+    operation peek(b: Self) -> Int64 effects Effect
+  end
+
+  sort MutBox
+    provides Modifiable[T = Self]
+    entity mb(fd: Int64)
+    provides Box
+    operation peek(b: MutBox) -> Int64 effects Modify[b] =
+      match b
+        case mb(x) -> x
+  end
+
+  operation same(b: MutBox) -> MutBox
+  rule same(?b) <=> ?b @[simp]
+
+  operation read_it(b: MutBox) -> Int64 effects Modify[b] = Box.peek(same(b))
+end
+"#;
+    if let Err(errs) = load_result(dispatched) {
+        panic!("the override's `Modify[b]` lands on the caller's `b`; got: {errs:#?}");
+    }
+}
+
+/// A body holding the typer's own `some(…)` coercion is judged the same when it is typed
+/// AGAIN: `poke(x)` at an `Option`-typed `Modify` parameter is `x`, a parameter. The typed body
+/// stores the wrap, and read again it was the construction "`Option.some(…)`, which produces a
+/// fresh value" — a later load (`KB.loaded` from `anthill run`) refused what the first one
+/// accepted, in the first one's file (MEASURED). An author's own `some(x)` is a construction,
+/// refused the first time.
+///
+/// BACK-OUT: the coercion not seen through (`through_option_coercion` not asked) fails this row.
+#[test]
+fn a_body_typed_again_reads_through_the_typers_own_option_coercion() {
+    use anthill_core::kb::typing::{type_check_sorts, Loaded};
+    let src = r#"
+namespace test.wi4gbqv.retyped
+  import anthill.prelude.{Int64, Unit, Bool, Modify, Modifiable, Option}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  operation poke(target: Option[T = CounterState]) -> Unit effects Modify[target] = ()
+  operation user(x: CounterState) -> Unit effects Modify[x] = poke(x)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    let again = type_check_sorts(&mut kb, Loaded::nothing());
+    assert!(again.is_empty(), "typed again, the body is judged as it was; got: {again:#?}");
+    let written = replace_in_fixture(
+        &replace_in_fixture(src, "= poke(x)", "= poke(some(x))"),
+        "import anthill.prelude.{Int64, Unit, Bool, Modify, Modifiable, Option}",
+        "import anthill.prelude.{Int64, Unit, Bool, Modify, Modifiable, Option}\n  import anthill.prelude.Option.{some}",
+    );
+    assert!(
+        told_as(&refusals_of(&written), &["the constructor `anthill.prelude.Option.some(…)`"]),
+        "an author's `some(x)` is a construction and names no place"
+    );
+}
+
+/// A field path off a value no name denotes is told as the field path, in the form the typer
+/// leaves it (`field_access(receiver, "rep")`). Classified as typed, it was "the call
+/// `anthill.reflect.field_access(…)`", a name the author never wrote (MEASURED).
+///
+/// BACK-OUT: the `field_access` arm dropped fails this row.
+#[test]
+fn a_field_path_off_a_value_no_name_denotes_is_told_as_one() {
+    let src = r#"
+namespace test.wi4gbqv.fieldoff
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort Box
+    provides Modifiable[T = Self]
+    entity full(v: Int64)
+  end
+
+  sort Holder
+    entity holder(rep: Box)
+  end
+
+  operation mkh() -> Holder = holder(rep: full(v: 1))
+  operation touch(target: Box) -> Unit effects Modify[target] = ()
+  operation viaCall() -> Unit = touch(mkh().rep)
+  operation viaCtor() -> Unit = touch(holder(rep: full(v: 2)).rep)
+end
+"#;
+    let errs = refusals_of(src);
+    let told = |e: &&String| {
+        told_as(
+            &[(*e).clone()],
+            &["the field path `.rep`, whose receiver is a value no name denotes", "pass `x.rep`"],
+        )
+    };
+    assert_eq!(errs.iter().filter(told).count(), 2, "both receivers name nothing; got: {errs:#?}");
+    assert!(!errs.iter().any(|e| e.contains("field_access")), "got: {errs:#?}");
+}
+
+/// An argument passed BY NAME is classified as the call's typing left it too: `touch(target:
+/// same(c))` is `c`, and `touch(target: h.fresh())` the call `Holder.fresh(h)`.
+///
+/// BACK-OUT: the named loop's argument classified as written fails this row alone; the rows
+/// above pass the argument positionally.
+#[test]
+fn a_named_argument_is_classified_as_typed() {
+    let src = r#"
+namespace test.wi4gbqv.named
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort CounterState
+    provides Modifiable[T = Self]
+    entity counter
+  end
+
+  sort Holder
+    provides Modifiable[T = Self]
+    entity holder(rep: CounterState)
+    operation fresh(h: Holder) -> CounterState = counter
+  end
+
+  operation same(c: CounterState) -> CounterState
+  rule same(?c) <=> ?c @[simp]
+  operation touch(target: CounterState) -> Unit effects Modify[target] = ()
+  operation viaRewrite(c: CounterState) -> Unit effects Modify[c] = touch(target: same(c))
+  operation viaDot(h: Holder) -> Unit effects {} = touch(target: h.fresh())
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        !errs.iter().any(|e| e.contains("same(…)") || e.contains("Modify[T = h]")),
+        "`same(c)` is `c`, and nothing is charged to `h`; got: {errs:#?}"
+    );
+    assert!(told_as(&errs, &["the call `test.wi4gbqv.named.Holder.fresh(…)`"]), "got: {errs:#?}");
+}
+
+/// A SELF-RECURSIVE call through a DISPATCHED override is judged on the override's own atom
+/// too: inside `MutBox.poke(a, other)`, `Box.poke(other, mb(fd: 1))` re-keys the override's
+/// `Modify[a]` onto the caller's `other`, and read after the re-key it was the override's own
+/// `Modify[other]` — which it does not declare — so the call was refused naming it. It is
+/// refused for the write it makes, to `other`, which the caller does not declare (MEASURED).
+///
+/// BACK-OUT: the override's atom judged after the re-key (`dispatched_impl_effects_of`) fails
+/// this row alone; [`a_self_recursive_call_is_judged_on_the_callees_own_atom`] drives the
+/// call's own site.
+#[test]
+fn a_self_recursive_dispatch_is_judged_on_the_overrides_own_atom() {
+    let src = r#"
+namespace test.wi4gbqv.ovrrec
+  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
+
+  sort Box
+    sort T = ?
+    effects Effect = ?
+    operation poke(a: Self, other: T) -> Int64 effects Effect
+  end
+
+  sort MutBox
+    provides Modifiable[T = Self]
+    entity mb(fd: Int64)
+    provides Box[T = MutBox]
+    operation poke(a: MutBox, other: MutBox) -> Int64 effects Modify[a] = Box.poke(other, mb(fd: 1))
+  end
+end
+"#;
+    let errs = refusals_of(src);
+    assert!(
+        errs.iter().any(|e| e.contains("undeclared effect: Modify[T = other]")),
+        "the write to `other` is undeclared; got: {errs:#?}"
+    );
+    assert!(!errs.iter().any(|e| e.contains("declares `Modify[other]`")), "got: {errs:#?}");
 }

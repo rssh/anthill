@@ -5,8 +5,8 @@
 //! handler is called with `(interp, op_sym, args)` and produces the
 //! operation's return `Value`. The handler closure owns the resource it
 //! represents — `Stdout` for `ConsoleOutput`, a test buffer for capture,
-//! a `Modify` arena for stateful cells, etc. Replacing a handler replaces
-//! the resource; the interpreter itself holds no effect-specific state.
+//! the wall clock for `Clock`, etc. Replacing a handler replaces the
+//! resource; the interpreter itself holds no effect-specific state.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -16,7 +16,6 @@ use std::rc::Rc;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
-use crate::kb::term_view::{TermView, ViewHead};
 
 use super::{EvalError, Interpreter, Value};
 
@@ -223,257 +222,6 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
             .map(|s| HandlerAction::Pure(Value::Str(s)))
             .ok_or_else(|| EvalError::Internal("scripted console input exhausted".into()))
     })
-}
-
-// ── Default Modify handler (per-resource dispatch) ─────────────
-
-/// Default handler for the `Modify` effect. Per WI-205's per-resource
-/// dispatch architecture, routes `get` / `set` based on the target
-/// Value's variant:
-///
-/// - `Value::Cell(h)` → reads/writes go through the interpreter's
-///   `cell_arena` (allocation-time uid; one slot per `Cell.new`).
-/// - `Value::Entity { functor, .. }` or `Value::Term` wrapping a nullary
-///   functor → fallback functor-keyed map. The functor symbol is the
-///   key; mixing types for the same resource is not rejected (runtime
-///   is dynamically typed; the typer is the place to catch mismatches).
-///   A resource built with fields is refused
-///   ([`EvalError::ResourceWithFields`]): one slot per functor would make
-///   `box(id: 1)` and `box(id: 2)` one place.
-///
-/// The Cell path matches what `Cell.set` does directly; routing
-/// `Modify.set(cell, v)` here gives the same arena semantics, so user
-/// code calling `Modify.set` on a Cell handle behaves identically to
-/// calling `Cell.set`.
-///
-/// Cycle detection surfaces as [`EvalError::CyclicReference`] when a
-/// functor-keyed `set` would store a value that transitively references
-/// itself via `Value::Term` or entity args. Cell-routed `set` skips the
-/// runtime walk — proposal 037 §`Cell[V]` and WI-207's typer-side
-/// `acyclic_cell` rule make cycles inexpressible at the type level.
-pub fn default_modify_handler() -> EffectHandler {
-    let cells: Rc<RefCell<HashMap<Symbol, Value>>> = Rc::new(RefCell::new(HashMap::new()));
-
-    Box::new(move |interp, op_sym, args| {
-        let target = args.first().ok_or_else(|| EvalError::ArityMismatch {
-            op: "Modify",
-            expected: 1,
-            got: 0,
-        })?;
-        let op_name = interp.kb().local_name_of(op_sym);
-
-        // Cell arm: route through the cell arena. Identity is the slot,
-        // not the functor; two Cell.new calls produce distinct handles.
-        if let Value::Cell(h) = target {
-            let handle = h.clone();
-            return match op_name {
-                "get" => Ok(HandlerAction::Pure(interp.read_cell(&handle))),
-                "set" => {
-                    let new_val = args
-                        .get(1)
-                        .cloned()
-                        .ok_or_else(|| EvalError::ArityMismatch {
-                            op: "Modify.set",
-                            expected: 2,
-                            got: args.len(),
-                        })?;
-                    interp.write_cell(&handle, new_val);
-                    Ok(HandlerAction::Pure(Value::Unit))
-                }
-                other => Err(EvalError::Internal(format!(
-                    "Modify[Cell] handler: unknown op `{}`",
-                    other
-                ))),
-            };
-        }
-
-        // Fallback: one slot per constructor, for a resource a constructor names; a value no
-        // constructor names (a tuple, a function value) is no resource at all. One built with
-        // fields would share that slot with every other value of its constructor —
-        // `box(id: 1)` and `box(id: 2)` one place, where two places are two resources — so
-        // it is refused until the handler keeps the values of one constructor apart (WI-200).
-        let key = resource_key(interp, target)?;
-        if matches!(
-            target.head(interp.kb()),
-            ViewHead::Functor { pos_arity, named_arity, .. } if pos_arity + named_arity > 0
-        ) {
-            return Err(EvalError::ResourceWithFields {
-                resource: super::render_raised_payload(interp.kb(), target),
-            });
-        }
-        match op_name {
-            "get" => cells
-                .borrow()
-                .get(&key)
-                .cloned()
-                .map(HandlerAction::Pure)
-                .ok_or_else(|| EvalError::ResourceUnset {
-                    resource: super::render_raised_payload(interp.kb(), target),
-                }),
-            "set" => {
-                let new_val = args
-                    .get(1)
-                    .cloned()
-                    .ok_or_else(|| EvalError::ArityMismatch {
-                        op: "Modify.set",
-                        expected: 2,
-                        got: args.len(),
-                    })?;
-                detect_cycle(interp, key, &new_val, 0)?;
-                cells.borrow_mut().insert(key, new_val);
-                Ok(HandlerAction::Pure(Value::Unit))
-            }
-            other => Err(EvalError::Internal(format!(
-                "Modify handler: unknown op `{}`",
-                other
-            ))),
-        }
-    })
-}
-
-fn resource_key(interp: &Interpreter, v: &Value) -> Result<Symbol, EvalError> {
-    crate::eval::eval::value_functor(interp.kb(), v).ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Entity, Cell, or nullary Term (resource identifier)",
-        got: v.type_name().to_string(),
-    })
-}
-
-/// Bounded structural walk checking whether `value` transitively
-/// references the cell keyed by `target`. `depth` is a budget guarding
-/// against pathological structures even without a genuine cycle.
-fn detect_cycle(
-    interp: &Interpreter,
-    target: Symbol,
-    value: &Value,
-    depth: usize,
-) -> Result<(), EvalError> {
-    const MAX_DEPTH: usize = 1024;
-    if depth >= MAX_DEPTH {
-        return Err(EvalError::CyclicReference);
-    }
-    match value {
-        Value::Entity {
-            functor,
-            pos,
-            named,
-            ..
-        } => {
-            if *functor == target {
-                return Err(EvalError::CyclicReference);
-            }
-            for v in pos.iter().chain(named.iter().map(|(_, v)| v)) {
-                detect_cycle(interp, target, v, depth + 1)?;
-            }
-            Ok(())
-        }
-        Value::Term { id: tid, .. } => detect_cycle_term(interp, target, *tid, depth),
-        // WI-787: through the owning accessor, not an open-coded chain. Order is
-        // immaterial to a cycle search, but a half-read would MISS children.
-        Value::Tuple { .. } => {
-            let components = value
-                .tuple_components(&interp.kb)
-                .expect("matched Value::Tuple");
-            for v in components.iter() {
-                detect_cycle(interp, target, v, depth + 1)?;
-            }
-            Ok(())
-        }
-        // The `Term::Ref` arm of `detect_cycle_term`, on the other carrier of the
-        // same symbol. `_ => Ok(())` would report NO cycle for the one shape this
-        // guard exists to catch — `Modify[<sym>].set(<same sym>)` — since
-        // `resource_key` reads its key through `value_functor`, which does accept
-        // this carrier.
-        Value::SymbolRef(sym) => {
-            if *sym == target {
-                Err(EvalError::CyclicReference)
-            } else {
-                Ok(())
-            }
-        }
-        // WI-1025: `value_functor` accepts an occurrence too, so this guard has to
-        // see through one or the same `_ => Ok(())` silently reports no cycle for a
-        // key `resource_key` accepted. Both halves of the `Entity` arm above, read
-        // carrier-neutrally: the head names the target, or a child references it.
-        Value::Node(_) => {
-            use crate::kb::term_view::ViewItem;
-            if crate::eval::eval::value_functor(interp.kb(), value) == Some(target) {
-                return Err(EvalError::CyclicReference);
-            }
-            // NO `Value::carried()` here, unlike the two readers this arm pairs
-            // with: `occ_view_pos_arg` / `named_arg` / `named_keys` each begin with
-            // `spliced_value(occ)` and read THROUGH the wrapper, so the walk below
-            // already sees a wrapped value's children. Measured, not assumed —
-            // adding the cancellation changed no test either way, which is the
-            // definition of a line that protects nothing.
-            let kb = interp.kb();
-            let as_value = |item: ViewItem| match item {
-                ViewItem::Term(t) => Value::term(t),
-                ViewItem::Value(v) => v.clone(),
-                ViewItem::Owned(v) => v,
-                ViewItem::Node(occ) => Value::Node(occ),
-            };
-            // Children are walked by INDEX, not by the head's arity — the
-            // `Entity`/`Tuple` arms above walk unconditionally and this must too.
-            // Gating on `ViewHead::Functor` silently dropped every child of an
-            // occurrence that heads `Opaque` (a list/set/tuple literal in a KB
-            // without the reflect constructors loaded), which is the `_ => Ok(())`
-            // this arm exists to remove, one level in.
-            let mut child_values: Vec<Value> = Vec::new();
-            let mut i = 0;
-            while let Some(item) = value.pos_arg(kb, i) {
-                child_values.push(as_value(item));
-                i += 1;
-            }
-            for s in value.named_keys(kb) {
-                if let Some(item) = value.named_arg(kb, s) {
-                    child_values.push(as_value(item));
-                }
-            }
-            for v in child_values {
-                detect_cycle(interp, target, &v, depth + 1)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn detect_cycle_term(
-    interp: &Interpreter,
-    target: Symbol,
-    tid: crate::kb::term::TermId,
-    depth: usize,
-) -> Result<(), EvalError> {
-    const MAX_DEPTH: usize = 1024;
-    if depth >= MAX_DEPTH {
-        return Err(EvalError::CyclicReference);
-    }
-    use crate::kb::term::Term;
-    match interp.kb().get_term(tid) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            if *functor == target {
-                return Err(EvalError::CyclicReference);
-            }
-            let pos: Vec<_> = pos_args.iter().copied().collect();
-            let named: Vec<_> = named_args.iter().map(|(_, t)| *t).collect();
-            for t in pos.into_iter().chain(named.into_iter()) {
-                detect_cycle_term(interp, target, t, depth + 1)?;
-            }
-            Ok(())
-        }
-        Term::Ref(sym) => {
-            if *sym == target {
-                Err(EvalError::CyclicReference)
-            } else {
-                Ok(())
-            }
-        }
-        _ => Ok(()),
-    }
 }
 
 // ── Default Error handler ──────────────────────────────────────
@@ -909,17 +657,16 @@ impl Interpreter {
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers), the
-    /// wall-clock `Clock` handler (a test reading the clock registers it, or
-    /// one of its own), and
-    /// a fresh arena-backed Modify handler — the latter is always useful,
-    /// even for tests, since Modify.get/set have no side effect beyond
-    /// the handler's own state.
+    /// `Error` handler, and the wall-clock `Clock` handler (a test reading
+    /// the clock registers it, or one of its own). No base modifiable sort
+    /// has a handler here: `Cell`'s operations are host functions over the
+    /// interpreter's arena (proposal 037 §4.1, §4.2).
     ///
     /// Each by its qualified name, and a name the KB does not declare is an error
-    /// (`UnknownOperation`), not a handler left out: the six are the standard library's,
+    /// (`UnknownOperation`), not a handler left out: the five are the standard library's,
     /// and a KB loaded without it has no program to run with them.
     pub fn register_standard_effect_handlers(&mut self) -> Result<(), EvalError> {
-        let entries: [(&str, fn() -> EffectHandler); 6] = [
+        let entries: [(&str, fn() -> EffectHandler); 5] = [
             (
                 "anthill.prelude.Console.ConsoleOutput",
                 stdio_console_output_handler,
@@ -932,7 +679,6 @@ impl Interpreter {
                 "anthill.prelude.Console.ConsoleInput",
                 stdio_console_input_handler,
             ),
-            ("anthill.prelude.Modify", default_modify_handler),
             ("anthill.prelude.Error", default_error_handler),
             ("anthill.prelude.Time.Clock", system_clock_handler),
         ];

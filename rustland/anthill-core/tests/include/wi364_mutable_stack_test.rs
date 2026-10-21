@@ -13,7 +13,7 @@
 //!   - the stack API: push -> top -> pop (LIFO, read+mutate) -> empty pop;
 //!   - the collection view: size (walk via iterator) and clear.
 
-use crate::common::{interp_for, register_modify_handler};
+use crate::common::interp_for;
 use anthill_core::eval::Value;
 use anthill_core::kb::term_view::TermView;
 
@@ -80,7 +80,6 @@ fn mutable_stack_carrier_loads_clean() {
 #[test]
 fn mutable_stack_lifecycle_push_pop_lifo() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
 
     let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
 
@@ -141,7 +140,6 @@ fn mutable_stack_lifecycle_push_pop_lifo() {
 #[test]
 fn mutable_stack_collection_view_insert_walk_clear() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
 
     let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
     assert_eq!(
@@ -216,7 +214,6 @@ fn mutable_stack_collection_view_insert_walk_clear() {
 #[test]
 fn iterable_map_snapshots_the_source_it_does_not_capture_it_live() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
 
     let s = interp.call("test.wi364.stack.fresh", &[]).expect("fresh");
     for v in [1i64, 2] {
@@ -239,7 +236,6 @@ fn iterable_map_snapshots_the_source_it_does_not_capture_it_live() {
 #[test]
 fn mutable_stack_new_returns_distinct_handles() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
 
     let a = interp.call("test.wi364.stack.fresh", &[]).expect("fresh a");
     let b = interp.call("test.wi364.stack.fresh", &[]).expect("fresh b");

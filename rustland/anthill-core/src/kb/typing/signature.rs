@@ -3412,7 +3412,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             //     the exact relation for place-vs-place and the WRONG one for
             //     place-vs-resource-TYPE: `Modify[c]` with `c: Cell` refines
             //     `Modify[T = Cell]` (`Cell.set` over `ModifyRuntime.set`, in the
-            //     stdlib), and nothing on this pass relates a place to a type.
+            //     stdlib then), and nothing on this pass relates a place to a type.
             //
             // WI-20260823-39AD2 REMOVED THE SECOND ARM OF THIS GATE, and the removal
             // is not "the relation was built" — the relation was found to be
@@ -3645,29 +3645,42 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 /// repeatedly, since nothing forbids nesting, and returns the element unchanged when it
 /// is already a label.
 pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol) -> Value {
+    peel_effect_atom_noting_absence(kb, e, label_key).0
+}
+
+/// [`peel_effect_atom`], and whether an `absent` wrapper (`-E`) stood on the way down: such an
+/// element DENIES its label. An absence constrains a row; it is no effect the operation
+/// incurs, and a reader judging what a call incurs reads past it, not through it.
+pub(super) fn peel_effect_atom_noting_absence(
+    kb: &KnowledgeBase,
+    e: &Value,
+    label_key: Symbol,
+) -> (Value, bool) {
     let mut cur = e.clone();
+    let mut denied = false;
     // Bounded by the row's own depth; the loop terminates because each step descends
     // into a strictly smaller child.
     loop {
         // By the constructor's qualified name, as `row_atoms` reads them: a sort of the
         // program's own named `absent` is no wrapper (MEASURED: `effects {absent[label =
         // Int64]}` over a user effect `absent` was refused, its label read as the effect).
-        let is_wrapper = cur.head(kb).functor_sym().is_some_and(|f| {
+        let wrapper = cur.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)).filter(|qn| {
             matches!(
-                kb.qualified_name_of(f),
+                *qn,
                 "anthill.prelude.EffectExpression.guarded"
                     | "anthill.prelude.EffectExpression.absent"
                     | "anthill.prelude.EffectExpression.present"
             )
         });
-        if !is_wrapper {
-            return cur;
-        }
+        let Some(wrapper) = wrapper else {
+            return (cur, denied);
+        };
+        denied |= wrapper == "anthill.prelude.EffectExpression.absent";
         match named_child_value(kb, &cur, label_key) {
             Some(inner) => cur = inner,
             // A wrapper with no `label` child is malformed; return it so the caller
             // judges what it can see rather than silently dropping the atom.
-            None => return cur,
+            None => return (cur, denied),
         }
     }
 }
@@ -3692,7 +3705,7 @@ pub(super) fn peel_effect_atom(kb: &KnowledgeBase, e: &Value, label_key: Symbol)
 ///
 /// WHY A REFUSAL AND NOT A COMPARISON. `Modify[<type>]` is unsatisfiable BY
 /// CONSTRUCTION, so there is nothing for a later pass to relate it to: σ binds a type
-/// parameter to a TYPE (`provides ModifyRuntime[T = Cell]` binds `T` to the sort),
+/// parameter to a TYPE (`provides Sp[T = Cell]` binds `T` to the sort),
 /// never to a place, so no instantiation of `Modify[T]` ever becomes a resource name.
 /// Left admissible it does not merely go unchecked — it DISABLES checking, in two
 /// different directions depending on whether the provision grounds it:

@@ -2850,10 +2850,10 @@ fn carrier_param_leaf_binding<V: TermView>(
 /// WI-383 B — the LATE, GROUND-valued companion to [`bind_spec_params_from_carrier_param`].
 /// Binds a spec value-param that is STILL FREE after the argument loops to its GROUND
 /// provider-fact value (`fact Box[T = IntCell, V = Int64]` ⟹ `Box.V := Int64`). This is the
-/// entity-resource Modify tie: `ModifyRuntime.get(target: T) -> V` consumed on a resource
-/// whose provider fact pins `V` to a concrete sort. `V` appears only in the RETURN, so no
-/// argument ever threads it; left free, the value-untied return is filled from the caller's
-/// `expected`, accepting ANY declared return (the soundness hole the Modify model names).
+/// carrier-param read tie: a spec's `rd(target: T) -> V` consumed on a carrier whose provider
+/// fact pins `V` to a concrete sort (`wi383_op_type_param_projection_test`). `V` appears only
+/// in the RETURN, so no argument ever threads it; left free, the value-untied return is filled
+/// from the caller's `expected`, accepting ANY declared return.
 ///
 /// Why it is a SEPARATE late pass, not folded into the early
 /// [`bind_spec_params_from_carrier_param`]:
@@ -3477,6 +3477,9 @@ impl DerivedRow {
 /// `has_guarded` is the caller's own "this op declares a guarded atom at all" answer,
 /// kept as a parameter rather than recomputed: both callers have already paid for it,
 /// and the guard-σ they pass is built only when it is true.
+///
+/// Returns whether the call INCURS the element — whether anything of it was kept — which is
+/// what a caller judging an incurred atom asks ([`placeless_modify`]).
 pub(super) fn push_effect_with_guard_discharge(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
@@ -3485,7 +3488,7 @@ pub(super) fn push_effect_with_guard_discharge(
     has_guarded: bool,
     walked: Value,
     out: &mut Vec<Value>,
-) {
+) -> bool {
     let (bare_row, walked) = if value_is_bare_row_expr(kb, &walked) {
         (true, wrap_bare_effect_expr_as_row(kb, &walked))
     } else {
@@ -3500,17 +3503,22 @@ pub(super) fn push_effect_with_guard_discharge(
         if has_guarded {
             drop_refuted_guarded_labels(kb, flow, subst, guard_sigma, &walked, &mut present);
         }
+        let kept = !present.is_empty();
         out.extend(present);
+        kept
     } else if has_guarded && resolved_functor_name(kb, &walked) == Some("guarded") {
         // A STANDALONE guarded atom (how a partial primitive declares its single effect:
         // `div … effects { Error[…] :- eq(b, 0) }`). Refute σ(guard) from Γ; drop the
         // atom on a positive proof of ¬guard, else keep it conservatively present
         // (unchanged from WI-478).
-        if !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked) {
+        let kept = !guarded_atom_value_refuted(kb, flow, subst, guard_sigma, &walked);
+        if kept {
             out.push(walked);
         }
+        kept
     } else {
         out.push(walked);
+        true
     }
 }
 
@@ -3587,7 +3595,7 @@ pub(super) fn dispatched_impl_effects_of(
         // The arg bound to the spec op's param[i] (the caller names and orders spec-op
         // params, not impl params): the positional one that fills it by the call's
         // WI-20260827-1F0QP ranking, else the one named with its label.
-        let Some((_, arg_occ)) = call.arg(kb, spec_params, i) else {
+        let Some((u, arg_occ)) = call.arg(kb, spec_params, i) else {
             continue;
         };
         let passed = call.passed(kb, spec_params, i);
@@ -3597,8 +3605,9 @@ pub(super) fn dispatched_impl_effects_of(
         // (WI-506: `Modify[c.rep]` is covered by `Modify[c]`) and skips an argument that names
         // no place (WI-20260823-4GBQV), which is refused where its `Modify` is incurred, as the
         // call's own. Keyed on variables alone, an override's `Modify[<its own param>]` leaked
-        // to the caller of `ModifyRuntime.set(h.cell, 1)` (MEASURED).
-        places.record(kb, *impl_param_sym, arg_occ);
+        // to the caller of a spec operation called on `h.cell` (MEASURED). The argument as the call's
+        // typing left it, as at the call's own site ([`typed_arg`]).
+        places.record(kb, *impl_param_sym, typed_arg(arg_occ, call.result(u)));
         // The type the override RECEIVES — a `some(…)`-wrapped argument's option — as
         // [`override_at_call`] and the fallback read it.
         if let Some(t) = passed {
@@ -3645,6 +3654,10 @@ pub(super) fn dispatched_impl_effects_of(
         override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, &reading, span)?;
     let mut out: Vec<Value> = Vec::new();
     let mut whole = true;
+    // The first `Modify` the call incurs over a parameter whose argument names no place, read
+    // off the override's own atom as the call's own is ([`placeless_modify`]).
+    let mut leak: Option<PlacelessModify> = None;
+    let keys = if places.placeless.is_empty() { None } else { ModifyKeys::new(kb) };
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
         // (`Stream.isEmpty effects s.E`) that a blanket ref-substitution leaves
@@ -3708,7 +3721,7 @@ pub(super) fn dispatched_impl_effects_of(
             // `b` that the call's argument must be bound to; the caller names and orders the
             // SPEC op's params, which the loop above pairs through [`bound_arg`] — the
             // ranking ([`positional_param_indices`]) `build_call_guard_sigma` reads too.
-            push_effect_with_guard_discharge(
+            let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
                 subst,
@@ -3717,17 +3730,16 @@ pub(super) fn dispatched_impl_effects_of(
                 walked,
                 &mut out,
             );
+            if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
+                leak = placeless_modify(kb, keys, &impl_op.params, e, &places.placeless);
+            }
         }
     }
     // WI-20260929-0RP29: a `Modify` over a parameter whose argument names no place is refused
-    // here as the call's own is (`unrekeyed_modify_argument`), not left naming the override's
+    // here as the call's own is ([`placeless_modify_refusal`]), not left naming the override's
     // parameter in the caller's row (`Modify[T = b]`, which no caller can declare).
-    if !places.placeless.is_empty() {
-        if let Some(err) =
-            unrekeyed_modify_argument(kb, &impl_op, impl_op_sym, &out, &places.placeless, span)
-        {
-            return Err(err);
-        }
+    if let Some(leak) = leak {
+        return Err(placeless_modify_refusal(kb, impl_op_sym, &leak, span));
     }
     Ok(DerivedRow {
         effects: out,

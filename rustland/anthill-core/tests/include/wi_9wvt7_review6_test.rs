@@ -5,8 +5,9 @@
 //!    raises a caught one again, and does not construct one (user, 2026-10-17).
 //! C. A sort's induction axiom owns its name against an operation and a rule, in its own load
 //!    and a later one, and against nothing else (user, 2026-10-17).
-//! D. `ModifyRuntime.get` and `set` take a place that is itself of a modifiable type, not one
-//!    that only holds a modifiable value (user, 2026-10-17); the refusal advises what repairs.
+//! D. (Retired with `ModifyRuntime`, WI-200: `ModifyRuntime.get` and `set` took a place that is
+//!    itself of a modifiable type, not one that only holds a modifiable value, and the refusal
+//!    advised what repairs.)
 //! E. Which provision a call gets: one order on the provisions' heads, a default only among the
 //!    tie, the bottom type below every spelling of a head, an arrow's parameter met as itself. (A
 //!    provider's own row was local here by the half of its dictionary; since the seventh review it
@@ -21,7 +22,6 @@
 //!
 //!   * the contract walked by the goals asked → [`a_contract_asking_for_a_spec_at_a_larger_type_is_refused_and_the_load_ends`];
 //!   * the typer's or the loader's construction refusal off → [`a_program_does_not_construct_a_runtime_account`];
-//!   * `ModifyRuntime`'s place read by `type_admits_modify` → [`a_place_that_only_holds_a_modifiable_value_is_refused_at_load`];
 //!   * the default consulted among every candidate → [`a_default_arbitrates_only_the_tie`];
 //!   * an arrow's parameter matched one way → [`an_arrow_parameter_is_met_as_itself`];
 //!   * a variant read at its sort for every spec → [`a_variant_carrier_is_advised_as_the_call_states_it`];
@@ -39,14 +39,13 @@
 //!
 //! The rest are measured against the tree before this review, whose readings were deleted
 //! rather than kept behind a switch — the raise's mark, the induction check at the axiom's
-//! derivation, the count ranking, the bottom type at a bare head alone, the place advice: each of
+//! derivation, the count ranking, the bottom type at a bare head alone: each of
 //! [`a_caught_account_is_read_and_raised_again_is_the_runtimes`],
 //! [`an_operation_or_a_rule_under_the_induction_axiom_is_refused_where_it_is_written`],
 //! [`another_declaration_under_the_induction_axioms_name_loads`],
 //! [`incomparable_heads_tie_and_a_chain_is_ranked`],
-//! [`a_variant_and_its_sort_rank_alike_in_both_spellings`],
-//! [`the_bottom_type_is_below_every_spelling_of_a_head`] and
-//! [`the_place_refusal_advises_a_repair_that_runs`] fails there as its comment says. So does
+//! [`a_variant_and_its_sort_rank_alike_in_both_spellings`] and
+//! [`the_bottom_type_is_below_every_spelling_of_a_head`] fails there as its comment says. So does
 //! every other row of this file.
 //!
 //! PASSES EITHER WAY, BY DESIGN: the repairs each refusal advises, run; the controls named in the
@@ -333,123 +332,6 @@ end
     ] {
         assert_eq!(run_int64(src, entry), Ok(answer), "{shape}");
     }
-}
-
-// ── D. the place `ModifyRuntime` reads and writes ─────────────────────────────────────────
-
-/// `get` / `set` run with the standard handlers, answering an `Int64`.
-fn run_with_handlers(src: &str, entry: &str) -> Result<i64, String> {
-    let mut interp = crate::common::interp_for(src);
-    interp
-        .register_standard_effect_handlers()
-        .expect("register the standard effect handlers");
-    match interp.call(entry, &[]) {
-        Ok(anthill_core::eval::Value::Int(n)) => Ok(n),
-        other => Err(format!("`{entry}` did not answer an Int64: {other:?}")),
-    }
-}
-
-/// A PLACE THAT ONLY HOLDS A MODIFIABLE VALUE IS NO PLACE THE HANDLER KEEPS, AND IS REFUSED AT
-/// LOAD. `get` and `set` read and write the place they are handed, and the standard handler keys
-/// a place by its constructor: an empty `List[T = Cell]` was written at `set(xs, 42)` and read
-/// back through ANOTHER empty list (42 — every `nil` one slot), a tuple with a `Cell` part and a
-/// function value returning one loaded and died at run time, an entity with a `Cell` field of a
-/// sort with no `Modifiable` loaded and died naming WI-200. The check asked whether a `Modify`
-/// could fire somewhere under the type, which each of these answers yes.
-///
-/// FAILS with the check reading `type_admits_modify` (the reading before this review): every
-/// shape loads.
-#[test]
-fn a_place_that_only_holds_a_modifiable_value_is_refused_at_load() {
-    let program = |decls: &str, body: &str| {
-        format!(
-            "namespace test.r6.hold\n  import anthill.prelude.{{Int64, Unit, Modify, Modifiable, Cell, List}}\n  \
-             import anthill.prelude.List.{{nil}}\n  import anthill.prelude.ModifyRuntime.{{set, get}}\n\
-             {decls}  operation go() -> Int64 =\n{body}end\n"
-        )
-    };
-    for (shape, decls, body, place) in [
-        (
-            "an empty list of cells",
-            "  operation write(xs: List[T = Cell[V = Int64]]) -> Unit effects Modify[xs] = set(xs, 42)\n",
-            "    let xs: List[T = Cell[V = Int64]] = nil()\n    let _ = write(xs)\n    0\n",
-            "List[T = Cell[V = Int64]]",
-        ),
-        (
-            "a tuple with a cell part",
-            "",
-            "    let t = (Cell.new(1), 2)\n    let _ = set(t, 5)\n    0\n",
-            "(_1: Cell[V = Int64], _2: Int64)",
-        ),
-        (
-            "an entity with a cell field",
-            "  sort W\n    entity w(c: Cell[V = Int64])\n  end\n  \
-             operation put(x: W, n: Int64) -> Unit effects Modify[x] = set(x, n)\n",
-            "    let x = w(c: Cell.new(1))\n    let _ = put(x, 5)\n    0\n",
-            "W",
-        ),
-    ] {
-        let errs = load_errors_of(&program(decls, body));
-        assert_refused_naming(
-            &errs,
-            &["expected a place of a modifiable type", &format!("got a place of type `{place}`")],
-            shape,
-        );
-    }
-}
-
-/// THE REFUSAL ADVISES A REPAIR THAT RUNS. `sort Plain { entity plain(n: Int64) }` given to
-/// `set` was told to give it a sort declaring `provides Modifiable[T = Self]`, and that program
-/// loaded and died on the standard handler's refusal of a resource built with fields (WI-200).
-/// The advice names a `Cell` first, and `Modifiable` only for a sort whose constructors take no
-/// fields: both run, answering what they wrote.
-///
-/// FAILS with the advice as it was (the text asserted). The two repairs pass either way: they
-/// are programs that ran before the refusal named them.
-#[test]
-fn the_place_refusal_advises_a_repair_that_runs() {
-    let refused = "namespace test.r6.plain\n  import anthill.prelude.{Int64, Unit}\n  \
-                   import anthill.prelude.ModifyRuntime.{set}\n  sort Plain\n    entity plain(n: Int64)\n  \
-                   end\n  operation put(p: Plain, n: Int64) -> Unit = set(p, n)\nend\n";
-    assert_refused_naming(
-        &load_errors_of(refused),
-        &[
-            "Make the place a `Cell`",
-            "a sort of the program's own whose constructors take no fields may instead declare \
-             `provides Modifiable[T = Self]`",
-        ],
-        "a constructor with fields",
-    );
-    let as_cell = r#"
-namespace test.r6.ascell
-  import anthill.prelude.{Int64, Unit, Modify, Cell}
-  import anthill.prelude.ModifyRuntime.{set, get}
-  operation put(p: Cell[V = Int64], n: Int64) -> Unit effects Modify[p] = set(p, n)
-  operation go() -> Int64 =
-    let p = Cell.new(3)
-    let _ = put(p, 5)
-    get(p)
-end
-"#;
-    assert_eq!(run_with_handlers(as_cell, "test.r6.ascell.go"), Ok(5));
-    let as_nullary = r#"
-namespace test.r6.asnull
-  import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import anthill.prelude.ModifyRuntime.{set, get}
-  sort Plain
-    provides Modifiable[T = Self]
-    entity plain
-  end
-  operation put(p: Plain, n: Int64) -> Unit effects Modify[p] = set(p, n)
-  -- The place is a binding, not the constant: ambient places are retired
-  -- (WI-20260902-JB6RS), so `Modify[plain]` and `put(plain, 6)` name none.
-  operation go() -> Int64 =
-    let p = plain
-    let _ = put(p, 6)
-    get(p)
-end
-"#;
-    assert_eq!(run_with_handlers(as_nullary, "test.r6.asnull.go"), Ok(6));
 }
 
 // ── E. which provision a call gets ────────────────────────────────────────────────────────

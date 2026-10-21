@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20261001-80ZV8-a-bare-parametric-sort-means
+- depends_on: WI-20261001-80ZV8-a-bare-parametric-sort-means, WI-20260821-6WVJB-a-predicate-s-clauses-must-all
 
 - tags: proposal-069
 
@@ -33,4 +33,8 @@ A QUESTION FROM WI-20260925-0RRQP, to decide before plan step 3 (user, 2026-10-0
 ### 2026-10-14T08:35:07Z — feedback — user
 
 A CHECK FOR THIS TICKET (user, 2026-10-14), found by the family e-applied-arrow: under the interim reading an unwritten E accepts any row, so let w: Function[A = Cell[V = Int64], B = Int64] = lambda (z: Cell[V = Int64]) -> put(z, 5) is admitted, and then w(q) in an operation that DECLARES NO EFFECTS runs and writes q (552) — the write is lost at the application. With Function.E default {} the lambda is refused at the annotation; acceptance should drive that program to that refusal. The family lists the program as an exception naming this ticket.
+
+### 2026-10-20T19:31:18Z — feedback — claude
+
+Now depends on WI-20260821-6WVJB (one arity per predicate, unblocked 2026-10-20 when WI-20260821-ZW940 was closed as decided). Once it is delivered, 069's arity check for a declaration that carries a default is the general rule, and needs no gate of its own: implement 069's omission reading on top of it rather than a defaults-only arity check.
 

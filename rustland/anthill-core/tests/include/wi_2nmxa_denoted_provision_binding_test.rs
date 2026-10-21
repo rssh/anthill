@@ -105,22 +105,7 @@
 //!     and a route's pin kept where it holds a value — no entry, carried type or citation
 //!     in the suite has the shape.
 
-use crate::common::{assert_refused_naming, load_errors_of, try_load_kb_with};
-use anthill_core::eval::{self, Interpreter};
-
-/// Load `src` and call `entry` with the `Modify` handler installed: its `Int64`, or why it
-/// did not load or run.
-fn run(src: &str, entry: &str) -> Result<i64, String> {
-    let kb = try_load_kb_with(src).map_err(|errs| errs.join("\n"))?;
-    let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
-    crate::common::register_modify_handler(&mut interp);
-    match interp.call(entry, &[]) {
-        Ok(eval::Value::Int(v)) => Ok(v),
-        other => Err(format!("`{entry}` did not run to an Int64: {other:?}")),
-    }
-}
+use crate::common::{assert_refused_naming, load_errors_of, run_int64 as run};
 
 // ── the stdlib's mapped stream: the ticket's own program ─────────────────────
 

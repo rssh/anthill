@@ -5261,7 +5261,7 @@ fn child_frame(ctx: ChildFrameContext, expr: Rc<NodeOccurrence>) -> Frame {
 /// **THE ONE SHAPE THAT NEEDS CARE IS THE CARRIER ALGEBRA.** `occ_head` reads
 /// THROUGH a top-level `Expr::Spliced`, so a raw `Value::Node(Spliced(<a
 /// dictionary>))` would present the excluded carrier's head. [`Value::carried`]
-/// cancels exactly that, and the two paired readers below cancel at the same place
+/// cancels exactly that, and the paired reader below cancels at the same place
 /// — a first draft cancelled only HERE, which left `constructor_sub_values` seeing
 /// `Expr::Spliced` and declining a value this function had just accepted: the very
 /// accept-then-decline pair the change exists to avoid.
@@ -5279,15 +5279,14 @@ fn child_frame(ctx: ChildFrameContext, expr: Rc<NodeOccurrence>) -> Frame {
 ///
 /// ADMITTING A CARRIER OBLIGES ITS PAIRED READERS (the rule WI-1016 wrote at
 /// `eval/pattern.rs`): `constructor_sub_values` must be able to destructure it, or
-/// `MatchDispatch`'s pre-filter promises an arm that then declines, and
-/// `effects::detect_cycle` must be able to walk it, or `Modify`'s guard reports no
-/// cycle for a key `resource_key` accepted. Both gained a `Value::Node` arm with
-/// this change.
+/// `MatchDispatch`'s pre-filter promises an arm that then declines. It gained a
+/// `Value::Node` arm with this change. (So did the standard `Modify` handler's cycle
+/// walk, the other paired reader then, retired with the handler by WI-200.)
 pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     use crate::kb::term_view::TermView;
     // Carrier algebra first, so an occurrence WRAPPING an excluded carrier cannot
-    // present that carrier's head — see [`Value::carried`], and note that the two
-    // readers paired with this one cancel at the same place, or one would accept
+    // present that carrier's head — see [`Value::carried`], and note that the
+    // reader paired with this one cancels at the same place, or one would accept
     // what the other cannot destructure.
     let value = value.carried();
     match value {

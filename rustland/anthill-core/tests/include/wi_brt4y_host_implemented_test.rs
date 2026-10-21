@@ -9,7 +9,8 @@
 //!   * claimed and bodied — a contradiction (`HostImplementedWithBody`).
 //!
 //! And the migration: the 46 host functions `register_standard_builtins` registered by
-//! hardcoded qualified name are `HOST_FNS` rows named by binding blocks, so every
+//! hardcoded qualified name (44 since WI-200 retired `ModifyRuntime`'s two) are `HOST_FNS`
+//! rows named by binding blocks, so every
 //! operation the interpreter registers is one `is_interpreter_mapped_op` can see.
 //!
 //! ── WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT ─────────────────────────────
@@ -251,8 +252,8 @@ fn the_full_closure_loads() {
 /// operation the interpreter registers is one the mapping index can see (183 mapped, 0
 /// invisible). The invariant is asserted over everything `register_standard_builtins`
 /// registers, not over a hand-kept list, so a hardcoded registration added THERE later
-/// fails here. The 46 are pinned by name as well, because "0 invisible" alone would also
-/// hold if they were registered nowhere.
+/// fails here. The 46 (44 since WI-200) are pinned by name as well, because "0 invisible"
+/// alone would also hold if they were registered nowhere.
 ///
 /// THE WHOLE RUNTIME REGISTRY since WI-20260923-9R5HN. BRT4Y could not reach
 /// anthill-stl's reflect set (`register_reflect_builtins`, which `runner::register_runtime`
@@ -354,9 +355,10 @@ const REFLECT_SET: [&str; 24] = [
     "anthill.kernel.not",
 ];
 
-/// The 46 registrations `register_standard_builtins` made by hardcoded qualified name
-/// before this ticket (`register_if_present`), each now an `operation_map` entry.
-const MIGRATED: [&str; 46] = [
+/// The registrations `register_standard_builtins` made by hardcoded qualified name
+/// before this ticket (`register_if_present`), each now an `operation_map` entry: 46 then,
+/// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort.
+const MIGRATED: [&str; 44] = [
     "anthill.prelude.PartialEq.eq",
     "anthill.prelude.PartialEq.neq",
     "anthill.kernel.struct_eq",
@@ -386,8 +388,6 @@ const MIGRATED: [&str; 46] = [
     "anthill.prelude.Console.eprint",
     "anthill.prelude.Console.eprintln",
     "anthill.prelude.Console.read_line",
-    "anthill.prelude.ModifyRuntime.get",
-    "anthill.prelude.ModifyRuntime.set",
     "anthill.prelude.Error.raise",
     "anthill.prelude.Cell.new",
     "anthill.prelude.Cell.get",

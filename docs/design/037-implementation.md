@@ -2,8 +2,8 @@
 
 ## Status: Decided (2026-10-17). The last step of WI-20261017-T34HP, delivered the same day. The proposal is
 [`../proposals/037-anthill-state-model.md`](../proposals/037-anthill-state-model.md), revised and
-reviewed on 2026-10-17; this document owns HOW. Nothing here is implemented. Its nine decisions
-(§3) were taken with the user the same day, one at a time.
+reviewed on 2026-10-17; this document owns HOW. Step 1 is implemented (WI-200, 2026-10-20); the
+rest is not. Its nine decisions (§3) were taken with the user the same day, one at a time.
 
 ## 0. The sequence
 
@@ -182,6 +182,14 @@ example, and each gets another: `kb/typing/coherence.rs:1777`, `carrier.rs:2961`
 `apply.rs:393`, `signature.rs:3242`, `:3248`, `:3368`, `:3503`, `:3516`, and `kb/resolve.rs:11895`,
 where `bridge_fault_message`'s comment lists a write through `ModifyRuntime` as a route to its
 hidden-row report (D4 is the spec's twin of this comment).
+*(AMENDED with step 1, 2026-10-20: the typer had `ModifyRuntime` code by then. WI-20260908-9WVT7's
+sixth review (be220580) added `modify_runtime_at_unmodifiable_place` (`kb/typing/apply.rs`), which
+refused `ModifyRuntime.get` / `set` at a place not itself of a modifiable type, with its helper
+`region::type_is_modifiable_place` and the provider index's `region_sorts` memo, which nothing else
+read. All three went with the sort, and so did kernel-language §5.6's passage on that refusal (user,
+2026-10-20), and the rows that drove it: `wi_9wvt7_review5_test` C, `wi_9wvt7_review6_test` D and
+`wi_9wvt7_review7_test` E. `wi_9wvt7_review7_test` B, a variant's place, is about `Modify` typing
+and keeps its subject with a fixture operation, as the 4GBQV rows do.)*
 
 **The tests,** by what each one is about.
 

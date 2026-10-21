@@ -21,7 +21,7 @@
 //! carrier is a wildcard too, so the param never pins); this extends the same
 //! leniency to the carrier-concrete / sibling-abstract mix.
 
-use crate::common::{interp_for, register_modify_handler};
+use crate::common::interp_for;
 use anthill_core::eval::Value;
 use anthill_core::kb::term_view::TermView;
 
@@ -74,7 +74,6 @@ end
 #[test]
 fn wi507_concrete_bare_clear_empties() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
 
     let s = interp.call("test.wi507.fresh", &[]).expect("fresh");
     for x in [10, 20, 30] {
@@ -99,7 +98,6 @@ fn wi507_concrete_bare_clear_empties() {
 #[test]
 fn wi507_abstract_carrier_only_clear_empties() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
     let r = interp.call("test.wi507.driveBare", &[]).expect("driveBare");
     assert_eq!(
         r.literal_int64(interp.kb()),
@@ -113,7 +111,6 @@ fn wi507_abstract_carrier_only_clear_empties() {
 #[test]
 fn wi507_abstract_insert_still_works() {
     let mut interp = interp_for(SRC);
-    register_modify_handler(&mut interp);
     let r = interp
         .call("test.wi507.driveInsert", &[])
         .expect("driveInsert");

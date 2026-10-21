@@ -31583,12 +31583,15 @@ impl<'a> Loader<'a> {
                 // below). It used to be one only as another bracket's entry, and refused
                 // elsewhere as a construction missing its argument list (WI-B6QYA) — the
                 // reading the bracket now has instead; a construction with type arguments is
-                // `red[…](…)`, which is not this node. Not in a rule's compound expression,
-                // where a constructor is a term the clause matches.
+                // `red[…](…)`, which is not this node. In a rule's compound expression as well,
+                // as the rule body's own walk reads it ([`Self::entity_ctor_expr`]'s caller):
+                // `if ?b then counter[] else counter[]` in a `@[simp]` right-hand side was built
+                // as the application `counter()` — loading at `-> CounterState` and evaluating
+                // to the instance — where the same rule without the `if` is refused, "expected
+                // CounterState, got Type (counter)" (MEASURED).
                 let is_type_value = !is_entity
                     && bracketed
-                    && (self.kb.has_kind(kb_functor, SymbolKind::Sort)
-                        || (names_constructor && !self.lowering_rule_compound_expr));
+                    && (self.kb.has_kind(kb_functor, SymbolKind::Sort) || names_constructor);
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
                 // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
