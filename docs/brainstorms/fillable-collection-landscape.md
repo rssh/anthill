@@ -10,7 +10,8 @@ Decided while writing it (the user, 2026-10-21):
 
 - A list literal is never translated to another collection: never built as one, never read
   through `split` in a pattern. kernel-language §4.6 says so now, proposal 019 records the
-  withdrawal, and WI-561 is rejected.
+  withdrawal. WI-561, a new literal with a tail (`[h | t]`) that will replace today's, is
+  pre-opened, its method not decided.
 - `<=>` stays independent of dictionaries: it unifies terms and never asks a sort.
 - THE MAIN OPTION (§4): the solver builds its collection from the list with
   `PersistentCollection[C = C].fromList([?p, ?q, ?r])`, a builder that reads the list's spine and
@@ -26,7 +27,7 @@ Decided while writing it (the user, 2026-10-21):
 [060](../proposals/060-clause-level-requirements-and-typed-heads.md) §2 (typed heads) and §3 (the
 head annotation as an anchor), [060-implementation](../design/060-implementation.md), "The next
 case — MiniSat over a collection BUILDER", kernel-language §4.6 (collection literals), WI-561
-(collection patterns, rejected), [future/unification-framework](../proposals/future/unification-framework.md)
+(a literal with a tail, pre-opened), [future/unification-framework](../proposals/future/unification-framework.md)
 (WI-382), [constrained-term-substrate](../design/constrained-term-substrate.md), and the clause
 typing: WI-20260926-7D48J and its parts WI-20261013-GGXCX, -WF14Z, -R1W5A, -RYDNV.
 
@@ -333,7 +334,7 @@ a typed head still enumerates the derived domain).
 
 - A (2026-10-21): the literal built as a `C` by the typer — §4.6's withdrawn sentence. The main
   option is its explicit form.
-- B (2026-10-21, with WI-561): the literal read as a pattern through `split`. F is the same
+- B (2026-10-21): the literal read as a pattern through `split`, WI-561's earlier candidate. F is the same
   reading, written by the solver; *measured* through the rewrite now parked (§9): 2 models.
 - C (2026-10-21): the sort's own unification placed at `<=>` by the typer or the resolver —
   `<=>` stays independent of dictionaries; H is the same relation, called by the solver.

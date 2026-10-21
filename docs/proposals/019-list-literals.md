@@ -22,10 +22,10 @@
 > `{…}` / `(…)`) are implemented as described. The **head-tail `[h | t]` form
 > below was removed** — it was a parse-only surface (`ListLiteral(h, tail: t)`)
 > with no end-to-end semantics and no real usage; list destructuring uses the
-> explicit `cons(?h, ?t)` constructor. A proper first-class, type-directed
-> collection *deconstruction* syntax (`[h | t]` as a pattern desugaring to
-> `Iteration.split` for any collection — the design this proposal sketched) is
-> tracked separately as **WI-561**, rejected on 2026-10-21 (the update above). The `[h | t]` / `tail:` text
+> explicit `cons(?h, ?t)` constructor. A collection literal with a tail
+> (`[h | t]`, `[a, b | t]`), a new syntax that will replace today's literal and
+> whose method of implementation is not decided, is tracked separately as
+> **WI-561** (PreOpened). The `[h | t]` / `tail:` text
 > in the sections below is retained as design history, not current behavior.
 
 ## Motivation
