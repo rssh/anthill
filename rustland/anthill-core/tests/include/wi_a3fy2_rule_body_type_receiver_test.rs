@@ -387,9 +387,10 @@ fn a_constructor_under_a_compound_expression_is_the_operation_bodys() {
     assert!(errs.is_empty(), "{errs:?}");
 }
 
-/// A member the denoted sort does not declare is refused about that sort, a member of
-/// `Type` with its spelling, and a rule of the sort as no call — none of them as an
-/// unresolved name.
+/// A member the denoted sort does not declare is refused about that sort, and a member of
+/// `Type` with its spelling — neither as an unresolved name. A rule of the sort is the goal
+/// its written spelling is (`wi_r653s_paren_less_dot_test`); it was refused here as no
+/// call until WI-20261008-R653S.
 #[test]
 fn a_member_the_sort_does_not_declare_is_refused_about_the_sort() {
     for (ns, body, said) in [
@@ -402,11 +403,6 @@ fn a_member_the_sort_does_not_declare_is_refused_about_the_sort() {
             "a3fy2eqmember",
             "  rule r(1) :- (Box).eq(Box)",
             vec!["`Box` declares no `eq`", "anthill.prelude.PartialEq.eq(…)"],
-        ),
-        (
-            "a3fy2rulemember",
-            "  rule r(?x) :- (Box).rows(?x)",
-            vec!["`rows` is declared in `Box` and is neither"],
         ),
     ] {
         let rendered = refusal(ns, "", body);

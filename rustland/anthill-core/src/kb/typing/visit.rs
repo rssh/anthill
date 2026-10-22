@@ -519,15 +519,14 @@ pub(super) fn visit_type(
                 // the chain — the term the fact side stores — exactly as the relation rung
                 // above leaves it.
                 //
-                // RULE BODIES ONLY. In an operation body the bare `Box.zero` names no
-                // operation, and `Box[T = …].zero` is refused on that premise
-                // (`ParenLessCitationOfNonRule`), so this reading stops where the
-                // rule-body elaboration it mirrors stops. MEASURED REDUNDANT TODAY, and
-                // kept as the statement of that scope: `loader_chain_dotted_name` needs
-                // the written-dot flag, and only the rule-body walk (and the materializer
-                // it falls back on) sets it, so with this gate removed an operation body
-                // is still refused — no row can drive it. It becomes load-bearing the day
-                // an operation-body producer marks its dots too.
+                // RULE BODIES ONLY. An operation body never brings the chain here: the
+                // loader lowers `Box.zero` there to the applied call `Box.zero()`
+                // (`Loader::try_qualified_op_ref`), the node an operation body's call is
+                // typed as. MEASURED REDUNDANT TODAY, and kept as the statement of that
+                // scope: `loader_chain_dotted_name` needs the written-dot flag, and only
+                // the rule-body walk (and the materializer it falls back on) sets it. It
+                // becomes load-bearing the day an operation-body producer marks its dots
+                // too.
                 if env.in_rule_body() {
                     if let Some(op) = dotted_citation_nullary_op(kb, &occ) {
                         let r =

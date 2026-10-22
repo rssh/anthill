@@ -1722,10 +1722,10 @@ impl<'a> Converter<'a> {
     /// `Sort.m.…` with the bindings ERASED: `Wrap[W = Colour].dom` (no such parameter)
     /// loaded clean where `Wrap[W = Colour].dom()` is refused.
     ///
-    /// The node is marked, because in an operation or const body paren-less is the
-    /// rule-citation spelling only — a bare `Sort.op` names no operation there — and it
-    /// is the loader, which knows what `m` resolves to, that refuses the non-rule case
-    /// (`Loader::refuse_paren_less_non_rule`).
+    /// The node is marked, because in an operation or const body paren-less is a rule
+    /// citation or an operation's call and nothing else, and it is the loader, which knows
+    /// what `m` resolves to, that refuses any other member
+    /// (`Loader::refuse_paren_less_bracket_binding_nothing`).
     fn convert_paren_less_citation(&mut self, node: Node) -> TermId {
         let span = self.span(node);
         let object = self

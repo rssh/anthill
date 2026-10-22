@@ -27,12 +27,14 @@
 //!  * [G] its `in_rule_body()` gate removed: NOTHING reddens, measured. The gate is
 //!    redundant with provenance today — only the rule-body walk marks a written dot, so
 //!    an operation body never reaches the rung — and is kept as the statement of scope
-//!    (see its site). `an_operation_body_is_not_widened` therefore pins the OBSERVABLE
-//!    (an operation body stays refused), not the gate.
+//!    (see its site). `an_operation_body_calls_it_too` pins the OBSERVABLE, not the gate:
+//!    it was `an_operation_body_is_not_widened`, an operation body refused, until
+//!    WI-20261008-R653S made the dotted name the call there as well — by the loader,
+//!    which builds the applied call, and not by this rung.
 //!
 //! PASS EITHER WAY, BY DESIGN: the one-segment and applied controls inside
 //! `a_dotted_nullary_operation_binds_its_value`, `the_term_still_matches_its_fact`,
-//! `a_non_nullary_member_stays_its_name` and `an_operation_body_is_not_widened` — they pin
+//! `a_non_nullary_member_stays_its_name` and `an_operation_body_calls_it_too` — they pin
 //! what the change must NOT move.
 //!
 //! NOT IN SCOPE, and uniform across spellings rather than a dotted-name gap: a QUERY
@@ -172,22 +174,23 @@ end
 }
 
 #[test]
-fn an_operation_body_is_not_widened() {
-    // The reading is a RULE-BODY one. In an operation body the bare `Box.zero` names no
-    // operation, and `Box[T = …].zero` is refused on that premise
-    // (`LoadError::ParenLessCitationOfNonRule`) — so it must stay refused here.
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(
-            "namespace zzdnco
+fn an_operation_body_calls_it_too() {
+    // An operation body reads the dotted name as the applied call `Box.zero()`
+    // (`Loader::try_qualified_op_ref`, WI-20261008-R653S), so both bodies give it one
+    // reading. It was refused there, "zero.name: expected resolved name".
+    let mut interp = crate::common::interp_for(
+        "namespace zzdnco
   import anthill.prelude.{Int64}
   sort Box
     entity box(v: Int64)
-    operation zero() -> Int64 = 0
+    operation zero() -> Int64 = 3
   end
   operation go() -> Int64 = Box.zero
 end
 ",
-        ),
-        &["zero.name: expected resolved name"],
     );
+    match interp.call("zzdnco.go", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 3),
+        other => panic!("go: expected Int(3), got {other:?}"),
+    }
 }

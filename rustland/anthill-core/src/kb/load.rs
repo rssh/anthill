@@ -2455,25 +2455,19 @@ pub enum LoadError {
         span: Span,
     },
     /// WI-20260911-5G28A (L3) — a PAREN-LESS bracketed `Sort[…].m` in an operation or
-    /// const body whose `m` resolves, and not to a rule. The paren-less spelling is the
-    /// RULE citation (`Wrap[T = Colour].tag`); the bare `Sort.m` cites nothing else
-    /// either, and without this the converter's lowering — the zero-argument call the
-    /// applied `Sort[…].m()` builds — would make `Box[T = Int64].zero` a call the author
-    /// did not write, which the typer accepts for a nullary operation.
+    /// const body whose `m` resolves to neither a rule nor an operation: a nested sort, a
+    /// const, a type parameter. A bracket before a dot is read by a rule citation
+    /// (`Wrap[T = Colour].tag`) or an operation's call (`Box[T = Int64].zero`) and by
+    /// nothing else, so here it would bind nothing.
     ///
     /// Its OWN variant, not [`Self::InvalidTypeArgument`]: the bracket may be perfectly
-    /// valid — it is the missing `()` or the member that is wrong, and a message that
-    /// opens "invalid type argument" sends the author to the one part they wrote right.
-    ParenLessCitationOfNonRule {
-        /// The sort AS WRITTEN (`Box`, `..ns.Box`), so the repair quotes the source.
+    /// valid — it is the member that is wrong, and a message that opens "invalid type
+    /// argument" sends the author to the one part they wrote right.
+    ParenLessBracketBindsNothing {
+        /// The sort AS WRITTEN (`Outer`, `..ns.Outer`), so the repair quotes the source.
         sort: String,
-        /// The member as written (`zero`).
+        /// The member as written (`Inner`).
         member: String,
-        /// Whether `member` is an operation — the one case with a spelling that reads
-        /// the bracket (`Sort[…].m()`). Anything else (a nested sort, a const, a type
-        /// parameter) has none: a bracket before a dot is read by a rule citation or an
-        /// operation call and by nothing else.
-        is_operation: bool,
         span: Span,
     },
     /// WI-840 (proposal 058 §4.2) — an operation declares a type parameter whose name
@@ -2708,24 +2702,35 @@ fn self_type_misuse_detail(problem: &SelfTypeProblem) -> String {
     }
 }
 
-/// WI-20260911-5G28A (L3): the one wording of [`LoadError::ParenLessCitationOfNonRule`],
-/// shared by the two renderings so they cannot drift (WI-852). Only an operation has a
-/// repair that keeps the bracket; for anything else the bracket reads nothing, and
-/// dropping it is what the bare spelling already means.
-fn paren_less_citation_detail(sort: &str, member: &str, is_operation: bool) -> String {
-    if is_operation {
-        format!(
-            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` is \
-             an operation — call it `{sort}[…].{member}()`"
-        )
+/// Why a sort's bracket on the relation `callee` named in a rule body is refused: the one
+/// wording for the written receiver (`Loader::refuse_rule_goal_receiver`) and for a receiver
+/// that denotes the sort (`typing::written_type_dots_as_calls`).
+pub(crate) fn rule_body_relation_bracket_detail(kb: &KnowledgeBase, callee: Symbol) -> String {
+    let name = kb.qualified_name_of(callee);
+    let fill = kb.try_resolve_symbol("anthill.reflect.Fillable.fill");
+    let domain_hint = if fill.map(|f| kb.canonical_sym(f)) == Some(kb.canonical_sym(callee)) {
+        "; a sort's domain is its `domain` relation — `Colour.domain(?x)` for \
+         `SortDomain[T = Colour].fill(?x)`"
     } else {
-        format!(
-            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` \
-             names no rule — a type bracket before a dot is read by a rule citation or an \
-             operation call and by nothing else, so here it would bind nothing; drop it \
-             (`{sort}.{member}`)"
-        )
-    }
+        ""
+    };
+    format!(
+        "a sort's type bracket on `{name}` in a rule body is not read — a relation named in a \
+         rule body, as a goal or as a value, is passed no type argument, so the binding would \
+         be dropped and the relation read at every instance. Cite the relation from an \
+         operation body, where the bracket selects the instance, or write it without the \
+         bracket{domain_hint}"
+    )
+}
+
+/// WI-20260911-5G28A (L3): the one wording of [`LoadError::ParenLessBracketBindsNothing`],
+/// shared by the two renderings so they cannot drift (WI-852).
+fn paren_less_bracket_detail(sort: &str, member: &str) -> String {
+    format!(
+        "`{sort}[…].{member}` names neither a rule nor an operation — a type bracket before \
+         a dot is read by a rule citation or an operation call and by nothing else, so here \
+         it would bind nothing; drop it (`{sort}.{member}`)"
+    )
 }
 
 /// WI-840: what an operation's declared type parameter collides with (proposal 058
@@ -2956,7 +2961,7 @@ impl LoadError {
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
-            | LoadError::ParenLessCitationOfNonRule { span, .. }
+            | LoadError::ParenLessBracketBindsNothing { span, .. }
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
@@ -3952,16 +3957,11 @@ impl LoadError {
                     call_type_args_unsupported_detail(callee, *position),
                 )
             }
-            LoadError::ParenLessCitationOfNonRule {
-                sort,
-                member,
-                is_operation,
-                span,
-            } => {
+            LoadError::ParenLessBracketBindsNothing { sort, member, span } => {
                 format!(
                     "{}: {}",
                     loc.format_start(*span),
-                    paren_less_citation_detail(sort, member, *is_operation),
+                    paren_less_bracket_detail(sort, member),
                 )
             }
             LoadError::SelfTypeMisuse { problem, span } => {
@@ -5441,16 +5441,11 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
-            LoadError::ParenLessCitationOfNonRule {
-                sort,
-                member,
-                is_operation,
-                span,
-            } => {
+            LoadError::ParenLessBracketBindsNothing { sort, member, span } => {
                 write!(
                     f,
                     "{} at {}..{}",
-                    paren_less_citation_detail(sort, member, *is_operation),
+                    paren_less_bracket_detail(sort, member),
                     span.start,
                     span.end,
                 )
@@ -24270,6 +24265,15 @@ fn dotted_join(
     }
 }
 
+/// The member a fully qualified `path` reaches once each type alias among its container
+/// segments is read as the sort it stands for — `test.r.CA.zero` over `sort CA = Box[V =
+/// Int64]` is `test.r.Box.zero` — for a reader that holds a qualified path rather than a
+/// name written at a scope: the rule-body readers of a dotted name without parentheses.
+/// `None` when no alias is crossed or the member is not there.
+pub(crate) fn member_through_aliases(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
+    dotted_join(kb, None, || path.to_owned(), AliasReading::ReadThrough).map(|j| j.member)
+}
+
 /// The type alias the call written `name` at `scope` reaches `callee` through, or `None`
 /// when the path joins as written or its last container is no alias. Asks the ladder's
 /// own join ([`dotted_join`]), and answers only where that join is `callee`, the symbol
@@ -30670,6 +30674,9 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_ctor_ref(parse_id, whole, results) {
                                     return;
                                 }
+                                if self.try_qualified_op_ref(parse_id, &chain, whole, results) {
+                                    return;
+                                }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
                                     if self.try_identifier_dot_field(
                                         parse_id,
@@ -30802,9 +30809,22 @@ impl<'a> Loader<'a> {
         // this occurrence, so the un-renamed `join` column collision was reported there.
         // Only the LOCATION is repaired: that diagnostic still names `join_run`, the op
         // the macro splices rather than the `join` the author wrote — WI-20260820-5R2XT.
-        let receiver_kb = self.mk_var_ref(root_sym);
-        results.push(receiver_kb);
-        self.push_leaf_occ(parse_id, receiver_kb);
+        //
+        // A nullary OPERATION root is its call, as the whole chain naming it is
+        // ([`Self::try_qualified_op_ref`]): the zero-argument call, at the parameters an
+        // alias in its name fixes.
+        if self.kb.has_kind(root_sym, SymbolKind::Operation) {
+            let root_name = receiver_name
+                .strip_suffix(trailing)
+                .map(|r| r.strip_suffix('.').unwrap_or(r))
+                .unwrap_or(receiver_name);
+            let recv_type = self.alias_recv_type_of(root_name, root_sym);
+            self.push_zero_arg_apply(parse_id, root_sym, recv_type, results);
+        } else {
+            let receiver_kb = self.mk_var_ref(root_sym);
+            results.push(receiver_kb);
+            self.push_leaf_occ(parse_id, receiver_kb);
+        }
         let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
         let name_ref = self.kb.alloc(Term::Ref(member_sym));
         let named_keys: SmallVec<[Symbol; 2]> = visible_named.iter().map(|&(sym, _)| sym).collect();
@@ -30986,8 +31006,10 @@ impl<'a> Loader<'a> {
 
     /// The LONGEST prefix of a dotted name that names a VALUE BY ITSELF, paired with the
     /// segments trailing it (empty when the whole name is that value): a RULE, whose
-    /// reference is the `Relation[T]`, or a CONST, which is its value (§5.9, "a name that
-    /// is a value at every term position"). Longest-first is "most specific citation
+    /// reference is the `Relation[T]`, a CONST, which is its value (§5.9, "a name that
+    /// is a value at every term position"), or a NULLARY OPERATION, whose name without
+    /// parentheses is its call — `Box.zero.to_string()` is `Box.zero().to_string()`, as
+    /// `let t = Box` then `t.zero.to_string()` is. Longest-first is "most specific citation
     /// wins" — with rules `a` and `a.b` in scope, `a.b` is the relation labelled `a.b`,
     /// not member `b` of relation `a`.
     ///
@@ -31211,7 +31233,7 @@ impl<'a> Loader<'a> {
         // zero-argument call the written `Sort[…].rule` lowers to, which has the receiver
         // slot a leaf has not.
         if let Some(recv_type) = self.alias_recv_type_of(name, sym) {
-            self.push_zero_arg_apply(parse_id, sym, recv_type, results);
+            self.push_zero_arg_apply(parse_id, sym, Some(recv_type), results);
             return true;
         }
         // Emit the bare-unqualified rule-reference form + its leaf occurrence —
@@ -31313,6 +31335,47 @@ impl<'a> Loader<'a> {
         true
     }
 
+    /// AN OPERATION NAMED BY A DOTTED PATH with no trailing `(…)` — `Box.zero`,
+    /// `ns.seven` — is the call the applied `Box.zero()` makes: the zero-argument call a
+    /// receiver that denotes the sort makes of it (`let t = Box` then `t.zero`), and the
+    /// one a rule body makes of the same chain. The sort's parameters are inferred at the
+    /// call, as the applied spelling infers them, and through an alias they are the ones
+    /// the alias fixes. Left a chain, it was typed as a call of reflect's `field_access`
+    /// whose member names nothing (`zero.name: expected resolved name, got unresolved`).
+    ///
+    /// After the rule's rung, so an operation that heads clauses is the relation it cites,
+    /// and after the constructor's, which reads its own kind.
+    ///
+    /// An `internal` operation named from outside its scope is refused as the applied
+    /// `Box.secret()` is: the forbidden reference is recorded, and the call is left to a
+    /// bare name the typer reports as no operation.
+    fn try_qualified_op_ref(
+        &mut self,
+        parse_id: TermId,
+        name: &str,
+        // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
+        whole: Option<Symbol>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        let is_operation = |sym: &Symbol| self.kb.has_kind(*sym, SymbolKind::Operation);
+        let sym = match whole {
+            Some(sym) if is_operation(&sym) => sym,
+            Some(_) => return false,
+            None => match hidden_dotted_internal(self.kb, name, self.current_scope)
+                .filter(is_operation)
+            {
+                Some(hidden) => {
+                    let span = self.parsed.terms.span(parse_id);
+                    self.push_forbidden_internal(hidden, name, span)
+                }
+                None => return false,
+            },
+        };
+        let recv_type = self.alias_recv_type_of(name, sym);
+        self.push_zero_arg_apply(parse_id, sym, recv_type, results);
+        true
+    }
+
     /// The reference to `sym` a one-segment name lowers to (`load_var_ref`), with its
     /// leaf occurrence, standing for the whole node at `parse_id`.
     fn push_name_ref(&mut self, parse_id: TermId, sym: Symbol, results: &mut Vec<TermId>) {
@@ -31328,7 +31391,7 @@ impl<'a> Loader<'a> {
         &mut self,
         parse_id: TermId,
         functor: Symbol,
-        recv_type: crate::eval::value::Value,
+        recv_type: Option<crate::eval::value::Value>,
         results: &mut Vec<TermId>,
     ) {
         let args_list = self.kb.build_list(&[]);
@@ -31351,7 +31414,7 @@ impl<'a> Loader<'a> {
                     pos_count: 0,
                     named_keys: Vec::new(),
                     type_args: Vec::new(),
-                    recv_type: Some(recv_type),
+                    recv_type,
                 },
                 &mut self.expr_occ_results,
             );
@@ -31368,12 +31431,19 @@ impl<'a> Loader<'a> {
 
     /// The VALUE a dotted `name` names by itself, else `None`: a rule-ish citation target
     /// ([`Self::is_paren_less_citation_target`] — a `Goal` head functor, a `Rule` label,
-    /// an `EquationFunctor`) or a const. What a prefix of a dot receiver is asked
-    /// ([`Self::value_prefix_split`]) — one resolution, two kinds.
+    /// an `EquationFunctor`), a const, or a nullary operation, whose name without
+    /// parentheses is its call ([`Self::try_qualified_op_ref`]). What a prefix of a dot
+    /// receiver is asked ([`Self::value_prefix_split`]) — one resolution, three kinds.
+    ///
+    /// NULLARY ONLY: the bare name of an operation that takes arguments denotes nothing
+    /// where no function is expected (§5.4), so it is no receiver, and a path under it is
+    /// the path miss it was — `inner.g(v)` beside `operation inner(n: Int64)` is the
+    /// unknown `inner.g`, not the call `inner()` short of its argument.
     fn resolve_qualified_value_readonly(&self, name: &str) -> Option<Symbol> {
         self.resolve_qualified_readonly(name).filter(|sym| {
             self.is_paren_less_citation_target(*sym)
                 || self.kb.has_kind(*sym, SymbolKind::Const)
+                || crate::kb::op_info::is_nullary_operation(self.kb, *sym)
         })
     }
 
@@ -31418,8 +31488,9 @@ impl<'a> Loader<'a> {
     /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
     /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
     /// collapses too. ONE predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
-    /// ([`Self::refuse_paren_less_non_rule`]), so the two spellings cannot admit
-    /// different members.
+    /// ([`Self::refuse_paren_less_bracket_binding_nothing`]), so the two spellings cannot
+    /// admit different members; an operation, which both spellings call, is the other
+    /// member they admit ([`Self::try_qualified_op_ref`]).
     ///
     /// WI-898: `EquationFunctor` collapses TOO, and deliberately — the rung asks "is this
     /// dotted name a rule-ish CITATION the typer should see?", not "is it a relation?"
@@ -31438,11 +31509,11 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-20260911-5G28A (L3): refuse a paren-less `Sort[…].m` in an operation or const
-    /// body whose `m` resolves to something the bare `Sort.m` would not cite —
-    /// [`LoadError::ParenLessCitationOfNonRule`]. Without it the converter's lowering
-    /// (the zero-argument call the applied `Sort[…].m()` builds) made `Box[T =
-    /// Int64].zero` a call to a nullary operation, which the typer accepts, where the
-    /// bare `Box.zero` names nothing.
+    /// body whose `m` resolves to neither a rule nor an operation —
+    /// [`LoadError::ParenLessBracketBindsNothing`]. The converter lowers the spelling to
+    /// the zero-argument call the applied `Sort[…].m()` builds, which is what a rule
+    /// citation and an operation's call are; a nested sort, a const or a type parameter
+    /// reads no bracket, and the call would be one the author did not write.
     ///
     /// AN UNRESOLVED `m` IS NOT REFUSED HERE. It has no kind to be "not a rule", and the
     /// typer reports the name as an unknown functor; refusing it as well put a second
@@ -31451,39 +31522,36 @@ impl<'a> Loader<'a> {
     /// their resolution reported them and handed back a bare intern, which has no kind.
     ///
     /// THE TYPER STILL SPEAKS AFTER THIS, and that is left on purpose: the node stays the
-    /// zero-argument call, so a member with parameters draws the arity error and a
-    /// non-callable one the unknown-functor error — the verdict the applied `Sort[…].m()`
-    /// draws. Suppressing them would mean substituting a recovery leaf (WI-605's
-    /// `expr_body_bottom_recovery`), which the rule-compound walk that also reaches this
-    /// frame does not honour.
+    /// zero-argument call, so a non-callable member draws the unknown-functor error — the
+    /// verdict the applied `Sort[…].m()` draws. Suppressing it would mean substituting a
+    /// recovery leaf (WI-605's `expr_body_bottom_recovery`), which the rule-compound walk
+    /// that also reaches this frame does not honour.
     ///
-    /// RULE BODIES ARE NOT THIS SITE. There the bare dotted name DOES reach an
-    /// operation (the goal `:- ns.flag` is its call, WI-20260902-VNWAW), so the marked
-    /// node keeps the applied reading the converter gave it. That includes a rule's
-    /// COMPOUND expression (`?y <=> (if c then Box[T = Int64].zero else 1)`), which this
-    /// walk lowers on the rule's behalf (`lowering_rule_compound_expr`): refused there,
-    /// one rule body gave the spelling two verdicts, a call in a data slot and a load
-    /// error one `if` deeper.
-    fn refuse_paren_less_non_rule(
+    /// RULE BODIES ARE NOT THIS SITE. There the marked node keeps the applied reading the
+    /// converter gave it, and a rule's COMPOUND expression (`?y <=> (if c then Box[T =
+    /// Int64].zero else 1)`), which this walk lowers on the rule's behalf
+    /// (`lowering_rule_compound_expr`), reads it as its data slot does.
+    fn refuse_paren_less_bracket_binding_nothing(
         &mut self,
         parse_functor: Symbol,
         kb_functor: Symbol,
         parse_id: TermId,
     ) {
         let def = self.kb.symbols.get(kb_functor);
-        if def.kinds().is_empty() || self.is_paren_less_citation_target(kb_functor) {
+        if def.kinds().is_empty()
+            || def.has_kind(SymbolKind::Operation)
+            || self.is_paren_less_citation_target(kb_functor)
+        {
             return;
         }
-        let is_operation = def.has_kind(SymbolKind::Operation);
         let written = self.parsed.symbols.local_name(parse_functor);
         let (sort, member) = written
             .rsplit_once('.')
             .expect("a paren-less citation's functor joins the bracket's sort and the member");
         let (sort, member) = (sort.to_string(), member.to_string());
-        self.errors.push(LoadError::ParenLessCitationOfNonRule {
+        self.errors.push(LoadError::ParenLessBracketBindsNothing {
             sort,
             member,
-            is_operation,
             span: self.parsed.terms.span(parse_id),
         });
     }
@@ -31990,17 +32058,21 @@ impl<'a> Loader<'a> {
                     && (self.kb.has_kind(kb_functor, SymbolKind::Sort) || names_constructor);
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
-                // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
-                // takes the one lowering below either way — and anything else is refused
-                // rather than read as a call the author did not write. An entity keeps its
-                // own route: its arm leaves the bracket unread and the end-of-file sweep
-                // reports it, as it does for the applied spelling.
+                // zero-argument call the applied `Sort[…].m()` builds, so a rule citation and
+                // an operation's call take the one lowering below either way — and anything
+                // else is refused rather than read as a call the author did not write. An
+                // entity keeps its own route: its arm leaves the bracket unread and the
+                // end-of-file sweep reports it, as it does for the applied spelling.
                 // A rule's compound expression is a RULE BODY — see the refusal's doc.
                 if !is_entity
                     && !self.lowering_rule_compound_expr
                     && self.parsed.terms.is_paren_less_citation(outer_parse_id)
                 {
-                    self.refuse_paren_less_non_rule(parse_functor, kb_functor, outer_parse_id);
+                    self.refuse_paren_less_bracket_binding_nothing(
+                        parse_functor,
+                        kb_functor,
+                        outer_parse_id,
+                    );
                 }
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
@@ -32859,22 +32931,8 @@ impl<'a> Loader<'a> {
         if written {
             self.consumed_recv_types.insert(parse_id);
         }
-        let name = self.kb.qualified_name_of(callee).to_string();
-        let fill = self.kb.try_resolve_symbol("anthill.reflect.Fillable.fill");
-        let domain_hint = if fill.map(|f| self.kb.canonical_sym(f)) == Some(self.kb.canonical_sym(callee)) {
-            "; a sort's domain is its `domain` relation — `Colour.domain(?x)` for \
-             `SortDomain[T = Colour].fill(?x)`"
-        } else {
-            ""
-        };
         self.errors.push(LoadError::InvalidTypeArgument {
-            detail: format!(
-                "a sort's type bracket on `{name}` in a rule body is not read — a relation named \
-                 in a rule body, as a goal or as a value, is passed no type argument, so the \
-                 binding would be dropped and the relation read at every instance. Cite the \
-                 relation from an operation body, where the bracket selects the instance, or \
-                 write it without the bracket{domain_hint}"
-            ),
+            detail: rule_body_relation_bracket_detail(self.kb, callee),
             span: Some(span),
         });
         true

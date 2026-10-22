@@ -166,11 +166,11 @@ pub struct SimpleTermStore {
     /// converter lowers a PAREN-LESS bracketed citation `Sort[…].m` into — the same term
     /// the applied `Sort[…].m()` builds, so both spellings reach one lowering and the
     /// bracket is validated either way. Only the surface tells them apart, and the
-    /// loader needs it: in an operation or const body paren-less is the RULE-citation
-    /// spelling (a bare `Sort.op` names no operation value there), so a marked node whose
-    /// functor resolves to anything else is refused rather than silently read as a call
-    /// (`Loader::refuse_paren_less_non_rule`). Recorded like its siblings, for their
-    /// reason.
+    /// loader needs it: in an operation or const body paren-less is a rule citation or an
+    /// operation's call, so a marked node whose functor resolves to anything else is
+    /// refused rather than silently read as a call
+    /// (`Loader::refuse_paren_less_bracket_binding_nothing`). Recorded like its siblings,
+    /// for their reason.
     paren_less_citations: HashSet<TermId>,
 }
 

@@ -659,7 +659,7 @@ fn a_declaration_that_is_no_call_is_refused_truthfully() {
         "  namespace Box\n    sort Inner\n      entity inn\n    end\n  end\n  operation go() -> Type =\n    let t = Box\n    t.Inner",
     );
     assert!(
-        rendered.contains("`Inner` is declared in `Box` and is neither"),
+        rendered.contains("`Inner` is declared in `Box` and is none of them"),
         "{rendered}"
     );
     assert!(!rendered.contains("no such member"), "{rendered}");

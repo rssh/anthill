@@ -37,11 +37,13 @@ pub(super) enum DenotedDot {
 /// Resolve `receiver.member(args)` for a receiver that denotes a sort: the written type
 /// itself, or a name a `let` bound to one.
 ///
-/// The member is an operation or a constructor declared in the denoted sort. It is called
-/// with the arguments as written — the receiver is a type, not a value of the sort, so it
-/// fills no parameter — which is the call `Sort.member(args)` makes. A member the sort
-/// does not declare is refused about that sort, whether or not `Type` has one of the name.
-/// A constructor is refused in a rule body's own term, with its written spelling.
+/// The member is an operation, a constructor or a rule declared in the denoted sort. It is
+/// called with the arguments as written — the receiver is a type, not a value of the sort,
+/// so it fills no parameter — which is the call `Sort.member(args)` makes; a rule is the
+/// relation `Sort.member(args)` cites. Without parentheses the member is the same call with
+/// no arguments, which `Sort.member` is too. A member the sort does not declare is refused
+/// about that sort, whether or not `Type` has one of the name. A constructor is refused in a
+/// rule body's own term, with its written spelling.
 pub(super) fn denoted_sort_dot(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -210,16 +212,54 @@ fn written_sort_dot(
         ));
     }
 
-    let denoted = kb.local_name_of(head).to_string();
-    // Declared in the sort, but not something a call reaches: a constant, a nested sort,
-    // a rule. Saying "no such member" of it would be false.
     let qualified = format!("{}.{short}", kb.qualified_name_of(head));
-    if kb.symbols.by_qualified_name.contains_key(&qualified) {
+    let declared = kb.symbols.by_qualified_name.get(&qualified).copied();
+
+    // A rule of the sort is the relation the written `Sort.rule(…)` cites, and `Sort.rule`
+    // without parentheses is that relation itself, which the call with no arguments is
+    // too. In an operation body the bracket selects the instance; in a rule body a
+    // relation is passed no type argument, and the bracket is refused as the written
+    // spelling's is.
+    if let Some(rule) = declared.filter(|d| kb.cites_a_relation(*d)) {
+        if let Some(refusal) = hidden(kb, rule) {
+            return refusal;
+        }
+        let recv_type = match receiver(kb) {
+            Ok(recv_type) => recv_type,
+            Err(refusal) => return refusal,
+        };
+        if recv_type.is_some() && !env.written_as_an_operation_body() {
+            let written = kb.qualified_name_of(rule).to_string();
+            return refused(
+                TypeError::here(),
+                format!("the relation written without the bracket, `{written}(…)`"),
+                crate::kb::load::rule_body_relation_bracket_detail(kb, rule),
+            );
+        }
+        let pass = crate::kb::simp_rewrite::simp_pass(kb);
+        return DenotedDot::Call(NodeOccurrence::synthesized_expr(
+            Expr::Apply {
+                recv_type,
+                functor: rule,
+                pos_args: pos_args.to_vec(),
+                named_args: named_args.to_vec(),
+                type_args: Vec::new(),
+            },
+            Rc::clone(occ),
+            pass,
+            occ.owner,
+        ));
+    }
+
+    let denoted = kb.local_name_of(head).to_string();
+    // Declared in the sort, but not something a call reaches: a constant, a nested sort.
+    // Saying "no such member" of it would be false.
+    if declared.is_some() {
         return refused(
             TypeError::here(),
-            format!("an operation or a constructor of `{denoted}`"),
+            format!("an operation, a constructor or a rule of `{denoted}`"),
             format!(
-                "`{short}` is declared in `{denoted}` and is neither; a receiver that denotes a sort reaches the sort's operations and constructors only"
+                "`{short}` is declared in `{denoted}` and is none of them; a receiver that denotes a sort reaches the sort's operations, constructors and rules only"
             ),
         );
     }

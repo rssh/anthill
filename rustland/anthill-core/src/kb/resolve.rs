@@ -10930,7 +10930,9 @@ impl KnowledgeBase {
 
     /// The nullary OPERATION a sort-component access `recv.field` names (`Box.zero`), or
     /// `None` — an entity receiver (its fields are Dispatch 1's, and data), a component
-    /// that is not an operation, or one that takes arguments.
+    /// that is not an operation, or one that takes arguments. A receiver that is a type
+    /// alias names the operation of the sort it stands for (`CA.zero` over `sort CA =
+    /// Box[V = Int64]`), as the applied `CA.zero()` does.
     fn nullary_op_component(&self, recv: &Value, field_name: &str) -> Option<Symbol> {
         let functor = recv.head(self).functor_sym()?;
         // An entity INSTANCE is data; a constructor's type face is a type, and its sort
@@ -10938,7 +10940,13 @@ impl KnowledgeBase {
         if !functor.is_type_face() && self.entity_fields.contains_key(&crate::intern::Decl::of(functor)) {
             return None;
         }
-        let op = self.sort_component(functor, field_name)?;
+        let op = self.sort_component(functor, field_name).or_else(|| {
+            if !self.is_scan_alias(functor) {
+                return None;
+            }
+            let path = format!("{}.{field_name}", self.qualified_name_of(functor));
+            super::load::member_through_aliases(self, &path)
+        })?;
         super::op_info::is_nullary_operation(self, op).then_some(op)
     }
 

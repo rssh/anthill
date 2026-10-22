@@ -15,14 +15,17 @@
 //!    2026-10-21, and this axis was not measured again on it), `a_nested_sort_after_the_bracket_is_refused` (loads clean: the
 //!    bracket was erased on the way to `Outer.Inner.op`), `a_bracket_on_a_zero_field_
 //!    constructor_meets_the_sweep` (loads clean) and `a_paren_less_bracket_on_an_operation_
-//!    is_refused` (on its message: "zero.name: expected resolved name").
-//!  * [U] the unresolved skip — in `kb/load.rs`, `refuse_paren_less_non_rule` without its
+//!    is_refused` (on its message: "zero.name: expected resolved name"; the row is
+//!    `a_paren_less_bracket_on_an_operation_is_its_call` since WI-20261008-R653S, and this
+//!    axis was not measured again on it).
+//!  * [U] the unresolved skip — in `kb/load.rs`, `refuse_paren_less_bracket_binding_nothing` without its
 //!    `def.kinds().is_empty()` test. 1 red: `a_typo_after_the_bracket_draws_one_error`
 //!    (a second error, quoting the unresolved dotted name as the member).
-//!  * [R] the refusal — the `refuse_paren_less_non_rule` call removed. 2 red:
-//!    `a_paren_less_bracket_on_an_operation_is_refused` (loads clean: a CALL the author did
-//!    not write) and `a_nested_sort_after_the_bracket_is_refused` (only the typer's
-//!    "unknown functor" is left, about a sort it knows).
+//!  * [R] the refusal — the `refuse_paren_less_bracket_binding_nothing` call removed. 1
+//!    red: `a_nested_sort_after_the_bracket_is_refused` (only the typer's "unknown functor"
+//!    is left, about a sort it knows). It also failed the operation's row until
+//!    WI-20261008-R653S made an operation without parentheses its call; the refusal no
+//!    longer reaches an operation.
 //!  * [G] the rule-compound gate — `!self.lowering_rule_compound_expr` dropped from the
 //!    refusal's call site. 1 red: `a_rule_body_data_slot_takes_the_applied_reading` (a
 //!    load error on the `if`, one level below a data slot that loads).
@@ -219,25 +222,25 @@ fn a_rule_body_data_slot_takes_the_applied_reading() {
 }
 
 #[test]
-fn a_paren_less_bracket_on_an_operation_is_refused() {
-    // Paren-less is the RULE-citation spelling: the bare `Box.zero` names no operation
-    // either (an unresolved name). The bracketed one must not become a silent call — which
-    // it does without the refusal, because the lowering is the zero-argument call and
-    // `zero` takes no arguments.
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(
-            "namespace zz5g28al3o\n\
-             \x20 import anthill.prelude.{Int64}\n\
-             \x20 sort Box[T]\n\
-             \x20   entity box(v: Int64)\n\
-             \x20   operation zero() -> Int64 = 0\n\
-             \x20 end\n\
-             \x20 operation go() -> Int64 = Box[T = Int64].zero\n\
-             end\n",
-        ),
-        &["`Box[…].zero` without parentheses is a RULE citation, and `zero` is an operation \
-           — call it `Box[…].zero()`"],
+fn a_paren_less_bracket_on_an_operation_is_its_call() {
+    // Without parentheses an operation is its call, the one the applied `Box[T =
+    // Int64].zero()` makes, as the bare `Box.zero` is (WI-20261008-R653S,
+    // `wi_r653s_paren_less_dot_test`). Until then paren-less was the rule-citation
+    // spelling only and this was refused, "call it `Box[…].zero()`".
+    let mut interp = crate::common::interp_for(
+        "namespace zz5g28al3o\n\
+         \x20 import anthill.prelude.{Int64}\n\
+         \x20 sort Box[T]\n\
+         \x20   entity box(v: Int64)\n\
+         \x20   operation zero() -> Int64 = 4\n\
+         \x20 end\n\
+         \x20 operation go() -> Int64 = Box[T = Int64].zero\n\
+         end\n",
     );
+    match interp.call("zz5g28al3o.go", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 4),
+        other => panic!("go: expected Int(4), got {other:?}"),
+    }
 }
 
 #[test]
@@ -262,9 +265,9 @@ fn a_nested_sort_after_the_bracket_is_refused() {
              end\n",
         ),
         &[
-            "`Outer[…].Inner` without parentheses is a RULE citation, and `Inner` names no \
-             rule — a type bracket before a dot is read by a rule citation or an operation \
-             call and by nothing else, so here it would bind nothing; drop it (`Outer.Inner`)",
+            "`Outer[…].Inner` names neither a rule nor an operation — a type bracket before a \
+             dot is read by a rule citation or an operation call and by nothing else, so here \
+             it would bind nothing; drop it (`Outer.Inner`)",
             "got unknown functor",
         ],
     );

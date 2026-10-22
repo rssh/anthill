@@ -414,13 +414,17 @@ pub(super) fn dotted_citation_relation(
 /// (`Box.zero`), or `None` — [`dotted_citation_relation`]'s twin for the one other kind
 /// that has a value reading there. The resolver makes the call where it reduces the chain
 /// as an operand (`reduce_dot_value`); this is the typer's half of the same reading, so
-/// `0 = Box.zero` types as `0 = seven` does instead of walking into its segments.
+/// `0 = Box.zero` types as `0 = seven` does instead of walking into its segments. A name
+/// through a type alias is the operation of the sort the alias stands for (`CA.zero` over
+/// `sort CA = Box[V = Int64]`), as the applied `CA.zero()` is.
 pub(super) fn dotted_citation_nullary_op(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Symbol> {
     let name = loader_chain_dotted_name(kb, occ)?;
-    let sym = kb.try_resolve_symbol(&name)?;
+    let sym = kb
+        .try_resolve_symbol(&name)
+        .or_else(|| crate::kb::load::member_through_aliases(kb, &name))?;
     crate::kb::op_info::is_nullary_operation(kb, sym).then_some(sym)
 }
 

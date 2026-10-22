@@ -32,7 +32,6 @@
 //!     an_entity_an_eponymous_sort_and_an_alias_keep_their_bare_reading
 //!     a_path_is_a_type_value_wherever_a_value_is_written
 //!     a_path_in_a_slot_of_another_sort_is_an_ordinary_mismatch
-//!     a_member_past_the_sort_is_read_off_the_sort
 //!     an_eponymous_sort_by_a_path_is_refused_as_its_bare_name_is (its operation-body row)
 //!     the_whole_name_is_read_before_a_consts_field
 //!     a_path_from_the_root_is_reached_past_a_binder
@@ -322,16 +321,16 @@ fn a_path_in_a_slot_of_another_sort_is_an_ordinary_mismatch() {
     }
 }
 
-/// A chain that continues past the sort reaches the sort at its inner level: the path is
-/// refused as the one-segment `Inner.deep` is, sentence for sentence. It drew a refusal
-/// of its own before, about the sort — a segment nothing declares, or, where the last
-/// segment resolves bare as here, an argument of `field_access` of the wrong type.
+/// A chain that continues past the sort to an operation names that operation, and without
+/// parentheses is its call, as the one-segment `Inner.deep` is
+/// (`wi_r653s_paren_less_dot_test`). Until WI-20261008-R653S both spellings were refused,
+/// and the row compared the two refusals sentence for sentence; it is no longer a row of
+/// the sort's rung, which a whole name naming the operation does not reach.
 #[test]
-fn a_member_past_the_sort_is_read_off_the_sort() {
-    let path = sentences("rxt6spast", "  operation go() -> Int64 = Outer.Inner.deep");
-    let bare = sentences("rxt6spastbare", "  operation go() -> Int64 = Inner.deep");
-    assert!(!bare.is_empty(), "the one-segment spelling is refused today");
-    assert_eq!(path, bare);
+fn a_member_past_the_sort_is_its_call() {
+    let call = |expr: &str| format!("  operation go() -> Int64 = {expr}\n  rule r(?x) :- ?x <=> go()");
+    assert_eq!(ints("rxt6spast", &call("Outer.Inner.deep")), [21]);
+    assert_eq!(ints("rxt6spastbare", &call("Inner.deep")), [21]);
 }
 
 /// An eponymous sort is no written type by its bare name, and none by a path: as the
