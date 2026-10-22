@@ -189,19 +189,18 @@ impl KbBridge {
 
     /// Decode an operation parameter's `FieldInfo` record into the reflect struct, read
     /// through the view on whichever carrier it rides — a record whose type is an
-    /// occurrence is no term. `name` defaults to `_` when absent; `type_name` falls back
-    /// to the record itself (mirrors the prior inline `operations` params decode).
+    /// occurrence is no term. `name` is the name as written, `_` when absent; `type_name`
+    /// falls back to the record itself (mirrors the prior inline `operations` params decode).
     fn field_info_of(&self, record: &Value) -> FieldInfo {
         let field = |key: &str| {
             let kb = self.kb.borrow();
             let sym = kb.lookup_symbol(key)?;
             record.named_arg(&kb, sym).map(|c| c.to_value())
         };
-        let named = field("name").and_then(|v| self.kb.borrow().value_symbol(&v));
-        let name = ReflectSymbol::new(match named {
-            Some(sym) => sym,
-            None => self.kb.borrow_mut().intern("_"),
-        });
+        let name = match field("name").map(|v| v.head(&*self.kb.borrow())) {
+            Some(anthill_core::kb::term_view::ViewHead::Const(Literal::String(name))) => name,
+            _ => "_".to_owned(),
+        };
         FieldInfo {
             name,
             type_name: rterm(field("type_name").unwrap_or_else(|| record.clone())),
@@ -996,7 +995,7 @@ impl KB for KbBridge {
             Some(fields) => fields
                 .iter()
                 .map(|(field_sym, field_type)| FieldInfo {
-                    name: ReflectSymbol::new(*field_sym),
+                    name: kb.local_name_of(*field_sym).to_owned(),
                     type_name: rterm(field_type.clone()),
                 })
                 .collect(),
@@ -2017,9 +2016,8 @@ end
         assert_eq!(beta.len(), 1, "Beta.dup has one field");
         let alpha = bridge.fields(type_ref(&bridge, "test.wi632_bridge.Alpha.dup"));
         assert_eq!(alpha.len(), 1, "Alpha.dup has one field");
-        let kb = bridge.kb.borrow();
-        assert_eq!(kb.local_name_of(beta[0].name.symbol()), "y");
-        assert_eq!(kb.local_name_of(alpha[0].name.symbol()), "x");
+        assert_eq!(beta[0].name, "y");
+        assert_eq!(alpha[0].name, "x");
     }
 
     #[test]
@@ -2245,7 +2243,7 @@ sort Tank {
             .iter()
             .find(|o| short(o.name.symbol()) == "fill")
             .expect("fill op");
-        let params: Vec<String> = fill.params.iter().map(|p| short(p.name.symbol())).collect();
+        let params: Vec<&str> = fill.params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(params, ["t", "b"]);
     }
 
@@ -2508,9 +2506,9 @@ end
 
         let fields = bridge.fields(type_ref(&bridge, "test.wi551_bridge.Color.red"));
         assert!(
-            fields.iter().any(|f| short(&f.name) == "shade"),
+            fields.iter().any(|f| f.name == "shade"),
             "red should surface a `shade` field, got {:?}",
-            fields.iter().map(|f| short(&f.name)).collect::<Vec<_>>(),
+            fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
         );
 
         let sorts = bridge.sorts(None);

@@ -39273,19 +39273,17 @@ impl<'a> Loader<'a> {
             .map(|(f, type_value)| {
                 let field_name_str = self.parsed.symbols.local_name(f.name).to_owned();
                 let field_qualified = format!("{}.{}", ctor_qualified, field_name_str);
-                let field_sym = if let Some(&existing) =
-                    self.kb.symbols.by_qualified_name.get(&field_qualified)
-                {
-                    existing
-                } else {
+                // The field's symbol is `<constructor>.<name>`; the record holds the name
+                // as written (`FieldInfo.name: String`).
+                if !self.kb.symbols.by_qualified_name.contains_key(&field_qualified) {
                     self.kb.symbols.define(
                         &field_name_str,
                         &field_qualified,
                         SymbolKind::Field,
                         self.kb.symbols.scope_id(ctor_functor),
-                    )
-                };
-                let name_term = self.kb.alloc(Term::Ref(field_sym));
+                    );
+                }
+                let name_term = self.kb.alloc(Term::Const(Literal::String(field_name_str)));
                 match type_value {
                     Value::Node(_) => {
                         // Denoted-bearing field type → value FieldInfo entity.
@@ -41414,7 +41412,9 @@ impl<'a> Loader<'a> {
                 if p.rest && capture_ok {
                     self.kb.record_op_capture_param(functor, field_sym);
                 }
-                let name_term = self.kb.alloc(Term::Ref(field_sym));
+                // The record holds the name as written (`FieldInfo.name: String`); the
+                // parameter's symbol is `<operation>.<name>` ([`op_info`]'s `extract_params`).
+                let name_term = self.kb.alloc(Term::Const(Literal::String(param_name_str.clone())));
                 // WI-341: bind a callback param's arrow param names to their
                 // `CallbackParam` places for this arrow type's conversion, so a
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.

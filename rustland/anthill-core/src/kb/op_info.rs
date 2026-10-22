@@ -135,7 +135,7 @@ pub struct OperationRecord {
 pub fn all_operation_params(kb: &KnowledgeBase) -> Vec<(Symbol, Vec<(Symbol, Value)>)> {
     operation_info_fact_heads(kb)
         .into_iter()
-        .map(|(op_sym, head)| (op_sym, extract_params(kb, head_field(kb, head, "params"))))
+        .map(|(op_sym, head)| (op_sym, extract_params(kb, head)))
         .collect()
 }
 
@@ -169,7 +169,7 @@ pub fn all_operation_params_and_effects(
         .map(|(op_sym, head)| {
             (
                 op_sym,
-                extract_params(kb, head_field(kb, head, "params")),
+                extract_params(kb, head),
                 effects_of_head(kb, head),
             )
         })
@@ -190,7 +190,7 @@ pub fn all_operation_signature_facts(
         .map(|(op_sym, head)| {
             (
                 op_sym,
-                extract_params(kb, head_field(kb, head, "params")),
+                extract_params(kb, head),
                 head_field_value(kb, head, "return_type"),
                 effects_of_head(kb, head),
             )
@@ -597,7 +597,7 @@ fn signature_from_head_with_type_params(
 ) -> Option<OpSignature> {
     let return_type = head_field_value(kb, head, "return_type")?;
     let effects = effects_of_head(kb, head);
-    let params = extract_params(kb, head_field(kb, head, "params"));
+    let params = extract_params(kb, head);
     let requires = clause_list_field(kb, head, "requires");
     let ensures = clause_list_field(kb, head, "ensures");
     // WI-087: an empty `meta()` (the no-attributes case) reports as `None`.
@@ -1050,13 +1050,21 @@ fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
     }
 }
 
-/// Decode the `params` field to `(name, type)` pairs carrier-faithfully. The
-/// params list AND each `FieldInfo` may be hash-consed (`Term`) or — when a
+/// Decode an `OperationInfo` head's `params` field to `(name, type)` pairs carrier-faithfully.
+/// The params list AND each `FieldInfo` may be hash-consed (`Term`) or — when a
 /// param type is `denoted`-bearing (a callback's `Modify[a]` arrow) — value
 /// carriers; the type is returned as a `Value`, preserving `Value::Node`
 /// occurrence identity and **never** materialized back to a term. Mirrors
 /// [`effects_of_head`] (WI-341 Stage A).
-fn extract_params(kb: &KnowledgeBase, params_field: Option<ViewItem>) -> Vec<(Symbol, Value)> {
+///
+/// A `FieldInfo` holds the parameter's name as written; its symbol is the operation's
+/// field `<operation>.<name>`, the one the loader defines beside the record.
+fn extract_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Value)> {
+    let Some(owner) = head_field(kb, head, "name").and_then(|n| view_ref_sym(kb, n)) else {
+        return Vec::new();
+    };
+    let owner = kb.qualified_name_of(owner).to_owned();
+    let params_field = head_field(kb, head, "params");
     let items: Vec<Value> = match params_field {
         Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::term).collect(),
         Some(ViewItem::Value(Value::Term { id: t, .. })) => {
@@ -1068,7 +1076,19 @@ fn extract_params(kb: &KnowledgeBase, params_field: Option<ViewItem>) -> Vec<(Sy
     items
         .into_iter()
         .filter_map(|fi| {
-            let name = view_ref_sym(kb, head_field(kb, &fi, "name")?)?;
+            let ViewHead::Const(crate::kb::term::Literal::String(name)) =
+                head_field(kb, &fi, "name")?.head(kb)
+            else {
+                return None;
+            };
+            let field = kb.symbols.by_qualified_name.get(&format!("{owner}.{name}")).copied();
+            // The loader defines the field beside the record it writes; a name naming none is
+            // a record the loader did not write, whose parameter this decode cannot place.
+            debug_assert!(
+                field.is_some(),
+                "`{owner}`'s parameter `{name}` names no field `{owner}.{name}`"
+            );
+            let name = field?;
             let ptype = head_field_value(kb, &fi, "type_name")?;
             Some((name, ptype))
         })

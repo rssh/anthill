@@ -2649,96 +2649,35 @@ end
 #[test]
 fn param_and_body_var_share_same_symbol() {
     // A parameter name "x" used in the operation body should resolve to the
-    // same KB Symbol as the parameter declaration in FieldInfo.
+    // same KB Symbol as the parameter the operation's record names: the record holds
+    // the name as written (`FieldInfo.name: String`), read as `<operation>.x` by the
+    // signature reader.
     let source = r#"
 sort Math
   operation id(x: Int64) -> Int64 = x
 end
 "#;
-    let mut kb = load_with_source(source);
-    let op_info_sym = kb
-        .try_resolve_symbol("anthill.reflect.OperationInfo")
-        .expect("OperationInfo should be defined");
-
-    // Find the "id" operation's FieldInfo param symbol and body var_ref symbol
-    let mut param_sym: Option<Symbol> = None;
-    let mut body_var_sym: Option<Symbol> = None;
-
-    let op_facts: Vec<_> = kb.rules_by_functor(op_info_sym).into_iter().collect();
-    for rid in op_facts {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // Read as its term on whichever carrier the fact rides.
-        let head = crate::common::fact_as_term(&mut kb, rid);
-        if let Term::Fn { named_args, .. } = kb.get_term(head) {
-            // Check if this is the "id" operation
-            let is_id = named_args
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "name")
-                .and_then(|(_, v)| match kb.get_term(*v) {
-                    Term::Ref(s) => Some(*s),
-                    _ => None,
-                })
-                .map(|s| kb.local_name_of(s) == "id")
-                .unwrap_or(false);
-            if !is_id {
-                continue;
-            }
-
-            // Extract param name symbol from FieldInfo
-            if let Some(params_tid) = named_args
-                .iter()
-                .find(|(s, _)| kb.local_name_of(*s) == "params")
-                .map(|(_, v)| *v)
-            {
-                // Walk cons-list to first FieldInfo
-                if let Term::Fn {
-                    named_args: cons_args,
-                    ..
-                } = kb.get_term(params_tid)
-                {
-                    if let Some((_, head_tid)) = cons_args
-                        .iter()
-                        .find(|(s, _)| kb.local_name_of(*s) == "head")
-                    {
-                        if let Term::Fn {
-                            named_args: fi_args,
-                            ..
-                        } = kb.get_term(*head_tid)
-                        {
-                            param_sym = fi_args
-                                .iter()
-                                .find(|(s, _)| kb.local_name_of(*s) == "name")
-                                .and_then(|(_, v)| match kb.get_term(*v) {
-                                    Term::Ref(s) => Some(*s),
-                                    _ => None,
-                                });
-                        }
-                    }
-                }
-            }
-
-            // Extract body var_ref name symbol via `kb.op_body_node`
-            // — post-WI-251 the body lives on the NodeOccurrence tree,
-            // not in the OperationInfo fact's Handle slot.
-            let id_sym = kb
-                .try_resolve_symbol("Math.id")
-                .or_else(|| kb.try_resolve_symbol("id"));
-            if let Some(op_sym) = id_sym {
-                use anthill_core::kb::node_occurrence::{Expr, NodeKind};
-                if let Some(body) = kb.op_body_node(op_sym) {
-                    if let NodeKind::Expr {
-                        expr: Expr::VarRef { name },
-                        ..
-                    } = &body.kind
-                    {
-                        body_var_sym = Some(*name);
-                    }
-                }
-            }
-        }
-    }
+    let kb = load_with_source(source);
+    let op_sym = kb
+        .try_resolve_symbol("Math.id")
+        .or_else(|| kb.try_resolve_symbol("id"))
+        .expect("the operation `id`");
+    let param_sym = anthill_core::kb::op_info::all_operation_params(&kb)
+        .into_iter()
+        .find(|(op, _)| *op == op_sym)
+        .and_then(|(_, params)| params.first().map(|(p, _)| *p));
+    // The body's var_ref name symbol, via `kb.op_body_node` — post-WI-251 the body lives
+    // on the NodeOccurrence tree, not in the OperationInfo fact's Handle slot.
+    let body_var_sym = {
+        use anthill_core::kb::node_occurrence::{Expr, NodeKind};
+        kb.op_body_node(op_sym).and_then(|body| match &body.kind {
+            NodeKind::Expr {
+                expr: Expr::VarRef { name },
+                ..
+            } => Some(*name),
+            _ => None,
+        })
+    };
 
     let ps = param_sym.expect("should find param symbol for x");
     let bs = body_var_sym.expect("should find body var_ref symbol for x");

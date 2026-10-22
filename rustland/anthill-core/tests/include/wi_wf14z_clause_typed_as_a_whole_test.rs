@@ -838,3 +838,29 @@ fn an_equations_stored_side_types_nothing() {
         [Some(3)]
     );
 }
+
+/// A FIELD'S NAME IS A `String` IN EVERY `FieldInfo` (user, 2026-10-22): `KB.fields` hands
+/// one back, and so do the loader's own records — an operation's parameter (`zebra`) and an
+/// entity's field (`quokka`), each read by a rule that asks for the name as written; and a
+/// clause comparing `KB.fields` with `FieldInfo(name: "x", …)` records nothing. The loader
+/// stored the field's symbol, which no string matches, and `FieldInfo.name` was declared a
+/// `Symbol`, which `"x"` does not fit.
+#[test]
+fn a_fields_name_is_a_string_in_every_field_info() {
+    let ns = "wiwf14z.fieldinfo";
+    let (rows, said) = recorded(|| {
+        let mut kb = crate::common::load_kb_with(&program(
+            ns,
+            "  import anthill.reflect.{FieldInfo, OperationInfo, EntityInfo, KB}\n  \
+             entity onlyQ(quokka: Int64)\n  \
+             sort Z\n    operation onlyZ(zebra: Int64) -> Int64 = zebra\n  end\n  \
+             rule param(?n) :- OperationInfo(name: ?, params: [FieldInfo(name: ?n, type_name: ?)]), ?n <=> \"zebra\"\n  \
+             rule field(?n) :- EntityInfo(name: ?, fields: [FieldInfo(name: ?n, type_name: ?)]), ?n <=> \"quokka\"\n  \
+             rule listed(1) :- KB.fields(KB.kb(), onlyQ[]) <=> [FieldInfo(name: \"quokka\", type_name: ?)]\n",
+        ));
+        ["param", "field", "listed"].map(|r| {
+            crate::common::query_unary(&mut kb, &format!("{ns}.{r}")).len()
+        })
+    });
+    assert_eq!((rows, said), ([1, 1, 1], vec![]));
+}

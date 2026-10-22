@@ -1070,7 +1070,7 @@ namespace anthill.reflect
   )
 
   entity FieldInfo(
-    name         : Symbol,                          -- field/param name (symbol reference)
+    name         : String,                          -- field/param name, as written
     type_name    : Term                             -- type expression
   )
 

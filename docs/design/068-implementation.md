@@ -711,6 +711,11 @@ records in 48 tests —
 | `docs/proposals/typing_pass_spec.anthill`'s `check_args`, `union_effects` over a column of no common type | 1 | 1 |
 | this file's | 2 | 8 |
 
+Decided with the user, 2026-10-22: a field's name is a `String` in every `FieldInfo` —
+`KB.fields`'s, as it was at run time, and the loader's own `EntityInfo` / `OperationInfo`
+records, which held the field's symbol; the signature reader resolves a parameter's symbol as
+`<operation>.<name>`. `wi_9r5hn`'s 12 records go with it.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run
