@@ -26,12 +26,16 @@ use crate::span::SourceId;
 /// one scope, one list of kinds (WI-926) — and [`Self::index`] is that entry's slot,
 /// the face masked off. Every `SymbolTable` read goes through it, so a face answers
 /// every table question exactly as its constructor does; only IDENTITY tells them
-/// apart. A face never enters the table itself: every write (`add_kind`, the
+/// apart. The KB's role question takes one role off a face: it is never the operation
+/// of its name (`KnowledgeBase::kinds`, WI-20261022-7EXEY). A face never enters the
+/// table itself: every write (`add_kind`, the
 /// canonical map, `set_arg_places`, `mark_internal`) refuses one in a debug build,
 /// and `define` / `intern` only ever mint plain symbols.
 ///
-/// A sort with no constructor of its name (`Int64`, `Cell`) has one face, the plain
-/// one, and is never given the bit.
+/// A sort that shares its name with an OPERATION has the same two identities
+/// (WI-20261022-7EXEY): the plain symbol is the operation, the face its type. A sort
+/// whose name has no data reading (`Int64`, `Cell`, a spec) has one face, the plain
+/// one, and is never given the bit (`KnowledgeBase::declaration_has_type_face`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
@@ -62,16 +66,17 @@ impl Symbol {
         Symbol(self.0 & !TYPE_FACE_BIT)
     }
 
-    /// The TYPE face of this declaration's constructor — the bare bit operation. It
-    /// does not ask the table whether the declaration HAS a constructor, and a face of
-    /// one that does not (`Int64`, `Cell`) is a second identity for a sort the spec
-    /// gives exactly one (§4.4); so it is crate-private, for the KB's guarded entry
-    /// point and this module's tests.
+    /// The TYPE face of this declaration — the bare bit operation. It does not ask the
+    /// table whether the declaration HAS a face (a constructor, or a sort-named
+    /// operation), and a face of one that does not (`Int64`, `Cell`) is a second identity
+    /// for a sort the spec gives exactly one (§4.4); so it is crate-private, for the KB's
+    /// guarded entry point and this module's tests.
     pub(crate) fn type_face(self) -> Self {
         Symbol(self.0 | TYPE_FACE_BIT)
     }
 
-    /// Is this the type face of a constructor?
+    /// Is this the type face of a declaration — a constructor's, or a sort-named
+    /// operation's?
     pub fn is_type_face(self) -> bool {
         self.0 & TYPE_FACE_BIT != 0
     }
@@ -433,6 +438,11 @@ impl KindSet {
         self.0 & kind.bit() != 0
     }
 
+    /// This set with `kind` taken out.
+    pub const fn without(self, kind: SymbolKind) -> Self {
+        KindSet(self.0 & !kind.bit())
+    }
+
     /// Does this set share a kind with `other`?
     pub const fn intersects(self, other: KindSet) -> bool {
         self.0 & other.0 != 0
@@ -472,7 +482,8 @@ impl std::fmt::Debug for KindSet {
 
 /// A kind to SHOW (WI-974): what a diagnostic calls a symbol, and the string reflect's
 /// `kind` returns. For a declaration it is the keyword the declaration was first written
-/// with ([`SymbolDef::written_kind`]); for a constructor's type face, `Sort`.
+/// with ([`SymbolDef::written_kind`]); for a type face, `Sort`; for the plain symbol of a
+/// sort-named operation, `Operation` (WI-20261022-7EXEY).
 ///
 /// NOT a role test, and built so it cannot be used as one: it has no `PartialEq`, no
 /// public constructor and no accessor back to a [`SymbolKind`] — only its name. "Can this
@@ -484,9 +495,14 @@ impl std::fmt::Debug for KindSet {
 pub struct KindLabel(SymbolKind);
 
 impl KindLabel {
-    /// How a constructor's TYPE FACE is shown — a type, whatever its declaration was
-    /// written with (WI-20260902-JB6RS).
+    /// How a TYPE FACE is shown — a type, whatever its declaration was written with
+    /// (WI-20260902-JB6RS).
     pub const TYPE_FACE: KindLabel = KindLabel(SymbolKind::Sort);
+
+    /// How the PLAIN symbol of a sort that shares its name with an operation is shown —
+    /// the operation, whichever was written first: its face is the type
+    /// (WI-20261022-7EXEY).
+    pub const SORT_NAMED_OPERATION: KindLabel = KindLabel(SymbolKind::Operation);
 
     /// The kind's reflect name — [`SymbolKind::reflect_name`].
     pub fn reflect_name(self) -> &'static str {

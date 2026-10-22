@@ -11,8 +11,10 @@
 //! Where a name plays a type role AND another, the site reads it by POSITION, as
 //! kernel-language §4.4 does: BARE, a sort that is no constructor is the type
 //! (`KnowledgeBase::is_type_value_head`); APPLIED, a name that is an operation is the
-//! operation (`KnowledgeBase::names_only_a_type`); at a provision's binding, the SLOT
-//! decides (`is_type_param_binding` of the key).
+//! operation; at a provision's binding, the SLOT decides (`is_type_param_binding` of the
+//! key). Since WI-20261022-7EXEY a sort that is also an operation has a TYPE FACE, as a
+//! constructor does: a type context names it by the face, and its plain symbol is the
+//! operation bare too (`wi_7exey_sort_operation_face_test`).
 //!
 //! Every row here is ONE PROGRAM WRITTEN TWICE, and asserts the two give one verdict.
 //!
@@ -38,12 +40,13 @@
 //!     not by the written keyword — the one fix here that is not order), so the
 //!     operation's own `-> Both` drew "expected Both, got Both … please report it", and
 //!     `Modify[Both]` was refused for a reason that depended on order.
-//!   * `a_bracket_requirement_on_a_sort_named_operation_is_refused_in_both_orders` — spec
-//!     first, `requires Both[T = Int64]` loaded and was read as the requirement written;
-//!     operation first it was read as a call of the operation. A stored clause keeps no
-//!     bracket for a sort with no constructor, so no reader can tell the two: the bracket
-//!     is now refused where it is written, in both orders — the one row where a verdict
-//!     that held in one order was given up for a loud one in both.
+//!   * `a_bracket_requirement_on_a_sort_named_operation_is_the_requirement_in_both_orders`
+//!     — spec first, `requires Both[T = Int64]` loaded and was read as the requirement
+//!     written; operation first it was read as a call of the operation. A stored clause kept
+//!     no bracket for a sort with no constructor, so no reader could tell the two, and
+//!     WI-974 refused the bracket where it was written, in both orders. WI-20261022-7EXEY
+//!     gave the pair a type face, and the row is now the positive one: the requirement
+//!     written, in both orders (its back-out is listed there).
 //!   * `an_operations_own_parameter_projects_beside_a_same_named_sort_in_both_orders` —
 //!     sort first, `F[U]`'s `U.Elem` was refused ("no `requires` bound … declares a
 //!     member"); operation first it was self-licensed, as the operation alone is.
@@ -253,28 +256,38 @@ fn a_sort_named_operation_is_a_type_in_a_type_slot_in_both_orders() {
     }
 }
 
-/// `{Sort, Operation}` in a `requires` clause WRITTEN WITH A BRACKET: the stored clause
-/// keeps no bracket for a sort with no constructor, so every reader would take it as the
-/// operation's call. It is refused where the bracket is still visible, in both orders. The
-/// CONTROL is the spec alone, which loads.
+/// `{Sort, Operation}` in a `requires` clause WRITTEN WITH A BRACKET is the requirement
+/// written, in both orders: the bracket is headed by the sort's type face
+/// (WI-20261022-7EXEY), so the clause is met by a provision — `f(-1)` runs where one
+/// exists and is refused where none does — and is never the operation's call. The CONTROL
+/// is the spec alone.
+///
+/// BACKED OUT: the face minted for constructors only (`wi_7exey_sort_operation_face_test`'s
+/// NO FACE) — the bracket is the operation's call again, in both orders.
 #[test]
-fn a_bracket_requirement_on_a_sort_named_operation_is_refused_in_both_orders() {
+fn a_bracket_requirement_on_a_sort_named_operation_is_the_requirement_in_both_orders() {
     let the_spec = "  sort Both\n    sort T = ?\n  end\n";
     let the_op = "  operation Both(x: Int64) -> Bool = x > 0\n";
-    let program = |decls: &str| {
+    let program = |decls: &str, provision: &str| {
         format!(
-            "namespace test.wi974r\n  import anthill.prelude.{{Int64, Bool}}\n{decls}  operation \
-             f(x: Int64) -> Int64 requires Both[T = Int64] = x\nend\n"
+            "namespace test.wi974r\n  import anthill.prelude.{{Int64, Bool}}\n{decls}  sort Tag\n    \
+             entity tag\n  end\n{provision}  operation f(x: Int64) -> Int64 requires Both[T = Tag] \
+             = x\n  operation go() -> Int64 = f(0 - 1)\nend\n"
         )
     };
-    for order in BOTH_ORDERS {
-        let errs = load_errors_of(&program(&ordered(order, the_spec, the_op)));
+    let provided = "  namespace Tag\n    provides Both[T = Tag]\n  end\n";
+    for (order, decls) in [
+        ("the spec first", format!("{the_spec}{the_op}")),
+        ("the operation first", format!("{the_op}{the_spec}")),
+        ("CONTROL, the spec alone", the_spec.to_string()),
+    ] {
+        assert_eq!(run_int64(&program(&decls, provided), "test.wi974r.go"), Ok(-1), "{order}, provided");
+        let errs = load_errors_of(&program(&decls, ""));
         assert!(
-            errs.len() == 1 && errs[0].contains("names a sort that is also an OPERATION"),
-            "the spec written {order}: expected the one refusal of the bracket; got {errs:#?}",
+            errs.len() == 1 && errs[0].contains("`test.wi974r.Tag` provides no `test.wi974r.Both`"),
+            "{order}, not provided: expected the one unmet requirement; got {errs:#?}",
         );
     }
-    assert_eq!(load_errors_of(&program(the_spec)), Vec::<String>::new(), "CONTROL, the spec alone");
 }
 
 /// `{Sort, Operation}` and an operation's OWN type parameter: `F[U]`'s `U.Elem` with no

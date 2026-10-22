@@ -739,7 +739,7 @@ end
 /// BACKED OUT, each alone (measured), this row fails: the canon keeping a sort's nullary
 /// `Fn` (and five rows that pin the one term: `map_arena`, `execute`, `wi1028`,
 /// `term_view`, `wi_n3w68`); the clause refusal (and `wi_s8jyf`, `wi_q0093`), the rule-body
-/// walk's, or the query's; the query's quoted-field gate; `names_only_a_type` counting an
+/// walk's, or the query's; the query's quoted-field gate; `is_type_value_head` counting an
 /// operation's name (the `Both` control is refused); the printer's type arm, or the parse
 /// side's written bracket. The clause refusal's `Off` gate fails `wi_5g28a` (an operation
 /// body's application is the typer's to refuse, and was reported twice). The single

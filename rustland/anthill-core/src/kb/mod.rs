@@ -4293,28 +4293,46 @@ impl KnowledgeBase {
     }
 
     /// The kind the reflect `kind` operation reports for `sym` — its builtin twin in the
-    /// resolver reads the same (WI-898). A constructor's TYPE FACE is a type, so it reports
-    /// `Sort` whatever kinds its declaration carries (WI-20260902-JB6RS): `kind(red[])` is
-    /// a sort, `kind(red)` the entity. Any other symbol reports the keyword its declaration
-    /// was first written with — the table does not see the face, so [`Self::kind_of`]
-    /// answers for the declaration.
+    /// resolver reads the same (WI-898). A TYPE FACE is a type, so it reports `Sort`
+    /// whatever kinds its declaration carries (WI-20260902-JB6RS): `kind(red[])` is a sort,
+    /// `kind(red)` the entity. The plain symbol of a sort that shares its name with an
+    /// operation reports `Operation` whichever was written first, because the face takes
+    /// every type reading of that name and the plain symbol is only ever the operation
+    /// (WI-20261022-7EXEY; user, 2026-10-22). Any other symbol reports the keyword its
+    /// declaration was first written with — the table does not see the face, so
+    /// [`Self::kind_of`] answers for the declaration.
     pub fn reflect_kind(&self, sym: Symbol) -> Option<crate::intern::KindLabel> {
         if sym.is_type_face() {
             return Some(crate::intern::KindLabel::TYPE_FACE);
+        }
+        if self.declaration_has_type_face(sym) && !self.has_kind(sym, SymbolKind::Entity) {
+            return Some(crate::intern::KindLabel::SORT_NAMED_OPERATION);
         }
         self.kind_of(sym)
     }
 
     /// Does `sym` play role `kind`? The membership question — insensitive to
-    /// which keyword came first, and therefore to source order.
+    /// which keyword came first, and therefore to source order. Asked of a type face, it
+    /// answers as [`Self::kinds`] does.
     pub fn has_kind(&self, sym: Symbol, kind: crate::intern::SymbolKind) -> bool {
-        self.symbols.get(sym).has_kind(kind)
+        self.kinds(sym).contains(kind)
     }
 
     /// Every role `sym` plays — for a question about several at once
     /// (`kinds(s).intersects(..)`). Empty for an unresolved symbol.
+    ///
+    /// A TYPE FACE plays its declaration's roles but one: it is never the OPERATION of its
+    /// name (WI-20261022-7EXEY). The table does not see the face, so without this the face
+    /// of a sort that shares its name with an operation answered every operation question
+    /// — a fact `Pair[T = Int64]` beside `Pair[T = Int64, U = String]` was refused as an
+    /// operation written at two arities (MEASURED).
     pub fn kinds(&self, sym: Symbol) -> crate::intern::KindSet {
-        self.symbols.get(sym).kinds()
+        let kinds = self.symbols.get(sym).kinds();
+        if sym.is_type_face() {
+            kinds.without(SymbolKind::Operation)
+        } else {
+            kinds
+        }
     }
 
     /// The symbol that owns the lexical scope in which `sym` was declared
@@ -12520,76 +12538,133 @@ impl KnowledgeBase {
     }
 
     /// Proposal 055 §2 — does `sym`, written in a value position, denote a TYPE VALUE
-    /// whatever surface it was written in: a SORT that is not its own constructor (§6.3).
-    /// Such a name has no construction reading, so a bare `Cell` is a type, and an
-    /// application `Cell[…]` — or, from a term that carries no surface, `Fn{Cell, …}` —
-    /// is a type application. An eponymous sort or a free-standing entity answers `false`:
-    /// its bare name and its applications are read by the surface (WI-927).
+    /// whatever surface it was written in — does it name ONLY a type? A type face, or a
+    /// SORT whose name has no data reading: no constructor of its name (§6.3) and no
+    /// operation (WI-20261022-7EXEY). Such a name has no construction or call reading, so
+    /// a bare `Cell` is a type, and an application `Cell[…]` — or, from a term that carries
+    /// no surface, `Fn{Cell, …}` — is a type application, while `Cell(…)` is refused where
+    /// it is written (kernel-language.md §4.4). A name that has a data reading answers
+    /// `false` for its plain symbol, which is that reading (an eponymous sort's instance,
+    /// a sort-named operation's call), and `true` for its face, which is its type.
     ///
     /// ONE PREDICATE for the producers that record the classification without a bracket to
     /// read — the walks' bare names (`Loader::bare_name_denotes_type`) and the `@[simp]`
-    /// RHS built from a term (`simp_rewrite::substitute_to_occurrence`) — and for the
-    /// refusal of such a sort applied as a call (WI-20260824-JM6ZW). `has_kind`, not
-    /// `kind_of`: WI-20260824-Q0093's namespace-before-sort row.
+    /// RHS built from a term (`simp_rewrite::substitute_to_occurrence`) — for eval's arms
+    /// that read a term with no mark, and for the refusal of such a sort applied as a call
+    /// (WI-20260824-JM6ZW). `has_kind`, not `kind_of`: WI-20260824-Q0093's
+    /// namespace-before-sort row. A PREDICATE of a sort's name cannot be declared (a
+    /// body-less `rule S(?x)` beside `sort S` is refused), and a rule head that resolves
+    /// to the sort mints none — it applies the sort, and is refused.
+    ///
+    /// It was two predicates until 7EXEY, this one and `names_only_a_type`, which also
+    /// excluded an operation: a sort-named operation had no face, so its plain symbol was
+    /// the type bare and the operation applied, and the two questions differed on it.
     pub fn is_type_value_head(&self, sym: Symbol) -> bool {
-        // A constructor's type face is a type, nested (`red†`, no `Sort` kind) or not
-        // (WI-20260902-JB6RS).
+        // A face is a type, nested (`red†`, no `Sort` kind) or not (WI-20260902-JB6RS).
         sym.is_type_face()
-            || (self.has_kind(sym, crate::intern::SymbolKind::Sort) && !self.is_entity_constructor(sym))
+            || (self.has_kind(sym, SymbolKind::Sort)
+                && !self.declaration_has_type_face(sym)
+                && !self.is_entity_constructor(sym))
     }
 
-    /// WI-20260902-JB6RS — does `sym` name ONLY a type: a constructor's type face, or a
-    /// sort with no constructor or operation of its name? Such a name has no reading as an
-    /// application, so `S(…)` is refused where it is written and an application headed by
-    /// it is written `S[…]` (kernel-language.md §4.4). A PREDICATE of a sort's name cannot
-    /// be declared (a body-less `rule S(?x)` beside `sort S` is refused), and a rule head
-    /// that resolves to the sort mints none — it applies the sort, and is refused here.
-    pub fn names_only_a_type(&self, sym: Symbol) -> bool {
-        sym.is_type_face()
-            || (self.is_type_value_head(sym) && !self.has_kind(sym, SymbolKind::Operation))
+    /// Does `sym` have a reading in a TYPE context (kernel-language.md §4.4): is it a sort,
+    /// a constructor (a sort in its own right, §6.3), or a face? Such a name written where
+    /// a type goes is that type, whatever else it names, and never a value place.
+    pub fn has_type_reading(&self, sym: Symbol) -> bool {
+        let kinds = self.kinds(sym);
+        sym.is_type_face() || kinds.contains(SymbolKind::Sort) || kinds.contains(SymbolKind::Entity)
+    }
+
+    /// WI-20261022-7EXEY — does the declaration `decl` get a TYPE FACE, a second identity
+    /// for its type reading beside the plain symbol, which keeps its data reading? Exactly
+    /// a sort whose NAME HAS A DATA READING too (kernel-language.md §4.4): every constructor
+    /// (`Entity` — nested, eponymous or free-standing; WI-20260902-JB6RS), and a sort that
+    /// shares its name with an operation (`Sort` + `Operation`, WI-751's pair). A sort with
+    /// no data reading of its name (`Int64`, `Cell`, a spec) has one identity, the plain
+    /// symbol, and is never given the bit.
+    ///
+    /// `Entity` IS "has a constructor of its name" for every declaration the loader makes:
+    /// scan pass 1 stamps it on all three shapes, and `register_prelude` defines its
+    /// constructors with it. It is read rather than `is_constructor_symbol` because the
+    /// kind is stamped before any term is built, where that registry fills during the load
+    /// (order-dependent, see [`Self::nullary_canon`]). A hand-built KB that registers a
+    /// constructor without the kind gets no face for it. `Operation` is stamped in pass 1
+    /// too, so the answer is the same whichever of the pair was written first.
+    ///
+    /// THE ONE PLACE that decides which declarations mint a face: [`Self::type_context_face`]
+    /// and [`Self::type_face_of`] both ask it.
+    fn declaration_has_type_face(&self, decl: Symbol) -> bool {
+        let kinds = self.kinds(decl);
+        kinds.contains(SymbolKind::Entity)
+            || (kinds.contains(SymbolKind::Sort) && kinds.contains(SymbolKind::Operation))
     }
 
     /// WI-20260902-JB6RS — the symbol a TYPE CONTEXT names `sym` by: its type face for a
-    /// declaration whose type contexts mint one, `sym` unchanged otherwise (a sort with no
-    /// constructor of its name, a face already). Every producer of a type term goes
-    /// through here — [`Self::make_sort_ref`] and the loader's type-context lowerings —
-    /// so which declarations mint a face is decided in ONE place.
+    /// declaration that has one ([`Self::declaration_has_type_face`]), `sym` unchanged
+    /// otherwise (a sort with no data reading of its name, a face already). Every producer
+    /// of a type term goes through here — [`Self::make_sort_ref`] and the loader's
+    /// type-context lowerings.
     ///
-    /// EVERY constructor: a nested one (`Entity`), and an eponymous or free-standing entity,
-    /// which carries `Sort` as well. A constructor's BARE name in a data context is its
-    /// instance, not this (kernel-language.md §4.4): its type there is written `Foo[]`, so
-    /// `fact p(Foo)` is not found by `:- p(Foo[])`.
+    /// A constructor's BARE name in a data context is its instance, not this
+    /// (kernel-language.md §4.4): its type there is written `Foo[]`, so `fact p(Foo)` is not
+    /// found by `:- p(Foo[])`. A sort-named operation's bare name there is the operation,
+    /// and its type is written `Positive[]` the same way (WI-20261022-7EXEY).
     pub fn type_context_face(&self, sym: Symbol) -> Symbol {
         if sym.is_type_face() {
             return sym;
         }
-        if self.has_kind(sym, SymbolKind::Entity) {
+        if self.declaration_has_type_face(sym) {
             sym.type_face()
         } else {
             sym
         }
     }
 
-    /// WI-20260902-JB6RS — the TYPE FACE of `sym`'s declaration, when that declaration
-    /// is of kind `Entity`; the declaration's own symbol otherwise.
+    /// WI-20261022-7EXEY — the symbol a BINDING of a bracket on `head` names `sym` by: a
+    /// bracket's binding is a type context (kernel-language.md §4.4), so its type face — but
+    /// a name that is an OPERATION as well takes the face only at a TYPE-PARAMETER slot, and
+    /// is the operation at any other (`Combiner[T = Tag, combine = tagCombine]`). The slot
+    /// decides, not the value, and by WI-974's one test ([`is_type_param_binding`], which
+    /// `spec_binding_texts` and the provision readers ask): a sort that shares its name with
+    /// an operation is either, and only the key says which was bound. `key` is `None` for a
+    /// positional binding, which takes the next type parameter (§5.1).
     ///
-    /// `Entity` IS "has a constructor of its name" for every declaration the loader makes:
-    /// scan pass 1 stamps it on all three shapes below, and `register_prelude` defines
-    /// its constructors with it. It is read rather than `is_constructor_symbol` because
-    /// the kind is stamped before any term is built, where that registry fills during
-    /// the load (order-dependent, see [`Self::nullary_canon`]). A hand-built KB that
-    /// registers a constructor without the kind gets no face for it.
+    /// The ONE rule for the four producers of a bracket's binding — the clause and query
+    /// converters, and the two body walks. The slot is read only for a value that is an
+    /// operation and has a face to give, which is rare: a name with no face is itself, and
+    /// any other face is its type at every slot.
     ///
-    /// The guarded way to a face, and the only one outside `intern`: a constructor — a
-    /// sort-nested `entity red`, an eponymous `sort Foo … entity Foo(…) … end`, a
-    /// free-standing `entity Foo(…)` — is a sort in its own right (§6.3) and so has two
-    /// readings, its instance and its type, and only such a declaration gets a second
-    /// identity. A sort with no constructor of its name (`Int64`, `Cell`) has exactly one
-    /// face, which is why this never puts the bit on one (kernel-language.md §4.4).
-    /// Idempotent: a face maps to itself.
+    /// [`is_type_param_binding`]: crate::kb::typing::is_type_param_binding
+    pub fn binding_type_face(&self, head: Symbol, key: Option<Symbol>, sym: Symbol) -> Symbol {
+        let face = self.type_context_face(sym);
+        if face == sym || !self.has_kind(sym, SymbolKind::Operation) {
+            return face;
+        }
+        match key {
+            Some(key)
+                if !crate::kb::typing::is_type_param_binding(
+                    self,
+                    key,
+                    self.qualified_name_of(head.plain()),
+                ) =>
+            {
+                sym
+            }
+            _ => face,
+        }
+    }
+
+    /// WI-20260902-JB6RS — the TYPE FACE of `sym`'s declaration, when that declaration has
+    /// one ([`Self::declaration_has_type_face`]); the declaration's own symbol otherwise.
+    ///
+    /// The guarded way to a face, and the only one outside `intern`: only a declaration
+    /// whose name has a data reading as well as its type gets a second identity, and a
+    /// sort with no data reading of its name (`Int64`, `Cell`) has exactly one, which is
+    /// why this never puts the bit on one (kernel-language.md §4.4). Idempotent: a face
+    /// maps to itself.
     pub fn type_face_of(&self, sym: Symbol) -> Symbol {
         let decl = sym.plain();
-        if self.has_kind(decl, SymbolKind::Entity) {
+        if self.declaration_has_type_face(decl) {
             decl.type_face()
         } else {
             decl
@@ -13253,7 +13328,7 @@ impl TermSource for KnowledgeBase {
         self.qualified_name_of(sym)
     }
     fn heads_only_a_type(&self, _id: TermId, sym: Symbol) -> bool {
-        self.names_only_a_type(sym)
+        self.is_type_value_head(sym)
     }
 }
 

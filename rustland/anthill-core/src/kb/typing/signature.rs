@@ -3989,9 +3989,10 @@ fn modify_place_type(
     // written first, so `sort counter { entity counter }` — `{Sort, Entity}`, the long
     // spelling of `entity counter` — was refused as "a Sort, which names no value" where
     // the short spelling was the constructor. A value place that is a type as well
-    // (`KindSet::is_place`) is read as the type, as the loader lowers it, and so is a
-    // sort beside a same-named operation: a BARE name is a type when it is a sort and no
-    // constructor ([`KnowledgeBase::is_type_value_head`], kernel-language §4.4).
+    // (`KindSet::is_place`) is read as the type, as the loader lowers it. A sort beside a
+    // same-named operation is read by its symbol: the loader names the type by its face,
+    // which is a type ([`KnowledgeBase::is_type_value_head`], kernel-language §4.4), and
+    // the plain symbol is the operation (WI-20261022-7EXEY).
     use crate::intern::SymbolKind;
     let kinds = kb.kinds(head);
     let mut types: Vec<Value> = if kinds.is_place(SymbolKind::OpResult) {

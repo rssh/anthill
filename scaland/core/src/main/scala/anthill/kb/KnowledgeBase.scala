@@ -101,17 +101,19 @@ class KnowledgeBase:
       case SymbolDef.Resolved(_, qualified, _, _) => KnowledgeBase.reflectLiteralForms.contains(qualified)
       case SymbolDef.Unresolved(_) => false
 
-  /** WI-20261020-80VNX (rustland's `names_only_a_type`) — does `sym` name ONLY a type: a
+  /** WI-20261020-80VNX (rustland's `is_type_value_head`) — does `sym` name ONLY a type: a
     * constructor's type face, or a sort with no constructor of its name? Such a name has
     * no reading as an application, so `S(…)` is refused where it is written
     * ([[anthill.load.LoadError.SortAppliedAsData]]) and its type is written `S[…]`
     * (kernel-language.md §4.4). An eponymous or free-standing entity has a constructor of
     * its name (`Entity`), and is applied as one.
     *
-    * Rustland also excludes a sort that is an OPERATION, which its loader lets one name
-    * be. Scaland's does not: an operation at a sort's address is a duplicate declaration
-    * (`Loader.checkDeclarations`) and a body-less rule there is refused as adding nothing,
-    * so no symbol of a clean load is a sort and something else to apply (measured). */
+    * Rustland's loader lets a sort and an OPERATION share a name, and gives that sort a
+    * type face as it gives a constructor one (WI-20261022-7EXEY), so its plain symbol is
+    * the operation. Scaland's does not: an operation at a sort's address is a duplicate
+    * declaration (`Loader.checkDeclarations`) and a body-less rule there is refused as
+    * adding nothing, so no symbol of a clean load is a sort and something else to apply
+    * (measured). */
   def namesOnlyAType(sym: TermSymbol): Boolean =
     sym.isTypeFace || {
       val d = symbols.get(sym)
