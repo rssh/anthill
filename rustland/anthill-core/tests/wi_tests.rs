@@ -1628,6 +1628,8 @@ mod wi_fqc85_rule_declaration_test;
 
 #[path = "include/wi_j38je_boolean_goal_test.rs"]
 mod wi_j38je_boolean_goal_test;
+#[path = "include/wi_j03at_marker_identity_test.rs"]
+mod wi_j03at_marker_identity_test;
 
 #[path = "include/wi_vpewk_host_op_operand_test.rs"]
 mod wi_vpewk_host_op_operand_test;
@@ -2045,6 +2047,8 @@ mod wi_jn09w_holder_gate_test;
 mod wi_2kv4y_unfixed_carrier_test;
 #[path = "include/wi_aaqt5_type_application_head_test.rs"]
 mod wi_aaqt5_type_application_head_test;
+#[path = "include/wi_9snr2_contract_clause_positional_test.rs"]
+mod wi_9snr2_contract_clause_positional_test;
 #[path = "include/wi_0rp29_nested_projection_value_in_type_test.rs"]
 mod wi_0rp29_nested_projection_value_in_type_test;
 #[path = "include/wi_0rp29_call_binding_test.rs"]
@@ -2112,6 +2116,10 @@ mod wi_xqgew_member_param_test;
 
 #[path = "include/wi_s7yf5_self_receiver_row_test.rs"]
 mod wi_s7yf5_self_receiver_row_test;
+#[path = "include/wi_gr5en_provider_at_depth_test.rs"]
+mod wi_gr5en_provider_at_depth_test;
+#[path = "include/wi_gr5en_left_out_parameter_test.rs"]
+mod wi_gr5en_left_out_parameter_test;
 
 #[path = "include/wi_41yye_enclosing_place_type_test.rs"]
 mod wi_41yye_enclosing_place_type_test;

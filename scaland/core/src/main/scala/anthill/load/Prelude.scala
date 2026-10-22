@@ -242,6 +242,12 @@ object Prelude:
       if scope == kernel then
         kb.symbols.addImport(kb.globalScope, short, sym, ImportOrigin.Builtin)
 
+    // The scoping markers the parser mints (`DesugarTarget.ForallImpl` and its peers).
+    // Defined so their addresses resolve, and NOT imported at `<global>`: no written
+    // spelling means them, so a bare `forall_impl` stays the writer's own name.
+    for address <- IndexedSeq(DesugarTarget.ForallImpl, DesugarTarget.ForallIn, DesugarTarget.SomeIn) do
+      defineIn(kb, kernel, DesugarTarget.short(address), SymbolKind.Operation)
+
   /** Add anthill.prelude as a parent of <global> and import reflect metadata.
     * Parser vocabulary is reached by its absolute address (ERF7T).
     *

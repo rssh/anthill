@@ -1007,7 +1007,7 @@ class ParseTest extends munit.FunSuite:
       .getOrElse(fail("parse failed"))
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
-    assertEquals(functorName(pf, body(0)), "forall_in")
+    assertEquals(functorName(pf, body(0)), DesugarTarget.ForallIn)
   }
 
   test("WI-027: `(some ?x in xs: P(?x))` lowers to `some_in`") {
@@ -1015,7 +1015,7 @@ class ParseTest extends munit.FunSuite:
       .getOrElse(fail("parse failed"))
     val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
       .getOrElse(fail("no body"))
-    assertEquals(functorName(pf, body(0)), "some_in")
+    assertEquals(functorName(pf, body(0)), DesugarTarget.SomeIn)
   }
 
   test("WI-027: an ordinary paren expr `(a + b)` still parses (bounded-quant backtracks)") {

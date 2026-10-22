@@ -2010,3 +2010,32 @@ pub(super) fn spec_param_sigma(
         .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, spec_qn).map(|p| (p, v.clone())))
         .collect()
 }
+
+/// A spec parameter the `provides` clause leaves out is the `?` written there: `provides
+/// Sp[T = Int64]` is `provides Sp[T = Int64, K = ?]`, a variable of the provision's own, so a
+/// member is held to taking every `K` the provision answers a call at. Left out of σ, a reader
+/// compared nothing there, and `op(t: Int64, x: Car)` behind `op(t: T, x: K)` loaded where the
+/// written spelling is refused — and a call at `K = String`, which the provision answers, ran
+/// the member on a `String` (MEASURED). The spec's carrier parameter is not filled: it names
+/// the provider (`provides Llm`), and a clause that leaves it out is refused on its own. It is
+/// the parameter an operation receives on ([`spec_carrier_param`]), as that refusal asks — not a
+/// sole parameter no operation receives on, which [`spec_carrier_param_or_sole`] would add: left
+/// out of `provides Tagged` over `tag(n: Int64) -> T`, such a `T` was compared nowhere, and a
+/// member returning `Int64` was run for a caller asking a `String` (MEASURED).
+pub(super) fn write_left_out_params(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    sigma: &mut Vec<(Symbol, Value)>,
+) {
+    let carrier = spec_carrier_param(kb, spec);
+    for (q, _) in own_params_of(kb, kb.canonical_sort_sym(spec)) {
+        if Some(q) == carrier || sigma.iter().any(|(p, _)| *p == q) {
+            continue;
+        }
+        // Named by its parameter, so a refusal prints `?K` where it compared the slot.
+        let name = kb.intern(&kb.local_name_of(q).to_string());
+        let vid = kb.fresh_var(name);
+        let var = kb.alloc(Term::Var(Var::Global(vid)));
+        sigma.push((q, Value::term(var)));
+    }
+}

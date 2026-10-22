@@ -14,6 +14,14 @@
 //! mis-arity marker name is no longer a marker anywhere: the resolver treats it as
 //! an ordinary (undefined) functor and the CLI reports it loudly, while a
 //! well-formed marker at its canonical arity still resolves unchanged.
+//!
+//! WI-20260827-J03AT moved the recognition from the short NAME to the kernel SYMBOL the
+//! converter and the resolver mint (`..anthill.kernel.forall_impl`, …), which no written
+//! name reaches. So a written marker name is refused at EVERY arity now, the canonical
+//! one included (the `…_at_its_own_arity_…` rows below). The arity gate still applies to
+//! the kernel symbol itself, written under an explicit import: at another arity it is not
+//! expanded, and the resolver reports it as an error when the goal runs — not at load,
+//! since the bootstrap declares the symbol.
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -100,6 +108,26 @@ fn pop_assumption_at_wrong_arity_is_refused() {
     );
 }
 
+/// A written marker name at its CANONICAL arity is refused too: no written spelling
+/// means the marker. Before WI-20260827-J03AT, `some_in(?x, [1, 2], tuple(base(?x)))`
+/// was the bounded quantifier and answered `true`.
+#[test]
+fn a_written_marker_name_at_its_own_arity_is_refused() {
+    for (pattern, name) in [
+        ("some_in(?x, [1, 2], tuple(base(?x)))", "some_in"),
+        ("forall_in(?x, [1, 2], tuple(base(?x)))", "forall_in"),
+        ("forall_impl(tuple(?h), tuple(base(?h)), tuple(base(?h)))", "forall_impl"),
+    ] {
+        let out = query_props(&[pattern]);
+        assert!(
+            is_refused(&out, name),
+            "{pattern}\nstdout:\n{}\nstderr:\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
+}
+
 // ── A well-formed marker at its canonical arity still resolves ──────
 
 /// THE regression: a well-formed universal quantifier desugars to a 3-ary
@@ -127,6 +155,20 @@ fn a_well_formed_some_still_resolves() {
     assert!(
         answered(&out),
         "a well-formed some must resolve, not be refused; stderr:\n{}",
+        out.stderr
+    );
+    assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);
+}
+
+/// The discharge's twin: `(forall(?h), base(?h) -: base(?h))` mints the kernel
+/// `forall_impl`, which the query guard exempts and the resolver discharges — the
+/// written `forall_impl(…)` row above is refused, this one answers.
+#[test]
+fn a_well_formed_discharge_still_resolves() {
+    let out = query_props(&["(forall(?h), base(?h) -: base(?h))"]);
+    assert!(
+        answered(&out),
+        "a well-formed discharge must resolve, not be refused; stderr:\n{}",
         out.stderr
     );
     assert!(out.stdout.contains("true"), "stdout:\n{}", out.stdout);

@@ -195,6 +195,28 @@ pub enum BuiltinTag {
     /// is on the choice-point stack (it prunes back to the barrier), not on σ —
     /// like Not / HoApply / PushChoice. Proposal 033.1 / WI-568.
     Cut,
+    /// `anthill.kernel.forall_impl(tuple(binders), tuple(antecedents), tuple(consequent))`
+    /// — the hereditary-Harrop discharge, `(forall(?x), A -: C)`
+    /// ([`crate::parse::desugar_target::FORALL_IMPL`]). The first of the four SCOPING
+    /// MARKERS, which `step_init` expands in place at their arity
+    /// ([`is_scoping_marker`]); a marker reaching `execute_builtin` was written at another
+    /// arity, and is an error there.
+    ForallImpl,
+    /// `anthill.kernel.forall_in(?x, xs, tuple(body))` — `(forall ?x in xs: body)`.
+    /// A scoping marker; see [`Self::ForallImpl`].
+    ForallIn,
+    /// `anthill.kernel.some_in(?x, xs, tuple(body))` — `(some ?x in xs: body)`.
+    /// A scoping marker; see [`Self::ForallImpl`].
+    SomeIn,
+    /// `anthill.kernel.__pop_assumption(n)` ([`POP_ASSUMPTION`]) — drops the `n`
+    /// assumptions a discharge pushed, once its consequent is proved. Minted by the
+    /// resolver only. A scoping marker; see [`Self::ForallImpl`].
+    PopAssumption,
+    /// `anthill.kernel.__within_requirements(goal, relation, d₀ …)` ([`WITHIN_REQUIREMENTS`])
+    /// — the marker a citation's root goal rides in. Minted by the resolver only and
+    /// unwrapped by `step_init` before any dispatch, so one reaching `execute_builtin` is
+    /// not in the shape the resolver mints.
+    WithinRequirements,
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.kernel.struct_eq(?a, ?b)` (`===`) — structural equality
     /// (succeeds/fails). Total, carrier-agnostic, never dispatches (WI-615 /
@@ -2225,7 +2247,7 @@ impl SearchStream {
                 functor: Some(f),
                 pos_arity,
                 ..
-            } => is_scoping_marker(kb.local_name_of(f), pos_arity),
+            } => is_scoping_marker(kb, f, pos_arity),
             _ => false,
         };
         if is_marker {
@@ -3287,7 +3309,8 @@ impl SearchStream {
     fn is_forall_impl(kb: &KnowledgeBase, goal: &Value) -> bool {
         matches!(
             goal.head(kb),
-            ViewHead::Functor { functor: Some(f), .. } if kb.local_name_of(f) == "forall_impl"
+            ViewHead::Functor { functor: Some(f), .. }
+                if kb.builtin_of(f) == Some(BuiltinTag::ForallImpl)
         )
     }
 
@@ -3411,9 +3434,9 @@ impl SearchStream {
         match goal.head(kb) {
             ViewHead::Functor {
                 functor: Some(f), ..
-            } => match kb.local_name_of(f) {
-                "forall_in" => Some(true),
-                "some_in" => Some(false),
+            } => match kb.builtin_of(f) {
+                Some(BuiltinTag::ForallIn) => Some(true),
+                Some(BuiltinTag::SomeIn) => Some(false),
                 _ => None,
             },
             _ => None,
@@ -3888,7 +3911,9 @@ impl SearchStream {
     /// Build `__pop_assumption(N)` — a synthetic goal that, when reached
     /// in step_init, drops N entries from the frame's assumed_facts.
     fn make_pop_assumption_marker(kb: &mut KnowledgeBase, n: usize) -> TermId {
-        let functor = kb.intern("__pop_assumption");
+        let functor = kb
+            .try_resolve_symbol(POP_ASSUMPTION)
+            .expect("bootstrap registers the `__pop_assumption` marker");
         let count = kb.alloc(Term::Const(crate::kb::term::Literal::Int(n as i64)));
         kb.alloc(Term::Fn {
             functor,
@@ -4073,10 +4098,12 @@ impl SearchStream {
                 functor: Some(f),
                 pos_arity: 1,
                 named_arity: 0,
-            } if kb.local_name_of(f) == "__pop_assumption" => match goal.pos_arg(kb, 0)?.head(kb) {
-                ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
-                _ => None,
-            },
+            } if kb.builtin_of(f) == Some(BuiltinTag::PopAssumption) => {
+                match goal.pos_arg(kb, 0)?.head(kb) {
+                    ViewHead::Const(Literal::Int(n)) if n >= 0 => Some(n as usize),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -6104,6 +6131,21 @@ impl KnowledgeBase {
                 unreachable!("PushChoice is handled in step_init, not execute_builtin")
             }
             BuiltinTag::Cut => unreachable!("Cut is handled in step_init, not execute_builtin"),
+            // `step_init` expands a scoping marker in its own shape, so one reaching here
+            // was written in another — reachable only by importing the kernel name.
+            BuiltinTag::ForallImpl
+            | BuiltinTag::ForallIn
+            | BuiltinTag::SomeIn
+            | BuiltinTag::PopAssumption
+            | BuiltinTag::WithinRequirements => BuiltinResult::Error(ResolveError::new(format!(
+                "`{}` is a resolver marker, read in place only in the shape the resolver \
+                 mints it (arity 3 for `forall_impl` / `forall_in` / `some_in`, one integer \
+                 for `__pop_assumption`, a goal and a relation for \
+                 `__within_requirements`); this goal is not in that shape",
+                goal.head(self)
+                    .functor_sym()
+                    .map_or("<marker>", |f| self.qualified_name_of(f))
+            ))),
             BuiltinTag::ResolveSortInstParam => {
                 self.builtin_resolve_sort_inst_param(goal, answer_subst)
             }
@@ -14317,7 +14359,7 @@ impl KnowledgeBase {
             // marker name is NOT resolved off-discrim, so it is refutable here.
             if self.extent_owner(functor).is_some()
                 || self.dispatched_bool_relation(&walked, functor)
-                || is_scoping_marker(self.local_name_of(functor), pos_arity)
+                || is_scoping_marker(self, functor, pos_arity)
             {
                 continue;
             }
@@ -14687,8 +14729,11 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 /// The marker is the goal's `original_goal` in its choice point, which is what a delay
 /// rotation re-pushes, so the arguments cannot be lost by reordering.
 ///
-/// Recognized by LOCAL NAME, as [`is_scoping_marker`]'s markers are.
-pub(crate) const WITHIN_REQUIREMENTS: &str = "__within_requirements";
+/// A kernel address, minted by the resolver alone and recognised by
+/// [`BuiltinTag::WithinRequirements`], as [`is_scoping_marker`]'s markers are: recognised
+/// by its short name, a user predicate of that name had its first argument resolved as the
+/// cited goal (WI-20260827-J03AT).
+pub(crate) const WITHIN_REQUIREMENTS: &str = "anthill.kernel.__within_requirements";
 
 /// The slot a [`WITHIN_REQUIREMENTS`] marker carries for a read NOTHING WAS ROUTED TO — the
 /// reserved nullary symbol `__unrouted`; the read then derives its own
@@ -14812,7 +14857,9 @@ pub(crate) fn within_requirements_goal(
     relation: Symbol,
     dicts: Vec<Value>,
 ) -> Value {
-    let within = kb.intern(WITHIN_REQUIREMENTS);
+    let within = kb
+        .try_resolve_symbol(WITHIN_REQUIREMENTS)
+        .expect("bootstrap registers the `__within_requirements` marker");
     let mut pos: Vec<Value> = Vec::with_capacity(dicts.len() + 2);
     pos.push(goal);
     pos.push(Value::SymbolRef(relation));
@@ -14870,7 +14917,7 @@ fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> 
             functor: Some(f),
             pos_arity,
             ..
-        } if pos_arity >= 2 && kb.local_name_of(f) == WITHIN_REQUIREMENTS => {
+        } if pos_arity >= 2 && kb.builtin_of(f) == Some(BuiltinTag::WithinRequirements) => {
             Some(goal.pos_arg(kb, 0)?.to_value())
         }
         _ => None,
@@ -14887,7 +14934,7 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
     else {
         return None;
     };
-    if pos_arity < 2 || kb.local_name_of(f) != WITHIN_REQUIREMENTS {
+    if pos_arity < 2 || kb.builtin_of(f) != Some(BuiltinTag::WithinRequirements) {
         return None;
     }
     // The relation rides as a SYMBOL on whatever carrier the σ walk left it on — built a
@@ -14957,31 +15004,41 @@ fn bind_citation_reads(
     }
 }
 
+/// The kernel address of the scope-discharge marker a discharge appends after its
+/// consequent ([`BuiltinTag::PopAssumption`]). Minted by the resolver only
+/// (`make_pop_assumption_marker`), so it is not a converter desugar target; registered
+/// at bootstrap, like the three markers that are.
+pub(crate) const POP_ASSUMPTION: &str = "anthill.kernel.__pop_assumption";
+
 /// The scoping / quantifier MARKER applications `step_init` resolves off the
 /// discrim path — skolemised / expanded in place, never via rule/fact
 /// candidates: `forall_impl` (WI-108 hereditary-Harrop) and `forall_in` /
 /// `some_in` (WI-027 bounded quantification), each 3-ary, plus the 1-ary
 /// `__pop_assumption` scope discharge.
 ///
-/// Recognised by short name AND positional arity (WI-878). A marker is only ever
-/// BUILT at its canonical arity (the parser desugars `forall … ==>` / `forall ?x
-/// in xs: …` to 3-ary heads; `make_pop_assumption_marker` builds `__pop_assumption`
-/// 1-ary) and the handlers consume exactly that shape (`step_bounded_quant` /
-/// `step_forall_impl` read positional args 0/1/2; `pop_assumption_arg` matches
-/// `pos_arity: 1`), so a marker NAME carried at any OTHER arity — `some_in(x)` —
-/// is a user typo, never the resolver's quantifier. Keying on the name alone let
-/// such a typo escape the undefined-functor report as a silent `no solutions`.
-/// This predicate is the SOLE arity guard: once it admits a marker the handlers
-/// assume canonical arity and no longer re-check it.
+/// Recognised by SYMBOL — the [`BuiltinTag`] bootstrap registers on each kernel
+/// address — AND positional arity (WI-878). By symbol because the short name is
+/// a user's too (WI-20260827-J03AT): a user predicate named `forall_impl` had its
+/// data arguments read as a discharge, and a user's `rule forall_impl(…)` captured
+/// the parser's own mint in its namespace, since the loader resolves a minted
+/// functor through scope like a written one. The converter mints the addresses
+/// ([`crate::parse::desugar_target::FORALL_IMPL`] and its two peers), which no
+/// identifier can spell, and a written bare `forall_impl(…)` is the writer's own
+/// name.
 ///
-/// Narrow residual: `__pop_assumption`'s full recognition is stricter than name +
-/// arity — `pop_assumption_arg` also requires `named_arity == 0` and a non-negative
-/// int argument. A malformed pos-arity-1 `__pop_assumption` (a non-int or a named
-/// arg) is thus exempted here yet unhandled by the resolver, the WI-878 silent-skip
-/// class surviving for this one form. It is effectively unreachable — the name is
-/// internal, synthesised only as `__pop_assumption(IntLiteral)`, never user-typed —
-/// and the arg-shape check is a resolver-internal extraction detail a name+arity
-/// predicate cannot express, so it stays in `pop_assumption_arg`.
+/// A marker is only ever BUILT at its canonical arity (the converter's and the
+/// induction synthesizer's 3-ary heads; `make_pop_assumption_marker`'s 1-ary one)
+/// and the handlers consume exactly that shape (`step_bounded_quant` /
+/// `step_forall_impl` read positional args 0/1/2; `pop_assumption_arg` matches
+/// `pos_arity: 1`), so a marker symbol at another arity was written under an
+/// import of the kernel name and is not the resolver's marker. This predicate is
+/// the SOLE arity guard: once it admits a marker the handlers assume canonical
+/// arity and no longer re-check it. What it does not admit reaches
+/// `execute_builtin`, which refuses it as an error when the goal runs — so does a
+/// pos-arity-1 `__pop_assumption` whose argument is not the non-negative integer
+/// `pop_assumption_arg` reads. Not at load: the bootstrap declares the symbol, so the
+/// load's "names nothing" guards (`KnowledgeBase::undefined_functor`) do not apply to it,
+/// as they do not to `find_dictionary` written in another shape.
 ///
 /// Shared by `step_init`'s marker dispatch and WI-670's refutation skip so the
 /// two recognitions never drift (a marker missing from the refutation set would
@@ -14989,16 +15046,17 @@ fn bind_citation_reads(
 ///
 /// `pub(crate)` so `KnowledgeBase::undefined_functor` (WI-754) shares this
 /// ONE authority: a marker carries no rule/fact/declaration, so without consulting
-/// it a well-formed `(forall … )` query would be mis-refused as an unknown functor
-/// — yet a mis-arity marker name MUST be refused. Routing both the CLI exemption
-/// and the resolver dispatch through this one predicate keeps them in LOCKSTEP
-/// (WI-878): tighten the arity here and both tighten together. WI-1034 added the
-/// third consumer — the loader's rule-body goal check — through the same
-/// `undefined_functor`, so a marker in a rule body is exempt for this one reason.
-pub(crate) fn is_scoping_marker(name: &str, pos_arity: usize) -> bool {
-    match name {
-        "forall_impl" | "forall_in" | "some_in" => pos_arity == 3,
-        "__pop_assumption" => pos_arity == 1,
+/// it a well-formed `(forall … )` query would be mis-refused as an unknown functor.
+/// Routing both the CLI exemption and the resolver dispatch through this one
+/// predicate keeps them in LOCKSTEP (WI-878). WI-1034 added the third consumer —
+/// the loader's rule-body goal check — through the same `undefined_functor`, so a
+/// marker in a rule body is exempt for this one reason.
+pub(crate) fn is_scoping_marker(kb: &KnowledgeBase, functor: Symbol, pos_arity: usize) -> bool {
+    match kb.builtin_of(functor) {
+        Some(BuiltinTag::ForallImpl | BuiltinTag::ForallIn | BuiltinTag::SomeIn) => {
+            pos_arity == 3
+        }
+        Some(BuiltinTag::PopAssumption) => pos_arity == 1,
         _ => false,
     }
 }

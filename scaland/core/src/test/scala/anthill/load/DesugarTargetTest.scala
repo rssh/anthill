@@ -32,7 +32,10 @@ class DesugarTargetTest extends munit.FunSuite:
     "!" -> DesugarTarget.Cut,
     "requires(Eq)" -> DesugarTarget.FindDictionary,
     "require[Eq]" -> DesugarTarget.FindDictionary,
-    "?d = require[Eq]" -> DesugarTarget.FindDictionary) do
+    "?d = require[Eq]" -> DesugarTarget.FindDictionary,
+    "(p(?x) -: p(?x))" -> DesugarTarget.ForallImpl,
+    "(forall ?y in [1]: p(?y))" -> DesugarTarget.ForallIn,
+    "(some ?y in [1]: p(?y))" -> DesugarTarget.SomeIn) do
     test(s"converter mint `$src` carries its absolute address") {
       val (pf, goals) = body(src)
       assertEquals(functor(pf, goals.head), address)
@@ -51,7 +54,7 @@ class DesugarTargetTest extends munit.FunSuite:
     }
 
   test("the target table agrees with the parsed addresses and excludes kernel short names") {
-    assertEquals(DesugarTarget.all.size, 12)
+    assertEquals(DesugarTarget.all.size, 15)
     for address <- DesugarTarget.all do
       assert(address.startsWith(".."), address)
       if !DesugarTarget.isKernelControl(address) then
@@ -79,7 +82,8 @@ class DesugarTargetTest extends munit.FunSuite:
     assertEquals(functor(pf, goals(4)), "cut")
     assertEquals(functor(pf, goals(5)), "find_dictionary")
     assertEquals(functor(pf, goals(6)), "requires")
-    for address <- Seq(DesugarTarget.Cut, DesugarTarget.FindDictionary, Pratt.unifyFunctor, Pratt.structEqFunctor) do
+    for address <- Seq(DesugarTarget.Cut, DesugarTarget.FindDictionary, DesugarTarget.ForallImpl,
+        DesugarTarget.ForallIn, DesugarTarget.SomeIn, Pratt.unifyFunctor, Pratt.structEqFunctor) do
       intercept[IllegalArgumentException](DesugarTarget.is(DesugarTarget.short(address), address))
   }
 
@@ -96,7 +100,8 @@ class DesugarTargetTest extends munit.FunSuite:
   test("host-name lookup excludes desugar vocabulary and retains metadata") {
     val kb = KnowledgeBase()
     Prelude.register(kb)
-    for name <- Seq("field_access", "dot_apply", "ho_apply", "ListLiteral", "cut", "find_dictionary") do
+    for name <- Seq("field_access", "dot_apply", "ho_apply", "ListLiteral", "cut", "find_dictionary",
+        "forall_impl", "forall_in", "some_in") do
       assertEquals(kb.symbols.resolveInScope(name, kb.globalScope), ResolveResult.NotFound, name)
     assert(kb.symbols.resolveInScope("SortInfo", kb.globalScope).denotes)
     assert(kb.tryResolveSymbol(DesugarTarget.qualified(DesugarTarget.FieldAccess)).isDefined)
@@ -116,4 +121,21 @@ class DesugarTargetTest extends munit.FunSuite:
       assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(address))
     assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(1)).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(DesugarTarget.HoApply))
     assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(2)).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(DesugarTarget.DotApply))
+  }
+
+  /** A namespace declaring its own `forall_impl` / `forall_in` / `some_in` does not
+    * capture the markers the parser mints: each loaded goal names the kernel address.
+    * Backing the three mints out to their short names fails this row (they resolve to
+    * `app.own.*`); the user's own predicates stay theirs either way. */
+  test("a user's own marker names do not capture the minted quantifier markers") {
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    val pf = parsed("namespace app.own\nfact p(1)\nfact forall_impl(1, 2, 3)\nfact forall_in(1, 2, 3)\nfact some_in(1, 2, 3)\nrule q(?x) :- p(?x), (p(?x) -: p(?x)), (forall ?y in [1]: p(?y)), (some ?y in [1]: p(?y))\nend")
+    val errors = Loader.loadAll(kb, IndexedSeq(pf))
+    assert(errors.isEmpty, errors.toString)
+    val rules = kb.byFunctor(kb.resolveSymbol("app.own.q"))
+    assertEquals(rules.length, 1)
+    val goals = kb.ruleBody(rules.head)
+    for (id, address) <- goals.toSeq.drop(1).zip(Seq(DesugarTarget.ForallImpl, DesugarTarget.ForallIn, DesugarTarget.SomeIn)) do
+      assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(address))
   }

@@ -22849,12 +22849,14 @@ fn positional_type_keys(
         .collect()
 }
 
-/// The arguments of a type application in a clause's term or a query's, as the one term its
-/// type is: a positional bound to the parameter it takes, and the arguments in the order an
-/// operation body's value of the type has them (`KnowledgeBase::make_parameterized_type`).
-/// The inputs `Pair[Int64, String]`, `Pair[A = Int64, B = String]` and `Pair[B = String, A =
-/// Int64]` are normalized to one term, so a fact holding one is found by a goal or a query
-/// writing another. Called once the arguments are known to fit the sort.
+/// The arguments of a type application in a term — a clause's, a query's, an operation's
+/// `requires` and `ensures` — as the one term its type is: a positional bound to the
+/// parameter it takes, and the arguments in the order an operation body's value of the type
+/// has them (`KnowledgeBase::make_parameterized_type`). The inputs `Pair[Int64, String]`,
+/// `Pair[A = Int64, B = String]` and `Pair[B = String, A = Int64]` are normalized to one
+/// term, so a fact holding one is found by a goal or a query writing another, and a
+/// requirement written with one is the requirement written with another. Called once the
+/// arguments are known to fit the sort.
 fn normalize_type_args<C>(
     kb: &mut KnowledgeBase,
     sort: Symbol,
@@ -29891,12 +29893,15 @@ impl<'a> Loader<'a> {
                             detail,
                             span: Some(self.parsed.terms.span(parse_id)),
                         });
-                    } else if node_fold == ConstFold::Data
-                        && !self.in_rule_head_bound
-                        && !self.in_quoted_term
-                    {
-                        // In a clause's data slot the application is the one term its type
-                        // is ([`normalize_type_args`]).
+                    } else if !self.in_rule_head_bound && !self.in_quoted_term {
+                        // The application is the one term its type is
+                        // ([`normalize_type_args`]) wherever this walk builds it: a
+                        // clause's data slot, an operation's `requires` and `ensures`, an
+                        // operation body. Every reader of a nested binding reads its named
+                        // arguments, so a positional left here is a binding dropped —
+                        // `requires Store[State = Buf[Int64]]` was a requirement at `Buf[]`.
+                        // A rule head's bound has its own reader (above), and a quoted
+                        // `Term` field holds the text as written.
                         let mut pos: Vec<TermId> = new_pos.drain(..).collect();
                         let mut named: Vec<(Symbol, TermId)> = new_named.drain(..).collect();
                         normalize_type_args(self.kb, owner, &mut pos, &mut named);
@@ -39192,7 +39197,10 @@ impl<'a> Loader<'a> {
             .copied()
             .unwrap_or_else(|| self.kb.intern(dt::short(dt::HO_APPLY)));
         let tuple_sym = self.kb.intern("tuple");
-        let forall_impl_sym = self.kb.intern("forall_impl");
+        let forall_impl_sym = self
+            .kb
+            .try_resolve_symbol(dt::qualified(dt::FORALL_IMPL))
+            .expect("bootstrap registers the discharge marker's address");
 
         let mut body: Vec<TermId> = Vec::new();
         for &(e, ctor_sym) in entities {

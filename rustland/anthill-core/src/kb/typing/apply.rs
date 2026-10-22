@@ -922,7 +922,7 @@ pub(super) fn check_apply_iter(
                 .is_some_and(|enclosing| same_sort_canonical(kb, *callee, enclosing))
         });
         let this_instance =
-            |kb: &mut KnowledgeBase, _receiver: &Value, recv_ty: &Value, member: Symbol| {
+            |kb: &mut KnowledgeBase, receiver: &Value, recv_ty: &Value, member: Symbol| {
                 own_spec
                     .and_then(|spec| this_instance_member(kb, env, spec, recv_ty, member))
                     .or_else(|| {
@@ -930,6 +930,16 @@ pub(super) fn check_apply_iter(
                             kb,
                             callee_parent_sort?,
                             enclosing_requires_clause.as_ref()?,
+                            recv_ty,
+                            member,
+                        )
+                    })
+                    .or_else(|| {
+                        call_slot_member(
+                            kb,
+                            callee_parent_sort?,
+                            &written_params,
+                            receiver,
                             recv_ty,
                             member,
                         )

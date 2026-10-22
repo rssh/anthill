@@ -1255,7 +1255,7 @@ private class AnthillParserImpl(
     * ordinary paren exprs still parse. Mirrors rustland's
     * `convert_bounded_quantification`. */
   private def boundedQuantification[$: P]: P[TermId] =
-    P("(" ~ located(keyword("forall").map(_ => "forall_in") | keyword("some").map(_ => "some_in"))
+    P("(" ~ located(keyword("forall").map(_ => DesugarTarget.ForallIn) | keyword("some").map(_ => DesugarTarget.SomeIn))
       ~ boundedBinderVar ~ keyword("in") ~/ term ~ ":" ~ goalTerm.rep(1, sep = ",") ~ ")").map {
       case (functor, span, binder, collection, body) =>
         val bodyTuple = terms.allocAt(Term.Fn(intern("tuple"), IArray.from(body), IArray.empty), span)
@@ -1826,7 +1826,7 @@ private class AnthillParserImpl(
             IArray.from(antecedents), IArray.empty), span)
           val conTuple = terms.allocAt(Term.Fn(intern("tuple"),
             IArray.from(consequents), IArray.empty), span)
-          terms.allocAt(Term.Fn(intern("forall_impl"),
+          terms.allocAt(Term.Fn(intern(DesugarTarget.ForallImpl),
             IArray(antTuple, conTuple), IArray.empty), span)
         case Some((first, rest, trailingComma, None)) =>
           if rest.isEmpty then first match

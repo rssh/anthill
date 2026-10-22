@@ -8,10 +8,11 @@
 //!
 //! # Two namespaces, and three ways the target comes to exist
 //!
-//! Most targets are reflect VOCABULARY — the reified shape of a source form. Two are
-//! `anthill.kernel` CONTROL primitives: [`CUT`] (`!`) and [`FIND_DICTIONARY`]
-//! (`requires(X)` / `require[X]`). The namespace follows what the form denotes; the
-//! minting mechanism is the same.
+//! Most targets are reflect VOCABULARY — the reified shape of a source form. Five are
+//! `anthill.kernel` CONTROL primitives: [`CUT`] (`!`), [`FIND_DICTIONARY`]
+//! (`requires(X)` / `require[X]`), and the three scoping markers [`FORALL_IMPL`] (the
+//! discharge), [`FORALL_IN`] and [`SOME_IN`] (the bounded quantifiers). The namespace
+//! follows what the form denotes; the minting mechanism is the same.
 //!
 //! WHAT IS *NOT* THE SAME IS HOW THE TARGET GETS DEFINED, and an earlier draft of this
 //! section asserted a uniformity that does not hold. Three mechanisms, not two:
@@ -135,11 +136,12 @@
 //! `SimpleTermStore::is_minted` may compare to the constant directly — provenance has
 //! already excluded the written spelling there.)
 //!
-//! EXCEPT FOR THE TWO KERNEL CONTROL TARGETS, where the rule INVERTS and [`is`] is the
-//! wrong tool. `!` and `requires(X)` name no functor, so there is no written spelling
-//! that means them: a user's `cut(…)` is an ordinary unrelated call, and admitting it
-//! would reinstate the capture these addresses removed. Compare to [`CUT`] /
-//! [`FIND_DICTIONARY`] directly — safe because `..` is unspellable. [`is`] asserts
+//! EXCEPT FOR THE KERNEL CONTROL TARGETS, where the rule INVERTS and [`is`] is the
+//! wrong tool. `!`, `requires(X)`, a discharge and a bounded quantifier name no functor,
+//! so there is no written spelling that means them: a user's `cut(…)` or `forall_impl(…)`
+//! is an ordinary unrelated call, and admitting it would reinstate the capture these
+//! addresses removed. Compare to the constant directly — safe because `..` is
+//! unspellable — or, with a name and no symbol table, ask [`is_control`]. [`is`] asserts
 //! against the misuse rather than trusting this paragraph. Raised by `/code-review`,
 //! which found the module telling a reader to walk into the bug.
 //!
@@ -197,14 +199,31 @@ pub const CUT: &str = "..anthill.kernel.cut";
 /// which reads this constant through [`qualified`].
 pub const FIND_DICTIONARY: &str = "..anthill.kernel.find_dictionary";
 
+/// `(forall(?x, …), A₁, … -: C₁, …)` — the hereditary-Harrop discharge,
+/// `forall_impl(tuple(binders), tuple(antecedents), tuple(consequent))`. Also the marker
+/// the loader's synthesized `<Sort>.induction` writes. Keyed downstream by
+/// [`crate::kb::resolve::BuiltinTag::ForallImpl`].
+///
+/// AN ADDRESS, because the short spelling was captured: the loader resolves a minted
+/// functor through scope like a written one, so in a namespace declaring its own
+/// `forall_impl` the discharge resolved to the user's predicate, and the readers that
+/// compared the short name read the user's `forall_impl(a, b, c)` as a discharge.
+pub const FORALL_IMPL: &str = "..anthill.kernel.forall_impl";
+/// `(forall ?x in xs: B)` — `forall_in(?x, xs, tuple(B))`; keyed by
+/// [`crate::kb::resolve::BuiltinTag::ForallIn`]. An address for [`FORALL_IMPL`]'s reason.
+pub const FORALL_IN: &str = "..anthill.kernel.forall_in";
+/// `(some ?x in xs: B)` — `some_in(?x, xs, tuple(B))`; keyed by
+/// [`crate::kb::resolve::BuiltinTag::SomeIn`]. An address for [`FORALL_IMPL`]'s reason.
+pub const SOME_IN: &str = "..anthill.kernel.some_in";
+
 /// The kernel CONTROL targets — this module's own [`ALL`] members that are control
 /// primitives rather than reflect vocabulary.
 ///
-/// Their surface forms (`!`, `requires(X)`) name no functor, so unlike the reflect
-/// vocabulary they have no legitimate written spelling. Published through
-/// [`is_kernel_control`] as the partition of [`ALL`]; the guard on [`is`] reads the
-/// WIDER [`NO_SURFACE_FUNCTOR`] below, which is a different question.
-const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY];
+/// Their surface forms (`!`, `requires(X)`, a discharge, a bounded quantifier) name no
+/// functor, so unlike the reflect vocabulary they have no legitimate written spelling.
+/// Published through [`is_kernel_control`] as the partition of [`ALL`]; the guard on
+/// [`is`] reads the WIDER [`NO_SURFACE_FUNCTOR`] below, which is a different question.
+const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY, FORALL_IMPL, FORALL_IN, SOME_IN];
 
 /// EVERY address whose surface form names NO FUNCTOR — the set [`is`] must never be
 /// asked about, because [`is`] admits the SHORT spelling and there is no written
@@ -230,6 +249,9 @@ const KERNEL_CONTROL: &[&str] = &[CUT, FIND_DICTIONARY];
 const NO_SURFACE_FUNCTOR: &[&str] = &[
     CUT,
     FIND_DICTIONARY,
+    FORALL_IMPL,
+    FORALL_IN,
+    SOME_IN,
     crate::parse::pratt::UNIFY_FUNCTOR,
     crate::parse::pratt::STRUCT_EQ_FUNCTOR,
 ];
@@ -267,7 +289,23 @@ pub const ALL: &[&str] = &[
     LAMBDA_EXPR,
     CUT,
     FIND_DICTIONARY,
+    FORALL_IMPL,
+    FORALL_IN,
+    SOME_IN,
 ];
+
+/// Does `qualified_name` — a functor's QUALIFIED name, as a view reports it — denote the
+/// kernel control target `target`? The marked address (a parse view, which reports the
+/// minted name verbatim) or the plain qualified name (a KB), never the short spelling:
+/// a user's own `forall_impl` answers that, and is not the target.
+///
+/// The peer of [`is`] for the class [`is`] refuses, for a reader that has a name and no
+/// symbol table — `persistence::print`, which renders a discharge or a bounded
+/// quantifier back to its surface form over either view.
+pub fn is_control(qualified_name: &str, target: &str) -> bool {
+    assert!(is_kernel_control(target), "{target} is not a kernel control target; use `is`");
+    qualified_name == target || qualified_name == qualified(target)
+}
 
 /// The short spelling of a desugar target — its last segment, which is the name a user
 /// can still write and the local name the resolved symbol carries. The `..` marker rides

@@ -18,13 +18,20 @@ object DesugarTarget:
   val LambdaExpr: String = "..anthill.reflect.Expr.lambda_expr"
   val Cut: String = "..anthill.kernel.cut"
   val FindDictionary: String = "..anthill.kernel.find_dictionary"
+  /** The discharge `(forall(?x), A -: C)` and the bounded quantifiers `(forall ?x in xs:
+    * B)` / `(some ?x in xs: B)`. Addresses, as rustland's: a minted short name is
+    * resolved through scope, so a namespace declaring its own `forall_impl` captured it. */
+  val ForallImpl: String = "..anthill.kernel.forall_impl"
+  val ForallIn: String = "..anthill.kernel.forall_in"
+  val SomeIn: String = "..anthill.kernel.some_in"
 
   val all: IndexedSeq[String] = IndexedSeq(FieldAccess, HoApply, DotApply,
     SetLiteral, ListLiteral, TupleLiteral, MatchExpr, IfExpr, LetExpr, LambdaExpr,
-    Cut, FindDictionary)
+    Cut, FindDictionary, ForallImpl, ForallIn, SomeIn)
 
-  def isKernelControl(address: String): Boolean =
-    address == Cut || address == FindDictionary
+  private val kernelControl: Set[String] = Set(Cut, FindDictionary, ForallImpl, ForallIn, SomeIn)
+
+  def isKernelControl(address: String): Boolean = kernelControl.contains(address)
 
   def qualified(address: String): String =
     anthill.intern.absolutePathTarget(address).getOrElse(

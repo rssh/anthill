@@ -32,6 +32,13 @@
 //!    it: by the `LoadError` variant alone, the same back-out moves no line of the file.
 //!  * ONE LINE OF A VERDICT FILE EDITED BY HAND: the run fails with that program's name
 //!    and both verdicts, and nothing else.
+//!
+//! THE CONTROLS ABOVE PREDATE THE LEFT-OUT PARAMETER'S `?` (WI-20261003-GR5EN's follow-up,
+//! decided with the user): a spec parameter a `provides` clause leaves out is the `?` written
+//! there, and every provision here leaves `K` and `L` out, so a member writing `x` or `y` at a
+//! type of its own fixes the caller's slot and is refused there — 3,704 verdicts moved, each to
+//! `narrower` at `x` or `y`, none from refused to running. Most programs now stop at that
+//! refusal, before the rule the family was built for; the controls were not measured again.
 
 use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 

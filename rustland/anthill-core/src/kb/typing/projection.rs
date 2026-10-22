@@ -969,6 +969,20 @@ pub(super) fn build_projection_off(
     Value::Node(kb.make_expr_carried_occ(receiver, member, span, None))
 }
 
+/// Every expression-carried projection in `ty`, as its receiver and member (`s.K` is `(s, K)`),
+/// at any depth [`type_any_part`] walks.
+pub(super) fn projections_in(kb: &KnowledgeBase, ty: &Value) -> Vec<(Value, Symbol)> {
+    let found = std::cell::RefCell::new(Vec::new());
+    type_any_part(kb, ty, &|te| match te {
+        TypeExtractor::ExprCarried { value, member } => {
+            found.borrow_mut().push((value.clone(), *member));
+            None
+        }
+        _ => None,
+    });
+    found.into_inner()
+}
+
 /// WI-398: collect the receiver-head symbols of every expression-carried projection
 /// (`ExprCarried`) in a type [`Value`] — the parameters this type PROJECTS. A single-ref
 /// `s.M` contributes `s`; a compound `s.f.M` contributes the chain's bottom head `s`.
@@ -2001,6 +2015,44 @@ pub(super) fn this_instance_member(
     rigid_of(member).map(Value::term)
 }
 
+/// `s.K` WHERE `s` IS DECLARED AT THE CALLEE'S SPEC WITH `K` WRITTEN — `s: Self`, which is
+/// `Sp[…, K = K]` — AND THE ARGUMENT'S PROVISION LEAVES `K` TO THE CALL: bound to one variable
+/// of its own (a written `?`) or left out, which reads as one. That is the call's one slot for
+/// `K`, the binding the declaration writes, so every reading of it in one call — `k: K` and
+/// `s.K` alike — is one type. Read off the argument's provision instead, each read opened a
+/// `?` of its own, and `Sp.put(c, 40, "x")` behind `put(s: Self, k: s.K, j: s.K)` ran (MEASURED);
+/// left out, the call refused "type 'Car' has no member 'K'" where the written `K = ?` ran.
+///
+/// The spec's carrier parameter is not left to the call — it names the provider — and a
+/// binding with more than one variable in it (`T = Car[V = ?]`) is read as before.
+pub(super) fn call_slot_member(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    declared: &[(Symbol, Value)],
+    receiver: &Value,
+    recv_ty: &Value,
+    member: Symbol,
+) -> Option<Value> {
+    let param = extract_sort_ref_sym(kb, receiver)?;
+    let (_, decl_ty) = declared.iter().find(|(p, _)| *p == param)?;
+    let (base, written) = sort_application_parts(kb, decl_ty)?;
+    if kb.canonical_sort_sym(base) != kb.canonical_sort_sym(spec) {
+        return None;
+    }
+    let name = kb.local_name_of(member).to_owned();
+    let (_, slot) = written
+        .iter()
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)?;
+    let recv_sort = kb.canonical_sort_sym(sort_functor_of_view(kb, recv_ty)?);
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    let provision = transitive_provider_spec_view_bindings(kb, recv_sort, spec, &mut visited)?;
+    let left_to_the_call = match member_binding(kb, &provision, &name) {
+        Some(b) => matches!(type_head(kb, &b), TypeHead::FlexVar(_)),
+        None => spec_carrier_param(kb, spec).is_none_or(|c| kb.local_name_of(c) != name),
+    };
+    left_to_the_call.then(|| slot.clone())
+}
+
 /// WI-20261001-80ZV8 — `src.Element` WHERE `src` IS TYPED BY A PARAMETER THE ENCLOSING SORT
 /// BOUNDS: what its `requires` clause binds the member to.
 ///
@@ -2420,7 +2472,22 @@ fn project_via_provided_spec(
         if let Some(bindings) =
             transitive_provider_spec_view_bindings(kb, recv_sort, spec, &mut visited)
         {
-            let written = member_binding(kb, &bindings, member)?;
+            // A spec parameter the provision leaves out is the `?` written there, the spec's
+            // carrier parameter excepted, and lends one of its own as a written `?` does — read
+            // as no member, a lambda hinted through `f: (u: s.K) -> Int64` met the neutral
+            // `s.K` where the written `K = ?` gave it a variable the call then ties (MEASURED).
+            let written = match member_binding(kb, &bindings, member) {
+                Some(written) => written,
+                None if spec_carrier_param(kb, spec)
+                    .is_none_or(|c| kb.local_name_of(c) != member)
+                    && kb.type_params_of_sort(spec).iter().any(|d| d.as_str() == member) =>
+                {
+                    let name = kb.intern(member);
+                    let vid = kb.fresh_var(name);
+                    Value::term(kb.alloc(Term::Var(Var::Global(vid))))
+                }
+                None => return None,
+            };
             return provision_lends_binding(kb, recv_ty, recv_sort, &written).map(Ok);
         }
         match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, selections, ctx, span) {
@@ -2487,8 +2554,13 @@ fn member_binding(kb: &KnowledgeBase, bindings: &[(Symbol, Value)], member: &str
 /// name the provider too — the second gate that predicate's own doc asks of a new consumer.
 /// Shared by the call ([`project_via_provided_spec`]) and the declaration rule's reader, so the
 /// two read one selection.
+///
+/// A spec parameter the provision leaves out is the `?` written there, the spec's carrier
+/// parameter excepted, and lends one of its own here as a written `?` does: read as no member,
+/// `k: c.K` over a `Car` that leaves `K` out was refused "type 'Car' has no member 'K'" where the
+/// written `K = ?` lent it (MEASURED).
 pub(super) fn unowned_member_bindings(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     recv_sort: Symbol,
     member: &str,
 ) -> Vec<(Symbol, Value)> {
@@ -2507,12 +2579,20 @@ pub(super) fn unowned_member_bindings(
         let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) else {
             continue;
         };
-        let Some(written) = member_binding(kb, &bindings, member) else {
-            continue;
+        let names_carrier = spec_carrier_param_or_sole(kb, spec)
+            .is_some_and(|p| kb.local_name_of(p) == member);
+        let written = match member_binding(kb, &bindings, member) {
+            Some(written) => written,
+            None if spec_carrier_param(kb, spec).is_some_and(|p| kb.local_name_of(p) == member) => {
+                continue
+            }
+            None => {
+                let name = kb.intern(member);
+                let vid = kb.fresh_var(name);
+                Value::term(kb.alloc(Term::Var(Var::Global(vid))))
+            }
         };
-        let is_the_provider = spec_carrier_param_or_sole(kb, spec)
-            .is_some_and(|p| kb.local_name_of(p) == member)
-            && composed_self_reference(kb, recv_sort, &written);
+        let is_the_provider = names_carrier && composed_self_reference(kb, recv_sort, &written);
         if !is_the_provider {
             out.push((spec, written));
         }

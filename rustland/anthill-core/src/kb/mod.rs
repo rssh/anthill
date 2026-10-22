@@ -5818,15 +5818,14 @@ impl KnowledgeBase {
     ///   * a functor that IS defined;
     ///   * a resolver SCOPING MARKER (`forall_in` / `some_in` / `forall_impl`
     ///     at arity 3, `__pop_assumption` at arity 1) — the resolver recognises
-    ///     these by short name AND arity and skolemises / expands them in place,
-    ///     so they carry no rule / fact / declaration yet are not unknown. A
+    ///     these by their kernel SYMBOL and arity and skolemises / expands them in
+    ///     place, so they carry no rule / fact / declaration yet are not unknown. A
     ///     bounded-quantifier query that evaluates to FALSE produces zero
     ///     solutions, and without this arm that empty result would be mis-refused
-    ///     as an unknown functor (WI-027). The arity gate (WI-878) means a marker
-    ///     NAME at any OTHER arity — a typo like `some_in(x)` — is NOT exempted
-    ///     and IS reported, exactly as the resolver no longer treats it as a
-    ///     quantifier; the shared [`crate::kb::resolve::is_scoping_marker`]
-    ///     predicate keeps the two in lockstep.
+    ///     as an unknown functor (WI-027). A written marker NAME — `some_in(x)` at
+    ///     any arity — is not that symbol and IS reported; the shared
+    ///     [`crate::kb::resolve::is_scoping_marker`] predicate keeps the guard and
+    ///     the resolver in lockstep.
     ///
     /// The `rules_by_functor` disjunct is load-bearing, not redundant with
     /// `kind_of`: a predicate defined PURELY by facts keeps an `Unresolved`
@@ -5843,7 +5842,7 @@ impl KnowledgeBase {
     /// is what clears that case.
     pub fn undefined_functor<V: term_view::TermView>(&self, view: &V) -> Option<Symbol> {
         let (sym, pos_arity) = self.goal_head_sym_arity(view)?;
-        if crate::kb::resolve::is_scoping_marker(self.local_name_of(sym), pos_arity) {
+        if crate::kb::resolve::is_scoping_marker(self, sym, pos_arity) {
             return None;
         }
         self.symbol_declares_nothing(sym).then_some(sym)
@@ -6237,7 +6236,8 @@ impl KnowledgeBase {
     /// its antecedents DECLARE the predicates its consequent proves (WI-1046).
     fn is_discharge_functor<V: term_view::TermView>(&self, view: &V) -> bool {
         matches!(self.goal_head_sym_arity(view),
-                 Some((f, _)) if self.local_name_of(f) == "forall_impl")
+                 Some((f, n)) if self.builtin_of(f) == Some(BuiltinTag::ForallImpl)
+                     && crate::kb::resolve::is_scoping_marker(self, f, n))
     }
 
     /// True iff `view`'s head is the negation builtin `not` — the one goal connective
@@ -6350,20 +6350,19 @@ impl KnowledgeBase {
     /// the slot holds a `tuple(…)` conjunction WRAPPER rather than a single item. Empty
     /// for a plain predicate or a data constructor.
     ///
-    /// Recognised by SYMBOL for the two goal connectives (`anthill.kernel.or` / `.and`,
-    /// kernel RULES that `builtin_of` misses — see [`Self::is_goal_connective`]), by
-    /// LOCAL NAME still for the quantifier markers, and by builtin tag otherwise.
+    /// Recognised by SYMBOL throughout: the two goal connectives (`anthill.kernel.or` /
+    /// `.and`, kernel RULES that `builtin_of` misses — see [`Self::is_goal_connective`])
+    /// by their kernel declarations, everything else by builtin tag.
     ///
-    /// THE MARKERS ARE THE UNFIXED HALF, and the split is worth naming rather than
-    /// leaving as an inconsistency to rediscover. WI-20260826-XED22 moved the connectives
-    /// off the name match because a USER's own `or` answered it; `forall_in` / `some_in`
-    /// / `forall_impl` still carry that defect, DRIVEN — a user `rule forall_impl(?x)`
-    /// beside `forall_impl(a, b, c)` answers one bogus `?x = ?_` where the identical
-    /// program with the head renamed `zzz` is a load error. They could not move with the
-    /// connectives: those have qualified kernel declarations to compare against, while a
-    /// marker is minted `kb.intern("forall_impl")` — a bare symbol with no qualified
-    /// name — so keying it needs the markers to carry an identity first. Filed; do not
-    /// "fix" it by widening the name match.
+    /// NEVER BY SHORT NAME, which a USER's own predicate answers. WI-20260826-XED22 moved
+    /// the connectives off the name match; WI-20260827-J03AT moved the quantifier markers,
+    /// which first needed an identity to compare against — they were minted
+    /// `intern("forall_impl")`, a bare symbol the scope of a namespace declaring its own
+    /// `forall_impl` captured. They carry kernel addresses now
+    /// ([`crate::parse::desugar_target::FORALL_IMPL`] and its peers) and the tags
+    /// bootstrap registers on them. MEASURED before: a user `rule forall_impl(?x)` beside
+    /// `forall_impl(a, b, c)` answered one bogus `?x = ?_` where the identical program
+    /// with the head renamed `zzz` was a load error.
     /// `and` IS HERE, and this doc said the opposite until WI-20260825-P9Y67 — it read
     /// "`and` is deliberately ABSENT: no kernel rule defines it, there is no
     /// `BuiltinTag::And`, and `a & b` lowers to `anthill.prelude.Bool.and` … WI-1046
@@ -6373,19 +6372,12 @@ impl KnowledgeBase {
     /// false and the one an editor would act on — "refuses it" — is the furthest from
     /// the code. Left standing it sends the next reader to the wrong conclusion at the
     /// table that DECIDES the reading. Found by `/code-review`.
-    /// EVERY arm is gated on `pos_arity`, and that is not defensive — for the MARKER
-    /// arms, which are still name-keyed (above). A marker is recognised by NAME here (it
-    /// heads no builtin), so without the gate a USER predicate that merely shares the
-    /// short name has its DATA
-    /// arguments classified as goals — and the loader (WI-1046) turns that
-    /// classification into a load-blocking refusal. MEASURED: `fact or(true)` beside
-    /// `rule r(?x) :- … or(?a & ?b), …` was REFUSED while the identical program with the
-    /// predicate renamed loaded clean. The arities are the connectives' own — `or/2` is
+    /// EVERY arm is gated on `pos_arity` as well: a connective is one because of its
+    /// symbol AND its shape. The arities are the connectives' own — `or/2` is
     /// `kernel.anthill:48`, the markers are `/3` exactly as
     /// [`crate::kb::resolve::is_scoping_marker`] has them, and the two builtins are at
-    /// their declared arities. This is the same defect the `tuple` wrapper had one layer
-    /// down, fixed the same way: a node is a connective because of its SHAPE, never
-    /// because of its spelling alone.
+    /// their declared arities — so a kernel name written at another arity is not read as
+    /// the connective here and not expanded by the resolver either.
     ///
     /// WI-1058 added the two non-`Proved` readings, and each replaced a copy that had
     /// already drifted or was missing outright: the discharge's ANTECEDENT slot was
@@ -6404,49 +6396,41 @@ impl KnowledgeBase {
             tuple_wrapped,
             reading,
         };
-        match (self.local_name_of(functor), pos_arity) {
+        // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`, `kernel.anthill:48`),
+        // so `builtin_of` would miss it — and its conjunctive PEER, added with `push_and`
+        // (WI-20260822-J38JE). Both are rules over a primitive, so both are asked here
+        // rather than in the `builtin_of` table below.
+        //
+        // BY SYMBOL, not by short name (WI-20260826-XED22). This arm read
+        // `("or" | "and", 2)` off `local_name_of`, which a USER's own `or` answers — so a
+        // local arity-1 `or` was read as the connective at arity 2 and its ARGUMENTS were
+        // classified as goals, which skipped the wrong-arity refusal an identically-shaped
+        // `zz` already got. See `is_goal_connective`.
+        if self.is_goal_connective(functor, pos_arity) {
+            return SmallVec::from_slice(&[
+                slot(0, false, SlotReading::Proved),
+                slot(1, false, SlotReading::Proved),
+            ]);
+        }
+        match (self.builtin_of(functor), pos_arity) {
             // A bounded quantifier binds ONE variable (arg 0, unwrapped) over a
             // COLLECTION (arg 1 — ordinary data, so no row) and evaluates a `tuple(…)`
             // of goals at arg 2 (the loader always wraps it; `resolve::unwrap_tuple_args`
             // reads the same shape). Arity 3 is `is_scoping_marker`'s, so the two cannot
             // disagree.
-            ("forall_in" | "some_in", 3) => {
-                return SmallVec::from_slice(&[
-                    slot(0, false, SlotReading::Binders),
-                    slot(2, true, SlotReading::Proved),
-                ]);
-            }
+            (Some(BuiltinTag::ForallIn | BuiltinTag::SomeIn), 3) => SmallVec::from_slice(&[
+                slot(0, false, SlotReading::Binders),
+                slot(2, true, SlotReading::Proved),
+            ]),
             // A hereditary-Harrop discharge: `forall_impl(tuple(binders),
             // tuple(antecedents), tuple(consequent))` — all three wrapped, and all three
             // read differently (`parse/convert.rs`'s lowering builds exactly this, as
             // does the loader's synthesized `<Sort>.induction`).
-            ("forall_impl", 3) => {
-                return SmallVec::from_slice(&[
-                    slot(0, true, SlotReading::Binders),
-                    slot(1, true, SlotReading::Assumed),
-                    slot(2, true, SlotReading::Proved),
-                ]);
-            }
-            // The kernel disjunction RULE (`a | b` lowers to `or(a, b)`,
-            // `kernel.anthill:48`), so `builtin_of` would miss it — and its
-            // conjunctive PEER, added with `push_and` (WI-20260822-J38JE). Both are
-            // rules over a primitive, so both are here rather than in the
-            // `builtin_of` table below.
-            //
-            // BY SYMBOL, not by short name (WI-20260826-XED22). This arm read
-            // `("or" | "and", 2)` off `local_name_of`, which a USER's own `or` answers —
-            // so a local arity-1 `or` was read as the connective at arity 2 and its
-            // ARGUMENTS were classified as goals, which skipped the wrong-arity refusal
-            // an identically-shaped `zz` already got. See `is_goal_connective`.
-            _ if self.is_goal_connective(functor, pos_arity) => {
-                return SmallVec::from_slice(&[
-                    slot(0, false, SlotReading::Proved),
-                    slot(1, false, SlotReading::Proved),
-                ]);
-            }
-            _ => {}
-        }
-        match (self.builtin_of(functor), pos_arity) {
+            (Some(BuiltinTag::ForallImpl), 3) => SmallVec::from_slice(&[
+                slot(0, true, SlotReading::Binders),
+                slot(1, true, SlotReading::Assumed),
+                slot(2, true, SlotReading::Proved),
+            ]),
             (Some(BuiltinTag::Not), 1) => {
                 SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
             }
@@ -12841,6 +12825,27 @@ impl KnowledgeBase {
             BuiltinTag::Cut,
         );
         self.register_builtin_tag("anthill.kernel.unify", BuiltinTag::Unify);
+        // The resolver's markers — the four scoping markers and a citation's
+        // `__within_requirements`. No `.anthill` file declares them: these lines define the
+        // addresses the converter mints (the resolver, for the last two), as they define
+        // `find_dictionary`'s, and the tag is what every reader keys on.
+        self.register_builtin_tag(
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::FORALL_IMPL),
+            BuiltinTag::ForallImpl,
+        );
+        self.register_builtin_tag(
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::FORALL_IN),
+            BuiltinTag::ForallIn,
+        );
+        self.register_builtin_tag(
+            crate::parse::desugar_target::qualified(crate::parse::desugar_target::SOME_IN),
+            BuiltinTag::SomeIn,
+        );
+        self.register_builtin_tag(crate::kb::resolve::POP_ASSUMPTION, BuiltinTag::PopAssumption);
+        self.register_builtin_tag(
+            crate::kb::resolve::WITHIN_REQUIREMENTS,
+            BuiltinTag::WithinRequirements,
+        );
         // WI-300 — rule-body requirement guard. A rule-body `requires(X)` desugars
         // (converter) to `find_dictionary(X)`; the typer sweep rewrites the argument
         // to carry spec X's base symbol plus the rule vars that ground its
