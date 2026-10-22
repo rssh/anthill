@@ -126,11 +126,16 @@ fn every_answer(kb: &mut anthill_core::kb::KnowledgeBase, qn: &str) -> Vec<i64> 
 
 /// THE DEFECT. After a rule-body call answered a scoped KB, the base's facts are all a later
 /// goal reads, in either goal order, and the call that answered it is the fault.
+///
+/// `Seen`'s `1` once for each shape `loads`' column fills (WI-20261013-WF14Z): the clause
+/// reads `?r`'s type off `Error.reify`'s result column, a `Result`, and an inferred column type
+/// is its bound, which fills the column the faulted call leaves unbound with an `ok` and an
+/// `err`, as a written one does.
 #[test]
 fn a_scoped_kb_does_not_outlive_a_rule_body_call() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    assert_eq!(every_answer(&mut kb, "test.bkb.afterLoad"), vec![1]);
-    assert_eq!(every_answer(&mut kb, "test.bkb.beforeLoad"), vec![1]);
+    assert_eq!(every_answer(&mut kb, "test.bkb.afterLoad"), vec![1, 1]);
+    assert_eq!(every_answer(&mut kb, "test.bkb.beforeLoad"), vec![1, 1]);
     let errors = faults(&mut kb, "test.bkb.loads");
     assert!(
         errors.iter().any(|e| e.contains("its value holds a scoped KB")

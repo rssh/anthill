@@ -112,17 +112,37 @@ fn frozen_clock(stamp: &'static str) -> EffectHandler {
     Box::new(move |_interp, _op, _args| Ok(HandlerAction::Pure(Value::Str(stamp.to_string()))))
 }
 
-/// THE DEFECT. Four rule-body routes to a clock read: each is undecided — one answer, not
+/// THE DEFECT. Four rule-body routes to a clock read: each is undecided — answers, none
 /// definite — where each answered the wall clock.
+///
+/// ONE ANSWER PER SHAPE THE COLUMN'S TYPE FILLS, where that type is a data sort with a
+/// variable in it (WI-20261013-WF14Z): the clause reads `?r`'s type off the call's result
+/// column, and an inferred column type is its bound, as a written one is — `Error.reify`'s
+/// `Result[T = String, E = e]` fills an `ok` and an `err`, `mapElems`'s `List[T = b]` a list
+/// of each length up to the search's depth. The written `?r: Result[T = String, E = Boom]`
+/// answers the two (measured, before and after). The other two routes' columns are a
+/// `String`, which has nothing to fill: one answer each.
 #[test]
 fn a_clock_read_in_a_rule_body_is_not_performed() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
     for qn in ROUTES {
         let rows = crate::common::query_unary(&mut kb, qn);
         assert!(
-            matches!(rows.as_slice(), [(_, false)]),
-            "{qn}: one answer, undecided: {rows:?}"
+            !rows.is_empty() && rows.iter().all(|(_, definite)| !definite),
+            "{qn}: answers, every one undecided: {rows:?}"
         );
+        let shapes = match qn {
+            "test.clock.viaReify" => Some(2),
+            "test.clock.viaMap" => None,
+            _ => Some(1),
+        };
+        if let Some(n) = shapes {
+            assert_eq!(
+                rows.len(),
+                n,
+                "{qn}: one answer per shape its column fills: {rows:?}"
+            );
+        }
     }
 }
 

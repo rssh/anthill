@@ -1095,6 +1095,28 @@ impl ClauseTypes {
                 }
             });
         }
+        // THE ENCLOSING SORT'S PARAMETERS ARE VARIABLES OF THE CLAUSE THE CITATION FIXES, opened
+        // for it as its columns are ([`open_citation_params`]). A head's bound reaches the
+        // stamps (`?p: Self` makes `?x` of `?p <=> box(a: ?x, b: ?y)` the sort's `T`), and a
+        // sort's parameter is no variable [`pin_type_vars`] binds: left as it is, the read
+        // `compare` makes at `?x` was routed to nothing and answered `Int64`'s own.
+        let mut params: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        for (_, ty) in &types {
+            crate::kb::node_occurrence::collect_value_type(kb, ty, &mut params, &mut seen);
+        }
+        params.retain(|v| kb.is_canonical_type_param_var(*v));
+        if !params.is_empty() {
+            let mut opened = Substitution::new();
+            for v in params {
+                let fresh = kb.fresh_var(v.name());
+                let fresh = kb.alloc(Term::Var(Var::Global(fresh)));
+                opened.bind_term(kb, v, fresh);
+            }
+            for (_, ty) in types.iter_mut() {
+                *ty = walk_type_deep_value(kb, &opened, ty);
+            }
+        }
         let mut pins = Substitution::with_parent(subst.clone());
         for (_, name, d) in slots {
             let Some((_, stamp)) = types.iter().find(|(seen, _)| seen == d) else {
@@ -2678,7 +2700,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
         _ => return Vec::new(),
     };
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-    let (var_types, _contradiction) = collect_rule_var_types(kb, head, &body_nodes);
+    let var_types = collect_rule_var_types(kb, rid, head, &body_nodes).var_types;
     // WI-20260911-5G28A — OPEN THIS CLAUSE'S BOUNDS PER CITATION, and that is what makes
     // a TIE between two columns readable at a call site. `rule my_rule(?x: List[T = ?t],
     // ?res: List[T = ?t])` stores both bounds De Bruijn-closed against one frame, so ONE
@@ -2969,4 +2991,418 @@ pub(crate) fn resolve_relation_arg_columns(
         bound.push(k);
     }
     Ok(bound)
+}
+
+/// The columns of a relation as a goal on it reads them: per head slot, the type its
+/// clauses give it — a variable's, written or inferred, or the term's own type where the
+/// slot is no variable — generalized across the clauses ([`generalize_columns`]), and opened
+/// fresh for each goal. A slot some clause does not have is left out. `None` where a
+/// clause's head cannot be read, or for a relation of no clause.
+///
+/// GENERALIZED, NOT JOINED AS A CITATION'S COLUMNS ARE. [`join_column_types`] reads a
+/// variable as the absence of a type, which is what it is in a column only a rule goal
+/// fills; a goal's column is read once rule goals type their arguments, and a variable
+/// there is a clause that holds at every type. Over `description_view(some(?d), ?d)` and
+/// `description_view(none(), none())` the join made the second column an `Option` — the
+/// first clause's `?d` read as nothing — and github-todo's `open_item`, whose `?desc` it
+/// fills, got that bound and answered nothing.
+///
+/// THE CALLEE BEFORE THE CALLER: typing a clause of the relation reads the columns of the
+/// relations it calls in turn, each once per typer run (`rule_goal_columns_memo`). A goal on
+/// a relation of the caller's own cycle reads nothing ([`same_rule_goal_cycle`]), so the
+/// columns of every relation of a cycle are read without the others', whichever is asked
+/// first.
+pub(super) fn rule_goal_columns(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+) -> Option<Vec<(SlotKey, Value)>> {
+    if kb.rule_goal_columns_in_flight.borrow().contains(&functor) {
+        // A goal on a relation being read — its own, or one of a cycle the walk of
+        // [`same_rule_goal_cycle`] did not see — reads nothing, rather than typing its
+        // clauses for ever.
+        return None;
+    }
+    let memo = kb.rule_goal_columns_memo.borrow().get(&functor).cloned();
+    let columns = match memo {
+        Some(columns) => columns?,
+        None => {
+            kb.rule_goal_columns_in_flight.borrow_mut().insert(functor);
+            let columns = relation_goal_columns(kb, functor).map(Rc::new);
+            kb.rule_goal_columns_in_flight.borrow_mut().remove(&functor);
+            kb.rule_goal_columns_memo
+                .borrow_mut()
+                .insert(functor, columns.clone());
+            columns?
+        }
+    };
+    Some(freshen_columns(kb, &columns))
+}
+
+/// [`rule_goal_columns`] before it is opened: each clause's, joined.
+fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<(SlotKey, Value)>> {
+    let rids: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
+    let mut joined: Option<Vec<(SlotKey, TermId)>> = None;
+    for rid in rids {
+        let columns = clause_goal_columns(kb, rid)?;
+        joined = Some(match joined.take() {
+            None => columns,
+            Some(previous) => generalize_columns(kb, &previous, &columns),
+        });
+    }
+    Some(
+        joined?
+            .into_iter()
+            .map(|(slot, ty)| (slot, Value::term(ty)))
+            .collect(),
+    )
+}
+
+/// The most specific columns two clauses' columns are both instances of — anti-unification,
+/// one pair of differing subterms read as one fresh variable throughout, so a variable two
+/// columns of each clause share stays shared and one only a single clause ties is dropped.
+/// At the top of a column two types with no variable in them meet at their join
+/// ([`join_types`]); below it they must be one type, as a type argument is read. A slot
+/// only one side has is left out.
+///
+/// A COLUMN WHOSE TYPE IS A VARIABLE NO OTHER COLUMN OF ITS CLAUSE NAMES says nothing, and
+/// the other side's type is taken, as a citation's join takes it ([`join_column_types`]).
+/// That is what a relation that calls itself reads: `reach(?c) :- reach(?d), ?c <=> ?d` beside
+/// `reach(?c) :- ?c <=> cnt(n: 4)` holds its column at the one type its own goal reads,
+/// `Cnt`. One tied to another column — `description_view(some(?d), ?d)`'s second — is a type
+/// the clause holds at every instance of, and is generalized.
+fn generalize_columns(
+    kb: &mut KnowledgeBase,
+    a: &[(SlotKey, TermId)],
+    b: &[(SlotKey, TermId)],
+) -> Vec<(SlotKey, TermId)> {
+    let says_nothing = |kb: &KnowledgeBase, columns: &[(SlotKey, TermId)], t: TermId| {
+        let Term::Var(v) = kb.get_term(t) else {
+            return false;
+        };
+        let v = *v;
+        let occurrences: usize = columns
+            .iter()
+            .map(|(_, c)| count_var_occurrences(kb, *c, v))
+            .sum();
+        occurrences == 1
+    };
+    let mut pairs: Vec<((TermId, TermId), TermId)> = Vec::new();
+    let mut out = Vec::with_capacity(a.len());
+    for &(slot, ta) in a {
+        let Some(&(_, tb)) = b.iter().find(|(s, _)| *s == slot) else {
+            continue;
+        };
+        if says_nothing(kb, a, ta) {
+            out.push((slot, tb));
+            continue;
+        }
+        if says_nothing(kb, b, tb) {
+            out.push((slot, ta));
+            continue;
+        }
+        if !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb) {
+            if let Some(j) = join_types(kb, Value::term(ta), Value::term(tb))
+                .and_then(|j| crate::kb::node_occurrence::value_to_term(kb, &j).ok())
+            {
+                out.push((slot, j));
+                continue;
+            }
+        }
+        let g = generalize_term(kb, ta, tb, &mut pairs);
+        out.push((slot, g));
+    }
+    out
+}
+
+/// [`generalize_columns`] below the top of a column.
+fn generalize_term(
+    kb: &mut KnowledgeBase,
+    a: TermId,
+    b: TermId,
+    pairs: &mut Vec<((TermId, TermId), TermId)>,
+) -> TermId {
+    if a == b {
+        return a;
+    }
+    if let (
+        Term::Fn {
+            functor: fa,
+            pos_args: pa,
+            named_args: na,
+        },
+        Term::Fn {
+            functor: fb,
+            pos_args: pb,
+            named_args: nb,
+        },
+    ) = (kb.get_term(a), kb.get_term(b))
+    {
+        if fa == fb
+            && pa.len() == pb.len()
+            && na.len() == nb.len()
+            && na
+                .iter()
+                .zip(nb.iter())
+                .all(|((ka, _), (kb_, _))| ka == kb_)
+        {
+            let functor = *fa;
+            let pos: Vec<(TermId, TermId)> = pa.iter().copied().zip(pb.iter().copied()).collect();
+            let named: Vec<(Symbol, TermId, TermId)> = na
+                .iter()
+                .zip(nb.iter())
+                .map(|((k, x), (_, y))| (*k, *x, *y))
+                .collect();
+            let pos_args = pos
+                .into_iter()
+                .map(|(x, y)| generalize_term(kb, x, y, pairs))
+                .collect();
+            let named_args = named
+                .into_iter()
+                .map(|(k, x, y)| (k, generalize_term(kb, x, y, pairs)))
+                .collect();
+            return kb.alloc(Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            });
+        }
+    }
+    if let Some((_, v)) = pairs.iter().find(|(p, _)| *p == (a, b)) {
+        return *v;
+    }
+    let name = kb.intern("column");
+    let fresh = kb.fresh_var(name);
+    let v = kb.alloc(Term::Var(Var::Global(fresh)));
+    pairs.push(((a, b), v));
+    v
+}
+
+/// How often the variable `v` stands in `t`.
+fn count_var_occurrences(kb: &KnowledgeBase, t: TermId, v: Var) -> usize {
+    match kb.get_term(t) {
+        Term::Var(w) => usize::from(*w == v),
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, a)| a))
+            .map(|a| count_var_occurrences(kb, *a, v))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Does `t` hold a type variable — a flexible one or a sort's parameter?
+fn term_mentions_type_var(kb: &KnowledgeBase, t: TermId) -> bool {
+    match kb.get_term(t) {
+        Term::Var(_) => true,
+        Term::Ref(s) | Term::Ident(s) => kb.canonical_type_param_var(*s).is_some(),
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, a)| a))
+            .any(|a| term_mentions_type_var(kb, *a)),
+        _ => false,
+    }
+}
+
+/// One clause's columns: its typing ([`collect_rule_var_types`]) read at each head slot, as
+/// terms, the carrier [`generalize_columns`] compares on. `None` where a column's type has
+/// none.
+fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<(SlotKey, TermId)>> {
+    let head = kb.fact_head_term(rid)?;
+    let (pos_args, named_args) = match kb.get_term(head) {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => (pos_args.clone(), named_args.clone()),
+        Term::Ref(_) | Term::Ident(_) => return Some(Vec::new()),
+        _ => return None,
+    };
+    let slots: Vec<(SlotKey, TermId)> = pos_args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (SlotKey::Pos(i), *a))
+        .chain(named_args.iter().map(|(k, a)| (SlotKey::Named(*k), *a)))
+        .collect();
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    let mut st = ClauseConstraints::new();
+    walk_clause(kb, head, &body, &mut st);
+    // A slot that is no variable is typed as a term filling a slot of its own type.
+    let mut term_slots: Vec<(SlotKey, Value)> = Vec::new();
+    for &(slot, arg) in &slots {
+        if arg.var_key(kb).is_some() {
+            continue;
+        }
+        let ty = match kb.get_term(arg) {
+            Term::Const(lit) => {
+                let lit = lit.clone();
+                literal_sort(kb, &lit)
+            }
+            _ => {
+                let name = kb.intern("column");
+                let fresh = kb.fresh_var(name);
+                let ty = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
+                collect_term_type_constraints(kb, arg, Some(&ty), &mut st);
+                ty
+            }
+        };
+        term_slots.push((slot, ty));
+    }
+    let (term_slot_slots, term_slot_types): (Vec<SlotKey>, Vec<Value>) =
+        term_slots.into_iter().unzip();
+    let (typing, term_slot_types) = finish_clause_typing(kb, rid, head, st, term_slot_types);
+    let mut columns = Vec::with_capacity(slots.len());
+    for (slot, arg) in slots {
+        let ty = match arg.var_key(kb) {
+            // A variable the clause types nowhere says nothing of its column
+            // ([`generalize_columns`]), as `?e` in `anc(?c, ?e) :- parent(of: ?c, is: ?m),
+            // anc(?m, ?e)` while `anc` is being read; left out, the slot was dropped from the
+            // relation and the other clauses' type with it.
+            Some(d) => match typing.var_types.get(&d) {
+                Some(ty) => ty.clone(),
+                None => {
+                    let name = kb.intern("column");
+                    let fresh = kb.fresh_var(name);
+                    Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
+                }
+            },
+            None => {
+                let at = term_slot_slots.iter().position(|s| *s == slot)?;
+                term_slot_types[at].clone()
+            }
+        };
+        columns.push((
+            slot,
+            crate::kb::node_occurrence::value_to_term(kb, &ty).ok()?,
+        ));
+    }
+    Some(columns)
+}
+
+/// `columns` with every variable in them renamed to a fresh one — the enclosing sort's
+/// parameters too, since a goal is an activation of its own — one renaming for all of them,
+/// so a variable two columns share stays shared.
+fn freshen_columns(kb: &mut KnowledgeBase, columns: &[(SlotKey, Value)]) -> Vec<(SlotKey, Value)> {
+    let mut vars: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, ty) in columns {
+        crate::kb::node_occurrence::collect_value_type(kb, ty, &mut vars, &mut seen);
+    }
+    if vars.is_empty() {
+        return columns.to_vec();
+    }
+    let mut renaming = Substitution::new();
+    for v in vars {
+        let fresh = kb.fresh_var(v.name());
+        let term = kb.alloc(Term::Var(Var::Global(fresh)));
+        renaming.bind_term(kb, v, term);
+    }
+    columns
+        .iter()
+        .map(|(slot, ty)| (*slot, walk_type_deep_value(kb, &renaming, ty)))
+        .collect()
+}
+
+/// Does a goal on `callee` from a clause of `caller` close a cycle — is `callee` a relation
+/// whose clauses reach `caller` through their goals, other than `caller` itself? Read off
+/// the goals of every clause reachable from `caller` once per typer run
+/// (`rule_goal_cycle_memo`): the relations each reaches are numbered by the cycle they are
+/// in, Tarjan's way.
+pub(super) fn same_rule_goal_cycle(kb: &mut KnowledgeBase, caller: Symbol, callee: Symbol) -> bool {
+    if caller == callee {
+        return false;
+    }
+    let of = |kb: &mut KnowledgeBase, f: Symbol| -> u32 {
+        if let Some(c) = kb.rule_goal_cycle_memo.borrow().get(&f) {
+            return *c;
+        }
+        number_rule_goal_cycles(kb, f);
+        kb.rule_goal_cycle_memo.borrow()[&f]
+    };
+    of(kb, caller) == of(kb, callee)
+}
+
+/// Number the cycles of the relations reachable from `root` through their rule goals
+/// ([`same_rule_goal_cycle`]), with Tarjan's walk.
+fn number_rule_goal_cycles(kb: &mut KnowledgeBase, root: Symbol) {
+    struct Walk {
+        index: HashMap<Symbol, u32>,
+        low: HashMap<Symbol, u32>,
+        stack: Vec<Symbol>,
+        on_stack: HashSet<Symbol>,
+        next: u32,
+    }
+    fn visit(kb: &mut KnowledgeBase, w: &mut Walk, f: Symbol) {
+        w.index.insert(f, w.next);
+        w.low.insert(f, w.next);
+        w.next += 1;
+        w.stack.push(f);
+        w.on_stack.insert(f);
+        for g in rule_goal_callees(kb, f) {
+            if kb.rule_goal_cycle_memo.borrow().contains_key(&g) {
+                continue;
+            }
+            if !w.index.contains_key(&g) {
+                visit(kb, w, g);
+                let low = w.low[&f].min(w.low[&g]);
+                w.low.insert(f, low);
+            } else if w.on_stack.contains(&g) {
+                let low = w.low[&f].min(w.index[&g]);
+                w.low.insert(f, low);
+            }
+        }
+        if w.low[&f] == w.index[&f] {
+            let mut memo = kb.rule_goal_cycle_memo.borrow_mut();
+            let id = memo.len() as u32;
+            while let Some(g) = w.stack.pop() {
+                w.on_stack.remove(&g);
+                memo.insert(g, id);
+                if g == f {
+                    break;
+                }
+            }
+        }
+    }
+    let mut w = Walk {
+        index: HashMap::new(),
+        low: HashMap::new(),
+        stack: Vec::new(),
+        on_stack: HashSet::new(),
+        next: 0,
+    };
+    visit(kb, &mut w, root);
+}
+
+/// The relations `functor`'s clauses hold goals on ([`rule_goal_functor`]), each once.
+fn rule_goal_callees(kb: &KnowledgeBase, functor: Symbol) -> Vec<Symbol> {
+    fn walk(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, pos: BodyPos, out: &mut Vec<Symbol>) {
+        let Some(expr) = occ.as_expr() else { return };
+        if matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_)) {
+            if let Some(g) = rule_goal_functor(kb, expr, pos) {
+                if !out.contains(&g) {
+                    out.push(g);
+                }
+            }
+        }
+        let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
+        for_each_child(expr, |c| children.push(Rc::clone(c)));
+        let child_pos = child_body_positions(kb, expr, pos, children.len());
+        for (c, p) in children.iter().zip(child_pos) {
+            walk(kb, c, p, out);
+        }
+    }
+    let mut out = Vec::new();
+    for rid in kb.rules_by_functor_iter(functor) {
+        for node in kb.rule_body_nodes(rid) {
+            walk(kb, node, BodyPos::Goal(GoalCommit::Top), &mut out);
+        }
+    }
+    out
 }

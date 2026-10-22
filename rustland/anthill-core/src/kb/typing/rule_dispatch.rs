@@ -1458,6 +1458,15 @@ pub(super) fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrenc
 /// `var id → type` map plus whether the constraints are contradictory. Head and
 /// body are closed against the same De Bruijn vars, so their idx keys align.
 ///
+/// A CLAUSE IS TYPED AS A WHOLE (068-implementation §6.2, decision 1): besides the
+/// positions the walk reads where it meets them, the head's written bound, an operation
+/// call's result, the result column of `f(args, ?r)`, a rule goal's columns and a dot's
+/// value each type a variable ([`LatePosition`]). Those are read on a trial and pin nothing
+/// where they do not fit; what did not fit is answered as [`ClauseTyping::disagreements`].
+/// Before them the head's bound reached nothing in the body — `rule h1(?a: Int64, ?x) :- ?x
+/// <=> ?a.abs()` bound `?x` to the term `-3.abs` — and a call's result typed nothing, so
+/// `?c <=> Mk.mk4(), ?x <=> ?c.bump()` did the same.
+///
 /// The single collection per rule for [`type_rule_bodies`], which reports the
 /// contradiction (sort-scoped), skips a contradictory rule's dispatch (the
 /// receiver sort would be unreliable), and stamps the map onto the body's `Var`
@@ -1469,25 +1478,54 @@ pub(super) fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrenc
 /// immutable borrow does not conflict with the inner `&mut kb` constraint pass.
 pub(super) fn collect_rule_var_types(
     kb: &mut KnowledgeBase,
+    rid: RuleId,
     head: TermId,
     body_nodes: &[Rc<NodeOccurrence>],
-) -> (HashMap<u32, Value>, bool) {
-    let mut subst = Substitution::new();
-    let mut var_types: HashMap<u32, Value> = HashMap::new();
-    // WI-9C2PZ — which entries are a CALL's placeholder rather than a statement about the
-    // variable. Lives for the collection and is dropped with it; see [`constrain_vid`].
-    let mut param_backed: ParamBackedVars = HashSet::new();
-    collect_term_type_constraints(kb, head, None, &mut var_types, &mut param_backed, &mut subst);
+) -> ClauseTyping {
+    let mut st = ClauseConstraints::new();
+    walk_clause(kb, head, body_nodes, &mut st);
+    finish_clause_typing(kb, rid, head, st, Vec::new()).0
+}
+
+/// The walk of a clause's head term and body goals that [`collect_rule_var_types`] reads its
+/// typing off, the late positions included.
+pub(super) fn walk_clause(
+    kb: &mut KnowledgeBase,
+    head: TermId,
+    body_nodes: &[Rc<NodeOccurrence>],
+    st: &mut ClauseConstraints,
+) {
+    collect_term_type_constraints(kb, head, None, st);
     for node in body_nodes {
         collect_occurrence_type_constraints(
             kb,
             node,
             None,
-            &mut var_types,
-            &mut param_backed,
-            &mut subst,
+            BodyPos::Goal(GoalCommit::Top),
+            true,
+            st,
         );
     }
+}
+
+/// What the walk of a clause ([`walk_clause`]) gives once its late positions are read
+/// ([`settle_late_positions`]): each variable's type, resolved to the end and with the rigids
+/// a bound was read at let vary again, and `extra` — types of the clause's own the caller
+/// added to the walk — read the same way.
+pub(super) fn finish_clause_typing(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    head: TermId,
+    mut st: ClauseConstraints,
+    extra: Vec<Value>,
+) -> (ClauseTyping, Vec<Value>) {
+    // The walk's own contradiction: two declared positions of one variable that disagree. A
+    // late position never sets it.
+    let contradiction = st.subst.is_contradiction();
+    let mut disagreements = Vec::new();
+    let rigids = settle_late_positions(kb, rid, head, &mut st, &mut disagreements);
+    let mut var_types = std::mem::take(&mut st.var_types);
+    let subst = st.subst;
     // WI-9C2PZ — RESOLVE THE MAP THROUGH THE SUBSTITUTION IT BUILT, which until now was
     // collected and dropped. `rule r(?x, ?y) :- eq(?x, ?y), parent(of: ?x, is: ?)`
     // records both variables at this call's instantiation of `PartialEq.T` and then
@@ -1517,16 +1555,29 @@ pub(super) fn collect_rule_var_types(
     // one step left `?p` at `Box[T = t]` and `?x` at the other variable — two names for
     // what the clause says is one, which a reader of the two types cannot rejoin. The
     // unifier's occurs check is what makes this end.
-    for ty in var_types.values_mut() {
+    let resolve = |kb: &mut KnowledgeBase, ty: &Value| -> Value {
+        let mut ty = ty.clone();
         loop {
-            let (resolved, changed) = crate::kb::node_occurrence::subst_value_type(kb, ty, &subst);
-            *ty = resolved;
+            let (resolved, changed) = crate::kb::node_occurrence::subst_value_type(kb, &ty, &subst);
+            ty = resolved;
             if !changed {
                 break;
             }
         }
+        unrigidify_clause_types(kb, &rigids, &ty)
+    };
+    for ty in var_types.values_mut() {
+        *ty = resolve(kb, ty);
     }
-    (var_types, subst.is_contradiction())
+    let extra = extra.iter().map(|ty| resolve(kb, ty)).collect();
+    (
+        ClauseTyping {
+            var_types,
+            contradiction,
+            disagreements,
+        },
+        extra,
+    )
 }
 
 /// Collect type constraints from a term: for each variable in an operation/entity
@@ -1536,9 +1587,7 @@ pub(super) fn collect_term_type_constraints(
     kb: &mut KnowledgeBase,
     term: TermId,
     position: Option<&Value>,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
+    st: &mut ClauseConstraints,
 ) {
     match kb.get_term(term) {
         Term::Fn {
@@ -1553,28 +1602,20 @@ pub(super) fn collect_term_type_constraints(
 
             // Expected types from operation params or entity fields — the dispatch the
             // body walker applies to an occurrence, on the head's `TermId` arguments.
-            let nested = constrain_application(
-                kb,
-                functor,
-                &pos_args,
-                &named_args,
-                position,
-                var_types,
-                param_backed,
-                subst,
-            );
+            let (nested, _) =
+                constrain_application(kb, functor, &pos_args, &named_args, &[], position, st);
 
             // Recurse into subterms, positional then named — the order
             // [`NestedPositions`] counts in.
             let args = pos_args.iter().chain(named_args.iter().map(|(_, arg)| arg));
             for (index, &arg) in args.enumerate() {
                 let position = nested_position(&nested, index);
-                collect_term_type_constraints(kb, arg, position, var_types, param_backed, subst);
+                collect_term_type_constraints(kb, arg, position, st);
             }
         }
         Term::Ref(name) | Term::Ident(name) => {
             let name = *name;
-            constrain_constant_constructor(kb, name, position, subst);
+            constrain_constant_constructor(kb, name, position, &mut st.subst);
         }
         _ => {}
     }

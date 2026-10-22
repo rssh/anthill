@@ -1913,6 +1913,8 @@ mod wi_shed7_reads_wait_test;
 mod wi_p7vp4_rule_body_requirements_test;
 #[path = "include/wi_0rrqp_clause_typed_through_constructor_test.rs"]
 mod wi_0rrqp_clause_typed_through_constructor_test;
+#[path = "include/wi_wf14z_clause_typed_as_a_whole_test.rs"]
+mod wi_wf14z_clause_typed_as_a_whole_test;
 #[path = "include/wi_0k8wd_selection_per_requirement_test.rs"]
 mod wi_0k8wd_selection_per_requirement_test;
 #[path = "include/wi_50zmn_two_requirements_of_one_sort_test.rs"]

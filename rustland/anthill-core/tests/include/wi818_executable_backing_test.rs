@@ -435,7 +435,11 @@ namespace wi818.sld
   import anthill.prelude.Stream.{head, headOption, tail, isEmpty}
 
   rule pick7(?r) :- head(cons(7, nil)) = ?r
-  rule pickho(?r) :- headOption(cons(7, nil)) = ?r
+  -- `?r` no column: `headOption`'s result is an `Option`, so as a column `?r` is filled
+  -- from `Option`'s domain (its inferred type is its bound, WI-20261013-WF14Z), and `eq`
+  -- against `none` and `some(?v)` answers nothing — as the written `?r: Option[T = Int64]`
+  -- did before this ticket. Here the call's derivations are what is counted.
+  rule pickho(?k) :- headOption(cons(7, nil)) = ?r, ?k <=> 1
   rule picktail(?r) :- tail(cons(7, nil)) = ?r
   rule pickie(?r) :- isEmpty(cons(7, nil)) = ?r
 end

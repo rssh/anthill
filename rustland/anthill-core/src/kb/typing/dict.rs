@@ -3079,9 +3079,10 @@ fn unfilled_error_tag_refusal(kb: &KnowledgeBase, dep: &RequiresEntry) -> Requir
                        and this call builds no evidence of it. A rule-body call's \
                        `ErrorTag` is no condition its clause can be handed, and without it \
                        the boundary has no payload sort to catch and refuses to run. Raise, \
-                       in the thunk, a value of a sort the call names — a type written on a \
-                       rule variable does not reach here, and a tuple, or a collection whose \
-                       element is open, has no instance; write an operation named bare as \
+                       in the thunk, a value whose sort the clause knows — a constructor's, \
+                       a rule variable's whose type is written or read off a goal — or bind \
+                       the thunk by a call whose result says what it raises; a tuple, or a \
+                       collection whose element is open, has no instance; write an operation named bare as \
                        `lambda () -> f()`, \
                        since a rule body reads the bare name as its zero-argument call; and \
                        a thunk that raises no `Error` label needs no boundary"

@@ -51,11 +51,17 @@
 //! |---|---|---|---|
 //! | `two_independent_eq_calls_are_two_columns` | **FAILS** (load) | ok | ok |
 //! | `the_two_columns_keep_their_own_types` | **FAILS** | **FAILS** | **FAILS** |
-//! | `eq_does_not_propagate_into_an_int_column` | **FAILS** | ok | ok |
-//! | `the_inherited_type_reaches_the_published_schema` | **FAILS** | ok | **FAILS** |
+//! | `eq_does_not_propagate_into_an_int_column` | ok | ok | ok |
+//! | `the_inherited_type_reaches_the_published_schema` | **FAILS** (column `x`) | ok | ok |
 //! | `a_variable_joins_every_class_its_calls_link_it_to` | **FAILS** | ok | **FAILS** |
 //! | `eq_propagates_a_concrete_type_to_both_columns` | ok | ok | ok |
 //! | `a_transitively_linked_relation_still_drains` | ok | ok | ok |
+//!
+//! Measured again 2026-10-22, for WI-20261013-WF14Z: a rule goal now types its variables at
+//! its callee's columns, so the `(2)` fixtures' `name(?y)` types `?y` `String` beside the
+//! `eq` link, and their two rows no longer measure the link (each says so at its site). The
+//! `(1)` and `(3)` fixtures lost their generator goals for that reason, and measure as
+//! before.
 //!
 //! THE LAST TWO ROWS PASS UNDER EVERY BACK-OUT, and that is stated rather than papered
 //! over: they are the VALUE arms — the ones that actually run the relation and read what
@@ -80,23 +86,19 @@ fn int_of(v: &Value, what: &str) -> i64 {
 
 // ── (1) Two independent `eq` calls are two correlation classes ────────────
 
-/// The ticket's own shape. `gen` is a RULE subgoal, which types nothing at all, so the
-/// only typing source for either column is its own `eq` call — which is what makes the
-/// two calls' independence observable.
+/// The ticket's own shape. The only typing source for either column is its own `eq` call
+/// — which is what makes the two calls' independence observable — and the citation's
+/// arguments are the values. A generator goal beside them would type the columns itself
+/// since WI-20261013-WF14Z (a rule goal reads its callee's columns: `gen` over `src`'s
+/// fields made them `String` and `Int64`), and the rows below would then measure the
+/// column, not the two calls.
 const TWO_EQ_GOOD: &str = r#"
 namespace test.wi9c2pz.two
   import anthill.prelude.{String, Int64, List}
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialEq.{eq}
 
-  sort S
-    entity src(s: String, n: Int64)
-  end
-  fact src(s: "a", n: 1)
-  fact src(s: "b", n: 2)
-
-  rule gen(?s, ?n) :- src(s: ?s, n: ?n)
-  rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)
+  rule twoeq(?x, ?n) :- eq(?x, "a"), eq(?n, 1)
 
   operation matchedRows() -> Int64 effects Error =
     let r = twoeq("a", 1)
@@ -116,13 +118,7 @@ namespace test.wi9c2pz.twoswap
   import anthill.prelude.List.{length}
   import anthill.prelude.PartialEq.{eq}
 
-  sort S
-    entity src(s: String, n: Int64)
-  end
-  fact src(s: "a", n: 1)
-
-  rule gen(?s, ?n) :- src(s: ?s, n: ?n)
-  rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)
+  rule twoeq(?x, ?n) :- eq(?x, "a"), eq(?n, 1)
 
   operation swapped() -> Int64 effects Error =
     let r = twoeq(1, "a")
@@ -144,7 +140,7 @@ fn wi9c2pz_two_independent_eq_calls_are_two_columns() {
     assert_eq!(
         int_of(&rows, "matchedRows"),
         1,
-        "`src(s: \"a\", n: 1)` is the one row satisfying both filters"
+        "`twoeq(\"a\", 1)` satisfies both filters"
     );
     // The filters are REAL — a citation that agrees with the relation on neither clause
     // drains nothing, so the row above is not an artefact of an unfiltered drain.
@@ -191,8 +187,9 @@ namespace test.wi9c2pz.propstr
   end
   fact parent(of: "root", is: "top")
 
-  -- a RULE subgoal types nothing but BINDS at run time, which is what lets `eq`
-  -- (a test, never a binder — kernel-language.md §5) filter rather than generate
+  -- a rule subgoal BINDS at run time, which is what lets `eq` (a test, never a
+  -- binder — kernel-language.md §5) filter rather than generate; it types its
+  -- variable at `name`'s `String` column too
   rule name(?n) :- parent(of: ?n, is: ?)
   rule linked(?x, ?y) :- name(?x), name(?y), eq(?x, ?y), parent(of: ?x, is: ?)
 
@@ -267,12 +264,11 @@ fn wi9c2pz_eq_propagates_a_concrete_type_to_both_columns() {
 /// propagation turns on: it fails if `?y` is left as an open variable, which would unify
 /// with `Int64` and load.
 ///
-/// CONTROL: back out the instantiation and this test fails by LOADING CLEAN. It does NOT
-/// redden on backing out the resolve step, and that measurement is worth keeping: the two
-/// columns still share ONE variable there, so the citation's own `String` narrows it and
-/// the `Int64` claim fails anyway. What this row measures is the CORRELATION; the
-/// propagation reaching the published SCHEMA is
-/// [`wi9c2pz_the_inherited_type_reaches_the_published_schema`]'s.
+/// CONTROL: NONE since WI-20261013-WF14Z, measured. Backing out the instantiation made it
+/// load clean until then; now `name(?y)` reads `name`'s `String` column, so `?y` is a
+/// `String` whether or not `eq` links it, under every back-out. The correlation it measured
+/// is [`wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to`]'s, whose fixture has no
+/// generator goal.
 #[test]
 fn wi9c2pz_eq_does_not_propagate_into_an_int_column() {
     let errs = try_load_kb_with(EQ_PROPAGATES_INT)
@@ -311,11 +307,13 @@ end
 
 /// The SCHEMA carries it, not just the citation: a second clause typing `y` `Int64` makes
 /// the relation DISJOINT, which the cross-clause lub can only see if the `eq` clause
-/// published `String` for `y`. This is the row that isolates the resolve-through-the-
-/// substitution step from the citation-time narrowing its siblings could ride on.
+/// published `String` for `y`.
 ///
-/// CONTROL: back out the instantiation OR the resolve step and this test fails by LOADING
-/// CLEAN — clause one contributes an unknown for `y` and the lub takes `Int64`.
+/// CONTROL: back out the instantiation and this test fails, on column `x` reported disjoint
+/// instead of `y`. Backing out the resolve step made it load clean until WI-20261013-WF14Z
+/// and no longer does: `name(?y)` types `y` `String` in clause one itself. The resolve step
+/// is measured by [`wi9c2pz_the_two_columns_keep_their_own_types`] and
+/// [`wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to`].
 #[test]
 fn wi9c2pz_the_inherited_type_reaches_the_published_schema() {
     let errs = try_load_kb_with(EQ_PROPAGATES_TWO_CLAUSE)
@@ -330,8 +328,11 @@ fn wi9c2pz_the_inherited_type_reaches_the_published_schema() {
 
 // ── (3) A variable joins EVERY class its calls link it to ─────────────────
 
-/// `eq(?x, ?y)` and `gt(?y, ?z)` share `?y`, so all three variables carry one type. The
-/// generator is again a rule subgoal, so the calls are the only typing source.
+/// `eq(?x, ?y)` and `gt(?y, ?z)` share `?y`, so all three variables carry one type. The calls
+/// are the only typing source and the citation's arguments the values. A generator goal
+/// beside them would type the columns itself since WI-20261013-WF14Z (a rule goal reads its
+/// callee's columns: `gen3` over `g`'s fields made all three `Int64`), and the refusal below
+/// would then be the column's, not the link's.
 const CHAIN_OK: &str = r#"
 namespace test.wi9c2pz.ch
   import anthill.prelude.{String, Int64, List}
@@ -339,13 +340,7 @@ namespace test.wi9c2pz.ch
   import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.PartialEq.{eq}
 
-  sort G
-    entity g(a: Int64, b: Int64, c: Int64)
-  end
-  fact g(a: 2, b: 2, c: 1)
-
-  rule gen3(?x, ?y, ?z) :- g(a: ?x, b: ?y, c: ?z)
-  rule chain(?x, ?y, ?z) :- gen3(?x, ?y, ?z), eq(?x, ?y), gt(?y, ?z)
+  rule chain(?x, ?y, ?z) :- eq(?x, ?y), gt(?y, ?z)
 
   operation rows() -> Int64 effects Error =
     let r = chain(2, 2, 1)
@@ -362,13 +357,7 @@ namespace test.wi9c2pz.chainbad
   import anthill.prelude.PartialOrd.{gt}
   import anthill.prelude.PartialEq.{eq}
 
-  sort G
-    entity g(a: Int64, b: Int64, c: Int64)
-  end
-  fact g(a: 2, b: 2, c: 1)
-
-  rule gen3(?x, ?y, ?z) :- g(a: ?x, b: ?y, c: ?z)
-  rule chain(?x, ?y, ?z) :- gen3(?x, ?y, ?z), eq(?x, ?y), gt(?y, ?z)
+  rule chain(?x, ?y, ?z) :- eq(?x, ?y), gt(?y, ?z)
 
   operation rows() -> Int64 effects Error =
     let r = chain(2, 2, "x")
@@ -387,7 +376,7 @@ fn wi9c2pz_a_transitively_linked_relation_still_drains() {
     let rows = interp
         .call("test.wi9c2pz.ch.rows", &[])
         .expect("a consistently-cited chain relation must load and drain");
-    assert_eq!(int_of(&rows, "rows"), 1, "`g(a: 2, b: 2, c: 1)` satisfies it");
+    assert_eq!(int_of(&rows, "rows"), 1, "`chain(2, 2, 1)` satisfies it");
 }
 
 /// A `String` in the third slot is refused, and only the transitive link can refuse it:

@@ -2568,6 +2568,21 @@ pub struct KnowledgeBase {
         >,
     >,
 
+    // WI-20261013-WF14Z — the columns a goal on each relation reads
+    // (`typing::rule_goal_columns`), and the cycle of relations each relation is in
+    // (`typing::same_rule_goal_cycle`). Read off the clauses as they stand, so dropped with
+    // the resolve cache at the start of a typer run and wherever a clause is stored or taken
+    // out (`invalidate_rule_goal_columns`).
+    pub(crate) rule_goal_columns_memo: RefCell<
+        HashMap<Symbol, Option<Rc<Vec<(crate::kb::typing::SlotKey, crate::eval::value::Value)>>>>,
+    >,
+    pub(crate) rule_goal_cycle_memo: RefCell<HashMap<Symbol, u32>>,
+    // The relations whose goal columns are being read right now, ON THE STACK: every insert
+    // is paired with a remove on the way out, and a goal on one of them reads nothing. Not a
+    // memo, so not dropped with the two above — a clause stored while a relation is being
+    // read must not take the guard away.
+    pub(crate) rule_goal_columns_in_flight: RefCell<std::collections::HashSet<Symbol>>,
+
     // WI-240 — per-impl-sort operations table; see `SortOpsTable`.
     // Built at load time, read by dispatch consumers via
     // `sort_ops_lookup`.
@@ -2986,6 +3001,9 @@ impl KnowledgeBase {
             spec_self_representing_cache: RefCell::new(HashMap::new()),
             witness_admissibility_in_flight: RefCell::new(std::collections::HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            rule_goal_columns_memo: RefCell::new(HashMap::new()),
+            rule_goal_cycle_memo: RefCell::new(HashMap::new()),
+            rule_goal_columns_in_flight: RefCell::new(std::collections::HashSet::new()),
             sort_ops: SortOpsTable::default(),
             host_mapped_ops: std::collections::HashSet::new(),
             interpreter_mapped_ops: std::collections::HashSet::new(),
@@ -3042,6 +3060,19 @@ impl KnowledgeBase {
     #[allow(dead_code)]
     pub fn invalidate_resolve_cache(&self) {
         self.resolve_cache.borrow_mut().clear();
+    }
+
+    /// WI-20261013-WF14Z — drop what [`Self::rule_goal_columns_memo`] and
+    /// [`Self::rule_goal_cycle_memo`] read off the clauses.
+    pub(crate) fn invalidate_rule_goal_columns(&self) {
+        let mut columns = self.rule_goal_columns_memo.borrow_mut();
+        if !columns.is_empty() {
+            columns.clear();
+        }
+        let mut cycles = self.rule_goal_cycle_memo.borrow_mut();
+        if !cycles.is_empty() {
+            cycles.clear();
+        }
     }
 
     /// WI-226: number of entries in the resolve cache. Diagnostic /
@@ -4734,6 +4765,7 @@ impl KnowledgeBase {
         meta: Option<TermId>,
     ) -> RuleId {
         let rule_id = RuleId(self.rules.len() as u32);
+        self.invalidate_rule_goal_columns();
 
         // WI-635: collect the stored head's `Var::Global`s ONCE here (assert is
         // cold; the resolver reads the cached list, never re-walking the head). A
@@ -7108,6 +7140,7 @@ impl KnowledgeBase {
 
     /// Mark a rule/fact as retracted. Removes from active indexes, decrements refcounts.
     pub fn retract(&mut self, id: RuleId) {
+        self.invalidate_rule_goal_columns();
         let entry = &mut self.rules[id.index()];
         if entry.retracted {
             return;

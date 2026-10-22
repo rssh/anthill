@@ -541,6 +541,63 @@ f(x)`:
   read off the clause typing C1b and C1c build.
 - *VF8GT* — narrowing to an arrow; a tuple type written as a value in a data slot.
 
+### 6.3 C1b, decision 1 as built (WI-20261013-WF14Z, first part, 2026-10-22)
+
+`kb/typing/rule_constraints.rs` (`LatePosition`, `settle_late_positions`),
+`kb/typing/relation.rs` (`rule_goal_columns`, `same_rule_goal_cycle`). Rows in
+`wi_wf14z_clause_typed_as_a_whole_test`, its back-out ledger at its head. Decision 1's table
+answers as decided, all but its last row (`-4`, the routing of a named requirement's slot).
+
+- **One substitution, the walk's positions first.** The walk reads what it read before — an
+  operation's and an entity's declared parameters, a constructor's application — and leaves
+  the rest for after it: the head's written bound (the enclosing sort's parameters it names
+  rigid), an operation call's result in a slot that declares a type, the result column of
+  `f(args, ?r)` (`functional_relation_goal`, the resolver's own reading of the goal), a rule
+  goal's columns and a dot's value. Each is read on a copy of the clause's typing and kept
+  where it fits; where it does not it pins nothing and is recorded with its class
+  (`ClauseDisagreement`), so this part refuses nothing new — decision 3's classes are counted
+  off those records before they refuse. A dot and a result whose type is computed from its
+  operands (`field_access`'s `FieldOf`, `head`'s `s.T`) are read last, once what they depend
+  on is typed; a call's written type arguments instantiate its parameters. Only a goal the
+  clause commits to types: one in a `|` branch, under `not` or in a quantifier's body reads
+  nothing outside it.
+- **A rule goal's columns are generalized across the callee's clauses**, not joined as a
+  citation's are: the most specific type each clause's column is an instance of, so a tie two
+  clauses make differently is dropped. Joined, `description_view(some(?d), ?d)` beside
+  `description_view(none, none)` made the second column an `Option`, and github-todo's
+  `open_item` answered nothing (measured on the first cut). A clause whose column is a variable
+  it names nowhere else holds no type there and takes the others' — which is how a relation
+  that calls itself reads its columns as one type. A goal on another relation of its own cycle
+  reads nothing (Tarjan's numbering over the goals), so neither relation's columns depend on
+  which is asked first. Read once per typer run and per clause stored (`rule_goal_columns_memo`).
+- **The parameter form's dotted path is a field read** (`clause_param_field_read`,
+  `clause_param_method_call` in the loader): `p.t`, `(p.t).abs()` and `p.t.abs()` on a
+  sigil-free head parameter lower to the dot the `?p` spelling does.
+- **A stamp's sort parameter is opened per citation** (`ClauseTypes::at_citation`): a head's
+  bound now reaches the stamps, and a sort's parameter is no variable a citation's pin binds.
+- **Inferred bounds stay as written** (user, 2026-10-22): a column the new positions type at a
+  data sort with a variable gets the check a written bound gets, so rows moved as their written
+  twins already did on the parent — an undecided call's `Result` column filled with an `ok` and
+  an `err` (9WVT7's clock, reify and scoped-KB rows), `headOption(…) = ?r` at a filled `Option`
+  answering nothing (`wi818`, whose row now counts the call off a body variable), and a z3 proof
+  through an inlined rule with an `Option` column refused, "no SMT sort" (FHEEK's `leafVar`,
+  KF2SD's `claim_a` and `chosen`). The same claims over an option sort with no parameter,
+  whose column is no bound, read as before (`leafN`, the `framesn` fixture).
+- **Found and fixed:** a typed head's domain check refused a value whose part its bound fixes
+  and the value does not carry — `?r: Result[T = Int64, E = ?e]` over `err(error: 5)` — on the
+  parent too (`read_unknowns_from_bound`).
+- **Stated limits:** a goal on another relation of a cycle reads nothing (`od` over `ev`); a
+  construction passed where a spec's carrier is declared (`head(cons(7, nil))`) is read at the
+  spec's own parameter, which the provider does not unify with; a column whose whole type is a
+  variable is read at the type its use asks for
+  (`a_column_whose_whole_type_is_a_variable_is_read_at_any_type`).
+
+Left to C1b: decision 2; decision 3's classes, each counted and then refused, with three of
+the four flips of `wi_0rrqp_clause_typed_through_constructor_test` and SHED7's `Sat.model`;
+decision 1's `-4` row; and closing a column whose whole type is a variable. The fourth flip is
+made: `a_column_nothing_types_is_read_at_any_type`'s program is refused once its rule goal types
+the column, and the row is `a_column_a_rule_goal_types_is_read_at_its_type`.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

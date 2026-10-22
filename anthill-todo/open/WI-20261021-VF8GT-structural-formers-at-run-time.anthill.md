@@ -21,3 +21,7 @@ STRUCTURAL FORMERS AT RUN TIME — A NAMED TUPLE AND AN ARROW ARE TESTED, FILLED
 
 CORRECTION to the description's (3): the paragraph quoted is kernel-language §5.1's 'An alias in a name is read through', not §5.4.
 
+### 2026-10-22T03:49:24Z — feedback — user
+
+MEASURED 2026-10-22 on 619d6caf (the parent of WI-20261013-WF14Z's first part), FROM WF14Z: A CLOSURE BOUND BEFORE THE CLAUSE RUNS IS REFUTED BY AN ARROW-TYPED HEAD, NOT LEFT UNDECIDED. Over `operation inc() -> (Int64) -> Int64 = lambda (n: Int64) -> n + 1` and `rule viaW2(?f: (Int64) -> Int64, ?r) :- ?r <=> 1`: `viaW2(lambda (n: Int64) -> n + 1, ?r)` and `hf(?f), viaW2(?f, ?r)` over `rule hf(?f) :- ?f <=> inc()` each answer NOTHING, silently — where the description's (1) measured the same bound conditional when the body binds the variable after the guard (`rule ff(?x: (Int64) -> Int64) :- hf(?x)`). The closure is bound when the head matches, so the generated `domain(?f, (Int64) -> Int64)` reads a value with no type and refutes it. Since WF14Z a type written on the variable reaches the clause's typing, so a thunk bound by a typed head now LOADS where it was refused for its `ErrorTag` (`rule viaW(?f: () -> Int64 @ {Error[Boom]}, ?r) :- Error.reify(?f, ?r)` called with a lambda), and answers nothing for this reason. To decide with this ticket's arrow test, both ways.
+
