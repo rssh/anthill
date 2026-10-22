@@ -4677,9 +4677,9 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// PARTIAL, as of WI-20260827-W1YKH, and the older "Total" claim here was never true:
 /// it rested on `alloc_from_value`, which refuses every `Value::Node` — as an
 /// `EvalError::Internal`, i.e. an invariant breach rather than a type error. A value
-/// with a term reading now lowers through the Node-aware `value_to_term` and prints as
-/// its canonical term; one without (an opaque runtime handle) raises `TypeMismatch`
-/// rather than being printed as something it is not.
+/// with a term reading ([`reads_as_term`]) prints as its term twin prints; one without
+/// (an opaque runtime handle) raises `TypeMismatch` rather than being printed as
+/// something it is not.
 fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_to_string", args)?;
     // WI-20260827-W1YKH — `alloc_from_value` REFUSES EVERY `Node`, as an
@@ -4695,19 +4695,21 @@ fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Va
     // natively (it is what `print_rule` already uses for a `Value::Node` head), so
     // lowering would have interned one transient tree per printed row, permanently,
     // on the path anthill-todo runs per stored item. Caught by /code-review.
+    //
+    // NOR ANY OTHER CARRIER (WI-20261022-DRGCP): an entity was still lowered with
+    // `alloc_from_value` for want of a printer that read it, interning a tree into the store
+    // per row for the same path. `print_value` reads every carrier through the view.
+    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
     if let Value::Node(occ) = v.carried() {
-        let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
         return Ok(Value::Str(printer.print_occurrence(occ)));
     }
-    let tid = match &v {
-        Value::Term { id: tid, .. } => *tid,
-        other => interp.kb.alloc_from_value(other).map_err(|e| EvalError::TypeMismatch {
+    if !reads_as_term(&interp.kb, &v) {
+        return Err(EvalError::TypeMismatch {
             expected: "Term",
-            got: format!("{} (passed to `term_to_string`: {e:?})", other.type_name()),
-        })?,
-    };
-    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
-    Ok(Value::Str(printer.print_term(tid)))
+            got: format!("{} (passed to `term_to_string`)", v.type_name()),
+        });
+    }
+    Ok(Value::Str(printer.print_value(&v)))
 }
 
 /// WI-20260827-W1YKH — does this value have a TERM reading at all?
@@ -4743,8 +4745,10 @@ fn reads_as_term(kb: &crate::kb::KnowledgeBase, v: &Value) -> bool {
 /// SAME SEMANTICS, DELIBERATELY: `nil` ends the spine, a non-`cons` functor is not a
 /// list, and a `cons` carrying anything but exactly head+tail (either both named or
 /// both positional) is REFUSED rather than folded — all-or-nothing, never a silently
-/// truncated prefix. The two must agree; the printer's stays `TermId`-typed because it
-/// serves printing, where the term is in the store by construction.
+/// truncated prefix. The two must agree. The printer's reads through a view too since
+/// WI-20261022-DRGCP (`TermPrinter::unwrap_spine`, generic over the parse side as well), and
+/// is still a second walker kept in step by hand: making them one is this ticket's open
+/// half.
 ///
 /// IT IS SHORTER THAN ITS PEER BY ONE ARM, and that is the view layer earning its
 /// keep rather than an omission: `Ref(nil)` and a stored `Fn{nil,[],[]}` are two

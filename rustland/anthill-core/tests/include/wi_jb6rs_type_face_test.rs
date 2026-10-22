@@ -134,10 +134,13 @@ end
 "#
         )
     };
+    // The refusal names the expression as written, `counter[]`: bare, `counter` would be the
+    // instance's spelling (WI-20261022-DRGCP — the occurrence printer wrote a type value's
+    // face without its bracket, and this row pinned that).
     for (ns, rhs) in [("cond", "(if ?b then counter[] else counter[])"), ("plain", "counter[]")] {
         let errs = load_errors_of(&src(ns, rhs));
         assert!(
-            errs.iter().any(|e| e.contains("expected CounterState, got Type (counter)")),
+            errs.iter().any(|e| e.contains("expected CounterState, got Type (counter[])")),
             "{ns}: the bracket is the type; got: {errs:#?}"
         );
     }

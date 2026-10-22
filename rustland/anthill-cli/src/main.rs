@@ -2250,79 +2250,21 @@ fn prove_args_for_check(args: &CheckArgs) -> ProveArgs {
 /// (occurrence — e.g. a `denoted` effect on an `OperationInfo` value fact), or
 /// a structural `Value::Entity`/`Tuple`. Reading it "as a term" (`rule_head`, or
 /// narrowing a binding to `Value::Term`) panics on a value head and drops `Node`
-/// bindings, so the query output reads the `Value` and renders each carrier here.
+/// bindings, so the query output reads the `Value`.
 ///
-/// A LITERAL is read and written carrier-neutrally, before any carrier is named
-/// (WI-20260907-VM9Q7): `TermView::as_literal` answers the same `Literal` for a native
-/// scalar, a `Value::Term` over `Term::Const` and a `Const` occurrence, and
-/// `write_literal` is the surface spelling `TermPrinter` and the load diagnostics
-/// already share. This used to have per-carrier arms, and the native ones had their
-/// own spellings, so one answer printed two ways depending on its carrier. Per
-/// `Literal` variant, the native arms against `write_literal`:
+/// Through `TermPrinter::print_value`, the one walk that prints every carrier through the
+/// view (WI-20261022-DRGCP). This was a per-carrier match of its own, the fourth printer of
+/// a value, and it wrote an entity headed by a TYPE with parentheses — `Box(V: Int64)`, a
+/// spelling the loader refuses — where its term twin is `Box[V = Int64]`. Its literal and
+/// leaf arms had been unified onto the shared writers one at a time (WI-20260907-VM9Q7: a
+/// `Float` or a `String` printed two ways by carrier; WI-20260905-N20EZ: a `Value::Var`
+/// printed its `Debug` form); now the whole value is.
 ///
-///   * `Float` — DIFFERED: `f.to_string()` drops the decimal point, so
-///     `rule r(?x) :- ?x <=> 3.0` printed `?x = 3` while the fact spelling
-///     `code(n: ?x)` over `fact code(n: 3.0)` printed `3.0`;
-///   * `String` — DIFFERED: `{:?}` is Rust's escaping, not anthill's, and the
-///     hash-consed twin wrote a control character RAW — so a fact holding ESC put a
-///     live terminal sequence on stdout. Both now go through `write_anthill_string`,
-///     which spells a control character `\u{…}`, an escape the lexer reads back
-///     (spec §2.4, added for this);
-///   * `Int`, `BigInt`, `Bool` — agreed, same text either way.
-fn render_value(
-    printer: &TermPrinter<'_, KnowledgeBase>,
-    kb: &KnowledgeBase,
-    v: &anthill_core::eval::Value,
-) -> String {
-    use anthill_core::eval::Value;
-    use anthill_core::kb::term_view::TermView;
-    if let Some(lit) = v.as_literal(kb) {
-        let mut buf = String::new();
-        anthill_core::persistence::print::write_literal(&lit, &mut buf);
-        return buf;
-    }
-    match v {
-        Value::Term { id: t, .. } => printer.print_term(*t),
-        Value::Node(occ) => printer.print_occurrence(occ),
-        Value::Entity {
-            functor,
-            pos,
-            named,
-            ..
-        } => {
-            let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
-            parts.extend(named.iter().map(|(s, c)| {
-                format!("{}: {}", kb.local_name_of(*s), render_value(printer, kb, c))
-            }));
-            format!("{}({})", kb.local_name_of(*functor), parts.join(", "))
-        }
-        Value::Tuple { pos, named, .. } => {
-            let mut parts: Vec<String> = pos.iter().map(|c| render_value(printer, kb, c)).collect();
-            parts.extend(named.iter().map(|(s, c)| {
-                format!("{}: {}", kb.local_name_of(*s), render_value(printer, kb, c))
-            }));
-            format!("({})", parts.join(", "))
-        }
-        // Through the shared owner, so a symbol prints as a symbol here exactly
-        // as its `Term::Ref` twin does via `print_term` below. The `other` arm
-        // renders the Rust `Debug` form, which for a `?X = <symbol>` answer
-        // binding is the cross-carrier divergence `write_symbol_ref` exists to
-        // prevent — this was the THIRD printer, missed when the other two were
-        // unified onto it.
-        Value::SymbolRef(sym) => {
-            let mut buf = String::new();
-            printer.write_symbol_ref(*sym, &mut buf);
-            buf
-        }
-        // Same owner for the other leaf: an unbound answer is a `Value::Var` since
-        // WI-20260905-N20EZ, and must print `?_` exactly as its `Term::Var` twin.
-        Value::Var(var) => {
-            let mut buf = String::new();
-            printer.write_var(*var, &mut buf);
-            buf
-        }
-        other => format!("{other:?}"),
-    }
+/// An OPAQUE carrier — a closure, a stream — has no surface; the printer names it by its kind
+/// (`<Closure>`), at the top of an answer as inside one. Its `Debug` form, which this printed
+/// at the top, named an arena slot.
+fn render_value(printer: &TermPrinter<'_, KnowledgeBase>, v: &anthill_core::eval::Value) -> String {
+    printer.print_value(v)
 }
 
 fn print_program_clause_results(kb: &KnowledgeBase, results: &[ProgramClause], max: usize) {
@@ -2334,7 +2276,7 @@ fn print_program_clause_results(kb: &KnowledgeBase, results: &[ProgramClause], m
     };
 
     for clause in &results[..limit] {
-        let head = render_value(&printer, kb, &clause.head);
+        let head = render_value(&printer, &clause.head);
         // Facts have no body; rule body atoms are occurrences (WI-246).
         let body = &clause.body_nodes;
         if body.is_empty() {
@@ -2370,7 +2312,7 @@ fn print_program_clause_match_results(
 
     for matched in &results[..limit] {
         let clause = &matched.clause;
-        print!("  {}", render_value(&printer, kb, &clause.head));
+        print!("  {}", render_value(&printer, &clause.head));
         // A bodied rule's head match is NOT an answer — show the body so the
         // row reads as the rule it is, not as bindings that failed to ground
         // (the WI-767 misread).
@@ -2390,7 +2332,7 @@ fn print_program_clause_match_results(
                 format!(
                     "?{} = {}",
                     kb.local_name_of(vid.name()),
-                    render_value(&printer, kb, val)
+                    render_value(&printer, val)
                 )
             })
             .collect();
@@ -2491,7 +2433,7 @@ fn print_solutions(
                 format!(
                     "?{} = {}",
                     kb.local_name_of(vid.name()),
-                    render_value(&printer, kb, val)
+                    render_value(&printer, val)
                 )
             })
             .collect();
@@ -2515,7 +2457,7 @@ fn print_solutions(
             let residuals: Vec<String> = sol
                 .residual
                 .iter()
-                .map(|v| render_value(&printer, kb, v))
+                .map(|v| render_value(&printer, v))
                 .collect();
             println!("    residual: {}", residuals.join(", "));
         }

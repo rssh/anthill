@@ -2059,12 +2059,12 @@ pub(super) fn check_apply_iter(
                     // REPORT THE CLAUSE AS JUDGED — both substitutions, in the order
                     // the check applied them — so the diagnostic names the bindings
                     // that refuted it rather than the declaration's variables:
-                    // `flows_to(Untrusted, Public)`, not `flows_to(?l, Public)`, which
-                    // says only that some label failed. σ_value goes on top of the
+                    // `flows_to(Untrusted[], Public[])`, not `flows_to(?l, Public[])`,
+                    // which says only that some label failed. σ_value goes on top of the
                     // σ_type walk already done above; a parameter with no clean
-                    // argument twin survives it and is then read back in SOURCE
-                    // spelling, so it reads as the `c` its author wrote rather than as
-                    // the loader's `var_ref` wrapper.
+                    // argument twin survives it, and the diagnostic quotes it in SOURCE
+                    // spelling (`TermPrinter::quoting_source`), as the `c` its author
+                    // wrote rather than the loader's `var_ref` wrapper.
                     let judged = substitute_ref_terms(kb, &clause, &req_sigma);
                     // WI-K88TN: a surviving RIGID is what says a DECLARATION is owed
                     // rather than a fact at this call — the same question the gate above
@@ -2089,11 +2089,10 @@ pub(super) fn check_apply_iter(
                             None => PreconditionFailure::UndischargeableWitness,
                         },
                     };
-                    let clause = goal_in_source_spelling(kb, &judged);
                     let err = TypeError::UnsatisfiedPrecondition {
                         span,
                         op: fn_sym,
-                        clause,
+                        clause: judged,
                         kind,
                     };
                     // WI-20260830-JM7A8: RECORDED, NOT RAISED, wherever a drainer is

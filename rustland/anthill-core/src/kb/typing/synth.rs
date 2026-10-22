@@ -2189,13 +2189,15 @@ impl PinnedWitness {
 /// readers of its canonical surface. (Same call, same reason, as the WI-849
 /// malformed-`type_params` report a few thousand lines below.)
 ///
-/// A non-`Term` carrier — a denoted `Value::Node` precondition — has no `TermId` to
-/// print and keeps the type renderer, which reads it through the View layer.
+/// ON EVERY CARRIER, and in the spelling its author wrote (WI-20261022-DRGCP): the clause
+/// as judged can hold a label a call put on an occurrence, or be an entity a substitution
+/// rebuilt, and the printer reads them all through the view; it writes a parameter's
+/// `var_ref` wrapper as the name and a skolem as `?m` (`TermPrinter::quoting_source`). A
+/// clause that was no term used to go back to the type renderer, and quoted
+/// `flows_to(Untrusted, Public)` for `flows_to(Untrusted[], Public[])` — the instances, so
+/// the fact it seemed to ask for discharged nothing.
 pub(super) fn format_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> String {
-    match clause {
-        Value::Term { id, .. } => crate::persistence::print::TermPrinter::over(kb).print_term(*id),
-        other => type_display_name_value(kb, other),
-    }
+    crate::persistence::print::TermPrinter::quoting_source(kb).print_value(clause)
 }
 
 /// Human-readable goal text for diagnostics ("Eq[T = Int]").

@@ -40,14 +40,12 @@ fn wi7fp1m_direct_query_matches_wrapper_enumeration() {
         .map(str::trim)
         .filter(|line| line.starts_with("?w ="))
         .collect();
+    // A ground list answer is written as its literal, as its term twin is
+    // (WI-20261022-DRGCP): an answer rebuilt over the resolver's bindings is an entity, and
+    // the CLI wrote that carrier `cons(head: a, tail: nil)`.
     assert_eq!(
         &rows[..4],
-        &[
-            "?w = nil",
-            "?w = cons(head: a, tail: nil)",
-            "?w = cons(head: b, tail: nil)",
-            "?w = cons(head: c, tail: nil)"
-        ]
+        &["?w = nil", "?w = [a]", "?w = [b]", "?w = [c]"]
     );
     let ground = query("domain(nil(), List[T = Letter])", true);
     assert_eq!(ground.code, 0, "{}", ground.stderr);

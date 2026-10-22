@@ -1,18 +1,19 @@
 /// Term printer — converts terms back to `.anthill` text.
 ///
-/// Generic over `TermSource` so it works against either a `KnowledgeBase`
-/// (hash-consed) or a `ParsedFile` (parse-IR). The canonical printed form
-/// is the same in both cases — used by persistence-side retract matching.
+/// Generic over [`PrintView`] so it works against either a `KnowledgeBase` (a hash-consed
+/// term, a value, an occurrence, read through [`TermView`]) or a `ParsedFile` (parse-IR).
+/// The canonical printed form is the same in both cases — used by persistence-side retract
+/// matching.
 use crate::parse::desugar_target as dt;
 use std::rc::Rc;
 
 use crate::eval::value::Value;
 use crate::intern::{is_positional_label_at, Symbol};
-use crate::kb::node_occurrence::{
-    EffectExprNode, Expr, NodeKind, NodeOccurrence, TypeChild, TypeNode,
-};
+use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, TypeNode};
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
+use crate::kb::term_view::{type_child_view_item, TermView, ViewHead, ViewItem};
 use crate::kb::KnowledgeBase;
+use crate::parse::ir::ParsedFile;
 
 /// A literal in `.anthill` SURFACE spelling — a quoted `String`, a `Float` that keeps
 /// its decimal point, `true`/`false`.
@@ -92,8 +93,216 @@ pub fn write_anthill_string(s: &str, buf: &mut String) {
     buf.push('"');
 }
 
+/// WI-20261022-DRGCP — WHAT THE PRINTER READS: a term's head and its children, through a
+/// view, whichever carrier holds them.
+///
+/// One walk over this trait prints everything [`TermPrinter`] prints as data or as a type —
+/// a fact, a goal a diagnostic quotes, a query answer, a type an occurrence carries — so one
+/// value prints one text on every carrier. The knowledge base reads [`ViewItem`]s through
+/// [`TermView`], where a hash-consed term, a value a substitution rebuilt over one, and a
+/// type or effect occurrence all read as the term twin (WI-342, WI-361, WI-425); the parse
+/// side reads its own terms by id. Before, the term printer read `TermId`s alone, a type's
+/// occurrence carrier had a hand-kept twin of its type writer, and a value had two more
+/// writers: a precondition a call had put on an occurrence went to the TYPE renderer and was
+/// quoted `flows_to(Untrusted, Public)` for `flows_to(Untrusted[], Public[])`, and a list in
+/// it `cons(head: …)` where its term printed `[…]`.
+///
+/// The file store needs the two sides to agree: its retract key compares a parse-side print
+/// of the text on disk with a knowledge-base print of the loaded fact. One walk over two
+/// readers that give one term one head is what makes them agree.
+///
+/// A [`TermSource`], for the names: both sides name a symbol as they do for any reader.
+pub trait PrintView: TermSource {
+    /// What the walk holds. Owned, so a walk can keep a child past its parent (a list
+    /// spine's elements).
+    type Item: Clone;
+    /// The item a hash-consed term is.
+    fn term_item(&self, id: TermId) -> Self::Item;
+    fn head(&self, item: &Self::Item) -> ViewHead;
+    fn pos_arg(&self, item: &Self::Item, i: usize) -> Option<Self::Item>;
+    fn named_arg(&self, item: &Self::Item, key: Symbol) -> Option<Self::Item>;
+    /// The named keys, in the order the carrier holds them, which is the order printed.
+    fn named_keys(&self, item: &Self::Item) -> Vec<Symbol>;
+    /// The named child whose key's local name is `key` — the forms the walk reads (an
+    /// arrow's `param`, a cons cell's `head`) by the name their declaration gives it.
+    fn named_child(&self, item: &Self::Item, key: &str) -> Option<Self::Item>;
+    /// Is the application `item`, headed by `sym`, a TYPE whatever slot it stands in —
+    /// headed by a constructor's type face, or by a sort with no constructor, predicate or
+    /// operation of its name (WI-20260902-JB6RS, kernel-language.md §4.4)? Such an
+    /// application is written with the bracket, since its parenthesized spelling is refused.
+    /// The knowledge base asks its kind table; the parse side, which has none, the face and
+    /// the written bracket.
+    fn heads_only_a_type(&self, item: &Self::Item, sym: Symbol) -> bool;
+    /// Was the bare name `item` WRITTEN with an empty bracket, `Foo[]`? Only the parse side
+    /// can say, and must: the knowledge base holds a constructor's type by its face, which
+    /// [`TermPrinter::write_symbol_ref`] writes with the bracket, so the parse side's print of
+    /// the text on disk has to write the bracket it read or the file store's key misses.
+    fn written_bracket(&self, _item: &Self::Item) -> bool {
+        false
+    }
+    /// Writes `item` when this side spells it with a writer of its own rather than the walk,
+    /// answering whether it did: on the knowledge base an EXPRESSION or PATTERN occurrence,
+    /// whose view is its reflect-term twin and not the source it was written as; on the
+    /// parse side a parse-only form.
+    fn own_spelling(printer: &TermPrinter<'_, Self>, item: &Self::Item, buf: &mut String) -> bool;
+}
+
+impl PrintView for KnowledgeBase {
+    type Item = ViewItem<'static>;
+
+    fn term_item(&self, id: TermId) -> Self::Item {
+        ViewItem::Term(id)
+    }
+
+    fn head(&self, item: &Self::Item) -> ViewHead {
+        item.head(self)
+    }
+
+    fn pos_arg(&self, item: &Self::Item, i: usize) -> Option<Self::Item> {
+        item.pos_arg(self, i).map(owned_item)
+    }
+
+    fn named_arg(&self, item: &Self::Item, key: Symbol) -> Option<Self::Item> {
+        item.named_arg(self, key).map(owned_item)
+    }
+
+    fn named_keys(&self, item: &Self::Item) -> Vec<Symbol> {
+        item.named_keys(self)
+    }
+
+    fn named_child(&self, item: &Self::Item, key: &str) -> Option<Self::Item> {
+        item.named_field(self, key).map(owned_item)
+    }
+
+    fn heads_only_a_type(&self, _item: &Self::Item, sym: Symbol) -> bool {
+        self.is_type_value_head(sym)
+    }
+
+    /// An occurrence the walk does not spell ([`TermPrinter::write_own_occurrence`]), and an
+    /// OPAQUE value — a closure, a stream, a cell — named by its kind, `<Closure>`: it has no
+    /// surface, and the kind is what tells two of them apart in an answer.
+    fn own_spelling(printer: &TermPrinter<'_, Self>, item: &Self::Item, buf: &mut String) -> bool {
+        match item {
+            ViewItem::Node(occ) | ViewItem::Owned(Value::Node(occ)) => {
+                printer.write_own_occurrence(occ, buf)
+            }
+            ViewItem::Owned(v) if matches!(v.head(printer.view), ViewHead::Opaque) => {
+                buf.push('<');
+                buf.push_str(v.type_name());
+                buf.push('>');
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A child read off a view holding nothing borrowed from its parent: a borrowed value is
+/// cloned — an `Rc`, or a scalar — so the walk can keep the child once the parent is gone.
+fn owned_item(item: ViewItem<'_>) -> ViewItem<'static> {
+    match item {
+        ViewItem::Term(t) => ViewItem::Term(t),
+        ViewItem::Value(v) => ViewItem::Owned(v.clone()),
+        ViewItem::Node(n) => ViewItem::Node(n),
+        ViewItem::Owned(v) => ViewItem::Owned(v),
+    }
+}
+
+impl PrintView for ParsedFile {
+    type Item = TermId;
+
+    fn term_item(&self, id: TermId) -> TermId {
+        id
+    }
+
+    /// The heads `TermIdView` gives the knowledge base's terms, so one term has one head on
+    /// both sides: a `Ref` and a nullary application alike (WI-20260902-CZJ2N).
+    fn head(&self, id: &TermId) -> ViewHead {
+        match self.terms.get(*id) {
+            Term::Var(v) => ViewHead::Var(*v),
+            Term::Const(lit) => ViewHead::Const(lit.clone()),
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => ViewHead::Functor {
+                functor: Some(*functor),
+                pos_arity: pos_args.len(),
+                named_arity: named_args.len(),
+            },
+            Term::Ref(s) => ViewHead::nullary(*s),
+            Term::Ident(s) => ViewHead::Ident(*s),
+            Term::Bottom => ViewHead::Bottom,
+            // Written by `own_spelling`.
+            Term::ParseAux(_) => ViewHead::Opaque,
+        }
+    }
+
+    fn pos_arg(&self, id: &TermId, i: usize) -> Option<TermId> {
+        match self.terms.get(*id) {
+            Term::Fn { pos_args, .. } => pos_args.get(i).copied(),
+            _ => None,
+        }
+    }
+
+    fn named_arg(&self, id: &TermId, key: Symbol) -> Option<TermId> {
+        match self.terms.get(*id) {
+            Term::Fn { named_args, .. } => {
+                named_args.iter().find(|(s, _)| *s == key).map(|(_, t)| *t)
+            }
+            _ => None,
+        }
+    }
+
+    fn named_keys(&self, id: &TermId) -> Vec<Symbol> {
+        match self.terms.get(*id) {
+            Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn named_child(&self, id: &TermId, key: &str) -> Option<TermId> {
+        match self.terms.get(*id) {
+            Term::Fn { named_args, .. } => named_args
+                .iter()
+                .find(|(s, _)| self.symbols.local_name(*s) == key)
+                .map(|(_, t)| *t),
+            _ => None,
+        }
+    }
+
+    fn written_bracket(&self, id: &TermId) -> bool {
+        self.terms.is_type_application(*id)
+    }
+
+    /// The parse side has no kind table, but it has the surface: an application WRITTEN
+    /// with the bracket is a type (WI-20260902-JB6RS), and printing it with parentheses
+    /// would give a spelling the loader refuses.
+    fn heads_only_a_type(&self, id: &TermId, sym: Symbol) -> bool {
+        sym.is_type_face() || self.terms.is_type_application(*id)
+    }
+
+    /// `Term::ParseAux` — parse-only; it reaches the printer only when it is invoked on a
+    /// parse-side term (e.g. for an error message), the loader stripping it before any KB
+    /// allocation. Its payload is printed in Debug form, so a diagnostic carries the
+    /// annotation or type-argument text even though it is not surface syntax.
+    fn own_spelling(printer: &TermPrinter<'_, Self>, id: &TermId, buf: &mut String) -> bool {
+        use crate::parse::ir::ParseAux;
+        let Term::ParseAux(aux) = printer.view.terms.get(*id) else {
+            return false;
+        };
+        match aux.as_ref() {
+            ParseAux::TypeExpr(te) => buf.push_str(&format!("<type-anno {:?}>", te)),
+            ParseAux::EntryType(te) => buf.push_str(&format!("<type-entry {:?}>", te)),
+            ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
+            ParseAux::ProofStmt(m) => buf.push_str(&format!("<proof-meta {:?}>", m)),
+        }
+        true
+    }
+}
+
 /// Prints terms as `.anthill` source text.
-pub struct TermPrinter<'a, V: TermSource + ?Sized> {
+pub struct TermPrinter<'a, V: PrintView + ?Sized> {
     view: &'a V,
     /// WI-1099 — WHICH QUESTION THIS PRINT ANSWERS. Two callers want different
     /// text from one term, and conflating them is why a reflect-built
@@ -154,6 +363,16 @@ pub struct TermPrinter<'a, V: TermSource + ?Sized> {
     /// exists for this class of miss (WI-187); the content key is its fallback for
     /// facts with no source span.
     reload_faithful: bool,
+    /// WI-20261022-DRGCP — A DIAGNOSTIC QUOTING WHAT ITS AUTHOR WROTE. A parameter
+    /// reference is the loader's `var_ref(name: c)` wrapper (WI-552), and a type variable a
+    /// body is checked under is a skolem `!m`; neither is a line anthill parses. Here the
+    /// wrapper is written as the name it wraps and a rigid as `?m`, the spelling its
+    /// declaration used — for a refusal that quotes a clause for its reader to match against
+    /// the line they wrote, or to write as the declaration it asks for
+    /// ([`TermPrinter::quoting_source`]). It replaced a pass that rebuilt the goal in that
+    /// spelling before printing it, which read a hash-consed goal only, and left a goal on
+    /// any other carrier quoting `var_ref[name = k]`.
+    source_spelling: bool,
 }
 
 impl<'a> TermPrinter<'a, KnowledgeBase> {
@@ -161,6 +380,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         Self {
             view: kb,
             reload_faithful: false,
+            source_spelling: false,
+        }
+    }
+
+    /// A printer for a diagnostic that quotes a clause as its author wrote it — see
+    /// [`TermPrinter::source_spelling`].
+    pub fn quoting_source(kb: &'a KnowledgeBase) -> Self {
+        Self {
+            view: kb,
+            reload_faithful: false,
+            source_spelling: true,
         }
     }
 
@@ -168,7 +398,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// `write_term` over the occurrence `Expr` substrate (rule bodies are now
     /// occurrences, not terms); embedded `TermId` fields (patterns, params)
     /// defer to `write_term`. Used by CLI rule/query display.
-    pub fn print_occurrence(&self, occ: &NodeOccurrence) -> String {
+    pub fn print_occurrence(&self, occ: &Rc<NodeOccurrence>) -> String {
         let mut buf = String::new();
         self.write_occurrence(occ, &mut buf);
         buf
@@ -182,13 +412,12 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// rather than trading the diagnostic for `rule_head`'s carrier panic,
     /// which would misattribute the failure.
     pub fn print_rule(&self, rid: crate::kb::RuleId) -> String {
+        // A head that is no term or occurrence is printed by `print_value` (WI-20261022-DRGCP)
+        // where it was a placeholder, `f(…)`; no bodied rule's head is one today, so no row
+        // tells the two apart.
         let head = match self.view.rule_head_value(rid) {
-            Value::Term { id, .. } => self.print_term(*id),
             Value::Node(occ) => self.print_occurrence(occ),
-            Value::Entity { functor, .. } => {
-                format!("{}(…)", self.view.local_name_of(*functor))
-            }
-            other => format!("<{} head>", other.type_name()),
+            other => self.print_value(other),
         };
         let body: Vec<String> = self
             .view
@@ -212,7 +441,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     /// from term_pattern_as_expr_occ), delegate to `write_occurrence`
     /// so the term shape is rendered as data instead of the literal
     /// `<not-a-pattern>` placeholder.
-    fn write_pattern(&self, occ: &NodeOccurrence, buf: &mut String) {
+    fn write_pattern(&self, occ: &Rc<NodeOccurrence>, buf: &mut String) {
         use crate::kb::node_occurrence::Pattern;
         let Some(pat) = occ.as_pattern() else {
             // Expr-kind (or RuleHead) child in a pattern slot — render
@@ -232,7 +461,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         match pat {
             Pattern::Var { name } => buf.push_str(self.view.sym_name(*name)),
             Pattern::Wildcard => buf.push('_'),
-            Pattern::Literal { value } => self.write_literal(value, buf),
+            Pattern::Literal { value } => write_literal(value, buf),
             Pattern::Constructor {
                 name,
                 pos_args,
@@ -272,405 +501,71 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         write_ann(buf);
     }
 
-    /// Render a `Type`-child — a ground hash-consed type or a nested occurrence —
-    /// uniformly (WI-348/349), and AS A TYPE on either carrier: a hash-consed child goes
-    /// through [`Self::write_type_term`], so `Buf[T = Int64]` does not read as the data
-    /// term `Buf(T: Int64)` because the type around it rides an occurrence
-    /// (WI-20260929-0RP29 — a type rebuilt by projection elimination is one, and read
-    /// differently from its term twin).
-    fn write_type_child(&self, child: &TypeChild, buf: &mut String) {
-        match child {
-            TypeChild::Interned(t) => self.write_type_term(*t, buf),
-            TypeChild::Node(occ) => self.write_occurrence(occ, buf),
-        }
+    /// A value as `.anthill` text, on whatever carrier it rides — a hash-consed term, an
+    /// entity or a tuple a substitution rebuilt, an occurrence, a scalar — read through the
+    /// view as [`Self::print_term`] reads a term, so one value prints one text
+    /// (WI-20261022-DRGCP). The DATA spelling: a constructor's type named bare is `Foo[]`
+    /// (kernel-language.md §4.4), an application `f(a, k: v)`.
+    pub fn print_value(&self, v: &Value) -> String {
+        self.print_item(&ViewItem::Owned(v.clone()))
     }
 
-    /// WI-361: render a type carried as a [`Value`] (a `named_tuple` `fields`
-    /// `List[TypeField]` element, a ∀'s binder or constraint) — `Value::Term` a
-    /// hash-consed type, `Value::Node` a poisoned occurrence — as a type, as
-    /// [`Self::write_type_child`] does. A type is only ever `Term` or `Node`, so the
-    /// fallback is unreachable.
-    fn write_type_value(&self, v: &Value, buf: &mut String) {
-        match v {
-            Value::Term { id: t, .. } => self.write_type_term(*t, buf),
-            Value::Node(occ) => self.write_occurrence(occ, buf),
-            _ => buf.push('?'),
-        }
-    }
-
-    /// A value carried on an occurrence ([`Expr::Spliced`]), as the data it is: a
-    /// hash-consed term by [`Self::write_term`], and the entity or tuple a substitution
-    /// rebuilt over it by its functor and arguments, a scalar as its literal. A carrier
-    /// with no structure to print — a closure, a stream, a dictionary — renders as an
-    /// opaque marker.
-    fn write_carried_value(&self, v: &Value, buf: &mut String) {
-        let write_args = |pos: &[Value], named: &[(Symbol, Value)], buf: &mut String| {
-            let mut first = true;
-            for c in pos {
-                if !std::mem::take(&mut first) {
-                    buf.push_str(", ");
-                }
-                self.write_carried_value(c, buf);
-            }
-            for (key, c) in named {
-                if !std::mem::take(&mut first) {
-                    buf.push_str(", ");
-                }
-                buf.push_str(self.view.sym_name(*key));
-                buf.push_str(": ");
-                self.write_carried_value(c, buf);
-            }
-        };
-        match v {
-            Value::Term { id, .. } => self.write_term(*id, buf),
-            Value::Node(occ) => self.write_occurrence(occ, buf),
-            Value::Var(var) => self.write_var(*var, buf),
-            Value::SymbolRef(sym) => self.write_symbol_ref(*sym, buf),
-            Value::Entity {
-                functor,
-                pos,
-                named,
-            } => {
-                buf.push_str(self.view.sym_name(*functor));
-                buf.push('(');
-                write_args(pos, named, buf);
-                buf.push(')');
-            }
-            Value::Tuple { pos, named } => {
-                buf.push('(');
-                write_args(pos, named, buf);
-                buf.push(')');
-            }
-            scalar => match crate::kb::term_view::TermView::as_literal(scalar, self.view) {
-                Some(lit) => self.write_literal(&lit, buf),
-                None => buf.push_str("<spliced>"),
-            },
-        }
-    }
-
-    /// A GOAL carried as a [`Value`] (an element of an effect guard's goal list): a
-    /// data term, rendered as one (`eq(b, b)`, not the type spelling `eq[b, b]`).
-    fn write_goal_value(&self, v: &Value, buf: &mut String) {
-        match v {
-            Value::Term { id: t, .. } => self.write_term(*t, buf),
-            Value::Node(occ) => self.write_occurrence(occ, buf),
-            _ => buf.push('?'),
-        }
-    }
-
-    /// Render a `Type`-sort occurrence (WI-342 IR) in the surface syntax
-    /// [`Self::write_type_term`] gives its term twin — `Parameterized` shows its `[param =
-    /// value]` bindings (the part a `denoted` value-index like `Modify[c]` lives in), a
-    /// value-in-type prints as its value, an arrow as `(P) -> R @ E`, an effect row as `{…}`,
-    /// a positional tuple component bare. WI-20260929-0RP29: a type projection elimination
-    /// rebuilds is an occurrence, so a structural spelling here printed it apart from the
-    /// same type on the term carrier. (A TERM printed OUTSIDE type context still takes
-    /// `write_term`'s data spelling, `Option(T: …)` — WI-361: a bare application of a sort is
-    /// shaped like a data term, and only the caller knows which it is.)
-    fn write_type_node(&self, tn: &TypeNode, buf: &mut String) {
-        match tn {
-            // WI-20260904-02ERR: rendered by the SHARED `write_var`, so a type variable
-            // reads identically whether it arrived interned or occurrence-carried.
-            TypeNode::Var(v) => self.write_var(*v, buf),
-            // A type written through an alias prints as the type it stands for, like every
-            // other read of it.
-            TypeNode::Aliased { stands_for, .. } => self.write_type_child(stands_for, buf),
-            // A value-in-type prints as the value it carries — `Buf[N = 3]`, as
-            // `write_type_term`'s `Denoted` arm prints its term twin.
-            TypeNode::Denoted { value } => self.write_occurrence(value, buf),
-            TypeNode::Parameterized { base, bindings } => {
-                self.write_type_child(base, buf);
+    /// The occurrences the walk does not spell ([`PrintView::own_spelling`]), written here,
+    /// answering whether `occ` was one: an EXPRESSION or a PATTERN, by
+    /// [`Self::write_occurrence`] — the view reads it as its reflect-term twin, which is not
+    /// the source it was written as — and the one TYPE shape the view cannot read, a
+    /// parameterized type whose base is itself an occurrence (a projection in base position,
+    /// which `elim_child` can build and the view heads `Opaque`), written from its parts as
+    /// the deleted type-node writer wrote it. No row builds that shape — the type renderer's
+    /// twin of this arm (`type_display_name_occ`) says the same — so backing the arm out
+    /// fails nothing; without it the shape prints `<opaque>`.
+    fn write_own_occurrence(&self, occ: &Rc<NodeOccurrence>, buf: &mut String) -> bool {
+        match &occ.kind {
+            NodeKind::Type(TypeNode::Parameterized { base, bindings })
+                if matches!(occ.head(self.view), ViewHead::Opaque) =>
+            {
+                self.write_type_item(&type_child_view_item(base), buf);
                 buf.push('[');
-                for (i, (sym, val)) in bindings.iter().enumerate() {
+                for (i, (sym, c)) in bindings.iter().enumerate() {
                     if i > 0 {
                         buf.push_str(", ");
                     }
                     buf.push_str(self.view.sym_name(*sym));
                     buf.push_str(" = ");
-                    self.write_type_child(val, buf);
+                    self.write_type_item(&type_child_view_item(c), buf);
                 }
                 buf.push(']');
+                true
             }
-            // A standalone effect-row type renders its braced row, as `write_type_term`'s
-            // `EffectsRows` arm does.
-            TypeNode::EffectsRows { effects_expr } => {
-                let mut atoms = Vec::new();
-                self.collect_effect_child_atoms(effects_expr, &mut atoms);
-                buf.push('{');
-                buf.push_str(&atoms.join(", "));
-                buf.push('}');
-            }
-            // The surface arrow `write_arrow_type` renders for the term, read off the
-            // occurrence's children — `(P) -> R @ E` — so an arrow reads the same on either
-            // carrier (WI-470 makes an inferred one an occurrence; WI-20260929-0RP29 a
-            // rebuilt one).
-            TypeNode::Arrow {
-                param,
-                result,
-                effects,
-                arity,
-            } => {
-                // WI-791: whether the `param` slot ALREADY renders as the parameter list —
-                // only a named tuple can, and only when the arrow's arity says it is one;
-                // at arity one it is the sole parameter's TYPE and takes a list around it.
-                // An unreadable arity keeps the shape heuristic, as `write_arrow_type`
-                // does. Carrier-agnostic: a tuple param with a denoted-bearing component
-                // rides as `TypeChild::Node`.
-                let slot_is_the_list = match param {
-                    TypeChild::Interned(t) => {
-                        self.is_named_tuple_term(*t)
-                            && match self.type_child_arity(arity) {
-                                Some(n) => n != 1,
-                                None => self.named_tuple_arity(*t) != 1,
-                            }
-                    }
-                    TypeChild::Node(occ) => match &occ.kind {
-                        NodeKind::Type(TypeNode::NamedTuple { fields }) => {
-                            match self.type_child_arity(arity) {
-                                Some(n) => n != 1,
-                                None => {
-                                    crate::kb::typing::value_list_elements(self.view, fields).len()
-                                        != 1
-                                }
-                            }
-                        }
-                        _ => false,
-                    },
-                };
-                if slot_is_the_list {
-                    self.write_type_child(param, buf);
-                } else {
-                    buf.push('(');
-                    self.write_type_child(param, buf);
-                    buf.push(')');
-                }
-                buf.push_str(" -> ");
-                self.write_type_child(result, buf);
-                let mut atoms = Vec::new();
-                self.collect_effect_child_atoms(effects, &mut atoms);
-                if !atoms.is_empty() {
-                    buf.push_str(" @ ");
-                    if atoms.len() == 1 {
-                        buf.push_str(&atoms[0]);
-                    } else {
-                        buf.push('{');
-                        buf.push_str(&atoms.join(", "));
-                        buf.push('}');
-                    }
-                }
-            }
-            // WI-397: a compound-receiver projection `(a.b).M` — receiver then `.member`.
-            // Neither child is a type: the receiver is a value path, the member a name.
-            TypeNode::ExprCarried { value, member } => {
-                for (i, child) in [value, member].into_iter().enumerate() {
-                    if i > 0 {
-                        buf.push('.');
-                    }
-                    match child {
-                        TypeChild::Interned(t) => self.write_term(*t, buf),
-                        TypeChild::Node(occ) => self.write_occurrence(occ, buf),
-                    }
-                }
-            }
-            TypeNode::NamedTuple { fields } => {
-                // WI-361: `fields` is a `Value`-carried `List[TypeField]`; decode it
-                // via the one shared decoder (the typer's `named_tuple_fields` uses
-                // the same) and render `(n: T, …)`.
-                buf.push('(');
-                let pairs =
-                    crate::kb::typing::list_records_to_pairs(self.view, fields, "name", "type");
-                for (i, (name, ty)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        buf.push_str(", ");
-                    }
-                    // A positional component (`_N` at its own position) prints bare, as
-                    // `write_named_tuple_element` prints its term twin (WI-790).
-                    let label = self.view.sym_name(*name);
-                    if !is_positional_label_at(label, i) {
-                        buf.push_str(label);
-                        buf.push_str(": ");
-                    }
-                    self.write_type_value(ty, buf);
-                }
-                buf.push(')');
-            }
-            // WI-1083: `forall A, B. <body>` — the quantifier is rendered even though
-            // it is not stored (a PolyType is ∀ by construction), because the whole
-            // point of the node is that the ∀ used to be invisible. `binders` is a
-            // `Value`-carried `List[Term]` of bare variables.
-            TypeNode::PolyType {
-                binders,
-                context,
-                body,
-            } => {
-                buf.push_str("forall ");
-                for (i, b) in crate::kb::typing::value_list_elements(self.view, binders)
-                    .iter()
-                    .enumerate()
-                {
-                    if i > 0 {
-                        buf.push_str(", ");
-                    }
-                    self.write_type_value(b, buf);
-                }
-                buf.push_str(". ");
-                // WI-20260904-50B2K part (c): `forall A. C => body`, and the `=>` is
-                // written only when there IS a context — a plain ∀ renders exactly as it
-                // did, so every pre-(c) expectation is unmoved.
-                let ctx = crate::kb::typing::value_list_elements(self.view, context);
-                if !ctx.is_empty() {
-                    for (i, c) in ctx.iter().enumerate() {
-                        if i > 0 {
-                            buf.push_str(", ");
-                        }
-                        self.write_type_value(c, buf);
-                    }
-                    buf.push_str(" => ");
-                }
-                self.write_type_child(body, buf);
+            NodeKind::Type(_) | NodeKind::EffectExpr(_) => false,
+            _ => {
+                self.write_occurrence(occ, buf);
+                true
             }
         }
     }
 
-    /// Render an `EffectExpression`-sort occurrence (the row algebra, WI-342): its atoms,
-    /// as a row's `{…}` holds them (`{}` for the empty row).
-    fn write_effect_expr_node(&self, en: &EffectExprNode, buf: &mut String) {
-        if matches!(en, EffectExprNode::EmptyRow) {
-            buf.push_str("{}");
-            return;
-        }
-        let mut atoms = Vec::new();
-        self.collect_effect_node_atoms(en, &mut atoms);
-        buf.push_str(&atoms.join(", "));
+    /// The element terms of a GROUND cons/nil list spine, or `None` for anything else —
+    /// [`Self::unwrap_spine`] over a term, for a caller holding `TermId`s.
+    pub fn unwrap_list_spine(&self, id: TermId) -> Option<Vec<TermId>> {
+        self.unwrap_spine(&ViewItem::Term(id))?
+            .iter()
+            .map(|item| item.as_term_id())
+            .collect()
     }
 
-    /// The atoms of an effect-row child on EITHER carrier — `{…}` and an arrow's `@ …`
-    /// read them here, so a row renders the same whichever carrier holds it or any part of
-    /// it: a hash-consed child through [`Self::collect_effect_atoms`] (an `EffectsRows`
-    /// wrapper unwrapped first, as `write_arrow_type` unwraps one), an occurrence through
-    /// its node.
-    fn collect_effect_child_atoms(&self, child: &TypeChild, out: &mut Vec<String>) {
-        match child {
-            TypeChild::Interned(t) => {
-                let expr = match self.view.term(*t) {
-                    Term::Fn {
-                        functor,
-                        named_args,
-                        ..
-                    } if self.view.qualified_name(*functor)
-                        == "anthill.prelude.TypeExtractor.EffectsRows" =>
-                    {
-                        self.named_arg(named_args, "effects_expr")
-                    }
-                    _ => Some(*t),
-                };
-                if let Some(expr) = expr {
-                    self.collect_effect_atoms(expr, out);
-                }
-            }
-            TypeChild::Node(occ) => match &occ.kind {
-                NodeKind::EffectExpr(en) => self.collect_effect_node_atoms(en, out),
-                NodeKind::Type(TypeNode::EffectsRows { effects_expr }) => {
-                    self.collect_effect_child_atoms(effects_expr, out)
-                }
-                // A label standing where the row is (a bare `effects Modify[c]`).
-                _ => {
-                    let mut s = String::new();
-                    self.write_occurrence(occ, &mut s);
-                    out.push(s);
-                }
-            },
-        }
-    }
-
-    /// [`Self::collect_effect_atoms`] for an `EffectExpression` occurrence — the same
-    /// surface per form: `L`, `-L`, `L :- g` (`( L :- g1, g2 )` when conjunctive, WI-478),
-    /// the tail variable, both halves of a `merge`, nothing for `empty_row`.
-    fn collect_effect_node_atoms(&self, en: &EffectExprNode, out: &mut Vec<String>) {
-        match en {
-            EffectExprNode::EmptyRow => {}
-            EffectExprNode::Merge { left, right } => {
-                self.collect_effect_child_atoms(left, out);
-                self.collect_effect_child_atoms(right, out);
-            }
-            EffectExprNode::Present { label } => {
-                let mut s = String::new();
-                self.write_type_child(label, &mut s);
-                out.push(s);
-            }
-            EffectExprNode::Absent { label } => {
-                let mut s = String::from("-");
-                self.write_type_child(label, &mut s);
-                out.push(s);
-            }
-            EffectExprNode::Guarded { label, guard } => {
-                let mut label_s = String::new();
-                self.write_type_child(label, &mut label_s);
-                let goals = self.guard_goal_value_strings(guard);
-                let body = goals.join(", ");
-                out.push(if goals.len() > 1 {
-                    format!("( {label_s} :- {body} )")
-                } else {
-                    format!("{label_s} :- {body}")
-                });
-            }
-            EffectExprNode::Open { tail } => {
-                let mut s = String::new();
-                self.write_type_child(tail, &mut s);
-                out.push(s);
-            }
-        }
-    }
-
-    /// WI-478: walk a NODE-form guard — a `Value`-carried `List[reflect.Term]`
-    /// cons-spine — into its rendered goal strings. A `nil` (no `head`/`tail`) ends
-    /// the walk. A spine that continues as a TERM is walked on the term store: a
-    /// node rebuilt by projection elimination carries its source's guard as it was
-    /// read, a term throughout when the source was one (WI-20260929-0RP29).
-    fn guard_goal_value_strings(&self, guard: &Value) -> Vec<String> {
-        let mut goals: Vec<String> = Vec::new();
-        let mut cur = guard;
-        loop {
-            match cur {
-                Value::Term { id } => {
-                    goals.extend(self.guard_goal_term_strings(Some(*id)));
-                    break;
-                }
-                Value::Entity { named, .. } => {
-                    let head = named.iter().find(|(s, _)| self.view.sym_name(*s) == "head");
-                    let tail = named.iter().find(|(s, _)| self.view.sym_name(*s) == "tail");
-                    match (head, tail) {
-                        (Some((_, h)), Some((_, t))) => {
-                            let mut s = String::new();
-                            self.write_goal_value(h, &mut s);
-                            goals.push(s);
-                            cur = t;
-                        }
-                        _ => break,
-                    }
-                }
-                _ => break,
-            }
-        }
-        goals
-    }
-
-    fn write_occurrence(&self, occ: &NodeOccurrence, buf: &mut String) {
+    fn write_occurrence(&self, occ: &Rc<NodeOccurrence>, buf: &mut String) {
         if occ.as_pattern().is_some() {
             self.write_pattern(occ, buf);
             return;
         }
-        // WI-348/349: a `Type` / `EffectExpr` occurrence (e.g. a `Modify[c]`
-        // effect label on an `OperationInfo` value fact) is not an `Expr`, so it
-        // used to fall to the `<head>` placeholder. Render it structurally —
-        // including `Parameterized.bindings`, which `TermView` hides — so query
-        // output and diagnostics show the actual type, not `<head>`.
-        if let Some(tn) = occ.as_type() {
-            self.write_type_node(tn, buf);
-            return;
-        }
-        if let Some(en) = occ.as_effect_expr() {
-            self.write_effect_expr_node(en, buf);
+        // WI-348/349: a `Type` / `EffectExpr` occurrence (e.g. a `Modify[c]` effect label
+        // on an `OperationInfo` value fact) is no `Expr`. It is written in the type spelling,
+        // by the walk that writes its term twin (WI-20261022-DRGCP), where it had a hand-kept
+        // writer of its own. A value that holds one is DATA, and [`Self::print_value`] writes
+        // it as data.
+        if occ.as_type().is_some() || occ.as_effect_expr().is_some() {
+            self.write_type_item(&ViewItem::Node(Rc::clone(occ)), buf);
             return;
         }
         let Some(expr) = occ.as_expr() else {
@@ -680,7 +575,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         };
         match expr {
             Expr::Var(var) => self.write_var(*var, buf),
-            Expr::Const(lit) => self.write_literal(lit, buf),
+            Expr::Const(lit) => write_literal(lit, buf),
             // WI-714: a macro-spliced pre-built value generally has no surface syntax —
             // it appears in a post-expansion op body, never in round-tripped source —
             // so it renders as an opaque marker.
@@ -696,8 +591,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             // …AND a carried term whose variables a substitution bound, which is a
             // transient entity over values where it is not that term: a structural type
             // written as a bracket's entry holding a clause's variable, read back from an
-            // answer. [`Self::write_carried_value`] prints the structure it has.
-            Expr::Spliced(v) => self.write_carried_value(v, buf),
+            // answer. The walk prints the structure it has, as it prints the term
+            // (WI-20261022-DRGCP).
+            Expr::Spliced(v) => self.write_item(&ViewItem::Owned(v.clone()), buf),
             Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym } => {
                 buf.push_str(self.view.sym_name(*sym));
             }
@@ -811,30 +707,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 head,
                 pos_args,
                 named_args,
-            } => {
-                buf.push_str(self.view.sym_name(*head));
-                if !pos_args.is_empty() || !named_args.is_empty() {
-                    buf.push('[');
-                    let mut first = true;
-                    for c in pos_args.iter() {
-                        if !first {
-                            buf.push_str(", ");
-                        }
-                        first = false;
-                        self.write_occurrence(c, buf);
-                    }
-                    for (sym, c) in named_args.iter() {
-                        if !first {
-                            buf.push_str(", ");
-                        }
-                        first = false;
-                        buf.push_str(self.view.sym_name(*sym));
-                        buf.push_str(" = ");
-                        self.write_occurrence(c, buf);
-                    }
-                    buf.push(']');
-                }
-            }
+            } => self.write_type_value(*head, pos_args, named_args, true, buf),
             Expr::Constructor {
                 name,
                 pos_args,
@@ -991,6 +864,55 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
+    /// Proposal 055's nominal type value. As DATA — an expression by itself — a bare one is a
+    /// name in a data context, so a constructor's type face is written `red[]`, as its `Ref`
+    /// twin is (kernel §4.4, WI-20261022-DRGCP). Its bindings are a TYPE context, where a
+    /// type value is written bare, `Box[V = Untrusted]`, as the term printer writes the
+    /// binding of its term twin; a binding that is no type value is the occurrence it is.
+    fn write_type_value(
+        &self,
+        head: Symbol,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        as_data: bool,
+        buf: &mut String,
+    ) {
+        if pos_args.is_empty() && named_args.is_empty() {
+            if as_data {
+                self.write_symbol_ref(head, buf);
+            } else {
+                buf.push_str(self.view.sym_name(head));
+            }
+            return;
+        }
+        buf.push_str(self.view.sym_name(head));
+        buf.push('[');
+        let binding = |c: &Rc<NodeOccurrence>, buf: &mut String| match c.as_expr() {
+            Some(Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            }) => self.write_type_value(*head, pos_args, named_args, false, buf),
+            _ => self.write_occurrence(c, buf),
+        };
+        let mut first = true;
+        for c in pos_args.iter() {
+            if !std::mem::take(&mut first) {
+                buf.push_str(", ");
+            }
+            binding(c, buf);
+        }
+        for (sym, c) in named_args.iter() {
+            if !std::mem::take(&mut first) {
+                buf.push_str(", ");
+            }
+            buf.push_str(self.view.sym_name(*sym));
+            buf.push_str(" = ");
+            binding(c, buf);
+        }
+        buf.push(']');
+    }
+
     /// [`Self::unwrap_list_spine`] over the occurrence carrier — the element
     /// occurrences of a `cons(head:, tail:)` / positional-`cons` chain ending in a bare
     /// `nil`, or `None` for anything else (a var tail, a non-`nil` end, a `cons` carrying
@@ -1128,12 +1050,13 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     }
 }
 
-impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
-    /// Construct a printer over an arbitrary `TermSource`.
+impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
+    /// Construct a printer over an arbitrary [`PrintView`].
     pub fn over(view: &'a V) -> Self {
         Self {
             view,
             reload_faithful: false,
+            source_spelling: false,
         }
     }
 
@@ -1144,360 +1067,376 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         Self {
             view,
             reload_faithful: true,
+            source_spelling: false,
         }
     }
 
     /// Print a term as `.anthill` source text.
     pub fn print_term(&self, id: TermId) -> String {
+        self.print_item(&self.view.term_item(id))
+    }
+
+    fn print_item(&self, item: &V::Item) -> String {
         let mut buf = String::new();
-        self.write_term(id, &mut buf);
+        self.write_item(item, &mut buf);
         buf
     }
 
-    /// If `id` is a `tuple(...)` Fn term with no named args, return a
-    /// borrowed slice over its positional contents. Used by the
-    /// `forall_impl` pretty-printer.
-    fn unwrap_tuple(&self, id: TermId) -> Option<&[TermId]> {
-        match self.view.term(id) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } if self.view.sym_name(*functor) == "tuple" && named_args.is_empty() => {
-                Some(pos_args.as_slice())
-            }
+    // ── Reading through the view ──────────────────────────────────
+
+    /// The functor and arities of an application; `None` for anything else.
+    fn application(&self, item: &V::Item) -> Option<(Symbol, usize, usize)> {
+        match self.view.head(item) {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => Some((f, pos_arity, named_arity)),
             _ => None,
         }
     }
 
-    fn write_comma_sep(&self, ts: &[TermId], buf: &mut String) {
-        for (i, &t) in ts.iter().enumerate() {
+    /// The symbol a bare name is: a `Ref`, the nullary application that is the same term
+    /// (WI-20260902-CZJ2N), an unresolved `Ident`.
+    fn bare_name(&self, item: &V::Item) -> Option<Symbol> {
+        match self.view.head(item) {
+            ViewHead::Ident(s)
+            | ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The named child whose key's local name is `key`.
+    fn child(&self, item: &V::Item, key: &str) -> Option<V::Item> {
+        self.view.named_child(item, key)
+    }
+
+    /// The name a parameter reference is written by where the text quotes its author
+    /// ([`TermPrinter::source_spelling`]): the `name` child of the loader's `var_ref`
+    /// wrapper, which may stand in a data slot or in a type's binding (`holds(Box[V = n])`).
+    fn source_name(&self, item: &V::Item, f: Symbol) -> Option<V::Item> {
+        if !self.source_spelling || self.view.qualified_name(f) != "anthill.reflect.Expr.var_ref" {
+            return None;
+        }
+        self.child(item, "name")
+    }
+
+    /// The last dotted segment of a symbol's name. The parse side names a functor as written,
+    /// so a qualified `anthill.prelude.List.cons` and a bare `cons` are one name here.
+    fn short_name(&self, sym: Symbol) -> &str {
+        let n = self.view.sym_name(sym);
+        n.rsplit('.').next().unwrap_or(n)
+    }
+
+    // ── Data ───────────────────────────────────────────────────────
+
+    /// Write `item` as DATA: the surface a fact, a goal's argument and a query answer take.
+    fn write_item(&self, item: &V::Item, buf: &mut String) {
+        if V::own_spelling(self, item, buf) {
+            return;
+        }
+        match self.view.head(item) {
+            ViewHead::Const(lit) => write_literal(&lit, buf),
+            ViewHead::Var(var) => self.write_var(var, buf),
+            ViewHead::Bottom => buf.push_str("bottom"),
+            ViewHead::Ident(sym) => buf.push_str(self.view.sym_name(sym)),
+            // A closure, a stream: nothing with a surface to print.
+            ViewHead::Opaque => buf.push_str("<opaque>"),
+            // A tuple a substitution rebuilt (`Value::Tuple`); a term's tuple has a functor.
+            ViewHead::Functor {
+                functor: None,
+                pos_arity,
+                ..
+            } => {
+                buf.push('(');
+                self.write_args(item, pos_arity, buf);
+                buf.push(')');
+            }
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity: 0,
+                named_arity: 0,
+            } => self.write_bare_name(item, f, buf),
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => self.write_application(item, f, pos_arity, named_arity, buf),
+        }
+    }
+
+    /// A bare name, as [`Self::write_symbol_ref`] writes it — save the EMPTY FLAT list
+    /// literal (WI-1099), the one nullary application a store keeps as one rather than as
+    /// its name: `[]` as the content key, and `ListLiteral()` where the text is read back,
+    /// since written bare it reloads as a name. A name the parse side read with an empty
+    /// bracket keeps it ([`PrintView::written_bracket`]): `Foo[]` on disk is the knowledge
+    /// base's `Foo[]`, its type face, and the file store's key compares the two prints.
+    fn write_bare_name(&self, item: &V::Item, f: Symbol, buf: &mut String) {
+        let fname = self.view.sym_name(f);
+        if dt::is(fname, dt::LIST_LITERAL) {
+            if self.reload_faithful {
+                buf.push_str(fname);
+                buf.push_str("()");
+            } else {
+                buf.push_str("[]");
+            }
+            return;
+        }
+        self.write_symbol_ref(f, buf);
+        if !f.is_type_face() && self.view.written_bracket(item) {
+            buf.push_str("[]");
+        }
+    }
+
+    /// An application with arguments, as DATA, in its surface form where it has one.
+    fn write_application(
+        &self,
+        item: &V::Item,
+        f: Symbol,
+        pos_arity: usize,
+        named_arity: usize,
+        buf: &mut String,
+    ) {
+        if let Some(name) = self.source_name(item, f) {
+            self.write_item(&name, buf);
+            return;
+        }
+        // WI-20260902-JB6RS — a constructor's TYPE FACE heads a type, and so does a sort with
+        // no constructor of its name; a type written as DATA takes the bracket (kernel §4.4):
+        // `Foo[X = Int64]`, `List[T = Int64]`. Written with parentheses, a face's would reload
+        // as an instance and a sort's is refused. WI-173: a type form carries a distinct
+        // `TypeExtractor.*` functor, printed in its surface syntax (`(A) -> B @ {E}`).
+        if self.view.heads_only_a_type(item, f) || self.is_type_form(f) {
+            self.write_type_item(item, buf);
+            return;
+        }
+        // WI-20261001-KDMQS — a NAME-ROOTED `field_access` chain prints as the dotted name it
+        // spells. See [`Self::dotted_chain_name`].
+        if let Some(name) = self.dotted_chain_name(item) {
+            buf.push_str(&name);
+            return;
+        }
+        // A ground cons/nil spine prints as a list literal (see [`Self::unwrap_spine`] for why
+        // the cons form must not be written to disk).
+        if let Some(items) = self.unwrap_spine(item) {
+            buf.push('[');
+            self.write_seq(&items, buf);
+            buf.push(']');
+            return;
+        }
+        let fname = self.view.sym_name(f);
+        // The parse-IR list form (`[…]` parses to `Fn(ListLiteral, pos_args)`) prints back as
+        // a bracket literal too, so the KB-side and parse-side canonical forms agree — the
+        // content-keyed retract match in the file store compares exactly these two prints.
+        //
+        // WI-1099: NOT IN RELOAD-FAITHFUL MODE. A ground `cons` spine prints `[…]` too (just
+        // above), so this text does not say WHICH of the two terms it came from — and `[…]`
+        // reloads as the spine in every position that declares nothing (§4.6). Written by NAME
+        // the flat literal survives, because only the bracket surface is lowered. The two
+        // modes and why they cannot be one print: [`TermPrinter::reload_faithful`].
+        //
+        // `dt::is` and THE SHORT NAME, deliberately (WI-20260825-5W3RJ): the parse side names
+        // the functor verbatim — `anthill.reflect.ListLiteral` where the desugar named its
+        // target — and the KB view by its local name, and keying on one spelling splits the two
+        // sides of the retract comparison (MEASURED with `==`:
+        // `wi1099_list_literal_twin_test::a_persisted_literal_is_still_retractable` left the
+        // fact on disk). The cost is narrow: a user's own `entity ListLiteral` prints as `[…]`
+        // here though the loader would not lower it.
+        if dt::is(fname, dt::LIST_LITERAL) && named_arity == 0 && !self.reload_faithful {
+            buf.push('[');
+            self.write_positional(item, pos_arity, buf);
+            buf.push(']');
+            return;
+        }
+        // Round-trip the forall_impl encoding produced by convert_nested_implication back to
+        // surface syntax.
+        if fname == "forall_impl" && pos_arity == 3 && named_arity == 0 {
+            let parts: Vec<Option<Vec<V::Item>>> = (0..3)
+                .map(|i| self.view.pos_arg(item, i).and_then(|p| self.unwrap_tuple(&p)))
+                .collect();
+            if let [Some(binders), Some(ants), Some(cons)] = parts.as_slice() {
+                buf.push_str("(forall(");
+                self.write_seq(binders, buf);
+                buf.push_str("), ");
+                self.write_seq(ants, buf);
+                buf.push_str(" -: ");
+                self.write_seq(cons, buf);
+                buf.push(')');
+                return;
+            }
+        }
+        // WI-027: `forall_in` / `some_in` → surface bounded quantifier.
+        if (fname == "forall_in" || fname == "some_in") && pos_arity == 3 && named_arity == 0 {
+            let body = self.view.pos_arg(item, 2).and_then(|b| self.unwrap_tuple(&b));
+            if let (Some(var), Some(range), Some(body)) =
+                (self.view.pos_arg(item, 0), self.view.pos_arg(item, 1), body)
+            {
+                buf.push('(');
+                buf.push_str(if fname == "forall_in" { "forall" } else { "some" });
+                buf.push(' ');
+                self.write_item(&var, buf);
+                buf.push_str(" in ");
+                self.write_item(&range, buf);
+                buf.push_str(": ");
+                self.write_seq(&body, buf);
+                buf.push(')');
+                return;
+            }
+        }
+        buf.push_str(fname);
+        buf.push('(');
+        self.write_args(item, pos_arity, buf);
+        buf.push(')');
+    }
+
+    /// The arguments of an application or a tuple, as DATA: the positional ones, then
+    /// `k: v` for each named one.
+    fn write_args(&self, item: &V::Item, pos_arity: usize, buf: &mut String) {
+        self.write_positional(item, pos_arity, buf);
+        for (i, key) in self.view.named_keys(item).into_iter().enumerate() {
+            if pos_arity > 0 || i > 0 {
+                buf.push_str(", ");
+            }
+            buf.push_str(self.view.sym_name(key));
+            buf.push_str(": ");
+            match self.view.named_arg(item, key) {
+                Some(c) => self.write_item(&c, buf),
+                None => buf.push('?'),
+            }
+        }
+    }
+
+    fn write_positional(&self, item: &V::Item, pos_arity: usize, buf: &mut String) {
+        for i in 0..pos_arity {
             if i > 0 {
                 buf.push_str(", ");
             }
-            self.write_term(t, buf);
+            match self.view.pos_arg(item, i) {
+                Some(c) => self.write_item(&c, buf),
+                None => buf.push('?'),
+            }
         }
     }
 
-    /// The element terms of a GROUND cons/nil list spine (named
-    /// `cons(head: …, tail: …)` or positional `cons(…, …)`, ending in a
-    /// nullary `nil`), or `None` for anything else — a var tail, a
-    /// non-nil end, a non-list term. Used by `write_term` to print list
-    /// spines as `[…]` literals: the bare-name nullary print (`nil`)
-    /// reloads as a NAME REFERENCE, which no longer unifies with
-    /// `nil()` / `cons(…)` patterns — the round-trip bug that made
-    /// runtime-persisted work items invisible to the workflow rules.
-    pub fn unwrap_list_spine(&self, id: TermId) -> Option<Vec<TermId>> {
+    fn write_seq(&self, items: &[V::Item], buf: &mut String) {
+        for (i, c) in items.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            self.write_item(c, buf);
+        }
+    }
+
+    /// If `item` is a `tuple(...)` application with no named args, its positional contents.
+    /// Used by the `forall_impl` / `forall_in` surface forms.
+    fn unwrap_tuple(&self, item: &V::Item) -> Option<Vec<V::Item>> {
+        let (f, pos_arity, named_arity) = self.application(item)?;
+        if self.view.sym_name(f) != "tuple" || named_arity != 0 {
+            return None;
+        }
+        (0..pos_arity).map(|i| self.view.pos_arg(item, i)).collect()
+    }
+
+    /// The element items of a GROUND cons/nil list spine (named `cons(head: …, tail: …)` or
+    /// positional `cons(…, …)`, ending in a nullary `nil`), or `None` for anything else — a
+    /// var tail, a non-nil end, a non-list term. Used to print list spines as `[…]` literals:
+    /// the bare-name nullary print (`nil`) reloads as a NAME REFERENCE, which no longer unifies
+    /// with `nil()` / `cons(…)` patterns — the round-trip bug that made runtime-persisted work
+    /// items invisible to the workflow rules.
+    fn unwrap_spine(&self, item: &V::Item) -> Option<Vec<V::Item>> {
         let mut items = Vec::new();
-        let mut cur = id;
+        let mut cur = item.clone();
         loop {
-            match self.view.term(cur) {
-                Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args,
-                } => {
-                    let fname = self.view.sym_name(*functor);
-                    let short = fname.rsplit('.').next().unwrap_or(fname);
-                    if short == "nil" && pos_args.is_empty() && named_args.is_empty() {
-                        return Some(items);
-                    }
-                    if short != "cons" {
-                        return None;
-                    }
-                    let named_head = named_args
-                        .iter()
-                        .find(|(s, _)| self.view.sym_name(*s) == "head")
-                        .map(|(_, t)| *t);
-                    let named_tail = named_args
-                        .iter()
-                        .find(|(s, _)| self.view.sym_name(*s) == "tail")
-                        .map(|(_, t)| *t);
-                    let (head, tail) = match (named_head, named_tail) {
-                        // EXACTLY head+tail — a cons carrying extra named or
-                        // positional args is not a list spine; folding it
-                        // would silently drop the extras.
-                        (Some(h), Some(t)) if named_args.len() == 2 && pos_args.is_empty() => {
-                            (h, t)
-                        }
-                        (None, None) if pos_args.len() == 2 && named_args.is_empty() => {
-                            (pos_args[0], pos_args[1])
-                        }
-                        _ => return None,
-                    };
-                    items.push(head);
-                    cur = tail;
-                }
-                // WI-511: the canonical nullary `nil` terminator is the bare
-                // `Ref(nil)` form (the alloc flip stores 0-ary constructors as
-                // `Ref`), so an empty / terminated spine ends here.
-                Term::Ref(s)
-                    if self.view.sym_name(*s).rsplit('.').next().unwrap_or("") == "nil" =>
-                {
-                    return Some(items);
-                }
-                _ => return None,
+            let (f, pos_arity, named_arity) = self.application(&cur)?;
+            let short = self.short_name(f);
+            // WI-511: the canonical nullary `nil` terminator is the bare `Ref(nil)` form (the
+            // alloc flip stores 0-ary constructors as `Ref`), which heads as this.
+            if short == "nil" && pos_arity == 0 && named_arity == 0 {
+                return Some(items);
             }
+            if short != "cons" {
+                return None;
+            }
+            // EXACTLY head+tail — a cons carrying extra named or positional args is not a list
+            // spine; folding it would silently drop the extras.
+            let (head, tail) = if pos_arity == 0 && named_arity == 2 {
+                (self.child(&cur, "head")?, self.child(&cur, "tail")?)
+            } else if pos_arity == 2 && named_arity == 0 {
+                (self.view.pos_arg(&cur, 0)?, self.view.pos_arg(&cur, 1)?)
+            } else {
+                return None;
+            };
+            items.push(head);
+            cur = tail;
         }
     }
 
-    fn write_term(&self, id: TermId, buf: &mut String) {
-        match self.view.term(id) {
-            Term::Const(lit) => self.write_literal(lit, buf),
-            Term::Var(var) => self.write_var(*var, buf),
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => {
-                // WI-20260902-JB6RS — a constructor's TYPE FACE heads a type, and so does a
-                // sort with no constructor of its name; a type written as DATA takes the
-                // bracket (kernel §4.4): `Foo[X = Int64]`, `List[T = Int64]`, the
-                // parameterized-type surface the type writer already prints. Written with
-                // parentheses, a face's would reload as an instance and a sort's is refused.
-                if self.view.heads_only_a_type(id, *functor) {
-                    // Never nullary in the store: `alloc` keeps the bare spelling.
-                    debug_assert!(
-                        !pos_args.is_empty() || !named_args.is_empty(),
-                        "a nullary application of a type head is stored as its `Ref`"
-                    );
-                    self.write_type_term(id, buf);
-                    return;
-                }
-                // WI-20261001-KDMQS — a NAME-ROOTED `field_access` chain prints as the
-                // dotted name it spells. See [`Self::dotted_chain_name`].
-                if let Some(name) = self.dotted_chain_name(id) {
-                    buf.push_str(&name);
-                    return;
-                }
-                // A ground cons/nil spine prints as a list literal (see
-                // `unwrap_list_spine` for why the cons form must not be
-                // written to disk).
-                if let Some(items) = self.unwrap_list_spine(id) {
-                    buf.push('[');
-                    self.write_comma_sep(&items, buf);
-                    buf.push(']');
-                    return;
-                }
-                let fname = self.view.sym_name(*functor);
-                // The parse-IR list form (`[…]` parses to `Fn(ListLiteral,
-                // pos_args)`) prints back as a bracket literal too, so the
-                // KB-side and parse-side canonical forms agree — the
-                // content-keyed retract match in the file store compares
-                // exactly these two prints.
-                //
-                // WI-1099: NOT IN RELOAD-FAITHFUL MODE. A ground `cons` spine
-                // prints `[…]` too (`unwrap_list_spine`, just above), so this text
-                // does not say WHICH of the two terms it came from — and `[…]`
-                // reloads as the spine in every position that declares nothing
-                // (§4.6). Written by NAME the flat literal survives, because only
-                // the bracket surface is lowered. The two modes and why they cannot
-                // be one print: [`TermPrinter::reload_faithful`].
-                //
-                // THE SHORT NAME IS DELIBERATE HERE, and it is the one place this
-                // file departs from its own qualified-name convention
-                // (`is_type_functor` below, WI-173). The loader's counterpart
-                // `list_literal_lowering` gates on the QUALIFIED
-                // `anthill.reflect.ListLiteral` — but this printer also runs over a
-                // `ParsedFile`, whose `TermSource::qualified_name` is the trait
-                // DEFAULT, i.e. the short name (parse/ir.rs). Keying on the
-                // qualified name therefore splits the two sides of the retract
-                // comparison. MEASURED, on a review pass's suggestion to align
-                // them: `wi1099_list_literal_twin_test::
-                // a_persisted_literal_is_still_retractable` fails and the fact stays
-                // on disk — while the ENTIRE anthill-todo suite (137) stays green,
-                // because it retracts by SPAN and never reaches this key. The cost
-                // of the short name is real and narrow: a user's own `entity
-                // ListLiteral` prints as `[…]` here though the loader would not
-                // lower it. Closing that needs qualified names on the parse view,
-                // not a test swap.
-                // WI-20260825-5W3RJ — `dt::is`, not `==`. This printer runs over BOTH a
-                // KB view (whose `sym_name` is the short local name) and a `ParsedFile`
-                // (whose `sym_name` is the interned functor VERBATIM) — and a `[…]` the
-                // converter desugared now carries `anthill.reflect.ListLiteral` there,
-                // because the desugar names its target rather than minting a bare name.
-                // MEASURED with `==`: the parse-side print of `[1, 2]` stopped rendering
-                // as a bracket, so the content-addressed retract key no longer matched
-                // the KB-side print and `a_persisted_literal_is_still_retractable` left
-                // the fact on disk — silently, which is the failure that row exists for.
-                if dt::is(fname, dt::LIST_LITERAL) && named_args.is_empty() && !self.reload_faithful
-                {
-                    buf.push('[');
-                    self.write_comma_sep(pos_args, buf);
-                    buf.push(']');
-                    return;
-                }
-                // WI-1099: `ListLiteral()` — the EMPTY flat literal, which a `[]` in
-                // a rival-collection slot and a by-name write both produce — must
-                // keep its parentheses here or it reloads as a bare name rather than
-                // a nullary application. The generic tail below omits them for an
-                // argument-less term, so this mode writes them.
-                if dt::is(fname, dt::LIST_LITERAL)
-                    && self.reload_faithful
-                    && pos_args.is_empty()
-                    && named_args.is_empty()
-                {
-                    buf.push_str(fname);
-                    buf.push_str("()");
-                    return;
-                }
-                // Round-trip the forall_impl encoding produced by
-                // convert_nested_implication back to surface syntax.
-                if fname == "forall_impl" && pos_args.len() == 3 && named_args.is_empty() {
-                    if let (Some(binders), Some(ants), Some(cons)) = (
-                        self.unwrap_tuple(pos_args[0]),
-                        self.unwrap_tuple(pos_args[1]),
-                        self.unwrap_tuple(pos_args[2]),
-                    ) {
-                        buf.push_str("(forall(");
-                        self.write_comma_sep(binders, buf);
-                        buf.push_str("), ");
-                        self.write_comma_sep(ants, buf);
-                        buf.push_str(" -: ");
-                        self.write_comma_sep(cons, buf);
-                        buf.push(')');
-                        return;
-                    }
-                }
-                // WI-027: `forall_in` / `some_in` term → surface bounded quantifier.
-                if (fname == "forall_in" || fname == "some_in")
-                    && pos_args.len() == 3
-                    && named_args.is_empty()
-                {
-                    if let Some(body) = self.unwrap_tuple(pos_args[2]) {
-                        let kw = if fname == "forall_in" {
-                            "forall"
-                        } else {
-                            "some"
-                        };
-                        buf.push('(');
-                        buf.push_str(kw);
-                        buf.push(' ');
-                        self.write_term(pos_args[0], buf);
-                        buf.push_str(" in ");
-                        self.write_term(pos_args[1], buf);
-                        buf.push_str(": ");
-                        self.write_comma_sep(body, buf);
-                        buf.push(')');
-                        return;
-                    }
-                }
-                // WI-173: a hash-consed TYPE term carries a distinct
-                // `TypeExtractor.*` functor (arrow / named_tuple / …) — print it
-                // in surface syntax (`(A) -> B @ {E}`, `(a: T, …)`) instead of the
-                // generic `Arrow(param: …, effects: EffectsRows(…))` blob. Matched
-                // on the QUALIFIED name so a user sort sharing a short name
-                // (`Arrow`) is unaffected. A bare parameterized type `Fn{S, named}`
-                // is NOT delegated here — it is structurally identical to a data
-                // term (WI-361), so only a type already KNOWN to be one (reached as
-                // a child inside `write_type_term`) renders as `S[k = v]`.
-                if self.is_type_functor(*functor) {
-                    self.write_type_term(id, buf);
-                    return;
-                }
-                buf.push_str(fname);
-                if !pos_args.is_empty() || !named_args.is_empty() {
-                    buf.push('(');
-                    let mut first = true;
-                    for &tid in pos_args.iter() {
-                        if !first {
-                            buf.push_str(", ");
-                        }
-                        first = false;
-                        self.write_term(tid, buf);
-                    }
-                    for &(sym, tid) in named_args.iter() {
-                        if !first {
-                            buf.push_str(", ");
-                        }
-                        first = false;
-                        buf.push_str(self.view.sym_name(sym));
-                        buf.push_str(": ");
-                        self.write_term(tid, buf);
-                    }
-                    buf.push(')');
-                }
-            }
-            Term::Ref(sym) => self.write_symbol_ref(*sym, buf),
-            Term::Ident(sym) => {
-                buf.push_str(self.view.sym_name(*sym));
-            }
-            Term::Bottom => {
-                buf.push_str("bottom");
-            }
-            Term::ParseAux(aux) => {
-                // Parse-only variant; reaches the printer only when
-                // it's invoked on a parse-side Term (e.g. for an error
-                // message). KB-side it never appears — the loader
-                // strips it before any KB allocation. Print the inner
-                // payload Debug-format so diagnostics carry the
-                // annotation/type-args text even though it's not in
-                // surface syntax.
-                use crate::parse::ir::ParseAux;
-                match aux.as_ref() {
-                    ParseAux::TypeExpr(te) => buf.push_str(&format!("<type-anno {:?}>", te)),
-                    ParseAux::EntryType(te) => buf.push_str(&format!("<type-entry {:?}>", te)),
-                    ParseAux::SortBindings(b) => buf.push_str(&format!("<type-args {:?}>", b)),
-                    ParseAux::ProofStmt(m) => buf.push_str(&format!("<proof-meta {:?}>", m)),
-                }
-            }
+    /// The elements of a list a type form holds — a tuple's fields, a ∀'s binders, a row
+    /// guard's goals: a spine as [`Self::unwrap_spine`] reads it, and otherwise the heads of
+    /// its `cons` cells up to the first that is none, as `value_list_elements` reads a
+    /// value-carried list.
+    fn list_elements(&self, item: &V::Item) -> Vec<V::Item> {
+        if let Some(items) = self.unwrap_spine(item) {
+            return items;
         }
+        let mut out = Vec::new();
+        let mut cur = Some(item.clone());
+        while let Some(cell) = cur {
+            if !matches!(self.application(&cell), Some((f, _, _)) if self.short_name(f) == "cons") {
+                break;
+            }
+            match self.child(&cell, "head") {
+                Some(h) => out.push(h),
+                None => break,
+            }
+            cur = self.child(&cell, "tail");
+        }
+        out
     }
 
     /// WI-20261001-KDMQS — the dotted name a NAME-ROOTED `field_access` chain spells
-    /// (`field_access(Float, infinity)` is `Float.infinity`), or `None` for any other term.
-    /// Name-rooted means every receiver down the chain is a name (`Ref`/`Ident`) or
-    /// another such chain, and every selector is a name: the shape §6.7 lowers a written
-    /// `A.B` to. A projection on a value (`?x.f`) or a typer-minted selector (a string)
-    /// is not one and prints as its structure.
+    /// (`field_access(Float, infinity)` is `Float.infinity`), or `None` for anything else.
+    /// Name-rooted means every receiver down the chain is a name or another such chain, and
+    /// every selector is a name: the shape §6.7 lowers a written `A.B` to. A projection on a
+    /// value (`?x.f`) or a typer-minted selector (a string) is not one and prints as its
+    /// structure.
     ///
-    /// THE CONTENT KEY NEEDS IT. The loader folds a const in a data slot to its value, so
-    /// a persisted `+∞` is written `Float.infinity` (the const's name, [`write_literal`]),
-    /// loads as the Float, and keys as `Float.infinity` on the KB side, while the parse of
-    /// the same on-disk text is the minted chain `field_access(Float, infinity)`. The file
-    /// store's retract compares those two prints. Printed structurally they differ and
-    /// the retract is a silent no-op.
+    /// THE CONTENT KEY NEEDS IT. The loader folds a const in a data slot to its value, so a
+    /// persisted `+∞` is written `Float.infinity` (the const's name, [`write_literal`]), loads
+    /// as the Float, and keys as `Float.infinity` on the KB side, while the parse of the same
+    /// on-disk text is the minted chain `field_access(Float, infinity)`. The file store's
+    /// retract compares those two prints. Printed structurally they differ and the retract is
+    /// a silent no-op.
     ///
     /// ON BOTH VIEWS, and not gated on the parse side's `is_minted` provenance. Gated, a
     /// HAND-written dotted name that is not a const (`fact h(o: Option.none)`) would key
-    /// `Option.none` from its text and `field_access(Option, none)` from the KB, which is
-    /// the same silent no-op one spelling over. Ungated, both views print one text for
-    /// one chain. The reload-faithful print is better for it too: the dotted text reloads
-    /// as the minted chain it came from, where `field_access(…)` reloaded as a call.
-    fn dotted_chain_name(&self, id: TermId) -> Option<String> {
-        let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = self.view.term(id)
-        else {
-            return None;
-        };
-        if !named_args.is_empty()
-            || pos_args.len() != 2
-            || !dt::is(self.view.sym_name(*functor), dt::FIELD_ACCESS)
-        {
+    /// `Option.none` from its text and `field_access(Option, none)` from the KB, which is the
+    /// same silent no-op one spelling over. Ungated, both views print one text for one chain.
+    fn dotted_chain_name(&self, item: &V::Item) -> Option<String> {
+        let (f, pos_arity, named_arity) = self.application(item)?;
+        if named_arity != 0 || pos_arity != 2 || !dt::is(self.view.sym_name(f), dt::FIELD_ACCESS) {
             return None;
         }
-        let selector = match self.view.term(pos_args[1]) {
-            Term::Ref(s) | Term::Ident(s) => self.view.sym_name(*s),
-            _ => return None,
+        let selector = self.bare_name(&self.view.pos_arg(item, 1)?)?;
+        let receiver = self.view.pos_arg(item, 0)?;
+        let receiver = match self.bare_name(&receiver) {
+            Some(s) => self.view.sym_name(s).to_owned(),
+            None => self.dotted_chain_name(&receiver)?,
         };
-        let receiver = match self.view.term(pos_args[0]) {
-            Term::Ref(s) | Term::Ident(s) => self.view.sym_name(*s).to_owned(),
-            Term::Fn { .. } => self.dotted_chain_name(pos_args[0])?,
-            _ => return None,
-        };
-        Some(format!("{receiver}.{selector}"))
+        Some(format!("{receiver}.{}", self.view.sym_name(selector)))
     }
 
-    /// WI-173: is `functor` one of the distinct `TypeExtractor.*` type functors
-    /// `write_term` should render in surface syntax? Matched on the QUALIFIED
-    /// name so a user sort/entity sharing a short name is never misread as a type.
-    /// EffectExpression atoms (`present`/`merge`/…) and `NamedTupleElement` are
-    /// deliberately absent: they appear only WITHIN an effects row / tuple-fields
-    /// list, never standalone, and are rendered by the dedicated walkers below.
-    fn is_type_functor(&self, functor: Symbol) -> bool {
+    /// WI-173: is `functor` one of the distinct `TypeExtractor.*` type functors the data
+    /// walk writes in their surface syntax? Matched on the QUALIFIED name so a user
+    /// sort/entity sharing a short name is never misread as a type. `EffectExpression` atoms
+    /// (`present`/`merge`/…) and `NamedTupleElement` are deliberately absent: as data they are
+    /// the applications they are — `present(label: Int64)` is not the label `Int64` — and
+    /// within a row or a tuple's fields the dedicated walkers read them.
+    fn is_type_form(&self, functor: Symbol) -> bool {
         matches!(
             self.view.qualified_name(functor),
             "anthill.prelude.TypeExtractor.Arrow"
@@ -1511,22 +1450,15 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
         )
     }
 
-    /// First named arg whose key short-name is `key` (type terms have few args;
-    /// a linear scan is cheaper than building a map).
-    fn named_arg(&self, named: &[(Symbol, TermId)], key: &str) -> Option<TermId> {
-        named
-            .iter()
-            .find(|(s, _)| self.view.sym_name(*s) == key)
-            .map(|(_, t)| *t)
-    }
-
-    /// The one spelling of a logic variable — `?x` (flex global), `?#n` (De
-    /// Bruijn), `!x` (rigid) — shared by `write_term`'s `Term::Var` arm and the
-    /// CLI's answer renderer for a value-level `Value::Var`. WI-20260905-N20EZ: an
-    /// unbound answer rides that carrier now (the resolver's fresh var is no longer
-    /// an interned term), and the renderer's `Debug` fallback printed
-    /// `Var(Global(VarId { .. }))` where `?_` was the answer — the same cross-carrier
-    /// divergence `write_symbol_ref` exists to prevent, one leaf over.
+    /// The one spelling of a logic variable — `?x` (flex global), `?#n` (De Bruijn), `!x`
+    /// (rigid) — shared by the walk and the CLI's answer renderer for a value-level
+    /// `Value::Var`. WI-20260905-N20EZ: an unbound answer rides that carrier now (the
+    /// resolver's fresh var is no longer an interned term), and the renderer's `Debug`
+    /// fallback printed `Var(Global(VarId { .. }))` where `?_` was the answer — the same
+    /// cross-carrier divergence `write_symbol_ref` exists to prevent, one leaf over.
+    ///
+    /// A rigid is `?x` where the text quotes its author ([`TermPrinter::source_spelling`]):
+    /// the skolem is how a body is checked, and its declaration wrote `?x`.
     pub fn write_var(&self, var: Var, buf: &mut String) {
         match var {
             Var::Global(vid) => {
@@ -1535,431 +1467,387 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
             }
             Var::DeBruijn(n) => buf.push_str(&format!("?#{n}")),
             Var::Rigid(vid) => {
-                buf.push('!');
+                buf.push(if self.source_spelling { '?' } else { '!' });
                 buf.push_str(self.view.sym_name(vid.name()));
             }
         }
     }
 
-    /// Render a bare symbol reference — the `Term::Ref` arm of [`Self::write_term`]
-    /// and the `Value::SymbolRef` carrier, which has no `TermId` to hand.
+    /// Render a bare symbol reference — a `Ref`, its nullary twins, and the
+    /// `Value::SymbolRef` carrier, which has no `TermId` to hand.
     ///
-    /// ONE owner so two carriers of one symbol can never render — and so never
-    /// KEY — differently; `Interpreter::write_value_canonical` builds a store key
-    /// from this, and a key that disagrees with its own twin's is the WI-425
-    /// cross-carrier wrong answer, not a cosmetic difference.
-    ///
-    /// This IS the former inline body, not an approximation of it. That body
-    /// routed a type functor through `write_type_term`, whose only `Term::Ref`
-    /// arms are the `Nothing` special case (WI-511) and `sym_name` — so a
-    /// non-`Nothing` type functor already rendered `sym_name`, identical to the
-    /// non-type-functor branch, and the `is_type_functor` gate distinguished
-    /// exactly one symbol.
+    /// ONE owner so two carriers of one symbol can never render — and so never KEY —
+    /// differently; `Interpreter::write_value_canonical` builds a store key from this, and a
+    /// key that disagrees with its own twin's is the WI-425 cross-carrier wrong answer, not a
+    /// cosmetic difference.
     pub fn write_symbol_ref(&self, sym: Symbol, buf: &mut String) {
         if self.view.qualified_name(sym) == "anthill.prelude.TypeExtractor.Nothing" {
             buf.push_str("nothing");
         } else {
             buf.push_str(self.view.sym_name(sym));
-            // A constructor's TYPE written as data is `Foo[]`: its bare name there is
-            // the instance (kernel §4.4, WI-20260902-JB6RS). The type writer prints a
-            // face bare — `write_type_term`'s own `Ref` arm, which does not come here.
+            // A constructor's TYPE written as data is `Foo[]`: its bare name there is the
+            // instance (kernel §4.4, WI-20260902-JB6RS). The type writer prints a face bare —
+            // [`Self::write_type_item`]'s own bare-name arm, which does not come here.
             if sym.is_type_face() {
                 buf.push_str("[]");
             }
         }
     }
 
-    /// WI-173: render a hash-consed TYPE term in surface syntax. The caller has
-    /// established `id` is a type (it hit a distinct `TypeExtractor.*` functor in
-    /// `write_term`, or it is the child of a type already being printed), so a
-    /// bare `Fn{S, named}` here is the PARAMETERIZED type `S[k = v]` —
-    /// unambiguous in type context, unlike generic `write_term`, where the same
-    /// shape is indistinguishable from a data term `S(k: v)` (WI-361: types and
-    /// data share the `Fn{S, named}` carrier). `Ref(S)` is the bare sort `S`.
-    fn write_type_term(&self, id: TermId, buf: &mut String) {
-        match self.view.term(id) {
-            // WI-511: the nullary `Nothing` type extractor is the canonical
-            // `Ref(Nothing)`; render it in surface syntax (mirrors the `Fn` arm
-            // below), not as the bare constructor name.
-            Term::Ref(s) | Term::Ident(s)
-                if self.view.qualified_name(*s) == "anthill.prelude.TypeExtractor.Nothing" =>
-            {
-                buf.push_str("nothing")
-            }
-            Term::Ref(s) | Term::Ident(s) => buf.push_str(self.view.sym_name(*s)),
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => {
-                match self.view.qualified_name(*functor) {
-                    "anthill.prelude.TypeExtractor.Arrow" => self.write_arrow_type(named_args, buf),
-                    "anthill.prelude.TypeExtractor.NamedTuple" => {
-                        self.write_named_tuple_type(named_args, buf)
-                    }
-                    "anthill.prelude.TypeExtractor.EffectsRows" => {
-                        // A standalone effect-row type renders its braced row.
-                        match self.named_arg(named_args, "effects_expr") {
-                            Some(ee) => self.write_effect_row(ee, buf),
-                            None => buf.push_str("{}"),
-                        }
-                    }
-                    "anthill.prelude.TypeExtractor.Denoted" => {
-                        // A value-in-type (`Modify[c]`'s `c`) — print the carried
-                        // value. The value is an ordinary (non-type) term, so the
-                        // generic writer renders it.
-                        match self.named_arg(named_args, "value") {
-                            Some(v) => self.write_term(v, buf),
-                            None => buf.push('?'),
-                        }
-                    }
-                    "anthill.prelude.TypeExtractor.ExprCarried" => {
-                        // `s.member` — receiver value then `.member`.
-                        if let Some(v) = self.named_arg(named_args, "value") {
-                            self.write_term(v, buf);
-                        }
-                        buf.push('.');
-                        if let Some(m) = self.named_arg(named_args, "member") {
-                            self.write_term(m, buf);
-                        }
-                    }
-                    "anthill.prelude.TypeExtractor.RigidTypeProjection" => {
-                        // `subject.member` — the type-receiver projection (`P.Key`).
-                        if let Some(v) = self.named_arg(named_args, "var") {
-                            self.write_term(v, buf);
-                        }
-                        buf.push('.');
-                        if let Some(m) = self.named_arg(named_args, "member") {
-                            self.write_term(m, buf);
-                        }
-                    }
-                    "anthill.prelude.TypeExtractor.TypeVar" => {
-                        // A type variable prints as the inference var `?name`.
-                        buf.push('?');
-                        if let Some(n) = self.named_arg(named_args, "name") {
-                            self.write_term(n, buf);
-                        }
-                    }
-                    "anthill.prelude.TypeExtractor.Nothing" => buf.push_str("nothing"),
-                    // Any other functor in type context is the parameterized type
-                    // `S[k = v, …]` (WI-361: base sort IS the functor, bindings ARE
-                    // the named args). A no-arg `Fn{S}` is the bare sort `S`.
-                    base => {
-                        buf.push_str(base.rsplit('.').next().unwrap_or(base));
-                        if !pos_args.is_empty() || !named_args.is_empty() {
-                            buf.push('[');
-                            let mut first = true;
-                            for &t in pos_args.iter() {
-                                if !first {
-                                    buf.push_str(", ");
-                                }
-                                first = false;
-                                self.write_type_term(t, buf);
-                            }
-                            for &(sym, t) in named_args.iter() {
-                                if !first {
-                                    buf.push_str(", ");
-                                }
-                                first = false;
-                                buf.push_str(self.view.sym_name(sym));
-                                buf.push_str(" = ");
-                                self.write_type_term(t, buf);
-                            }
-                            buf.push(']');
-                        }
-                    }
-                }
-            }
-            // Vars (`?T`), value-in-type literals, etc. carry no type-specific
-            // surface — the generic term writer renders them.
-            _ => self.write_term(id, buf),
+    // ── Types ──────────────────────────────────────────────────────
+
+    /// WI-173: write `item` as a TYPE, the spelling a type annotation takes: an application
+    /// is the PARAMETERIZED type `S[k = v]` — unambiguous here, unlike the data walk, where the
+    /// same shape is a data term `S(k: v)` (WI-361: types and data share the application) —
+    /// a type form is its surface syntax, and a constructor's type face named bare is its
+    /// name. A variable, a value in a type and anything else with no type surface is written
+    /// as data.
+    fn write_type_item(&self, item: &V::Item, buf: &mut String) {
+        if V::own_spelling(self, item, buf) {
+            return;
+        }
+        match self.view.head(item) {
+            ViewHead::Ident(s)
+            | ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } => match self.view.qualified_name(s) {
+                // WI-511: the nullary `Nothing` type extractor is the canonical bare name.
+                "anthill.prelude.TypeExtractor.Nothing" => buf.push_str("nothing"),
+                // The empty row standing alone, as its occurrence was written: `{}`.
+                "anthill.prelude.EffectExpression.empty_row" => buf.push_str("{}"),
+                _ => buf.push_str(self.view.sym_name(s)),
+            },
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                ..
+            } => match self.source_name(item, f) {
+                Some(name) => self.write_item(&name, buf),
+                None => self.write_type_application(item, f, pos_arity, buf),
+            },
+            _ => self.write_item(item, buf),
         }
     }
 
-    /// WI-173: `arrow(param, result, effects)` → `(<param>) -> <result>` with an
-    /// optional `@ <effects>`. When `param` is itself a `named_tuple` its own
-    /// parenthesised form is used directly (avoids double-wrapping `((a: T)) ->`).
+    fn write_type_application(&self, item: &V::Item, f: Symbol, pos_arity: usize, buf: &mut String) {
+        match self.view.qualified_name(f) {
+            "anthill.prelude.TypeExtractor.Arrow" => self.write_arrow_type(item, buf),
+            "anthill.prelude.TypeExtractor.NamedTuple" => self.write_named_tuple_type(item, buf),
+            // A standalone effect-row type renders its braced row.
+            "anthill.prelude.TypeExtractor.EffectsRows" => {
+                buf.push('{');
+                if let Some(row) = self.child(item, "effects_expr") {
+                    buf.push_str(&self.effect_atoms(&row).join(", "));
+                }
+                buf.push('}');
+            }
+            // A value-in-type (`Modify[c]`'s `c`) — the carried value, as data.
+            "anthill.prelude.TypeExtractor.Denoted" => match self.child(item, "value") {
+                Some(v) => self.write_item(&v, buf),
+                None => buf.push('?'),
+            },
+            // `s.member` — the receiver value then `.member`.
+            "anthill.prelude.TypeExtractor.ExprCarried" => {
+                self.write_dotted(item, "value", "member", buf)
+            }
+            // `subject.member` — the type-receiver projection (`P.Key`).
+            "anthill.prelude.TypeExtractor.RigidTypeProjection" => {
+                self.write_dotted(item, "var", "member", buf)
+            }
+            // A type variable prints as the inference var `?name`.
+            "anthill.prelude.TypeExtractor.TypeVar" => {
+                buf.push('?');
+                if let Some(n) = self.child(item, "name") {
+                    self.write_item(&n, buf);
+                }
+            }
+            "anthill.prelude.TypeExtractor.Nothing" => buf.push_str("nothing"),
+            "anthill.prelude.TypeExtractor.PolyType" => self.write_poly_type(item, buf),
+            // An effect row's algebra standing alone, unwrapped, in a type position: its atoms,
+            // as a row's `{…}` holds them — the spelling its occurrence was given (the empty
+            // row, nullary, is the bare-name arm's).
+            q if q.starts_with("anthill.prelude.EffectExpression.") => {
+                buf.push_str(&self.effect_atoms(item).join(", "))
+            }
+            // Any other functor is the parameterized type `S[k = v, …]` (WI-361: the base sort
+            // IS the functor, the bindings ARE the named args).
+            base => {
+                buf.push_str(base.rsplit('.').next().unwrap_or(base));
+                buf.push('[');
+                for i in 0..pos_arity {
+                    if i > 0 {
+                        buf.push_str(", ");
+                    }
+                    match self.view.pos_arg(item, i) {
+                        Some(c) => self.write_type_item(&c, buf),
+                        None => buf.push('?'),
+                    }
+                }
+                for (i, key) in self.view.named_keys(item).into_iter().enumerate() {
+                    if pos_arity > 0 || i > 0 {
+                        buf.push_str(", ");
+                    }
+                    buf.push_str(self.view.sym_name(key));
+                    buf.push_str(" = ");
+                    match self.view.named_arg(item, key) {
+                        Some(c) => self.write_type_item(&c, buf),
+                        None => buf.push('?'),
+                    }
+                }
+                buf.push(']');
+            }
+        }
+    }
+
+    /// `receiver.member`, each read as data.
+    fn write_dotted(&self, item: &V::Item, receiver: &str, member: &str, buf: &mut String) {
+        if let Some(r) = self.child(item, receiver) {
+            self.write_item(&r, buf);
+        }
+        buf.push('.');
+        if let Some(m) = self.child(item, member) {
+            self.write_item(&m, buf);
+        }
+    }
+
+    /// WI-1083: `forall A, B. <body>` — the quantifier is rendered even though it is not
+    /// stored (a PolyType is ∀ by construction), because the whole point of the form is that
+    /// the ∀ used to be invisible. WI-20260904-50B2K part (c): `forall A. C => body`, the `=>`
+    /// written only when there IS a context.
+    fn write_poly_type(&self, item: &V::Item, buf: &mut String) {
+        buf.push_str("forall ");
+        let binders = self.child(item, "binders").map(|b| self.list_elements(&b)).unwrap_or_default();
+        self.write_type_seq(&binders, buf);
+        buf.push_str(". ");
+        let context = self.child(item, "context").map(|c| self.list_elements(&c)).unwrap_or_default();
+        if !context.is_empty() {
+            self.write_type_seq(&context, buf);
+            buf.push_str(" => ");
+        }
+        match self.child(item, "body") {
+            Some(b) => self.write_type_item(&b, buf),
+            None => buf.push('?'),
+        }
+    }
+
+    fn write_type_seq(&self, items: &[V::Item], buf: &mut String) {
+        for (i, c) in items.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            self.write_type_item(c, buf);
+        }
+    }
+
+    /// WI-173: `arrow(param, result, effects)` → `(<param>) -> <result>` with an optional
+    /// `@ <effects>`. When `param` is itself a named tuple its own parenthesised form is used
+    /// directly (avoids double-wrapping `((a: T)) ->`).
     ///
-    /// WI-766: that direct form is AMBIGUOUS at arity one, and only there. The
-    /// loader reads a single arrow parameter by its TYPE and drops the label, so
-    /// `(a: T) -> R` loads as `arrow(param = T)` — meaning a genuine one-component
-    /// tuple parameter, `arrow(param = (a: T))`, would print to that same text and
-    /// read back as the scalar. Arity one therefore keeps the outer parens.
+    /// WI-766: that direct form is AMBIGUOUS at arity one, and only there. The loader reads a
+    /// single arrow parameter by its TYPE and drops the label, so `(a: T) -> R` loads as
+    /// `arrow(param = T)` — meaning a genuine one-component tuple parameter, `arrow(param =
+    /// (a: T))`, would print to that same text and read back as the scalar. Arity one
+    /// therefore keeps the outer parens.
     ///
-    /// WI-791: which case this IS is now read from the arrow's own `arity` child
-    /// instead of guessed from the param's component count. That distinction is
-    /// what makes the round trip FAITHFUL rather than merely stable: the two
-    /// spellings that used to print alike — `(t: (a: A, b: B)) -> R` (arity 1) and
-    /// `(a: A, b: B) -> R` (arity 2) — now print as `((a: A, b: B)) -> R` and
-    /// `(a: A, b: B) -> R`, each reparsing to the arrow it came from. It is also
-    /// stable under re-printing: wrapping is decided by arity, and reparsing
-    /// `((a: A, b: B)) -> R` yields a ONE-parameter list again, so no layer
-    /// accumulates (the failure mode of the reverted in-slot encoding, whose third
-    /// print/reparse generation no longer parsed).
-    fn write_arrow_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
-        let arity = self
-            .named_arg(named, "arity")
-            .and_then(|a| self.type_child_arity(&TypeChild::Interned(a)));
-        match self.named_arg(named, "param") {
+    /// WI-791: which case this IS is read from the arrow's own `arity` child instead of
+    /// guessed from the param's component count. That distinction is what makes the round
+    /// trip FAITHFUL rather than merely stable: the two spellings that used to print alike —
+    /// `(t: (a: A, b: B)) -> R` (arity 1) and `(a: A, b: B) -> R` (arity 2) — print as
+    /// `((a: A, b: B)) -> R` and `(a: A, b: B) -> R`, each reparsing to the arrow it came
+    /// from.
+    fn write_arrow_type(&self, item: &V::Item, buf: &mut String) {
+        let arity = self.child(item, "arity").and_then(|a| self.const_usize(&a));
+        match self.child(item, "param") {
             None => buf.push_str("()"),
             Some(p) => {
-                // Does the `param` slot ALREADY render as the parameter list? Only
-                // a named tuple can, and only when the arrow says it is one.
-                let slot_is_the_list = self.is_named_tuple_term(p)
+                // Does the `param` slot ALREADY render as the parameter list? Only a named
+                // tuple can, and only when the arrow says it is one; a count this cannot read
+                // falls back to the pre-WI-791 shape heuristic.
+                let slot_is_the_list = self.is_named_tuple(&p)
                     && match arity {
                         Some(n) => n != 1,
-                        // A count this cannot read falls back to the pre-WI-791
-                        // shape heuristic rather than inventing a parenthesisation.
-                        None => self.named_tuple_arity(p) != 1,
+                        None => self.named_tuple_arity(&p) != 1,
                     };
                 if slot_is_the_list {
-                    // Its own parens are the list's (arity 0 renders `()`).
-                    self.write_type_term(p, buf);
+                    self.write_type_item(&p, buf);
                 } else {
-                    // The slot is the sole parameter's TYPE — wrap a one-slot
-                    // parameter list around it.
                     buf.push('(');
-                    self.write_type_term(p, buf);
+                    self.write_type_item(&p, buf);
                     buf.push(')');
                 }
             }
         }
         buf.push_str(" -> ");
-        match self.named_arg(named, "result") {
-            Some(r) => self.write_type_term(r, buf),
+        match self.child(item, "result") {
+            Some(r) => self.write_type_item(&r, buf),
             None => buf.push('?'),
         }
-        // Effects: `effects` is an `EffectsRows` wrapper; render `@ E` for a single
-        // atom, `@ {E1, E2}` for a set, and nothing for the pure (`empty_row`) row.
-        if let Some(e) = self.named_arg(named, "effects") {
-            if let Term::Fn { named_args, .. } = self.view.term(e) {
-                if let Some(ee) = self.named_arg(named_args, "effects_expr") {
-                    let atoms = self.effect_atoms(ee);
-                    if !atoms.is_empty() {
-                        buf.push_str(" @ ");
-                        if atoms.len() == 1 {
-                            buf.push_str(&atoms[0]);
-                        } else {
-                            buf.push('{');
-                            buf.push_str(&atoms.join(", "));
-                            buf.push('}');
-                        }
-                    }
+        // `@ E` for a single atom, `@ {E1, E2}` for a set, and nothing for the pure row.
+        if let Some(e) = self.child(item, "effects") {
+            let atoms = self.effect_atoms(&e);
+            if !atoms.is_empty() {
+                buf.push_str(" @ ");
+                if atoms.len() == 1 {
+                    buf.push_str(&atoms[0]);
+                } else {
+                    buf.push('{');
+                    buf.push_str(&atoms.join(", "));
+                    buf.push('}');
                 }
             }
         }
     }
 
-    /// WI-173: `named_tuple(fields)` → `(<f1>, <f2>, …)`. A positional field
-    /// (name `_N`) prints as the bare type; a named field as `n: T`.
-    fn write_named_tuple_type(&self, named: &[(Symbol, TermId)], buf: &mut String) {
+    /// WI-791: an arrow's `arity` child, a non-negative integer literal; `None` for any other
+    /// shape, which keeps the pre-WI-791 rendering rather than inventing a parenthesisation.
+    fn const_usize(&self, item: &V::Item) -> Option<usize> {
+        match self.view.head(item) {
+            ViewHead::Const(Literal::Int(n)) => usize::try_from(n).ok(),
+            _ => None,
+        }
+    }
+
+    fn is_named_tuple(&self, item: &V::Item) -> bool {
+        matches!(self.application(item), Some((f, _, _))
+            if self.view.qualified_name(f) == "anthill.prelude.TypeExtractor.NamedTuple")
+    }
+
+    /// Component count of a named tuple. Only the arity-one case is acted on (see
+    /// [`Self::write_arrow_type`]); a shape this cannot read counts 0, which routes to the
+    /// pre-WI-766 behaviour rather than inventing parens.
+    fn named_tuple_arity(&self, item: &V::Item) -> usize {
+        self.child(item, "fields").map_or(0, |f| self.list_elements(&f).len())
+    }
+
+    /// WI-173: `named_tuple(fields)` → `(<f1>, <f2>, …)`. A positional field (name `_N`) prints
+    /// as the bare type; a named field as `n: T`.
+    fn write_named_tuple_type(&self, item: &V::Item, buf: &mut String) {
         buf.push('(');
-        if let Some(fields) = self.named_arg(named, "fields") {
-            if let Some(elems) = self.unwrap_list_spine(fields) {
-                for (i, &elem) in elems.iter().enumerate() {
-                    if i > 0 {
-                        buf.push_str(", ");
-                    }
-                    self.write_named_tuple_element(elem, i, buf);
+        if let Some(fields) = self.child(item, "fields") {
+            for (i, elem) in self.list_elements(&fields).iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
                 }
+                self.write_named_tuple_element(elem, i, buf);
             }
         }
         buf.push(')');
     }
 
-    /// One `NamedTupleElement(name, type)` → `n: T`, or bare `T` for a positional
-    /// `_N` field name (the surface tuple form `(A, B)` has no field labels).
-    ///
-    /// `index` is the component's own position, which is what decides whether its
-    /// label is the synthetic one — see [`Self::is_positional_name`].
-    fn write_named_tuple_element(&self, elem: TermId, index: usize, buf: &mut String) {
-        let Term::Fn { named_args, .. } = self.view.term(elem) else {
-            self.write_type_term(elem, buf);
+    /// One `NamedTupleElement(name, type)` → `n: T`, or bare `T` for a positional `_N` field
+    /// name (the surface tuple form `(A, B)` has no field labels). `index` is the component's
+    /// own position, which is what decides whether its label is the synthetic one — see
+    /// [`Self::is_positional_name`].
+    fn write_named_tuple_element(&self, elem: &V::Item, index: usize, buf: &mut String) {
+        if self.application(elem).is_none() {
+            self.write_type_item(elem, buf);
             return;
-        };
-        let name = self.named_arg(named_args, "name");
-        let ty = self.named_arg(named_args, "type");
+        }
+        let name = self.child(elem, "name");
         let positional = name
+            .as_ref()
             .map(|n| self.is_positional_name(n, index))
             .unwrap_or(true);
-        if !positional {
-            if let Some(n) = name {
-                self.write_term(n, buf);
-                buf.push_str(": ");
-            }
+        if let (false, Some(n)) = (positional, &name) {
+            self.write_item(n, buf);
+            buf.push_str(": ");
         }
-        match ty {
-            Some(t) => self.write_type_term(t, buf),
+        match self.child(elem, "type") {
+            Some(t) => self.write_type_item(&t, buf),
             None => buf.push('?'),
         }
     }
 
-    /// Is this component's name the synthetic label for its OWN position — i.e.
-    /// is it the surface `(A, B)` form, whose labels the printer must omit?
+    /// Is this component's name the synthetic label for its OWN position — i.e. is it the
+    /// surface `(A, B)` form, whose labels the printer must omit?
     ///
-    /// This was the LOOSEST of the five recognizers: `_` + digits at ANY index,
-    /// which the caller then ERASED. Two classes of user label were lost that way,
-    /// both MEASURED before the fix:
-    ///
-    ///  * `(_01: Int64, b: Int64)` printed as `(Int64, b: Int64)` — `_01` is a user
-    ///    label (WI-786), and the output mixes positional and named fields, which
-    ///    the parser REJECTS outright. The printed form did not round-trip at all.
-    ///  * `(_2: Int64, b: Int64)` printed the same way, and where such text does
-    ///    reparse the loader mints `_1` for slot 0 — a silent field RENAME across a
-    ///    persistence round trip.
-    ///
-    /// Asking [`is_positional_label_at`] with the component's own index refuses
-    /// both, and a genuine `(Int64, Int64)` still prints without labels. Narrowing
-    /// only the RULE and not also threading the index would have fixed the first
-    /// class and left the second, so the two halves are one fix (WI-790/WI-789).
-    fn is_positional_name(&self, name: TermId, index: usize) -> bool {
-        if let Term::Ref(s) = self.view.term(name) {
-            is_positional_label_at(self.view.sym_name(*s), index)
-        } else {
-            false
-        }
+    /// This was the LOOSEST of the five recognizers: `_` + digits at ANY index, which the
+    /// caller then ERASED. Two classes of user label were lost that way, both MEASURED before
+    /// the fix: `(_01: Int64, b: Int64)` printed as `(Int64, b: Int64)` — `_01` is a user label
+    /// (WI-786), and the output mixes positional and named fields, which the parser REJECTS —
+    /// and `(_2: Int64, b: Int64)` printed the same way, where the loader then mints `_1` for
+    /// slot 0: a silent field RENAME across a persistence round trip. Asking
+    /// [`is_positional_label_at`] with the component's own index refuses both, and a genuine
+    /// `(Int64, Int64)` still prints without labels (WI-790/WI-789).
+    fn is_positional_name(&self, name: &V::Item, index: usize) -> bool {
+        self.bare_name(name)
+            .is_some_and(|s| is_positional_label_at(self.view.sym_name(s), index))
     }
 
-    /// WI-791: decode an arrow's `arity` child (a ground `Const(Int)`). `None` for
-    /// any other shape — the caller then keeps the pre-WI-791 rendering rather
-    /// than inventing a parenthesisation.
-    fn type_child_arity(&self, child: &TypeChild) -> Option<usize> {
-        let TypeChild::Interned(t) = child else {
-            return None;
-        };
-        match self.view.term(*t) {
-            Term::Const(crate::kb::term::Literal::Int(n)) if *n >= 0 => Some(*n as usize),
-            _ => None,
-        }
-    }
-
-    fn is_named_tuple_term(&self, id: TermId) -> bool {
-        matches!(self.view.term(id),
-            Term::Fn { functor, .. }
-            if self.view.qualified_name(*functor) == "anthill.prelude.TypeExtractor.NamedTuple")
-    }
-
-    /// Component count of a `NamedTuple` term. Only the arity-one case is acted on
-    /// (see `write_arrow_type`); a shape this cannot read returns 0, which routes to
-    /// the unchanged pre-WI-766 behaviour rather than inventing parens.
-    fn named_tuple_arity(&self, id: TermId) -> usize {
-        let Term::Fn { named_args, .. } = self.view.term(id) else {
-            return 0;
-        };
-        self.named_arg(named_args, "fields")
-            .and_then(|f| self.unwrap_list_spine(f))
-            .map_or(0, |elems| elems.len())
-    }
-
-    /// WI-173: render a whole effect row (the `EffectsRows.effects_expr` tree) as a
-    /// braced surface row `{E1, E2}` / `{}` (used for a standalone effect-row type).
-    fn write_effect_row(&self, ee: TermId, buf: &mut String) {
-        buf.push('{');
-        buf.push_str(&self.effect_atoms(ee).join(", "));
-        buf.push('}');
-    }
-
-    /// WI-173: collect an `EffectExpression` tree's atoms as rendered surface
-    /// strings — `present(L)` → `L`, `absent(L)` → `-L`, `open(tail)` → the tail
-    /// variable, `merge(a, b)` → both, `empty_row` → none. The right-folded
-    /// `merge` chain `build_canonical_effects_rows` produces flattens back to the
-    /// ordered atom list the surface row `{…}` parses from.
-    fn effect_atoms(&self, ee: TermId) -> Vec<String> {
+    /// WI-173: an effect row's atoms as rendered surface strings — `present(L)` → `L`,
+    /// `absent(L)` → `-L`, `guarded(L, g)` → `L :- g`, `open(tail)` → the tail variable,
+    /// `merge(a, b)` → both, `empty_row` → none, an `EffectsRows` wrapper → its row. The
+    /// right-folded `merge` chain `build_canonical_effects_rows` produces flattens back to the
+    /// ordered atom list the surface row `{…}` parses from. Anything else — a label standing
+    /// where the row is (a bare `effects Modify[c]`), a row variable — is one atom, its type.
+    fn effect_atoms(&self, item: &V::Item) -> Vec<String> {
         let mut out = Vec::new();
-        self.collect_effect_atoms(ee, &mut out);
+        self.collect_effect_atoms(item, &mut out);
         out
     }
 
-    fn collect_effect_atoms(&self, ee: TermId, out: &mut Vec<String>) {
-        let Term::Fn {
-            functor,
-            named_args,
-            ..
-        } = self.view.term(ee)
-        else {
-            return;
-        };
-        match self.view.qualified_name(*functor) {
-            "anthill.prelude.EffectExpression.empty_row" => {}
-            "anthill.prelude.EffectExpression.present" => {
-                if let Some(l) = self.named_arg(named_args, "label") {
-                    let mut s = String::new();
-                    self.write_type_term(l, &mut s);
-                    out.push(s);
+    fn collect_effect_atoms(&self, item: &V::Item, out: &mut Vec<String>) {
+        let form = self.application(item).map(|(f, _, _)| self.view.qualified_name(f));
+        match form {
+            Some("anthill.prelude.TypeExtractor.EffectsRows") => {
+                if let Some(row) = self.child(item, "effects_expr") {
+                    self.collect_effect_atoms(&row, out);
                 }
             }
-            // WI-478: `guarded(label, guard)` renders as the surface `E :- g1, …` —
-            // a single goal uses the bare form, a conjunctive guard the
-            // parenthesized `( E :- g1, g2 )` so it round-trips through the parser.
-            "anthill.prelude.EffectExpression.guarded" => {
-                if let Some(l) = self.named_arg(named_args, "label") {
-                    let mut label_s = String::new();
-                    self.write_type_term(l, &mut label_s);
-                    let goals = self.guard_goal_term_strings(self.named_arg(named_args, "guard"));
+            Some("anthill.prelude.EffectExpression.empty_row") => {}
+            Some("anthill.prelude.EffectExpression.merge") => {
+                for side in ["left", "right"] {
+                    if let Some(c) = self.child(item, side) {
+                        self.collect_effect_atoms(&c, out);
+                    }
+                }
+            }
+            Some("anthill.prelude.EffectExpression.present") => {
+                if let Some(l) = self.child(item, "label") {
+                    out.push(self.type_text(&l));
+                }
+            }
+            Some("anthill.prelude.EffectExpression.absent") => {
+                if let Some(l) = self.child(item, "label") {
+                    out.push(format!("-{}", self.type_text(&l)));
+                }
+            }
+            // WI-478: `guarded(label, guard)` renders as the surface `E :- g1, …` — a single
+            // goal uses the bare form, a conjunctive guard the parenthesized `( E :- g1, g2 )`
+            // so it round-trips through the parser.
+            Some("anthill.prelude.EffectExpression.guarded") => {
+                if let Some(l) = self.child(item, "label") {
+                    let label = self.type_text(&l);
+                    let goals: Vec<String> = self
+                        .child(item, "guard")
+                        .map(|g| self.list_elements(&g))
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|g| self.print_item(g))
+                        .collect();
                     let body = goals.join(", ");
                     out.push(if goals.len() > 1 {
-                        format!("( {label_s} :- {body} )")
+                        format!("( {label} :- {body} )")
                     } else {
-                        format!("{label_s} :- {body}")
+                        format!("{label} :- {body}")
                     });
                 }
             }
-            "anthill.prelude.EffectExpression.absent" => {
-                if let Some(l) = self.named_arg(named_args, "label") {
-                    let mut s = String::from("-");
-                    self.write_type_term(l, &mut s);
-                    out.push(s);
+            Some("anthill.prelude.EffectExpression.open") => {
+                if let Some(tail) = self.child(item, "tail") {
+                    out.push(self.type_text(&tail));
                 }
             }
-            "anthill.prelude.EffectExpression.open" => {
-                if let Some(tail) = self.named_arg(named_args, "tail") {
-                    let mut s = String::new();
-                    self.write_term(tail, &mut s);
-                    out.push(s);
-                }
-            }
-            "anthill.prelude.EffectExpression.merge" => {
-                if let Some(l) = self.named_arg(named_args, "left") {
-                    self.collect_effect_atoms(l, out);
-                }
-                if let Some(r) = self.named_arg(named_args, "right") {
-                    self.collect_effect_atoms(r, out);
-                }
-            }
-            _ => {}
+            _ => out.push(self.type_text(item)),
         }
     }
 
-    /// WI-478: walk a TERM-form guard — a hash-consed `List[reflect.Term]`
-    /// cons-spine — into its rendered goal strings (the term peer of
-    /// `guard_goal_value_strings`). A `nil` / non-cons head ends the walk.
-    fn guard_goal_term_strings(&self, guard: Option<TermId>) -> Vec<String> {
-        let mut goals: Vec<String> = Vec::new();
-        let mut cur = guard;
-        while let Some(g) = cur {
-            let Term::Fn {
-                functor,
-                named_args,
-                ..
-            } = self.view.term(g)
-            else {
-                break;
-            };
-            if self.view.qualified_name(*functor) != "anthill.prelude.List.cons" {
-                break;
-            }
-            if let Some(h) = self.named_arg(named_args, "head") {
-                let mut s = String::new();
-                self.write_term(h, &mut s);
-                goals.push(s);
-            }
-            cur = self.named_arg(named_args, "tail");
-        }
-        goals
-    }
-
-    fn write_literal(&self, lit: &Literal, buf: &mut String) {
-        write_literal(lit, buf)
+    fn type_text(&self, item: &V::Item) -> String {
+        let mut s = String::new();
+        self.write_type_item(item, &mut s);
+        s
     }
 }
 
@@ -1978,7 +1866,7 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
 /// WI-1099: the text this writes is READ BACK by the loader, so it is the
 /// reload-faithful question, not the canonical-surface one. The file store's
 /// retract key keeps the surface print — see [`TermPrinter::reload_faithful`].
-pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
+pub fn print_fact<V: PrintView + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
     let printer = TermPrinter::reload_faithful(view);
     let mut out = String::from("fact ");
     out.push_str(&printer.print_term(term));
@@ -2004,50 +1892,52 @@ pub fn print_fact<V: TermSource + ?Sized>(view: &V, term: TermId, meta: Option<T
 /// term is not this fact's field, and dropping it would silently edit a subterm
 /// nobody asked about. If the top-level term carries none of the named arguments,
 /// this IS [`print_fact`] — same text, same round trip.
-pub fn print_fact_omitting<V: TermSource + ?Sized>(
+pub fn print_fact_omitting<V: PrintView + ?Sized>(
     view: &V,
     term: TermId,
     meta: Option<TermId>,
     omit: &[&str],
 ) -> String {
-    let Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    } = view.term(term)
-    else {
-        return print_fact(view, term, meta);
+    let item = view.term_item(term);
+    let (functor, pos_arity) = match view.head(&item) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } => (f, pos_arity),
+        _ => return print_fact(view, term, meta),
     };
-    if omit.is_empty()
-        || !named_args
-            .iter()
-            .any(|(s, _)| omit.contains(&view.sym_name(*s)))
-    {
+    let keys = view.named_keys(&item);
+    if omit.is_empty() || !keys.iter().any(|s| omit.contains(&view.sym_name(*s))) {
         return print_fact(view, term, meta);
     }
     let printer = TermPrinter::reload_faithful(view);
     let mut out = String::from("fact ");
-    out.push_str(view.sym_name(*functor));
+    out.push_str(view.sym_name(functor));
     out.push('(');
     let mut first = true;
-    for &tid in pos_args.iter() {
-        if !first {
+    for i in 0..pos_arity {
+        if !std::mem::take(&mut first) {
             out.push_str(", ");
         }
-        first = false;
-        out.push_str(&printer.print_term(tid));
+        match view.pos_arg(&item, i) {
+            Some(c) => out.push_str(&printer.print_item(&c)),
+            None => out.push('?'),
+        }
     }
-    for &(sym, tid) in named_args.iter() {
-        if omit.contains(&view.sym_name(sym)) {
+    for key in keys {
+        if omit.contains(&view.sym_name(key)) {
             continue;
         }
-        if !first {
+        if !std::mem::take(&mut first) {
             out.push_str(", ");
         }
-        first = false;
-        out.push_str(view.sym_name(sym));
+        out.push_str(view.sym_name(key));
         out.push_str(": ");
-        out.push_str(&printer.print_term(tid));
+        match view.named_arg(&item, key) {
+            Some(c) => out.push_str(&printer.print_item(&c)),
+            None => out.push('?'),
+        }
     }
     out.push(')');
     if let Some(meta_id) = meta {
@@ -2068,8 +1958,9 @@ mod tests {
 
     /// A value carried on an occurrence prints the structure it has: an entity a
     /// substitution rebuilt, with a term, a variable and a scalar under it. Before, any
-    /// carried value that was no term printed `<spliced>`; with the scalar arm taken out
-    /// of `write_carried_value` the `3` below prints `<spliced>` again.
+    /// carried value that was no term printed `<spliced>`. With the walk's `ViewHead::Const`
+    /// arm writing `?`, the `1` and the `3` below print `?` (WI-20261022-DRGCP: the walk that
+    /// prints a term prints the value too).
     #[test]
     fn a_carried_entity_prints_its_arguments() {
         use crate::kb::node_occurrence::{Expr, NodeOccurrence};
@@ -2089,6 +1980,27 @@ mod tests {
         );
         let printed = TermPrinter::new(&kb).print_occurrence(&occ);
         assert_eq!(printed, "f(1, ?k, n: 3)");
+    }
+
+    /// An opaque value inside a value is named by its kind (WI-20261022-DRGCP): it has no
+    /// surface, and the kind is what an answer can say of it.
+    #[test]
+    fn an_opaque_value_in_a_value_is_named_by_its_kind() {
+        let mut kb = KnowledgeBase::new();
+        let (f, h, d) = (kb.intern("f"), kb.intern("h"), kb.intern("d"));
+        let one = kb.alloc(Term::Const(Literal::Int(1)));
+        let head = kb.alloc(Term::Fn {
+            functor: h,
+            pos_args: SmallVec::from_elem(one, 1),
+            named_args: SmallVec::new(),
+        });
+        let rid = kb.assert_fact(head, crate::kb::ClauseKind::Fact, d, None);
+        let v = Value::Entity {
+            functor: f,
+            pos: vec![Value::FactRef(crate::kb::extent::FactRef::resident(rid))].into(),
+            named: vec![].into(),
+        };
+        assert_eq!(TermPrinter::new(&kb).print_value(&v), "f(<FactRef>)");
     }
 
     #[test]
