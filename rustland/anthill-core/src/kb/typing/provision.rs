@@ -457,11 +457,11 @@ pub(super) fn provision_binding_at_param(
     spec_view: &Value,
 ) -> Option<(Value, Symbol)> {
     let val = provision_binding_value_at_param(kb, carrier_param, spec_view)?;
+    // A sort, by membership (WI-974) — which a free-standing entity is (§6.3), so the
+    // `is_free_standing_entity` disjunct that made up for the keyword written first is
+    // gone with it.
     spec_view_base(kb, &val)
-        .filter(|&s| {
-            matches!(kb.kind_of(s), Some(crate::intern::SymbolKind::Sort))
-                || kb.is_free_standing_entity(s)
-        })
+        .filter(|&s| kb.has_kind(s, crate::intern::SymbolKind::Sort))
         .map(|s| (val, s))
 }
 
@@ -844,9 +844,16 @@ fn instance_fact_op_in_bindings(
 /// `provides_spec_base_sym`, is an `Operation`. Folding all three callers through this
 /// one predicate keeps them
 /// from disagreeing about what an op-valued binding is.
+///
+/// THE SLOT DECIDES, NOT THE VALUE (WI-974). A name can be an operation and a type at
+/// once (WI-751: `sort Both … end` beside `operation Both(…)`), and its kinds cannot say
+/// whether `F = Both` or `combine = Both` was written: the KEY can. So this answers by
+/// membership — the operation the value names, if it names one — and every caller that can
+/// meet a type binding drops a type-parameter key first ([`is_type_param_binding`]). It
+/// asked for the keyword written FIRST, which read the pair by source order.
 pub(crate) fn binding_op_symbol<V: TermView>(kb: &KnowledgeBase, value: &V) -> Option<Symbol> {
     crate::kb::load::provides_spec_base_sym_view(kb, value)
-        .filter(|s| matches!(kb.kind_of(*s), Some(crate::intern::SymbolKind::Operation)))
+        .filter(|&s| kb.has_kind(s, crate::intern::SymbolKind::Operation))
 }
 
 /// WI-431 coherence (rule 2): true iff the provision's spec view binds AT LEAST
@@ -857,9 +864,12 @@ pub(crate) fn binding_op_symbol<V: TermView>(kb: &KnowledgeBase, value: &V) -> O
 /// `provides` / type-only `fact` is never over-rejected).
 pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: &Value) -> bool {
     match unwrap_spec_view_value(kb, spec_view) {
-        Some((_, bindings)) => bindings
-            .iter()
-            .any(|(_, value)| binding_op_symbol(kb, value).is_some()),
+        Some((spec, bindings)) => {
+            let spec_qn = kb.qualified_name_of(spec);
+            bindings.iter().any(|(key, value)| {
+                binding_op_symbol(kb, value).is_some() && !is_type_param_binding(kb, *key, spec_qn)
+            })
+        }
         None => false,
     }
 }
@@ -1933,7 +1943,7 @@ pub(super) fn effect_is_modify<V: TermView>(
 /// True iff `short` names a type-parameter (vs an op) of the spec at
 /// `spec_qn`. Determined by checking whether `<spec_qn>.<short>`
 /// resolves to a SortAlias-bearing symbol — only spec params do.
-pub(super) fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bool {
+pub(crate) fn is_type_param_binding(kb: &KnowledgeBase, short: Symbol, spec_qn: &str) -> bool {
     type_param_sym_of_binding(kb, short, spec_qn).is_some()
 }
 

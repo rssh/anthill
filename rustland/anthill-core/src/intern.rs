@@ -235,6 +235,25 @@ impl ScopeId {
 
 // ── Symbol metadata ─────────────────────────────────────────────
 
+/// Declares [`SymbolKind`] and builds [`SymbolKind::ALL`] from the same variant list, so a
+/// kind cannot be declared and left out of `ALL` (WI-974): [`KindSet`] gives each kind the
+/// bit of its position there.
+macro_rules! symbol_kinds {
+    ($(#[$enum_meta:meta])* pub enum SymbolKind { $($(#[$meta:meta])* $variant:ident,)* }) => {
+        $(#[$enum_meta])*
+        pub enum SymbolKind {
+            $($(#[$meta])* $variant,)*
+        }
+
+        impl SymbolKind {
+            /// Every kind, in declaration order (`ALL[k as usize] == k`) — the variant list
+            /// itself, by [`symbol_kinds!`].
+            pub const ALL: &'static [SymbolKind] = &[$(SymbolKind::$variant),*];
+        }
+    };
+}
+
+symbol_kinds! {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymbolKind {
     Sort,
@@ -302,28 +321,9 @@ pub enum SymbolKind {
     /// them as scoped symbols during body lowering — is deferred.)
     LocalLet,
 }
+}
 
 impl SymbolKind {
-    /// True for the frame-/instance-relative VALUE-PLACE kinds — an operation or
-    /// callback parameter, a result binder, an entity field, or a `let`-local.
-    /// These name a place WITHIN some binder's scope, NOT a global identity
-    /// (`Sort`/`Entity`/`Operation`/…), so a reference to one is binder-relative:
-    /// meaningful only up to binder alignment. The single source of truth for that
-    /// classification — used by the loader's value-in-type lowering
-    /// (`symbol_is_value_place`) and the typer's value-in-type groundness gate
-    /// (`denoted_value_is_closed`, WI-470), which must agree on the set.
-    pub fn is_value_place(self) -> bool {
-        matches!(
-            self,
-            SymbolKind::Param
-                | SymbolKind::Field
-                | SymbolKind::LocalLet
-                | SymbolKind::OpResult
-                | SymbolKind::CallbackParam
-                | SymbolKind::CallbackResult
-        )
-    }
-
     /// The kind's REFLECT NAME — the string `kind(?sym, ?k)` binds, in the
     /// resolver's builtin and in the `anthill-stl` eval bridge alike. One table
     /// (WI-898): the two readers each carried their own exhaustive copy, so adding
@@ -354,6 +354,156 @@ impl SymbolKind {
             SymbolKind::LocalLet => "LocalLet",
         }
     }
+
+    /// This kind's bit in a [`KindSet`] — its position in [`Self::ALL`], which the
+    /// assertion below keeps inside a `u16`.
+    const fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+const _: () = assert!(
+    SymbolKind::ALL.len() <= u16::BITS as usize,
+    "a KindSet holds one bit per SymbolKind in a u16: widen it before adding a kind"
+);
+
+/// The categories one name PLAYS — a set of [`SymbolKind`]s, one bit each (WI-974).
+///
+/// One written name can be several things, and the loader admits these, each on purpose:
+/// §6.3's constructor that is its own sort (`Entity` + `Sort`), 059 R2's secondary entry
+/// (`Namespace` + `Sort`), a name written as both a predicate head and an equation head
+/// (`Goal` + `EquationFunctor`, WI-898), a sort beside a same-named operation (`Sort` +
+/// `Operation`, WI-751), a const beside a same-named namespace (`Const` + `Namespace`,
+/// RXT6S), an entity beside a same-named operation (`entity foo(k)` with `operation
+/// foo(n)`: `Sort` + `Entity` + `Operation`), and an operation's type parameter that is a
+/// value parameter too (`operation foo[T](T: Int64)`: `Sort` + `Param`) — and the unions
+/// of these one address can carry (`namespace Rec` beside `sort Rec { entity Rec(…) }`:
+/// `Namespace` + `Sort` + `Entity`). MEASURED over the `anthill-core` suite, 2026-10-21;
+/// the entity beside an operation and the type-and-value parameter by probe, as no row of
+/// that suite writes them.
+///
+/// It was a list in declaration order, so that its head could be the keyword written
+/// first, and that head was compared against one kind at ~65 sites — "was it WRITTEN
+/// with `sort`" asked where "is it a sort" was meant, which gives the two spellings of
+/// one declaration two answers. A set has no head: the written keyword is a separate
+/// field of [`SymbolDef`], readable only as a [`KindLabel`], which cannot be compared
+/// with a kind at all.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct KindSet(u16);
+
+impl KindSet {
+    pub const EMPTY: KindSet = KindSet(0);
+
+    /// The frame-/instance-relative VALUE-PLACE kinds — an operation or callback
+    /// parameter, a result binder, an entity field, or a `let`-local. These name a place
+    /// WITHIN some binder's scope, NOT a global identity (`Sort`/`Entity`/`Operation`/…),
+    /// so a reference to one is binder-relative: meaningful only up to binder alignment.
+    /// A NAME is asked through [`Self::is_value_place`], the one answer for the loader's
+    /// value-in-type lowering (`symbol_is_value_place`) and the typer's groundness gate
+    /// (`denoted_value_is_closed`, WI-470), which must agree.
+    pub const VALUE_PLACES: KindSet = KindSet::of_all(&[
+        SymbolKind::Param,
+        SymbolKind::Field,
+        SymbolKind::LocalLet,
+        SymbolKind::OpResult,
+        SymbolKind::CallbackParam,
+        SymbolKind::CallbackResult,
+    ]);
+
+    pub const fn of(kind: SymbolKind) -> Self {
+        KindSet(kind.bit())
+    }
+
+    /// The set of `kinds` — for a constant naming several (`KindSet::of_all(&[..])`).
+    pub const fn of_all(kinds: &[SymbolKind]) -> Self {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < kinds.len() {
+            bits |= kinds[i].bit();
+            i += 1;
+        }
+        KindSet(bits)
+    }
+
+    pub fn insert(&mut self, kind: SymbolKind) {
+        self.0 |= kind.bit();
+    }
+
+    pub const fn contains(self, kind: SymbolKind) -> bool {
+        self.0 & kind.bit() != 0
+    }
+
+    /// Does this set share a kind with `other`?
+    pub const fn intersects(self, other: KindSet) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Is the name a VALUE PLACE ([`Self::VALUE_PLACES`]) — one it plays, and no
+    /// TYPE: `operation foo[T](T: Int64)` declares `T` as a type parameter and a value
+    /// parameter (`{Sort, Param}`), and it is read as the type. The one answer for the
+    /// loader's value-in-type lowering and the typer's groundness gate, which must agree.
+    pub const fn is_value_place(self) -> bool {
+        self.intersects(Self::VALUE_PLACES) && !self.contains(SymbolKind::Sort)
+    }
+
+    /// Is the name the value place `kind` (one of [`Self::VALUE_PLACES`])? Read as
+    /// [`Self::is_value_place`] reads a name — a type parameter that is a value
+    /// parameter too is the TYPE — so every reader of a place agrees with the loader's.
+    pub const fn is_place(self, kind: SymbolKind) -> bool {
+        self.is_value_place() && self.contains(kind)
+    }
+
+    /// The kinds in [`SymbolKind::ALL`]'s order — never the order they were declared in,
+    /// which a set does not keep.
+    pub fn iter(self) -> impl Iterator<Item = SymbolKind> {
+        SymbolKind::ALL.iter().copied().filter(move |k| self.contains(*k))
+    }
+}
+
+impl std::fmt::Debug for KindSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+/// A kind to SHOW (WI-974): what a diagnostic calls a symbol, and the string reflect's
+/// `kind` returns. For a declaration it is the keyword the declaration was first written
+/// with ([`SymbolDef::written_kind`]); for a constructor's type face, `Sort`.
+///
+/// NOT a role test, and built so it cannot be used as one: it has no `PartialEq`, no
+/// public constructor and no accessor back to a [`SymbolKind`] — only its name. "Can this
+/// name serve as an X" is [`SymbolDef::has_kind`]'s question; asked of the written
+/// keyword it answers "was X written FIRST", which differs between the two spellings of
+/// one declaration (`entity E(…)` and `sort E { entity E(…) }`) and between the two
+/// orders of a pair of declarations.
+#[derive(Clone, Copy)]
+pub struct KindLabel(SymbolKind);
+
+impl KindLabel {
+    /// How a constructor's TYPE FACE is shown — a type, whatever its declaration was
+    /// written with (WI-20260902-JB6RS).
+    pub const TYPE_FACE: KindLabel = KindLabel(SymbolKind::Sort);
+
+    /// The kind's reflect name — [`SymbolKind::reflect_name`].
+    pub fn reflect_name(self) -> &'static str {
+        self.0.reflect_name()
+    }
+}
+
+impl std::fmt::Debug for KindLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reflect_name())
+    }
+}
+
+impl std::fmt::Display for KindLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reflect_name())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -364,11 +514,11 @@ pub enum SymbolDef {
     Resolved {
         local_name: String,
         qualified_name: String,
-        /// The categories this name PLAYS, in declaration order — a set, not a
-        /// single value, because one written name can genuinely be more than one
-        /// thing. §6.3's eponymous constructor IS its sort: `sort Project { entity
-        /// Project(…) }` writes one name that is both a `Sort` and an `Entity`,
-        /// and so does the sugar `entity Project(…)` it desugars from.
+        /// The categories this name PLAYS — a set, not a single value, because one
+        /// written name can genuinely be more than one thing. §6.3's eponymous
+        /// constructor IS its sort: `sort Project { entity Project(…) }` writes one
+        /// name that is both a `Sort` and an `Entity`, and so does the sugar `entity
+        /// Project(…)` it desugars from. [`KindSet`] lists every pair the loader admits.
         ///
         /// It used to be one `SymbolKind`, so a name that plays two roles could
         /// record only the one that got there first, and the same two declarations
@@ -383,27 +533,15 @@ pub enum SymbolDef {
         /// by-qualified-name reuse) that never reach `define` at all. See
         /// `scan_items_pass1`'s `Item::Entity` arm.
         ///
-        /// Order is kept (not a bitset) because it is the one real piece of
-        /// information beyond membership: the head is the keyword the declaration
-        /// actually opened with, which is what [`Self::primary_kind`] — and hence
-        /// `kind_of` — reports, exactly as the single field did.
-        ///
-        /// Ask [`Self::has_kind`] for "does this name play role X" — that is the
-        /// question most readers mean, and it is order-free. [`Self::primary_kind`]
-        /// is right for exactly two things: DISPLAY (a diagnostic, reflect's `kind`
-        /// string), and a genuinely EXCLUSIVE discriminator, where "any role
-        /// qualifies" would be the wrong question — the loader's
-        /// `symbol_is_value_place` is one, since its caller branches on the false
-        /// case. Asking `primary_kind() == Sort` to decide whether a name is USABLE
-        /// as a sort is the misuse: it re-creates the source-order dependence this
-        /// field exists to remove.
-        ///
-        /// Not yet uniform: many `kind_of` call sites predate the set and still
-        /// compare it to a single kind. Each is only correct where the exclusive
-        /// reading is intended; they were left alone rather than swept, because the
-        /// two readings coincide for every symbol carrying ONE category and only a
-        /// site-by-site judgement can tell which was meant.
-        kinds: SmallVec<[SymbolKind; 2]>,
+        /// Ask [`Self::has_kind`] for "does this name play role X" — it is order-free.
+        /// The keyword written first is not here but in `written`.
+        kinds: KindSet,
+        /// The keyword this name's FIRST declaration opened with — the one piece of
+        /// information beyond membership, and for DISPLAY only: it is read out as a
+        /// [`KindLabel`] ([`Self::written_kind`]), which no role test can be built on.
+        /// Until WI-974 it was the head of an ordered `kinds` list and was compared
+        /// against single kinds as if it were the role.
+        written: SymbolKind,
         /// The scope this name was DECLARED IN. A [`ScopeId`] since WI-984 — it
         /// was a bare `u32` (the owner's name-term raw), which made it one type
         /// with an arbitrary term and an arbitrary index.
@@ -425,9 +563,8 @@ pub enum SymbolDef {
 }
 
 impl SymbolTable {
-    /// Record that `sym` also plays `kind`. Idempotent, order-preserving: the
-    /// first-declared category stays the head, so `primary_kind` (and `kind_of`)
-    /// keep reporting the keyword the declaration opened with.
+    /// Record that `sym` also plays `kind`. Idempotent; the keyword written first
+    /// (`written`, what `kind_of` shows) is not changed.
     ///
     /// The explicit companion to `define`'s accumulation, for the case where a
     /// second role is discovered WITHOUT a second `define` call — §6.3's eponymous
@@ -440,32 +577,50 @@ impl SymbolTable {
             "add_kind({sym:?}): a type face is not a declaration, and the table holds plain symbols only"
         );
         if let Some(SymbolDef::Resolved { kinds, .. }) = self.defs.get_mut(sym.index() as usize) {
-            if !kinds.contains(&kind) {
-                kinds.push(kind);
-            }
+            kinds.insert(kind);
         }
     }
 }
 
 impl SymbolDef {
-    /// The categories this name plays, declaration order. Empty for `Unresolved`.
-    pub fn kinds(&self) -> &[SymbolKind] {
+    /// The categories this name plays. Empty for `Unresolved`.
+    pub fn kinds(&self) -> KindSet {
         match self {
-            SymbolDef::Resolved { kinds, .. } => kinds,
-            SymbolDef::Unresolved { .. } => &[],
+            SymbolDef::Resolved { kinds, .. } => *kinds,
+            SymbolDef::Unresolved { .. } => KindSet::EMPTY,
         }
     }
 
     /// Does this name play role `kind`? THE question almost every caller means.
     pub fn has_kind(&self, kind: SymbolKind) -> bool {
-        self.kinds().contains(&kind)
+        self.kinds().contains(kind)
     }
 
-    /// The keyword the declaration opened with — for DISPLAY only (diagnostics,
-    /// reflect's `kind` string). Not a test for what the name can be used as:
-    /// see [`Self::has_kind`].
-    pub fn primary_kind(&self) -> Option<SymbolKind> {
-        self.kinds().first().copied()
+    /// The keyword the declaration was first written with — for DISPLAY only
+    /// (diagnostics, reflect's `kind` string). `None` for `Unresolved`. Not a test for
+    /// what the name can be used as, and [`KindLabel`] cannot be made into one: see
+    /// [`Self::has_kind`].
+    pub fn written_kind(&self) -> Option<KindLabel> {
+        match self {
+            SymbolDef::Resolved { written, .. } => Some(KindLabel(*written)),
+            SymbolDef::Unresolved { .. } => None,
+        }
+    }
+
+    /// How to NAME this symbol by one of the roles in `among` that it plays — for a
+    /// diagnostic about those roles only: the keyword it was first written with when that
+    /// is one of them, else the first of them in [`SymbolKind::ALL`]'s order. `None` when
+    /// it plays none. A label, as [`Self::written_kind`] is, so it shows and decides
+    /// nothing.
+    pub fn kind_label_among(&self, among: KindSet) -> Option<KindLabel> {
+        let SymbolDef::Resolved { kinds, written, .. } = self else {
+            return None;
+        };
+        let playing = KindSet(kinds.0 & among.0);
+        if playing.contains(*written) {
+            return Some(KindLabel(*written));
+        }
+        playing.iter().next().map(KindLabel)
     }
 }
 
@@ -1246,7 +1401,8 @@ impl SymbolTable {
         self.defs.push(SymbolDef::Resolved {
             local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
-            kinds: SmallVec::from_elem(kind, 1),
+            kinds: KindSet::of(kind),
+            written: kind,
             scope,
             arg_places: None,
         });
@@ -1334,7 +1490,8 @@ impl SymbolTable {
         self.defs.push(SymbolDef::Resolved {
             local_name: local_name.to_owned(),
             qualified_name: qualified_name.to_owned(),
-            kinds: SmallVec::from_elem(kind, 1),
+            kinds: KindSet::of(kind),
+            written: kind,
             scope,
             arg_places: None,
         });

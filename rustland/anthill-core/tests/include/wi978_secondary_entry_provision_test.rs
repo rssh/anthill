@@ -12,8 +12,9 @@
 //!
 //! What was skipped was the EMITTER, and the discriminator was DECLARATION
 //! ORDER, not placement. `maybe_emit_fact_provides_info` branched on
-//! `kind_of(domain)` — `primary_kind()`, the FIRST category added to the symbol
-//! — while a secondary entry's symbol carries a SET of them (WI-956/WI-926):
+//! `kind_of(domain)` — `primary_kind()`, the FIRST category added to the symbol (the
+//! keyword written first; WI-974 removed it, and `kind_of` is now a display label that
+//! cannot be compared with a kind) — while a secondary entry's symbol carries a SET of them (WI-956/WI-926):
 //!
 //! | main entry beside `namespace X`  | primary   | `has_kind(Sort)` |
 //! |----------------------------------|-----------|------------------|
@@ -91,7 +92,7 @@ const SPEC: &str = r#"
   end
 "#;
 
-/// The two main-entry spellings that differ in `primary_kind`. `enum` behaves as
+/// The two main-entry spellings that differ in the keyword written first (`primary_kind`). `enum` behaves as
 /// `sort` does (both are `primary=Sort`) and is covered by the `sort` row.
 const ENTITY: &str = "entity Rec(n: Int64)";
 const SORT: &str = "sort Rec\n    entity rec(n: Int64)\n  end";

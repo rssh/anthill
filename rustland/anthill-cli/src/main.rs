@@ -2063,7 +2063,7 @@ fn report_unknown_functor_name(
     // What makes re-reading the ladder faithful: the name asked about is the text the
     // author wrote, because an undefined symbol is a bare intern of it.
     debug_assert!(
-        kb.kind_of(sym).is_none(),
+        kb.kinds(sym).is_empty(),
         "the unknown-functor reporters must only pass an undefined (bare-interned) \
          functor; `{}` is declared, and `local_name_of` would hand its SHORT name to the \
          ladder — reporting a qualified pattern as an ambiguity it never had",

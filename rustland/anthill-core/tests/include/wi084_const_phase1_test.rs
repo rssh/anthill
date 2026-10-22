@@ -61,9 +61,8 @@ fn assert_const_kind(
     let sym = kb
         .try_resolve_symbol(qname)
         .unwrap_or_else(|| panic!("const `{qname}` should resolve to a symbol"));
-    assert_eq!(
-        kb.kind_of(sym),
-        Some(SymbolKind::Const),
+    assert!(
+        kb.has_kind(sym, SymbolKind::Const),
         "`{qname}` should have SymbolKind::Const"
     );
     sym

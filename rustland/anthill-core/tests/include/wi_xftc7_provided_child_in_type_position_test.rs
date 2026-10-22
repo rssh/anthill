@@ -517,8 +517,8 @@ end
 /// WHAT A NAME MAY BE USED AS IS A SET, NOT THE KEYWORD THAT CAME FIRST.
 ///
 /// `type_admissible` (kb/load.rs) is the positive gate this ticket added so that an
-/// `operation Zero()` cannot mint a type. It asked `kb.kind_of`, which is
-/// `SymbolDef::primary_kind` — and that method's own doc says it is "the keyword the
+/// `operation Zero()` cannot mint a type. It asked `kb.kind_of`, which was
+/// `SymbolDef::primary_kind` (WI-974 removed it; `kind_of` is now a display label) — and that method's own doc says it is "the keyword the
 /// declaration opened with — for DISPLAY only … Not a test for what the name can be used
 /// as: see `has_kind`". `define` / `add_kind` accumulate a category SET precisely so
 /// source order stops deciding things (WI-926), and asking the first keyword put the

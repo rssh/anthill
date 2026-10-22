@@ -1171,7 +1171,7 @@ pub(super) fn unify_denoted_view<A: TermView, B: TermView>(
 /// last segment (`<op>.f.a` → `<op>.f`), and its ordered params are on its symbol
 /// (`SymbolTable::arg_places`).
 pub(super) fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
-    if kb.kind_of(sym) != Some(crate::intern::SymbolKind::CallbackParam) {
+    if !kb.kinds(sym).is_place(crate::intern::SymbolKind::CallbackParam) {
         return None;
     }
     let qn = kb.qualified_name_of(sym);
@@ -1822,7 +1822,7 @@ fn ground_rigid_projection_if_concrete(
             // this child is an entity/operation/body-sort that merely shares the name (a
             // soundness hole); WI-956 deleted the one that existed, so [`resolve_sort_alias`]
             // now matches only this symbol for every caller.
-            if kb.kind_of(member_sym) == Some(crate::intern::SymbolKind::Sort) {
+            if kb.has_kind(member_sym, crate::intern::SymbolKind::Sort) {
                 if let Some(target) = resolve_sort_alias(kb, member_sym) {
                     let g = walk_type_deep(kb, subst, target);
                     // Ground ONLY a manifest member (`sort V = Int64`). An abstract

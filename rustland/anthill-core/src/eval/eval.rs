@@ -272,10 +272,10 @@ impl Interpreter {
             Expr::Ref(sym) | Expr::Ident(sym) => self.reduce_var(*sym, occ),
             Expr::VarRef { name } => self.reduce_var(*name, occ),
             // Proposal 055 §2 — a nominal type expression in value position, ALREADY
-            // CLASSIFIED by the loader. This arm neither re-asks `kind_of` nor consults
-            // the expected sort; it only assembles the value the recorded denotation
-            // names. It is what the two `kind_of(..) == Sort` arms below
-            // (`Expr::Apply`'s and `reduce_var`'s) become once every producer mints
+            // CLASSIFIED by the loader. This arm neither re-asks the name's kinds nor
+            // consults the expected sort; it only assembles the value the recorded
+            // denotation names. It is what the two sort arms below (`Expr::Apply`'s
+            // `names_only_a_type` and `reduce_var`'s `is_type_value_head`) become once every producer mints
             // this form — see their sites for which producers still do not.
             //
             // THE TWO FACES ARE ASSEMBLED BY THE TWO BUILDERS THEY BACK ONTO, and that
@@ -355,7 +355,17 @@ impl Interpreter {
                 // occurrence made from a term, or a KB loaded without the typer. A sort
                 // names no operation, so such a node could only ever have died in
                 // dispatch as `UnknownOperation`. Sits ahead of the classification match.
-                if self.kb.kind_of(*functor) == Some(crate::intern::SymbolKind::Sort) {
+                //
+                // A name that is ONLY a type (WI-974) — the loader's test for the same
+                // application ([`KnowledgeBase::names_only_a_type`]). It asked for the
+                // keyword written first, so the long spelling of a constructor (`sort Mk {
+                // entity Mk(v) }`) built a type here where `entity Mk(v)` constructed, and a
+                // sort beside a same-named operation was a type or a call by source order.
+                // That pair is now always the call — an application of a name that is an
+                // operation is the operation's (§4.4); a WRITTEN bracket of it is a type
+                // the typer records as `Expr::TypeValue`, which never reaches this arm, and
+                // an unmarked one (a KB loaded without the typer) has lost what says so.
+                if self.kb.names_only_a_type(*functor) {
                     return self.start_sort_type(*functor, pos_args, named_args);
                 }
                 // WI-714 (proposal 052): a RULE-headed application (`queens(board)`,
@@ -363,7 +373,7 @@ impl Interpreter {
                 // `Relation[T]` value whose supplied arguments BIND head parameters
                 // (subtracted from the free columns). The applied peer of
                 // `reduce_var`'s bare rule arm, and — like the sort arm above —
-                // re-derived from `kind_of(functor)` with no `CallClass` mark: the
+                // re-derived from the functor (`cites_a_relation`) with no `CallClass` mark: the
                 // typer has settled the reading (a rule name applied to args), and a
                 // rule names no operation, so this could only ever have died in
                 // dispatch as `UnknownOperation`.
@@ -646,7 +656,7 @@ impl Interpreter {
         // entity/constructor/operation arms; a `Const` symbol is none of those, so
         // ordering is moot, but resolving the value here keeps the const path self
         // contained.
-        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Const) {
+        if self.kb.has_kind(sym, crate::intern::SymbolKind::Const) {
             let v = self.force_const(sym)?;
             return Ok(StepOutcome::Deliver(v));
         }
@@ -658,11 +668,12 @@ impl Interpreter {
         // is an occurrence made from a TERM — `materialize_from_handle` does not carry the
         // classification (`Expr::TypeValue`'s doc) — and a KB loaded without the typer,
         // for which the symbol is the only record there is.
-        // NOT a constructor (WI-20260902-JB6RS): an eponymous entity's primary kind is
-        // `Sort`, and its bare name is its instance, the arm below — as the typer reads it.
-        if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort)
-            && !self.kb.is_entity_constructor(sym)
-        {
+        // NOT a constructor (WI-20260902-JB6RS): an eponymous entity is a `Sort` too, and
+        // its bare name is its instance, the arm below — as the typer reads it. The test is
+        // the typer's own ([`KnowledgeBase::is_type_value_head`]); it asked for the keyword
+        // written first, which missed a sort whose secondary entry was written above it
+        // (WI-974).
+        if self.kb.is_type_value_head(sym) {
             self.refuse_unbound_type_param(sym)?;
             let tid = self.kb.make_sort_ref(sym);
             return Ok(StepOutcome::Deliver(Value::term(tid)));

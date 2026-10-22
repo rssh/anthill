@@ -298,28 +298,30 @@ end
     );
 }
 
-/// CONTROL — the ORDER within the set still records which keyword was written,
-/// which is the one thing `kind_of` may legitimately report (a diagnostic, or
-/// reflect's `kind` string). Membership is order-free; the head is not.
+/// CONTROL — the symbol still records which keyword was written FIRST, which is the
+/// one thing `kind_of` may legitimately report (a diagnostic, or reflect's `kind`
+/// string). Membership is order-free; the written keyword is not. Since WI-974 the two
+/// are separate fields — a `KindSet` and the keyword — and the keyword is read only as a
+/// `KindLabel`, by its name: it cannot be compared with a kind.
 ///
-/// Passes with and without the fix (`primary_kind` reproduces the old single
+/// Passes with and without the fix (the written keyword reproduces the old single
 /// `kind` field exactly, since `define` was first-writer-wins) — it documents the
 /// intended reading rather than measuring the change.
 #[test]
 fn control_the_head_of_the_set_is_the_written_keyword() {
-    use anthill_core::intern::SymbolKind;
+    use anthill_core::intern::KindLabel;
     let sugar = load_src(&src(SUGAR));
     let desugared = load_src(&src(DESUGARED));
     let sym = |kb: &KnowledgeBase| kb.try_resolve_symbol("test.wi925.E").expect("E resolves");
 
     assert_eq!(
-        sugar.kind_of(sym(&sugar)),
-        Some(SymbolKind::Entity),
+        sugar.kind_of(sym(&sugar)).map(KindLabel::reflect_name),
+        Some("Entity"),
         "`entity E` wrote `entity`"
     );
     assert_eq!(
-        desugared.kind_of(sym(&desugared)),
-        Some(SymbolKind::Sort),
+        desugared.kind_of(sym(&desugared)).map(KindLabel::reflect_name),
+        Some("Sort"),
         "`sort E` wrote `sort`"
     );
 }

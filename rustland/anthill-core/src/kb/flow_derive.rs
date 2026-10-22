@@ -239,7 +239,7 @@ fn close_untraced(untraced: &mut HashSet<Symbol>, edges: &[Edge]) {
 /// A callback-typed parameter: a `Param` that is callable — a `() -> T` one too,
 /// whose argument places are empty.
 fn is_callback(kb: &KnowledgeBase, sym: Symbol) -> bool {
-    kb.kind_of(sym) == Some(SymbolKind::Param) && kb.symbols.is_callable(sym)
+    kb.kinds(sym).is_place(SymbolKind::Param) && kb.symbols.is_callable(sym)
 }
 
 struct Deriver<'a> {
@@ -538,7 +538,7 @@ impl<'a> Deriver<'a> {
         let val = self
             .kb
             .try_resolve_symbol(&format!("{}.result", cb_qn))
-            .filter(|&r| self.kb.kind_of(r) == Some(SymbolKind::CallbackResult))
+            .filter(|&r| self.kb.kinds(r).is_place(SymbolKind::CallbackResult))
             .map(|r| Origin {
                 kind: Fk::Direct,
                 src: r,
@@ -619,7 +619,7 @@ impl<'a> Deriver<'a> {
             return Some(*o);
         }
         // An op parameter is its own `input` place (kind `Param`).
-        if self.kb.kind_of(name) == Some(SymbolKind::Param) {
+        if self.kb.kinds(name).is_place(SymbolKind::Param) {
             return Some(Origin {
                 kind: Fk::Direct,
                 src: name,

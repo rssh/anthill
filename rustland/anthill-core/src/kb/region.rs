@@ -430,7 +430,7 @@ pub(crate) fn op_boundary_effects(
             // scope `scan_operation_params` registers its places under, and the
             // typer types the body under that same symbol.
             Some(sym)
-                if kb.kind_of(sym) == Some(SymbolKind::CallbackParam)
+                if kb.kinds(sym).is_place(SymbolKind::CallbackParam)
                     && kb.symbols.declaring_scope(sym).map(|s| s.owner()) == Some(op_sym) =>
             {
                 // WI-353: a callback parameter's latent `Modify[f.a]`. Resolve
@@ -500,7 +500,7 @@ pub(crate) fn op_boundary_effects(
             // no declaration the declaration check would refuse. A WRITTEN `Modify[n]` on
             // a concrete non-modifiable type is still refused, by `check_modify_targets`.
             Some(sym)
-                if kb.kind_of(sym) == Some(SymbolKind::Param)
+                if kb.kinds(sym).is_place(SymbolKind::Param)
                     && kb.symbols.declaring_scope(sym).map(|s| s.owner()) == Some(op_sym)
                     && is_modify_effect(kb, &effect)
                     && !param_admits_modify(kb, op_sym, sym, regions) => {}

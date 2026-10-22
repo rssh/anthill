@@ -67,11 +67,15 @@
 //!   PASS either way, by design: a_constructor_with_no_field_is_its_value — a name, not
 //!   an application.
 //!
-//!   NOT COVERED, both measured with the arm in place. A constructor that shares its
-//!   sort's name (`sort E { entity E(n: Int64) }`, `<=> E(n: ?v)`) is refused at load,
-//!   read as `E` applied to type arguments. A tuple written on the right-hand side (`<=>
-//!   (?a, ?a)`) loads clean and dies in eval, `unhandled Expr variant`: it arrives as the
-//!   tuple node of a rule's text, which is another node eval has no reading for.
+//!   NOT COVERED, measured with the arm in place. A tuple written on the right-hand side
+//!   (`<=> (?a, ?a)`) loads clean and dies in eval, `unhandled Expr variant`: it arrives as
+//!   the tuple node of a rule's text, which is another node eval has no reading for.
+//!
+//!   A constructor that shares its sort's name (`sort E { entity E(n: Int64) }`, `<=> E(n:
+//!   ?v)`) was the second gap: read as `E` applied to type arguments, because eval's sort
+//!   arm asked for the keyword written FIRST, which the long spelling makes `sort`. It
+//!   constructs since WI-974 —
+//!   `wi974_kind_set_order_twin_test::a_simp_right_hand_side_constructs_in_both_spellings`.
 
 use anthill_core::eval::Value;
 

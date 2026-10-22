@@ -7645,17 +7645,21 @@ impl KnowledgeBase {
         let Some(sym) = place_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
         };
-        let prov_qn = match self.kind_of(sym) {
-            Some(crate::intern::SymbolKind::Param) => "anthill.reflect.feed.Provenance.input",
-            Some(crate::intern::SymbolKind::OpResult) => {
-                "anthill.reflect.feed.Provenance.op_result"
-            }
-            Some(crate::intern::SymbolKind::CallbackResult) => {
-                "anthill.reflect.feed.Provenance.fresh_output"
-            }
-            Some(crate::intern::SymbolKind::LocalLet) => "anthill.reflect.feed.Provenance.local",
-            // CallbackParam (a flow target) and non-place symbols: no provenance.
-            _ => return BuiltinResult::Failure,
+        // A PLACE's provenance is its value-place kind, and a name that is a type as well is
+        // no place (`KindSet::is_place`, WI-974). CallbackParam (a flow target) and
+        // non-place symbols: no provenance.
+        use crate::intern::SymbolKind;
+        let kinds = self.kinds(sym);
+        let prov_qn = if kinds.is_place(SymbolKind::Param) {
+            "anthill.reflect.feed.Provenance.input"
+        } else if kinds.is_place(SymbolKind::OpResult) {
+            "anthill.reflect.feed.Provenance.op_result"
+        } else if kinds.is_place(SymbolKind::CallbackResult) {
+            "anthill.reflect.feed.Provenance.fresh_output"
+        } else if kinds.is_place(SymbolKind::LocalLet) {
+            "anthill.reflect.feed.Provenance.local"
+        } else {
+            return BuiltinResult::Failure;
         };
         let prov_sym = match self.try_resolve_symbol(prov_qn) {
             Some(s) => s,

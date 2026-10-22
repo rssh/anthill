@@ -153,8 +153,8 @@ end
         .expect("the `<=>` twin DOES introduce its subject — the positive this absence \
                  is measured against");
     assert_eq!(
-        kb.kind_of(sym),
-        Some(anthill_core::intern::SymbolKind::EquationFunctor),
+        kb.kinds(sym),
+        anthill_core::intern::KindSet::of(anthill_core::intern::SymbolKind::EquationFunctor),
         "`<=>` is the connective of equational rule heads, so its subject is an \
          equation functor — the stamp `===` was wrongly given",
     );

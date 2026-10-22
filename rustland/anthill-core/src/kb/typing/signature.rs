@@ -3985,38 +3985,48 @@ fn modify_place_type(
         kb.op_record(owner)?.signature.clone()
     };
     let head_name = kb.local_name_of(head).to_owned();
-    let mut types: Vec<Value> = match kb.kind_of(head) {
-        Some(crate::intern::SymbolKind::OpResult) => vec![fact
+    // By the roles the name PLAYS (WI-974), in the order below: it read the keyword
+    // written first, so `sort counter { entity counter }` — `{Sort, Entity}`, the long
+    // spelling of `entity counter` — was refused as "a Sort, which names no value" where
+    // the short spelling was the constructor. A value place that is a type as well
+    // (`KindSet::is_place`) is read as the type, as the loader lowers it, and so is a
+    // sort beside a same-named operation: a BARE name is a type when it is a sort and no
+    // constructor ([`KnowledgeBase::is_type_value_head`], kernel-language §4.4).
+    use crate::intern::SymbolKind;
+    let kinds = kb.kinds(head);
+    let mut types: Vec<Value> = if kinds.is_place(SymbolKind::OpResult) {
+        vec![fact
             .as_ref()
             .and_then(|f| f.return_type.cloned())
             .or_else(|| owner_signature(kb, head).map(|sig| sig.return_type))
-            .ok_or("its operation records no return type")?],
-        Some(crate::intern::SymbolKind::Param) => {
-            let declared = match &fact {
-                Some(f) => f.params.iter().find(|(q, _)| kb.local_name_of(*q) == head_name).map(|(_, t)| t.clone()),
-                None => owner_signature(kb, head)
-                    .and_then(|sig| sig.params.into_iter().find(|(q, _)| kb.local_name_of(*q) == head_name))
-                    .map(|(_, t)| t),
-            };
-            vec![declared.ok_or_else(|| format!("`{head_name}` is not among its operation's parameters"))?]
-        }
+            .ok_or("its operation records no return type")?]
+    } else if kinds.is_place(SymbolKind::Param) {
+        let declared = match &fact {
+            Some(f) => f.params.iter().find(|(q, _)| kb.local_name_of(*q) == head_name).map(|(_, t)| t.clone()),
+            None => owner_signature(kb, head)
+                .and_then(|sig| sig.params.into_iter().find(|(q, _)| kb.local_name_of(*q) == head_name))
+                .map(|(_, t)| t),
+        };
+        vec![declared.ok_or_else(|| format!("`{head_name}` is not among its operation's parameters"))?]
+    } else if kinds.contains(SymbolKind::Operation) && !kb.is_type_value_head(head) {
         // AMBIENT: the result of a zero-argument operation (WI-313's `Modify[op]`) and a
         // constructor's constant (WI-20260823-4GBQV's `Modify[counter]`, retired at the
         // loader). Either is declarable, and neither is writable — no call re-keys onto it.
-        Some(crate::intern::SymbolKind::Operation) => {
-            return Ok(PlaceType::Ambient { head, what: "the zero-argument operation" })
-        }
-        Some(crate::intern::SymbolKind::Entity) => {
-            return Ok(PlaceType::Ambient { head, what: "the constructor" })
-        }
+        return Ok(PlaceType::Ambient { head, what: "the zero-argument operation" });
+    } else if kinds.contains(SymbolKind::Entity) {
+        return Ok(PlaceType::Ambient { head, what: "the constructor" });
+    } else if kinds.is_place(SymbolKind::CallbackParam)
+        || kinds.is_place(SymbolKind::CallbackResult)
+        || kinds.is_place(SymbolKind::LocalLet)
+    {
         // A callback's binder or result, or a body local: its type is on no signature
         // this reads.
-        Some(
-            crate::intern::SymbolKind::CallbackParam
-            | crate::intern::SymbolKind::CallbackResult
-            | crate::intern::SymbolKind::LocalLet,
-        ) => return Ok(PlaceType::Unknown),
-        other => return Err(format!("its place `{head_name}` is a {other:?}, which names no value")),
+        return Ok(PlaceType::Unknown);
+    } else if kb.is_type_value_head(head) {
+        return Err(format!("its place `{head_name}` is a type, which names no value"));
+    } else {
+        let shown = kb.kind_of(head);
+        return Err(format!("its place `{head_name}` is a {shown:?}, which names no value"));
     };
     for field in fields.iter().rev() {
         let field = kb.local_name_of(*field).to_owned();

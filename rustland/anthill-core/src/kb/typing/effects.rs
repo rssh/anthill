@@ -1202,11 +1202,17 @@ pub(super) fn drop_refuted_guarded_labels(
 /// resolves to a `Sort` and is satisfied by dispatch / coverage (WI-343 / WI-325),
 /// never by `prove_from_gamma`. A clause with no functor head is conservatively
 /// NOT treated as a value precondition (left to the other checks).
+///
+/// The head is APPLIED, so it is read as an application is (kernel-language §4.4): a spec
+/// requirement only when the name can be nothing but a type
+/// ([`KnowledgeBase::names_only_a_type`]) — a sort that is also an operation is applied as
+/// the operation (WI-974). It asked for the keyword written FIRST, so `requires both(x)`
+/// beside `sort both` was a precondition in one order and an unchecked spec in the other.
 pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause.head(kb) {
         ViewHead::Functor {
             functor: Some(f), ..
-        } => kb.kind_of(f) != Some(crate::intern::SymbolKind::Sort),
+        } => !kb.names_only_a_type(f),
         _ => false,
     }
 }
@@ -2468,7 +2474,7 @@ fn label_over_callback_binder(kb: &KnowledgeBase, label: &Value) -> bool {
         && type_any_part(kb, label, &|te| match te {
             TypeExtractor::Denoted(inner) => {
                 Some(place_head_sym(kb, inner).is_some_and(|place| {
-                    kb.kind_of(place) == Some(crate::intern::SymbolKind::CallbackParam)
+                    kb.kinds(place).is_place(crate::intern::SymbolKind::CallbackParam)
                 }))
             }
             _ => None,

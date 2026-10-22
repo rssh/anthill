@@ -838,7 +838,6 @@ pub(super) fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value
 }
 
 pub(super) fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::intern::SymbolKind;
     let [s] = expect_args::<1>("kind", args)?;
     let sym = expect_symbol(interp.kb(), s, "kind")?;
     // WI-898: the kind→string table lives on `SymbolKind` itself, shared with the
@@ -846,7 +845,7 @@ pub(super) fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let kind_str = interp
         .kb()
         .reflect_kind(sym)
-        .map_or("Unresolved", SymbolKind::reflect_name);
+        .map_or("Unresolved", crate::intern::KindLabel::reflect_name);
     Ok(Value::Str(kind_str.into()))
 }
 

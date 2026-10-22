@@ -3189,7 +3189,7 @@ mod wi802_function_spec_owner_tests {
                     place kb::typing spells it"
                 )
             });
-        assert_eq!(kb.kind_of(f), Some(SymbolKind::Sort), "it must be a SORT");
+        assert!(kb.has_kind(f, SymbolKind::Sort), "it must be a SORT");
         assert!(
             is_function_spec(&kb, f),
             "the owner recognizes its own referent"
@@ -3212,9 +3212,8 @@ mod wi802_function_spec_owner_tests {
     fn an_unresolved_function_name_is_not_the_stdlib_sort() {
         let mut kb = load_stdlib(None);
         let unresolved = kb.intern("Function");
-        assert_eq!(
-            kb.kind_of(unresolved),
-            None,
+        assert!(
+            kb.kinds(unresolved).is_empty(),
             "no such declaration ⇒ unresolved"
         );
         assert_eq!(
@@ -3235,7 +3234,7 @@ mod wi802_function_spec_owner_tests {
         let declared = kb
             .try_resolve_symbol("Function")
             .expect("top-level `sort Function`");
-        assert_eq!(kb.kind_of(declared), Some(SymbolKind::Sort));
+        assert!(kb.has_kind(declared, SymbolKind::Sort));
         assert_eq!(
             kb.qualified_name_of(declared),
             "Function",
@@ -4065,6 +4064,13 @@ end
             .unwrap_or_else(|| panic!("resolve {qn}"))
     }
 
+    /// The keyword `s` was first written with, by its NAME — the reading the five gates
+    /// used to take, which this module measures against `has_kind`. Since WI-974 it can
+    /// be spelled only so: `kind_of` is a display label, not comparable with a kind.
+    fn written_keyword(kb: &KnowledgeBase, s: Symbol) -> Option<&'static str> {
+        kb.kind_of(s).map(crate::intern::KindLabel::reflect_name)
+    }
+
     /// The premise the rest of the module rests on: this fixture really does build a
     /// sort that `kind_of` calls something else, and it really is parametric. If the
     /// loader ever refuses the re-declaration, THIS is the test that says so — the
@@ -4075,7 +4081,11 @@ end
         let rec = sym(&kb, "test.wi956.Rec");
         assert_eq!(
             kb.symbols.get(rec).kinds(),
-            &[SymbolKind::Namespace, SymbolKind::Sort, SymbolKind::Entity],
+            crate::intern::KindSet::of_all(&[
+                SymbolKind::Namespace,
+                SymbolKind::Sort,
+                SymbolKind::Entity
+            ]),
             "the secondary entry registers Namespace first; `sort Rec` adds Sort \
              through the reuse arm, and its eponymous constructor adds Entity",
         );
@@ -4083,10 +4093,10 @@ end
             kb.has_kind(rec, SymbolKind::Sort),
             "`Rec` PLAYS the sort role"
         );
-        assert_ne!(
-            kb.kind_of(rec),
-            Some(SymbolKind::Sort),
-            "…and `kind_of` says otherwise — the whole asymmetry, in one assert",
+        assert_eq!(
+            written_keyword(&kb, rec),
+            Some("Namespace"),
+            "…and the keyword written first is another — the whole asymmetry, in one assert",
         );
         assert_eq!(
             kb.type_params_of_sort(rec),
@@ -4095,7 +4105,7 @@ end
         );
         // The control sort, same shape, opposite declaration order.
         let ord = sym(&kb, "test.wi956.Ord");
-        assert_eq!(kb.kind_of(ord), Some(SymbolKind::Sort));
+        assert_eq!(written_keyword(&kb, ord), Some("Sort"));
         assert_eq!(kb.type_params_of_sort(ord), vec!["U".to_string()]);
     }
 
@@ -4202,7 +4212,7 @@ end
             .iter()
             .copied()
             .filter(|&s| {
-                kb.has_kind(s, SymbolKind::Sort) && kb.kind_of(s) != Some(SymbolKind::Sort)
+                kb.has_kind(s, SymbolKind::Sort) && written_keyword(&kb, s) != Some("Sort")
             })
             .collect();
         assert!(
@@ -4239,7 +4249,7 @@ end
         );
         for &op in &ops {
             assert_eq!(
-                impl_parent_of_op(&kb, op).filter(|p| kb.kind_of(*p) == Some(SymbolKind::Sort)),
+                impl_parent_of_op(&kb, op).filter(|p| written_keyword(&kb, *p) == Some("Sort")),
                 impl_parent_sort_of_op(&kb, op),
                 "`{}`: the two gates disagree on a LIBRARY operation",
                 kb.qualified_name_of(op),
