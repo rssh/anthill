@@ -873,10 +873,17 @@ impl Interpreter {
         let mut named: Vec<(Symbol, Value)> = Vec::with_capacity(named_args.len());
         let mut columns: Vec<(Symbol, VarId)> = Vec::new();
         // Fill one head slot: a bound column splices its supplied value (a filter); a
-        // free column opens a fresh global (a materialized column); a ground slot rides
-        // verbatim; a compound slot mentioning a variable is rejected loudly (its raw
-        // DeBruijn would unify reflexively-only → silent 0 solutions — the typer
-        // rejects this at LOAD, this guards a programmatically-built reference).
+        // free column opens a fresh global (a materialized column); a ground slot opens
+        // a fresh ANONYMOUS global, no column; a compound slot mentioning a variable is
+        // rejected loudly (its raw DeBruijn would unify reflexively-only → silent 0
+        // solutions — the typer rejects this at LOAD, this guards a programmatically-built
+        // reference).
+        //
+        // A ground slot is the FIRST clause's constant, and each clause pins it to its
+        // own: riding verbatim, it filtered every clause by the first one's, so over
+        // `rule mixed(1, ?y) :- ?y <=> 10` and `rule mixed(2, ?y) :- ?y <=> 20` the
+        // citation read one row, and over `fact holds(1)`, `fact holds(2)` one proof.
+        // Each clause's head still pins the anonymous variable to its own constant.
         let fill = |me: &mut Self,
                     slot: SlotKey,
                     arg: TermId,
@@ -899,7 +906,9 @@ impl Interpreter {
                                 .into(),
                         ));
                     }
-                    Ok(Value::term(arg))
+                    let anon = me.kb.intern("_");
+                    let fresh = me.kb.fresh_var(anon);
+                    Ok(Value::term(me.kb.alloc(Term::Var(Var::Global(fresh)))))
                 }
             }
         };

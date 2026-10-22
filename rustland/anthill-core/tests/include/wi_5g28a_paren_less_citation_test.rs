@@ -10,8 +10,9 @@
 //!    validated` (loads clean: the bindings were erased), `a_bracketed_chain_followed_by_a_
 //!    projection_is_a_citation` (three "expected resolved name" errors), `a_let_bound_
 //!    citation_is_a_relation_value` (one), `a_bracketed_goal_in_a_rule_body_is_the_goal`
-//!    (it answers 0 rows while its bare twin answers 1 — a silent wrong answer, under which
-//!    `not(…)` would succeed), `a_nested_sort_after_the_bracket_is_refused` (loads clean: the
+//!    (it answered 0 rows while its bare twin answered 1 — a silent wrong answer, under which
+//!    `not(…)` would succeed; the row is `a_bracketed_goal_in_a_rule_body_is_refused` since
+//!    2026-10-21, and this axis was not measured again on it), `a_nested_sort_after_the_bracket_is_refused` (loads clean: the
 //!    bracket was erased on the way to `Outer.Inner.op`), `a_bracket_on_a_zero_field_
 //!    constructor_meets_the_sweep` (loads clean) and `a_paren_less_bracket_on_an_operation_
 //!    is_refused` (on its message: "zero.name: expected resolved name").
@@ -34,7 +35,7 @@
 //! it pins that the lowering did not change what the paren-less spelling answers;
 //! `a_typo_after_the_bracket_draws_one_error` under [C] (the flattened chain drew one
 //! error too — the row guards [U] alone); and the bare twin inside
-//! `a_bracketed_goal_in_a_rule_body_is_the_goal` under every axis.
+//! `a_bracketed_goal_in_a_rule_body_is_refused` under every axis.
 //!
 //! NOT IN THIS SLICE, said so a green row is not read as more: the citation still types
 //! its column at the clause's own `T` (`got Wrap[T = ?T]` for a bound `?x: Wrap[T = T]`),
@@ -140,35 +141,41 @@ fn both_spellings_answer_the_same_count() {
     }
 }
 
+/// A RULE-BODY GOAL WITH A SORT'S BRACKET IS REFUSED (2026-10-21). A rule goal passes its
+/// callee nothing, so `:- Wrap[T = Colour].holds` was lowered onto the goal and read by no
+/// one: it answered as the bare goal does here only because `holds` reads no `T` — over
+/// `rule el(?x: T)`, `Wrap[T = Int64].el(?x)` answered a `String` too
+/// (`rule_goal_sort_bracket_refused_test`). Both spellings, paren-less and applied, meet the
+/// refusal. Before 5G28A's lowering the paren-less goal loaded clean and answered NOTHING.
 #[test]
-fn a_bracketed_goal_in_a_rule_body_is_the_goal() {
-    // A rule body is the other lowering the marked node reaches, and there it takes the
-    // applied reading with no refusal. Before, `:- Wrap[T = Colour].holds` was a
-    // `field_access` term heading no clause: it loaded clean and answered NOTHING, where
-    // the bare `:- Wrap.holds` and the applied `:- Wrap[T = Colour].holds()` answer.
-    let mut kb = crate::common::load_kb_with(
-        "namespace zz5g28al3g\n\
-         \x20 sort Colour\n\
-         \x20   entity red\n\
-         \x20 end\n\
-         \x20 sort Wrap[T]\n\
-         \x20   entity wrap(v: T)\n\
-         \x20   rule holds :- true\n\
-         \x20 end\n\
-         \x20 rule viaBracket(1) :- Wrap[T = Colour].holds\n\
-         \x20 rule viaBare(1) :- Wrap.holds\n\
-         end\n",
-    );
+fn a_bracketed_goal_in_a_rule_body_is_refused() {
+    let src = |goal: &str| {
+        format!(
+            "namespace zz5g28al3g\n\
+             \x20 sort Colour\n\
+             \x20   entity red\n\
+             \x20 end\n\
+             \x20 sort Wrap[T]\n\
+             \x20   entity wrap(v: T)\n\
+             \x20   rule holds :- true\n\
+             \x20 end\n\
+             \x20 rule viaGoal(1) :- {goal}\n\
+             end\n"
+        )
+    };
+    let mut kb = crate::common::load_kb_with(&src("Wrap.holds"));
     assert_eq!(
-        crate::common::definite_unary(&mut kb, "zz5g28al3g.viaBare").len(),
+        crate::common::definite_unary(&mut kb, "zz5g28al3g.viaGoal").len(),
         1,
         "CONTROL: the bare goal answers — passes under every back-out, by design",
     );
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "zz5g28al3g.viaBracket").len(),
-        1,
-        "the bracketed paren-less goal must answer as the bare one does",
-    );
+    for goal in ["Wrap[T = Colour].holds", "Wrap[T = Colour].holds()"] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src(goal)),
+            &["type bracket on `zz5g28al3g.Wrap.holds` in a rule body"],
+            goal,
+        );
+    }
 }
 
 #[test]

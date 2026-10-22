@@ -1115,6 +1115,7 @@ impl KnowledgeBase {
             or_connective_sym: plain(&self.or_connective_sym),
             and_connective_sym: plain(&self.and_connective_sym),
             reify_operation_sym: plain(&self.reify_operation_sym),
+            error_sort_sym: plain(&self.error_sort_sym),
             runtime_account_syms: plain(&self.runtime_account_syms),
             induction_axioms: plain(&self.induction_axioms),
             tuple_literal_sym: plain(&self.tuple_literal_sym),

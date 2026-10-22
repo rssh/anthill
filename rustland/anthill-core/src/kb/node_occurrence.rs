@@ -5522,15 +5522,19 @@ pub fn reassemble_pattern_subpatterns(
 /// carrier; the ONE reader, replacing the split between
 /// `Expr::Let.type_annotation` (already a `Value`) and the binder channel's
 /// `occurrence_to_term` re-grounding.
-pub fn pattern_annotation_value(kb: &mut KnowledgeBase, ann: &Rc<NodeOccurrence>) -> Value {
+///
+/// `None` for an annotation that names a sort the loader could not resolve: that name was
+/// refused where it was written, and the binder is read as unannotated. Read, the annotation
+/// was refused again by every check that compared it (`expected Relation[…], got
+/// Relation[…]` under a missing import), and every use of the binder after it.
+pub fn pattern_annotation_value(kb: &mut KnowledgeBase, ann: &Rc<NodeOccurrence>) -> Option<Value> {
     // A type its author wrote through a type alias is carried whole, name and all
     // ([`written_pattern_annotation`]).
-    if let Some(Expr::Spliced(written @ Value::Node(ty))) = ann.as_expr() {
-        if ty.as_type().is_some() {
-            return written.clone();
-        }
-    }
-    Value::term(occurrence_to_term(kb, ann))
+    let written = match ann.as_expr() {
+        Some(Expr::Spliced(written @ Value::Node(ty))) if ty.as_type().is_some() => written.clone(),
+        _ => Value::term(occurrence_to_term(kb, ann)),
+    };
+    (!crate::kb::typing::type_mentions_unresolved_name(kb, &written)).then_some(written)
 }
 
 /// The annotation occurrence of a binder whose type was written through a type alias: the

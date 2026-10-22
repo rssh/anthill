@@ -1416,6 +1416,17 @@ impl KnowledgeBase {
         }
     }
 
+    /// Is the row member `e` the `Error` effect — bare, or applied (`Error[T = Boom]`)?
+    /// Read by its HEAD, as [`Self::effect_member_is_parametric`] is, and by the resolved
+    /// symbol, never by a name's last segment.
+    pub(crate) fn effect_member_is_error(&self, e: &crate::eval::value::Value) -> bool {
+        let Some(error) = self.error_sort_sym else {
+            return false;
+        };
+        super::typing::sort_functor_of_view(self, e)
+            .is_some_and(|s| self.canonical_sort_sym(s) == self.canonical_sort_sym(error))
+    }
+
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):
     /// the op's parameters become DeBruijn vars (`?0`…), the body is specialized
     /// one step, and each `if`-branch path yields a guarded [`DefiningEquation`]

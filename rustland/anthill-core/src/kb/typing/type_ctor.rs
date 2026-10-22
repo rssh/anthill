@@ -222,11 +222,26 @@ pub(super) fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; T
 /// a type-parameter SUBJECT, neither of which can hold a type constructor. The probe saw
 /// both (18 and 8 times), always as leaves.
 fn for_each_type_base(kb: &KnowledgeBase, ty: &Value, visit: &mut impl FnMut(Symbol)) {
+    walk_type_heads(kb, ty, false, visit)
+}
+
+/// Does a type name, as a head anywhere, a sort the loader could not resolve? That name was
+/// reported where it was written, so a check against the type would only report it again —
+/// and the two sides of such a mismatch render alike (`expected Relation[…], got
+/// Relation[…]`), since the unresolved name is printed as written.
+pub(crate) fn type_mentions_unresolved_name(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let mut found = false;
+    walk_type_heads(kb, ty, true, &mut |head| found |= !kb.symbols.is_resolved(head));
+    found
+}
+
+/// [`for_each_type_base`]'s walk, visiting a bare sort reference too where `bare` is set.
+fn walk_type_heads(kb: &KnowledgeBase, ty: &Value, bare: bool, visit: &mut impl FnMut(Symbol)) {
     match extract_type(kb, ty) {
         TypeExtractor::Parameterized { base, bindings } => {
             visit(base);
             for (_, v) in &bindings {
-                for_each_type_base(kb, v, visit);
+                walk_type_heads(kb, v, bare, visit);
             }
         }
         // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
@@ -236,20 +251,25 @@ fn for_each_type_base(kb: &KnowledgeBase, ty: &Value, visit: &mut impl FnMut(Sym
             effects,
             arity: _,
         } => {
-            for_each_type_base(kb, &param, visit);
-            for_each_type_base(kb, &result, visit);
-            for_each_type_base(kb, &effects, visit);
+            walk_type_heads(kb, &param, bare, visit);
+            walk_type_heads(kb, &result, bare, visit);
+            walk_type_heads(kb, &effects, bare, visit);
         }
         TypeExtractor::NamedTuple(fields) => {
             for (_, v) in &fields {
-                for_each_type_base(kb, v, visit);
+                walk_type_heads(kb, v, bare, visit);
             }
         }
-        TypeExtractor::EffectsRows(e) => for_each_type_base(kb, &e, visit),
+        TypeExtractor::EffectsRows(e) => walk_type_heads(kb, &e, bare, visit),
         TypeExtractor::PolyType { context, body, .. } => {
-            for_each_type_base(kb, &body, visit);
+            walk_type_heads(kb, &body, bare, visit);
             for c in &context {
-                for_each_type_base(kb, c, visit);
+                walk_type_heads(kb, c, bare, visit);
+            }
+        }
+        TypeExtractor::SortRef(s) => {
+            if bare {
+                visit(s)
             }
         }
         TypeExtractor::ExprCarried { .. }
@@ -257,7 +277,6 @@ fn for_each_type_base(kb: &KnowledgeBase, ty: &Value, visit: &mut impl FnMut(Sym
         | TypeExtractor::FlexVar { .. }
         | TypeExtractor::Skolem { .. }
         | TypeExtractor::Denoted(_)
-        | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
         | TypeExtractor::Nothing
         | TypeExtractor::Error => {}

@@ -2032,6 +2032,11 @@ pub struct KnowledgeBase {
     /// resolver's per-goal gates. `None` before the prelude loads, when no symbol is it.
     reify_operation_sym: Option<Symbol>,
 
+    /// `anthill.prelude.Error`, cached where the connectives are:
+    /// [`Self::effect_member_is_error`] is asked on the resolver's per-goal gates. `None`
+    /// before the prelude loads.
+    error_sort_sym: Option<Symbol>,
+
     /// The runtime's three accounts of what it could not do ([`RuntimeAccount`]), in
     /// [`RuntimeAccount::ALL`]'s order, cached where the connectives are: the bridge reads one
     /// per raise that escapes it, and the typer one per construction. `None` before the
@@ -2939,6 +2944,7 @@ impl KnowledgeBase {
             or_connective_sym: None,
             and_connective_sym: None,
             reify_operation_sym: None,
+            error_sort_sym: None,
             runtime_account_syms: [None; 3],
             induction_axioms: HashSet::new(),
             unify_connective_sym: None,
@@ -10417,6 +10423,7 @@ impl KnowledgeBase {
         self.or_connective_sym = self.try_resolve_symbol("anthill.kernel.or");
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
         self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
+        self.error_sort_sym = self.try_resolve_symbol("anthill.prelude.Error");
         self.runtime_account_syms =
             RuntimeAccount::ALL.map(|account| self.try_resolve_symbol(account.qualified_name()));
     }

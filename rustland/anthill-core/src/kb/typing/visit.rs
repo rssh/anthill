@@ -81,7 +81,7 @@ pub(super) fn visit_type(
             // alias canonicalization, the value's expected type, and the
             // WI-379 conformance check at `LetAfterValue`) is unchanged.
             let annotation =
-                extract_pattern_type_ann(&pattern).map(|ann| pattern_annotation_value(kb, ann));
+                extract_pattern_type_ann(&pattern).and_then(|ann| pattern_annotation_value(kb, ann));
             // WI-399: discharge an expression-carried projection (`s.cell.T`) in the
             // let annotation HERE, where `env` resolves the receiver's type — the
             // let-binding peer of the op-call elimination in `check_apply_iter`. The
@@ -246,9 +246,9 @@ pub(super) fn visit_type(
             // `Value::Node` carrier instead of being flattened to `Value::Term`
             // (the carrier is information — see that function).
             // WI-20261001-89WZR: at the body's parameters, as the `let` arm reads its own.
-            let ann_type: Option<Value> = extract_pattern_type_ann(&param).map(|ann_occ| {
-                let written = pattern_annotation_value(kb, ann_occ);
-                written_type_at_body_rigids(kb, &env, &written)
+            let ann_type: Option<Value> = extract_pattern_type_ann(&param).and_then(|ann_occ| {
+                let written = pattern_annotation_value(kb, ann_occ)?;
+                Some(written_type_at_body_rigids(kb, &env, &written))
             });
             let param_type: Value = ann_type
                 .or_else(|| {

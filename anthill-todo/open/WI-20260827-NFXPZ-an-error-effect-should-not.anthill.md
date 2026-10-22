@@ -34,3 +34,9 @@ WHAT THIS TICKET MUST DECIDE, and it is a SEMANTICS question rather than a gate 
 
 ACCEPTANCE: the `err` row above answers per the decision in item 1, in BOTH polarities (an operation whose host function would answer `"a"` and one that would not), with the `pure` control still at 1 and a `{Modify[s], Error}` row still refused; the negation interaction of item 2 driven; and the flipped assertion in `wi_vpewk_host_op_operand_test` carries the new reading. Full workspace green via rustland/scripts/test.sh.
 
+## Changes
+
+### 2026-10-21T19:50:15Z — feedback — user
+
+THE BODIED HALF IS DONE (2026-10-21, decided with the user: keep it, and kernel-language §5.3 amended): a BODIED operation whose row's concrete members are all `Error` has its goal views (`effect_row_admits_relational_view`, through `effect_member_is_error`), since the bridge runs the body and a raise leaves the call unreduced, as in a value slot. Before, over `three() -> Int64 effects {Error} = 3`, `three(?r)` answered nothing where `?r <=> three()` answers 3, and `not(three(3))` held; a raising body's goal failed and `not(…)` over it proved a falsehood. Rows: error_row_relational_view_test; wi939 / wi_dqd5w / wi_nx4fd's 'concrete effect still refused' rows now use `Clock`. WHAT IS LEFT HERE is this ticket's own subject: a HOST-mapped operation with an `Error` row (`host_op_reducible_at_a_value` still demands an empty row), whose goal still has no reading.
+
