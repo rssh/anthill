@@ -40,6 +40,22 @@ pub(super) struct ClauseConstraints {
     /// its cycle ([`rule_goal_columns_at`]): their types, and the variables nothing types.
     pub(super) unread: Vec<Value>,
     pub(super) unread_vars: HashSet<u32>,
+    /// What the walk found that does not fit — a construction's argument against its field.
+    pub(super) found: Vec<ClauseDisagreement>,
+    /// Variables only a demand has typed so far — a call's argument at a parameter of a
+    /// stated type —; any other position, a test among them (`domain(?v, T)`, `<=>` against a
+    /// construction or a literal, a head's bound), takes a variable off. The arguments a
+    /// column of some type meets ([`ColumnType::Some`]), read once every other position is,
+    /// and the variables nothing types that such a column takes.
+    pub(super) demand_only: HashSet<u32>,
+    pub(super) some_args: Vec<Rc<NodeOccurrence>>,
+    pub(super) some_typed: HashSet<u32>,
+    /// Where a term the walk reads was written, for a term that carries no place of its own
+    /// (a head's, a fact's).
+    pub(super) at: Option<crate::span::SourceSpan>,
+    /// Whether a construction's arguments are checked against its fields, and the reflect
+    /// syntax a term stores is read as data: not in an equation's head ([`walk_clause`]).
+    pub(super) checks_constructions: bool,
 }
 
 impl ClauseConstraints {
@@ -51,6 +67,12 @@ impl ClauseConstraints {
             late: Vec::new(),
             unread: Vec::new(),
             unread_vars: HashSet::new(),
+            found: Vec::new(),
+            demand_only: HashSet::new(),
+            some_args: Vec::new(),
+            some_typed: HashSet::new(),
+            at: None,
+            checks_constructions: true,
         }
     }
 
@@ -66,6 +88,12 @@ impl ClauseConstraints {
             late: Vec::new(),
             unread: self.unread.clone(),
             unread_vars: self.unread_vars.clone(),
+            found: Vec::new(),
+            demand_only: self.demand_only.clone(),
+            some_args: self.some_args.clone(),
+            some_typed: self.some_typed.clone(),
+            at: self.at,
+            checks_constructions: self.checks_constructions,
         }
     }
 
@@ -81,6 +109,10 @@ impl ClauseConstraints {
         self.late.extend(trial.late);
         self.unread = trial.unread;
         self.unread_vars = trial.unread_vars;
+        self.found.extend(trial.found);
+        self.demand_only = trial.demand_only;
+        self.some_args = trial.some_args;
+        self.some_typed = trial.some_typed;
     }
 }
 
@@ -140,6 +172,10 @@ pub(super) struct ClauseDisagreement {
 /// Which position of a clause did not fit ([`ClauseDisagreement`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DisagreementClass {
+    /// A construction's argument against the field it fills.
+    ConstructionField,
+    /// A variable a column of some type takes, which only a demand types.
+    SomeTypeDemand,
     /// A head's written bound against what the body says of its variable.
     HeadBound,
     /// The same, where the bound fits once the enclosing sort's parameter it names is let
@@ -383,6 +419,10 @@ pub(super) fn instantiate_declared_type(
 pub(super) trait ConstrainedArg {
     fn literal(&self, kb: &KnowledgeBase) -> Option<Literal>;
     fn var_key(&self, kb: &KnowledgeBase) -> Option<u32>;
+    /// The constructor an entity construction applies, or a constant constructor names.
+    fn constructor(&self, kb: &KnowledgeBase) -> Option<Symbol>;
+    /// Where the argument was written, where it carries a place.
+    fn span(&self) -> Option<crate::span::SourceSpan>;
 }
 
 impl ConstrainedArg for TermId {
@@ -399,6 +439,16 @@ impl ConstrainedArg for TermId {
             _ => None,
         }
     }
+    fn constructor(&self, kb: &KnowledgeBase) -> Option<Symbol> {
+        match kb.get_term(*self) {
+            Term::Fn { functor, .. } | Term::Ref(functor) => Some(*functor),
+            _ => None,
+        }
+        .filter(|f| is_construction_functor(kb, *f))
+    }
+    fn span(&self) -> Option<crate::span::SourceSpan> {
+        None
+    }
 }
 
 impl ConstrainedArg for Rc<NodeOccurrence> {
@@ -414,6 +464,17 @@ impl ConstrainedArg for Rc<NodeOccurrence> {
             Some(Expr::Var(Var::DeBruijn(idx))) => Some(*idx),
             _ => None,
         }
+    }
+    fn constructor(&self, kb: &KnowledgeBase) -> Option<Symbol> {
+        let expr = self.as_expr()?;
+        match expr {
+            Expr::Ref(name) => Some(*name),
+            _ => expr_call_parts(expr).map(|(functor, _, _)| functor),
+        }
+        .filter(|f| is_construction_functor(kb, *f))
+    }
+    fn span(&self) -> Option<crate::span::SourceSpan> {
+        Some(self.span)
     }
 }
 
@@ -438,6 +499,8 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     arg: &A,
     expected_type: &Value,
     instantiated: bool,
+    // Whether the position is a call's argument, which needs its value's type known.
+    demand: bool,
     st: &mut ClauseConstraints,
 ) -> bool {
     if says_nothing_of_a_value(kb, expected_type) {
@@ -448,7 +511,7 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
         return true;
     }
     if let Some(vid) = arg.var_key(kb) {
-        constrain_vid(kb, vid, expected_type, instantiated, st);
+        constrain_vid(kb, vid, expected_type, instantiated, demand, st);
         return true;
     }
     false
@@ -496,8 +559,14 @@ fn constrain_vid(
     vid: u32,
     expected_type: &Value,
     from_param: bool,
+    demand: bool,
     st: &mut ClauseConstraints,
 ) {
+    if !demand {
+        st.demand_only.remove(&vid);
+    } else if !st.var_types.contains_key(&vid) {
+        st.demand_only.insert(vid);
+    }
     let Some(existing) = st.var_types.get(&vid).cloned() else {
         // Nothing known yet — record what this position says.
         st.var_types.insert(vid, expected_type.clone());
@@ -571,6 +640,9 @@ pub(super) fn collect_occurrence_type_constraints(
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
     let nested = match expr_call_parts(expr) {
         Some((functor, pos_args, named_args)) => {
+            if goal && committed {
+                constrain_domain_test(kb, functor, pos_args, st);
+            }
             let bracket = call_bracket_instances(kb, occ, expr, functor);
             let (nested, result) =
                 constrain_application(kb, functor, pos_args, named_args, &bracket, position, st);
@@ -798,7 +870,10 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 // wrapped into — says what the call takes, not what the variable is: it is
                 // the call's placeholder, as a parameter of the callee's own type is.
                 let placeholder = instantiated || is_option_type(kb, &param_type);
-                if !constrain_arg(kb, arg, &param_type, placeholder, st) {
+                // A demand is a parameter of a stated type: one of the callee's own type
+                // parameters — a spec's carrier, dispatched by the value — takes any value.
+                let demand = !instantiated && !kb.is_equality_connective_functor(functor);
+                if !constrain_arg(kb, arg, &param_type, placeholder, demand, st) {
                     nested.push((index, param_type));
                 }
             }
@@ -818,6 +893,9 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 st.subst = trial;
             }
         }
+    } else if !st.checks_constructions && is_reflect_syntax(kb, functor) {
+        // An equation's sides are stored as the reflect terms that write them (`?b.v` as a
+        // `dot_apply`): syntax, whose fields say nothing of the variables in them.
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
         for (field_sym, field_type) in &field_types {
@@ -826,7 +904,14 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 // constrain directly, no re-grounding to a term.
                 let (field_type, instantiated) =
                     instantiate_declared_type(kb, field_type, &mut inst);
-                if !constrain_arg(kb, &named_args[named].1, &field_type, instantiated, st) {
+                let arg = &named_args[named].1;
+                if st.checks_constructions && !argument_fits_field(kb, arg, &field_type, st) {
+                    st.found.push(ClauseDisagreement {
+                        class: DisagreementClass::ConstructionField,
+                        span: arg.span().or(st.at),
+                    });
+                }
+                if !constrain_arg(kb, arg, &field_type, instantiated, false, st) {
                     nested.push((pos_args.len() + named, field_type));
                 }
             }
@@ -920,6 +1005,153 @@ fn constrain_literal_arg(
     unify_types(kb, subst, expected_type, &lit_type);
 }
 
+/// `domain(?v, T)`, the run-time type test: `?v` is a `T` where the test holds, as a position
+/// that declares `T` says, and it is narrowed. A `T` the loader refuses — naming no sort, a spec
+/// over its parameter — says nothing.
+fn constrain_domain_test(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    st: &mut ClauseConstraints,
+) {
+    if kb.builtin_of(functor) != Some(crate::kb::resolve::BuiltinTag::TypeDomain) {
+        return;
+    }
+    let [value, ty] = pos_args else { return };
+    let Some(d) = value.var_key(kb) else { return };
+    let Ok(ty) = crate::kb::node_occurrence::value_to_term(kb, &Value::Node(Rc::clone(ty))) else {
+        return;
+    };
+    let ty = Value::term(ty);
+    if type_mentions_unresolved_name(kb, &ty) || parameter_spec_written_as_type(kb, &ty).is_some() {
+        return;
+    }
+    constrain_vid(kb, d, &ty, false, false, st);
+}
+
+/// `found` with each place's disagreement of one class once: a late position reads an
+/// argument the walk read already.
+pub(super) fn found_once(found: Vec<ClauseDisagreement>) -> Vec<ClauseDisagreement> {
+    let mut once: Vec<ClauseDisagreement> = Vec::with_capacity(found.len());
+    for d in found {
+        if !once.iter().any(|o| o.class == d.class && o.span == d.span) {
+            once.push(d);
+        }
+    }
+    once
+}
+
+/// Read the constructions a fact writes, as a clause's are read ([`argument_fits_field`]),
+/// and count what does not fit ([`count_clause_disagreements`]). A fact the loader made, which
+/// carries no place, is not read.
+pub(super) fn check_fact_constructions(kb: &mut KnowledgeBase, rid: RuleId) {
+    let (Some(at), Some(head)) = (kb.rule_head_span(rid), kb.fact_head_term(rid)) else {
+        return;
+    };
+    if is_equation(kb, rid) {
+        return;
+    }
+    let mut st = ClauseConstraints::new();
+    st.at = Some(at);
+    collect_term_type_constraints(kb, head, None, &mut st);
+    count_clause_disagreements(kb, &found_once(st.found));
+}
+
+/// Whether `rid` is an equation — directional (`@[simp]`) or a guarded `lhs = rhs :- g`, its
+/// head an application of an equality connective: a rewrite pattern, not data.
+pub(super) fn is_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
+    kb.is_directional_equation(rid)
+        || kb
+            .rule_head_value(rid)
+            .head(kb)
+            .functor_sym()
+            .is_some_and(|f| kb.is_equality_connective_functor(f))
+}
+
+/// Whether `functor` is one of the reflect `Expr` forms a term writes syntax as.
+fn is_reflect_syntax(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.sort_of_constructor(functor)
+        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.reflect.Expr")
+}
+
+/// Whether `functor` builds a value of an entity: a constructor, and not a type written as a
+/// value — a sort's type face (`Item[]`), one of `TypeExtractor`'s forms.
+fn is_construction_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.entity_field_types(functor).is_some() && !is_type_form_functor(kb, functor)
+}
+
+/// Whether a construction's argument fits the field it fills, as an operation's argument is
+/// checked against its parameter: a literal's sort and a construction's sort, with the
+/// argument conversions (a `Term` field admits every value, an `Option[T]` field a bare `T`,
+/// a field at a bare spec a value of a sort that provides it). Any other argument — a variable, a call, a
+/// collection literal, a type written as a term — is met by its own position.
+fn argument_fits_field<A: ConstrainedArg>(
+    kb: &mut KnowledgeBase,
+    arg: &A,
+    field: &Value,
+    st: &ClauseConstraints,
+) -> bool {
+    if says_nothing_of_a_value(kb, field) {
+        return true;
+    }
+    let actual = if let Some(lit) = arg.literal(kb) {
+        literal_sort(kb, &lit)
+    } else if let Some(ctor) = arg.constructor(kb) {
+        if kb.is_ordered_product_functor(ctor) || SeqLiteral::of_constructor(kb, ctor).is_some()
+        {
+            return true;
+        }
+        let Some(sort) = kb.sort_of_constructor(ctor) else {
+            return true;
+        };
+        let published = kb
+            .type_param_syms_of(sort)
+            .iter()
+            .all(|&param| kb.canonical_type_param_var(param).is_some());
+        if !published {
+            return true;
+        }
+        let own = Value::term(own_application(kb, sort));
+        instantiate_declared_type(kb, &own, &mut ParamInstantiation::new()).0
+    } else {
+        return true;
+    };
+    // A field of the construction's own parameter reads what the clause has bound; one with
+    // no variable in it needs nothing of the clause's substitution.
+    let reads_subst = type_mentions_flex_var(kb, field);
+    let scratch = |st: &ClauseConstraints| {
+        if reads_subst {
+            st.subst.clone()
+        } else {
+            Substitution::new()
+        }
+    };
+    if unify_types(kb, &mut scratch(st), field, &actual)
+        || types_compatible(kb, &mut scratch(st), &actual, field)
+    {
+        return true;
+    }
+    // A value of a sort that provides the field's bare spec, as at an operation's argument.
+    if let (Some(actual_base), Some(spec)) =
+        (type_base_sort_view(kb, &actual), extract_sort_ref_sym(kb, field))
+    {
+        if sort_provides_admissibly(kb, actual_base, spec) {
+            return true;
+        }
+    }
+    if is_option_type(kb, field) && !is_option_type(kb, &actual) {
+        if let Some(element) = extract_type_param(kb, field, "T") {
+            if unify_types(kb, &mut scratch(st), &element, &actual)
+                || types_compatible(kb, &mut scratch(st), &actual, &element)
+            {
+                return true;
+            }
+        }
+    }
+    note_disagreement(kb, &st.subst, field, &actual);
+    false
+}
+
 /// The type of a tuple, list or set literal — `functor` the reflect entity it is stored as —
 /// from its elements: each element typed at a component of its own, a tuple's by its label, a
 /// list's and a set's all at one element type; `None` for any other functor. An element that
@@ -938,7 +1170,7 @@ fn collection_literal_type<A: ConstrainedArg>(
         Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
     };
     let mut meet = |kb: &mut KnowledgeBase, index: usize, arg: &A, ty: &Value, st: &mut _| {
-        if !constrain_arg(kb, arg, ty, true, st) {
+        if !constrain_arg(kb, arg, ty, true, false, st) {
             nested.push((index, ty.clone()));
         }
     };
@@ -979,11 +1211,16 @@ fn type_written_as_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
     let (Expr::Apply { functor, .. } | Expr::Ref(functor)) = expr else {
         return false;
     };
-    if functor.is_type_face() || rule_body_type_term(kb, expr) {
-        return true;
-    }
-    kb.sort_of_constructor(*functor)
-        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
+    rule_body_type_term(kb, expr) || is_type_form_functor(kb, *functor)
+}
+
+/// Whether `functor` writes a type as a value: a sort's type face (`Item[]`), or one of
+/// `TypeExtractor`'s structural forms.
+fn is_type_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    functor.is_type_face()
+        || kb
+            .sort_of_constructor(functor)
+            .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
 }
 
 /// Read the positions of a clause the walk left for after it ([`LatePosition`]): the head's
@@ -1062,6 +1299,7 @@ pub(super) fn settle_late_positions(
             break;
         }
     }
+    demands_on_some_type(kb, rid, st);
     rigids
 }
 
@@ -1388,6 +1626,7 @@ fn constrain_var_at(
     let mut trial = st.subst.clone();
     if unify_types(kb, &mut trial, &existing, ty) {
         st.subst = trial;
+        st.demand_only.remove(&d);
         if st.param_backed.remove(&d) {
             st.var_types.insert(d, ty.clone());
         }
@@ -1460,7 +1699,7 @@ fn constrain_goal_at_columns(
     kb: &mut KnowledgeBase,
     st: &mut ClauseConstraints,
     goal: &Rc<NodeOccurrence>,
-    columns: &[(SlotKey, Value)],
+    columns: &[(SlotKey, ColumnType)],
 ) -> bool {
     let Some(Expr::Apply {
         pos_args,
@@ -1476,8 +1715,15 @@ fn constrain_goal_at_columns(
         .map(|(i, a)| (SlotKey::Pos(i), a))
         .chain(named_args.iter().map(|(k, a)| (SlotKey::Named(*k), a)));
     for (slot, arg) in slots {
-        let Some((_, ty)) = columns.iter().find(|(s, _)| *s == slot) else {
+        let Some((_, column)) = columns.iter().find(|(s, _)| *s == slot) else {
             continue;
+        };
+        let ty = match column {
+            ColumnType::Of(ty) => ty,
+            ColumnType::Some => {
+                meet_some_type(st, arg);
+                continue;
+            }
         };
         // A column of occurrences quotes the argument written there, as a `Term` position
         // does: `synth_int(42, ?n)` over `synth_int(?e, 1) :- occurrence_term(?e, …)` reads
@@ -1494,6 +1740,50 @@ fn constrain_goal_at_columns(
         }
     }
     true
+}
+
+/// An argument at a column of some type ([`ColumnType::Some`]): a filter, which types nothing,
+/// read once every other position of the clause is ([`demands_on_some_type`]).
+fn meet_some_type(st: &mut ClauseConstraints, arg: &Rc<NodeOccurrence>) {
+    st.some_args.push(Rc::clone(arg));
+}
+
+/// The demands on a value a column of some type gives: a variable there that only a demand
+/// types is recorded ([`DisagreementClass::SomeTypeDemand`]), and one nothing types is the
+/// column's — a dot on it is recorded too. A variable a test or any other position types is
+/// read at that type.
+fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstraints) {
+    for arg in std::mem::take(&mut st.some_args) {
+        let Some(d) = arg.var_key(kb) else { continue };
+        if st.demand_only.contains(&d) {
+            st.found.push(ClauseDisagreement {
+                class: DisagreementClass::SomeTypeDemand,
+                span: Some(arg.span),
+            });
+        } else if !st.var_types.contains_key(&d) {
+            st.some_typed.insert(d);
+        }
+    }
+    if st.some_typed.is_empty() {
+        return;
+    }
+    fn walk(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, st: &mut ClauseConstraints) {
+        let Some(expr) = occ.as_expr() else { return };
+        if let Expr::DotApply { receiver, .. } = expr {
+            if let Some(d) = receiver.var_key(kb) {
+                if st.some_typed.contains(&d) && !st.var_types.contains_key(&d) {
+                    st.found.push(ClauseDisagreement {
+                        class: DisagreementClass::SomeTypeDemand,
+                        span: Some(occ.span),
+                    });
+                }
+            }
+        }
+        for_each_child(expr, |c| walk(kb, c, st));
+    }
+    for node in kb.rule_body_nodes(rid).to_vec() {
+        walk(kb, &node, st);
+    }
 }
 
 /// [`note_disagreement`] for an argument: the slot's type against what the clause says of
@@ -1527,7 +1817,7 @@ fn rule_goal_columns_at(
     kb: &mut KnowledgeBase,
     own: Option<Symbol>,
     functor: Symbol,
-) -> Option<Vec<(SlotKey, Value)>> {
+) -> Option<Vec<(SlotKey, ColumnType)>> {
     if own.is_some_and(|f| same_rule_goal_cycle(kb, f, functor)) {
         return None;
     }
@@ -1654,6 +1944,8 @@ pub fn clause_disagreements_by_this_thread() -> Vec<(&'static str, usize)> {
 impl DisagreementClass {
     fn name(self) -> &'static str {
         match self {
+            DisagreementClass::ConstructionField => "construction field",
+            DisagreementClass::SomeTypeDemand => "some type demand",
             DisagreementClass::HeadBound => "head bound",
             DisagreementClass::SortParameterFixed => "sort parameter fixed",
             DisagreementClass::CallResult => "call result",

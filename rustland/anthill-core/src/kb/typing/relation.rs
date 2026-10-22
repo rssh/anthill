@@ -3015,7 +3015,7 @@ pub(crate) fn resolve_relation_arg_columns(
 pub(super) fn rule_goal_columns(
     kb: &mut KnowledgeBase,
     functor: Symbol,
-) -> Option<Vec<(SlotKey, Value)>> {
+) -> Option<Vec<(SlotKey, ColumnType)>> {
     if kb.rule_goal_columns_in_flight.borrow().contains(&functor) {
         // A goal on a relation being read — its own, or one of a cycle the walk of
         // [`same_rule_goal_cycle`] did not see — reads nothing, rather than typing its
@@ -3038,8 +3038,21 @@ pub(super) fn rule_goal_columns(
     Some(freshen_columns(kb, &columns))
 }
 
+/// The type of a relation's column as a goal reads it: a type, or SOME TYPE — the column of a
+/// relation whose clauses give it types with no join (`fact holds(1)`, `fact holds("a")`). A
+/// value of some type goes where any type is taken: a goal's argument there is a filter, and a
+/// variable it takes needs a type from a test or another position before a demand reads it.
+#[derive(Clone)]
+pub(crate) enum ColumnType {
+    Of(Value),
+    Some,
+}
+
 /// [`rule_goal_columns`] before it is opened: each clause's, joined.
-fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<(SlotKey, Value)>> {
+fn relation_goal_columns(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+) -> Option<Vec<(SlotKey, ColumnType)>> {
     let rids: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
     let mut joined: Option<Vec<GoalColumn>> = None;
     for rid in rids {
@@ -3052,7 +3065,14 @@ fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<
     Some(
         joined?
             .into_iter()
-            .map(|c| (c.slot, Value::term(c.ty)))
+            .map(|c| {
+                let ty = if c.some {
+                    ColumnType::Some
+                } else {
+                    ColumnType::Of(Value::term(c.ty))
+                };
+                (c.slot, ty)
+            })
             .collect(),
     )
 }
@@ -3066,6 +3086,8 @@ struct GoalColumn {
     /// that read nothing — on the clause's own relation, or another of its cycle — so the
     /// clause says nothing of it.
     unread: bool,
+    /// The clauses give the column types with no join ([`ColumnType::Some`]).
+    some: bool,
 }
 
 /// The most specific columns two clauses' columns are both instances of — anti-unification,
@@ -3101,17 +3123,22 @@ fn generalize_columns(
             continue;
         }
         let (ta, tb) = (ca.ty, cb.ty);
-        let ty = if !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb) {
+        let ground = !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb);
+        let joined = if ground && !ca.some && !cb.some {
             join_types(kb, Value::term(ta), Value::term(tb))
                 .and_then(|j| crate::kb::node_occurrence::value_to_term(kb, &j).ok())
         } else {
             None
         };
-        let ty = ty.unwrap_or_else(|| generalize_term(kb, ta, tb, &mut pairs));
+        // Two types with no variable in them and no join, or a column already of some type,
+        // make a column of some type.
+        let some = ca.some || cb.some || (ground && joined.is_none());
+        let ty = joined.unwrap_or_else(|| generalize_term(kb, ta, tb, &mut pairs));
         out.push(GoalColumn {
             slot: ca.slot,
             ty,
             unread: false,
+            some,
         });
     }
     out
@@ -3236,7 +3263,7 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
         .collect();
     let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let mut st = ClauseConstraints::new();
-    walk_clause(kb, head, &body, &mut st);
+    walk_clause(kb, rid, head, &body, &mut st);
     // A slot that is no variable is typed as a term filling a slot of its own type.
     let mut term_slots: Vec<(SlotKey, Value)> = Vec::new();
     for &(slot, arg) in &slots {
@@ -3290,6 +3317,7 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
             slot,
             ty,
             unread: false,
+            some: false,
         });
     }
     // A column whose type is a variable no other column names, and which an argument of a
@@ -3315,11 +3343,16 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
 /// `columns` with every variable in them renamed to a fresh one — the enclosing sort's
 /// parameters too, since a goal is an activation of its own — one renaming for all of them,
 /// so a variable two columns share stays shared.
-fn freshen_columns(kb: &mut KnowledgeBase, columns: &[(SlotKey, Value)]) -> Vec<(SlotKey, Value)> {
+fn freshen_columns(
+    kb: &mut KnowledgeBase,
+    columns: &[(SlotKey, ColumnType)],
+) -> Vec<(SlotKey, ColumnType)> {
     let mut vars: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
     for (_, ty) in columns {
-        crate::kb::node_occurrence::collect_value_type(kb, ty, &mut vars, &mut seen);
+        if let ColumnType::Of(ty) = ty {
+            crate::kb::node_occurrence::collect_value_type(kb, ty, &mut vars, &mut seen);
+        }
     }
     if vars.is_empty() {
         return columns.to_vec();
@@ -3332,7 +3365,13 @@ fn freshen_columns(kb: &mut KnowledgeBase, columns: &[(SlotKey, Value)]) -> Vec<
     }
     columns
         .iter()
-        .map(|(slot, ty)| (*slot, walk_type_deep_value(kb, &renaming, ty)))
+        .map(|(slot, ty)| {
+            let ty = match ty {
+                ColumnType::Of(ty) => ColumnType::Of(walk_type_deep_value(kb, &renaming, ty)),
+                ColumnType::Some => ColumnType::Some,
+            };
+            (*slot, ty)
+        })
         .collect()
 }
 

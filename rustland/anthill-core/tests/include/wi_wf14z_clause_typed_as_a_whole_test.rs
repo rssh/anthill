@@ -75,6 +75,21 @@
 //! | a column of occurrences quoting its argument (`constrain_goal_at_columns`) | `a_column_of_occurrences_quotes_its_argument` |
 //! | a collection literal read as its collection, not as the reflect entity it is stored as (`collection_literal_type`) | `a_collection_literal_is_its_collection`: refused at load, `TupleLiteral.x` no such member |
 //!
+//! The third part, decision 2, measured 2026-10-22 with this file, `wi_jmmhq`, `wi_qhdgc` and
+//! `typing_test`, each part backed out alone:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | a construction's argument checked against its field (`argument_fits_field`) | `every_construction_is_typed_against_its_fields` |
+//! | a fact's constructions read (`check_fact_constructions`) | `every_construction_is_typed_against_its_fields`, by its fact |
+//! | an equation's head not checked as data, in a clause (`walk_clause`) and in the fact sweep (`is_equation`), each alone | `an_equations_head_is_a_rewrite_pattern` (and the first, `an_equations_stored_side_types_nothing`) |
+//! | the reflect syntax an equation stores typing nothing (`is_reflect_syntax`) | `an_equations_stored_side_types_nothing` — refused, "contradictory variable types" —, `an_equations_head_is_a_rewrite_pattern` |
+//! | a column of no common type of some type (`generalize_columns`) | `a_column_of_no_common_type_is_of_some_type` |
+//! | a variable only demands type recorded there (`demand_only`) | `a_column_of_no_common_type_is_of_some_type` |
+//! | `domain` read as a test (`constrain_domain_test`) | `a_column_of_no_common_type_is_of_some_type`, by its `domain` case |
+//! | a dot on a value of some type recorded (`demands_on_some_type`) | `a_column_of_no_common_type_is_of_some_type`, by its dot |
+//! | a parameter of the callee's own type no demand (`constrain_application`) | `a_spec_operations_carrier_takes_a_value_of_some_type` |
+//!
 //! A goal on its own relation reading the clause's own head was a part too, and no row failed
 //! with it backed out: the memo answers nothing for a relation while its clauses are being
 //! read, and the relation's columns after, which is the one type the decision asks for. It
@@ -661,4 +676,165 @@ fn a_column_of_occurrences_quotes_its_argument() {
         )
     });
     assert_eq!((answers, said), (vec![Some(1)], vec![]));
+}
+
+// ── Decision 2: how far data is typed (068-implementation §6.2), recorded ─────────────────
+
+/// Decision 2's table fixture: `pt`'s two `Int64` fields, `Hold.holder` over a `pt`, `holds`'
+/// three facts of no common type, and `U`'s operations at a value of each.
+const DATA: &str = "  import anthill.kernel.{domain}\n  entity pt(x: Int64, y: Int64)\n  entity wrap(v: Int64)\n  \
+    sort Hold\n    entity holder(h: pt)\n  end\n  import NS.Hold.{holder}\n  \
+    sort U\n    operation ilen(n: Int64) -> Int64 = n\n    operation px(p: pt) -> Int64 = p.x\n  end\n  \
+    fact holds(1)\n  fact holds(\"a\")\n  fact holds(pt(x: 1, y: 2))\n";
+
+/// EVERY CONSTRUCTION IS TYPED AGAINST ITS FIELDS, in a fact, a head and a body — each
+/// recorded where its argument does not fit. Before, only a fact of the entity itself and a
+/// body goal on it were checked: these loaded, and the `<=>` ones bound the ill-typed value.
+#[test]
+fn every_construction_is_typed_against_its_fields() {
+    for (shape, clause) in [
+        ("a fact's field", "  fact holder(h: pt(x: \"s\", y: 2))\n"),
+        ("a head", "  rule hh(pt(x: \"s\", y: 2)) :- true\n"),
+        ("a `<=>` side", "  rule g(?r) :- ?r <=> pt(x: \"s\", y: 2)\n"),
+        ("a nested construction", "  rule g(?r) :- ?r <=> pt(x: wrap(v: 1), y: 2)\n"),
+        ("a relation goal's argument", "  rule g(?a) :- holds(pt(x: \"s\", y: 2)), ?a <=> 1\n"),
+    ] {
+        let ns = "wiwf14z.construction";
+        let (_, said) = recorded(|| {
+            crate::common::load_kb_with(&program(ns, &format!("{DATA}{clause}")))
+        });
+        assert_eq!(said, [("construction field", 1)], "{shape}");
+    }
+}
+
+/// CONTROL, PASSES EITHER WAY: a construction that fits records nothing, the argument
+/// conversions included — a bare value at an `Option` field, any value at a `Term` field.
+#[test]
+fn a_construction_that_fits_records_nothing() {
+    let ns = "wiwf14z.fits";
+    let (_, said) = recorded(|| {
+        crate::common::load_kb_with(&program(
+            ns,
+            &format!(
+                "{DATA}  entity maybe(o: Option[T = Int64])\n  \
+                 entity quoted(t: anthill.reflect.Term)\n  \
+                 fact holder(h: pt(x: 1, y: 2))\n  \
+                 rule g(?r) :- ?r <=> pt(x: 1, y: 2)\n  \
+                 rule m(?r) :- ?r <=> maybe(o: 3)\n  rule q(?r) :- ?r <=> quoted(t: \"s\")\n"
+            ),
+        ))
+    });
+    assert_eq!(said, []);
+}
+
+/// A COLUMN OF NO COMMON TYPE IS OF SOME TYPE: `holds` answers its three values, and a demand
+/// on a value read out of it — a call's argument, a dot — is recorded until a test narrows
+/// it: `domain`, `<=>` against a construction, a head's bound. A column two rule clauses give
+/// different types is one too. Before, the column was a variable and every demand read the
+/// value at the type it asked for: `ilen` handed back a `String` as an `Int64`, which it
+/// still does at run time — the load is what decision 3 refuses.
+#[test]
+fn a_column_of_no_common_type_is_of_some_type() {
+    let ns = "wiwf14z.some";
+    // (shape, clause, how many rows `g` answers, what the load records)
+    let cases: [(&str, &str, usize, Vec<(&str, usize)>); 7] = [
+        ("read", "  rule g(?r) :- holds(?r)\n", 3, vec![]),
+        ("a call's argument", "  rule g(?r) :- holds(?v), ?r <=> U.ilen(?v)\n", 3, vec![("some type demand", 1)]),
+        ("a dot", "  rule g(?r) :- holds(?v), ?r <=> ?v.abs()\n", 3, vec![("some type demand", 1)]),
+        ("narrowed by `domain`", "  rule g(?r) :- holds(?v), domain(?v, Int64), ?r <=> U.ilen(?v)\n", 1, vec![]),
+        ("narrowed by `<=>`", "  rule g(?r) :- holds(?v), ?v <=> pt(x: ?a, y: ?), ?r <=> U.px(?v)\n", 1, vec![]),
+        ("narrowed by a head's bound", "  rule n(?v: Int64, ?r) :- holds(?v), ?r <=> U.ilen(?v)\n  rule g(?r) :- n(?v, ?r)\n", 1, vec![]),
+        ("typed by a later goal", "  fact one(1)\n  rule g(?r) :- holds(?v), one(?v), ?r <=> U.ilen(?v)\n", 1, vec![]),
+    ];
+    for (shape, clause, rows, record) in cases {
+        let (got, said) = recorded(|| {
+            let mut kb = crate::common::load_kb_with(&program(ns, &format!("{DATA}{clause}")));
+            crate::common::query_unary(&mut kb, &format!("{ns}.g")).len()
+        });
+        assert_eq!((got, said), (rows, record), "{shape}");
+    }
+    let (_, said) = recorded(|| {
+        crate::common::load_kb_with(&program(
+            ns,
+            &format!(
+                "{DATA}  fact isInt(1)\n  fact isStr(\"a\")\n  \
+                 rule mix(?v) :- isInt(?v)\n  rule mix(?v) :- isStr(?v)\n  \
+                 rule g(?r) :- mix(?v), ?r <=> U.ilen(?v)\n"
+            ),
+        ))
+    });
+    assert_eq!(said, [("some type demand", 1)], "two rule clauses");
+}
+
+/// A SPEC OPERATION'S CARRIER TAKES A VALUE OF SOME TYPE: `Desc.describe(?x, ?r)` is
+/// dispatched by each value's own sort, so `item`'s `leaf` and `other` answer `7` and `9` and
+/// nothing is recorded — a parameter of the callee's own type is no demand. Read as one, the
+/// call was recorded as a demand on an un-narrowed value.
+#[test]
+fn a_spec_operations_carrier_takes_a_value_of_some_type() {
+    let ns = "wiwf14z.carrier";
+    let (rows, said) = recorded(|| {
+        let mut kb = crate::common::load_kb_with(&program(
+            ns,
+            "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
+             sort Leaf\n    import anthill.prelude.Int64\n    entity leaf\n    \
+             provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n  end\n  \
+             sort Other\n    import anthill.prelude.Int64\n    entity other\n    \
+             provides Desc[T = Other]\n    operation describe(x: Other) -> Int64 = 9\n  end\n  \
+             fact item(leaf())\n  fact item(other())\n  \
+             rule g(?r) :- item(?x), Desc.describe(?x, ?r)\n",
+        ));
+        let mut got: Vec<Option<i64>> = crate::common::query_unary(&mut kb, &format!("{ns}.g"))
+            .into_iter()
+            .map(|(v, _)| match v {
+                anthill_core::eval::Value::Int(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        got.sort();
+        got
+    });
+    assert_eq!((rows, said), (vec![Some(7), Some(9)], vec![]));
+}
+
+/// AN EQUATION'S HEAD IS A REWRITE PATTERN, NOT DATA: its sides are stored as the reflect
+/// terms that write them, which the construction check does not read — a bodyless `@[simp]`
+/// equation and a guarded one, each with a field read on its right. Read as data, each
+/// recorded a construction disagreement inside the stored `?b.v`.
+#[test]
+fn an_equations_head_is_a_rewrite_pattern() {
+    let ns = "wiwf14z.equation";
+    let (_, said) = recorded(|| {
+        crate::common::load_kb_with(&program(
+            ns,
+            "  sort Box\n    entity box(v: Int64)\n    operation open(b: Box) -> Int64\n    \
+             operation peek(b: Box) -> Int64\n    \
+             rule open(?b) <=> ?b.v @[simp]\n    \
+             rule peek(?b) = ?b.v :- gt(1, 0) @[simp]\n  end\n  \
+             import anthill.prelude.PartialOrd.{gt}\n",
+        ))
+    });
+    assert_eq!(said, []);
+}
+
+/// AN EQUATION'S STORED SIDE TYPES NOTHING: `peek(?b) = ?b.v :- gt(1, 0)` keeps `?b.v` as the
+/// reflect `dot_apply(receiver: ?b, …)`, and `?b` is `peek`'s `Box`, not the receiver field's
+/// type — so the equation loads and `go()` rewrites to the field, `3`. Read as data, `?b`
+/// had two declared types and the rule was refused, "contradictory variable types", on the
+/// tree before WF14Z too.
+#[test]
+fn an_equations_stored_side_types_nothing() {
+    let ns = "wiwf14z.storedside";
+    assert_eq!(
+        ints(
+            ns,
+            "  import anthill.prelude.PartialOrd.{gt}\n  \
+             sort Box\n    entity box(v: Int64)\n    operation peek(b: Box) -> Int64\n    \
+             rule peek(?b) = ?b.v :- gt(1, 0) @[simp]\n  end\n  \
+             operation go() -> Int64 = Box.peek(Box.box(v: 3))\n  \
+             rule r(?x) :- ?x <=> go()\n",
+            &["r"],
+        ),
+        [Some(3)]
+    );
 }

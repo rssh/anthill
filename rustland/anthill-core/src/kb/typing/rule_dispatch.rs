@@ -1483,7 +1483,8 @@ pub(super) fn collect_rule_var_types(
     body_nodes: &[Rc<NodeOccurrence>],
 ) -> ClauseTyping {
     let mut st = ClauseConstraints::new();
-    walk_clause(kb, head, body_nodes, &mut st);
+    st.at = kb.rule_head_span(rid);
+    walk_clause(kb, rid, head, body_nodes, &mut st);
     finish_clause_typing(kb, rid, head, st, Vec::new()).0
 }
 
@@ -1491,11 +1492,16 @@ pub(super) fn collect_rule_var_types(
 /// typing off, the late positions included.
 pub(super) fn walk_clause(
     kb: &mut KnowledgeBase,
+    rid: RuleId,
     head: TermId,
     body_nodes: &[Rc<NodeOccurrence>],
     st: &mut ClauseConstraints,
 ) {
+    // An equation's head is a rewrite pattern, its sides the reflect terms that write them:
+    // its constructions are not data. Its guard's are.
+    st.checks_constructions = !is_equation(kb, rid);
     collect_term_type_constraints(kb, head, None, st);
+    st.checks_constructions = true;
     for node in body_nodes {
         collect_occurrence_type_constraints(
             kb,
@@ -1524,6 +1530,9 @@ pub(super) fn finish_clause_typing(
     let contradiction = st.subst.is_contradiction();
     let mut disagreements = Vec::new();
     let rigids = settle_late_positions(kb, rid, head, &mut st, &mut disagreements);
+    // What the walk and the late positions found at a place of their own, once each.
+    disagreements.extend(std::mem::take(&mut st.found));
+    let disagreements = found_once(disagreements);
     let mut var_types = std::mem::take(&mut st.var_types);
     let subst = st.subst;
     // WI-9C2PZ — RESOLVE THE MAP THROUGH THE SUBSTITUTION IT BUILT, which until now was

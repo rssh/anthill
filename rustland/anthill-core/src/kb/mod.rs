@@ -2574,7 +2574,7 @@ pub struct KnowledgeBase {
     // the resolve cache at the start of a typer run and wherever a clause is stored or taken
     // out (`invalidate_rule_goal_columns`).
     pub(crate) rule_goal_columns_memo: RefCell<
-        HashMap<Symbol, Option<Rc<Vec<(crate::kb::typing::SlotKey, crate::eval::value::Value)>>>>,
+        HashMap<Symbol, Option<Rc<Vec<(crate::kb::typing::SlotKey, crate::kb::typing::ColumnType)>>>>,
     >,
     pub(crate) rule_goal_cycle_memo: RefCell<HashMap<Symbol, u32>>,
     // The relations whose goal columns are being read right now, ON THE STACK: every insert

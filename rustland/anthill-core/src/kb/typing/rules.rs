@@ -325,11 +325,13 @@ pub(super) fn type_rule_bodies(
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
     for rid in kb.live_rule_ids() {
-        if kb.is_fact(rid) {
-            continue; // facts have no body
-        }
         // WI-20261010-9BKZ4 — a sealed load's rule bodies were typed by that load.
         if rule_body_is_typed_once(kb, rid) != (which == RuleBodies::SealedOnly) {
+            continue;
+        }
+        if kb.is_fact(rid) {
+            // A fact has no body; what it constructs is read as a clause's head is.
+            check_fact_constructions(kb, rid);
             continue;
         }
         // A value-carrier (denoted) head has no hash-consed term to read

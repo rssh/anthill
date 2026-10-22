@@ -669,6 +669,48 @@ Decided with the user, 2026-10-22, for the part that refuses:
   it took `wi1099`'s 6 tests and `typing_test`'s 6, 19 records, off the count).
 - *The §5.3 sentence* on a column a clause says nothing of stands as corrected.
 
+### 6.5 C1b, decision 2 as built (WI-20261013-WF14Z, third part, 2026-10-22)
+
+Recorded, refusing nothing; rows in `wi_wf14z_clause_typed_as_a_whole_test` under "Decision
+2", each part backed out alone in its ledger.
+
+- **Every construction is typed against its fields**, in a rule body, a head and a fact: a
+  literal or a nested construction is checked against the field it fills, with the argument
+  conversions (a `Term` field admits every value, an `Option[T]` field a bare `T`, a field at
+  a bare spec a value of a sort that provides it), and a mismatch is recorded at the argument
+  (`construction field`). Facts are read by the clause walk — those a source writes, of a load
+  no seal holds; a fact the loader makes carries no place and is not read. The table's rows
+  that loaded record now: a fact's nested field, a head, a `<=>` side, a nested construction,
+  a relation goal's argument.
+- **An equation's head is a rewrite pattern, not data**: its constructions are not checked,
+  and the reflect syntax its sides are stored as types nothing. Found on the way and fixed:
+  a guarded `@[simp]` equation reading a field on its right — `peek(?b) = ?b.v :- gt(1, 0)` —
+  was refused, "contradictory variable types", on the tree before WF14Z too: the stored
+  `dot_apply(receiver: ?b, …)` typed `?b` at its `receiver` field beside `peek`'s `Box`. It
+  loads and rewrites.
+- **A rule goal's column whose clauses give it types with no join is of some type**
+  (`ColumnType::Some`): a goal's argument there is a filter. A variable it takes that only
+  demands type — a call's argument at a parameter of a stated type, a dot — is recorded
+  (`some type demand`); a test (`domain(?v, T)`, `<=>` against a construction or a literal, a
+  head's bound) or any other position types it, wherever it is written. A parameter of the
+  callee's own type is no demand: a spec's carrier is dispatched by the value, and
+  `Desc.describe(?x, ?r)` over `item`s of two sorts answers each.
+- **Not yet, the citation's side.** A citation of such a column reads as before — a fact
+  relation's column a variable read at any type, two rule clauses' refused at the relation,
+  "disjoint types for column" —; reading it at some type is an operation-body refusal, made
+  with decision 3's, where it closes a column whose whole type is a variable.
+
+**The count**: the corpus records nothing of either class. The suite (gate 10334 / 0): 72
+records in 48 tests —
+
+| shape | tests | records |
+|---|---|---|
+| a fixture built to be refused (`typing_test`'s field rows, `wi928`, `wi1056`, `szkv7`, `d0sd4`, `wi946`, `jb6rs`, `wi830`, `wi849`) | 38 | 46 |
+| `KB.fields` compared with `FieldInfo(name: "x", …)`, a `String` at the `Symbol` field — the clause answers at run time, the operation-body twin is refused, "expected Symbol, got String" (`wi_9r5hn`) | 3 | 12 |
+| a `cons` pattern at a `Set` field, a negative control whose clause never holds (`wi936`, `wi1096`, `declared_field_type_readers`) | 4 | 5 |
+| `docs/proposals/typing_pass_spec.anthill`'s `check_args`, `union_effects` over a column of no common type | 1 | 1 |
+| this file's | 2 | 8 |
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run
