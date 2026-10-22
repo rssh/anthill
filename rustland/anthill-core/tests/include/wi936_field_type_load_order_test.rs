@@ -155,7 +155,6 @@ namespace test.wi936.untyped
   -- desugars`, which is the same shape for the positive case).
   fact bagged(Bagged(tags: [1, 2, 3]))
 
-  rule set_head(?h) :- bagged(Bagged(tags: cons(head: ?h, tail: ?)))
   rule set_whole(?s) :- bagged(Bagged(tags: ?s))
 
   entity Bagged(tags: Set[T = Int64])
@@ -338,8 +337,14 @@ fn an_untyped_list_literal_lowers_in_either_order() {
             1,
             "…and read as a whole it still answers exactly once",
         );
+        // Asked at run time: written in a clause, the `List` pattern at the `Set` field is
+        // refused at load (068-implementation §6.2, decision 3).
         assert_eq!(
-            answers(&mut kb, "test.wi936.untyped.set_head").len(),
+            crate::common::pattern_hits(
+                &mut kb,
+                "test.wi936.untyped.bagged(test.wi936.untyped.Bagged(tags: \
+                 anthill.prelude.List.cons(head: ?h, tail: ?)))"
+            ),
             0,
             "a `Set[T = Int64]`-DECLARED field keeps its literal flat — a `cons` \
              pattern matches nothing, in either order",

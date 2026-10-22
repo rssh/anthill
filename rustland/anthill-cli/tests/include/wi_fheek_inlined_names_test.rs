@@ -578,6 +578,8 @@ end
 /// 1.0)` wrote it as a variable nothing ties to the construction — `(>= var_0 var_1)` in
 /// `top`, a COUNTEREXAMPLE on d7a8ffcb. Inside `wrap` it was CDHSQ's refusal of `?p` as the
 /// rule's own variable, which BR7P3's naming retired; it is this refusal now (/code-review).
+/// The claims compare `?y` with itself: `related` ties its two columns to one type, so `?y`
+/// is a `P`, and a `Float` beside it is refused at load (068-implementation §6.2, decision 3).
 #[test]
 fn a_construction_written_as_a_term_is_refused() {
     let out = dry_run(
@@ -593,10 +595,10 @@ namespace test.fheek.built_term
   proof lemma by trust(reason: "a control") end
 
   rule wrap(?p, ?q) :- related(?p, ?q)
-  rule inl: gte(?y, 5.0) :- wrap(P(x: 1.0), ?y)
+  rule inl: gte(?y, ?y) :- wrap(P(x: 1.0), ?y)
   proof inl using lemma by z3 end
 
-  rule top: gte(?y, 5.0) :- ?p = P(x: 1.0), related(?p, ?y)
+  rule top: gte(?y, ?y) :- ?p = P(x: 1.0), related(?p, ?y)
   proof top using lemma by z3 end
 end
 "#,

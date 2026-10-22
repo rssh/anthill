@@ -211,13 +211,6 @@ pub(super) fn type_check_sorts_collect(
     // Ops reached via a sort's `SortInfo` — so the gated free-op sweep
     // doesn't re-check them (collected only when the sweep is enabled).
     let mut sort_owned_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
-    // WI-603: the sort-scoped non-fact rules whose contradiction the single
-    // `type_rule_bodies` pass should report — the exact set the removed
-    // `check_rule_typing` walked (`by_domain` over each SortInfo sort). A free
-    // namespace-level rule's contradiction stays unreported, as before.
-    let mut rule_typing_reportable: std::collections::HashSet<crate::kb::RuleId> =
-        std::collections::HashSet::new();
-
     // WI-314 / WI-20260920-E3DC5 — the region set for result-escape masking. PROGRAM-GLOBAL
     // and loop-invariant across this pass, so it is computed here, once, and threaded into
     // every `check_operation_bodies` call; that function used to compute it itself and so
@@ -243,7 +236,6 @@ pub(super) fn type_check_sorts_collect(
             kb,
             &loaded,
             &sort_infos,
-            &mut rule_typing_reportable,
             &mut errors,
             &mut sources,
         );
@@ -279,15 +271,6 @@ pub(super) fn type_check_sorts_collect(
             // every LATER sort's entity-fact / operation-body error pairs with the
             // PREVIOUS error's `SourceId` and renders `path:line:col` for the wrong file.
             sources.resize(errors.len(), None);
-            // WI-603: contradiction is now reported by the single `type_rule_bodies`
-            // pass below (one `collect_rule_var_types` per rule). Record which
-            // non-fact rules `check_rule_typing` would have walked so that pass
-            // preserves the exact reporting scope.
-            for rid in kb.by_domain(sort_sym) {
-                if !kb.is_fact(rid) {
-                    rule_typing_reportable.insert(rid);
-                }
-            }
         }
     }
 
@@ -385,13 +368,12 @@ pub(super) fn type_check_sorts_collect(
     sources.resize(errors.len(), None);
     type_rule_bodies(
         kb,
-        &rule_typing_reportable,
         RuleBodies::NotSealed,
         &mut errors,
         &mut sources,
     );
     if oracle {
-        oracle_type_sealed_rules(kb, &rule_typing_reportable);
+        oracle_type_sealed_rules(kb);
     }
 
     // WI-702 (proposal 054 §"Consumers"): reject a `@[simp]`/`@[unfold]` rewrite whose
@@ -1992,8 +1974,7 @@ fn check_entity_fact(
 /// exactly what that loop holds its own to:
 ///
 ///   * a bodyless clause under a constructor: its fields, by [`check_entity_fact`];
-///   * a rule whose domain is a sort: the pattern fragment, and a place in
-///     `rule_typing_reportable` so `type_rule_bodies` reports its contradiction.
+///   * a rule whose domain is a sort: the pattern fragment.
 ///
 /// A clause under one of the call's OWN sorts is left to the loop — it walks the whole
 /// bucket — so nothing is reported twice. "Own" includes [`Loaded::refused_sorts`]: the
@@ -2013,7 +1994,6 @@ fn check_late_clauses(
     kb: &mut KnowledgeBase,
     loaded: &Loaded<'_>,
     sort_infos: &[(Symbol, Option<(Vec<Symbol>, Vec<Symbol>)>)],
-    rule_typing_reportable: &mut HashSet<RuleId>,
     errors: &mut Vec<TypeError>,
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
@@ -2081,7 +2061,6 @@ fn check_late_clauses(
             if !is_sort {
                 continue;
             }
-            rule_typing_reportable.insert(rid);
             if let Some(ho_apply_sym) = ho_apply_sym {
                 check_rule_pattern_fragment(kb, rid, ho_apply_sym, errors);
                 // Per-rule diagnostics with no one file to attribute them to, as the

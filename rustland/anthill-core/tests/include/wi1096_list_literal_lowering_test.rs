@@ -544,20 +544,28 @@ end
 /// lists.
 #[test]
 fn a_declared_collection_of_lists_keeps_its_literal_flat() {
-    let src = r#"
+    let src = |rule: &str| {
+        format!(
+            r#"
 namespace wi1096.setoflists
-  import anthill.prelude.{List, Int64, Set}
-  import anthill.prelude.List.{cons}
+  import anthill.prelude.{{List, Int64, Set}}
+  import anthill.prelude.List.{{cons}}
   fact mark(1)
   entity Wrap(inner: Set[T = List[T = Int64]])
   fact w(Wrap(inner: [1, 2]))
-  rule wrap_head(?m)  :- mark(?m), w(Wrap(inner: cons(head: 1, tail: ?)))
   rule wrap_whole(?m) :- mark(?m), w(Wrap(inner: ?))
+  {rule}
 end
-"#;
-    let mut kb = crate::common::load_kb_with(src);
+"#
+        )
+    };
+    let mut kb = crate::common::load_kb_with(&src(""));
     assert_eq!(
-        any(&mut kb, "wi1096.setoflists.wrap_head"),
+        crate::common::pattern_hits(
+            &mut kb,
+            "wi1096.setoflists.w(wi1096.setoflists.Wrap(inner: \
+             anthill.prelude.List.cons(head: 1, tail: ?)))"
+        ),
         0,
         "the literal names the SET, not one of its element lists",
     );
@@ -565,6 +573,18 @@ end
         decided(&mut kb, "wi1096.setoflists.wrap_whole"),
         1,
         "…and the fact is there",
+    );
+    // Written in a clause, the pattern is refused at load: a `List` at the `Set` field.
+    let errs = crate::common::load_errors_of(&src(
+        "rule wrap_head(?m)  :- mark(?m), w(Wrap(inner: cons(head: 1, tail: ?)))",
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains(
+                "type mismatch in Wrap.inner (entity-field): expected Set[T = List[T = Int64]], \
+                 got List[T = "
+            ),
+        "{errs:#?}"
     );
 }
 
@@ -602,6 +622,28 @@ namespace wi1096.namedargs
     );
 }
 
+/// A `cons` PATTERN AT A `Set` FIELD IS REFUSED AT LOAD (068-implementation §6.2, decision
+/// 3): the pattern is a `List`, which the field is not. Before, the clause loaded and
+/// answered nothing — the negative control below, which asks the pattern at run time now.
+#[test]
+fn a_set_field_refuses_a_list_pattern_at_load() {
+    let errs = crate::common::load_errors_of(&format!(
+        "namespace wi1096\n  import anthill.prelude.{{List, Int64, Set}}\n  \
+         import anthill.prelude.List.{{cons}}\n{MARK}  \
+         entity Tagged(tags: Set[T = Int64])\n  \
+         fact tagged(Tagged(tags: [1, 2]))\n  \
+         rule set_head(?m)  :- mark(?m), tagged(Tagged(tags: cons(head: 1, tail: ?)))\nend\n"
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains(
+                "type mismatch in Tagged.tags (entity-field): expected Set[T = Int64], got \
+                 List[T = "
+            ),
+        "{errs:#?}"
+    );
+}
+
 /// CONTROL, AND THE GUARD ON THE FIX'S SHAPE — a field whose DECLARED type is another
 /// collection keeps the literal flat. This is the case WI-007 installed the "leave it
 /// alone" branch for, and the only case that branch was ever right about. Were the fix
@@ -611,14 +653,17 @@ fn a_declared_non_list_collection_still_keeps_the_literal_flat() {
     let mut kb = kb_of(
         "  entity Tagged(tags: Set[T = Int64])\n  \
            fact tagged(Tagged(tags: [1, 2]))\n  \
-           rule set_head(?m)  :- mark(?m), tagged(Tagged(tags: cons(head: 1, tail: ?)))\n  \
            rule set_whole(?m) :- mark(?m), tagged(Tagged(tags: ?))\n",
     );
     assert_eq!(
-        any(&mut kb, "wi1096.set_head"),
+        crate::common::pattern_hits(
+            &mut kb,
+            "wi1096.tagged(wi1096.Tagged(tags: anthill.prelude.List.cons(head: 1, tail: ?)))"
+        ),
         0,
-        "a `Set`-declared field keeps its literal flat — a `cons` pattern matches \
-         nothing, exactly as before this ticket",
+        "a `Set`-declared field keeps its literal flat — a `cons` pattern, asked at run \
+         time, matches nothing, exactly as before this ticket; written in a clause it is \
+         refused at load (`a_set_field_refuses_a_list_pattern_at_load`)",
     );
     assert_eq!(
         decided(&mut kb, "wi1096.set_whole"),

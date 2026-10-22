@@ -447,7 +447,10 @@ fn a_nan_operand_answers_false_in_the_result_column() {
 /// **A CROSS-SORT LITERAL PAIR REACHES THE RESOLVER, from a program that LOADS.** This
 /// ticket's first draft asserted it could not — "`PartialOrd.lt(a: T, b: T)` cannot type
 /// it" — and /code-review measured that false: a rule variable bound by a predicate that
-/// declares no argument types has no stamped type, so the typer has nothing to refuse.
+/// declared no argument types had no stamped type, so the typer had nothing to refuse.
+/// Since 068-implementation §6.2's decision 3 the clause typing reads `tag`'s column as
+/// `String`, and that clause is refused at load (the third arm); the pair reaches the
+/// resolver through a goal built at run time, a query.
 ///
 /// The answer is UNDECIDED, and the point of the finding was the DIAGNOSIS: the message
 /// used to send the reader after ordering dispatch, which would not have helped an
@@ -456,22 +459,26 @@ fn a_nan_operand_answers_false_in_the_result_column() {
 /// two DIFFERENT literal sorts ``.
 ///
 /// CONTROL, RUN: the second arm is the same comparison written DIRECTLY, which the typer
-/// does refuse — so the pair says the escape is the untyped variable and not the
+/// does refuse — so the pair says the escape is the goal the load does not type and not the
 /// comparison. Fold `SortMismatch` back into `NoOrder` and the answer here does not change;
 /// what changes is the message, which is why this test also asserts the load.
 #[test]
 fn a_cross_sort_literal_pair_is_undecided_and_diagnosed() {
-    let via_untyped_var = "namespace wi879.mix\n  \
-                             import anthill.prelude.{Int64, String, Bool, PartialOrd}\n  \
-                             import anthill.kernel.{unify}\n\n  \
-                           fact tag(\"a\")\n  \
-                           rule answer(?r) :- tag(?x), PartialOrd.gt(?x, 1), unify(?r, 5)\nend\n";
-    let mut kb = crate::common::load_kb_with(via_untyped_var);
-    assert_eq!(
-        rows_of(&mut kb, "wi879.mix.answer"),
-        "UNDECIDED",
+    let tagged = "namespace wi879.mix\n  \
+                    import anthill.prelude.{Int64, String, Bool, PartialOrd}\n  \
+                    import anthill.kernel.{unify}\n\n  \
+                  fact tag(\"a\")\n";
+    let mut kb = crate::common::load_kb_with(&format!("{tagged}end\n"));
+    let goal = crate::common::query_pattern_term(
+        &mut kb,
+        "anthill.kernel.and(wi879.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))",
+    );
+    let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(
+        sols.len() == 1 && !sols[0].is_definite(),
         "a `String` against an `Int64` has no common order, so the goal withholds a \
-         verdict — it used to answer `[]`, claiming `\"a\" <= 1`",
+         verdict — it used to answer `[]`, claiming `\"a\" <= 1`; got {} solution(s)",
+        sols.len()
     );
 
     let written_directly = "namespace wi879.mix2\n  \
@@ -484,6 +491,15 @@ fn a_cross_sort_literal_pair_is_undecided_and_diagnosed() {
         errs.iter().any(|e| e.contains("type mismatch")),
         "CONTROL: the typer refuses the pair wherever it can SEE the operand types — which \
          is what made the first draft's claim look true. Got: {errs:?}",
+    );
+
+    let errs = crate::common::load_errors_of(&format!(
+        "{tagged}  rule answer(?r) :- tag(?x), PartialOrd.gt(?x, 1), unify(?r, 5)\nend\n"
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in tag._1 (rule-column): expected String, got Int64"),
+        "the clause that reads `tag` is refused at load: {errs:#?}"
     );
 }
 

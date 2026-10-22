@@ -193,7 +193,6 @@ const RES: &str = "namespace zz5g28ar\n\
                    \x20 import anthill.prelude.{List, Int64, String}\n\
                    \x20 rule my_rule(?x: List[T = ?t], ?res: List[T = ?t]) :- ?res <=> ?x\n\
                    \x20 rule answers([1, 2]) :- my_rule([1, 2], ?r), ?r <=> [1, 2]\n\
-                   \x20 rule mismatched([1, 2]) :- my_rule([1, 2], [\"a\"])\n\
                    \x20 rule two_calls(1) :- my_rule([1, 2], ?a), my_rule([\"s\"], ?b)\n\
                    end\n";
 
@@ -217,10 +216,23 @@ fn the_tie_refutes_a_mismatched_second_column() {
     // `?res <=> ?x` refutes `["a"]` against `[1, 2]` before any type test decides it. The
     // pin's own refuting direction is `wi_shed7_fillable_test`'s `tieBad`, which axis B
     // reddens.
+    //
+    // Asked at run time: written in a clause, `my_rule([1, 2], ["a"])` is refused at load,
+    // the second argument against the column the first one fixes (068-implementation §6.2,
+    // decision 3).
     let mut kb = crate::common::load_kb_with(RES);
     assert_eq!(
-        crate::common::definite_unary(&mut kb, "zz5g28ar.mismatched").len(),
+        crate::common::pattern_hits(&mut kb, "zz5g28ar.my_rule([1, 2], [\"a\"])"),
         0,
+    );
+    let errs = crate::common::load_errors_of(&RES.replace(
+        "end\n",
+        "  rule mismatched([1, 2]) :- my_rule([1, 2], [\"a\"])\nend\n",
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in cons.head (entity-field): expected Int64, got String"),
+        "{errs:#?}"
     );
 }
 

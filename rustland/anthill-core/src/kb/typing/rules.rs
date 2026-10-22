@@ -286,12 +286,12 @@ pub(super) fn for_each_var_leaf(
 /// from op-param / entity-field signatures) and then:
 ///
 ///   * **Contradiction** (WI-603, subsuming `check_rule_typing`): a var whose
-///     constraints don't unify is reported as a rule type error — but ONLY for the
-///     sort-scoped rules `check_rule_typing` walked (`reportable`, built by the
-///     driver's `by_domain` sweep over each `SortInfo` sort). A free
-///     namespace-level rule's contradiction stays unreported, exactly as before.
-///     A contradictory rule's receiver sorts are unreliable, so it is neither
-///     dispatched nor stamped.
+///     constraints don't unify is reported as a rule type error, in every rule — a
+///     variable whose positions disagree (068-implementation §6.2, decision 3; a free
+///     namespace-level rule's went unreported before). A contradictory rule's receiver
+///     sorts are unreliable, so it is neither dispatched nor stamped.
+///   * **Disagreements**: a position of the clause that does not fit what the rest says
+///     of it ([`ClauseDisagreement`]), each a load error at its place.
 ///   * **Dot dispatch** (WI-282): rewrite every `Expr::DotApply` to its method
 ///     `Apply` / `field_access` form *before* the body reaches SLD (the rule-body
 ///     peer of the op-body dot dispatch, WI-279), the receiver's concrete sort read
@@ -307,7 +307,6 @@ pub(super) fn for_each_var_leaf(
 /// contradiction, now emitted here) and the dot pass no longer collects separately.
 pub(super) fn type_rule_bodies(
     kb: &mut KnowledgeBase,
-    reportable: &std::collections::HashSet<crate::kb::RuleId>,
     // WI-20261010-9BKZ4: the rules a seal does not hold, or (the oracle) those it does.
     which: RuleBodies,
     // WI-745 / WI-1026: parallel to `errors`, tagging each error with the
@@ -329,9 +328,17 @@ pub(super) fn type_rule_bodies(
         if rule_body_is_typed_once(kb, rid) != (which == RuleBodies::SealedOnly) {
             continue;
         }
+        // A clause's refusals — a contradiction, a position that does not fit — at every
+        // load that types it, as one load over everything reports them, but a refused
+        // load's: that load reported them, and its corrected retry is not refused over its
+        // clauses, which stay ([`KnowledgeBase::is_clause_of_a_refused_load`]).
+        let reports = !kb.is_clause_of_a_refused_load(rid);
         if kb.is_fact(rid) {
             // A fact has no body; what it constructs is read as a clause's head is.
-            check_fact_constructions(kb, rid);
+            if reports {
+                let found = check_fact_constructions(kb, rid);
+                push_clause_disagreements(kb, &found, errors, sources);
+            }
             continue;
         }
         // A value-carrier (denoted) head has no hash-consed term to read
@@ -367,12 +374,10 @@ pub(super) fn type_rule_bodies(
             continue;
         };
         let typing = collect_rule_var_types(kb, rid, head, &body_nodes);
-        count_clause_disagreements(kb, &typing.disagreements);
         let (var_types, contradiction) = (typing.var_types, typing.contradiction);
         if contradiction {
             // On a contradiction the receiver sorts are unreliable — skip dispatch
-            // and stamping. Report only for the sort-scoped rules `check_rule_typing`
-            // walked; a free rule's contradiction stays unreported, as before.
+            // and stamping.
             // WI-20260902-CZJ2N — READ THE HEAD THROUGH `head_functor`, not a `Term::Fn`
             // destructure. `rule_sym` above already IS that read and was computed and
             // discarded here; the destructure additionally assumed a shape a NULLARY head
@@ -389,23 +394,21 @@ pub(super) fn type_rule_bodies(
             // is closed anyway because the assumption is false and the correct read was
             // already in hand — an untested branch that reads a shape the store cannot
             // produce is a trap for whoever makes the upstream case reachable.
-            if reportable.contains(&rid) {
-                if let Some(head_sym) = rule_sym {
-                    // WI-458: the rule's own head span, keyed by RuleId — no
-                    // `term_span` fallback (see `check_pattern_fragment`).
-                    let head_span = kb.rule_head_span(rid);
-                    errors.push(TypeError::Other {
-                        site: TypeError::here(),
-                        span: head_span.map(|s| s.span),
-                        context: TypeErrorContext::Rule {
-                            name: head_sym,
-                            field: RuleField::Whole,
-                        },
-                        expected: "consistent variable types".to_string(),
-                        actual: "contradictory variable types".to_string(),
-                    });
-                    sources.push(head_span.map(|s| s.source));
-                }
+            if let Some(head_sym) = rule_sym.filter(|_| reports) {
+                // WI-458: the rule's own head span, keyed by RuleId — no
+                // `term_span` fallback (see `check_pattern_fragment`).
+                let head_span = kb.rule_head_span(rid);
+                errors.push(TypeError::Other {
+                    site: TypeError::here(),
+                    span: head_span.map(|s| s.span),
+                    context: TypeErrorContext::Rule {
+                        name: head_sym,
+                        field: RuleField::Whole,
+                    },
+                    expected: "consistent variable types".to_string(),
+                    actual: "contradictory variable types".to_string(),
+                });
+                sources.push(head_span.map(|s| s.source));
             }
             continue;
         }
@@ -518,11 +521,76 @@ pub(super) fn type_rule_bodies(
                 stamp_rule_body_var_types(node, &var_types);
             }
         }
+        // After the dispatch walk, which reports a construction it types at the
+        // construction: the same field is not reported twice.
+        if reports {
+            push_clause_disagreements(kb, &typing.disagreements, errors, sources);
+        }
         // A sealed load's clauses had theirs installed when that load typed them; the
         // oracle's pass over them must change nothing a seal holds.
         if which == RuleBodies::NotSealed {
             install_inferred_column_bounds(kb, rid, &var_types);
         }
+    }
+}
+
+/// A clause's disagreements as load errors (068-implementation §6.2, decision 3), each at its
+/// own place. A mismatch an earlier check refused at a place that holds it is that check's
+/// error, and is not reported again: a construction's field — a fact's own
+/// ([`check_entity_facts`]), a construction the dispatch walk typed — and an operation's
+/// return at a result column (WI-1104's check of a spec operation's call).
+fn push_clause_disagreements(
+    kb: &KnowledgeBase,
+    found: &[ClauseDisagreement],
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    for d in found {
+        if refused_already(errors, sources, d) {
+            continue;
+        }
+        errors.push(d.to_type_error(kb));
+        sources.push(d.span.map(|s| s.source));
+    }
+}
+
+/// Whether `errors` holds a refusal of the same position as `d` — an entity's field, an
+/// operation's return — at a place that meets `d`'s.
+fn refused_already(
+    errors: &[TypeError],
+    sources: &[Option<crate::span::SourceId>],
+    d: &ClauseDisagreement,
+) -> bool {
+    let (Some(position), Some(at)) = (refused_position(&d.context), d.span) else {
+        return false;
+    };
+    errors.iter().zip(sources).any(|(e, source)| match e {
+        TypeError::TypeMismatch {
+            span: Some(sp),
+            context,
+            ..
+        }
+        | TypeError::Other {
+            span: Some(sp),
+            context,
+            ..
+        } => {
+            refused_position(context) == Some(position)
+                && *source == Some(at.source)
+                && sp.start <= at.span.end
+                && at.span.start <= sp.end
+        }
+        _ => false,
+    })
+}
+
+/// The position a refusal is about, where two checks can refuse it: an entity's field, an
+/// operation's return.
+fn refused_position(context: &TypeErrorContext) -> Option<(Symbol, Option<Symbol>)> {
+    match context {
+        TypeErrorContext::EntityField { entity, field } => Some((*entity, Some(*field))),
+        TypeErrorContext::OperationReturn { op_name, .. } => Some((*op_name, None)),
+        _ => None,
     }
 }
 

@@ -140,7 +140,9 @@ namespace anthill.examples.lf1.safety.transponder
   -- until the ranking tactic exposes a `pessimistic_bound: N` argument
   -- that emits a `RankingProof(name, measure, max_ticks)` fact directly.
 
-  entity PostArmedExcursionBound(max_ticks: Int64)
+  -- A Float: the bound multiplies the per-step distance, a real, and the SMT
+  -- documents read every number as a real.
+  entity PostArmedExcursionBound(max_ticks: Float)
 
   rule excursion_distance_bound(?excursion)
     :- transponder_step_distance_bound(?delta_t),
@@ -335,7 +337,7 @@ namespace anthill.examples.lf1.safety.transponder
   -- witness, plugged in until the ranking tactic accepts a
   -- `pessimistic_bound:` argument that emits a `RankingProof` fact
   -- with the witness directly.
-  fact PostArmedExcursionBound(max_ticks: 6)
+  fact PostArmedExcursionBound(max_ticks: 6.0)
 
   -- Per-step no-collision (always holds on every tick, not just
   -- post-armed).

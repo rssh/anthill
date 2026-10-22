@@ -131,19 +131,37 @@ fn a_bare_value_is_wrapped_under_an_option_of_a_type_holding_a_value() {
 }
 
 /// A `[…]` literal written for a field declared a `Set` stays as written, also when the
-/// set's element type holds a value: a `cons` pattern matches nothing, and the fact is
-/// there.
+/// set's element type holds a value: a `cons` pattern, asked at run time, matches nothing,
+/// and the fact is there. Written in a clause, the pattern is refused at load — a `List` at
+/// the `Set` field (068-implementation §6.2, decision 3).
 #[test]
 fn a_literal_stays_flat_under_a_set_of_a_type_holding_a_value() {
+    let decls = "  entity Tagged(tags: Set[T = Foo[T = Int64, N = 3]])\n  \
+                 fact tagged(Tagged(tags: [foo(v: 1), foo(v: 2)]))\n";
     let mut kb = load_kb_with(&source(
         "dfset",
-        "  entity Tagged(tags: Set[T = Foo[T = Int64, N = 3]])\n  \
-         fact tagged(Tagged(tags: [foo(v: 1), foo(v: 2)]))\n  \
-         rule set_head(?m) :- mark(?m), tagged(Tagged(tags: cons(head: ?, tail: ?)))\n  \
-         rule set_whole(?m) :- mark(?m), tagged(Tagged(tags: ?))",
+        &format!("{decls}  rule set_whole(?m) :- mark(?m), tagged(Tagged(tags: ?))"),
     ));
-    assert_eq!(query_unary(&mut kb, "test.dfset.set_head").len(), 0);
+    assert_eq!(
+        crate::common::pattern_hits(
+            &mut kb,
+            "test.dfset.tagged(test.dfset.Tagged(tags: anthill.prelude.List.cons(head: ?, tail: ?)))"
+        ),
+        0
+    );
     assert_eq!(ints(&mut kb, "test.dfset.set_whole"), [1]);
+    let errs = crate::common::load_errors_of(&source(
+        "dfset",
+        &format!(
+            "{decls}  rule set_head(?m) :- mark(?m), tagged(Tagged(tags: cons(head: ?, tail: ?)))"
+        ),
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in Tagged.tags (entity-field): expected Set[T = Foo[")
+            && errs[0].contains("got List[T = "),
+        "{errs:#?}"
+    );
 }
 
 /// A query pattern takes the shape the loader stored under the same declared type: the

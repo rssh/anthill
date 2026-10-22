@@ -351,12 +351,12 @@ fn a_number_in_a_head_binds_a_free_variable() {
 namespace test.kf32.number
   import anthill.prelude.PartialOrd.{lte, lt}
 
-  rule mode(0, ?r) :- ?r = 1.0
-  rule mode(1, ?r) :- ?r = 2.0
+  rule mode(0.0, ?r) :- ?r = 1.0
+  rule mode(1.0, ?r) :- ?r = 2.0
   rule low: lte(?r, 1.0) :- mode(?k, ?r), lt(?k, 0.5)
   proof low by z3 end
 
-  rule only(0, ?r) :- ?r = 1.0
+  rule only(0.0, ?r) :- ?r = 1.0
   rule one: lte(?r, 1.0) :- only(?k, ?r)
   proof one by z3 end
 
@@ -523,12 +523,12 @@ namespace test.kf32.named
   rule ent_early: gte(?c, -1.0) :- lte(?c, 10.0), Lim(cap: ?c)
   proof ent_early by z3 end
 
-  rule mode(0, ?r) :- ?r = 1.0
-  rule mode(1, ?r) :- ?r = 2.0
+  rule mode(0.0, ?r) :- ?r = 1.0
+  rule mode(1.0, ?r) :- ?r = 2.0
   rule early: lte(?r, 2.0) :- gte(?k, -5.0), mode(?k, ?r)
   proof early by z3 end
 
-  rule pick(0, ?r) :- ?r = 1.0
+  rule pick(0.0, ?r) :- ?r = 1.0
   rule pick(?n, ?r) :- gte(?n, 5.0), ?r = 1.0
   rule lost: gte(?m, 0.0) :- gte(?m, ?k), pick(?k, ?r)
   proof lost by z3 end

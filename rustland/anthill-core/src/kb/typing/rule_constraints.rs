@@ -43,13 +43,14 @@ pub(super) struct ClauseConstraints {
     /// What the walk found that does not fit — a construction's argument against its field.
     pub(super) found: Vec<ClauseDisagreement>,
     /// Variables only a demand has typed so far — a call's argument at a parameter of a
-    /// stated type —; any other position, a test among them (`domain(?v, T)`, `<=>` against a
-    /// construction or a literal, a head's bound), takes a variable off. The arguments a
-    /// column of some type meets ([`ColumnType::Some`]), read once every other position is,
-    /// and the variables nothing types that such a column takes.
-    pub(super) demand_only: HashSet<u32>,
-    pub(super) some_args: Vec<Rc<NodeOccurrence>>,
-    pub(super) some_typed: HashSet<u32>,
+    /// stated type —, with the first such demand; any other position, a test among them
+    /// (`domain(?v, T)`, `<=>` against a construction or a literal, a head's bound), takes a
+    /// variable off. The arguments a column of some type meets ([`ColumnType::Some`]), read
+    /// once every other position is, and the variables nothing types that such a column
+    /// takes, with the column.
+    pub(super) demand_only: HashMap<u32, Demand>,
+    pub(super) some_args: Vec<SomeTypeArg>,
+    pub(super) some_typed: HashMap<u32, (Symbol, Symbol)>,
     /// Where a term the walk reads was written, for a term that carries no place of its own
     /// (a head's, a fact's).
     pub(super) at: Option<crate::span::SourceSpan>,
@@ -68,9 +69,9 @@ impl ClauseConstraints {
             unread: Vec::new(),
             unread_vars: HashSet::new(),
             found: Vec::new(),
-            demand_only: HashSet::new(),
+            demand_only: HashMap::new(),
             some_args: Vec::new(),
-            some_typed: HashSet::new(),
+            some_typed: HashMap::new(),
             at: None,
             checks_constructions: true,
         }
@@ -151,6 +152,7 @@ enum LatePosition {
 /// argument each parameter is filled with — what a projection the result names (`head(s:
 /// Self) -> s.T`) is read off.
 pub(super) struct CallResult {
+    op: Symbol,
     ty: Value,
     params: Vec<(Symbol, ArgType)>,
 }
@@ -162,33 +164,135 @@ enum ArgType {
     Of(Value),
 }
 
-/// A late position that did not fit what the clause already said, and so pinned nothing.
+/// A position of a clause that does not fit what the rest of the clause says, and so pinned
+/// nothing: a load error (068-implementation §6.2, decision 3), named by the position —
+/// a construction's field, a rule goal's column, a head's bound, a call's result, a dot, the
+/// enclosing sort's parameter the body fixes, a demand on a value of some type.
 #[derive(Clone, Debug)]
 pub(super) struct ClauseDisagreement {
-    pub(super) class: DisagreementClass,
     pub(super) span: Option<crate::span::SourceSpan>,
+    pub(super) context: TypeErrorContext,
+    pub(super) misfit: Misfit,
 }
 
-/// Which position of a clause did not fit ([`ClauseDisagreement`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DisagreementClass {
-    /// A construction's argument against the field it fills.
-    ConstructionField,
-    /// A variable a column of some type takes, which only a demand types.
-    SomeTypeDemand,
-    /// A head's written bound against what the body says of its variable.
-    HeadBound,
-    /// The same, where the bound fits once the enclosing sort's parameter it names is let
-    /// vary: the body fixes the parameter.
-    SortParameterFixed,
-    /// An operation call's result against the slot it fills.
-    CallResult,
-    /// The result column of `f(args, ?r)` against the call's result.
-    ResultColumn,
-    /// A rule goal's argument against the callee's column.
-    RuleGoal,
-    /// A dot's value against the slot it fills.
-    DotResult,
+/// What did not fit at a [`ClauseDisagreement`].
+#[derive(Clone, Debug)]
+pub(super) enum Misfit {
+    /// The position's type, and the type the clause gives what fills it.
+    Types { expected: Value, actual: Value },
+    /// A demand on a variable a rule goal's column of some type takes, which nothing
+    /// narrows: `expected` is the parameter's type (a dot's receiver has none), `column` the
+    /// column, as relation and label.
+    SomeType {
+        expected: Option<Value>,
+        var: Symbol,
+        column: (Symbol, Symbol),
+    },
+}
+
+impl Misfit {
+    /// The two types, each read to the end through `subst`, a sort's parameter in them by its
+    /// name.
+    fn types(kb: &mut KnowledgeBase, subst: &Substitution, expected: &Value, actual: &Value) -> Self {
+        let expected = walk_type_deep_value(kb, subst, expected);
+        let actual = walk_type_deep_value(kb, subst, actual);
+        Misfit::Types {
+            expected: parameters_named(kb, &expected),
+            actual: parameters_named(kb, &actual),
+        }
+    }
+}
+
+/// `ty` with each sort's parameter in it written by its name, as a message names it: the
+/// parameter's canonical variable reads as no name at all.
+fn parameters_named(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    let leaf = |kb: &mut KnowledgeBase, v: &Value| -> Option<Value> {
+        let var = match v {
+            Value::Term { id, .. } => match kb.get_term(*id) {
+                Term::Var(Var::Global(g)) => *g,
+                _ => return None,
+            },
+            Value::Var(Var::Global(g)) => *g,
+            _ => return None,
+        };
+        let param = kb.type_param_of_canonical_var(var)?;
+        Some(Value::term(kb.make_name_term_from_sym(param)))
+    };
+    rewrite_type_leaves(kb, ty, &leaf).unwrap_or_else(|| ty.clone())
+}
+
+impl ClauseDisagreement {
+    /// The disagreement with its types as the whole clause leaves them, `subst` its
+    /// substitution and `rigids` the parameters its bounds were read at: a variable a later
+    /// position typed reads at that type.
+    pub(super) fn resolved(
+        mut self,
+        kb: &mut KnowledgeBase,
+        subst: &Substitution,
+        rigids: &[(VarId, VarId)],
+    ) -> Self {
+        if let Misfit::Types { expected, actual } = &mut self.misfit {
+            for ty in [expected, actual] {
+                let walked = walk_type_deep_value(kb, subst, ty);
+                let walked = unrigidify_clause_types(kb, rigids, &walked);
+                *ty = parameters_named(kb, &walked);
+            }
+        }
+        self
+    }
+
+    /// The load error this disagreement is.
+    pub(super) fn to_type_error(&self, kb: &KnowledgeBase) -> TypeError {
+        let span = self.span.map(|s| s.span);
+        match &self.misfit {
+            Misfit::Types { expected, actual } => TypeError::TypeMismatch {
+                span,
+                context: self.context.clone(),
+                expected: expected.clone(),
+                actual: actual.clone(),
+                site: TypeError::here(),
+                denoted: None,
+            },
+            Misfit::SomeType {
+                expected,
+                var,
+                column: (relation, label),
+            } => TypeError::Other {
+                span,
+                context: self.context.clone(),
+                expected: match expected {
+                    Some(ty) => type_display_name_value(kb, ty),
+                    None => "a receiver of a known type".to_string(),
+                },
+                actual: format!(
+                    "a value of some type: `{}.{}` has no type its clauses share; a test \
+                     narrows `{}` first — `domain`, `<=>` against a construction or a literal, \
+                     a head's bound",
+                    kb.local_name_of(*relation),
+                    kb.local_name_of(*label),
+                    kb.local_name_of(*var),
+                ),
+                site: TypeError::here(),
+            },
+        }
+    }
+}
+
+/// A call's argument at a parameter of a stated type, which needs its value's type known: the
+/// parameter, its type and where the argument is written.
+#[derive(Clone, Debug)]
+pub(super) struct Demand {
+    context: TypeErrorContext,
+    expected: Value,
+    span: Option<crate::span::SourceSpan>,
+}
+
+/// An argument a rule goal's column of some type meets, with the column as relation and
+/// label ([`meet_some_type`]).
+#[derive(Clone)]
+pub(super) struct SomeTypeArg {
+    arg: Rc<NodeOccurrence>,
+    column: (Symbol, Symbol),
 }
 
 /// One clause's typing: each variable's type by De Bruijn index, whether the walk found
@@ -499,8 +603,9 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     arg: &A,
     expected_type: &Value,
     instantiated: bool,
-    // Whether the position is a call's argument, which needs its value's type known.
-    demand: bool,
+    // The call's parameter, where the position is a call's argument, which needs its value's
+    // type known.
+    demand: Option<Demand>,
     st: &mut ClauseConstraints,
 ) -> bool {
     if says_nothing_of_a_value(kb, expected_type) {
@@ -559,13 +664,17 @@ fn constrain_vid(
     vid: u32,
     expected_type: &Value,
     from_param: bool,
-    demand: bool,
+    demand: Option<Demand>,
     st: &mut ClauseConstraints,
 ) {
-    if !demand {
-        st.demand_only.remove(&vid);
-    } else if !st.var_types.contains_key(&vid) {
-        st.demand_only.insert(vid);
+    match demand {
+        None => {
+            st.demand_only.remove(&vid);
+        }
+        Some(demand) if !st.var_types.contains_key(&vid) => {
+            st.demand_only.insert(vid, demand);
+        }
+        Some(_) => {}
     }
     let Some(existing) = st.var_types.get(&vid).cloned() else {
         // Nothing known yet — record what this position says.
@@ -872,13 +981,22 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 let placeholder = instantiated || is_option_type(kb, &param_type);
                 // A demand is a parameter of a stated type: one of the callee's own type
                 // parameters — a spec's carrier, dispatched by the value — takes any value.
-                let demand = !instantiated && !kb.is_equality_connective_functor(functor);
+                let demand = (!instantiated && !kb.is_equality_connective_functor(functor))
+                    .then(|| Demand {
+                        context: TypeErrorContext::OperationArgument {
+                            op_name: functor,
+                            param: *param_sym,
+                        },
+                        expected: param_type.clone(),
+                        span: arg.span(),
+                    });
                 if !constrain_arg(kb, arg, &param_type, placeholder, demand, st) {
                     nested.push((index, param_type));
                 }
             }
         }
         result = Some(CallResult {
+            op: functor,
             ty: instantiate_declared_type(kb, &op.return_type, &mut inst).0,
             params,
         });
@@ -898,6 +1016,12 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
         // `dot_apply`): syntax, whose fields say nothing of the variables in them.
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
+        // The position first, as an operation body reads an expected type into the
+        // construction: its parameters are the fields' — `h(inner: w2(a: ?x, b: "s"))` over
+        // `inner: W2[A = E, B = Int64]` checks `b` against `Int64`.
+        if let Some(position) = position {
+            constrain_constructed(kb, functor, position, &mut inst, &mut st.subst);
+        }
         for (field_sym, field_type) in &field_types {
             if let Some(named) = named_args.iter().position(|(s, _)| s == field_sym) {
                 // WI-341 Stage A: field type is a carrier-agnostic `Value` —
@@ -905,19 +1029,23 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 let (field_type, instantiated) =
                     instantiate_declared_type(kb, field_type, &mut inst);
                 let arg = &named_args[named].1;
-                if st.checks_constructions && !argument_fits_field(kb, arg, &field_type, st) {
-                    st.found.push(ClauseDisagreement {
-                        class: DisagreementClass::ConstructionField,
-                        span: arg.span().or(st.at),
-                    });
+                if st.checks_constructions {
+                    if let Err(actual) = argument_fits_field(kb, arg, &field_type, st) {
+                        let misfit = Misfit::types(kb, &st.subst, &field_type, &actual);
+                        st.found.push(ClauseDisagreement {
+                            span: arg.span().or(st.at),
+                            context: TypeErrorContext::EntityField {
+                                entity: functor,
+                                field: *field_sym,
+                            },
+                            misfit,
+                        });
+                    }
                 }
-                if !constrain_arg(kb, arg, &field_type, instantiated, false, st) {
+                if !constrain_arg(kb, arg, &field_type, instantiated, None, st) {
                     nested.push((pos_args.len() + named, field_type));
                 }
             }
-        }
-        if let Some(position) = position {
-            constrain_constructed(kb, functor, position, &mut inst, &mut st.subst);
         }
     }
     (nested, result)
@@ -1026,15 +1154,18 @@ fn constrain_domain_test(
     if type_mentions_unresolved_name(kb, &ty) || parameter_spec_written_as_type(kb, &ty).is_some() {
         return;
     }
-    constrain_vid(kb, d, &ty, false, false, st);
+    constrain_vid(kb, d, &ty, false, None, st);
 }
 
-/// `found` with each place's disagreement of one class once: a late position reads an
+/// `found` with each place's disagreement of one kind once: a late position reads an
 /// argument the walk read already.
 pub(super) fn found_once(found: Vec<ClauseDisagreement>) -> Vec<ClauseDisagreement> {
     let mut once: Vec<ClauseDisagreement> = Vec::with_capacity(found.len());
     for d in found {
-        if !once.iter().any(|o| o.class == d.class && o.span == d.span) {
+        if !once
+            .iter()
+            .any(|o| o.span == d.span && o.context.kind_tag() == d.context.kind_tag())
+        {
             once.push(d);
         }
     }
@@ -1042,19 +1173,44 @@ pub(super) fn found_once(found: Vec<ClauseDisagreement>) -> Vec<ClauseDisagreeme
 }
 
 /// Read the constructions a fact writes, as a clause's are read ([`argument_fits_field`]),
-/// and count what does not fit ([`count_clause_disagreements`]). A fact the loader made, which
-/// carries no place, is not read.
-pub(super) fn check_fact_constructions(kb: &mut KnowledgeBase, rid: RuleId) {
+/// and answer what does not fit. A fact the loader made, which carries no place, is not read.
+///
+/// A fact of an entity has its own fields checked by the entity-fact check
+/// ([`check_entity_facts`]), over the load's work list and with what it knows of the field;
+/// what is read here is what that check does not — a construction inside an argument, and a
+/// relation fact's arguments.
+pub(super) fn check_fact_constructions(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+) -> Vec<ClauseDisagreement> {
     let (Some(at), Some(head)) = (kb.rule_head_span(rid), kb.fact_head_term(rid)) else {
-        return;
+        return Vec::new();
     };
     if is_equation(kb, rid) {
-        return;
+        return Vec::new();
     }
     let mut st = ClauseConstraints::new();
     st.at = Some(at);
-    collect_term_type_constraints(kb, head, None, &mut st);
-    count_clause_disagreements(kb, &found_once(st.found));
+    match kb.get_term(head).clone() {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } if is_construction_functor(kb, functor) => {
+            st.checks_constructions = false;
+            let (nested, _) =
+                constrain_application(kb, functor, &pos_args, &named_args, &[], None, &mut st);
+            st.checks_constructions = true;
+            let args = pos_args.iter().chain(named_args.iter().map(|(_, arg)| arg));
+            for (index, &arg) in args.enumerate() {
+                let position = nested_position(&nested, index);
+                collect_term_type_constraints(kb, arg, position, &mut st);
+            }
+        }
+        _ => collect_term_type_constraints(kb, head, None, &mut st),
+    }
+    found_once(st.found)
 }
 
 /// Whether `rid` is an equation — directional (`@[simp]`) or a guarded `lhs = rhs :- g`, its
@@ -1090,32 +1246,35 @@ fn argument_fits_field<A: ConstrainedArg>(
     arg: &A,
     field: &Value,
     st: &ClauseConstraints,
-) -> bool {
+) -> Result<(), Value> {
     if says_nothing_of_a_value(kb, field) {
-        return true;
+        return Ok(());
     }
     let actual = if let Some(lit) = arg.literal(kb) {
         literal_sort(kb, &lit)
     } else if let Some(ctor) = arg.constructor(kb) {
         if kb.is_ordered_product_functor(ctor) || SeqLiteral::of_constructor(kb, ctor).is_some()
         {
-            return true;
+            return Ok(());
         }
         let Some(sort) = kb.sort_of_constructor(ctor) else {
-            return true;
+            return Ok(());
         };
         let published = kb
             .type_param_syms_of(sort)
             .iter()
             .all(|&param| kb.canonical_type_param_var(param).is_some());
         if !published {
-            return true;
+            return Ok(());
         }
         let own = Value::term(own_application(kb, sort));
         instantiate_declared_type(kb, &own, &mut ParamInstantiation::new()).0
     } else {
-        return true;
+        return Ok(());
     };
+    // The field as the clause has bound it — a parameter the construction's position fixed
+    // (`cons` at a `List[T = Sp]` slot) is that type, which the provider question below reads.
+    let field = &walk_type_deep_value(kb, &st.subst, field);
     // A field of the construction's own parameter reads what the clause has bound; one with
     // no variable in it needs nothing of the clause's substitution.
     let reads_subst = type_mentions_flex_var(kb, field);
@@ -1129,14 +1288,14 @@ fn argument_fits_field<A: ConstrainedArg>(
     if unify_types(kb, &mut scratch(st), field, &actual)
         || types_compatible(kb, &mut scratch(st), &actual, field)
     {
-        return true;
+        return Ok(());
     }
     // A value of a sort that provides the field's bare spec, as at an operation's argument.
     if let (Some(actual_base), Some(spec)) =
         (type_base_sort_view(kb, &actual), extract_sort_ref_sym(kb, field))
     {
         if sort_provides_admissibly(kb, actual_base, spec) {
-            return true;
+            return Ok(());
         }
     }
     if is_option_type(kb, field) && !is_option_type(kb, &actual) {
@@ -1144,12 +1303,11 @@ fn argument_fits_field<A: ConstrainedArg>(
             if unify_types(kb, &mut scratch(st), &element, &actual)
                 || types_compatible(kb, &mut scratch(st), &actual, &element)
             {
-                return true;
+                return Ok(());
             }
         }
     }
-    note_disagreement(kb, &st.subst, field, &actual);
-    false
+    Err(actual)
 }
 
 /// The type of a tuple, list or set literal — `functor` the reflect entity it is stored as —
@@ -1170,7 +1328,7 @@ fn collection_literal_type<A: ConstrainedArg>(
         Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
     };
     let mut meet = |kb: &mut KnowledgeBase, index: usize, arg: &A, ty: &Value, st: &mut _| {
-        if !constrain_arg(kb, arg, ty, true, false, st) {
+        if !constrain_arg(kb, arg, ty, true, None, st) {
             nested.push((index, ty.clone()));
         }
     };
@@ -1242,8 +1400,8 @@ pub(super) fn settle_late_positions(
     disagreements: &mut Vec<ClauseDisagreement>,
 ) -> Vec<(VarId, VarId)> {
     let span = kb.rule_head_span(rid);
-    let rigids = settle_head_bounds(kb, rid, st, disagreements, span);
     let own = kb.head_functor(head);
+    let rigids = settle_head_bounds(kb, rid, own, st, disagreements, span);
     // What can be read only once something else is: a dot, whose receiver must be typed,
     // and a result whose type is computed from its operands (`field_access`'s `FieldOf`,
     // the field's type once the receiver's is known).
@@ -1256,20 +1414,32 @@ pub(super) fn settle_late_positions(
                     continue;
                 };
                 let mut trial = st.trial();
-                if constrain_goal_at_columns(kb, &mut trial, goal, &columns) {
-                    st.commit(trial);
-                } else {
-                    let fixed = fits_once_parameters_vary(kb, st, &rigids, |kb, varying| {
-                        constrain_goal_at_columns(kb, varying, goal, &columns)
-                    });
-                    disagreements.push(ClauseDisagreement {
-                        class: if fixed {
-                            DisagreementClass::SortParameterFixed
-                        } else {
-                            DisagreementClass::RuleGoal
-                        },
-                        span: Some(goal.span),
-                    });
+                match constrain_goal_at_columns(kb, &mut trial, *functor, goal, &columns) {
+                    Ok(()) => st.commit(trial),
+                    Err((label, arg, column)) => {
+                        let fixed = fits_once_parameters_vary(kb, st, &rigids, |kb, varying| {
+                            constrain_goal_at_columns(kb, varying, *functor, goal, &columns)
+                                .is_ok()
+                        });
+                        let span = Some(arg.span);
+                        disagreements.push(match fixed {
+                            Some(fixed) => fixed.disagreement(kb, span),
+                            None => {
+                                // The column as the goal's other arguments left it, against
+                                // what the rest of the clause gives the argument.
+                                let actual = argument_type(kb, st, &arg);
+                                let actual = walk_type_deep_value(kb, &st.subst, &actual);
+                                ClauseDisagreement {
+                                    span,
+                                    context: TypeErrorContext::RuleColumn {
+                                        relation: *functor,
+                                        column: label,
+                                    },
+                                    misfit: Misfit::types(kb, &trial.subst, &column, &actual),
+                                }
+                            }
+                        });
+                    }
                 }
                 continue;
             }
@@ -1314,43 +1484,40 @@ fn settle_typed_position(
     rigids: &[(VarId, VarId)],
     disagreements: &mut Vec<ClauseDisagreement>,
 ) -> bool {
-    let (slot, ty, class, at) = match late {
+    let (slot, ty, context, at) = match late {
         LatePosition::CallResult {
             position,
             result,
             at,
         } => {
-            let Some(result) = computed_result_type(kb, rid, st, result, *at) else {
+            let Some(ty) = computed_result_type(kb, rid, st, result, *at) else {
                 return false;
             };
-            (
-                SlotOf::Type(position),
-                result,
-                DisagreementClass::CallResult,
-                *at,
-            )
+            let context = TypeErrorContext::OperationReturn {
+                op_name: result.op,
+                surface: None,
+            };
+            (SlotOf::Type(position), ty, context, *at)
         }
         LatePosition::ResultColumn { arg, result } => {
-            let Some(result) = computed_result_type(kb, rid, st, result, arg.span) else {
+            let Some(ty) = computed_result_type(kb, rid, st, result, arg.span) else {
                 return false;
             };
-            (
-                SlotOf::Arg(arg),
-                result,
-                DisagreementClass::ResultColumn,
-                arg.span,
-            )
+            let context = TypeErrorContext::OperationReturn {
+                op_name: result.op,
+                surface: None,
+            };
+            (SlotOf::Arg(arg), ty, context, arg.span)
         }
         LatePosition::DotResult { dot, position } => {
             let Some(ty) = dot_value_type(kb, rid, st, dot) else {
                 return false;
             };
-            (
-                SlotOf::Type(position),
-                ty,
-                DisagreementClass::DotResult,
-                dot.span,
-            )
+            let Some(Expr::DotApply { name, .. }) = dot.as_expr() else {
+                unreachable!("a dot's value is read off a dot");
+            };
+            let context = TypeErrorContext::DotProjection { member: *name };
+            (SlotOf::Type(position), ty, context, dot.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
     };
@@ -1363,10 +1530,6 @@ fn settle_typed_position(
     if fits {
         st.commit(trial);
     } else {
-        match slot {
-            SlotOf::Type(position) => note_disagreement(kb, &st.subst, position, &ty),
-            SlotOf::Arg(arg) => note_arg_disagreement(kb, &st.subst, st, arg, &ty),
-        }
         let fixed = fits_once_parameters_vary(kb, st, rigids, |kb, varying| match slot {
             SlotOf::Type(position) => {
                 let position = unrigidify_clause_types(kb, rigids, position);
@@ -1378,13 +1541,22 @@ fn settle_typed_position(
                 constrain_occurrence_at(kb, varying, arg, &ty)
             }
         });
-        disagreements.push(ClauseDisagreement {
-            class: if fixed {
-                DisagreementClass::SortParameterFixed
-            } else {
-                class
-            },
-            span: Some(at),
+        disagreements.push(match fixed {
+            Some(fixed) => fixed.disagreement(kb, Some(at)),
+            None => {
+                // The call's result, or the dot's value, against what the clause says of the
+                // slot it fills — its declared type, or the argument the result is — as an
+                // operation's return is read against what its body gives.
+                let has = match slot {
+                    SlotOf::Type(position) => position.clone(),
+                    SlotOf::Arg(arg) => argument_type(kb, st, arg),
+                };
+                ClauseDisagreement {
+                    span: Some(at),
+                    context,
+                    misfit: Misfit::types(kb, &st.subst, &ty, &has),
+                }
+            }
         });
     }
     true
@@ -1423,9 +1595,9 @@ fn fits_once_parameters_vary(
     st: &ClauseConstraints,
     rigids: &[(VarId, VarId)],
     fits: impl FnOnce(&mut KnowledgeBase, &mut ClauseConstraints) -> bool,
-) -> bool {
+) -> Option<FixedParameter> {
     if rigids.is_empty() {
-        return false;
+        return None;
     }
     let mut varying = st.trial();
     let vars: Vec<u32> = varying.var_types.keys().copied().collect();
@@ -1434,7 +1606,98 @@ fn fits_once_parameters_vary(
         let ty = unrigidify_clause_types(kb, rigids, &ty);
         varying.var_types.insert(d, ty);
     }
-    fits(kb, &mut varying)
+    if !fits(kb, &mut varying) {
+        return None;
+    }
+    parameter_fixed(kb, &varying.subst, rigids)
+}
+
+/// An enclosing sort's parameter a clause's body fixes, and what it fixes it to
+/// ([`fits_once_parameters_vary`]).
+struct FixedParameter {
+    param: VarId,
+    to: Value,
+}
+
+impl FixedParameter {
+    /// The load error: the parameter, rigid in the clause, against what the body makes it.
+    fn disagreement(
+        &self,
+        kb: &mut KnowledgeBase,
+        span: Option<crate::span::SourceSpan>,
+    ) -> ClauseDisagreement {
+        let param_sym = kb
+            .type_param_of_canonical_var(self.param)
+            .expect("a rigid of a clause stands for a sort's parameter");
+        let sort = impl_parent_of_op(kb, param_sym).expect("a sort's parameter has its sort");
+        // The parameter by its name: the clause holds at every instance, so it is no type
+        // the body may make.
+        let param = Value::term(kb.make_name_term_from_sym(param_sym));
+        ClauseDisagreement {
+            span,
+            context: TypeErrorContext::SortParameter {
+                sort,
+                param: param_sym,
+            },
+            misfit: Misfit::Types {
+                expected: param,
+                actual: parameters_named(kb, &self.to),
+            },
+        }
+    }
+}
+
+/// The first of the parameters `rigids` stands for that `subst` binds to something other
+/// than itself.
+fn parameter_fixed(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    rigids: &[(VarId, VarId)],
+) -> Option<FixedParameter> {
+    for &(_, param) in rigids {
+        let id = kb.alloc(Term::Var(Var::Global(param)));
+        let to = walk_type_deep_value(kb, subst, &Value::term(id));
+        if !matches!(&to, Value::Term { id: t, .. } if *t == id) {
+            // What the clause's other positions hold rigid is that parameter too.
+            let to = unrigidify_clause_types(kb, rigids, &to);
+            return Some(FixedParameter { param, to });
+        }
+    }
+    None
+}
+
+/// The type the clause gives `arg`, as a position reads it — a variable's, a literal's sort,
+/// a construction's — by typing it at a fresh variable on a copy.
+fn argument_type(
+    kb: &mut KnowledgeBase,
+    st: &ClauseConstraints,
+    arg: &Rc<NodeOccurrence>,
+) -> Value {
+    let name = kb.intern("t");
+    let fresh = kb.fresh_var(name);
+    let fresh = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
+    let mut trial = st.trial();
+    constrain_occurrence_at(kb, &mut trial, arg, &fresh);
+    walk_type_deep_value(kb, &trial.subst, &fresh)
+}
+
+/// The source name of a clause's variable `d`, a De Bruijn index into its frame.
+fn clause_var_name(kb: &KnowledgeBase, rid: RuleId, d: u32) -> Symbol {
+    let globals = kb.rule_globals(rid);
+    globals
+        .get(globals.len().wrapping_sub(1).wrapping_sub(d as usize))
+        .unwrap_or_else(|| panic!("a clause's variable {d} is in its frame of {}", globals.len()))
+        .name()
+}
+
+/// The source name of the variable `arg` is: a clause's, by its frame, or one a binder in the
+/// body names.
+fn occurrence_var_name(kb: &KnowledgeBase, rid: RuleId, arg: &Rc<NodeOccurrence>) -> Symbol {
+    match arg.as_expr() {
+        Some(Expr::Var(Var::DeBruijn(d))) => clause_var_name(kb, rid, *d),
+        Some(Expr::Var(Var::Global(v))) => v.name(),
+        _ => unreachable!("a demand is read off a variable"),
+    }
 }
 
 /// What a late position's type is given to: a slot's declared type, or an argument.
@@ -1514,6 +1777,7 @@ fn computed_result_type(
 fn settle_head_bounds(
     kb: &mut KnowledgeBase,
     rid: RuleId,
+    own: Option<Symbol>,
     st: &mut ClauseConstraints,
     disagreements: &mut Vec<ClauseDisagreement>,
     span: Option<crate::span::SourceSpan>,
@@ -1547,6 +1811,7 @@ fn settle_head_bounds(
             continue;
         }
         let opened = crate::kb::node_occurrence::open_value_type(kb, &bound, &frame).0;
+        let opened = parameters_by_their_variable(kb, &opened);
         let mut vars: Vec<VarId> = Vec::new();
         let mut seen = HashSet::new();
         crate::kb::node_occurrence::collect_value_type(kb, &opened, &mut vars, &mut seen);
@@ -1566,17 +1831,49 @@ fn settle_head_bounds(
         }
         // Where the bound fits once its parameters vary, it is the parameter the body fixes.
         let mut varying = st.trial();
-        let class = if constrain_var_at(kb, &mut varying, d, &opened) {
-            DisagreementClass::SortParameterFixed
+        let fixed = if constrain_var_at(kb, &mut varying, d, &opened) {
+            parameter_fixed(kb, &varying.subst, &rigids)
         } else {
-            DisagreementClass::HeadBound
+            None
         };
-        if let Some(has) = st.var_types.get(&d).cloned() {
-            note_disagreement(kb, &st.subst, &rigid_bound, &has);
-        }
-        disagreements.push(ClauseDisagreement { class, span });
+        disagreements.push(match fixed {
+            Some(fixed) => fixed.disagreement(kb, span),
+            None => {
+                let has = st
+                    .var_types
+                    .get(&d)
+                    .cloned()
+                    .expect("a bound that does not fit meets a type the body gave");
+                ClauseDisagreement {
+                    span,
+                    context: TypeErrorContext::RuleBound {
+                        rule: own.unwrap_or_else(|| kb.rule_domain(rid)),
+                        var: clause_var_name(kb, rid, d),
+                    },
+                    misfit: Misfit::types(kb, &st.subst, &opened, &has),
+                }
+            }
+        });
     }
     rigids
+}
+
+/// `ty` with each sort's parameter written by its name (`Wrap[T = T]` in a sort nested in the
+/// one that declares `T`) read as the parameter's variable, as a bound that writes the
+/// variable is read.
+fn parameters_by_their_variable(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    let leaf = |kb: &mut KnowledgeBase, v: &Value| -> Option<Value> {
+        let ViewHead::Functor {
+            functor: Some(name),
+            pos_arity: 0,
+            named_arity: 0,
+        } = v.head(kb)
+        else {
+            return None;
+        };
+        kb.canonical_type_param_var(name).map(Value::term)
+    };
+    rewrite_type_leaves(kb, ty, &leaf).unwrap_or_else(|| ty.clone())
 }
 
 /// Every rigid of `rigids` in `ty` read as the parameter it stands for again
@@ -1636,6 +1933,12 @@ fn constrain_var_at(
         return false;
     }
     let placeholder = walk_type_deep_value(kb, &st.subst, &existing);
+    // A parameter the clause holds rigid is of no particular sort: it meets a placeholder of
+    // one only by the some-coercion. The question below answers `Ok` for a pair it cannot
+    // decide — `List[T = e]` with `e` open against `C` — which is no answer here.
+    if matches!(ty.head(kb), ViewHead::Var(Var::Rigid(_))) && !is_option_type(kb, &placeholder) {
+        return false;
+    }
     // The question an operation body's argument is asked of its parameter, which admits a
     // carrier that provides the spec a parameter is written at.
     let context = TypeErrorContext::Rule {
@@ -1694,20 +1997,22 @@ fn constrain_occurrence_at(
     !st.subst.contradiction
 }
 
-/// Each argument of the rule goal `goal` at the column of its slot.
+/// Each argument of the rule goal `goal` on `relation` at the column of its slot; where one
+/// does not fit, the column's label, the argument and the column's type.
 fn constrain_goal_at_columns(
     kb: &mut KnowledgeBase,
     st: &mut ClauseConstraints,
+    relation: Symbol,
     goal: &Rc<NodeOccurrence>,
     columns: &[(SlotKey, ColumnType)],
-) -> bool {
+) -> Result<(), (Symbol, Rc<NodeOccurrence>, Value)> {
     let Some(Expr::Apply {
         pos_args,
         named_args,
         ..
     }) = goal.as_expr()
     else {
-        return true;
+        return Ok(());
     };
     let slots = pos_args
         .iter()
@@ -1718,10 +2023,14 @@ fn constrain_goal_at_columns(
         let Some((_, column)) = columns.iter().find(|(s, _)| *s == slot) else {
             continue;
         };
+        let label = match slot {
+            SlotKey::Pos(i) => kb.intern(&crate::intern::positional_label(i)),
+            SlotKey::Named(k) => k,
+        };
         let ty = match column {
             ColumnType::Of(ty) => ty,
             ColumnType::Some => {
-                meet_some_type(st, arg);
+                meet_some_type(st, arg, (relation, label));
                 continue;
             }
         };
@@ -1731,81 +2040,69 @@ fn constrain_goal_at_columns(
         if is_occurrence_type(kb, ty) {
             continue;
         }
-        let before = disagreements_printed().then(|| st.subst.clone());
         if !constrain_occurrence_at(kb, st, arg, ty) {
-            if let Some(before) = before {
-                note_arg_disagreement(kb, &before, st, arg, ty);
-            }
-            return false;
+            return Err((label, Rc::clone(arg), ty.clone()));
         }
     }
-    true
+    Ok(())
 }
 
 /// An argument at a column of some type ([`ColumnType::Some`]): a filter, which types nothing,
 /// read once every other position of the clause is ([`demands_on_some_type`]).
-fn meet_some_type(st: &mut ClauseConstraints, arg: &Rc<NodeOccurrence>) {
-    st.some_args.push(Rc::clone(arg));
+fn meet_some_type(st: &mut ClauseConstraints, arg: &Rc<NodeOccurrence>, column: (Symbol, Symbol)) {
+    st.some_args.push(SomeTypeArg {
+        arg: Rc::clone(arg),
+        column,
+    });
 }
 
 /// The demands on a value a column of some type gives: a variable there that only a demand
-/// types is recorded ([`DisagreementClass::SomeTypeDemand`]), and one nothing types is the
-/// column's — a dot on it is recorded too. A variable a test or any other position types is
+/// types is refused at the demand ([`Misfit::SomeType`]), and one nothing types is the
+/// column's — a dot on it is refused too. A variable a test or any other position types is
 /// read at that type.
 fn demands_on_some_type(kb: &KnowledgeBase, rid: RuleId, st: &mut ClauseConstraints) {
-    for arg in std::mem::take(&mut st.some_args) {
+    for SomeTypeArg { arg, column } in std::mem::take(&mut st.some_args) {
         let Some(d) = arg.var_key(kb) else { continue };
-        if st.demand_only.contains(&d) {
+        if let Some(demand) = st.demand_only.get(&d) {
             st.found.push(ClauseDisagreement {
-                class: DisagreementClass::SomeTypeDemand,
-                span: Some(arg.span),
+                span: demand.span.or(Some(arg.span)),
+                context: demand.context.clone(),
+                misfit: Misfit::SomeType {
+                    expected: Some(demand.expected.clone()),
+                    var: occurrence_var_name(kb, rid, &arg),
+                    column,
+                },
             });
         } else if !st.var_types.contains_key(&d) {
-            st.some_typed.insert(d);
+            st.some_typed.insert(d, column);
         }
     }
     if st.some_typed.is_empty() {
         return;
     }
-    fn walk(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, st: &mut ClauseConstraints) {
+    fn walk(kb: &KnowledgeBase, rid: RuleId, occ: &Rc<NodeOccurrence>, st: &mut ClauseConstraints) {
         let Some(expr) = occ.as_expr() else { return };
-        if let Expr::DotApply { receiver, .. } = expr {
+        if let Expr::DotApply { receiver, name, .. } = expr {
             if let Some(d) = receiver.var_key(kb) {
-                if st.some_typed.contains(&d) && !st.var_types.contains_key(&d) {
-                    st.found.push(ClauseDisagreement {
-                        class: DisagreementClass::SomeTypeDemand,
-                        span: Some(occ.span),
-                    });
+                if let Some(&column) = st.some_typed.get(&d) {
+                    if !st.var_types.contains_key(&d) {
+                        st.found.push(ClauseDisagreement {
+                            span: Some(occ.span),
+                            context: TypeErrorContext::DotProjection { member: *name },
+                            misfit: Misfit::SomeType {
+                                expected: None,
+                                var: occurrence_var_name(kb, rid, receiver),
+                                column,
+                            },
+                        });
+                    }
                 }
             }
         }
-        for_each_child(expr, |c| walk(kb, c, st));
+        for_each_child(expr, |c| walk(kb, rid, c, st));
     }
     for node in kb.rule_body_nodes(rid).to_vec() {
-        walk(kb, &node, st);
-    }
-}
-
-/// [`note_disagreement`] for an argument: the slot's type against what the clause says of
-/// the argument — a variable's type, a literal's sort.
-fn note_arg_disagreement(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    st: &ClauseConstraints,
-    arg: &Rc<NodeOccurrence>,
-    ty: &Value,
-) {
-    if !disagreements_printed() {
-        return;
-    }
-    let has = if let Some(lit) = arg.literal(kb) {
-        Some(literal_sort(kb, &lit))
-    } else {
-        arg.var_key(kb).and_then(|d| st.var_types.get(&d).cloned())
-    };
-    match has {
-        Some(has) => note_disagreement(kb, subst, ty, &has),
-        None => eprintln!("  {} against a construction", type_display_name_value(kb, ty)),
+        walk(kb, rid, &node, st);
     }
 }
 
@@ -1846,112 +2143,3 @@ fn dot_value_type(
         .map(|r| r.ty)
 }
 
-thread_local! {
-    /// The late positions that did not fit, by class, over every clause this thread typed
-    /// ([`clause_disagreements_by_this_thread`]).
-    static CLAUSE_DISAGREEMENTS: std::cell::RefCell<HashMap<&'static str, usize>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-/// Whether `ANTHILL_CLAUSE_DISAGREEMENTS` is set: each disagreement is then printed.
-fn disagreements_printed() -> bool {
-    std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_some()
-}
-
-/// With `ANTHILL_CLAUSE_DISAGREEMENTS=1`, print the two types a late position failed on.
-fn note_disagreement(kb: &mut KnowledgeBase, subst: &Substitution, a: &Value, b: &Value) {
-    if !disagreements_printed() {
-        return;
-    }
-    let a = walk_type_deep_value(kb, subst, a);
-    let b = walk_type_deep_value(kb, subst, b);
-    eprintln!(
-        "  {} against {}",
-        type_display_name_value(kb, &a),
-        type_display_name_value(kb, &b)
-    );
-}
-
-/// Tally `found` ([`clause_disagreements_by_this_thread`]); with
-/// `ANTHILL_CLAUSE_DISAGREEMENTS=1`, also print each with where it was written; with
-/// `ANTHILL_CLAUSE_DISAGREEMENTS_TO=<file>`, also append each to the file as a line of
-/// class, test (the thread's name), place and the source from there — what the count of a
-/// whole suite run is taken from, since a passing test's printing is not shown.
-pub(super) fn count_clause_disagreements(kb: &KnowledgeBase, found: &[ClauseDisagreement]) {
-    if found.is_empty() {
-        return;
-    }
-    let print = disagreements_printed();
-    let record = std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS_TO");
-    let mut lines = String::new();
-    CLAUSE_DISAGREEMENTS.with(|tally| {
-        let mut tally = tally.borrow_mut();
-        for d in found {
-            *tally.entry(d.class.name()).or_default() += 1;
-            if !print && record.is_none() {
-                continue;
-            }
-            let (at, from) = disagreement_place(kb, d);
-            if print {
-                eprintln!("clause disagreement {}: {at}", d.class.name());
-            }
-            if record.is_some() {
-                let test = std::thread::current().name().unwrap_or("").to_owned();
-                lines.push_str(&format!("{}\t{test}\t{at}\t{from}\n", d.class.name()));
-            }
-        }
-    });
-    if let Some(file) = record {
-        use std::io::Write;
-        let appended = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file)
-            .and_then(|mut f| f.write_all(lines.as_bytes()));
-        if let Err(e) = appended {
-            panic!("ANTHILL_CLAUSE_DISAGREEMENTS_TO={}: {e}", file.to_string_lossy());
-        }
-    }
-}
-
-/// Where a disagreement was written, as `path:line:column`, and the first sixty characters of
-/// the source from there on one line.
-fn disagreement_place(kb: &KnowledgeBase, d: &ClauseDisagreement) -> (String, String) {
-    d.span
-        .and_then(|sp| {
-            let (path, text) = kb.sources.provenance(sp.source)?;
-            let start = (sp.span.start as usize).min(text.len());
-            let line = text[..start].matches('\n').count() + 1;
-            let col = start - text[..start].rfind('\n').map_or(0, |i| i + 1) + 1;
-            let path = path.map(|p| p.display().to_string()).unwrap_or_default();
-            let from: String = text[start..].chars().take(60).collect();
-            Some((format!("{path}:{line}:{col}"), from.replace('\n', " ")))
-        })
-        .unwrap_or_else(|| (format!("{:?}", d.span), String::new()))
-}
-
-/// The late positions of a clause that did not fit, by class, over every clause this thread
-/// has typed since it started.
-pub fn clause_disagreements_by_this_thread() -> Vec<(&'static str, usize)> {
-    CLAUSE_DISAGREEMENTS.with(|tally| {
-        let mut out: Vec<(&'static str, usize)> =
-            tally.borrow().iter().map(|(k, v)| (*k, *v)).collect();
-        out.sort();
-        out
-    })
-}
-
-impl DisagreementClass {
-    fn name(self) -> &'static str {
-        match self {
-            DisagreementClass::ConstructionField => "construction field",
-            DisagreementClass::SomeTypeDemand => "some type demand",
-            DisagreementClass::HeadBound => "head bound",
-            DisagreementClass::SortParameterFixed => "sort parameter fixed",
-            DisagreementClass::CallResult => "call result",
-            DisagreementClass::ResultColumn => "result column",
-            DisagreementClass::RuleGoal => "rule goal",
-            DisagreementClass::DotResult => "dot result",
-        }
-    }
-}

@@ -781,7 +781,9 @@ end
 
 /// TWO REQUIREMENTS OF ONE SPEC AT TWO PARAMETERS: `eq` at `T` and `eq` at `U` are two
 /// functions, each with its own law, and a variable's is the one of its sort. An
-/// application across the two carriers is of no instance, and is refused.
+/// application across the two carriers is of no instance, and is refused — at load, where
+/// `neq(?a, ?b)` makes the sort's parameter `U` the `T` of `?a` (068-implementation §6.2,
+/// decision 3). The translation refused it before, "of two sorts".
 #[test]
 fn one_operation_at_two_carriers_is_two_functions() {
     let scope = |rule: &str| {
@@ -831,7 +833,11 @@ end
     let across = prove_dry_run("two_across", &scope("rule p(?a: T, ?b: U) :- neq(?a, ?b)"));
     let refused = errors(&across);
     assert_eq!(refused.len(), 1, "stderr:\n{}", across.stderr);
-    assert!(refused[0].contains("of two sorts"), "{}", refused[0]);
+    assert!(
+        refused[0].contains("type mismatch in Scope.U (sort-parameter): expected U, got T"),
+        "{}",
+        refused[0]
+    );
 }
 
 /// A LAW THAT IS NOT LOWERED IS LEFT OUT AND SAID, and the others of its spec are

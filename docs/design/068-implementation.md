@@ -716,6 +716,83 @@ Decided with the user, 2026-10-22: a field's name is a `String` in every `FieldI
 records, which held the field's symbol; the signature reader resolves a parameter's symbol as
 `<operation>.<name>`. `wi_9r5hn`'s 12 records go with it.
 
+### 6.6 C1b, decision 3's refusals (WI-20261013-WF14Z, fourth part, 2026-10-22)
+
+Every position the clause typing records as not fitting is a load error at its place, named by
+the position, with both types as the whole clause leaves them (`ClauseDisagreement`,
+`rules.rs`'s `push_clause_disagreements`). The count of §6.4 and §6.5, taken again on the
+tree before this part (FieldInfo's `String` in), was 147 records in 80 tests and 29 in the
+CLI's spawned binaries, the corpus none but `lf1`'s; each became a refusal or a rewritten
+row. The record tally (`ANTHILL_CLAUSE_DISAGREEMENTS*`, `clause_disagreements_by_this_thread`)
+is gone with it. Rows in `wi_wf14z_clause_typed_as_a_whole_test`, the ledger at its head.
+
+| class | the error |
+|---|---|
+| a construction's argument against its field | `pt.x (entity-field): expected Int64, got String` |
+| a rule goal's argument against the callee's column | `c._1 (rule-column): expected Int64, got String` |
+| a head's bound against the body | `named_bad.x (rule-bound): expected String, got Int64` |
+| the enclosing sort's parameter the body fixes | `Box3.T (sort-parameter): expected T, got Int64`; `Sat.C … got List[T = Bit]` |
+| a call's result, a result column | `sign.return (op-return): expected Int64, got String`; a spec operation's result column is WI-1104's refusal, once |
+| a dot's value | `<dot projection>.t (dot-projection): expected Int64, got String` |
+| a demand on a value of some type | `ilen.n (op-arg): expected Int64, got a value of some type`, naming the column (`holds._1`) and the test that narrows it (`domain(?v, T)`) |
+| a variable whose positions disagree | the walk's contradiction, "contradictory variable types", now in every rule: a namespace-level rule's went unreported |
+| a member missing on a typed receiver | the dispatch walk's, as 0RRQP built it, at a receiver any position types |
+
+A construction's field that an earlier check refused at the construction holding it — an
+entity fact's own fields (`check_entity_facts`), a construction the dispatch walk types (an
+entity goal's argument, an `=` operand) — is that check's one error; the fact sweep reads only
+what the entity-fact check does not, a construction inside an argument and a relation fact's
+arguments, so a refused file's facts and a hand-driven typer call over sorts alone are as before.
+
+Found on the way, and fixed:
+
+- *A construction is read at its position's parameters before its fields*, as an operation
+  body reads an expected type into it: `h(inner: w2(a: ?x, b: "s"))` over `inner: W2[A = E, B
+  = Int64]` is refused at `w2.b`; checked at parameters of its own it loaded (0RRQP's owed flip).
+- *A sort's parameter written by its name in a bound* (`Wrap[T = T]` in a sort nested in the one
+  that declares `T`) is the parameter, rigid; read as a name, `Outer.Inner`'s clause loaded.
+- *A rigid parameter takes over a call's placeholder of a sort only by the some-coercion*: the
+  argument check answers `Ok` for a pair it cannot decide, `List[T = e]` with `e` open against
+  `C`, and `Sat.model`'s `vs <=> [?p, ?q, ?r]` loaded where `[1, 2]` was refused.
+- *A field is read through the clause's substitution before the provider question*: a `cons`
+  at a `List[T = Sp]` slot holds `Car`s and `Van`s.
+- *A refused load's clauses are not refused again* (`KnowledgeBase::refused_load_clauses`,
+  written at both error exits of a load). Its clauses stay in the knowledge base and a later
+  load types every rule a seal does not hold, so they refused its corrected retry; a later load
+  is held to every other clause, as one load over everything is — a fact it adds can leave an
+  earlier clause's column of no common type, and that clause is refused there.
+- The resolver's warning on two literal sorts said the typer cannot see a variable a predicate
+  binds; it says a goal built at run time, or a value read through a column that says nothing
+  of its type.
+
+The rows, as decided (§6.4, §6.5, and with the user 2026-10-22 for the last):
+
+- `lf1`'s `PostArmedExcursionBound.max_ticks` is a `Float`; the SMT fixtures that wrote an
+  integer in a head beside a real (`wi_1kf32`'s `mode(0, ?r)`) write `0.0`, which their
+  documents already read.
+- A row whose subject is the run time over a clause now refused asks the goal at run time, a
+  query (`common::pattern_hits`), and the written clause's refusal is a row beside it: the
+  `cons` pattern at a `Set` field (`wi936`, `wi1096` ×2, `declared_field_type_readers`), the
+  typed head's guards (`wi742`, `shed7` ×2, `qmfc5`, this file's `n1` / `n2`), the run-time
+  refutation of a tie (`wi_5g28a`, `wi_80zv8`), `wi879`'s cross-sort pair and the CLI's
+  `resolve_errors`.
+- A fault row that reads the fault's written place or a relation over the faulting clause
+  reads the value through a `Term` field, which says nothing of its type (user, 2026-10-22):
+  `wi_8y5be`, the reflect bridge, `resolver_error_channel`.
+- `fheek`'s claims compare `?y` with itself (`related` ties its columns, so `?y` is a `P`); the
+  SMT translation's refusal of a construction is what they still reach. `zz7ph`'s application
+  across two carriers is refused at load, "Scope.U … expected U, got T".
+
+The flips owed: `a_body_that_fixes_a_sorts_parameter_is_refused` (with the bare-sort repair
+loading), `a_constructor_that_does_not_fit_its_position_is_refused`, and SHED7's `Sat.model`
+refused. Its repair, `vs <=> PersistentCollection[C = C].fromList([…])`, waits on the stdlib's
+`fromList` (SHED7's step 3); with a stand-in spec it loads, and the relation flounders on the
+call with no argument at its carrier parameter, which WI-20261013-RYDNV (C1d) supplies.
+
+Left to C1b: decision 1's `-4` row (`a_slot_the_arguments_own_type_says_is_not_read`); the
+citation's side of "some type", which closes a column whose whole type is a variable (0RRQP's
+51 rows its measurement).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

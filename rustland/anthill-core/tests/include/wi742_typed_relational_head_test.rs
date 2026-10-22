@@ -141,12 +141,17 @@ end
 /// then be re-asked. `eq` would not: it is a semantic equality TEST that never binds,
 /// so `rule f(?x: String) :- eq(?x, "abe")` residualizes with OR WITHOUT the
 /// annotation — MEASURED, and the reason this fixture is spelled with `<=>`.
+///
+/// `named_bad` binds `?x` to the value its second argument is asked with: written in the
+/// clause, `?x <=> 5` under `?x: String` is refused at load (068-implementation §6.2,
+/// decision 3; `a_bound_the_body_contradicts_is_refused_at_load`), so the value the guard
+/// refutes is the query's.
 const DELAY_SRC: &str = r#"
 namespace test.wi742.delay
   import anthill.prelude.{Int64, String}
 
   rule named(?x: String) :- ?x <=> "abe"
-  rule named_bad(?x: String) :- ?x <=> 5
+  rule named_bad(?x: String, ?v) :- ?x <=> ?v
   rule named_untyped(?x) :- ?x <=> "abe"
 end
 "#;
@@ -167,7 +172,26 @@ fn delays_then_holds_when_a_later_goal_binds() {
 fn refutes_after_a_later_goal_binds() {
     let mut kb = crate::common::load_kb_with(DELAY_SRC);
     // Same shape, non-conforming binding: the re-asked guard REFUTES.
-    assert_eq!(answers(&mut kb, "test.wi742.delay.named_bad(?x)"), 0);
+    assert_eq!(answers(&mut kb, "test.wi742.delay.named_bad(?x, 5)"), 0);
+    // CONTROL: a conforming one holds.
+    assert_eq!(definite_answers(&mut kb, "test.wi742.delay.named_bad(?x, \"abe\")"), 1);
+}
+
+/// A BOUND THE BODY CONTRADICTS IS REFUSED AT LOAD (068-implementation §6.2, decision 3):
+/// `?x <=> 5` says `?x` is an `Int64`, which its bound `String` is not. It loaded before, and
+/// the guard refuted the value at run time.
+#[test]
+fn a_bound_the_body_contradicts_is_refused_at_load() {
+    let errs = crate::common::load_errors_of(
+        "namespace test.wi742.bad\n  import anthill.prelude.{Int64, String}\n  \
+         rule named_bad(?x: String) :- ?x <=> 5\nend\n",
+    );
+    assert!(
+        errs.len() == 1
+            && errs[0]
+                .contains("type mismatch in named_bad.x (rule-bound): expected String, got Int64"),
+        "{errs:#?}"
+    );
 }
 
 #[test]

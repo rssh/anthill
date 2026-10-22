@@ -16421,6 +16421,7 @@ fn load_phase_inner(
             // diagnostics, not just the full one: the partial path is the same channel
             // handed to the same reader, and every producer above the `run_typer` gate
             // feeds both.
+            kb.note_refused_load(phase_first_rule..kb.rules.len());
             Err(dedup_rendered_load_errors(all_errors))
         };
     }
@@ -16808,6 +16809,7 @@ fn load_phase_inner(
         // producer above is covered by one rule instead of ~30 hand-rolled ones. See
         // `dedup_rendered_load_errors` for why the channel owns this and the per-file
         // `dedup_load_errors` cannot.
+        kb.note_refused_load(phase_first_rule..kb.rules.len());
         Err(dedup_rendered_load_errors(all_errors))
     }
 }

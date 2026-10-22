@@ -451,7 +451,8 @@ fn a_bound_with_a_slot_left_open_still_answers() {
 ///
 /// THE CONTROL is a spec standing where a type does inside the same arrow, which is
 /// refused. A LOAD VERDICT ONLY — no fact holds a function for the bound to be matched
-/// against. FAILS with effect rows walked (`collect_sorts_written_as_types`): refused.
+/// against (a fact's `Int64` there is refused at load, 068-implementation §6.2, decision 3).
+/// FAILS with effect rows walked (`collect_sorts_written_as_types`): refused.
 #[test]
 fn a_row_label_inside_a_bound_is_no_variables_type() {
     let ns = "test.wi582row";
@@ -460,7 +461,7 @@ fn a_row_label_inside_a_bound_is_no_variables_type() {
             ns,
             "  import anthill.prelude.Error\n",
             &format!(
-                "  fact src(1, 10)\n  rule g(?a: {bound}, ?b: Int64) :- src(?a, ?b)\n  \
+                "  rule g(?a: {bound}, ?b: Int64) :- ?b <=> 10\n  \
                  rule outg(?b) :- g(?a, ?b)"
             ),
         )

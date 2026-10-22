@@ -1443,15 +1443,18 @@ sort Store {
         assert!(matches!(results[0], Solution::Definite { .. }));
     }
 
-    /// An ill-typed comparison the resolver cannot ASK. `tag` declares no types, so the
-    /// typer cannot see the operand sorts and `gt(?x, 1)` reaches the resolver as a
-    /// String/Int64 pair.
+    /// An ill-typed comparison the resolver cannot ASK. `Tag`'s field is a `Term`, which
+    /// says nothing of the value's type, so the typer cannot see the operand sorts and
+    /// `gt(?x, 1)` reaches the resolver as a String/Int64 pair. (Read from a fact whose
+    /// column the typer reads as `String`, the comparison is refused at load.)
     const FAULTING_COMPARISON: &str = r#"
 namespace rstl.fault
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
+  import anthill.reflect.{Term}
 
-  fact tag("a")
-  rule bad :- tag(?x), PartialOrd.gt(?x, 1)
+  entity Tag(v: Term)
+  fact Tag(v: "a")
+  rule bad :- Tag(v: ?x), PartialOrd.gt(?x, 1)
 end
 "#;
 
@@ -1512,7 +1515,7 @@ end
             "`at` must locate the WRITTEN comparison in the fixture, got {start}..{end}"
         );
         let (line, _) = anthill_core::span::LineIndex::new(FAULTING_COMPARISON).line_col(span.start());
-        assert_eq!(line, 6, "the comparison is on the fixture's `rule bad` line");
+        assert_eq!(line, 8, "the comparison is on the fixture's `rule bad` line");
     }
 
     /// The eager drains report the fault too. `take_n` and `exists` pump the resolver

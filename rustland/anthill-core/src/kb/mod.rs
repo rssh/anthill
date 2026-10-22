@@ -2308,6 +2308,12 @@ pub struct KnowledgeBase {
     /// both sides of the comparison — and scoped: a layer's discard restores it with the
     /// declarations it describes.
     equality_signatures: std::collections::HashMap<Symbol, eq_derive::EqualitySignature>,
+    /// The rule slots each refused load filled. Its clauses stay in the knowledge base, and
+    /// the clause typing reads every rule a seal does not hold at every load, as one load
+    /// over everything would; a refused load's clauses were reported by that load, and a
+    /// later one — its corrected retry — is not refused over them again
+    /// ([`Self::is_clause_of_a_refused_load`]).
+    refused_load_clauses: Vec<std::ops::Range<usize>>,
 
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
@@ -2982,6 +2988,7 @@ impl KnowledgeBase {
             unbacked_derived_provisions: HashSet::new(),
             derived_provision_origin: std::collections::HashMap::new(),
             equality_signatures: std::collections::HashMap::new(),
+            refused_load_clauses: Vec::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
@@ -3313,6 +3320,20 @@ impl KnowledgeBase {
         signatures: std::collections::HashMap<Symbol, eq_derive::EqualitySignature>,
     ) {
         self.equality_signatures = signatures;
+    }
+
+    /// Record the rule slots a refused load filled ([`Self::refused_load_clauses`]).
+    pub(crate) fn note_refused_load(&mut self, clauses: std::ops::Range<usize>) {
+        if !clauses.is_empty() {
+            self.refused_load_clauses.push(clauses);
+        }
+    }
+
+    /// Whether `rid` is a clause a refused load asserted ([`Self::refused_load_clauses`]).
+    pub(crate) fn is_clause_of_a_refused_load(&self, rid: RuleId) -> bool {
+        self.refused_load_clauses
+            .iter()
+            .any(|r| r.contains(&rid.index()))
     }
 
     // ── Source & occurrence access ─────────────────────────────

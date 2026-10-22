@@ -355,7 +355,7 @@ fn type_constant_values_aside(
 }
 
 /// The oracle's half of the rule-body sweep, the same way.
-pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase, reportable: &HashSet<RuleId>) {
+pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase) {
     let sealed: Vec<RuleId> = kb
         .live_rule_ids_iter()
         .filter(|&rid| !kb.is_fact(rid) && rule_body_is_typed_once(kb, rid))
@@ -366,7 +366,7 @@ pub(super) fn oracle_type_sealed_rules(kb: &mut KnowledgeBase, reportable: &Hash
     let before: Vec<(RuleId, Vec<String>)> =
         sealed.iter().map(|&rid| (rid, stamps(kb, rid))).collect();
     let (mut errors, mut sources) = (Vec::new(), Vec::new());
-    type_rule_bodies(kb, reportable, RuleBodies::SealedOnly, &mut errors, &mut sources);
+    type_rule_bodies(kb, RuleBodies::SealedOnly, &mut errors, &mut sources);
     for e in &errors {
         oracle_hit(format!(
             "typing a sealed rule body again reported: {}",

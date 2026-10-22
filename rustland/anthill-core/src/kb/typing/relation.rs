@@ -2791,12 +2791,13 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
 /// argument for `?w` fixes the `?e` the bound's domain check reads. Read apart, the bound's
 /// `?e` was a variable nothing in the body reached.
 ///
-/// `None` where a bound and its variable's inferred type do not unify, or where the body
-/// would fix the enclosing sort's own parameter — the instance, which a clause holds at
-/// every value (`rule pr(?x: Box2[T = T]) :- ?x <=> b2(v: 5)` says `T` is `Int64`): a clause
-/// whose body disagrees with its head, which WI-20261013-GGXCX decides. Each is then read as
-/// before. A sort's parameter the body only names stays itself, so a citation's bracket
-/// still reads it ([`open_citation_params`]).
+/// `None` where a bound and its variable's inferred type do not unify — a bound the clause
+/// typing admits by a conversion, a carrier at its spec — or where the body would fix the
+/// enclosing sort's own parameter — the instance, which a clause holds at every value (`rule
+/// pr(?x: Box2[T = T]) :- ?x <=> b2(v: 5)` says `T` is `Int64`). Each is then read as before.
+/// The second is refused at load (068-implementation §6.2, decision 3), and is read here for
+/// what the rest of that load reads of it. A sort's parameter the body only names stays
+/// itself, so a citation's bracket still reads it ([`open_citation_params`]).
 pub(super) fn unified_column_types(
     kb: &mut KnowledgeBase,
     bounds: &[(u32, Value)],

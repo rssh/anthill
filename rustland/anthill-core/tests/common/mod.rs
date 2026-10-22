@@ -2660,6 +2660,16 @@ pub fn resolve_with_messages(
     (sols, stats.errors.iter().map(|e| e.message.clone()).collect())
 }
 
+/// How many solutions the query `pattern` gets over `kb`, its names written in full: a goal
+/// built at run time, which the load does not type — what a row asks whose subject is the run
+/// time over a clause the load would refuse.
+#[allow(dead_code)]
+pub fn pattern_hits(kb: &mut KnowledgeBase, pattern: &str) -> usize {
+    let goal = query_pattern_term(kb, pattern);
+    kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .len()
+}
+
 /// [`resolve_with_messages`]' fault messages alone.
 #[allow(dead_code)]
 pub fn fault_messages(src: &str, pattern: &str) -> Vec<String> {

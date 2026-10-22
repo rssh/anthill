@@ -343,10 +343,10 @@ end
 }
 
 /// A rule written at NAMESPACE level has a namespace for its domain, and the sort loop
-/// visits sorts: in one call its contradiction is not reported, and never was. The row
-/// does not say that is right. It says the pass over the call's clauses takes only rules
-/// in a SORT, so it changes neither what one call says about such a rule nor — the same
-/// thing — what a later call does.
+/// visits sorts. Its contradiction — `?x` a `box`'s `Int64` and a `tag`'s `String` — is
+/// refused as any rule's is (068-implementation §6.2, decision 3: a variable whose positions
+/// disagree), and a later call gives it the verdict one call does. Before, in one call it
+/// was not reported, and the row said only that the two calls agreed.
 #[test]
 fn a_later_calls_namespace_level_rule_gets_the_verdict_one_call_gives_it() {
     const AT_NAMESPACE_LEVEL: &str = r#"
@@ -369,10 +369,11 @@ end
     let later_call = load_in_a_later_call(&mut kb, AT_NAMESPACE_LEVEL, LoadOptions::default())
         .map(|_| ())
         .map_err(rendered);
-    assert_eq!(
-        one_call,
-        Ok(()),
-        "one call loads it, as it did before the pass over the call's clauses existed"
+    assert!(
+        matches!(&one_call, Err(errors) if errors.len() == 1
+            && errors[0].contains("type mismatch in bad.rule (rule): expected consistent \
+                                   variable types, got contradictory variable types")),
+        "one call refuses it: {one_call:?}"
     );
     assert_eq!(later_call, one_call);
 }

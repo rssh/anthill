@@ -632,6 +632,10 @@ end
 /// answers `3`. FAILS with the guard standing aside on an unbound `?x` (round 2's early guard):
 /// `add(2.5, 1, ?y)` runs first and FAULTS — an arithmetic carrier mismatch, not a refutation —
 /// so `nb` is undecided.
+///
+/// The `2.5` is the query's: written in `b`'s body, `?x <=> 2.5` beside `inc`'s `Int64` column
+/// is refused at load (068-implementation §6.2, decision 3), so `b` binds `?x` to the value
+/// it is asked with.
 #[test]
 fn a_value_bound_after_the_body_opened_is_type_tested_first() {
     const LATE: &str = r#"
@@ -640,14 +644,28 @@ namespace shed7late
   import anthill.prelude.Numeric.{add}
 
   rule inc(?x: Int64, ?y) :- add(?x, 1, ?y), !
-  rule b(?z) :- inc(?x, ?), ?x <=> 2.5, ?z <=> 1
-  rule nb(?r) :- not(b(1)), ?r <=> 1
+  rule b(?v, ?z) :- inc(?x, ?), ?x <=> ?v, ?z <=> 1
   rule good(?z) :- inc(?x, ?z), ?x <=> 2
 end
 "#;
+    use anthill_core::kb::resolve::ResolveConfig;
     let mut kb = crate::common::load_kb_with(LATE);
-    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7late.nb"), Some(1), "`2.5` is refused, not faulted on");
+    let goal = crate::common::query_pattern_term(&mut kb, "anthill.kernel.not(shed7late.b(2.5, 1))");
+    let sols = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(
+        sols.len() == 1 && sols[0].is_definite(),
+        "`2.5` is refused, not faulted on: {} solution(s)",
+        sols.len()
+    );
     assert_eq!(crate::common::one_definite_int(&mut kb, "shed7late.good"), Some(3), "`add(2, 1)`");
+    let errs = crate::common::load_errors_of(&LATE.replace(
+        "rule b(?v, ?z) :- inc(?x, ?), ?x <=> ?v, ?z <=> 1",
+        "rule b(?z) :- inc(?x, ?), ?x <=> 2.5, ?z <=> 1",
+    ));
+    assert!(
+        errs.len() == 1 && errs[0].contains("type mismatch in inc._1 (rule-column): expected Int64, got Float"),
+        "written in the clause, the value is refused at load: {errs:#?}"
+    );
 }
 
 /// A WRITTEN `domain(…)` asks one question, of two operands: a stray one is a located ERROR,
@@ -656,6 +674,9 @@ end
 /// `String` through an `Int64` check. The guard is its own internal builtin now
 /// (`__domain_guard`), and `domain` refuses the shape. FAILS with the shape check removed: the
 /// label is ignored, the goal refutes `"s"` quietly, and no fault is reported.
+///
+/// Asked at run time: written in a clause, `domain(?x, Int64)` beside `gen`'s `String` column
+/// is refused at load (068-implementation §6.2, decision 3).
 #[test]
 fn a_written_domain_with_a_stray_operand_is_an_error() {
     const WRITTEN: &str = r#"
@@ -664,13 +685,15 @@ namespace shed7written
   import anthill.kernel.*
 
   fact gen("s")
-  rule chk(?x) :- domain(?x, Int64, early: false), gen(?x)
-  rule chkPlain(?x) :- domain(?x, Int64), gen(?x)
 end
 "#;
     use anthill_core::kb::resolve::ResolveConfig;
     let mut kb = crate::common::load_kb_with(WRITTEN);
-    let goal = crate::common::query_pattern_term(&mut kb, "shed7written.chk(?x)");
+    let goal = crate::common::query_pattern_term(
+        &mut kb,
+        "anthill.kernel.and(anthill.kernel.domain(?x, anthill.prelude.Int64, early: false), \
+         shed7written.gen(?x))",
+    );
     let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
     assert!(sols.iter().all(|s| !s.is_definite()), "no definite answer through a malformed check");
     assert!(
@@ -679,7 +702,22 @@ end
         stats.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
     );
     // CONTROL — passes either way, BY DESIGN: the two-operand check refutes `"s"`.
-    assert!(crate::common::shown_rows(&mut kb, "shed7written.chkPlain").is_empty(), "`\"s\"` is no `Int64`");
+    assert_eq!(
+        crate::common::pattern_hits(
+            &mut kb,
+            "anthill.kernel.and(anthill.kernel.domain(?x, anthill.prelude.Int64), shed7written.gen(?x))"
+        ),
+        0,
+        "`\"s\"` is no `Int64`"
+    );
+    let errs = crate::common::load_errors_of(&WRITTEN.replace(
+        "  fact gen(\"s\")\n",
+        "  fact gen(\"s\")\n  rule chkPlain(?x) :- domain(?x, Int64), gen(?x)\n",
+    ));
+    assert!(
+        errs.len() == 1 && errs[0].contains("type mismatch in gen._1 (rule-column): expected String, got Int64"),
+        "written in the clause, the test is refused at load: {errs:#?}"
+    );
 }
 
 /// A typed head whose bound is an ALIAS fills as its target: `pick(?x: Hue)` under `sort Hue =
@@ -960,13 +998,21 @@ end
 /// `?x: C` lowers it, through the type door, to the parameter's variable. The generated goal
 /// then checked the value against `C` itself — a sort no value has — and never against the
 /// caller's type: `S[C = Bit].par` floundered on `domain(?_, C)` where `S[C = Bit].sig`
-/// answers 2, and the solver written once over its collection, `Sat[C = List[T = Bit]]
-/// .model`, answered 0 where the same clause written at `List[T = Bit]` answers tiny-sat's 2.
+/// answers 2.
 ///
-/// FAILS WHEN BACKED OUT (the bare arm's `type_param_var` removed), MEASURED: `par`,
-/// `parPattern` and `model` raise `relation_floundered` or answer 0; `sig` and `unsat` pass
-/// either way, by design (the sigil form never took that arm, and an unsatisfiable formula
-/// is refuted before the bound is read).
+/// FAILS WHEN BACKED OUT (the bare arm's `type_param_var` removed), MEASURED: `par` raises
+/// `relation_floundered`; `sig` passes either way, by design (the sigil form never took that
+/// arm).
+///
+/// A BODY THAT MAKES `C` A LIST IS REFUSED AT LOAD (068-implementation §6.2, decision 3): the
+/// clause holds at every `C`, and `vs <=> [?p, ?q, ?r]` says `vs` is a `List`. The solver
+/// written once over its collection, `Sat[C = List[T = Bit]].model`, answered tiny-sat's 2
+/// through this form before; `S.parPattern`, `Sat.model` and `Sat.unsat` are each refused,
+/// naming the parameter. The repair builds `vs` as a `C` from the list
+/// (WI-20260925-SHED7's step 3, `PersistentCollection.fromList`, which the stdlib does not
+/// have yet — `Builds` stands in): it loads, and answering waits on a call with no argument
+/// at its carrier parameter, supplied by the sort's `requires` (WI-20261013-RYDNV) — today
+/// the relation flounders.
 #[test]
 fn the_parameter_form_of_a_type_variable_bound_is_the_sigil_form() {
     const PARAM: &str = r#"
@@ -985,32 +1031,53 @@ namespace shed7param
   sort S[C]
     rule sig(?x: C) :- true
     rule par(x: C) :- true
-    rule parPattern(x: C) :- x <=> [?y]
-  end
-
-  sort Sat[C]
-    rule model(vs: C)
-      :- vs <=> [?p, ?q, ?r],
-         neg(?p, ?np), neg(?q, ?nq), neg(?r, ?nr),
-         or2(?p, ?nq), or2(?q, ?r), or2(?np, ?nr)
-    rule unsat(vs: C)
-      :- vs <=> [?p, ?q, ?r], neg(?p, ?np), or2(?p, ?p), or2(?np, ?np)
   end
 
   sort Driver
     operation sig() -> Int64 effects {Error} = S[C = Bit].sig.takeN(5).length()
     operation par() -> Int64 effects {Error} = S[C = Bit].par.takeN(5).length()
-    operation parPattern() -> Int64 effects {Error} = S[C = List[T = Bit]].parPattern.takeN(5).length()
-    operation model() -> Int64 effects {Error} = Sat[C = List[T = Bit]].model.takeN(100).length()
-    operation unsat() -> Int64 effects {Error} = Sat[C = List[T = Bit]].unsat.takeN(100).length()
   end
 end
 "#;
     let mut interp = crate::common::interp_for(PARAM);
-    for (entry, want) in [("sig", 2), ("par", 2), ("parPattern", 2), ("model", 2), ("unsat", 0)] {
+    for (entry, want) in [("sig", 2), ("par", 2)] {
         match interp.call(&format!("shed7param.Driver.{entry}"), &[]) {
             Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}`"),
             other => panic!("`{entry}`: expected {want}, got {other:?}"),
         }
     }
+    let with = |sorts: &str| PARAM.replace("  sort Driver\n", &format!("{sorts}  sort Driver\n"));
+    let errs = crate::common::load_errors_of(&with(
+        "  sort P[C]\n    rule parPattern(x: C) :- x <=> [?y]\n  end\n\
+         \x20 sort Sat[C]\n    rule model(vs: C)\n      :- vs <=> [?p, ?q, ?r],\n         \
+         neg(?p, ?np), neg(?q, ?nq), neg(?r, ?nr),\n         \
+         or2(?p, ?nq), or2(?q, ?r), or2(?np, ?nr)\n    \
+         rule unsat(vs: C)\n      :- vs <=> [?p, ?q, ?r], neg(?p, ?np), or2(?p, ?p), or2(?np, ?np)\n  end\n",
+    ));
+    assert!(
+        errs.len() == 3
+            && errs[0].contains("type mismatch in P.C (sort-parameter): expected C, got List[T = ?_]")
+            && errs[1].contains("type mismatch in Sat.C (sort-parameter): expected C, got List[T = Bit]")
+            && errs[2].contains("type mismatch in Sat.C (sort-parameter): expected C, got List[T = Bit]"),
+        "{errs:#?}"
+    );
+    let repaired = with(
+        "  sort Builds\n    sort C = ?\n    operation fromList(l: List[T = Bit]) -> C\n  end\n  \
+         sort ListBuilds\n    provides Builds[C = List[T = Bit]]\n    \
+         operation fromList(l: List[T = Bit]) -> List[T = Bit] = l\n  end\n  \
+         sort Sat[C]\n    requires Builds[C = C]\n    rule model(vs: C)\n      \
+         :- vs <=> Builds.fromList([?p, ?q, ?r]),\n         \
+         neg(?p, ?np), neg(?q, ?nq), neg(?r, ?nr),\n         \
+         or2(?p, ?nq), or2(?q, ?r), or2(?np, ?nr)\n  end\n",
+    )
+    .replace(
+        "  end\nend\n",
+        "    operation model() -> Int64 effects {Error} = Sat[C = List[T = Bit]].model.takeN(100).length()\n  end\nend\n",
+    );
+    let mut interp = crate::common::interp_for(&repaired);
+    let got = interp.call("shed7param.Driver.model", &[]);
+    assert!(
+        matches!(got, Err(anthill_core::eval::EvalError::Raised { .. })),
+        "STATED LIMIT: the repair loads, and floundering waits on WI-20261013-RYDNV: {got:?}"
+    );
 }

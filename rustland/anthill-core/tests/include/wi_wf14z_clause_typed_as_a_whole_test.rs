@@ -58,7 +58,8 @@
 //! | that set kept apart from the memo, which a stored clause clears | none: no load of `anthill-core`'s suite stores a clause while a relation's columns are read (a panic there under a switch, every row green) |
 //!
 //! The second part, measured 2026-10-22 with this file, `wi_0rrqp`, `wi_9c2pz`, `wi_s8cbv`,
-//! `wi_prva2`, `wi_shed7`, `wi742`, `wi_k4jgc` and `wi_pw9a0` — what a clause's typing records,
+//! `wi_prva2`, `wi_shed7`, `wi742`, `wi_k4jgc` and `wi_pw9a0` — what a clause's typing recorded
+//! then, which the fourth part refuses (a row that recorded nothing loads and answers now),
 //! each part backed out alone:
 //!
 //! | backed out | fails |
@@ -85,15 +86,41 @@
 //! | an equation's head not checked as data, in a clause (`walk_clause`) and in the fact sweep (`is_equation`), each alone | `an_equations_head_is_a_rewrite_pattern` (and the first, `an_equations_stored_side_types_nothing`) |
 //! | the reflect syntax an equation stores typing nothing (`is_reflect_syntax`) | `an_equations_stored_side_types_nothing` — refused, "contradictory variable types" —, `an_equations_head_is_a_rewrite_pattern` |
 //! | a column of no common type of some type (`generalize_columns`) | `a_column_of_no_common_type_is_of_some_type` |
-//! | a variable only demands type recorded there (`demand_only`) | `a_column_of_no_common_type_is_of_some_type` |
+//! | a variable that only demands a type refused there (`demand_only`) | `a_column_of_no_common_type_is_of_some_type` |
 //! | `domain` read as a test (`constrain_domain_test`) | `a_column_of_no_common_type_is_of_some_type`, by its `domain` case |
-//! | a dot on a value of some type recorded (`demands_on_some_type`) | `a_column_of_no_common_type_is_of_some_type`, by its dot |
+//! | a dot on a value of some type refused (`demands_on_some_type`) | `a_column_of_no_common_type_is_of_some_type`, by its dot |
 //! | a parameter of the callee's own type no demand (`constrain_application`) | `a_spec_operations_carrier_takes_a_value_of_some_type` |
 //!
 //! A goal on its own relation reading the clause's own head was a part too, and no row failed
 //! with it backed out: the memo answers nothing for a relation while its clauses are being
 //! read, and the relation's columns after, which is the one type the decision asks for. It
 //! was removed.
+//!
+//! The fourth part, decision 3's refusals, measured 2026-10-22 over this file and every module
+//! whose rows it rewrote (`wi_0rrqp`, `wi_szkv7`, `wi_shed7`, `wi946`, `wi1096`, `wi936`,
+//! `declared_field_type_readers`, `wi742`, `wi_qmfc5`, `wi582`, `wi879`,
+//! `resolver_error_channel`, `wi_8y5be`, `wi_jb6rs`, `wi_5g28a_rule_head`, `wi_80zv8`,
+//! `wi_m32c2`, `typing_test`, `wi928`, `wi1056`, `wi1104`, `wi_9wvt7`), each part backed out
+//! alone:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | a disagreement made a load error (`push_clause_disagreements`) | every refusal row: here `every_construction_is_typed_against_its_fields`, `a_column_of_no_common_type_is_of_some_type`, `a_goal_that_fixes_the_sorts_parameter_is_that_class`, `a_typed_head_admits_a_value_whose_part_its_bound_fixes`; `wi_0rrqp…::a_body_that_fixes_a_sorts_parameter_is_refused`, `…::a_constructor_that_does_not_fit_its_position_is_refused`, `wi_shed7` ×3, `wi1096` ×2, `wi742`, `wi879`, `wi_qmfc5`, `wi_5g28a…::the_tie_refutes_a_mismatched_second_column`, `wi_80zv8` ×2, `declared_field_type_readers…::a_literal_stays_flat_under_a_set_of_a_type_holding_a_value`; the CLI's `resolver_error_render…::the_comparison_written_in_a_clause_is_refused_at_load` and `wi_zz7ph…::one_operation_at_two_carriers_is_two_functions` |
+//! | a refusal an earlier check made at a place that holds it reported once (`refused_already`) | `every_construction_is_typed_against_its_fields`, by its three cases an older check refuses too; with the operation's return left out of it (found by /code-review), `a_calls_result_and_a_dot_that_do_not_fit_are_refused`, by WI-1104's spec call |
+//! | the fact sweep leaving an entity fact's own fields to the entity-fact check (`check_fact_constructions`) | `wi_szkv7_clause_frontier…::a_refused_files_own_clauses_are_left_alone`, `…::the_clauses_are_what_the_hand_driven_form_of_a_load_hands_the_typer`, `wi_szkv7_later_equality…::a_failed_loads_derived_rows_do_not_refuse_its_corrected_retry` |
+//! | a construction read at its position before its fields (`constrain_application`) | `wi_0rrqp…::a_constructor_that_does_not_fit_its_position_is_refused`, `wi_5g28a…::the_tie_refutes_a_mismatched_second_column`, `wi_80zv8` ×2 — each loaded |
+//! | a parameter written by its name read as its variable (`parameters_by_their_variable`) | `wi_0rrqp…::a_body_that_fixes_a_sorts_parameter_is_refused`, by `Outer.Inner` |
+//! | a rigid parameter taking over a sort's placeholder only by the some-coercion (`constrain_var_at`) | `wi_shed7…::the_parameter_form_of_a_type_variable_bound_is_the_sigil_form`: `Sat.model` loaded |
+//! | a disagreement's types read as the whole clause leaves them (`ClauseDisagreement::resolved`) | the same row: `List[T = ?_]` for `List[T = Bit]` |
+//! | a sort's parameter named in a message (`parameters_named`) | `a_goal_that_fixes_the_sorts_parameter_is_that_class`, `wi_0rrqp…::a_body_that_fixes_a_sorts_parameter_is_refused`, the same `wi_shed7` row: `expected ?_` |
+//! | a namespace-level rule's contradiction reported (`type_rule_bodies`) | `wi_szkv7_clause_frontier…::a_later_calls_namespace_level_rule_gets_the_verdict_one_call_gives_it` |
+//! | a refused load's clauses not refused again (`KnowledgeBase::is_clause_of_a_refused_load`; found by /code-review) | `a_refused_loads_clause_does_not_refuse_its_corrected_retry`, by its retry |
+//!
+//! A field read through the clause's substitution before the provider question
+//! (`argument_fits_field`) was found by `wi_m32c2…::control_a_rule_body_call_answers`, refused
+//! once the position was read first. The rows rewritten to reach the run time through a goal
+//! built at run time, or a value through a `Term` field, pass either way by design: what they
+//! drive is the resolver's.
 //!
 //! PASS EITHER WAY, BY DESIGN: `a_constructor_types_its_variable_in_either_goal_order` and
 //! `a_dot_on_a_typed_variable_answers_as_its_written_call` (both since WI-20260925-0RRQP), and
@@ -376,8 +403,8 @@ fn a_typed_head_admits_a_value_whose_part_its_bound_fixes() {
         ns,
         "  rule w1(?r: Result[T = Int64, E = ?e]) :- ?r <=> err(error: 5)\n  \
          rule w2(?r: Result[T = ?a, E = Int64]) :- ?r <=> ok(value: 5)\n  \
-         rule n1(?r: Result[T = Int64, E = Bool]) :- ?r <=> err(error: 5)\n  \
-         rule n2(?r: Result[T = Int64, E = ?e]) :- ?r <=> ok(value: \"s\")\n",
+         rule n1(?r: Result[T = Int64, E = Bool]) :- true\n  \
+         rule n2(?r: Result[T = Int64, E = ?e]) :- true\n",
     ));
     for rule in ["w1", "w2"] {
         let rows = crate::common::query_unary(&mut kb, &format!("{ns}.{rule}"));
@@ -386,9 +413,33 @@ fn a_typed_head_admits_a_value_whose_part_its_bound_fixes() {
             "{rule}: the value, got {rows:?}"
         );
     }
-    for rule in ["n1", "n2"] {
-        let rows = crate::common::query_unary(&mut kb, &format!("{ns}.{rule}"));
-        assert!(rows.is_empty(), "{rule}: refused, got {rows:?}");
+    // A value handed to the head at run time is held to the bound by its check: refused where
+    // the bound does not fit it, answered where it does.
+    for (rule, value, rows) in [
+        ("n1", "err(error: 5)", 0),
+        ("n1", "err(error: true)", 1),
+        ("n2", "ok(value: \"s\")", 0),
+        ("n2", "ok(value: 5)", 1),
+    ] {
+        let pattern = format!("{ns}.{rule}(anthill.prelude.Result.{value})");
+        let goal = crate::common::query_pattern_term(&mut kb, &pattern);
+        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+        assert_eq!(got.len(), rows, "{pattern}");
+    }
+    // The same values a body gives the head are refused at load.
+    for (body, says) in [
+        (
+            "  rule n1(?r: Result[T = Int64, E = Bool]) :- ?r <=> err(error: 5)\n",
+            "type mismatch in n1.r (rule-bound): expected Result[E = Bool, T = Int64], got \
+             Result[E = Int64, T = ?_]",
+        ),
+        (
+            "  rule n2(?r: Result[T = Int64, E = ?e]) :- ?r <=> ok(value: \"s\")\n",
+            "type mismatch in n2.r (rule-bound): expected Result[E = ?e, T = Int64], got \
+             Result[E = ?_, T = String]",
+        ),
+    ] {
+        refused(ns, body, says);
     }
 }
 
@@ -460,68 +511,56 @@ fn a_column_whose_whole_type_is_a_variable_is_read_at_any_type() {
     assert!(interp.call(&format!("{ns}.f"), &[]).is_ok(), "loads, and answers a value");
 }
 
-// ── What a clause's typing records, which decision 3's refusals are counted on ──────────
+// ── The clause typing made exact (068-implementation §6.4) ──────────────────────────────
 //
-// Nothing below refuses: a late position that does not fit is recorded with its class
-// (`clause_disagreements_by_this_thread`), and 068-implementation §6.2's decision 3 refuses
-// the classes once they are counted. A position the operation-body typer accepts records
-// nothing; one it refuses records its class.
+// A position the operation-body typer accepts, and whose clause answers at run time, is
+// accepted here too; one it refuses is refused (decision 3, §6.6). Each row below loads and
+// answers, or is refused with the one error it names.
 
-/// What loading with `load` records of its clauses' disagreements, by class.
-fn recorded<T>(load: impl FnOnce() -> T) -> (T, Vec<(&'static str, usize)>) {
-    use anthill_core::kb::typing::clause_disagreements_by_this_thread;
-    // The shared standard library is loaded once per binary, on the thread that asks first;
-    // asked here, what it records is not counted against `load`.
-    let _base = crate::common::load_stdlib_kb();
-    let before: std::collections::HashMap<_, _> =
-        clause_disagreements_by_this_thread().into_iter().collect();
-    let out = load();
-    let added = clause_disagreements_by_this_thread()
-        .into_iter()
-        .filter_map(|(class, n)| {
-            let d = n - before.get(class).copied().unwrap_or(0);
-            (d > 0).then_some((class, d))
-        })
-        .collect();
-    (out, added)
+/// The one refusal `body`'s program gets, which names `says`.
+#[track_caller]
+fn refused(ns: &str, body: &str, says: &str) {
+    let errors = crate::common::load_errors_of(&program(ns, body));
+    assert!(
+        errors.len() == 1 && errors[0].contains(says),
+        "one refusal naming `{says}`, got {errors:#?}"
+    );
 }
 
 /// A COLUMN WHOSE VARIABLE NOTHING IN ITS CLAUSE NAMES IS OPEN: `classify`'s second clause
-/// takes every `?x`, so `classify(5, ?r)` answers through it and records nothing. Read as the
-/// other clause's `Colour` — what a goal on the relation itself leaves unsaid — it recorded a
+/// takes every `?x`, so `classify(5, ?r)` loads and answers through it. Read as the other
+/// clause's `Colour` — what a goal on the relation itself leaves unsaid — the goal was a
 /// rule-goal disagreement.
 #[test]
 fn a_column_nothing_in_its_clause_names_is_open() {
-    let ns = "wiwf14z.open";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.open",
             "  sort Colour\n    entity red\n  end\n  \
              rule classify(?x: Colour, ?c) :- ?c <=> 1\n  \
              rule classify(?x, ?c) :- ?c <=> 2\n  \
              rule g(?r) :- classify(5, ?r)\n",
             &["g"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(2)], vec![]));
+        ),
+        [Some(2)]
+    );
 }
 
 /// A `Term` SLOT TYPES NOTHING, as an operation's argument converts any value to the `Term`
 /// it declares: `takes`'s column is `nonvar`'s parameter, and `5` and an `Int64` variable meet
-/// it with nothing recorded. Typed `Term`, the variable disagreed with every other position.
+/// it. Typed `Term`, the variable disagreed with every other position.
 #[test]
 fn a_term_slot_types_nothing() {
-    let ns = "wiwf14z.term";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.term",
             "  rule takes(?g) :- anthill.reflect.nonvar(?g)\n  \
              rule viaLit(?r) :- takes(5), ?r <=> 1\n  \
              rule viaVar(?r) :- takes(?x), ?x <=> -5, ?r <=> Int64.abs(?x)\n",
             &["viaLit", "viaVar"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(1), Some(5)], vec![]));
+        ),
+        [Some(1), Some(5)]
+    );
 }
 
 /// AN `Option` PARAMETER IS THE CALL'S PLACEHOLDER: a bare `Int64` meets it as an operation's
@@ -531,17 +570,16 @@ fn a_term_slot_types_nothing() {
 /// operation body is); `len` here does not read its argument.
 #[test]
 fn an_option_parameter_is_the_calls_placeholder() {
-    let ns = "wiwf14z.option";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.option",
             "  sort Opt\n    operation len(o: Option[T = Int64]) -> Int64 = 1\n  end\n  \
              rule viaHead(?a: Int64, ?r) :- ?r <=> Opt.len(?a)\n  \
              rule g(?r) :- viaHead(3, ?r)\n",
             &["g"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(1)], vec![]));
+        ),
+        [Some(1)]
+    );
 }
 
 /// A BRACKET ENTRY IS NO DATA: `p.E` in `require[Desc[T = p.E]]` is a projection written as a
@@ -549,10 +587,9 @@ fn an_option_parameter_is_the_calls_placeholder() {
 /// Typed there, the head's bound `Box` disagreed with it.
 #[test]
 fn a_bracket_entry_types_nothing() {
-    let ns = "wiwf14z.bracketentry";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.bracketentry",
             "  sort Desc\n    sort T = ?\n    operation tag() -> Int64\n  end\n  \
              sort Red\n    import anthill.prelude.Int64\n    entity red\n    \
              provides Desc[T = Red]\n    operation tag() -> Int64 = 7\n  end\n  \
@@ -560,9 +597,9 @@ fn a_bracket_entry_types_nothing() {
              rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n  \
              rule g(?r) :- anchored(box(v: red()), ?r)\n",
             &["g"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(7)], vec![]));
+        ),
+        [Some(7)]
+    );
 }
 
 /// A BOUND THE LOADER REFUSES IS READ AS UNWRITTEN: one naming a sort that does not resolve,
@@ -576,36 +613,28 @@ fn a_refused_bound_is_read_as_unwritten() {
         ("NoSuchSortAnywhere", "unresolved name 'NoSuchSortAnywhere'"),
         ("Sizer", "a rule variable is typed `wiwf14z.refusedbound.Sizer`"),
     ] {
-        let (errors, said) = recorded(|| {
-            crate::common::load_errors_of(&program(
-                ns,
-                &format!(
-                    "  sort Sizer\n    sort T = ?\n    operation size(a: T) -> Int64\n  end\n  \
-                     fact item(1)\n  rule f(?x: {bound}) :- item(?x)\n"
-                ),
-            ))
-        });
-        assert!(
-            errors.len() == 1 && errors[0].contains(refusal) && said.is_empty(),
-            "{bound}: {errors:#?} {said:?}"
+        refused(
+            ns,
+            &format!(
+                "  sort Sizer\n    sort T = ?\n    operation size(a: T) -> Int64\n  end\n  \
+                 fact item(1)\n  rule f(?x: {bound}) :- item(?x)\n"
+            ),
+            refusal,
         );
     }
 }
 
-/// A BODY THAT FIXES THE SORT'S PARAMETER THROUGH A GOAL is that class, as through a
-/// construction: `bx` answers only `Box2[T = Int64]` values, where `pr` holds at every `T`.
-/// Recorded as a rule-goal disagreement before it was told apart.
+/// A BODY THAT FIXES THE SORT'S PARAMETER THROUGH A GOAL is refused naming the parameter, as
+/// through a construction: `bx` answers only `Box2[T = Int64]` values, where `pr` holds at
+/// every `T`. Refused as a rule-goal disagreement before it was told apart.
 #[test]
 fn a_goal_that_fixes_the_sorts_parameter_is_that_class() {
-    let ns = "wiwf14z.fixedbygoal";
-    let (_, said) = recorded(|| {
-        crate::common::load_kb_with(&program(
-            ns,
-            "  rule bx(?x) :- ?x <=> NS.Box2.b2(v: 5)\n  \
-             sort Box2[T]\n    entity b2(v: T)\n    rule pr(?x: Box2[T = T]) :- bx(?x)\n  end\n",
-        ))
-    });
-    assert_eq!(said, [("sort parameter fixed", 1)]);
+    refused(
+        "wiwf14z.fixedbygoal",
+        "  rule bx(?x) :- ?x <=> NS.Box2.b2(v: 5)\n  \
+         sort Box2[T]\n    entity b2(v: T)\n    rule pr(?x: Box2[T = T]) :- bx(?x)\n  end\n",
+        "type mismatch in Box2.T (sort-parameter): expected T, got Int64",
+    );
 }
 
 /// A COLLECTION LITERAL IS ITS COLLECTION: `item`'s facts hold the tuples `(x: 1)` and `(x:
@@ -618,7 +647,7 @@ fn a_goal_that_fixes_the_sorts_parameter_is_that_class() {
 #[test]
 fn a_collection_literal_is_its_collection() {
     let ns = "wiwf14z.literal";
-    let (answers, said) = recorded(|| {
+    let answers = {
         let mut kb = crate::common::load_kb_with(&program(
             ns,
             "  fact item((x: 1))\n  fact item((x: true))\n  \
@@ -636,8 +665,8 @@ fn a_collection_literal_is_its_collection() {
             crate::common::one_definite_int(&mut kb, &format!("{ns}.viaHead")),
             crate::common::one_definite_int(&mut kb, &format!("{ns}.viaDot")),
         )
-    });
-    assert_eq!((answers, said), ((1, Some(1), Some(1), Some(3)), vec![]));
+    };
+    assert_eq!(answers, (1, Some(1), Some(1), Some(3)));
 }
 
 /// WHAT THE SOME-COERCION BINDS IS THE CALL'S: `?a: Int64` meets `pick`'s `Option[T = A]`
@@ -645,40 +674,38 @@ fn a_collection_literal_is_its_collection() {
 /// `Int64.abs`. Kept only as the check's verdict, `A` stayed open and the dot was data.
 #[test]
 fn what_the_some_coercion_binds_is_the_calls() {
-    let ns = "wiwf14z.coercionbinds";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.coercionbinds",
             "  sort Opt2\n    operation pick[A](x: Option[T = A], y: A) -> A = y\n  end\n  \
              rule viaPick(?a: Int64, ?b, ?r) :- ?c <=> Opt2.pick(?a, ?b), ?r <=> ?b.abs()\n  \
              rule g(?r) :- viaPick(3, -4, ?r)\n",
             &["g"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(4)], vec![]));
+        ),
+        [Some(4)]
+    );
 }
 
 /// A COLUMN OF OCCURRENCES QUOTES ITS ARGUMENT (user, 2026-10-22): `synth_int`'s column is
-/// `occurrence_term`'s `NodeOccurrence`, and `synth_int(42, ?n)` reads `42`'s occurrence,
-/// with nothing recorded. Met as a type, `42`'s `Int64` disagreed with the column. The
-/// operation-body twin, `q(42)` at `e: NodeOccurrence`, stays refused.
+/// `occurrence_term`'s `NodeOccurrence`, and `synth_int(42, ?n)` reads `42`'s occurrence.
+/// Met as a type, `42`'s `Int64` disagreed with the column. The operation-body twin, `q(42)`
+/// at `e: NodeOccurrence`, stays refused.
 #[test]
 fn a_column_of_occurrences_quotes_its_argument() {
-    let ns = "wiwf14z.occurrence";
-    let (answers, said) = recorded(|| {
+    assert_eq!(
         ints(
-            ns,
+            "wiwf14z.occurrence",
             "  import anthill.reflect.{occurrence_term}\n  \
              import anthill.reflect.Expr.{int_lit}\n  \
              rule synth_int(?e, 1) :- occurrence_term(?e, int_lit(value: ?))\n  \
              rule g(?n) :- synth_int(42, ?n)\n",
             &["g"],
-        )
-    });
-    assert_eq!((answers, said), (vec![Some(1)], vec![]));
+        ),
+        [Some(1)]
+    );
 }
 
-// ── Decision 2: how far data is typed (068-implementation §6.2), recorded ─────────────────
+// ── Decision 2: how far data is typed (068-implementation §6.2) ───────────────────────────
 
 /// Decision 2's table fixture: `pt`'s two `Int64` fields, `Hold.holder` over a `pt`, `holds`'
 /// three facts of no common type, and `U`'s operations at a value of each.
@@ -688,92 +715,113 @@ const DATA: &str = "  import anthill.kernel.{domain}\n  entity pt(x: Int64, y: I
     fact holds(1)\n  fact holds(\"a\")\n  fact holds(pt(x: 1, y: 2))\n";
 
 /// EVERY CONSTRUCTION IS TYPED AGAINST ITS FIELDS, in a fact, a head and a body — each
-/// recorded where its argument does not fit. Before, only a fact of the entity itself and a
-/// body goal on it were checked: these loaded, and the `<=>` ones bound the ill-typed value.
+/// refused naming the field, once. Before, only a fact of the entity itself and a body goal on
+/// it were checked: these loaded, and the `<=>` ones bound the ill-typed value. Where an
+/// earlier check refuses the field at the construction — a fact of the entity, a body goal
+/// on it, an `=` operand — that check's is the one refusal.
 #[test]
 fn every_construction_is_typed_against_its_fields() {
-    for (shape, clause) in [
-        ("a fact's field", "  fact holder(h: pt(x: \"s\", y: 2))\n"),
-        ("a head", "  rule hh(pt(x: \"s\", y: 2)) :- true\n"),
-        ("a `<=>` side", "  rule g(?r) :- ?r <=> pt(x: \"s\", y: 2)\n"),
-        ("a nested construction", "  rule g(?r) :- ?r <=> pt(x: wrap(v: 1), y: 2)\n"),
-        ("a relation goal's argument", "  rule g(?a) :- holds(pt(x: \"s\", y: 2)), ?a <=> 1\n"),
+    for (shape, clause, got) in [
+        ("a fact's field", "  fact holder(h: pt(x: \"s\", y: 2))\n", "String"),
+        ("a head", "  rule hh(pt(x: \"s\", y: 2)) :- true\n", "String"),
+        ("a `<=>` side", "  rule g(?r) :- ?r <=> pt(x: \"s\", y: 2)\n", "String"),
+        ("a nested construction", "  rule g(?r) :- ?r <=> pt(x: wrap(v: 1), y: 2)\n", "wrap"),
+        ("a relation goal's argument", "  rule g(?a) :- holds(pt(x: \"s\", y: 2)), ?a <=> 1\n", "String"),
+        ("a fact of the entity", "  fact pt(x: \"s\", y: 2)\n", "String"),
+        ("a body goal on another", "  rule g(?a) :- holder(h: pt(x: \"s\", y: 2)), ?a <=> 1\n", "String"),
+        ("an `=` operand", "  rule g(?r) :- ?r = pt(x: \"s\", y: 2)\n", "String"),
     ] {
-        let ns = "wiwf14z.construction";
-        let (_, said) = recorded(|| {
-            crate::common::load_kb_with(&program(ns, &format!("{DATA}{clause}")))
-        });
-        assert_eq!(said, [("construction field", 1)], "{shape}");
+        let errors = crate::common::load_errors_of(&program(
+            "wiwf14z.construction",
+            &format!("{DATA}{clause}"),
+        ));
+        let says = format!("type mismatch in pt.x (entity-field): expected Int64, got {got}");
+        assert!(
+            errors.len() == 1 && errors[0].contains(&says),
+            "{shape}: {errors:#?}"
+        );
     }
 }
 
-/// CONTROL, PASSES EITHER WAY: a construction that fits records nothing, the argument
-/// conversions included — a bare value at an `Option` field, any value at a `Term` field.
+/// CONTROL, PASSES EITHER WAY: a construction that fits loads, the argument conversions
+/// included — a bare value at an `Option` field, any value at a `Term` field.
 #[test]
-fn a_construction_that_fits_records_nothing() {
-    let ns = "wiwf14z.fits";
-    let (_, said) = recorded(|| {
-        crate::common::load_kb_with(&program(
-            ns,
-            &format!(
-                "{DATA}  entity maybe(o: Option[T = Int64])\n  \
-                 entity quoted(t: anthill.reflect.Term)\n  \
-                 fact holder(h: pt(x: 1, y: 2))\n  \
-                 rule g(?r) :- ?r <=> pt(x: 1, y: 2)\n  \
-                 rule m(?r) :- ?r <=> maybe(o: 3)\n  rule q(?r) :- ?r <=> quoted(t: \"s\")\n"
-            ),
-        ))
-    });
-    assert_eq!(said, []);
+fn a_construction_that_fits_loads() {
+    crate::common::load_kb_with(&program(
+        "wiwf14z.fits",
+        &format!(
+            "{DATA}  entity maybe(o: Option[T = Int64])\n  \
+             entity quoted(t: anthill.reflect.Term)\n  \
+             fact holder(h: pt(x: 1, y: 2))\n  \
+             rule g(?r) :- ?r <=> pt(x: 1, y: 2)\n  \
+             rule m(?r) :- ?r <=> maybe(o: 3)\n  rule q(?r) :- ?r <=> quoted(t: \"s\")\n"
+        ),
+    ));
 }
 
 /// A COLUMN OF NO COMMON TYPE IS OF SOME TYPE: `holds` answers its three values, and a demand
-/// on a value read out of it — a call's argument, a dot — is recorded until a test narrows
-/// it: `domain`, `<=>` against a construction, a head's bound. A column two rule clauses give
+/// on a value read out of it — a call's argument, a dot — is refused until a test narrows it:
+/// `domain`, `<=>` against a construction, a head's bound. A column two rule clauses give
 /// different types is one too. Before, the column was a variable and every demand read the
-/// value at the type it asked for: `ilen` handed back a `String` as an `Int64`, which it
-/// still does at run time — the load is what decision 3 refuses.
+/// value at the type it asked for: `ilen` handed back a `String` as an `Int64`.
 #[test]
 fn a_column_of_no_common_type_is_of_some_type() {
     let ns = "wiwf14z.some";
-    // (shape, clause, how many rows `g` answers, what the load records)
-    let cases: [(&str, &str, usize, Vec<(&str, usize)>); 7] = [
-        ("read", "  rule g(?r) :- holds(?r)\n", 3, vec![]),
-        ("a call's argument", "  rule g(?r) :- holds(?v), ?r <=> U.ilen(?v)\n", 3, vec![("some type demand", 1)]),
-        ("a dot", "  rule g(?r) :- holds(?v), ?r <=> ?v.abs()\n", 3, vec![("some type demand", 1)]),
-        ("narrowed by `domain`", "  rule g(?r) :- holds(?v), domain(?v, Int64), ?r <=> U.ilen(?v)\n", 1, vec![]),
-        ("narrowed by `<=>`", "  rule g(?r) :- holds(?v), ?v <=> pt(x: ?a, y: ?), ?r <=> U.px(?v)\n", 1, vec![]),
-        ("narrowed by a head's bound", "  rule n(?v: Int64, ?r) :- holds(?v), ?r <=> U.ilen(?v)\n  rule g(?r) :- n(?v, ?r)\n", 1, vec![]),
-        ("typed by a later goal", "  fact one(1)\n  rule g(?r) :- holds(?v), one(?v), ?r <=> U.ilen(?v)\n", 1, vec![]),
-    ];
-    for (shape, clause, rows, record) in cases {
-        let (got, said) = recorded(|| {
-            let mut kb = crate::common::load_kb_with(&program(ns, &format!("{DATA}{clause}")));
-            crate::common::query_unary(&mut kb, &format!("{ns}.g")).len()
-        });
-        assert_eq!((got, said), (rows, record), "{shape}");
+    // (shape, clause, how many rows `g` answers)
+    for (shape, clause, rows) in [
+        ("read", "  rule g(?r) :- holds(?r)\n", 3),
+        ("narrowed by `domain`", "  rule g(?r) :- holds(?v), domain(?v, Int64), ?r <=> U.ilen(?v)\n", 1),
+        ("narrowed by `<=>`", "  rule g(?r) :- holds(?v), ?v <=> pt(x: ?a, y: ?), ?r <=> U.px(?v)\n", 1),
+        ("narrowed by a head's bound", "  rule n(?v: Int64, ?r) :- holds(?v), ?r <=> U.ilen(?v)\n  rule g(?r) :- n(?v, ?r)\n", 1),
+        ("typed by a later goal", "  fact one(1)\n  rule g(?r) :- holds(?v), one(?v), ?r <=> U.ilen(?v)\n", 1),
+    ] {
+        let mut kb = crate::common::load_kb_with(&program(ns, &format!("{DATA}{clause}")));
+        let got = crate::common::query_unary(&mut kb, &format!("{ns}.g")).len();
+        assert_eq!(got, rows, "{shape}");
     }
-    let (_, said) = recorded(|| {
-        crate::common::load_kb_with(&program(
-            ns,
-            &format!(
-                "{DATA}  fact isInt(1)\n  fact isStr(\"a\")\n  \
-                 rule mix(?v) :- isInt(?v)\n  rule mix(?v) :- isStr(?v)\n  \
-                 rule g(?r) :- mix(?v), ?r <=> U.ilen(?v)\n"
+    let some = "got a value of some type: `holds._1` has no type its clauses share; a test \
+                narrows `v` first — `domain`, `<=>` against a construction or a literal, a \
+                head's bound";
+    for (shape, clause, says) in [
+        (
+            "a call's argument",
+            "  rule g(?r) :- holds(?v), ?r <=> U.ilen(?v)\n".to_string(),
+            format!("type mismatch in ilen.n (op-arg): expected Int64, {some}"),
+        ),
+        (
+            "a dot",
+            "  rule g(?r) :- holds(?v), ?r <=> ?v.abs()\n".to_string(),
+            format!(
+                "type mismatch in <dot projection>.abs (dot-projection): expected a receiver \
+                 of a known type, {some}"
             ),
-        ))
-    });
-    assert_eq!(said, [("some type demand", 1)], "two rule clauses");
+        ),
+        (
+            "two rule clauses",
+            "  fact isInt(1)\n  fact isStr(\"a\")\n  \
+             rule mix(?v) :- isInt(?v)\n  rule mix(?v) :- isStr(?v)\n  \
+             rule g(?r) :- mix(?v), ?r <=> U.ilen(?v)\n"
+                .to_string(),
+            format!("type mismatch in ilen.n (op-arg): expected Int64, {some}")
+                .replace("holds._1", "mix._1"),
+        ),
+    ] {
+        let errors = crate::common::load_errors_of(&program(ns, &format!("{DATA}{clause}")));
+        assert!(
+            errors.len() == 1 && errors[0].contains(&says),
+            "{shape}: {errors:#?}"
+        );
+    }
 }
 
 /// A SPEC OPERATION'S CARRIER TAKES A VALUE OF SOME TYPE: `Desc.describe(?x, ?r)` is
-/// dispatched by each value's own sort, so `item`'s `leaf` and `other` answer `7` and `9` and
-/// nothing is recorded — a parameter of the callee's own type is no demand. Read as one, the
-/// call was recorded as a demand on an un-narrowed value.
+/// dispatched by each value's own sort, so `item`'s `leaf` and `other` answer `7` and `9` — a
+/// parameter of the callee's own type is no demand. Read as one, the call was refused as a
+/// demand on an un-narrowed value.
 #[test]
 fn a_spec_operations_carrier_takes_a_value_of_some_type() {
     let ns = "wiwf14z.carrier";
-    let (rows, said) = recorded(|| {
+    let rows = {
         let mut kb = crate::common::load_kb_with(&program(
             ns,
             "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
@@ -793,28 +841,24 @@ fn a_spec_operations_carrier_takes_a_value_of_some_type() {
             .collect();
         got.sort();
         got
-    });
-    assert_eq!((rows, said), (vec![Some(7), Some(9)], vec![]));
+    };
+    assert_eq!(rows, [Some(7), Some(9)]);
 }
 
 /// AN EQUATION'S HEAD IS A REWRITE PATTERN, NOT DATA: its sides are stored as the reflect
 /// terms that write them, which the construction check does not read — a bodyless `@[simp]`
-/// equation and a guarded one, each with a field read on its right. Read as data, each
-/// recorded a construction disagreement inside the stored `?b.v`.
+/// equation and a guarded one, each with a field read on its right, load. Read as data, each
+/// was refused inside the stored `?b.v`.
 #[test]
 fn an_equations_head_is_a_rewrite_pattern() {
-    let ns = "wiwf14z.equation";
-    let (_, said) = recorded(|| {
-        crate::common::load_kb_with(&program(
-            ns,
-            "  sort Box\n    entity box(v: Int64)\n    operation open(b: Box) -> Int64\n    \
-             operation peek(b: Box) -> Int64\n    \
-             rule open(?b) <=> ?b.v @[simp]\n    \
-             rule peek(?b) = ?b.v :- gt(1, 0) @[simp]\n  end\n  \
-             import anthill.prelude.PartialOrd.{gt}\n",
-        ))
-    });
-    assert_eq!(said, []);
+    crate::common::load_kb_with(&program(
+        "wiwf14z.equation",
+        "  sort Box\n    entity box(v: Int64)\n    operation open(b: Box) -> Int64\n    \
+         operation peek(b: Box) -> Int64\n    \
+         rule open(?b) <=> ?b.v @[simp]\n    \
+         rule peek(?b) = ?b.v :- gt(1, 0) @[simp]\n  end\n  \
+         import anthill.prelude.PartialOrd.{gt}\n",
+    ));
 }
 
 /// AN EQUATION'S STORED SIDE TYPES NOTHING: `peek(?b) = ?b.v :- gt(1, 0)` keeps `?b.v` as the
@@ -842,13 +886,13 @@ fn an_equations_stored_side_types_nothing() {
 /// A FIELD'S NAME IS A `String` IN EVERY `FieldInfo` (user, 2026-10-22): `KB.fields` hands
 /// one back, and so do the loader's own records — an operation's parameter (`zebra`) and an
 /// entity's field (`quokka`), each read by a rule that asks for the name as written; and a
-/// clause comparing `KB.fields` with `FieldInfo(name: "x", …)` records nothing. The loader
-/// stored the field's symbol, which no string matches, and `FieldInfo.name` was declared a
-/// `Symbol`, which `"x"` does not fit.
+/// clause comparing `KB.fields` with `FieldInfo(name: "x", …)` loads. The loader stored the
+/// field's symbol, which no string matches, and `FieldInfo.name` was declared a `Symbol`,
+/// which `"x"` does not fit.
 #[test]
 fn a_fields_name_is_a_string_in_every_field_info() {
     let ns = "wiwf14z.fieldinfo";
-    let (rows, said) = recorded(|| {
+    let rows = {
         let mut kb = crate::common::load_kb_with(&program(
             ns,
             "  import anthill.reflect.{FieldInfo, OperationInfo, EntityInfo, KB}\n  \
@@ -861,6 +905,80 @@ fn a_fields_name_is_a_string_in_every_field_info() {
         ["param", "field", "listed"].map(|r| {
             crate::common::query_unary(&mut kb, &format!("{ns}.{r}")).len()
         })
-    });
-    assert_eq!((rows, said), ([1, 1, 1], vec![]));
+    };
+    assert_eq!(rows, [1, 1, 1]);
+}
+
+/// A CALL'S RESULT, A RESULT COLUMN AND A DOT THAT DO NOT FIT ARE REFUSED, each once, at the
+/// operation's return or the member, as an operation's return is read against what its body
+/// gives: `?r: String` beside `sign`'s `Int64`, in a value slot and as the result column, and
+/// beside `P.t`. A spec operation's result column is WI-1104's refusal at the call, which the
+/// clause typing does not report again. Before, each loaded, the position pinning nothing.
+#[test]
+fn a_calls_result_and_a_dot_that_do_not_fit_are_refused() {
+    let ns = "wiwf14z.results";
+    let decls = "  sort U\n    operation sign(a: Int64) -> Int64 = a\n  end\n  \
+                 sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
+                 sort Leaf\n    import anthill.prelude.Int64\n    entity leaf\n    \
+                 provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n  end\n";
+    for (clause, says) in [
+        ("rule cr(?r: String) :- ?r <=> U.sign(3)", "sign.return (op-return): expected Int64, got String"),
+        ("rule rc(?r: String) :- U.sign(3, ?r)", "sign.return (op-return): expected Int64, got String"),
+        ("rule dr(?p: P, ?r: String) :- ?r <=> ?p.t", "<dot projection>.t (dot-projection): expected Int64, got String"),
+        ("rule sc(?r) :- Desc.describe(leaf(), \"s\")", "describe.return (op-return): expected Int64, got String"),
+    ] {
+        refused(ns, &format!("{decls}  {clause}\n"), says);
+    }
+}
+
+/// A REFUSED LOAD'S CLAUSE DOES NOT REFUSE ITS CORRECTED RETRY, and a later load is held to
+/// every other clause as one load over everything is. The refused load's clauses stay in the
+/// knowledge base, and the clause typing reads every rule a seal does not hold at each load:
+/// read as the later load's, the refused `g` and `bad` refused the retry too, a contradiction
+/// of a namespace-level rule included. Kept to the load that asserted it instead, a clause an
+/// earlier load typed clean was not refused where a later load's fact made its column of no
+/// common type, which one load over both refuses.
+#[test]
+fn a_refused_loads_clause_does_not_refuse_its_corrected_retry() {
+    use crate::common::{load_in_a_later_call, rendered_load_errors};
+    let ns = "wiwf14z.retry";
+    let mut kb = crate::common::load_kb_with(&program(ns, "  entity pt(x: Int64, y: Int64)\n"));
+    let refused = load_in_a_later_call(
+        &mut kb,
+        &format!(
+            "namespace {ns}.bad\n  import anthill.prelude.{{Int64, String}}\n  \
+             import {ns}.{{pt}}\n  sort U\n    operation slen(s: String) -> Int64 = 1\n  end\n  \
+             rule g(?r) :- ?r <=> pt(x: \"s\", y: 2)\n  \
+             rule bad(?r) :- pt(x: ?a, y: 2) <=> ?p, U.slen(?a, ?r)\nend\n"
+        ),
+        Default::default(),
+    );
+    let errors = rendered_load_errors(refused.err().expect("the ill-typed clauses fail the load"));
+    assert!(
+        errors.len() == 2
+            && errors[0].contains("type mismatch in pt.x (entity-field)")
+            && errors[1].contains("contradictory variable types"),
+        "{errors:#?}"
+    );
+    let retry = load_in_a_later_call(
+        &mut kb,
+        &format!("namespace {ns}.good\n  import {ns}.{{pt}}\n  rule g(?r) :- ?r <=> pt(x: 1, y: 2)\nend\n"),
+        Default::default(),
+    );
+    assert!(retry.is_ok(), "{:?}", retry.err().map(rendered_load_errors));
+
+    let first = "namespace wiwf14z.later\n  import anthill.prelude.{Int64, String}\n  \
+                 sort U\n    operation ilen(n: Int64) -> Int64 = n\n  end\n  \
+                 fact holds(1)\n  rule g(?r) :- holds(?v), ?r <=> U.ilen(?v)\nend\n";
+    let mut kb = crate::common::load_kb_with(first);
+    let later = load_in_a_later_call(
+        &mut kb,
+        "namespace wiwf14z.later\n  fact holds(\"a\")\nend\n",
+        Default::default(),
+    );
+    let errors = rendered_load_errors(later.err().expect("the later fact changes `g`'s column"));
+    assert!(
+        errors.len() == 1 && errors[0].contains("type mismatch in ilen.n (op-arg)"),
+        "{errors:#?}"
+    );
 }

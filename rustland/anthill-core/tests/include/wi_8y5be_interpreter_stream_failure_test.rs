@@ -11,10 +11,12 @@
 use crate::common::interp_for;
 use anthill_core::eval::{EvalError, Value};
 
-/// An ill-typed comparison the resolver cannot ASK — `tag` declares no types, so the
-/// typer cannot see that `?x` is a `String` — reached through an entity-headed rule so
-/// an operation body can query it. `?x` is BODY-ONLY on purpose: written in the head,
-/// it takes the field's declared `String` and the typer refuses the comparison at load.
+/// An ill-typed comparison the resolver cannot ASK — `?x` is read from `Tag`'s field, a
+/// `Term`, which says nothing of the value's type, so the typer cannot see that `?x` is a
+/// `String` — reached through an entity-headed rule so an operation body can query it. `?x`
+/// is BODY-ONLY on purpose: written in the head, it takes the field's declared `String` and
+/// the typer refuses the comparison at load; and read from `tag`, whose column it reads as
+/// `String`, the load refuses it too (068-implementation §6.2, decision 3).
 ///
 /// `probe` answers 1 when the first pull yields a row and 0 when the stream is empty;
 /// `clean_probe` is the same query over a rule with no comparison. `faulty_stream` hands
@@ -37,7 +39,9 @@ namespace test.wi8y5be
   end
 
   fact tag("a")
-  rule Faulty(x: ?y) :- tag(?y), tag(?x), PartialOrd.gt(?x, 1)
+  entity Tag(v: Term)
+  fact Tag(v: "a")
+  rule Faulty(x: ?y) :- tag(?y), Tag(v: ?x), PartialOrd.gt(?x, 1)
   rule Clean(x: ?x) :- tag(?x)
 
   operation probe() -> Int64 effects Error[ResolveStreamFailure] =
@@ -54,7 +58,7 @@ namespace test.wi8y5be
     effects Error[ResolveStreamFailure] =
     execute(kb(), pattern_query(term: as_term(Faulty(x: fresh_var[String]("x")))))
 
-  rule faulty_rel(?y) :- tag(?y), tag(?x), PartialOrd.gt(?x, 2)
+  rule faulty_rel(?y) :- tag(?y), Tag(v: ?x), PartialOrd.gt(?x, 2)
   operation rel_count() -> Int64 effects Error = length(faulty_rel.takeN(10))
 end
 "#;
@@ -275,10 +279,12 @@ fn a_decided_negation_over_a_faulted_subsearch_is_not_a_fault() {
         r#"
 namespace test.wi8y5be.naf
   import anthill.prelude.{Int64, String, PartialOrd}
+  import anthill.reflect.{Term}
   import anthill.kernel.{not, or}
   fact item(1)
-  fact tag("a")
-  rule p(?k) :- tag(?x), or(PartialOrd.gt(?x, 1), true), item(?k)
+  entity Tag(v: Term)
+  fact Tag(v: "a")
+  rule p(?k) :- Tag(v: ?x), or(PartialOrd.gt(?x, 1), true), item(?k)
   rule q(?k) :- item(?k), not(p(?k))
 end
 "#,

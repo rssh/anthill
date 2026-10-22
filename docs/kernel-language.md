@@ -2723,6 +2723,17 @@ variable no position types stays open, and a call at it is dispatched by the val
 runs. *Not yet read*: a goal on another relation of the clause's own cycle of goals (`ev` and
 `od` calling each other) gives its arguments no type.
 
+A position that does not fit what the rest of the clause says of it is a load error, named
+by the position: a construction's argument against its field, in a body, a head or a fact; a
+rule goal's argument against the callee's column; a head's bound against the body; a call's
+result, a result column and a dot's value against the slot they fill; and two positions of
+one variable. The enclosing sort's parameter is rigid in the clause: in `sort Box3[T]`, `rule
+pr(?x: Self) :- ?x <=> b3(v: 5)` is refused, `expected T, got Int64`, while `rule pr(?x:
+Box3)`, an open slot, loads. A column whose clauses give it no common type is of some type: a
+value read from it goes wherever any type is taken, and a demand on it (a call's argument at
+a parameter of a stated type, a dot) is refused until a test narrows it: `domain(?v, T)`,
+`<=>` against a construction or a literal, or a head's bound.
+
 This is the requirement-binding half of proposal 060. Its typed-head half is
 delivered separately, below, and so is the ANCHOR combination joining them: a
 `require[X]` in a clause whose only grounding is a typed head binding resolves

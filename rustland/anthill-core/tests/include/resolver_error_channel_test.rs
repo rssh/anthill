@@ -28,16 +28,20 @@
 
 use anthill_core::kb::resolve::ResolveConfig;
 
-/// `tag("a")` binds `?x` from a predicate that declares no types, so the typer cannot
-/// see the operand sorts and `gt(?x, 1)` reaches the resolver as a String/Int64 pair.
-/// (Written DIRECTLY the typer refuses it — that is WI-879's own control.)
+/// `Tag(v: ?x)` binds `?x` from a field declared `Term`, which says nothing of the value's
+/// type, so the typer cannot see the operand sorts and `gt(?x, 1)` reaches the resolver as a
+/// String/Int64 pair. (Written DIRECTLY the typer refuses it — that is WI-879's own control;
+/// and so it does through a fact whose column it reads as `String`, 068-implementation
+/// §6.2, decision 3.)
 const CROSS_SORT: &str = r#"
 namespace rec.mix
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
+  import anthill.reflect.{Term}
   import anthill.kernel.{unify}
 
-  fact tag("a")
-  rule answer(?r) :- tag(?x), PartialOrd.gt(?x, 1), unify(?r, 5)
+  entity Tag(v: Term)
+  fact Tag(v: "a")
+  rule answer(?r) :- Tag(v: ?x), PartialOrd.gt(?x, 1), unify(?r, 5)
 end
 "#;
 
@@ -125,8 +129,9 @@ fn a_well_typed_comparison_reports_nothing() {
 #[test]
 fn a_faulted_constraint_guard_says_why() {
     // The REAL quantified-constraint syntax (`no ?x: <goal> -: <goal>`), which is what
-    // drives `eval_count_guard`. `tag("a")` binds `?x` from a predicate declaring no
-    // types, so `gt(?x, 1)` reaches the resolver as a String/Int64 pair and faults.
+    // drives `eval_count_guard`. `tag("a")` binds `?x` from a fact the constraint's
+    // typing does not read, so `gt(?x, 1)` reaches the resolver as a String/Int64 pair and
+    // faults.
     let src = r#"
 namespace rec.guard
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
@@ -173,11 +178,13 @@ fn a_fault_on_a_branch_that_did_not_decide_does_not_mark_the_search_incomplete()
     let src = r#"
 namespace rec.naf
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
+  import anthill.reflect.{Term}
   import anthill.kernel.{unify, not}
 
-  fact tag("a")
+  entity Tag(v: Term)
+  fact Tag(v: "a")
   fact seven(7)
-  rule p :- tag(?x), PartialOrd.gt(?x, 1)
+  rule p :- Tag(v: ?x), PartialOrd.gt(?x, 1)
   rule p :- seven(?y), PartialOrd.gt(?y, 1)
   rule ok(?r) :- not(p), unify(?r, 1)
 end
@@ -211,7 +218,8 @@ fn a_faulted_extent_read_refuses_with_the_reason() {
     // it instead returned a silently SHORT row list with the reason on stderr.
     //
     // `derived` is rule-backed and its body compares a String against an Int64, which
-    // reaches `builtin_cmp`'s no-order arm.
+    // reaches `builtin_cmp`'s no-order arm: the String comes through `Tag`'s `Term` field,
+    // which says nothing of its type.
     //
     // CONTROL: `a_clean_extent_read_still_returns_rows` passes either way by design —
     // it says the new refusal did not swallow the ordinary read. Back out the
@@ -220,10 +228,12 @@ fn a_faulted_extent_read_refuses_with_the_reason() {
     let src = r#"
 namespace rec.ext
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
-  fact tag("a")
+  import anthill.reflect.{Term}
+  entity Tag(v: Term)
+  fact Tag(v: "a")
   sort Rows
     entity derived(v: Int64)
-    rule derived(v: ?x) :- tag(?x), PartialOrd.gt(?x, 1)
+    rule derived(v: ?x) :- Tag(v: ?x), PartialOrd.gt(?x, 1)
   end
 end
 "#;

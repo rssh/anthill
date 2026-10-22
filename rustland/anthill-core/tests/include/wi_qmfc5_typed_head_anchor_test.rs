@@ -539,12 +539,20 @@ fn a_refining_carrier_answers_the_same_in_both_tiers() {
     // what "`requires(X)` IS the no-`out` case" forbids. Both now answer nothing.
     //
     // BACKING OUT the goal emission (returning `goal: None` for the no-`out` case again)
-    // fails this row on the CHECK line only; the BIND line passes either way, and that is
-    // what makes the pair evidence rather than a coincidence.
+    // failed this row on the CHECK line only; the BIND line passes either way. MEASURED
+    // 2026-10-22: it passes with the emission backed out now, on the tree before
+    // WI-20261013-WF14Z's fourth part too — the typed head's own check refuses the `sub` —
+    // and what fails under that back-out is `the_check_tier_emits_the_same_goal_the_bind_tier_does`
+    // and `equation_headed_anchor_keeps_its_body`.
+    //
+    // The `sub` comes through `Seed`'s field, a `Term`, which says nothing of its type: read
+    // out of `seed`, whose column is `Sub`, beside `?x: Leaf`, the clause is refused at load
+    // (068-implementation §6.2, decision 3), as the last line says.
     let src = |tier: &str| {
         refining(&format!(
             "  rule answer(?r) :- checked(?x, ?r)\n  \
-             rule checked(?x: Leaf, ?r) :- {tier}, seed(?x), Desc.tag(?r)\n"
+             entity Seed(v: anthill.reflect.Term)\n  fact Seed(v: sub())\n  \
+             rule checked(?x: Leaf, ?r) :- {tier}, Seed(v: ?x), Desc.tag(?r)\n"
         ))
     };
     let run = |t: &str| {
@@ -553,6 +561,14 @@ fn a_refining_carrier_answers_the_same_in_both_tiers() {
     };
     assert_eq!(run("requires(Desc[T = Leaf])"), 0, "check tier");
     assert_eq!(run("?d = require[Desc[T = Leaf]]"), 0, "bind tier");
+    let errs = crate::common::load_errors_of(&refining(
+        "  rule checked(?x: Leaf, ?r) :- requires(Desc[T = Leaf]), seed(?x), Desc.tag(?r)\n",
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in seed._1 (rule-column): expected Sub, got Leaf"),
+        "{errs:#?}"
+    );
 }
 
 #[test]

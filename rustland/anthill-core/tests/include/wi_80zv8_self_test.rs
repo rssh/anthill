@@ -733,9 +733,29 @@ namespace {ns}
     rule twin(?x: {bound}, ?y: {bound}) :- ?y = ?x
   end
   rule both(1) :- Box.twin(box(v: 1), box(v: 1))
-  rule mixed(1) :- Box.twin(box(v: 1), box(v: "s"))
 end
 "#
+    )
+}
+
+/// The mixed pair, asked at run time: written in a clause, `Box.twin(box(v: 1), box(v: "s"))`
+/// is refused at load, the second box against the column the first one fixes
+/// (068-implementation §6.2, decision 3).
+fn mixed_twin(ns: &str, bound: &str) -> usize {
+    let mut kb = load_kb_with(&rule_tie_program(ns, bound));
+    let errs = crate::common::load_errors_of(&rule_tie_program(ns, bound).replace(
+        "  rule both(1) :- Box.twin(box(v: 1), box(v: 1))\nend\n",
+        "  rule both(1) :- Box.twin(box(v: 1), box(v: 1))\n  \
+         rule mixed(1) :- Box.twin(box(v: 1), box(v: \"s\"))\nend\n",
+    ));
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in box.v (entity-field): expected Int64, got String"),
+        "{errs:#?}"
+    );
+    crate::common::pattern_hits(
+        &mut kb,
+        &format!("{ns}.Box.twin({ns}.Box.box(v: 1), {ns}.Box.box(v: \"s\"))"),
     )
 }
 
@@ -751,8 +771,8 @@ fn self_bounds_of_one_rule_are_one_instance() {
         "two boxes of one element type"
     );
     assert_eq!(
-        shown_rows(&mut kb, "wi80zv8.rule3.mixed"),
-        Vec::<(String, bool)>::new(),
+        mixed_twin("wi80zv8.rule3", "Self"),
+        0,
         "an Int64 box beside a String box"
     );
 }
@@ -763,7 +783,7 @@ fn self_bounds_of_one_rule_are_one_instance() {
 fn self_bounds_of_one_rule_are_the_written_form() {
     let mut kb = load_kb_with(&rule_tie_program("wi80zv8.rule4", "Box[T = T]"));
     assert_eq!(shown_rows(&mut kb, "wi80zv8.rule4.both"), vec![("1".to_owned(), true)]);
-    assert_eq!(shown_rows(&mut kb, "wi80zv8.rule4.mixed"), Vec::<(String, bool)>::new());
+    assert_eq!(mixed_twin("wi80zv8.rule4", "Box[T = T]"), 0);
 }
 
 fn guarded_join_program(ns: &str, bound: &str) -> String {

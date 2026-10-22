@@ -27,7 +27,7 @@ fn query(goal: &str) -> crate::common::Output {
 
 #[test]
 fn an_unorderable_comparison_is_explained() {
-    let out = query("cli.mix.answer(?r)");
+    let out = query("anthill.kernel.and(cli.mix.tag(?x), anthill.prelude.PartialOrd.gt(?x, 1))");
     assert!(
         out.has_diagnostic("warning:", "two DIFFERENT literal sorts"),
         "the query must explain WHY the goal could not be decided, naming the operand \
@@ -42,6 +42,24 @@ fn an_unorderable_comparison_is_explained() {
         out.stdout.contains("residual"),
         "the residual answer must still print;\nstdout:\n{}",
         out.stdout
+    );
+}
+
+/// The same comparison written in a clause is refused at load, the column `tag` gives `?x`
+/// against the `Int64` the comparison's literal asks (068-implementation §6.2, decision 3).
+#[test]
+fn the_comparison_written_in_a_clause_is_refused_at_load() {
+    let kb = fixtures_dir("resolve_errors").join("kb.anthill");
+    let written = std::fs::read_to_string(&kb).unwrap().replace(
+        "  fact num(7)\n",
+        "  rule answer(?r) :- tag(?x), PartialOrd.gt(?x, 1), unify(?r, 5)\n  fact num(7)\n",
+    );
+    let path = crate::common::write_temp("resolve_errors_written.anthill", &written);
+    let out = anthill(&["load", path.to_str().unwrap()]);
+    assert!(
+        out.has_diagnostic("error:", "type mismatch in tag._1 (rule-column): expected String, got Int64"),
+        "stderr:\n{}",
+        out.stderr
     );
 }
 

@@ -38,7 +38,7 @@
 //! | backed out | fails |
 //! |---|---|
 //! | the constructor's sort unified with its position (`constrain_constructed`) | the eleven routed rows, and `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_variable_the_citation_leaves_unfixed_is_an_unknown` (re-measured 2026-10-21, at its `wrap(?y)` and `none` spellings respectively), `a_constructor_in_a_head_field_types_its_variables`, `a_dot_on_a_variable_typed_through_a_constructor_is_the_call`, `a_call_at_a_variable_the_clause_types_is_decided_at_load` |
-//! | that unification made in place, not on a copy | `a_constructor_that_does_not_fit_its_position_pins_nothing` |
+//! | that unification made in place, not on a copy | `a_constructor_that_does_not_fit_its_position_pins_nothing` (since WI-20261013-WF14Z's fourth part `a_constructor_that_does_not_fit_its_position_is_refused`, the program refused; not measured again) |
 //! | a constant constructor read as its sort (`constrain_constant_constructor`) | `a_column_typed_by_a_constructor_is_checked_at_its_citation`, `a_variable_the_citation_leaves_unfixed_is_an_unknown`, `a_constructor_in_a_head_field_types_its_variables`, and `wi_5g28a_paren_less_citation_test::a_bracketed_chain_followed_by_a_projection_is_a_citation` |
 //! | the resolve to the end, made one step (`collect_rule_var_types`) | the eleven routed rows, `a_column_typed_by_a_constructor_is_checked_at_its_citation`, and the paren-less row above |
 //! | the citation's reading of the clause's typing (`ClauseTypes`) | the eleven routed rows |
@@ -50,8 +50,8 @@
 //! | a citation's unfixed clause variable opened as an unknown (`close_unfixed_clause_vars`; measured 2026-10-21) | `a_variable_the_citation_leaves_unfixed_is_an_unknown` (its three spellings with a bound's written variable or unwritten slot, which load; the other four are refused either way, at the first call that reads the citation), `the_citation_whole_is_refused_at_a_written_instance` |
 //! | the clause's inferred column type installed as its bound (`install_inferred_column_bounds`; measured 2026-10-21, each below alone over this file, `wi_5g28a_rule_dictionary_test` and `wi_x9pb4_require_dictionary_element_test`) | `an_inferred_column_is_checked_as_a_written_one`, `a_value_whose_element_nothing_fixes_answers_conditionally`, `a_free_part_at_a_fixed_instance_is_filled_from_its_domain` |
 //! | a written bound unified with its variable's inferred type at a citation (`unified_column_types` in `relation_clause_columns`) | `an_inferred_column_is_checked_as_a_written_one`, by `p2` |
-//! | a sort's parameter the body would fix read as before (`unified_column_types`' `return None`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Box3` |
-//! | the same for a parameter written by its name (`collect_param_refs`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Outer.Inner` |
+//! | a sort's parameter the body would fix read as before (`unified_column_types`' `return None`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Box3` (since WF14Z's fourth part the clause is refused, `a_body_that_fixes_a_sorts_parameter_is_refused`) |
+//! | the same for a parameter written by its name (`collect_param_refs`) | `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, by `Outer.Inner` (likewise) |
 //! | a written variable kept as the representative of the body's (`unified_column_types`' `back`) | `a_variable_the_citation_leaves_unfixed_is_an_unknown`, by its refusal naming `?t` |
 //! | only a data sort's type installed (`sort_has_constructors`) | `a_variable_passed_to_a_spec_operation_gets_no_bound`, `wi_x9pb4_require_dictionary_element_test::a_self_representing_spec_receives_its_dictionary_too` |
 //! | an inferred type keyed as a written one (`with_written_binding_keys`) | `a_column_the_citation_gives_no_type_pins_nothing`, `a_rule_of_an_earlier_load_is_read_by_a_later_one`, each by the later load's refusal "expands only now" |
@@ -71,7 +71,7 @@
 //! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
 //! `where_an_argument_fixes_it_the_other_instances_are_dropped`,
 //! `a_bound_at_the_callers_parameter_is_checked_through_its_domain_only`,
-//! `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, and the three stated limits at
+//! and the three stated limits at
 //! the end of the file. Each says why at its site.
 //!
 //! WI-20261013-WF14Z's rows here, where a rule goal now types its arguments by the callee's
@@ -744,7 +744,9 @@ const SAME: &str = "  sort Same[T]\n    entity same(a: T, b: T)\n  end\n  import
 /// inferred column was read with no check — both solutions under a type that says `Colour`
 /// — and `p2`'s written `?e` was a variable the body's tie never reached, so `h2` was refused,
 /// 'expected Wrap[T = Colour], got Wrap[T = ?e]'. A rule of a sort with parameters reads the
-/// same at an expected type (`n4`): it read both.
+/// same at an expected type (`n4`), over `bx`'s two instances: it read both. (Its `bx` built
+/// a `b2(v: 5)` once, which fixed `Box2`'s `T` in `pr`'s body, now refused —
+/// `a_body_that_fixes_a_sorts_parameter_is_refused`.)
 #[test]
 fn an_inferred_column_is_checked_as_a_written_one() {
     let ns = "wi0rrqp.i1";
@@ -759,7 +761,7 @@ fn an_inferred_column_is_checked_as_a_written_one() {
              operation n2() -> Int64 effects {{Error}} = p2(wrap(red)).takeN(5).length()\n  \
              operation n3() -> Int64 effects {{Error}} = p3(wrap(red)).takeN(5).length()\n  \
              operation h2() -> Wrap[T = Colour] effects {{Error, Error[EmptyStream]}} = p2(wrap(red)).head.x\n  \
-             rule bx(?x) :- ?x <=> NS.Box2.b2(v: 5)\n  \
+             fact bx(NS.Box2.b2(v: 5))\n  fact bx(NS.Box2.b2(v: \"s\"))\n  \
              sort Box2[T]\n    entity b2(v: T)\n    rule pr(?x: Box2[T = T], ?y) :- bx(?x), holder(h: ?y)\n  end\n  \
              operation n4() -> Int64 effects {{Error}} =\n    \
              let r: Relation[T = (x: Box2[T = Int64], y: Wrap[T = Colour]), E = {{Error}}] = Box2[T = Int64].pr\n    \
@@ -899,29 +901,39 @@ end
     );
 }
 
-/// A BODY THAT FIXES A SORT'S PARAMETER IS READ AS BEFORE — a clause whose body disagrees
-/// with its head, which WI-20261013-GGXCX decides. `Box3`'s `pr` says `?x` is a `b3(v: 5)` at
-/// every `T`; read through the body, `T` was `Int64`, the column no longer named it, the
-/// expected type fixed nothing and `n5` was refused. `Outer.Inner`'s `r` writes the outer `T`
-/// by its name, and `f` was refused, 'expected Wrap[T = ?T], got Wrap[T = Int64]'. Each still
-/// reads both solutions where a written bound's would: the stated limit beside GGXCX.
+/// A BODY THAT FIXES A SORT'S PARAMETER IS REFUSED (068-implementation §6.2, decision 3):
+/// the enclosing sort's parameter is rigid in a clause, as in an operation body. `Box3`'s
+/// `pr` says `?x` is a `b3(v: 5)` at every `T`, and `Outer.Inner`'s `r` a `wrap(1)` at every
+/// outer `T`. Read through the body, `T` was `Int64`, and each loaded and read both of
+/// `holder`'s solutions where a written bound's would read one. The repair, a bare `Box3` —
+/// an open slot (070) — loads, a relation of `Box3[T = Int64]` values.
 #[test]
-fn a_body_that_fixes_a_sorts_parameter_is_read_as_before() {
+fn a_body_that_fixes_a_sorts_parameter_is_refused() {
     let ns = "wi0rrqp.c9";
-    let src = program(
+    let errs = wrap_errors(
         ns,
         &format!(
-            "{WRAP}{TWO_INSTANCES}  \
+            "{TWO_INSTANCES}  \
              sort Box3[T]\n    entity b3(v: T)\n    rule pr(?x: Box3[T = T], ?y) :- ?x <=> b3(v: 5), holder(h: ?y)\n  end\n  \
-             operation n5() -> Int64 effects {{Error}} =\n    \
-             let r: Relation[T = (x: Box3[T = Int64], y: Wrap[T = Colour]), E = {{Error}}] = Box3[T = Int64].pr\n    \
-             r.takeN(5).length()\n  \
              sort Outer[T]\n    entity outer(v: T)\n    sort Inner\n      \
-             rule r(?x: Wrap[T = T]) :- ?x <=> wrap(1)\n    end\n    \
-             operation f(o: Self) -> Wrap[T = T] effects {{Error, Error[EmptyStream]}} = Inner.r.head.x\n  end\n"
+             rule r(?x: Wrap[T = T]) :- ?x <=> wrap(1)\n    end\n  end\n"
         ),
     );
-    assert_eq!(drive(&src, &format!("{ns}.n5")), 2, "both, as before");
+    assert!(
+        errs.len() == 2
+            && errs[0].contains("type mismatch in Box3.T (sort-parameter): expected T, got Int64")
+            && errs[1].contains("type mismatch in Outer.T (sort-parameter): expected T, got Int64"),
+        "{errs:#?}"
+    );
+    let mut kb = crate::common::load_kb_with(&program(
+        ns,
+        "  sort Box3[T]\n    entity b3(v: T)\n    rule pr(?x: Box3) :- ?x <=> b3(v: 5)\n  end\n",
+    ));
+    let rows = crate::common::query_unary(&mut kb, &format!("{ns}.Box3.pr"));
+    assert!(
+        rows.len() == 1 && rows[0].1,
+        "the bare sort's clause answers its `b3(v: 5)`: {rows:?}"
+    );
 }
 
 /// A CONSTRUCTOR IN A FIELD OF THE HEAD types its variables at the field. `pinned`'s head
@@ -1116,22 +1128,33 @@ fn a_call_at_a_variable_the_clause_types_is_decided_at_load() {
     );
 }
 
-/// A CONSTRUCTOR THAT DOES NOT FIT ITS POSITION PINS NOTHING. `h`'s field is a `W2[A = E,
-/// B = Int64]` and the clause writes a `w2` whose `b` is a `String`. The two agree on `A`
-/// before they disagree on `B`; kept, that agreement tied `?x` to `h`'s `E`, and `r(q, 5)`
-/// over a `q: H[E = Colour]` was refused for an `Int64` where a `Colour` was owed.
+/// A CONSTRUCTOR THAT DOES NOT FIT ITS POSITION IS REFUSED, at the field
+/// (068-implementation §6.2, decision 3). `h`'s field is a `W2[A = E, B = Int64]`, which a
+/// construction there is read at, as an operation body reads it; the clause writes a `w2`
+/// whose `b` is a `String`. It loaded before, the construction pinning nothing, and its
+/// fields were checked at parameters of their own. The twin whose `b` is `5` loads.
 #[test]
-fn a_constructor_that_does_not_fit_its_position_pins_nothing() {
-    let errs = wrap_errors(
-        "wi0rrqp.misfit",
-        "  sort W2[A, B]\n    entity w2(a: A, b: B)\n  end\n  \
-         sort H[E]\n    entity h(inner: W2[A = E, B = Int64])\n  end\n  \
-         import NS.W2.{w2}\n  \
-         import NS.H.{h}\n  \
-         rule r(?q, ?x) :- ?q <=> h(inner: w2(a: ?x, b: \"s\"))\n  \
-         operation f(q: H[E = Colour]) -> Int64 effects {Error} = r(q, 5).takeN(3).length()\n",
+fn a_constructor_that_does_not_fit_its_position_is_refused() {
+    let at = |b: &str| {
+        wrap_errors(
+            "wi0rrqp.misfit",
+            &format!(
+                "  sort W2[A, B]\n    entity w2(a: A, b: B)\n  end\n  \
+                 sort H[E]\n    entity h(inner: W2[A = E, B = Int64])\n  end\n  \
+                 import NS.W2.{{w2}}\n  \
+                 import NS.H.{{h}}\n  \
+                 rule r(?q, ?x) :- ?q <=> h(inner: w2(a: ?x, b: {b}))\n  \
+                 operation f(q: H[E = Colour]) -> Int64 effects {{Error}} = r(q, red).takeN(3).length()\n"
+            ),
+        )
+    };
+    let errs = at("\"s\"");
+    assert!(
+        errs.len() == 1
+            && errs[0].contains("type mismatch in w2.b (entity-field): expected Int64, got String"),
+        "{errs:#?}"
     );
-    assert!(errs.is_empty(), "`?x` is tied to nothing: {errs:?}");
+    assert!(at("5").is_empty(), "the twin loads: {:?}", at("5"));
 }
 
 /// A citation from OUTSIDE the sort, of a `Box` whose `O` the signature leaves out: the

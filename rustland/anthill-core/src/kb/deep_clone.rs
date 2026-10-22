@@ -1138,6 +1138,7 @@ impl KnowledgeBase {
             unbacked_derived_provisions: plain(&self.unbacked_derived_provisions),
             derived_provision_origin: plain(&self.derived_provision_origin),
             equality_signatures: plain(&self.equality_signatures),
+            refused_load_clauses: plain(&self.refused_load_clauses),
             sources: self.sources.duplicate(),
             // Bare, or the copy was refused above (`ExtentRegistry::deep_clone_refusal`).
             extents: extent::ExtentRegistry::default(),

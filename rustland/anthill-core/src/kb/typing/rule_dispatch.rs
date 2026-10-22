@@ -1532,7 +1532,10 @@ pub(super) fn finish_clause_typing(
     let rigids = settle_late_positions(kb, rid, head, &mut st, &mut disagreements);
     // What the walk and the late positions found at a place of their own, once each.
     disagreements.extend(std::mem::take(&mut st.found));
-    let disagreements = found_once(disagreements);
+    let disagreements: Vec<ClauseDisagreement> = found_once(disagreements)
+        .into_iter()
+        .map(|d| d.resolved(kb, &st.subst, &rigids))
+        .collect();
     let mut var_types = std::mem::take(&mut st.var_types);
     let subst = st.subst;
     // WI-9C2PZ — RESOLVE THE MAP THROUGH THE SUBSTITUTION IT BUILT, which until now was

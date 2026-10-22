@@ -1248,6 +1248,24 @@ pub enum TypeErrorContext {
     Construction {
         ctor: Symbol,
     },
+    /// A rule goal's argument against the callee's column it fills — the type the callee's
+    /// clauses give that column, written or inferred. `column` is the slot's label: a named
+    /// slot's key, a positional one's `_N`.
+    RuleColumn {
+        relation: Symbol,
+        column: Symbol,
+    },
+    /// A head's written bound against what the clause's body says of its variable.
+    RuleBound {
+        rule: Symbol,
+        var: Symbol,
+    },
+    /// The enclosing sort's parameter, which a clause holds at every instance of, fixed by
+    /// the clause's body.
+    SortParameter {
+        sort: Symbol,
+        param: Symbol,
+    },
 }
 
 /// WI-20261012-80259 — which pattern [`TypeErrorContext::PatternPosition`] is about. A
@@ -1320,6 +1338,11 @@ impl TypeErrorContext {
             TypeErrorContext::CollectionElement { construct, .. } => (*construct).to_string(),
             // (the `source` rides in `kind_tag`)
             TypeErrorContext::Construction { ctor } => kb.local_name_of(*ctor).to_string(),
+            TypeErrorContext::RuleColumn { relation, .. } => {
+                kb.local_name_of(*relation).to_string()
+            }
+            TypeErrorContext::RuleBound { rule, .. } => kb.local_name_of(*rule).to_string(),
+            TypeErrorContext::SortParameter { sort, .. } => kb.local_name_of(*sort).to_string(),
         }
     }
 
@@ -1353,6 +1376,9 @@ impl TypeErrorContext {
                 ..
             } => "collection-element-join",
             TypeErrorContext::Construction { .. } => "construction",
+            TypeErrorContext::RuleColumn { .. } => "rule-column",
+            TypeErrorContext::RuleBound { .. } => "rule-bound",
+            TypeErrorContext::SortParameter { .. } => "sort-parameter",
         }
     }
 
@@ -1383,6 +1409,9 @@ impl TypeErrorContext {
             // element's position in `pos_args` and needs no reader to undo the display.
             TypeErrorContext::CollectionElement { index, .. } => format!("element {}", index + 1),
             TypeErrorContext::Construction { .. } => "construction".to_string(),
+            TypeErrorContext::RuleColumn { column, .. } => kb.local_name_of(*column).to_string(),
+            TypeErrorContext::RuleBound { var, .. } => kb.local_name_of(*var).to_string(),
+            TypeErrorContext::SortParameter { param, .. } => kb.local_name_of(*param).to_string(),
         }
     }
 }

@@ -10055,7 +10055,8 @@ impl KnowledgeBase {
                 "`{name}` compares {la} against {lb} — two DIFFERENT literal \
                  sorts, which have no common order, so the goal is UNDECIDED rather than \
                  false. The typer refuses this pair wherever it can see the operand types; \
-                 it cannot when a rule variable is bound by a predicate that declares none."
+                 it cannot in a goal built at run time, or at a value read through a column \
+                 that says nothing of its type."
             ),
             OrdVerdict::NoOrder => format!(
                 "`{name}` has no order for this operand pair ({la} and {lb}) — the \
