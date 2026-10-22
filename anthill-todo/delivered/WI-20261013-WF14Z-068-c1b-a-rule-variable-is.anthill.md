@@ -3,9 +3,9 @@
 - id: WI-20261013-WF14Z-068-c1b-a-rule-variable-is
 - created: 2026-10-13T08:03:12Z
 
-- status: Open
-- status_agent: claude
-- status_at: 2026-10-13T08:03:12Z
+- status: Delivered
+- status_agent: user
+- status_at: 2026-10-22T14:38:38Z
 
 - acceptance: cargo-test
 
@@ -54,4 +54,8 @@ FIFTH, SIXTH AND SEVENTH PARTS BUILT (2026-10-22), docs/design/068-implementatio
 ### 2026-10-22T14:12:13Z — feedback — user
 
 EIGHTH PART BUILT (2026-10-22, user decision the same day): a later load's clause that changes how a sealed relation's columns read is a load error (ChangesSealedCode), kernel-language §8.3's fourth way into a sealed body; 068-implementation §6.10. sealed::clauses_that_change_a_sealed_relation compares the relation's columns over the clauses of the sealed KB with those over every clause (relation_columns_over, first_column_read_apart, up to variable renaming), for a relation with a clause in a sealed source; it names the first later clause that changes the reading on its own. fact reaches("a", "b") is refused (it changed sealed keep_modify's reading, the oracle reporting one body before WF14Z and four after its sixth part); a clause at the columns' own types loads. FOUND under ANTHILL_TEST_FRESH_LOAD: the seal's clause mark also holds a program loaded in the library's call, so a relation is the sealed load's only by a sealed source. Rows in wi_9bkz4_sealed_bodies_test, the check and its attribution each backed out. MEASURED: gate 10361 / 0; typer oracle 9333 / 0; two-step 9333 / 0; fresh the documented wi_6wvjb; node carrier the parent's 6; families green. Root CLAUDE.md's summary of §8.3 names the clause too. OPEN, asked: whether RYDNV's value-slot part comes into this ticket so ?x.compare answers 4 / -4.
+
+### 2026-10-22T14:38:37Z — feedback — user
+
+DELIVERED (2026-10-22). Every row the description and the C1a decisions owed is built, in eight parts: d30d241f (decision 1's positions), b2b4ba74 (the clause typing made exact), 2b2db456 (decision 2, recorded), 604fd4eb (decision 3's refusals), 03cc3b58 (fifth to seventh: the -4 row, some type at a citation, two providers refused, a dot through another variable's slot), b22c6a32 (eighth: a later clause that changes a sealed relation's columns refused). 068-implementation §6.3–6.10 states each; the back-out ledger is at the head of wi_wf14z_clause_typed_as_a_whole_test. One row left to its owner, user decision 2026-10-22: the dot through a slot answers -1 in a value slot until WI-20261013-RYDNV retires inferred_demand's value-slot refusal (note there, with the rows that flip).
 
