@@ -598,6 +598,77 @@ decision 1's `-4` row; and closing a column whose whole type is a variable. The 
 made: `a_column_nothing_types_is_read_at_any_type`'s program is refused once its rule goal types
 the column, and the row is `a_column_a_rule_goal_types_is_read_at_its_type`.
 
+### 6.4 C1b, the clause typing made exact (WI-20261013-WF14Z, second part, 2026-10-22)
+
+Still refusing nothing. What the first part recorded on the suite — 213 disagreements in 113
+tests — was read shape by shape, and each shape the operation-body typer accepts, and whose
+clause answers at run time, no longer records anything. Rows in
+`wi_wf14z_clause_typed_as_a_whole_test` after `recorded`, each backed out alone in its
+ledger.
+
+- **An argument meets a position as an operation's argument does**, with its conversions. A
+  `Term` position admits every value and types nothing (`nonvar(?g)`'s parameter: `takes(5)`
+  recorded `Term against Int64`). An `Option[T]` parameter is the call's placeholder, as a
+  parameter of the callee's own type is: a bare `T` meets it by the some-coercion, and a
+  position that says what the variable is takes over (`?a: Int64` passed to `len(o:
+  Option[T = Int64])`). The call is not wrapped at run time in a rule body — C1c's (a note on
+  WI-20261013-R1W5A).
+- **A type written as a term is no data**: a `TypeExtractor` construction, an arrow, a type
+  face. `p.E` in `require[Desc[T = p.E]]` typed the head parameter at `ExprCarried.value`'s
+  `NodeOccurrence`.
+- **A collection literal is its collection**, a tuple of its components' types or a list or
+  set of one element type — not the reflect entity it is stored as. A fact's `(x: 1)` was a
+  `TupleLiteral`, so `?t.x` on a value read out of it was refused, a member the entity does
+  not have.
+- **A bound the loader refuses is read as unwritten**: one naming a sort that does not resolve
+  (as an annotation is), and one at a spec over its parameter (`check_rule_sort_uses`).
+- **A clause says nothing of a column only where the column's variable is an argument of a goal
+  that read nothing** — on its own relation or another of its cycle (`GoalColumn::unread`). One
+  nothing in the clause names is of every type: `classify(?x, ?c) :- ?c <=> 2` beside
+  `classify(?x: Colour, ?c)` was read at `Colour`, and `classify(5, ?r)`, which answers `2`,
+  disagreed. kernel-language §5.3's sentence is corrected to say so.
+- **A position that fits once the sort's parameters vary is counted as fixing one**, whichever
+  position read it (`bx(?x)` under `pr(?x: Box2[T = T])` was a rule-goal disagreement).
+- **A column of occurrences quotes its argument** (user, 2026-10-22), as a `Term` position
+  does: `synth_int(42, ?n)` over `synth_int(?e, 1) :- occurrence_term(?e, int_lit(value: ?))`
+  reads `42`'s occurrence. The operation-body twin `q(42)` at `e: NodeOccurrence` stays
+  refused.
+
+Two shapes were taken for false positives and are not: a refining sort (`sort Sub requires
+Leaf`) against `?x: Leaf`, and two carriers under one rule-bracket introducer (`both[A](?x: A,
+?y: A) :- Desc[A], seed(?x), seedo(?y)`). Each clause answers nothing at run time, so each
+disagreement is real and stays.
+
+**The count**, by `ANTHILL_CLAUSE_DISAGREEMENTS_TO=<file>` (one line a disagreement: class,
+test, place, source), with nothing refused:
+
+- *The corpus of §1.2*: the stdlib and every project 0, but `lf1`: 4 rule-goal disagreements,
+  one cause — `excursion_distance_bound` multiplies `PostArmedExcursionBound.max_ticks`, an
+  `Int64`, by `transponder_step_distance_bound`'s `Float` (`?excursion = ?n * ?delta_t`), which
+  the operation-body twin refuses, "type mismatch in mul.b: expected Int64, got Float"; the
+  three callers then read the column at the wrong type.
+- *The suite* (gate 10328 / 0): 89 records in 47 tests — rule goal 79, head bound 4, sort
+  parameter fixed 4, call result 1, result column 1. By shape:
+
+  | shape | tests | records |
+  |---|---|---|
+  | `lf1` loaded (the corpus's one cause) | `lf1_real_spec_test` 3, `wi995`, `wi1075`, the CLI's | 40 |
+  | a run-time fault reached through an ill-typed clause: `fact tag("a")`, `tag(?x), PartialOrd.gt(?x, 1)` | `resolver_error_channel` 4, `wi_8y5be` 7, the reflect bridge's 4, `wi879`, the CLI's `resolve_errors` | 24 |
+  | a run-time guard over a clause that can never hold: a bound no row meets (`pw9a0`'s lists under an arrow or a tuple bound, `wi582`'s `src(1, 10)` under an arrow, `wi742`'s `named_bad(?x: String) :- ?x <=> 5`), a value of the wrong sort (`shed7`'s `inc(?x, ?), ?x <=> 2.5`), `qmfc5`'s refining carrier and two carriers under one introducer | `pw9a0` 2, `qmfc5` 2, `wi742` 2, `wi582`, `shed7` | 11 |
+  | an SMT fixture comparing an `Int64` with a `Float` (`kf32`'s `mode(0, ?r)` beside `lt(?k, 0.5)`), or ordering a construction (`fheek`'s `wrap(P(x: 1.0), ?y)`) | the CLI's | 6 |
+  | already refused for another reason, or built to disagree | `0rrqp`'s owed flip and `n4`, `wi1104`, `9wvt7`'s error tag, `two_across`, this file's `n1` / `n2` and `fixedbygoal` | 8 |
+
+Decided with the user, 2026-10-22, for the part that refuses:
+
+- *`lf1`*: `entity PostArmedExcursionBound(max_ticks: Float)`, its fact `max_ticks: 6.0` — the
+  SMT documents read every number as a real already.
+- *A test whose subject is the run time over a clause the load refuses* reaches that path
+  through a goal built at run time, so the program loads clean and the fault channel or the
+  guard is still driven; the written clause's refusal is its row.
+- *A column typed `NodeOccurrence` or `Expr` is a quote*, as a `Term` position is (built above;
+  it took `wi1099`'s 6 tests and `typing_test`'s 6, 19 records, off the count).
+- *The §5.3 sentence* on a column a clause says nothing of stands as corrected.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

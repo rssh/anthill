@@ -36,6 +36,10 @@ pub(super) struct ClauseConstraints {
     pub(super) param_backed: ParamBackedVars,
     pub(super) subst: Substitution,
     late: Vec<LatePosition>,
+    /// The arguments of goals that read nothing — on the clause's own relation, or another of
+    /// its cycle ([`rule_goal_columns_at`]): their types, and the variables nothing types.
+    pub(super) unread: Vec<Value>,
+    pub(super) unread_vars: HashSet<u32>,
 }
 
 impl ClauseConstraints {
@@ -45,6 +49,8 @@ impl ClauseConstraints {
             param_backed: HashSet::new(),
             subst: Substitution::new(),
             late: Vec::new(),
+            unread: Vec::new(),
+            unread_vars: HashSet::new(),
         }
     }
 
@@ -58,6 +64,8 @@ impl ClauseConstraints {
             param_backed: self.param_backed.clone(),
             subst,
             late: Vec::new(),
+            unread: self.unread.clone(),
+            unread_vars: self.unread_vars.clone(),
         }
     }
 
@@ -71,6 +79,8 @@ impl ClauseConstraints {
         self.subst = trial.subst;
         self.subst.contradiction = contradiction;
         self.late.extend(trial.late);
+        self.unread = trial.unread;
+        self.unread_vars = trial.unread_vars;
     }
 }
 
@@ -152,6 +162,10 @@ pub(super) struct ClauseTyping {
     pub(super) var_types: HashMap<u32, Value>,
     pub(super) contradiction: bool,
     pub(super) disagreements: Vec<ClauseDisagreement>,
+    /// The arguments of goals that read nothing: their types, as `var_types` resolves, and
+    /// the variables nothing types.
+    pub(super) unread: Vec<Value>,
+    pub(super) unread_vars: HashSet<u32>,
 }
 
 /// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
@@ -426,6 +440,9 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     instantiated: bool,
     st: &mut ClauseConstraints,
 ) -> bool {
+    if says_nothing_of_a_value(kb, expected_type) {
+        return true;
+    }
     if let Some(lit) = arg.literal(kb) {
         constrain_literal_arg(kb, &lit, expected_type, instantiated, &mut st.subst);
         return true;
@@ -546,6 +563,11 @@ pub(super) fn collect_occurrence_type_constraints(
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
+    // A type written as a term — the spec instance of a `require[…]`, a projection in it,
+    // a sort's bracket written as a value — is no data, and nothing in it is typed.
+    if type_written_as_term(kb, expr) {
+        return;
+    }
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
     let nested = match expr_call_parts(expr) {
         Some((functor, pos_args, named_args)) => {
@@ -772,7 +794,11 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                     (None, None) => ArgType::Of(param_type.clone()),
                 };
                 params.push((*param_sym, arg_type));
-                if !constrain_arg(kb, arg, &param_type, instantiated, st) {
+                // A parameter the argument converts to — `Option[T]`, which a bare `T` is
+                // wrapped into — says what the call takes, not what the variable is: it is
+                // the call's placeholder, as a parameter of the callee's own type is.
+                let placeholder = instantiated || is_option_type(kb, &param_type);
+                if !constrain_arg(kb, arg, &param_type, placeholder, st) {
                     nested.push((index, param_type));
                 }
             }
@@ -781,6 +807,17 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
             ty: instantiate_declared_type(kb, &op.return_type, &mut inst).0,
             params,
         });
+    } else if let Some(ty) =
+        collection_literal_type(kb, functor, pos_args, named_args, &mut nested, st)
+    {
+        // A tuple, list or set literal, stored as the reflect entity that writes it, is of
+        // the collection's type, which the entity's fields do not declare.
+        if let Some(position) = position {
+            let mut trial = st.subst.clone();
+            if unify_types(kb, &mut trial, position, &ty) {
+                st.subst = trial;
+            }
+        }
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
         for (field_sym, field_type) in &field_types {
@@ -883,6 +920,72 @@ fn constrain_literal_arg(
     unify_types(kb, subst, expected_type, &lit_type);
 }
 
+/// The type of a tuple, list or set literal — `functor` the reflect entity it is stored as —
+/// from its elements: each element typed at a component of its own, a tuple's by its label, a
+/// list's and a set's all at one element type; `None` for any other functor. An element that
+/// is neither a literal nor a variable is given its component as its position (`nested`).
+fn collection_literal_type<A: ConstrainedArg>(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[A],
+    named_args: &[(Symbol, A)],
+    nested: &mut NestedPositions,
+    st: &mut ClauseConstraints,
+) -> Option<Value> {
+    let component = |kb: &mut KnowledgeBase| {
+        let name = kb.intern("element");
+        let fresh = kb.fresh_var(name);
+        Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
+    };
+    let mut meet = |kb: &mut KnowledgeBase, index: usize, arg: &A, ty: &Value, st: &mut _| {
+        if !constrain_arg(kb, arg, ty, true, st) {
+            nested.push((index, ty.clone()));
+        }
+    };
+    if kb.is_ordered_product_functor(functor) {
+        let mut pos = Vec::with_capacity(pos_args.len());
+        for (i, arg) in pos_args.iter().enumerate() {
+            let ty = component(kb);
+            meet(kb, i, arg, &ty, st);
+            pos.push(ty);
+        }
+        let mut named = Vec::with_capacity(named_args.len());
+        for (j, (label, arg)) in named_args.iter().enumerate() {
+            let ty = component(kb);
+            meet(kb, pos_args.len() + j, arg, &ty, st);
+            named.push((*label, ty));
+        }
+        return Some(tuple_value_type(kb, pos, named));
+    }
+    let kind = SeqLiteral::of_constructor(kb, functor)?;
+    let element = component(kb);
+    for (i, arg) in pos_args.iter().enumerate() {
+        meet(kb, i, arg, &element, st);
+    }
+    let span = crate::span::SourceSpan::new(crate::span::SourceId::from_raw(0), 0, 0);
+    Some(seq_literal_type(kb, kind, element, span, None))
+}
+
+/// Whether a position typed `ty` says nothing of the value that fills it: `Term`, which
+/// every value converts to, as an operation's argument does at a parameter of that type.
+fn says_nothing_of_a_value(kb: &KnowledgeBase, ty: &Value) -> bool {
+    is_reflect_term_type(kb, ty)
+}
+
+/// Whether `expr` is a type written as a term: an application of one of the structural
+/// type forms (`TypeExtractor`'s constructors, an arrow), or a sort's type face (`Box[…]`
+/// written as a value).
+fn type_written_as_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
+    let (Expr::Apply { functor, .. } | Expr::Ref(functor)) = expr else {
+        return false;
+    };
+    if functor.is_type_face() || rule_body_type_term(kb, expr) {
+        return true;
+    }
+    kb.sort_of_constructor(*functor)
+        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
+}
+
 /// Read the positions of a clause the walk left for after it ([`LatePosition`]): the head's
 /// written bounds first, then the rest in the order they were written, and a dot last, once
 /// what types its receiver has been read. Each on a trial copy, kept where it fits and
@@ -912,14 +1015,22 @@ pub(super) fn settle_late_positions(
         for late in std::mem::take(&mut st.late) {
             if let LatePosition::RuleGoal { functor, goal } = &late {
                 let Some(columns) = rule_goal_columns_at(kb, own, *functor) else {
+                    note_unread_goal(kb, st, goal);
                     continue;
                 };
                 let mut trial = st.trial();
                 if constrain_goal_at_columns(kb, &mut trial, goal, &columns) {
                     st.commit(trial);
                 } else {
+                    let fixed = fits_once_parameters_vary(kb, st, &rigids, |kb, varying| {
+                        constrain_goal_at_columns(kb, varying, goal, &columns)
+                    });
                     disagreements.push(ClauseDisagreement {
-                        class: DisagreementClass::RuleGoal,
+                        class: if fixed {
+                            DisagreementClass::SortParameterFixed
+                        } else {
+                            DisagreementClass::RuleGoal
+                        },
                         span: Some(goal.span),
                     });
                 }
@@ -934,7 +1045,7 @@ pub(super) fn settle_late_positions(
                 LatePosition::DotResult { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
             };
-            if computed || !settle_typed_position(kb, rid, st, &late, disagreements) {
+            if computed || !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
                 waiting.push(late);
             }
         }
@@ -943,7 +1054,7 @@ pub(super) fn settle_late_positions(
     loop {
         let before = waiting.len();
         for late in std::mem::take(&mut waiting) {
-            if !settle_typed_position(kb, rid, st, &late, disagreements) {
+            if !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
                 waiting.push(late);
             }
         }
@@ -962,6 +1073,7 @@ fn settle_typed_position(
     rid: RuleId,
     st: &mut ClauseConstraints,
     late: &LatePosition,
+    rigids: &[(VarId, VarId)],
     disagreements: &mut Vec<ClauseDisagreement>,
 ) -> bool {
     let (slot, ty, class, at) = match late {
@@ -1006,21 +1118,85 @@ fn settle_typed_position(
     };
     let mut trial = st.trial();
     let fits = match slot {
+        SlotOf::Type(position) if says_nothing_of_a_value(kb, position) => true,
         SlotOf::Type(position) => unify_types(kb, &mut trial.subst, position, &ty),
         SlotOf::Arg(arg) => constrain_occurrence_at(kb, &mut trial, arg, &ty),
     };
     if fits {
         st.commit(trial);
     } else {
-        if let SlotOf::Type(position) = slot {
-            note_disagreement(kb, &st.subst, position, &ty);
+        match slot {
+            SlotOf::Type(position) => note_disagreement(kb, &st.subst, position, &ty),
+            SlotOf::Arg(arg) => note_arg_disagreement(kb, &st.subst, st, arg, &ty),
         }
+        let fixed = fits_once_parameters_vary(kb, st, rigids, |kb, varying| match slot {
+            SlotOf::Type(position) => {
+                let position = unrigidify_clause_types(kb, rigids, position);
+                let ty = unrigidify_clause_types(kb, rigids, &ty);
+                unify_types(kb, &mut varying.subst, &position, &ty)
+            }
+            SlotOf::Arg(arg) => {
+                let ty = unrigidify_clause_types(kb, rigids, &ty);
+                constrain_occurrence_at(kb, varying, arg, &ty)
+            }
+        });
         disagreements.push(ClauseDisagreement {
-            class,
+            class: if fixed {
+                DisagreementClass::SortParameterFixed
+            } else {
+                class
+            },
             span: Some(at),
         });
     }
     true
+}
+
+/// Record a goal's variable arguments when the goal reads nothing — each one's type, or the
+/// variable where nothing types it: what such a variable says of a column is what the
+/// relation's other clauses say.
+fn note_unread_goal(kb: &KnowledgeBase, st: &mut ClauseConstraints, goal: &Rc<NodeOccurrence>) {
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        return;
+    };
+    for arg in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
+        let Some(d) = arg.var_key(kb) else {
+            continue;
+        };
+        match st.var_types.get(&d) {
+            Some(ty) => st.unread.push(ty.clone()),
+            None => {
+                st.unread_vars.insert(d);
+            }
+        }
+    }
+}
+
+/// Whether a late position that did not fit does once the enclosing sort's parameters the
+/// head's bounds name are let vary: then the body fixes the parameter, which is a class of
+/// its own. On a copy.
+fn fits_once_parameters_vary(
+    kb: &mut KnowledgeBase,
+    st: &ClauseConstraints,
+    rigids: &[(VarId, VarId)],
+    fits: impl FnOnce(&mut KnowledgeBase, &mut ClauseConstraints) -> bool,
+) -> bool {
+    if rigids.is_empty() {
+        return false;
+    }
+    let mut varying = st.trial();
+    let vars: Vec<u32> = varying.var_types.keys().copied().collect();
+    for d in vars {
+        let ty = walk_type_deep_value(kb, &varying.subst, &varying.var_types[&d]);
+        let ty = unrigidify_clause_types(kb, rigids, &ty);
+        varying.var_types.insert(d, ty);
+    }
+    fits(kb, &mut varying)
 }
 
 /// What a late position's type is given to: a slot's declared type, or an argument.
@@ -1123,6 +1299,15 @@ fn settle_head_bounds(
     let mut rigidify = Substitution::new();
     let mut rigids: Vec<(VarId, VarId)> = Vec::new();
     for (d, bound) in stored {
+        // A bound naming a sort the loader could not resolve is reported once and read as
+        // unwritten, as an annotation is; one at a spec over its parameter is refused where
+        // it is written (`check_rule_sort_uses`); one at `Term` admits every value.
+        if says_nothing_of_a_value(kb, &bound)
+            || type_mentions_unresolved_name(kb, &bound)
+            || parameter_spec_written_as_type(kb, &bound).is_some()
+        {
+            continue;
+        }
         let opened = crate::kb::node_occurrence::open_value_type(kb, &bound, &frame).0;
         let mut vars: Vec<VarId> = Vec::new();
         let mut seen = HashSet::new();
@@ -1148,6 +1333,9 @@ fn settle_head_bounds(
         } else {
             DisagreementClass::HeadBound
         };
+        if let Some(has) = st.var_types.get(&d).cloned() {
+            note_disagreement(kb, &st.subst, &rigid_bound, &has);
+        }
         disagreements.push(ClauseDisagreement { class, span });
     }
     rigids
@@ -1225,9 +1413,20 @@ fn constrain_var_at(
             context,
             None,
         ),
-        ArgValidation::Ok
+        ArgValidation::Ok | ArgValidation::WrapSome { .. }
     );
     if conforms {
+        // A bare value meets an `Option[X]` placeholder as its element (the some-coercion), so
+        // `X` is the value's type — a parameter of the callee's own type the call's other
+        // arguments read.
+        if is_option_type(kb, &placeholder) && !is_option_type(kb, ty) {
+            if let Some(element) = extract_type_param(kb, &placeholder, "T") {
+                let mut trial = st.subst.clone();
+                if unify_types(kb, &mut trial, &element, ty) {
+                    st.subst = trial;
+                }
+            }
+        }
         st.param_backed.remove(&d);
         st.var_types.insert(d, ty.clone());
     }
@@ -1242,6 +1441,9 @@ fn constrain_occurrence_at(
     arg: &Rc<NodeOccurrence>,
     ty: &Value,
 ) -> bool {
+    if says_nothing_of_a_value(kb, ty) {
+        return true;
+    }
     if let Some(lit) = arg.literal(kb) {
         let lit_type = literal_sort(kb, &lit);
         return unify_types(kb, &mut st.subst, ty, &lit_type);
@@ -1277,11 +1479,44 @@ fn constrain_goal_at_columns(
         let Some((_, ty)) = columns.iter().find(|(s, _)| *s == slot) else {
             continue;
         };
+        // A column of occurrences quotes the argument written there, as a `Term` position
+        // does: `synth_int(42, ?n)` over `synth_int(?e, 1) :- occurrence_term(?e, …)` reads
+        // `42`'s occurrence.
+        if is_occurrence_type(kb, ty) {
+            continue;
+        }
+        let before = disagreements_printed().then(|| st.subst.clone());
         if !constrain_occurrence_at(kb, st, arg, ty) {
+            if let Some(before) = before {
+                note_arg_disagreement(kb, &before, st, arg, ty);
+            }
             return false;
         }
     }
     true
+}
+
+/// [`note_disagreement`] for an argument: the slot's type against what the clause says of
+/// the argument — a variable's type, a literal's sort.
+fn note_arg_disagreement(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    st: &ClauseConstraints,
+    arg: &Rc<NodeOccurrence>,
+    ty: &Value,
+) {
+    if !disagreements_printed() {
+        return;
+    }
+    let has = if let Some(lit) = arg.literal(kb) {
+        Some(literal_sort(kb, &lit))
+    } else {
+        arg.var_key(kb).and_then(|d| st.var_types.get(&d).cloned())
+    };
+    match has {
+        Some(has) => note_disagreement(kb, subst, ty, &has),
+        None => eprintln!("  {} against a construction", type_display_name_value(kb, ty)),
+    }
 }
 
 /// The columns a goal on `functor` reads from a clause of `own`: nothing for a goal on another
@@ -1328,9 +1563,14 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+/// Whether `ANTHILL_CLAUSE_DISAGREEMENTS` is set: each disagreement is then printed.
+fn disagreements_printed() -> bool {
+    std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_some()
+}
+
 /// With `ANTHILL_CLAUSE_DISAGREEMENTS=1`, print the two types a late position failed on.
 fn note_disagreement(kb: &mut KnowledgeBase, subst: &Substitution, a: &Value, b: &Value) {
-    if std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_none() {
+    if !disagreements_printed() {
         return;
     }
     let a = walk_type_deep_value(kb, subst, a);
@@ -1343,34 +1583,61 @@ fn note_disagreement(kb: &mut KnowledgeBase, subst: &Substitution, a: &Value, b:
 }
 
 /// Tally `found` ([`clause_disagreements_by_this_thread`]); with
-/// `ANTHILL_CLAUSE_DISAGREEMENTS=1`, also print each with where it was written.
+/// `ANTHILL_CLAUSE_DISAGREEMENTS=1`, also print each with where it was written; with
+/// `ANTHILL_CLAUSE_DISAGREEMENTS_TO=<file>`, also append each to the file as a line of
+/// class, test (the thread's name), place and the source from there — what the count of a
+/// whole suite run is taken from, since a passing test's printing is not shown.
 pub(super) fn count_clause_disagreements(kb: &KnowledgeBase, found: &[ClauseDisagreement]) {
     if found.is_empty() {
         return;
     }
-    let print = std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_some();
+    let print = disagreements_printed();
+    let record = std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS_TO");
+    let mut lines = String::new();
     CLAUSE_DISAGREEMENTS.with(|tally| {
         let mut tally = tally.borrow_mut();
         for d in found {
             *tally.entry(d.class.name()).or_default() += 1;
+            if !print && record.is_none() {
+                continue;
+            }
+            let (at, from) = disagreement_place(kb, d);
             if print {
-                let at = d
-                    .span
-                    .and_then(|sp| {
-                        let (path, text) = kb.sources.provenance(sp.source)?;
-                        let start = (sp.span.start as usize).min(text.len());
-                        let line = text[..start].matches('\n').count() + 1;
-                        let col = start - text[..start].rfind('\n').map_or(0, |i| i + 1) + 1;
-                        Some(format!(
-                            "{}:{line}:{col}",
-                            path.map(|p| p.display().to_string()).unwrap_or_default()
-                        ))
-                    })
-                    .unwrap_or_else(|| format!("{:?}", d.span));
                 eprintln!("clause disagreement {}: {at}", d.class.name());
+            }
+            if record.is_some() {
+                let test = std::thread::current().name().unwrap_or("").to_owned();
+                lines.push_str(&format!("{}\t{test}\t{at}\t{from}\n", d.class.name()));
             }
         }
     });
+    if let Some(file) = record {
+        use std::io::Write;
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut f| f.write_all(lines.as_bytes()));
+        if let Err(e) = appended {
+            panic!("ANTHILL_CLAUSE_DISAGREEMENTS_TO={}: {e}", file.to_string_lossy());
+        }
+    }
+}
+
+/// Where a disagreement was written, as `path:line:column`, and the first sixty characters of
+/// the source from there on one line.
+fn disagreement_place(kb: &KnowledgeBase, d: &ClauseDisagreement) -> (String, String) {
+    d.span
+        .and_then(|sp| {
+            let (path, text) = kb.sources.provenance(sp.source)?;
+            let start = (sp.span.start as usize).min(text.len());
+            let line = text[..start].matches('\n').count() + 1;
+            let col = start - text[..start].rfind('\n').map_or(0, |i| i + 1) + 1;
+            let path = path.map(|p| p.display().to_string()).unwrap_or_default();
+            let from: String = text[start..].chars().take(60).collect();
+            Some((format!("{path}:{line}:{col}"), from.replace('\n', " ")))
+        })
+        .unwrap_or_else(|| (format!("{:?}", d.span), String::new()))
 }
 
 /// The late positions of a clause that did not fit, by class, over every clause this thread

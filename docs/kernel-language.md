@@ -2707,9 +2707,11 @@ constructor's fields and its result; an entity goal's fields; a rule goal's colu
 field read — each a goal the clause commits to, not one inside a `|` branch, a quantifier's
 body or a negation. A rule goal reads the callee's columns as the callee's clauses type
 them, the same for a written and an inferred column, fresh at each goal: a column's type is
-the join of its clauses' — a clause whose column is a variable it names nowhere else holds no
-type there, and a tie two clauses make between columns differently is not kept — so a
-relation that calls itself reads its columns as one type. Over `entity cnt(n: Int64)` with
+the join of its clauses', and a tie two clauses make between columns differently is not kept.
+A clause holds no type at a column whose variable's only other position is a goal on the
+relation itself or on another of its cycle of goals, so a relation that calls itself reads its
+columns as one type; a column
+whose variable nothing in its clause names is of every type. Over `entity cnt(n: Int64)` with
 `bump(c: Cnt) -> Int64`, the dot in
 `rule h(?a: Int64, ?x) :- ?x <=> ?a.abs()` is `Int64.abs`, and in `rule g(?x) :- gen(?c),
 ?x <=> ?c.bump()` over `rule gen(?c) :- ?c <=> cnt(n: 4)` it is `Cnt.bump`; in `rule

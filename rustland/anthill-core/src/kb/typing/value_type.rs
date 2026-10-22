@@ -637,7 +637,7 @@ fn constructor_value_type(
 /// components under the `_1.._n` convention (WI-442) plus any named components. The
 /// synthetic span is unused unless a child type is a `Value::Node` (denoted-poisoned),
 /// which a runtime tuple's ground component types are not.
-fn tuple_value_type(
+pub(super) fn tuple_value_type(
     kb: &mut KnowledgeBase,
     pos_types: Vec<Value>,
     named_types: Vec<(Symbol, Value)>,

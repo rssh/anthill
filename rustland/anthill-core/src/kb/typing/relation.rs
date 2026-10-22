@@ -3041,7 +3041,7 @@ pub(super) fn rule_goal_columns(
 /// [`rule_goal_columns`] before it is opened: each clause's, joined.
 fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<(SlotKey, Value)>> {
     let rids: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
-    let mut joined: Option<Vec<(SlotKey, TermId)>> = None;
+    let mut joined: Option<Vec<GoalColumn>> = None;
     for rid in rids {
         let columns = clause_goal_columns(kb, rid)?;
         joined = Some(match joined.take() {
@@ -3052,9 +3052,20 @@ fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<
     Some(
         joined?
             .into_iter()
-            .map(|(slot, ty)| (slot, Value::term(ty)))
+            .map(|c| (c.slot, Value::term(c.ty)))
             .collect(),
     )
+}
+
+/// One clause's column, as a goal on its relation reads it.
+#[derive(Clone, Copy)]
+struct GoalColumn {
+    slot: SlotKey,
+    ty: TermId,
+    /// The column's type is a variable whose only other position is an argument of a goal
+    /// that read nothing — on the clause's own relation, or another of its cycle — so the
+    /// clause says nothing of it.
+    unread: bool,
 }
 
 /// The most specific columns two clauses' columns are both instances of — anti-unification,
@@ -3064,52 +3075,44 @@ fn relation_goal_columns(kb: &mut KnowledgeBase, functor: Symbol) -> Option<Vec<
 /// ([`join_types`]); below it they must be one type, as a type argument is read. A slot
 /// only one side has is left out.
 ///
-/// A COLUMN WHOSE TYPE IS A VARIABLE NO OTHER COLUMN OF ITS CLAUSE NAMES says nothing, and
-/// the other side's type is taken, as a citation's join takes it ([`join_column_types`]).
-/// That is what a relation that calls itself reads: `reach(?c) :- reach(?d), ?c <=> ?d` beside
-/// `reach(?c) :- ?c <=> cnt(n: 4)` holds its column at the one type its own goal reads,
-/// `Cnt`. One tied to another column — `description_view(some(?d), ?d)`'s second — is a type
-/// the clause holds at every instance of, and is generalized.
+/// A COLUMN A CLAUSE SAYS NOTHING OF ([`GoalColumn::unread`]) takes the other side's type, as
+/// a citation's join takes it ([`join_column_types`]). That is what a relation that calls
+/// itself reads: `reach(?c) :- reach(?d), ?c <=> ?d` beside `reach(?c) :- ?c <=> cnt(n: 4)`
+/// holds its column at the one type its own goal reads, `Cnt`. A column whose variable nothing
+/// in its clause names — `classify(?x, ?c) :- ?c <=> 2` — takes every type, and is
+/// generalized: beside `classify(?x: Colour, ?c)` the column is open.
 fn generalize_columns(
     kb: &mut KnowledgeBase,
-    a: &[(SlotKey, TermId)],
-    b: &[(SlotKey, TermId)],
-) -> Vec<(SlotKey, TermId)> {
-    let says_nothing = |kb: &KnowledgeBase, columns: &[(SlotKey, TermId)], t: TermId| {
-        let Term::Var(v) = kb.get_term(t) else {
-            return false;
-        };
-        let v = *v;
-        let occurrences: usize = columns
-            .iter()
-            .map(|(_, c)| count_var_occurrences(kb, *c, v))
-            .sum();
-        occurrences == 1
-    };
+    a: &[GoalColumn],
+    b: &[GoalColumn],
+) -> Vec<GoalColumn> {
     let mut pairs: Vec<((TermId, TermId), TermId)> = Vec::new();
     let mut out = Vec::with_capacity(a.len());
-    for &(slot, ta) in a {
-        let Some(&(_, tb)) = b.iter().find(|(s, _)| *s == slot) else {
+    for ca in a {
+        let Some(cb) = b.iter().find(|c| c.slot == ca.slot) else {
             continue;
         };
-        if says_nothing(kb, a, ta) {
-            out.push((slot, tb));
+        if ca.unread {
+            out.push(*cb);
             continue;
         }
-        if says_nothing(kb, b, tb) {
-            out.push((slot, ta));
+        if cb.unread {
+            out.push(*ca);
             continue;
         }
-        if !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb) {
-            if let Some(j) = join_types(kb, Value::term(ta), Value::term(tb))
+        let (ta, tb) = (ca.ty, cb.ty);
+        let ty = if !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb) {
+            join_types(kb, Value::term(ta), Value::term(tb))
                 .and_then(|j| crate::kb::node_occurrence::value_to_term(kb, &j).ok())
-            {
-                out.push((slot, j));
-                continue;
-            }
-        }
-        let g = generalize_term(kb, ta, tb, &mut pairs);
-        out.push((slot, g));
+        } else {
+            None
+        };
+        let ty = ty.unwrap_or_else(|| generalize_term(kb, ta, tb, &mut pairs));
+        out.push(GoalColumn {
+            slot: ca.slot,
+            ty,
+            unread: false,
+        });
     }
     out
 }
@@ -3214,7 +3217,7 @@ fn term_mentions_type_var(kb: &KnowledgeBase, t: TermId) -> bool {
 /// One clause's columns: its typing ([`collect_rule_var_types`]) read at each head slot, as
 /// terms, the carrier [`generalize_columns`] compares on. `None` where a column's type has
 /// none.
-fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<(SlotKey, TermId)>> {
+fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalColumn>> {
     let head = kb.fact_head_term(rid)?;
     let (pos_args, named_args) = match kb.get_term(head) {
         Term::Fn {
@@ -3259,15 +3262,19 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<(SlotK
         term_slots.into_iter().unzip();
     let (typing, term_slot_types) = finish_clause_typing(kb, rid, head, st, term_slot_types);
     let mut columns = Vec::with_capacity(slots.len());
+    // The slots whose variable nothing types and a goal that read nothing takes: such a column
+    // says nothing ([`GoalColumn::unread`]).
+    let mut unread_slots: Vec<SlotKey> = Vec::new();
     for (slot, arg) in slots {
         let ty = match arg.var_key(kb) {
-            // A variable the clause types nowhere says nothing of its column
-            // ([`generalize_columns`]), as `?e` in `anc(?c, ?e) :- parent(of: ?c, is: ?m),
-            // anc(?m, ?e)` while `anc` is being read; left out, the slot was dropped from the
-            // relation and the other clauses' type with it.
+            // A variable the clause types nowhere is a column of every type; left out, the
+            // slot was dropped from the relation and the other clauses' type with it.
             Some(d) => match typing.var_types.get(&d) {
                 Some(ty) => ty.clone(),
                 None => {
+                    if typing.unread_vars.contains(&d) {
+                        unread_slots.push(slot);
+                    }
                     let name = kb.intern("column");
                     let fresh = kb.fresh_var(name);
                     Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
@@ -3278,10 +3285,29 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<(SlotK
                 term_slot_types[at].clone()
             }
         };
-        columns.push((
+        let ty = crate::kb::node_occurrence::value_to_term(kb, &ty).ok()?;
+        columns.push(GoalColumn {
             slot,
-            crate::kb::node_occurrence::value_to_term(kb, &ty).ok()?,
-        ));
+            ty,
+            unread: false,
+        });
+    }
+    // A column whose type is a variable no other column names, and which an argument of a
+    // goal that read nothing has: `?e` in `anc(?c, ?e) :- parent(of: ?c, is: ?m), anc(?m,
+    // ?e)` while `anc` is being read.
+    let types: Vec<TermId> = columns.iter().map(|c| c.ty).collect();
+    for column in &mut columns {
+        let Term::Var(v) = kb.get_term(column.ty) else {
+            continue;
+        };
+        let v = *v;
+        let once = types.iter().map(|t| count_var_occurrences(kb, *t, v)).sum::<usize>() == 1;
+        column.unread = once
+            && (unread_slots.contains(&column.slot)
+                || typing.unread.iter().any(|u| {
+                    matches!(crate::kb::node_occurrence::value_to_term(kb, u).ok()
+                        .map(|t| kb.get_term(t).clone()), Some(Term::Var(w)) if w == v)
+                }));
     }
     Some(columns)
 }

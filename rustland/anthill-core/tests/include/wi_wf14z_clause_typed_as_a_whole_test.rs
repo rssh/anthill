@@ -57,6 +57,24 @@
 //! | a relation being read answering nothing (`rule_goal_columns_in_flight`) | every row: the load overflows the stack |
 //! | that set kept apart from the memo, which a stored clause clears | none: no load of `anthill-core`'s suite stores a clause while a relation's columns are read (a panic there under a switch, every row green) |
 //!
+//! The second part, measured 2026-10-22 with this file, `wi_0rrqp`, `wi_9c2pz`, `wi_s8cbv`,
+//! `wi_prva2`, `wi_shed7`, `wi742`, `wi_k4jgc` and `wi_pw9a0` — what a clause's typing records,
+//! each part backed out alone:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | a column only an unread goal names, told from one nothing names (`GoalColumn::unread`): the old reading, "named by no other column" | `a_column_nothing_in_its_clause_names_is_open` |
+//! | the record of a goal that read nothing (`note_unread_goal`) | `a_relation_that_calls_itself_reads_its_own_columns`, `a_goal_on_a_relation_of_its_cycle_reads_nothing`, `a_clause_that_types_a_column_nowhere_says_nothing_of_it` |
+//! | a `Term` position typing nothing (`says_nothing_of_a_value`) | `a_term_slot_types_nothing` |
+//! | an `Option` parameter the call's placeholder (`constrain_application`) | `an_option_parameter_is_the_calls_placeholder` |
+//! | the some-coercion at a placeholder's takeover (`constrain_var_at`'s `WrapSome`) | `an_option_parameter_is_the_calls_placeholder` |
+//! | a type written as a term typing nothing (`type_written_as_term`) | `a_bracket_entry_types_nothing` |
+//! | a bound naming an unresolved sort read as unwritten; one at a spec (`settle_head_bounds`), each alone | `a_refused_bound_is_read_as_unwritten` |
+//! | a position that fits once the sort's parameters vary counted as fixing one (`fits_once_parameters_vary`) | `a_goal_that_fixes_the_sorts_parameter_is_that_class` |
+//! | the element a bare value meets an `Option` placeholder as bound to the value's type (`constrain_var_at`) | `what_the_some_coercion_binds_is_the_calls` |
+//! | a column of occurrences quoting its argument (`constrain_goal_at_columns`) | `a_column_of_occurrences_quotes_its_argument` |
+//! | a collection literal read as its collection, not as the reflect entity it is stored as (`collection_literal_type`) | `a_collection_literal_is_its_collection`: refused at load, `TupleLiteral.x` no such member |
+//!
 //! A goal on its own relation reading the clause's own head was a part too, and no row failed
 //! with it backed out: the memo answers nothing for a relation while its clauses are being
 //! read, and the relation's columns after, which is the one type the decision asks for. It
@@ -425,4 +443,222 @@ fn a_column_whose_whole_type_is_a_variable_is_read_at_any_type() {
          operation f() -> Int64 effects {Error, Error[EmptyStream]} = anyHolds.head.x\n",
     ));
     assert!(interp.call(&format!("{ns}.f"), &[]).is_ok(), "loads, and answers a value");
+}
+
+// ── What a clause's typing records, which decision 3's refusals are counted on ──────────
+//
+// Nothing below refuses: a late position that does not fit is recorded with its class
+// (`clause_disagreements_by_this_thread`), and 068-implementation §6.2's decision 3 refuses
+// the classes once they are counted. A position the operation-body typer accepts records
+// nothing; one it refuses records its class.
+
+/// What loading with `load` records of its clauses' disagreements, by class.
+fn recorded<T>(load: impl FnOnce() -> T) -> (T, Vec<(&'static str, usize)>) {
+    use anthill_core::kb::typing::clause_disagreements_by_this_thread;
+    // The shared standard library is loaded once per binary, on the thread that asks first;
+    // asked here, what it records is not counted against `load`.
+    let _base = crate::common::load_stdlib_kb();
+    let before: std::collections::HashMap<_, _> =
+        clause_disagreements_by_this_thread().into_iter().collect();
+    let out = load();
+    let added = clause_disagreements_by_this_thread()
+        .into_iter()
+        .filter_map(|(class, n)| {
+            let d = n - before.get(class).copied().unwrap_or(0);
+            (d > 0).then_some((class, d))
+        })
+        .collect();
+    (out, added)
+}
+
+/// A COLUMN WHOSE VARIABLE NOTHING IN ITS CLAUSE NAMES IS OPEN: `classify`'s second clause
+/// takes every `?x`, so `classify(5, ?r)` answers through it and records nothing. Read as the
+/// other clause's `Colour` — what a goal on the relation itself leaves unsaid — it recorded a
+/// rule-goal disagreement.
+#[test]
+fn a_column_nothing_in_its_clause_names_is_open() {
+    let ns = "wiwf14z.open";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  sort Colour\n    entity red\n  end\n  \
+             rule classify(?x: Colour, ?c) :- ?c <=> 1\n  \
+             rule classify(?x, ?c) :- ?c <=> 2\n  \
+             rule g(?r) :- classify(5, ?r)\n",
+            &["g"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(2)], vec![]));
+}
+
+/// A `Term` SLOT TYPES NOTHING, as an operation's argument converts any value to the `Term`
+/// it declares: `takes`'s column is `nonvar`'s parameter, and `5` and an `Int64` variable meet
+/// it with nothing recorded. Typed `Term`, the variable disagreed with every other position.
+#[test]
+fn a_term_slot_types_nothing() {
+    let ns = "wiwf14z.term";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  rule takes(?g) :- anthill.reflect.nonvar(?g)\n  \
+             rule viaLit(?r) :- takes(5), ?r <=> 1\n  \
+             rule viaVar(?r) :- takes(?x), ?x <=> -5, ?r <=> Int64.abs(?x)\n",
+            &["viaLit", "viaVar"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(1), Some(5)], vec![]));
+}
+
+/// AN `Option` PARAMETER IS THE CALL'S PLACEHOLDER: a bare `Int64` meets it as an operation's
+/// argument does, by the some-coercion, and the variable stays the head's `Int64`. Read as
+/// the variable's type, the head's bound disagreed with it. The call runs on the bare value —
+/// a rule-body call does not wrap it, which is WI-20261013-R1W5A's (C1c types the call as an
+/// operation body is); `len` here does not read its argument.
+#[test]
+fn an_option_parameter_is_the_calls_placeholder() {
+    let ns = "wiwf14z.option";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  sort Opt\n    operation len(o: Option[T = Int64]) -> Int64 = 1\n  end\n  \
+             rule viaHead(?a: Int64, ?r) :- ?r <=> Opt.len(?a)\n  \
+             rule g(?r) :- viaHead(3, ?r)\n",
+            &["g"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(1)], vec![]));
+}
+
+/// A BRACKET ENTRY IS NO DATA: `p.E` in `require[Desc[T = p.E]]` is a projection written as a
+/// term, and the head parameter in it is not typed at its `value` field (`NodeOccurrence`).
+/// Typed there, the head's bound `Box` disagreed with it.
+#[test]
+fn a_bracket_entry_types_nothing() {
+    let ns = "wiwf14z.bracketentry";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  sort Desc\n    sort T = ?\n    operation tag() -> Int64\n  end\n  \
+             sort Red\n    import anthill.prelude.Int64\n    entity red\n    \
+             provides Desc[T = Red]\n    operation tag() -> Int64 = 7\n  end\n  \
+             sort Box\n    sort E = ?\n    entity box(v: E)\n  end\n  \
+             rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n  \
+             rule g(?r) :- anchored(box(v: red()), ?r)\n",
+            &["g"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(7)], vec![]));
+}
+
+/// A BOUND THE LOADER REFUSES IS READ AS UNWRITTEN: one naming a sort that does not resolve,
+/// and one at a spec over its parameter, are each refused once where they are written, and
+/// the clause typing reads neither. Read, each disagreed with the column `item` gives the
+/// variable.
+#[test]
+fn a_refused_bound_is_read_as_unwritten() {
+    let ns = "wiwf14z.refusedbound";
+    for (bound, refusal) in [
+        ("NoSuchSortAnywhere", "unresolved name 'NoSuchSortAnywhere'"),
+        ("Sizer", "a rule variable is typed `wiwf14z.refusedbound.Sizer`"),
+    ] {
+        let (errors, said) = recorded(|| {
+            crate::common::load_errors_of(&program(
+                ns,
+                &format!(
+                    "  sort Sizer\n    sort T = ?\n    operation size(a: T) -> Int64\n  end\n  \
+                     fact item(1)\n  rule f(?x: {bound}) :- item(?x)\n"
+                ),
+            ))
+        });
+        assert!(
+            errors.len() == 1 && errors[0].contains(refusal) && said.is_empty(),
+            "{bound}: {errors:#?} {said:?}"
+        );
+    }
+}
+
+/// A BODY THAT FIXES THE SORT'S PARAMETER THROUGH A GOAL is that class, as through a
+/// construction: `bx` answers only `Box2[T = Int64]` values, where `pr` holds at every `T`.
+/// Recorded as a rule-goal disagreement before it was told apart.
+#[test]
+fn a_goal_that_fixes_the_sorts_parameter_is_that_class() {
+    let ns = "wiwf14z.fixedbygoal";
+    let (_, said) = recorded(|| {
+        crate::common::load_kb_with(&program(
+            ns,
+            "  rule bx(?x) :- ?x <=> NS.Box2.b2(v: 5)\n  \
+             sort Box2[T]\n    entity b2(v: T)\n    rule pr(?x: Box2[T = T]) :- bx(?x)\n  end\n",
+        ))
+    });
+    assert_eq!(said, [("sort parameter fixed", 1)]);
+}
+
+/// A COLLECTION LITERAL IS ITS COLLECTION: `item`'s facts hold the tuples `(x: 1)` and `(x:
+/// true)`, and `f`'s bound `(x: Int64)` reads the one that fits with nothing recorded; `viaBody`
+/// builds `(x: 1)` and `viaHead` reads one out of `mk`'s head, each handed to `pair`'s column
+/// `(x: Int64)`; `one`'s column is the tuple `(x: Int64)`, so the field read on the value
+/// `viaDot` reads out of it is an `Int64`'s, and `abs` answers. Read as the reflect
+/// `TupleLiteral` entity a tuple is stored as, the fact's column and `mk`'s each disagreed
+/// with the bound, and the field read was refused, a member `TupleLiteral` does not have.
+#[test]
+fn a_collection_literal_is_its_collection() {
+    let ns = "wiwf14z.literal";
+    let (answers, said) = recorded(|| {
+        let mut kb = crate::common::load_kb_with(&program(
+            ns,
+            "  fact item((x: 1))\n  fact item((x: true))\n  \
+             rule f(?x: (x: Int64)) :- item(?x)\n  \
+             rule pair(?p: (x: Int64)) :- true\n  \
+             rule viaBody(?r) :- ?t <=> (x: 1), pair(?t), ?r <=> 1\n  \
+             rule mk((x: ?a)) :- ?a <=> 1\n  \
+             rule viaHead(?r) :- mk(?t), pair(?t), ?r <=> 1\n  \
+             fact one((x: -3))\n  \
+             rule viaDot(?r) :- one(?t), ?r <=> ?t.x.abs()\n",
+        ));
+        (
+            crate::common::query_unary(&mut kb, &format!("{ns}.f")).len(),
+            crate::common::one_definite_int(&mut kb, &format!("{ns}.viaBody")),
+            crate::common::one_definite_int(&mut kb, &format!("{ns}.viaHead")),
+            crate::common::one_definite_int(&mut kb, &format!("{ns}.viaDot")),
+        )
+    });
+    assert_eq!((answers, said), ((1, Some(1), Some(1), Some(3)), vec![]));
+}
+
+/// WHAT THE SOME-COERCION BINDS IS THE CALL'S: `?a: Int64` meets `pick`'s `Option[T = A]`
+/// as its element, so `A` is `Int64`, and `?b`, at `A`, is an `Int64` — the dot on it is
+/// `Int64.abs`. Kept only as the check's verdict, `A` stayed open and the dot was data.
+#[test]
+fn what_the_some_coercion_binds_is_the_calls() {
+    let ns = "wiwf14z.coercionbinds";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  sort Opt2\n    operation pick[A](x: Option[T = A], y: A) -> A = y\n  end\n  \
+             rule viaPick(?a: Int64, ?b, ?r) :- ?c <=> Opt2.pick(?a, ?b), ?r <=> ?b.abs()\n  \
+             rule g(?r) :- viaPick(3, -4, ?r)\n",
+            &["g"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(4)], vec![]));
+}
+
+/// A COLUMN OF OCCURRENCES QUOTES ITS ARGUMENT (user, 2026-10-22): `synth_int`'s column is
+/// `occurrence_term`'s `NodeOccurrence`, and `synth_int(42, ?n)` reads `42`'s occurrence,
+/// with nothing recorded. Met as a type, `42`'s `Int64` disagreed with the column. The
+/// operation-body twin, `q(42)` at `e: NodeOccurrence`, stays refused.
+#[test]
+fn a_column_of_occurrences_quotes_its_argument() {
+    let ns = "wiwf14z.occurrence";
+    let (answers, said) = recorded(|| {
+        ints(
+            ns,
+            "  import anthill.reflect.{occurrence_term}\n  \
+             import anthill.reflect.Expr.{int_lit}\n  \
+             rule synth_int(?e, 1) :- occurrence_term(?e, int_lit(value: ?))\n  \
+             rule g(?n) :- synth_int(42, ?n)\n",
+            &["g"],
+        )
+    });
+    assert_eq!((answers, said), (vec![Some(1)], vec![]));
 }

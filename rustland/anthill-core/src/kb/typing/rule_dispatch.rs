@@ -834,7 +834,7 @@ fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
 /// belongs, as a GOAL-position rung in [`call_dispatch_shape`] (an instance CLAIM is not
 /// a subgoal), and a sort-headed term in a data slot is an ordinary
 /// [`CallDispatch::DataTerm`] whose functor resolves.
-fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
+pub(super) fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
     let Expr::Apply { functor, .. } = expr else {
         return false;
     };
@@ -1569,12 +1569,16 @@ pub(super) fn finish_clause_typing(
     for ty in var_types.values_mut() {
         *ty = resolve(kb, ty);
     }
+    let unread = st.unread.iter().map(|ty| resolve(kb, ty)).collect();
+    let unread_vars = std::mem::take(&mut st.unread_vars);
     let extra = extra.iter().map(|ty| resolve(kb, ty)).collect();
     (
         ClauseTyping {
             var_types,
             contradiction,
             disagreements,
+            unread,
+            unread_vars,
         },
         extra,
     )
