@@ -264,7 +264,9 @@ fn rule_bodies_have_dot(kb: &KnowledgeBase, functor_qn: &str) -> bool {
 /// The ticket's shape LOADS, and both clauses are live in the drained relation.
 ///
 /// CONTROL: back out the per-application instantiation and this fails at LOAD with
-/// "disjoint types for column `x`". It does not redden on the other two halves —
+/// "disjoint types for column `x`" (measured before WI-20261013-WF14Z's sixth part, which
+/// reads two clauses' types with no join as a column of some type rather than refusing
+/// them, and not measured again). It does not redden on the other two halves —
 /// `eq(?x, "root")` puts only ONE constraint on `?x`, so there is nothing for a concrete
 /// type to displace; the resolve-through-σ axis is measured by
 /// [`wi741_a_concretely_typed_clause_still_out_votes`].
@@ -354,9 +356,13 @@ fn wi741_a_single_clause_spec_typed_column_still_drains() {
 
 // ── The guards that must survive ──────────────────────────────────────────
 
-/// A genuinely disjoint pair is STILL a loud load error. This one passes both with
-/// and WITHOUT the change, by design — it is the survival pin for the relaxation,
-/// not a measurement of it.
+/// A genuinely disjoint pair is STILL a loud load error where one type is asked of it.
+/// This one passes both with and WITHOUT the change, by design — it is the survival pin
+/// for the relaxation, not a measurement of it.
+///
+/// Since WI-20261013-WF14Z's sixth part the column is of some type (068-implementation
+/// §6.8): the citation reads it at an unknown of its own, `?x`, and `rows`'s `(x: String)`
+/// is refused there. It was refused at the citation, "disjoint types for column `x`".
 #[test]
 fn wi741_a_genuinely_disjoint_pair_is_still_loud() {
     let errs = try_load_kb_with(DISJOINT)
@@ -364,8 +370,8 @@ fn wi741_a_genuinely_disjoint_pair_is_still_loud() {
         .expect("a `String` column against an `Int64` column must stay a load error");
     let text = errs.join("\n");
     assert!(
-        text.contains("disjoint types for column `x`"),
-        "expected the disjoint-column refusal; got:\n{text}"
+        text.contains("expected List[T = (x: String)], got List[T = (x: ?x)]"),
+        "expected the refusal of the column of some type; got:\n{text}"
     );
 }
 
@@ -382,7 +388,10 @@ fn wi741_a_genuinely_disjoint_pair_is_still_loud() {
 /// column publishes the bare variable, contributes nothing to the lub, and the relation
 /// silently becomes `Relation[(x: Int64)]` — information the producer had, and lost.
 /// (Under WI-741 the same failure came from backing out `constrain_vid`, which held the
-/// concrete-displaces-parameter rule this now gets from ordinary unification.)
+/// concrete-displaces-parameter rule this now gets from ordinary unification.) Measured
+/// when the refusal was the citation's, "disjoint types for column `x`"; since
+/// WI-20261013-WF14Z's sixth part the column is of some type and `rows` is refused at its
+/// return, and the control was not measured again.
 #[test]
 fn wi741_a_concretely_typed_clause_still_out_votes() {
     let errs = try_load_kb_with(CONCRETE_OUTVOTES)
@@ -390,8 +399,8 @@ fn wi741_a_concretely_typed_clause_still_out_votes() {
         .expect("a clause typed String through a spec op must still out-vote an Int64 clause");
     let text = errs.join("\n");
     assert!(
-        text.contains("disjoint types for column `x`"),
-        "expected the disjoint-column refusal; got:\n{text}"
+        text.contains("expected List[T = (x: String)], got List[T = (x: ?x)]"),
+        "expected the refusal of the column of some type; got:\n{text}"
     );
 }
 

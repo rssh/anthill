@@ -122,9 +122,69 @@
 //! built at run time, or a value through a `Term` field, pass either way by design: what they
 //! drive is the resolver's.
 //!
+//! The fifth part, decision 1's last row (068-implementation §6.7), measured 2026-10-22 over
+//! `wi_0rrqp`, this file, `wi_p7vp4`, `wi_5g28a`, `wi_x9pb4`, `wi_ee0ep`, `wi1094` and
+//! `wi_shed7`; its rows are `wi_0rrqp`'s:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | a read a clause variable's named slot states answered by the slot as the citation fixes it (`carried_slot_reading`, then `carried_slot_selection`) | `wi_0rrqp…::a_slot_the_arguments_own_type_says_is_read`, `…::the_slot_is_read_wherever_the_clause_states_its_requirement`, `…::the_arguments_slot_outranks_the_callers_requirement`, `…::each_of_two_slots_on_one_spec_is_read_off_the_argument`, `…::one_provider_or_a_named_parameter_is_read` (by `agree`), `…::a_slot_whose_spec_has_an_element_the_read_leaves_open_is_read` |
+//! | the read compared with the slot whole, an element the read leaves open against the slot's (`slot_states_the_read`) | `wi_0rrqp…::a_slot_whose_spec_has_an_element_the_read_leaves_open_is_read`: the citation flounders |
+//! | the read's own goal resolved, not the slot's at the citation's types (`carried_slot_selection`) | the same row, the same way |
+//! | a slot fixed to the caller's parameter beside one fixed to a witness routing nothing (`carried_slot_selection`'s `undecided`; found by /code-review; refused since the seventh part) | then `two_slots_fixed_to_two_witnesses_route_nothing`, by `twoMixed`; now the seventh part's `TwoProviders` row |
+//! | a slot fixed to a witness that does not answer refused at the citation (`settle_citation_routes`; found by /code-review) | `wi_0rrqp…::a_slot_fixed_to_a_witness_that_does_not_answer_is_refused`: the citation loads |
+//!
+//! Also found by /code-review and driven by no row, passing either way: an element the read
+//! leaves open is the read spec's own parameter only (`slot_states_the_read`), and a drift
+//! between a sort's declaration order and its chain is a panic, as `carried_slot` makes it.
+//!
+//! The sixth part, the citation's side of some type and a later load's reading of a woven
+//! call (068-implementation §6.8), measured 2026-10-22 over this file, `wi_0rrqp`, `wi741`,
+//! `wi_9c2pz` and `wi714`, each part backed out alone:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | a woven call read as its call in the clause walk (`clause_call_parts`) | `a_later_load_reads_a_woven_call_as_its_call` |
+//! | two clauses' types with no join a column of some type (`relation_columns_across_clauses`) | `a_column_of_some_type_is_an_unknown_at_each_citation`, `wi741…::wi741_a_genuinely_disjoint_pair_is_still_loud`, `wi741…::wi741_a_concretely_typed_clause_still_out_votes`, `wi_9c2pz…::wi9c2pz_the_inherited_type_reaches_the_published_schema`, `wi714…::wi714_disjoint_concrete_column_types_still_reject` — each refused at the citation, "disjoint types for column" |
+//! | a clause's variable of some type making its column one at a citation (`relation_clause_columns`) | `a_column_of_some_type_is_an_unknown_at_each_citation`, by `anyHolds`, which loads |
+//! | the same for a rule goal's column (`clause_goal_columns`) | `a_relation_that_passes_a_column_of_some_type_on_is_of_some_type` |
+//! | an argument at a column of some type a filter (`relation_reference_type_applied`) | `a_column_of_some_type_is_an_unknown_at_each_citation`, by `mix("a")` |
+//! | two clause types of different sorts with no join of some type for a rule goal, a variable in either (`generalize_columns`; found by /code-review) | `two_clauses_of_different_sorts_are_of_some_type_for_a_rule_goal_too` |
+//! | a relation at two arities giving its goals no columns (`relation_goal_columns`; found by the typer oracle) | `a_relation_written_at_two_arities_gives_its_goals_no_columns`, by a second refusal; under `ANTHILL_TYPER_ORACLE=1`, `wi_6wvjb…::a_clause_against_an_earlier_loads_clauses_is_refused` |
+//!
+//! Closing every column whose whole type is a variable, as the nested one is closed, was
+//! measured too (the full gate): it refused `wi730…::wi730_negation_over_an_unbound_column_flounders_loudly`,
+//! whose column nothing in its clause names and is of every type (§5.3), and — before a woven
+//! call was read — `wi_0rrqp…::a_rule_of_an_earlier_load_is_read_by_a_later_one` and
+//! `…::a_column_the_citation_gives_no_type_pins_nothing`. 0RRQP's 51 rows of 2026-10-21 refuse
+//! nothing now: the clause typing reads a call's result.
+//!
+//! The seventh part, two slots that may name two providers refused and a dot through another
+//! variable's slot (user, 2026-10-22; 068-implementation §6.9), measured 2026-10-22 over
+//! `wi_0rrqp`, this file and `wi_ee0ep`, each part backed out alone:
+//!
+//! | backed out | fails |
+//! |---|---|
+//! | slots the citation fixes to two providers refused (`carried_slot_reading`'s `TwoProviders`) | `wi_0rrqp…::two_slots_that_may_name_two_providers_are_refused`, by its citations |
+//! | an operation body's read through a contested slot refused (`contested_slot_read`) | the same row, by `twoOp` |
+//! | a forward of an anonymous requirement through a contested slot refused (`build_dep_projection`) | the same row, by `twoFwd` |
+//! | the screen marking the slot it keeps as contested (`op_requires_chain_rc`) | the same row, and `wi_0rrqp…::one_provider_or_a_named_parameter_is_read`, by its message |
+//! | a citation of the parameter whose slot the screen dropped refused (`CarriedMisfit::Unheld`) | `wi_0rrqp…::one_provider_or_a_named_parameter_is_read`, by `second`, which loads |
+//! | a citation of the parameter whose slot the frame keeps routed to it, contested or not | the same row, by `first`, refused |
+//! | a dot through another clause variable's slot dispatched (`find_spec_op_for_clause_slot`) | `wi_0rrqp…::a_dot_through_another_variables_slot_is_the_call`: the term |
+//! | the unheld refusal, its other cause a requirement the caller writes (`CarriedMisfit::Unheld`; found by /code-review) | `wi_0rrqp…::a_collision_with_the_callers_requirement_or_a_second_slot_is_refused`, by `Holder`, and `…::one_provider_or_a_named_parameter_is_read`, by `second` |
+//! | the body's refusal, at two slots of one parameter's carrier (`contested_slot_read`; found by /code-review) | the same row, by `Semi`, and `…::two_slots_that_may_name_two_providers_are_refused` |
+//!
+//! Also found by /code-review, and driven by no row of their own: the forward's exemption
+//! keyed on the dep being a named slot of the callee's sort, not on the rung alone (an
+//! anonymous requirement on a sort that names a slot of the same spec is no argument's); the
+//! refusal account keyed on the slot the forward takes; the body check skipped for a frame
+//! with no contested slot; the dot rung's chain drift a panic.
+//!
 //! PASS EITHER WAY, BY DESIGN: `a_constructor_types_its_variable_in_either_goal_order` and
-//! `a_dot_on_a_typed_variable_answers_as_its_written_call` (both since WI-20260925-0RRQP), and
-//! the stated limits at the end of two rows.
+//! `a_dot_on_a_typed_variable_answers_as_its_written_call` (both since WI-20260925-0RRQP),
+//! `a_column_nothing_in_its_clause_names_is_read_at_the_type_asked`, and the stated limits at
+//! the end of two rows.
 
 const CNT: &str = r#"
   import anthill.prelude.{Int64, Bool, String, List, Option, Result, Error, EmptyStream}
@@ -496,19 +556,87 @@ fn a_clause_that_types_a_column_nowhere_says_nothing_of_it() {
     );
 }
 
-/// STATED LIMIT, PASSES EITHER WAY: a column whose whole type is a variable — here the join of
-/// an `Int64` and a `String`, which is no type — is read at the type its use asks for:
-/// `anyHolds.head.x` loads returned as an `Int64` and answers one of the two values.
+/// A COLUMN OF SOME TYPE IS AN UNKNOWN AT EACH CITATION (068-implementation §6.8): a value
+/// read from it goes where any type is taken — `takeN(5).length()` counts both solutions, and
+/// an argument there is a filter, `mix("a")` holding the one at `"a"` — and a use that asks
+/// for one type is refused. A rule that takes `holds`'s column (`anyHolds`) holds its values,
+/// and two rule clauses that type `mix`'s at `Int64` and `String` have no join. Before, the
+/// first was a variable read at the type its use asked for — `anyHolds.head.x` loaded
+/// returned as an `Int64` and answered one of the two values — and the second was refused at the
+/// citation, "disjoint types for column `v`". FAILS with the clause's own reading backed out
+/// (`some` in `relation_clause_columns`): the `anyHolds` refusal, which loads; with the
+/// join's backed out (`relation_columns_across_clauses`): every `mix` citation, refused
+/// "disjoint types for column `v`"; with an argument there checked against the unknown
+/// (`relation_reference_type_applied`): `mix("a")`, refused "argument binding column `v` has
+/// an incompatible type".
 #[test]
-fn a_column_whose_whole_type_is_a_variable_is_read_at_any_type() {
+fn a_column_of_some_type_is_an_unknown_at_each_citation() {
     let ns = "wiwf14z.whole";
+    let decls = "  fact holds(1)\n  fact holds(\"a\")\n  rule anyHolds(?x) :- holds(?x)\n  \
+                 fact isInt(1)\n  fact isStr(\"a\")\n  \
+                 rule mix(?v, ?k) :- isInt(?v), ?k <=> 1\n  rule mix(?v, ?k) :- isStr(?v), ?k <=> 2\n";
     let mut interp = crate::common::interp_for(&program(
         ns,
-        "  fact holds(1)\n  fact holds(\"a\")\n  \
-         rule anyHolds(?x) :- holds(?x)\n  \
-         operation f() -> Int64 effects {Error, Error[EmptyStream]} = anyHolds.head.x\n",
+        &format!(
+            "{decls}  \
+             operation passed() -> Int64 effects {{Error, Error[EmptyStream]}} = anyHolds.takeN(5).length()\n  \
+             operation joined() -> Int64 effects {{Error, Error[EmptyStream]}} = mix.takeN(5).length()\n  \
+             operation filtered() -> Int64 effects {{Error, Error[EmptyStream]}} = mix(\"a\").head.k\n"
+        ),
     ));
-    assert!(interp.call(&format!("{ns}.f"), &[]).is_ok(), "loads, and answers a value");
+    let at = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp
+        .call(&format!("{ns}.{op}"), &[])
+    {
+        Ok(anthill_core::eval::Value::Int(n)) => n,
+        other => panic!("{op}: {other:?}"),
+    };
+    assert_eq!(
+        [at(&mut interp, "passed"), at(&mut interp, "joined"), at(&mut interp, "filtered")],
+        [2, 2, 2]
+    );
+    for (shape, op, says) in [
+        (
+            "a rule over a column of some type",
+            "anyHolds.head.x",
+            "type mismatch in f.return (op-return): expected Int64, got ?x",
+        ),
+        (
+            "two clauses with no join",
+            "mix.head.v",
+            "type mismatch in f.return (op-return): expected Int64, got ?v",
+        ),
+    ] {
+        let errors = crate::common::load_errors_of(&program(
+            ns,
+            &format!("{decls}  operation f() -> Int64 effects {{Error, Error[EmptyStream]}} = {op}\n"),
+        ));
+        assert!(errors.len() == 1 && errors[0].contains(says), "{shape}: {errors:#?}");
+    }
+}
+
+/// CONTROL, PASSES EITHER WAY: a column nothing in its clause names is of every type (§5.3),
+/// and a citation reads it at the type its use asks for — `loose.head.other` returned as a
+/// `String` loads and answers the solution's unbound value, and an argument there binds it,
+/// `loose(1, "zed")` holding the one solution — where a column of some type is refused.
+#[test]
+fn a_column_nothing_in_its_clause_names_is_read_at_the_type_asked() {
+    let ns = "wiwf14z.every";
+    let src = program(
+        ns,
+        "  fact isInt(1)\n  rule loose(?n, ?other) :- isInt(?n)\n  \
+         operation f() -> String effects {Error, Error[EmptyStream]} = loose.head.other\n  \
+         operation g() -> Int64 effects {Error, Error[EmptyStream]} = loose(1, \"zed\").takeN(5).length()\n",
+    );
+    let mut interp = crate::common::interp_for(&src);
+    assert!(
+        matches!(interp.call(&format!("{ns}.f"), &[]), Ok(anthill_core::eval::Value::Var(_))),
+        "the column's value is the solution's unbound variable"
+    );
+    let mut interp = crate::common::interp_for(&src);
+    assert!(matches!(
+        interp.call(&format!("{ns}.g"), &[]),
+        Ok(anthill_core::eval::Value::Int(1))
+    ));
 }
 
 // ── The clause typing made exact (068-implementation §6.4) ──────────────────────────────
@@ -979,6 +1107,117 @@ fn a_refused_loads_clause_does_not_refuse_its_corrected_retry() {
     let errors = rendered_load_errors(later.err().expect("the later fact changes `g`'s column"));
     assert!(
         errors.len() == 1 && errors[0].contains("type mismatch in ilen.n (op-arg)"),
+        "{errors:#?}"
+    );
+}
+
+// ── The citation's side of some type, and a later load (068-implementation §6.8) ────────
+
+/// A RELATION THAT PASSES A COLUMN OF SOME TYPE ON IS OF SOME TYPE THERE TOO: `anyHolds` holds
+/// `holds`'s values, so a demand on a value a goal on it gives is refused until a test
+/// narrows it, as one on `holds` is. Read as a column of every type, `ilen` took the
+/// `String` and the `pt` as `Int64`s. FAILS with that reading backed out (`some` in
+/// `clause_goal_columns`): the refusal, which loads.
+#[test]
+fn a_relation_that_passes_a_column_of_some_type_on_is_of_some_type() {
+    let ns = "wiwf14z.passes";
+    let passes = "  rule anyHolds(?x) :- holds(?x)\n";
+    refused(
+        ns,
+        &format!("{DATA}{passes}  rule g(?r) :- anyHolds(?v), ?r <=> U.ilen(?v)\n"),
+        "type mismatch in ilen.n (op-arg): expected Int64, got a value of some type: \
+         `anyHolds._1` has no type its clauses share",
+    );
+    let mut kb = crate::common::load_kb_with(&program(
+        ns,
+        &format!(
+            "{DATA}{passes}  rule g(?r) :- anyHolds(?v), domain(?v, Int64), ?r <=> U.ilen(?v)\n"
+        ),
+    ));
+    assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.g")), Some(1));
+}
+
+/// A LATER LOAD READS A WOVEN CALL AS THE CALL IT WAS WRITTEN AS. `sgn`'s goal
+/// `WeakOrd.compare(?a, ?b, ?r)` is woven at its own load — a dictionary channel added, an
+/// `apply_within` — and a later load reads the stored clause: its result column types `?r`
+/// as at the clause's own load, so `sgn(1, 5).head.r` is an `Int64` and a dot on it is the
+/// call. Read apart, the column was untyped there: returned as a `String` it loaded and
+/// answered the `Int64` `-1`, and `?r.abs()` was data. FAILS with the woven call read apart
+/// (`clause_call_parts`).
+#[test]
+fn a_later_load_reads_a_woven_call_as_its_call() {
+    let early = "namespace wiwf14z.early\n  \
+                 import anthill.prelude.{Int64, WeakOrd}\n  \
+                 rule sgn(?a, ?b, ?r) :- WeakOrd.compare(?a, ?b, ?r)\nend\n";
+    let later = |body: &str| {
+        let mut kb = crate::common::load_kb_with(early);
+        let src = format!(
+            "namespace wiwf14z.late\n  \
+             import anthill.prelude.{{Int64, String, Error, EmptyStream}}\n  \
+             import anthill.prelude.Stream.{{head}}\n  \
+             import wiwf14z.early.{{sgn}}\n{body}end\n"
+        );
+        crate::common::load_in_a_later_call(&mut kb, &src, Default::default())
+            .map(|_| kb)
+            .map_err(crate::common::rendered_load_errors)
+    };
+    let errors = later(
+        "  operation f() -> String effects {Error, Error[EmptyStream]} = sgn(1, 5).head.r\n",
+    )
+    .err()
+    .expect("an `Int64` column returned as a `String`");
+    assert!(
+        errors.len() == 1
+            && errors[0].contains("type mismatch in f.return (op-return): expected String, got Int64"),
+        "{errors:#?}"
+    );
+    let mut kb = later("  rule q(?x) :- sgn(1, 5, ?r), ?x <=> ?r.abs()\n")
+        .unwrap_or_else(|e| panic!("the later load: {e:#?}"));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiwf14z.late.q"), Some(1));
+}
+
+/// TWO CLAUSES OF DIFFERENT SORTS ARE OF SOME TYPE FOR A RULE GOAL TOO, a variable in either:
+/// `k(?l) :- ?l <=> nil` beside `k(?l) :- isInt(?l)` holds a `List[T = t]` and an `Int64`,
+/// and a demand on a value `k` gives is refused as the citation's read is. Generalized, the
+/// column was a variable of every type and `ilen` took the list as an `Int64`. FAILS with that
+/// reading backed out (`generalize_columns`): the rule goal loads.
+#[test]
+fn two_clauses_of_different_sorts_are_of_some_type_for_a_rule_goal_too() {
+    let ns = "wiwf14z.apart";
+    let decls = "  fact isInt(1)\n  rule k(?l) :- ?l <=> nil\n  rule k(?l) :- isInt(?l)\n  \
+                 sort U\n    operation ilen(n: Int64) -> Int64 = n\n  end\n";
+    refused(
+        ns,
+        &format!("{decls}  rule g(?r) :- k(?v), ?r <=> U.ilen(?v)\n"),
+        "type mismatch in ilen.n (op-arg): expected Int64, got a value of some type: `k._1` \
+         has no type its clauses share",
+    );
+    refused(
+        ns,
+        &format!(
+            "{decls}  operation f() -> Int64 effects {{Error, Error[EmptyStream]}} = k.head.l\n"
+        ),
+        "type mismatch in f.return (op-return): expected Int64, got ?l",
+    );
+}
+
+/// A RELATION WRITTEN AT TWO ARITIES GIVES ITS GOALS NO COLUMNS: a clause of one arity answers
+/// no goal of the other, and the load is refused for the two arities, once. Joined slot by
+/// slot, `r(1)` beside `r("a", "b")` made the first column of some type and `ilen(?x)` a
+/// second refusal; over a library relation it made library bodies read another way, which the
+/// typer oracle reports (`wi_6wvjb…::a_clause_against_an_earlier_loads_clauses_is_refused`
+/// under `ANTHILL_TYPER_ORACLE=1`). FAILS with the arity test backed out
+/// (`relation_goal_columns`): two refusals.
+#[test]
+fn a_relation_written_at_two_arities_gives_its_goals_no_columns() {
+    let errors = crate::common::load_errors_of(&program(
+        "wiwf14z.arities",
+        "  fact r(1)\n  fact r(\"a\", \"b\")\n  \
+         sort U\n    operation ilen(n: Int64) -> Int64 = n\n  end\n  \
+         rule g(?y) :- r(?x, ?y), ?z <=> U.ilen(?x)\n",
+    ));
+    assert!(
+        errors.len() == 1 && errors[0].contains("is written at more than one arity"),
         "{errors:#?}"
     );
 }

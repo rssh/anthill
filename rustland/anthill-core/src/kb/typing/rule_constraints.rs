@@ -306,6 +306,9 @@ pub(super) struct ClauseTyping {
     /// the variables nothing types.
     pub(super) unread: Vec<Value>,
     pub(super) unread_vars: HashSet<u32>,
+    /// The variables of some type: a column of some type takes them, and nothing else types
+    /// them ([`demands_on_some_type`]), with that column as relation and label.
+    pub(super) some_typed: HashMap<u32, (Symbol, Symbol)>,
 }
 
 /// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
@@ -747,7 +750,7 @@ pub(super) fn collect_occurrence_type_constraints(
         return;
     }
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
-    let nested = match expr_call_parts(expr) {
+    let nested = match clause_call_parts(expr) {
         Some((functor, pos_args, named_args)) => {
             if goal && committed {
                 constrain_domain_test(kb, functor, pos_args, st);
@@ -835,6 +838,29 @@ pub(super) fn collect_occurrence_type_constraints(
             BodyPos::Untyped => false,
         };
         collect_occurrence_type_constraints(kb, c, position, p, child_committed, st);
+    }
+}
+
+/// The callee and arguments of an application the clause walk reads, a woven call
+/// (`apply_within`, its dictionary channel added where the clause's requirements are inferred)
+/// as the call it was written as. A later load reads the stored clause, whose calls are woven:
+/// read apart, the result column of `WeakOrd.compare(?x, ?y, ?c)` typed `?c` at the clause's
+/// own load and nothing at a later one's citation.
+fn clause_call_parts(
+    expr: &Expr,
+) -> Option<(
+    Symbol,
+    &[Rc<NodeOccurrence>],
+    &[(Symbol, Rc<NodeOccurrence>)],
+)> {
+    match expr {
+        Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            ..
+        } => Some((*functor, args, named_args)),
+        _ => expr_call_parts(expr),
     }
 }
 

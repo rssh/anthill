@@ -1583,6 +1583,7 @@ pub(super) fn finish_clause_typing(
     }
     let unread = st.unread.iter().map(|ty| resolve(kb, ty)).collect();
     let unread_vars = std::mem::take(&mut st.unread_vars);
+    let some_typed = std::mem::take(&mut st.some_typed);
     let extra = extra.iter().map(|ty| resolve(kb, ty)).collect();
     (
         ClauseTyping {
@@ -1591,6 +1592,7 @@ pub(super) fn finish_clause_typing(
             disagreements,
             unread,
             unread_vars,
+            some_typed,
         },
         extra,
     )

@@ -528,7 +528,7 @@ f(x)`:
   rows; decision 3's C1b classes, each with its count. Flips in
   `wi_0rrqp_clause_typed_through_constructor_test`: `a_body_that_fixes_a_sorts_parameter_is_read_as_before`
   (refused), `a_constructor_that_does_not_fit_its_position_pins_nothing` (refused, `b: "s"`
-  against `Int64`), `a_slot_the_arguments_own_type_says_is_not_read` (`-4`), and
+  against `Int64`), `a_slot_the_arguments_own_type_says_is_not_read` (`-4`; §6.7), and
   `a_column_nothing_types_is_read_at_any_type` (refused once a rule goal and a goal-position
   call type their columns; 0RRQP's 51 rows are its measurement). SHED7's `Sat.model` refused,
   with its repair loading.
@@ -792,6 +792,169 @@ call with no argument at its carrier parameter, which WI-20261013-RYDNV (C1d) su
 Left to C1b: decision 1's `-4` row (`a_slot_the_arguments_own_type_says_is_not_read`); the
 citation's side of "some type", which closes a column whose whole type is a variable (0RRQP's
 51 rows its measurement).
+
+### 6.7 C1b, a named slot read off the citation (WI-20261013-WF14Z, fifth part, 2026-10-22)
+
+Decision 1's last row. A citation routes each requirement read of the cited clauses
+(`citation_requirement_routes`); a read whose witness the clause's own typing puts at a type a
+named slot of one of its variables' types states is now answered by that slot as the citation
+fixes it (`carried_slot_reading`), the way a call reads the slot off its argument's type
+(`selections_from_slot_bindings`). In `sort Box { sort T = ?; requires O: WeakOrd[T]; entity
+box(a: T, b: T) }`, `rule order(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y,
+?c)` types `?p` as `Box[T = t, O = o]` and the read as `WeakOrd[T = t]`, which is `O` at those
+bindings; cited as `Box.order(mk()).head.c` with `mk() -> Box[T = Int64, O = Ascending]`, `o`
+is `Ascending`, and the read is resolved with `Ascending` selected for it (`resolve_route_pinned`).
+Whether the read is the slot's is asked of the clause's typing before the citation fixes
+anything (`ClauseTypes::stamped_type`), so a read at another type is not: `WeakOrd.compare(1, 5,
+?c)` in the same clause answers `Int64`'s own, as the operation-body twin does. Rows in
+`wi_0rrqp_clause_typed_through_constructor_test`, each beside its operation-body twin:
+
+| cited | answers | twin |
+|---|---|---|
+| `Box.order(mk())`, the description's row (`a_slot_the_arguments_own_type_says_is_read`) | `-4` (was `-1`) | `Box.directOf(mk())`, `-4` |
+| the witness a column, cited with and without its argument; a `Self` bound; positional fields; an alias `AscBox = CBox[T = Int64, O = Ascending]` | `-4` | `-4` |
+| through `let b = desc()` and through a parameter `b: CBox[T = Int64, O = Descending]` | `4` | `4` |
+| `WeakOrd.compare(1, 5, ?c)` | `-1` | `-1` |
+| from `Holder`, which holds `W: WeakOrd[T = Int64]` selected `Descending` | `-4` (was `4`) | `-4` |
+| `Pair2`'s `OK` and `OV` read off one argument, from outside the sort, at one element type and at two, and both in one clause | `4`, `-4`, `7` | — |
+| `requires C: Conv[A = T, B = Int64]`, the read `Conv.conv(?x, ?c)` deciding `A` and leaving `B` | `11` (floundered) | `11` |
+
+A read leaves open an element its witnesses do not decide (`witness_sort_goal`'s wildcard, the
+spec's own parameter), so it is the slot's where every element it decides is the slot's
+(`slot_states_the_read`), and the goal resolved is the slot's at the citation's types: the open
+element against a provision that binds it is refused. A witness the slot is fixed to that does
+not answer that goal is refused at the citation, as the member operation's call refuses it:
+`mk() -> Box[T = String, O = Descending]` cited as `Box.order(mk())`, "Descending provides
+WeakOrd, but not at the bindings this call to Box.order needs" — it loaded and the read derived
+`String`'s own. A slot fixed to the caller's own parameter beside one fixed to a witness routes
+nothing, as two witnesses do. These three were found by /code-review.
+
+Not read, and routed as before: a slot the clause's bound writes (`?p: CBox[T = Int64, O =
+Descending]` answers `Int64`'s own, `-1`, as the operation-body twin with that parameter type
+does); a slot the citation leaves open or fixes to the caller's own type parameter, which the
+caller's frame answers. A slot fixed to the caller's parameter (`cite[A](b: Box[T = A])`'s
+`b.O`) is read from that parameter's own slot of the caller's frame. Two slots that state the
+read and that the citation fixes to two providers were a stated limit here — routed nothing,
+`-1` — and are refused since the seventh part (§6.9).
+
+MEASURED: the full gate with the reading in and before the rows were written, 10343 / 1, the
+description's row — nothing else moved. Backed out over `wi_0rrqp`, `wi_wf14z`, `wi_p7vp4`,
+`wi_5g28a`, `wi_x9pb4`, `wi_ee0ep`, `wi1094` and `wi_shed7`, the six rows that hold a moved
+answer fail, by the answer they had; the `Conv` row fails with each of its two halves backed
+out alone too.
+
+Left to C1b: the citation's side of "some type", which closes a column whose whole type is a
+variable (0RRQP's 51 rows its measurement).
+
+### 6.8 C1b, some type at a citation (WI-20261013-WF14Z, sixth part, 2026-10-22)
+
+Decision 2's citation side. Rows in `wi_wf14z_clause_typed_as_a_whole_test` under "The
+citation's side of some type", and the row that was its stated limit; the ledger at its head.
+
+- **A column of some type is an unknown at each citation** (`ClauseColumn::some`,
+  `some_type_columns_at_citation`): a fresh rigid in an operation body, a variable in a rule
+  body's citation, as that keeps the relation's own. A column is of some type where the
+  relation's clauses give it types with no join — two rule clauses at `Int64` and `String`,
+  refused at the citation until now, "disjoint types for column" — or where a clause's
+  variable is one a column of some type gives and nothing else types: `rule anyHolds(?x) :-
+  holds(?x)` over `fact holds(1)` and `fact holds("a")`, read at the type its use asked for
+  until now. A value of it goes where any type is taken (`mix.takeN(5).length()`), and a use
+  that asks one type is refused there: `mix.head.v` returned as an `Int64`, "expected Int64,
+  got ?v". An argument at such a column is a filter (`mix("a")`).
+- **A relation that passes a column of some type on is of some type there too**, for a rule
+  goal as for a citation (`clause_goal_columns`): `g(?r) :- anyHolds(?v), ?r <=> U.ilen(?v)`
+  is refused as the goal on `holds` is, naming `anyHolds._1`, and `domain(?v, Int64)` narrows
+  it. It was a column of every type, and `ilen` took the `String` as an `Int64`.
+- **A column nothing in its clause names stays of every type** (kernel-language §5.3), read at
+  the type its use asks for. Closing every column whose whole type is a variable, as the
+  nested one is closed (`close_unfixed_clause_vars`), was measured on the full gate: it
+  refused `wi730`'s negation over such a column, which a citation reads as a `String`. The 51
+  rows 0RRQP measured on 2026-10-21 for it refuse nothing now — the clause typing reads a
+  call's result — so the closing is the some-type columns', and no more.
+- **Found and fixed: a later load reads a woven call as its call** (`clause_call_parts`). A
+  clause's calls that owe a dictionary are stored woven (`apply_within`), and a later load
+  types the stored clause again — its citations, its rule goals, its own re-check. The clause
+  walk read only `Apply`, so the result column of `WeakOrd.compare(?a, ?b, ?r)` typed `?r` at
+  the clause's own load and nothing at a later one: `sgn(1, 5).head.r` returned as a `String`
+  loaded and answered the `Int64` `-1`, and `?r.abs()` in a later load's rule was data. The
+  closing measurement above found it, through 0RRQP's two later-load rows.
+
+- **A rule goal reads two clauses of different sorts with no join as some type**, a variable in
+  either (`generalize_columns`): `k(?l) :- ?l <=> nil` beside `k(?l) :- isInt(?l)` was
+  generalized to a column of every type, so a demand on `k`'s value loaded where the citation
+  refuses it (found by /code-review).
+- **A relation written at two arities gives its goals no columns** (`relation_goal_columns`):
+  the load is refused for the arities, and a clause of one arity answers no goal of the other.
+  Joined slot by slot, a later load's `fact reaches(1)` beside the library's two-argument
+  `reaches` made library bodies read another way, which the typer oracle reported on
+  `wi_6wvjb`'s row.
+- **Not closed, and for a decision** (measured on the tree before this part too, with the typer
+  oracle): a later load's clause at the right arity on a library relation that leaves a column
+  of some type changes how sealed library bodies are read, and nothing refuses it — `fact
+  reaches("a", "b")` makes `reaches._2` of some type, and the oracle reports `keep_modify`'s
+  sealed body; with this part's passing-on the same fact reaches four of them through
+  `origin._2`. The load is accepted and the sealed bodies are not typed again.
+
+Rows moved: WI-714's guard rows over a genuinely disjoint pair (`wi714`'s
+`wi714_disjoint_concrete_column_types_still_reject`, `wi741`'s two, `wi_9c2pz`'s
+`the_inherited_type_reaches_the_published_schema`) are refused at the read that asks one
+type, `expected List[T = (x: String)], got List[T = (x: ?x)]`, where they were refused at the
+citation; the column is an unknown of the citation's, not `Term`, so WI-714's "never a silent
+widen" holds. Their back-out claims that named the citation's refusal were not measured again,
+and say so at their sites.
+
+### 6.9 C1b, two providers refused and a dot through a slot (WI-20261013-WF14Z, seventh part, 2026-10-22)
+
+Decided with the user, 2026-10-22, over this program (`CBox` declares `requires O:
+WeakOrd[T]`):
+
+```anthill
+rule two(?p, ?q, ?c) :- ?p <=> cbox(a: ?x, b: ?y), ?q <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+operation cited() -> Int64 = CBox.two(asc(), desc()).head.c
+operation twoOp[A](p: CBox[T = A], q: CBox[T = A]) -> Int64 =
+  match q case cbox(a, b) -> WeakOrd.compare(a, b)
+```
+
+`?p`'s `O` and `?q`'s both state the read at their shared element, and `asc()` and `desc()`
+fix them to `Ascending` and `Descending`; `twoOp`'s read is stated by `p`'s and `q`'s slots
+alike. The citation answered `Int64`'s own, `-1`; the operation answered `p`'s order, `-4`,
+comparing `q`'s values — by parameter order, `twoOp(desc(), asc())` gave `4`. Decided: **a read
+two requirement slots may answer with two providers, and that names neither, is a load error**,
+at the citation and in the operation body alike. The second is EE0EP's decision of 2026-09-22
+(two parameters of one carrier are refused), which a call needing the second parameter's slot
+already met (`AmbiguousWithFrame`) and a read answered from the first escaped.
+
+- **The citation** (`carried_slot_reading`) classifies each slot that states the read: a
+  witness the argument's type names, a parameter of the caller (`b.O`), the caller's type
+  parameter (`O = P` written), or open. Two that differ are refused, naming both ("fix two
+  requirement slots that state it, to `Ascending` and to `Descending`"; "to `Ascending` and to
+  the caller's `?P`"). A parameter of the caller is read from its own slot of the caller's
+  frame, so `first[A](b1: Box[T = A], b2: Box[T = A]) = Box.order(b1)` reads `b1`'s; one whose
+  slot the collision screen dropped (`Box.order(b2)` there) is refused, as the call naming it
+  is ("the frame holds one slot for both, `b1`'s"). A read no slot states, answered by the
+  caller's frame, is refused where that frame's slot is contested (`contested_cover`).
+- **The operation body**: the collision screen of `op_requires_chain_rc` still keeps the
+  first parameter's slot and drops the second's, and now marks the kept one contested
+  (`SupplySource::FromParam`'s `contested`). A call classified onto a contested slot is refused
+  once per body, on the stored tree (`contested_slot_read`, "`p`'s slot `O` and `q`'s answer
+  it, two parameters of one carrier, and the read names neither"), and so is an anonymous
+  requirement forwarded through one (`build_dep_projection`, `Util.cmp(a, b)` with `cmp[A]
+  requires WeakOrd[T = A]`). A callee's named slot read off an argument is not —
+  `CBox.direct(p)` reads `p`'s, and the call naming `q` is refused as before.
+
+**A dot through another variable's slot is that spec's call** (`find_spec_op_for_clause_slot`):
+in `orderDot(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), ?c <=> ?x.compare(?y)`, `?x` is typed `t`
+and `?p`'s `O` states `WeakOrd[T = t]`, so the dot is `WeakOrd.compare(?x, ?y)`, as
+`a.compare(b)` is in a member of `Box` through `requires O: WeakOrd[T]`. It was data — the
+citation handed back the term `1.compare(5)` declared an `Int64`. In a value slot the call
+answers as its written twin there does, by the values, `Int64`'s own `-1`: the inference that
+gives a goal-position call its condition (P7VP4's `inferred_demand`) declines an unpinned
+body-less operation in a value slot, and retiring that refusal is WI-20261013-RYDNV's (C1d,
+its description). Once it is retired the dot answers `4` / `-4` as the goal does, and the
+two-box program's dot form is refused as the written one is.
+
+MEASURED: each part backed out alone fails its own row (the ledger at the head of
+`wi_wf14z_clause_typed_as_a_whole_test`).
 
 ## 7. Testing
 

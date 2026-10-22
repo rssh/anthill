@@ -8,7 +8,8 @@ use super::*;
 /// in declaration order (**`Unit`** for zero — a boolean/membership relation), each
 /// column typed at the **lub** of that
 /// head parameter across the relation's clauses (WI-287 `join_types`; a disjoint
-/// pair with no lub is a load error, never a silent widen to `Term`). `sym` is a
+/// pair with no lub is a column of some type, an unknown of the citation's own and never
+/// a silent widen to `Term` — [`some_type_columns_at_citation`]). `sym` is a
 /// rule label or head functor (the caller gates on `SymbolKind::Goal | Rule`).
 ///
 /// The access-effect row `E ⊇ {Error}` is threaded through the `provides` edge; it
@@ -20,7 +21,7 @@ pub(super) fn relation_reference_type(
     occ: &Rc<NodeOccurrence>,
     site: Option<CitationSite<'_>>,
 ) -> Result<Value, TypeError> {
-    let mut columns = relation_columns_across_clauses(kb, sym, span)?;
+    let mut columns = relation_columns_across_clauses(kb, sym, span, site.is_some())?;
     let Some(site) = site else {
         return relation_type_from_columns(kb, sym, columns, occ.span, span);
     };
@@ -452,7 +453,7 @@ pub(super) fn relation_reference_type_applied(
     occ: &Rc<NodeOccurrence>,
     site: CitationSite<'_>,
 ) -> Result<Value, TypeError> {
-    let mut columns = relation_columns_across_clauses(kb, sym, span)?;
+    let mut columns = relation_columns_across_clauses(kb, sym, span, true)?;
     // WI-20260911-5G28A S1 — the enclosing sort's parameters, opened for THIS citation and
     // seeded from its bracket / enclosing instance BEFORE the arguments bind columns, so an
     // argument meets `Wrap[T = ?t]` (a variable it can pin) or `Wrap[T = Colour]` (a type
@@ -508,7 +509,7 @@ pub(super) fn relation_reference_type_applied(
                     &named_results[i - pos_results.len()]
                 };
                 let arg = arg_res.as_ref().ok()?;
-                let col = columns.iter().find(|c| c.name == *cname)?;
+                let col = columns.iter().find(|c| c.name == *cname && !c.some)?;
                 Some((*cname, col.ty.clone(), arg.ty.clone()))
             })
             .collect();
@@ -530,10 +531,10 @@ pub(super) fn relation_reference_type_applied(
         }
     }
     for (i, cname) in bound.iter().enumerate() {
-        let col_ty = columns
+        let (col_ty, some) = columns
             .iter()
             .find(|c| c.name == *cname)
-            .map(|c| c.ty.clone())
+            .map(|c| (c.ty.clone(), c.some))
             .expect("a bound column name is one of the relation's columns");
         let arg_res = if i < pos_results.len() {
             &pos_results[i]
@@ -542,6 +543,11 @@ pub(super) fn relation_reference_type_applied(
         };
         if let Ok(arg) = arg_res {
             bound_types.push((*cname, arg.ty.clone()));
+            // An argument at a column of some type is a filter: a value of any type goes
+            // there, and the solutions are the ones that hold it.
+            if some {
+                continue;
+            }
             // Resolve the column type through the accumulated σ (a correlated
             // column's var may already be pinned by an earlier argument).
             let declared_col_ty = col_ty.clone();
@@ -719,6 +725,30 @@ fn close_unfixed_clause_vars(
     walk_type_deep_value(kb, &opening, &ty)
 }
 
+/// A COLUMN OF SOME TYPE IS AN UNKNOWN OF ITS OWN AT EACH CITATION (068-implementation §6.2,
+/// decision 2): the relation's solutions there are of types with no join — `mix(?v) :-
+/// isInt(?v)` beside `mix(?v) :- isStr(?v)`, or `anyHolds(?x) :- holds(?x)` over `fact
+/// holds(1)` and `fact holds("a")` — so a value read from it goes where any type is taken and
+/// is refused where one type is asked: `mix.takeN(5).length()` loads, `mix.head.v` returned as
+/// an `Int64` is refused. `rigid` in functional code, where a citation's types are an operation
+/// body's; a citation in a rule body keeps a variable, as it keeps the relation's own.
+///
+/// Before, two rule clauses with no join were refused at the citation, "disjoint types for
+/// column", and a column a rule takes from one of some type was a variable read at the type
+/// its use asked for: `anyHolds.head.x` loaded returned as an `Int64` and answered one of
+/// the two values.
+fn some_type_columns_at_citation(kb: &mut KnowledgeBase, columns: &mut [ClauseColumn], rigid: bool) {
+    for c in columns.iter_mut().filter(|c| c.some) {
+        let fresh = kb.fresh_var(c.name);
+        let var = if rigid {
+            Var::Rigid(fresh)
+        } else {
+            Var::Global(fresh)
+        };
+        c.ty = Value::term(kb.alloc(Term::Var(var)));
+    }
+}
+
 /// WI-20260911-5G28A S2 — a citation's EDGE CHECK, captured at the citation and run later.
 ///
 /// LATER BECAUSE THE READS DO NOT EXIST YET. An operation body is typed before any rule
@@ -767,8 +797,16 @@ fn queue_citation_routes(
 /// WI-20260911-5G28A S2 — run every queued citation edge check ([`PendingCitationRoutes`])
 /// and stamp the routes it finds. AFTER `record_find_dictionary_grounding`, which is what
 /// makes the reads routable; drains the queue, so a later pass cannot see a stale entry.
-pub(super) fn settle_citation_routes(kb: &mut KnowledgeBase) {
+///
+/// Answers the citations refused, each at the citation with the file it is written in: a
+/// named slot of a clause variable's type fixed to a witness that does not answer the read
+/// the slot states ([`CarriedMisfit`]).
+pub(super) fn settle_citation_routes(
+    kb: &mut KnowledgeBase,
+) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
+    let mut refused = Vec::new();
     for pending in std::mem::take(&mut kb.pending_citation_routes) {
+        let mut misfits = Vec::new();
         let routes = citation_requirement_routes(
             kb,
             &pending.chain,
@@ -777,11 +815,99 @@ pub(super) fn settle_citation_routes(kb: &mut KnowledgeBase) {
             &pending.column_types,
             &pending.bound_types,
             &pending.subst,
+            &mut misfits,
         );
         if !routes.is_empty() {
             pending.occ.set_op_dicts(routes);
         }
+        let span = Some(pending.occ.span.span);
+        for misfit in misfits {
+            let error = match misfit {
+                CarriedMisfit::NotAnswered { witness, spec } => TypeError::WitnessDoesNotProvide {
+                    span,
+                    op: pending.relation,
+                    witness,
+                    spec,
+                    at_bindings: true,
+                },
+                CarriedMisfit::TwoProviders {
+                    spec,
+                    first,
+                    second,
+                } => TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::Rule {
+                        name: pending.relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: format!(
+                        "one provider of `{}` for a read of the clause",
+                        kb.qualified_name_of(spec)
+                    ),
+                    actual: format!(
+                        "the citation's arguments fix two requirement slots that state it, to \
+                         {first} and to {second}, and the read names neither"
+                    ),
+                },
+                CarriedMisfit::Unheld {
+                    param,
+                    binder,
+                    holder,
+                } => TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::Rule {
+                        name: pending.relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: format!(
+                        "the caller's slot `{}.{}`, whose requirement a read of the clause is",
+                        kb.local_name_of(param),
+                        kb.local_name_of(binder),
+                    ),
+                    actual: match holder {
+                        Some((kept, kept_binder)) => format!(
+                            "the frame holds one slot for it and `{}.{}`, {} — name the slot \
+                             (`requires {}: …`) and write that name in the parameter's type",
+                            kb.local_name_of(kept),
+                            kb.local_name_of(kept_binder),
+                            if kept == param {
+                                "two slots of one carrier at one type"
+                            } else {
+                                "two parameters of one carrier"
+                            },
+                            kb.local_name_of(binder),
+                        ),
+                        None => format!(
+                            "a requirement the caller writes answers it, so the frame holds no \
+                             slot of `{}`'s own — name the slot (`requires {}: …`) and write \
+                             that name in the parameter's type",
+                            kb.local_name_of(param),
+                            kb.local_name_of(binder),
+                        ),
+                    },
+                },
+                CarriedMisfit::Contested {
+                    param,
+                    binder,
+                    other,
+                } => TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::Rule {
+                        name: pending.relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: "one slot of the caller's frame for a read of the clause"
+                        .to_string(),
+                    actual: contested_account(kb, param, binder, other),
+                },
+            };
+            refused.push((error, Some(pending.occ.span.source)));
+        }
     }
+    refused
 }
 
 /// WI-20260911-5G28A S2 — the cited relation's IMPLICIT ARGUMENTS at this citation: one
@@ -818,6 +944,7 @@ fn citation_requirement_routes(
     column_types: &[(Symbol, Value)],
     bound_types: &[(Symbol, Value)],
     subst: &Substitution,
+    misfits: &mut Vec<CarriedMisfit>,
 ) -> SmallVec<[Option<TermId>; 2]> {
     let Some(fd) = find_dictionary_symbol(kb) else {
         return SmallVec::new();
@@ -858,13 +985,12 @@ fn citation_requirement_routes(
             }
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        // Read only for a clause one of whose reads is witnessed by a variable that is no
-        // column, which is where it is the one source of the witness's type.
-        let witnessed_off_column = body.iter().any(|node| {
-            requirement_read_out(kb, fd, node).is_some()
-                && read_witness_vars(node).any(|d| !slots.iter().any(|(_, _, di)| *di == d))
-        });
-        let clause_types = witnessed_off_column
+        // Read for a clause with a read: the one source of a witness's type where the
+        // witness is no column, and of the named slots its variables' types carry.
+        let reads = body
+            .iter()
+            .any(|node| requirement_read_out(kb, fd, node).is_some());
+        let clause_types = reads
             .then(|| ClauseTypes::at_citation(kb, &body, &slots, column_types, bound_types, subst))
             .flatten();
         for node in &body {
@@ -892,6 +1018,7 @@ fn citation_requirement_routes(
                 column_types,
                 bound_types,
                 subst,
+                misfits,
             );
             any |= route.is_some();
             routes.push(route);
@@ -920,6 +1047,7 @@ fn route_requirement_read(
     column_types: &[(Symbol, Value)],
     bound_types: &[(Symbol, Value)],
     subst: &Substitution,
+    misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     let spec_sort = sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))?;
     if named_args
@@ -1011,12 +1139,389 @@ fn route_requirement_read(
         let syms = ProjectionSyms::resolve(kb)?;
         return sort_domain_route(kb, chain, param_rigids, subst, spec_sort, &ty, &syms);
     }
-    let built = if is_anchor_form(kb, spec_sort, op_functor) {
-        anchor_sort_goal(kb, spec_sort, &arg_types, &bracket.written)
-    } else {
-        witness_sort_goal(kb, spec_sort, op_functor, &arg_types, &bracket.written)
-    }?;
-    resolve_route(kb, chain, param_rigids, subst, &built.goal)
+    let anchor = is_anchor_form(kb, spec_sort, op_functor);
+    let read_goal = |kb: &mut KnowledgeBase, types: &[Value]| {
+        if anchor {
+            anchor_sort_goal(kb, spec_sort, types, &bracket.written)
+        } else {
+            witness_sort_goal(kb, spec_sort, op_functor, types, &bracket.written)
+        }
+        .map(|built| built.goal)
+    };
+    let goal = read_goal(kb, &arg_types)?;
+    // A read a named slot of a clause variable's type answers is answered by what this
+    // citation fixes the slot to, as a call reads the slot off its argument's type.
+    let stamped: Option<Vec<Value>> = clause_types.and_then(|c| {
+        pos_args[2..]
+            .iter()
+            .map(|w| match w.as_expr() {
+                Some(Expr::Var(Var::DeBruijn(d))) => c.stamped_type(*d),
+                _ => None,
+            })
+            .collect()
+    });
+    let carried = match (clause_types, stamped) {
+        (Some(c), Some(stamped)) => match read_goal(kb, &stamped) {
+            Some(stated) => carried_slot_reading(kb, chain, c, &stated),
+            None => CarriedReading::None,
+        },
+        _ => CarriedReading::None,
+    };
+    match carried {
+        CarriedReading::None => {
+            // A read no slot of the clause's variables states is answered by the caller's
+            // frame; two of the caller's parameters of one carrier answer it alike, and
+            // nothing in the read says which.
+            if let Some((param, binder, other)) =
+                contested_cover(kb, chain, &goal, param_rigids, subst)
+            {
+                misfits.push(CarriedMisfit::Contested {
+                    param,
+                    binder,
+                    other,
+                });
+                return None;
+            }
+            resolve_route(kb, chain, param_rigids, subst, &goal)
+        }
+        CarriedReading::Scope(i) => emit_route(
+            kb,
+            chain,
+            &ResolvedRequiresNode::FromScope {
+                scope_index: i,
+                spec_sort,
+                projection: SmallVec::new(),
+            },
+        ),
+        CarriedReading::Pinned(selected, slot_goal) => {
+            // A witness that does not answer the slot's requirement at the citation's types
+            // is refused, as the call `Box.directOf(mk())` refuses it: `mk() -> Box[T =
+            // String, O = Descending]` names a witness of `WeakOrd[T = Int64]` only.
+            let Some(tree) =
+                resolve_against_caller(kb, chain, param_rigids, subst, &slot_goal, Some(&selected))
+            else {
+                misfits.push(CarriedMisfit::NotAnswered {
+                    witness: selected
+                        .witness()
+                        .expect("a carried selection names its witness"),
+                    spec: selected.spec_sort,
+                });
+                return None;
+            };
+            emit_route(kb, chain, &tree)
+        }
+        CarriedReading::Refused(misfit) => {
+            misfits.push(misfit);
+            None
+        }
+    }
+}
+
+/// Why a citation is refused at a requirement read of the cited clause
+/// ([`route_requirement_read`]).
+pub(crate) enum CarriedMisfit {
+    /// A named slot of a clause variable's type states the read, and the citation fixes it
+    /// to a witness that does not answer it at the citation's types.
+    NotAnswered { witness: Symbol, spec: Symbol },
+    /// Two such slots state the read, and the citation fixes them to two providers:
+    /// `CBox.two(asc(), desc())` over `two(?p, ?q, ?c) :- …, WeakOrd.compare(?x, ?y, ?c)`.
+    TwoProviders {
+        spec: Symbol,
+        first: String,
+        second: String,
+    },
+    /// The caller's frame answers the read from a parameter's slot that another unwritten
+    /// slot answers alike ([`SupplySource::FromParam`]'s `contested`), and the read names
+    /// neither.
+    Contested {
+        param: Symbol,
+        binder: Symbol,
+        other: (Symbol, Symbol),
+    },
+    /// The read is the slot `binder` of the caller's parameter `param`, which the collision
+    /// screen gave no slot of its own: the frame holds `holder`'s for both, or — `None` — a
+    /// requirement the caller writes answers it (the spec's collision rule, kernel-language
+    /// §5.2).
+    Unheld {
+        param: Symbol,
+        binder: Symbol,
+        holder: Option<(Symbol, Symbol)>,
+    },
+}
+
+/// What a citation reads for a requirement read off the named slots of its clause's
+/// variables' types ([`carried_slot_reading`]).
+enum CarriedReading {
+    /// No slot states the read, or none the citation settles: the caller's frame answers it.
+    None,
+    /// The witness one or more slots are fixed to, and the slot's requirement at the
+    /// citation's types.
+    Pinned(InstanceSelection, SortGoal),
+    /// The caller's own slot for the parameter the slots are fixed to (`b.O`), by index.
+    Scope(usize),
+    Refused(CarriedMisfit),
+}
+
+/// What the citation fixes one slot that states the read to.
+enum SlotFixed {
+    Witness(InstanceSelection, SortGoal),
+    /// A parameter of the caller, `b` of `b.O`: its slot in the caller's frame, or — the
+    /// collision screen gave it none — the slot the frame holds in its place, where that is
+    /// another unwritten slot.
+    Param {
+        param: Symbol,
+        binder: Symbol,
+        slot: Result<usize, Option<(Symbol, Symbol)>>,
+    },
+    /// One of the caller's own type parameters (`O = P` written): its frame answers.
+    Rigid(Value),
+}
+
+/// What the NAMED SLOTS of the clause variables' types say of a read, as this citation fixes
+/// them, where the read `stated` — built at the clause's own typing — is the requirement a
+/// slot states.
+///
+/// In `sort Box { sort T = ?; requires O: WeakOrd[T]; entity box(a: T, b: T) }`, `rule
+/// order(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)` types `?p` as
+/// `Box[T = t, O = o]` and `?x` as `t`, so the read is `WeakOrd[T = t]`, what `O` states at
+/// those bindings. Cited as `Box.order(mk())` with `mk() -> Box[T = Int64, O = Ascending]`,
+/// `o` is `Ascending`, and the read is answered by it, as `Box.directOf(mk())` reads the
+/// slot off its argument; cited as `Box.order(b)` with the caller's `b: Box[T = A]`, `o` is
+/// `b.O`, the caller's slot for `b`. A read at another type (`WeakOrd.compare(1, 5, ?c)` in
+/// the same clause) is not the slot's, as in the operation-body twin.
+///
+/// Slots the citation fixes to two providers — two witnesses, a witness and a parameter, two
+/// parameters — leave the read naming neither, and the citation is refused, as a body's read
+/// two parameters of one carrier answer is (user, 2026-10-22). A slot the clause writes
+/// itself, or one the citation leaves open, says nothing.
+fn carried_slot_reading(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    clause_types: &ClauseTypes,
+    stated: &SortGoal,
+) -> CarriedReading {
+    let mut fixed: Vec<SlotFixed> = Vec::new();
+    for (_, ty) in &clause_types.types {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, ty) else {
+            continue;
+        };
+        let named = kb.named_requirement_slots(base).to_vec();
+        if named.is_empty() {
+            continue;
+        }
+        let entries = provider_dict_entries(kb, base, None);
+        for slot in named {
+            if !slot
+                .spec_base
+                .is_some_and(|s| same_sort_canonical(kb, s, stated.spec_sort))
+            {
+                continue;
+            }
+            let binder = kb.local_name_of(slot.binder).to_string();
+            let Some((_, held)) = bindings.iter().find(|(k, _)| kb.local_name_of(*k) == binder)
+            else {
+                continue;
+            };
+            if resolved_var(kb, held).is_none() {
+                continue;
+            }
+            // [`carried_slot`]'s invariant: the declaration order and the chain's agree, and
+            // pinning by either where they do not would answer a real goal with a wrong
+            // provider.
+            let entry = dict_chain_index(kb, base, &slot)
+                .and_then(|i| entries.entries().get(i).cloned())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "named slot `{}` of `{}` has no dictionary position demanding its \
+                         spec — declaration and dictionary-chain order have drifted",
+                        kb.local_name_of(slot.binder),
+                        kb.qualified_name_of(base),
+                    )
+                });
+            let Some(spec) = slot_spec_at_bindings(kb, base, &entry.spec, &bindings) else {
+                continue;
+            };
+            let Some(slot_goal) = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })
+            else {
+                continue;
+            };
+            if !slot_states_the_read(kb, &slot_goal, stated) {
+                continue;
+            }
+            let at = walk_type_deep_value(kb, &clause_types.subst, held);
+            if let Ok(Some(selected)) =
+                slot_selection_of(kb, base, slot, &at, SlotPinSource::Carrier)
+            {
+                let bindings = slot_goal
+                    .bindings
+                    .iter()
+                    .map(|(k, v)| (*k, walk_type_deep_value(kb, &clause_types.subst, v)))
+                    .collect();
+                fixed.push(SlotFixed::Witness(
+                    selected.selection,
+                    SortGoal { bindings, ..slot_goal },
+                ));
+            } else if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &at) {
+                // The caller's `b.O`: its slot for `b`, keyed by the parameter.
+                let Some(param) = extract_sort_ref_sym(kb, &value) else {
+                    continue;
+                };
+                let slot = chain
+                    .entries()
+                    .iter()
+                    .position(|e| {
+                        matches!(e.supply, SupplySource::FromParam { param: p, binder: b, .. }
+                            if p == param && kb.local_name_of(b) == kb.local_name_of(member))
+                    })
+                    .ok_or(param);
+                // The argument names the parameter, so its own slot answers even where a
+                // second parameter contests it, as a call naming it does. One with no slot
+                // of its own — the collision screen kept the other's — is refused, as such
+                // a call is.
+                let slot = slot.map_err(|p| {
+                    chain.entries().iter().find_map(|e| match e.supply {
+                        SupplySource::FromParam {
+                            param: kept,
+                            binder: kept_binder,
+                            contested: Some((c, cb)),
+                        } if c == p && kb.local_name_of(cb) == kb.local_name_of(member) => {
+                            Some((kept, kept_binder))
+                        }
+                        _ => None,
+                    })
+                });
+                fixed.push(SlotFixed::Param {
+                    param,
+                    binder: member,
+                    slot,
+                });
+            } else if !matches!(type_head(kb, &at), TypeHead::FlexVar(_)) {
+                fixed.push(SlotFixed::Rigid(at));
+            }
+        }
+    }
+    let Some((first, rest)) = fixed.split_first() else {
+        return CarriedReading::None;
+    };
+    if let Some(second) = rest.iter().find(|f| !same_fixed(kb, first, f)) {
+        return CarriedReading::Refused(CarriedMisfit::TwoProviders {
+            spec: stated.spec_sort,
+            first: describe_fixed(kb, first),
+            second: describe_fixed(kb, second),
+        });
+    }
+    match fixed.swap_remove(0) {
+        SlotFixed::Witness(selected, goal) => CarriedReading::Pinned(selected, goal),
+        SlotFixed::Param { slot: Ok(i), .. } => CarriedReading::Scope(i),
+        SlotFixed::Param {
+            param,
+            binder,
+            slot: Err(holder),
+        } => CarriedReading::Refused(CarriedMisfit::Unheld {
+            param,
+            binder,
+            holder,
+        }),
+        SlotFixed::Rigid(_) => CarriedReading::None,
+    }
+}
+
+/// Do two slots the citation fixes name one provider.
+fn same_fixed(kb: &KnowledgeBase, a: &SlotFixed, b: &SlotFixed) -> bool {
+    match (a, b) {
+        (SlotFixed::Witness(x, _), SlotFixed::Witness(y, _)) => same_selection(kb, x, y),
+        (
+            SlotFixed::Param {
+                param: p,
+                binder: b1,
+                ..
+            },
+            SlotFixed::Param {
+                param: q,
+                binder: b2,
+                ..
+            },
+        ) => p == q && kb.local_name_of(*b1) == kb.local_name_of(*b2),
+        (SlotFixed::Rigid(x), SlotFixed::Rigid(y)) => values_structurally_equal(kb, x, y),
+        _ => false,
+    }
+}
+
+/// A provider a slot is fixed to, as a refusal names it.
+fn describe_fixed(kb: &KnowledgeBase, f: &SlotFixed) -> String {
+    match f {
+        SlotFixed::Witness(selected, _) => selected
+            .witness()
+            .map(|w| format!("`{}`", kb.qualified_name_of(w)))
+            .unwrap_or_else(|| "a witness".to_string()),
+        SlotFixed::Param { param, binder, .. } => format!(
+            "the caller's `{}.{}`",
+            kb.local_name_of(*param),
+            kb.local_name_of(*binder)
+        ),
+        SlotFixed::Rigid(v) => format!("the caller's `{}`", format_value_for_goal(kb, v)),
+    }
+}
+
+/// A slot of the caller's frame that answers `goal` and that another unwritten slot contests
+/// ([`SupplySource::FromParam`]'s `contested`): the kept slot's parameter and binder, and the
+/// slot that contests it.
+fn contested_cover(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    goal: &SortGoal,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+) -> Option<(Symbol, Symbol, (Symbol, Symbol))> {
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids,
+    };
+    chain.entries().iter().find_map(|e| match e.supply {
+        SupplySource::FromParam {
+            param,
+            binder,
+            contested: Some(other),
+        } if e.required_sort == goal.spec_sort
+            && requires_entry_covers_goal(kb, e, goal, Some(&sigma)) =>
+        {
+            Some((param, binder, other))
+        }
+        _ => None,
+    })
+}
+
+/// Does the requirement a named slot states, `slot`, say what the read `stated` says: each
+/// element the read decides is the slot's, structurally, and it decides one. An element the
+/// read leaves open rides as the spec's own parameter ([`witness_sort_goal`]'s wildcard), which
+/// any slot meets: `Conv.conv(?x, ?c)` decides `A` from its argument and leaves `B`, and is
+/// `requires C: Conv[A = T, B = Int64]`'s at `A = t`.
+fn slot_states_the_read(kb: &KnowledgeBase, slot: &SortGoal, stated: &SortGoal) -> bool {
+    if !same_sort_canonical(kb, slot.spec_sort, stated.spec_sort) {
+        return false;
+    }
+    let spec_qn = kb.qualified_name_of(stated.spec_sort).to_string();
+    let params = kb.type_params_of_sort(stated.spec_sort);
+    let mut decided = false;
+    for (key, value) in &stated.bindings {
+        // Open is the spec's OWN parameter: another sort's, written by its name, is decided.
+        let open = view_ref_symbol(kb, value).is_some_and(|s| {
+            let qn = kb.qualified_name_of(s);
+            params.iter().any(|p| qn == format!("{spec_qn}.{p}"))
+        });
+        if open {
+            continue;
+        }
+        let Some(at_slot) = binding_for_param(kb, &slot.bindings, *key, BindingKeyMatch::Label)
+        else {
+            return false;
+        };
+        if !values_structurally_equal(kb, at_slot, value) {
+            return false;
+        }
+        decided = true;
+    }
+    decided
 }
 
 /// The type a citation gives the column `name`: its argument's own type where one binds the
@@ -1034,18 +1539,6 @@ fn citation_column_type(
     }
     let (_, ty) = column_types.iter().find(|(n, _)| *n == name)?;
     Some(walk_type_deep_value(kb, subst, ty))
-}
-
-/// The De Bruijn index of each witness of a requirement read that is a variable.
-fn read_witness_vars(read: &Rc<NodeOccurrence>) -> impl Iterator<Item = u32> + '_ {
-    let witnesses: &[Rc<NodeOccurrence>] = match read.as_expr() {
-        Some(Expr::Apply { pos_args, .. }) => pos_args.get(2..).unwrap_or(&[]),
-        _ => &[],
-    };
-    witnesses.iter().filter_map(|w| match w.as_expr() {
-        Some(Expr::Var(Var::DeBruijn(d))) => Some(*d),
-        _ => None,
-    })
 }
 
 /// One clause's own typing of its variables, as ONE citation meets it: the type each
@@ -1144,6 +1637,13 @@ impl ClauseTypes {
         let (_, ty) = self.types.iter().find(|(seen, _)| *seen == d)?;
         Some(walk_type_deep_value(kb, &self.subst, ty))
     }
+
+    /// The type of the clause variable at De Bruijn index `d` as the clause types it, before
+    /// this citation fixes anything.
+    fn stamped_type(&self, d: u32) -> Option<Value> {
+        let (_, ty) = self.types.iter().find(|(seen, _)| *seen == d)?;
+        Some(ty.clone())
+    }
 }
 
 /// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —
@@ -1156,6 +1656,19 @@ fn resolve_route(
     subst: &Substitution,
     goal: &SortGoal,
 ) -> Option<TermId> {
+    let tree = resolve_against_caller(kb, chain, param_rigids, subst, goal, None)?;
+    emit_route(kb, chain, &tree)
+}
+
+/// [`resolve_route`]'s resolution, with the provider `pin` selects for the goal itself.
+fn resolve_against_caller(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    goal: &SortGoal,
+    pin: Option<&InstanceSelection>,
+) -> Option<ResolvedRequiresNode> {
     let sigma = SigmaCtx {
         subst,
         param_rigids,
@@ -1163,14 +1676,19 @@ fn resolve_route(
     let scope = ResolutionScope {
         available_requires: chain.entries(),
         sigma: Some(&sigma),
-        pin: None,
+        pin,
         sub_goal_requires: &[],
     };
-    let ResolutionResult::Resolved(tree) = resolve(kb, goal, &scope) else {
-        return None;
-    };
+    match resolve(kb, goal, &scope) {
+        ResolutionResult::Resolved(tree) => Some(tree),
+        _ => None,
+    }
+}
+
+/// A resolved route as the projection the citation passes.
+fn emit_route(kb: &mut KnowledgeBase, chain: &DictChain, tree: &ResolvedRequiresNode) -> Option<TermId> {
     let syms = ProjectionSyms::resolve(kb)?;
-    emit_tree_as_projection(kb, chain, &tree, &syms)
+    emit_tree_as_projection(kb, chain, tree, &syms)
 }
 
 /// WI-20260925-P7VP4 — the slot index `k` of a SLOT read (`slot: k`), or `None` for any
@@ -1379,7 +1897,8 @@ fn sort_domain_route(
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:
 /// compound-var heads rejected loudly, each column's type the **lub** of that SLOT
-/// across every clause (aligned by slot IDENTITY, not free-column index), and a
+/// across every clause (aligned by slot IDENTITY, not free-column index) — or of some
+/// type, where there is none or a clause's column is of some type — and a
 /// heterogeneous free-slot interface rejected loudly. Shared by the bare
 /// ([`relation_reference_type`]) and applied ([`relation_reference_type_applied`])
 /// citation positions; before-dedup so the applied form can subtract bound slots.
@@ -1387,6 +1906,9 @@ fn relation_columns_across_clauses(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     span: Option<Span>,
+    // A column of some type read at a rigid unknown, as in functional code
+    // ([`some_type_columns_at_citation`]).
+    rigid: bool,
 ) -> Result<Vec<ClauseColumn>, TypeError> {
     let qn = kb.qualified_name_of(sym).to_string();
     let rids = kb.rule_ids_by_qn(&qn);
@@ -1463,21 +1985,16 @@ fn relation_columns_across_clauses(
             let Some(c) = columns.iter_mut().find(|c| c.slot == oc.slot) else {
                 continue;
             };
+            if c.some || oc.some {
+                c.some = true;
+                continue;
+            }
+            // Two clauses whose types for the column have no join make it a column of some
+            // type, which is no refusal of the relation: a citation reads it at an unknown,
+            // and a use that asks for one type is refused there.
             match join_column_types(kb, &mut met, c.ty.clone(), oc.ty) {
                 Some(j) => c.ty = j,
-                None => {
-                    let cname = c.name;
-                    return Err(TypeError::Other {
-                        site: TypeError::here(),
-                        span,
-                        context: TypeErrorContext::Rule {
-                            name: sym,
-                            field: RuleField::Whole,
-                        },
-                        expected: "a common column type across relation clauses".to_string(),
-                        actual: format!("disjoint types for column `{}`", kb.local_name_of(cname)),
-                    });
-                }
+                None => c.some = true,
             }
         }
     }
@@ -1486,6 +2003,7 @@ fn relation_columns_across_clauses(
             c.ty = walk_type_deep_value(kb, &met, &c.ty);
         }
     }
+    some_type_columns_at_citation(kb, &mut columns, rigid);
     Ok(columns)
 }
 
@@ -2618,10 +3136,16 @@ pub(crate) enum SlotKey {
 /// WI-714 — one free-variable column of a relation clause: its head SLOT (for
 /// cross-clause alignment), its NAME (the field key for a named slot, else the
 /// source variable name), and its inferred TYPE.
+///
+/// `some`: the column is of some type ([`ColumnType::Some`]) — its variable is one a column
+/// of some type gives and nothing else types, or the relation's clauses give it types with no
+/// join. [`relation_columns_across_clauses`] answers such a column with `ty` an unknown of the
+/// citation's own ([`some_type_columns_at_citation`]); one clause's column says nothing there.
 pub(super) struct ClauseColumn {
     pub(super) slot: SlotKey,
     pub(super) name: Symbol,
     pub(super) ty: Value,
+    pub(super) some: bool,
 }
 
 /// WI-714 — the free-variable SLOTS of a rule's head: `(slot, name, debruijn)` in
@@ -2700,7 +3224,8 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
         _ => return Vec::new(),
     };
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-    let var_types = collect_rule_var_types(kb, rid, head, &body_nodes).var_types;
+    let typing = collect_rule_var_types(kb, rid, head, &body_nodes);
+    let (var_types, some_typed) = (typing.var_types, typing.some_typed);
     // WI-20260911-5G28A — OPEN THIS CLAUSE'S BOUNDS PER CITATION, and that is what makes
     // a TIE between two columns readable at a call site. `rule my_rule(?x: List[T = ?t],
     // ?res: List[T = ?t])` stores both bounds De Bruijn-closed against one frame, so ONE
@@ -2777,7 +3302,13 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
             let fresh = kb.fresh_var(name);
             Value::term(kb.alloc(Term::Var(Var::Global(fresh))))
         };
-        columns.push(ClauseColumn { slot, name, ty });
+        let some = some_typed.contains_key(&d);
+        columns.push(ClauseColumn {
+            slot,
+            name,
+            ty,
+            some,
+        });
     }
     columns
 }
@@ -3050,11 +3581,26 @@ pub(crate) enum ColumnType {
 }
 
 /// [`rule_goal_columns`] before it is opened: each clause's, joined.
+///
+/// Nothing for a relation written at two arities, which is refused at its load
+/// ([`LoadError::ClausesOfDifferentArity`](crate::kb::load::LoadError)): a clause of one
+/// arity answers no goal of the other, and joined slot by slot, `fact reaches(1)` beside the
+/// library's `reaches(?from: Symbol, ?to)` made its first column of some type, and so the
+/// columns of the library relations that read it.
 fn relation_goal_columns(
     kb: &mut KnowledgeBase,
     functor: Symbol,
 ) -> Option<Vec<(SlotKey, ColumnType)>> {
     let rids: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
+    let arity = |kb: &KnowledgeBase, rid: RuleId| {
+        crate::kb::head_functor_and_arity(kb, kb.rule_head_value(rid)).map(|(_, n)| n)
+    };
+    if let Some((&first, rest)) = rids.split_first() {
+        let a = arity(kb, first);
+        if rest.iter().any(|&rid| arity(kb, rid) != a) {
+            return None;
+        }
+    }
     let mut joined: Option<Vec<GoalColumn>> = None;
     for rid in rids {
         let columns = clause_goal_columns(kb, rid)?;
@@ -3132,8 +3678,17 @@ fn generalize_columns(
             None
         };
         // Two types with no variable in them and no join, or a column already of some type,
-        // make a column of some type.
-        let some = ca.some || cb.some || (ground && joined.is_none());
+        // make a column of some type — and so do two of different sorts with no join, a
+        // variable in either: `List[T = t]` beside `Int64` is no instance of one type, as
+        // the citation reads it ([`relation_columns_across_clauses`]).
+        let apart = !ground
+            && match (concrete_type_head(kb, ta), concrete_type_head(kb, tb)) {
+                (Some(ha), Some(hb)) => {
+                    ha != hb && join_types(kb, Value::term(ta), Value::term(tb)).is_none()
+                }
+                _ => false,
+            };
+        let some = ca.some || cb.some || (ground && joined.is_none()) || apart;
         let ty = joined.unwrap_or_else(|| generalize_term(kb, ta, tb, &mut pairs));
         out.push(GoalColumn {
             slot: ca.slot,
@@ -3143,6 +3698,16 @@ fn generalize_columns(
         });
     }
     out
+}
+
+/// The sort a column's type is an application of, where it is one: no variable and no sort's
+/// parameter.
+fn concrete_type_head(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    match kb.get_term(t) {
+        Term::Fn { functor, .. } => Some(*functor),
+        Term::Ref(s) if kb.canonical_type_param_var(*s).is_none() => Some(*s),
+        _ => None,
+    }
 }
 
 /// [`generalize_columns`] below the top of a column.
@@ -3294,7 +3859,8 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
     // says nothing ([`GoalColumn::unread`]).
     let mut unread_slots: Vec<SlotKey> = Vec::new();
     for (slot, arg) in slots {
-        let ty = match arg.var_key(kb) {
+        let d = arg.var_key(kb);
+        let ty = match d {
             // A variable the clause types nowhere is a column of every type; left out, the
             // slot was dropped from the relation and the other clauses' type with it.
             Some(d) => match typing.var_types.get(&d) {
@@ -3314,11 +3880,14 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
             }
         };
         let ty = crate::kb::node_occurrence::value_to_term(kb, &ty).ok()?;
+        // A variable a column of some type gives, and nothing else types, makes this column
+        // one too: `anyHolds(?x) :- holds(?x)` holds `holds`'s values.
+        let some = d.is_some_and(|d| typing.some_typed.contains_key(&d));
         columns.push(GoalColumn {
             slot,
             ty,
             unread: false,
-            some: false,
+            some,
         });
     }
     // A column whose type is a variable no other column names, and which an argument of a

@@ -157,6 +157,14 @@ pub enum SupplySource {
         /// argument's type. Recorded rather than re-derived: the spec cannot name it —
         /// one carrier may declare two slots of one spec (058 §3.3's `OA`/`OB`).
         binder: Symbol,
+        /// Another unwritten slot, `(parameter, binder)`, that states this one's requirement,
+        /// and which the collision screen therefore gave no slot of its own
+        /// ([`op_requires_chain_rc`]): `twoOp[A](p: CBox[T = A], q: CBox[T = A])` holds `p`'s
+        /// `O`, contested by `q`'s; `s: Semi[T = Int64]` holds `s`'s `OA`, contested by its
+        /// `OB`. A read this entry answers is a read the other answers too, and nothing in it
+        /// says which, so it is refused rather than answered from this one
+        /// ([`contested_account`]).
+        contested: Option<(Symbol, Symbol)>,
     },
 }
 
@@ -181,7 +189,7 @@ impl SupplySource {
     /// reads a type inherit the default in silence, which is the hole this closes.
     pub(crate) fn witness_in_argument_type(self) -> Option<(Symbol, Symbol)> {
         match self {
-            SupplySource::FromParam { param, binder } => Some((param, binder)),
+            SupplySource::FromParam { param, binder, .. } => Some((param, binder)),
             SupplySource::Required | SupplySource::SelfSupplied => None,
         }
     }
@@ -1455,40 +1463,17 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
             else {
                 continue;
             };
-            // The spec AT THE PARAMETER'S OWN BINDINGS: `WeakOrd[T = MySet.T]` under
-            // `s: MySet[T = String]` is `WeakOrd[T = String]`. Same composition
-            // [`build_child_subst_map`] does one level up, keyed off the CARRIER's
-            // qualified parameter names.
-            // EVERY WRITTEN ARGUMENT GOES IN, ON THE CARRIER IT RIDES — one that holds a value
-            // (`MySet[T = Buf[N = 3]]`) as plainly as a term. A key that names no parameter
-            // of the carrier drops the WHOLE slot, not just that binding: with it left out
-            // the entry would be synthesized with a PARTIALLY substituted spec still naming
-            // the carrier's own parameter (`WeakOrd[T = MySet.T]` where the call means
-            // `WeakOrd[T = String]`), which then feeds the collision screen and
-            // `param_slot_witness`'s pin under a spec the call never meant — a wrong
-            // dictionary built out of a right reading, which is the hazard the
-            // `dict_chain_index` paragraph above refuses.
-            let mut map: HashMap<Symbol, Value> = HashMap::new();
-            let carrier_qn = kb.qualified_name_of(carrier).to_string();
-            let mut keyed_all = true;
-            for (short_sym, value) in &written {
-                let short = kb.local_name_of(*short_sym).to_string();
-                let Some(q) = kb.try_resolve_symbol(&format!("{carrier_qn}.{short}")) else {
-                    keyed_all = false;
-                    break;
-                };
-                map.insert(q, value.clone());
-            }
-            if !keyed_all {
+            // The spec AT THE PARAMETER'S OWN BINDINGS ([`slot_spec_at_bindings`]).
+            let Some(spec) = slot_spec_at_bindings(kb, carrier, &entry.spec, &written) else {
                 continue;
-            }
-            let spec = substitute_in_spec(kb, &entry.spec, &map);
+            };
             out.push(RequiresEntry {
                 required_sort: entry.required_sort,
                 spec,
                 supply: SupplySource::FromParam {
                     param: pname,
                     binder: slot.binder,
+                    contested: None,
                 },
                 // The carrier's name for it, not one this operation gives: the entry is
                 // told from its neighbours by the parameter it is read off.
@@ -1497,6 +1482,65 @@ pub(super) fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> 
         }
     }
     out
+}
+
+/// Why a read a contested slot answers names no dictionary ([`SupplySource::FromParam`]'s
+/// `contested`): the slot `param`'s `binder` and the one that contests it, `other` — another
+/// parameter's, or another slot of the same parameter's carrier at the same type.
+pub(super) fn contested_account(
+    kb: &KnowledgeBase,
+    param: Symbol,
+    binder: Symbol,
+    other: (Symbol, Symbol),
+) -> String {
+    let (other_param, other_binder) = other;
+    let both = if other_param == param {
+        format!(
+            "`{}`'s slots `{}` and `{}` answer it, two slots of one carrier at one type",
+            kb.local_name_of(param),
+            kb.local_name_of(binder),
+            kb.local_name_of(other_binder),
+        )
+    } else {
+        format!(
+            "`{}`'s slot `{}` and `{}`'s answer it, two parameters of one carrier",
+            kb.local_name_of(param),
+            kb.local_name_of(binder),
+            kb.local_name_of(other_param),
+        )
+    };
+    format!(
+        "{both}, and the read names neither — read it through a call on the parameter it means, \
+         or name the slot (`requires {}: …`) and write that name in the parameter's type",
+        kb.local_name_of(binder)
+    )
+}
+
+/// The spec a named slot's chain entry states at a type of its carrier, `carrier[bindings]`:
+/// `WeakOrd[T = MySet.T]` under `MySet[T = String]` is `WeakOrd[T = String]`. Same composition
+/// [`build_child_subst_map`] does one level up, keyed off the CARRIER's qualified parameter
+/// names.
+///
+/// EVERY WRITTEN ARGUMENT GOES IN, ON THE CARRIER IT RIDES — one that holds a value
+/// (`MySet[T = Buf[N = 3]]`) as plainly as a term. A key that names no parameter of the
+/// carrier drops the WHOLE slot (`None`), not just that binding: with it left out the spec
+/// would be PARTIALLY substituted, still naming the carrier's own parameter (`WeakOrd[T =
+/// MySet.T]` where the type means `WeakOrd[T = String]`), and a reader would pin a witness
+/// under a spec the type never meant — a wrong dictionary built out of a right reading.
+pub(super) fn slot_spec_at_bindings(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: &Value,
+    bindings: &[(Symbol, Value)],
+) -> Option<Value> {
+    let mut map: HashMap<Symbol, Value> = HashMap::new();
+    let carrier_qn = kb.qualified_name_of(carrier).to_string();
+    for (short_sym, value) in bindings {
+        let short = kb.local_name_of(*short_sym).to_string();
+        let q = kb.try_resolve_symbol(&format!("{carrier_qn}.{short}"))?;
+        map.insert(q, value.clone());
+    }
+    Some(substitute_in_spec(kb, spec, &map))
 }
 
 pub(crate) fn op_requires_chain_rc(
@@ -1575,17 +1619,44 @@ pub(crate) fn op_requires_chain_rc(
         // and answered out of the wrong slot. `requires_entry_covers_goal` is what
         // [`resolve`] asks when it picks a forward — if it says an existing entry covers
         // this goal, that entry is exactly what the body's read would take.
-        let collides = match goal_from_requires_entry(kb, &dn) {
-            Some(goal) => entries
-                .iter()
-                .chain(sort_half.iter())
-                .any(|e| requires_entry_covers_goal(kb, e, &goal, None)),
+        //
+        // A COLLISION WITH ANOTHER PARAMETER'S SLOT ONLY is recorded on the slot kept: the
+        // user's decision of 2026-09-22 refuses two parameters of one carrier, and a call
+        // that needs the dropped parameter's slot is refused for it (`AmbiguousWithFrame`),
+        // but a bare read the kept slot answers was answered from the first parameter —
+        // `WeakOrd.compare(a, b)` over `q`'s fields in `twoOp[A](p: CBox[T = A], q: CBox[T =
+        // A])` compared by `p`'s order. Marked, the resolver refuses that read.
+        let Some(goal) = goal_from_requires_entry(kb, &dn) else {
             // No decodable goal: nothing can be said about a collision, so the
             // conservative direction is to add no channel and keep today's refusal.
-            None => true,
+            continue;
         };
-        if !collides {
-            entries.push(dn);
+        let is_param_slot = |e: &RequiresEntry| matches!(e.supply, SupplySource::FromParam { .. });
+        let covered_otherwise = entries
+            .iter()
+            .filter(|e| !is_param_slot(e))
+            .chain(sort_half.iter())
+            .any(|e| requires_entry_covers_goal(kb, e, &goal, None));
+        if covered_otherwise {
+            continue;
+        }
+        let contested = entries
+            .iter()
+            .position(|e| is_param_slot(e) && requires_entry_covers_goal(kb, e, &goal, None));
+        match contested {
+            Some(i) => {
+                if let (
+                    SupplySource::FromParam {
+                        contested: slot @ None,
+                        ..
+                    },
+                    SupplySource::FromParam { param, binder, .. },
+                ) = (&mut entries[i].supply, dn.supply)
+                {
+                    *slot = Some((param, binder));
+                }
+            }
+            None => entries.push(dn),
         }
     }
     let rc: Rc<Vec<RequiresEntry>> = Rc::new(entries);

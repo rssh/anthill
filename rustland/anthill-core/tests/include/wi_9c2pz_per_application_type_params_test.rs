@@ -306,23 +306,25 @@ end
 "#;
 
 /// The SCHEMA carries it, not just the citation: a second clause typing `y` `Int64` makes
-/// the relation DISJOINT, which the cross-clause lub can only see if the `eq` clause
-/// published `String` for `y`.
+/// the column of some type, which the cross-clause join can only see if the `eq` clause
+/// published `String` for `y` — and `x`, `String` in both clauses, stays `String`.
 ///
 /// CONTROL: back out the instantiation and this test fails, on column `x` reported disjoint
-/// instead of `y`. Backing out the resolve step made it load clean until WI-20261013-WF14Z
-/// and no longer does: `name(?y)` types `y` `String` in clause one itself. The resolve step
-/// is measured by [`wi9c2pz_the_two_columns_keep_their_own_types`] and
-/// [`wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to`].
+/// instead of `y` (measured when a column with no join was refused at the citation,
+/// "disjoint types for column"; since WI-20261013-WF14Z's sixth part it is of some type,
+/// and the control was not measured again). Backing out the resolve step made it load
+/// clean until WI-20261013-WF14Z and no longer does: `name(?y)` types `y` `String` in clause
+/// one itself. The resolve step is measured by [`wi9c2pz_the_two_columns_keep_their_own_types`]
+/// and [`wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to`].
 #[test]
 fn wi9c2pz_the_inherited_type_reaches_the_published_schema() {
     let errs = try_load_kb_with(EQ_PROPAGATES_TWO_CLAUSE)
         .err()
-        .expect("a String `y` column against an Int64 one must be a disjoint refusal");
+        .expect("a String `y` column against an Int64 one must be refused where it is read");
     let text = errs.join("\n");
     assert!(
-        text.contains("disjoint types for column `y`"),
-        "the lub must report column `y` disjoint — `x` is String in both clauses; got:\n{text}"
+        text.contains("expected List[T = (x: String, y: String)], got List[T = (x: String, y: ?y)]"),
+        "`y` of some type and `x` a String; got:\n{text}"
     );
 }
 

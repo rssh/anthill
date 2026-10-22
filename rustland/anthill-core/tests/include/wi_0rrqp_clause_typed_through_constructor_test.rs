@@ -71,7 +71,7 @@
 //! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
 //! `where_an_argument_fixes_it_the_other_instances_are_dropped`,
 //! `a_bound_at_the_callers_parameter_is_checked_through_its_domain_only`,
-//! and the three stated limits at
+//! and the stated limits at
 //! the end of the file. Each says why at its site.
 //!
 //! WI-20261013-WF14Z's rows here, where a rule goal now types its arguments by the callee's
@@ -89,16 +89,35 @@
 //! with that ticket's key backed out (a selection kept by the required sort alone), it
 //! fails by the call's refusal, "two providers are selected".
 //!
+//! ## A slot the argument's type says
+//!
+//! A stated limit here until WI-20261013-WF14Z's fifth part: cited with an argument whose
+//! own type says a named slot (`mk() -> Box[T = Int64, O = Ascending]`), from an operation
+//! that holds no requirement, the clause's read derived `Int64`'s own. It is read off the
+//! argument now, as a call reads it (`carried_slot_selection`):
+//! [`a_slot_the_arguments_own_type_says_is_read`],
+//! [`the_slot_is_read_wherever_the_clause_states_its_requirement`],
+//! [`the_arguments_slot_outranks_the_callers_requirement`],
+//! [`each_of_two_slots_on_one_spec_is_read_off_the_argument`],
+//! [`a_slot_whose_spec_has_an_element_the_read_leaves_open_is_read`], and `agree` in
+//! [`one_provider_or_a_named_parameter_is_read`] — each FAILS with the reading backed
+//! out, by `-1`, or by the caller's `W`'s `4` for the third. Slots that may name two
+//! providers are refused, at the citation and in an operation body alike
+//! ([`two_slots_that_may_name_two_providers_are_refused`]), and a dot through another
+//! variable's slot is the spec's call ([`a_dot_through_another_variables_slot_is_the_call`]).
+//!
 //! ## Stated limits
 //!
-//! Three, each a row at the end of the file that passes either way:
+//! Four, each a row at the end of the file:
 //!
-//!   * A SLOT THE ARGUMENT'S OWN TYPE SAYS is not read by a citation from an operation
-//!     that holds no requirement.
 //!   * A SLOT AT THE CITING OPERATION'S OWN TYPE PARAMETER is refused for a call and not
-//!     for a citation.
+//!     for a citation. Passes either way.
 //!   * A DRIVER RUN AS A RULE'S GOAL answers `Int64`'s own. So the rows are driven through
-//!     the interpreter, as P7VP4's are.
+//!     the interpreter, as P7VP4's are. Passes either way.
+//!   * A SLOT THE CLAUSE'S BOUND WRITES is not read off the argument, as the operation-body
+//!     twin does not read it. Passes either way.
+//!   * A CALL IN A VALUE SLOT — the dot's, and its written twin — answers by the values and
+//!     is not routed through the slot: WI-20261013-RYDNV's. The other half of the dot's row.
 
 use anthill_core::eval::{self, Interpreter, Value};
 
@@ -1183,21 +1202,159 @@ fn a_citation_outside_the_sort_reads_the_slot_its_argument_carries() {
     assert_eq!(at("called"), -4, "CONTROL, either way: the member operation's call");
 }
 
-/// STATED LIMIT — passes either way. Cited with an argument whose OWN type says the slot,
-/// from an operation that holds no requirement, the clause's condition is read at the
-/// element's type alone: `Int64`'s own `-1`, where the member operation called on the same
-/// value answers through the value's `Ascending`. The clause's typing says `?p` is a
-/// `Box[T = t, O = o]` and its condition is `WeakOrd[T = t]`; nothing says that `o` is what
-/// answers it.
+/// A SLOT THE ARGUMENT'S OWN TYPE SAYS IS READ, by a citation from an operation that holds no
+/// requirement, as the member operation's call reads it: `mk()`'s `Box[T = Int64, O =
+/// Ascending]` answers `-4` both ways. The clause's typing says `?p` is a `Box[T = t, O = o]`
+/// and its read is `WeakOrd[T = t]`, which is what `O` states at those bindings, so the read is
+/// answered by `o` as the citation fixes it (`carried_slot_selection`; WI-20261013-WF14Z,
+/// 068-implementation §6.7). FAILS with that reading backed out: the citation derived
+/// `Int64`'s own `-1` from the values.
 #[test]
-fn a_slot_the_arguments_own_type_says_is_not_read() {
+fn a_slot_the_arguments_own_type_says_is_read() {
     let ns = "wi0rrqp.own";
     let src = program(ns, &format!("{BOX}{OUTSIDE}"));
     let at = |entry: &str| drive(&src, &format!("{ns}.Out.{entry}"));
     assert_eq!(
         (at("citedAtItsType"), at("calledAtItsType")),
-        (-1, -4),
-        "the citation derives `Int64`'s own; the call reads the value's `Ascending`",
+        (-4, -4),
+        "the citation and the call both read the value's `Ascending`",
+    );
+}
+
+/// The clause and the citation in the other shapes the slot is read through, each beside the
+/// operation-body twin it answers as. `compare(1, 5)` is `-4` under `Ascending`, `4` under
+/// `Descending`, `-1` for `Int64`'s own.
+const CARRIED: &str = r#"
+  sort CBox
+    sort T = ?
+    requires O: WeakOrd[T]
+    entity cbox(a: T, b: T)
+    rule order(?p, ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    rule atLiterals(?p, ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(1, 5, ?c)
+    rule atColumn(?p, ?x, ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    rule boundSelf(?p: Self, ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    rule positional(?p, ?c) :- ?p <=> cbox(?x, ?y), WeakOrd.compare(?x, ?y, ?c)
+    rule written(?p: CBox[T = Int64, O = Descending], ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    operation direct(p: Self) -> Int64 = match p case cbox(a, b) -> WeakOrd.compare(a, b)
+    operation directAtLiterals(p: Self) -> Int64 = match p case cbox(a, b) -> WeakOrd.compare(1, 5)
+  end
+  sort AscBox = CBox[T = Int64, O = Ascending]
+  sort Cite
+    import NS.CBox.{cbox}
+    operation asc() -> CBox[T = Int64, O = Ascending] = cbox(a: 1, b: 5)
+    operation desc() -> CBox[T = Int64, O = Descending] = cbox(a: 1, b: 5)
+    operation aliased() -> AscBox = cbox(a: 1, b: 5)
+    operation atLiterals() -> Int64 effects {Error, Error[EmptyStream]} = CBox.atLiterals(asc()).head.c
+    operation atLiteralsCalled() -> Int64 = CBox.directAtLiterals(asc())
+    operation atColumn() -> Int64 effects {Error, Error[EmptyStream]} = CBox.atColumn(asc(), 1).head.c
+    operation atColumnFree() -> Int64 effects {Error, Error[EmptyStream]} = CBox.atColumn(asc()).head.c
+    operation boundSelf() -> Int64 effects {Error, Error[EmptyStream]} = CBox.boundSelf(asc()).head.c
+    operation positional() -> Int64 effects {Error, Error[EmptyStream]} = CBox.positional(asc()).head.c
+    operation alias() -> Int64 effects {Error, Error[EmptyStream]} = CBox.order(aliased()).head.c
+    operation aliasCalled() -> Int64 = CBox.direct(aliased())
+    operation viaLet() -> Int64 effects {Error, Error[EmptyStream]} =
+      let b = desc()
+      CBox.order(b).head.c
+    operation param(b: CBox[T = Int64, O = Descending]) -> Int64 effects {Error, Error[EmptyStream]} =
+      CBox.order(b).head.c
+    operation viaParam() -> Int64 effects {Error, Error[EmptyStream]} = param(desc())
+    operation paramCalled(b: CBox[T = Int64, O = Descending]) -> Int64 = CBox.direct(b)
+    operation viaParamCalled() -> Int64 = paramCalled(desc())
+    operation written() -> Int64 effects {Error, Error[EmptyStream]} = CBox.written(desc()).head.c
+    operation writtenOp(p: CBox[T = Int64, O = Descending]) -> Int64 =
+      match p case cbox(a, b) -> WeakOrd.compare(a, b)
+    operation writtenCalled() -> Int64 = writtenOp(desc())
+  end
+  sort Holder
+    import NS.Cite.{asc}
+    requires W: WeakOrd[T = Int64]
+    operation cited() -> Int64 effects {Error, Error[EmptyStream]} = CBox.order(asc()).head.c
+    operation called() -> Int64 = CBox.direct(asc())
+  end
+  sort HolderDriver
+    operation cited() -> Int64 effects {Error, Error[EmptyStream]} = Holder.cited[W = Descending]()
+    operation called() -> Int64 = Holder.called[W = Descending]()
+  end
+"#;
+
+/// The slot is read where the clause's own typing says the read is its requirement, wherever
+/// the variable stands and however the argument's type is written: the witness a column, a
+/// `Self` bound, positional fields, a type alias, a `let`, a parameter. A read at another type
+/// (`compare(1, 5, ?c)`) is not the slot's, as in the member operation. FAILS with the reading
+/// backed out: `atColumn`, `atColumnFree`, `boundSelf`, `positional`, `alias`, `viaLet` and
+/// `viaParam`, each `-1`; the operation-body twins and `atLiterals` pass either way.
+#[test]
+fn the_slot_is_read_wherever_the_clause_states_its_requirement() {
+    let ns = "wi0rrqp.carried";
+    let src = program(ns, CARRIED);
+    let at = |entry: &str| drive(&src, &format!("{ns}.Cite.{entry}"));
+    for (entry, twin, answer) in [
+        ("atLiterals", "atLiteralsCalled", -1),
+        ("atColumn", "aliasCalled", -4),
+        ("atColumnFree", "aliasCalled", -4),
+        ("boundSelf", "aliasCalled", -4),
+        ("positional", "aliasCalled", -4),
+        ("alias", "aliasCalled", -4),
+        ("viaLet", "viaParamCalled", 4),
+        ("viaParam", "viaParamCalled", 4),
+    ] {
+        assert_eq!((at(entry), at(twin)), (answer, answer), "`{entry}` beside `{twin}`");
+    }
+}
+
+/// THE ARGUMENT'S SLOT OUTRANKS THE CALLER'S REQUIREMENT, as a call's does: `Holder` holds
+/// `W: WeakOrd[T = Int64]`, selected `Descending`, and the argument's type says `Ascending`.
+/// FAILS with the reading backed out: the citation answered through `W`, `4`.
+#[test]
+fn the_arguments_slot_outranks_the_callers_requirement() {
+    let ns = "wi0rrqp.holder";
+    let src = program(ns, CARRIED);
+    let at = |entry: &str| drive(&src, &format!("{ns}.HolderDriver.{entry}"));
+    assert_eq!((at("cited"), at("called")), (-4, -4));
+}
+
+/// TWO SLOTS ON ONE SPEC, read off one argument by a citation from outside the sort: each
+/// clause's read is its own slot's, `OK`'s for the keys and `OV`'s for the values, at one
+/// element type and at two, and in one clause that reads both. FAILS with the reading backed
+/// out: every answer `-1` (`String`'s own for `"a"`, `"b"`).
+#[test]
+fn each_of_two_slots_on_one_spec_is_read_off_the_argument() {
+    let ns = "wi0rrqp.pairout";
+    let src = program(
+        ns,
+        r#"
+  sort StrSeven
+    provides Ord[T = String]
+    operation compare(a: String, b: String) -> Int64 = 7
+  end
+  sort Pair2
+    sort K = ?
+    sort V = ?
+    requires OK: WeakOrd[T = K]
+    requires OV: WeakOrd[T = V]
+    entity entry(k1: K, k2: K, v1: V, v2: V)
+    rule keyOrder(?p, ?c) :- ?p <=> entry(k1: ?a, k2: ?b, v1: ?, v2: ?), WeakOrd.compare(?a, ?b, ?c)
+    rule valOrder(?p, ?c) :- ?p <=> entry(k1: ?, k2: ?, v1: ?a, v2: ?b), WeakOrd.compare(?a, ?b, ?c)
+    rule both(?p, ?c, ?d) :- ?p <=> entry(k1: ?a, k2: ?b, v1: ?u, v2: ?v), WeakOrd.compare(?a, ?b, ?c), WeakOrd.compare(?u, ?v, ?d)
+  end
+  sort Driver
+    import NS.Pair2.{entry}
+    operation ints() -> Pair2[K = Int64, V = Int64, OK = Descending, OV = Ascending] =
+      entry(k1: 1, k2: 5, v1: 1, v2: 5)
+    operation mixed() -> Pair2[K = Int64, V = String, OK = Descending, OV = StrSeven] =
+      entry(k1: 1, k2: 5, v1: "a", v2: "b")
+    operation key() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.keyOrder(ints()).head.c
+    operation val() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.valOrder(ints()).head.c
+    operation bothKey() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.both(ints()).head.c
+    operation bothVal() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.both(ints()).head.d
+    operation mixedVal() -> Int64 effects {Error, Error[EmptyStream]} = Pair2.valOrder(mixed()).head.c
+  end
+"#,
+    );
+    let at = |entry: &str| drive(&src, &format!("{ns}.Driver.{entry}"));
+    assert_eq!(
+        [at("key"), at("val"), at("bothKey"), at("bothVal"), at("mixedVal")],
+        [4, -4, 4, -4, 7]
     );
 }
 
@@ -1297,5 +1454,283 @@ fn each_clause_reaches_its_own_of_two_requirements_on_one_sort() {
         let src = program(ns, &pair.replace("BRACKET", bracket).replace("ENTRY", entry));
         assert_eq!(drive(&src, &format!("{ns}.Driver.key")), key, "`keyOrder`, under `[{bracket}]`");
         assert_eq!(drive(&src, &format!("{ns}.Driver.val")), val, "`valOrder`, under `[{bracket}]`");
+    }
+}
+
+/// A SLOT WHOSE SPEC HAS AN ELEMENT THE READ LEAVES OPEN is read too: `Conv.conv(?x, ?c)`
+/// decides `A` from its argument and leaves `B`, and `requires C: Conv[A = T, B = Int64]`
+/// states both, so the read is the slot's and is resolved as the slot states it — `PlusTen`'s
+/// `11`, as the member operation answers. FAILS, the citation floundering between `PlusOne`
+/// and `PlusTen`, with the reading backed out and with each of two halves of it: the read
+/// compared with the slot whole, its open `B` against the slot's `Int64`
+/// (`slot_states_the_read`), and the read's own goal resolved, whose open `B` the provision's
+/// `Int64` refuses (`carried_slot_selection`'s goal).
+#[test]
+fn a_slot_whose_spec_has_an_element_the_read_leaves_open_is_read() {
+    let ns = "wi0rrqp.conv";
+    let src = program(
+        ns,
+        r#"
+  sort Conv
+    sort A = ?
+    sort B = ?
+    operation conv(a: A) -> B
+  end
+  sort PlusOne
+    import anthill.prelude.Numeric.{add}
+    provides Conv[A = Int64, B = Int64]
+    operation conv(a: Int64) -> Int64 = add(a, 1)
+  end
+  sort PlusTen
+    import anthill.prelude.Numeric.{add}
+    provides Conv[A = Int64, B = Int64]
+    operation conv(a: Int64) -> Int64 = add(a, 10)
+  end
+  sort Box
+    sort T = ?
+    requires C: Conv[A = T, B = Int64]
+    entity box(a: T)
+    rule r(?p, ?c) :- ?p <=> box(a: ?x), Conv.conv(?x, ?c)
+    operation direct(p: Self) -> Int64 = match p case box(a) -> Conv.conv(a)
+  end
+  sort Out
+    import NS.Box.{box}
+    operation mk() -> Box[T = Int64, C = PlusTen] = box(a: 1)
+    operation cited() -> Int64 effects {Error, Error[EmptyStream]} = Box.r(mk()).head.c
+    operation called() -> Int64 = Box.direct(mk())
+  end
+"#,
+    );
+    let at = |entry: &str| drive(&src, &format!("{ns}.Out.{entry}"));
+    assert_eq!((at("cited"), at("called")), (11, 11));
+}
+
+/// A DOT THROUGH ANOTHER VARIABLE'S SLOT IS THE CALL (user, 2026-10-22): in `orderDot`, `?x`
+/// is typed `t` and `?p`'s `O` states `WeakOrd[T = t]`, so `?x.compare(?y)` is
+/// `WeakOrd.compare(?x, ?y)`, as `a.compare(b)` is in a member of `Box`. It was data, and the
+/// citation handed back the term `1.compare(5)` declared an `Int64`. STATED LIMIT, the other
+/// half: in a value slot the call answers as its written twin `orderVal` there does, by the
+/// values, `Int64`'s own `-1` where the goal-position `order` answers `-4`; weaving a value
+/// slot's call through the clause's condition is WI-20261013-RYDNV's. FAILS with the dot's
+/// reading backed out (`find_spec_op_for_clause_slot`): `dotOutside` is the term.
+#[test]
+fn a_dot_through_another_variables_slot_is_the_call() {
+    let ns = "wi0rrqp.dot";
+    let src = program(
+        ns,
+        &format!(
+            "{BOX}  sort Dots\n    import NS.Box.{{box}}\n    \
+             rule orderDot(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), ?c <=> ?x.compare(?y)\n    \
+             rule orderVal(?p, ?c) :- ?p <=> box(a: ?x, b: ?y), ?c <=> WeakOrd.compare(?x, ?y)\n    \
+             operation mk() -> Box[T = Int64, O = Ascending] = box(a: 1, b: 5)\n    \
+             operation dotOutside() -> Int64 effects {{Error, Error[EmptyStream]}} = orderDot(mk()).head.c\n    \
+             operation valOutside() -> Int64 effects {{Error, Error[EmptyStream]}} = orderVal(mk()).head.c\n    \
+             operation goalOutside() -> Int64 effects {{Error, Error[EmptyStream]}} = Box.order(mk()).head.c\n  \
+             end\n"
+        ),
+    );
+    let at = |entry: &str| drive(&src, &format!("{ns}.Dots.{entry}"));
+    assert_eq!(
+        [at("dotOutside"), at("valOutside"), at("goalOutside")],
+        [-1, -1, -4]
+    );
+}
+
+/// STATED LIMIT — passes either way. A slot the clause's bound writes is not read off the
+/// argument: `written`'s `?p: CBox[T = Int64, O = Descending]` makes the read `Int64`'s own,
+/// `-1`, as the operation-body twin with the same parameter type answers.
+#[test]
+fn a_slot_the_clause_writes_is_not_read_off_the_argument() {
+    let ns = "wi0rrqp.writtenslot";
+    let src = program(ns, CARRIED);
+    let at = |entry: &str| drive(&src, &format!("{ns}.Cite.{entry}"));
+    assert_eq!((at("written"), at("writtenCalled")), (-1, -1));
+}
+
+/// Two `CBox` values in one clause, or two `CBox` parameters of one operation: a read at
+/// their shared element is stated by both values' `O`, and is refused where they may name two
+/// providers (user, 2026-10-22).
+const TWO_BOXES: &str = r#"
+  sort CBox
+    sort T = ?
+    requires O: WeakOrd[T]
+    entity cbox(a: T, b: T)
+    rule two(?p, ?q, ?c) :- ?p <=> cbox(a: ?x, b: ?y), ?q <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    rule order(?p, ?c) :- ?p <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+    operation direct(p: Self) -> Int64 = match p case cbox(a, b) -> WeakOrd.compare(a, b)
+  end
+  sort Util
+    operation cmp[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)
+  end
+  sort Cite
+    import NS.CBox.{cbox}
+    operation asc() -> CBox[T = Int64, O = Ascending] = cbox(a: 1, b: 5)
+    operation desc() -> CBox[T = Int64, O = Descending] = cbox(a: 1, b: 5)
+    OPS
+  end
+"#;
+
+/// TWO SLOTS THAT MAY NAME TWO PROVIDERS ARE REFUSED, in every spelling of the read: the
+/// citation whose arguments fix the two to two witnesses, or to a witness and the caller's
+/// own parameter; the operation body that reads one goal through two parameters' slots, by
+/// a call to the spec operation and by a call that forwards the requirement. Before, the
+/// citation answered `Int64`'s own (`-1`) and the body the first parameter's (`-4`, `q`'s
+/// values compared by `p`'s order). FAILS with each refusal backed out: the citation's
+/// (`carried_slot_reading`), the body read's (`contested_slot_read`), the forward's
+/// (`build_dep_projection`).
+#[test]
+fn two_slots_that_may_name_two_providers_are_refused() {
+    let at = |ns: &str, ops: &str| {
+        crate::common::load_errors_of(&program(ns, &TWO_BOXES.replace("OPS", ops)))
+    };
+    let two_witnesses = "fix two requirement slots that state it, to `wi0rrqp.twocite.Ascending` \
+                         and to `wi0rrqp.twocite.Descending`, and the read names neither";
+    let mixed = "to `wi0rrqp.twomixed.Ascending` and to the caller's `?P`";
+    let body = "`p`'s slot `O` and `q`'s answer it, two parameters of one carrier, and the read \
+                names neither";
+    let forward = "the frame's slots for `anthill.prelude.WeakOrd[T = \
+                   wi0rrqp.twofwd.Util.cmp.A]`: `p`'s slot `O` and `q`'s answer it, two \
+                   parameters of one carrier, and the read names neither";
+    for (ns, ops, says) in [
+        (
+            "wi0rrqp.twocite",
+            "operation cited() -> Int64 effects {Error, Error[EmptyStream]} = \
+             CBox.two(asc(), desc()).head.c",
+            two_witnesses,
+        ),
+        (
+            "wi0rrqp.twomixed",
+            "operation mixed[P](q: CBox[T = Int64, O = P]) -> Int64 effects {Error, \
+             Error[EmptyStream]} = CBox.two(asc(), q).head.c",
+            mixed,
+        ),
+        (
+            "wi0rrqp.twobody",
+            "operation twoOp[A](p: CBox[T = A], q: CBox[T = A]) -> Int64 =\n      \
+             match q case cbox(a, b) -> WeakOrd.compare(a, b)",
+            body,
+        ),
+        (
+            "wi0rrqp.twofwd",
+            "operation twoFwd[A](p: CBox[T = A], q: CBox[T = A]) -> Int64 =\n      \
+             match q case cbox(a, b) -> Util.cmp(a, b)",
+            forward,
+        ),
+    ] {
+        let errors = at(ns, ops);
+        assert!(errors.len() == 1 && errors[0].contains(says), "{ns}: {errors:#?}");
+    }
+}
+
+/// THE OTHER TWO COLLISIONS of the spec's rule (kernel-language §5.2: a slot another entry of
+/// the frame already covers is refused rather than guessed), each refused with what collides:
+/// a cited parameter whose slot a requirement the caller writes covers (`Holder`'s `W`), and
+/// a read two slots of ONE parameter's carrier state at one type (`Semi`'s `OA` and `OB`).
+/// Both loaded before, answering from the caller's `W` and from `OA`. Found by /code-review,
+/// which also found their first wording naming one parameter twice. FAILS with the
+/// citation's refusal of an unheld slot backed out (`CarriedMisfit::Unheld`), by `Holder`,
+/// and with the body's (`contested_slot_read`), by `Semi`.
+#[test]
+fn a_collision_with_the_callers_requirement_or_a_second_slot_is_refused() {
+    let holder = crate::common::load_errors_of(&program(
+        "wi0rrqp.holderslot",
+        &format!(
+            "{BOX}  sort Holder\n    import NS.Box.{{box}}\n    requires W: WeakOrd[T = Int64]\n    \
+             operation cited(b: Box[T = Int64]) -> Int64 effects {{Error, Error[EmptyStream]}} = \
+             Box.order(b).head.c\n  end\n"
+        ),
+    ));
+    assert!(
+        holder.len() == 1
+            && holder[0].contains(
+                "expected the caller's slot `b.O`, whose requirement a read of the clause is, got \
+                 a requirement the caller writes answers it"
+            ),
+        "{holder:#?}"
+    );
+    let semi = crate::common::load_errors_of(&program(
+        "wi0rrqp.semislots",
+        "  sort Semi\n    sort T = ?\n    requires OA: WeakOrd[T]\n    requires OB: WeakOrd[T]\n    \
+         entity semi(a: T, b: T)\n  end\n  sort User\n    import NS.Semi.{semi}\n    \
+         operation readA(s: Semi[T = Int64]) -> Int64 = match s case semi(a, b) -> WeakOrd.compare(a, b)\n  \
+         end\n",
+    ));
+    assert!(
+        semi.len() == 1
+            && semi[0].contains("`s`'s slots `OA` and `OB` answer it, two slots of one carrier at one type"),
+        "{semi:#?}"
+    );
+}
+
+/// CONTROLS, beside the refusals: two slots fixed to one witness route it; a call or a
+/// citation that names one of two parameters reads that parameter's slot, and one whose slot
+/// the frame holds for the other is refused, as such a call is (EE0EP's
+/// `two_parameters_of_one_carrier_are_refused`). FAILS with the citation's reading backed out,
+/// by `agree` (`-1`), and with a parameter's own slot taken as contested, by `first`.
+#[test]
+fn one_provider_or_a_named_parameter_is_read() {
+    let ns = "wi0rrqp.twoone";
+    let src = program(
+        ns,
+        &TWO_BOXES.replace(
+            "OPS",
+            "operation agree() -> Int64 effects {Error, Error[EmptyStream]} = \
+             CBox.two(asc(), asc()).head.c\n    \
+             operation first[A](b1: CBox[T = A], b2: CBox[T = A]) -> Int64 effects {Error, \
+             Error[EmptyStream]} = CBox.order(b1).head.c\n    \
+             operation runFirst() -> Int64 effects {Error, Error[EmptyStream]} = first(asc(), desc())\n    \
+             operation viaP[A](p: CBox[T = A], q: CBox[T = A]) -> Int64 = CBox.direct(p)\n    \
+             operation runViaP() -> Int64 = viaP(desc(), asc())",
+        ),
+    );
+    let at = |entry: &str| drive(&src, &format!("{ns}.Cite.{entry}"));
+    assert_eq!([at("agree"), at("runFirst"), at("runViaP")], [-4, -4, 4]);
+    let errors = crate::common::load_errors_of(&program(
+        "wi0rrqp.twosecond",
+        &TWO_BOXES.replace(
+            "OPS",
+            "operation second[A](b1: CBox[T = A], b2: CBox[T = A]) -> Int64 effects {Error, \
+             Error[EmptyStream]} = CBox.order(b2).head.c",
+        ),
+    ));
+    assert!(
+        errors.len() == 1
+            && errors[0].contains("expected the caller's slot `b2.O`, whose requirement a read \
+                                   of the clause is, got the frame holds one slot for it and \
+                                   `b1.O`, two parameters of one carrier"),
+        "{errors:#?}"
+    );
+}
+
+/// A SLOT FIXED TO A WITNESS THAT DOES NOT ANSWER THE READ IS REFUSED, at the citation, as the
+/// member operation's call is: `mk() -> Box[T = String, O = Descending]` names a witness of
+/// `WeakOrd[T = Int64]` only. FAILS with the refusal backed out (`settle_citation_routes`):
+/// the citation loads and the read derives `String`'s own.
+#[test]
+fn a_slot_fixed_to_a_witness_that_does_not_answer_is_refused() {
+    let at = |ns: &str, op: &str| {
+        crate::common::load_errors_of(&program(
+            ns,
+            &format!(
+                "{BOX}  sort Out\n    import NS.Box.{{box}}\n    \
+                 operation mk() -> Box[T = String, O = Descending] = box(a: \"x\", b: \"y\")\n    \
+                 {op}\n  end\n"
+            ),
+        ))
+    };
+    for (ns, op, callee) in [
+        (
+            "wi0rrqp.misfitcite",
+            "operation cited() -> Int64 effects {Error, Error[EmptyStream]} = Box.order(mk()).head.c",
+            "order",
+        ),
+        ("wi0rrqp.misfitcall", "operation called() -> Int64 = Box.directOf(mk())", "directOf"),
+    ] {
+        let errors = at(ns, op);
+        let says = format!(
+            "Descending provides anthill.prelude.WeakOrd, but not at the bindings this call to \
+             {ns}.Box.{callee} needs"
+        );
+        assert!(errors.len() == 1 && errors[0].contains(&says), "{callee}: {errors:#?}");
     }
 }

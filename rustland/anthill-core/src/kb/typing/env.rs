@@ -481,6 +481,11 @@ impl TypingEnv {
         self.debruijn_types.get(&idx).cloned()
     }
 
+    /// Every type the enclosing rule's clause gives a variable, in no order.
+    pub(super) fn debruijn_types(&self) -> impl Iterator<Item = &Value> {
+        self.debruijn_types.values()
+    }
+
     /// WI-424/WI-942 — install the body's param-var → rigid map (see the
     /// [`Self::param_rigids`] field doc). `sort_rigid_len` is how many leading
     /// entries belong to the enclosing SORT; the rest are the operation's own.

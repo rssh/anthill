@@ -917,7 +917,7 @@ fn check_slot_witnesses_provide(
 /// WI-456 — why a slot binding written in a TYPE makes no selection, with no call site in
 /// it: [`witness_value_slot_selections`] reports it as a [`TypeError`] at the call's span,
 /// and the carrier path ([`carried_slot`]) has no call site to name.
-enum SlotValueRefusal {
+pub(super) enum SlotValueRefusal {
     NotASort { spec: Symbol },
     Unindexable { owner: Symbol, binder: Symbol },
 }
@@ -977,7 +977,7 @@ fn value_slot_selections(
 
 /// One named slot of `owner` bound to `bound`, as a selection — or `None` when the
 /// binding selects nothing.
-fn slot_selection_of(
+pub(super) fn slot_selection_of(
     kb: &mut KnowledgeBase,
     owner: Symbol,
     slot: crate::kb::NamedRequirementSlot,

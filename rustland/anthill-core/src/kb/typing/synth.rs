@@ -617,6 +617,35 @@ fn scope_requirement_tie(
     None
 }
 
+/// A read a frame slot answers that another parameter's slot answers too
+/// ([`SupplySource::FromParam`]'s `contested`): refused, since the read names no parameter.
+/// `twoOp[A](p: CBox[T = A], q: CBox[T = A]) = match q case cbox(a, b) -> WeakOrd.compare(a,
+/// b)` compared `q`'s fields by `p`'s order.
+pub(super) fn contested_slot_refusal(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+    goal: &SortGoal,
+) -> Option<ResolutionResult> {
+    let SupplySource::FromParam {
+        param,
+        binder,
+        contested: Some(other),
+    } = entry.supply
+    else {
+        return None;
+    };
+    Some(ResolutionResult::NoMatch {
+        goal_text: format_goal(kb, goal),
+        hint: format!(
+            "the frame's slots for `{}`: {}",
+            format_goal(kb, goal),
+            contested_account(kb, param, binder, other)
+        ),
+        spec: goal.spec_sort,
+        forwarded: false,
+    })
+}
+
 pub(super) fn scope_chain_cover(
     kb: &mut KnowledgeBase,
     scope: &ResolutionScope,
@@ -969,6 +998,9 @@ pub(super) fn resolve_inner<'a>(
         // agreeing case (a sub-goal over the SAME param, e.g. the conditional
         // WrapDesc's `Desc[E := GT]`) still resolves FromScope.
         if requires_entry_covers_goal(kb, ar, goal, scope.sigma) {
+            if let Some(refused) = contested_slot_refusal(kb, ar, goal) {
+                return refused;
+            }
             return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                 scope_index: i,
                 spec_sort: goal.spec_sort,
@@ -986,6 +1018,9 @@ pub(super) fn resolve_inner<'a>(
             if ar.required_sort == goal.spec_sort
                 && requires_entry_covers_goal(kb, ar, goal, scope.sigma)
             {
+                if let Some(refused) = contested_slot_refusal(kb, ar, goal) {
+                    return refused;
+                }
                 return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                     scope_index: base + j,
                     spec_sort: goal.spec_sort,
@@ -1013,6 +1048,15 @@ pub(super) fn resolve_inner<'a>(
         // generic body the check had already admitted — `WeakOrd.compare` at `Pair[A, A]`
         // under `requires Ord[A]` (MEASURED, found by /code-review).
         if let Some((scope_index, projection)) = scope_chain_cover(kb, scope, goal) {
+            let entry = scope
+                .available_requires
+                .iter()
+                .chain(scope.sub_goal_requires)
+                .nth(scope_index)
+                .expect("a chain cover is at an entry of the scope");
+            if let Some(refused) = contested_slot_refusal(kb, entry, goal) {
+                return refused;
+            }
             return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                 scope_index,
                 spec_sort: goal.spec_sort,

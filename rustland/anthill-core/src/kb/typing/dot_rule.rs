@@ -443,6 +443,94 @@ pub(super) fn find_spec_op_for_constrained_param(
     })
 }
 
+/// A dot in a rule body on a variable whose type is the carrier a REQUIREMENT SLOT of another
+/// clause variable's type states a spec at: in `sort Box { sort T = ?; requires O:
+/// WeakOrd[T]; entity box(a: T, b: T) }`, `?p <=> box(a: ?x, b: ?y), ?c <=> ?x.compare(?y)`
+/// types `?p` as `Box[T = t, O = o]` and `?x` as `t`, and `o` states `WeakOrd[T = t]`, so
+/// `?x.compare(?y)` is `WeakOrd.compare(?x, ?y)` (user, 2026-10-22) — as `a.compare(b)` in
+/// a member of `Box` is, through `requires O: WeakOrd[T]` on `a: T`. The call then reads the
+/// slot as the written one does: a citation fixes it ([`carried_slot_reading`]).
+///
+/// `None` where no slot states a spec at the receiver's type or none of those declares the
+/// member; a tie between two specs is refused as at a constrained parameter.
+pub(super) fn find_spec_op_for_clause_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_ty: &Value,
+    short: &str,
+    span: Option<Span>,
+) -> Result<Option<Symbol>, TypeError> {
+    if resolved_var(kb, recv_ty).is_none() {
+        return Ok(None);
+    }
+    let types: Vec<Value> = env.debruijn_types().cloned().collect();
+    let mut definers: Vec<(Symbol, Symbol)> = Vec::new();
+    for ty in &types {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, ty) else {
+            continue;
+        };
+        let named = kb.named_requirement_slots(base).to_vec();
+        if named.is_empty() {
+            continue;
+        }
+        let chain = provider_dict_entries(kb, base, None);
+        for slot in named {
+            let Some(spec) = slot.spec_base else { continue };
+            // [`carried_slot`]'s invariant, as [`carried_slot_reading`] holds it.
+            let entry = dict_chain_index(kb, base, &slot)
+                .and_then(|i| chain.entries().get(i).cloned())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "named slot `{}` of `{}` has no dictionary position demanding its \
+                         spec — declaration and dictionary-chain order have drifted",
+                        kb.local_name_of(slot.binder),
+                        kb.qualified_name_of(base),
+                    )
+                });
+            let Some(stated) = slot_spec_at_bindings(kb, base, &entry.spec, &bindings) else {
+                continue;
+            };
+            let Some(goal) = goal_from_requires_entry(kb, &RequiresEntry { spec: stated, ..entry })
+            else {
+                continue;
+            };
+            let Some(carrier) = spec_carrier_param_or_sole(kb, spec) else { continue };
+            let at = binding_for_param(kb, &goal.bindings, carrier, BindingKeyMatch::Label);
+            if !at.is_some_and(|v| values_structurally_equal(kb, v, recv_ty)) {
+                continue;
+            }
+            let spec_term = kb.alloc(Term::Ref(spec));
+            if let Some(op) = crate::kb::load::find_operation_in_scope(kb, spec_term, short) {
+                if !definers.iter().any(|(s, _)| same_sort_canonical(kb, *s, spec)) {
+                    definers.push((spec, op));
+                }
+            }
+        }
+    }
+    if definers.len() <= 1 {
+        return Ok(definers.first().map(|(_, op)| *op));
+    }
+    let tied: Vec<Symbol> = definers.iter().map(|(s, _)| *s).collect();
+    if let Some(winner) = most_refined_spec(kb, &tied) {
+        if let Some((_, op)) = definers
+            .iter()
+            .find(|(s, _)| same_sort_canonical(kb, *s, winner))
+        {
+            return Ok(Some(*op));
+        }
+    }
+    let receiver = match recv_ty {
+        Value::Term { id, .. } => type_display_name(kb, *id),
+        other => format_value_for_goal(kb, other),
+    };
+    Err(TypeError::AmbiguousConstrainedParamMember {
+        span,
+        member: kb.intern(short),
+        receiver,
+        specs: tied,
+    })
+}
+
 /// WI-1119 — of the specs that constrain the receiver's type parameter, those declaring
 /// `short`, paired with the operation each declares. [`find_spec_op_for_constrained_param`]
 /// owns the rule; this is the member filter over [`constraining_specs_for_param`]'s walk.

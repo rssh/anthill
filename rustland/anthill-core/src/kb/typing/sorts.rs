@@ -408,8 +408,9 @@ pub(super) fn type_check_sorts_collect(
     // `settle_citation_routes`, so a citation routes the inferred reads as the written ones.
     infer_rule_body_requirements(kb);
     // WI-20260911-5G28A S2: every rule read is now routable, so the citations queued while
-    // the operation bodies were typed can be routed (`settle_citation_routes`).
-    settle_citation_routes(kb);
+    // the operation bodies were typed can be routed (`settle_citation_routes`). What it
+    // refuses names its file, so it is pushed with the anchored errors below.
+    let citations_refused = settle_citation_routes(kb);
 
     // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
     // handles a rule that DECLARES its requirement (`requires(X)` → find_dictionary);
@@ -442,7 +443,7 @@ pub(super) fn type_check_sorts_collect(
     // step with `errors`. Without it both this pass's errors render a bare byte offset,
     // which names nothing — measured on `:- 42`, which reported `at 98..100`.
     sources.resize(errors.len(), None);
-    for (err, src) in check_rule_body_goal_readings(kb) {
+    for (err, src) in check_rule_body_goal_readings(kb).into_iter().chain(citations_refused) {
         errors.push(err);
         sources.push(src);
     }

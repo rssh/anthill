@@ -621,6 +621,43 @@ pub(super) fn check_operation_bodies(
                         receiver_param: None,
                     });
                 }
+                // TWO PARAMETERS OF ONE CARRIER, A READ THAT NAMES NEITHER: refused, on the
+                // stored tree, once per body ([`contested_slot_read`]).
+                // Only a frame that holds a contested slot can have such a read.
+                let contested_frame = op_requires_chain_rc(kb, op.op_sym).iter().any(|e| {
+                    matches!(
+                        e.supply,
+                        SupplySource::FromParam {
+                            contested: Some(_),
+                            ..
+                        }
+                    )
+                });
+                let read = contested_frame
+                    .then(|| contested_slot_read(&result.node))
+                    .flatten();
+                if let Some((call, slot)) = read {
+                    if let SupplySource::FromParam {
+                        param,
+                        binder,
+                        contested: Some(other),
+                    } = slot.supply
+                    {
+                        errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span: Some(call.span.span),
+                            context: TypeErrorContext::OperationArgument {
+                                op_name: op.op_sym,
+                                param,
+                            },
+                            expected: format!(
+                                "one slot of the frame answering a read of `{}`",
+                                kb.qualified_name_of(slot.required_sort)
+                            ),
+                            actual: contested_account(kb, param, binder, other),
+                        });
+                    }
+                }
                 // WI-20260919-N31XX (proposal 065, "The rule") — A RIGID READ AS A VALUE
                 // NEEDS A `requires TypeValue[T = B]` IN SCOPE.
                 //

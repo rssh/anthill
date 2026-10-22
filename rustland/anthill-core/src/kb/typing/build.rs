@@ -764,6 +764,16 @@ pub(super) fn build_type(
                         return;
                     }
                 }
+            } else if env.in_rule_body() {
+                // A rule variable typed by a variable a requirement slot of another clause
+                // variable's type constrains ([`find_spec_op_for_clause_slot`]).
+                match find_spec_op_for_clause_slot(kb, &env, &recv.ty, &short, dot_span) {
+                    Ok(found) => found,
+                    Err(e) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                }
             } else {
                 None
             };

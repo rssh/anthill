@@ -1575,6 +1575,44 @@ pub(super) fn surviving_dot_apply(
     None
 }
 
+/// The first call of a typed body read through a frame slot another parameter's slot
+/// contests ([`SupplySource::FromParam`]'s `contested`), in source order: the call and the
+/// slot it was read through. The user's decision of 2026-09-22 refuses two parameters of
+/// one carrier; a call that needs the second parameter's own slot is refused where it is
+/// typed, and this is the read that names no parameter, which the first one answered.
+pub(super) fn contested_slot_read(
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Rc<NodeOccurrence>, RequiresEntry)> {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(node) = stack.pop() {
+        let NodeKind::Expr {
+            expr,
+            classification,
+            ..
+        } = &node.kind
+        else {
+            continue;
+        };
+        if let Some(CallClass::DeferToRequirement { resolved_spec, .. }) =
+            classification.borrow().as_deref()
+        {
+            if matches!(
+                resolved_spec.supply,
+                SupplySource::FromParam {
+                    contested: Some(_),
+                    ..
+                }
+            ) {
+                return Some((Rc::clone(&node), resolved_spec.clone()));
+            }
+        }
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        crate::kb::node_occurrence::for_each_child(expr, |child| children.push(Rc::clone(child)));
+        stack.extend(children.into_iter().rev());
+    }
+    None
+}
+
 /// WI-20260919-N31XX (proposal 065, "The rule") — the type parameters this body is
 /// ALLOWED to read as values: those `B` for which `TypeValue[T = B]` stands among the
 /// requirements in scope.

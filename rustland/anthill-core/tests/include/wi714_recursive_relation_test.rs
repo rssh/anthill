@@ -296,6 +296,10 @@ end
 /// relaxation applies ONLY where a clause carries no information — it must never
 /// silently widen a real conflict (WI-714 CORE piece 3: "a disjoint pair with no lub
 /// is a LOAD error, never a silent widen to Term").
+///
+/// Since WI-20261013-WF14Z's sixth part the column is of some type (068-implementation
+/// §6.8) — not `Term`, an unknown of the citation's own — and the load error is at the
+/// read that asks for a `String`, where it was at the citation, "disjoint types for column".
 #[test]
 fn wi714_disjoint_concrete_column_types_still_reject() {
     let src = r#"
@@ -320,8 +324,8 @@ end
     let errs = try_load_kb_with(src).err().unwrap_or_default();
     assert!(
         errs.iter()
-            .any(|e| e.contains("disjoint types for column") || e.contains("common column type")),
+            .any(|e| e.contains("expected List[T = String], got List[T = (x: ?x)]")),
         "two clauses typing a column at genuinely disjoint CONCRETE types must stay a \
-         loud load error, got: {errs:?}"
+         loud load error where the column is read, got: {errs:?}"
     );
 }

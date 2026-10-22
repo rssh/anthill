@@ -156,6 +156,23 @@ pub fn build_dep_projection(
         (0..caller_requires.len()).find(|&i| entries_cover(kb, &caller_requires[i], dep, disambig))
     };
     if let Some(i) = chosen {
+        // A slot another unwritten slot contests answers the dep for both, and nothing in the
+        // call says which: refused, as the body's own read is. Not a NAMED slot of the
+        // callee's sort (named, and `Withhold` — [`rung_for_dep`]): that one is the
+        // argument's, `CBox.direct(p)` reading `p`'s, and the call naming the parameter whose
+        // slot the screen dropped is refused where it is typed (`AmbiguousWithFrame`). An
+        // anonymous requirement on a sort that also names a slot of its spec is no argument's.
+        let argument_slot = dep.binder.is_some() && matches!(rung, DefaultRung::Withhold);
+        let contested = (!argument_slot)
+            .then(|| goal_from_requires_entry(kb, dep))
+            .flatten()
+            .and_then(|goal| contested_slot_refusal(kb, &caller_requires.entries()[i], &goal));
+        if let Some(refused) = contested {
+            if let Some(out) = s3_failure_out {
+                *out = Some(refused);
+            }
+            return None;
+        }
         let name = caller_requires.name_at(kb, i)?;
         return Some(build_req_var_ref(kb, syms, name));
     }

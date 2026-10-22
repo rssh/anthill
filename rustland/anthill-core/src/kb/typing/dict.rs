@@ -1878,7 +1878,9 @@ pub(super) fn param_supplied_slot(
     // `FromParam { param: s, binder: O }` entry, the value `s.P` answers false.
     //
     op_requires_chain_rc(kb, op).iter().any(|e| match e.supply {
-        SupplySource::FromParam { param, binder: b } => is_self_projection_of(kb, &bv, param, b),
+        SupplySource::FromParam {
+            param, binder: b, ..
+        } => is_self_projection_of(kb, &bv, param, b),
         SupplySource::Required | SupplySource::SelfSupplied => false,
     })
 }
@@ -2178,7 +2180,7 @@ pub(super) fn build_op_scoped_dicts(
         // `Alphabetical`.
         let pinned_by_arg: Option<InstanceSelection>;
         let pin: Option<&InstanceSelection> = match dep.supply {
-            SupplySource::FromParam { param, binder } => {
+            SupplySource::FromParam { param, binder, .. } => {
                 // THE CHANNEL NOT BEING POPULATED IS NOT THE SAME AS THE ARGUMENT NOT
                 // NAMING A PROVIDER, and collapsing them is a silent wrong answer
                 // (review). `param_slot_witness` answers `None` for both: the legitimate
@@ -2515,7 +2517,35 @@ pub(super) fn build_op_scoped_dicts(
                     }
                     _ => None,
                 };
-                let refusal = match unprovided {
+                // A forward through a slot another unwritten slot answers alike
+                // ([`contested_slot_refusal`]): the account is the resolver's own, and it
+                // names the repair. Asked of the entry the forward takes — the first that
+                // covers the dep at this call, [`build_dep_projection`]'s Strategy 1 — so a
+                // dep refused for another reason keeps its own account.
+                let forwarded_through = caller_requires
+                    .entries()
+                    .iter()
+                    .find(|e| entries_cover(kb, e, &dep, Some(&disambig)))
+                    .map(|e| e.supply);
+                let contested = match &s3_failure {
+                    Some(nomatch @ ResolutionResult::NoMatch { .. })
+                        if matches!(
+                            forwarded_through,
+                            Some(SupplySource::FromParam {
+                                contested: Some(_),
+                                ..
+                            })
+                        ) =>
+                    {
+                        Some(RequirementRefusal::carrying_its_repair(
+                            kb,
+                            &dep,
+                            describe_resolution_failure(kb, nomatch),
+                        ))
+                    }
+                    _ => None,
+                };
+                let refusal = if contested.is_some() { contested } else { match unprovided {
                     Some((unprovided, construction)) => Some(RequirementRefusal {
                         account_names_every_repair: false,
                         no_scope_route: false,
@@ -2746,7 +2776,7 @@ pub(super) fn build_op_scoped_dicts(
                             (None, _) => former.map(|former| former_refusal(kb, &dep, &former)),
                         }
                     }
-                };
+                } };
                 if let Some(refusal) = refusal {
                     kb.unsuppliable_requirements.push(UnsuppliableRequirement {
                         span: site.span,
