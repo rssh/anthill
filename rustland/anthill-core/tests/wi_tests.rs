@@ -2045,6 +2045,8 @@ mod wi_jn09w_holder_gate_test;
 mod wi_2kv4y_unfixed_carrier_test;
 #[path = "include/wi_aaqt5_type_application_head_test.rs"]
 mod wi_aaqt5_type_application_head_test;
+#[path = "include/wi_9snr2_contract_clause_positional_test.rs"]
+mod wi_9snr2_contract_clause_positional_test;
 #[path = "include/wi_0rp29_nested_projection_value_in_type_test.rs"]
 mod wi_0rp29_nested_projection_value_in_type_test;
 #[path = "include/wi_0rp29_call_binding_test.rs"]
