@@ -1853,9 +1853,12 @@ end
 }
 
 /// A WILDCARD SPEC PARAMETER BOUND TO A MEMBER VARIABLE STAYS ONE: the provision leaves `T`
-/// unbound, `a: Option[T = T]` binds it to the member's `M`, and `b: List[T = T]` then binds `M`
-/// to `Int64`. The spec side made every variable it reached rigid — `M` included — and refused
-/// `b` in this order while the swapped one ran (MEASURED). Runs to 3.
+/// out — its `?` — `a: Option[T = T]` binds the member's `M` to it, and `b: List[T = T]` reads
+/// that `M` again. The spec side made every variable it reached rigid — `M` included — and
+/// refused `b` in this order while the swapped one ran (MEASURED). Runs to 3.
+///
+/// The member was `b: List[T = Int64]`, fixing the `T` the provision leaves out, until
+/// WI-20261003-GR5EN's follow-up read that `T` as the written `?`; it is refused now, at `b`.
 #[test]
 fn a_wildcard_bound_to_a_member_variable_is_not_frozen() {
     let src = with_app(
@@ -1871,7 +1874,7 @@ namespace wi0rp29mr6.wild
     sort V = ?
     entity car(v: V)
     provides Sp
-    operation op[M](s: Self, a: Option[T = M], b: List[T = Int64]) -> Int64 = List.length(b)
+    operation op[M](s: Self, a: Option[T = M], b: List[T = {b}]) -> Int64 = List.length(b)
   end
   operation go() -> Int64 =
     let c: Car[V = Int64] = car(v: 1)
@@ -1879,7 +1882,12 @@ namespace wi0rp29mr6.wild
 end
 "#,
     );
-    assert_eq!(run_int64(&src, "wi0rp29mr6.wild.go"), Ok(3));
+    assert_eq!(run_int64(&src.replace("{b}", "M"), "wi0rp29mr6.wild.go"), Ok(3));
+    assert_refused_naming(
+        &load_errors(&src.replace("{b}", "Int64")),
+        &["parameter 3 (`b: List[T = Int64]`) takes less than the spec's"],
+        "a member fixing the `T` the provision leaves out",
+    );
 }
 
 /// A CALLBACK'S PARAMETER WIDER BY WIDTH FITS, IN EITHER ORDER: `f: (t: (a: X, b: Int64, c:
@@ -3732,8 +3740,8 @@ end
 }
 
 /// `Sp.put(s: Sp, k: s.K, j: s.K)` at `Car provides Sp[T = V]` — `K` left UNBOUND, and `Car`
-/// declaring none — the member taking `k: Int64` and `j` as `j_ty`, with `go`.
-fn unbound_member_program(ns: &str, j_ty: &str, body: &str, go: &str) -> String {
+/// declaring none — with the member `put{member}` and `go`.
+fn unbound_member_program(ns: &str, member: &str, go: &str) -> String {
     with_app(&format!(
         r#"
 namespace {ns}
@@ -3747,7 +3755,7 @@ namespace {ns}
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation put(c: Self, k: Int64, j: {j_ty}) -> Int64 = {body}
+    operation put{member}
   end
   operation go() -> Int64 =
     let c: Car[V = String] = car(v: "s")
@@ -3757,50 +3765,74 @@ end
     ))
 }
 
-/// A PROJECTION OVER A SPEC MEMBER THE PROVISION LEAVES UNBOUND IS A WILDCARD, as that
-/// parameter is in every other position: `k: s.K` at `Car provides Sp[T = V]` is any type, so
-/// `k: Int64` fits. Left to the call's reading it was "type 'Car' has no member 'K'", and the
-/// member — which no spec call reaches, the call refusing on the same words — was refused as
-/// unreadable (MEASURED). Its qualified call runs it, to 40 + 2. FAILS under ledger part 64.
+/// A PROJECTION OVER A SPEC MEMBER THE PROVISION LEAVES UNBOUND IS THE PROVISION'S `?`, as that
+/// parameter is in every other position (`provides Sp[T = V]` is `provides Sp[T = V, K = ?]`):
+/// `k: s.K` is any type the provision answers a call at, so a member generic over it fits and
+/// runs through its qualified call, to 42. Left to the call's reading it was "type 'Car' has no
+/// member 'K'", and the member was refused as unreadable (MEASURED). FAILS under ledger part 64.
+///
+/// UNTIL WI-20261003-GR5EN's follow-up the left-out `K` was a wildcard no comparison read, and
+/// `put(c: Self, k: Int64, j: Int64)` fit here; it takes less than the written `K = ?` admits,
+/// and is refused as that spelling is.
 #[test]
 fn a_projection_over_a_member_the_provision_leaves_unbound_is_a_wildcard() {
     let ns = "wi0rp29mr8.unbound";
-    let src = unbound_member_program(ns, "Int64", "k + j", "Car.put(c, 40, 2)");
+    let src = unbound_member_program(
+        ns,
+        "[W](c: Self, k: W, j: W) -> Int64 = 42",
+        "Car.put(c, 40, 2)",
+    );
     assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
+    let fixed = unbound_member_program(
+        "wi0rp29mr8.unbound_fixed",
+        "(c: Self, k: Int64, j: Int64) -> Int64 = k + j",
+        "0",
+    );
+    assert_refused_naming(
+        &load_errors(&fixed),
+        &[
+            "parameter 2 (`k: Int64`) takes less than the spec's",
+            "the spec's `?K` admits arguments the member's `Int64` does not",
+        ],
+        "a member fixing the slot the provision leaves out",
+    );
 }
 
-/// … AND ONE WILDCARD IS ONE TYPE: `k: s.K, j: s.K` read `K` once, so a member taking an
-/// `Int64` and a `String` there is refused at the second, the spec's side printed as the first
-/// made it. FAILS under ledger part 64 (refused at parameter 2 instead, as unreadable) and
-/// part 66 (the spec's side printed `?_`).
+/// … AND ONE `?` IS ONE TYPE: `k: s.K, j: s.K` read the provision's one `K`, so a member taking
+/// it as `W` at `k` and a `String` at `j` is refused at the second. FAILS under ledger part 64
+/// (refused at parameter 2 instead, as unreadable).
 #[test]
 fn a_projection_over_a_member_the_provision_leaves_unbound_is_one_type() {
-    let src = unbound_member_program("wi0rp29mr8.unbound_two", "String", "k", "0");
+    let src = unbound_member_program(
+        "wi0rp29mr8.unbound_two",
+        "[W](c: Self, k: W, j: String) -> Int64 = 0",
+        "0",
+    );
     assert_refused_naming(
         &load_errors(&src),
         &[
             "parameter 3 (`j: String`) takes less than the spec's",
-            "the spec's `Int64` admits arguments the member's `String` does not",
+            "the spec's `?K` admits arguments the member's `String` does not",
         ],
         "two readings of one unbound member",
     );
 }
 
-/// … AND ITS CONTROL: the spec call over such a provision is refused at the call, which reads
-/// no `K` off a `Car` — so the wildcard admits no member a call could then mis-feed. Passes
-/// either way by design.
+/// … AND ITS CALL: the spec call reads the provision's one `K` too, as the call's slot — so
+/// `Sp.put(c, 40, 2)` reaches the member, and `Sp.put(c, 40, "x")`, which would hand it an
+/// `Int64` and a `String` for one `K`, is refused at the call. It read no `K` off a `Car` until
+/// a left-out parameter was the provision's `?`, refusing both.
 #[test]
 fn a_projection_over_a_member_the_provision_leaves_unbound_is_a_wildcard_control() {
-    let src = unbound_member_program(
-        "wi0rp29mr8.unbound_call",
-        "Int64",
-        "k + j",
-        "Sp.put(c, 40, 2)",
-    );
+    let ns = "wi0rp29mr8.unbound_call";
+    let src = |go: &str| {
+        unbound_member_program(ns, "[W](c: Self, k: W, j: W) -> Int64 = 42", go)
+    };
+    assert_eq!(run_int64(&src("Sp.put(c, 40, 2)"), &format!("{ns}.go")), Ok(42));
     assert_refused_naming(
-        &load_errors(&src),
-        &["has no member 'K'"],
-        "the spec call reads no `K`",
+        &load_errors(&src("Sp.put(c, 40, \"x\")")),
+        &["type mismatch in put.j (op-arg): expected Int64, got String"],
+        "one `K` for the call",
     );
 }
 
@@ -4349,6 +4381,11 @@ end
 /// refusing it (MEASURED). Under ledger part 75 the PROCESS dies of that overflow, which fails
 /// every row of the binary; under the earlier part 64 (an unbound member left to the call's
 /// reading) it is refused another way, as unreadable.
+///
+/// SINCE WI-20261003-GR5EN's follow-up a spec parameter the provision leaves out is the `?`
+/// written there, and a member that fixes it takes less than the provision promises: this
+/// program, which leaves `K` out and types `x` as a `Car`, is refused at `x`, and the
+/// mechanism this row drove — a unifier binding a variable inside itself, ledger part 75 — `a: List[T = W]` fixes `s.K` — is not reached by it.
 #[test]
 fn a_unifier_binding_a_variable_inside_itself_is_refused_not_walked() {
     let src = with_app(
@@ -4378,7 +4415,7 @@ end
     );
     assert_refused_naming(
         &load_errors(&src),
-        &["parameter 3 (`b: ?W`) takes less than the spec's"],
+        &["parameter 2 (`a: List[T = ?W]`) takes less than the spec's"],
         "a member whose variables solve only through themselves",
     );
 }
@@ -4423,6 +4460,10 @@ end
 /// answered from the provision under check (`Sp`, which leaves `E` unbound: a wildcard),
 /// admitted the member behind `put(s: Sp, k: Int64)`, and `Sp.put(c, 41)` ran `String.length`
 /// on 41 (MEASURED). FAILS under ledger part 76.
+///
+/// Since a parameter a provision leaves out is the `?` written there, `provides Sp` lends `E` as
+/// `?` too, as `Sp[E = ?]` does, and `Car`'s two provisions disagree on it: the read refuses the
+/// member as naming a member two specs bind differently, where it read `Other`'s `String` alone.
 #[test]
 fn the_rule_reads_a_projection_from_the_spec_its_receiver_is_declared_by() {
     let src = with_app(
@@ -4453,15 +4494,16 @@ end
     assert_refused_naming(
         &load_errors(&src),
         &[
-            "parameter 2 (`k: c.E`) takes less than the spec's",
-            "the spec's `Int64` admits arguments the member's `String` does not",
+            "parameter 2 (`k: c.E`) does not read at the spec's arguments",
+            "has a member 'E' by two specs it provides, which bind it differently",
         ],
         "a member's projection read from another spec's provision",
     );
 }
 
 /// … AND IN THE RETURN: `get(c: Car) -> c.E` returns `Other`'s `String` behind `-> Int64`;
-/// `Sp.get(c) + 1` died adding 1 to a string (MEASURED). FAILS under ledger part 76.
+/// `Sp.get(c) + 1` died adding 1 to a string (MEASURED). FAILS under ledger part 76. Refused as
+/// its twin above is now, `E` lent by both provisions.
 #[test]
 fn the_rule_reads_a_projection_from_the_spec_its_receiver_is_declared_by_at_the_return() {
     let src = with_app(
@@ -4491,7 +4533,7 @@ end
     );
     assert_refused_naming(
         &load_errors(&src),
-        &["the member returns `String`, which is not a subtype of the spec's `Int64`"],
+        &["has a member 'E' by two specs it provides, which bind it differently"],
         "a member's returned projection read from another spec's provision",
     );
 }
@@ -4901,6 +4943,9 @@ end
 /// The return leg took that unifier's `true` for a fit, the member loaded, and a caller reading
 /// the promised list met the bare payload (MEASURED: `match_failed` at run time). Under ledger
 /// part 86 the PROCESS dies: the cyclic unifier is taken, and the resolve after it walks it.
+///
+/// Since a left-out `K` is the provision's `?` — any type, which `a` reads — `A` is bound to it
+/// and no cycle forms: refused as the return it is, the spec's `?K` printed.
 #[test]
 fn a_return_unifying_only_through_itself_is_refused() {
     let src = with_app(
@@ -4929,15 +4974,16 @@ end
         &load_errors(&src),
         &[
             "its own member 'op' does not fit",
-            "the member returns `Option[T = ?A]`, which is not a subtype of the spec's",
+            "the member returns `Option[T = ?K]`, which is not a subtype of the spec's",
         ],
         "a return that unifies only through a variable holding itself",
     );
 }
 
-/// `Car provides Sp[T = Int64, J = V]` — a WITNESS for `Int64`, whose own parameter `V` no
-/// receiver fixes — and its member `op`, behind `op(t: T, x: K, {y})`.
-fn witness_parameter_program(ns: &str, y: &str, go: &str) -> String {
+/// `Car provides Sp[T = Int64, J = V{written}]` — a WITNESS for `Int64`, whose own parameter `V`
+/// no receiver fixes — and its member `op`, behind `op(t: T, x: K, {y})`. `K` is written as the
+/// member's `x`, which a member may not fix where the provision leaves it out.
+fn witness_parameter_program(ns: &str, written: &str, y: &str, go: &str) -> String {
     with_app(&format!(
         r#"
 namespace {ns}
@@ -4952,7 +4998,7 @@ namespace {ns}
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Int64, J = V]
+    provides Sp[T = Int64, J = V{written}]
     operation op(t: Int64, x: Car[V = List[T = V]], y: x.J) -> Int64 = t + 1
   end
   operation go() -> Int64 =
@@ -4971,15 +5017,20 @@ end
 /// 90 each — either keeps `V` from being bound inside itself and walked — and under the two
 /// TOGETHER the process dies of that overflow (as under 84 and 90 together);
 /// [`a_witness_parameter_is_no_type_a_member_fixes`] is the row part 87 alone fails.
+///
+/// SINCE WI-20261003-GR5EN's follow-up a spec parameter the provision leaves out is the `?`
+/// written there, and a member that fixes it takes less than the provision promises: this
+/// program, which leaves `K` out and types `x` as a `Car`, is refused at `x`, and the
+/// mechanism this row drove — a witness's own parameter kept out of the provision's open slots, ledger parts 87 and 90 — its twin below writes `K` and still reaches it — is not reached by it.
 #[test]
 fn a_witness_parameter_is_any_type_whoever_reads_it() {
     let ns = "wi0rp29mr9.wit_own";
-    let src = witness_parameter_program(
-        ns,
-        "y: L",
-        "let k: Car[V = List[T = Int64]] = car(v: [1])\n    Car.op(41, k, [2])",
+    let src = witness_parameter_program(ns, "", "y: L", "0");
+    assert_refused_naming(
+        &load_errors(&src),
+        &["parameter 2 (`x: Car[V = List[T = V]]`) takes less than the spec's"],
+        "a member fixing the `K` the provision leaves out",
     );
-    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
 }
 
 /// … AND ITS REFUSAL TWIN: with `y` typed by the spec's `K`, as `x` is, the spec passes `y` a
@@ -4987,7 +5038,12 @@ fn a_witness_parameter_is_any_type_whoever_reads_it() {
 /// overflowed. Under parts 87 and 90 as its twin above.
 #[test]
 fn a_witness_parameter_is_any_type_whoever_reads_it_misfit() {
-    let src = witness_parameter_program("wi0rp29mr9.wit_own_bad", "y: K", "0");
+    let src = witness_parameter_program(
+        "wi0rp29mr9.wit_own_bad",
+        ", K = Car[V = List[T = V]]",
+        "y: K",
+        "0",
+    );
     assert_refused_naming(
         &load_errors(&src),
         &["parameter 3 (`y: x.J`) takes less than the spec's"],
@@ -5192,11 +5248,12 @@ fn a_member_returning_its_carrier_fits_a_view_whose_wildcard_met_its_own_variabl
     assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
 }
 
-/// `Car[V]` providing `Sp[T = Int64]` — and `Sq[J = V]`, which lends `J` — with the spec
-/// operation `op({spec_rest})` and the member `op{tparams}(t: Int64, x: {x}, {member_rest})`,
-/// whose `y` projects `x`.
+/// `Car[V]` providing `Sp[T = Int64{written}]` — and `Sq[J = V]`, which lends `J` — with the
+/// spec operation `op({spec_rest})` and the member `op{tparams}(t: Int64, x: {x},
+/// {member_rest})`, whose `y` projects `x`.
 fn projected_parameter_program(
     ns: &str,
+    written: &str,
     spec_rest: &str,
     tparams: &str,
     x: &str,
@@ -5220,7 +5277,7 @@ namespace {ns}
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Int64]
+    provides Sp[T = Int64{written}]
     provides Sq[J = V]
     operation op{tparams}(t: Int64, x: {x}, {member_rest}) -> Int64 = t + 1
     operation oq(j: V) -> Int64 = 1
@@ -5239,18 +5296,27 @@ end
 /// this pass, once the rule read `J` off the provision that lends it). The member runs through
 /// its qualified call, to 41 + 1. Under ledger part 90 the PROCESS dies of that overflow; the
 /// call file's part 27 FAILS it (the lending provision left out by its parameter's name).
+///
+/// SINCE WI-20261003-GR5EN's follow-up a spec parameter the provision leaves out is the `?`
+/// written there, and a member that fixes it takes less than the provision promises: this
+/// program, which leaves `K` out and types `x` as a `Car`, is refused at `x`, and the
+/// mechanism this row drove — the receiver's arguments replaced once, ledger part 90 — its twins below write `K` and still reach it — is not reached by it.
 #[test]
 fn a_parameter_writing_its_sorts_own_parameter_is_replaced_once() {
-    let ns = "wi0rp29mr9.once_lent";
     let src = projected_parameter_program(
-        ns,
+        "wi0rp29mr9.once_lent",
+        "",
         "y: L",
         "",
         "Car[V = List[T = V]]",
         "y: x.J",
-        "let k: Car[V = List[T = Int64]] = car(v: [1])\n    Car.op(41, k, [2])",
+        "0",
     );
-    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&src),
+        &["parameter 2 (`x: Car[V = List[T = V]]`) takes less than the spec's"],
+        "a member fixing the `K` the provision leaves out",
+    );
 }
 
 /// … AND ITS REFUSAL TWIN: behind the spec's `y: String` the member's `y: x.J` — a list — takes
@@ -5260,6 +5326,7 @@ fn a_parameter_writing_its_sorts_own_parameter_is_replaced_once() {
 fn a_parameter_writing_its_sorts_own_parameter_is_replaced_once_misfit() {
     let src = projected_parameter_program(
         "wi0rp29mr9.once_lent_bad",
+        ", K = Car[V = List[T = V]]",
         "y: String",
         "",
         "Car[V = List[T = V]]",
@@ -5282,6 +5349,7 @@ fn a_field_path_off_a_parameter_writing_its_sorts_own_parameter_is_replaced_once
     let ns = "wi0rp29mr9.once_field";
     let src = projected_parameter_program(
         ns,
+        ", K = Car[V = List[T = V]], L = V",
         "y: L",
         "",
         "Car[V = List[T = V]]",
@@ -5298,26 +5366,39 @@ fn a_field_path_off_a_parameter_writing_its_sorts_own_parameter_is_replaced_once
 /// this member — which fits — was refused (MEASURED). Runs through its qualified call, to 41 + 1.
 /// FAILS under ledger part 91, and under the call file's part 27 (the lending provision left out
 /// by its parameter's name) — as its three siblings below do.
+///
+/// SINCE WI-20261003-GR5EN's follow-up a spec parameter the provision leaves out is the `?`
+/// written there, and a member that fixes it takes less than the provision promises: this
+/// program, which leaves `K` out and types `x` as a `Car`, is refused at `x`, and the
+/// mechanism this row drove — what a projection reads is each argument as bound so far, ledger part 91, with its three siblings — is not reached by it.
 #[test]
 fn a_projection_reads_its_receiver_as_bound_so_far() {
     let ns = "wi0rp29mr9.late_w";
     let src = projected_parameter_program(
         ns,
+        "",
         "y: String, z: String",
         "[W]",
         "Car[V = W]",
         "y: x.J, z: W",
         "let k: Car[V = String] = car(v: \"a\")\n    Car.op(41, k, \"b\", \"c\")",
     );
-    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&src),
+        &["parameter 2 (`x: Car[V = ?W]`) takes less than the spec's"],
+        "a member fixing the `K` the provision leaves out",
+    );
 }
 
 /// … AND ITS REFUSAL TWIN names the type read: behind `y: Int64` the member's `y` is the `String`
 /// its `z` fixed. FAILS under ledger part 91 (refused all the same, naming the unread `x.J`).
+///
+/// Refused at `x` now, as its twin above.
 #[test]
 fn a_projection_reads_its_receiver_as_bound_so_far_misfit() {
     let src = projected_parameter_program(
         "wi0rp29mr9.late_w_bad",
+        "",
         "y: Int64, z: String",
         "[W]",
         "Car[V = W]",
@@ -5326,10 +5407,7 @@ fn a_projection_reads_its_receiver_as_bound_so_far_misfit() {
     );
     assert_refused_naming(
         &load_errors(&src),
-        &[
-            "parameter 3 (`y: x.J`) takes less than the spec's",
-            "the spec's `Int64` admits arguments the member's `String` does not",
-        ],
+        &["parameter 2 (`x: Car[V = ?W]`) takes less than the spec's"],
         "a member narrower than the spec behind a projection a later position fixes",
     );
 }
@@ -5343,13 +5421,18 @@ fn a_projection_reads_its_sorts_own_parameter_as_bound_so_far() {
     let ns = "wi0rp29mr9.late_v";
     let src = projected_parameter_program(
         ns,
+        "",
         "y: List[T = String], z: String",
         "",
         "Car[V = List[T = V]]",
         "y: x.J, z: V",
         "let k: Car[V = List[T = String]] = car(v: [\"a\"])\n    Car.op(41, k, [\"b\"], \"c\")",
     );
-    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(42));
+    assert_refused_naming(
+        &load_errors(&src),
+        &["parameter 2 (`x: Car[V = List[T = V]]`) takes less than the spec's"],
+        "a member fixing the `K` the provision leaves out",
+    );
 }
 
 /// … AND ITS REFUSAL TWIN: behind `y: List[T = Int64]` the member's `y` is a `List[T = String]`.
@@ -5358,6 +5441,7 @@ fn a_projection_reads_its_sorts_own_parameter_as_bound_so_far() {
 fn a_projection_reads_its_sorts_own_parameter_as_bound_so_far_misfit() {
     let src = projected_parameter_program(
         "wi0rp29mr9.late_v_bad",
+        "",
         "y: List[T = Int64], z: String",
         "",
         "Car[V = List[T = V]]",
@@ -5366,10 +5450,7 @@ fn a_projection_reads_its_sorts_own_parameter_as_bound_so_far_misfit() {
     );
     assert_refused_naming(
         &load_errors(&src),
-        &[
-            "parameter 3 (`y: x.J`) takes less than the spec's",
-            "the spec's `List[T = Int64]` admits arguments the member's `List[T = String]` does not",
-        ],
+        &["parameter 2 (`x: Car[V = List[T = V]]`) takes less than the spec's"],
         "a member narrower than the spec behind a projection its sort's own parameter fixes",
     );
 }

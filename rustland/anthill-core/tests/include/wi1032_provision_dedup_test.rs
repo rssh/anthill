@@ -264,6 +264,10 @@ end
 /// This is also the shape whose absence of a tie is why `render_instance_tie` did NOT get
 /// a defensive name-dedup: it was the remaining candidate driver for a duplicate name, and
 /// it does not tie. MEASURED — answers 7, no diagnostic.
+///
+/// The second parameter is one no operation reads (`Tag`). It was `Element`, which `nxt`
+/// returns: left out of the first provision, that is the provision's `?`, and the shared
+/// member returning `Int64` fixes it — refused since a left-out parameter is that `?`.
 #[test]
 fn a_specificity_ordered_pair_still_takes_the_more_specific() {
     let ns = "test.wi1032.specificity";
@@ -274,14 +278,15 @@ fn a_specificity_ordered_pair_still_takes_the_more_specific() {
   sort Iter
     sort Carrier = ?
     sort Element = ?
+    sort Tag = ?
     operation nxt(i: Carrier) -> Element
   end
 
   sort C
     import anthill.prelude.Int64
     entity c
-    provides Iter[Carrier = C]
     provides Iter[Carrier = C, Element = Int64]
+    provides Iter[Carrier = C, Element = Int64, Tag = Int64]
     operation nxt(i: C) -> Int64 = 7
   end
 

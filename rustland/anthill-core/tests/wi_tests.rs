@@ -2116,6 +2116,8 @@ mod wi_xqgew_member_param_test;
 mod wi_s7yf5_self_receiver_row_test;
 #[path = "include/wi_gr5en_provider_at_depth_test.rs"]
 mod wi_gr5en_provider_at_depth_test;
+#[path = "include/wi_gr5en_left_out_parameter_test.rs"]
+mod wi_gr5en_left_out_parameter_test;
 
 #[path = "include/wi_41yye_enclosing_place_type_test.rs"]
 mod wi_41yye_enclosing_place_type_test;

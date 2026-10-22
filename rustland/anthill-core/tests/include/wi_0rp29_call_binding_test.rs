@@ -1685,6 +1685,10 @@ fn a_specs_carrier_parameter_is_no_member_of_its_provider() {
 /// got Entity" at run time (MEASURED on the builds before the sixth pass, which refused the
 /// member by the same misreading). FAILS only with ledger parts 22, 24 and 25 backed out
 /// together — the reading before this pass; each alone still refuses it.
+///
+/// Since a left-out parameter is the provision's `?`, `s.T` reads that `?` — any type — and the
+/// member taking `k: Int64` there fixes it: refused as taking less, where it was refused as
+/// reading no member.
 #[test]
 fn a_member_the_named_specs_provision_leaves_unbound_is_no_member() {
     let src = r#"
@@ -1708,7 +1712,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["has no member 'T'"],
+        &["parameter 2 (`k: Int64`) takes less than the spec's"],
         "`Sp`'s `T` is unbound at `Car`",
     );
 }

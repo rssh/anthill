@@ -1719,10 +1719,15 @@ end
 }
 
 /// … AND A MEMBER RETURNING A PROVIDER OF THE SPEC'S RETURN: `mk(c: Car) -> Box[T = Int64]`
-/// against `mk(s: Sp) -> Describe[K = K]`, `K` unbound (MEASURED: refused "the member returns
-/// `Box[T = Int64]`, which is not a subtype of the spec's `Describe[K = ?_]`" on the tree the ninth
-/// review saw). Runs to 42.
-/// FAILS under ledger part 108.
+/// against `mk(s: Sp) -> Describe`, the spec's own unwritten slot, which the member picks.
+/// Runs to 42.
+///
+/// It was `-> Describe[K = K]` with `Sp`'s `K` left out of `provides Sp[T = Int64]` (MEASURED:
+/// refused "the member returns `Box[T = Int64]`, which is not a subtype of the spec's
+/// `Describe[K = ?_]`" on the tree the ninth review saw; FAILED under ledger part 108). Since a
+/// left-out parameter is the provision's `?`, that `K` is the caller's — `let d: Describe[K =
+/// String] = Sp.mk(car(n: 1))` asks for it — and the member fixing it is refused, as the
+/// second program here shows.
 #[test]
 fn a_member_returning_a_provider_of_the_specs_return_fits() {
     let src = r#"
@@ -1741,7 +1746,7 @@ namespace wi0rp29r9.narrower_return
   sort Sp
     sort T = ?
     sort K = ?
-    operation mk(s: Self) -> Describe[K = K]
+    operation mk(s: Self) -> {ret}
   end
   sort Car
     entity car(n: Int64)
@@ -1751,7 +1756,15 @@ namespace wi0rp29r9.narrower_return
   operation go() -> Int64 = Describe.tag(Sp.mk(car(n: 1)))
 end
 "#;
-    assert_eq!(run_src(src, "wi0rp29r9.narrower_return.go"), Ok(42));
+    assert_eq!(
+        run_src(&src.replace("{ret}", "Describe"), "wi0rp29r9.narrower_return.go"),
+        Ok(42)
+    );
+    assert_refused_naming(
+        &load_errors(&src.replace("{ret}", "Describe[K = K]")),
+        &["the member returns `Box[T = Int64]`, which is not a subtype of the spec's"],
+        "a member fixing the `K` the provision leaves out",
+    );
 }
 
 /// CONTROL: a provider of ANOTHER instance of the spec's return does not fit — `Box[T = Int64]`

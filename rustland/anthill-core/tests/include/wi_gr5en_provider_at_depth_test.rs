@@ -10,25 +10,22 @@
 //! unification gives up) stayed refused. The provider is now an arm of the relation's walk, the
 //! carrier side chosen by the walk's direction, and the second walk is gone.
 //!
-//! The walk binds a member's variable, and a spec-side one only at the RETURN, where the spec's
-//! unwritten slot is the member's to pick (`-> Plain` behind `-> Describe[K = K]`, `K` left
-//! unbound). At a parameter a spec-side variable is a parameter the provision leaves unbound —
-//! the caller's, a wildcard (kernel-language.md §8.7) — and the walk leaves it alone.
+//! A spec parameter the provision leaves out is the `?` written there, the caller's, and the
+//! returns below behind a spec's open slot write the spec's own unwritten slot (`-> Describe`),
+//! which is the member's to pick (`wi_gr5en_left_out_parameter_test` holds the rest).
 //!
 //! BACK-OUTS, measured on one build with each switch:
-//! - THE PROVIDER ARM (`bind_member_vars_through_provision`) not called — 7 FAIL: every `…_fits`
-//!   row whose carrier is `Plain` or whose tuple differs in width (the arm also replaces the
-//!   removed walk, which bound `Plain` at the top), and
-//!   [`a_written_receiver_meets_its_provision_through_a_provider`].
-//! - A SPEC-SIDE VARIABLE BOUND AT A PARAMETER as at the return — 1 FAILS:
-//!   [`a_callback_fixing_the_callers_unbound_slot_through_a_provider_is_refused`].
-//! - A SPEC-SIDE VARIABLE BOUND AT EVERY POSITION OF THE RETURN, a returned function's parameter
-//!   too — 1 FAILS: [`a_returned_functions_parameter_is_the_callers_slot`].
-//! - The arm AND S7YF5's provider view in `unify_parameterized_view` — 9 FAIL: the ticket's two
+//! - THE PROVIDER ARM (`bind_member_vars_through_provision`) not called — 5 FAIL: the
+//!   parameter rows whose carrier is `Plain` or whose tuple differs in width (the arm also
+//!   replaces the removed walk, which bound `Plain` at the top), and
+//!   [`a_written_receiver_meets_its_provision_through_a_provider`]. The returns behind the
+//!   spec's own unwritten slot pass without it, as they did on the parent.
+//! - The arm AND S7YF5's provider view in `unify_parameterized_view` — 8 FAIL: the ticket's two
 //!   rows and the variable read by a later parameter as well; either alone binds an applied
 //!   carrier.
-//! - Pass either way by design: the refusals of a member narrower than its spec or of a
-//!   provider at another instance, and the controls a member is generic over the slot in.
+//! - Pass either way by design: the refusals of a member narrower than its spec, of a provider
+//!   at another instance and of a member fixing the caller's slot, and the controls a member is
+//!   generic over the slot in.
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
 /// `Box` provides `Describe` at its own `T`.
@@ -209,15 +206,15 @@ fn a_parameterless_provider_at_the_top_fits() {
     );
 }
 
-/// A RETURN: the spec's `K`, which the provision leaves unbound and no parameter reads, is the
-/// member's to pick, so `-> Plain` fits `-> Describe[K = K]` — at the top and inside a tuple.
+/// A RETURN: the spec's own unwritten slot (`-> Describe`) is the member's to pick, so `->
+/// Plain` fits — at the top and inside a tuple.
 #[test]
 fn a_parameterless_provider_returned_behind_the_specs_open_slot_fits() {
     runs(
         "plain_ret",
         PLAIN,
         "Sp[T = Int64]",
-        ") -> Describe[K = K]",
+        ") -> Describe",
         "op(c: Car) -> Plain = plain(n: 42)",
         "Describe.tag(Sp.op(car(n: 1)))",
     );
@@ -225,7 +222,7 @@ fn a_parameterless_provider_returned_behind_the_specs_open_slot_fits() {
         "plain_ret_tuple",
         PLAIN,
         "Sp[T = Int64]",
-        ") -> (a: Describe[K = K], b: Int64)",
+        ") -> (a: Describe, b: Int64)",
         "op(c: Car) -> (a: Plain, b: Int64) = (a: plain(n: 41), b: 1)",
         "Describe.tag(Sp.op(car(n: 1)).a) + 1",
     );
@@ -278,14 +275,14 @@ fn a_parameter_wider_by_width_and_through_a_provider_fits() {
     );
 }
 
-/// A return wider by width: `-> (a: Box[T = W], b: Int64)` behind `-> (a: Describe[K = K])`.
+/// A return wider by width: `-> (a: Box[T = W], b: Int64)` behind `-> (a: Describe)`.
 #[test]
 fn a_return_wider_by_width_and_through_a_provider_fits() {
     runs(
         "ret_width",
         BOX,
         "Sp[T = Int64]",
-        ", y: T) -> (a: Describe[K = K])",
+        ", y: T) -> (a: Describe)",
         "op[W](c: Car, y: W) -> (a: Box[T = W], b: Int64) = (a: box(n: 42, t: y), b: 1)",
         "Describe.tag(Sp.op(car(n: 1), 7).a)",
     );
@@ -293,7 +290,7 @@ fn a_return_wider_by_width_and_through_a_provider_fits() {
         "plain_ret_width",
         PLAIN,
         "Sp[T = Int64]",
-        ") -> (a: Describe[K = K])",
+        ") -> (a: Describe)",
         "op(c: Car) -> (a: Plain, b: Int64) = (a: plain(n: 42), b: 1)",
         "Describe.tag(Sp.op(car(n: 1)).a)",
     );
@@ -333,12 +330,11 @@ fn a_callback_parameter_wider_by_width_and_through_a_provider_fits() {
 
 // ── the caller's slot ──────────────────────────────────────────────────────────────────────
 
-/// A SPEC PARAMETER THE PROVISION LEAVES UNBOUND, READ BY A PARAMETER, IS LEFT TO THE RELATION.
-/// It is a wildcard (kernel-language.md §8.7), a variable on the spec's side, and the walk binds
-/// a spec-side variable only at the return, where the member picks it. Bound at a callback's
-/// parameter too, `f: (u: Box[T = Int64]) -> Int64` behind `f: (u: Describe[K = K]) -> Int64`
-/// loaded, and a call passing a callback that reads a `String` key ran it on an `Int64` one
-/// (MEASURED: a run-time type error). Refused on the parent, where no walk reached the pair.
+/// A SPEC PARAMETER THE PROVISION LEAVES OUT IS THE CALLER'S, at a callback's parameter as
+/// anywhere: `f: (u: Box[T = Int64]) -> Int64` behind `f: (u: Describe[K = K]) -> Int64` fixes
+/// it. Bound there by the relation's walk, as a member's own variable is, it loaded, and a call
+/// passing a callback that reads a `String` key ran it on an `Int64` one (MEASURED: a run-time
+/// type error). Refused on the parent, where no walk reached the pair.
 #[test]
 fn a_callback_fixing_the_callers_unbound_slot_through_a_provider_is_refused() {
     refused(
@@ -359,12 +355,11 @@ fn a_callback_fixing_the_callers_unbound_slot_through_a_provider_is_refused() {
     );
 }
 
-/// … AND UNDER A RETURNED FUNCTION'S PARAMETER THE CALLER SUPPLIES THE VALUE: there the spec's
-/// slot is the caller's again, and the walk leaves it alone. `-> (u: (a: Box[T = Int64])) ->
-/// Int64` behind `-> (u: (a: Box[T = K], b: Int64)) -> Int64`, `K` left unbound: bound there by
-/// the walk it loaded, and a caller handing the returned function a `Box[T = String]` ran it on
-/// one (MEASURED: `type mismatch: expected Int64, got String`). Refused on the parent, where no
-/// walk bound it.
+/// … AND UNDER A RETURNED FUNCTION'S PARAMETER, where the caller supplies the value: `-> (u: (a:
+/// Box[T = Int64])) -> Int64` behind `-> (u: (a: Box[T = K], b: Int64)) -> Int64`, `K` left
+/// out. Bound there by the relation's walk it loaded, and a caller handing the returned
+/// function a `Box[T = String]` ran it on one (MEASURED: `type mismatch: expected Int64, got
+/// String`). Refused on the parent, where no walk bound it.
 #[test]
 fn a_returned_functions_parameter_is_the_callers_slot() {
     refused(

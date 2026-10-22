@@ -535,8 +535,9 @@ struct ProvisionShared {
     /// row around an expanded label a value — and substituted as that
     /// ([`sigma_subst_type`]).
     template: Vec<(Symbol, Value)>,
-    /// The spec's own parameters: one the provision leaves unbound stays a WILDCARD, as in the
-    /// rest of this check (a provision naming no carrier is refused on its own, WI-KXNEX).
+    /// The spec's own parameters. One the provision leaves out is the `?` written there, which
+    /// σ holds ([`write_left_out_params`]); only the carrier parameter can be missing from it,
+    /// and a clause naming no carrier is refused on its own (WI-KXNEX).
     spec_own: SmallVec<[VarId; 4]>,
 }
 
@@ -972,7 +973,6 @@ fn member_narrower_than_spec(
                         &b,
                         &t,
                         variance == Variance::Contravariant,
-                        SpecSlots::Callers,
                     );
                 }
                 if binds_a_cycle(kb, &probe) {
@@ -1071,6 +1071,30 @@ fn member_narrower_than_spec(
             };
             let at = resolve_type_deep_value(kb, &prep, &at);
             read.extend(kb.collect_vars(&at));
+            // A PROJECTION OF A SLOT THE PROVISION BINDS TO ONE VARIABLE OF ITS OWN — a written
+            // `?`, or a parameter the clause leaves out — reads that variable, the call's one
+            // slot, as `k: K` does ([`ProjectionReader::instance_of`]): a parameter typed `s.K`
+            // reads it too, and it is any type here as there. Left to the return, `k: s.K, j:
+            // s.K` behind a member's `k: Int64` read a slot the member could fix.
+            for (receiver, member) in projections_in(kb, pty) {
+                let name = kb.local_name_of(member).to_owned();
+                let owned = projection_owner_spec(kb, &receiver, &name)
+                    .is_some_and(|s| kb.canonical_sort_sym(s) == spec_canon);
+                let bound = template
+                    .iter()
+                    .find(|(q, _)| short_name_of(kb.local_name_of(*q)) == name)
+                    .map(|(_, b)| b.clone());
+                let whole = bound.and_then(|b| {
+                    let b = resolve_type_deep_value(kb, &prep, &b);
+                    match type_head(kb, &b) {
+                        TypeHead::FlexVar(v) => Some(v),
+                        _ => None,
+                    }
+                });
+                if let (true, Some(v)) = (owned, whole) {
+                    read.push(v);
+                }
+            }
         }
         read
     };
@@ -1421,13 +1445,13 @@ fn member_narrower_than_spec(
             let got = resolve_type_deep_value(kb, &probe, &got);
             let want = resolve_type_deep_value(kb, &probe, &want);
             let want_open = resolve_type_deep_value(kb, &probe, &want_open);
-            // A SPEC PARAMETER THE PROVISION LEAVES UNBOUND, and nothing has bound since, is a
-            // wildcard: in a spec view it stands for whatever the provider leaves there, which
-            // is no binding the relation can compare — a provider that leaves `E` unbound is no
-            // `Stream[E = X]` for any written `X`. Left written, a member returning its own
-            // carrier behind `-> Stream[T = s.T, E = s.E]` at `provides Stream[T]` was no subtype
-            // of it (MEASURED: a fixture that loaded before this ticket; the eighth pass admitted
-            // it on unification's word alone).
+            // A SPEC PARAMETER MISSING FROM σ — only the spec's carrier parameter can be, every
+            // other one left out being the `?` σ holds ([`write_left_out_params`]) — and nothing
+            // has bound since, is a wildcard: in a spec view it stands for whatever the provider
+            // leaves there, which is no binding the relation can compare. Left written, a member
+            // returning its own carrier behind `-> Stream[T = s.T, E = s.E]` at `provides
+            // Stream[T]` was no subtype of it (MEASURED: a fixture that loaded before this
+            // ticket); that `E` is the `?` σ holds now.
             let unbound: SmallVec<[Symbol; 4]> = own_params_of(kb, spec_canon)
                 .iter()
                 .map(|&(q, _)| q)
@@ -2096,10 +2120,10 @@ impl ProjectionReader {
             None => return self.read_unowned(kb, recv_ty, &name, prep, instance),
         }
         let Some((_, b)) = self.bindings.iter().find(|(s, _)| *s == name) else {
-            // A spec parameter the provision leaves UNBOUND is a wildcard here as in every
-            // other position: its own variable. Left to the call's reading, `s.K` at `Car
-            // provides Sp[T = V]` was "type 'Car' has no member 'K'" and a member the spec call
-            // can never reach was refused as unreadable (MEASURED).
+            // Only the spec's CARRIER parameter is missing from σ ([`write_left_out_params`]
+            // writes every other one as the `?` it is): its own variable. Left to the call's
+            // reading, `s.K` at a provision without it was "type 'Car' has no member 'K'" and a
+            // member was refused as unreadable (MEASURED).
             let &(_, v) = self.spec_params.iter().find(|(s, _)| *s == name)?;
             return Some(Value::term(kb.alloc(Term::Var(Var::Global(v)))));
         };
@@ -2172,6 +2196,14 @@ impl ProjectionReader {
         let Some(slot) = instance else {
             return read;
         };
+        // A binding that IS one variable of the provision's own — a written `?`, or a parameter
+        // the clause leaves out, which reads as one — is the call's one slot, not an instance
+        // per read: every read of it, `k: K` and `s.K` alike, is the type the rule holds for
+        // it. Opened per read, `k: s.K, j: s.K` were two types, `put[W](c: Self, k: W, j: W)`
+        // was refused, and a spec call passed an `Int64` and a `String` there (MEASURED).
+        if matches!(type_head(kb, b), TypeHead::FlexVar(_)) {
+            return read;
+        }
         let Some(opening) = ProvisionOpening::of(kb, [b]) else {
             return read;
         };
@@ -2362,9 +2394,8 @@ fn spec_at_provision(
 /// ([`align_named_tuple_slots`]), an arrow's parameter and result, a same-sort application's
 /// binding by label, a carrier's provision against the spec it provides
 /// ([`bind_member_vars_through_provision`]); an unbound member variable there takes the spec's
-/// type, and so does a spec variable where [`SpecSlots`] says the member picks it. `flipped` is
-/// the relation's direction: an arrow's parameter and a `Contravariant` binding turn it, so there
-/// the MEMBER's tuple is the one aligned as the subtype (a callback's parameter wider by width
+/// type. `flipped` is the relation's direction: an arrow's parameter and a `Contravariant`
+/// binding turn it, so there the MEMBER's tuple is the one aligned as the subtype (a callback's parameter wider by width
 /// is `(t: (a: X, b: Int64, c: Int64))` behind `(t: (a: Int64, b: Int64))`). The verdict stays
 /// the relation's — this only supplies the variables it reads, and a binding the relation then
 /// refuses is refused.
@@ -2374,19 +2405,16 @@ fn bind_member_vars_along(
     spec: &Value,
     member: &Value,
     flipped: bool,
-    spec_slots: SpecSlots,
 ) {
     let m = walk_view(kb, subst, member);
-    let s = walk_view(kb, subst, spec);
-    if matches!(type_head(kb, &m), TypeHead::FlexVar(_))
-        || (spec_slots.member_picks(flipped) && matches!(type_head(kb, &s), TypeHead::FlexVar(_)))
-    {
-        unify_types(kb, subst, &m, &s);
+    if matches!(type_head(kb, &m), TypeHead::FlexVar(_)) {
+        unify_types(kb, subst, &m, spec);
         return;
     }
+    let s = walk_view(kb, subst, spec);
     match (extract_type(kb, &s), extract_type(kb, &m)) {
         (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf)) => {
-            bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::DATA, flipped, spec_slots);
+            bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::DATA, flipped);
         }
         (
             TypeExtractor::Arrow {
@@ -2406,19 +2434,11 @@ fn bind_member_vars_along(
                 (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf))
                     if arity != 1 && both_named_tuples(kb, &sp, &mp) =>
                 {
-                    bind_member_fields_along(
-                        kb,
-                        subst,
-                        &sf,
-                        &mf,
-                        TupleAlign::PARAM_LIST,
-                        !flipped,
-                        spec_slots,
-                    );
+                    bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::PARAM_LIST, !flipped);
                 }
-                _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped, spec_slots),
+                _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped),
             }
-            bind_member_vars_along(kb, subst, &sr, &mr, flipped, spec_slots);
+            bind_member_vars_along(kb, subst, &sr, &mr, flipped);
         }
         (
             TypeExtractor::Parameterized {
@@ -2439,35 +2459,11 @@ fn bind_member_vars_along(
                 };
                 if let Some(sv) = binding_for_param(kb, &sbind, *k, BindingKeyMatch::Label).cloned()
                 {
-                    bind_member_vars_along(kb, subst, &sv, mv, flip, spec_slots);
+                    bind_member_vars_along(kb, subst, &sv, mv, flip);
                 }
             }
         }
-        _ => bind_member_vars_through_provision(kb, subst, &s, &m, flipped, spec_slots),
-    }
-}
-
-/// Who picks a variable on the SPEC's side of [`bind_member_vars_along`]. At a parameter the
-/// caller does: such a variable is a spec parameter the provision leaves unbound, a wildcard
-/// the relation reads as written, and the walk leaves it alone. At the return the member
-/// produces the value, so the spec's unwritten slot is the member's to pick (`-> Describe[K =
-/// ?]` behind a member's `-> Plain`) and the walk binds it, as unification binds it where it
-/// reaches — but only where the member produces it: under a returned arrow's parameter the
-/// caller supplies the value and the slot is the caller's again. Bound there too, `-> (u: (a:
-/// Box[T = Int64])) -> Int64` behind `-> (u: (a: Box[T = K], b: Int64)) -> Int64` loaded, and a
-/// caller passing a `Box[T = String]` to the returned function ran it on one (MEASURED).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SpecSlots {
-    Callers,
-    Members,
-}
-
-impl SpecSlots {
-    /// Does the member pick a spec-side variable at a position of this direction? The return
-    /// is walked with the member the subtype (`flipped`), and a position that turns the
-    /// relation over is one the caller supplies.
-    fn member_picks(self, flipped: bool) -> bool {
-        self == SpecSlots::Members && flipped
+        _ => bind_member_vars_through_provision(kb, subst, &s, &m, flipped),
     }
 }
 
@@ -2487,7 +2483,6 @@ fn bind_member_vars_through_provision(
     spec: &Value,
     member: &Value,
     flipped: bool,
-    spec_slots: SpecSlots,
 ) {
     let (sub, sup) = if flipped { (member, spec) } else { (spec, member) };
     let (Some(carrier), Some((provided, sup_bindings))) = (
@@ -2517,9 +2512,9 @@ fn bind_member_vars_through_provision(
             continue;
         };
         if flipped {
-            bind_member_vars_along(kb, subst, sup_v, &view_v, flip, spec_slots);
+            bind_member_vars_along(kb, subst, sup_v, &view_v, flip);
         } else {
-            bind_member_vars_along(kb, subst, &view_v, sup_v, flip, spec_slots);
+            bind_member_vars_along(kb, subst, &view_v, sup_v, flip);
         }
     }
 }
@@ -2550,12 +2545,8 @@ fn bind_on_probe(
     if genuine_contradiction_since(kb, &probe, before) {
         return (probe, unified, false);
     }
-    let (spec, member, spec_slots) = if member_is_sub {
-        (sup, sub, SpecSlots::Members)
-    } else {
-        (sub, sup, SpecSlots::Callers)
-    };
-    bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub, spec_slots);
+    let (spec, member) = if member_is_sub { (sup, sub) } else { (sub, sup) };
+    bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub);
     let cyclic = binds_a_cycle(kb, &probe);
     (probe, unified, cyclic)
 }
@@ -2569,7 +2560,6 @@ fn bind_member_fields_along(
     member_fields: &[(Symbol, Value)],
     mode: TupleAlign,
     flipped: bool,
-    spec_slots: SpecSlots,
 ) {
     let pairs: Vec<(Value, Value)> = if flipped {
         let Some(slots) = align_named_tuple_slots(kb, member_fields, spec_fields, mode) else {
@@ -2587,7 +2577,7 @@ fn bind_member_fields_along(
             .collect()
     };
     for (s, m) in pairs {
-        bind_member_vars_along(kb, subst, &s, &m, flipped, spec_slots);
+        bind_member_vars_along(kb, subst, &s, &m, flipped);
     }
 }
 
@@ -2991,7 +2981,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         /// A witness's carrier — the sort its operations receive on.
         witness: Option<Symbol>,
     }
-    let provs: Vec<Prov> = provides_rows(kb)
+    let mut provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
             // The view's RAW named arguments, not `row.bindings` — see [`spec_param_sigma`].
             let named = view_named_children(kb, &row.spec_view);
@@ -3003,6 +2993,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             }
         })
         .collect();
+    for p in &mut provs {
+        write_left_out_params(kb, p.spec, &mut p.sigma);
+    }
 
     let mut errors = Vec::new();
     for p in &provs {
