@@ -10511,7 +10511,8 @@ impl KnowledgeBase {
     }
 
     /// `scope(?sym, ?result)` — if `?sym` is bound to a Ref or Fn, bind `?result`
-    /// to the enclosing scope term (Fn). Fails if scope is <global> (top-level).
+    /// to the symbol owning the scope `?sym` is declared in, as a name term. Fails
+    /// if that scope is `<global>` (top-level).
     fn builtin_scope<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let sym_val = match self.walk_arg(goal.pos_arg(self, 0), subst) {
             Some(v) => v,

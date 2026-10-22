@@ -6825,11 +6825,6 @@ fn entity_is_direct_child(entity: &Entity) -> bool {
     entity.name.segments.len() == 1
 }
 
-/// Check if a scope term represents a sort (vs. the global scope or a namespace).
-/// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
-/// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
-/// registers under and the keyword its `SortInfo` reports. Read by both halves of
-/// the sort load, which is why it is derived once here rather than twice there.
 /// `anthill.reflect.MemberKind`'s variants (reflect.anthill) — the loader's ONE spelling
 /// of a member kind. `register_stdlib_scopes` defines the symbols from [`Self::ALL`];
 /// `MemberInfo` and `DeclarationMeta` (WI-20260914-DV7DP) name them through
@@ -6880,6 +6875,9 @@ impl MemberKind {
     }
 }
 
+/// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
+/// registers under and the keyword its `SortInfo` reports. Read by both halves of
+/// the sort load, which is why it is derived once here rather than twice there.
 fn sort_decl_kinds(kind: SortDeclKind) -> (SortKind, &'static str) {
     match kind {
         SortDeclKind::Enum => (SortKind::Enum, "enum"),
@@ -6953,14 +6951,6 @@ fn mint_domain_value_face_name(kb: &mut KnowledgeBase, sort: Symbol) {
         .define_qualified_only("domain", &name, SymbolKind::Goal, scope);
 }
 
-/// For a dotted name like `"a.b.C"`, create implicit intermediate namespaces
-/// `"a"` and `"a.b"` (if they don't already exist), returning the short name
-/// (`"C"`) and the innermost scope (`a.b`'s term).
-///
-/// If the name has no dots, returns `(full_name, outer_scope)` unchanged.
-///
-/// `prefix` is the fully-qualified path of the enclosing scope. Intermediate
-
 /// The NAMESPACE already declared as `qualified` DIRECTLY IN `scope`, if any —
 /// the "several files contribute to one namespace" reuse test, asked identically
 /// by the implicit-namespace walk and by `DefinePass`'s `Namespace` arm. Both
@@ -6984,6 +6974,13 @@ fn existing_namespace_in_scope(
         })
 }
 
+/// For a dotted name like `"a.b.C"`, create implicit intermediate namespaces
+/// `"a"` and `"a.b"` (if they don't already exist), returning the short name
+/// (`"C"`) and the innermost scope (`a.b`'s).
+///
+/// If the name has no dots, returns `(full_name, outer_scope)` unchanged.
+///
+/// `prefix` is the fully-qualified path of the enclosing scope. Intermediate
 /// namespaces get qualified names prepended with this prefix.
 fn ensure_intermediate_namespaces(
     kb: &mut KnowledgeBase,
@@ -45509,6 +45506,361 @@ end
             "demo.Colour",
             "the same rule written one level in is filed under the SORT"
         );
+    }
+}
+
+#[cfg(test)]
+mod wi832_nested_scope_identity_tests {
+    //! WI-832 — A NESTED SCOPE IS ITS OWNER'S, AT EVERY DEPTH AND IN EVERY KIND.
+    //!
+    //! WI-984 made a scope a [`ScopeId`] minted from its owner symbol, and WI-1028
+    //! carried it through the loader's walk; their tests drive one level of nesting
+    //! (namespace → sort → entity → field, sort → operation). This module drives the
+    //! nestings they leave out, each in the places a scope is read:
+    //!
+    //!  * where a name is DECLARED ([`KnowledgeBase::declaring_scope_symbol`]);
+    //!  * what `anthill.reflect.scope` answers, through BOTH of its backings — the SLD
+    //!    builtin and the eval host op, which WI-984 found sharing no answer;
+    //!  * what a name RESOLVES against, two-sided: the nested scope sees out, and the
+    //!    scope around it does not see in;
+    //!  * and the bodies written in those scopes, run.
+    //!
+    //! The nestings: a sort inside a sort; an operation's own scope (its type
+    //! parameter, its parameter, its `result`, and a sibling operation's); a namespace
+    //! inside a namespace written as blocks; and the same written dotted, whose
+    //! intermediate namespaces are implicit (`ensure_intermediate_namespaces`).
+    //!
+    //! NO BEHAVIOUR CHANGE COMES WITH THIS MODULE: it pins what WI-984 / WI-1028
+    //! already do, so every row passes on the tree it was written against, and
+    //! backing those tickets out is no longer a measurable change. CONTROL, MEASURED
+    //! instead by breaking one filing at a time — each the one line given, in
+    //! `DefinePass::enter_scope` or a helper it calls:
+    //!
+    //!  1. SORT ARM, first line: `let actual_scope = if !s.is_type_param &&
+    //!     is_sort_scope(kb, actual_scope) { kb.symbols.declaring_scope(actual_scope.
+    //!     owner()).unwrap() } else { actual_scope };` — a sort written in a sort
+    //!     filed in the outer sort's enclosing scope. The declaration, reflect and
+    //!     resolution tests fail: `Inner` declared in `wi832`, and `probe` no longer
+    //!     sees `outer_op`.
+    //!  2. `scan_operation_params`, the parameter's `define(…, op_scope)` given `if
+    //!     qualified.starts_with("wi832") { enclosing_scope } else { op_scope }` — a
+    //!     parameter filed in its sort's scope. The same three fail, and in resolution
+    //!     only the NEGATIVE rows do (`Inner` sees `x`): `probe` sees `x` either way,
+    //!     through its parent.
+    //!  3. NAMESPACE ARM, first line: `let actual_scope = if !site.written.
+    //!     contains('.') && qualified.starts_with("wi832") { kb.global_scope() } else
+    //!     { actual_scope };` — a namespace nested as a block filed at `<global>`. The
+    //!     same three fail, and `deep` stops seeing `Outer`.
+    //!  4. `ensure_intermediate_namespaces` returning `if full_name.
+    //!     starts_with("wi832d") { outer_scope } else { current_scope }` — a dotted
+    //!     name declared into the scope it is written in, not the namespace it names
+    //!     (the WI-992 defect). The same three fail: `tip` declared in `<global>`, and
+    //!     its chain to `dotted` is gone.
+    //!
+    //! Mutations 2–6 name the fixture because applied to every name each breaks the
+    //! STDLIB load first (measured, all five), which fails every test here without
+    //! reading a row; mutation 1 is unrestricted and the stdlib loads under it. NONE OF
+    //! THE FOUR reaches the "does not see in" rows of the sort and the namespaces
+    //! (`Outer`/`probe`, `mid`/`Leaf`, `dotted`/`Far`), which guard a LEAK rather
+    //! than a mis-filing; two more mutations measured those, and each fails ONLY the
+    //! resolution test, which is why it is a test of its own:
+    //!
+    //!  5. SORT ARM, the variant-exposure link: `if has_variant ||
+    //!     qualified.starts_with("wi832")` — a sort with no constructors exposed to
+    //!     the scope around it (`Outer` sees `probe`).
+    //!  6. NAMESPACE ARM, before `record_scope_text_file`: `if qualified.
+    //!     starts_with("wi832") { kb.symbols.add_exposure_parent(actual_scope,
+    //!     ns_scope); }` — a namespace exposed the same way (`mid` sees `Leaf`,
+    //!     `dotted` sees `Far`).
+    //!
+    //! The body test passes under all six BY DESIGN: a mis-filed parameter is still
+    //! the name its own body reads. It is the row that drives the bodies at all —
+    //! the tables above read the symbol table after the load, and a body that
+    //! resolved to the wrong symbol would leave every one of them green.
+    use super::*;
+    use crate::eval::{Interpreter, Value};
+    use crate::intern::{ResolveResult, GLOBAL_SCOPE_NAME};
+    use crate::kb::resolve::ResolveConfig;
+    use crate::kb::term::Var;
+    use smallvec::SmallVec;
+
+    const SRC: &str = "\
+namespace wi832
+  sort Outer
+    sort Inner
+      operation probe[T](x: T) -> T = x
+    end
+    operation outer_op(o: Int64) -> Int64 = o
+  end
+  namespace mid
+    namespace deep
+      sort Leaf
+        operation leaf_op(n: Int64) -> Int64 = n
+      end
+    end
+  end
+end
+
+namespace wi832d.dotted.tip
+  sort Far
+    operation far_op(n: Int64) -> Int64 = n
+  end
+end
+";
+
+    /// `(member, the scope it is declared in)`, by qualified name.
+    const DECLARED_IN: &[(&str, &str)] = &[
+        // A sort inside a sort.
+        ("wi832.Outer", "wi832"),
+        ("wi832.Outer.Inner", "wi832.Outer"),
+        ("wi832.Outer.Inner.probe", "wi832.Outer.Inner"),
+        // An operation's own scope, and a sibling operation's.
+        ("wi832.Outer.Inner.probe.T", "wi832.Outer.Inner.probe"),
+        ("wi832.Outer.Inner.probe.x", "wi832.Outer.Inner.probe"),
+        ("wi832.Outer.Inner.probe.result", "wi832.Outer.Inner.probe"),
+        ("wi832.Outer.outer_op.o", "wi832.Outer.outer_op"),
+        // A namespace inside a namespace, as blocks.
+        ("wi832", GLOBAL_SCOPE_NAME),
+        ("wi832.mid", "wi832"),
+        ("wi832.mid.deep", "wi832.mid"),
+        ("wi832.mid.deep.Leaf", "wi832.mid.deep"),
+        // The same, dotted: `wi832d` and `wi832d.dotted` are never written alone.
+        ("wi832d", GLOBAL_SCOPE_NAME),
+        ("wi832d.dotted", "wi832d"),
+        ("wi832d.dotted.tip", "wi832d.dotted"),
+        ("wi832d.dotted.tip.Far", "wi832d.dotted.tip"),
+    ];
+
+    fn interp() -> Interpreter {
+        let mut interp = Interpreter::new(crate::kb::test_support::load_stdlib(Some(SRC)));
+        crate::eval::builtins::register_standard_builtins(&mut interp)
+            .expect("register standard eval builtins");
+        interp
+    }
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("`{qn}` must be declared by the fixture"))
+    }
+
+    /// What `reflect.scope` promises for a member: the scope it is declared in,
+    /// and `none` for the top level.
+    fn reflected(declared_in: &str) -> Option<String> {
+        (declared_in != GLOBAL_SCOPE_NAME).then(|| declared_in.to_owned())
+    }
+
+    #[test]
+    fn each_member_is_declared_in_the_scope_it_is_written_in() {
+        let interp = interp();
+        let kb = interp.kb();
+        let actual: Vec<(&str, String)> = DECLARED_IN
+            .iter()
+            .map(|&(member, _)| {
+                let scope = kb.declaring_scope_symbol(sym(kb, member)).map_or_else(
+                    || "<no scope>".to_owned(),
+                    |s| kb.qualified_name_of(s).to_owned(),
+                );
+                (member, scope)
+            })
+            .collect();
+        let expected: Vec<(&str, String)> = DECLARED_IN
+            .iter()
+            .map(|&(m, s)| (m, s.to_owned()))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    /// `scope(?sym, ?r)`, resolved — the language-level reader.
+    fn sld_scope(interp: &mut Interpreter, member: &str) -> Option<String> {
+        let kb = interp.kb_mut();
+        let scope_op = kb.resolve_symbol("anthill.reflect.scope");
+        let member_sym = sym(kb, member);
+        let member_ref = kb.alloc(Term::Ref(member_sym));
+        let r = kb.intern("r");
+        let r_vid = kb.fresh_var(r);
+        let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
+        let goal = kb.alloc(Term::Fn {
+            functor: scope_op,
+            pos_args: SmallVec::from_slice(&[member_ref, r_var]),
+            named_args: SmallVec::new(),
+        });
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert!(
+            solutions.len() <= 1,
+            "`scope` answers at most once for `{member}`"
+        );
+        // No solution is how the builtin says "top level" — and also how a builtin
+        // that failed for every input would read. The rows that expect a scope are
+        // what tell the two apart, so the table must keep some.
+        solutions.first().map(|s| {
+            let answer = kb.reify(r_var, &s.subst).expect_term();
+            kb.qualified_name_of(kb.name_term_sym(answer)).to_owned()
+        })
+    }
+
+    /// `anthill.reflect.scope(s)`, called — the eval host op.
+    fn eval_scope(interp: &mut Interpreter, member: &str) -> Option<String> {
+        let member_sym = sym(interp.kb(), member);
+        let member_ref = Value::term(interp.kb_mut().alloc(Term::Ref(member_sym)));
+        let got = interp
+            .call("anthill.reflect.scope", &[member_ref])
+            .unwrap_or_else(|e| panic!("reflect.scope({member}): {e:?}"));
+        let kb = interp.kb();
+        let Value::Entity { functor, named, .. } = &got else {
+            panic!("reflect.scope({member}) returned a non-Option {got:?}");
+        };
+        if *functor == sym(kb, "anthill.prelude.Option.none") {
+            return None;
+        }
+        assert_eq!(*functor, sym(kb, "anthill.prelude.Option.some"));
+        let payload = named
+            .iter()
+            .find(|(label, _)| kb.local_name_of(*label) == "value")
+            .unwrap_or_else(|| {
+                panic!("reflect.scope({member}) returned a `some` with no `value`: {got:?}")
+            });
+        let owner = kb
+            .value_symbol(&payload.1)
+            .unwrap_or_else(|| panic!("reflect.scope({member})'s `some` holds a symbol"));
+        Some(kb.qualified_name_of(owner).to_owned())
+    }
+
+    #[test]
+    fn both_backings_of_reflect_scope_answer_the_declaring_scope() {
+        let mut interp = interp();
+        let expected: Vec<(&str, Option<String>)> = DECLARED_IN
+            .iter()
+            .map(|&(m, s)| (m, reflected(s)))
+            .collect();
+        let sld: Vec<(&str, Option<String>)> = DECLARED_IN
+            .iter()
+            .map(|&(m, _)| (m, sld_scope(&mut interp, m)))
+            .collect();
+        let eval: Vec<(&str, Option<String>)> = DECLARED_IN
+            .iter()
+            .map(|&(m, _)| (m, eval_scope(&mut interp, m)))
+            .collect();
+        assert_eq!(sld, expected, "the SLD builtin");
+        assert_eq!(eval, expected, "the eval host op");
+    }
+
+    /// How a name reads from a scope, with respect to one member. `Ambiguously` is
+    /// never expected: as an answer it fails a `Yes` row (a use of the name there is
+    /// an ambiguity error, not a reference) and a `No` row alike (the member leaked
+    /// in beside another reading).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Sees {
+        Yes,
+        No,
+        Ambiguously,
+    }
+    use Sees::{No, Yes};
+
+    /// `(the scope resolved in, the name, the member it would name, how it reads)`.
+    /// Each nesting is asked both ways: the member is seen from its own scope (or
+    /// from further in), and NOT from the scope around it. The negative rows are
+    /// the ones that discriminate — a scope handed out one level too far out still
+    /// sees everything its positive row asks for.
+    const SEES: &[(&str, &str, &str, Sees)] = &[
+        // A sort inside a sort: its operation is not exposed to the outer sort (only
+        // entity variants are, §8.6), but the outer sort's is visible from inside.
+        ("wi832.Outer.Inner", "probe", "wi832.Outer.Inner.probe", Yes),
+        ("wi832.Outer", "probe", "wi832.Outer.Inner.probe", No),
+        (
+            "wi832.Outer.Inner.probe",
+            "outer_op",
+            "wi832.Outer.outer_op",
+            Yes,
+        ),
+        // An operation's scope holds its type parameter, its parameters and its
+        // `result`, and neither its sort nor a sibling operation sees them.
+        (
+            "wi832.Outer.Inner.probe",
+            "x",
+            "wi832.Outer.Inner.probe.x",
+            Yes,
+        ),
+        (
+            "wi832.Outer.Inner.probe",
+            "T",
+            "wi832.Outer.Inner.probe.T",
+            Yes,
+        ),
+        (
+            "wi832.Outer.Inner.probe",
+            "result",
+            "wi832.Outer.Inner.probe.result",
+            Yes,
+        ),
+        ("wi832.Outer.Inner", "x", "wi832.Outer.Inner.probe.x", No),
+        ("wi832.Outer.Inner", "T", "wi832.Outer.Inner.probe.T", No),
+        (
+            "wi832.Outer.Inner",
+            "result",
+            "wi832.Outer.Inner.probe.result",
+            No,
+        ),
+        ("wi832.Outer.outer_op", "o", "wi832.Outer.outer_op.o", Yes),
+        ("wi832.Outer", "o", "wi832.Outer.outer_op.o", No),
+        ("wi832.Outer.outer_op", "x", "wi832.Outer.Inner.probe.x", No),
+        ("wi832.Outer.Inner.probe", "o", "wi832.Outer.outer_op.o", No),
+        // A namespace inside a namespace.
+        ("wi832.mid.deep", "Leaf", "wi832.mid.deep.Leaf", Yes),
+        ("wi832.mid", "Leaf", "wi832.mid.deep.Leaf", No),
+        ("wi832.mid.deep", "Outer", "wi832.Outer", Yes),
+        // The same, dotted: the implicit intermediates are a chain of enclosing
+        // scopes, so `dotted` (a member of `wi832d`) is seen two levels in.
+        ("wi832d.dotted.tip", "Far", "wi832d.dotted.tip.Far", Yes),
+        ("wi832d.dotted", "Far", "wi832d.dotted.tip.Far", No),
+        ("wi832d.dotted.tip", "dotted", "wi832d.dotted", Yes),
+    ];
+
+    #[test]
+    fn a_nested_scope_sees_out_and_the_scope_around_it_does_not_see_in() {
+        let interp = interp();
+        let kb = interp.kb();
+        let sees = |from: &str, name: &str, member: &str| {
+            let scope = kb.symbols.scope_id(sym(kb, from));
+            let target = sym(kb, member);
+            match kb.symbols.resolve_in_scope(name, scope) {
+                ResolveResult::Found(s) if s == target => Yes,
+                ResolveResult::Ambiguous(readings, _) if readings.contains(&target) => {
+                    Sees::Ambiguously
+                }
+                _ => No,
+            }
+        };
+        let actual: Vec<_> = SEES
+            .iter()
+            .map(|&(from, name, member, _)| (from, name, member, sees(from, name, member)))
+            .collect();
+        assert_eq!(actual, SEES);
+    }
+
+    /// Each body reads its own parameter, in each of the four nestings — `probe`
+    /// through its type parameter too.
+    #[test]
+    fn the_bodies_written_in_those_scopes_run() {
+        let mut interp = interp();
+        let calls = [
+            ("wi832.Outer.Inner.probe", 7),
+            ("wi832.Outer.outer_op", 3),
+            ("wi832.mid.deep.Leaf.leaf_op", 5),
+            ("wi832d.dotted.tip.Far.far_op", 9),
+        ];
+        let actual: Vec<(&str, i64)> = calls
+            .iter()
+            .map(|&(op, arg)| {
+                let got = interp
+                    .call(op, &[Value::Int(arg)])
+                    .unwrap_or_else(|e| panic!("{op}({arg}): {e:?}"));
+                let Value::Int(n) = got else {
+                    panic!("{op}({arg}) returned a non-Int {got:?}");
+                };
+                (op, n)
+            })
+            .collect();
+        assert_eq!(actual, calls, "each body answers its own argument");
     }
 }
 
