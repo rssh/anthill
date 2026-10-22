@@ -27,6 +27,133 @@ pub(super) type ParamInstantiation = HashMap<u32, TermId>;
 /// the fault is the CALL's, not the variable's. See [`constrain_vid`].
 pub(super) type ParamBackedVars = HashSet<u32>;
 
+/// What one clause's typing is collected into: what each variable's own positions say
+/// (`var_types`, keyed by De Bruijn index), which of those records are a call's placeholder
+/// ([`ParamBackedVars`]), the one substitution over the clause, and the positions read once
+/// the walk is done ([`LatePosition`]).
+pub(super) struct ClauseConstraints {
+    pub(super) var_types: HashMap<u32, Value>,
+    pub(super) param_backed: ParamBackedVars,
+    pub(super) subst: Substitution,
+    late: Vec<LatePosition>,
+}
+
+impl ClauseConstraints {
+    pub(super) fn new() -> Self {
+        ClauseConstraints {
+            var_types: HashMap::new(),
+            param_backed: HashSet::new(),
+            subst: Substitution::new(),
+            late: Vec::new(),
+        }
+    }
+
+    /// A copy to try one position on: kept where the position fits ([`Self::commit`]),
+    /// dropped where it does not, so a position that does not fit pins nothing.
+    fn trial(&self) -> Self {
+        let mut subst = self.subst.clone();
+        subst.contradiction = false;
+        ClauseConstraints {
+            var_types: self.var_types.clone(),
+            param_backed: self.param_backed.clone(),
+            subst,
+            late: Vec::new(),
+        }
+    }
+
+    /// Keep what `trial` learnt, the positions its own walk found included. The flag a
+    /// contradiction of the walk set stays as the walk left it: a late position never
+    /// sets it.
+    fn commit(&mut self, trial: ClauseConstraints) {
+        let contradiction = self.subst.contradiction;
+        self.var_types = trial.var_types;
+        self.param_backed = trial.param_backed;
+        self.subst = trial.subst;
+        self.subst.contradiction = contradiction;
+        self.late.extend(trial.late);
+    }
+}
+
+/// A position of a clause that types a variable and is read once the walk is done: on a
+/// copy of the clause's typing, kept only where it fits. So what these positions say is
+/// added to what the walk found, and never makes the walk's contradiction — the one a
+/// clause is refused or left undispatched for.
+enum LatePosition {
+    /// An operation's application in a slot that declares a type (`?c <=> Mk.mk4()`, the
+    /// `T` of `<=>`): the call's result is of that type.
+    CallResult {
+        position: Value,
+        result: CallResult,
+        at: crate::span::SourceSpan,
+    },
+    /// `f(a₁…aₙ, ?r)` at goal position, read as the call (§5.3): the last argument is the
+    /// call's result.
+    ResultColumn {
+        arg: Rc<NodeOccurrence>,
+        result: CallResult,
+    },
+    /// A goal on a relation: each argument is at the callee's column.
+    RuleGoal {
+        functor: Symbol,
+        goal: Rc<NodeOccurrence>,
+    },
+    /// A dot whose value fills a slot that declares a type (`?y <=> ?p.t`): its type, once
+    /// the clause types its receiver.
+    DotResult {
+        dot: Rc<NodeOccurrence>,
+        position: Value,
+    },
+}
+
+/// An operation application's result type at the application's instantiation, and the
+/// argument each parameter is filled with — what a projection the result names (`head(s:
+/// Self) -> s.T`) is read off.
+pub(super) struct CallResult {
+    ty: Value,
+    params: Vec<(Symbol, ArgType)>,
+}
+
+/// The type of a call's argument as a projection reads it: a variable's, once the clause is
+/// typed, or the type the argument is known at where it is read.
+enum ArgType {
+    Var(u32),
+    Of(Value),
+}
+
+/// A late position that did not fit what the clause already said, and so pinned nothing.
+#[derive(Clone, Debug)]
+pub(super) struct ClauseDisagreement {
+    pub(super) class: DisagreementClass,
+    pub(super) span: Option<crate::span::SourceSpan>,
+}
+
+/// Which position of a clause did not fit ([`ClauseDisagreement`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DisagreementClass {
+    /// A head's written bound against what the body says of its variable.
+    HeadBound,
+    /// The same, where the bound fits once the enclosing sort's parameter it names is let
+    /// vary: the body fixes the parameter.
+    SortParameterFixed,
+    /// An operation call's result against the slot it fills.
+    CallResult,
+    /// The result column of `f(args, ?r)` against the call's result.
+    ResultColumn,
+    /// A rule goal's argument against the callee's column.
+    RuleGoal,
+    /// A dot's value against the slot it fills.
+    DotResult,
+}
+
+/// One clause's typing: each variable's type by De Bruijn index, whether the walk found
+/// two declared positions of one variable that disagree, and the late positions that did
+/// not fit.
+pub(super) struct ClauseTyping {
+    pub(super) var_types: HashMap<u32, Value>,
+    pub(super) contradiction: bool,
+    pub(super) disagreements: Vec<ClauseDisagreement>,
+}
+
 /// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
 /// denotes one.
 ///
@@ -297,24 +424,14 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     arg: &A,
     expected_type: &Value,
     instantiated: bool,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
+    st: &mut ClauseConstraints,
 ) -> bool {
     if let Some(lit) = arg.literal(kb) {
-        constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
+        constrain_literal_arg(kb, &lit, expected_type, instantiated, &mut st.subst);
         return true;
     }
     if let Some(vid) = arg.var_key(kb) {
-        constrain_vid(
-            kb,
-            vid,
-            expected_type,
-            instantiated,
-            var_types,
-            param_backed,
-            subst,
-        );
+        constrain_vid(kb, vid, expected_type, instantiated, st);
         return true;
     }
     false
@@ -362,30 +479,31 @@ fn constrain_vid(
     vid: u32,
     expected_type: &Value,
     from_param: bool,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
+    st: &mut ClauseConstraints,
 ) {
-    let Some(existing) = var_types.get(&vid).cloned() else {
+    let Some(existing) = st.var_types.get(&vid).cloned() else {
         // Nothing known yet — record what this position says.
-        var_types.insert(vid, expected_type.clone());
+        st.var_types.insert(vid, expected_type.clone());
         if from_param {
-            param_backed.insert(vid);
+            st.param_backed.insert(vid);
         }
         return;
     };
-    let existing_from_param = param_backed.contains(&vid);
+    let existing_from_param = st.param_backed.contains(&vid);
     // Unify either way: that is what binds a call's parameter to the variable's concrete
     // type, so a SIBLING argument of the same call inherits it.
-    if !unify_types(kb, subst, &existing, expected_type) && !from_param && !existing_from_param {
-        subst.contradiction = true;
+    if !unify_types(kb, &mut st.subst, &existing, expected_type)
+        && !from_param
+        && !existing_from_param
+    {
+        st.subst.contradiction = true;
     }
     // A declared position takes over from a placeholder — including when the two just
     // disagreed, because the declared type is what the variable is and recording it is
     // what leaves the offending CALL checkable.
     if !from_param && existing_from_param {
-        var_types.insert(vid, expected_type.clone());
-        param_backed.remove(&vid);
+        st.var_types.insert(vid, expected_type.clone());
+        st.param_backed.remove(&vid);
     }
 }
 
@@ -407,9 +525,15 @@ pub(super) fn collect_occurrence_type_constraints(
     // The declared type of the position `occ` fills, where its parent is an application
     // that declares one ([`NestedPositions`]); `None` for a top-level goal.
     position: Option<&Value>,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
+    // Where in the body `occ` sits, as the dispatch walk reads it ([`BodyPos`]): a goal is
+    // read as a relation, a call's result column or a call, and data as data.
+    pos: BodyPos,
+    // Whether `occ` is part of a goal the clause commits to — a conjunct, not a `|` branch,
+    // a quantifier's body or a negation ([`GoalCommit::Top`]). Only such a goal's positions
+    // are read after the walk: a branch types a variable for the branch alone, so
+    // `(pi(?x) | ps(?x))` over an `Int64` and a `String` column would make `?x` the first.
+    committed: bool,
+    st: &mut ClauseConstraints,
 ) {
     // WI-298: descend into Pattern children so a var living in a pattern's
     // nested type-annotation Expr leaf gets the same op-arg / entity-field
@@ -417,25 +541,64 @@ pub(super) fn collect_occurrence_type_constraints(
     // `node_to_debruijn` and `collect_occurrence_global_vars_ordered`.
     if occ.as_pattern().is_some() {
         for_each_pattern_child(occ, |c| {
-            collect_occurrence_type_constraints(kb, c, None, var_types, param_backed, subst)
+            collect_occurrence_type_constraints(kb, c, None, BodyPos::Untyped, false, st)
         });
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
+    let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
     let nested = match expr_call_parts(expr) {
-        Some((functor, pos_args, named_args)) => constrain_application(
-            kb,
-            functor,
-            pos_args,
-            named_args,
-            position,
-            var_types,
-            param_backed,
-            subst,
-        ),
+        Some((functor, pos_args, named_args)) => {
+            let bracket = call_bracket_instances(kb, occ, expr, functor);
+            let (nested, result) =
+                constrain_application(kb, functor, pos_args, named_args, &bracket, position, st);
+            // THE CALL'S RESULT IS OF THE SLOT IT FILLS, and at goal position the extra
+            // argument of `f(a₁…aₙ, ?r)` is that result (§5.3's functional relation): what
+            // the resolver reads the goal as, asked of the resolver. A goal is no value, so
+            // the slot a connective declares for it (`not(query: Term)`) is not its type.
+            if let Some(result) = result.filter(|_| committed) {
+                if goal {
+                    if let Some((_, n)) = kb.functional_relation_goal(&Value::Node(Rc::clone(occ)))
+                    {
+                        if let Some(arg) = pos_args.get(n) {
+                            st.late.push(LatePosition::ResultColumn {
+                                arg: Rc::clone(arg),
+                                result,
+                            });
+                        }
+                    }
+                } else if let Some(position) = position {
+                    st.late.push(LatePosition::CallResult {
+                        position: position.clone(),
+                        result,
+                        at: occ.span,
+                    });
+                }
+            }
+            if goal && committed {
+                if let Some(functor) = rule_goal_functor(kb, expr, pos) {
+                    st.late.push(LatePosition::RuleGoal {
+                        functor,
+                        goal: Rc::clone(occ),
+                    });
+                }
+            }
+            nested
+        }
         None => {
-            if let Expr::Ref(name) = expr {
-                constrain_constant_constructor(kb, *name, position, subst);
+            match expr {
+                Expr::Ref(name) => {
+                    constrain_constant_constructor(kb, *name, position, &mut st.subst)
+                }
+                Expr::DotApply { .. } => {
+                    if let Some(position) = position.filter(|_| committed) {
+                        st.late.push(LatePosition::DotResult {
+                            dot: Rc::clone(occ),
+                            position: position.clone(),
+                        });
+                    }
+                }
+                _ => {}
             }
             NestedPositions::new()
         }
@@ -456,12 +619,82 @@ pub(super) fn collect_occurrence_type_constraints(
     //
     // An application's children are its arguments, positional then named
     // (`for_each_child`), which is the order [`NestedPositions`] counts in.
-    let mut index = 0;
-    for_each_child(expr, |c| {
+    let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
+    for_each_child(expr, |c| children.push(Rc::clone(c)));
+    let child_pos = child_body_positions(kb, expr, pos, children.len());
+    for (index, (c, p)) in children.iter().zip(child_pos).enumerate() {
         let position = nested_position(&nested, index);
-        collect_occurrence_type_constraints(kb, c, position, var_types, param_backed, subst);
-        index += 1;
-    });
+        let child_committed = match p {
+            BodyPos::Goal(commit) | BodyPos::GoalTuple(commit) => {
+                committed && commit == GoalCommit::Top
+            }
+            BodyPos::Value => committed,
+            BodyPos::Untyped => false,
+        };
+        collect_occurrence_type_constraints(kb, c, position, p, child_committed, st);
+    }
+}
+
+/// What an operation call's own bracket binds its type parameters to, read as the call's
+/// typing reads it ([`seed_op_type_args`]: a key by its name, a positional by the next
+/// parameter no key took, the operation's own and then its sort's). Empty where the call
+/// writes no bracket, or one its typing refuses — which that typing reports.
+fn call_bracket_instances(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    expr: &Expr,
+    functor: Symbol,
+) -> Vec<(VarId, TermId)> {
+    let Expr::Apply { type_args, .. } = expr else {
+        return Vec::new();
+    };
+    if type_args.is_empty() {
+        return Vec::new();
+    }
+    let Some(op) = lookup_operation_info_full(kb, functor) else {
+        return Vec::new();
+    };
+    let mut seeded = Substitution::new();
+    if seed_op_type_args(kb, &mut seeded, &TypingEnv::empty(), &op, occ, functor, None).is_err() {
+        return Vec::new();
+    }
+    let bound: Vec<(VarId, Value)> = seeded
+        .bindings
+        .iter()
+        .map(|(v, val)| (*v, val.clone()))
+        .collect();
+    bound
+        .into_iter()
+        .filter_map(|(v, val)| {
+            crate::kb::node_occurrence::value_to_term(kb, &val)
+                .ok()
+                .map(|t| (v, t))
+        })
+        .collect()
+}
+
+/// The relation a goal at `pos` is a goal on, read as the resolver reads it: an application
+/// whose functor heads clauses and is neither a connective, an operation, an entity, a
+/// builtin nor a sort — each of those is read by its own declaration.
+pub(super) fn rule_goal_functor(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> Option<Symbol> {
+    let Expr::Apply {
+        functor, pos_args, ..
+    } = expr
+    else {
+        return None;
+    };
+    let functor = *functor;
+    let wrapper = matches!(pos, BodyPos::GoalTuple(_)) && kb.local_name_of(functor) == "tuple";
+    if wrapper
+        || !kb.goal_slot_readings(functor, pos_args.len()).is_empty()
+        || lookup_operation_info_full(kb, functor).is_some()
+        || kb.is_entity_constructor(functor)
+        || kb.builtin_of(functor).is_some()
+        || kb.has_kind(functor, crate::intern::SymbolKind::Sort)
+    {
+        return None;
+    }
+    kb.rules_by_functor_iter(functor).next().map(|_| functor)
 }
 
 /// The positions of one application whose argument is neither a literal nor a variable,
@@ -499,45 +732,55 @@ pub(super) fn nested_position(nested: &NestedPositions, index: usize) -> Option<
 /// the rule would skip the check that reports it. A constructor that does not fit its
 /// position pins nothing, the parameters it does share with the position included
 /// ([`constrain_constructed`]).
-#[allow(clippy::too_many_arguments)]
+///
+/// The second half of the answer is an operation's result type at this application's
+/// instantiation, for the walker to give to the slot the call fills.
 pub(super) fn constrain_application<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &[A],
     named_args: &[(Symbol, A)],
+    // What the call's own bracket binds its type parameters to (`f[T = Int64](…)`,
+    // [`call_bracket_instances`]): each the type that parameter is instantiated at here.
+    bracket: &[(VarId, TermId)],
     position: Option<&Value>,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
-) -> NestedPositions {
+    st: &mut ClauseConstraints,
+) -> (NestedPositions, Option<CallResult>) {
     // WI-9C2PZ: ONE [`ParamInstantiation`] per application — see
     // [`instantiate_declared_type`].
     let mut inst = ParamInstantiation::new();
     let mut nested = NestedPositions::new();
+    let mut result = None;
     if let Some(op) = lookup_operation_info_full(kb, functor) {
+        for &(param, ty) in bracket {
+            inst.insert(param.raw(), ty);
+        }
         // The parameter a positional argument FILLS, not the one at its index: it ranks
         // among the parameters the labels left open ([`positional_param_indices`]). By
         // index, `pick(?l, k: 1)` over `(k: Int64, l: Leaf)` typed `?l` as `Int64`, and a
         // later `Desc.describe(?l, ?r)` was refused for a carrier the clause never had.
         let pos_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
+        let mut params: Vec<(Symbol, ArgType)> = Vec::new();
         for (index, (arg, param)) in pos_args.iter().zip(pos_params).enumerate() {
             // WI-341 Stage A: seed inference from the param type carrier-agnostically.
-            if let Some((_, param_type)) = param.and_then(|p| op.params.get(p)) {
+            if let Some((param_sym, param_type)) = param.and_then(|p| op.params.get(p)) {
                 let (param_type, instantiated) =
                     instantiate_declared_type(kb, param_type, &mut inst);
-                if !constrain_arg(
-                    kb,
-                    arg,
-                    &param_type,
-                    instantiated,
-                    var_types,
-                    param_backed,
-                    subst,
-                ) {
+                let arg_type = match (arg.var_key(kb), arg.literal(kb)) {
+                    (Some(d), _) => ArgType::Var(d),
+                    (None, Some(lit)) => ArgType::Of(literal_sort(kb, &lit)),
+                    (None, None) => ArgType::Of(param_type.clone()),
+                };
+                params.push((*param_sym, arg_type));
+                if !constrain_arg(kb, arg, &param_type, instantiated, st) {
                     nested.push((index, param_type));
                 }
             }
         }
+        result = Some(CallResult {
+            ty: instantiate_declared_type(kb, &op.return_type, &mut inst).0,
+            params,
+        });
     } else if let Some(field_types) = kb.entity_field_types(functor) {
         let field_types = field_types.to_vec();
         for (field_sym, field_type) in &field_types {
@@ -546,24 +789,16 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 // constrain directly, no re-grounding to a term.
                 let (field_type, instantiated) =
                     instantiate_declared_type(kb, field_type, &mut inst);
-                if !constrain_arg(
-                    kb,
-                    &named_args[named].1,
-                    &field_type,
-                    instantiated,
-                    var_types,
-                    param_backed,
-                    subst,
-                ) {
+                if !constrain_arg(kb, &named_args[named].1, &field_type, instantiated, st) {
                     nested.push((pos_args.len() + named, field_type));
                 }
             }
         }
         if let Some(position) = position {
-            constrain_constructed(kb, functor, position, &mut inst, subst);
+            constrain_constructed(kb, functor, position, &mut inst, &mut st.subst);
         }
     }
-    nested
+    (nested, result)
 }
 
 /// Unify `position` with the sort `constructor` constructs, at the parameters `inst`
@@ -646,4 +881,518 @@ fn constrain_literal_arg(
     // check and lose it. The failed unification simply pins nothing.
     let lit_type = literal_sort(kb, lit);
     unify_types(kb, subst, expected_type, &lit_type);
+}
+
+/// Read the positions of a clause the walk left for after it ([`LatePosition`]): the head's
+/// written bounds first, then the rest in the order they were written, and a dot last, once
+/// what types its receiver has been read. Each on a trial copy, kept where it fits and
+/// recorded as a [`ClauseDisagreement`] where it does not. Answers the rigids the bounds
+/// were read at, which the caller lets vary again once the clause is typed
+/// ([`unrigidify_clause_types`]).
+///
+/// THE ENCLOSING SORT'S PARAMETER A BOUND NAMES IS RIGID HERE, as it is in an operation
+/// body: the clause holds at every instance, so its body may not fix the parameter. Read as
+/// an ordinary variable, `rule pr(?x: Self) :- ?x <=> b3(v: 5)` in `sort Box3[T]` bound `T`
+/// to `Int64`, and every type that names `T` in the clause read `Int64` with it.
+pub(super) fn settle_late_positions(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    head: TermId,
+    st: &mut ClauseConstraints,
+    disagreements: &mut Vec<ClauseDisagreement>,
+) -> Vec<(VarId, VarId)> {
+    let span = kb.rule_head_span(rid);
+    let rigids = settle_head_bounds(kb, rid, st, disagreements, span);
+    let own = kb.head_functor(head);
+    // What can be read only once something else is: a dot, whose receiver must be typed,
+    // and a result whose type is computed from its operands (`field_access`'s `FieldOf`,
+    // the field's type once the receiver's is known).
+    let mut waiting: Vec<LatePosition> = Vec::new();
+    while !st.late.is_empty() {
+        for late in std::mem::take(&mut st.late) {
+            if let LatePosition::RuleGoal { functor, goal } = &late {
+                let Some(columns) = rule_goal_columns_at(kb, own, *functor) else {
+                    continue;
+                };
+                let mut trial = st.trial();
+                if constrain_goal_at_columns(kb, &mut trial, goal, &columns) {
+                    st.commit(trial);
+                } else {
+                    disagreements.push(ClauseDisagreement {
+                        class: DisagreementClass::RuleGoal,
+                        span: Some(goal.span),
+                    });
+                }
+                continue;
+            }
+            let computed = match &late {
+                LatePosition::CallResult { result, .. }
+                | LatePosition::ResultColumn { result, .. } => {
+                    value_contains_projection(kb, &result.ty)
+                        || return_reducible_ctors(kb, &result.ty).iter().any(|f| *f)
+                }
+                LatePosition::DotResult { .. } => true,
+                LatePosition::RuleGoal { .. } => false,
+            };
+            if computed || !settle_typed_position(kb, rid, st, &late, disagreements) {
+                waiting.push(late);
+            }
+        }
+    }
+    // Each round reads what the last one made readable.
+    loop {
+        let before = waiting.len();
+        for late in std::mem::take(&mut waiting) {
+            if !settle_typed_position(kb, rid, st, &late, disagreements) {
+                waiting.push(late);
+            }
+        }
+        if waiting.is_empty() || waiting.len() == before {
+            break;
+        }
+    }
+    rigids
+}
+
+/// Read one late position that types a slot by a type ([`LatePosition::CallResult`],
+/// [`LatePosition::ResultColumn`], [`LatePosition::DotResult`]), or answer `false` where that
+/// type cannot be read yet ([`settle_late_positions`]).
+fn settle_typed_position(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    st: &mut ClauseConstraints,
+    late: &LatePosition,
+    disagreements: &mut Vec<ClauseDisagreement>,
+) -> bool {
+    let (slot, ty, class, at) = match late {
+        LatePosition::CallResult {
+            position,
+            result,
+            at,
+        } => {
+            let Some(result) = computed_result_type(kb, rid, st, result, *at) else {
+                return false;
+            };
+            (
+                SlotOf::Type(position),
+                result,
+                DisagreementClass::CallResult,
+                *at,
+            )
+        }
+        LatePosition::ResultColumn { arg, result } => {
+            let Some(result) = computed_result_type(kb, rid, st, result, arg.span) else {
+                return false;
+            };
+            (
+                SlotOf::Arg(arg),
+                result,
+                DisagreementClass::ResultColumn,
+                arg.span,
+            )
+        }
+        LatePosition::DotResult { dot, position } => {
+            let Some(ty) = dot_value_type(kb, rid, st, dot) else {
+                return false;
+            };
+            (
+                SlotOf::Type(position),
+                ty,
+                DisagreementClass::DotResult,
+                dot.span,
+            )
+        }
+        LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
+    };
+    let mut trial = st.trial();
+    let fits = match slot {
+        SlotOf::Type(position) => unify_types(kb, &mut trial.subst, position, &ty),
+        SlotOf::Arg(arg) => constrain_occurrence_at(kb, &mut trial, arg, &ty),
+    };
+    if fits {
+        st.commit(trial);
+    } else {
+        if let SlotOf::Type(position) = slot {
+            note_disagreement(kb, &st.subst, position, &ty);
+        }
+        disagreements.push(ClauseDisagreement {
+            class,
+            span: Some(at),
+        });
+    }
+    true
+}
+
+/// What a late position's type is given to: a slot's declared type, or an argument.
+enum SlotOf<'a> {
+    Type(&'a Value),
+    Arg(&'a Rc<NodeOccurrence>),
+}
+
+/// A call's result type as the call computes it: a type constructor its signature writes
+/// (`field_access`'s `FieldOf[T = R, Name = Name]`) reduced at what the clause has given its
+/// operands, as an operation body reduces it at the call's return. `None` while an operand
+/// is not known yet, or where the reduction refuses — the dispatch walk reports that.
+fn computed_result_type(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    st: &ClauseConstraints,
+    result: &CallResult,
+    at: crate::span::SourceSpan,
+) -> Option<Value> {
+    let ctx = TypeErrorContext::Rule {
+        name: kb.rule_domain(rid),
+        field: RuleField::Body,
+    };
+    // A PROJECTION ON A PARAMETER (`s.T`) is read off the type the argument there has, as
+    // the call reads it; read as a type of its own it made `head(cons(7, nil)) = ?r`'s `?r`
+    // an `s.T`, and the `eq` beside it was refused.
+    let mut ty = result.ty.clone();
+    if value_contains_projection(kb, &ty) {
+        let mut args: HashMap<Symbol, Value> = HashMap::with_capacity(result.params.len());
+        for (param, arg) in &result.params {
+            let ty = match arg {
+                ArgType::Var(d) => match st.var_types.get(d) {
+                    Some(ty) => ty.clone(),
+                    None => continue,
+                },
+                ArgType::Of(ty) => ty.clone(),
+            };
+            args.insert(*param, walk_type_deep_value(kb, &st.subst, &ty));
+        }
+        ty = eliminate_type_projections(kb, &ty, &args, Receivers::Call, None, &ctx, None).ok()?;
+        if value_contains_projection(kb, &ty) {
+            return None;
+        }
+    }
+    let mut flags = return_reducible_ctors(kb, &ty);
+    if !flags.iter().any(|f| *f) {
+        return Some(ty);
+    }
+    let mut reduced = walk_type_deep_value(kb, &st.subst, &ty);
+    let site = CtorReduceSite {
+        sp: at,
+        span: Some(at.span),
+        scope: kb.symbols.scope_id(kb.rule_domain(rid)),
+    };
+    for _ in 0..TYPE_CTORS.len() * 4 {
+        for (cfg, wrote) in TYPE_CTORS.iter().zip(flags.iter()) {
+            if *wrote {
+                reduced = reduce_type_ctor(kb, &reduced, &ctx, &site, cfg).ok()?;
+            }
+        }
+        let next = return_reducible_ctors(kb, &reduced);
+        if !next.iter().any(|f| *f) {
+            return Some(reduced);
+        }
+        if next == flags {
+            return None;
+        }
+        flags = next;
+    }
+    None
+}
+
+/// The head's written bounds, each opened per collection — a variable the bound writes is
+/// fresh, as a citation opens it — with the enclosing sort's parameters it names made rigid,
+/// and unified with what the body says of its variable. Answers the `(rigid, parameter)`
+/// pairs.
+fn settle_head_bounds(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    st: &mut ClauseConstraints,
+    disagreements: &mut Vec<ClauseDisagreement>,
+    span: Option<crate::span::SourceSpan>,
+) -> Vec<(VarId, VarId)> {
+    let stored = kb.rule_type_bounds(rid).to_vec();
+    if stored.is_empty() {
+        return Vec::new();
+    }
+    let globals: Vec<VarId> = kb.rule_globals(rid).to_vec();
+    let frame: Vec<VarId> = globals
+        .iter()
+        .rev()
+        .map(|&v| {
+            if kb.is_canonical_type_param_var(v) {
+                v
+            } else {
+                kb.fresh_var(v.name())
+            }
+        })
+        .collect();
+    let mut rigidify = Substitution::new();
+    let mut rigids: Vec<(VarId, VarId)> = Vec::new();
+    for (d, bound) in stored {
+        let opened = crate::kb::node_occurrence::open_value_type(kb, &bound, &frame).0;
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        crate::kb::node_occurrence::collect_value_type(kb, &opened, &mut vars, &mut seen);
+        for v in vars {
+            if kb.is_canonical_type_param_var(v) && !rigids.iter().any(|(_, p)| *p == v) {
+                let r = kb.fresh_var(v.name());
+                let rigid = kb.alloc(Term::Var(Var::Rigid(r)));
+                rigidify.bind_term(kb, v, rigid);
+                rigids.push((r, v));
+            }
+        }
+        let rigid_bound = walk_type_deep_value(kb, &rigidify, &opened);
+        let mut trial = st.trial();
+        if constrain_var_at(kb, &mut trial, d, &rigid_bound) {
+            st.commit(trial);
+            continue;
+        }
+        // Where the bound fits once its parameters vary, it is the parameter the body fixes.
+        let mut varying = st.trial();
+        let class = if constrain_var_at(kb, &mut varying, d, &opened) {
+            DisagreementClass::SortParameterFixed
+        } else {
+            DisagreementClass::HeadBound
+        };
+        disagreements.push(ClauseDisagreement { class, span });
+    }
+    rigids
+}
+
+/// Every rigid of `rigids` in `ty` read as the parameter it stands for again
+/// ([`settle_late_positions`]).
+pub(super) fn unrigidify_clause_types(
+    kb: &mut KnowledgeBase,
+    rigids: &[(VarId, VarId)],
+    ty: &Value,
+) -> Value {
+    if rigids.is_empty() {
+        return ty.clone();
+    }
+    let leaf = |kb: &mut KnowledgeBase, v: &Value| -> Option<Value> {
+        let r = match v {
+            Value::Term { id, .. } => match kb.get_term(*id) {
+                Term::Var(Var::Rigid(r)) => *r,
+                _ => return None,
+            },
+            Value::Var(Var::Rigid(r)) => *r,
+            _ => return None,
+        };
+        let (_, param) = rigids.iter().find(|(rigid, _)| *rigid == r)?;
+        Some(Value::term(kb.alloc(Term::Var(Var::Global(*param)))))
+    };
+    rewrite_type_leaves(kb, ty, &leaf).unwrap_or_else(|| ty.clone())
+}
+
+/// Type variable `d` at `ty`, as a declared position does ([`constrain_vid`]): recorded where
+/// nothing was, unified where something was, and taking over from a call's placeholder.
+///
+/// A PLACEHOLDER THE TYPE CONFORMS TO is taken over where the two do not unify: `?l: List[T =
+/// Int64]` passed to `head(s: Self)` of `Stream` is a `List`, though the placeholder `Stream[T
+/// = t, E = e]` does not unify with it. Any other is what the clause says the variable is, and
+/// the type does not fit: `?x <=> b3(v: 5)` makes the `T` of `<=>` a `Box3[T = Int64]`, which a
+/// bound `Box3[T = T]` is not, and `gt(?x, 1)` pins `?x` at the literal's `Int64`, which a goal
+/// on `fact tag("a")` is not.
+fn constrain_var_at(
+    kb: &mut KnowledgeBase,
+    st: &mut ClauseConstraints,
+    d: u32,
+    ty: &Value,
+) -> bool {
+    let Some(existing) = st.var_types.get(&d).cloned() else {
+        st.var_types.insert(d, ty.clone());
+        return true;
+    };
+    let mut trial = st.subst.clone();
+    if unify_types(kb, &mut trial, &existing, ty) {
+        st.subst = trial;
+        if st.param_backed.remove(&d) {
+            st.var_types.insert(d, ty.clone());
+        }
+        return true;
+    }
+    if !st.param_backed.contains(&d) {
+        return false;
+    }
+    let placeholder = walk_type_deep_value(kb, &st.subst, &existing);
+    // The question an operation body's argument is asked of its parameter, which admits a
+    // carrier that provides the spec a parameter is written at.
+    let context = TypeErrorContext::Rule {
+        name: kb.intern("clause"),
+        field: RuleField::Body,
+    };
+    let conforms = matches!(
+        validate_arg_against_param(
+            kb,
+            &mut st.subst.clone(),
+            ty,
+            &placeholder,
+            None,
+            context,
+            None,
+        ),
+        ArgValidation::Ok
+    );
+    if conforms {
+        st.param_backed.remove(&d);
+        st.var_types.insert(d, ty.clone());
+    }
+    conforms
+}
+
+/// Type the argument `arg` at `ty`: a variable as a declared position, a literal at its own
+/// sort, anything else walked as a term that fills a slot of that type.
+fn constrain_occurrence_at(
+    kb: &mut KnowledgeBase,
+    st: &mut ClauseConstraints,
+    arg: &Rc<NodeOccurrence>,
+    ty: &Value,
+) -> bool {
+    if let Some(lit) = arg.literal(kb) {
+        let lit_type = literal_sort(kb, &lit);
+        return unify_types(kb, &mut st.subst, ty, &lit_type);
+    }
+    if let Some(d) = arg.var_key(kb) {
+        return constrain_var_at(kb, st, d, ty);
+    }
+    collect_occurrence_type_constraints(kb, arg, Some(ty), BodyPos::Value, true, st);
+    !st.subst.contradiction
+}
+
+/// Each argument of the rule goal `goal` at the column of its slot.
+fn constrain_goal_at_columns(
+    kb: &mut KnowledgeBase,
+    st: &mut ClauseConstraints,
+    goal: &Rc<NodeOccurrence>,
+    columns: &[(SlotKey, Value)],
+) -> bool {
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        return true;
+    };
+    let slots = pos_args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (SlotKey::Pos(i), a))
+        .chain(named_args.iter().map(|(k, a)| (SlotKey::Named(*k), a)));
+    for (slot, arg) in slots {
+        let Some((_, ty)) = columns.iter().find(|(s, _)| *s == slot) else {
+            continue;
+        };
+        if !constrain_occurrence_at(kb, st, arg, ty) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The columns a goal on `functor` reads from a clause of `own`: nothing for a goal on another
+/// relation of its cycle, and the callee's, opened fresh, for any other
+/// ([`rule_goal_columns`]). A goal on its own relation reads its columns as one type: while
+/// they are being read the goal reads nothing, and each clause's column is the relation's.
+fn rule_goal_columns_at(
+    kb: &mut KnowledgeBase,
+    own: Option<Symbol>,
+    functor: Symbol,
+) -> Option<Vec<(SlotKey, Value)>> {
+    if own.is_some_and(|f| same_rule_goal_cycle(kb, f, functor)) {
+        return None;
+    }
+    rule_goal_columns(kb, functor)
+}
+
+/// The type of the dot `dot`, typed as the dispatch walk types it, at the types the clause
+/// has given its variables so far; `None` where it does not type — its receiver is one the
+/// clause has not typed yet, or the dot is refused, which the dispatch walk reports.
+fn dot_value_type(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    st: &ClauseConstraints,
+    dot: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    let mut types: HashMap<u32, Value> = HashMap::with_capacity(st.var_types.len());
+    for (d, ty) in &st.var_types {
+        types.insert(*d, walk_type_deep_value(kb, &st.subst, ty));
+    }
+    let mut env = TypingEnv::empty();
+    env.set_debruijn_types(Rc::new(types));
+    env.set_rule_scope(kb.rule_domain(rid));
+    env.mark_rule_body_dispatch();
+    type_check_node_at(kb, &env, dot, None, NodePos::Value)
+        .ok()
+        .map(|r| r.ty)
+}
+
+thread_local! {
+    /// The late positions that did not fit, by class, over every clause this thread typed
+    /// ([`clause_disagreements_by_this_thread`]).
+    static CLAUSE_DISAGREEMENTS: std::cell::RefCell<HashMap<&'static str, usize>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// With `ANTHILL_CLAUSE_DISAGREEMENTS=1`, print the two types a late position failed on.
+fn note_disagreement(kb: &mut KnowledgeBase, subst: &Substitution, a: &Value, b: &Value) {
+    if std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_none() {
+        return;
+    }
+    let a = walk_type_deep_value(kb, subst, a);
+    let b = walk_type_deep_value(kb, subst, b);
+    eprintln!(
+        "  {} against {}",
+        type_display_name_value(kb, &a),
+        type_display_name_value(kb, &b)
+    );
+}
+
+/// Tally `found` ([`clause_disagreements_by_this_thread`]); with
+/// `ANTHILL_CLAUSE_DISAGREEMENTS=1`, also print each with where it was written.
+pub(super) fn count_clause_disagreements(kb: &KnowledgeBase, found: &[ClauseDisagreement]) {
+    if found.is_empty() {
+        return;
+    }
+    let print = std::env::var_os("ANTHILL_CLAUSE_DISAGREEMENTS").is_some();
+    CLAUSE_DISAGREEMENTS.with(|tally| {
+        let mut tally = tally.borrow_mut();
+        for d in found {
+            *tally.entry(d.class.name()).or_default() += 1;
+            if print {
+                let at = d
+                    .span
+                    .and_then(|sp| {
+                        let (path, text) = kb.sources.provenance(sp.source)?;
+                        let start = (sp.span.start as usize).min(text.len());
+                        let line = text[..start].matches('\n').count() + 1;
+                        let col = start - text[..start].rfind('\n').map_or(0, |i| i + 1) + 1;
+                        Some(format!(
+                            "{}:{line}:{col}",
+                            path.map(|p| p.display().to_string()).unwrap_or_default()
+                        ))
+                    })
+                    .unwrap_or_else(|| format!("{:?}", d.span));
+                eprintln!("clause disagreement {}: {at}", d.class.name());
+            }
+        }
+    });
+}
+
+/// The late positions of a clause that did not fit, by class, over every clause this thread
+/// has typed since it started.
+pub fn clause_disagreements_by_this_thread() -> Vec<(&'static str, usize)> {
+    CLAUSE_DISAGREEMENTS.with(|tally| {
+        let mut out: Vec<(&'static str, usize)> =
+            tally.borrow().iter().map(|(k, v)| (*k, *v)).collect();
+        out.sort();
+        out
+    })
+}
+
+impl DisagreementClass {
+    fn name(self) -> &'static str {
+        match self {
+            DisagreementClass::HeadBound => "head bound",
+            DisagreementClass::SortParameterFixed => "sort parameter fixed",
+            DisagreementClass::CallResult => "call result",
+            DisagreementClass::ResultColumn => "result column",
+            DisagreementClass::RuleGoal => "rule goal",
+            DisagreementClass::DotResult => "dot result",
+        }
+    }
 }

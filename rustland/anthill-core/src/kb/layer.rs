@@ -271,6 +271,8 @@ kb_scoped_fields!(
     spec_carrier_param_cache,
     spec_self_representing_cache,
     resolve_cache,
+    rule_goal_columns_memo,
+    rule_goal_cycle_memo,
 );
 
 impl KbScopedSnapshot {
@@ -536,6 +538,8 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         spec_carrier_param_cache: _,
         spec_self_representing_cache: _,
         resolve_cache: _,
+        rule_goal_columns_memo: _,
+        rule_goal_cycle_memo: _,
 
         // ── NEITHER: in-flight stack state, in NO list ─────────
         //
@@ -553,6 +557,9 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // roll back — the rule the memos above obey ("a memo is scoped exactly when the
         // thing it caches is") does not reach it, because it caches nothing.
         witness_admissibility_in_flight: _,
+        // The same class for the same reason: the relations whose goal columns are being
+        // read ON THE STACK (`typing::rule_goal_columns`), empty outside that read.
+        rule_goal_columns_in_flight: _,
         // WI-20260820-8RJK8 — NEITHER MONOTONE NOR SCOPED, for the same reason as its
         // neighbour above and stated in the same place: it counts the conditional-rewrite
         // guards currently ON THE STACK, and every increment is paired with a decrement on

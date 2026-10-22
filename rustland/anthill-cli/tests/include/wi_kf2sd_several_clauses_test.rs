@@ -760,15 +760,25 @@ end
 /// head is `none`: the call's argument there is a variable the frame being read has bound
 /// to nothing (`?o`, free in `bound`) or a construction over the caller's (`some(?y)`),
 /// neither known to be `none`, which WI-687 refuses — and no world reads the leaked
-/// binding. `chosen` is the control that selection through an inlined rule still works
+/// binding. `chosen` was the control that selection through an inlined rule still works
 /// where the call WRITES what selects.
+///
+/// `claim_a` AND `chosen` ARE REFUSED BEFORE ANY WORLD IS READ since WI-20261013-WF14Z
+/// (user decision 2026-10-22: an inferred bound is as written): `pick(?o, ?r)` types `wrap`'s
+/// column `?o` at `pick`'s, an `Option[T = Option[T = t]]`, a bound no SMT sort lowers — as
+/// the written `wrap(?o: Option[T = Option[T = ?t]], ?r)` was refused before. `claim0`'s
+/// `?o` is no column of `bound`, and is read as before.
 #[test]
 fn a_clause_is_selected_by_the_frame_being_read_and_no_other() {
     let out = dry_run("frames", FRAMES);
-    for (rule, callee, inlined) in [
-        ("claim0", "gain", "bound"),
-        ("claim_a", "pick", "wrap"),
-    ] {
+    for rule in ["claim_a", "chosen"] {
+        let said = refusal(&out, &format!("test.kf2sd.frames.{rule}"));
+        assert!(
+            said.contains("has no SMT sort: a bound is lowered when it is"),
+            "{said}"
+        );
+    }
+    for (rule, callee, inlined) in [("claim0", "gain", "bound")] {
         let said = refusal(&out, &format!("test.kf2sd.frames.{rule}"));
         assert!(
             said.contains(&format!(
@@ -782,11 +792,62 @@ fn a_clause_is_selected_by_the_frame_being_read_and_no_other() {
             "{said}"
         );
     }
+    assert_eq!(errors(&out).len(), 3, "stderr:\n{}", out.stderr);
+}
+
+/// `claim_a` and `chosen` over an option sort with no parameter, so `wrap`'s column is a
+/// `OOF`, a type with no variable in it, and gets no bound: the frames are read as the
+/// `Option` fixture's were before WI-20261013-WF14Z. `claim_a` is refused in the world of
+/// `pick`'s clause whose head is the nullary `nf`, and `chosen` selects by what its call
+/// writes.
+const FRAMES_NOMINAL: &str = r#"
+namespace test.kf2sd.framesn
+  import anthill.prelude.{Float}
+  import anthill.prelude.PartialOrd.{gte, lte}
+
+  sort OF
+    entity nf
+    entity sf(v: Float)
+  end
+  sort OOF
+    entity nof
+    entity sof(v: OF)
+  end
+  import test.kf2sd.framesn.OF.{nf, sf}
+  import test.kf2sd.framesn.OOF.{nof, sof}
+
+  rule pick(sof(nf), ?r) :- ?r = -100.0
+  rule pick(sof(sf(?x)), ?r) :- ?r = ?x
+  rule wrap(?o, ?r) :- ?z = sof(sf(1.0)), pick(?o, ?r)
+
+  rule claim_a: gte(?r, 0.0) :- wrap(sof(?y), ?r)
+  proof claim_a by z3 end
+
+  rule chosen: gte(?r, 0.0) :- wrap(sof(sf(3.0)), ?r)
+  proof chosen by z3 end
+end
+"#;
+
+#[test]
+fn a_clause_is_selected_by_the_frame_being_read_through_a_column() {
+    let out = dry_run("framesn", FRAMES_NOMINAL);
+    let said = refusal(&out, "test.kf2sd.framesn.claim_a");
+    assert!(
+        said.contains(
+            "WI-687: nullary head constructor `test.kf2sd.framesn.OF.nf` inlining \
+             'test.kf2sd.framesn.pick' does not match the call argument"
+        ) && said.contains(
+            "(in the world where `test.kf2sd.framesn.pick/2`, in the body of \
+             `test.kf2sd.framesn.wrap` (read inlined) (0 fact(s), 2 with a body) is \
+             answered by its clause 1 of 2)"
+        ),
+        "{said}"
+    );
     assert_eq!(
-        assertions(&out, "test.kf2sd.frames.chosen"),
+        assertions(&out, "test.kf2sd.framesn.chosen"),
         ["(assert (not (>= 3.0 0.0)))"]
     );
-    assert_eq!(errors(&out).len(), 2, "stderr:\n{}", out.stderr);
+    assert_eq!(errors(&out).len(), 1, "stderr:\n{}", out.stderr);
 }
 
 /// A NUMBER SELECTS AS A CONSTRUCTOR DOES — written in the call, or what the call's

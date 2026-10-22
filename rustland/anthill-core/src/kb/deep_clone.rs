@@ -51,9 +51,10 @@
 //! error, not a copy that is quietly missing something ([`DeepCloneError`]).
 //!
 //! The memo caches whose rows hold an `Rc` (`requires_chain_cache` and its eight
-//! siblings, and `resolve_cache`: ten) START EMPTY in the copy. Each memoizes an answer
-//! computed from the declarations, each already has an invalidation the load calls
-//! (`invalidate_requires_chain_cache`, `invalidate_resolve_cache`), so "empty" is a
+//! siblings, `resolve_cache`, and the two rule-goal memos: twelve) START EMPTY in the copy.
+//! Each memoizes an answer computed from the declarations, each already has an invalidation
+//! the load calls (`invalidate_requires_chain_cache`, `invalidate_resolve_cache`,
+//! `invalidate_rule_goal_columns`), so "empty" is a
 //! state every reader meets anyway — and a copier per row type would be ten more
 //! places for the claim above to be wrong. A cache whose rows are plain is copied.
 //!
@@ -1161,6 +1162,9 @@ impl KnowledgeBase {
             spec_self_representing_cache: plain(&self.spec_self_representing_cache),
             witness_admissibility_in_flight: RefCell::new(HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            rule_goal_columns_memo: RefCell::new(HashMap::new()),
+            rule_goal_cycle_memo: RefCell::new(HashMap::new()),
+            rule_goal_columns_in_flight: RefCell::new(HashSet::new()),
             sort_ops: plain(&self.sort_ops),
             host_mapped_ops: plain(&self.host_mapped_ops),
             interpreter_mapped_ops: plain(&self.interpreter_mapped_ops),
@@ -1203,6 +1207,10 @@ impl KnowledgeBase {
             (
                 "witness_admissibility_in_flight",
                 !self.witness_admissibility_in_flight.borrow().is_empty(),
+            ),
+            (
+                "rule_goal_columns_in_flight",
+                !self.rule_goal_columns_in_flight.borrow().is_empty(),
             ),
             // Queued by one typer pass and drained by the same pass (`typing/relation.rs`).
             ("pending_citation_routes", !self.pending_citation_routes.is_empty()),

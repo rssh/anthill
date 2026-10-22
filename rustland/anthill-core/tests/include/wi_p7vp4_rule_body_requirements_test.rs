@@ -460,6 +460,7 @@ const FIX_PRELUDE: &str = r#"
     sort T = ?
     operation unit(x: T) -> Int64
     operation twice(x: T) -> Int64 = Int64.add(unit(x), unit(x))
+    operation scaled(x: T, n: Int64) -> Int64 = Int64.add(unit(x), n)
   end
 
   sort Rod
@@ -482,11 +483,16 @@ fn fix_program(ns: &str, body: &str) -> String {
 /// but a host operation's (WI-1040's `a_covered_call_nested_in_another_covered_call_is_woven_-
 /// with_it` drives a nested weave through a FOLDED outer body). FAILS with the one-pass
 /// `weave_calls` backed out to sequential weaves.
+///
+/// The inner call fills a parameter that is no carrier of the outer's: since
+/// WI-20261013-WF14Z a call's result types the slot it fills, so `Util.sign(Scale.twice(?x),
+/// ?z, ?c)`, the row's first spelling, reads `sign`'s `A` as `twice`'s `Int64` and is decided
+/// at load, not woven.
 #[test]
 fn a_call_nested_in_a_woven_call_is_woven_too() {
     let kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.nest",
-        "  rule nested(?x, ?z, ?c) :- Util.sign(Scale.twice(?x), ?z, ?c)\n",
+        "  rule nested(?x, ?y, ?c) :- Scale.scaled(?y, Scale.twice(?x), ?c)\n",
     ));
     let woven: Vec<(String, bool, Vec<String>)> = crate::common::body_calls(&kb, "wip7vp4.nest.nested")
         .into_iter()
@@ -495,10 +501,10 @@ fn a_call_nested_in_a_woven_call_is_woven_too() {
     assert_eq!(
         woven,
         vec![
-            ("sign".to_string(), true, vec!["twice".to_string()]),
+            ("scaled".to_string(), true, vec!["twice".to_string()]),
             ("twice".to_string(), true, Vec::new()),
         ],
-        "the outer `sign` is woven, holding the woven inner `twice`",
+        "the outer `scaled` is woven, holding the woven inner `twice`",
     );
 }
 
@@ -579,17 +585,22 @@ fn a_call_inside_a_quantifier_keeps_its_value_dispatch() {
 
 /// A cited slot call that must WAIT — its second argument is bound by a later goal. The
 /// slot arm handed back the plain call, and the retry reduced it with no slots: the answer
-/// was `Int64`'s own `-1` where the caller chose `Descending` (4), and `five(?a)` written
+/// was `Int64`'s own `-1` where the caller chose `Descending` (4), and the binding goal written
 /// first gave 4 — goal order decided it. FAILS with the slot arm returning its plain call.
+///
+/// `?a` is bound by `same2` from a column the citation fills, so the clause types it at the
+/// citing operation's `A`. Bound by `five(?a)` over `rule five(?x) :- ?x <=> 5`, as this row
+/// first wrote it, `?a` is an `Int64` since WI-20261013-WF14Z (a rule goal reads its callee's
+/// columns): `sign` is decided at load and the citation at `A` is refused.
 #[test]
 fn a_woven_slot_call_that_waits_keeps_its_slots() {
-    let driver = "  rule five(?x) :- ?x <=> 5\n  \
-                  rule late(?b, ?c) :- Util.sign(?b, ?a, ?c), five(?a)\n  \
+    let driver = "  rule same2(?x, ?y) :- ?x <=> ?y\n  \
+                  rule late(?b, ?e, ?c) :- Util.sign(?b, ?a, ?c), same2(?e, ?a)\n  \
                   sort Driver\n    \
-                  operation citeLate[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
-                  requires WeakOrd[T = A] = late(x).head.c\n    \
+                  operation citeLate[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
+                  requires WeakOrd[T = A] = late(x, y).head.c\n    \
                   operation lateDesc() -> Int64 effects {Error, Error[EmptyStream]} =\n      \
-                  citeLate[A = Int64, WeakOrd = Descending](1)\n  \
+                  citeLate[A = Int64, WeakOrd = Descending](1, 5)\n  \
                   end\n";
     let mut interp = crate::common::interp_for(&fix_program("wip7vp4.waits", driver));
     match interp.call("wip7vp4.waits.Driver.lateDesc", &[]) {
@@ -1326,8 +1337,9 @@ fn a_rule_goal_passes_its_callee_no_dictionary() {
 /// body then refuses a requirement the clause's text does not determine, before the
 /// inference runs. A `require[WeakOrd[…]]` does not discharge it — a bracket holds what its
 /// spec REQUIRES, not the spec (`scope_contract_covers_dep`); the refusal advised that
-/// bracket until this ticket ran it, and no longer does — nor does a typed head or the
-/// introducer. Of the two repairs it still names, an argument whose type is known loads
+/// bracket until this ticket ran it, and no longer does — nor does the introducer. A head
+/// typed `Int64` is an argument whose type is known since WI-20261013-WF14Z: the clause reads
+/// the head's bound. Of the two repairs it still names, an argument whose type is known loads
 /// (`lit`) and then is not reduced: an operand of `=` that calls an operation with
 /// `requires` stays a term and the goal is undecided (WI-20260926-DSEXA's item 3). What
 /// answers is the call written as the `<=>` operand above, or as a goal of its own.
@@ -1360,7 +1372,6 @@ fn an_operations_own_requires_is_inferred_in_a_value_slot_and_refused_as_an_eq_o
             "  rule r1(?a, ?b, ?c) :- ?c = Util.sign(?a, ?b)\n",
             "  rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n",
             "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], ?c = Util.sign(?a, ?b)\n",
-            "  rule r4(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], ?c = Util.sign(?a, ?b)\n",
             "  rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n",
         ],
         "Util.sign",
@@ -1369,11 +1380,23 @@ fn an_operations_own_requires_is_inferred_in_a_value_slot_and_refused_as_an_eq_o
         !errs.iter().any(|e| e.contains("Declare `require[")),
         "no bracket holds an operation's own requirement, and none is advised: {errs:?}",
     );
+    // Over a head typed `Int64` the call is no longer this refusal's: the head's bound
+    // reaches its element since WI-20261013-WF14Z ([`a_member_of_a_sort_that_requires_is_refused_at_rule_variables`]
+    // runs that clause). Beside two such bindings a written `require[WeakOrd[T = Int64]]`
+    // names no one of them, which is refused for its own reason, before and after.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fix_program(
+            "wip7vp4.operandtwo",
+            "  rule r4(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], ?c = Util.sign(?a, ?b)\n",
+        )),
+        &["expected one typed head binding anchoring `WeakOrd`, got 2 of them do"],
+        "a bracket that names no one of two typed head bindings",
+    );
 }
 
 /// A MEMBER OF A SORT THAT `requires` IS REFUSED AT LOAD wherever its arguments are rule
-/// variables — as a goal, in a value slot, with a `require` of the spec, over a head typed
-/// `Int64`, with both, and under the introducer. Its chain is its sort's; the rule-body
+/// variables the clause does not type — as a goal, in a value slot, with a `require` of the
+/// spec, and under the introducer. Its chain is its sort's; the rule-body
 /// typer checks a member of a parametric sort wherever it is written, as it checks a spec
 /// operation; and `Holder` is no spec any sort provides, so neither a bracket nor an
 /// inferred read has an instance of it to name. Turns with WI-20260926-7D48J's
@@ -1393,11 +1416,36 @@ fn a_member_of_a_sort_that_requires_is_refused_at_rule_variables() {
             "  rule m1(?a, ?b, ?c) :- Holder.hsign(?a, ?b, ?c)\n",
             "  rule m2(?a, ?b, ?c) :- ?c <=> Holder.hsign(?a, ?b)\n",
             "  rule m3(?a, ?b, ?c) :- require[WeakOrd[T]], Holder.hsign(?a, ?b, ?c)\n",
-            "  rule m4(?a: Int64, ?b: Int64, ?c) :- Holder.hsign(?a, ?b, ?c)\n",
-            "  rule m5(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], Holder.hsign(?a, ?b, ?c)\n",
             "  rule m6[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n",
         ],
         "Holder.hsign",
+    );
+    // A HEAD TYPED `Int64` PINS THE CHAIN (068-implementation §6.2, decision 1; 7D48J's
+    // 2026-10-08 note, row 3): the clause reads the head's bound, so `hsign` is at `Int64` and
+    // decided at load, as at literals — `Int64`'s own `-1` for `(1, 5)`. Read without the
+    // bound, the clause was refused as the others are. FAILS with the head bound read as no
+    // position (`settle_head_bounds`).
+    let mut kb = crate::common::load_kb_with(&fix_program(
+        "wip7vp4.memberhead",
+        &format!(
+            "{HOLDER}  rule m4(?a: Int64, ?b: Int64, ?c) :- Holder.hsign(?a, ?b, ?c)\n  \
+             rule q4(?c) :- m4(1, 5, ?c)\n"
+        ),
+    ));
+    assert_eq!(
+        crate::common::one_definite_int(&mut kb, "wip7vp4.memberhead.q4"),
+        Some(-1)
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fix_program(
+            "wip7vp4.membertwo",
+            &format!(
+                "{HOLDER}  rule m5(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], \
+                 Holder.hsign(?a, ?b, ?c)\n"
+            ),
+        )),
+        &["expected one typed head binding anchoring `WeakOrd`, got 2 of them do"],
+        "a bracket that names no one of two typed head bindings",
     );
     let ns = "wip7vp4.memberok";
     let repaired = format!(

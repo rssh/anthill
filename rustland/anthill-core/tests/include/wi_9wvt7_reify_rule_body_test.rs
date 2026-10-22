@@ -124,6 +124,7 @@ namespace test.rrb
   rule declinedLoad(?r) :- Error.reify(lambda () -> loadOrBoom(1), ?r)
 
   rule printing(?r) :- Error.reify(lambda () -> printThenBoom(), ?r)
+  rule printingWritten(?r: Result[T = Int64, E = Boom]) :- Error.reify(lambda () -> printThenBoom(), ?r)
 end
 "#;
 
@@ -223,16 +224,23 @@ fn a_payload_the_boundary_declines_is_a_fault() {
 
 /// A thunk with another effect (`ConsoleOutput`) is not run to an answer: the bridge's
 /// effect registry is empty, so the print is not performed and the goal stays UNDECIDED —
-/// one answer, not definite — with the decline reported, naming the effect. Before (a) the
+/// answers, none definite — with the decline reported, naming the effect. Before (a) the
 /// goal was refuted instead: no answer at all.
+///
+/// TWO ANSWERS, AN `ok` AND AN `err`, since WI-20261013-WF14Z: the clause reads `?r`'s type
+/// off the call's result column, `Result[T = Int64, E = Boom]`, and an inferred column type
+/// is its bound, which fills a column the body leaves unbound — as the written twin
+/// `printingWritten` does.
 #[test]
 fn an_effectful_thunk_leaves_the_goal_undecided() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    let rows = crate::common::query_unary(&mut kb, "test.rrb.printing");
-    assert!(
-        matches!(rows.as_slice(), [(_, false)]),
-        "one answer, undecided: {rows:?}"
-    );
+    for qn in ["test.rrb.printing", "test.rrb.printingWritten"] {
+        let rows = crate::common::query_unary(&mut kb, qn);
+        assert!(
+            rows.len() == 2 && rows.iter().all(|(_, definite)| !definite),
+            "{qn}: an `ok` and an `err`, each undecided: {rows:?}"
+        );
+    }
     let goal = crate::common::query_pattern_term(&mut kb, "test.rrb.printing(?r)");
     let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
     assert!(
@@ -290,7 +298,7 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
 
 /// The shapes whose `ErrorTag` slot the call builds no evidence for, each its own load so
 /// one refusal cannot stand for another.
-const UNFILLED_ERROR_TAG_PROGRAMS: [(&str, &str); 7] = [
+const UNFILLED_ERROR_TAG_PROGRAMS: [(&str, &str); 6] = [
     (
         "a rule variable's type beside a second label",
         r#"
@@ -311,21 +319,6 @@ end
 namespace test.rrbo
   import anthill.prelude.{Error, Result}
   rule onlyP(?p, ?r) :- Error.reify(lambda () -> Error.raise(?p), ?r)
-end
-"#,
-    ),
-    (
-        "a thunk bound by another goal",
-        r#"
-namespace test.rrbo
-  import anthill.prelude.{Int64, String, Error, Result}
-  sort Boom
-    entity boom(why: String)
-  end
-  operation mayFail(n: Int64) -> Int64 effects {Error[Boom]} =
-    if n < 0 then Error.raise(boom("negative")) else n + 1
-  operation mkThunk() -> () -> Int64 @ {Error[Boom]} = lambda () -> mayFail(0 - 1)
-  rule viaVar(?r) :- mkThunk(?f), Error.reify(?f, ?r)
 end
 "#,
     ),
@@ -454,7 +447,16 @@ fn a_generic_catcher_cited_from_a_rule_faults() {
 }
 
 /// The repairs the refusal names, each driven: the payload raised as a value of a sort the
-/// call names, and an operation named bare written as a lambda that calls it.
+/// call names — a constructor's, or a rule variable's whose type is written — the thunk bound
+/// by a call whose result says what it raises, and an operation named bare written as a lambda
+/// that calls it.
+///
+/// THE THUNK A GOAL BINDS is typed by that goal's result column since WI-20261013-WF14Z:
+/// `mkThunk(?f)` makes `?f` a `() -> Int64 @ {Error[Boom]}`, so the boundary reads `Boom`.
+/// Read at no type, `viaVar` was one of the shapes refused for building no evidence. FAILS
+/// with the result column read as no position (`LatePosition::ResultColumn`). And a payload
+/// whose type the head writes (`withBound`'s `?p: Boom`) is read by the clause since that
+/// ticket, where it was refused; FAILS with the head's bound read as no position.
 const REPAIRS_PROGRAM: &str = r#"
 namespace test.rrbr
   import anthill.prelude.{Int64, String, Error, Result}
@@ -472,6 +474,13 @@ namespace test.rrbr
   rule fixedBoom(?r) :- eitherFixed(0 - 1, ?r)
   rule fixedOther(?r) :- eitherFixed(7, ?r)
   rule lambdaFixed(?r) :- Error.reify(lambda () -> raiseNow(), ?r)
+
+  operation mayFail(n: Int64) -> Int64 effects {Error[Boom]} =
+    if n < 0 then Error.raise(boom("negative")) else n + 1
+  operation mkThunk() -> () -> Int64 @ {Error[Boom]} = lambda () -> mayFail(0 - 1)
+  rule viaVar(?r) :- mkThunk(?f), Error.reify(?f, ?r)
+  rule withBound(?p: Boom, ?r) :- Error.reify(lambda () -> Error.raise(?p), ?r)
+  rule boundPayload(?r) :- withBound(Boom.boom("w"), ?r)
 end
 "#;
 
@@ -487,6 +496,10 @@ fn the_advised_repairs_answer() {
     assert_eq!(why(&kb, &r), "b");
     let r = crate::common::one_definite(&mut kb, "test.rrbr.lambdaFixed");
     assert_eq!(why(&kb, &r), "now");
+    let r = crate::common::one_definite(&mut kb, "test.rrbr.viaVar");
+    assert_eq!(why(&kb, &r), "negative");
+    let r = crate::common::one_definite(&mut kb, "test.rrbr.boundPayload");
+    assert_eq!(why(&kb, &r), "w");
     // The `Other` passes the boundary typed at `Boom`: no answer, and a fault.
     let errors = faults(&mut kb, "test.rrbr.fixedOther");
     assert!(

@@ -326,11 +326,17 @@ fn a_typed_column_types_as_its_bound() {
 }
 
 #[test]
-fn an_untyped_column_accepts_either_declaration() {
-    // THE CONTROL for the row above, and the reason its second half is the evidence:
-    // with no annotation the column is a fresh variable, so BOTH declarations load.
+fn an_unannotated_column_types_as_its_goal_reads_it() {
+    // The row above with no annotation. `item(?x)` types `?x` at `item`'s column, a `Colour`
+    // read off its facts (068-implementation §6.2, decision 1: a rule goal reads the callee's
+    // columns), so the column is a `Colour` as if written and the `Int64` declaration is
+    // refused the same way. Before WI-20261013-WF14Z the column was a fresh variable and both
+    // declarations loaded; FAILS with the rule goal read as no position.
     crate::common::load_kb_with(&column_src("?x", "Colour"));
-    crate::common::load_kb_with(&column_src("?x", "Int64"));
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(&column_src("?x", "Int64")),
+        &["expected List[T = (x: Int64)], got List[T = (x: Colour)]"],
+    );
 }
 
 // ── proposal 060 §2.1 — the sigil-free parameter form ─────────────────────────

@@ -70,10 +70,15 @@
 //!
 //! PASS EITHER WAY, BY DESIGN: `a_member_operation_and_an_uncited_clause_answer_as_before`,
 //! `where_an_argument_fixes_it_the_other_instances_are_dropped`,
-//! `a_column_nothing_types_is_read_at_any_type`,
 //! `a_bound_at_the_callers_parameter_is_checked_through_its_domain_only`,
 //! `a_body_that_fixes_a_sorts_parameter_is_read_as_before`, and the three stated limits at
 //! the end of the file. Each says why at its site.
+//!
+//! WI-20261013-WF14Z's rows here, where a rule goal now types its arguments by the callee's
+//! columns: `a_column_a_rule_goal_types_is_read_at_its_type` (the stated limit that was
+//! `a_column_nothing_types_is_read_at_any_type`) and
+//! `a_rule_goal_fixes_what_the_citation_leaves_unfixed` (two spellings that were rows of
+//! `a_variable_the_citation_leaves_unfixed_is_an_unknown`).
 //!
 //! ## The second row
 //!
@@ -540,8 +545,12 @@ const TWO_INSTANCES: &str = "  fact holder(h: wrap(1))\n  fact holder(h: wrap(re
 /// bound's written variable and unwritten slot loaded, and `f` answered `wrap(v: 1)`
 /// whenever that solution came first (they come in no fixed order); the other spellings were
 /// refused only because the first call reading the citation (`.head`) opened a variable
-/// named like a written `?`. The last row is the head bound this file offered as the repair
-/// of the constructor's spelling.
+/// named like a written `?`.
+///
+/// Two spellings this row held are no unknown since WI-20261013-WF14Z: `gen(?y)` types `?y`
+/// by `gen`'s column, a `Colour`, so `rule tag(?x) :- gen(?y), ?x <=> wrap(?y)` — and its head
+/// bound `?x: Wrap` — read back as a `Wrap[T = Colour]` load and as a `Wrap[T = Int64]` are
+/// refused, naming `Colour` ([`a_rule_goal_fixes_what_the_citation_leaves_unfixed`]).
 #[test]
 fn a_variable_the_citation_leaves_unfixed_is_an_unknown() {
     let spellings = [
@@ -549,9 +558,7 @@ fn a_variable_the_citation_leaves_unfixed_is_an_unknown() {
         ("wi0rrqp.u2", "rule tag(?x: Wrap) :- holder(h: ?x)", "Wrap"),
         ("wi0rrqp.u3", "rule tag(?x: Wrap[T = ?]) :- holder(h: ?x)", "Wrap"),
         ("wi0rrqp.u4", "rule tag(?x) :- holder(h: ?x)", "Wrap"),
-        ("wi0rrqp.u5", "rule tag(?x) :- gen(?y), ?x <=> wrap(?y)", "Wrap"),
         ("wi0rrqp.u6", "rule tag(?x) :- ?x <=> none", "Option"),
-        ("wi0rrqp.u7", "rule tag(?x: Wrap) :- gen(?y), ?x <=> wrap(?y)", "Wrap"),
     ];
     for (ns, rule, sort) in spellings {
         let read_back = |ns: &str, ret: &str| {
@@ -594,6 +601,47 @@ fn a_variable_the_citation_leaves_unfixed_is_an_unknown() {
             rendered.contains("wrap") || rendered.contains("none"),
             "`{rule}` read back as a `{sort}`: one of its solutions, got `{rendered}`"
         );
+    }
+}
+
+/// A RULE GOAL'S COLUMN FIXES WHAT A CITATION WOULD LEAVE UNFIXED (068-implementation §6.2,
+/// decision 1). `gen`'s column is a `Colour`, so `tag`'s `?x <=> wrap(?y)` is a
+/// `Wrap[T = Colour]`, its bound's unwritten slot included: read back as one it loads and
+/// answers `wrap(v: red)`, and as a `Wrap[T = Int64]` it is refused. Read at no type, the
+/// element was an unknown both ways. FAILS with the rule goal read as no position
+/// (`LatePosition::RuleGoal`).
+#[test]
+fn a_rule_goal_fixes_what_the_citation_leaves_unfixed() {
+    for (ns, rule) in [
+        ("wi0rrqp.g5", "rule tag(?x) :- gen(?y), ?x <=> wrap(?y)"),
+        ("wi0rrqp.g7", "rule tag(?x: Wrap) :- gen(?y), ?x <=> wrap(?y)"),
+    ] {
+        let read_back = |ns: &str, ret: &str| {
+            program(
+                ns,
+                &format!(
+                    "{WRAP}  {rule}\n  \
+                     operation f() -> {ret} effects {{Error, Error[EmptyStream]}} = tag.head.x\n"
+                ),
+            )
+        };
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&read_back(ns, "Wrap[T = Int64]")),
+            &["f.return", "expected Wrap[T = Int64], got Wrap[T = Colour]"],
+            &format!("`{rule}` read back as a `Wrap[T = Int64]`"),
+        );
+        let ns = format!("{ns}ok");
+        let mut interp = crate::common::interp_for(&read_back(&ns, "Wrap[T = Colour]"));
+        let out = interp
+            .call(&format!("{ns}.f"), &[])
+            .unwrap_or_else(|e| panic!("`{rule}` read back as a `Wrap[T = Colour]`: {e:?}"));
+        let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
+        let rendered = match &out {
+            Value::Node(occ) => printer.print_occurrence(occ),
+            Value::Term { id, .. } => printer.print_term(*id),
+            other => format!("{other:?}"),
+        };
+        assert!(rendered.contains("red"), "`{rule}`: `wrap(v: red)`, got `{rendered}`");
     }
 }
 
@@ -664,30 +712,25 @@ fn where_an_argument_fixes_it_the_other_instances_are_dropped() {
     assert_eq!(call_int(&mut interp, &format!("{ns}.viaGoal")), 2, "both, through a rule goal");
 }
 
-/// STATED LIMIT, PASSES EITHER WAY: a column whose whole type is a variable — one nothing in
-/// the clause types, here a column only a rule goal fills — is not closed. `untyped.head.x`
-/// is read back as an `Int64`, and `f` answers a `wrap`. Closing such a column too refused
-/// 51 rows of the workspace (measured 2026-10-21), nearly all a column a call at goal position
-/// fills (`WeakOrd.compare(?x, ?y, ?c)`), whose result the clause's typing does not read yet.
+/// A COLUMN A RULE GOAL FILLS IS READ AT ITS TYPE (068-implementation §6.2, decision 1):
+/// `untyped(?x) :- tag(?x)` reads `?x` at `tag`'s column, a `Wrap`, so `untyped.head.x`
+/// returned as an `Int64` is refused. Read at no type — a rule goal typed none of its
+/// arguments — it loaded, and `f` answered a `wrap`. FAILS with the rule goal read as no
+/// position (`LatePosition::RuleGoal`).
 #[test]
-fn a_column_nothing_types_is_read_at_any_type() {
-    let ns = "wi0rrqp.l1";
-    let src = program(
-        ns,
+fn a_column_a_rule_goal_types_is_read_at_its_type() {
+    let errs = wrap_errors(
+        "wi0rrqp.l1",
         &format!(
-            "{WRAP}{TWO_INSTANCES}  rule tag(?x) :- holder(h: ?x)\n  rule untyped(?x) :- tag(?x)\n  \
+            "{TWO_INSTANCES}  rule tag(?x) :- holder(h: ?x)\n  rule untyped(?x) :- tag(?x)\n  \
              operation f() -> Int64 effects {{Error, Error[EmptyStream]}} = untyped.head.x\n"
         ),
     );
-    let mut interp = crate::common::interp_for(&src);
-    let out = interp.call(&format!("{ns}.f"), &[]).expect("a solution");
-    let printer = anthill_core::persistence::print::TermPrinter::new(interp.kb());
-    let rendered = match &out {
-        Value::Node(occ) => printer.print_occurrence(occ),
-        Value::Term { id, .. } => printer.print_term(*id),
-        other => format!("{other:?}"),
-    };
-    assert!(rendered.contains("wrap"), "a `wrap` returned as an `Int64`, got `{rendered}`");
+    crate::common::assert_refused_naming(
+        &errs,
+        &["f.return", "expected Int64, got Wrap[T = ?"],
+        "a `Wrap` column returned as an `Int64`",
+    );
 }
 
 /// `Same` ties its two fields' types: a clause that builds `same(a: ?w, b: ?x)` says `?w` and

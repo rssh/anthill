@@ -364,7 +364,9 @@ pub(super) fn type_rule_bodies(
         else {
             continue;
         };
-        let (var_types, contradiction) = collect_rule_var_types(kb, head, &body_nodes);
+        let typing = collect_rule_var_types(kb, rid, head, &body_nodes);
+        count_clause_disagreements(kb, &typing.disagreements);
+        let (var_types, contradiction) = (typing.var_types, typing.contradiction);
         if contradiction {
             // On a contradiction the receiver sorts are unreliable — skip dispatch
             // and stamping. Report only for the sort-scoped rules `check_rule_typing`

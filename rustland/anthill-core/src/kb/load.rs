@@ -28472,6 +28472,148 @@ impl<'a> Loader<'a> {
         self.bare_contract_spec(sym, span)
     }
 
+    /// The field read `p.t` is on a sigil-free clause parameter `p`, as the `Expr::DotApply`
+    /// the `?p.t` spelling lowers to, or `None` for any other node. A chain `p.a.b` reads
+    /// field after field, each level built here as its parse node is lowered.
+    fn clause_param_field_read(
+        &mut self,
+        parse_id: TermId,
+        span: SourceSpan,
+    ) -> Option<Rc<NodeOccurrence>> {
+        if !self.parsed.terms.is_minted(parse_id) {
+            return None;
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id).clone()
+        else {
+            return None;
+        };
+        if !named_args.is_empty()
+            || pos_args.len() != 2
+            || self.parsed.symbols.local_name(functor) != dt::FIELD_ACCESS
+        {
+            return None;
+        }
+        let Term::Ident(member) = self.parsed.terms.get(pos_args[1]).clone() else {
+            return None;
+        };
+        let mut root = pos_args[0];
+        loop {
+            match self.parsed.terms.get(root) {
+                Term::Ident(sym) => {
+                    if !self
+                        .rule_param_vars
+                        .contains_key(self.parsed.symbols.local_name(*sym))
+                    {
+                        return None;
+                    }
+                    break;
+                }
+                Term::Fn {
+                    functor, pos_args, ..
+                } if self.parsed.symbols.local_name(*functor) == dt::FIELD_ACCESS
+                    && pos_args.len() == 2 =>
+                {
+                    root = pos_args[0];
+                }
+                _ => return None,
+            }
+        }
+        let name = self.remap_symbol(member, self.parsed.terms.span(pos_args[1]));
+        let receiver = self.build_body_atom_occurrence(pos_args[0]);
+        Some(NodeOccurrence::new_expr(
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            },
+            span,
+            self.current_owner,
+        ))
+    }
+
+    /// The method call `p.t.abs()` is on a sigil-free clause parameter `p` — the call the
+    /// converter spells with the dotted callee `p.t.abs`, a name nothing declares — as the
+    /// `Expr::DotApply` chain the `?p.t.abs()` spelling lowers to, or `None` for any other
+    /// node. A bracket on it (`p.t.m[T = Int64]()`) is refused as on any dot call, which has
+    /// no channel for one.
+    fn clause_param_method_call(
+        &mut self,
+        parse_id: TermId,
+        span: SourceSpan,
+    ) -> Option<Rc<NodeOccurrence>> {
+        if self.rule_param_vars.is_empty() {
+            return None;
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id)
+        else {
+            return None;
+        };
+        let (root, rest) = self.parsed.symbols.local_name(*functor).split_once('.')?;
+        let &vid = self.rule_param_vars.get(root)?;
+        let rest: Vec<String> = rest.split('.').map(str::to_owned).collect();
+        let (pos_args, named_args) = (pos_args.clone(), named_args.clone());
+        let (method, fields) = rest.split_last()?;
+        if named_args.iter().any(|&(_, a)| self.is_call_type_args_aux(a)) {
+            self.errors.push(LoadError::CallTypeArgsNotSupportedHere {
+                callee: method.clone(),
+                position: CallTypeArgsPosition::DotCall,
+                span: self.parsed.terms.span(parse_id),
+            });
+            self.consumed_call_type_args.insert(parse_id);
+        }
+        let owner = self.current_owner;
+        let mut receiver = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, owner);
+        for field in fields {
+            let name = self.kb.intern(field);
+            receiver = NodeOccurrence::new_expr(
+                Expr::DotApply {
+                    receiver,
+                    name,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                },
+                span,
+                owner,
+            );
+        }
+        let name = self.kb.intern(method);
+        let pos_args = pos_args
+            .iter()
+            .map(|&a| self.build_body_atom_occurrence(a))
+            .collect();
+        let named_args: Vec<(Symbol, TermId)> = named_args
+            .iter()
+            .copied()
+            .filter(|&(_, a)| self.named_child_survives_walk(a))
+            .collect();
+        let named_args = named_args
+            .iter()
+            .map(|&(k, a)| {
+                let key = self.kb.intern(self.parsed.symbols.local_name(k));
+                (key, self.build_body_atom_occurrence(a))
+            })
+            .collect();
+        Some(NodeOccurrence::new_expr(
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+            },
+            span,
+            owner,
+        ))
+    }
+
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
     /// clause's own term is read, unless its root is a clause parameter or a local
     /// binder: such a chain is a projection on that binding and names nothing, however
@@ -34091,6 +34233,17 @@ impl<'a> Loader<'a> {
                     return occ;
                 }
                 self.const_fold = node_fold;
+                // A DOTTED CHAIN ROOTED AT A SIGIL-FREE CLAUSE PARAMETER is a field read on
+                // that parameter's variable, the dot its `?p.t` spelling is (§5.3, "The
+                // parameter form"). Left the converter's `field_access(p, t)`, the field was
+                // the name `t`: `?x <=> p.t` read the field at run time but typed nothing,
+                // and `?x <=> (p.t).abs()` was refused, "t.name: expected resolved name".
+                if let Some(occ) = self.clause_param_field_read(parse_id, span) {
+                    return occ;
+                }
+                if let Some(occ) = self.clause_param_method_call(parse_id, span) {
+                    return occ;
+                }
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
                 // value: the twin of `convert_term_inner`'s arm, so a fact holding
                 // `Float.infinity` and a body goal spelling it build one term.

@@ -2890,7 +2890,13 @@ fn pin_bound_as_a_bound(
                 TypeBoundPin::Refuted
             };
         }
-        value_type_open(kb, subst, value)
+        // A PART THE VALUE DOES NOT CARRY IS THE BOUND'S. `err(error: 5)` says nothing of
+        // `Result`'s `T`, so its open type is `Result[T = ?t, E = Int64]`, and against the
+        // bound `Result[T = Int64, E = ?e]` the unknown `?t` met `Int64` as a type of its own
+        // and the check refused the value — a typed head over a value its bound admits
+        // answered nothing.
+        value_type_open_with_unknowns(kb, subst, value)
+            .map(|(ty, unknowns)| read_unknowns_from_bound(kb, &ty, &bound, &unknowns))
     } else {
         // THE VALUE'S OWN TYPE MUST BE DETERMINED, and this is the same question
         // [`type_bound_verdict_view`] asks of it — an under-determined input cannot pin an
@@ -2925,20 +2931,110 @@ pub(crate) fn value_type_open(
     Some(open_type_placeholders(kb, &ty))
 }
 
+/// [`value_type_open`], and the fresh variables it put where the value's type is not known.
+fn value_type_open_with_unknowns(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+) -> Option<(Value, Vec<VarId>)> {
+    let ty = value_type_term(kb, subst, value);
+    if !type_head_is_decidable(kb, &ty) {
+        return None;
+    }
+    let unknowns = std::cell::RefCell::new(Vec::new());
+    let opened = match &ty {
+        Value::Term { id, .. } => Value::term(open_term_placeholders(kb, *id, &unknowns)),
+        other => other.clone(),
+    };
+    Some((opened, unknowns.into_inner()))
+}
+
+/// `ty` with each of its `unknowns` that stands opposite a part of `bound` with no variable in
+/// it replaced by that part ([`pin_bound_as_a_bound`]).
+fn read_unknowns_from_bound(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    bound: &Value,
+    unknowns: &[VarId],
+) -> Value {
+    if unknowns.is_empty() {
+        return ty.clone();
+    }
+    let (Value::Term { id: t, .. }, Ok(b)) =
+        (ty, crate::kb::node_occurrence::value_to_term(kb, bound))
+    else {
+        return ty.clone();
+    };
+    fn walk(kb: &mut KnowledgeBase, t: TermId, b: TermId, unknowns: &[VarId]) -> TermId {
+        match (kb.get_term(t).clone(), kb.get_term(b).clone()) {
+            (Term::Var(Var::Global(v)), _)
+                if unknowns.contains(&v) && !type_mentions_flex_var(kb, &Value::term(b)) =>
+            {
+                b
+            }
+            (
+                Term::Fn {
+                    functor,
+                    pos_args,
+                    named_args,
+                },
+                Term::Fn {
+                    functor: bf,
+                    pos_args: bp,
+                    named_args: bn,
+                },
+            ) if functor == bf && pos_args.len() == bp.len() => {
+                let pos: SmallVec<[TermId; 4]> = pos_args
+                    .iter()
+                    .zip(bp.iter())
+                    .map(|(&a, &x)| walk(kb, a, x, unknowns))
+                    .collect();
+                let named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                    .iter()
+                    .map(|&(k, a)| match bn.iter().find(|(bk, _)| *bk == k) {
+                        Some(&(_, x)) => (k, walk(kb, a, x, unknowns)),
+                        None => (k, a),
+                    })
+                    .collect();
+                if pos == pos_args && named == named_args {
+                    t
+                } else {
+                    kb.alloc(Term::Fn {
+                        functor,
+                        pos_args: pos,
+                        named_args: named,
+                    })
+                }
+            }
+            _ => t,
+        }
+    }
+    Value::term(walk(kb, *t, b, unknowns))
+}
+
 /// `ty` with every reflect `TypeVar` placeholder — [`value_type_term`]'s "not known" — replaced
 /// by a fresh logic variable a later pin can bind. See [`pin_bound_from_value_open`].
 fn open_type_placeholders(kb: &mut KnowledgeBase, ty: &Value) -> Value {
     match ty {
-        Value::Term { id, .. } => Value::term(open_term_placeholders(kb, *id)),
+        Value::Term { id, .. } => Value::term(open_term_placeholders(
+            kb,
+            *id,
+            &std::cell::RefCell::new(Vec::new()),
+        )),
         other => other.clone(),
     }
 }
 
-fn open_term_placeholders(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+fn open_term_placeholders(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    unknowns: &std::cell::RefCell<Vec<VarId>>,
+) -> TermId {
     rewrite_term_leaves(kb, t, &|kb, t| {
         matches!(type_head(kb, &Value::term(t)), TypeHead::TypeVar(_)).then(|| {
             let name = kb.intern("T");
             let vid = kb.fresh_var(name);
+            unknowns.borrow_mut().push(vid);
             kb.alloc(Term::Var(Var::Global(vid)))
         })
     })

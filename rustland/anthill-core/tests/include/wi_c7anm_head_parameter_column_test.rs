@@ -372,9 +372,11 @@ end
 fn the_declared_column_schema_follows_the_written_order() {
     // Asserted through the type ERROR, which is the shortest way to make the typer
     // print the tuple it inferred. `x: Red` is the MIDDLE column, named and typed;
-    // appending it last reported `(a: ?a, b: ?b, x: Red)`.
+    // appending it last reported `(a: ?a, b: ?b, x: Red)`. `a` and `b` are `Red` too, read
+    // off `seedr`'s column (WI-20261013-WF14Z: a rule goal types its arguments); before, they
+    // were `?a` and `?b`.
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(COLUMN_SRC),
-        &["got List[T = (a: ?a, x: Red, b: ?b)]"],
+        &["got List[T = (a: Red, x: Red, b: Red)]"],
     );
 }

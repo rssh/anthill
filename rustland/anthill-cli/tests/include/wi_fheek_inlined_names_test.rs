@@ -92,6 +92,11 @@ fn stated<'a>(out: &'a Output, rule: &str) -> Vec<&'a str> {
 /// Each `(rule, document)` of `out` is that document, line for line.
 fn documents(out: &Output, namespace: &str, expected: &[(&str, &[&str])]) {
     assert_eq!(errors(out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
+    documents_ignoring_errors(out, namespace, expected);
+}
+
+/// [`documents`] where the caller has read `out`'s errors itself.
+fn documents_ignoring_errors(out: &Output, namespace: &str, expected: &[(&str, &[&str])]) {
     for (rule, lines) in expected {
         assert_eq!(
             stated(out, &format!("{namespace}.{rule}")),
@@ -426,9 +431,23 @@ namespace test.fheek.ctor
 
   rule get(some(?x), ?r) :- ?r = ?x
   rule get(none, ?r) :- ?r = 0.0
-  rule fwd(?o, ?r) :- get(?o, ?r)
+  rule fwd(some(?x), ?r) :- get(some(?x), ?r)
   rule leaf: gte(?r, 1.0) :- lte(1.0, ?a), fwd(some(?a), ?r)
   proof leaf by z3 end
+  rule fwdVar(?o, ?r) :- get(?o, ?r)
+  rule leafVar: gte(?r, 1.0) :- lte(1.0, ?a), fwdVar(some(?a), ?r)
+  proof leafVar by z3 end
+
+  sort OF
+    entity nf
+    entity sf(v: Float)
+  end
+  import test.fheek.ctor.OF.{nf, sf}
+  rule getN(sf(?x), ?r) :- ?r = ?x
+  rule getN(nf, ?r) :- ?r = 0.0
+  rule fwdN(?o, ?r) :- getN(?o, ?r)
+  rule leafN: gte(?r, 1.0) :- lte(1.0, ?a), fwdN(sf(?a), ?r)
+  proof leafN by z3 end
 end
 "#;
 
@@ -443,10 +462,26 @@ end
 /// `leaf`: a field of a closed construction met by a head's variable (`get(some(?x), …)`)
 /// is what the caller passed there — it was passed over, and the true claim was a
 /// COUNTEREXAMPLE.
+///
+/// `leaf` passes the construction through `fwd`'s head `some(?x)`; through a column of
+/// `fwd`'s, `leafVar` as `leaf` was written, it is refused since WI-20261013-WF14Z (user
+/// decision 2026-10-22: an inferred bound is as written): `get(?o, ?r)` types the column `?o`
+/// at `get`'s, an `Option[T = t]`, a bound no SMT sort lowers — as the written `fwd(?o:
+/// Option[T = ?t], ?r)` was refused before. Its document was `leaf`'s, and it is `leafN`'s,
+/// the same claim through a column over an option sort with no parameter (`OF`), which gets
+/// no bound.
 #[test]
 fn a_construction_crosses_into_an_inlined_rule_closed_over_its_callers_frame() {
     let out = dry_run("ctor", CTOR);
-    documents(
+    let refused: Vec<&str> = errors(&out);
+    assert!(
+        refused.len() == 1
+            && refused[0].contains("test.fheek.ctor.leafVar: the bound of")
+            && refused[0].contains("has no SMT sort"),
+        "stderr:\n{}",
+        out.stderr
+    );
+    documents_ignoring_errors(
         &out,
         "test.fheek.ctor",
         &[
@@ -480,6 +515,14 @@ fn a_construction_crosses_into_an_inlined_rule_closed_over_its_callers_frame() {
             ),
             (
                 "leaf",
+                &[
+                    "(declare-const var_0 Real)",
+                    "(assert (<= 1.0 var_0))",
+                    "(assert (not (>= var_0 1.0)))",
+                ],
+            ),
+            (
+                "leafN",
                 &[
                     "(declare-const var_0 Real)",
                     "(assert (<= 1.0 var_0))",
@@ -712,7 +755,7 @@ fn the_verdicts() {
     verdicts(
         &prove("ctor", CTOR),
         "test.fheek.ctor",
-        &["held", "built", "leaf"],
+        &["held", "built", "leaf", "leafN"],
         &["passed"],
     );
     verdicts(

@@ -124,6 +124,7 @@ pub(super) fn type_check_sorts_collect(
     // empty, answered 2 — so the two test recipes disagreed. Every answer this run
     // memoizes is read off the provisions as they now stand.
     kb.invalidate_resolve_cache();
+    kb.invalidate_rule_goal_columns();
     let oracle = oracle_on();
     if oracle {
         oracle_reset();

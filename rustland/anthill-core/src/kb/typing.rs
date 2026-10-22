@@ -176,6 +176,7 @@ pub(crate) use provision::*;
 pub(crate) use relation::*;
 pub use requires::*;
 pub use result::*;
+pub use rule_constraints::clause_disagreements_by_this_thread;
 use rule_constraints::*;
 use rule_dispatch::*;
 pub(crate) use rule_requirements::*;
