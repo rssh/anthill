@@ -710,8 +710,14 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             } => {
                 let fname = self.view.sym_name(*functor);
                 // Round-trip the forall_impl encoding to surface syntax — the
-                // occurrence twin of `write_term`'s special case.
-                if fname == "forall_impl" && pos_args.len() == 3 && named_args.is_empty() {
+                // occurrence twin of `write_term`'s special case. Asked of the QUALIFIED
+                // name: the markers are kernel addresses, and a user's own `forall_impl`
+                // shares only the short one.
+                let qname = self.view.qualified_name(*functor);
+                if dt::is_control(qname, dt::FORALL_IMPL)
+                    && pos_args.len() == 3
+                    && named_args.is_empty()
+                {
                     if let (Some(binders), Some(ants), Some(cons)) = (
                         self.occ_unwrap_tuple(&pos_args[0]),
                         self.occ_unwrap_tuple(&pos_args[1]),
@@ -729,12 +735,13 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
                 // WI-027: `forall_in(?x, xs, tuple(body))` / `some_in(…)` →
                 // surface `(forall ?x in xs: body)` / `(some ?x in xs: body)`.
-                if (fname == "forall_in" || fname == "some_in")
+                let is_forall_in = dt::is_control(qname, dt::FORALL_IN);
+                if (is_forall_in || dt::is_control(qname, dt::SOME_IN))
                     && pos_args.len() == 3
                     && named_args.is_empty()
                 {
                     if let Some(body) = self.occ_unwrap_tuple(&pos_args[2]) {
-                        let kw = if fname == "forall_in" {
+                        let kw = if is_forall_in {
                             "forall"
                         } else {
                             "some"
@@ -1342,8 +1349,13 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     return;
                 }
                 // Round-trip the forall_impl encoding produced by
-                // convert_nested_implication back to surface syntax.
-                if fname == "forall_impl" && pos_args.len() == 3 && named_args.is_empty() {
+                // convert_nested_implication back to surface syntax. Asked of the
+                // QUALIFIED name, as the occurrence twin does.
+                let qname = self.view.qualified_name(*functor);
+                if dt::is_control(qname, dt::FORALL_IMPL)
+                    && pos_args.len() == 3
+                    && named_args.is_empty()
+                {
                     if let (Some(binders), Some(ants), Some(cons)) = (
                         self.unwrap_tuple(pos_args[0]),
                         self.unwrap_tuple(pos_args[1]),
@@ -1360,12 +1372,13 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                     }
                 }
                 // WI-027: `forall_in` / `some_in` term → surface bounded quantifier.
-                if (fname == "forall_in" || fname == "some_in")
+                let is_forall_in = dt::is_control(qname, dt::FORALL_IN);
+                if (is_forall_in || dt::is_control(qname, dt::SOME_IN))
                     && pos_args.len() == 3
                     && named_args.is_empty()
                 {
                     if let Some(body) = self.unwrap_tuple(pos_args[2]) {
-                        let kw = if fname == "forall_in" {
+                        let kw = if is_forall_in {
                             "forall"
                         } else {
                             "some"

@@ -2902,7 +2902,7 @@ impl<'a> Converter<'a> {
         let antecedents_tuple = self.alloc_fn_term("tuple", antecedents, span);
         let consequent_tuple = self.alloc_fn_term("tuple", consequent, span);
         self.alloc_fn_term(
-            "forall_impl",
+            dt::FORALL_IMPL,
             SmallVec::from_slice(&[binders_tuple, antecedents_tuple, consequent_tuple]),
             span,
         )
@@ -2923,14 +2923,14 @@ impl<'a> Converter<'a> {
             .field(node, "quantifier")
             .map(|n| self.text(n).to_string());
         let functor = match q.as_deref() {
-            Some("forall") => "forall_in",
-            Some("some") => "some_in",
+            Some("forall") => dt::FORALL_IN,
+            Some("some") => dt::SOME_IN,
             other => {
                 self.err(
                     &format!("unsupported bounded quantifier `{}`", other.unwrap_or("?")),
                     node,
                 );
-                "forall_in"
+                dt::FORALL_IN
             }
         };
         let binder = match self.field(node, "binder") {

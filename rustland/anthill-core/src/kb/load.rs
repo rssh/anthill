@@ -39094,7 +39094,10 @@ impl<'a> Loader<'a> {
             .copied()
             .unwrap_or_else(|| self.kb.intern(dt::short(dt::HO_APPLY)));
         let tuple_sym = self.kb.intern("tuple");
-        let forall_impl_sym = self.kb.intern("forall_impl");
+        let forall_impl_sym = self
+            .kb
+            .try_resolve_symbol(dt::qualified(dt::FORALL_IMPL))
+            .expect("bootstrap registers the discharge marker's address");
 
         let mut body: Vec<TermId> = Vec::new();
         for &(e, ctor_sym) in entities {

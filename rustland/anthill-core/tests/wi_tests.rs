@@ -1624,6 +1624,8 @@ mod wi_fqc85_rule_declaration_test;
 
 #[path = "include/wi_j38je_boolean_goal_test.rs"]
 mod wi_j38je_boolean_goal_test;
+#[path = "include/wi_j03at_marker_identity_test.rs"]
+mod wi_j03at_marker_identity_test;
 
 #[path = "include/wi_vpewk_host_op_operand_test.rs"]
 mod wi_vpewk_host_op_operand_test;

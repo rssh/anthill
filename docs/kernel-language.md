@@ -2130,7 +2130,7 @@ orders cannot disagree.
 | a resolver **builtin** or scoping marker (`unify`, `find_dictionary`, `forall_impl`, …) | that builtin's own goal semantics |
 | a **non-`Bool`** term that is not a relation — a non-`Bool` operation, a non-boolean constant | a **load error**: it denotes no truth, so it can never match |
 
-Of the builtins in the resolver-builtin row, `forall_impl` is reachable **bare**; `unify` and `find_dictionary` are not. Both left the implicit prelude in WI-909 — `find_dictionary` with `cut`, `unify` with `struct_eq` (§8.6) — so `find_dictionary` is written as `requires(X)` / `require[X]` and `unify` as the `<=>` operator or a goal-position `let`, either of them under an explicit import when the name itself is written.
+None of the builtins in the resolver-builtin row is reachable bare. Each is written in its surface form — `forall_impl` as the discharge `(forall(?x), A -: C)`, `forall_in` and `some_in` as the bounded quantifiers `(forall ?x in xs: B)` and `(some ?x in xs: B)`, `find_dictionary` as `requires(X)` / `require[X]`, `unify` as the `<=>` operator or a goal-position `let` — or, when the name itself is written, under an explicit import of it from `anthill.kernel` (§8.6). A bare `forall_impl(…)` is the writer's own name: a predicate of that name in scope, or a goal that names nothing.
 
 `not`, `or` and `and` are not an exception to the condition reading, and §6.6 is not in tension with it. All three names at a goal position resolve to the **resolver primitives** before anything is typed, so they never become `Bool` expressions there at all — the redirection is a rule about *names*, applied first. (`and` was the exception until WI-20260822-J38JE, for want of a `kernel.and` to be redirected TO; §6.6 named the comma and `a & b` was refused. `push_and` supplied the primitive and the three are symmetric now.) A genuine `Bool`-valued `and` of two `Bool` **values** is still a condition like any other — the conjunction reading **subsumes** it rather than competing with it (§6.6).
 
@@ -6212,19 +6212,23 @@ the operation *parameter* an eponymous `sort Foo` / `operation Foo(X: …)` pair
 to be checked. A sort's type PARAMETERS are sorts and stay nameable through both readings.
 
 **Synthesized forms do not use that rung, and are not names to be resolved.** `match`,
-`if`, `let`, `\`, member access, the `[…]` / `{…}` / `(…)` literals, `!` and
-`requires(X)` / `require[X]` are *desugared*: the converter builds a term whose functor
-is the target's **absolute path** — `..anthill.reflect.Expr.if_expr`,
-`..anthill.reflect.field_access`, `..anthill.kernel.cut`,
-`..anthill.kernel.find_dictionary` — so it is resolved by qualified name, with no scope
-walk at all. The namespace follows what the form denotes: a reified *shape* is reflect
-vocabulary, while `!` and the requirement guard are kernel *control*. The mechanism does
-not vary with it.
+`if`, `let`, `\`, member access, the `[…]` / `{…}` / `(…)` literals, `!`,
+`requires(X)` / `require[X]`, the discharge `(forall(?x), A -: C)` and the bounded
+quantifiers `(forall ?x in xs: B)` / `(some ?x in xs: B)` are *desugared*: the converter
+builds a term whose functor is the target's absolute path —
+`..anthill.reflect.Expr.if_expr`, `..anthill.reflect.field_access`,
+`..anthill.kernel.cut`, `..anthill.kernel.find_dictionary`,
+`..anthill.kernel.forall_impl`, `..anthill.kernel.forall_in`,
+`..anthill.kernel.some_in` — so it is resolved by qualified name, with no scope walk at
+all. The namespace follows what the form denotes: a reified *shape* is reflect
+vocabulary, while `!`, the requirement guard, the discharge and the quantifiers are
+kernel *control*. The mechanism does not vary with it.
 
 *Target*, not *declaration*: most of these addresses name a declaration, but
-`find_dictionary` names a symbol the bootstrap mints and no `.anthill` file declares, so
-it carries no signature and no arity. The distinction matters when asking what a rename
-would break — for that one, nothing in the library is holding the name up.
+`find_dictionary`, `forall_impl`, `forall_in` and `some_in` name symbols the bootstrap
+mints and no `.anthill` file declares, so they carry no signature and no arity. The
+distinction matters when asking what a rename would break — for those, nothing in the
+library is holding the name up.
 
 Three consequences follow, and each of them used to be a rule of its own:
 

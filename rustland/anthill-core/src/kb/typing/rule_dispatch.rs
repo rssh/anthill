@@ -575,7 +575,7 @@ pub(super) fn child_body_positions(
     // WI-1034's descent gate, re-asked per child (see [`GoalCommit::child`]).
     let child_commit = commit.child(
         kb.builtin_of(*functor) == Some(crate::kb::resolve::BuiltinTag::Not),
-        kb.local_name_of(*functor) == "forall_impl",
+        kb.builtin_of(*functor) == Some(crate::kb::resolve::BuiltinTag::ForallImpl),
         kb.is_goal_conjunction(*functor, pos_args.len()),
     );
     // `for_each_child` yields `pos_args` first, so a slot index is a child index.
