@@ -3,9 +3,9 @@
 - id: WI-20260827-J03AT-the-three-quantifier-marker
 - created: 2026-08-27T04:17:47Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-27T04:17:47Z
+- status_at: 2026-10-22T17:05:15Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -39,4 +39,10 @@ TWO ROUTES, NEITHER COSTED:
 CONTROL, when it is fixed: the `forall_impl` row above becomes the `zzz` error verbatim, and the `zzz` row stays as it is — the pair is what says the fix is about the KEYING and not about the arity check, which already works. Add a `some_in` row (its current answer is a residual, not a refusal, so a count alone will not catch it) and a row for `is_discharge_functor`'s skip. A genuine `(forall(?x), P(?x) -: Q(?x))` discharge and a bounded `(forall ?x in xs: p(?x))` must keep working — those are the reason the arms exist.
 
 FOUND BY /code-review on WI-20260826-XED22, which fixed two of the five arms in that table and left three; the inconsistency is worse than either extreme, so this should not sit long. XED22's `is_goal_connective` is the shape to copy.
+
+## Changes
+
+### 2026-10-22T17:05:14Z — feedback — user
+
+Delivered in 3c575fe5. Route (a), the user's decision (2026-10-22): the three quantifier markers are minted at kernel addresses (..anthill.kernel.forall_impl / .forall_in / .some_in) and every reader keys on the builtin tag bootstrap registers on them; route (b) was measured out first, since in a namespace declaring its own forall_impl (a rule or a fact) the parser's discharge resolved to the user's symbol. Spec 5.3 and 8.6 changed with it: a bare written forall_impl(...) is the writer's own name. __pop_assumption was included on the user's answer; __within_requirements, found by /code-review (a user predicate of that name answered nothing where its clause held), was fixed the same way. NOT BUILT: a load-time refusal of a kernel marker written at another arity under an explicit import of anthill.kernel - it loads, and the resolver reports it as an error when it runs (driven by a_kernel_marker_in_another_shape_is_an_error_when_it_runs); undefined_functor cannot report it, since the bootstrap declares the symbol and the CLI asserts an undefined functor is undeclared. Rows: tests/include/wi_j03at_marker_identity_test.rs (11 of 13 fail on the parent commit; the two controls pass either way) and wi878_marker_arity_test's canonical-arity and discharge rows.
 
