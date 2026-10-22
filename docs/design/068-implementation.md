@@ -956,6 +956,32 @@ two-box program's dot form is refused as the written one is.
 MEASURED: each part backed out alone fails its own row (the ledger at the head of
 `wi_wf14z_clause_typed_as_a_whole_test`).
 
+### 6.10 C1b, a later clause on a sealed relation (WI-20261013-WF14Z, eighth part, 2026-10-22)
+
+Decided with the user, 2026-10-22. A goal on a relation reads its columns from its clauses
+(§6.3, §6.8), so a clause a later load adds to a relation the sealed standard library wrote
+can change what the library's sealed bodies read, and those are not typed again. Measured
+with the typer oracle: `fact reaches("a", "b")` beside the library's `reaches(?from, ?to)`
+(both `Symbol`) left both columns of some type, and `keep_modify`'s `provenance(?r, input)` a
+demand on one — refused in one load over both, loaded clean behind the seal. It predates
+WF14Z (the oracle reported one body on the parent), and the sixth part's passing-on of some
+type made it four.
+
+The rule is kernel-language §8.3's fourth way a later load could reach a sealed body: a
+clause, not a sealed load's, for a relation a sealed load wrote is refused where the
+relation's columns over every clause are not those over the sealed load's clauses alone
+(`sealed::clauses_that_change_a_sealed_relation`, `relation_columns_over`,
+`first_column_read_apart`). A sealed load's relation is one with a clause in a sealed source,
+whose bodies are typed once: the seal's clause mark also holds a program loaded in the standard
+library's call, sealed only in part, whose readers are typed at every load and refuse a clause
+that changes them themselves (found under `ANTHILL_TEST_FRESH_LOAD=1`, by
+`a_refused_loads_clause_does_not_refuse_its_corrected_retry`, refused twice). A clause at the
+columns' own types adds rows and loads; a relation at two arities is the arity check's. Rows in `wi_9bkz4_sealed_bodies_test` (its
+library `tagged`/`doubled`): the clause refused in two calls, the library's reader refused in
+one call over both, the control loading; the check backed out, the two-call half loads. The
+gate's other rows were green with the check in: no test and no bundled program adds such a
+clause.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

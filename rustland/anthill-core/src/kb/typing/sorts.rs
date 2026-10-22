@@ -463,6 +463,7 @@ pub(super) fn type_check_sorts_collect(
     // body: who answers its dispatches. LAST, and inside the run, so that every typer
     // run raises it and the provision index it asks is this run's.
     provisions_that_change_a_sealed_dispatch(kb, &mut errors, &mut sources);
+    clauses_that_change_a_sealed_relation(kb, &mut errors, &mut sources);
     if oracle {
         oracle_verdict(
             errors

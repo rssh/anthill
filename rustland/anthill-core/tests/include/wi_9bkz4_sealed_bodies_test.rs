@@ -68,6 +68,15 @@
 //! * made to judge a CONVERSION of the later load: `a_spec_that_converts_to_a_sealed_
 //!   spec_loads` FAILS in two calls.
 //!
+//! THE RELATION CHECK (WI-20261013-WF14Z, user 2026-10-22)
+//! * made to find nothing (`sealed::clauses_that_change_a_sealed_relation`):
+//!   `a_clause_that_changes_a_sealed_relations_columns_is_refused` FAILS in two calls —
+//!   `fact tagged("a")` loads, and the library's `doubled` hands `ilen` the `String`.
+//! * made to say it at the first clause the later load wrote rather than the one that
+//!   changes the reading: the same row FAILS, at `3:8` (`tagged(2)`) for `4:8`.
+//! * BY DESIGN, `a_clause_at_a_sealed_relations_column_types_loads` passes either way:
+//!   it is the row that fails if the check refuses every later clause.
+//!
 //! THE SEAL
 //! * made to keep no types by symbol: eight rows FAIL, `the_seal_holds_…` among them.
 //! * made to keep no rule-slot mark, so that the library's own clauses are judged:
@@ -1521,4 +1530,65 @@ fn a_provider_and_an_override_for_the_programs_own_type_reach_a_sealed_body() {
             "{how}"
         );
     }
+}
+
+// ── The relation check ───────────────────────────────────────────────
+
+const LIB_RELATION: &str = r#"
+namespace test.libr
+  import anthill.prelude.{Int64}
+  sort U
+    operation ilen(n: Int64) -> Int64 = n
+  end
+  fact isInt(1)
+  rule tagged(?x) :- isInt(?x)
+  rule doubled(?r) :- tagged(?v), ?r <=> U.ilen(?v)
+end
+"#;
+
+/// A CLAUSE A LATER LOAD ADDS TO A SEALED RELATION, THAT CHANGES WHAT ITS COLUMNS READ, IS
+/// REFUSED: `fact tagged("a")` beside the library's `tagged`, whose column is an `Int64`,
+/// makes it of some type, and the library's `doubled` hands it to `ilen` as an `Int64`. In
+/// one call the clause typing refuses `doubled` for it; behind the seal `doubled` is not
+/// typed again, so the clause is refused where it is written.
+#[test]
+fn a_clause_that_changes_a_sealed_relations_columns_is_refused() {
+    // `tagged(2)` first, at the column's own type: the refusal is said at `tagged("a")`,
+    // line 4, the clause that changes the reading (found by /code-review).
+    let program = "namespace test.progr\n  import test.libr.{tagged}\n  fact tagged(2)\n  \
+                   fact tagged(\"a\")\nend\n";
+    let errors = refused(one_call(LIB_RELATION, program), "one call");
+    assert!(
+        errors.iter().any(|e| e.contains("type mismatch in ilen.n (op-arg)")
+            && e.contains("got a value of some type: `tagged._1`")),
+        "one call refuses the library's reader; got {errors:?}"
+    );
+    let errors = refused(two_calls(LIB_RELATION, program), "two calls");
+    assert!(
+        errors.len() == 1
+            && errors[0].starts_with("4:8:")
+            && errors[0].contains(
+                "a clause for 'test.libr.tagged', which a sealed load wrote, changes how its \
+                 column `_1` reads — `anthill.prelude.Int64` over the sealed load's clauses, of \
+                 some type with this one"
+            ),
+        "two calls refuse the clause; got {errors:?}"
+    );
+}
+
+/// CONTROL, PASSES EITHER WAY: a clause at the column's own type adds rows and changes no
+/// reading — `fact tagged(2)` loads in two calls, and the library's `doubled` answers it.
+#[test]
+fn a_clause_at_a_sealed_relations_column_types_loads() {
+    let program = "namespace test.progr\n  import test.libr.{tagged}\n  fact tagged(2)\nend\n";
+    let mut kb = loaded(two_calls(LIB_RELATION, program), "two calls");
+    let mut answers: Vec<i64> = crate::common::query_unary(&mut kb, "test.libr.doubled")
+        .into_iter()
+        .map(|(v, _)| match v {
+            Value::Int(n) => n,
+            other => panic!("an Int64 answer, got {other:?}"),
+        })
+        .collect();
+    answers.sort();
+    assert_eq!(answers, [1, 2]);
 }

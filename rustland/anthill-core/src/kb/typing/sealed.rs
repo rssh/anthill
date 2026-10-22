@@ -585,6 +585,117 @@ fn heads_reached(body: &Rc<NodeOccurrence>, heads: &HashMap<Symbol, Vec<RuleId>>
     reached
 }
 
+/// (3) A CLAUSE, NOT A SEALED LOAD'S, THAT CHANGES HOW A SEALED RELATION'S COLUMNS READ
+/// (user, 2026-10-22).
+///
+/// A goal on a relation reads its columns from its clauses ([`relation_columns_over`]), so a
+/// clause a later load adds to a relation a sealed load wrote can change what the sealed
+/// bodies that goal on it read — and those are not typed again. Measured with the typer
+/// oracle: `fact reaches("a", "b")` beside the library's `reaches(?from, ?to)`, whose
+/// `from` and `to` are `Symbol`s, made both columns of some type, so `origin`'s second
+/// column was of some type too and `keep_modify`'s `provenance(?r, input)` a demand on it —
+/// a body one load over both refuses, loaded clean behind the seal. Refused when the
+/// relation's columns over every clause are not the ones over the sealed load's clauses
+/// alone; a clause at the columns' own types adds rows and changes no reading. A relation
+/// written at two arities is the arity check's to refuse.
+pub(super) fn clauses_that_change_a_sealed_relation(
+    kb: &mut KnowledgeBase,
+    errors: &mut Vec<TypeError>,
+    sources: &mut Vec<Option<crate::span::SourceId>>,
+) {
+    if kb.sealed.is_empty() {
+        return;
+    }
+    // The relations a later clause was written for, each with its first such clause: a
+    // goal reads a relation's clauses, so only a functor a goal could name — no connective,
+    // operation, entity, builtin or sort, each read by its own declaration.
+    let mut later: Vec<(Symbol, RuleId)> = Vec::new();
+    for rid in kb.live_rule_ids() {
+        if clause_is_of_the_sealed_kb(kb, rid) {
+            continue;
+        }
+        let Some(functor) = kb.rule_head_value(rid).head(kb).functor_sym() else {
+            continue;
+        };
+        if later.iter().any(|(f, _)| *f == functor)
+            || kb.is_equality_connective_functor(functor)
+            || crate::kb::op_info::lookup_operation_info(kb, functor).is_some()
+            || kb.is_entity_constructor(functor)
+            || kb.builtin_of(functor).is_some()
+            || kb.has_kind(functor, crate::intern::SymbolKind::Sort)
+        {
+            continue;
+        }
+        later.push((functor, rid));
+    }
+    later.sort_by_key(|(_, rid)| rid.index());
+    for (functor, _) in later {
+        let all: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
+        // A sealed load's relation: one of its clauses is written in a sealed source, whose
+        // bodies are typed once ([`rule_body_is_typed_once`]). The clause mark alone also
+        // holds a clause of an earlier load sealed only in part — a program loaded in the
+        // standard library's call — whose readers are typed at every load and refuse a
+        // clause that changes them themselves.
+        if !all.iter().any(|&rid| rule_body_is_typed_once(kb, rid)) {
+            continue;
+        }
+        let sealed: Vec<RuleId> = all
+            .iter()
+            .copied()
+            .filter(|&rid| clause_is_of_the_sealed_kb(kb, rid))
+            .collect();
+        let (Some(before), Some(after)) = (
+            relation_columns_over(kb, &sealed),
+            relation_columns_over(kb, &all),
+        ) else {
+            continue;
+        };
+        let Some((slot, was, now)) = first_column_read_apart(kb, &before, &after) else {
+            continue;
+        };
+        // Where to say it: the first later clause that changes the reading on its own, else
+        // the first that has a place — a derived clause has none.
+        let later_clauses: Vec<RuleId> = all
+            .iter()
+            .copied()
+            .filter(|&rid| !clause_is_of_the_sealed_kb(kb, rid))
+            .collect();
+        let mut culprit = None;
+        for &rid in &later_clauses {
+            let mut one = sealed.clone();
+            one.push(rid);
+            let changes = relation_columns_over(kb, &one)
+                .is_some_and(|with| first_column_read_apart(kb, &before, &with).is_some());
+            if changes {
+                culprit = Some(rid);
+                break;
+            }
+        }
+        let site = culprit
+            .and_then(|rid| kb.rule_head_span(rid))
+            .or_else(|| later_clauses.iter().find_map(|&rid| kb.rule_head_span(rid)));
+        let render = |kb: &KnowledgeBase, ty: Option<&ColumnType>| match ty {
+            Some(ColumnType::Of(t)) => format!("`{}`", format_value_for_goal(kb, t)),
+            Some(ColumnType::Some) => "of some type".to_string(),
+            None => "no column".to_string(),
+        };
+        let column = match slot {
+            SlotKey::Pos(i) => crate::intern::positional_label(i),
+            SlotKey::Named(k) => kb.local_name_of(k).to_string(),
+        };
+        let name = kb.qualified_name_of(functor).to_string();
+        let message = format!(
+            "a clause for '{name}', which a sealed load wrote, changes how its column `{column}` \
+             reads — {} over the sealed load's clauses, {} with this one: the sealed load's \
+             bodies that read '{name}' were typed against the first and are not typed again. \
+             Write the clause at the column's type, or for a relation of your own",
+            render(kb, Some(was)),
+            render(kb, now),
+        );
+        refuse(message, site, errors, sources);
+    }
+}
+
 /// (2) A PROVISION, NOT A SEALED LOAD'S, THAT CHANGES WHO ANSWERS A SEALED DISPATCH.
 ///
 /// An unselected dispatch is answered by the most specific provision, then by the

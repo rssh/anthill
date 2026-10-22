@@ -3592,6 +3592,17 @@ fn relation_goal_columns(
     functor: Symbol,
 ) -> Option<Vec<(SlotKey, ColumnType)>> {
     let rids: Vec<RuleId> = kb.rules_by_functor_iter(functor).collect();
+    relation_columns_over(kb, &rids)
+}
+
+/// [`relation_goal_columns`] over the clauses `rids` of one relation: what a goal on it reads
+/// were these its clauses. The sealed-relation check reads it over the sealed load's clauses
+/// and over all of them ([`clauses_that_change_a_sealed_relation`]).
+pub(super) fn relation_columns_over(
+    kb: &mut KnowledgeBase,
+    rids: &[RuleId],
+) -> Option<Vec<(SlotKey, ColumnType)>> {
+    let rids = rids.to_vec();
     let arity = |kb: &KnowledgeBase, rid: RuleId| {
         crate::kb::head_functor_and_arity(kb, kb.rule_head_value(rid)).map(|(_, n)| n)
     };
@@ -3622,6 +3633,84 @@ fn relation_goal_columns(
             })
             .collect(),
     )
+}
+
+/// The first column two readings of one relation ([`relation_columns_over`]) read apart: a
+/// column of some type beside one of a type, or two types that are not one up to the names
+/// of their variables. `None` where they agree at every slot.
+pub(super) fn first_column_read_apart<'a>(
+    kb: &mut KnowledgeBase,
+    before: &'a [(SlotKey, ColumnType)],
+    after: &'a [(SlotKey, ColumnType)],
+) -> Option<(SlotKey, &'a ColumnType, Option<&'a ColumnType>)> {
+    for (slot, was) in before {
+        let now = after.iter().find(|(s, _)| s == slot).map(|(_, t)| t);
+        let agree = match (was, now) {
+            (ColumnType::Some, Some(ColumnType::Some)) => true,
+            (ColumnType::Of(a), Some(ColumnType::Of(b))) => {
+                match (
+                    crate::kb::node_occurrence::value_to_term(kb, a),
+                    crate::kb::node_occurrence::value_to_term(kb, b),
+                ) {
+                    (Ok(a), Ok(b)) => terms_alike_up_to_renaming(kb, a, b, &mut Vec::new()),
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        if !agree {
+            return Some((*slot, was, now));
+        }
+    }
+    None
+}
+
+/// `a` and `b` are one term but for the names of their variables, renamed one-to-one.
+fn terms_alike_up_to_renaming(
+    kb: &KnowledgeBase,
+    a: TermId,
+    b: TermId,
+    renamed: &mut Vec<(Var, Var)>,
+) -> bool {
+    if a == b {
+        return true;
+    }
+    match (kb.get_term(a), kb.get_term(b)) {
+        (Term::Var(x), Term::Var(y)) => {
+            match renamed.iter().find(|(p, q)| p == x || q == y) {
+                Some((p, q)) => p == x && q == y,
+                None => {
+                    renamed.push((*x, *y));
+                    true
+                }
+            }
+        }
+        (
+            Term::Fn {
+                functor: fa,
+                pos_args: pa,
+                named_args: na,
+            },
+            Term::Fn {
+                functor: fb,
+                pos_args: pb,
+                named_args: nb,
+            },
+        ) => {
+            let (pa, pb, na, nb) = (pa.clone(), pb.clone(), na.clone(), nb.clone());
+            fa == fb
+                && pa.len() == pb.len()
+                && na.len() == nb.len()
+                && pa
+                    .iter()
+                    .zip(pb.iter())
+                    .all(|(x, y)| terms_alike_up_to_renaming(kb, *x, *y, renamed))
+                && na.iter().zip(nb.iter()).all(|((kx, x), (ky, y))| {
+                    kx == ky && terms_alike_up_to_renaming(kb, *x, *y, renamed)
+                })
+        }
+        _ => false,
+    }
 }
 
 /// One clause's column, as a goal on its relation reads it.
