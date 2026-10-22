@@ -44,8 +44,8 @@ typed=annotated,row=exact,applied=call,does=nothing,declares=all	runs 4112
 typed=annotated,row=exact,applied=call,does=nothing,declares=none	runs 4112
 typed=annotated,row=exact,applied=call,does=raises,declares=all	runs 4112
 typed=annotated,row=exact,applied=call,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=annotated,row=exact,applied=call,does=writes-own,declares=all	refused TypeMismatch/let-binding+UnresolvedName
-typed=annotated,row=exact,applied=call,does=writes-own,declares=none	refused TypeMismatch/let-binding+UnresolvedName
+typed=annotated,row=exact,applied=call,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
+typed=annotated,row=exact,applied=call,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=annotated,row=exact,applied=call,does=writes-scope,declares=all	runs 515
 typed=annotated,row=exact,applied=call,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=annotated,row=exact,applied=call,does=raises-callers,declares=all	runs 512
@@ -54,8 +54,8 @@ typed=annotated,row=exact,applied=alias,does=nothing,declares=all	runs 4112
 typed=annotated,row=exact,applied=alias,does=nothing,declares=none	runs 4112
 typed=annotated,row=exact,applied=alias,does=raises,declares=all	runs 4112
 typed=annotated,row=exact,applied=alias,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=annotated,row=exact,applied=alias,does=writes-own,declares=all	refused TypeMismatch/let-binding+UnresolvedName
-typed=annotated,row=exact,applied=alias,does=writes-own,declares=none	refused TypeMismatch/let-binding+UnresolvedName
+typed=annotated,row=exact,applied=alias,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
+typed=annotated,row=exact,applied=alias,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=annotated,row=exact,applied=alias,does=writes-scope,declares=all	runs 515
 typed=annotated,row=exact,applied=alias,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=annotated,row=exact,applied=alias,does=raises-callers,declares=all	runs 512
@@ -64,8 +64,8 @@ typed=annotated,row=exact,applied=slot,does=nothing,declares=all	runs 4112
 typed=annotated,row=exact,applied=slot,does=nothing,declares=none	runs 4112
 typed=annotated,row=exact,applied=slot,does=raises,declares=all	runs 4112
 typed=annotated,row=exact,applied=slot,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=annotated,row=exact,applied=slot,does=writes-own,declares=all	refused TypeMismatch/let-binding+UnresolvedName
-typed=annotated,row=exact,applied=slot,does=writes-own,declares=none	refused TypeMismatch/let-binding+UnresolvedName
+typed=annotated,row=exact,applied=slot,does=writes-own,declares=all	refused UnresolvedName
+typed=annotated,row=exact,applied=slot,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=annotated,row=exact,applied=slot,does=writes-scope,declares=all	runs 515
 typed=annotated,row=exact,applied=slot,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=annotated,row=exact,applied=slot,does=raises-callers,declares=all	runs 512
@@ -74,8 +74,8 @@ typed=annotated,row=exact,applied=slot-own,does=nothing,declares=all	runs 4112
 typed=annotated,row=exact,applied=slot-own,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=annotated,row=exact,applied=slot-own,does=raises,declares=all	runs 4112
 typed=annotated,row=exact,applied=slot-own,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=annotated,row=exact,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/let-binding+UnresolvedName
-typed=annotated,row=exact,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/let-binding+UnresolvedName
+typed=annotated,row=exact,applied=slot-own,does=writes-own,declares=all	refused UnresolvedName
+typed=annotated,row=exact,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=annotated,row=exact,applied=slot-own,does=writes-scope,declares=all	runs 515
 typed=annotated,row=exact,applied=slot-own,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=annotated,row=exact,applied=slot-own,does=raises-callers,declares=all	runs 512
