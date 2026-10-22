@@ -151,7 +151,9 @@ fn written_sort_dot(
             Err(refusal) => return refusal,
         };
         let pass = crate::kb::simp_rewrite::simp_pass(kb);
-        return DenotedDot::Call(NodeOccurrence::synthesized_expr(
+        // The call reads as the dot was written: `t.inc` without parentheses is a
+        // function value where one is expected, as `Box.inc` is.
+        return DenotedDot::Call(NodeOccurrence::synthesized_expr_written(
             Expr::Apply {
                 recv_type,
                 functor: op,
@@ -162,6 +164,7 @@ fn written_sort_dot(
             Rc::clone(occ),
             pass,
             occ.owner,
+            occ.is_paren_less(),
         ));
     }
 

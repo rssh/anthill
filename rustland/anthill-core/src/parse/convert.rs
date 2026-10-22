@@ -205,6 +205,9 @@ enum BuildFrame<'t> {
         name_sym: Symbol,
         name_span: Span,
         slots: SmallVec<[ArgSlot; 4]>,
+        /// Written without parentheses (`e.m`, not `e.m()`) — see
+        /// `SimpleTermStore::paren_less_dots`.
+        paren_less: bool,
     },
     SetLiteral {
         node: Node<'t>,
@@ -1607,6 +1610,7 @@ impl<'a> Converter<'a> {
             name_sym,
             name_span,
             slots,
+            paren_less: false,
         }));
         // Args pushed reversed, then the receiver last so it pops (and lands
         // on the result stack) first — matching the DotApply build's drain.
@@ -1770,6 +1774,7 @@ impl<'a> Converter<'a> {
                 name_sym: field_sym,
                 name_span: field_span,
                 slots: SmallVec::new(),
+                paren_less: true,
             }));
         } else {
             work.push(WorkOp::Build(BuildFrame::FieldAccess {
@@ -2507,6 +2512,7 @@ impl<'a> Converter<'a> {
                 name_sym,
                 name_span,
                 slots,
+                paren_less,
             } => {
                 // Result layout (drain_start..): receiver, then one entry per
                 // slot in source order. Parse shape:
@@ -2538,6 +2544,9 @@ impl<'a> Converter<'a> {
                 );
                 // WI-618: accessor provenance, as for FieldAccess above.
                 self.terms.mark_minted(tid);
+                if paren_less {
+                    self.terms.mark_paren_less_dot(tid);
+                }
                 results.push(tid);
             }
             BuildFrame::SetLiteral { node, count } => {
@@ -2637,6 +2646,9 @@ impl<'a> Converter<'a> {
                         SmallVec::from_slice(&[object, member_tid]),
                         span,
                     );
+                    if is_value_recv {
+                        self.terms.mark_paren_less_dot(access);
+                    }
                     named.push((entry.label, access));
                 }
                 // NO 1-COLLAPSE — the tuple is built at EVERY arity, one member

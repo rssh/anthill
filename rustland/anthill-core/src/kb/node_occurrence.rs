@@ -497,11 +497,24 @@ impl NodeOccurrence {
         owner: Option<Symbol>,
         dot_chain: bool,
     ) -> Rc<Self> {
+        Self::new_expr_written(expr, span, owner, dot_chain, false)
+    }
+
+    /// [`Self::new_expr_dot_chain`], recording also whether the node was written without
+    /// parentheses (see the `paren_less` field).
+    pub fn new_expr_written(
+        expr: Expr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        dot_chain: bool,
+        paren_less: bool,
+    ) -> Rc<Self> {
         Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
                 expr,
                 origin: OccurrenceOrigin::Source,
                 dot_chain,
+                paren_less,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -519,6 +532,17 @@ impl NodeOccurrence {
             &self.kind,
             NodeKind::Expr {
                 dot_chain: true,
+                ..
+            }
+        )
+    }
+
+    /// Was this node written without parentheses? See the `paren_less` field.
+    pub fn is_paren_less(&self) -> bool {
+        matches!(
+            &self.kind,
+            NodeKind::Expr {
+                paren_less: true,
                 ..
             }
         )
@@ -580,6 +604,7 @@ impl NodeOccurrence {
                     // resolver opened it — the silent-loss shape `inferred_type` was
                     // fixed for at WI-502.
                     dot_chain: self.is_dot_chain(),
+                    paren_less: self.is_paren_less(),
                     classification: RefCell::new(None),
                     op_dicts: RefCell::new(SmallVec::new()),
                     inferred_type: RefCell::new(None),
@@ -588,9 +613,13 @@ impl NodeOccurrence {
                 span: self.span,
                 owner: self.owner,
             }),
-            _ => {
-                NodeOccurrence::new_expr_dot_chain(expr, self.span, self.owner, self.is_dot_chain())
-            }
+            _ => NodeOccurrence::new_expr_written(
+                expr,
+                self.span,
+                self.owner,
+                self.is_dot_chain(),
+                self.is_paren_less(),
+            ),
         };
         rebuilt.carry_typer_stamps_from(self);
         rebuilt
@@ -735,6 +764,7 @@ impl NodeOccurrence {
                 },
                 // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
                 dot_chain: self.is_dot_chain(),
+                paren_less: self.is_paren_less(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -829,6 +859,7 @@ impl NodeOccurrence {
                 // are: this destructuring is EXHAUSTIVE on purpose, so a new field has to
                 // be decided about rather than silently skipped.
                 dot_chain: _,
+                paren_less: _,
                 classification: dst_class,
                 op_dicts: dst_op_dicts,
                 inferred_type: dst_ty,
@@ -838,6 +869,7 @@ impl NodeOccurrence {
                 expr: _,
                 origin: _,
                 dot_chain: _,
+                paren_less: _,
                 classification: src_class,
                 op_dicts: src_op_dicts,
                 inferred_type: src_ty,
@@ -869,6 +901,19 @@ impl NodeOccurrence {
         by: PassId,
         owner: Option<Symbol>,
     ) -> Rc<Self> {
+        Self::synthesized_expr_written(expr, from, by, owner, false)
+    }
+
+    /// [`Self::synthesized_expr`] for a call that stands for one written without
+    /// parentheses (see the `paren_less` field): the call a dot on a sort-denoting
+    /// receiver makes, which reads as the dot was written.
+    pub fn synthesized_expr_written(
+        expr: Expr,
+        from: Rc<NodeOccurrence>,
+        by: PassId,
+        owner: Option<Symbol>,
+        paren_less: bool,
+    ) -> Rc<Self> {
         let span = from.span;
         Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
@@ -884,6 +929,7 @@ impl NodeOccurrence {
                 // the typer's own `field_access(recv, "field")` rewrite is the case — and
                 // it is not the dot the author wrote even when it expands one.
                 dot_chain: false,
+                paren_less,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -1262,6 +1308,14 @@ pub enum NodeKind {
         /// `field_access(recv, "field")` rewrite (WI-759) is a call it MEANT to build,
         /// not a dot the author wrote, and no reader of this flag wants it.
         dot_chain: bool,
+        /// Was this call, or this dot, written WITHOUT PARENTHESES — `Box.inc`,
+        /// `Box[V = Int64].inc`, `t.inc` — rather than as `Box.inc()`? Both build the
+        /// same node with no arguments, and they differ for a member that takes
+        /// arguments: without parentheses it is a function value where one is expected,
+        /// with them an arity error. Set by the loader from the parse store and carried
+        /// by every rebuild, as `dot_chain` is; a synthesized node takes it only where
+        /// its builder passes it on (the call a dot on a sort-denoting receiver makes).
+        paren_less: bool,
         /// Typer-attached classification (WI-231). Mutable because the
         /// typer writes after construction while other walkers may hold
         /// shared `Rc` references to this occurrence.
@@ -7516,6 +7570,8 @@ pub(crate) enum BuildFrame {
         type_args: Vec<(Option<Symbol>, Value)>,
         /// WI-20260829-W6JH0 — proposal 035 form (3)'s companion-receiver type.
         recv_type: Option<Value>,
+        /// Written without parentheses — see `NodeKind::Expr`'s `paren_less`.
+        paren_less: bool,
     },
     Constructor {
         span: SourceSpan,
@@ -7549,6 +7605,8 @@ pub(crate) enum BuildFrame {
         name: Symbol,
         pos_count: usize,
         named_keys: Vec<Symbol>,
+        /// Written without parentheses — see `NodeKind::Expr`'s `paren_less`.
+        paren_less: bool,
     },
     ApplyWithin {
         span: SourceSpan,
@@ -7857,6 +7915,8 @@ fn visit_fn(
                     // is nothing here to recover. Operation bodies are stored as
                     // occurrences and never make this round trip.
                     recv_type: None,
+                    // A term carries no parse surface either.
+                    paren_less: false,
                 },
                 span,
                 work,
@@ -7897,6 +7957,7 @@ fn visit_fn(
                 name,
                 pos_count,
                 named_keys,
+                paren_less: false,
             }));
             // Args first (reversed → pop in source order), receiver last so
             // it pops after the args in `build_frame`.
@@ -8339,6 +8400,7 @@ pub(crate) fn build_frame(
             named_keys,
             type_args,
             recv_type,
+            paren_less,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Apply {
@@ -8348,7 +8410,7 @@ pub(crate) fn build_frame(
                 named_args,
                 type_args,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(NodeOccurrence::new_expr_written(expr, span, None, false, paren_less));
         }
         BuildFrame::TypeValue {
             span,
@@ -8389,6 +8451,7 @@ pub(crate) fn build_frame(
             name,
             pos_count,
             named_keys,
+            paren_less,
         } => {
             // Args are on top (pushed after the receiver Visit); pop them
             // first, then the receiver underneath.
@@ -8400,7 +8463,7 @@ pub(crate) fn build_frame(
                 pos_args,
                 named_args,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(NodeOccurrence::new_expr_written(expr, span, None, false, paren_less));
         }
         BuildFrame::ApplyWithin {
             span,

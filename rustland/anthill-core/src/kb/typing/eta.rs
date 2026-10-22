@@ -240,6 +240,98 @@ fn poly_type_body<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> 
     }
 }
 
+/// The type `ty` a reference to the operation `op` has, with its declaring sort's parameters
+/// fresh for this reference and fixed by the type the position expects. A sort's
+/// parameters are type parameters of each of its operations, fixed by the use as a call
+/// fixes them, and a reference is a use: `empty` over `operation empty() -> Box[V]` is a
+/// `Box` at a `V` of its own, as `empty()` is, and `let b: Box[V = Int64] = empty` fixes
+/// it at `Int64`, as the call's expected type fixes it. Two references share none.
+///
+/// The signature names a parameter by its symbol (`Ref(Box.V)`), which the walk reads as
+/// the sort's one variable; that variable is bound here to a fresh one, so both spellings
+/// of it are replaced. A ∀ over it ([`generalize_eta_arrow`]) did not reach it: its
+/// instantiation replaces variables, and the arrow names the symbol.
+///
+/// A `receiver` the reference was written on (`Box[V = Int64].wrap`, or an alias that
+/// fixes `V`) binds the parameters first, as the receiver of a call does; one that is no
+/// instance of the declaring sort is `Err`, the instance it had to be. Where `expected`
+/// does not unify the type is handed back as far as it was pinned, and the position's
+/// own check reports the mismatch, as it does for a call.
+pub(super) fn open_declaring_sort_params(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    ty: &Value,
+    receiver: Option<&Value>,
+    expected: Option<&Value>,
+) -> Result<Value, Value> {
+    let Some(parent) = impl_parent_sort_of_op(kb, op) else {
+        return Ok(ty.clone());
+    };
+    // Each fresh variable is named after its parameter, so a mismatch reads `?V`.
+    let canonical: Vec<(Symbol, VarId)> = sort_type_params_as_pairs(kb, parent)
+        .iter()
+        .filter_map(|(param, t)| match kb.get_term(*t) {
+            Term::Var(Var::Global(vid)) => Some((*param, *vid)),
+            _ => None,
+        })
+        .collect();
+    if canonical.is_empty() {
+        return Ok(ty.clone());
+    }
+    let mut fresh = Substitution::new();
+    let mut instance: Vec<(Symbol, TermId)> = Vec::with_capacity(canonical.len());
+    for (param, vid) in canonical {
+        let short = short_name_of(kb.local_name_of(param)).to_string();
+        let name = kb.intern(&short);
+        let new_vid = kb.fresh_var(name);
+        let new_term = kb.alloc(Term::Var(Var::Global(new_vid)));
+        fresh.bind(kb, vid, new_term);
+        instance.push((param, new_term));
+    }
+    let mut opened = walk_type_deep_value(kb, &fresh, ty);
+    if let Some(recv) = receiver {
+        let base = kb.make_sort_ref(parent);
+        let at = Value::term(kb.make_parameterized_type(base, &instance));
+        let mut pinned = Substitution::new();
+        if !unify_types(kb, &mut pinned, &at, recv) {
+            return Err(at);
+        }
+        opened = walk_type_deep_value(kb, &pinned, &opened);
+    }
+    let Some(exp) = expected else {
+        return Ok(opened);
+    };
+    let mut pinned = Substitution::new();
+    if unify_types(kb, &mut pinned, &opened, exp) {
+        Ok(walk_type_deep_value(kb, &pinned, &opened))
+    } else {
+        Ok(opened)
+    }
+}
+
+/// The refusal of a reference written on a receiver that is no instance of the sort
+/// declaring the operation ([`open_declaring_sort_params`]'s `Err`).
+pub(super) fn receiver_not_an_instance(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    span: Option<Span>,
+    instance: &Value,
+    receiver: Option<&Value>,
+) -> TypeError {
+    let expected = format!("a receiver at an instance of {}", type_display_name_value(kb, instance));
+    let actual = match receiver {
+        Some(r) => type_display_name_value(kb, r),
+        None => "no receiver".to_string(),
+    };
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationAsFunctionValue { op_name: op },
+        expected,
+        actual,
+    }
+}
+
 /// WI-275: the type of an operation referenced as a first-class function value
 /// (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
 /// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional

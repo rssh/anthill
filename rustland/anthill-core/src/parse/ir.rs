@@ -172,6 +172,14 @@ pub struct SimpleTermStore {
     /// (`Loader::refuse_paren_less_bracket_binding_nothing`). Recorded like its siblings,
     /// for their reason.
     paren_less_citations: HashSet<TermId>,
+
+    /// The `dot_apply` a dot written WITHOUT PARENTHESES lowers to — `e.m`, `(Box).m`,
+    /// and each member of `x.(a, b)` — where `e.m()` lowers to the same term with no
+    /// arguments. Only the surface tells them apart, and the typer needs it: a member
+    /// that takes arguments is a function value where one is expected when written
+    /// without parentheses, and an arity error when written with them. Recorded like its
+    /// siblings, for their reason.
+    paren_less_dots: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -254,6 +262,17 @@ impl SimpleTermStore {
     /// WI-20260911-5G28A: was this call written paren-less, as `Sort[…].m`?
     pub fn is_paren_less_citation(&self, id: TermId) -> bool {
         self.paren_less_citations.contains(&id)
+    }
+
+    /// Record that the `dot_apply` `id` was written without parentheses — see
+    /// [`Self::paren_less_dots`].
+    pub fn mark_paren_less_dot(&mut self, id: TermId) {
+        self.paren_less_dots.insert(id);
+    }
+
+    /// Was this `dot_apply` written without parentheses, as `e.m`?
+    pub fn is_paren_less_dot(&self, id: TermId) -> bool {
+        self.paren_less_dots.contains(&id)
     }
 
     /// WI-1099: record that `id` was written as the bracket surface `[a, b]`, not as a

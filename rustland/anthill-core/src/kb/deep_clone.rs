@@ -395,6 +395,7 @@ impl Copier {
                 expr,
                 origin,
                 dot_chain,
+                paren_less,
                 classification,
                 op_dicts,
                 inferred_type,
@@ -416,6 +417,7 @@ impl Copier {
                         },
                     },
                     dot_chain: plain(dot_chain),
+                    paren_less: plain(paren_less),
                     classification: RefCell::new(
                         classification
                             .borrow()

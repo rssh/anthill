@@ -793,6 +793,60 @@ pub(super) fn eliminate_env_schema(
     Ok(inst.ty)
 }
 
+/// A member WRITTEN WITHOUT PARENTHESES on a sort — `Box.inc`, `Box[V = Int64].wrap`,
+/// `CA.wrap`, `t.inc` — read as its one-segment name is, at the receiver's parameters
+/// ([`check_bare_ref`]): where a function is expected it is that function value, and an
+/// operation that takes arguments denotes nothing anywhere else, as `inc` does not. A
+/// nullary operation is its call, as `zero` is, except where a function is expected and
+/// its result is not that function, which leaves only the function value. Written as
+/// `Box.inc()` it is the call with no arguments, an arity error. `None` when this call is
+/// not such a member, or is the nullary call.
+pub(super) fn paren_less_member_as_function(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    flow: &FlowEnv,
+    occ: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    recv_type: Option<&Value>,
+    expected: Option<&Value>,
+    solving: &mut WalkSolutions,
+) -> Option<Result<TypeResult, TypeError>> {
+    if !occ.is_paren_less()
+        || !pos_args.is_empty()
+        || !named_args.is_empty()
+        || !kb.has_kind(functor, crate::intern::SymbolKind::Operation)
+    {
+        return None;
+    }
+    if operation_is_nullary(kb, functor) {
+        let exp = expected?;
+        arrow_parts(kb, exp)?;
+        if lookup_operation_return_type(kb, functor)
+            .is_some_and(|ret| types_compatible(kb, &mut Substitution::new(), &ret, exp))
+        {
+            return None;
+        }
+    }
+    // The reference the one-segment name is, standing where the call stood: the eta arm
+    // stamps it, and the evaluator mints the function value from it.
+    let pass = crate::kb::simp_rewrite::simp_pass(kb);
+    let reference = NodeOccurrence::synthesized_expr(
+        Expr::VarRef { name: functor },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    let span = Some(occ.span.span);
+    Some(check_bare_ref(
+        kb, env, flow, functor, span, &reference, expected, recv_type, solving,
+    ))
+}
+
+/// `receiver` is the type an operation's name was written on without parentheses
+/// (`Box[V = Int64].wrap`); it binds the declaring sort's parameters
+/// ([`open_declaring_sort_params`]). `None` for a name written alone.
 pub(super) fn check_bare_ref(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -801,6 +855,7 @@ pub(super) fn check_bare_ref(
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
     expected: Option<&Value>,
+    receiver: Option<&Value>,
     solving: &mut WalkSolutions,
 ) -> Result<TypeResult, TypeError> {
     if let Some(ty) = env.lookup_var(sym) {
@@ -989,6 +1044,8 @@ pub(super) fn check_bare_ref(
                         }
                         None => fn_ty,
                     };
+                    let fn_ty = open_declaring_sort_params(kb, sym, &fn_ty, receiver, Some(exp))
+                        .map_err(|at| receiver_not_an_instance(kb, sym, span, &at, receiver))?;
                     // WI-420: resolve + attach the op's requirement dispatch dict
                     // (the `expected` arrow pins its element type) so eval captures
                     // it on the OpRef. A cross-sort unsatisfiable requirement is a
@@ -1216,6 +1273,8 @@ pub(super) fn check_bare_ref(
             occ.owner,
         )
         .unwrap_or(ret);
+        let ret = open_declaring_sort_params(kb, sym, &ret, receiver, expected)
+            .map_err(|at| receiver_not_an_instance(kb, sym, span, &at, receiver))?;
         return Ok(TypeResult::pure_value(ret, env.clone(), Rc::clone(occ)));
     }
     // WI-20260824-JM6ZW — A SORT REACHING HERE WAS NOT CLASSIFIED, and that is the

@@ -409,6 +409,7 @@ pub(super) fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                None,
                 solving,
             );
             results.push(r);
@@ -422,6 +423,7 @@ pub(super) fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                None,
                 solving,
             );
             results.push(r);
@@ -438,6 +440,7 @@ pub(super) fn visit_type(
                 occ_span,
                 &occ,
                 expected.as_ref(),
+                None,
                 solving,
             );
             results.push(r);
@@ -483,8 +486,24 @@ pub(super) fn visit_type(
             functor,
             pos_args,
             named_args,
+            recv_type,
             ..
         } => {
+            if let Some(r) = paren_less_member_as_function(
+                kb,
+                &*env,
+                &env.flow,
+                &occ,
+                *functor,
+                pos_args,
+                named_args,
+                recv_type.as_ref(),
+                expected.as_ref(),
+                solving,
+            ) {
+                results.push(r);
+                return;
+            }
             // WI-20260902-4NEKZ — A DOTTED PAREN-LESS CITATION OF A RULE IS THAT
             // RELATION, in a rule-body VALUE slot as in an operation body. The chain
             // survives to here only where the loader did NOT collapse it — an operation
@@ -530,7 +549,7 @@ pub(super) fn visit_type(
                 if env.in_rule_body() {
                     if let Some(op) = dotted_citation_nullary_op(kb, &occ) {
                         let r =
-                            check_bare_ref(kb, &*env, &env.flow, op, occ_span, &occ, None, solving);
+                            check_bare_ref(kb, &*env, &env.flow, op, occ_span, &occ, None, None, solving);
                         results.push(r);
                         return;
                     }

@@ -106,18 +106,30 @@ pub(super) fn relation_ref_arg_type(
 /// WI-275: a lambda or a bare reference — the two argument shapes that need a top-down
 /// function type (to type a lambda's parameter, or to eta-lift an operation name to a
 /// function value). [`hof_arg_hint`] gives those, and only those, the declared param type.
+/// A member written without parentheses on a sort (`Box.inc`, `t.wrap`) is a bare
+/// reference spelled with a dot, and is one of them
+/// ([`paren_less_member_as_function`]).
 ///
 /// WI-793 named it: the SAME predicate decides which arguments must never be staged
 /// ahead of the hints, because a staged argument is visited before any hint exists and
 /// these are exactly the arguments a hint is for.
 pub(super) fn is_hof_shaped(arg: &Rc<NodeOccurrence>) -> bool {
-    matches!(
-        &arg.kind,
-        NodeKind::Expr {
-            expr: Expr::Lambda { .. } | Expr::VarRef { .. },
-            ..
-        }
-    )
+    match arg.as_expr() {
+        Some(Expr::Lambda { .. } | Expr::VarRef { .. }) => true,
+        Some(
+            Expr::Apply {
+                pos_args,
+                named_args,
+                ..
+            }
+            | Expr::DotApply {
+                pos_args,
+                named_args,
+                ..
+            },
+        ) => arg.is_paren_less() && pos_args.is_empty() && named_args.is_empty(),
+        _ => false,
+    }
 }
 
 /// WI-793: the UNIFIED `pos_args ++ named_args` index of the argument bound to parameter

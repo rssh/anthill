@@ -24668,6 +24668,8 @@ enum LoadBuildFrame {
         name_ref: TermId,
         pos_count: usize,
         named_keys: SmallVec<[Symbol; 2]>,
+        /// Written without parentheses, `e.m` — see `NodeKind::Expr`'s `paren_less`.
+        paren_less: bool,
     },
 }
 
@@ -30463,6 +30465,7 @@ impl<'a> Loader<'a> {
                             name_ref,
                             pos_count: positional.len(),
                             named_keys,
+                            paren_less: self.parsed.terms.is_paren_less_dot(parse_id),
                         }));
                         // Push named (reversed), positional (reversed), then
                         // receiver last so it pops/lands first.
@@ -30833,6 +30836,7 @@ impl<'a> Loader<'a> {
             name_ref,
             pos_count: pos_args.len(),
             named_keys,
+            paren_less: false,
         }));
         for &(_, tid) in visible_named.iter().rev() {
             work.push(LoadWorkOp::Visit(tid));
@@ -30868,6 +30872,7 @@ impl<'a> Loader<'a> {
                     name_ref: segment_ref,
                     pos_count: 0,
                     named_keys: SmallVec::new(),
+                    paren_less: true,
                 }));
             }
         }
@@ -31111,11 +31116,13 @@ impl<'a> Loader<'a> {
         // (the member `Ident` itself, `pos_args[1]`), not the whole access term.
         let kb_member = self.remap_symbol(member, self.parsed.terms.span(pos_args[1]));
         let name_ref = self.kb.alloc(Term::Ref(kb_member));
+        // A field access is a dot written without parentheses.
         work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
             outer_parse_id: parse_id,
             name_ref,
             pos_count: 0,
             named_keys: SmallVec::new(),
+            paren_less: true,
         }));
         // Visit the receiver (object) so it lands in the DotApply receiver slot.
         work.push(LoadWorkOp::Visit(pos_args[0]));
@@ -31415,6 +31422,8 @@ impl<'a> Loader<'a> {
                     named_keys: Vec::new(),
                     type_args: Vec::new(),
                     recv_type,
+                    // The dotted name was written without parentheses.
+                    paren_less: true,
                 },
                 &mut self.expr_occ_results,
             );
@@ -32217,6 +32226,7 @@ impl<'a> Loader<'a> {
                             named_keys: occ_named_keys,
                             type_args,
                             recv_type,
+                            paren_less: self.parsed.terms.is_paren_less_citation(outer_parse_id),
                         }
                     };
                     node_occurrence::build_frame(self.kb, frame, &mut self.expr_occ_results);
@@ -32227,6 +32237,7 @@ impl<'a> Loader<'a> {
                 name_ref,
                 pos_count,
                 named_keys,
+                paren_less,
             } => {
                 // Result layout (drain_start..): receiver, positional args,
                 // named args. Build the reflect `dot_apply(receiver, name,
@@ -32285,6 +32296,7 @@ impl<'a> Loader<'a> {
                             name,
                             pos_count,
                             named_keys: occ_named_keys,
+                            paren_less,
                         },
                         &mut self.expr_occ_results,
                     );
